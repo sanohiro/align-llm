@@ -3593,6 +3593,9 @@ python3 - "${root_dir}" "${work_dir}" <<'PY'
 import hashlib
 import json
 import os
+import re
+import shutil
+import struct
 import subprocess
 import sys
 
@@ -3681,13 +3684,110 @@ SUFFIX_SINGLE_SHOT_4 = "ds-suffix-single-shot-4"
 SUFFIX_FULL_FIVE = "3,17,5,9,27"
 SUFFIX_STEPS_THREE = "2"
 
+# `docs/specs/r6-moe-resident-dense.md` section 13 item 15's payload, and the two exact details it
+# must produce here. `bounded_detail` cut its operand at a fixed **byte** index, so an operand whose
+# byte 256 fell inside a multibyte scalar aborted the process inside the slice and `--decode-step`
+# produced no document where it owes a refusal. 245 ASCII bytes put byte 256 on the third byte of
+# the fourth `\u3042`. The helper now backs off over continuation bytes (`0x80..0xBF`) to a lead
+# byte, and it runs **twice** on each of these paths — once inside `resident_detail`/`suffix_detail`
+# over the operand, once inside `fail` over the wrapped result. The first cut lands at 254 bytes
+# (`"a" * 245` plus three `\u3042`); over `resident[...]` the second lands at 254 and keeps only the
+# nine-byte prefix and the ASCII, while over the shorter `suffix[...]` prefix it lands at 255 and
+# keeps one whole `\u3042` — which is the boundary itself, asserted rather than described. Both
+# strings are written out because *where* the cut lands is the thing under test.
+MULTIBYTE_OPERAND = "a" * 245 + "\u3042" * 20
+MULTIBYTE_RESIDENT_DETAIL = "resident[" + "a" * 245
+MULTIBYTE_SUFFIX_DETAIL = "suffix[" + "a" * 245 + "\u3042"
+
+
+# R6-PREFIX-KEY (`docs/specs/r6-prefix-key-corpus.md` sections 5.1 and 5.2). Every store is a
+# directory **the caller creates**: the arm never creates one, never lists one, and writes nothing
+# into it but `<64-hex>.akvp`. All of them live under the runner's own `mktemp -d` tree.
+STORE_DIR = path("store")
+STORE_SUFFIX_DIR = path("store-suffix")
+STORE_RESIDENT_DIR = path("store-resident")
+STORE_STABLE_DIR = path("store-stable")
+STORE_ABSENT_DIR = path("store-absent")
+STORE_FILE = path("store-not-a-directory")
+STORE_CORRUPT_DIR = path("store-corrupt")
+STORE_WRONG_TOKENS_DIR = path("store-wrong-tokens")
+STORE_WRONG_PACK_DIR = path("store-wrong-pack")
+STORE_KEY_TOKENS_DIR = path("store-key-tokens")
+STORE_KEY_WIDTH_DIR = path("store-key-width")
+STORE_KEY_GEOMETRY_DIR = path("store-key-geometry")
+STORE_KEY_PACK_DIR = path("store-key-pack")
+STORE_KEY_TOKENS = "3,17,9"
+STORE_KEY_WIDTH = "16"
+STORE_KEY_GEOMETRY = geom("geometry-key-variant")
+STORE_KEY_PACK = path("model-pack-key-variant.alignpack")
+
+# Section 3.2, oracle D — **this is the third implementation of section 2.3's 152-byte preimage**,
+# beside `src/kv_plane.align`'s `derive_key` and `scripts/kv_plane_reader.py`'s. It is written from
+# the specification and takes its inputs from the **document** the arm published, which is what makes
+# "the key is a function of the published digests" a test rather than a claim.
+KEY_VERSION = 1
+KEY_PREIMAGE_BYTES = 152
+PACK_SOURCE_RECORD_OFFSET_AT = 80
+PACK_TOTAL_BYTES_AT = 24
+PACK_SOURCE_DIGEST_IN_RECORD = 48
+
+
+def store_key(source_hex, geometry_hex, ids, kv_width, pack_total_bytes,
+              plane_layout_version=1, element_type=0, format_version=1):
+    stream = b"".join(struct.pack("<I", int(value)) for value in ids)
+    preimage = b"".join([
+        bytes.fromhex(source_hex),
+        bytes.fromhex(geometry_hex),
+        hashlib.sha256(stream).digest(),
+        struct.pack("<Q", pack_total_bytes),
+        struct.pack("<I", kv_width),
+        struct.pack("<I", len(ids)),
+        struct.pack("<I", plane_layout_version),
+        struct.pack("<I", element_type),
+        struct.pack("<I", format_version),
+        struct.pack("<I", KEY_VERSION),
+        b"\0" * 24,
+    ])
+    assert len(preimage) == KEY_PREIMAGE_BYTES, len(preimage)
+    return hashlib.sha256(preimage).hexdigest()
+
+
+def key_from_document(document):
+    """Section 2.7's contract: the key is recomputable from the document alone, because `kv`
+    publishes the three digests and the four scalars and `selection` publishes the width."""
+    kv_object = document["kv"]
+    return store_key(kv_object["source_header_region_sha256"], kv_object["geometry_sha256"],
+                     document["selection"]["tokens"],
+                     document["selection"]["reconciliation_width"],
+                     kv_object["pack_total_bytes"],
+                     kv_object["plane_layout_version"], 0, kv_object["format_version"])
+
+
+def key_from_inputs(pack_path, geometry_path, ids, kv_width):
+    """The same preimage from the **operands** rather than from a document, used only to place a
+    container at a key path before any run has produced one (the three `hit-but-broken` rows). It is
+    asserted equal to `key_from_document` wherever both exist, so it cannot drift silently."""
+    with open(pack_path, "rb") as handle:
+        raw = handle.read()
+    total = struct.unpack_from("<Q", raw, PACK_TOTAL_BYTES_AT)[0]
+    record = struct.unpack_from("<Q", raw, PACK_SOURCE_RECORD_OFFSET_AT)[0]
+    at = record + PACK_SOURCE_DIGEST_IN_RECORD
+    with open(geometry_path, "rb") as handle:
+        geometry = handle.read()
+    return store_key(raw[at:at + 32].hex(), hashlib.sha256(geometry).hexdigest(), ids, kv_width,
+                     total)
+
+
+def store_file(directory, key):
+    return os.path.join(directory, key + ".akvp")
+
 
 def kv(mutation):
     return path("model-kv-%s.akvp" % mutation)
 
 
 def ds(save="-", load="-", width=WIDTH, geometry=GEOM, steps=STEPS, transcript=None, pack=None,
-       resident=None, tokens=None, suffix=None):
+       resident=None, tokens=None, suffix=None, store=None):
     """One thirteen-operand invocation, or a fourteen-operand one when `resident` is given. Every kv
     case is thirteen operands so that the two directions differ in nothing but which position holds
     the path; every R6-RESIDENT-WEIGHTS case is the *same* thirteen plus one operand, so the
@@ -3700,10 +3800,15 @@ def ds(save="-", load="-", width=WIDTH, geometry=GEOM, steps=STEPS, transcript=N
     # R6-PREFIX-SUFFIX-PREFILL section 2.2. `SUFFIX` is `args[14]`, so a case that supplies it also
     # supplies `RESIDENT`'s position — with the default `-` unless the case names one, which is what
     # makes the streamed and resident suffix legs differ in exactly that operand.
-    if resident is not None or suffix is not None:
+    if resident is not None or suffix is not None or store is not None:
         operands.append("-" if resident is None else resident)
-    if suffix is not None:
-        operands.append(suffix)
+    # R6-PREFIX-KEY section 2.2. `STORE` is `args[15]`, so a case that supplies it also supplies
+    # `SUFFIX`'s position — with the default `-` unless the case names one. `args.len() == 16` with
+    # `STORE` of `-` is exactly `args.len() == 15`, so nothing below changes an existing meaning.
+    if suffix is not None or store is not None:
+        operands.append("-" if suffix is None else suffix)
+    if store is not None:
+        operands.append(store)
     return operands
 
 
@@ -3869,13 +3974,19 @@ NO_DOCUMENT = [
     ("ds-arity-8", [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT]),
     # R6-KV-PERSIST section 5.3, R6-RESIDENT-WEIGHTS section 5.1, and R6-PREFIX-SUFFIX-PREFILL
     # section 5.2: the over-arity case moves up one position each time the grammar grows,
-    # `ds-arity-12` -> `ds-arity-14` -> `ds-arity-15` -> `ds-arity-16`. It is `NO_DOCUMENT` and
-    # carries no golden row, so the move costs zero golden bytes. Fifteen operands is now **legal**
-    # and is `ds-suffix-*` below: an unparseable fifteenth operand owes the caller a document naming
-    # it, and only a sixteenth is arity.
-    ("ds-arity-16",
+    # `ds-arity-12` -> `ds-arity-14` -> `ds-arity-15` -> `ds-arity-16` -> `ds-arity-17`. It is
+    # `NO_DOCUMENT` and carries no golden row, so the move costs zero golden bytes. **Sixteen
+    # operands is now legal** and is `ds-store-*` below: an unusable sixteenth operand owes the
+    # caller a document or a path refusal naming it, and only a seventeenth is arity.
+    ("ds-arity-17",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "-", "-", "-", "-",
-      "extra"]),
+      "-", "extra"]),
+    # R6-PREFIX-KEY section 4.1's construction cell. `STORE` takes the same `valid_path` check
+    # `KV_SAVE` and `KV_LOAD` take, so an empty sixteenth operand is `Err(Error.Invalid)` with no
+    # document — identical to the two operands it sits beside.
+    ("ds-store-path-empty",
+     [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "-", "-", "-", "-",
+      ""]),
     ("ds-path-kv-save-empty",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDTH, LOGITS, STEPS, "", "-"]),
     ("ds-path-kv-load-empty",
@@ -3957,6 +4068,10 @@ STUB_CASES = [
     ("ds-resident-unknown", ds(resident="extra"), "R6_RESIDENT"),
     ("ds-resident-empty", ds(resident=""), "R6_RESIDENT"),
     ("ds-resident-case", ds(resident="WEIGHTS"), "R6_RESIDENT"),
+    # Section 13 item 15's regression on this arm. The abort was in the shared `bounded_detail`, so
+    # both operands that reach it get a row: this one through `resident_detail`, `ds-suffix-multibyte`
+    # below through `suffix_detail`. Each asserts a *document*, so a re-introduced abort fails here.
+    ("ds-resident-multibyte", ds(resident=MULTIBYTE_OPERAND), "R6_RESIDENT"),
     # Precedence: the residency mode is decided before the container is opened, so an unknown mode
     # over a pack that does not exist still names the mode.
     ("ds-resident-unknown-and-missing",
@@ -3977,6 +4092,8 @@ STUB_CASES = [
     # what they accept. `-` is how a caller says "no suffix"; the empty string is a malformed list.
     ("ds-suffix-empty", ds(load=KV_GOOD, suffix=""), "R6_SUFFIX"),
     ("ds-suffix-garbage", ds(load=KV_GOOD, suffix="x"), "R6_SUFFIX"),
+    # The second `bounded_detail` caller on this arm; section 13 item 15.
+    ("ds-suffix-multibyte", ds(load=KV_GOOD, suffix=MULTIBYTE_OPERAND), "R6_SUFFIX"),
     ("ds-suffix-trailing", ds(load=KV_GOOD, suffix="5,"), "R6_SUFFIX"),
     # The vocabulary re-check, in the same pass `TOKENS` is re-checked in once the geometry is real.
     ("ds-suffix-over-vocab", ds(load=KV_GOOD, suffix="32"), "R6_SUFFIX"),
@@ -4114,7 +4231,81 @@ ENGINE_CASES = [
     ("ds-suffix-resident",
      ds(load=KV_PREFIX, tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_THREE, transcript="-",
         steps=SUFFIX_STEPS_THREE, resident="weights"), ""),
-] + [(name, operands, code) for name, operands, code, _, _, _ in KV_REFUSALS]
+]
+
+# R6-PREFIX-KEY section 5.1. The store's own block: **one `STORE` directory per case**, a miss that
+# writes and a hit that reads, and the pair compared by oracle K below. Order is the contract — a
+# miss must run before the hit that follows it, and `record` runs this list in order — and every
+# case is a **separate process**, so the hit reads a container the runner's own earlier process
+# wrote and not one it is still holding.
+#
+# Every activation here stays at three tokens or fewer: `ds-store-miss`/`-hit` are this block's
+# three-token prompt and the suffix pair is item 33's `T_prefix = 2`, `S = 1`. The store's own
+# golden surface — `store.key`, `store.container_bytes` — is **digests and integers only** and has
+# no floating-point input, so it is platform-independent by construction (section 5.3).
+STORE_CASES = [
+    # The two rows the whole capability turns on. Identical argv; the only difference is that the
+    # first one found no file.
+    ("ds-store-miss", ds(store=STORE_DIR), ""),
+    ("ds-store-hit", ds(store=STORE_DIR), ""),
+    # `STORE` + `SUFFIX`, both directions. This is the combination item 33 refused and section 2.5
+    # reverses **narrowly**: the caller still cannot express "prefill then suffix", and the miss
+    # reaches it only because a keyed miss must persist a `T_prefix`-column plane before continuing.
+    # These two are `ds-suffix-1`'s operands with `STORE` in place of `KV_LOAD`, so the comparison
+    # below is a comparison of the provenance and of nothing else.
+    ("ds-store-suffix-miss",
+     ds(tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_ONE, store=STORE_SUFFIX_DIR), ""),
+    ("ds-store-suffix-hit",
+     ds(tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_ONE, store=STORE_SUFFIX_DIR), ""),
+    # The `RESIDENT` composition. Oracle K on this pair and oracle R against `ds-store-hit`, whose
+    # argv differs in exactly the `RESIDENT` operand and the (unpublished) store directory.
+    ("ds-store-resident-miss", ds(store=STORE_RESIDENT_DIR, resident="weights"), ""),
+    ("ds-store-resident-hit", ds(store=STORE_RESIDENT_DIR, resident="weights"), ""),
+]
+
+# Section 5.2's refusal matrix for the store. Every row asserts its code, its detail, and what the
+# `store` object publishes while refusing — which is the point of publishing it in every document.
+#
+# `ds-suffix-no-load` above is the unchanged row of the widened rule: `SUFFIX` with **neither**
+# `KV_LOAD` nor `STORE` is still `R6_KV_ARGS suffix[no_load]`.
+STORE_REFUSALS = [
+    # Step 2d, both details, in the operands' own order.
+    ("ds-store-with-save", ds(save=KV_ABSENT, store=STORE_DIR), "R6_KV_ARGS", "store[with_save]"),
+    ("ds-store-with-load", ds(load=KV_GOOD, store=STORE_DIR), "R6_KV_ARGS", "store[with_load]"),
+    # Precedence: 2d precedes every numeric parse, so a conflicting provenance is refused before
+    # `STEPS` is looked at and before any directory is touched.
+    ("ds-store-with-save-bad-steps", ds(save=KV_ABSENT, store=STORE_DIR, steps="0"),
+     "R6_KV_ARGS", "store[with_save]"),
+    # Precedence: L0 follows step 6, because `kv_width` is **in the preimage** — deriving the key
+    # earlier would key on an unvalidated number. The document carries `key: "-"` and
+    # `outcome: "absent"`, which says the refusal preceded key derivation.
+    ("ds-store-narrow-width", ds(store=STORE_DIR, width="3"), "R6_KV_WIDTH", "kv_width[3]"),
+    # W5. One code for three causes the pin cannot separate (Request 53): a directory that does not
+    # exist, and a path that is a regular file, are the same refusal and the detail names the
+    # **operand** rather than guessing the cause. Both pay a full prefill first, which section 2.6
+    # records as a deliberate cost rather than an oversight.
+    ("ds-store-unwritable", ds(store=STORE_ABSENT_DIR), "R6_KV_UNWRITABLE", "store[create]"),
+    ("ds-store-file-not-dir", ds(store=STORE_FILE), "R6_KV_UNWRITABLE", "store[create]"),
+    # W5 at the **other** call site, which is the one this capability moved. A keyed miss with a
+    # suffix saves before the suffix pass (section 12, D14), so its create failure is reported from
+    # a site no prior capability could reach — `SUFFIX` was illegal beside `KV_SAVE`. The row pins
+    # that the same code and the same detail come out of it and that the run is **refused there**:
+    # the suffix pass does not run, no step runs, and the arm does not continue with a prefix it
+    # could not persist. Without it the moved site's failure branch has no regression at all.
+    ("ds-store-suffix-unwritable",
+     ds(tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_ONE, store=STORE_ABSENT_DIR),
+     "R6_KV_UNWRITABLE", "store[create]"),
+    # **A miss is only a missing file.** A file that exists at the key path is loaded through L1–L14
+    # and every failure there is that check's refusal — never a silent re-prefill. Three of them,
+    # built by placing a container at a key path it does not describe.
+    ("ds-store-hit-corrupt-plane", ds(store=STORE_CORRUPT_DIR), "R6_KV_DIGEST", "plane"),
+    ("ds-store-hit-wrong-tokens", ds(store=STORE_WRONG_TOKENS_DIR), "R6_KV_TOKENS", "2"),
+    ("ds-store-hit-wrong-pack", ds(store=STORE_WRONG_PACK_DIR), "R6_KV_IDENTITY", "pack"),
+]
+
+ENGINE_CASES = ENGINE_CASES + [(name, operands, code) for name, operands, code, _, _, _
+                               in KV_REFUSALS] \
+    + STORE_CASES + [(name, operands, code) for name, operands, code, _ in STORE_REFUSALS]
 
 # Section 5.2 and section 11.1 correction 13's bound, approached from the side no refusal reaches.
 # `slot` is bounded by `tokens.count` at both `stage_embed_row` call sites, so a prompt of exactly
@@ -4321,6 +4512,10 @@ def normalize(text):
     # what a reader compares against a single-shot run's `selection.token_count`, and `pack_bytes` is
     # exactly zero on the resident leg.
     document["suffix"]["compute_ns"] = 0
+    # R6-PREFIX-KEY section 2.9. `lookup_ns` is the only clock the `store` object holds. `key`,
+    # `outcome`, `saved`, and `container_bytes` are deliberately **not** normalized: the key is a
+    # digest over exact bytes, the other three are exact, and all four are the contract.
+    document["store"]["lookup_ns"] = 0
     for key, placeholder in PLACEHOLDER.items():
         if document[key]:
             document[key] = placeholder
@@ -4329,6 +4524,11 @@ def normalize(text):
     # `mktemp -d` path and would make the golden a function of this run's temporary directory. It is
     # replaced by a placeholder here, exactly as the five top-level path fields are, and the case
     # table below asserts the placeholder so the substitution cannot hide a wrong detail.
+    #
+    # **This substitution covers `KV_SAVE`/`KV_LOAD` runs only.** A store run's own cleanup failure
+    # reports the operand — `R6_KV_UNWRITABLE store[create]`'s sibling `store[cleanup]`, section 12
+    # D16 — because a derived name is the arm's own and section 2.7 publishes no path anywhere. That
+    # detail needs no normalization, which is the point of mapping it in the arm rather than here.
     if document["error_detail"].startswith(work_dir):
         document["error_detail"] = "<path>"
     return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
@@ -4442,6 +4642,32 @@ def normalize_persist(text):
     return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
 
 
+# R6-PREFIX-KEY section 3.1, **oracle K — the capability's acceptance rule**: a hit and the miss that
+# filled it are the same run. It is oracle Q's comparison plus exactly three fields, and that is not
+# a widening: a keyed miss **is** a save run and a keyed hit **is** a load run, so the blocks oracle Q
+# excludes are excluded here for the same reason — a load run skips the prefill, so it builds no
+# prefill graph, reads fewer pack bytes, and fills fewer windows. Section 3.1's own exclusion list
+# names `kv.*` and `pack.reader_*` as "the counters item 30 already excludes", which is that set.
+#
+# The three added are the store's own report and nothing else:
+#
+#   * `store.outcome`  miss -> hit, which is the thing being tested;
+#   * `store.saved`    1 -> 0, likewise;
+#   * `store.lookup_ns` a clock, already zeroed by `normalize` and popped here so the exclusion is
+#     stated where a reader looks for it.
+#
+# **`store.key` and `store.container_bytes` stay inside the comparison**, which is what makes the
+# oracle catch a key that varies between runs and a container written with the wrong layout.
+STORE_EXCLUDED_FIELDS = (("store", "outcome"), ("store", "saved"), ("store", "lookup_ns"))
+
+
+def normalize_store(text):
+    document = json.loads(normalize_persist(text))
+    for block, field in STORE_EXCLUDED_FIELDS:
+        document[block].pop(field, None)
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
 def build_shim(force):
     environment = dict(os.environ)
     environment.pop("ALIGN_LLM_GGML_INCLUDE", None)
@@ -4457,12 +4683,15 @@ def run(operands, environment=None):
     return subprocess.run([binary] + operands, capture_output=True, cwd=work_dir, env=environment)
 
 
-def read_container(container, kind=None, tokens=TOKENS):
+def read_container(container, kind=None, tokens=TOKENS, quiet=True):
     """`scripts/kv_plane_reader.py`, always as a **subprocess and never imported**
     (`scripts/run-alignpack-smoke`'s rule): a shared interpreter state would let the two
-    implementations agree by accident."""
+    implementations agree by accident. `quiet=False` is R6-PREFIX-KEY's own use: the report carries
+    the reader's independently derived `key`, which oracle D compares against the file's name."""
     command = ["python3", READER, "--plane", container, "--pack", PACK, "--geometry", GEOM,
-               "--tokens", tokens, "--quiet"]
+               "--tokens", tokens]
+    if quiet:
+        command += ["--quiet"]
     if kind is not None:
         command += ["--expect-reject", kind]
     return subprocess.run(command, capture_output=True, cwd=work_dir)
@@ -4473,6 +4702,11 @@ def read_container(container, kind=None, tokens=TOKENS):
 SUFFIX_FIELDS = ("requested", "completed", "token_count", "n_past_base", "sequence_length",
                  "columns_written", "first_column", "graph_count", "node_count", "pack_bytes",
                  "compute_ns")
+
+# The six fields of R6-PREFIX-KEY section 2.7's `store` object, asserted as a **set** on every
+# document for the same reason: a field added or dropped without moving this list is a failure rather
+# than a silently smaller object.
+STORE_FIELDS = ("requested", "key", "outcome", "saved", "container_bytes", "lookup_ns")
 
 failures = []
 produced = {}
@@ -4500,7 +4734,7 @@ def record(name, operands, expected):
     if (result.returncode == 0) != (expected_exit == 0):
         failures.append("%s: status %r but exit %d"
                         % (name, document["status"], result.returncode))
-    if document["kind"] != "R6_DECODE_STEP" or document["schema_version"] != 5:
+    if document["kind"] != "R6_DECODE_STEP" or document["schema_version"] != 6:
         failures.append("%s: wrong document identity %r/%r"
                         % (name, document["kind"], document["schema_version"]))
     # R6-RESIDENT-WEIGHTS section 3.5: the `weights` object is present in **every** document,
@@ -4540,6 +4774,27 @@ def record(name, operands, expected):
     elif suffix["completed"] and suffix["columns_written"] != suffix["sequence_length"]:
         failures.append("%s: a completed suffix wrote %d columns, not its own sequence length %d"
                         % (name, suffix["columns_written"], suffix["sequence_length"]))
+    # R6-PREFIX-KEY section 2.7: the `store` object is present in **every** document, including one
+    # refused before the key was derived, so "this run missed" is never silent and a caller who
+    # mistyped the directory reads a document that says which run they got. The clauses below are the
+    # object's own consistency: a run that asked for no store publishes nothing about one, `saved` is
+    # `1` only on a **complete** write (which no hit and no refusal can claim), and a run refused
+    # before L0 publishes `key: "-"`, which is itself information.
+    store = document.get("store")
+    if not isinstance(store, dict) or sorted(store) != sorted(STORE_FIELDS):
+        failures.append("%s: the document published no store object: %r" % (name, store))
+    elif not store["requested"] and (store["key"] != "-" or store["outcome"] != "absent"
+                                     or store["saved"] != 0 or store["container_bytes"] != 0
+                                     or store["lookup_ns"] != 0):
+        failures.append("%s: a document with no store published store figures: %r" % (name, store))
+    elif store["outcome"] not in ("absent", "hit", "miss"):
+        failures.append("%s: store.outcome is %r" % (name, store["outcome"]))
+    elif store["saved"] and store["outcome"] != "miss":
+        failures.append("%s: a %r run claimed it saved: %r" % (name, store["outcome"], store))
+    elif (store["key"] == "-") != (store["outcome"] == "absent"):
+        failures.append("%s: store.key and store.outcome disagree: %r" % (name, store))
+    elif store["key"] != "-" and len(store["key"]) != 64:
+        failures.append("%s: store.key is %r" % (name, store["key"]))
     if not document["abi"]["fp_contract_off"]:
         failures.append("%s: the shim was not built with -ffp-contract=off" % name)
     # R6-STEP-N section 2.8, on **every** document including the error ones: the loop-level
@@ -4580,6 +4835,64 @@ OCCUPIED_BEFORE = open(KV_OCCUPIED, "rb").read()
 os.symlink(KV_OCCUPIED, KV_OCCUPIED_LINK)
 os.makedirs(KV_READONLY_DIR, exist_ok=True)
 os.chmod(KV_READONLY_DIR, 0o555)
+
+# R6-PREFIX-KEY section 5.1's setup. **The arm creates no store**, so the runner does — which is the
+# contract and not a convenience: a directory is a namespace, and an arm that mints namespaces from a
+# path operand is one typo from populating `/tmp/tyop/` (section 2.4, Request 53).
+#
+# `STORE_ABSENT_DIR` is deliberately **not** created and `STORE_FILE` is a regular file: both are
+# `R6_KV_UNWRITABLE store[create]`, which is the assertion that the three causes are not
+# distinguished at this pin.
+for directory in (STORE_DIR, STORE_SUFFIX_DIR, STORE_RESIDENT_DIR, STORE_STABLE_DIR,
+                  STORE_CORRUPT_DIR, STORE_WRONG_TOKENS_DIR, STORE_WRONG_PACK_DIR,
+                  STORE_KEY_TOKENS_DIR, STORE_KEY_WIDTH_DIR, STORE_KEY_GEOMETRY_DIR,
+                  STORE_KEY_PACK_DIR):
+    os.makedirs(directory, exist_ok=True)
+with open(STORE_FILE, "wb") as handle:
+    handle.write(b"a store is a directory")
+
+# The geometry and pack variants the key-determinism rows need. Each changes **exactly one preimage
+# field** and nothing the arm would otherwise refuse:
+#
+#   * the geometry file gains one byte of insignificant JSON whitespace, so `geometry_sha256` moves
+#     while every geometry integer stays what it was;
+#   * the pack's stored `source_header_region_sha256` has its first byte flipped, so
+#     `source_header_region_sha256` moves while the container the arm stages is unchanged. Nothing
+#     on this arm recomputes that digest — `--pack-verify` is the arm that does — so the run
+#     succeeds and only the key differs.
+with open(GEOM, "rb") as handle:
+    GEOMETRY_IMAGE = handle.read()
+with open(STORE_KEY_GEOMETRY, "wb") as handle:
+    handle.write(GEOMETRY_IMAGE.replace(b"{", b"{ ", 1))
+with open(PACK, "rb") as handle:
+    PACK_IMAGE = bytearray(handle.read())
+PACK_DIGEST_AT = struct.unpack_from("<Q", PACK_IMAGE, PACK_SOURCE_RECORD_OFFSET_AT)[0] \
+    + PACK_SOURCE_DIGEST_IN_RECORD
+PACK_IMAGE[PACK_DIGEST_AT] = PACK_IMAGE[PACK_DIGEST_AT] ^ 0x01
+with open(STORE_KEY_PACK, "wb") as handle:
+    handle.write(bytes(PACK_IMAGE))
+
+# The three `hit-but-broken` rows, built by placing a container **at the key path of a run that will
+# ask for it** and then breaking it in place — which is the only way to reach them, and is exactly
+# the point: the key addresses a file that may be anything. The name comes from this block's own
+# preimage implementation, so a name the arm would not have chosen is itself a failure of oracle D.
+STORE_EXPECTED_KEY = key_from_inputs(PACK, GEOM, [3, 17, 5], int(WIDTH))
+with open(KV_GOOD, "rb") as handle:
+    STORE_GOOD_IMAGE = handle.read()
+GOOD_PLANE_OFFSET = struct.unpack_from("<Q", STORE_GOOD_IMAGE, 88)[0]
+GOOD_IDENTITY_OFFSET = struct.unpack_from("<Q", STORE_GOOD_IMAGE, 64)[0]
+corrupt = bytearray(STORE_GOOD_IMAGE)
+corrupt[GOOD_PLANE_OFFSET] = corrupt[GOOD_PLANE_OFFSET] ^ 0x40
+with open(store_file(STORE_CORRUPT_DIR, STORE_EXPECTED_KEY), "wb") as handle:
+    handle.write(bytes(corrupt))
+wrong_pack = bytearray(STORE_GOOD_IMAGE)
+wrong_pack[GOOD_IDENTITY_OFFSET] = wrong_pack[GOOD_IDENTITY_OFFSET] ^ 0x01
+with open(store_file(STORE_WRONG_PACK_DIR, STORE_EXPECTED_KEY), "wb") as handle:
+    handle.write(bytes(wrong_pack))
+# A container whose ids are **not** this run's, carried to the key path of a run whose ids are:
+# reaching it for real needs a SHA-256 collision, so the file is placed by hand and the refusal is
+# `R6_KV_TOKENS` naming the first id that disagrees.
+shutil.copyfile(kv("tokens-id"), store_file(STORE_WRONG_TOKENS_DIR, STORE_EXPECTED_KEY))
 
 # The R5B arm is untouched: its own flag still selects it and it still emits its own document.
 r5b = run(["--model-forward", PACK, GEOM, TOKENS])
@@ -4988,7 +5301,8 @@ for case in ("ds-resident-stream-1", "ds-kv-args-dash-dash"):
 for case, detail in (("ds-resident-unknown", "resident[extra]"),
                      ("ds-resident-empty", "resident[]"),
                      ("ds-resident-case", "resident[WEIGHTS]"),
-                     ("ds-resident-unknown-and-missing", "resident[extra]")):
+                     ("ds-resident-unknown-and-missing", "resident[extra]"),
+                     ("ds-resident-multibyte", MULTIBYTE_RESIDENT_DETAIL)):
     document = json.loads(produced[case])
     if document["error_detail"] != detail:
         failures.append("%s: error_detail %r, not %r" % (case, document["error_detail"], detail))
@@ -5361,6 +5675,7 @@ SUFFIX_REFUSAL_DETAILS = (("ds-suffix-no-load", "suffix[no_load]"),
                           ("ds-suffix-no-load-bad-steps", "suffix[no_load]"),
                           ("ds-suffix-empty", "suffix[]"),
                           ("ds-suffix-garbage", "suffix[x]"),
+                          ("ds-suffix-multibyte", MULTIBYTE_SUFFIX_DETAIL),
                           ("ds-suffix-trailing", "suffix[5,]"),
                           ("ds-suffix-over-vocab", "token[0]"),
                           ("ds-suffix-over-cap", "sequence[33]"),
@@ -5377,6 +5692,335 @@ for case, detail in SUFFIX_REFUSAL_DETAILS:
             or refused["plane"]["roundtrip_verdict"] == "IDENTICAL":
         failures.append("%s: a refused suffix run published loop state: %r / %r"
                         % (case, refused["suffix"], refused["plane"]))
+
+# ---------------------------------------------------------------------------------------------
+# R6-PREFIX-KEY section 3: oracle K, oracle D, the refusal matrix, and the store's own arithmetic
+#
+# Everything here runs against the **engine** shim, before the forced-failure loop rebuilds it.
+# ---------------------------------------------------------------------------------------------
+
+store_miss = json.loads(produced["ds-store-miss"])
+store_hit = json.loads(produced["ds-store-hit"])
+STORE_CONTAINER = store_file(STORE_DIR, STORE_EXPECTED_KEY)
+
+# The miss wrote, at the name the arm chose, and it is the **only** thing in the caller's directory:
+# the arm writes nothing else into a store and creates nothing else anywhere.
+if store_miss["store"]["outcome"] != "miss" or store_miss["store"]["saved"] != 1 \
+        or store_miss["kv"]["verdict"] != "SAVED" or store_miss["plane"]["source"] != "PREFILL":
+    failures.append("ds-store-miss: %r / %r" % (store_miss["store"], store_miss["kv"]["verdict"]))
+if store_hit["store"]["outcome"] != "hit" or store_hit["store"]["saved"] != 0 \
+        or store_hit["kv"]["verdict"] != "LOADED" or store_hit["plane"]["source"] != "LOADED":
+    failures.append("ds-store-hit: %r / %r" % (store_hit["store"], store_hit["kv"]["verdict"]))
+if sorted(os.listdir(STORE_DIR)) != [STORE_EXPECTED_KEY + ".akvp"]:
+    failures.append("ds-store-miss: the store holds %r" % sorted(os.listdir(STORE_DIR)))
+elif os.stat(STORE_CONTAINER).st_size != store_miss["store"]["container_bytes"]:
+    failures.append("ds-store-miss: the container is %d bytes and the document says %d"
+                    % (os.stat(STORE_CONTAINER).st_size, store_miss["store"]["container_bytes"]))
+
+# **Oracle D**, three agreements over one byte layout in three languages (section 3.2). The arm
+# published `store.key`; this block recomputed it from the **document's** own digests and scalars;
+# and `scripts/kv_plane_reader.py` recomputed it from the **container's** header and identity record
+# and asserted the file it was handed is named for it. A preimage that drifts in any one of the three
+# is caught by the other two.
+for case, document in (("ds-store-miss", store_miss), ("ds-store-hit", store_hit)):
+    if document["store"]["key"] != STORE_EXPECTED_KEY:
+        failures.append("%s: store.key %r is not the operands' own key %r"
+                        % (case, document["store"]["key"], STORE_EXPECTED_KEY))
+    if key_from_document(document) != document["store"]["key"]:
+        failures.append("%s: the key recomputed from the document is %r, the arm published %r"
+                        % (case, key_from_document(document), document["store"]["key"]))
+if not os.path.exists(STORE_CONTAINER):
+    # The arm keyed something this block's own preimage does not derive, so every assertion below
+    # is about a file that is not there. Report that once rather than crashing on the first read:
+    # a key that drifts is oracle D's headline failure and it deserves a sentence, not a traceback.
+    for line in failures:
+        sys.stderr.write("decode step smoke: FAIL %s\n" % line)
+    sys.stderr.write("decode step smoke: FAIL ds-store-miss: no container at the key this block "
+                     "derives (%s); the store holds %r\n"
+                     % (STORE_EXPECTED_KEY, sorted(os.listdir(STORE_DIR))))
+    raise SystemExit(1)
+named = read_container(STORE_CONTAINER, quiet=False)
+if named.returncode != 0:
+    failures.append("ds-store-key-name: the independent reader refused the stored container: %s"
+                    % named.stderr.decode("utf-8", "replace").strip())
+else:
+    reader_key = [line.split()[1] for line in named.stdout.decode("utf-8").splitlines()
+                  if line.startswith("key ")]
+    if reader_key != [STORE_EXPECTED_KEY]:
+        failures.append("ds-store-key-name: the reader derived %r, the name is %r"
+                        % (reader_key, STORE_EXPECTED_KEY))
+# The reader's own new verdict, on a valid container carried to a name that is not its key. This is
+# the row that makes the name part of the format's meaning rather than a convention.
+RENAMED = store_file(STORE_STABLE_DIR, "0" * 64)
+shutil.copyfile(STORE_CONTAINER, RENAMED)
+if read_container(RENAMED, "KEY").returncode != 0:
+    failures.append("ds-store-key-name: the reader accepted a container at the wrong name")
+os.remove(RENAMED)
+
+# **Oracle K — the acceptance rule.** A hit and the miss that filled it are the same run outside
+# three store fields and oracle Q's own exclusion list, which is what "using the cache changes
+# nothing but the cost" means as an assertion.
+for label, first, second in (("ds-store-oracle-k", "ds-store-miss", "ds-store-hit"),
+                             ("ds-store-oracle-k-suffix", "ds-store-suffix-miss",
+                              "ds-store-suffix-hit"),
+                             ("ds-store-oracle-k-resident", "ds-store-resident-miss",
+                              "ds-store-resident-hit")):
+    if normalize_store(produced[first]) != normalize_store(produced[second]):
+        failures.append("%s: %s" % (label, describe_difference(normalize_store(produced[first]),
+                                                               normalize_store(produced[second]))))
+# The guard against a vacuous oracle: the comparison must still hold everything that would change if
+# one loaded lane, one column, or one derived key were wrong.
+witness = json.loads(normalize_store(produced["ds-store-hit"]))
+if "decode" not in witness or not witness.get("steps") \
+        or "sha256" not in witness["steps"][0] or "output" not in witness \
+        or "oracle_logits" not in witness or "roundtrip_bytes_compared" not in witness["plane"] \
+        or witness["store"].get("key") != STORE_EXPECTED_KEY \
+        or witness["store"].get("container_bytes") != store_miss["store"]["container_bytes"]:
+    failures.append("ds-store-oracle-k: the exclusion list emptied the comparison: %r"
+                    % sorted(witness))
+
+# `ds-store-vs-kv-save`. The container a miss writes is **byte-identical** to the one `KV_SAVE`
+# writes for the same prompt, which is what makes "the `akvp` v1 format is byte-unchanged" a verified
+# statement rather than a claim about the diff.
+with open(STORE_CONTAINER, "rb") as handle:
+    stored_digest = hashlib.sha256(handle.read()).hexdigest()
+with open(KV_SAVE, "rb") as handle:
+    saved_digest = hashlib.sha256(handle.read()).hexdigest()
+if stored_digest != saved_digest:
+    failures.append("ds-store-vs-kv-save: the store's container is %s and KV_SAVE's is %s"
+                    % (stored_digest, saved_digest))
+
+# `ds-store-suffix-vs-kv-save`, and it is the row that pins **when** a keyed miss saves. A miss with
+# a suffix must persist the **prefill** plane — `T_prefix` columns, the rest zero — before the suffix
+# pass writes into it. Persisting afterwards produces a container whose plane carries `T_prefix + S`
+# columns under a header declaring `columns_persisted = T_prefix`: it round-trips through the arm
+# (its own digest covers what it wrote), it is **not** byte-identical to the `KV_SAVE` container of
+# the same prefix, and the independent reader refuses it as `ZEROTAIL`. Both halves are asserted
+# here, against the container `ds-suffix-save-prefix` wrote for the same two ids at the same width.
+STORE_SUFFIX_KEY = key_from_inputs(PACK, GEOM, [3, 17], int(WIDTH))
+STORE_SUFFIX_CONTAINER = store_file(STORE_SUFFIX_DIR, STORE_SUFFIX_KEY)
+if json.loads(produced["ds-store-suffix-miss"])["store"]["key"] != STORE_SUFFIX_KEY \
+        or not os.path.exists(STORE_SUFFIX_CONTAINER):
+    failures.append("ds-store-suffix-vs-kv-save: no container at the prefix's key %r; the store "
+                    "holds %r" % (STORE_SUFFIX_KEY, sorted(os.listdir(STORE_SUFFIX_DIR))))
+else:
+    with open(STORE_SUFFIX_CONTAINER, "rb") as handle:
+        keyed_prefix_digest = hashlib.sha256(handle.read()).hexdigest()
+    with open(KV_PREFIX, "rb") as handle:
+        explicit_prefix_digest = hashlib.sha256(handle.read()).hexdigest()
+    if keyed_prefix_digest != explicit_prefix_digest:
+        failures.append("ds-store-suffix-vs-kv-save: the keyed container is %s and the KV_SAVE "
+                        "container of the same prefix is %s — the miss persisted the wrong plane"
+                        % (keyed_prefix_digest, explicit_prefix_digest))
+    reader_prefix = read_container(STORE_SUFFIX_CONTAINER, tokens=SUFFIX_PREFIX_TOKENS)
+    if reader_prefix.returncode != 0:
+        failures.append("ds-store-suffix-vs-kv-save: the independent reader refused the keyed "
+                        "prefix container: %s"
+                        % reader_prefix.stderr.decode("utf-8", "replace").strip())
+
+# `ds-store-no-suffix` and `ds-store-suffix`. A keyed miss **is** the save run and a keyed hit **is**
+# the load run: both are compared against the documents item 29 and item 33 already pin, outside the
+# `store` object the caller did not ask for on the other side.
+def without_store(text):
+    document = json.loads(normalize_persist(text))
+    document.pop("store", None)
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+for label, keyed, comparand in (("ds-store-no-suffix-miss", "ds-store-miss", "ds-kv-save-ok"),
+                                ("ds-store-no-suffix-hit", "ds-store-hit", "ds-kv-load-ok"),
+                                ("ds-store-suffix", "ds-store-suffix-hit", "ds-suffix-1")):
+    if without_store(produced[keyed]) != without_store(produced[comparand]):
+        failures.append("%s: %s" % (label,
+                                    describe_difference(without_store(produced[comparand]),
+                                                        without_store(produced[keyed]))))
+
+# **Oracle S on both store legs** (section 3.3): the keyed run and a single-shot prefill of
+# `TOKENS ++ SUFFIX` are the same run — which is what ties the store to arithmetic rather than to
+# itself. Item 33's own exclusion set plus the `store` block, which is the operand under test on one
+# side and absent on the other; everything else it keeps, it keeps.
+#
+# The **miss** leg matters most and is the one the real-model qualification also runs: a miss
+# prefills `T_prefix`, saves that plane, and *then* runs the suffix pass, so it is the only path on
+# which the reversal recorded in section 2.5 is exercised end to end.
+#
+# One field beyond item 33's set has to go, and it gets a **compensating assertion** rather than a
+# quiet addition: `weights.wrap_count` counts one streamed window wrap per graph, and a **miss** runs
+# one graph set more than a single-shot — its own prefill of `T_prefix`, which is the whole point of
+# a miss. Item 33's pairs never met this because a *load* run builds no prefill graph, so its suffix
+# pass exactly replaces the single-shot's prefill. The exact identity is asserted below.
+def normalize_suffix_store(text):
+    document = json.loads(normalize_suffix(text))
+    document.pop("store", None)
+    document["weights"].pop("wrap_count", None)
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+STORE_SUFFIX_SINGLE_SHOT = "ds-kv-args-dash-dash"
+for label, extra_graph_sets in (("ds-store-suffix-miss", 1), ("ds-store-suffix-hit", 0)):
+    if normalize_suffix_store(produced[label]) != normalize_suffix_store(
+            produced[STORE_SUFFIX_SINGLE_SHOT]):
+        failures.append("oracle S (%s): %s"
+                        % (label,
+                           describe_difference(
+                               normalize_suffix_store(produced[STORE_SUFFIX_SINGLE_SHOT]),
+                               normalize_suffix_store(produced[label]))))
+    # The compensating assertion, exact rather than approximate: `n_layer + 2` graphs per set on this
+    # geometry — the embedding gather, both layers, and the head.
+    keyed_wraps = json.loads(produced[label])["weights"]["wrap_count"]
+    single_wraps = json.loads(produced[STORE_SUFFIX_SINGLE_SHOT])["weights"]["wrap_count"]
+    if keyed_wraps != single_wraps + extra_graph_sets * (2 + 2):
+        failures.append("oracle S (%s): %d window wraps against the single-shot run's %d, not "
+                        "%d extra graph set(s)" % (label, keyed_wraps, single_wraps,
+                                                   extra_graph_sets))
+
+# Oracle R over the store's own legs: `ds-store-hit` and `ds-store-resident-hit` differ in the
+# `RESIDENT` operand and in a store directory no document publishes, so residency must change
+# nothing but the `weights` object and the counters section 4.1 of R6-RESIDENT-WEIGHTS enumerates.
+#
+# It is `normalize_resident` alone and **not** oracle K's wider set: both legs are hits, so both
+# loaded and neither prefilled, and the whole `store` object — key, outcome, saved, container bytes
+# — stays inside the comparison.
+left = normalize_resident(produced["ds-store-hit"])
+right = normalize_resident(produced["ds-store-resident-hit"])
+if left != right:
+    failures.append("oracle R (ds-store-hit vs ds-store-resident-hit): %s"
+                    % describe_difference(left, right))
+
+# Section 5.2's refusal matrix. Each row names its own code and detail, and each publishes a `store`
+# object that says how far the run got: `key: "-"` and `outcome: "absent"` for everything refused
+# before L0, and a real key with `outcome: "hit"`/`"miss"` for the four that reached it.
+STORE_REFUSAL_STATE = {
+    "ds-store-with-save": ("-", "absent", "-"),
+    "ds-store-with-load": ("-", "absent", "-"),
+    "ds-store-with-save-bad-steps": ("-", "absent", "-"),
+    "ds-store-narrow-width": ("-", "absent", "-"),
+    "ds-store-unwritable": (STORE_EXPECTED_KEY, "miss", "PREFILL"),
+    "ds-store-file-not-dir": (STORE_EXPECTED_KEY, "miss", "PREFILL"),
+    # The suffix row keys the **prefix** — `3,17` and not `3,17,5` — which is the whole content of
+    # "a store is keyed on what is shared": the suffix is not in the preimage and its absence here
+    # is asserted rather than assumed.
+    "ds-store-suffix-unwritable": (STORE_SUFFIX_KEY, "miss", "PREFILL"),
+    "ds-store-hit-corrupt-plane": (STORE_EXPECTED_KEY, "hit", "-"),
+    "ds-store-hit-wrong-tokens": (STORE_EXPECTED_KEY, "hit", "-"),
+    "ds-store-hit-wrong-pack": (STORE_EXPECTED_KEY, "hit", "-"),
+}
+for name, _, code, detail in STORE_REFUSALS:
+    refused = json.loads(produced[name])
+    if refused["error_code"] != code or refused["error_detail"] != detail:
+        failures.append("%s: %r/%r, not %r/%r"
+                        % (name, refused["error_code"], refused["error_detail"], code, detail))
+    key, outcome, source = STORE_REFUSAL_STATE[name]
+    if refused["store"]["requested"] != 1 or refused["store"]["key"] != key \
+            or refused["store"]["outcome"] != outcome or refused["store"]["saved"] != 0:
+        failures.append("%s: a refused store run published %r" % (name, refused["store"]))
+    if refused["plane"]["source"] != source:
+        failures.append("%s: a refused store run published a plane source %r"
+                        % (name, refused["plane"]["source"]))
+    # **Never a silent re-prefill.** Whatever the refusal, no step ran and no verdict was claimed.
+    if refused["decode"]["steps_completed"] != 0 or refused["steps"] \
+            or refused["decode"]["token_ids"] \
+            or refused["plane"]["roundtrip_verdict"] == "IDENTICAL":
+        failures.append("%s: a refused store run published loop state: %r / %r"
+                        % (name, refused["decode"], refused["plane"]))
+# The moved call site's own assertion, and the reason `ds-store-suffix-unwritable` is a row rather
+# than a second copy of `ds-store-unwritable`: the suffix was **requested and not completed**, so the
+# arm refused at the save that now precedes the pass (section 12, D14) instead of running the pass
+# and reporting the failure afterwards. The key it published is the **prefix**'s, `3,17` — the same
+# `f8881c20…` `ds-store-suffix-miss` writes — which is what a store keyed on the shared prefix means.
+suffix_unwritable = json.loads(produced["ds-store-suffix-unwritable"])
+if suffix_unwritable["suffix"]["requested"] != 1 or suffix_unwritable["suffix"]["completed"] != 0 \
+        or suffix_unwritable["suffix"]["graph_count"] != 0:
+    failures.append("ds-store-suffix-unwritable: the suffix pass ran before the store refusal: %r"
+                    % suffix_unwritable["suffix"])
+if suffix_unwritable["store"]["key"] != STORE_SUFFIX_KEY:
+    failures.append("ds-store-suffix-unwritable: keyed %r, not the prefix's %r"
+                    % (suffix_unwritable["store"]["key"], STORE_SUFFIX_KEY))
+
+# The three broken containers are **still there and still broken**: a hit that failed did not
+# replace, delete, or re-prefill over the file it refused.
+for directory in (STORE_CORRUPT_DIR, STORE_WRONG_TOKENS_DIR, STORE_WRONG_PACK_DIR):
+    if sorted(os.listdir(directory)) != [STORE_EXPECTED_KEY + ".akvp"]:
+        failures.append("ds-store-hit-broken: %s holds %r"
+                        % (os.path.basename(directory), sorted(os.listdir(directory))))
+if os.path.exists(STORE_ABSENT_DIR):
+    failures.append("ds-store-unwritable: the arm created the store directory")
+with open(STORE_FILE, "rb") as handle:
+    if handle.read() != b"a store is a directory":
+        failures.append("ds-store-file-not-dir: the arm wrote over the caller's file")
+
+# Section 3.2's determinism rows: **one preimage field changed, a different key**, four ways. Each
+# runs against its own empty store, so each is a miss that writes under its own name; none carries a
+# golden row, because what they assert is the key and the key is asserted here.
+STORE_KEY_CASES = [
+    ("ds-store-key-tokens", ds(tokens=STORE_KEY_TOKENS, store=STORE_KEY_TOKENS_DIR,
+                               transcript="-"),
+     [3, 17, 9], int(WIDTH), PACK, GEOM),
+    # No transcript on the width row: the instrument's own graphs pin `KV_WIDTH` at 8 and oracle A'
+    # would refuse the run at a different width before the key it is here to compare was compared.
+    ("ds-store-key-width", ds(width=STORE_KEY_WIDTH, store=STORE_KEY_WIDTH_DIR, transcript="-"),
+     [3, 17, 5], int(STORE_KEY_WIDTH), PACK, GEOM),
+    ("ds-store-key-geometry", ds(geometry=STORE_KEY_GEOMETRY, store=STORE_KEY_GEOMETRY_DIR),
+     [3, 17, 5], int(WIDTH), PACK, STORE_KEY_GEOMETRY),
+    ("ds-store-key-pack", ds(pack=STORE_KEY_PACK, store=STORE_KEY_PACK_DIR),
+     [3, 17, 5], int(WIDTH), STORE_KEY_PACK, GEOM),
+]
+store_keys = {"ds-store-miss": STORE_EXPECTED_KEY}
+for name, operands, ids, width, pack_path, geometry_path in STORE_KEY_CASES:
+    result = run(operands)
+    if result.stdout == b"":
+        failures.append("%s: no document (exit %d)" % (name, result.returncode))
+        continue
+    document = json.loads(result.stdout.decode("utf-8"))
+    if document["error_code"] != "" or document["store"]["outcome"] != "miss":
+        failures.append("%s: %r / %r" % (name, document["error_code"], document["store"]))
+        continue
+    store_keys[name] = document["store"]["key"]
+    expected = key_from_inputs(pack_path, geometry_path, ids, width)
+    if document["store"]["key"] != expected \
+            or key_from_document(document) != document["store"]["key"]:
+        failures.append("%s: the arm keyed %r, the operands derive %r, the document derives %r"
+                        % (name, document["store"]["key"], expected, key_from_document(document)))
+if len(set(store_keys.values())) != len(store_keys):
+    failures.append("ds-store-key: %d preimages produced %d distinct keys: %r"
+                    % (len(store_keys), len(set(store_keys.values())), store_keys))
+
+# `ds-store-key-stable`: a different working directory, a different `STORE`, and a different
+# `DOCUMENT` — **none of which is in the preimage** — produce the same key and the same container.
+stable_document = path("store-stable-document.json")
+stable_operands = [ARM, PACK, GEOM, TOKENS, stable_document, SOURCE, TRANSCRIPT, WIDTH, "-", STEPS,
+                   "-", "-", "-", "-", STORE_STABLE_DIR]
+stable = subprocess.run([binary] + stable_operands, capture_output=True, cwd=root_dir)
+if stable.returncode != 0:
+    failures.append("ds-store-key-stable: exit %d: %s"
+                    % (stable.returncode, stable.stderr.decode("utf-8", "replace")[-300:]))
+else:
+    with open(stable_document, "r", encoding="utf-8") as handle:
+        stable_json = json.load(handle)
+    if stable_json["store"]["key"] != STORE_EXPECTED_KEY \
+            or stable_json["store"]["outcome"] != "miss":
+        failures.append("ds-store-key-stable: %r, not a miss at %r"
+                        % (stable_json["store"], STORE_EXPECTED_KEY))
+    with open(store_file(STORE_STABLE_DIR, STORE_EXPECTED_KEY), "rb") as handle:
+        if hashlib.sha256(handle.read()).hexdigest() != stored_digest:
+            failures.append("ds-store-key-stable: the container differs from the first store's")
+
+# Section 4.8's cleanup cell. Every store directory this block created holds **only** `<64-hex>.akvp`
+# files, and the arm created no directory of its own: it never lists a store, so anything else in one
+# would have to have been written by the arm, and the whole point of the naming rule is that it
+# writes exactly one name. The directories themselves are removed with the runner's `mktemp -d` tree
+# by the shell trap above, which is where every other fixture in this runner is freed.
+STORE_NAME_SHAPE = re.compile(r"^[0-9a-f]{64}\.akvp$")
+for directory in (STORE_DIR, STORE_SUFFIX_DIR, STORE_RESIDENT_DIR, STORE_STABLE_DIR,
+                  STORE_CORRUPT_DIR, STORE_WRONG_TOKENS_DIR, STORE_WRONG_PACK_DIR,
+                  STORE_KEY_TOKENS_DIR, STORE_KEY_WIDTH_DIR, STORE_KEY_GEOMETRY_DIR,
+                  STORE_KEY_PACK_DIR):
+    entries = sorted(os.listdir(directory))
+    if not entries or any(not STORE_NAME_SHAPE.match(entry) for entry in entries):
+        failures.append("ds-store-teardown: %s holds %r"
+                        % (os.path.basename(directory), entries))
+if os.path.exists(STORE_ABSENT_DIR) or not os.path.isfile(STORE_FILE):
+    failures.append("ds-store-teardown: the arm created or replaced a caller-owned path")
 
 for name, force, operands, expected in FORCED_CASES:
     build_shim(force)
@@ -5489,6 +6133,9 @@ if unwrapped["weights"]["resident_wraps_created"] != 0 \
         or unwrapped["weights"]["resident_wraps_freed"] != 0:
     failures.append("ds-force-resident-wrap: a refused wrap was counted: %r"
                     % unwrapped["weights"])
+if unwrapped["weights"]["wrap_count"] != 0:
+    failures.append("ds-force-resident-wrap: a refused weight-region wrap was counted: %r"
+                    % unwrapped["weights"])
 # The finding itself: nothing was created, so nothing leaked, and the document must say so.
 if unwrapped["lifetime"]["graph_balance_failures"] != 0 \
         or not unwrapped["lifetime"]["released_before_owner_scope_end"]:
@@ -5588,6 +6235,16 @@ print("decode step smoke: %d no-document cases (R6_ARITY, R6_PATH), %d documente
       "steps decoding the reference loop's own ids, a resident prefill at the staging boundary, and "
       "arm-r5b-unchanged PASS"
       % (len(NO_DOCUMENT), len(ORDER) + len(BOUNDARY_CASES), len(ORDER), len(codes - {""})))
+print("decode step smoke: prefix key -- %d store cases, oracle K byte-identical on %d hit/miss "
+      "pairs outside %d excluded groups, oracle D agreeing three ways over one 152-byte preimage, "
+      "oracle S byte-identical on both the hit and the miss leg against the single-shot run, "
+      "%d keys distinct on one changed field each, a keyed container byte-identical to KV_SAVE's, "
+      "%d refusals each naming its own detail, and three hit-but-broken containers refused rather "
+      "than re-prefilled"
+      % (len(STORE_CASES) + len(STORE_REFUSALS), 3,
+         len(PERSIST_EXCLUDED_BLOCKS) + len(PERSIST_EXCLUDED_FIELDS)
+         + len(STORE_EXCLUDED_FIELDS),
+         len(store_keys), len(STORE_REFUSALS)))
 print("decode step smoke: akvp v1 -- %d refusal cases each asserting the arm's code and detail and "
       "the independent reader's own kind over %d reject kinds, a %d-byte container written and "
       "reloaded in a separate process, a fixture-written container loaded and decoded to the same "
@@ -5672,6 +6329,29 @@ def operands(document="-", reference=SOURCE, transcript=TRANSCRIPT, width=WIDTH,
     return [ARM, pack, geometry, tokens, document, reference, transcript, width, logits, steps]
 
 
+# R6-MOE-RESIDENT-DENSE section 3.2. The fourteen-operand form: the ten above plus `KV_SAVE`,
+# `KV_LOAD`, and `RESIDENT` at positions 11, 12 and 13 — the same indices the dense arm uses, so a
+# command line cannot be silently reordered between the two arms. KV persistence is **not
+# implemented on this arm**, so the two reserved positions must both be `-`; every `mdr-*` case
+# below is therefore some `operands(...)` call plus exactly three operands, and a streamed and a
+# `dense` leg differ in nothing but the last one.
+def mdr(resident="-", kv_save="-", kv_load="-", **rest):
+    return operands(**rest) + [kv_save, kv_load, resident]
+
+
+KV_UNSUPPORTED = os.path.join(work_dir, "moe-kv-unsupported.akvp")
+
+# Section 13 item 15's payload and the exact detail it must produce. `bounded_detail` runs **twice**
+# on this path — once inside `resident_detail` over the operand, once inside `fail` over the wrapped
+# result — and each cut backs off over continuation bytes (`0x80..0xBF`) to a UTF-8 lead byte. The
+# first cut lands at 254 bytes (`"a" * 245` plus three `\u3042`); the second, over the 264-byte
+# `resident[...]`, lands at 254 again and keeps the nine-byte prefix and the 245 ASCII bytes. The
+# expected string is written out rather than recomputed because *where* the cut lands is the thing
+# under test.
+MULTIBYTE_OPERAND = "a" * 245 + "\u3042" * 20
+MULTIBYTE_DETAIL = "resident[" + "a" * 245
+
+
 # Cases whose operands are rejected before any file work: no document at all, non-zero exit.
 NO_DOCUMENT = [
     ("md-arity-4", [ARM, PACK, GEOM]),
@@ -5681,6 +6361,13 @@ NO_DOCUMENT = [
     # Twelve and above are `R6M_ARITY` too, with positions 11, 12 and 13 reserved for `KV_SAVE`,
     # `KV_LOAD` and `RESIDENT` at the same indices the dense arm uses.
     ("md-arity-12", FULL + ["extra"]),
+    # R6-MOE-RESIDENT-DENSE section 3.1. The arity set is {5, 6, 7, 9, 10, 11, 14}: fourteen is now
+    # legal and thirteen and fifteen are not. Thirteen would be an invocation that stopped inside the
+    # two reserved KV placeholders — a caller who meant something this arm cannot do — and fifteen is
+    # one operand past the grammar. Both present as `NO_DOCUMENT`, exactly as four, eight and twelve
+    # do, because there is no `R6M_ARITY` constant in the source: the arity guard is lexical.
+    ("mdr-arity-13", FULL + ["-", "-"]),
+    ("mdr-arity-15", FULL + ["-", "-", "dense", "extra"]),
     ("md-path-pack-empty", [ARM, "", GEOM, TOKENS]),
     ("md-path-geometry-empty", [ARM, PACK, "", TOKENS]),
     ("md-path-doc-empty", [ARM, PACK, GEOM, TOKENS, ""]),
@@ -5742,6 +6429,37 @@ STUB_CASES = [
      "R4_PACK_TRUNCATED"),
     ("md-coverage-gap-expert", operands(pack=path("moe-model-pack-no-expert.alignpack")),
      "R5D_CLAIM_MISSING"),
+    # ---------------------------------------------------------------------------------------------
+    # R6-MOE-RESIDENT-DENSE section 5.1's operand cells. Every one of them is refused **before any
+    # path work**, so all six run under the default stub and reach `R5_GGML_UNAVAILABLE` only when
+    # the grammar admits them.
+    # ---------------------------------------------------------------------------------------------
+    # Arity 14 accepted. Its three extra operands are all the default, so this document must be
+    # byte-identical to the nine-operand `md-stub-unavailable`, and the assertion below says so:
+    # absence **is** `-`, and this capability changes no shipped invocation.
+    ("mdr-arity-14", mdr(), "R5_GGML_UNAVAILABLE"),
+    # The residency grammar is `-` or `dense` and nothing else. The empty string is not absence.
+    ("mdr-resident-unknown", mdr(resident="extra"), "R6M_RESIDENT"),
+    ("mdr-resident-empty", mdr(resident=""), "R6M_RESIDENT"),
+    ("mdr-resident-case", mdr(resident="DENSE"), "R6M_RESIDENT"),
+    # Section 13 item 15. `bounded_detail` cut the operand at a fixed **byte** index, so an operand
+    # whose byte 256 fell inside a multibyte scalar aborted the process inside the slice: the arm
+    # produced no document at all where it owes an `R6M_RESIDENT` refusal. 245 ASCII bytes put byte
+    # 256 on the third byte of the fourth `\u3042`, which is the reviewer's repro exactly. This row is
+    # the regression, and it asserts a *document*, so a re-introduced abort fails here rather than
+    # somewhere downstream.
+    ("mdr-resident-multibyte", mdr(resident=MULTIBYTE_OPERAND), "R6M_RESIDENT"),
+    # **`weights` is refused by name**, and this is the shipped regression for it. The dense arm
+    # accepts that value; whole-model residency here would make `residency.expert_bytes` unreachable
+    # and this arm exists to publish it, so the value is refused explicitly rather than falling
+    # through a default.
+    ("mdr-resident-weights-refused", mdr(resident="weights"), "R6M_RESIDENT"),
+    # The two reserved positions. `kv[save]` is checked before `kv[load]`, and both are checked
+    # before `RESIDENT` — the load case carries an otherwise-refusable `RESIDENT` so the precedence
+    # is asserted rather than described.
+    ("mdr-kv-save-unsupported", mdr(kv_save=KV_UNSUPPORTED), "R6M_KV_UNSUPPORTED"),
+    ("mdr-kv-load-unsupported", mdr(kv_load=KV_UNSUPPORTED, resident="weights"),
+     "R6M_KV_UNSUPPORTED"),
 ]
 
 ENGINE_CASES = [
@@ -5788,6 +6506,38 @@ ENGINE_CASES = [
     ("md-logits-missing", operands(logits=path("absent.bin")), "R5_LOGITS_UNREADABLE"),
     ("md-logits-nonfinite", operands(logits=path("moe-model-logits-neg-inf.bin")),
      "R5_LOGITS_NONFINITE"),
+    # R6-MOE-RESIDENT-DENSE sections 5.1 and 5.2. Each `dense` leg is an existing streamed case plus
+    # exactly one operand's worth of difference, so oracle D below compares two invocations that
+    # differ in `RESIDENT` and nothing else:
+    #
+    #   md-engine-ok  (T=3, N=1, no transcript, no logits)  <->  mdr-resident-dense-1
+    #   md-steps-3    (T=3, N=3, no transcript, no logits)  <->  mdr-resident-dense-steps
+    ("mdr-resident-dense-1",
+     mdr(resident="dense", steps="1", transcript="-", logits="-"), ""),
+    ("mdr-resident-dense-steps",
+     mdr(resident="dense", transcript="-", logits="-"), ""),
+]
+
+# R6-MOE-RESIDENT-DENSE section 5.3's staging-boundary cell, and the dense arm's
+# `ds-resident-stage-full` case verbatim in shape. `layer_olmoe.MAX_PREFILL_TOKENS` is 32 and this
+# corpus's `n_vocab` is 32, so `0..31` is both the longest prompt this arm admits and a prompt whose
+# every id is in vocabulary — and it stages 32 **distinct** embedding rows rather than one row
+# thirty-two times, so the highest slot carries bytes that belong only to it. The width is `T + N`
+# exactly, the minimum this arm accepts.
+#
+# **It carries no golden row, on the class R6-RESIDENT-WEIGHTS deviation 9 measured.** A 32-token
+# prefill's accumulations differ in the last bit between macOS/arm64 and Linux/x86_64, so pinning its
+# digests would make the golden a statement about the machine that regenerated it. It is asserted
+# instead by oracle D against its own streamed twin, which is a within-host comparison and therefore
+# correct on every platform, plus `record()`'s document-identity assertions and the structural block
+# below.
+STAGE_FULL = "mdr-resident-stage-full"
+STAGE_FULL_TOKENS = ",".join(str(identifier) for identifier in range(32))
+STAGE_FULL_WIDTH = "33"
+STAGE_FULL_STEPS = "1"
+BOUNDARY_CASES = [
+    (STAGE_FULL, mdr(resident="dense", tokens=STAGE_FULL_TOKENS, transcript="-", logits="-",
+                     width=STAGE_FULL_WIDTH, steps=STAGE_FULL_STEPS), ""),
 ]
 
 FORCED_CASES = [
@@ -5820,6 +6570,14 @@ FORCED_CASES = [
     ("md-force-routing-id-repeat", "engine+moe-argsort-repeat", operands(), "R5D_EXPERT_ID"),
     ("md-force-carry-short", "engine+moe-carry-short", operands(), "R5E_CARRY"),
     ("md-force-residual-short", "engine+moe-residual-short", operands(), "R5_RESIDUAL"),
+    # R6-MOE-RESIDENT-DENSE section 5.1's early-exit cell, and section 7 risk 1's named regression.
+    # The invariant the run-scope counter pair asserts is **balance**, not presence: a `dense` run
+    # can fail in the window between a filled, live region and a wrap that does not exist, and the
+    # check has to stay silent when it does. `buffer_from_host` refusing is the one way an input can
+    # reach that window, and `record()`'s `graph_balance_failures == 0` assertion below is what would
+    # catch a `!= 1` condition written on the failure path.
+    ("mdr-force-resident-wrap", "engine+resident-wrap",
+     mdr(resident="dense", transcript="-", logits="-"), "R5_GGML_INIT"),
 ]
 
 PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
@@ -5890,9 +6648,52 @@ def normalize(text):
                 scrub(item)
 
     scrub(document)
+    # R6-MOE-RESIDENT-DENSE section 3.8. `fill_ns` is the only clock the `weights` object holds and
+    # the `_ns` rule above already reached it; it is named here so the exemption list is explicit.
+    # `resident_bytes`, `fill_pread_count`, `fill_bytes`, `step_dense_pack_bytes`,
+    # `step_expert_pack_bytes`, `step_pack_bytes`, `wrap_count` and both wrap counters are
+    # deliberately **not** normalized: they are deterministic and they are the claim.
+    document["weights"]["fill_ns"] = 0
     for key, placeholder in PLACEHOLDER.items():
         if document[key]:
             document[key] = placeholder
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
+# R6-MOE-RESIDENT-DENSE section 4.1, **oracle D**. It is named D and not R deliberately: item 32's
+# oracle R is the routing-identity oracle and keeps its name, and this document runs both.
+#
+# `normalize` plus the `weights` object and exactly ten field names, enumerated here rather than
+# pattern-matched so the exclusion cannot quietly grow:
+#
+#   * `weights`, which is the capability's own report;
+#   * `pack.reader_pread_count` / `reader_bytes_read`, which are the claim;
+#   * `lifetime.ggml_buffers_created` / `_freed`, because the dense window's per-graph wrap is
+#     replaced by one run-scope wrap counted in its own pair (section 4.3);
+#   * the six `window.dense_*` and `window.reuse_count` fields, which describe a streamed window this
+#     run does not have.
+#
+# What stays inside the comparison is the point: the **whole** `residency` object — including
+# `expert_bytes_read`, which is precisely the number section 4.4 exists to protect — every
+# `steps[i].token_id`, `routed.layers[]`, `residency.*` and `sha256`, `window.member_placements`,
+# `window.claim_placements`, `window.pointer_identity_failures`, the head's logits, `graph` in full,
+# `verdict`, and `error_code`/`error_detail`.
+RESIDENT_EXCLUDED_BLOCKS = ("weights",)
+RESIDENT_EXCLUDED_FIELDS = (
+    ("pack", "reader_pread_count"), ("pack", "reader_bytes_read"),
+    ("lifetime", "ggml_buffers_created"), ("lifetime", "ggml_buffers_freed"),
+    ("window", "dense_bytes"), ("window", "dense_peak_block_index"),
+    ("window", "dense_peak_block_kind"), ("window", "dense_peak_block_layer"),
+    ("window", "dense_peak_block_bytes"), ("window", "reuse_count"),
+)
+
+
+def normalize_resident(text):
+    document = json.loads(text)
+    for block in RESIDENT_EXCLUDED_BLOCKS:
+        document.pop(block, None)
+    for block, field in RESIDENT_EXCLUDED_FIELDS:
+        document[block].pop(field, None)
     return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
 
 
@@ -5936,9 +6737,27 @@ def record(name, argv, expected):
     if (result.returncode == 0) != (document["status"] == "ok"):
         failures.append("%s: status %r but exit %d"
                         % (name, document["status"], result.returncode))
-    if document["kind"] != "R6_MOE_DECODE_STEP" or document["schema_version"] != 1:
+    if document["kind"] != "R6_MOE_DECODE_STEP" or document["schema_version"] != 2:
         failures.append("%s: wrong document identity %r/%r"
                         % (name, document["kind"], document["schema_version"]))
+    # R6-MOE-RESIDENT-DENSE section 3.8: the `weights` object is present in **every** document,
+    # including one refused before a file is opened, so the mode a run took is never implicit. The
+    # hazard it closes is a caller who wanted residency, forgot the operand, and read a document that
+    # did not say so.
+    weights = document.get("weights")
+    if not isinstance(weights, dict) or weights.get("mode") not in ("stream", "dense"):
+        failures.append("%s: the document published no weights mode: %r" % (name, weights))
+    elif weights["mode"] == "stream" and (weights["resident_bytes"] != 0
+                                          or weights["fill_ns"] != 0
+                                          or weights["fill_pread_count"] != 0
+                                          or weights["fill_bytes"] != 0
+                                          or weights["resident_wraps_created"] != 0
+                                          or weights["resident_wraps_freed"] != 0):
+        failures.append("%s: a streamed document published resident figures: %r" % (name, weights))
+    if isinstance(weights, dict) \
+            and weights["step_pack_bytes"] != (weights["step_dense_pack_bytes"]
+                                               + weights["step_expert_pack_bytes"]):
+        failures.append("%s: step_pack_bytes is not the sum of its two terms: %r" % (name, weights))
     if not document["abi"]["fp_contract_off"]:
         failures.append("%s: the shim was not built with -ffp-contract=off; the goldens are not "
                         "reproducible across compilers" % name)
@@ -6407,12 +7226,199 @@ for name in ("md-force-decode-position", "md-force-mask-offset"):
         failures.append("%s: %r / %r"
                         % (name, mutant["status"], mutant["oracle_decode"]["verdict"]))
 
+build_shim("engine")
+
+# ---------------------------------------------------------------------------------------------
+# R6-MOE-RESIDENT-DENSE: the residency assertions (sections 4.1 to 4.4, 5.1 and 5.2)
+# ---------------------------------------------------------------------------------------------
+
+# Absence is `-`, in bytes: fourteen operands whose last three are the defaults produce the same
+# document as nine. This capability adds no default and changes no shipped invocation.
+if produced["md-stub-unavailable"] != produced["mdr-arity-14"]:
+    failures.append("mdr-arity-14: three default operands changed the document: %s"
+                    % describe_difference(produced["md-stub-unavailable"],
+                                          produced["mdr-arity-14"]))
+
+# The refusal details, which the golden also carries but which are named here so a regenerated
+# golden cannot silently accept a different one. `kv[save]` precedes `kv[load]`, and both precede
+# `RESIDENT` — `mdr-kv-load-unsupported` also names an otherwise-refusable residency mode.
+for name, detail in (("mdr-resident-unknown", "resident[extra]"),
+                     ("mdr-resident-empty", "resident[]"),
+                     ("mdr-resident-case", "resident[DENSE]"),
+                     ("mdr-resident-weights-refused", "resident[weights]"),
+                     ("mdr-resident-multibyte", MULTIBYTE_DETAIL),
+                     ("mdr-kv-save-unsupported", "kv[save]"),
+                     ("mdr-kv-load-unsupported", "kv[load]")):
+    document = json.loads(produced[name])
+    if document["error_detail"] != detail:
+        failures.append("%s: detail %r, not %r" % (name, document["error_detail"], detail))
+    if document["weights"]["mode"] != "stream":
+        failures.append("%s: a refused document must still publish a mode: %r"
+                        % (name, document["weights"]))
+
+# Oracle D. One step and three steps, each `dense` leg against the streamed case it differs from in
+# exactly the `RESIDENT` operand.
+for streamed_case, resident_case in (("md-engine-ok", "mdr-resident-dense-1"),
+                                     ("md-steps-3", "mdr-resident-dense-steps")):
+    left = normalize_resident(produced[streamed_case])
+    right = normalize_resident(produced[resident_case])
+    if left != right:
+        failures.append("oracle D (%s vs %s): %s"
+                        % (streamed_case, resident_case, describe_difference(left, right)))
+
+# The staging boundary, from the legal side. A `dense` prefill of exactly `MAX_PREFILL_TOKENS` ids
+# stages slot 31 — the highest index `stage_embed_row` can be asked for — and the streamed twin makes
+# the case an assertion about the **bytes** that slot carries rather than only about the run not
+# being refused.
+for name, argv, expected in BOUNDARY_CASES:
+    record(name, argv, expected)
+
+if STAGE_FULL not in produced:
+    failures.append("%s: the staging-boundary case produced no document" % STAGE_FULL)
+else:
+    stage_full = json.loads(produced[STAGE_FULL])
+    if stage_full["error_code"] != "" or stage_full["status"] != "ok":
+        failures.append("%s: a %d-token dense prefill was refused: %r %r"
+                        % (STAGE_FULL, len(STAGE_FULL_TOKENS.split(",")),
+                           stage_full["error_code"], stage_full["error_detail"]))
+    else:
+        if stage_full["weights"]["mode"] != "dense" \
+                or stage_full["weights"]["step_dense_pack_bytes"] != 0:
+            failures.append("%s: %r" % (STAGE_FULL, stage_full["weights"]))
+        if stage_full["decode"]["n_past_first"] != 32 \
+                or stage_full["plane"]["columns_written"] != 32 + int(STAGE_FULL_STEPS):
+            failures.append("%s: n_past_first %d and %d columns, not 32 and %d"
+                            % (STAGE_FULL, stage_full["decode"]["n_past_first"],
+                               stage_full["plane"]["columns_written"],
+                               32 + int(STAGE_FULL_STEPS)))
+        if stage_full["plane"]["roundtrip_verdict"] != "IDENTICAL":
+            failures.append("%s: oracle B is %r at the staging boundary"
+                            % (STAGE_FULL, stage_full["plane"]["roundtrip_verdict"]))
+    stage_full_streamed = normalize_resident(normalize(
+        run(mdr(tokens=STAGE_FULL_TOKENS, transcript="-", logits="-", width=STAGE_FULL_WIDTH,
+                steps=STAGE_FULL_STEPS)).stdout.decode("utf-8")))
+    if stage_full_streamed != normalize_resident(produced[STAGE_FULL]):
+        failures.append("oracle D at the staging boundary (%s): %s"
+                        % (STAGE_FULL,
+                           describe_difference(stage_full_streamed,
+                                               normalize_resident(produced[STAGE_FULL]))))
+
+# Section 2.2's layout arithmetic on this fixture, spelled out so the golden's own
+# `weights.resident_bytes` is a number with a derivation rather than a number that was observed. The
+# synthetic container's `block_align` is 4,096 and every region starts on that boundary:
+#
+#   token_embd, the whole table   n_vocab 32 x n_embd 4 x 4 B = 512 B  -> 4,096 rounded up
+#   the staging region            MAX_PREFILL_TOKENS 32 x 16 B = 512 B -> 4,096 rounded up
+#   2 routed layers + the head    the rest
+#
+# The assertions are the structural properties that hold for **any** pack, so a fixture change moves
+# the golden and not the reasoning. This is deliberately not a remembered constant: section 7 risk 4
+# is the fixture co-derivation class, and a check that asserted a number the implementation also
+# produced would prove nothing.
+RESIDENT_BLOCK_ALIGN = 4096
+RESIDENT_TABLE_BYTES = RESIDENT_BLOCK_ALIGN
+RESIDENT_STAGE_BYTES = RESIDENT_BLOCK_ALIGN
+
+for case in ("mdr-resident-dense-1", "mdr-resident-dense-steps"):
+    document = json.loads(produced[case])
+    weights = document["weights"]
+    window = document["window"]
+    lifetime = document["lifetime"]
+    steps_rows = document["steps"]
+    if weights["mode"] != "dense":
+        failures.append("%s: mode %r, not dense" % (case, weights["mode"]))
+    # The claim, and the primary metric of section 3.8: a `dense` decode step reads **zero dense**
+    # pack bytes. It is a counter and not a clock.
+    if weights["step_dense_pack_bytes"] != 0:
+        failures.append("%s: a dense run read %d dense pack bytes in its decode steps"
+                        % (case, weights["step_dense_pack_bytes"]))
+    # The co-primary invariant of section 4.4, and the whole reason this arm keeps streaming its
+    # experts: the expert measurement must not move. `step_expert_pack_bytes` is the syscall side and
+    # `steps[].residency.expert_pread_bytes` is where it comes from, so the two are reconciled here
+    # rather than assumed to agree.
+    if weights["step_expert_pack_bytes"] <= 0:
+        failures.append("%s: a dense run read no expert bytes; the measurement this arm exists to "
+                        "publish is gone: %r" % (case, weights))
+    if weights["step_expert_pack_bytes"] != sum(row["residency"]["expert_pread_bytes"]
+                                                for row in steps_rows):
+        failures.append("%s: step_expert_pack_bytes %d is not the sum of the published steps' "
+                        "expert_pread_bytes" % (case, weights["step_expert_pack_bytes"]))
+    # And `step_pack_bytes` keeps `r6-resident-weights.md` section 3.5's exact meaning — pack bytes
+    # read by decode steps only — so on this arm it is **not** zero in `dense` mode.
+    if weights["step_pack_bytes"] != weights["step_expert_pack_bytes"]:
+        failures.append("%s: step_pack_bytes %d should be exactly the expert term in dense mode"
+                        % (case, weights["step_pack_bytes"]))
+    # Section 4.3, oracle B at run scope: exactly one wrap created and exactly one freed, in a pair
+    # separate from the per-graph pair so the per-graph check keeps its meaning. `wrap_count` is the
+    # weight-region wraps of the whole run and is 1 where the streamed leg's is one per graph.
+    if weights["wrap_count"] != 1 or weights["resident_wraps_created"] != 1 \
+            or weights["resident_wraps_freed"] != 1:
+        failures.append("%s: the run-scope wrap did not balance: %r" % (case, weights))
+    if json.loads(produced["md-steps-3"])["weights"]["wrap_count"] <= 1:
+        failures.append("the streamed leg wrapped its dense window %d times, so the hoist proves "
+                        "nothing" % json.loads(produced["md-steps-3"])["weights"]["wrap_count"])
+    if lifetime["graph_balance_failures"] != 0 \
+            or not lifetime["released_before_owner_scope_end"]:
+        failures.append("%s: the dense teardown did not balance: %r" % (case, lifetime))
+    if lifetime["ggml_buffers_created"] != lifetime["ggml_buffers_freed"]:
+        failures.append("%s: the per-graph buffer pair stopped balancing under the hoist: %r"
+                        % (case, lifetime))
+    # The fill happened once and read the dense set.
+    if weights["fill_bytes"] <= 0 or weights["fill_pread_count"] <= 0:
+        failures.append("%s: the region reported no fill: %r" % (case, weights))
+    # Section 2.2, structurally: the region is the **sum** the layout walks, and a sum over every
+    # graph cannot be below the maximum over the same graphs plus the two regions streaming never
+    # holds at all.
+    if weights["resident_bytes"] % RESIDENT_BLOCK_ALIGN != 0:
+        failures.append("%s: the region is %d bytes, which is not a multiple of the container's own "
+                        "block alignment (%d)"
+                        % (case, weights["resident_bytes"], RESIDENT_BLOCK_ALIGN))
+    if weights["resident_bytes"] < window["dense_bytes"] + RESIDENT_TABLE_BYTES \
+            + RESIDENT_STAGE_BYTES:
+        failures.append("%s: the region (%d) is below the streamed peak (%d) plus the table and the "
+                        "stage" % (case, weights["resident_bytes"], window["dense_bytes"]))
+    if weights["fill_bytes"] >= weights["resident_bytes"]:
+        failures.append("%s: the fill (%d) is not below the region (%d); the staging region is "
+                        "never filled from the pack"
+                        % (case, weights["fill_bytes"], weights["resident_bytes"]))
+    # Oracle P's new reach (section 4.2). In `dense` mode every dense placement is against the
+    # region, so a run that silently fell back to a per-graph copy could not report zero here.
+    if window["pointer_identity_failures"] != 0 or window["member_placements"] <= 0 \
+            or window["claim_placements"] <= 0:
+        failures.append("%s: %d placement failures over %d member and %d claim placements"
+                        % (case, window["pointer_identity_failures"],
+                           window["member_placements"], window["claim_placements"]))
+    if document["verdict"] != "EXTERNAL":
+        failures.append("%s: verdict %r, not EXTERNAL" % (case, document["verdict"]))
+
+# Section 7 risk 1's regression, read off the forced build: a `dense` run that failed **before** the
+# wrap existed created nothing, freed nothing, and must report a perfect teardown. A `created != 1`
+# condition written unconditionally would fabricate a leak exactly here.
+wrap_refused = json.loads(produced["mdr-force-resident-wrap"])
+if wrap_refused["weights"]["mode"] != "dense" \
+        or wrap_refused["weights"]["resident_wraps_created"] != 0 \
+        or wrap_refused["weights"]["resident_wraps_freed"] != 0:
+    failures.append("mdr-force-resident-wrap: %r" % (wrap_refused["weights"],))
+if wrap_refused["weights"]["wrap_count"] != 0:
+    failures.append("mdr-force-resident-wrap: a refused weight-region wrap was counted: %r"
+                    % (wrap_refused["weights"],))
+if wrap_refused["lifetime"]["graph_balance_failures"] != 0:
+    failures.append("mdr-force-resident-wrap: a failure before the wrap existed reported %d "
+                    "balance failure(s); the run-scope check is asserting presence, not balance"
+                    % wrap_refused["lifetime"]["graph_balance_failures"])
+# The region was filled and live when the wrap was refused, which is what makes this the early-exit
+# window rather than an ordinary refusal.
+if wrap_refused["weights"]["fill_bytes"] <= 0:
+    failures.append("mdr-force-resident-wrap: the fill did not run, so this is not the early-exit "
+                    "window the cell is about: %r" % (wrap_refused["weights"],))
+
 build_shim("")
 
 DECLARED_R6M_CODES = {
     "R6M_TOKENS", "R6M_GEOMETRY", "R6M_KV_WIDTH", "R6M_STEPS", "R6M_PLANE_UNAVAILABLE",
     "R6M_PLANE_WRITE", "R6M_PLANE_MISMATCH", "R6M_TRANSCRIPT", "R6M_ORACLE_MISSING",
     "R6M_GEOMETRY_UNREADABLE", "R6M_CLAIM_ACCOUNTING", "R6M_ROUTED_SHAPE",
+    "R6M_RESIDENT", "R6M_RESIDENT_BUDGET", "R6M_KV_UNSUPPORTED",
 }
 # The four this block does not reach, each with its reason. `R6M_PLANE_UNAVAILABLE` and
 # `R6M_PLANE_WRITE` are fail-closed guards on an arithmetic no input can produce — the plane's size
@@ -6422,8 +7428,17 @@ DECLARED_R6M_CODES = {
 # `R6M_ROUTED_SHAPE` is section 3.11's second such relation — `stage_carry_at` refuses a short
 # `topk_image` with `R5E_CARRY` before compute, so no operand reaches the key arithmetic with a
 # `routed[]` that is not exactly `n_layer * n_expert_used` long.
+#
+# `R6M_RESIDENT_BUDGET` joins them, and its reason is different in kind and is recorded rather than
+# glossed. It guards `resident_bytes > model_forward.MAX_WINDOW_BYTES` (8 GiB) and the `-1` that
+# `plan_resident_dense`'s checked arithmetic poisons an unrepresentable total with; this corpus's
+# whole region is 114 KB and its member sizes come from the container, so no operand this block can
+# write reaches either. Reaching it would need a lowered-limits entry point of its own — a second
+# executable and a ceiling threaded through `execute` — which `docs/specs/r6-moe-resident-dense.md`
+# section 13 item 6 records as a deviation and section 8 defers, on the terms
+# `R4_WINDOW_UNAVAILABLE` already carries.
 UNREACHED_R6M_CODES = {"R6M_PLANE_UNAVAILABLE", "R6M_PLANE_WRITE", "R6M_CLAIM_ACCOUNTING",
-                       "R6M_ROUTED_SHAPE"}
+                       "R6M_ROUTED_SHAPE", "R6M_RESIDENT_BUDGET"}
 INHERITED_CODES = {
     "R4_PACK_UNREADABLE", "R4_PACK_TRUNCATED", "R5_GGML_UNAVAILABLE", "R5_GEOMETRY", "R5_SHAPE",
     "R5D_CLAIM_MISSING", "R5_ALIGNMENT", "R5_TYPE_UNSUPPORTED", "R5_SOURCE_DIVERGED",

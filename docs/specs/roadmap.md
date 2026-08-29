@@ -768,6 +768,76 @@ The current forward delivery order is:
     `R5_SOURCE_DIVERGED` over a correct result. It was filed outside item 33 because it would have
     put an R5B correctness change inside a review scoped to a suffix graph.
 
+35. **R6-MOE-RESIDENT-DENSE — the dense third of a routed decode step, held resident, with the
+    expert measurement unmoved.** Design and results in
+    [`r6-moe-resident-dense.md`](r6-moe-resident-dense.md). Item 30 made a *dense* model's decode
+    step read zero weight bytes and item 32 measured what a *routed* decode step reads:
+    **740,666,496 B**, of which 487,587,840 is the top-8 routing decision in all sixteen layers and
+    **253,078,656 is dense weight the previous step already read** — the same bytes on every step of
+    every prompt, because the dense half of a routed model does not depend on the routing. This
+    capability removes that third. It takes item 32's **reserved fourteenth operand**, `RESIDENT` at
+    `args[13]` with the value `dense` (arity 14, with `-` required in the two reserved KV positions
+    and `R6M_KV_UNSUPPORTED` otherwise, so a reserved position stays reserved), holds the pack's
+    **147 dense members** — the 57,950,208 B `token_embd.weight` table, sixteen layers of attention,
+    norms and router at `8 x 9,994,240 + 8 x 11,075,584 = 168,558,592`, and the 84,520,960 B head —
+    in **one 311,066,624 B region under one run-scope ggml wrap across all 578 graphs**, replacing
+    306 per-graph dense-window wraps with one, and leaves the 3,900,702,720 B of expert planes
+    streaming through the claim window untouched. **The measurement survives, which is the whole
+    point:** `steps[].residency.expert_bytes` and `expert_pread_bytes` stay **487,587,840 on every
+    step in both legs** with 0 ppm read amplification, and that is an acceptance clause rather than
+    an expectation. `R6_MOE_DECODE_STEP` goes to **schema 2** with a `weights` object item 32 had
+    deliberately left absent; the primary metric is the new **`weights.step_dense_pack_bytes`**,
+    exactly **0** in `dense` mode against **4,049,258,496** streamed at `N = 16`, while
+    `weights.step_pack_bytes` keeps `r6-resident-weights.md`'s exact meaning so one name does not
+    mean two things across two decode arms. **`docs/specs/r6-resident-weights.md` section 3.4
+    remains the owner of Track B decode performance**; this capability records its ceiling against it
+    and adopts its **150,000 ppm floor unchanged**: baseline 3.63 s at `N = 16` on the fixed prompt,
+    **cost ceiling 276,000 ppm** committed in the commit *before* the implementation commit — the
+    process correction item 30 said it owed its successor — predicted 2.63 s, measured with the two
+    legs **interleaved**, three repeats, **worst-of-N**, and a pre-committed `INDETERMINATE` rule for
+    the case where this arm's 3.63 s baseline is noisier than the ceiling is wide.
+    **What it measured.** The byte claim holds exactly and is host-independent: at all twelve
+    points — four prompts x `N` in {1, 4, 16} — `weights.step_dense_pack_bytes` is **0** in `dense`
+    mode against `253,078,656 x N` streamed, `weights.step_expert_pack_bytes` is `487,587,840 x N`
+    in **both** legs, `weights.resident_bytes` is **311,066,624** (equal to an independent walk of
+    the pack document's 147 dense member records), `weights.wrap_count` is **306 -> 1**, and
+    **oracle D is `MATCH` on all four prompts**. The elapsed leg is **`BELOW FLOOR`** and is recorded
+    as such. It was measured twice. The **measurement of record** is the quiet-host run (section
+    12.4), taken with no `llama-server`, no container and a completely clear process table at
+    8.47 GB free, which **reproduced the committed baseline** — streamed `[3.458, 3.551, 3.928]` s
+    against 3.63 s, a median 21,693 ppm away — and removed **138,402 ppm** at the fixed task
+    worst-of-3, **92 % of the 150,000 ppm floor and 50 % of the 276,000 ppm ceiling**. The median and
+    best-of-3 readings are 86,825 and 84,187 ppm, so no reading clears the floor; the other three
+    prompts at `N = 16` give 138,128, **156,687** and 147,670 ppm, so one prompt does clear it and it
+    is not the fixed task, which section 3.7 chose before any number existed. `INDETERMINATE` does
+    not apply (streamed spread 129,116 ppm) and the `miss` label does not either (the result is above
+    half the ceiling, so the ceiling estimate was sound and the seam is simply thin, as section 3.7's
+    1.84× margin predicted). **No elapsed claim is made**; per section 4.6 clause 12, stated in
+    advance, clauses 1 to 11 carry the capability. A first run on a contended host (section 12.5) is
+    kept as evidence with its 857,000 ppm baseline drift stated: its byte results are identical to
+    the quiet run's in **every** field, which is what a counter is supposed to do. `gmake moe-decode-step-qualification` itself refuses on this host at
+    its **instrument cross-check**, reproducing item 32's deviation 4 to the digit, which is item
+    32's condition and not this capability's.
+    **There is no crossover:** unlike item 30, whose 4.68 GB fill loses at `N = 1`, this fill costs
+    only the 57,943,296 B of embedding table the prefill did not already read, so `N = 1` and
+    `N = 4` are small wins — below the floor, published as diagnostics, and not claimed. Peak
+    footprint grows 347,451,392 -> 573,997,056 B, a factor of 1.65 against item 30's 9.4, **so no
+    physical-memory preflight ships and Align Request 50 gains no client**. `src/decode_step.align`,
+    `src/model_forward.align`, `src/layer_olmoe.align`, `src/ggml_spike.align`, and both shims are
+    **byte-unchanged**; the one new function is `moe_model_forward.plan_resident_dense`, a twin of
+    `model_forward.plan_resident` that Align's missing generics force (Request 49's newest and
+    sharpest-shaped client, and roughly 65 lines rather than 40 because three of the arithmetic
+    helpers it needs are private). Correctness is **free**: oracle D compares the two legs' whole
+    normalized documents outside the `weights` object and an enumerated ten-name exclusion, and
+    gate G, oracle R, oracle B, oracle T and oracle C' are all re-run on the resident leg. Owner
+    `gmake layer-forward-smoke`, whose seventh block gains eleven golden rows, a staging-boundary
+    case with no golden row, two no-document arity cases and a forced build in which a `dense` run
+    fails with its region live;
+    focused `gmake moe-decode-step-qualification`. **What it leaves open:** the R6 gate still asks
+    that TTFT improve on repeated coding tasks *sharing a prefix*, and a decode loop that shares no
+    prefix does not answer it; the next capability toward it is partial **expert** residency, whose
+    input is item 32's union curve and this capability's freed footprint.
+
 36. **MF-SINGLE-TOKEN-LOGITS — the one-token prefill reads the prompt's embedding row.** Design,
     blast radius, and results in
     [`mf-single-token-logits.md`](mf-single-token-logits.md). A bug fix, filed by
@@ -873,6 +943,64 @@ The current forward delivery order is:
     answers the dominant mode produces are exactly the ones no artifact shows. Evidence in
     `eval/prompt/c4-editset-gate/`; the per-row table and the analysis are in design section 11.4.
 
+37. **R6-PREFIX-KEY — a content-addressed store for prefix planes.** Design and results in
+    [`r6-prefix-key-corpus.md`](r6-prefix-key-corpus.md). `--decode-step` gains a sixteenth operand,
+    `STORE`, a directory that is mutually exclusive with `KV_SAVE` and `KV_LOAD`. The arm **derives**
+    the key `r6-kv-persist.md` section 2.8 recorded in advance — `(source_header_region_sha256,
+    geometry_sha256, token_stream_sha256, kv_width, plane_layout_version)`, plus `pack_total_bytes`,
+    `token_count`, `element_type`, `format_version`, and a `key_version` — as a SHA-256 over a
+    152-byte preimage, and addresses `<STORE>/<key-hex>.akvp`. **A hit loads; a miss prefills, saves,
+    and continues**, and the two produce byte-identical documents outside the store's own three
+    moving fields and item 29's own exclusion set — oracle K, the capability's acceptance rule, which
+    holds on the hosted fixture on three pairs (plain, `+SUFFIX`, and resident). **A miss
+    is only a missing file**: a container that exists and fails any identity check is that check's
+    refusal and never a silent re-prefill, which keeps item 29's invalidation rule character for
+    character; three hosted rows place a broken container at a key path and assert exactly that. The
+    `akvp` v1 format is **byte-unchanged** and the hosted owner asserts, by SHA-256, that a `STORE`
+    container is byte-identical to a `KV_SAVE` one — including for a miss that has a suffix, which is
+    what pins *when* a miss saves. Schema **6** adds a `store` object
+    published in every document including error documents; **no path is published**, so the key — a
+    digest, not a clock or a machine path — is golden-stable, and the whole 139-row decode-step
+    golden moves only in the document's own `schema_version` plus that object, verified mechanically
+    — the container header's separate `document_schema_version` field stays **3**, as
+    `r6-prefix-suffix-prefill.md` section 2.9 requires. One byte
+    layout has three implementations (the arm, `scripts/kv_plane_reader.py` checking that a container
+    is at its own name, and the smoke recomputing it from the document's own published digests) and
+    oracle D asserts all three agree, with five determinism rows changing one preimage field each.
+    **No new refusal code is minted**: step 2d adds two `R6_KV_ARGS` details and a miss whose create
+    fails is `R6_KV_UNWRITABLE store[create]` — one code for three causes the pin cannot separate,
+    which is Request 53's client evidence. Owner `gmake layer-forward-smoke`; focused
+    `gmake decode-step-qualification`, two extra invocations per prompt, **run on the reference host
+    and PASS**: four prompts, a keyed miss and a keyed hit each, oracle K / oracle S / gate G1 /
+    oracle B all IDENTICAL on both legs, four distinct keys addressing four 29,970,432 B containers
+    each byte-identical to `KV_SAVE`'s, and the leg costing 48.71 s of a 15 min 38 s
+    target. **No TTFT or throughput
+    claim and no cost ceiling** — `CLAUDE.md`'s performance row is not selected; the runner's TTFT
+    figures stay a labelled diagnostic. Stacked on item 36, whose lift of the `T_prefix >= 2` refusal
+    a store that *writes* containers requires. One new Align request, **53** (`std.fs` directory
+    operations), `PROPOSED` and non-blocking. **What it leaves open:** the R6 gate asks that TTFT
+    improve on repeated coding tasks sharing a prefix. This discharges two of item 33 section 1.4's
+    four reasons — there is now a key and a store — and leaves the corpus and the consumer.
+    `MAX_PREFILL_TOKENS` is still **32**, so the largest legal prefix is 32 tokens and no real prompt
+    reaches it; the shared prefix of `eval/prompt/canonical-v1` measures **370 tokens** against
+    suffixes of 696, 825, and 1,049 (section 1.2). Item 38 lifts the cap, pins the corpus, and takes
+    the gate measurement.
+
+38. **R6-PREFIX-TTFT — the prefill cap lifted, the corpus pinned, and the R6 gate measured.**
+    **Not started.** Its charter is section 11 of
+    [`r6-prefix-key-corpus.md`](r6-prefix-key-corpus.md), written **before** item 37 was implemented
+    so the split is a schedule rather than a hope, and it needs its own design gate and its own
+    ledger before implementation. It lifts `MAX_PREFILL_TOKENS` from 32 to 2048 — a constant read as
+    code by seven `.align` modules and three scripts and **bound into a persisted header field**, so
+    the lift is a one-way compatibility step — pins `eval/kv/prefix-corpus-v1` from the qualification's
+    own instrument, and measures TTFT on the paired single-shot and keyed-hit legs. Its first
+    implementation step is a **baseline probe, not code**: the ceiling is
+    `(T / (T + S)) x (prefill compute / single-shot TTFT)`, whose first factor is already measured at
+    **0.30582 mean and 0.26075 worst**, so the gate is reachable only if this arm's resident prefill
+    runs at or below roughly 200 tokens per second on the reference host — a falsifiable precondition
+    written before any number exists. The floor (150,000 ppm, adopted from `r6-resident-weights.md`
+    section 3.4), the two cache protocols, and the pre-committed MET / NOT_MET / INDETERMINATE rule
+    are all fixed in section 11 in advance.
 
 > Items 35 and 36 are claimed on sibling branches (`agent/r6-moe-resident-dense`,
 > `agent/mf-single-token-logits`); 37 and 38 are reserved for Track B's `R6-PREFIX-KEY-CORPUS`,
@@ -1889,7 +2017,11 @@ policyの測定にはmulti-prefill sessionかdecodeが必要である。
 持たず、TTFTの主張もしない。このgateを満たすには少なくともstep 2とdecode loop、そのうえで
 prefix再利用とresidency policyが必要である。item 29（R6-KV-PERSIST）はKV planeをディスクに
 永続化し別プロセスで再読み込みする——5項目のうちsession KVのみ——が、prefix共有・DRAM/NVMe tier・
-invalidationは持たず、TTFTの主張もしない。
+invalidationは持たず、TTFTの主張もしない。item 37（R6-PREFIX-KEY）はprefix planeの
+content-addressed storeを実装し、keyとstoreという欠けていた4つのうち2つを埋めた——しかしcorpusと
+consumerは依然として存在せず、TTFTの主張もしない。`MAX_PREFILL_TOKENS`が32のままであるため実際の
+promptは1つも入らない（`eval/prompt/canonical-v1`の共有prefixは370 token）。cap引き上げ・corpus
+固定・gate測定はitem 38（R6-PREFIX-TTFT）が担う。
 
 **順序についての実測由来の結論（2026-08-28、R3-DECODE-RESIDENCY、roadmap item 25）。**
 R6はexpert residencyのruntime実装より**先**に着手してよい。実際の運用に最も近いmixed arm

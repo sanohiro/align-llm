@@ -6,8 +6,10 @@ file records durable project state.
 ## Active: C4-REPAIR-TEMPLATE (2026-08-30)
 
 Branch `agent/c4-repair-template`, merged with `agent/c4-repair-editset` (`6ccbb88`) and
-`origin/main` (`8d095a4`). Implemented, owner-verified, **gate run complete**. Not reviewed, not
-pushed for merge.
+`origin/main` (`451aa66`, through PR #155), always by merge and never rebase. The latest merge's
+only conflict was this active block; it keeps the capability state here and the newly merged R6
+checkpoint below. Implemented, owner-verified, **gate run complete**. Not reviewed, not pushed for
+merge.
 
 **Capability.** The prompt template and the declared edit policy — the successor
 `c4-repair-editset.md` section 6.4 named. `docs/specs/c4-repair-template.md` is the authoritative
@@ -23,7 +25,7 @@ Under version 3 it fails attempt 1 at 724 B and recovers to the same 758-byte pa
 `candidate_pass_count` is 2 here and was 2 at C4E; `completion_gain_count` is 2 in both. **No task
 passes here that did not pass before.** The counted recovery is recovery from a regression this
 capability's own attempt-1 change introduced — section 4.3 item 4 recorded that confound before the
-run. The specification must say this plainly **before publication**; a bare `MET` would misreport
+run. Section 11.4 now says this plainly; a bare `MET` would misreport
 the result.
 
 **The pre-committed secondary was not met.** `edit_refusal_count: 10` against a target of `< 10`
@@ -53,7 +55,7 @@ because the gate fixture never attached the record.
 **10,077 B** of four-chunk launch-window headroom. Adapter pin `fa73f9dc…` unmoved.
 
 **Next actions, in order.**
-1. Merge the latest `origin/main`, never rebase, and rerun the owner set on the merged candidate.
+1. Rerun the owner set on the merged candidate.
 2. **Two disjoint comprehensive reviews** (the diff is large and spans three surfaces): one for the
    adapter/import-chain/version-3 producer, one for the evaluator, Align verifier, corpus freeze,
    and gate evidence. Explicitly disjoint risks, per `CLAUDE.md`'s very-large-change allowance.
@@ -65,7 +67,242 @@ because the gate fixture never attached the record.
 
 **Blockers.** None technical. The `llama-server` this branch reused was stopped after the gate run.
 
-## Active: C4-REPAIR-EDITSET (2026-08-29)
+## Merged checkpoint: R6-MOE-RESIDENT-DENSE (PR #155, `main` `451aa66`, 2026-08-30)
+
+Branch `agent/r6-moe-resident-dense`, implemented on `agent/r6-olmoe-decode` head `bf7c87d` and then
+**merged** with `origin/main` `45ff38e` (R6-OLMOE-DECODE, PR #148, which itself carried
+R6-PREFIX-SUFFIX-PREFILL, PR #149) by `git merge` — **never a rebase**. One conflict, in
+`docs/align-requests.md`, where both sides appended after Request 49: resolved by keeping this
+capability's client paragraph **and** `main`'s next-free-number comment, with the comment extended
+to record that this capability proposes none either.
+
+The four things that merge re-checks all held:
+
+- **roadmap item 35.** After the second merge `main` carries 30, 31, 32, 33 and **36** (36 is
+  MF-SINGLE-TOKEN-LOGITS, PR #151); 34 is still claimed by `C4-REPAIR-EDITSET` and is not on `main`,
+  so **35 is still this capability's**. The item was re-ordered to sit between 33 and 36 after the
+  merge placed it below 36.
+- **`R6_MOE_DECODE_STEP` schema 2**, unchanged by the merge.
+- **next free Align request number 53.** `docs/align-requests.md` still ends at Request **52** after
+  the second merge; this capability takes none and adds clients to 33, 35, 36, 38, 47, 48, 49 and
+  **51**, and records **50** as explicitly not a client.
+- **which goldens regenerate:** the implementation moved `scripts/moe-decode-step-golden.jsonl`
+  59 -> 69 rows. Review repair adds one UTF-8 refusal row, making **70**. Main's later capabilities
+  moved `scripts/decode-step-golden.jsonl` 116 -> 155; the same root-cause repair adds two refusal
+  rows and corrects one forced-wrap counter, making **157**. `src/model_forward.align` stays
+  byte-unchanged. `main` also moved `AGGREGATE_TIMEOUT` from 1,800 s to 3,600 s in the `Makefile`;
+  nothing in this capability reads it.
+
+**A second `git merge origin/main` took `334f524`** — PR #150 (C4-REPAIR-MEASURED: Track A only,
+plus the `Makefile`'s `.PHONY`/`AGGREGATE_TIMEOUT` and the baseline chain) and PR #151
+(MF-SINGLE-TOKEN-LOGITS). One conflict, in `HANDOFF.md`, where both sides opened a new `## Active`
+block: resolved by keeping this capability's and relabelling MF-SINGLE-TOKEN-LOGITS' as the merged
+checkpoint it became. **PR #151 adds `gathered: bool` to both `GraphMembers` records**; the merge
+carried `gathered: false` into `moe_decode_step.decode_embed_members` from `main`'s side, which is
+correct — that member bakes the token into its own `source`/`pack` offsets and reads one row
+directly rather than gathering `pieces` — and this capability adds no other `GraphMembers` builder.
+`scripts/moe-model-forward-golden.jsonl` gained a row from `main`'s side (98 -> 99) and
+`src/moe_model_forward.align` changed there; neither is this branch's.
+
+**Capability.** The dense member set of a routed model held resident across an `N`-step decode loop,
+experts still streamed. CPU only, OLMoE-1B-7B-0125-Instruct Q4_K_M. Authoritative ledger
+`docs/specs/r6-moe-resident-dense.md`: sections 1 to 6 are the pre-implementation design, committed
+in `f8796ea` **before** the first line of implementation and not rewritten since; correction 18
+adds one explicitly marked `Shipped:` note. Sections 12 to 14 record the results, every deviation,
+and the ledger-to-diff mapping. All four design-gate triggers fire.
+
+**State.** Implemented, measured, reviewed, repaired, and published as PR #155. Implementation and measurement are
+committed through `a94ab24`; the consolidated review repair is `588bcbf`. A third merge takes
+`origin/main` `c1ad71e` (the session-stop handoff, PR #154) without rebasing; its only conflict was
+this active block, resolved by retaining the completed repair state and queuing the other unfinished
+branch below. The tree is buildable and every hosted owner passes.
+
+**Performance contract, committed with the design.** Owner `docs/specs/r6-resident-weights.md`
+section 3.4. Baseline 3.63 s (`timings.elapsed_ns`, prompt 1, `N = 16`, `KV_WIDTH` 256, reference
+host, item 32 section 12.3). Primary metric `weights.step_dense_pack_bytes`: 4,049,258,496 -> **0**.
+Cost ceiling **276,000 ppm**, floor **150,000 ppm** adopted unchanged, predicted 2.63 s, margin
+1.84x.
+
+**Measured twice, and the measurement of record is the quiet-host run (section 12.4).** It was taken
+with no `llama-server`, no container and a completely clear process table at **8.47 GB free**, and it
+**reproduced the committed baseline**: streamed `[3.458, 3.551, 3.928]` s against 3.63 s, a median
+21,693 ppm away, where the first run had drifted 857,000 ppm. Byte clauses hold exactly at all twelve
+points, oracle D is `MATCH` on all four prompts, the region is 311,066,624 B reproduced independently
+from the pack document, and `wrap_count` is 306 -> 1 — **identical in every field to the contended
+run**, which is what a counter is supposed to be.
+
+**The elapsed leg is `BELOW FLOOR` at 138,402 ppm against a 150,000 ppm floor** — 92 % of the floor,
+50 % of the ceiling. Median 86,825 ppm, best-of-3 84,187 ppm, so no reading clears it. The other
+three prompts at `N = 16` give 138,128, **156,687** and 147,670 ppm: one prompt does clear the floor
+and it is not the fixed task, which section 3.7 chose before any number existed and which is not
+changed now. `INDETERMINATE` does not apply (streamed spread 129,116 ppm inside the 276,000 ppm
+ceiling) and neither does the `miss` label (the result is above half the ceiling). **No elapsed claim
+is made; section 4.6 clause 12 puts the capability on clauses 1 to 11**, which hold exactly. Clause
+12 is **`BELOW FLOOR`** and that is the settled answer, not an open item.
+
+**The first run (section 12.5) is kept as evidence** with its drift stated. Getting the quiet host
+took two attempts: one 4-hour poll at an 8 GB floor that never fired (80 samples; a Qwen
+`llama-server` present in 80 of 80 and memory 2.05-5.82 GB), and a second at a 6 GB floor — the floor
+the session's other benchmarks used — that fired on its 42nd sample at 8.47 GB, so the relaxation was
+not load-bearing.
+
+**`gmake moe-decode-step-qualification` refuses on this host**, at its own instrument cross-check
+and before the arm runs, with the same two `result_output` sums `docs/specs/r6-olmoe-decode.md`
+deviation 4 records (-113284.835938 against -111030.03125). The R2C `llama-eval-callback` is a
+static `GGML_BLAS`/`GGML_ACCELERATE` build; the ggml the arm and `llama-debug` share is not; and the
+`llama-debug` built from the pinned source that item 32's qualification of record used is not on
+this host. **Section 15 of that document owns the fix and nothing here works around it** — no check
+was relaxed and no switch was added. The measurement was taken by a standalone driver running the
+**same** shipped invocations (section 12.3), which is sound because an instrument skew is identical
+on both sides of oracle D and cancels, and the primary metric reads neither instrument.
+
+**Blockers.** None. Nine Align gaps are met and all nine are already recorded (Requests 33, 35, 36,
+38, 47, 48, 49, 50, 51); none blocks. Request 49 gains a new *shape* of client, Request 51 gains its
+first reproduction by a reader who did not know the answer (`arena` is a reserved word, and cell
+MRD-P1's probe hit repro 1 exactly), and Request 50 gains **no** client — recorded so the register is
+not inflated.
+
+**Constraints.** CPU only. Experts stay streamed **by design**: whole-model residency would make
+`residency.expert_bytes` unreachable and `RESIDENT=weights` is refused by name on this arm. No TTFT
+or throughput claim; the R6 gate stays unmet.
+
+**Review.** Two independent reviewers covered disjoint risks at clean head `a94ab24`, ledger
+`f8796ea`, merge base `334f524`: reviewer A covered implementation and returned request changes
+with one major and three minor findings; reviewer B covered specification, evidence, and governance
+and returned approve with repairs with four major and seven minor findings. All findings were
+validated. The UTF-8 abort, wrap-counter semantics, stale handoff/request/count/cross-reference and
+oracle-D prose, verdict vocabulary, spread denominator, worst-pairing description, and portability
+precedent are repaired. The requested second fill-failure case is not added because no validated
+pack can reach that failure; the forced wrap failure owns the same live-region teardown window.
+Commit `de83ceb`'s misleading subject is accepted as historical metadata and not rewritten; its body
+and `a94ab24` make the supersession explicit. A final host-native review of the consolidated delta
+found one P3 documentation mismatch: three unchanged golden row counts still described the older
+merge base. They are refreshed to 63, 29, and 99. No finding remains unresolved.
+
+**Publication.** Exact-head preflight passed at `94482e3`; all three required GitHub checks passed,
+and PR #155 merged as `451aa66`.
+
+**Intentional uncommitted files.** None.
+
+## Queued after C4-REPAIR-TEMPLATE
+
+- Roadmap item **38**, R6-PREFIX-TTFT, follows item 39. Its charter is
+  `docs/specs/r6-prefix-key-corpus.md` section 11.
+
+**Host facts worth keeping:** serialize the 16 GiB host across Track A gates, DinD fresh-image
+preflight, real-model qualification, and timing benchmarks. Run DinD as uid 501; bwrap inside Docker
+needs `--security-opt systempaths=unconfined`. Do not pin >= 2-token decode-step or >= 4-token
+prefill activations in a hosted golden because arm64 and x86_64 can differ in the last bit.
+
+## Merged checkpoint: R6-PREFIX-KEY (PR #153, `main` `661dd3d`, 2026-08-30)
+
+Branch `agent/r6-prefix-key-corpus`, cut from `agent/mf-single-token-logits` `40eb965` — that
+branch's merge of `origin/main` `45ff38e` (PR #148). It was **stacked on roadmap item 36**, which
+has since merged as **PR #151** (`main` `334f524`, item 36's final head `d538066`) and is now merged
+into this branch by `git merge`, never a rebase. The stack existed because a store that *writes*
+containers requires item 36's fix: item 33's `T_prefix >= 2` refusal existed only because a
+one-token prefill computed the wrong embedding row, and a store would have persisted that wrong
+plane and served it forever. **The merge moved the decode-step golden's base from 141 to 139 rows**:
+item 36's `d538066` moved `ds-suffix-single-shot-2` and `ds-suffix-prefix-one` into
+`BOUNDARY_CASES`, because a two-token decode step differs by one ULP between arm64 and x86_64. The
+store rows sit on top of that base and none of them carries a decode activation. `origin/main`
+`8d095a4` (PR #152, C4-REPAIR-EDITSET) is merged in on top by a second `git merge`, again never a
+rebase; both conflicts were `Active`-block and roadmap-entry collisions resolved by keeping both
+sides, and nothing that capability changed touches this one's arm, scripts, or goldens.
+
+Roadmap item **37**. The design gate fires on all four `CLAUDE.md` triggers. The ledger is
+`docs/specs/r6-prefix-key-corpus.md`, **committed at `8238df6` and not edited**: sections 1–10 are
+the contract, section 11 is item 38's charter, **section 12 records every implementation deviation**,
+and section 13 records the results.
+
+**Implemented, verified, published as PR #153.** `--decode-step` gains a sixteenth operand,
+`STORE`, a caller-created directory that is mutually exclusive with `KV_SAVE` and `KV_LOAD`. The arm
+derives a 32-byte key — SHA-256 over a 152-byte preimage of three digests plus `pack_total_bytes`,
+`kv_width`, `token_count`, `plane_layout_version`, `element_type`, `format_version`, `key_version` —
+and addresses `<STORE>/<64-hex>.akvp`. **A hit loads through the unchanged L1–L14 path; a miss
+prefills, saves through the unchanged writer, and continues**, and the two produce byte-identical
+documents outside three store fields and oracle Q's own set (oracle K). **A miss is only a missing
+file**: three hosted rows place a broken container at a key path and assert `R6_KV_DIGEST("plane")`,
+`R6_KV_TOKENS`, and `R6_KV_IDENTITY("pack")` rather than a re-prefill. Schema **6** adds a `store`
+object to every document; **no path is published**. `src/kv_plane.align`'s writer, reader, header
+plan, and every bound are unchanged and the container is asserted byte-identical to a `KV_SAVE` one.
+
+**Files.** `src/kv_plane.align` (+`derive_key`, `store_path`, four constants),
+`src/decode_step.align` (the operand, step 2d, L0, `render_store`, schema 6),
+`src/model_forward.align` (**five `Outcome` fields only** — section 12 deviation D1),
+`scripts/kv_plane_reader.py` (a second preimage implementation and the `KEY` verdict),
+`scripts/run-layer-forward-smoke` (a third preimage implementation, 16 golden rows, oracle K/D),
+`scripts/run-decode-step` (the real-model store leg and a third analysis block),
+`scripts/decode-step-golden.jsonl` (139 → 155 rows), plus `docs/specs/roadmap.md` (items 37 and 38),
+`docs/align-development.md`, `docs/align-requests.md` (Request 53), and the ledger. **The Makefile
+is untouched**: no target, no aggregate membership, and no check topology moves.
+
+**Verification, all green at this head** (`gmake`, `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib`):
+`gmake build`, `gmake check` (31 units), `gmake layer-forward-smoke` (159 documented cases, 155
+golden rows, 42 codes), `gmake ggml-spike-smoke`, `gmake alignpack-smoke`,
+`gmake gate-topology-check`, `gmake decode-step-qualification` (real model, 4 store prompts, PASS),
+`gmake fmt` leaves no
+diff, `gmake format-check`, `git diff --check`. The golden movement was verified **mechanically**:
+all 139 pre-existing rows differ only in the document's own `schema_version` 5 → 6 plus a default
+`store` object, in the same order, with no row removed — the container header's separate
+`document_schema_version` stays 3 (section 12, D15). **Five ledger mutants were run at the final head
+and all five died**: a preimage field dropped in one of the three implementations, a hit treated as a
+miss, a key that ignores the token stream, the container's path published in the document, and a
+miss that saves after the suffix pass.
+
+**One comprehensive review is complete and its findings are repaired** (section 12, D15–D21 plus
+addenda to D6, D7, and D14). Two code repairs: W5 maps `R6_KV_CLEANUP_FAILED` to `store[cleanup]`
+so no writer code can leak the derived path into `error_detail` (D16), and `derive_key` bounds
+`kv_width` and `token_count` from **above** as well as below, because both narrow to `u32` in the
+preimage (D19). One new golden row, `ds-store-suffix-unwritable`, gives D14's moved call site its
+own failure regression. The preimage is **unchanged** and every key in this document still holds:
+D17 records the `document_schema_version` coupling that keeps it safe rather than spending reserved
+bytes on it. D14 and a `KEY_VERSION` mutant were re-injected at the repair head and both died.
+
+**One real defect was found and fixed during implementation, and it is deviation D14.** The
+`KV_SAVE` writer's call site is *after* the suffix pass, which was correct for every prior run
+because `SUFFIX` is illegal beside `KV_SAVE`; a keyed **miss** is the first run that has both, and
+the first implementation inherited the position and persisted a plane carrying `T_prefix + S`
+columns under a header declaring `columns_persisted = T_prefix`, with the suffix pass's
+`prefill_argmax`. It round-trips through the arm, so oracle K passed — it was caught by the two
+container assertions instead: the keyed container was **not** byte-identical to the `KV_SAVE`
+container of the same prefix, and the independent reader refuses it as `ZEROTAIL`. The fix is one
+guarded call site before the pass; the regression is `ds-store-suffix-vs-kv-save`, which is also the
+fifth mutant.
+
+**The real-model qualification is run and `PASS`** (section 13.6). `gmake
+decode-step-qualification` on the reference host, **2026-08-30 04:48:38-05:04:16, 15 min 38 s**, of
+which the store leg is **48.71 s** against risk 7's 120 s threshold (D7). Four prompts, a keyed miss
+and a keyed hit each, resident at 16 GiB physical: **oracle K, oracle S on both legs, gate G1 on
+both legs, and oracle B are all IDENTICAL**, four distinct keys address four 29,970,432 B containers
+each byte-identical to `KV_SAVE`'s and accepted by the independent reader's `--check-name`, and
+`store.lookup_ns` is 6.5-9.7 us. Gate G1 was the one assertion the dry run could not reach and it is
+now closed on all eight legs. Getting the host took **three polling windows** — 18:30-20:01,
+20:47-00:47, and 00:56-04:48 — against the 6 GB coordination floor, held in turn by two
+Docker-in-Docker preflights, a `llama-server` resident on the same model for over eight hours, and
+an aggregate `make` run. **Nothing was killed, nothing ran below the floor, and no degraded
+measurement was recorded.**
+
+**Next actions, in order.** (1) `python3 scripts/pre-pr
+--owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (2) Publish the pull request. One
+comprehensive review is complete and repaired; another is **not** required — the qualification
+recorded a result and changed no design, contract, or code. (3) Merge; item 36's precondition is
+discharged.
+
+**Blockers.** None. Item 36 merged as PR #151 and is merged into this branch, and the host
+qualification is run and green.
+
+**New Align request 53** (`std.fs` `create_dir` / `read_dir` / `is_dir`), `PROPOSED`, `medium`,
+non-blocking; its resume condition is a store eviction/GC capability. **The number is re-checked
+at both merges and holds**: `origin/main` `8d095a4` claims **52** for C4-REPAIR-MEASURED's `Option`
+partial move — the request section 8 predicted and reserved — so the register runs 1-52 and 53 is
+this capability's. Request 30
+gains a third client (the store's check-then-create window, which at this pin lets a concurrent loser
+**overwrite** rather than be refused — deviation D6), Request 49 gains a recorded **negative** client,
+and Request 31 gains the correction a store owes it and **stays low and non-blocking** with its
+reason.
+
+## Merged checkpoint: C4-REPAIR-EDITSET (PR #152, `main` `8d095a4`, 2026-08-30)
 
 Branch `agent/c4-repair-editset`, originally stacked on `agent/c4-repair-measured` at `c07775c`,
 now merged with `origin/main` at `4940005` (PR #150, which merged that parent capability).

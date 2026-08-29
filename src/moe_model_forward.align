@@ -8,6 +8,7 @@ import std.time
 import alignpack_read
 import ggml_ffi
 import layer_olmoe
+import model_forward
 import moe_layer_forward
 
 // R5E-MOE-MODEL-PREFILL (`docs/specs/r5e-moe-model-prefill.md`). The `--moe-model-forward` arm: the
@@ -688,6 +689,24 @@ pub Outcome {
   decode_expert_bytes: i64,
   expert_pread_bytes: i64,
   decode_expert_pread_bytes: i64,
+
+  // R6-MOE-RESIDENT-DENSE section 3.8. The `weights` object of `R6_MOE_DECODE_STEP` schema 2, owned
+  // by `src/moe_decode_step.align` and rendered by nothing else: `--moe-layer-forward` and
+  // `--moe-model-forward` share this record and neither renders one of these fields, so their
+  // goldens cannot move. `step_dense_pack_bytes` is the capability's **primary metric** and is a
+  // syscall counter, not arithmetic: it accumulates the decode steps' own dense
+  // `alignpack_read.Counters.bytes_read` and never the claim scatters', which is what makes
+  // "residency cannot move the expert measurement" a mechanism rather than an assurance.
+  resident_mode: bool,
+  resident_bytes: i64,
+  resident_fill_ns: i64,
+  resident_fill_pread_count: i64,
+  resident_fill_bytes: i64,
+  step_dense_pack_bytes: i64,
+  step_expert_pack_bytes: i64,
+  wrap_count: i64,
+  resident_wraps_created: i64,
+  resident_wraps_freed: i64,
   union_keys_final: i64,
   union_bytes_final: i64,
   decode_keys_demanded: i64,
@@ -901,6 +920,16 @@ pub fn empty_outcome() -> Outcome = Outcome {
   decode_expert_bytes: 0,
   expert_pread_bytes: 0,
   decode_expert_pread_bytes: 0,
+  resident_mode: false,
+  resident_bytes: 0,
+  resident_fill_ns: 0,
+  resident_fill_pread_count: 0,
+  resident_fill_bytes: 0,
+  step_dense_pack_bytes: 0,
+  step_expert_pack_bytes: 0,
+  wrap_count: 0,
+  resident_wraps_created: 0,
+  resident_wraps_freed: 0,
   union_keys_final: 0,
   union_bytes_final: 0,
   decode_keys_demanded: 0,
@@ -1852,6 +1881,97 @@ pub fn build_layer_members(
     pieces: pieces.build(),
     stride: stride.build(),
     gathered: false,
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// R6-MOE-RESIDENT-DENSE section 3.5 — the routed resident layout
+//
+// `model_forward.plan_resident` is typed on `model_forward.Plan`/`Ends`, sizes its embed stage with
+// `layer_qwen2.MAX_PREFILL_TOKENS`, and cannot be applied to a routed plan: Align has no generics at
+// this pin, so a `borrow`-taking cross-module call cannot be parameterized over two record types.
+// This is Request 49's newest client and its sharpest-shaped one — roughly forty duplicated lines
+// that exist for no reason but the two `Plan` records being different named types.
+//
+// The **record** is shared, and only the producer is duplicated: this returns
+// `model_forward.ResidentLayout` so that `stream_layout`, `empty_resident_layout` and
+// `stage_embed_row` are reused byte-unchanged and one index convention — `base[0]` the stage,
+// `base[1 + layer]` a layer, `base[1 + n_layer]` the head, the table at `table_at = 0` — serves both
+// decode arms. Section 5.3 names that convention as the one shared symbol whose meaning must not
+// drift.
+//
+// The layer extents come from `p.layer_window_bytes[]`, the `align_up`-per-member sum, and **not**
+// from `p.layer_member_bytes[]`, the raw sum that `steps[].residency.dense_bytes` accumulates. The
+// two coincide on OLMoE because every dense member size there is already a multiple of 4,096; a
+// model whose dense members are not would separate them, and the arena is laid out from the aligned
+// one.
+//
+// `i64` arithmetic wraps silently, so every term is checked before it exists, exactly as
+// `model_forward.plan_resident` does: a term that cannot be represented becomes `-1`, `-1` poisons
+// every later term, and the caller's `region_bytes <= 0` guard refuses the run with
+// `R6M_RESIDENT_BUDGET` before any allocation.
+// ---------------------------------------------------------------------------------------------
+
+I64_MAX := 9223372036854775807
+
+fn mul_checked(left: i64, right: i64) -> i64 {
+  if left < 0 || right < 0 { return -1 }
+  if right == 0 { return 0 }
+  if left > I64_MAX / right { return -1 }
+  return left * right
+}
+
+fn add_checked(left: i64, right: i64) -> i64 {
+  if left < 0 || right < 0 { return -1 }
+  if left > I64_MAX - right { return -1 }
+  return left + right
+}
+
+fn align_up_checked(value: i64, alignment: i64) -> i64 {
+  if value < 0 { return -1 }
+  if alignment <= 1 { return value }
+  remainder := value % alignment
+  if remainder == 0 { return value }
+  return add_checked(value, alignment - remainder)
+}
+
+pub fn plan_resident_dense(
+  borrow p: Plan, borrow e: Ends, block_align: i64,
+) -> model_forward.ResidentLayout {
+  mut base: array_builder<i64> := array_builder()
+  mut span: array_builder<i64> := array_builder()
+  step := if block_align > MAX_TENSOR_ALIGNMENT { block_align } else { MAX_TENSOR_ALIGNMENT }
+  table_bytes := align_up_checked(e.embed_nbytes, step)
+  // `layer_olmoe.MAX_PREFILL_TOKENS` and not `layer_qwen2`'s. The two are both 32 today, which is
+  // exactly why calling the dense producer would have worked by accident and broken silently the day
+  // one of them moved. `MAX_PREFILL_TOKENS` rows and not `tokens.count`: the stage is the same size
+  // on every run of one model, so the region's size is a function of the pack alone.
+  stage_bytes := align_up_checked(
+    mul_checked(e.row_bytes, layer_olmoe.MAX_PREFILL_TOKENS), step)
+  mut at := table_bytes
+  base.push(at)
+  span.push(stage_bytes)
+  at = add_checked(at, stage_bytes)
+  mut layer := 0
+  loop {
+    if layer >= p.n_layer { break }
+    extent := align_up_checked(p.layer_window_bytes[layer], step)
+    base.push(at)
+    span.push(extent)
+    at = add_checked(at, extent)
+    layer = layer + 1
+  }
+  head := align_up_checked(e.head_window_bytes, step)
+  base.push(at)
+  span.push(head)
+  at = add_checked(at, head)
+  return model_forward.ResidentLayout {
+    bytes: at,
+    table_at: 0,
+    table_bytes: table_bytes,
+    stage_bytes: stage_bytes,
+    base: base.build(),
+    span: span.build(),
   }
 }
 

@@ -7,6 +7,7 @@ import std.time
 import alignpack_read
 import ggml_ffi
 import layer_olmoe
+import model_forward
 import moe_layer_forward
 import moe_model_forward
 
@@ -45,12 +46,17 @@ import moe_model_forward
 // both concat axes, the offset mask, the per-step routing decision and its claim accounting, oracle
 // B's byte round trip, oracles R and T per step, and the `R6_MOE_DECODE_STEP` document.
 
-// Section 3.10. A **new kind** at schema 1, which collides with nothing because it is a new kind.
-// Section 3.1 records why a shared kind with `--decode-step` was rejected: the `model` object of a
-// routed document carries `n_expert` and `n_expert_used`, and publishing the routed fields inside
+// Section 3.10. A **new kind**, which collides with nothing because it is a new kind. Section 3.1
+// records why a shared kind with `--decode-step` was rejected: the `model` object of a routed
+// document carries `n_expert` and `n_expert_used`, and publishing the routed fields inside
 // `R6_DECODE_STEP` would bump that schema 4 -> 5 and rewrite every row of the dense golden for a
 // capability that changes no dense behaviour.
-SCHEMA_VERSION := 1
+//
+// R6-MOE-RESIDENT-DENSE section 3.8 takes **schema 2**: the `weights` object item 32 recorded as
+// deliberately absent — "publishing an object that is always `-` is a field pretending to be a
+// promise" — becomes present by contract, in every document including error documents. A field that
+// was absent by contract becoming present by contract is a format change and is named as one.
+SCHEMA_VERSION := 2
 DOCUMENT_KIND := "R6_MOE_DECODE_STEP"
 
 // Section 3.2's vocabulary. Codes are prefixed `R6M_` and not `R6_`, so a document from this arm can
@@ -78,6 +84,18 @@ CODE_CLAIM_ACCOUNTING := "R6M_CLAIM_ACCOUNTING"
 // size. Like `R6M_CLAIM_ACCOUNTING` it is unreachable from an input — `stage_carry_at` refuses a
 // short `topk_image` before compute — and it is a guard rather than a validation step.
 CODE_ROUTED_SHAPE := "R6M_ROUTED_SHAPE"
+// R6-MOE-RESIDENT-DENSE sections 3.1 and 3.2. All three are **document-carrying**, unlike the arity
+// refusal, which is `Err(Error.Invalid)` with no document at all (there is no `R6M_ARITY` constant
+// in this source; section 11 item 12 records that discrepancy with the prose rather than propagating
+// it). `R6M_RESIDENT_UNAVAILABLE` is deliberately **not** introduced: a degraded reservation on this
+// buffer already carries `R5_WINDOW_UNAVAILABLE` and a second name for one condition on one buffer
+// is what section 3.2 refuses for seam codes.
+CODE_RESIDENT := "R6M_RESIDENT"
+CODE_RESIDENT_BUDGET := "R6M_RESIDENT_BUDGET"
+// KV persistence is deferred on this arm on item 32 section 8's two exact couplings. Positions 11
+// and 12 stay **reserved**: they must both be `-`, and anything else is refused by name rather than
+// quietly becoming legal.
+CODE_KV_UNSUPPORTED := "R6M_KV_UNSUPPORTED"
 
 // Section 3.4. The plane is one `buffer`, and this is the ceiling a malformed width would have to
 // clear before a single byte is reserved. At OLMoE's geometry and the maximum legal width it is
@@ -250,9 +268,35 @@ pub fn empty_step_residency() -> StepResidency = StepResidency {
 // its largest client.
 // ---------------------------------------------------------------------------------------------
 
+// `error_detail` is a diagnostic, not a contract on the operand's completeness, so a longer one is
+// truncated at a UTF-8 scalar boundary and the truncation is not marked. The scan walks back over
+// continuation bytes (`0x80..0xBF`), so the cut can never split a scalar and the slice can never
+// abort. Cutting at a fixed byte index instead aborts the process on an operand whose 256th byte
+// falls inside a multibyte scalar, which turns a refusal into no document at all; section 13
+// item 15 records that repair. This is `src/model_ir.align`'s form, adopted verbatim.
 fn bounded_detail(value: str) -> string {
-  if value.len() <= MAX_DETAIL_BYTES { return value.clone() }
-  return value[0..MAX_DETAIL_BYTES].clone()
+  view := value.bytes()
+  if view.len() <= MAX_DETAIL_BYTES {
+    return value.clone()
+  }
+  mut cut := MAX_DETAIL_BYTES
+  loop {
+    if cut <= 0 { break }
+    byte := view.u8(cut) as i64
+    if byte < 128 || byte >= 192 { break }
+    cut = cut - 1
+  }
+  return value[0..cut].clone()
+}
+
+// R6-MOE-RESIDENT-DENSE section 3.2. `resident[<text>]`, bounded to 256 bytes by `bounded_detail`,
+// so an operand of any length produces a detail of a bounded one.
+fn resident_detail(value: str) -> string {
+  d := builder()
+  d.write("resident[")
+  d.write(value)
+  d.write("]")
+  return bounded_detail(d.to_string())
 }
 
 fn fail(borrow mut o: moe_model_forward.Outcome, code: str, detail: str) {
@@ -1602,6 +1646,12 @@ if decode {
 fn run_moe_layer(
   device: raw,
   backend: raw,
+  // R6-MOE-RESIDENT-DENSE section 3.4. `null` is streaming mode and this graph wraps its own dense
+  // window; a live handle is the **run-scope** wrap over the resident region, which this graph
+  // places into and does not free. The claim window's per-graph wrap below is unchanged in either
+  // mode, which is why the per-graph balance check keeps its exact meaning here rather than being
+  // loosened, and why the run-scope wrap is counted in its own pair (section 4.3).
+  resident_buffer: raw,
   context_bytes: i64,
   borrow spec: moe_model_forward.LayerSpec,
   decode: bool,
@@ -1643,6 +1693,9 @@ fn run_moe_layer(
   mut graph_a_ctx := ggml_ffi.null_handle()
   mut graph_b_ctx := ggml_ffi.null_handle()
   mut weight_buffer := ggml_ffi.null_handle()
+  // The wrap this graph must free, which is the wrap this graph created. In `dense` mode it stays
+  // `null` and `teardown_layer` is a no-op for it.
+  mut owned_weight_buffer := ggml_ffi.null_handle()
   mut claim_buffer := ggml_ffi.null_handle()
   mut input_buffer := ggml_ffi.null_handle()
   mut graph_a := ggml_ffi.null_handle()
@@ -1675,12 +1728,16 @@ fn run_moe_layer(
       o.contexts_created = o.contexts_created + 4
     }
   }
-  if o.code.len() == 0 {
+  if o.code.len() == 0 && !ggml_ffi.handle_absent(resident_buffer) {
+    weight_buffer = resident_buffer
+  } else if o.code.len() == 0 {
     weight_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
     if ggml_ffi.handle_absent(weight_buffer) {
       fail(o, "R5_GGML_INIT", "weight_buffer")
     } else {
+      owned_weight_buffer = weight_buffer
       o.ggml_buffers_created = o.ggml_buffers_created + 1
+      o.wrap_count = o.wrap_count + 1
     }
   }
   if o.code.len() == 0 {
@@ -1958,8 +2015,10 @@ fn run_moe_layer(
     compare_routing_layer(
       scan, starts, lengths, spec.oracle_base, spec.layer, step, routing, g.n_expert_used, o)
   }
+  // `owned_weight_buffer` and not `weight_buffer`: in `dense` mode the two differ and the graph must
+  // free the wrap it created, which is none.
   teardown_layer(
-    galloc_b, graph_b_ctx, claim_buffer, galloc_a, graph_a_ctx, weight_buffer, weight_ctx,
+    galloc_b, graph_b_ctx, claim_buffer, galloc_a, graph_a_ctx, owned_weight_buffer, weight_ctx,
     input_buffer, input_ctx, o)
 }
 
@@ -2022,6 +2081,9 @@ fn graph_alignment(
 fn run_moe_end_graph(
   device: raw,
   backend: raw,
+  // Section 3.4, as in `run_moe_layer`: `null` streams and this graph wraps its own window, a live
+  // handle is the run-scope wrap it places into and does not free.
+  resident_buffer: raw,
   context_bytes: i64,
   kind: i64,
   graph_index: i64,
@@ -2050,6 +2112,7 @@ fn run_moe_end_graph(
   mut input_ctx := ggml_ffi.null_handle()
   mut graph_ctx := ggml_ffi.null_handle()
   mut weight_buffer := ggml_ffi.null_handle()
+  mut owned_weight_buffer := ggml_ffi.null_handle()
   mut input_buffer := ggml_ffi.null_handle()
   mut graph := ggml_ffi.null_handle()
   mut galloc := ggml_ffi.null_handle()
@@ -2066,12 +2129,16 @@ fn run_moe_end_graph(
       o.contexts_created = o.contexts_created + 3
     }
   }
-  if o.code.len() == 0 {
+  if o.code.len() == 0 && !ggml_ffi.handle_absent(resident_buffer) {
+    weight_buffer = resident_buffer
+  } else if o.code.len() == 0 {
     weight_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
     if ggml_ffi.handle_absent(weight_buffer) {
       fail(o, "R5_GGML_INIT", "weight_buffer")
     } else {
+      owned_weight_buffer = weight_buffer
       o.ggml_buffers_created = o.ggml_buffers_created + 1
+      o.wrap_count = o.wrap_count + 1
     }
   }
   if o.code.len() == 0 {
@@ -2185,7 +2252,7 @@ fn run_moe_end_graph(
   }
   teardown_layer(
     ggml_ffi.null_handle(), ggml_ffi.null_handle(), ggml_ffi.null_handle(), galloc, graph_ctx,
-    weight_buffer, weight_ctx, input_buffer, input_ctx, o)
+    owned_weight_buffer, weight_ctx, input_buffer, input_ctx, o)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2269,6 +2336,7 @@ fn decode_pass(
   borrow pak: file,
   device: raw,
   backend: raw,
+  resident_buffer: raw,
   context_bytes: i64,
   borrow g: layer_olmoe.Geometry,
   borrow ends: moe_model_forward.Ends,
@@ -2279,6 +2347,8 @@ fn decode_pass(
   borrow head_members: moe_model_forward.GraphMembers,
   borrow window: slice<u8>,
   borrow claim_window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   borrow slot_view: slice<u8>,
   borrow ids_view: slice<u8>,
   borrow pos_view: slice<u8>,
@@ -2316,15 +2386,35 @@ fn decode_pass(
   mut claim_counters := alignpack_read.new_counters()
   past_bytes := n_past * g.n_head_kv * g.head_dim * 4
   embed_members := decode_embed_members(g, ends, token_id)
+  // In `stream` mode the layout is `model_forward.stream_layout`, so every base is 0 and every span
+  // is the whole window and these three views are the window itself, character for character. In
+  // `dense` mode they are the region's own sub-slices, and the graph's `m.window[at]` offsets stay
+  // graph-relative inside them.
+  embed_base := layout.base[0]
+  embed_view := window[embed_base..embed_base + layout.span[0]]
   read_started := time.instant()
-  take_pack(o, moe_model_forward.fill_members(pak, embed_members, tokens, window, chunk_temp, counters))
+  if resident {
+    // R6-MOE-RESIDENT-DENSE section 3.6, and the whole reason the region holds the entire
+    // 57,950,208-byte `token_embd.weight` table for a 1,152-byte row: one host copy out of the
+    // resident table into the region's own staging region, and **zero pack bytes** for this step's
+    // embedding gather. `embed_members.stride[0]` and not `ends.row_bytes` — the two are the same
+    // number by construction, and this is the stride of the member the graph is about to read.
+    take_pack(o, model_forward.stage_embed_row(
+        window, layout.table_at, embed_base, layout.span[0], embed_members.stride[0], g.n_vocab,
+        token_id, 0))
+  } else {
+    take_pack(
+      o, moe_model_forward.fill_members(pak, embed_members, tokens, embed_view, chunk_temp,
+        counters))
+  }
   o.pread_ns = o.pread_ns + (time.instant() - read_started)
   o.window_reuse_count = o.window_reuse_count + 1
   if o.code.len() > 0 { return routed_ids.build() }
   mut embed_result := moe_model_forward.empty_end_result()
   run_moe_end_graph(
-    device, backend, context_bytes, moe_model_forward.GRAPH_EMBED, 0, -1, 1, 0, 1, true, g,
-    embed_members, embed_nodes, oracle, window, slot_view, ids_view, residual_view, node_view,
+    device, backend, resident_buffer, context_bytes, moe_model_forward.GRAPH_EMBED, 0, -1, 1, 0, 1,
+    true, g,
+    embed_members, embed_nodes, oracle, embed_view, slot_view, ids_view, residual_view, node_view,
     scan, starts, lengths, breach, embed_result, o)
   account(embed_result.activation_bytes, embed_result.slot_high_water, 0, activation, o)
   decoded.node_count = decoded.node_count + embed_result.node_count
@@ -2337,10 +2427,19 @@ fn decode_pass(
   loop {
     if layer >= g.n_layer || o.code.len() > 0 { break }
     members := moe_model_forward.build_layer_members(table, plan, layer)
+    layer_base := layout.base[1 + layer]
+    layer_view := window[layer_base..layer_base + layout.span[1 + layer]]
     layer_started := time.instant()
-    take_pack(o, moe_model_forward.fill_members(pak, members, tokens, window, chunk_temp, counters))
+    if !resident {
+      take_pack(
+        o, moe_model_forward.fill_members(pak, members, tokens, layer_view, chunk_temp, counters))
+    }
     o.pread_ns = o.pread_ns + (time.instant() - layer_started)
     o.window_reuse_count = o.window_reuse_count + 1
+    // Section 4.4: `steps[].residency.dense_bytes` is **arithmetic** — the demand of the step's
+    // graph, not what the reader read — and residency changes only the `pread` side. It is therefore
+    // unchanged in both legs, and the bytes residency actually removed are published in
+    // `weights.step_dense_pack_bytes`.
     res.dense_bytes = res.dense_bytes + plan.layer_member_bytes[layer]
     if o.code.len() > 0 { break }
     mut stage_k: buffer := buffer(past_bytes)
@@ -2363,8 +2462,10 @@ fn decode_pass(
     mut routing := layer_olmoe.empty_routing()
     mut result := moe_model_forward.empty_layer_result()
     run_moe_layer(
-      device, backend, context_bytes, spec, true, n_past, stride, step, g, plan, win, members,
-      a_nodes, b_nodes, oracle, window, claim_window, slot_view, pos_view, mask_view, out_ids_view,
+      device, backend, resident_buffer, context_bytes, spec, true, n_past, stride, step, g, plan,
+      win, members,
+      a_nodes, b_nodes, oracle, layer_view, claim_window, slot_view, pos_view, mask_view,
+      out_ids_view,
       past_k_view, past_v_view, residual_view, node_view, plane_view, scan, starts, lengths, pak,
       block_temp, claim_counters, breach, routing, result, state, o)
     account(result.activation_a, result.slot_high_water, 0, activation, o)
@@ -2394,8 +2495,13 @@ fn decode_pass(
     layer = layer + 1
   }
   if o.code.len() > 0 { return routed_ids.build() }
+  head_window_base := layout.base[1 + g.n_layer]
+  head_view := window[head_window_base..head_window_base + layout.span[1 + g.n_layer]]
   head_started := time.instant()
-  take_pack(o, moe_model_forward.fill_members(pak, head_members, tokens, window, chunk_temp, counters))
+  if !resident {
+    take_pack(
+      o, moe_model_forward.fill_members(pak, head_members, tokens, head_view, chunk_temp, counters))
+  }
   o.pread_ns = o.pread_ns + (time.instant() - head_started)
   o.window_reuse_count = o.window_reuse_count + 1
   res.dense_bytes = res.dense_bytes + head_members.nbytes[0] + head_members.nbytes[1]
@@ -2404,8 +2510,10 @@ fn decode_pass(
   mut head_result := moe_model_forward.empty_end_result()
   head_base := layer_olmoe.mm_oracle_head_base(g.n_layer)
   run_moe_end_graph(
-    device, backend, context_bytes, moe_model_forward.GRAPH_HEAD, 1 + g.n_layer, g.n_layer, 1,
-    head_base, layer_olmoe.MM_HEAD_ORACLE_COUNT, true, g, head_members, head_nodes, oracle, window,
+    device, backend, resident_buffer, context_bytes, moe_model_forward.GRAPH_HEAD, 1 + g.n_layer,
+    g.n_layer, 1,
+    head_base, layer_olmoe.MM_HEAD_ORACLE_COUNT, true, g, head_members, head_nodes, oracle,
+    head_view,
     slot_view, residual_view, logits_view, node_view, scan, starts, lengths, breach, head_result, o)
   account(head_result.activation_bytes, head_result.slot_high_water, 0, activation, o)
   decoded.node_count = decoded.node_count + head_result.node_count
@@ -2434,6 +2542,14 @@ fn decode_pass(
   decoded.top_k = render_top_k(step_top_index_built, step_top_bits_built)
   o.reader_pread_count = o.reader_pread_count + counters.pread_count + claim_counters.pread_count
   o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read + claim_counters.bytes_read
+  // R6-MOE-RESIDENT-DENSE section 3.8's **primary metric** and its co-primary invariant, taken from
+  // the two counters this frame owns and hands to no other reader. `counters` sees the dense fills
+  // alone and `claim_counters` sees the expert scatters alone: two disjoint counters through two
+  // disjoint code paths, which is what makes "residency cannot move the expert measurement" a
+  // mechanism rather than an assurance. In `dense` mode the first is exactly 0 and the second is
+  // unchanged to the byte.
+  o.step_dense_pack_bytes = o.step_dense_pack_bytes + counters.bytes_read
+  o.step_expert_pack_bytes = o.step_expert_pack_bytes + claim_counters.bytes_read
   // Section 3.11's second measurement, and the reason it is a second one: `res.expert_bytes` above
   // is arithmetic, from `decide`'s output and the container's plane sizes, and an arm that resolved
   // eight claims and then read the whole layer would publish the same number. This is what the
@@ -2468,6 +2584,7 @@ fn prefill_pass(
   borrow pak: file,
   device: raw,
   backend: raw,
+  resident_buffer: raw,
   context_bytes: i64,
   borrow g: layer_olmoe.Geometry,
   borrow table: layer_olmoe.MemberTable,
@@ -2478,6 +2595,8 @@ fn prefill_pass(
   borrow head_members: moe_model_forward.GraphMembers,
   borrow window: slice<u8>,
   borrow claim_window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   borrow slot_view: slice<u8>,
   borrow index_view: slice<u8>,
   borrow mask_view: slice<u8>,
@@ -2508,21 +2627,40 @@ fn prefill_pass(
   mut claim_counters := alignpack_read.new_counters()
   mut source_counters := alignpack_read.new_counters()
   mut seen_keys: array<i64> := moe_model_forward.empty_array()
+  embed_base := layout.base[0]
+  embed_view := window[embed_base..embed_base + layout.span[0]]
   read_started := time.instant()
-  take_pack(o, moe_model_forward.fill_members(
-      pak, embed_members, tokens, window, chunk_temp, counters))
+  if resident {
+    // Section 3.6. The prompt's `T` rows are gathered out of the resident table into the region's
+    // staging region: `T` host copies of `row_bytes` each and no pack read. `stage_embed_row`'s
+    // guard bounds the write by the **stage's own** span, not the region's, so a slot past
+    // `MAX_PREFILL_TOKENS` cannot overwrite a layer's resident weights.
+    mut piece := 0
+    loop {
+      if piece >= tokens.count || o.code.len() > 0 { break }
+      take_pack(o, model_forward.stage_embed_row(
+          window, layout.table_at, embed_base, layout.span[0], embed_members.stride[0], g.n_vocab,
+          tokens.ids[piece], piece))
+      piece = piece + 1
+    }
+  } else {
+    take_pack(o, moe_model_forward.fill_members(
+        pak, embed_members, tokens, embed_view, chunk_temp, counters))
+  }
   o.pread_ns = o.pread_ns + (time.instant() - read_started)
   o.window_reuse_count = o.window_reuse_count + 1
   o.embedding_bytes_read = embed_members.stride[0] * tokens.count
   if o.code.len() == 0 && o.reference_present {
     take_pack(o, moe_model_forward.compare_source_file(
-        reference_path, embed_members, tokens, window, -1, chunk_temp, source_counters))
+        reference_path, embed_members, tokens, embed_view, -1, chunk_temp, source_counters))
   }
   mut embed_result := moe_model_forward.empty_end_result()
   if o.code.len() == 0 {
     run_moe_end_graph(
-      device, backend, context_bytes, moe_model_forward.GRAPH_EMBED, 0, -1, tokens.count, 0, 1,
-      false, g, embed_members, embed_nodes, oracle, window, slot_view, index_view, residual_view,
+      device, backend, resident_buffer, context_bytes, moe_model_forward.GRAPH_EMBED, 0, -1,
+      tokens.count, 0, 1,
+      false, g, embed_members, embed_nodes, oracle, embed_view, slot_view, index_view,
+      residual_view,
       node_view, scan, starts, lengths, breach, embed_result, o)
     account(embed_result.activation_bytes, embed_result.slot_high_water,
       embed_result.node_count, activation, o)
@@ -2536,15 +2674,19 @@ fn prefill_pass(
     last := layer == g.n_layer - 1
     t_out := if last { 1 } else { tokens.count }
     members := moe_model_forward.build_layer_members(table, plan, layer)
+    layer_base := layout.base[1 + layer]
+    layer_view := window[layer_base..layer_base + layout.span[1 + layer]]
     layer_started := time.instant()
-    take_pack(o, moe_model_forward.fill_members(
-        pak, members, tokens, window, chunk_temp, counters))
+    if !resident {
+      take_pack(o, moe_model_forward.fill_members(
+          pak, members, tokens, layer_view, chunk_temp, counters))
+    }
     o.pread_ns = o.pread_ns + (time.instant() - layer_started)
     o.window_reuse_count = o.window_reuse_count + 1
     o.dense_bytes_read = o.dense_bytes_read + plan.layer_member_bytes[layer]
     if o.code.len() == 0 && o.reference_present {
       take_pack(o, moe_model_forward.compare_source_file(
-          reference_path, members, tokens, window, layer, chunk_temp, source_counters))
+          reference_path, members, tokens, layer_view, layer, chunk_temp, source_counters))
     }
     if o.code.len() > 0 { break }
     wide := width > tokens.count
@@ -2553,8 +2695,9 @@ fn prefill_pass(
     mut routing := layer_olmoe.empty_routing()
     mut result := moe_model_forward.empty_layer_result()
     run_moe_layer(
-      device, backend, context_bytes, spec, false, tokens.count, stride, 0, g, plan, win, members,
-      a_nodes, b_nodes, oracle, window, claim_window, slot_view, index_view, mask_view,
+      device, backend, resident_buffer, context_bytes, spec, false, tokens.count, stride, 0, g,
+      plan, win, members,
+      a_nodes, b_nodes, oracle, layer_view, claim_window, slot_view, index_view, mask_view,
       out_ids_view, plane_view, plane_view, residual_view, node_view, plane_view, scan, starts,
       lengths, pak, block_temp, claim_counters, breach, routing, result, state, o)
     account(result.activation_a, result.slot_high_water, result.node_count_a, activation, o)
@@ -2587,24 +2730,29 @@ fn prefill_pass(
     o.reference_bytes_read = o.reference_bytes_read + source_counters.bytes_read
     return seen_keys
   }
+  head_window_base := layout.base[1 + g.n_layer]
+  head_view := window[head_window_base..head_window_base + layout.span[1 + g.n_layer]]
   head_started := time.instant()
-  take_pack(o, moe_model_forward.fill_members(
-      pak, head_members, tokens, window, chunk_temp, counters))
+  if !resident {
+    take_pack(o, moe_model_forward.fill_members(
+        pak, head_members, tokens, head_view, chunk_temp, counters))
+  }
   o.head_pread_ns = time.instant() - head_started
   o.pread_ns = o.pread_ns + o.head_pread_ns
   o.window_reuse_count = o.window_reuse_count + 1
   o.head_bytes_read = head_members.nbytes[0] + head_members.nbytes[1]
   if o.code.len() == 0 && o.reference_present {
     take_pack(o, moe_model_forward.compare_source_file(
-        reference_path, head_members, tokens, window, g.n_layer, chunk_temp, source_counters))
+        reference_path, head_members, tokens, head_view, g.n_layer, chunk_temp, source_counters))
   }
   mut head_result := moe_model_forward.empty_end_result()
   if o.code.len() == 0 {
     head_base := layer_olmoe.mm_oracle_head_base(g.n_layer)
     run_moe_end_graph(
-      device, backend, context_bytes, moe_model_forward.GRAPH_HEAD, 1 + 2 * g.n_layer, g.n_layer,
+      device, backend, resident_buffer, context_bytes, moe_model_forward.GRAPH_HEAD,
+      1 + 2 * g.n_layer, g.n_layer,
       1, head_base, layer_olmoe.MM_HEAD_ORACLE_COUNT, false, g, head_members, head_nodes, oracle,
-      window, slot_view, residual_view, logits_view, node_view, scan, starts, lengths, breach,
+      head_view, slot_view, residual_view, logits_view, node_view, scan, starts, lengths, breach,
       head_result, o)
     account(head_result.activation_bytes, head_result.slot_high_water, head_result.node_count,
       activation, o)
@@ -2885,6 +3033,7 @@ fn decode_loop(
   borrow pak: file,
   device: raw,
   backend: raw,
+  resident_buffer: raw,
   context_bytes: i64,
   borrow g: layer_olmoe.Geometry,
   borrow ends: moe_model_forward.Ends,
@@ -2895,6 +3044,8 @@ fn decode_loop(
   borrow head_members: moe_model_forward.GraphMembers,
   borrow window: slice<u8>,
   borrow claim_window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   borrow slot_view: slice<u8>,
   borrow ids_view: slice<u8>,
   borrow pos_all: slice<u8>,
@@ -2985,8 +3136,10 @@ fn decode_loop(
     decoded.token_id = token
     mut res := empty_step_residency()
     ids := decode_pass(
-      pak, device, backend, context_bytes, g, ends, table, plan, win, tokens, head_members, window,
-      claim_window, slot_view, ids_view, pos_view, mask_view, out_ids_view, residual_view,
+      pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, win, tokens,
+      head_members, window,
+      claim_window, layout, resident, slot_view, ids_view, pos_view, mask_view, out_ids_view,
+      residual_view,
       logits_view, node_view, plane_view, oracle, embed_nodes, a_nodes, b_nodes, head_nodes, scan,
       ranges.start, ranges.length, token, n_past, step, width, stride, breach, activation, res,
       state, decoded, o)
@@ -3295,6 +3448,66 @@ fn stage_inputs(
 // so there is no manual free to forget and no exit that can leave a stale plane behind.
 // ---------------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------------
+// R6-MOE-RESIDENT-DENSE section 3.5 — the one-time fill
+//
+// Every **dense** member the run touches — the whole `token_embd.weight` table, the sixteen layers'
+// attention, norm and router weights, and the head — read once, in graph order, straight into its
+// own interior offset in the region, through the same `CHUNK_BYTES` rounds `read_into_window` and
+// `fill_members` already use. The 3.9 GB of expert planes are **not** here and never are: they keep
+// streaming through the claim window exactly as they do today, which is the whole point of the
+// capability.
+//
+// The embed **stage** is never filled from the pack. It is the 36,864-byte scratch region the
+// gathered rows are copied into, and 311,027,712 is therefore what `weights.fill_bytes` publishes
+// against a 311,066,624-byte region.
+//
+// It runs before the backend opens and before the wrap exists, so a failure here is an ordinary pack
+// failure with an ordinary pack code and nothing has to be released.
+// ---------------------------------------------------------------------------------------------
+
+fn fill_resident_dense(
+  borrow pak: file,
+  borrow g: layer_olmoe.Geometry,
+  borrow table: layer_olmoe.MemberTable,
+  borrow plan: moe_model_forward.Plan,
+  borrow ends: moe_model_forward.Ends,
+  borrow tokens: moe_model_forward.TokenColumns,
+  borrow head_members: moe_model_forward.GraphMembers,
+  borrow window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  borrow mut o: moe_model_forward.Outcome,
+) {
+  mut transient: buffer := buffer(moe_model_forward.CHUNK_BYTES)
+  mut counters := alignpack_read.new_counters()
+  started := time.instant()
+  take_pack(o, moe_model_forward.read_into_window(
+      pak, transient, window, layout.table_at, ends.embed_pack_offset, ends.embed_nbytes,
+      "R4_PACK_UNREADABLE", "token_embd", counters))
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer || o.code.len() > 0 { break }
+    members := moe_model_forward.build_layer_members(table, plan, layer)
+    layer_base := layout.base[1 + layer]
+    layer_view := window[layer_base..layer_base + layout.span[1 + layer]]
+    take_pack(
+      o, moe_model_forward.fill_members(pak, members, tokens, layer_view, transient, counters))
+    layer = layer + 1
+  }
+  if o.code.len() == 0 {
+    head_base := layout.base[1 + g.n_layer]
+    head_view := window[head_base..head_base + layout.span[1 + g.n_layer]]
+    take_pack(
+      o, moe_model_forward.fill_members(pak, head_members, tokens, head_view, transient, counters))
+  }
+  o.resident_fill_ns = time.instant() - started
+  o.resident_fill_pread_count = counters.pread_count
+  o.resident_fill_bytes = counters.bytes_read
+  o.pread_ns = o.pread_ns + o.resident_fill_ns
+  o.reader_pread_count = o.reader_pread_count + counters.pread_count
+  o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read
+}
+
 fn schedule_decode(
   borrow pak: file,
   borrow g: layer_olmoe.Geometry,
@@ -3307,6 +3520,8 @@ fn schedule_decode(
   borrow head_members: moe_model_forward.GraphMembers,
   borrow window: slice<u8>,
   borrow claim_window: slice<u8>,
+  borrow layout: model_forward.ResidentLayout,
+  resident: bool,
   device: raw,
   context_bytes: i64,
   width: i64,
@@ -3455,11 +3670,33 @@ fn schedule_decode(
     }
   }
   o.graph_count = (2 * g.n_layer + 2) * (1 + steps)
+  // Section 3.4's hoist. The region is filled once and wrapped once, at **run** scope, before the
+  // first graph exists; all 578 graphs at `N = 16` place into this one wrap and free none of it,
+  // replacing 306 per-graph dense-window wraps with one. The claim window keeps its own buffer and
+  // its own per-graph wrap, which is why the per-graph balance check below keeps its exact meaning.
+  // The pair of counters is separate from `ggml_buffers_*` on purpose (section 4.3): this wrap's own
+  // balance is asserted at the scope that owns it, after `backend_close` and before `execute`'s
+  // region leaves scope.
+  mut resident_buffer := ggml_ffi.null_handle()
+  if o.code.len() == 0 && resident {
+    fill_resident_dense(pak, g, table, plan, ends, tokens, head_members, window, layout, o)
+  }
+  if o.code.len() == 0 && resident {
+    resident_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
+    if ggml_ffi.handle_absent(resident_buffer) {
+      fail(o, "R5_GGML_INIT", "resident_buffer")
+    } else {
+      o.resident_wraps_created = o.resident_wraps_created + 1
+      o.wrap_count = o.wrap_count + 1
+    }
+  }
   mut prefill_keys: array<i64> := moe_model_forward.empty_array()
   if o.code.len() == 0 {
     prefill_keys = prefill_pass(
-      pak, device, backend, context_bytes, g, table, plan, win, tokens, embed_members,
-      head_members, window, claim_window, slot_view, index_view, mask_wide_view, out_ids_view,
+      pak, device, backend, resident_buffer, context_bytes, g, table, plan, win, tokens,
+      embed_members,
+      head_members, window, claim_window, layout, resident, slot_view, index_view, mask_wide_view,
+      out_ids_view,
       residual_view, logits_view, node_view, plane_view, prefill_oracle, embed_nodes,
       prefill_a_nodes, head_nodes, scan, ranges.start, ranges.length, width, stride,
       reference_path, breach, activation, state, o)
@@ -3487,16 +3724,40 @@ fn schedule_decode(
     token_id := decoded.argmax
     first_token := if token_id >= 0 { token_id } else { o.argmax }
     stepped = decode_loop(
-      pak, device, backend, context_bytes, g, ends, table, plan, win, tokens, head_members,
-      window, claim_window, slot_view, decode_ids_view, decode_pos_view, mask_decode_view,
+      pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, win, tokens,
+      head_members,
+      window, claim_window, layout, resident, slot_view, decode_ids_view, decode_pos_view,
+      mask_decode_view,
       decode_out_ids_view, decode_residual_view, decode_logits_view, node_view, plane_view,
       decode_oracle, embed_nodes, decode_b_nodes, head_nodes, prefill_keys, transcript_path,
       first_token, n_past, steps, width, stride, block_align, origin, breach, activation, state,
       decoded, o)
   }
+  // Section 4.3's ordering, on **every** exit path from here: the wrap is freed before the backend
+  // and long before `execute`'s region leaves scope. There is no path between the region's
+  // construction and this teardown that returns early, which is what makes one converged teardown
+  // sufficient (section 5.1's early-exit cell).
+  if !ggml_ffi.handle_absent(resident_buffer) {
+    ggml_ffi.buffer_free(resident_buffer)
+    o.resident_wraps_freed = o.resident_wraps_freed + 1
+  }
   if !ggml_ffi.handle_absent(backend) {
     ggml_ffi.backend_close(backend)
     o.backends_freed = o.backends_freed + 1
+  }
+  // Oracle B at run scope (section 4.3). The invariant is *balance*, not *presence*: a `dense` run
+  // that fails before the wrap exists — the fill raising `R4_PACK_UNREADABLE`, or `buffer_from_host`
+  // itself refusing (`mdr-force-resident-wrap`) — created nothing and freed nothing, and asserting
+  // `created == 1` there would fabricate a leak on a teardown that was in fact perfect. That was
+  // `r6-resident-weights.md`'s A-MAJOR review finding and this arm adopts the **repaired** condition
+  // rather than the drafted one. `created != freed` still catches a wrap that is never freed and
+  // `created > 1` still catches one created twice; the "exactly one" reading is kept as a third
+  // clause conditioned on success, which is the guard against a run that silently streamed.
+  if resident
+    && (o.resident_wraps_created != o.resident_wraps_freed
+      || o.resident_wraps_created > 1
+      || (o.code.len() == 0 && o.resident_wraps_created != 1)) {
+    o.graph_balance_failures = o.graph_balance_failures + 1
   }
   o.slot_capacity = ggml_ffi.slots_capacity(slot_view)
   o.slot_magic_ok = ggml_ffi.slots_ok(slot_view)
@@ -3506,6 +3767,7 @@ fn schedule_decode(
     && o.contexts_created == o.contexts_freed
     && o.backends_created == o.backends_freed
     && o.gallocrs_created == o.gallocrs_freed
+    && o.resident_wraps_created == o.resident_wraps_freed
     && o.graph_balance_failures == 0
   o.verdict = if o.code.len() > 0 {
     moe_model_forward.VERDICT_UNAVAILABLE
@@ -3586,6 +3848,9 @@ pub fn execute(
   width_text: str,
   logits_path: str,
   steps_text: str,
+  kv_save_text: str,
+  kv_load_text: str,
+  resident_text: str,
   borrow mut tokens: moe_model_forward.TokenColumns,
   borrow mut graphs: moe_model_forward.GraphColumns,
   borrow mut top: moe_model_forward.TopColumns,
@@ -3602,6 +3867,37 @@ pub fn execute(
   // publishes; the refusals stay exactly where the validation order puts them.
   probed := moe_model_forward.parse_index(steps_text)
   if probed > 0 { o.decode_steps_requested = probed }
+  // R6-MOE-RESIDENT-DENSE section 3.2's refusal precedence, and both checks precede every
+  // path-content check so that a run naming a reserved position or an unknown residency mode is
+  // refused before a file is opened — and `weights.mode` is still published in that document.
+  //
+  // Positions 11 and 12 first, save before load: KV persistence is deferred on this arm on item 32
+  // section 8's two exact couplings, and this is how a reserved position stays reserved instead of
+  // quietly becoming legal.
+  if kv_save_text != "-" {
+    fail(o, CODE_KV_UNSUPPORTED, "kv[save]")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  if kv_load_text != "-" {
+    fail(o, CODE_KV_UNSUPPORTED, "kv[load]")
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  // Then position 13. `-` is streaming, the shipped behaviour, and is what an absent operand means;
+  // the empty string is **not** absence and is refused with everything else that is not `dense`.
+  //
+  // **`weights` is refused by name.** The dense arm accepts that value and this arm must not: whole
+  // model residency makes `residency.expert_bytes` unreachable and this arm exists to publish it. It
+  // is refused explicitly by the same grammar rather than falling through a default, and
+  // `mdr-resident-weights-refused` is its shipped regression.
+  resident := resident_text == "dense"
+  o.resident_mode = resident
+  if !resident && resident_text != "-" {
+    fail(o, CODE_RESIDENT, resident_detail(resident_text))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
 
   g := stage_inputs(tokens_text, width_text, steps_text, geometry_path, tokens, o)
   if o.code.len() > 0 {
@@ -3691,15 +3987,37 @@ pub fn execute(
     o.elapsed_ns = time.instant() - started
     return o
   }
+  // R6-MOE-RESIDENT-DENSE sections 3.3 and 3.5. Streaming reserves the **peak** dense graph and
+  // refills it per graph; `dense` reserves the **sum** of the whole dense member set and fills it
+  // once. Both are one `buffer`, one 64-byte-aligned interior slice, and one length check on the
+  // observable consequence of a degraded reservation, which is the only failure Request 35 leaves
+  // visible. The claim window is untouched by either: two buffers, two lifetimes, two budgets, two
+  // wraps (section 3.4).
+  layout := if resident {
+    moe_model_forward.plan_resident_dense(staged.plan, staged.ends, staged.block_align)
+  } else {
+    model_forward.stream_layout(dense_bytes, g.n_layer)
+  }
+  region_bytes := if resident { layout.bytes } else { dense_bytes }
+  o.resident_bytes = if resident { layout.bytes } else { 0 }
+  // The budget, checked **before any allocation**, against the existing window ceiling and the
+  // existing idiom. On the reference model 311,066,624 leaves 96.4 % headroom, and this is also what
+  // catches the `-1` that `plan_resident_dense`'s checked arithmetic poisons an unrepresentable
+  // total with.
+  if resident && (region_bytes <= 0 || region_bytes > moe_model_forward.MAX_WINDOW_BYTES) {
+    fail(o, CODE_RESIDENT_BUDGET, moe_model_forward.labelled("bytes", region_bytes))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
   // The two Align-owned weight windows, each over-reserved by `MAX_TENSOR_ALIGNMENT` so the arm can
   // hand ggml an **interior** range that starts on a boundary, allocated exactly once and reused by
   // every graph of the prefill and of every step. Section 9 records this as Request 33's third
   // client in one arm, because the plane pays the same compensation.
-  mut weights: buffer := buffer(dense_bytes + moe_model_forward.MAX_TENSOR_ALIGNMENT)
+  mut weights: buffer := buffer(region_bytes + moe_model_forward.MAX_TENSOR_ALIGNMENT)
   moe_model_forward.fill_zero(weights, 1)
   dense_pad := moe_model_forward.MAX_TENSOR_ALIGNMENT
     - moe_model_forward.base_mod(weights, moe_model_forward.MAX_TENSOR_ALIGNMENT)
-  moe_model_forward.prime_window(weights, dense_pad - 1 + dense_bytes)
+  moe_model_forward.prime_window(weights, dense_pad - 1 + region_bytes)
   mut claims: buffer := buffer(staged.claim_window_bytes + moe_model_forward.MAX_TENSOR_ALIGNMENT)
   moe_model_forward.fill_zero(claims, 1)
   claim_pad := moe_model_forward.MAX_TENSOR_ALIGNMENT
@@ -3707,13 +4025,16 @@ pub fn execute(
   moe_model_forward.prime_window(claims, claim_pad - 1 + staged.claim_window_bytes)
   weights_view := weights.bytes()
   claims_view := claims.bytes()
-  if weights_view.len() != dense_pad + dense_bytes
+  // Section 3.3: a degraded reservation on this buffer keeps `R5_WINDOW_UNAVAILABLE` — here spelled
+  // with the code this arm already raises for it — rather than gaining a second name for one
+  // condition on one buffer.
+  if weights_view.len() != dense_pad + region_bytes
     || claims_view.len() != claim_pad + staged.claim_window_bytes {
     fail(o, "R4_WINDOW_UNAVAILABLE", "weights")
     o.elapsed_ns = time.instant() - started
     return o
   }
-  window_view := weights_view[dense_pad..dense_pad + dense_bytes]
+  window_view := weights_view[dense_pad..dense_pad + region_bytes]
   claim_view := claims_view[claim_pad..claim_pad + staged.claim_window_bytes]
 
   embed_members := moe_model_forward.build_embed_members(g, staged.ends, tokens.count)
@@ -3785,9 +4106,9 @@ pub fn execute(
   }
   schedule_decode(
     pak, g, table, staged.plan, staged.ends, staged.win, tokens, embed_members, head_members,
-    window_view, claim_view, device, context_bytes, width, residual_bytes, logits_bytes,
-    readback_bytes, staged.block_align, reference_path, transcript_path, logits_path, steps,
-    started, graphs, top, stepped, o)
+    window_view, claim_view, layout, resident, device, context_bytes, width, residual_bytes,
+    logits_bytes, readback_bytes, staged.block_align, reference_path, transcript_path, logits_path,
+    steps, started, graphs, top, stepped, o)
   o.elapsed_ns = time.instant() - started
   return o
 }
@@ -3971,6 +4292,48 @@ pub fn render_window(borrow o: moe_model_forward.Outcome) -> string {
   d.write_int(o.carried_bytes)
   d.write(",\"logits_bytes\":")
   d.write_int(o.logits_bytes)
+  d.write("}")
+  return d.to_string()
+}
+
+// R6-MOE-RESIDENT-DENSE section 3.8. The `weights` object, present in **every** document including
+// error documents, so the mode a run took is never implicit — which is what closes the one hazard
+// the operand's default carries, a caller who wants residency and forgets the operand.
+//
+// `step_dense_pack_bytes` is the capability's **primary metric**: a syscall counter, not a clock,
+// identical across runs, and exactly zero in `dense` mode. `step_expert_pack_bytes` is the
+// co-primary invariant and is `487,587,840 * N` in **both** modes. `step_pack_bytes` is their sum
+// and keeps `docs/specs/r6-resident-weights.md` section 3.5's exact meaning — "pack bytes read by
+// decode steps only" — so one field name means one thing across both decode arms; on this arm it is
+// therefore not zero in `dense` mode, and the claim's metric got its own name instead.
+//
+// It is written here rather than in `moe_model_forward`'s shared renderers for the reason section
+// 5.2 predicts in bytes: `--moe-layer-forward` and `--moe-model-forward` share that module, and
+// adding a field to a renderer they call would move goldens this capability promises are unchanged.
+pub fn render_weights(borrow o: moe_model_forward.Outcome) -> string {
+  d := builder()
+  d.write("{\"mode\":")
+  d.write(moe_model_forward.json_string(if o.resident_mode { "dense" } else { "stream" }))
+  d.write(",\"resident_bytes\":")
+  d.write_int(o.resident_bytes)
+  d.write(",\"fill_ns\":")
+  d.write_int(o.resident_fill_ns)
+  d.write(",\"fill_pread_count\":")
+  d.write_int(o.resident_fill_pread_count)
+  d.write(",\"fill_bytes\":")
+  d.write_int(o.resident_fill_bytes)
+  d.write(",\"step_dense_pack_bytes\":")
+  d.write_int(o.step_dense_pack_bytes)
+  d.write(",\"step_expert_pack_bytes\":")
+  d.write_int(o.step_expert_pack_bytes)
+  d.write(",\"step_pack_bytes\":")
+  d.write_int(o.step_dense_pack_bytes + o.step_expert_pack_bytes)
+  d.write(",\"wrap_count\":")
+  d.write_int(o.wrap_count)
+  d.write(",\"resident_wraps_created\":")
+  d.write_int(o.resident_wraps_created)
+  d.write(",\"resident_wraps_freed\":")
+  d.write_int(o.resident_wraps_freed)
   d.write("}")
   return d.to_string()
 }
@@ -4283,6 +4646,8 @@ pub fn render(
   residency_view: str := residency
   window := render_window(o)
   window_view: str := window
+  weights := render_weights(o)
+  weights_view: str := weights
   graph := render_graph(o, graphs)
   graph_view: str := graph
   head := moe_model_forward.render_output(o, top)
@@ -4306,6 +4671,8 @@ pub fn render(
   d.write(residency_view)
   d.write(",\"window\":")
   d.write(window_view)
+  d.write(",\"weights\":")
+  d.write(weights_view)
   d.write(",\"graph\":")
   d.write(graph_view)
   d.write(",\"head\":")
@@ -4444,7 +4811,14 @@ fn print_summary(
 // `decode.steps_requested` is published in every document so the count is never implicit.
 pub fn run(args: array<str>) -> Result<(), Error> {
   count := args.len()
-  if count < 5 || count == 8 || count > 11 {
+  // R6-MOE-RESIDENT-DENSE section 3.1. The arity set becomes {5, 6, 7, 9, 10, 11, 14}. **Eight
+  // remains refused** for R6's own reason — a transcript without a width refuses itself — and 12,
+  // 13, and 15 and above remain refused, because positions 11 and 12 exist only to hold the two
+  // reserved `-` placeholders in front of `RESIDENT` and an invocation that stopped inside them
+  // would be a caller who meant something this arm cannot do. Every one of these presents as
+  // `Err(Error.Invalid)`: no document, non-zero exit, the `NO_DOCUMENT` class the seventh smoke
+  // block already uses.
+  if count < 5 || count == 8 || (count > 11 && count != 14) {
     return Err(Error.Invalid)
   }
   // `-` is admitted in the document, transcript and logits positions **only**, and a path operand
@@ -4470,18 +4844,35 @@ pub fn run(args: array<str>) -> Result<(), Error> {
   if count >= 10 && args[9] != "-" && !moe_model_forward.mm_valid_path(args[9]) {
     return Err(Error.Invalid)
   }
+  // `RESIDENT` is not a path and takes no path check, but it **is** copied into the document as a
+  // JSON scalar by `resident_detail`, and a raw non-UTF-8 byte there produces a document no
+  // conforming reader can decode. That is the same rule this module already applies to every path
+  // operand through `mm_valid_path`, applied to the one non-path operand whose text reaches the
+  // output; `-`, `dense`, and the empty string are all valid UTF-8, so no accepted or named-refused
+  // value is affected.
+  if count >= 14 && !moe_model_forward.utf8_ok(args[13]) {
+    return Err(Error.Invalid)
+  }
   reference_path := if count >= 7 { args[6] } else { "" }
   transcript_path := if count >= 9 && args[7] != "-" { args[7] } else { "" }
   width_text := if count >= 9 { args[8] } else { "" }
   logits_path := if count >= 10 && args[9] != "-" { args[9] } else { "" }
   steps_text := if count >= 11 { args[10] } else { "1" }
+  // Positions 11 and 12 are `KV_SAVE` and `KV_LOAD` at the same indices the dense arm uses, so a
+  // command line cannot be silently reordered between the two arms. KV persistence is not
+  // implemented here (section 8), so both must be `-`; anything else is `R6M_KV_UNSUPPORTED`, raised
+  // in `execute` because it is a refusal that owes the caller a document. The two placeholders are
+  // the price of the index promise and they are cheap.
+  kv_save_text := if count >= 14 { args[11] } else { "-" }
+  kv_load_text := if count >= 14 { args[12] } else { "-" }
+  resident_text := if count >= 14 { args[13] } else { "-" }
   mut tokens := moe_model_forward.empty_tokens()
   mut graphs := moe_model_forward.empty_graphs()
   mut top := moe_model_forward.empty_top()
   mut stepped := empty_steps()
   outcome := execute(
     args[2], args[3], args[4], reference_path, transcript_path, width_text, logits_path,
-    steps_text, tokens, graphs, top, stepped)
+    steps_text, kv_save_text, kv_load_text, resident_text, tokens, graphs, top, stepped)
   document := render(
     outcome, tokens, graphs, top, stepped, args[2], args[3], reference_path, transcript_path,
     logits_path)

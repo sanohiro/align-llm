@@ -8010,6 +8010,12 @@ or, equivalently, an `align(N)` prefix admitted on a `buffer` binding.
 
 ---
 
+R6-MOE-RESIDENT-DENSE (`docs/specs/r6-moe-resident-dense.md` section 9) is one more client, and
+the count does **not** grow: in `dense` mode the 311,066,624-byte resident region replaces the dense
+window rather than joining it, so the arm still pays the 64-byte over-reservation exactly three
+times — the region, the claim window, and the KV plane. The compensation is unchanged, and the
+capability is recorded as an ordinary client rather than a sharper one.
+
 ## Request 34 — `Result` ok payloads beyond scalars (`raw`, `buffer`, records)
 
 ```text
@@ -8230,6 +8236,14 @@ b.cap() -> i64                             // the capacity actually reserved, in
 
 ---
 
+R6-MOE-RESIDENT-DENSE is recorded as a deliberately **weak** client, so this request's evidence is
+not inflated by a capability that barely exercises it. `docs/specs/r6-moe-resident-dense.md` section
+3.9 is the arithmetic: at a 311 MB region on a run that already reserves 347 MB of windows plus
+plane, a degraded reservation is an **unreachable guard** rather than the difference between a
+document and a process abort. The observable-consequence check on `weights.bytes().len()` still
+stands in for the missing report and still carries `R4_WINDOW_UNAVAILABLE` on this arm, and no
+second code was introduced for it.
+
 ## Request 36 — In-place replacement of owned array record fields and moving out of nested fields
 
 ```text
@@ -8315,6 +8329,10 @@ Extending the existing owned-field-replacement surface the checker already carri
    passes unchanged in outcome.
 
 ---
+
+R6-MOE-RESIDENT-DENSE is a **mild** client, recorded as such: `model_forward.ResidentLayout`'s
+`base`/`span` arrays are built once by `moe_model_forward.plan_resident_dense` and only read
+thereafter, so the capability cites this request without sharpening it.
 
 ## Request 37 — Compiler check-time scaling for long function bodies and `match` on `Result` inside loops
 
@@ -8543,6 +8561,14 @@ requests fewer than `b.cap()` bytes.
    outcome.
 
 ---
+
+R6-MOE-RESIDENT-DENSE is a **weaker** client than the dense arm's, and the priority is not raised on
+its account. Its one-time fill chunks 311,027,712 B through `read_into_window` at `CHUNK_BYTES` in a
+**measured 418** `pread`s against the dense arm's 4,669 — the same shape at a fifteenth of the
+volume. (The pre-implementation estimate here was "roughly 297", derived from the byte total alone;
+the fill chunks **per member**, so a 147-member set costs more calls than the volume predicts.
+`docs/specs/r6-moe-resident-dense.md` section 12.4 carries the measurement.) It is cited as
+continuing evidence that the chunking is structural rather than incidental.
 
 ## Request 39 — Release of rebound `buffer` allocations before frame exit
 
@@ -9613,6 +9639,11 @@ Bind the expression to a named local on the preceding line and pass the local. T
 
 ---
 
+R6-MOE-RESIDENT-DENSE is one more client. Every `borrow` operand this capability introduces — the
+resident region's interior slice, each graph's per-layer sub-slice
+(`window[layout.base[1 + layer]..]`), the head view, and the embed stage view — is bound to a named
+local on the line before the call that consumes it, which is R5E's mitigation applied unchanged.
+
 ## Request 48 — Same-call argument aliasing between a `borrow mut` owner and its own scalar field
 
 ```text
@@ -9694,6 +9725,10 @@ nested read-only-borrow form so the two shapes agree and the rule is at least pr
 Copy the scalar to a local before the call and pass the local.
 
 ---
+
+R6-MOE-RESIDENT-DENSE is one more client. `block_align`, `n_layer`, and the layout's scalars are
+copied to locals before every call that also takes `borrow mut o`, on the pattern the arm already
+uses for `pack_total` in `schedule_decode`.
 
 ## Request 49 — A cross-module call with a `borrow mut` argument refuses every shorter-lived operand
 
@@ -9879,10 +9914,29 @@ No new syntax. Two checker changes:
 
 ---
 
+R6-MOE-RESIDENT-DENSE (`docs/specs/r6-moe-resident-dense.md` sections 3.5 and 5.3) adds a client of
+a **new shape**, and it is the sharpest-shaped one this request has. `moe_model_forward` now carries
+`plan_resident_dense`, a twin of `model_forward.plan_resident` whose body differs
+from the original in exactly two tokens — `layer_olmoe.MAX_PREFILL_TOKENS` for `layer_qwen2`'s, and
+the receiving record's module — together with its own `mul_checked`, `add_checked`, and
+`align_up_checked`, which are character-for-character copies of `model_forward`'s private helpers.
+Nothing about the algorithm is architecture-specific: it walks
+`[table][stage][layer 0 .. n-1][head]` and `align_up`s each region. The duplication exists **only**
+because `model_forward.Plan` and `moe_model_forward.Plan` are different named types and Align has no
+generics at this pin to parameterize one producer over both.
+Every other piece of the mechanism is genuinely shared and is reused byte-unchanged:
+`model_forward.ResidentLayout` itself, `stream_layout`, `empty_resident_layout`, and
+`stage_embed_row`. The request's cost is therefore visible as a ratio rather than as a total — one
+duplicated **producer** against a shared record and three shared helpers — and
+`docs/specs/r6-moe-resident-dense.md` section 7 risk 7 records the drift hazard two producers of one
+index convention create.
+
 <!-- The next free request number is **53**. R6-PREFIX-SUFFIX-PREFILL proposes none: every gap it
      met is already recorded above (49 as a continuing client, and 22, 41, 35, 31, 21, 30, 29, 38,
-     39, 33 inherited unchanged through paths it does not touch). 52 is expected to be claimed by a
-     parallel branch; both numbers must be re-checked when this branch merges `origin/main`. -->
+     39, 33 inherited unchanged through paths it does not touch). R6-MOE-RESIDENT-DENSE proposes
+     none either: it adds clients to 33, 35, 36, 38, 47, 48, 49 and 51, and records 50 as
+     explicitly **not** a client. 52 is claimed by a parallel branch; both numbers must be
+     re-checked when a branch merges `origin/main`. -->
 
 ## Request 50 — `std.os`: how much physical and available memory the host has
 
@@ -9962,6 +10016,13 @@ explicit `N/A` line naming physical memory below 12 GiB, exiting 0. That is a co
 check — the runner already refuses to start below a disk-space floor in the same shape — and it is
 recorded here rather than treated as sufficient, because the refusal a *caller of the arm* deserves
 is a document with a code, and the arm cannot produce one.
+
+R6-MOE-RESIDENT-DENSE is explicitly **not** a client, recorded here by name so that a later reader
+counting evidence does not count it. `docs/specs/r6-moe-resident-dense.md` section 3.9 gives the
+arithmetic: the capability's peak footprint grows from 347,451,392 B to 573,997,056 B, a factor of
+1.65 against the dense arm's 9.4, so there is no host on which its operand is the difference between
+a document and an abort. **No physical-memory preflight ships**, `scripts/run-moe-decode-step` has
+none to add, and the request gains nothing from this capability.
 
 ## Request 51 — A reserved word used as an identifier should say so
 
@@ -10159,6 +10220,96 @@ move while the record is still live, or keep the payload in place for a `match` 
 
 ---
 
+## Request 53 — `std.fs`: directory creation, directory listing, and a file-type predicate
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none today. It becomes blocking for the deferred store-eviction /
+  garbage-collection capability (`docs/specs/r6-prefix-key-corpus.md` section 7), which cannot
+  enumerate what it must evict.
+Independent work that may continue: all of R6-PREFIX-KEY (roadmap item 37) and all of
+  R6-PREFIX-TTFT (roadmap item 38).
+Resume condition: schedule an eviction, garbage-collection, or size-budget capability over the R6
+  prefix store; or an Align release ships any of the three surfaces below.
+Align commit or pull request: none
+align-llm verification: `src/decode_step.align`'s `R6_KV_UNWRITABLE store[create]` gains a detail
+  that names its cause — `store[absent]`, `store[not_a_directory]`, or `store[denied]` — decided by
+  `fs.is_dir` **before** the prefill rather than by a failed create after it; the three
+  `ds-store-unwritable`, `ds-store-file-not-dir`, and a new `ds-store-denied` rows in
+  `scripts/run-layer-forward-smoke` assert the three distinct details and that the first two now
+  refuse before a plane exists (`plane.source: "-"`); and `gmake layer-forward-smoke` passes with
+  the decode-step golden moving only in those rows.
+```
+
+### Motivation and current sibling evidence
+
+R6-PREFIX-KEY (roadmap item 37) ships a **content-addressed store**: a caller-supplied directory that
+the arm addresses by a derived name, `<STORE>/<64-hex>.akvp`. It never creates the directory, never
+lists it, and never asks what kind of thing a path is — because at this pin it cannot.
+
+`std.fs` as consumed by this repository is `create_exclusive`, `create_rw`, `exists`, `open_rw`,
+`read_file`, `remove`, `rename`, and `write_file`. There is **no `create_dir`, no `read_dir`, and no
+predicate that distinguishes a regular file from a directory from a missing path**. `fs.exists` is
+true for a directory and for a file alike, so it cannot answer "is this operand the kind of thing the
+operand is documented to be".
+
+**Three concrete consequences in the shipped capability, none of them hypothetical:**
+
+1. **The arm cannot create its own store**, so the store is documented as a directory the caller
+   creates (`docs/specs/r6-prefix-key-corpus.md` section 2.4). This is also defensible on its own —
+   an arm that mints namespaces from a path operand is one typo from populating `/tmp/tyop/` — so
+   the request is filed for the other two.
+2. **`R6_KV_UNWRITABLE store[create]` cannot name its cause.** "No such directory", "that path is a
+   regular file", and "that directory is not writable" are **one** refusal with **one** detail,
+   because `fs.create_rw`'s mapped failure at this pin does not separate them. The detail names the
+   *operand* rather than guessing the *cause*, which is the honest form of the limitation and not a
+   substitute for it. Two shipped rows — `ds-store-unwritable` and `ds-store-file-not-dir` — assert
+   that the two causes are **not** distinguished, so the day they are is a visible golden move.
+3. **The failure is reported after a full prefill.** The create is at step W1, which follows the
+   prefill; a pre-flight check would need either a type predicate or a probe write in the caller's
+   directory on **every** run including hits, and `r6-kv-persist.md` section 2.5's rule — a caller
+   who asks for an unpersistable configuration should learn it in milliseconds — cannot be honoured
+   without one. This is the request's strongest client evidence and section 6 risk 5 of the design
+   owns the consequence.
+
+A fourth consequence is scheduled rather than current: **eviction, garbage collection, and a size
+budget are all deferred** (section 7 of the design) and every one of them must enumerate the store.
+That is what makes this request blocking for that capability and non-blocking for this one.
+
+### Requested capability
+
+```text
+fs.create_dir(path: str) -> Result<(), Error>        // one level; fails if the path exists
+fs.read_dir(path: str) -> Result<array<string>, Error>
+fs.is_dir(path: str) -> Result<bool, Error>
+```
+
+Deliberately minimal: one level rather than a recursive `mkdir -p`, entry **names** rather than a
+stat-bearing record, and a single boolean predicate rather than a mode word. Each is the smallest
+surface that answers one of the three consequences above, and none of them is a capability this
+repository would build a compatibility layer around in the meantime — the shipped arm requires the
+caller's directory and says so.
+
+### Acceptance criteria
+
+1. `fs.is_dir` distinguishes the three causes in consequence 2: it returns `Ok(false)` for a regular
+   file, `Ok(true)` for a directory, and `Err(NotFound)` for an absent path, so
+   `R6_KV_UNWRITABLE store[create]` can carry a cause **before** the prefill.
+2. `fs.create_dir` fails deterministically when the path exists, whatever kind of entry it is, and
+   never follows a final symlink to create somewhere else.
+3. `fs.read_dir` enumerates a directory of at least 10,000 entries without unbounded allocation, in a
+   documented order (or with the order documented as unspecified, which is fine as long as it is
+   stated), and excludes `.` and `..`.
+4. All three respect the retained-root discipline Request 18 describes.
+5. **`fs.read_dir` returning `array<string>` intersects Request 22** — indexing arrays of Move
+   element types is refused by `check_index` at this pin — so a consumer that reads the returned
+   array needs 22 as well. That intersection is part of this request rather than a surprise for its
+   implementer: either 22 lands first, or `read_dir` ships a shape that can be consumed without it.
+
+---
+
 ## Not requested (respecting Align's design)
 
 These were considered and deliberately **not** requested, because they conflict with Align's design
@@ -10184,3 +10335,12 @@ or are already implemented:
 - **Working directory via app-side shell.** A `sh -c "cd <dir> && ..."` workaround exists, but it is
   fragile (shell quoting, no native exit/stream semantics); native `cwd` is requested in Request 1
   instead of relying on it.
+R6-MOE-RESIDENT-DENSE reproduced repro 1 unprompted, which is this request's first piece of evidence
+from a reader who did not already know the answer. Cell MRD-P1's throwaway probe declared
+`fn one_graph(..., borrow arena: slice<u8>, borrow claim: slice<u8>, ...)` and the compiler emitted
+`expected ':'` and `expected identifier` at the parameter's own column followed by **thirty-one**
+cascading top-level errors on later lines, none of which contained a defect; the two real causes
+took a bisection against a known-good file to find. Nothing in the diagnostic named `arena`, and the
+implementation's own identifiers avoid the word (`window`, `region`, `resident_*`) as ordinary code
+rather than as a workaround. Priority is not raised: the cost was one bisection, and it is recorded
+because the request predicted exactly this and it happened.

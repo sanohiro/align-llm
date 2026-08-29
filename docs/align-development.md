@@ -2142,11 +2142,11 @@ block. A `Makefile` edit is still an executable-contract boundary, so `scripts/p
 **executable** row and the installed profile rather than the documentation lane. The FFI boundary
 does **not** change: R5E adds no `extern` symbol and neither C shim gains one.
 
-## The `--decode-step` arm (R6-DECODE-KV-STEP1, R6-STEP-N, R6-KV-PERSIST, R6-RESIDENT-WEIGHTS, R6-PREFIX-SUFFIX-PREFILL)
+## The `--decode-step` arm (R6-DECODE-KV-STEP1, R6-STEP-N, R6-KV-PERSIST, R6-RESIDENT-WEIGHTS, R6-PREFIX-SUFFIX-PREFILL, R6-PREFIX-KEY)
 
 `docs/specs/r6-decode-kv-step1.md`, `docs/specs/r6-step-n.md`, `docs/specs/r6-kv-persist.md`,
-`docs/specs/r6-resident-weights.md`, and `docs/specs/r6-prefix-suffix-prefill.md` are the
-authoritative ledgers. R5B computes a whole prefill and stops: `src/model_forward.align` opens three fresh `ggml_context`s
+`docs/specs/r6-resident-weights.md`, `docs/specs/r6-prefix-suffix-prefill.md`, and
+`docs/specs/r6-prefix-key-corpus.md` are the authoritative ledgers. R5B computes a whole prefill and stops: `src/model_forward.align` opens three fresh `ggml_context`s
 per graph and frees them at the end of that graph, so every K and V it produces dies with its graph
 and the model can answer "what are the logits for this prompt" and not "what comes next". R6 adds
 the smallest thing that changes that — an **Align-owned KV plane**, host bytes carrying every
@@ -2178,7 +2178,7 @@ the writer. The plane **refill** stays in `src/decode_step.align` because a cros
 byte movement stays with the buffer's owner and no compatibility layer is built around the gap.
 
 `--decode-step` is selected by its exact first operand and is five, six, seven, nine, ten, eleven,
-twelve, thirteen, fourteen, **or fifteen** operands. **Eight is refused**, inherited verbatim from
+twelve, thirteen, fourteen, fifteen, **or sixteen** operands. **Eight is refused**, inherited verbatim from
 `--model-forward` and for the same reason: `KV_WIDTH` travels with the transcript. A wrong arity
 produces **no document and no error code**: the arm exits non-zero with empty stdout, and `R6_ARITY`
 and `R6_PATH` are prose names in the source's comments rather than codes anything emits.
@@ -2195,7 +2195,30 @@ and `R6_PATH` are prose names in the source's comments rather than codes anythin
 ./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS -       KV.akvp
 ./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS -       -       weights
 ./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS -       KV.akvp -       SUFFIX
+./ggml-spike --decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS -       -       weights SUFFIX  STORE_DIR
 ```
+
+`STORE` is the sixteenth operand and it is a **directory the caller must create** — the arm never
+creates one, never lists one, and writes nothing into it but `<64-hex>.akvp`. Given it, the arm
+derives the container's name from the pack's source-identity digest, the geometry file's bytes,
+`TOKENS`, and `KV_WIDTH` (plus the format's own version scalars), loads that file if it is there and
+writes it if it is not, and publishes the key it used in `store.key` on **every** run that reached
+the derivation, a refused one included. A run refused **before** the derivation — a conflicting
+operand, an unparsable or too-narrow `KV_WIDTH` — publishes `key: "-"` and `outcome: "absent"`,
+which is itself information: it says the refusal preceded the key. `store.requested` is published
+either way, so a store run is never implicit. `-` is absent and means exactly what fifteen operands
+mean. It is **mutually exclusive
+with `KV_SAVE` and `KV_LOAD`** — `R6_KV_ARGS` with detail `store[with_save]` or `store[with_load]` —
+because it is a third plane provenance and must not compete with the two explicit ones; `SUFFIX` is
+legal beside it and is the point. **A miss is only a missing file**: a container that exists at the
+key path and fails any identity check is that check's refusal, never a silent re-prefill. A miss
+whose create fails — the directory does not exist, the path is a regular file, or it is not writable
+— is `R6_KV_UNWRITABLE` with detail `store[create]`, one code for three causes `std.fs` cannot
+separate at this pin (Align Request 53), reported **after** the prefill because a pre-flight check
+would need a type predicate the standard library does not ship. A partial container the writer could
+not remove is `R6_KV_CLEANUP_FAILED` with detail `store[cleanup]` — the operand, for the same reason.
+No path is published anywhere in the document **or in any refusal detail**; a caller that wants the
+file forms `STORE + "/" + store.key + ".akvp"`.
 
 `TOKENS` is the **prefill**; no decoded token is ever an operand. The arm computes step 1's as its
 own prefill's `argmax` and every later step's as its own previous step's, because an operand would
@@ -2297,13 +2320,17 @@ at positions `T_prefix ..` and can never be *re-based*. Prefix sharing is theref
 `a,b,c` cannot serve a run whose prefix is `a,b`, even though its first two columns hold exactly the
 right bytes; that is `columns_persisted != token_count`, which the format defers.
 
-**There is still no prefix key, no store, and no lookup.** A saved plane is found only by a caller
-who names its path, so this ships the *execution* half of the roadmap's repo-stable-prefix mechanism
-and none of its *lookup* half. `gmake decode-step-qualification` reports a labelled **TTFT
-diagnostic** on three legs — single-shot, load-plus-suffix, and plain load — and derives no rate,
+**There is now a prefix key, a store, and a lookup — and still no corpus and no consumer.**
+R6-PREFIX-KEY (roadmap item 37) discharges the *lookup* half above: `STORE` makes the arm derive the
+container's name and decide the provenance itself, so a caller no longer names a path. `gmake
+decode-step-qualification` reports a labelled **TTFT diagnostic** on three legs — single-shot,
+load-plus-suffix, and plain load — plus the store leg's own miss/hit wall clock, and derives no rate,
 speedup, or per-token figure from any of them: what a suffix run actually saves is `T_prefix`
 columns of prefill *compute* and no I/O at all, because a prefill of any width is one weight sweep
-and a resident run pays it once.
+and a resident run pays it once. **The gate stays unmet and no TTFT claim is made**, because
+`MAX_PREFILL_TOKENS` is 32 and no real prompt's shared prefix fits — `eval/prompt/canonical-v1`'s is
+370 tokens. Lifting the cap, pinning the corpus, and taking the measurement is roadmap item 38,
+whose charter is section 11 of `docs/specs/r6-prefix-key-corpus.md`.
 
 **CPU only.** `--model-forward-gpu` keeps its per-graph wrap and per-graph free, because
 `docs/specs/r5c-metal-prefill.md` section 2.6 measured that an unfreed Metal buffer aborts the
@@ -2318,7 +2345,8 @@ R6's `T + 1` character for character, and "the plane is too narrow for this run"
 `R6_KV_WIDTH` rather than acquiring a second code. `TRANSCRIPT` accepts `-` for "no transcript",
 exactly as `--model-forward`'s does.
 
-The document is `R6_DECODE_STEP` at **schema 2**: `decode` carries the loop
+The document is `R6_DECODE_STEP`, at **schema 6** since R6-PREFIX-KEY added the `store` object;
+schema 2 is where the fields below arrived and the kind has never changed. `decode` carries the loop
 (`steps_requested`, `steps_completed`, `n_past_first`, `n_past_last`, `token_ids`, and the
 summed/maximised totals) and a new `steps[]` array carries one object per completed step, each with
 its own `n_past`, `token_id`, `argmax`, `sha256`, `plane_column_written`, and `oracle` sub-object.
@@ -2397,6 +2425,8 @@ ALIGN_LLM_LLAMA_DEBUG=/path/to/llama-debug \                  # the prefill's by
 ALIGN_LLM_DECODE_STEP_TMPDIR=/path/to/scratch \               # where the pack is written; defaults to TMPDIR
 ALIGN_LLM_DECODE_STEPS=16 \                                   # the step count N; defaults to 16
 ALIGN_LLM_KV_PERSIST_PROMPTS=4 \                              # prompts getting the save/load leg
+ALIGN_LLM_SUFFIX_SPLITS=2 \                                   # split points per prompt for the suffix leg
+ALIGN_LLM_STORE_PROMPTS=4 \                                   # prompts getting the keyed store leg
   gmake decode-step-qualification
 ```
 
@@ -2414,6 +2444,12 @@ containers and two determinism duplicates, and covering them by luck is not cove
 persistence leg's own documented cost fallback is, in order, `ALIGN_LLM_DECODE_STEPS=8` and then
 `ALIGN_LLM_KV_PERSIST_PROMPTS=2`, which costs one prompt's coverage of the equality oracle and no
 closure cell.
+
+R6-PREFIX-KEY's **store leg** rides on the suffix leg's first split and costs **two `--decode-step`
+invocations per prompt** — one keyed miss, one keyed hit — plus one container per prompt in the
+prompt's own `store/` directory. Its documented fallback is `ALIGN_LLM_STORE_PROMPTS=1`, which moves
+the whole leg to prompt 1; `0` disables it and the runner says so with an explicit `N/A` line rather
+than passing silently.
 
 **Gate G needs `numpy`, and its absence is an `N/A` rather than a skipped gate.**
 `scripts/decode_step_fingerprint.py` dequantizes the whole of `token_embd.weight` to measure how
@@ -2533,7 +2569,7 @@ graph already contains. `scripts/ggml_shim_stub.c` gains two forced-failure buil
 shared region — `engine+compute-step2` and `engine+writeback-offset` — which are never defined in an
 ordinary build.
 
-## The `--moe-decode-step` arm (R6-OLMOE-DECODE)
+## The `--moe-decode-step` arm (R6-OLMOE-DECODE, R6-MOE-RESIDENT-DENSE)
 
 `docs/specs/r6-olmoe-decode.md` is the authoritative ledger. It ships as a **seventh arm of the
 existing `ggml-spike` executable**, `--moe-decode-step`, beside R4.5's positional arm,
@@ -2548,10 +2584,17 @@ gmake layer-forward-smoke              # extended with a seventh block; unchange
 gmake moe-decode-step-qualification    # the opt-in real-ggml, real-model, two-instrument qualification
 ```
 
-`--moe-decode-step` is selected by its exact first operand and takes five, six, seven, nine, ten, or
-eleven operands. **Eight is `R6M_ARITY`**, for `--decode-step`'s own reason — a transcript without a
-width refuses itself — and twelve and above are `R6M_ARITY`, with positions 11, 12, and 13 reserved
-for `KV_SAVE`, `KV_LOAD`, and `RESIDENT` at the same indices the dense arm uses.
+`--moe-decode-step` is selected by its exact first operand and takes five, six, seven, nine, ten,
+eleven, or **fourteen** operands. **Eight is `R6M_ARITY`**, for `--decode-step`'s own reason — a
+transcript without a width refuses itself — and **twelve, thirteen, and fifteen and above are
+`R6M_ARITY`**. Positions 11, 12, and 13 are `KV_SAVE`, `KV_LOAD`, and `RESIDENT` at the same indices
+the dense arm uses; **KV persistence is not implemented on this arm**, so the two KV positions must
+both be `-` and anything else is `R6M_KV_UNSUPPORTED` with detail `kv[save]` or `kv[load]`.
+
+(`R6M_ARITY` names how an arity refusal reads, not a constant in the source: the guard is lexical and
+presents as a non-zero exit with **no document at all**, which is what the smoke classes
+`NO_DOCUMENT`. `docs/specs/r6-moe-resident-dense.md` section 11 item 12 records the discrepancy
+between that prose and the source rather than inventing a constant to match it.)
 
 ```sh
 ./ggml-spike --moe-decode-step PACK GEOM.json TOKENS
@@ -2560,6 +2603,7 @@ for `KV_SAVE`, `KV_LOAD`, and `RESIDENT` at the same indices the dense arm uses.
 ./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH
 ./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin
 ./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf -              KV_WIDTH LOGITS.bin STEPS
+./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS - - dense
 ```
 
 **The operand shape is `--decode-step`'s, position for position**, so the two decode runners build
@@ -2569,8 +2613,31 @@ their argument vectors the same way and a command line cannot be silently reorde
 the count is never implicit. `-` is legal in the document, transcript, and logits positions only;
 `PACK`, `GEOMETRY`, and `REFERENCE` refuse it lexically.
 
-**Weights are streamed and there is no `RESIDENT` operand**, because R6-RESIDENT-WEIGHTS makes a
-decode step read zero pack bytes and this arm exists to measure the bytes a decode step reads.
+**`RESIDENT` is the fourteenth operand:** `-` (stream the weights, the shipped behaviour, and what an
+absent operand means) or **`dense`** (hold the pack's 147 dense members resident for the process's
+lifetime — the embedding table, the sixteen layers' attention, norm and router weights, and the
+output head — while the 3.9 GB of expert planes keep streaming through the claim window).
+**`weights` is refused by name** with `R6M_RESIDENT`: whole-model residency would make
+`residency.expert_bytes` unreachable, and this arm exists to publish it. Any other value, including
+the empty string, is `R6M_RESIDENT` with detail `resident[<text>]`.
+
+In `dense` mode the arm allocates one region — **311,066,624 B** on the reference model — fills it
+once with 311,027,712 B in one pass before the first graph, wraps it **once** for the whole run
+across all **578** graphs — replacing **306** per-graph dense-window wraps with one — and places
+every dense tensor of every graph into a sub-slice of it. The claim window keeps its own buffer and
+its own per-graph wrap. Peak footprint of the weight windows plus the plane goes from 347,451,392 B
+to 573,997,056 B, a factor of 1.65, so **no physical-memory preflight is needed and none ships**;
+`ALIGN_LLM_MOE_RESIDENT_DENSE=0` skips the resident leg of the qualification and prints one explicit
+`N/A` line.
+
+`R6_MOE_DECODE_STEP` is at **schema 2**, which is where the `weights` object arrives — present in
+every document including error documents, so the mode a run took is never implicit.
+`weights.step_dense_pack_bytes` goes from 4,049,258,496 to **0** at `N = 16` while
+`steps[].residency.expert_bytes` stays **487,587,840 on every step**, and `weights.step_pack_bytes`
+keeps `docs/specs/r6-resident-weights.md` section 3.5's exact meaning — pack bytes read by decode
+steps only — so the same field name means the same thing on both decode arms.
+`docs/specs/r6-moe-resident-dense.md` section 3.7 is the performance contract and
+`docs/specs/r6-resident-weights.md` section 3.4 remains the owner of Track B decode performance.
 
 **What it publishes that no other arm does:** per step, `routed.layers[]` — the eight expert ids
 claimed in each of the sixteen layers — with the cumulative union and the marginal new bytes, and
@@ -2593,7 +2660,7 @@ publishes `top_k`, the step's top ten with the raw `u32` of each logit, in
 `ALIGN_LLM_GGUF_MODEL` (an **olmoe** GGUF), `ALIGN_LLM_LLAMA_EVAL_CALLBACK` (**R2C-patched** — full
 router axes are required, and an unpatched instrument prints six of eight slots),
 `ALIGN_LLM_LLAMA_DEBUG`, `ALIGN_LLM_MOE_DECODE_STEP_TMPDIR`, `ALIGN_LLM_DECODE_STEPS`,
-`ALIGN_LLM_MOE_DECODE_STEP_PROMPTS`. `numpy` is required for gate G's fingerprint measurement and its
+`ALIGN_LLM_MOE_DECODE_STEP_PROMPTS`, `ALIGN_LLM_MOE_RESIDENT_DENSE`. `numpy` is required for gate G's fingerprint measurement and its
 absence is an N/A rather than a pass.
 
 **`src/layer_olmoe.align`'s `MAX_PREFILL_TOKENS` moves 6 → 32**, matching `src/layer_qwen2.align`,
