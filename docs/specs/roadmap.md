@@ -604,6 +604,11 @@ The current forward delivery order is:
     removes the per-step weight sweep item 29 left in place, and prefix-keyed lookup on top of it is
     the next capability toward the TTFT gate.
 
+<!-- Items 34 and 35 are reserved: each was on a branch or in draft when the item beside it was
+     written, so the numbers are claimed and the entries land with those branches. The gap is
+     deliberate and must not be re-used. Item 31 landed with C4-REPAIR-MEASURED and item 32 with
+     R6-OLMOE-DECODE, which are the two entries below. -->
+
 31. **C4-REPAIR-MEASURED — one bounded model repair attempt in the provider-backed measurement
     path.** The first Track A capability since the C6-MEASURED wave, and the one that asks whether
     C4's roadmap gate can be closed with a model instead of a scripted patch. Design and results in
@@ -743,26 +748,62 @@ The current forward delivery order is:
     instrument already printed. **The R6 gate is still unmet:** this ships the *execution* half of
     mechanism 2 (repo stable prefix KV) and none of its *lookup* half — there is still no prefix key,
     no store, no corpus, and no prefix-sharing consumer — so TTFT is reported as a labelled
-    diagnostic on three legs and no claim is made. One surface is **narrower than the mechanism
-    allows**: `T_prefix >= 2` is required, raising `R6_SUFFIX` with detail `prefix[<n>]`, because a
-    one-token prefill computes the embedding of token 0 whatever the operand says — see the
-    follow-up below.
+    diagnostic on three legs and no claim is made. One surface shipped **narrower than the mechanism
+    allows**: `T_prefix >= 2` was required, raising `R6_SUFFIX` with detail `prefix[<n>]`, because a
+    one-token prefill computed the embedding of token 0 whatever the operand said. **Item 36 removed
+    that defect and this branch lifted the bound**, so a one-token prefix is accepted and
+    `ds-suffix-prefix-one` is a passing oracle-S run rather than a refusal.
 
-    **Follow-up: `MF-SINGLE-TOKEN-LOGITS` (no item number yet).** A pre-existing defect this
-    capability found in an arm it does not touch: `model_forward.fill_members` gathers an embedding
-    row by id only when `pieces > 1`, so **any prompt of exactly one token computes the logits of
-    token 0**, silently and with `status: ok`, on `--layer-forward`, `--model-forward`,
-    `--moe-model-forward`, and `--decode-step`. The resident path does not share it
-    (`stage_embed_row` gathers by id at every count), and no golden in this repository exercises
-    `token_count == 1`, which is why it has been latent since R5B. The fix is a `gathered`
-    discriminator on `model_forward.GraphMembers` — eighteen construction sites across three modules
-    and four arms — with an `mf-tokens-one` row in `scripts/model-forward-golden.jsonl` and the same
-    question asked of `--moe-model-forward`; owner `gmake layer-forward-smoke`. It is **not** filed
-    inside item 33 because that would put an R5B correctness change inside a review scoped to a
-    suffix graph, and it takes a roadmap number when it is picked up rather than claiming one across
-    the reserved 31/32 gap. Its reproduction, evidence, and full field record are in
-    [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md) section 11.2. Completing it removes
-    item 33's `prefix[<n>]` refusal, which **widens** the accepted surface and needs no other change.
+    **Follow-up, discharged: `MF-SINGLE-TOKEN-LOGITS`, item 36 below.** A pre-existing defect this
+    capability found in an arm it does not touch: `fill_members` and `compare_source` gathered an
+    embedding row by id only where `pieces > 1`, so **any prompt of exactly one token computed the
+    logits of token 0**, silently and with `status: ok`. Section 11.2 of
+    [`r6-prefix-suffix-prefill.md`](r6-prefix-suffix-prefill.md) filed it and item 36 measured its
+    blast radius, correcting three of that record's claims: four arms, but **not the four named**
+    (`--layer-forward` and `--moe-layer-forward` gather unconditionally and were never affected,
+    while `--model-forward-gpu` is), **nine** construction sites and not eighteen (ten once item 32
+    landed), and the resident
+    path is **not** immune — `stage_embed_row` staged the right row while `compare_source` still
+    expected row 0, so a one-token non-zero resident run with a reference reported
+    `R5_SOURCE_DIVERGED` over a correct result. It was filed outside item 33 because it would have
+    put an R5B correctness change inside a review scoped to a suffix graph.
+
+36. **MF-SINGLE-TOKEN-LOGITS — the one-token prefill reads the prompt's embedding row.** Design,
+    blast radius, and results in
+    [`mf-single-token-logits.md`](mf-single-token-logits.md). A bug fix, filed by
+    R6-PREFIX-SUFFIX-PREFILL section 11.2 and numbered 36 because **31, 32, 34 and 35 are reserved
+    by capabilities that were on branches or in draft at the time of writing** and this one merged
+    out of order; the numbering is a name, not a delivery order. `fill_members` and `compare_source` gathered a
+    member's rows by token id only where `pieces > 1` — the piece count used as a **proxy** for
+    "this member is the per-token embedding row set". `build_embed_members` sets `pieces = tokens`,
+    so a one-token prefill took the whole-member branch and read **row 0 of the embedding table**
+    instead of the prompt's row: wrong logits with `status: ok`. Four public arms were affected —
+    `--model-forward`, `--model-forward-gpu`, `--moe-model-forward`, and `--decode-step`'s prefill —
+    across ten `GraphMembers` construction sites in four modules — nine when the fix was written
+    and a tenth with item 32's `moe_decode_step`; `--layer-forward` and
+    `--moe-layer-forward` were not, because they gather unconditionally. The resident path was not
+    immune either: `stage_embed_row` staged the right row while `compare_source` still expected
+    row 0, so a one-token non-zero resident run **with** a reference reported `R5_SOURCE_DIVERGED`
+    over a correct result. The fix is a `gathered: bool` on both `GraphMembers` records and the
+    predicate `m.gathered && at == 0`, which is true exactly where `pieces > 1` was, so `T >= 2` is
+    byte-identical and **the gather fix changes no existing golden row in any of the six corpora**.
+    Its regression is therefore **six new rows** rather than a changed one — a one-token control at
+    id 0 and a one-token non-zero id on each affected arm, plus the streamed/resident equality pair
+    whose `R5_SOURCE_DIVERGED` false alarm disappears. *(The item 33 lift this branch also carries
+    adds one more row and removes `ds-suffix-prefix-one`'s, so the branch as a whole adds seven
+    golden rows, removes one, and changes none. That row leaves because a passing two-token run is
+    host-dependent in its decode step — measured on hosted CI — and is asserted from
+    `BOUNDARY_CASES` without a pinned digest, as item 33's own four-token comparand is.)* The
+    real-model half is
+    `--model-forward` at one non-zero token byte-identical to `llama-debug --save-logits` on the
+    same one-token prompt, with the tokenization checked rather than assumed. Owner
+    `gmake layer-forward-smoke`; focused `gmake model-forward-qualification` and
+    `gmake moe-model-forward-qualification`. No Align gap and no design gate: no CLI operand,
+    persisted format, or ownership boundary moves. **It also widens item 33's accepted surface**:
+    that capability's `T_prefix >= 2` bound existed only because of this defect, so this branch
+    lifts it — the `R6_SUFFIX prefix[<n>]` refusal is gone, `ds-suffix-prefix-one` becomes a passing
+    oracle-S run at `T_prefix = 1`, and `r6-prefix-suffix-prefill.md` sections 3.7, 5.6 and 11 record
+    the lift.
 
 34. **C4-REPAIR-EDITSET — the failing edit set in the repair prompt, through a second
     corpus-member adapter.** The direct consequence of item 31's measured negative. C4-REPAIR-

@@ -927,6 +927,22 @@ FORCED_CASES = [
     ("mf-force-inf-readback", "engine+inf-readback",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", RUNTIME_LOGITS], ""),
 ]
+# MF-SINGLE-TOKEN-LOGITS (`docs/specs/mf-single-token-logits.md` sections 1 and 4). Every case above
+# runs three tokens, so this corpus was blind to a one-token prefill: `fill_members` and
+# `compare_source` read `pieces > 1` as a proxy for "gather this member by token id", the embedding
+# member sets `pieces = tokens`, and at `T = 1` the proxy is false -- the run read row 0 of the
+# embedding table instead of the prompt's row and reported `status: ok` over wrong logits. The fix
+# is invisible to a three-token corpus, so the regression is **new rows** rather than changed ones.
+#
+# The pair is what makes it a regression rather than a digest: a one-token prefill of id 3 and the
+# same prefill of id 0. Before the fix both produced the id-0 document; after it they must differ,
+# and `mf-tokens-one-zero` must keep the bytes the defect used to produce for both. Both cases
+# supply the reference, because `compare_source` carried the same predicate and a one-token
+# non-zero run with a REFERENCE reported `R5_SOURCE_DIVERGED` over a correct window.
+ONE_TOKEN_CASES = [
+    ("mf-tokens-one", [ARM, PACK, GEOM, "3", "-", SOURCE], ""),
+    ("mf-tokens-one-zero", [ARM, PACK, GEOM, "0", "-", SOURCE], ""),
+]
 
 # Section 6, correction C25, and the R5A block above's repair for the same reason: a golden
 # mismatch used to print both whole documents. One R5B document is larger than R5A's, the fresh
@@ -1178,6 +1194,40 @@ for name, operands, expected in ENGINE_CASES:
             failures.append("%s: %s %d != %s %d"
                             % (name, created, lifetime[created], freed, lifetime[freed]))
 
+# MF-SINGLE-TOKEN-LOGITS section 4. The one-token cases run here, under the engine shim the block
+# above built, and not inside `ENGINE_CASES`: every assertion in that loop is arithmetic on the
+# three-token prompt (`schedule[0].l_out_ne1 == 3`), and a one-token prefill is one row wide.
+for name, operands, expected in ONE_TOKEN_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    if document["status"] != "ok":
+        failures.append("%s: a one-token prefill was refused: %r %r"
+                        % (name, document["error_code"], document["error_detail"]))
+        continue
+    if document["verdict"] != "EXTERNAL":
+        failures.append("%s: verdict %r, not EXTERNAL" % (name, document["verdict"]))
+    if len(document["schedule"]) != 2 or document["schedule"][0]["l_out_ne1"] != 1:
+        failures.append("%s: a one-token prefill is not one row wide at layer 0" % name)
+    if document["output"]["element_count"] != 32:
+        failures.append("%s: %d logits, not n_vocab"
+                        % (name, document["output"]["element_count"]))
+    # Oracle 1 over a one-token window. This is the half of the defect the resident decode path made
+    # visible as a refusal: `compare_source` has to compare the row the gather actually read.
+    one_token_reference = document["reference"]
+    if one_token_reference["verdict"] != "IDENTICAL" \
+            or one_token_reference["nodes_identical"] != one_token_reference["nodes_compared"] \
+            or one_token_reference["nodes_compared"] < 1:
+        failures.append("%s: oracle 1 over a one-token prefill is %r"
+                        % (name, one_token_reference))
+
+# The defect's signature, stated as a comparison rather than as a digest: two different embedding
+# rows cannot produce the same logits. Before the fix they did, because both read row 0.
+if json.loads(produced["mf-tokens-one"])["output"]["sha256"] \
+        == json.loads(produced["mf-tokens-one-zero"])["output"]["sha256"]:
+    failures.append("mf-tokens-one: a one-token prefill of id 3 produced id 0's logits -- the "
+                    "gather is reading row 0 again")
+
 # Section 4.4's oracle cells, asserted on the documents the cases above produced.
 reference = json.loads(produced["mf-engine-reference"])["reference"]
 if reference["verdict"] != "IDENTICAL" or reference["graphs_compared"] != 4 \
@@ -1364,7 +1414,8 @@ if missing_codes:
 
 ORDER = ([name for name, _, _ in STUB_CASES]
          + [name for name, _, _ in ENGINE_CASES]
-         + [name for name, _, _, _ in FORCED_CASES])
+         + [name for name, _, _, _ in FORCED_CASES]
+         + [name for name, _, _ in ONE_TOKEN_CASES])
 
 if update:
     with open(golden_path, "w", encoding="utf-8") as handle:
@@ -1571,6 +1622,13 @@ FORCED_CASES = [
     # to admit a device's rounding and must not admit an infinity.
     ("gf-force-inf-readback", "engine+gpu+inf-readback",
      [ARM, PACK, GEOM, TOKENS, "-", SOURCE, NARROW, "3", RUNTIME_LOGITS], ""),
+]
+# MF-SINGLE-TOKEN-LOGITS section 1: this arm reaches the same two predicates through `render_parts`
+# -> `execute`, so the one-token gather is a fourth affected arm and not a `--model-forward`
+# peculiarity. The hosted GPU leg is the `engine+gpu` stub device, which computes real numbers, so
+# the row is a real row here and not an `N/A`.
+ONE_TOKEN_CASES = [
+    ("gf-tokens-one", [ARM, PACK, GEOM, "3", "-", SOURCE], ""),
 ]
 
 PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
@@ -1831,6 +1889,27 @@ for name, operands, expected in GPU_CASES:
                         % (name, lifetime["ggml_buffers_created"],
                            lifetime["ggml_buffers_freed"]))
 
+# MF-SINGLE-TOKEN-LOGITS section 4, under the `engine+gpu` shim the loop above built.
+for name, operands, expected in ONE_TOKEN_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    if document["status"] != "ok":
+        failures.append("%s: a one-token prefill was refused: %r %r"
+                        % (name, document["error_code"], document["error_detail"]))
+        continue
+    if document["graph"]["backend_name"] != "stub-gpu":
+        failures.append("%s: the backend came from the wrong device: %r"
+                        % (name, document["graph"]["backend_name"]))
+    if len(document["schedule"]) != 2 or document["schedule"][0]["l_out_ne1"] != 1:
+        failures.append("%s: a one-token prefill is not one row wide at layer 0" % name)
+    one_token_reference = document["reference"]
+    if one_token_reference["verdict"] != "IDENTICAL" \
+            or one_token_reference["nodes_identical"] != one_token_reference["nodes_compared"] \
+            or one_token_reference["nodes_compared"] < 1:
+        failures.append("%s: oracle 1 over a one-token prefill is %r"
+                        % (name, one_token_reference))
+
 # Section 4.4's oracle cells.
 reference = json.loads(produced["gf-gpu-reference"])["reference"]
 if reference["verdict"] != "IDENTICAL" or reference["graphs_compared"] != 4 \
@@ -2022,7 +2101,8 @@ if missing_codes:
 ORDER = ([name for name, _, _ in STUB_CASES]
          + [name for name, _, _ in NO_GPU_CASES]
          + [name for name, _, _ in GPU_CASES]
-         + [name for name, _, _, _ in FORCED_CASES])
+         + [name for name, _, _, _ in FORCED_CASES]
+         + [name for name, _, _ in ONE_TOKEN_CASES])
 
 if update:
     with open(golden_path, "w", encoding="utf-8") as handle:
@@ -2914,6 +2994,12 @@ FORCED_CASES = [
     ("mm-force-carry-short", "engine+moe-carry-short", [ARM, PACK, GEOM, TOKENS, WIDTH],
      "R5E_CARRY"),
 ]
+# MF-SINGLE-TOKEN-LOGITS section 1. `moe_model_forward` carries its own copy of both predicates over
+# its own builder, so the one-token gather is a defect of this arm too and is pinned on this arm's
+# own corpus rather than inferred from the dense one.
+ONE_TOKEN_CASES = [
+    ("mm-tokens-one", [ARM, PACK, GEOM, "3", WIDTH, "-", SOURCE], ""),
+]
 
 PLACEHOLDER = {"pack_path": "<pack>", "geometry_path": "<geometry>",
                "reference_path": "<reference>", "transcript_path": "<transcript>",
@@ -3217,6 +3303,31 @@ if reference["reference"]["nodes_compared"] != reference["reference"]["nodes_ide
                     % (reference["reference"]["nodes_identical"],
                        reference["reference"]["nodes_compared"]))
 
+# MF-SINGLE-TOKEN-LOGITS section 4. Outside `ENGINE_CASES` because every assertion in that loop is
+# the generator's three-token routing: a one-token prompt routes differently by construction, and
+# what this case pins is the embedding row the gather read.
+for name, operands, expected in ONE_TOKEN_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    if document["status"] != "ok":
+        failures.append("%s: a one-token prefill was refused: %r %r"
+                        % (name, document["error_code"], document["error_detail"]))
+        continue
+    one_token_schedule = document["schedule"]
+    if len(one_token_schedule) != 2:
+        failures.append("%s: %d schedule rows, not 2" % (name, len(one_token_schedule)))
+    elif one_token_schedule[0]["t_in"] != 1 or one_token_schedule[0]["t_out"] != 1 \
+            or one_token_schedule[1]["t_in"] != 1 or one_token_schedule[1]["t_out"] != 1:
+        failures.append("%s: a one-token prefill is %r wide"
+                        % (name, [(row["t_in"], row["t_out"]) for row in one_token_schedule]))
+    one_token_reference = document["reference"]
+    if one_token_reference["verdict"] != "IDENTICAL" \
+            or one_token_reference["nodes_identical"] != one_token_reference["nodes_compared"] \
+            or one_token_reference["nodes_compared"] < 1:
+        failures.append("%s: oracle 1 over a one-token prefill is %r"
+                        % (name, one_token_reference))
+
 # Section 4.4's oracle cells: an exact pass, full routing coverage, and a breach that is a verdict
 # on a successful run rather than an error code.
 passing = json.loads(run([ARM, PACK, GEOM, TOKENS, WIDTH, "-", SOURCE, TRANSCRIPT]).stdout)
@@ -3425,7 +3536,8 @@ if reached != expected_reached:
 
 ORDER = ([name for name, _, _ in STUB_CASES]
          + [name for name, _, _ in ENGINE_CASES]
-         + [name for name, _, _, _ in FORCED_CASES])
+         + [name for name, _, _, _ in FORCED_CASES]
+         + [name for name, _, _ in ONE_TOKEN_CASES])
 
 if update:
     with open(golden_path, "w", encoding="utf-8") as handle:
@@ -3546,12 +3658,19 @@ KV_IDENTITY_ABSENT_DEST = path("kv-identity-absent.akvp")
 # comparands are new documents and the third is `ds-kv-args-dash-dash`, which already exists as a
 # golden row — so "three routes to one state produce one document" is checked rather than stated.
 #
-# `T_prefix = 2` on all three, and **no case has `T_prefix = 1`**: a one-token prompt is a
-# pre-existing wrong-answer defect in `model_forward.fill_members` that this capability found and
-# does not depend on (section 11, finding 4). The closure cells `T_prefix = 1` would have carried —
-# `S >= 2` and a suffix column attending to an earlier suffix column — are carried by `ds-suffix-2`
-# and `ds-suffix-3` at `T_prefix = 2` instead.
+# `T_prefix = 2` on all three, and **`T_prefix = 1` is a fourth split** since MF-SINGLE-TOKEN-LOGITS
+# (roadmap item 36) fixed the one-token gather this capability originally refused around: the bound
+# it shipped, `R6_SUFFIX prefix[<n>]`, is gone and `ds-suffix-prefix-one` is a passing oracle-S run
+# rather than a refusal -- asserted from `BOUNDARY_CASES`, without a golden row, for the measured
+# cross-host reason recorded there. The closure cells `T_prefix = 1` does not carry — `S >= 2` and a suffix
+# column attending to an earlier suffix column — are still carried by `ds-suffix-2` and
+# `ds-suffix-3` at `T_prefix = 2`.
 KV_PREFIX = path("kv-prefix.akvp")
+# MF-SINGLE-TOKEN-LOGITS (roadmap item 36) lifted the `T_prefix >= 2` bound, so the one-token prefix
+# gets its own container and its own two-token single-shot comparand.
+KV_PREFIX_ONE = path("kv-prefix-one.akvp")
+SUFFIX_PREFIX_ONE = "3"
+SUFFIX_FULL_TWO = "3,5"
 SUFFIX_PREFIX_TOKENS = "3,17"
 SUFFIX_ONE = "5"
 SUFFIX_TWO = "5,9"
@@ -3861,14 +3980,12 @@ STUB_CASES = [
     ("ds-suffix-trailing", ds(load=KV_GOOD, suffix="5,"), "R6_SUFFIX"),
     # The vocabulary re-check, in the same pass `TOKENS` is re-checked in once the geometry is real.
     ("ds-suffix-over-vocab", ds(load=KV_GOOD, suffix="32"), "R6_SUFFIX"),
-    # The **prefix bound**, `T_prefix >= 2`, and the one refusal this capability adds for a defect
-    # it did not cause. A one-token prefill computes the embedding of token 0 whatever the operand
-    # says (section 11.2, `MF-SINGLE-TOKEN-LOGITS`), so a container saved for a one-token prefix
-    # holds the wrong plane and oracle S's equality would silently not hold. The arm refuses rather
-    # than answering wrongly, and it refuses at step 3c -- before the container named here, which is
-    # written for `3,17,5` and would otherwise be refused by L12 -- so the row also shows 3c
-    # preceding the identity checks.
-    ("ds-suffix-prefix-one", ds(load=KV_GOOD, tokens="3", suffix=SUFFIX_ONE), "R6_SUFFIX"),
+    # The **prefix bound is gone.** `T_prefix >= 2` and its `R6_SUFFIX prefix[<n>]` refusal existed
+    # only because a one-token prefill computed the embedding of token 0 whatever the operand said;
+    # MF-SINGLE-TOKEN-LOGITS (roadmap item 36) fixed that, so `ds-suffix-prefix-one` moved to
+    # `BOUNDARY_CASES` below as a passing oracle-S run at `T_prefix = 1`. Nothing replaced the check:
+    # the sequence cap below is the only bound on `T_prefix`, which is why it is now the first
+    # `R6_SUFFIX` a too-short-prefix caller can reach.
     # The **sequence** cap, `T_prefix + S <= MAX_PREFILL_TOKENS`. It is on the sequence and not on
     # `S` because the cap is the oracle's: oracle C'' runs `--model-forward` at `TOKENS,SUFFIX`, so a
     # cap on `S` alone would let the arm accept a run whose own acceptance oracle it refuses.
@@ -3970,6 +4087,13 @@ ENGINE_CASES = [
     # `ds-kv-save-ok` writes the whole prompt's. Nothing about the save direction changes.
     ("ds-suffix-save-prefix",
      ds(save=KV_PREFIX, tokens=SUFFIX_PREFIX_TOKENS, steps="1", transcript="-"), ""),
+    # The container for `T_prefix = 1`, reopened by MF-SINGLE-TOKEN-LOGITS (roadmap item 36),
+    # written by a **one-token prefill** in its own process — the exact run whose plane used to hold
+    # token 0's columns whatever `TOKENS` said. A one-token prefill and its decode step are
+    # byte-identical on both hosts, so this row is pinned here; the two-token pair it feeds is not,
+    # and lives in `BOUNDARY_CASES` for the cross-platform reason recorded there.
+    ("ds-suffix-save-prefix-one",
+     ds(save=KV_PREFIX_ONE, tokens=SUFFIX_PREFIX_ONE, steps="1", transcript="-"), ""),
     # `S = 1` — the degenerate suffix, and the only one whose graph shape matches a decode step's.
     # It must **not** be a decode step: its token is an operand, not an argmax. Its comparand is
     # `ds-kv-args-dash-dash`, which already exists as a golden row, so oracle S is asserted here
@@ -4020,10 +4144,36 @@ ENGINE_CASES = [
 # run. Every other new row in this capability — including the five-token single-shot and the three
 # suffix successes — was byte-identical on both hosts in the run that found this, so only the
 # measured case moves.
+#
+# MF-SINGLE-TOKEN-LOGITS adds the third and fourth members, and moves the boundary again: the
+# **decode step after a two-token prefill** differs across hosts. `ds-suffix-single-shot-2` and the
+# `T_prefix = 1` suffix run it is the comparand for both publish `.steps[0].bit_sum` 71850835819 on
+# macOS/arm64 against 71850835587 on Linux/x86_64, with `.steps[0].sha256` differing with it, found
+# by this capability's first hosted CI run. Two tokens, not four -- and the drift is in the decode
+# step rather than in the prefill, which is why `ds-suffix-save-prefix-one` and `ds-tokens-one`,
+# whose prefill is **one** token, stay pinned and were byte-identical on both hosts. The pair is
+# asserted exactly as `ds-suffix-2` is: oracle S compares the two **within one host**, oracle C''
+# compares the suffix run against `--model-forward` on the same host, and `record()`'s
+# document-identity assertions run. They are documented cases without golden rows.
 BOUNDARY_CASES = [
     (STAGE_FULL, ds(tokens=STAGE_FULL_TOKENS, transcript="-", width=STAGE_FULL_WIDTH,
                     steps=STAGE_FULL_STEPS, resident="weights"), ""),
     (SUFFIX_SINGLE_SHOT_4, ds(tokens=SUFFIX_FULL_FOUR, transcript="-"), ""),
+    # The comparand first, so oracle S below always finds a document that already exists. Both need
+    # `ds-suffix-save-prefix-one`'s container, which `ENGINE_CASES` above wrote.
+    ("ds-suffix-single-shot-2", ds(tokens=SUFFIX_FULL_TWO, transcript="-"), ""),
+    ("ds-suffix-prefix-one",
+     ds(load=KV_PREFIX_ONE, tokens=SUFFIX_PREFIX_ONE, suffix=SUFFIX_ONE, transcript="-"), ""),
+]
+# MF-SINGLE-TOKEN-LOGITS sections 1 and 4. `decode_step`'s prefill is `model_forward`'s, so the
+# one-token gather reaches this arm too -- and this is the arm where the defect was **not** silent:
+# `stage_embed_row` stages the right row, `compare_source` expected row 0, and a one-token non-zero
+# resident run with a REFERENCE reported `R5_SOURCE_DIVERGED` over a correct window. The pair is
+# oracle R's shape: the two invocations differ in exactly the `RESIDENT` operand, so the streamed
+# leg and the resident leg must produce the same document and both must complete.
+ONE_TOKEN_CASES = [
+    ("ds-tokens-one", ds(tokens="3", transcript="-"), ""),
+    ("ds-tokens-one-resident", ds(tokens="3", transcript="-", resident="weights"), ""),
 ]
 
 FORCED_CASES = [
@@ -4663,6 +4813,27 @@ repeats = {normalize(run([ARM, PACK, GEOM, TOKENS, "-", SOURCE, TRANSCRIPT, WIDT
 if len(repeats) != 1:
     failures.append("three consecutive runs produced %d distinct documents" % len(repeats))
 
+# MF-SINGLE-TOKEN-LOGITS section 4, under the engine shim the block above built and outside
+# `ENGINE_CASES`, whose plane and token assertions are arithmetic on the three-token prompt.
+for name, operands, expected in ONE_TOKEN_CASES:
+    document = record(name, operands, expected)
+    if document is None:
+        continue
+    if document["status"] != "ok":
+        failures.append("%s: a one-token prefill was refused: %r %r"
+                        % (name, document["error_code"], document["error_detail"]))
+        continue
+    one_token_plane = document["plane"]
+    if one_token_plane["columns_written"] != 1 + int(STEPS):
+        failures.append("%s: the plane holds %d columns, not T + %s"
+                        % (name, one_token_plane["columns_written"], STEPS))
+    if one_token_plane["roundtrip_verdict"] != "IDENTICAL":
+        failures.append("%s: oracle B is %r over a one-token prefill"
+                        % (name, one_token_plane["roundtrip_verdict"]))
+    if document["decode"]["steps_completed"] != int(STEPS):
+        failures.append("%s: %d of %s steps completed"
+                        % (name, document["decode"]["steps_completed"], STEPS))
+
 # ---------------------------------------------------------------------------------------------
 # R6-RESIDENT-WEIGHTS section 4: oracle R, oracle P's new reach, and oracle B at run scope
 #
@@ -4684,7 +4855,8 @@ if produced["ds-kv-args-dash-dash"] != produced["ds-resident-dash"]:
 
 # Oracle R. One step and three steps.
 for streamed_case, resident_case in (("ds-resident-stream-1", "ds-resident-weights-1"),
-                                     ("ds-kv-args-dash-dash", "ds-resident-weights-steps")):
+                                     ("ds-kv-args-dash-dash", "ds-resident-weights-steps"),
+                                     ("ds-tokens-one", "ds-tokens-one-resident")):
     left = normalize_resident(produced[streamed_case])
     right = normalize_resident(produced[resident_case])
     if left != right:
@@ -5011,6 +5183,9 @@ if len(load_repeats) != 1:
 
 SUFFIX_ORACLE = [
     # case, single-shot comparand, prefix ids, suffix ids, the whole list, N
+    # `T_prefix = 1`: the split MF-SINGLE-TOKEN-LOGITS reopened, and the narrowest one the operand
+    # grammar allows.
+    ("ds-suffix-prefix-one", "ds-suffix-single-shot-2", [3], [5], SUFFIX_FULL_TWO, 3),
     ("ds-suffix-1", "ds-kv-args-dash-dash", [3, 17], [5], "3,17,5", 3),
     ("ds-suffix-2", SUFFIX_SINGLE_SHOT_4, [3, 17], [5, 9], SUFFIX_FULL_FOUR, 3),
     ("ds-suffix-3", "ds-suffix-single-shot", [3, 17], [5, 9, 27], SUFFIX_FULL_FIVE,
@@ -5187,7 +5362,6 @@ SUFFIX_REFUSAL_DETAILS = (("ds-suffix-no-load", "suffix[no_load]"),
                           ("ds-suffix-empty", "suffix[]"),
                           ("ds-suffix-garbage", "suffix[x]"),
                           ("ds-suffix-trailing", "suffix[5,]"),
-                          ("ds-suffix-prefix-one", "prefix[1]"),
                           ("ds-suffix-over-vocab", "token[0]"),
                           ("ds-suffix-over-cap", "sequence[33]"),
                           ("ds-suffix-over-cap-and-narrow", "sequence[33]"),
@@ -5372,7 +5546,8 @@ if missing_codes:
 
 ORDER = ([name for name, _, _ in STUB_CASES]
          + [name for name, _, _ in ENGINE_CASES]
-         + [name for name, _, _, _ in FORCED_CASES])
+         + [name for name, _, _, _ in FORCED_CASES]
+         + [name for name, _, _ in ONE_TOKEN_CASES])
 
 if update:
     with open(golden_path, "w", encoding="utf-8") as handle:
