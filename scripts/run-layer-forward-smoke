@@ -3536,6 +3536,8 @@ SUFFIX_ONE = "5"
 SUFFIX_TWO = "5,9"
 SUFFIX_THREE = "5,9,27"
 SUFFIX_FULL_FOUR = "3,17,5,9"
+# Named because it lives in `BOUNDARY_CASES` and is referenced by oracle S from there.
+SUFFIX_SINGLE_SHOT_4 = "ds-suffix-single-shot-4"
 SUFFIX_FULL_FIVE = "3,17,5,9,27"
 SUFFIX_STEPS_THREE = "2"
 
@@ -3934,14 +3936,13 @@ ENGINE_CASES = [
     ("ds-resident-stream-1", ds(steps="1"), ""),
     ("ds-resident-weights-1", ds(steps="1", resident="weights"), ""),
     ("ds-resident-weights-steps", ds(resident="weights"), ""),
-    # R6-PREFIX-SUFFIX-PREFILL section 5.1. The two single-shot comparands oracle S needs, run
+    # R6-PREFIX-SUFFIX-PREFILL section 5.1. The five-token single-shot comparand oracle S needs, run
     # first so that a suffix run below is always compared against a document that already exists.
-    # Both take `-` in the transcript position: the fixture's decode transcript is the four-graph
-    # transcript of the **three**-token prompt, and there is no instrument run for a four- or
-    # five-token one — which is the same reason `ds-suffix-3`'s real-model leg needs no new
+    # The four-token one is `SUFFIX_SINGLE_SHOT_4` in `BOUNDARY_CASES`, for the cross-platform reason
+    # recorded there. Both take `-` in the transcript position: the fixture's decode transcript is
+    # the four-graph transcript of the **three**-token prompt, and there is no instrument run for a
+    # four- or five-token one — which is the same reason `ds-suffix-3`'s real-model leg needs no new
     # instrument run either, only the other way round (section 5.4).
-    ("ds-suffix-single-shot-4",
-     ds(tokens=SUFFIX_FULL_FOUR, transcript="-"), ""),
     ("ds-suffix-single-shot",
      ds(tokens=SUFFIX_FULL_FIVE, transcript="-", steps=SUFFIX_STEPS_THREE), ""),
     # The prefix's container, written by the arm's own save direction in its own process, exactly as
@@ -3986,9 +3987,22 @@ ENGINE_CASES = [
 # make the golden a statement about the machine that regenerated it. The case is asserted instead by
 # oracle R against its streamed twin, which is a **within-host** comparison and therefore correct on
 # every platform, plus `record()`'s document-identity assertions and the structural block below.
+#
+# R6-PREFIX-SUFFIX-PREFILL section 5.7 adds the second member for the same measured reason at a much
+# smaller size. `ds-suffix-2`'s single-shot comparand is a **four**-token prefill, and its
+# `.schedule[1].l_out_bit_sum` is 12689786356 on macOS/arm64 against 12689786355 on Linux/x86_64,
+# with `.schedule[1].l_out_sha256` differing with it. Four tokens, not thirty-two: the host boundary
+# this fixture's arithmetic reaches is far lower than the staging case suggested, and section 6
+# risk 4's five-column reasoning is wrong as stated. What the case exists for is unaffected, and for
+# exactly the oracle-R argument above: oracle S compares `ds-suffix-2` against it **within one host**
+# and is therefore correct on every platform, and `record()`'s document-identity assertions still
+# run. Every other new row in this capability — including the five-token single-shot and the three
+# suffix successes — was byte-identical on both hosts in the run that found this, so only the
+# measured case moves.
 BOUNDARY_CASES = [
     (STAGE_FULL, ds(tokens=STAGE_FULL_TOKENS, transcript="-", width=STAGE_FULL_WIDTH,
                     steps=STAGE_FULL_STEPS, resident="weights"), ""),
+    (SUFFIX_SINGLE_SHOT_4, ds(tokens=SUFFIX_FULL_FOUR, transcript="-"), ""),
 ]
 
 FORCED_CASES = [
@@ -4663,7 +4677,10 @@ for streamed_case, resident_case in (("ds-resident-stream-1", "ds-resident-weigh
 # leg copies them out of the arena's table, and oracle R says the two produce the same document.
 # The case runs here, under the engine shim the block above built, and not in `ENGINE_CASES`: it
 # carries no golden row (see `BOUNDARY_CASES`), and every assertion in that loop is arithmetic on
-# the three-token prompt and the width of 8 this block otherwise uses throughout.
+# the three-token prompt and the width of 8 this block otherwise uses throughout. The loop also
+# produces `SUFFIX_SINGLE_SHOT_4`, oracle S's four-token comparand, which is out of the golden for
+# the same cross-platform reason and is asserted by the suffix block below; it must be produced
+# before that block runs, which is why it is here and not after it.
 for name, operands, expected in BOUNDARY_CASES:
     record(name, operands, expected)
 
@@ -4974,7 +4991,7 @@ if len(load_repeats) != 1:
 SUFFIX_ORACLE = [
     # case, single-shot comparand, prefix ids, suffix ids, the whole list, N
     ("ds-suffix-1", "ds-kv-args-dash-dash", [3, 17], [5], "3,17,5", 3),
-    ("ds-suffix-2", "ds-suffix-single-shot-4", [3, 17], [5, 9], SUFFIX_FULL_FOUR, 3),
+    ("ds-suffix-2", SUFFIX_SINGLE_SHOT_4, [3, 17], [5, 9], SUFFIX_FULL_FOUR, 3),
     ("ds-suffix-3", "ds-suffix-single-shot", [3, 17], [5, 9, 27], SUFFIX_FULL_FIVE,
      int(SUFFIX_STEPS_THREE)),
 ]

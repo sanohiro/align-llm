@@ -50,8 +50,9 @@ with **six** literals parameterised across three functions; `decode_layer_inputs
 `capture_plane`, and `verify_plane` at `tokens`; `decode_pass` at `tokens_in` with its own
 `suffix_pass` counter; eleven `Outcome` fields and the `suffix` object at document **schema 5**;
 `output`/`oracle_logits` moved to the pass's own logits on a completed run with the container's
-vector kept in `kv`; 22 new golden rows (three oracle-S splits, twelve refusals including the
-repair's `ds-suffix-prefix-one`, three comparands, two forced builds, and a resident leg), two stub
+vector kept in `kv`; 22 new cases and **21** new golden rows (three oracle-S splits, twelve refusals
+including the repair's `ds-suffix-prefix-one`, three comparands, two forced builds, and a resident
+leg, minus the four-token comparand kept out of the cross-platform golden), two stub
 shim arms and two builder flavours;
 `scripts/run-decode-step`'s per-split suffix leg with oracle S, oracle C″, oracle B, gate G, the
 accounting, and the three-leg TTFT diagnostic; roadmap item **33**, `docs/align-development.md`,
@@ -70,10 +71,16 @@ was written, and oracle C″ was byte-identical on the **first** implementation 
 column-count sensitivity R6 measured in llama.cpp does not appear between this arm's own two paths
 at `S >= 2` **and** `n_past > 0`. It never reappeared on any later run, hosted or real-model.
 
-**Goldens.** `scripts/decode-step-golden.jsonl` 116 → **138** (137 at `6cef75b`; the repair adds
-`ds-suffix-prefix-one` and changes no other row). A programmatic diff confirms the only fields that
-changed in a pre-existing row are `.schema_version` (4 → 5) and the added `.suffix` — the prediction
-exactly. **Every other golden in `scripts/` is byte-unchanged**, all six.
+**Goldens.** `scripts/decode-step-golden.jsonl` 116 → **137**. A programmatic diff confirms the only
+fields that changed in a pre-existing row are `.schema_version` (4 → 5) and the added `.suffix` — the
+prediction exactly. **Every other golden in `scripts/` is byte-unchanged**, all six.
+**Hosted CI refused one added row and it is out**, recorded as section 11.3 deviation 7:
+`ds-suffix-single-shot-4`, a four-token single-shot prefill, has `.schedule[1].l_out_bit_sum`
+12,689,786,356 on macOS/arm64 against 12,689,786,355 on Linux/x86_64. It moves into
+`BOUNDARY_CASES` on `ds-resident-stage-full`'s precedent — still run, still recorded, still compared
+by oracle S **within one host** — and only the committed row goes. Risk 4's five-column mitigation is
+wrong as stated: a 1-ULP disagreement is available at any width and this fixture reaches it at four
+tokens, which the next capability adding a multi-token prefill case needs to know.
 
 **Findings, in section 11.** Oracle S's exclusion list needed four more fields and
 `plane.roundtrip_bytes_compared` a fifth, each **compensated by an explicit assertion** rather than
@@ -124,11 +131,11 @@ commits stay reachable, and re-check all four.
 
 **Verification checkpoint (publication head).** `gmake build`, `gmake check`, `gmake fmt`,
 `gmake format-check`, `git diff --check`, `gmake gate-topology-check`, `gmake ggml-spike-smoke`, and
-`gmake layer-forward-smoke` (all six blocks; **139** documented decode-step cases, 138 with a golden
-row, 42 codes, **13** suffix refusals each with its detail asserted, 52 `KV_REFUSALS` rows) all
-pass; the owner is 65.9 s real at the repaired head and 49.3 s at the publication head.
+`gmake layer-forward-smoke` (all six blocks; **139** documented decode-step cases, **137** with a
+golden row, 42 codes, **13** suffix refusals each with its detail asserted, 52 `KV_REFUSALS` rows)
+all pass; the owner is 65.9 s real at the repaired head and ~50 s at the publication head.
 `python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke` is stamped at
-the publication head (`hosted-checks` pass, 474 s).
+the publication head, and hosted CI passes there on all three jobs.
 **`gmake decode-step-qualification` was not re-run for the repair or the minors**, and the reason is
 that no changed line can reach it: the `2 <= j` guard removes a split the four prompts never
 produce (the smallest `|L|` is 3), the `T_prefix >= 2` refusal cannot fire at `j >= 2`, the stub

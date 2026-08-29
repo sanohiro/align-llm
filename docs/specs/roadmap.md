@@ -635,8 +635,10 @@ The current forward delivery order is:
     every document; `output` and `oracle_logits` describe the suffix pass's own logits on a completed
     suffix run, with the container's vector still published in `kv`. Exact prefixes only: RoPE
     positions are absolute, so prefix sharing is inherently **left-anchored**, and prefix truncation
-    is deferred. Owner `gmake layer-forward-smoke`, whose fifth block gains 22 golden rows including
-    three oracle-S splits, twelve refusals, and two forced builds that publish a partial pass; focused
+    is deferred. Owner `gmake layer-forward-smoke`, whose fifth block gains 22 cases and 21 golden
+    rows — three oracle-S splits, twelve refusals, and two forced builds that publish a partial pass,
+    plus a four-token comparand kept out of the cross-platform golden because its `l_out` digest
+    differs between arm64 and x86_64 in the last bit (section 11.3 deviation 7); focused
     `gmake decode-step-qualification`, which splits each of the four prompts at up to two points and
     needs **no new `llama-debug` run and no new instrument run**, because the split is on ids the
     instrument already printed. **The R6 gate is still unmet:** this ships the *execution* half of

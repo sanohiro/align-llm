@@ -988,7 +988,7 @@ case ships.
 | Case | `T_prefix` | `S` | `N` | Single-shot comparand | Oracle S | Oracle C″ | Oracle B |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `ds-suffix-1` | 2 | 1 | 3 | `ds-kv-args-dash-dash` (**an existing golden row**) | IDENTICAL | IDENTICAL | IDENTICAL, 1,152 B = 960 + 192 |
-| `ds-suffix-2` | 2 | 2 | 3 | `ds-suffix-single-shot-4` | IDENTICAL | IDENTICAL | IDENTICAL, 1,408 B = 1,152 + 256 |
+| `ds-suffix-2` | 2 | 2 | 3 | `ds-suffix-single-shot-4` (**a `BOUNDARY_CASES` run, no golden row** — 11.3 deviation 7) | IDENTICAL | IDENTICAL | IDENTICAL, 1,408 B = 1,152 + 256 |
 | `ds-suffix-3` | 2 | 3 | 2 | `ds-suffix-single-shot` | IDENTICAL | IDENTICAL | IDENTICAL, 1,152 B = 832 + 320 |
 | `ds-suffix-resident` | 2 | 3 | 2 | `ds-suffix-3` (oracle R) | IDENTICAL | IDENTICAL | IDENTICAL, 1,152 B |
 
@@ -1042,13 +1042,19 @@ the loaded ones. Both runs freed the plane and balanced their teardown.
 
 | File | Predicted | Measured |
 | --- | --- | --- |
-| `scripts/decode-step-golden.jsonl` | all 116 rows change in `schema_version` and the `suffix` object only; ~16 added; 116 → ~132 | **exactly that**: 116 rows change in `schema_version` 4 → 5 and the added `suffix` object and **in no other field**; **22** rows added; 116 → **138** |
+| `scripts/decode-step-golden.jsonl` | all 116 rows change in `schema_version` and the `suffix` object only; ~16 added; 116 → ~132 | **exactly that**: 116 rows change in `schema_version` 4 → 5 and the added `suffix` object and **in no other field**; **21** rows added; 116 → **137** |
 | every other golden in `scripts/`: `layer-forward-golden.jsonl`, `model-forward-golden.jsonl`, `gpu-forward-golden.jsonl`, `moe-layer-forward-golden.jsonl`, `moe-model-forward-golden.jsonl`, `ggml-spike-golden.jsonl` | byte-unchanged | **byte-unchanged** |
 
 The six unchanged goldens are the check that `layer_qwen2`'s changed literals really are gated on
-the new parameter. The 22 added rows are **twelve** refusals, three single-shot/save documents, four
-suffix successes, the tokens-mismatch refusal, and the two forced builds. Twenty-one of them shipped
+the new parameter. The 21 added rows are **twelve** refusals, two single-shot/save documents, four
+suffix successes, the tokens-mismatch refusal, and the two forced builds. Twenty of them shipped
 at the implementation head; `ds-suffix-prefix-one` is the review repair's (11.1 correction 8).
+
+**The twenty-second row did not survive hosted CI, and deviation 7 records why.** `ds-suffix-2`'s
+four-token single-shot comparand is host-dependent in the last bit, so it moves into
+`BOUNDARY_CASES` — run, recorded, and asserted by oracle S within one host, but not pinned in a file
+compared across two. The runner reports **139 documented cases, 137 with a golden row**, and both
+prints say which count is which.
 
 ### 5.8 Mutation evidence
 
@@ -1199,6 +1205,15 @@ mechanism 2 and none of its lookup half.
    — the same magnitude as every existing engine row — and the over-cap case `ds-suffix-over-cap` is
    a **refusal**, which produces no digest at all. No new golden row computes a digest over more
    than five columns.
+   **Realized, and the mitigation was insufficient — 11.3 deviation 7.** Staying at five columns is
+   not a bound on host divergence: hosted CI refused `ds-suffix-single-shot-4`, a **four**-token
+   single-shot prefill, whose `.schedule[1].l_out_bit_sum` is 12,689,786,356 on macOS/arm64 against
+   12,689,786,355 on Linux/x86_64. The reasoning above assumed the 32-token case was near a
+   threshold; it is not — a 1-ULP disagreement is available at any width and this fixture reaches it
+   at four. The case moves to `BOUNDARY_CASES`. **What a committed golden can pin is a row whose
+   digests happen to agree on both hosts, which is not a property a later capability may assume**;
+   the durable assertion for a multi-token prefill is a within-host comparison (oracle S, oracle R),
+   and the next capability adding one should plan for the boundary list rather than the golden.
 5. **Request 49 forces a workaround into the module boundary.** *Mitigation:* it does not, and the
    reason is that this capability adds no cross-module call taking `borrow mut buffer`: the suffix
    write-back goes through `capture_plane`, which is **already in `decode_step`** with the plane,
@@ -1608,6 +1623,25 @@ number claimed here would collide. It is recorded as a named follow-up under roa
    for a sentence that belongs in the owning document anyway. The corrected prose is in that
    document's section 2.3 header table and its section 2.8 schema row, both of which now say the
    field records the document schema the format was **defined against**.
+7. **One added golden row did not survive hosted CI, and risk 4's mitigation was the wrong bound.**
+   `ds-suffix-single-shot-4` — `ds-suffix-2`'s four-token single-shot comparand — is host-dependent
+   in the last bit: `.schedule[1].l_out_bit_sum` **12,689,786,356** on macOS/arm64 against
+   **12,689,786,355** on Linux/x86_64, with `.schedule[1].l_out_sha256` differing with it. The
+   `Pinned Align compiler and supported checks` job refused the golden at the publication head
+   `c91757c`. Risk 4 mitigated this by keeping every new case at or below five columns, on the
+   reading that R6-RESIDENT-WEIGHTS' 32-token divergence was a long-accumulation effect; **it is
+   not** — a 1-ULP disagreement is available at any width, and this fixture reaches it at four
+   tokens. The case moves into `BOUNDARY_CASES`, exactly as `ds-resident-stage-full` did
+   (`docs/specs/r6-resident-weights.md` section 5.9 deviation 9): it still runs under the engine
+   shim, `record()` still asserts document identity, and **oracle S still compares `ds-suffix-2`
+   against it** — a within-host comparison, and therefore correct on every platform. Only the
+   committed row goes, because a committed row for it would be a statement about the machine that
+   regenerated the file. `scripts/decode-step-golden.jsonl` is 137 rows and the removed row is the
+   only difference from `c91757c`'s 138; the other twenty new rows are byte-identical, and the
+   runner reports 139 documented cases with 137 golden rows.
+   **Not worked around by loosening `normalize`.** Dropping `schedule[*].l_out_*` from the golden
+   would hide the same divergence on every existing row, including the ones that currently agree,
+   and would trade a real cross-host check for a count.
 
 ### 11.4 What did not move
 
@@ -1647,7 +1681,7 @@ implementation head.
 | 2.7 `R6_SUFFIX`, one new code, four details (`suffix[<text>]`, `prefix[<n>]`, `sequence[<n>]`, `token[<index>]`) | `CODE_SUFFIX`, `suffix_detail`, and two `labelled` details | 5.6's matrix, every row naming its exact detail |
 | 2.7 X1–X5 and the `suffix[]` locator | `schedule_decode`'s pass block and `prefix_suffix` | both forced builds' details |
 | 2.8 a partial pass publishes no completion | the pass block's failure branch | both forced builds, all six clauses |
-| 2.9 schema 5, the `suffix` object in every document | `SCHEMA_VERSION`, `render_suffix`, `render` | `record()` asserts the object on all 138 rows |
+| 2.9 schema 5, the `suffix` object in every document | `SCHEMA_VERSION`, `render_suffix`, `render` | `record()` asserts the object on all 139 documented cases (137 golden rows) |
 | 2.9 `output`/`oracle_logits` move on a completed pass | the two digest sites | `output.sha256 != kv.logits_sha256` per case; the container's vector on both forced builds |
 | 2.9 `plane.source` stays `"LOADED"` | unchanged | asserted per case |
 | 2.9 `normalize` zeroes only `suffix.compute_ns` | the smoke's `normalize` | the golden holds the other ten |
@@ -1666,7 +1700,7 @@ implementation head.
 | 4.2 failure — write-back short (`R6_PLANE_WRITE`) | **deferred as designed**, on R6-STEP-N section 7's terms: the arm's own sizing makes it unreachable and no forced build produces it |
 | 4.3 `layer_qwen2` construction/success; failure, malformed input, early exit, cleanup `N/A` | **met as designed**; every other golden in `scripts/` is byte-unchanged, all six |
 | 4.3 `mf_write_mask_offset`'s missing upper guard | **deferred as designed**, unreachable under step 6 |
-| 4.4 `model_forward` construction, the seam, success, failure | **met**, except the `render`-time `completed ⇒ columns_written == n_past_base + token_count` assertion, which lives in the **smoke's** `record()` rather than in `render` — an Align `render` cannot refuse to write a document without a second failure path through a pure function, and the property is asserted on every one of the 138 rows instead |
+| 4.4 `model_forward` construction, the seam, success, failure | **met**, except the `render`-time `completed ⇒ columns_written == n_past_base + token_count` assertion, which lives in the **smoke's** `record()` rather than in `render` — an Align `render` cannot refuse to write a document without a second failure path through a pure function, and the property is asserted on every one of the 139 documented cases instead |
 | 4.4 the position producer in `model_forward` | **deviation 2**: it stays in `decode_step` beside its three siblings |
 | 4.5 `kv_plane.align` and the reader byte-unchanged | **met**, with no diff to check, which is the evidence |
 | 4.6 FFI, both shims, `ggml_spike.align` byte-unchanged | **met**; the stub and the builder are the recorded exception |
