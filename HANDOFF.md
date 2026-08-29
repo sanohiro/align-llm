@@ -183,6 +183,18 @@ next free number.
 runs real-model CPU work in sibling worktrees; check `pgrep -f 'ggml-spike|run-decode-step|run-moe-decode-step'`
 and free memory before starting `llama-server`, and never kill another agent's process.
 
+**Coding-baseline chain, re-recorded.** This capability changes `Makefile`, one of the twenty
+recorded baseline artifacts, so the chain on `main` does not bind this head. Exactly one of the
+twenty digests moved (`Makefile`); `.align-revision` is unchanged and the twenty paths are
+identical. The eval artifacts this capability adds — `eval/prompt/c4-repair-gate/` and
+`eval/prompt/canonical-v1r/` — are **not** in the recorded set, which
+`python3 scripts/check-baseline-chain` confirms against the manifest. The identity-bound chain is
+`4652753` -> `5b88b6b` -> `9f9d458` (clean source, immutable oracle projection, finalization), with
+the pending measurement recorded on Linux (aarch64, kernel 6.11.11-linuxkit, Python 3.12.3) through
+the DinD wrapper, exactly as the R-wave's were. `gmake baseline-check` passes on Linux at the
+finalized head. The pull request must be a **merge**: squash or rebase would make the three commits
+unreachable from `main`.
+
 **Next actions, in order.**
 1. At the final head, on a clean worktree:
    `python3 scripts/pre-pr --owner-test prompt-verifier-smoke -- gmake prompt-model-smoke
