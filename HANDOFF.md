@@ -36,22 +36,33 @@ corpus. The required final review of `18e9bfb` then accepted five new findings: 
 scalar-accessor error, candidate-by-candidate special work approaching 10^12 comparisons,
 non-transactional stdout, Unicode classifier drift absent from tokenizer identity, and this stale
 handoff. Repository policy therefore required redesign rather than another repair loop.
-`ebbc794f18a05e5985bf5a8b769b4cc74e7fd41b` is that redesign: invalid scalar keys return `-1`;
-specials are capped at 256 entries / 32 bytes and use a dense trie bounded to 8,193 nodes and
+`ebbc794f18a05e5985bf5a8b769b4cc74e7fd41b` is that first redesign: invalid scalar keys return
+`-1`; specials are capped at 256 entries / 32 bytes and use a dense trie bounded to 8,193 nodes and
 33,554,432 input transitions; zero stdout applies only before the final write; and the exact
 managed regex dependency identities enter the tokenizer preimage and owner check.
 
-**Next actions.** (1) Run one fresh comprehensive review of the redesigned candidate. (2) If no
-valid finding remains, pass the exact-head docs publication preflight, publish the English PR with
-both review envelopes and finding dispositions, wait for checks, and merge. (3) Implement and
-publish Request 22 in the sibling Align repository, then adopt the shipped revision and build the
-tokenizer consumer without a compatibility layer.
+A fresh comprehensive review of `c1050c7` accepted four further contract defects, so the oracle and
+malformed-model closure are being redesigned together: ParseControl must pass the pinned
+`--parse-special` flag; capacity/identity arithmetic already proved representable cannot publish
+unreachable data errors; every non-generated parity input needs exact bytes or a frozen source
+identity; and duplicate token text must be rejected because pinned llama.cpp ultimately asserts
+rather than exposing the earlier map overwrite. The current uncommitted candidate adds
+`R7_TOKEN_DUPLICATE`, removes the unreachable results, freezes 299 ordered parity cases, and binds
+the four R6 prompt bytes to `prefix-corpus-v1` identities.
+
+**Next actions.** (1) Complete the author consistency pass and commit the second redesign. (2) Run
+one fresh comprehensive review of the stable candidate. (3) If no valid finding remains, pass the
+exact-head docs publication preflight, publish the English PR with every review envelope and finding
+disposition, wait for checks, and merge. (4) Implement and publish Request 22 in the sibling Align
+repository, then adopt the shipped revision and build the tokenizer consumer without a
+compatibility layer.
 
 **Blocker.** Align Request 22. Resume when Align ships ordinary borrow indexing for Move array
 elements and its compiler owners pass; the align-llm pin/adoption capability then owns every
 originally named Request 22 migration plus the tokenizer consumer.
 
-**Intentional uncommitted files.** None after the redesign and continuity commits.
+**Intentional uncommitted files.** `docs/specs/r7-tokenizer.md` and this handoff while the second
+review-driven redesign is being checked.
 
 ## Merged checkpoint: DEV-OUTPUT-SUMMARY (2026-08-31)
 

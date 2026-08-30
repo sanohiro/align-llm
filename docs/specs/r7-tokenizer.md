@@ -1,7 +1,7 @@
 # R7-TOKENIZER
 
-Status: contract ready after final-review redesign, 2026-08-31; align-llm source blocked on Align
-Request 22
+Status: contract redesigned after two comprehensive-review waves, 2026-08-31; align-llm source
+blocked on Align Request 22
 
 ## 1. Decision and boundary
 
@@ -195,17 +195,17 @@ The first occurrence of every key wins. Load validates in this order:
 | 3 | `tokenizer.ggml.model` and `.pre` are present STRING values | `R7_TOKENIZER_METADATA`, detail key |
 | 4 | values equal `gpt2` and `qwen2` respectively | `R7_UNSUPPORTED_TOKENIZER`, detail `model/pre` |
 | 5 | `tokens` is ARRAY/STRING, `token_type` ARRAY/INT32, `merges` ARRAY/STRING | `R7_TOKENIZER_METADATA`, detail key |
-| 6 | declared counts satisfy 2.8 before payload materialization | `R7_VOCAB_SIZE` or `R7_MERGE_COUNT` |
+| 6 | declared token count is `1..MAX_TOKENIZER_ENTRIES` and merge count is `0..MAX_TOKENIZER_ENTRIES` before payload materialization | `R7_VOCAB_SIZE` or `R7_MERGE_COUNT` |
 | 7 | materialize tokens, types, then merges through the GGUF producers | `R7_TOKENIZER_ARRAY`, detail key |
 | 8 | actual token and type counts equal; actual counts equal declarations | `R7_VOCAB_SIZE`, detail `tokens[n]types[m]` |
 | 9 | every token is non-empty and type is in 1 through 6 | `R7_TOKEN_EMPTY` or `R7_TOKEN_TYPE`, detail `token[i]` or `token[i]type[n]` |
-| 10 | after `</s>` promotion, the UNKNOWN/CONTROL/USER_DEFINED count is at most `MAX_SPECIAL_TOKENS` | `R7_SPECIAL_COUNT`, detail decimal count |
-| 11 | every effective special candidate is at most `MAX_SPECIAL_TOKEN_BYTES`, checked in ascending id order | `R7_SPECIAL_TEXT`, detail `token[i]` |
-| 12 | every NORMAL token consists only of GPT-2 alphabet scalars; every BYTE token is exact ASCII `<0xHH>` | `R7_TOKEN_TEXT`, detail `token[i]` |
-| 13 | every merge has one non-empty left part and non-empty remainder after the first ASCII space found at byte 1 or later | `R7_MERGE`, detail `merge[i]` |
-| 14 | the 256 GPT-2 byte-alphabet strings resolve to NORMAL tokens | `R7_BYTE_ALPHABET`, detail `byte[n]` |
-| 15 | construct token, merge, and special indexes without capacity overflow | `R7_INDEX_CAPACITY`, detail index name |
-| 16 | compute the canonical tokenizer identity | `R7_IDENTITY`, detail `preimage` |
+| 10 | build the proven-capacity token index while scanning ids ascending; report the later id of the first duplicate text | `R7_TOKEN_DUPLICATE`, detail `token[i]` |
+| 11 | after `</s>` promotion, the UNKNOWN/CONTROL/USER_DEFINED count is at most `MAX_SPECIAL_TOKENS` | `R7_SPECIAL_COUNT`, detail decimal count |
+| 12 | every effective special candidate is at most `MAX_SPECIAL_TOKEN_BYTES`, checked in ascending id order | `R7_SPECIAL_TEXT`, detail `token[i]` |
+| 13 | every NORMAL token consists only of GPT-2 alphabet scalars; every BYTE token is exact ASCII `<0xHH>` | `R7_TOKEN_TEXT`, detail `token[i]` |
+| 14 | every merge has one non-empty left part and non-empty remainder after the first ASCII space found at byte 1 or later | `R7_MERGE`, detail `merge[i]` |
+| 15 | the 256 GPT-2 byte-alphabet strings resolve to NORMAL tokens | `R7_BYTE_ALPHABET`, detail `byte[n]` |
+| 16 | construct the bounded merge index and special trie, then compute the canonical tokenizer identity | terminal OOM only; section 2.8 proves every arithmetic capacity |
 
 `tokenizer.ggml.scores`, BOS/EOS/PAD ids, `add_bos_token`, `add_eos_token`, and
 `tokenizer.chat_template` are neither required nor interpreted. They cannot affect either public
@@ -216,9 +216,11 @@ Empty token strings are rejected rather than rewritten to llama.cpp's synthetic 
 spelling. The reference model has none, and rewriting container data would make tokenizer identity
 and decode output depend on a hidden repair.
 
-Duplicate token strings follow the pinned llama.cpp rule: later ids replace earlier ids in the
-text-to-id lookup, while id-to-text remains complete. Duplicate merge pairs follow its other rule:
-the first rank wins. Neither duplication changes array order or identity.
+Duplicate token strings are rejected. Pinned llama.cpp first overwrites the text-to-id entry but
+then aborts on its `id_to_token.size() == token_to_id.size()` assertion, so it exposes no usable
+later-id behavior to copy. R7 turns that malformed-model abort into recoverable
+`R7_TOKEN_DUPLICATE`; accepted-model behavior remains parity-compatible. Duplicate merge pairs
+follow the pinned rule: the first rank wins. Their original array order remains part of identity.
 
 ### 2.4 Special-token modes
 
@@ -230,9 +232,10 @@ the GGUF type is NORMAL. No other spelling-based promotion is admitted.
 Special candidates are UNKNOWN, CONTROL, and USER_DEFINED tokens. An accepted model has at most
 `MAX_SPECIAL_TOKENS = 256` candidates, and each candidate is at most
 `MAX_SPECIAL_TOKEN_BYTES = 32` UTF-8 bytes. Partition is left-to-right; at a byte position the
-longest candidate wins, then the lowest id. Because both input and candidate are valid UTF-8,
-every match boundary is a scalar boundary. Section 3.5 fixes the bounded trie that implements this
-order without a candidate-by-candidate scan.
+longest candidate wins. Token text is unique by section 2.3, so no equal-spelling id tie exists.
+Because both input and candidate are valid UTF-8, every match boundary is a scalar boundary.
+Section 3.5 fixes the bounded trie that implements this order without a candidate-by-candidate
+scan.
 
 | Mode/class | UNKNOWN | CONTROL, including promoted `</s>` | USER_DEFINED | UNUSED | NORMAL/BYTE |
 | --- | --- | --- | --- | --- | --- |
@@ -341,11 +344,12 @@ An Align pin whose classifier dependency identity differs must update the identi
 contract before it can be adopted; it cannot silently reuse an old tokenizer id.
 
 The path, tensor bytes, quantization, chat template, special ids, and unrelated GGUF metadata are
-excluded because they cannot affect these operations. File order, duplicate entries, unused
-tokens, and original token types remain included because they can affect ids or decoding. The
-spelling-promotion, scanner, and special-trie rules are fixed by identity schema 1 and are not
-duplicated in the preimage. The classifier identity is included because its Unicode category
-tables can change scanner output even when all model arrays are identical.
+excluded because they cannot affect these operations. File order, duplicate merge entries, unused
+tokens, and original token types remain included because they can affect ids or decoding;
+duplicate token text is rejected before identity. The spelling-promotion, scanner, and
+special-trie rules are fixed by identity schema 1 and are not duplicated in the preimage. The
+classifier identity is included because its Unicode category tables can change scanner output even
+when all model arrays are identical.
 
 The one-shot `crypto.sha256` input is built only after all size checks. `MAX_TOKENIZER_TEXT_BYTES`
 plus checked per-entry prefixes bounds it. No identity cache or persisted tokenizer exists.
@@ -377,8 +381,11 @@ most `b-1` accepted merges, and fewer than `3b` queued candidates; the five Copy
 columns are reserved only after proving that bound. All counts fit `i64` by several orders under
 the declared caps.
 
-Actual allocation failure follows Align's terminal OOM policy; it is not converted into a data
-error. All accepted attacker-controlled dimensions are nevertheless bounded before allocation.
+The admitted maxima make every capacity arithmetic result representable. A checked-arithmetic
+failure while forming an index, heap, trie, JSON buffer, or identity preimage is therefore an
+internal invariant violation, not a model-dependent recoverable result. Actual allocation failure
+follows Align's terminal OOM policy; it is not converted into a data error. All accepted
+attacker-controlled dimensions are nevertheless bounded before allocation.
 
 ### 2.9 Errors and first-failure publication
 
@@ -394,13 +401,12 @@ error. All accepted attacker-controlled dimensions are nevertheless bounded befo
 | `R7_TOKENIZER_ARRAY` | selected payload cannot be materialized | key |
 | `R7_TOKEN_EMPTY` | empty vocabulary entry | `token[i]` |
 | `R7_TOKEN_TYPE` | token type outside 1 through 6 | `token[i]type[n]` |
+| `R7_TOKEN_DUPLICATE` | token text duplicates an earlier id | `token[i]` for the later id |
 | `R7_SPECIAL_COUNT` | effective special candidate count exceeds 256 | decimal count |
 | `R7_SPECIAL_TEXT` | effective special candidate exceeds 32 UTF-8 bytes | `token[i]` |
 | `R7_TOKEN_TEXT` | NORMAL text contains a non-alphabet scalar or BYTE spelling is not exact | `token[i]` |
 | `R7_MERGE` | malformed merge entry | `merge[i]` |
 | `R7_BYTE_ALPHABET` | one GPT-2 byte scalar has no NORMAL token | `byte[n]` |
-| `R7_INDEX_CAPACITY` | checked index or heap capacity cannot form | `token`, `merge`, `special`, or `heap` |
-| `R7_IDENTITY` | canonical preimage cannot form under its checked bound | `preimage` |
 | `R7_TEXT_SIZE` | encode text exceeds 1 MiB | decimal bytes |
 | `R7_TOKEN_COUNT` | decode id count exceeds cap | decimal count |
 | `R7_TOKEN_ID` | id negative or not below vocabulary size | `token[i]id[n]` |
@@ -546,19 +552,18 @@ greedy left-to-right merge without a heap is not equivalent and is forbidden.
 
 The loader inserts effective candidates into a dense byte trie in ascending id order. A node has
 256 `i64` transition slots initialized to `-1`; the root is node zero, and at most one node is
-created per candidate byte. Each node also has two terminal ids initialized to `-1`. Insertion
-writes a terminal only while it is `-1`, so duplicate equal-length spellings select the lowest id
-independently for `ParseControl` and `LiteralControl`. CONTROL/UNKNOWN write only the parse
-terminal; USER_DEFINED writes both. UNUSED never enters the trie.
+created per candidate byte. Each node also has two terminal ids initialized to `-1`. Token-text
+uniqueness means each enabled terminal is written at most once. CONTROL/UNKNOWN write only the
+parse terminal; USER_DEFINED writes both. UNUSED never enters the trie.
 
 Partition maintains one raw-span start and scans input byte positions left-to-right. At each
 position it walks at most `MAX_SPECIAL_TOKEN_BYTES` trie transitions, recording the deepest enabled
 terminal for the selected mode. If a terminal was found, it tokenizes the preceding raw span once,
 appends the recorded id, and resumes after the complete matched bytes; otherwise it advances the
 input position by one byte without tokenizing yet. The final raw span is tokenized once. Thus the
-deepest terminal gives longest-byte match, the terminal construction gives ascending-id ties, and
-a disabled CONTROL/UNKNOWN spelling flows through ordinary Qwen2 BPE. USER_DEFINED remains atomic
-in both encode modes. Adjacent raw spans are never recombined across an atomic id.
+deepest terminal gives longest-byte match, and a disabled CONTROL/UNKNOWN spelling flows through
+ordinary Qwen2 BPE. USER_DEFINED remains atomic in both encode modes. Adjacent raw spans are never
+recombined across an atomic id.
 
 This trie is a deliberate bounded replacement for pinned llama.cpp's candidate-by-candidate
 partition loop. Section 2.8 proves its node, allocation, and transition-work ceilings. The hosted
@@ -618,8 +623,8 @@ source and reads no product-generated expectation.
 - one BPE-reachable UNUSED token whose encode/decode pair demonstrates the documented non-roundtrip;
 - exact canonical token JSON and exact no-newline decoded stdout;
 - arity, mode, path, invalid JSON, oversize input, and zero stdout for every pre-write failure;
-- first-key wins, duplicate token last-wins, and duplicate merge first-wins;
-- exact special count/length rejection boundaries, duplicate/prefix trie matching, and a 1 MiB
+- first-key wins, duplicate-token rejection, and duplicate merge first-wins;
+- exact special count/length rejection boundaries, prefix trie matching, and a 1 MiB
   adversarial-prefix case that completes within the owner timeout with expected output;
 - the managed Align checkout's exact three regex lock identities from 2.7 before product compile;
 - every error code in 2.9 through missing/wrong arrays, mismatched counts, caps, invalid UTF-8,
@@ -646,11 +651,75 @@ output, timeout, or mismatch is a hard failure. Every reference invocation has a
 subprocess timeout; the fixed corpus has no separate target-wide timeout. The target stays outside
 `HOSTED_CHECK_TARGETS`, `CAPABLE_ONLY_CHECK_TARGETS`, and every aggregate.
 
-The corpus order is the section 4.1 named lexical cases, every control and user-defined spelling in
-ascending real-model id order, boundary-overlap cases in fixture-manifest order, the checked-in
-canonical prompt, the three R6 complete task prompts in manifest order, then 256 generated Unicode
-cases numbered `000` through `255`. The generated suffix uses `splitmix64-v1`, initial state
-`0x52375157454e3231`, and unsigned 64-bit wrap. Its exact `next_u64()` is:
+The parity corpus is frozen independently of product output. Its first 16 cases are the following
+exact UTF-8 byte strings, in row order. `-` is the zero-byte string; every other cell is lowercase
+hex with no separator. These rows, rather than the category labels in section 4.1, are normative.
+
+| Case | Exact UTF-8 bytes |
+| --- | --- |
+| `00-empty` | `-` |
+| `01-ascii` | `48656c6c6f2c20776f726c6421` |
+| `02-contractions` | `49276d2049274d207765276c6c205745274c4c206865276420484527442063616e27742043414e2754` |
+| `03-digits` | `61313233343562` |
+| `04-whitespace` | `20616c706861202062657461202020` |
+| `05-newlines` | `610d0a200a0d0a62` |
+| `06-punctuation` | `666f6f2e2e2e3f21202d2d20626172` |
+| `07-nul` | `610062` |
+| `08-cjk` | `e6bca2e5ad97e3818be381aae382abe3838a` |
+| `09-combining` | `65cc8120636166c3a9` |
+| `10-emoji` | `f09f91a9e2808df09f92bbf09f9a80` |
+| `11-four-byte` | `f0908d88f48fbfbf` |
+| `12-control-boundary` | `783c7c696d5f73746172747c3e79` |
+| `13-adjacent-controls` | `3c7c696d5f73746172747c3e3c7c696d5f656e647c3e` |
+| `14-mixed-specials` | `3c746f6f6c5f63616c6c3e3c7c696d5f656e647c3e3c2f746f6f6c5f63616c6c3e` |
+| `15-promoted-control` | `613c2f733e62` |
+
+The next 23 cases are the exact effective-special spellings below in ascending id order. The table
+also makes the Qwen2 `</s>` promotion and USER_DEFINED membership independently auditable rather
+than deriving the parity inputs from Align output.
+
+| Id | Original type | Exact spelling |
+| ---: | --- | --- |
+| 128247 | NORMAL, promoted CONTROL | `</s>` |
+| 151643 | CONTROL | `<|endoftext|>` |
+| 151644 | CONTROL | `<|im_start|>` |
+| 151645 | CONTROL | `<|im_end|>` |
+| 151646 | CONTROL | `<|object_ref_start|>` |
+| 151647 | CONTROL | `<|object_ref_end|>` |
+| 151648 | CONTROL | `<|box_start|>` |
+| 151649 | CONTROL | `<|box_end|>` |
+| 151650 | CONTROL | `<|quad_start|>` |
+| 151651 | CONTROL | `<|quad_end|>` |
+| 151652 | CONTROL | `<|vision_start|>` |
+| 151653 | CONTROL | `<|vision_end|>` |
+| 151654 | CONTROL | `<|vision_pad|>` |
+| 151655 | CONTROL | `<|image_pad|>` |
+| 151656 | CONTROL | `<|video_pad|>` |
+| 151657 | USER_DEFINED | `<tool_call>` |
+| 151658 | USER_DEFINED | `</tool_call>` |
+| 151659 | CONTROL | `<|fim_prefix|>` |
+| 151660 | CONTROL | `<|fim_middle|>` |
+| 151661 | CONTROL | `<|fim_suffix|>` |
+| 151662 | CONTROL | `<|fim_pad|>` |
+| 151663 | CONTROL | `<|repo_name|>` |
+| 151664 | CONTROL | `<|file_sep|>` |
+
+The following four prompt cases reuse the already-frozen R6 `prefix-corpus-v1` byte identities,
+not a newly selected "canonical prompt." Before tokenization the runner executes
+`python3 scripts/check-prefix-corpus`, reconstructs each complete prompt from the manifest's named
+source `text` fields with the composition rule in `scripts/check-prefix-corpus`, and requires this
+exact row order, byte count, and SHA-256:
+
+| Entry id | Bytes | Complete-prompt SHA-256 |
+| --- | ---: | --- |
+| `shared-prefix` | 1,733 | `3c2e3a26638ea3958a2edb57f7dbf65a11fe4a7496b7eebfc3c3602f0e5ca604` |
+| `duration-half-away-from-zero.initial.suffix` | 4,711 | `00aa28784d5a3a2078b328882d7778d04fdbb8276025f8fe301da5f166c5a9b3` |
+| `layer-precedence-frozen-module.initial.suffix` | 6,506 | `17efb05144ba8724e2e8efa37bddc82a76957cd7d6e00f21c178394cfe375aa3` |
+| `record-codec-round-trip.initial.suffix` | 5,545 | `09273a5180788584c7dd7518581defc669646797a7b118d325f18337ecb242e8` |
+
+The final 256 cases are numbered `unicode-000` through `unicode-255`. They use
+`splitmix64-v1`, initial state `0x52375157454e3231`, and unsigned 64-bit wrap. Its exact
+`next_u64()` is:
 
 ```text
 state = state + 0x9e3779b97f4a7c15
@@ -663,10 +732,15 @@ return z xor (z >> 31)
 Each case has `1 + next_u64() % 64` scalars; each scalar candidate is
 `next_u64() % 0x110000`, retrying only `0xd800..0xdfff`. This fixes seed, generator, case count,
 lengths, scalar domain, rejection rule, and order independently of Python's PRNG or Unicode tables.
-For every case:
+Thus the corpus has exactly 299 cases in the order above: 16 fixed byte rows, 23 exact special rows,
+4 frozen R6 prompts, and 256 generated Unicode rows. The runner fails before either tokenizer when
+any table spelling, special id/type/text read independently from the pinned model, prompt identity,
+case count, or generated bytes differ. For every case:
 
-- `ParseControl` ids equal `llama-tokenize -m MODEL --stdin --ids --no-bos --no-escape`;
-- `LiteralControl` ids equal the same command with `--no-parse-special` added;
+- `ParseControl` ids equal
+  `llama-tokenize -m MODEL --stdin --ids --no-bos --no-escape --parse-special`;
+- `LiteralControl` ids equal
+  `llama-tokenize -m MODEL --stdin --ids --no-bos --no-escape --no-parse-special`;
 - Align `RenderControl` of either exact reference id list equals the original UTF-8 bytes;
 - `SkipControl` equals the independent expected filtering of effective CONTROL/UNKNOWN ids;
 - repeated Align runs publish the same ids, text, counts, and `tokenizer_id`.
@@ -721,9 +795,9 @@ coding.
 | `src/gguf.align`: `read_i32_array` | same selected-offset route | sign-extended owned `i64` values | invalid key/wrong width/truncation/cap is `Invalid` | invalid key before path; first bad scalar | same | `tokenizer-smoke`: invalid key, types positive/wrong/truncated |
 | Request 22 migrations | Build direct Move-record/string arrays | unchanged accessors/documents | existing failure documents unchanged | existing first-failure order | element-wise Drop exactly once | `gguf-smoke`, `model-ir-smoke`, `layer-forward-smoke` |
 | `src/tokenizer_qwen2.align`: loader | tokens, types, merges in step order; checked tables, trie, and identity | private immutable tokenizer | first code in 2.3/2.9, no partial output | no later index after failure | all arrays/regex/index/trie/preimage state drop | `tokenizer-smoke` full model matrix |
-| token hash index | ascending ids insert; duplicate replaces | complete-string lookup | collision never equals without byte compare | table-full impossible under checked capacity | Copy arrays drop | collision fixture, duplicate last-wins |
+| token hash index | ascending ids insert; duplicate rejects later id | complete-string lookup | duplicate is `R7_TOKEN_DUPLICATE`; collision never equals without byte compare | table-full impossible under proven capacity | Copy arrays drop | collision fixture, duplicate rejection |
 | merge hash index | ascending ranks insert; duplicate ignored | first rank | malformed merge before insert | first malformed rank | strings stay owned by merges array | rank/collision/duplicate cases |
-| special trie/partition | ascending ids into checked dense transitions and two mode terminals | longest/lowest-id atomic match within 32 probes per position | count/length cap errors; disabled control flows to BPE | raw segment flush before atomic id | trie and raw-span scratch drop | all modes, overlaps, duplicate ties, exact maximum common-prefix case |
+| special trie/partition | ascending unique ids into checked dense transitions and two mode terminals | longest atomic match within 32 probes per position | count/length cap errors; disabled control flows to BPE | raw segment flush before atomic id | trie and raw-span scratch drop | all modes, overlaps, exact maximum common-prefix case |
 | Qwen2 scanner | exact managed-regex identity, scalar spans, then three compiled classifiers | ordered complete pieces | lock mismatch rejects in the owner; invalid UTF-8 cannot enter from `str` | total fallback advances one scalar | regex handles/scalar columns drop | lock-identity check + lexical category table + seeded cases |
 | GPT-2 byte map | fixed numeric map, validated byte alphabet | reversible mapped bytes | missing/mistyped byte token is load error | first missing byte | fixed Copy tables drop | all 256 bytes and multilingual roundtrip |
 | BPE heap | one symbol per mapped byte, adjacent candidates | rank/left exact ids | absent final token is `R7_TOKEN_LOOKUP` | stale candidates skipped without mutation | word/symbol/heap scratch drops per piece | rank conflict, stale heap, long word |
@@ -732,7 +806,7 @@ coding.
 | `src/main.align` | arity/mode/path, model, bounded input, operation | one stdout write | product/pre-write failure has zero stdout; sink failure may retain a prefix and propagates OS status/signal | cheap validation prevents file work | readers/buffers/results drop | CLI matrix, byte-exact success, zero stdout for pre-write failures |
 | `scripts/tokenizer_fixture.py` | temporary independent GGUF and manifest | deterministic corpus | explicit mutants one root cause each | no committed/generated fixture | runner-owned temp trap | `make tokenizer-smoke` |
 | `scripts/run-tokenizer-smoke` | managed compiler + fixture | all API/CLI assertions | refuses missing case/output and vacuous corpus | first command failure stops | trap removes temp tree | itself |
-| `scripts/run-tokenizer-parity` | validates two opt-in operands and pin | exact ids/roundtrips | wrong pin/tool/model/mismatch hard fails | absent prerequisite one N/A line | temporary inputs/results removed | `make tokenizer-parity` |
+| `scripts/run-tokenizer-parity` | validates two opt-in operands, pin, 299-case frozen corpus, and R6 prompt manifest | exact ids/roundtrips | wrong pin/tool/model/corpus/mismatch hard fails | absent prerequisite one N/A line | temporary inputs/results removed | `make tokenizer-parity` |
 | `Makefile` / topology | add two phony targets; hosted owner once | hosted graph reaches smoke | topology duplication/omission fails | parity never enters aggregate | N/A | `gate-topology-check`, `make ci` |
 
 ## 6. Risks and mitigations
@@ -753,7 +827,8 @@ coding.
    simple words. Rank conflicts, equal-rank left order, and stale candidates are separate owner
    cases, and real ids are compared exactly.
 5. **Special-mode ambiguity.** llama.cpp uses “parse special” while USER_DEFINED remains parsed.
-   The public names say control and the four-class table is normative.
+   The public names say control, the four-class table is normative, and parity passes explicit
+   `--parse-special` / `--no-parse-special` flags rather than relying on the tool default.
 6. **Decode appears valid per token but fails jointly.** UTF-8 is validated after concatenating all
    pieces. The negative corpus includes individually incomplete byte pieces that become valid
    jointly and a sequence that remains invalid.
@@ -763,9 +838,14 @@ coding.
 8. **Repeated model load.** Two public operations each load once. This capability makes no latency
    claim; a resident handle waits for a measured consumer and an opaque ownership surface.
 9. **Oracle circularity.** The hosted Python oracle neither imports nor parses Align source. The
-   real qualification uses the pinned llama.cpp executable for ids and byte equality for roundtrip.
+   real qualification uses the pinned llama.cpp executable for ids and byte equality for roundtrip;
+   its 299 inputs are fixed by exact bytes, pinned model metadata, existing R6 identities, or the
+   specified generator before either tokenizer runs.
 10. **Aggregate creep.** Only the bounded synthetic owner joins hosted checks. The 4.4 GB model and
     external tokenizer stay opt-in.
+11. **Malformed duplicate vocabulary.** Pinned llama.cpp mutates its lookup and then asserts, so
+    there is no successful oracle result to imitate. R7 rejects the later id recoverably before
+    identity/index publication and tests that exact divergence.
 
 ## 7. Deferred work
 
@@ -808,21 +888,21 @@ The author pass checks these statements as one contract:
 1. Roadmap item 41, `HANDOFF.md`, Request 22, and this section all name the same active capability
    and blocking resume condition.
 2. The public inventory in 2.1/2.2 exactly covers the CLI and no hypothetical Align surface.
-3. Qwen2 regex and its locked classifier identity, bounded special-trie classification, byte map,
-   BPE priority, and decode rules match the pinned source and the 2026-08-31 reference-model
-   observation.
+3. Qwen2 regex and its locked classifier identity, bounded special-trie classification, duplicate
+   rejection, byte map, BPE priority, decode rules, and explicit oracle flags match the pinned
+   source and the 2026-08-31 reference-model observation.
 4. Every malformed condition has one first code, one bounded detail, and a closure-matrix owner.
 5. Every allocation and attacker-controlled loop has a preceding count/byte/capacity/work bound
    and one cleanup owner.
 6. Token JSON, tokenizer identity, defaults, effects, persistence, cache identity, and metrics are
    explicit; genuinely inapplicable fields say why.
-7. The hosted owner is aggregate-safe; real-model parity is opt-in; aggregate membership change
-   names `make ci`.
+7. The hosted owner is aggregate-safe; the exact 299-case real-model parity corpus is opt-in;
+   aggregate membership change names `make ci`.
 8. Request 22 cannot reach `ALIGN_LLM_VERIFIED` from a pin update or tokenizer alone; all previously
    named migrations remain acceptance.
 
-Result: consistent at the design checkpoint. Final ledger-to-diff reconciliation remains pending
-until the blocked implementation exists.
+Result: consistent after the second review-driven redesign. Final ledger-to-diff reconciliation
+remains pending until the blocked implementation exists.
 
 ## 10. Final ledger-to-diff mapping
 
