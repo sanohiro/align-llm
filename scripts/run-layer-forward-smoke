@@ -238,10 +238,10 @@ STUB_CASES = [
     # a particular number, and nine is one past the new one exactly as seven was one
     # past the old one. `src/layer_olmoe.align` keeps its own cap at 6, so the routed
     # block below still refuses seven.
-    # R6-STEP-N section 2.5 lifts `MAX_PREFILL_TOKENS` 8 -> 32. **33 repetitions of token id 1,
-    # not `1,2,...,33`:** this geometry's `n_vocab` is 32, so an ascending list would be refused
+    # R6-PREFIX-TTFT lifts `MAX_PREFILL_TOKENS` 32 -> 2048. **2049 repetitions of token id 1,
+    # not an ascending list:** this geometry's `n_vocab` is 32, so an ascending list would be refused
     # as out-of-vocabulary and the case would stop being about the cap.
-    ("lf-tokens-33", [ARM, PACK, "0", GEOM, ",".join(["1"] * 33)], "R5_TOKENS"),
+    ("lf-tokens-2049", [ARM, PACK, "0", GEOM, ",".join(["1"] * 2049)], "R5_TOKENS"),
     # The other half of that lift, and the reason it is safe. `llama-eval-callback` prints a
     # tensor's rows in full only while `ne1 <= 6`; above it prints three leading and three trailing
     # rows and the scan's `printed_count` clamps to six on **both** sides. A seven- or eight-token
@@ -788,10 +788,10 @@ STUB_CASES = [
     ("mf-tokens-trailing", [ARM, PACK, GEOM, "1,"], "R5_TOKENS"),
     ("mf-tokens-space", [ARM, PACK, GEOM, "1, 2"], "R5_TOKENS"),
     # R6 section 2.7: the cap is 8 now, so the over-cap fixture is nine tokens.
-    # R6-STEP-N section 2.5 lifts `MAX_PREFILL_TOKENS` 8 -> 32. **33 repetitions of token id 1,
-    # not `1,2,...,33`:** this geometry's `n_vocab` is 32, so an ascending list would be refused
+    # R6-PREFIX-TTFT lifts `MAX_PREFILL_TOKENS` 32 -> 2048. **2049 repetitions of token id 1,
+    # not an ascending list:** this geometry's `n_vocab` is 32, so an ascending list would be refused
     # as out-of-vocabulary and the case would stop being about the cap.
-    ("mf-tokens-33", [ARM, PACK, GEOM, ",".join(["1"] * 33)], "R5_TOKENS"),
+    ("mf-tokens-2049", [ARM, PACK, GEOM, ",".join(["1"] * 2049)], "R5_TOKENS"),
     # R6 section 2.7's other half. Above six tokens the instrument prints three leading and three
     # trailing rows and `printed_count` clamps to six on both sides, so a transcript comparison at
     # `T = 7` would check six of seven rows and still report `PASS`. The oracle refuses itself. The
@@ -2206,12 +2206,11 @@ STUB_CASES = [
     ("moe-tokens-empty", [ARM, PACK, GEOM, ""], "R5_TOKENS"),
     ("moe-tokens-trailing", [ARM, PACK, GEOM, "1,"], "R5_TOKENS"),
     ("moe-tokens-space", [ARM, PACK, GEOM, "1, 2"], "R5_TOKENS"),
-    # R6-OLMOE-DECODE section 3.8 lifts `layer_olmoe.MAX_PREFILL_TOKENS` 6 -> 32, so seven tokens
-    # are now **accepted** by the token gate and the case that pinned the old cap has to name the
-    # new one. The over-cap list is thirty-three repetitions of id 1 and not `1,2,...,33`: the
+    # R6-PREFIX-TTFT lifts `layer_olmoe.MAX_PREFILL_TOKENS` 32 -> 2048. The over-cap list is 2049
+    # repetitions of id 1 and not an ascending list: the
     # synthetic `n_vocab` is 32, so an ascending list would be refused as out-of-vocabulary and the
     # case would stop being about the cap.
-    ("moe-tokens-33", [ARM, PACK, GEOM, ",".join(["1"] * 33)], "R5_TOKENS"),
+    ("moe-tokens-2049", [ARM, PACK, GEOM, ",".join(["1"] * 2049)], "R5_TOKENS"),
     # The other half of the lift, and the reason it is safe. The instrument prints a tensor's rows
     # in full only while `ne1 <= 6`, so a seven-token prefill **with a transcript** would compare six
     # of seven rows and report `PASS` about a row it never saw. The oracle refuses itself; the same
@@ -2810,9 +2809,9 @@ STUB_CASES = [
     ("mm-tokens-empty", [ARM, PACK, GEOM, "", WIDTH], "R5_TOKENS"),
     ("mm-tokens-trailing", [ARM, PACK, GEOM, "1,", WIDTH], "R5_TOKENS"),
     ("mm-tokens-space", [ARM, PACK, GEOM, "1, 2", WIDTH], "R5_TOKENS"),
-    # R6-OLMOE-DECODE section 3.8's lift, on the second arm it widens. See the fourth block's
-    # `moe-tokens-33` for why the over-cap list is thirty-three repetitions of one id.
-    ("mm-tokens-33", [ARM, PACK, GEOM, ",".join(["1"] * 33), WIDTH], "R5_TOKENS"),
+    # R6-PREFIX-TTFT's lift, on the second arm it widens. See the fourth block's
+    # `moe-tokens-2049` for why the over-cap list repeats one valid id.
+    ("mm-tokens-2049", [ARM, PACK, GEOM, ",".join(["1"] * 2049), WIDTH], "R5_TOKENS"),
     ("mm-tokens-seven-with-transcript",
      [ARM, PACK, GEOM, "1,2,3,4,5,6,7", WIDTH, "-", SOURCE, TRANSCRIPT], "R5_ORACLE_TRUNCATED"),
     ("mm-tokens-seven-no-transcript",
@@ -3626,14 +3625,13 @@ LOGITS = path("model-logits.bin")
 WIDTH = "8"
 STEPS = "3"
 
-# R6-RESIDENT-WEIGHTS section 5.2's staging-boundary case. `MAX_PREFILL_TOKENS` is 32 and this
-# geometry's `n_vocab` is 32, so `0..31` is both the longest prompt the arm admits and a prompt
-# whose every id is in vocabulary — and it stages 32 **distinct** embedding rows rather than one row
-# thirty-two times, so the highest slot carries bytes that belong only to it. The width is `T + N`
-# exactly, the minimum `--decode-step` accepts.
+# R6-RESIDENT-WEIGHTS section 5.2's staging-boundary case, moved to R6-PREFIX-TTFT's 2048-token
+# boundary. This geometry's `n_vocab` is 32, so the prompt repeats `0..31` sixty-four times: every
+# id is valid, and slot 2047 still carries the row for id 31 rather than an all-zero accident. The
+# width is `T + N` exactly, the minimum `--decode-step` accepts.
 STAGE_FULL = "ds-resident-stage-full"
-STAGE_FULL_TOKENS = ",".join(str(identifier) for identifier in range(32))
-STAGE_FULL_WIDTH = "33"
+STAGE_FULL_TOKENS = ",".join(str(identifier % 32) for identifier in range(2048))
+STAGE_FULL_WIDTH = "2049"
 STAGE_FULL_STEPS = "1"
 
 # R6-KV-PERSIST section 5.1. Every container this block writes lands under the runner's own
@@ -3651,6 +3649,10 @@ KV_READONLY_DIR = path("kv-readonly")
 KV_UNWRITABLE = os.path.join(KV_READONLY_DIR, "kv.akvp")
 KV_ABSENT = path("kv-absent.akvp")
 KV_GOOD = path("model-kv-good.akvp")
+KV_EXPANDED_33 = path("model-kv-expanded-33.akvp")
+KV_EXPANDED_CORPUS = path("model-kv-expanded-corpus.akvp")
+KV_EXPANDED_2048 = path("model-kv-expanded-2048.akvp")
+KV_EXPANDED_2049 = path("model-kv-expanded-2049.akvp")
 KV_FOREIGN = path("model-kv-foreign-geometry.akvp")
 KV_HUGE = geom("geometry-kv-too-large")
 KV_ZERO_IDENTITY_PACK = path("model-pack-zero-identity.alignpack")
@@ -3672,6 +3674,7 @@ KV_PREFIX = path("kv-prefix.akvp")
 # MF-SINGLE-TOKEN-LOGITS (roadmap item 36) lifted the `T_prefix >= 2` bound, so the one-token prefix
 # gets its own container and its own two-token single-shot comparand.
 KV_PREFIX_ONE = path("kv-prefix-one.akvp")
+KV_PREFIX_CAP = path("kv-prefix-cap.akvp")
 SUFFIX_PREFIX_ONE = "3"
 SUFFIX_FULL_TWO = "3,5"
 SUFFIX_PREFIX_TOKENS = "3,17"
@@ -3683,6 +3686,11 @@ SUFFIX_FULL_FOUR = "3,17,5,9"
 SUFFIX_SINGLE_SHOT_4 = "ds-suffix-single-shot-4"
 SUFFIX_FULL_FIVE = "3,17,5,9,27"
 SUFFIX_STEPS_THREE = "2"
+# R6-PREFIX-TTFT's exact legal sequence boundary. Repeating one in-vocabulary suffix id keeps this
+# about `T_prefix + S`, not about the fixture's 32-token vocabulary.
+SUFFIX_AT_CAP = ",".join(["5"] * 2046)
+SUFFIX_FULL_CAP = SUFFIX_PREFIX_TOKENS + "," + SUFFIX_AT_CAP
+SUFFIX_CAP_WIDTH = "2049"
 
 # `docs/specs/r6-moe-resident-dense.md` section 13 item 15's payload, and the two exact details it
 # must produce here. `bounded_detail` cut its operand at a fixed **byte** index, so an operand whose
@@ -3896,6 +3904,10 @@ KV_REFUSALS = [
      "plane[536870913]", kv("plane-too-large"), "HEADER"),
     ("ds-kv-logits-too-large", ds("-", kv("logits-too-large")), "R6_KV_TOO_LARGE",
      "logits[16777220]", kv("logits-too-large"), "HEADER"),
+    # R6-PREFIX-TTFT's upper persisted-policy bound. The file is internally canonical, so both
+    # readers must refuse `token_count` itself before looking at its token or plane regions.
+    ("ds-kv-token-count-2049", ds("-", KV_EXPANDED_2049), "R6_KV_HEADER", "token_count",
+     KV_EXPANDED_2049, "HEADER"),
     ("ds-kv-plane-not-last", ds("-", kv("plane-not-last")), "R6_KV_REGION", "plane",
      kv("plane-not-last"), "REGION"),
     ("ds-kv-geometry-layers", ds("-", kv("geometry-layers")), "R6_KV_GEOMETRY", "n_layer",
@@ -4011,10 +4023,10 @@ STUB_CASES = [
      "R5_GGML_UNAVAILABLE"),
     ("ds-tokens-empty", [ARM, PACK, GEOM, ""], "R6_TOKENS"),
     ("ds-tokens-trailing", [ARM, PACK, GEOM, "1,"], "R6_TOKENS"),
-    # R6-STEP-N section 2.5's lift, 8 -> 32. **33 repetitions of token id 1, not `1,2,...,33`:** the
-    # hosted geometry's `n_vocab` is 32, so an ascending list would be refused as out-of-vocabulary
+    # R6-PREFIX-TTFT's lift, 32 -> 2048. **2049 repetitions of token id 1, not an ascending list:**
+    # the hosted geometry's `n_vocab` is 32, so an ascending list would be refused as out-of-vocabulary
     # and the case would stop being about the cap.
-    ("ds-tokens-33", [ARM, PACK, GEOM, ",".join(["1"] * 33)], "R6_TOKENS"),
+    ("ds-tokens-2049", [ARM, PACK, GEOM, ",".join(["1"] * 2049)], "R6_TOKENS"),
     ("ds-tokens-oob", [ARM, PACK, GEOM, "1,32"], "R6_TOKENS"),
     # Step 3b (R6-STEP-N section 2.3). Parse, then range, then the cap; the plane bound is step 6's
     # and raises `R6_KV_WIDTH`, which is what `ds-kv-width-narrow-for-steps` below asserts.
@@ -4107,14 +4119,14 @@ STUB_CASES = [
     # `S` because the cap is the oracle's: oracle C'' runs `--model-forward` at `TOKENS,SUFFIX`, so a
     # cap on `S` alone would let the arm accept a run whose own acceptance oracle it refuses.
     ("ds-suffix-over-cap",
-     ds(load=KV_GOOD, tokens=SUFFIX_PREFIX_TOKENS, suffix=",".join(["5"] * 31)), "R6_SUFFIX"),
+     ds(load=KV_GOOD, tokens=SUFFIX_PREFIX_TOKENS, suffix=",".join(["5"] * 2047)), "R6_SUFFIX"),
     # Precedence: step 3 precedes 3c, because `T_prefix` must be a number before `T_prefix + S` is
     # one, so both operands invalid names `R6_TOKENS`.
     ("ds-suffix-and-bad-tokens",
-     ds(load=KV_GOOD, tokens=",".join(["1"] * 33), suffix=SUFFIX_ONE), "R6_TOKENS"),
+     ds(load=KV_GOOD, tokens=",".join(["1"] * 2049), suffix=SUFFIX_ONE), "R6_TOKENS"),
     # Precedence: 3c precedes 6, for the same sentence one term later.
     ("ds-suffix-over-cap-and-narrow",
-     ds(load=KV_GOOD, tokens=SUFFIX_PREFIX_TOKENS, suffix=",".join(["5"] * 31), width="4"),
+     ds(load=KV_GOOD, tokens=SUFFIX_PREFIX_TOKENS, suffix=",".join(["5"] * 2047), width="4"),
      "R6_SUFFIX"),
     # The plane bound, **widened rather than duplicated**: step 6 reads
     # `T_prefix + S + N <= KV_WIDTH` and raises the code R6 already owns for "the plane is too
@@ -4180,6 +4192,15 @@ ENGINE_CASES = [
     # implementation of the format that has read neither the arm nor the reader. This is what makes
     # `akvp` a shared contract rather than the arm's habit.
     ("ds-kv-load-fixture", ds(load=KV_GOOD), ""),
+    # R6-PREFIX-TTFT's expanded reader successes: the first value the old build refused, and the
+    # checked corpus prefix count. The all-zero fixture plane is valid persisted data; these rows
+    # own policy, token-stream layout, upload, and one-step continuation rather than prefill math.
+    ("ds-kv-load-expanded-33",
+     ds(load=KV_EXPANDED_33, tokens=",".join(["1"] * 33), width="64", steps="1",
+        transcript="-"), ""),
+    ("ds-kv-load-expanded-corpus",
+     ds(load=KV_EXPANDED_CORPUS, tokens=",".join(["1"] * 370), width="1536", steps="1",
+        transcript="-"), ""),
     # R6-RESIDENT-WEIGHTS section 3.1's "absence is `-`", asserted rather than described:
     # `ds-resident-dash` is `ds-kv-args-dash-dash` plus one operand whose value is the default, and
     # the assertion below is that the two documents are identical.
@@ -4309,14 +4330,14 @@ ENGINE_CASES = ENGINE_CASES + [(name, operands, code) for name, operands, code, 
 
 # Section 5.2 and section 11.1 correction 13's bound, approached from the side no refusal reaches.
 # `slot` is bounded by `tokens.count` at both `stage_embed_row` call sites, so a prompt of exactly
-# `MAX_PREFILL_TOKENS` ids stages slot 31 — the highest index any caller can produce — and the
-# corpus stops containing only three-token prompts. On this fixture the stage's 32 x 16 B of rows
-# are padded up to `block_align` 4,096, so slot 31 is not the region's last byte; what the case pins
+# `MAX_PREFILL_TOKENS` ids stages slot 2047 — the highest index any caller can produce — and the
+# corpus stops containing only three-token prompts. On this fixture the stage's 2048 x 32 B of rows
+# occupy 65,536 bytes; what the case pins
 # is the **token count**, and a destination bound one row too tight would turn this legal run into
 # `R5_SHAPE`.
 #
 # **It carries no golden row, and the reason is a measured one.** The golden is committed and
-# compared byte for byte on macOS/arm64 and on Linux/x86_64, and a 32-token prefill's `l_out` and
+# compared byte for byte on macOS/arm64 and on Linux/x86_64, and the earlier 32-token prefill's `l_out` and
 # logits digests differ between them in the last bit (`.schedule[0].l_out_bit_sum` 538248184962
 # against 538248184963 on the first CI run of this case) — long accumulations and 32 rows of `exp`
 # reach a host difference the three-token corpus never does. Pinning a host-specific digest would
@@ -4355,6 +4376,18 @@ BOUNDARY_CASES = [
     ("ds-suffix-single-shot-2", ds(tokens=SUFFIX_FULL_TWO, transcript="-"), ""),
     ("ds-suffix-prefix-one",
      ds(load=KV_PREFIX_ONE, tokens=SUFFIX_PREFIX_ONE, suffix=SUFFIX_ONE, transcript="-"), ""),
+    # R6-PREFIX-TTFT: save the two-token prefix, compare the exact 2,048-token sequence as a
+    # single-shot run, then continue the saved plane with 2,046 suffix tokens. These carry no
+    # cross-host golden; oracle S and C'' compare them within one host below.
+    ("ds-suffix-save-prefix-cap",
+     ds(save=KV_PREFIX_CAP, tokens=SUFFIX_PREFIX_TOKENS, transcript="-", width=SUFFIX_CAP_WIDTH,
+        steps="1", resident="weights"), ""),
+    ("ds-suffix-single-shot-cap",
+     ds(tokens=SUFFIX_FULL_CAP, transcript="-", width=SUFFIX_CAP_WIDTH, steps="1",
+        resident="weights"), ""),
+    ("ds-suffix-at-cap",
+     ds(load=KV_PREFIX_CAP, tokens=SUFFIX_PREFIX_TOKENS, suffix=SUFFIX_AT_CAP, transcript="-",
+        width=SUFFIX_CAP_WIDTH, steps="1", resident="weights"), ""),
 ]
 # MF-SINGLE-TOKEN-LOGITS sections 1 and 4. `decode_step`'s prefill is `model_forward`'s, so the
 # one-token gather reaches this arm too -- and this is the arm where the defect was **not** silent:
@@ -4928,11 +4961,16 @@ for name, operands, expected in ENGINE_CASES:
     plane = document["plane"]
     if document["verdict"] != "EXTERNAL":
         failures.append("%s: verdict %r, not EXTERNAL" % (name, document["verdict"]))
-    # Section 2.2's size arithmetic on this geometry: `n_layer * 2 * KV_WIDTH * n_head_kv *
-    # head_dim * 4` is `2 * 2 * 8 * 1 * 4 * 4`.
-    if plane["bytes"] != 512 or plane["stride"] != 128:
-        failures.append("%s: plane %d bytes, stride %d, not 512/128"
-                        % (name, plane["bytes"], plane["stride"]))
+    # Section 2.2's size arithmetic on this case's own width. R6-PREFIX-TTFT adds legal persisted
+    # widths 64 and 1,536 to this loop, so deriving from the document prevents the old width-8
+    # fixture from becoming a hidden second cap.
+    expected_stride = document["selection"]["reconciliation_width"] \
+        * document["model"]["n_head_kv"] * document["model"]["head_dim"] * 4
+    expected_plane = document["model"]["n_layer"] * 2 * expected_stride
+    if plane["bytes"] != expected_plane or plane["stride"] != expected_stride:
+        failures.append("%s: plane %d bytes, stride %d, not %d/%d"
+                        % (name, plane["bytes"], plane["stride"], expected_plane,
+                           expected_stride))
     steps_requested = decode["steps_requested"]
     rows = document["steps"]
     # R6-PREFIX-SUFFIX-PREFILL section 5.1. Every assertion below was written against this block's
@@ -5177,9 +5215,9 @@ for streamed_case, resident_case in (("ds-resident-stream-1", "ds-resident-weigh
                         % (streamed_case, resident_case, describe_difference(left, right)))
 
 # The staging boundary, pinned from the legal side. A resident prefill of exactly
-# `MAX_PREFILL_TOKENS` ids stages slot 31, the highest index `stage_embed_row` can be asked for, and
+# `MAX_PREFILL_TOKENS` ids stages slot 2047, the highest index `stage_embed_row` can be asked for, and
 # the twin below makes the case an assertion about the **bytes** that slot carries rather than only
-# about the run not being refused: the streamed leg reads all 32 rows out of the pack, the resident
+# about the run not being refused: the streamed leg reads all 2048 rows out of the pack, the resident
 # leg copies them out of the arena's table, and oracle R says the two produce the same document.
 # The case runs here, under the engine shim the block above built, and not in `ENGINE_CASES`: it
 # carries no golden row (see `BOUNDARY_CASES`), and every assertion in that loop is arithmetic on
@@ -5204,12 +5242,12 @@ else:
             failures.append("%s: %r" % (STAGE_FULL, stage_full["weights"]))
         # The prompt reached the graph at its full length: `n_past` before the first decode step is
         # the prompt's own token count, and the plane holds `T + N` columns after it.
-        if stage_full["decode"]["n_past_first"] != 32 \
-                or stage_full["plane"]["columns_written"] != 32 + int(STAGE_FULL_STEPS):
-            failures.append("%s: n_past_first %d and %d columns, not 32 and %d"
+        if stage_full["decode"]["n_past_first"] != 2048 \
+                or stage_full["plane"]["columns_written"] != 2048 + int(STAGE_FULL_STEPS):
+            failures.append("%s: n_past_first %d and %d columns, not 2048 and %d"
                             % (STAGE_FULL, stage_full["decode"]["n_past_first"],
                                stage_full["plane"]["columns_written"],
-                               32 + int(STAGE_FULL_STEPS)))
+                               2048 + int(STAGE_FULL_STEPS)))
         if stage_full["plane"]["roundtrip_verdict"] != "IDENTICAL":
             failures.append("%s: oracle B is %r at the staging boundary"
                             % (STAGE_FULL, stage_full["plane"]["roundtrip_verdict"]))
@@ -5227,15 +5265,15 @@ else:
 # The synthetic container's `block_align` is 4,096 and every region starts on that boundary:
 #
 #   token_embd, whole table   n_vocab 32 x n_embd 4 x 4 B = 512 B   -> 4,096 rounded up
-#   the staging region        MAX_PREFILL_TOKENS 32 x 16 B  = 512 B -> 4,096 rounded up
+#   the staging region        MAX_PREFILL_TOKENS 2048 x 32 B = 65,536 B
 #   2 layers + the head       the rest
 #
-# The exact total for this fixture is 114,688 B, which the golden carries; the assertions below are
-# the structural properties that hold for **any** pack, so a fixture change moves the golden and not
-# the reasoning.
+# R6-PREFIX-TTFT adds 61,440 B to the earlier 114,688 B total. The golden carries the exact total;
+# the assertions below are the structural properties that hold for **any** pack, so a fixture
+# change moves the golden and not the reasoning.
 RESIDENT_BLOCK_ALIGN = 4096
 RESIDENT_TABLE_BYTES = RESIDENT_BLOCK_ALIGN
-RESIDENT_STAGE_BYTES = RESIDENT_BLOCK_ALIGN
+RESIDENT_STAGE_BYTES = 2048 * 32
 
 for case in ("ds-resident-weights-1", "ds-resident-weights-steps"):
     document = json.loads(produced[case])
@@ -5392,6 +5430,51 @@ if from_fixture["plane"]["source"] != "LOADED" \
 if read_container(KV_GOOD).returncode != 0:
     failures.append("ds-kv-load-fixture: the reader refused the fixture's own container")
 
+# R6-PREFIX-TTFT's reader-policy expansion and token-region arithmetic. The independent reader
+# reports the offsets it derived from each file; this block derives them again from the contract,
+# not from the fixture generator. Count 2,048 is reader-only because a decode step would require
+# column 2,049, beyond that fixture's intentionally exact width.
+for label, container, count in (("expanded-33", KV_EXPANDED_33, 33),
+                                ("expanded-corpus", KV_EXPANDED_CORPUS, 370),
+                                ("expanded-2048", KV_EXPANDED_2048, 2048)):
+    expanded = read_container(container, tokens=",".join(["1"] * count), quiet=False)
+    if expanded.returncode != 0:
+        failures.append("ds-kv-%s: independent reader refused: %s"
+                        % (label, expanded.stderr.decode("utf-8", "replace").strip()))
+        continue
+    reported = {}
+    for line in expanded.stdout.decode("utf-8").splitlines():
+        fields = line.split(None, 1)
+        if len(fields) == 2:
+            reported[fields[0]] = fields[1]
+    stream_bytes = count * 4
+    identity_offset = ((192 + stream_bytes + 7) // 8) * 8
+    logits_offset = identity_offset + 192
+    plane_offset = ((logits_offset + 32 * 4 + 4095) // 4096) * 4096
+    expected_layout = {
+        "token_stream_bytes": stream_bytes,
+        "identity_offset": identity_offset,
+        "logits_offset": logits_offset,
+        "plane_offset": plane_offset,
+        "token_count": count,
+    }
+    for field, expected in expected_layout.items():
+        if reported.get(field) != str(expected):
+            failures.append("ds-kv-%s: %s is %r, not %d"
+                            % (label, field, reported.get(field), expected))
+
+for case, count in (("ds-kv-load-expanded-33", 33),
+                    ("ds-kv-load-expanded-corpus", 370)):
+    expanded = json.loads(produced[case])
+    if expanded["status"] != "ok" or expanded["kv"]["token_count"] != count \
+            or expanded["selection"]["token_count"] != count \
+            or expanded["decode"]["n_past_first"] != count \
+            or expanded["plane"]["columns_written"] != count + 1 \
+            or expanded["plane"]["source"] != "LOADED" \
+            or expanded["plane"]["roundtrip_verdict"] != "IDENTICAL":
+        failures.append("%s: expanded persisted run did not continue at %d: %r / %r / %r"
+                        % (case, count, expanded["kv"], expanded["decode"], expanded["plane"]))
+
 # Oracle Q. The two runs are the same run.
 if normalize_persist(produced["ds-kv-save-ok"]) != normalize_persist(produced["ds-kv-load-ok"]):
     failures.append("ds-kv-roundtrip: %s"
@@ -5496,22 +5579,59 @@ if len(load_repeats) != 1:
 # ---------------------------------------------------------------------------------------------
 
 SUFFIX_ORACLE = [
-    # case, single-shot comparand, prefix ids, suffix ids, the whole list, N
+    # case, single-shot comparand, prefix ids, suffix ids, the whole list, N, width
     # `T_prefix = 1`: the split MF-SINGLE-TOKEN-LOGITS reopened, and the narrowest one the operand
     # grammar allows.
-    ("ds-suffix-prefix-one", "ds-suffix-single-shot-2", [3], [5], SUFFIX_FULL_TWO, 3),
-    ("ds-suffix-1", "ds-kv-args-dash-dash", [3, 17], [5], "3,17,5", 3),
-    ("ds-suffix-2", SUFFIX_SINGLE_SHOT_4, [3, 17], [5, 9], SUFFIX_FULL_FOUR, 3),
+    ("ds-suffix-prefix-one", "ds-suffix-single-shot-2", [3], [5], SUFFIX_FULL_TWO, 3, WIDTH),
+    ("ds-suffix-1", "ds-kv-args-dash-dash", [3, 17], [5], "3,17,5", 3, WIDTH),
+    ("ds-suffix-2", SUFFIX_SINGLE_SHOT_4, [3, 17], [5, 9], SUFFIX_FULL_FOUR, 3, WIDTH),
     ("ds-suffix-3", "ds-suffix-single-shot", [3, 17], [5, 9, 27], SUFFIX_FULL_FIVE,
-     int(SUFFIX_STEPS_THREE)),
+     int(SUFFIX_STEPS_THREE), WIDTH),
+    ("ds-suffix-at-cap", "ds-suffix-single-shot-cap", [3, 17], [5] * 2046, SUFFIX_FULL_CAP,
+     1, SUFFIX_CAP_WIDTH),
 ]
 
-for case, comparand, prefix_ids, suffix_ids, whole, step_count in SUFFIX_ORACLE:
+for case, comparand, prefix_ids, suffix_ids, whole, step_count, suffix_width in SUFFIX_ORACLE:
     if case not in produced or comparand not in produced:
         failures.append("%s: the suffix case or its comparand produced no document" % case)
         continue
     left = normalize_suffix(produced[case])
     right = normalize_suffix(produced[comparand])
+    if case == "ds-suffix-at-cap":
+        # The tiny fixture's largest streamed layer block is 49,152 bytes, while gathering the
+        # 2,048-row embedding for the single-shot resident run needs 65,536 bytes. The suffix run
+        # loads only two prefix rows before continuing, so it keeps the layer-sized window. This is
+        # a planner high-water difference, not a semantic difference in the prefill result. Remove
+        # only the five fields that identify that high-water block, and compensate with exact
+        # assertions below; every other window field remains in oracle S.
+        left_document = json.loads(left)
+        right_document = json.loads(right)
+        left_window = left_document["window"]
+        right_window = right_document["window"]
+        expected_embedding_bytes = right_document["model"]["n_embd"] * len(suffix_ids + prefix_ids) * 4
+        if left_window["bytes"] != left_window["peak_block_bytes"] \
+                or left_window["peak_block_kind"] != 1 \
+                or left_window["peak_block_layer"] < 0:
+            failures.append("%s: the suffix run did not retain its streamed layer high-water: %r"
+                            % (case, left_window))
+        if right_window["bytes"] != expected_embedding_bytes \
+                or right_window["peak_block_bytes"] != expected_embedding_bytes \
+                or right_window["peak_block_index"] \
+                != right_document["selection"]["embedding_block_index"] \
+                or right_window["peak_block_kind"] != 0 \
+                or right_window["peak_block_layer"] != -1:
+            failures.append("%s: the single-shot run did not expose its embedding high-water: %r"
+                            % (comparand, right_window))
+        if left_window["bytes"] >= right_window["bytes"]:
+            failures.append("%s: the suffix layer window %d is not smaller than the single-shot "
+                            "embedding window %d"
+                            % (case, left_window["bytes"], right_window["bytes"]))
+        for field in ("bytes", "peak_block_index", "peak_block_kind", "peak_block_layer",
+                      "peak_block_bytes"):
+            left_window.pop(field)
+            right_window.pop(field)
+        left = json.dumps(left_document, separators=(",", ":"), ensure_ascii=False)
+        right = json.dumps(right_document, separators=(",", ":"), ensure_ascii=False)
     if left != right:
         failures.append("oracle S (%s vs %s): %s"
                         % (case, comparand, describe_difference(left, right)))
@@ -5579,12 +5699,17 @@ for case, comparand, prefix_ids, suffix_ids, whole, step_count in SUFFIX_ORACLE:
         failures.append("%s: `output` is still the container's persisted vector" % case)
     # Oracle C''. `--model-forward` at `TOKENS,SUFFIX` and the same width, built from the **prefill**
     # row table, must produce logits byte-identical to the suffix run's `output.sha256`.
-    forward = run(["--model-forward", PACK, GEOM, whole, "-", SOURCE, "-", WIDTH])
-    forward_document = json.loads(forward.stdout.decode("utf-8"))
-    if forward_document["output"]["sha256"] != document["output"]["sha256"]:
-        failures.append("oracle C'' (%s): --model-forward at %s is %r, the suffix pass is %r"
-                        % (case, whole, forward_document["output"]["sha256"],
-                           document["output"]["sha256"]))
+    # The exact-cap row is resident because this tiny F32 pack's 65,536-byte gathered embedding is
+    # larger than its 49,152-byte streamed layer window. The real measured pack has the opposite
+    # relationship, and oracle S above compares the complete resident result. `--model-forward`
+    # has no resident operand, so C'' remains the four short-shape rows it has always owned.
+    if case != "ds-suffix-at-cap":
+        forward = run(["--model-forward", PACK, GEOM, whole, "-", SOURCE, "-", suffix_width])
+        forward_document = json.loads(forward.stdout.decode("utf-8"))
+        if forward_document["output"]["sha256"] != document["output"]["sha256"]:
+            failures.append("oracle C'' (%s): --model-forward at %s is %r, the suffix pass is %r"
+                            % (case, whole, forward_document["output"]["sha256"],
+                               document["output"]["sha256"]))
 
 # Section 6 risk 2's guard, and the reason the four additions above are findings rather than edits:
 # **a growing exclusion list is how an equality oracle stops being one.** The witness asserts that
@@ -5619,7 +5744,7 @@ if "decode" not in witness or "steps" not in witness or not witness["steps"] \
 # The reader-facing half of the same hazard: on at least one case `output.argmax` differs from the
 # container's `kv.prefill_argmax`, so a reader who learned `output` from R6-KV-PERSIST is told by a
 # **test** and not by a paragraph that a completed suffix run republishes it.
-if not [case for case, _, _, _, _, _ in SUFFIX_ORACLE
+if not [case for case, _, _, _, _, _, _ in SUFFIX_ORACLE
         if json.loads(produced[case])["output"]["argmax"]
         != json.loads(produced[case])["kv"]["prefill_argmax"]]:
     failures.append("no suffix case moved output.argmax away from the container's prefill_argmax")
@@ -5678,9 +5803,9 @@ SUFFIX_REFUSAL_DETAILS = (("ds-suffix-no-load", "suffix[no_load]"),
                           ("ds-suffix-multibyte", MULTIBYTE_SUFFIX_DETAIL),
                           ("ds-suffix-trailing", "suffix[5,]"),
                           ("ds-suffix-over-vocab", "token[0]"),
-                          ("ds-suffix-over-cap", "sequence[33]"),
-                          ("ds-suffix-over-cap-and-narrow", "sequence[33]"),
-                          ("ds-suffix-and-bad-tokens", "token[32]"),
+                          ("ds-suffix-over-cap", "sequence[2049]"),
+                          ("ds-suffix-over-cap-and-narrow", "sequence[2049]"),
+                          ("ds-suffix-and-bad-tokens", "token[2048]"),
                           ("ds-suffix-narrow-width", "kv_width[6]"),
                           ("ds-suffix-tokens-mismatch", "count[3]"))
 for case, detail in SUFFIX_REFUSAL_DETAILS:
@@ -6388,11 +6513,11 @@ STUB_CASES = [
     ("md-tokens-empty", operands(tokens=""), "R6M_TOKENS"),
     ("md-tokens-trailing", operands(tokens="1,"), "R6M_TOKENS"),
     ("md-tokens-space", operands(tokens="1, 2"), "R6M_TOKENS"),
-    # The cap moved 6 -> 32, so seven tokens are now accepted by the token gate and thirty-three are
-    # not. The over-cap list is **thirty-three repetitions of id 1** and not `1,2,...,33`: the
+    # R6-PREFIX-TTFT moves the cap 32 -> 2048. The over-cap list is **2049 repetitions of id 1**
+    # and not an ascending list: the
     # hosted `n_vocab` is 32, so an ascending list would be refused as out-of-vocabulary and the
     # case would stop being about the cap.
-    ("md-tokens-33", operands(tokens=",".join(["1"] * 33)), "R6M_TOKENS"),
+    ("md-tokens-2049", operands(tokens=",".join(["1"] * 2049)), "R6M_TOKENS"),
     ("md-tokens-vocab", operands(tokens="1,32"), "R6M_TOKENS"),
     # `STEPS` is decided **before** `KV_WIDTH`, because `N` must be a number before `T + N` is one.
     ("md-steps-empty", operands(steps=""), "R6M_STEPS"),
@@ -6519,11 +6644,9 @@ ENGINE_CASES = [
 ]
 
 # R6-MOE-RESIDENT-DENSE section 5.3's staging-boundary cell, and the dense arm's
-# `ds-resident-stage-full` case verbatim in shape. `layer_olmoe.MAX_PREFILL_TOKENS` is 32 and this
-# corpus's `n_vocab` is 32, so `0..31` is both the longest prompt this arm admits and a prompt whose
-# every id is in vocabulary — and it stages 32 **distinct** embedding rows rather than one row
-# thirty-two times, so the highest slot carries bytes that belong only to it. The width is `T + N`
-# exactly, the minimum this arm accepts.
+# `ds-resident-stage-full` case verbatim in shape at R6-PREFIX-TTFT's 2048-token boundary. This
+# corpus's `n_vocab` is 32, so the prompt repeats `0..31` sixty-four times: every id is valid, and
+# slot 2047 carries a real row. The width is `T + N` exactly, the minimum this arm accepts.
 #
 # **It carries no golden row, on the class R6-RESIDENT-WEIGHTS deviation 9 measured.** A 32-token
 # prefill's accumulations differ in the last bit between macOS/arm64 and Linux/x86_64, so pinning its
@@ -6532,8 +6655,8 @@ ENGINE_CASES = [
 # correct on every platform, plus `record()`'s document-identity assertions and the structural block
 # below.
 STAGE_FULL = "mdr-resident-stage-full"
-STAGE_FULL_TOKENS = ",".join(str(identifier) for identifier in range(32))
-STAGE_FULL_WIDTH = "33"
+STAGE_FULL_TOKENS = ",".join(str(identifier % 32) for identifier in range(2048))
+STAGE_FULL_WIDTH = "2049"
 STAGE_FULL_STEPS = "1"
 BOUNDARY_CASES = [
     (STAGE_FULL, mdr(resident="dense", tokens=STAGE_FULL_TOKENS, transcript="-", logits="-",
@@ -7267,7 +7390,7 @@ for streamed_case, resident_case in (("md-engine-ok", "mdr-resident-dense-1"),
                         % (streamed_case, resident_case, describe_difference(left, right)))
 
 # The staging boundary, from the legal side. A `dense` prefill of exactly `MAX_PREFILL_TOKENS` ids
-# stages slot 31 — the highest index `stage_embed_row` can be asked for — and the streamed twin makes
+# stages slot 2047 — the highest index `stage_embed_row` can be asked for — and the streamed twin makes
 # the case an assertion about the **bytes** that slot carries rather than only about the run not
 # being refused.
 for name, argv, expected in BOUNDARY_CASES:
@@ -7285,12 +7408,12 @@ else:
         if stage_full["weights"]["mode"] != "dense" \
                 or stage_full["weights"]["step_dense_pack_bytes"] != 0:
             failures.append("%s: %r" % (STAGE_FULL, stage_full["weights"]))
-        if stage_full["decode"]["n_past_first"] != 32 \
-                or stage_full["plane"]["columns_written"] != 32 + int(STAGE_FULL_STEPS):
-            failures.append("%s: n_past_first %d and %d columns, not 32 and %d"
+        if stage_full["decode"]["n_past_first"] != 2048 \
+                or stage_full["plane"]["columns_written"] != 2048 + int(STAGE_FULL_STEPS):
+            failures.append("%s: n_past_first %d and %d columns, not 2048 and %d"
                             % (STAGE_FULL, stage_full["decode"]["n_past_first"],
                                stage_full["plane"]["columns_written"],
-                               32 + int(STAGE_FULL_STEPS)))
+                               2048 + int(STAGE_FULL_STEPS)))
         if stage_full["plane"]["roundtrip_verdict"] != "IDENTICAL":
             failures.append("%s: oracle B is %r at the staging boundary"
                             % (STAGE_FULL, stage_full["plane"]["roundtrip_verdict"]))
@@ -7308,7 +7431,7 @@ else:
 # synthetic container's `block_align` is 4,096 and every region starts on that boundary:
 #
 #   token_embd, the whole table   n_vocab 32 x n_embd 4 x 4 B = 512 B  -> 4,096 rounded up
-#   the staging region            MAX_PREFILL_TOKENS 32 x 16 B = 512 B -> 4,096 rounded up
+#   the staging region            MAX_PREFILL_TOKENS 2048 x 32 B = 65,536 B
 #   2 routed layers + the head    the rest
 #
 # The assertions are the structural properties that hold for **any** pack, so a fixture change moves
@@ -7317,7 +7440,7 @@ else:
 # produced would prove nothing.
 RESIDENT_BLOCK_ALIGN = 4096
 RESIDENT_TABLE_BYTES = RESIDENT_BLOCK_ALIGN
-RESIDENT_STAGE_BYTES = RESIDENT_BLOCK_ALIGN
+RESIDENT_STAGE_BYTES = 2048 * 32
 
 for case in ("mdr-resident-dense-1", "mdr-resident-dense-steps"):
     document = json.loads(produced[case])

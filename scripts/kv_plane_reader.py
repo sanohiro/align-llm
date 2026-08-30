@@ -44,7 +44,9 @@ MAX_KV_PLANE_BYTES = 536870912
 MAX_KV_LOGITS_BYTES = 16777216
 MAX_KV_CONTAINER_BYTES = 1073741824
 # `layer_qwen2.MAX_PREFILL_TOKENS` and `MAX_ATTENTION_WIDTH`.
-MAX_PREFILL_TOKENS = 32
+# R6-PREFIX-TTFT. This mirrors both architecture-owned caps because persisted token_count validation
+# must accept exactly the same frozen shared-prefix boundary as the producer.
+MAX_PREFILL_TOKENS = 2048
 MAX_ATTENTION_WIDTH = 4096
 
 REJECT_KINDS = [

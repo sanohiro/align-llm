@@ -3,13 +3,14 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R6-PREFIX-TTFT design (2026-08-30)
+## Active: R6-PREFIX-TTFT implementation and measurement (2026-08-30)
 
 Branch `agent/r6-prefix-ttft`, based on `main` merge commit
 `c16f14ea5ec2e42d61f7e6644716854d9ca61c2c` (C4-REPAIR-TEMPLATE, PR #156). Authoritative charter
 `docs/specs/r6-prefix-key-corpus.md` section 11; capability ledger and closure matrix
-`docs/specs/r6-prefix-ttft.md`. The design is complete and is the next commit, before any
-production-source change.
+`docs/specs/r6-prefix-ttft.md`. The pre-implementation design is commit `a3c5e9e`; implementation
+is complete and owner-tested in the worktree, before its checkpoint commit and reference-host
+measurement.
 
 **Required first-action probe is complete.** A throwaway build changed only the Qwen cap to 2,048,
 measured a 1,200-token resident `--decode-step` prefill three times, and restored the source. The
@@ -28,18 +29,37 @@ single-shot against keyed hit; miss/write cost is a required secondary with an o
 reuse count. Five repeats, warm and >=20 GiB eviction-pressure protocols, and the charter's verdict
 rule are fixed before implementation.
 
-**Next actions.** (1) Commit the design checkpoint. (2) Implement the cap lift and all synthetic
-boundary coverage. (3) Implement and generate/check `eval/kv/prefix-corpus-v1`. (4) Implement the
-focused `scripts/run-decode-step --prefix-ttft` qualification and run owners. (5) Take the two-
-protocol reference-host measurement, append results without rewriting the precommitted design,
-review once, preflight, publish, and merge.
+**Implementation checkpoint.** Both architecture caps and the independent reader are 2,048. The
+hosted owner reaches dense, routed, suffix, and persisted-reader boundaries at 2,048, refuses 2,049,
+and keeps long activations out of goldens; the fixed test arena is 512 MiB so the enlarged mask is
+real rather than skipped. `eval/kv/prefix-corpus-v1` holds one 370-id shared prefix and suffixes of
+696, 1,049, and 825 ids, with pinned identities and five malformed checker classes.
+`scripts/run-decode-step --prefix-ttft` is an independent capable path: resident weights, fresh
+processes, alternating legs, warm and complete-file eviction protocols, five-pair gate semantics,
+compressor records, exact half-away arithmetic, miss cost, and canonical PASS/ERROR summaries.
+
+**Latest durable verification.** With GNU make and the Homebrew library path,
+`gmake layer-forward-smoke prefix-corpus-check` passes: all seven owner blocks, 167 dense decode
+documents (160 golden rows), the exact-cap oracle-S row, 70 routed decode documents, the 370-id
+shared prefix plus `[696, 1049, 825]` suffixes, and five malformed corpus classes. `gmake fmt`,
+`gmake format-check`, Python syntax compilation, dispatch N/A/arity probes, statistic-helper edge
+cases, and `git diff --check` pass.
+
+**Next actions.** (1) Commit this coherent implementation checkpoint. (2) Run the five-repeat W/C
+reference-host measurement with the pinned model/instruments and the existing unrelated >=20 GiB
+Docker disk image as eviction input. (3) Append results and the one optional summary-path contract
+clarification without rewriting the precommitted ceiling/floor. (4) Run one comprehensive review,
+repair once if required, preflight, publish, merge, refresh `main`, and start the next eligible
+roadmap capability.
 
 **Blockers.** None. Request 22 remains non-blocking because the checked-in ids come from the pinned
 Python/instrument path and Align consumes decimal ids only. The reference host must be serialized
 for the multi-hour measurement.
 
-**Intentional uncommitted files.** The three design files above until the design checkpoint commit.
-Build products and the 4.4 GiB throwaway probe pack live under the session scratch root, outside Git.
+**Intentional uncommitted files.** The implementation and generated corpus named above until the
+implementation checkpoint commit. Build products and the 4.4 GiB throwaway probe pack live under
+the session scratch root, outside Git. Measurement summaries remain outside Git until their
+aggregates are transcribed into the ledger.
 
 ## Merged checkpoint: C4-REPAIR-TEMPLATE review repair (2026-08-30)
 

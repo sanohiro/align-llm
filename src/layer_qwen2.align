@@ -53,8 +53,8 @@ pub SLOT_NODE_BASE := 16
 // last checkpoint is 22 tokens and the arm would refuse its own oracle at 8. 32 is the smallest
 // power of two above 22, with headroom for the next capability rather than exactly enough for this
 // one — which is the mistake the 6 → 8 lift made and paid for immediately.
-// `src/layer_olmoe.align`'s own cap stays at 6: OLMoE is a declared non-goal of R6 and a shared lift
-// would widen an arm this capability does not test.
+// `src/layer_olmoe.align`'s own cap stayed at 6 in that capability because OLMoE was a declared
+// non-goal; its later R6 decode capability raised the two architectures together to 32.
 //
 // **The lift does not weaken any oracle, and that is enforced rather than argued.** The sentence
 // above — "an oracle that compares fewer elements as the input grows while still reporting `PASS` is
@@ -63,9 +63,11 @@ pub SLOT_NODE_BASE := 16
 // `--model-forward` therefore refuse that combination with `R5_ORACLE_TRUNCATED` before any graph is
 // built (`src/layer_forward.align`'s and `src/model_forward.align`'s token stages), and that refusal
 // is **byte-unchanged** by this lift: it fires on `tokens.count > TRUNCATION_PRINTED`, which is 6 and
-// does not move. The range `7 .. 32` is admitted for arithmetic and refused for comparison, at 32
-// exactly as at 8. `--decode-step`'s own decode tensors are one column wide and are unaffected.
-pub MAX_PREFILL_TOKENS := 32
+// does not move. R6-PREFIX-TTFT (`docs/specs/r6-prefix-ttft.md`) raises the arithmetic cap from 32
+// to **2048** so a real repository prompt's frozen shared prefix can reach the keyed-prefix
+// consumer. The range `7 .. 2048` is admitted for arithmetic and refused for comparison, at 2048
+// exactly as at 32. `--decode-step`'s own decode tensors are one column wide and are unaffected.
+pub MAX_PREFILL_TOKENS := 2048
 
 // R6-STEP-N section 2.3. The fail-fast guard on the `STEPS` operand, and deliberately **not** the
 // real limit: the real limit is `T + N <= KV_WIDTH` and it is checked separately, under

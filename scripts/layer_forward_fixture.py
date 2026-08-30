@@ -1520,6 +1520,21 @@ def write_decode_corpus(g, embed, layers, head, prefill_records, prefill_logits,
                             source_record_offset, text, mutation=mutation)
 
     emit("model-kv-good.akvp", container())
+    # R6-PREFIX-TTFT's one-way reader-policy expansion. Counts 33 and the corpus prefix count 370
+    # are loaded by the arm; count 2,048 pins the largest token stream and its canonical offsets;
+    # 2,049 is well-formed bytes that both readers must refuse at the header bound.
+    emit("model-kv-expanded-33.akvp",
+         kv_container(g, planes, [1] * 33, prefill_logits, 64, pack_bytes,
+                      source_record_offset, geometry_text, zero_plane=True))
+    emit("model-kv-expanded-corpus.akvp",
+         kv_container(g, planes, [1] * 370, prefill_logits, 1536, pack_bytes,
+                      source_record_offset, geometry_text, zero_plane=True))
+    emit("model-kv-expanded-2048.akvp",
+         kv_container(g, planes, [1] * 2048, prefill_logits, 2048, pack_bytes,
+                      source_record_offset, geometry_text, zero_plane=True))
+    emit("model-kv-expanded-2049.akvp",
+         kv_container(g, planes, [1] * 2049, prefill_logits, 4096, pack_bytes,
+                      source_record_offset, geometry_text, zero_plane=True))
     for mutation in KV_MUTATIONS:
         emit("model-kv-%s.akvp" % mutation, container(mutation))
     # `ds-kv-tokens-count` is **not** a byte patch, and the canonical-layout rule is why: shortening
@@ -1616,7 +1631,7 @@ def kv_plane_image(g, planes, width, columns):
 
 
 def kv_container(g, planes, tokens, logits, width, pack_bytes, pack_source_record_offset,
-                 geometry_text, mutation=None):
+                 geometry_text, mutation=None, zero_plane=False):
     """One `akvp` v1 container, and one byte-level defect when `mutation` names it."""
     token_count = len(tokens)
     n_vocab = logits.count()
@@ -1625,7 +1640,11 @@ def kv_container(g, planes, tokens, logits, width, pack_bytes, pack_source_recor
 
     ids = b"".join(struct.pack("<I", i) for i in tokens)
     logits_image = struct.pack("<%df" % n_vocab, *logits.data)
-    plane_image = kv_plane_image(g, planes, width, token_count)
+    # R6-PREFIX-TTFT's expanded-header fixtures test layout and reader policy, not activation
+    # arithmetic. Their all-zero plane is a valid persisted image (including its required zero
+    # tail) and avoids pretending this tiny three-token reference computed 2,048 columns.
+    plane_image = bytes(plan["plane_bytes"]) if zero_plane \
+        else kv_plane_image(g, planes, width, token_count)
 
     pack_digest = pack_bytes[pack_source_record_offset + 48:pack_source_record_offset + 80]
     pack_total_bytes = struct.unpack_from("<Q", pack_bytes, 24)[0]
