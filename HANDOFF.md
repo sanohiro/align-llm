@@ -46,14 +46,15 @@ malformed-model closure are being redesigned together: ParseControl must pass th
 `--parse-special` flag; capacity/identity arithmetic already proved representable cannot publish
 unreachable data errors; every non-generated parity input needs exact bytes or a frozen source
 identity; and duplicate token text must be rejected because pinned llama.cpp ultimately asserts
-rather than exposing the earlier map overwrite. The current uncommitted candidate adds
-`R7_TOKEN_DUPLICATE`, removes the unreachable results, freezes 299 ordered parity cases, and binds
-the four R6 prompt bytes to `prefix-corpus-v1` identities.
+rather than exposing the earlier map overwrite. Second redesign
+`d47592e828e97ad84b750f38444d2e69d2a17455` adds `R7_TOKEN_DUPLICATE`, removes the unreachable
+results, freezes 299 ordered parity cases, and binds the four R6 prompt bytes to
+`prefix-corpus-v1` identities.
 
-**Next actions.** (1) Complete the author consistency pass and commit the second redesign. (2) Run
-one fresh comprehensive review of the stable candidate. (3) If no valid finding remains, pass the
+**Next actions.** (1) Run one fresh comprehensive review of the stable candidate. (2) If no valid
+finding remains, pass the
 exact-head docs publication preflight, publish the English PR with every review envelope and finding
-disposition, wait for checks, and merge. (4) Implement and publish Request 22 in the sibling Align
+disposition, wait for checks, and merge. (3) Implement and publish Request 22 in the sibling Align
 repository, then adopt the shipped revision and build the tokenizer consumer without a
 compatibility layer.
 
@@ -61,8 +62,8 @@ compatibility layer.
 elements and its compiler owners pass; the align-llm pin/adoption capability then owns every
 originally named Request 22 migration plus the tokenizer consumer.
 
-**Intentional uncommitted files.** `docs/specs/r7-tokenizer.md` and this handoff while the second
-review-driven redesign is being checked.
+**Intentional uncommitted files.** None after the second redesign commit; this continuity-only
+update records its exact identity.
 
 ## Merged checkpoint: DEV-OUTPUT-SUMMARY (2026-08-31)
 
