@@ -1127,10 +1127,32 @@ The current forward delivery order is:
     token counts remain a secondary observation. It will not suppress warnings without summarizing
     them, replace installed-profile evidence, or add another aggregate merely to test itself.
 
-    **Active design:** [`dev-output-summary.md`](dev-output-summary.md) fixes the shared command,
+    **Merged as PR #158.** [`dev-output-summary.md`](dev-output-summary.md) fixes the shared command,
     raw-log identity and lifetime, signal/status rules, warning normalization, bounded diagnostic
     format, direct-owner/preflight/CI adopters, exact three-sample baseline, output ceilings, and
-    closure matrix before implementation.
+    closure matrix. Repaired head `24a6686` emits 7 lines / 872 bytes against the 922-line /
+    185,927-byte baseline while retaining all 921 child lines / 185,893 bytes; both gates are
+    **MET**. The final workflow repair is `af5d766`, and merge commit `5e124c2` carries all required
+    hosted, x86_64, and aarch64 evidence.
+
+41. **R7-TOKENIZER — Qwen2 text/token conversion from the model's own GGUF vocabulary.** R7's
+    gate cannot be reached from R6's token-id-only runtime: the existing `ModelProvider` accepts
+    text and returns text, while every shipped runtime arm accepts ids and publishes ids. The first
+    independently useful boundary is therefore a Qwen2 tokenizer that materializes
+    `tokenizer.ggml.tokens` and `tokenizer.ggml.merges`, encodes UTF-8 plus explicitly selected
+    special tokens to ids, and decodes ids back to exact UTF-8 without an external tokenizer at
+    runtime. It targets the same Qwen2.5-Coder-7B Q4_K_M model as the dense runtime and takes pinned
+    llama.cpp tokenization as the parity oracle; it does not yet expose a provider, render a chat
+    conversation, load weights, run inference, sample logits, or claim speed.
+
+    The proportional design gate fires on public GGUF/tokenizer/CLI surfaces, large owned string
+    arrays, malformed-model and special-token precedence, and the invariant spanning GGUF,
+    tokenizer, CLI, fixtures, and parity. A design-only publication checkpoint is exceptional but
+    necessary here because external coordination must consume it first: Align Request 22 rejects
+    ordinary borrow indexing of Move array elements at both the pinned revision and current Align
+    `main`. That request is now blocking. Design and request lifecycle work may continue, but source
+    implementation must not consume its proposed surface before `ALIGN_MERGED`. The authoritative
+    ledger and closure matrix are [`r7-tokenizer.md`](r7-tokenizer.md).
 
 ### Status (2026-08-28)
 
