@@ -51,19 +51,36 @@ rather than exposing the earlier map overwrite. Second redesign
 results, freezes 299 ordered parity cases, and binds the four R6 prompt bytes to
 `prefix-corpus-v1` identities.
 
-**Next actions.** (1) Run one fresh comprehensive review of the stable candidate. (2) If no valid
-finding remains, pass the
-exact-head docs publication preflight, publish the English PR with every review envelope and finding
-disposition, wait for checks, and merge. (3) Implement and publish Request 22 in the sibling Align
-repository, then adopt the shipped revision and build the tokenizer consumer without a
-compatibility layer.
+A fresh comprehensive review of `ee37833` accepted four final resource/oracle findings: build 10566
+rejects the positive `--parse-special` option and already parses by tokenizer-specific default; the
+256 MiB token/merge text cap was not enforced across both arrays; load-factor-only linear probing
+left adversarial work quadratic; and public count-error details were underspecified. The first
+finding supersedes the earlier `c1050c7` review's contrary flag finding: exact pinned help plus live
+control, USER_DEFINED, and `</s>` invocations prove the earlier source-default inference wrong. The
+current consolidated redesign restores the executable ParseControl command; validates exact
+declared-count and combined-text details; replaces open addressing and byte-string BPE lookup with
+16-link token/Copy-id-pair buckets, prevalidated merge result ids, and exact 16/17 collision owners;
+and records reference bucket peaks 5/6. Per the final-review convergence rule, inspect this complete
+repair delta and author evidence rather than starting another review loop.
+
+**Author evidence.** The pinned build reports version 10566 / `bb4caa754`; default and
+`--no-parse-special` live probes produce the required atomic/literal control ids while preserving
+USER_DEFINED ids. The model audit reproduces 2,894,618 combined tokenizer bytes, token/merge bucket
+peaks 5/6, and zero unresolved merge components/results. All 299 parity identities, 22 exhaustive
+error codes, three classifier lock identities, the R6 prefix manifest, Markdown fences, and
+`git diff --check` pass.
+
+**Next actions.** (1) Commit the consolidated redesign. (2) Pass the exact-head docs publication
+preflight, publish the English PR with every review envelope and finding disposition, wait for
+checks, and merge. (3) Implement and publish Request 22 in the sibling Align repository, then adopt
+the shipped revision and build the tokenizer consumer without a compatibility layer.
 
 **Blocker.** Align Request 22. Resume when Align ships ordinary borrow indexing for Move array
 elements and its compiler owners pass; the align-llm pin/adoption capability then owns every
 originally named Request 22 migration plus the tokenizer consumer.
 
-**Intentional uncommitted files.** None after the second redesign commit; this continuity-only
-update records its exact identity.
+**Intentional uncommitted files.** `docs/specs/r7-tokenizer.md` and this handoff while the
+consolidated final-review redesign is author-checked.
 
 ## Merged checkpoint: DEV-OUTPUT-SUMMARY (2026-08-31)
 

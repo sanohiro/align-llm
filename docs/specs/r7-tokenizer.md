@@ -1,6 +1,6 @@
 # R7-TOKENIZER
 
-Status: contract redesigned after two comprehensive-review waves, 2026-08-31; align-llm source
+Status: contract ready after consolidated final-review redesign, 2026-08-31; align-llm source
 blocked on Align Request 22
 
 ## 1. Decision and boundary
@@ -120,7 +120,7 @@ readers reject the same key as `Error.Invalid` before path work. The generic GGU
 outer container-validity limit: `MAX_ARRAY_ELEMENTS = 16,777,216` and
 `MAX_STRING_BYTES = 16,777,216`. Materialization is a narrower public operation: both readers
 refuse more than 1,048,576 elements; the string reader also refuses an item over 4,096 bytes or
-cumulative string payload over 268,435,456 bytes. Those checks happen from declared length
+cumulative string payload over 16,777,216 bytes. Those checks happen from declared length
 prefixes before each clone, so an accepted container cannot force a multi-gigabyte temporary array
 before section 2.8's tokenizer check.
 
@@ -195,17 +195,18 @@ The first occurrence of every key wins. Load validates in this order:
 | 3 | `tokenizer.ggml.model` and `.pre` are present STRING values | `R7_TOKENIZER_METADATA`, detail key |
 | 4 | values equal `gpt2` and `qwen2` respectively | `R7_UNSUPPORTED_TOKENIZER`, detail `model/pre` |
 | 5 | `tokens` is ARRAY/STRING, `token_type` ARRAY/INT32, `merges` ARRAY/STRING | `R7_TOKENIZER_METADATA`, detail key |
-| 6 | declared token count is `1..MAX_TOKENIZER_ENTRIES` and merge count is `0..MAX_TOKENIZER_ENTRIES` before payload materialization | `R7_VOCAB_SIZE` or `R7_MERGE_COUNT` |
+| 6 | validate declared counts before payload materialization: tokens first, then token types, then merges, with the exact details in 2.9 | `R7_VOCAB_SIZE` or `R7_MERGE_COUNT` |
 | 7 | materialize tokens, types, then merges through the GGUF producers | `R7_TOKENIZER_ARRAY`, detail key |
-| 8 | actual token and type counts equal; actual counts equal declarations | `R7_VOCAB_SIZE`, detail `tokens[n]types[m]` |
+| 8 | sum token bytes, then merge bytes, and require their combined total at most `MAX_TOKENIZER_TEXT_BYTES` | `R7_TOKENIZER_TEXT_SIZE`, exact three-count detail in 2.9 |
 | 9 | every token is non-empty and type is in 1 through 6 | `R7_TOKEN_EMPTY` or `R7_TOKEN_TYPE`, detail `token[i]` or `token[i]type[n]` |
-| 10 | build the proven-capacity token index while scanning ids ascending; report the later id of the first duplicate text | `R7_TOKEN_DUPLICATE`, detail `token[i]` |
+| 10 | build the bounded-bucket token index while scanning ids ascending; report duplicate text before bucket exhaustion | `R7_TOKEN_DUPLICATE` or `R7_HASH_BUCKET`, detail `token[i]` |
 | 11 | after `</s>` promotion, the UNKNOWN/CONTROL/USER_DEFINED count is at most `MAX_SPECIAL_TOKENS` | `R7_SPECIAL_COUNT`, detail decimal count |
 | 12 | every effective special candidate is at most `MAX_SPECIAL_TOKEN_BYTES`, checked in ascending id order | `R7_SPECIAL_TEXT`, detail `token[i]` |
 | 13 | every NORMAL token consists only of GPT-2 alphabet scalars; every BYTE token is exact ASCII `<0xHH>` | `R7_TOKEN_TEXT`, detail `token[i]` |
-| 14 | every merge has one non-empty left part and non-empty remainder after the first ASCII space found at byte 1 or later | `R7_MERGE`, detail `merge[i]` |
-| 15 | the 256 GPT-2 byte-alphabet strings resolve to NORMAL tokens | `R7_BYTE_ALPHABET`, detail `byte[n]` |
-| 16 | construct the bounded merge index and special trie, then compute the canonical tokenizer identity | terminal OOM only; section 2.8 proves every arithmetic capacity |
+| 14 | every merge has one non-empty left part and non-empty remainder after the first ASCII space found at byte 1 or later; left, right, and their concatenation resolve to token ids | `R7_MERGE` or `R7_MERGE_TOKEN`, detail in 2.9 |
+| 15 | build the bounded-bucket merge index in rank order; a duplicate id pair keeps the first rank | `R7_HASH_BUCKET`, detail `merge[i]` |
+| 16 | the 256 GPT-2 byte-alphabet strings resolve to NORMAL tokens | `R7_BYTE_ALPHABET`, detail `byte[n]` |
+| 17 | construct the bounded special trie, then compute the canonical tokenizer identity | terminal OOM only; section 2.8 proves every arithmetic capacity |
 
 `tokenizer.ggml.scores`, BOS/EOS/PAD ids, `add_bos_token`, `add_eos_token`, and
 `tokenizer.chat_template` are neither required nor interpreted. They cannot affect either public
@@ -221,6 +222,12 @@ then aborts on its `id_to_token.size() == token_to_id.size()` assertion, so it e
 later-id behavior to copy. R7 turns that malformed-model abort into recoverable
 `R7_TOKEN_DUPLICATE`; accepted-model behavior remains parity-compatible. Duplicate merge pairs
 follow the pinned rule: the first rank wins. Their original array order remains part of identity.
+
+The three successful GGUF array readers return exactly their declared lengths or fail before
+publication. Actual-versus-declared mismatch is therefore a producer invariant, not an additional
+recoverable tokenizer outcome. Step 6 checks the three declarations directly: token count must be
+`1..MAX_TOKENIZER_ENTRIES`; token-type count must equal token count and be within the same cap; and
+merge count must be `0..MAX_TOKENIZER_ENTRIES`.
 
 ### 2.4 Special-token modes
 
@@ -360,7 +367,8 @@ plus checked per-entry prefixes bounds it. No identity cache or persisted tokeni
 | --- | ---: | --- | --- |
 | `MAX_TOKENIZER_ENTRIES` | 1,048,576 | materializing tokens or merges | 152,064 tokens; 151,387 merges; over 6x headroom without accepting R1's 4M shape into several indexes |
 | `MAX_TOKENIZER_ITEM_BYTES` | 4,096 | cloning one token or merge | maximum token 256 bytes; maximum merge 257 bytes |
-| `MAX_TOKENIZER_TEXT_BYTES` | 268,435,456 | building indexes or identity | observed token bytes 1,374,166 plus merge bytes 1,520,452; cap is over 92x combined |
+| `MAX_TOKENIZER_TEXT_BYTES` | 16,777,216 | building indexes or identity after summing both materialized arrays | observed token bytes 1,374,166 plus merge bytes 1,520,452; cap is over 5.7x combined |
+| `MAX_HASH_BUCKET_ENTRIES` | 16 | token/merge index insertion or lookup | reference token buckets peak at 5 and merge-id-pair buckets at 6 |
 | `MAX_SPECIAL_TOKENS` | 256 | building the special trie | 23 effective candidates after `</s>` promotion; over 11x headroom |
 | `MAX_SPECIAL_TOKEN_BYTES` | 32 | inserting or probing a special candidate | observed maximum 20 bytes |
 | `MAX_SPECIAL_TRIE_NODES` | 8,193 | allocating dense trie columns | root plus `256 * 32`; exact structural ceiling |
@@ -371,15 +379,26 @@ plus checked per-entry prefixes bounds it. No identity cache or persisted tokeni
 
 Every addition and multiplication involving a file count, text length, hash-table capacity, heap
 capacity, trie capacity, JSON capacity, or identity-preimage capacity is checked before formation.
-Open-addressed tables use the smallest power of two at least twice the entry count and never exceed
-2,097,152 slots. The special trie has exactly 256 `i64` transition slots per node, so its complete
-transition column is at most 2,097,408 entries (16,779,264 bytes), plus two 8,193-entry terminal-id
-columns. Partition performs at most
+Token and merge indexes each use the smallest power-of-two bucket-head array at least twice their
+entry count, never over 2,097,152 heads, plus one next-link per entry. A bucket holds at most 16
+entries; the seventeenth distinct key is a recoverable model rejection. Token insertion and lookup
+therefore perform at most 16 length checks and complete-byte comparisons. Since complete bytes are
+compared only after equal length and combined tokenizer text is at most 16 MiB, token insertion plus
+the three token lookups per merge read at most 64 times that combined text in complete equality
+checks — at most 1 GiB — rather than quadratic input. Hashing is another fixed linear pass. Merge
+then indexes only a pair of Copy token ids; operation-time merge lookup is at most 16 Copy-pair
+checks. The reference model's exact bucket peaks, measured with the hashes in section 3.4, are 5
+and 6.
+
+The special trie has exactly 256 `i64` transition slots per node, so its complete transition column
+is at most 2,097,408 entries (16,779,264 bytes), plus two 8,193-entry terminal-id columns. Partition
+performs at most
 `MAX_OPERATION_INPUT_BYTES * MAX_SPECIAL_TOKEN_BYTES = 33,554,432` transition reads; candidate
 count cannot multiply that work. A BPE word of `b` source bytes has at most `b` initial symbols, at
 most `b-1` accepted merges, and fewer than `3b` queued candidates; the five Copy-scalar heap
-columns are reserved only after proving that bound. All counts fit `i64` by several orders under
-the declared caps.
+columns are reserved only after proving that bound, and its fewer than `3b` merge-index lookups
+perform fewer than `48b` Copy-pair checks. All counts fit `i64` by several orders under the declared
+caps.
 
 The admitted maxima make every capacity arithmetic result representable. A checked-arithmetic
 failure while forming an index, heap, trie, JSON buffer, or identity preimage is therefore an
@@ -389,30 +408,41 @@ attacker-controlled dimensions are nevertheless bounded before allocation.
 
 ### 2.9 Errors and first-failure publication
 
-`error_detail` is truncated at a UTF-8 boundary to 256 bytes. These codes are exhaustive:
+`error_detail` is truncated at a UTF-8 boundary to 256 bytes. Every `n`, `m`, `a`, `b`, `c`, or `i`
+below is shortest unsigned decimal with no separator other than the shown punctuation. Step 6 tests
+`tokens[n]`, then `tokens[n]types[m]`, then `merges[n]`; later conditions cannot replace the first
+failure. These codes are exhaustive:
 
 | Code | First condition | Detail |
 | --- | --- | --- |
 | `R7_GGUF` | complete table has structural error | `<gguf-code>@<offset>` |
 | `R7_TOKENIZER_METADATA` | required key absent or wrong GGUF class | key |
 | `R7_UNSUPPORTED_TOKENIZER` | model/pre value differs | `<model>/<pre>` |
-| `R7_VOCAB_SIZE` | zero, over cap, declared/actual mismatch, or tokens/types mismatch | counts |
-| `R7_MERGE_COUNT` | over cap or declared/actual mismatch | counts |
+| `R7_VOCAB_SIZE` | declared token count is zero or over cap; otherwise token-type count differs or is over cap | `tokens[n]` for token range; otherwise `tokens[n]types[m]` |
+| `R7_MERGE_COUNT` | declared merge count is over cap | `merges[n]` |
 | `R7_TOKENIZER_ARRAY` | selected payload cannot be materialized | key |
+| `R7_TOKENIZER_TEXT_SIZE` | combined token and merge string bytes exceed 16,777,216 | `tokens[a]merges[b]total[c]` |
 | `R7_TOKEN_EMPTY` | empty vocabulary entry | `token[i]` |
 | `R7_TOKEN_TYPE` | token type outside 1 through 6 | `token[i]type[n]` |
 | `R7_TOKEN_DUPLICATE` | token text duplicates an earlier id | `token[i]` for the later id |
+| `R7_HASH_BUCKET` | seventeenth distinct token or merge key hashes to one bucket | `token[i]` or `merge[i]` |
 | `R7_SPECIAL_COUNT` | effective special candidate count exceeds 256 | decimal count |
 | `R7_SPECIAL_TEXT` | effective special candidate exceeds 32 UTF-8 bytes | `token[i]` |
 | `R7_TOKEN_TEXT` | NORMAL text contains a non-alphabet scalar or BYTE spelling is not exact | `token[i]` |
 | `R7_MERGE` | malformed merge entry | `merge[i]` |
+| `R7_MERGE_TOKEN` | merge left, then right, then concatenated result text is absent from the token index | `merge[i]left`, `merge[i]right`, or `merge[i]result` |
 | `R7_BYTE_ALPHABET` | one GPT-2 byte scalar has no NORMAL token | `byte[n]` |
 | `R7_TEXT_SIZE` | encode text exceeds 1 MiB | decimal bytes |
 | `R7_TOKEN_COUNT` | decode id count exceeds cap | decimal count |
 | `R7_TOKEN_ID` | id negative or not below vocabulary size | `token[i]id[n]` |
 | `R7_OUTPUT_SIZE` | the next decoded piece would exceed 1 MiB | decimal attempted bytes |
-| `R7_TOKEN_LOOKUP` | valid model/input reaches a BPE symbol absent from the token index | bounded symbol bytes as lowercase hex |
 | `R7_DECODE_UTF8` | complete decoded byte stream is not valid UTF-8 | `output` |
+
+Model validation steps 2 through 17 always precede operation validation. After a successful load,
+`encode_model` checks text byte length before partition or BPE. `decode_model` checks token count,
+then every id in ascending input position, then appends pieces with the output cap, then validates
+whole-result UTF-8. Thus the first bad id precedes every output-size/UTF-8 fault, the first attempted
+oversize append precedes final UTF-8, and no later operation condition replaces an earlier one.
 
 On a model-validation failure before step 7, `tokenizer_id=""`, vocabulary and merge counts are
 `-1`, and output is empty. `TokenTextResult.token_count` is nevertheless the supplied array length
@@ -518,35 +548,49 @@ those 256 scalars. No locale, normalization, replacement character, or lossy con
 
 The private tokenizer owns the three GGUF arrays plus Copy-scalar indexes:
 
-- an open-addressed token table from FNV-1a-64 of token bytes to id, load factor at most 0.5;
-- an open-addressed merge table from FNV-1a-64 of left bytes, a domain separator, and right bytes to
-  first merge rank;
-- one `merge_split: array<i64>` giving the first separator byte;
+- a token bucket-head array plus one next-link per vocabulary id, keyed by FNV-1a-64 of token bytes;
+- a merge bucket-head array plus next-link, left-id, right-id, and result-id columns per first-ranked
+  merge, keyed by FNV-1a-64 of `u64le(left_id) || 0xff || u64le(right_id)`;
+- one `merge_split: array<i64>` giving each original merge's first separator byte;
 - one dense byte trie with 256-way `special_next: array<i64>` transitions and separate
   `special_parse_terminal` / `special_literal_terminal` id columns;
 - the fixed 256 byte-to-token ids.
 
-Hash equality never establishes text equality: every hit borrows the indexed Move string and
-compares complete bytes. The fixed hash is an implementation index only; `tokenizer_id` is SHA-256
-and no persisted/cache/wire field contains FNV output.
+FNV-1a-64 uses offset basis `14695981039346656037` and prime `1099511628211`, wrapping unsigned
+64-bit multiplication after every byte. A bucket is `hash & (bucket_count - 1)`. Token insertion
+scans the existing chain, comparing length before complete bytes; a duplicate wins over the bucket
+cap, otherwise the seventeenth distinct entry is `R7_HASH_BUCKET`. Merge construction resolves the
+left text, right text, and their concatenation through that bounded token index before hashing the
+Copy id pair. The concatenated lookup hashes and compares the two borrowed spans in sequence; it
+does not allocate a joined string. An existing pair keeps its first rank; otherwise its seventeenth
+distinct bucket entry is `R7_HASH_BUCKET`. Insertion prepends the accepted entry. Every lookup stops
+after 16 links; because no accepted inserted key lies deeper, absence after that scan is
+authoritative.
+
+Hash equality never establishes token-text equality: complete bytes decide. Pair equality uses the
+two complete token ids, whose text is unique. The fixed hashes are implementation indexes only;
+`tokenizer_id` is SHA-256 and no persisted/cache/wire field contains FNV output or bucket layout.
+Pinned llama.cpp can limp past a merge whose component/result text is absent and later fall back to
+smaller pieces; R7 instead rejects that malformed model as `R7_MERGE_TOKEN`. The reference model has
+zero such rows, and all accepted merges therefore carry their result id directly.
 
 For each byte-encoded pretoken:
 
-1. make one linked symbol per mapped byte, represented by Copy `start`, `length`, `prev`, and
-   `next` columns into one encoded string;
+1. make one linked symbol per mapped byte, represented by Copy token id, `length`, `prev`, and
+   `next` columns;
 2. add every adjacent pair present in the merge index to a min-heap;
 3. heap order is lower rank first, then lower left symbol index;
 4. a heap entry records both original symbol lengths and is stale if either is zero, lengths
    changed, or the pair is no longer adjacent;
-5. merge a valid pair into its left symbol, unlink the right, and enqueue only the new left and
-   right adjacencies;
-6. walk remaining symbols in order and resolve each complete text through the token table;
-7. absence is `R7_TOKEN_LOOKUP`; no unknown token is invented.
+5. merge a valid pair by replacing the left symbol's id with the merge row's prevalidated result id,
+   adding the lengths, unlinking the right, and enqueueing only the new left and right adjacencies;
+6. walk remaining symbols in order and emit their already-valid token ids.
 
 The heap is five mutable Copy-scalar arrays: rank, left symbol, right symbol, original left length,
-and original right length. It stores no borrowed view and remains valid across
-symbol mutation. This is the pinned llama.cpp priority rule, including the left-index tie breaker;
-greedy left-to-right merge without a heap is not equivalent and is forbidden.
+and original right length. It stores no borrowed view and remains valid across symbol mutation.
+Merge lookup compares Copy id pairs and never rehashes a growing symbol string. This is the pinned
+llama.cpp priority rule, including the left-index tie breaker; greedy left-to-right merge without a
+heap is not equivalent and is forbidden.
 
 ### 3.5 Special partition
 
@@ -623,13 +667,14 @@ source and reads no product-generated expectation.
 - one BPE-reachable UNUSED token whose encode/decode pair demonstrates the documented non-roundtrip;
 - exact canonical token JSON and exact no-newline decoded stdout;
 - arity, mode, path, invalid JSON, oversize input, and zero stdout for every pre-write failure;
-- first-key wins, duplicate-token rejection, and duplicate merge first-wins;
+- first-key wins, duplicate-token rejection, duplicate merge first-wins, exact combined tokenizer
+  text cap, and token/merge bucket acceptance at 16 versus rejection at 17 distinct colliders;
 - exact special count/length rejection boundaries, prefix trie matching, and a 1 MiB
   adversarial-prefix case that completes within the owner timeout with expected output;
 - the managed Align checkout's exact three regex lock identities from 2.7 before product compile;
-- every error code in 2.9 through missing/wrong arrays, mismatched counts, caps, invalid UTF-8,
-  empty token, invalid type, malformed merge/BYTE, missing byte alphabet, bad id, and invalid final
-  UTF-8;
+- every error code in 2.9 through missing/wrong arrays, declared count mismatch, text/bucket caps,
+  invalid UTF-8, empty/duplicate token, invalid type, malformed or unresolved merge/BYTE, missing
+  byte alphabet, bad id, output cap, and invalid final UTF-8;
 - complete cleanup by repeated success/failure under the repository's available leak/lifetime
   probes; no fixture or temporary file remains after the runner exits.
 
@@ -738,7 +783,8 @@ any table spelling, special id/type/text read independently from the pinned mode
 case count, or generated bytes differ. For every case:
 
 - `ParseControl` ids equal
-  `llama-tokenize -m MODEL --stdin --ids --no-bos --no-escape --parse-special`;
+  `llama-tokenize -m MODEL --stdin --ids --no-bos --no-escape`; build 10566's tokenize-specific
+  default parses control tokens and exposes no positive `--parse-special` option;
 - `LiteralControl` ids equal
   `llama-tokenize -m MODEL --stdin --ids --no-bos --no-escape --no-parse-special`;
 - Align `RenderControl` of either exact reference id list equals the original UTF-8 bytes;
@@ -795,12 +841,12 @@ coding.
 | `src/gguf.align`: `read_i32_array` | same selected-offset route | sign-extended owned `i64` values | invalid key/wrong width/truncation/cap is `Invalid` | invalid key before path; first bad scalar | same | `tokenizer-smoke`: invalid key, types positive/wrong/truncated |
 | Request 22 migrations | Build direct Move-record/string arrays | unchanged accessors/documents | existing failure documents unchanged | existing first-failure order | element-wise Drop exactly once | `gguf-smoke`, `model-ir-smoke`, `layer-forward-smoke` |
 | `src/tokenizer_qwen2.align`: loader | tokens, types, merges in step order; checked tables, trie, and identity | private immutable tokenizer | first code in 2.3/2.9, no partial output | no later index after failure | all arrays/regex/index/trie/preimage state drop | `tokenizer-smoke` full model matrix |
-| token hash index | ascending ids insert; duplicate rejects later id | complete-string lookup | duplicate is `R7_TOKEN_DUPLICATE`; collision never equals without byte compare | table-full impossible under proven capacity | Copy arrays drop | collision fixture, duplicate rejection |
-| merge hash index | ascending ranks insert; duplicate ignored | first rank | malformed merge before insert | first malformed rank | strings stay owned by merges array | rank/collision/duplicate cases |
+| token hash index | ascending ids into head/next buckets; 16-link cap | complete-string lookup within 16 links | duplicate is `R7_TOKEN_DUPLICATE` before distinct-entry `R7_HASH_BUCKET`; hash never equals without byte compare | no seventeenth insertion or lookup | Copy heads/links drop | exact 16/17 colliders, duplicate precedence, ordinary collision fixture |
+| merge hash index | resolve left/right/result ids, then insert first-ranked Copy pair into 16-link bucket | first rank and prevalidated result id | missing component/result is `R7_MERGE_TOKEN`; duplicate ignored before distinct-entry `R7_HASH_BUCKET` | malformed/unresolved row before insert; no seventeenth insert | Copy id/head/link arrays drop; strings stay owned by merges | missing left/right/result, exact 16/17 colliders, rank/duplicate cases |
 | special trie/partition | ascending unique ids into checked dense transitions and two mode terminals | longest atomic match within 32 probes per position | count/length cap errors; disabled control flows to BPE | raw segment flush before atomic id | trie and raw-span scratch drop | all modes, overlaps, exact maximum common-prefix case |
 | Qwen2 scanner | exact managed-regex identity, scalar spans, then three compiled classifiers | ordered complete pieces | lock mismatch rejects in the owner; invalid UTF-8 cannot enter from `str` | total fallback advances one scalar | regex handles/scalar columns drop | lock-identity check + lexical category table + seeded cases |
 | GPT-2 byte map | fixed numeric map, validated byte alphabet | reversible mapped bytes | missing/mistyped byte token is load error | first missing byte | fixed Copy tables drop | all 256 bytes and multilingual roundtrip |
-| BPE heap | one symbol per mapped byte, adjacent candidates | rank/left exact ids | absent final token is `R7_TOKEN_LOOKUP` | stale candidates skipped without mutation | word/symbol/heap scratch drops per piece | rank conflict, stale heap, long word |
+| BPE heap | one token id per mapped byte, adjacent Copy-id candidates | rank/left exact ids; merge carries result id | accepted-model pair lookup is bounded and total | stale candidates skipped without mutation | id/symbol/heap scratch drops per piece | rank conflict, stale heap, long word, fewer-than-48b pair-check ceiling |
 | decode | validate ids, append pieces to a 1 MiB-bounded raw buffer | whole valid UTF-8 string | bad id precedes output cap; first oversize append is `R7_OUTPUT_SIZE`; invalid final UTF-8 is data error | no partial result | raw buffer/private tokenizer drop | negative/high ids, exact/over output cap, byte fragments, modes |
 | public result construction | empty error result first, fill only at settled transitions | identity/count/output coherent | output empty, known metadata retained | one first code | result alone transfers | all error rows and repeat loop |
 | `src/main.align` | arity/mode/path, model, bounded input, operation | one stdout write | product/pre-write failure has zero stdout; sink failure may retain a prefix and propagates OS status/signal | cheap validation prevents file work | readers/buffers/results drop | CLI matrix, byte-exact success, zero stdout for pre-write failures |
@@ -821,20 +867,22 @@ coding.
 2. **Move-array lifetime error.** Hundreds of thousands of strings make a shallow copied element a
    double-free risk. This is why Request 22 blocks source. Compiler tests plus repeated load/error
    owners must prove borrow-only reads and element-wise Drop.
-3. **Hash collision mistaken for equality.** Hashes select probes only; complete bytes decide. The
-   fixture deliberately collides the fixed FNV table.
+3. **Hash collision or probe denial.** Hashes select buckets only; complete token bytes or Copy id
+   pairs decide equality. Sixteen-link bucket caps bound every operation, the fixture covers exact
+   16/17 distinct colliders and duplicate precedence, and the real-model peaks are recorded.
 4. **Wrong BPE priority.** Selecting the first available pair or omitting stale checks can pass
    simple words. Rank conflicts, equal-rank left order, and stale candidates are separate owner
    cases, and real ids are compared exactly.
 5. **Special-mode ambiguity.** llama.cpp uses “parse special” while USER_DEFINED remains parsed.
-   The public names say control, the four-class table is normative, and parity passes explicit
-   `--parse-special` / `--no-parse-special` flags rather than relying on the tool default.
+   The public names say control and the four-class table is normative. Build 10566 exposes only the
+   negative CLI flag: its verified tokenize-specific default owns ParseControl, while
+   `--no-parse-special` owns LiteralControl.
 6. **Decode appears valid per token but fails jointly.** UTF-8 is validated after concatenating all
    pieces. The negative corpus includes individually incomplete byte pieces that become valid
    jointly and a sequence that remains invalid.
-7. **Unbounded model amplification.** Counts, each item, combined text, tables, identity, operation
-   input, ids, decoded output, canonical JSON, heap, and special-trie nodes/work all have checked
-   caps. Outer GGUF validation happens first.
+7. **Unbounded model amplification.** Counts, each item, combined token-plus-merge text, bucket work,
+   tables, identity, operation input, ids, decoded output, canonical JSON, heap, and special-trie
+   nodes/work all have checked caps. Outer GGUF validation happens first.
 8. **Repeated model load.** Two public operations each load once. This capability makes no latency
    claim; a resident handle waits for a measured consumer and an opaque ownership surface.
 9. **Oracle circularity.** The hosted Python oracle neither imports nor parses Align source. The
@@ -889,8 +937,8 @@ The author pass checks these statements as one contract:
    and blocking resume condition.
 2. The public inventory in 2.1/2.2 exactly covers the CLI and no hypothetical Align surface.
 3. Qwen2 regex and its locked classifier identity, bounded special-trie classification, duplicate
-   rejection, byte map, BPE priority, decode rules, and explicit oracle flags match the pinned
-   source and the 2026-08-31 reference-model observation.
+   rejection, bounded bucket indexes, byte map, BPE priority, decode rules, and the pinned oracle's
+   tokenize-specific parse default match source and the 2026-08-31 reference-model observation.
 4. Every malformed condition has one first code, one bounded detail, and a closure-matrix owner.
 5. Every allocation and attacker-controlled loop has a preceding count/byte/capacity/work bound
    and one cleanup owner.
@@ -901,8 +949,8 @@ The author pass checks these statements as one contract:
 8. Request 22 cannot reach `ALIGN_LLM_VERIFIED` from a pin update or tokenizer alone; all previously
    named migrations remain acceptance.
 
-Result: consistent after the second review-driven redesign. Final ledger-to-diff reconciliation
-remains pending until the blocked implementation exists.
+Result: consistent after the consolidated final-review redesign. Final ledger-to-diff
+reconciliation remains pending until the blocked implementation exists.
 
 ## 10. Final ledger-to-diff mapping
 
