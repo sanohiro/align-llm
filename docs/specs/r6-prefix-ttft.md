@@ -363,3 +363,139 @@ precedes implementation, exact owner and qualification results, and every findin
   policy capabilities.
 - Cross-host performance portability needs a separately fixed host class and baseline; this result
   claims only the reference host and protocols above.
+
+## 8. Implementation and measurement record
+
+### 8.1 Final implementation and bounded deviations
+
+The pre-implementation design is commit `a3c5e9e`. The measured implementation head is
+`eb832bf34e8e1e8d31f6aa9d78590f211e009f55`: `17cce70` implements the cap, corpus, owners, and
+runner; `eb832bf` corrects the runner's qualification-only validation of a keyed hit. A hit skips
+the prefix graph by definition, so its `reference.verdict` is `-`, while a miss and a single-shot
+run compute that graph and remain `IDENTICAL`. Hosted oracle K and oracle S own the skipped graph's
+equivalence. The first attempted qualification stopped at exactly that validation, emitted an
+`ERROR` summary with its two completed timed coordinates, removed scratch state, and made no
+verdict; none of its observations were reused in the run below.
+
+Three implementation details refine, but do not change, sections 3 through 5:
+
+1. The synthetic F32 fixture's embedding row is 32 B. Its exact-cap single-shot gather therefore
+   raises the planner high-water from the 49,152 B layer block to 65,536 B, while the suffix run
+   loads only the two-row prefix before continuing and keeps the layer high-water. The exact-cap
+   oracle S excludes only the five fields identifying that high-water block and asserts both
+   layouts exactly; every semantic field and every other window field stays in the equality.
+2. The stub arena is 512 MiB instead of 4 MiB so the 2,048-column attention mask is really
+   allocated and computed. Expanded persisted fixtures cover counts 33, the corpus prefix count
+   370, 2,048, and the 2,049 refusal independently of real-model activation goldens.
+3. `ALIGN_LLM_PREFIX_TTFT_SUMMARY` is the optional requested-output path section 4.4 anticipated.
+   It defaults to `align-r6-prefix-ttft-summary.json` under the scratch root and must resolve
+   outside the work tree. The run directory is still removed; the canonical summary survives at
+   that explicit path. Non-five repeat counts are labelled `DIAGNOSTIC` and cannot emit a gate
+   verdict.
+
+The generated corpus passed its model-free checker with a 370-id shared prefix and suffix counts
+696, 1,049, and 825. Owner verification passed at the implementation checkpoint: all seven
+`layer-forward-smoke` blocks, including 167 dense decode documents and 70 routed decode documents,
+plus the corpus's five malformed classes. Long real activations remain absent from goldens.
+
+### 8.2 Reference-host command and evidence identity
+
+The gate run used the section 3.6 environment-variable command form below. `$MODEL` was the exact
+model identity in section 2.1; `$EVICTION` was an existing unrelated 63,999,836,160-byte Docker
+disk image. Paths are intentionally not persisted.
+
+```text
+PATH=$GNU_MAKE_PATH:$PATH \
+LIBRARY_PATH=$GGML_LIB:$OPENSSL_LIB \
+ALIGN_LLM_GGML_INCLUDE=$GGML_INCLUDE \
+ALIGN_LLM_GGML_LIB=$GGML_LIB \
+ALIGN_LLM_GGUF_MODEL=$MODEL \
+ALIGN_LLM_LLAMA_EVAL_CALLBACK=$LLAMA_EVAL_CALLBACK \
+ALIGN_LLM_LLAMA_DEBUG=$LLAMA_DEBUG \
+ALIGN_LLM_PREFIX_TTFT_EVICTION_FILE=$EVICTION \
+ALIGN_LLM_PREFIX_TTFT_TMPDIR=$SCRATCH \
+ALIGN_LLM_PREFIX_TTFT_SUMMARY=$SUMMARY \
+gmake prefix-ttft-qualification
+```
+
+Host: Apple M1, arm64, 16 GiB physical memory, macOS 26.5.2. Both instruments reported build
+10566 at commit `bb4caa754`; the model was 4,683,073,536 B at SHA-256 `509287f7…d3c`. The canonical
+49,218-byte summary is SHA-256
+`aa1627a074bfec80a5a291a93d2e22b118b2eeea7b7514a0db18e13873f5f833`. An independent read-only
+recalculation verified all 30 unique pair coordinates, alternating orders, every per-pair
+half-away result, both protocol means, all six suffix means, the six leave-one-suffix-out means, 66
+completed fresh processes, and the final rule.
+
+### 8.3 TTFT result
+
+All figures below are reductions in ppm. No pair was discarded or replaced.
+
+| Protocol | Duration suffix | Layer-precedence suffix | Record-codec suffix | Protocol mean | Leave-one-out values | Jackknife range |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| W | 347,025 | 264,500 | 302,479 | 304,668 | 283,489 / 324,752 / 305,762 | **283,489..324,752** |
+| C | 317,170 | 266,282 | 312,056 | 298,502 | 289,169 / 314,613 / 291,726 | **289,169..314,613** |
+
+The worse protocol is W because its jackknife minimum, **283,489 ppm**, is smaller. Both protocol
+minima are positive, and the worse minimum clears the 150,000 ppm shipping floor by **133,489
+ppm**. The roadmap improvement gate is **MET** and the shipping verdict is **MET**.
+
+Mean first-token times, in seconds, show the paired quantities behind that result:
+
+| Protocol | Suffix | Single-shot | Keyed hit | Pair reduction range |
+| --- | --- | ---: | ---: | ---: |
+| W | duration | 168.860 | 109.934 | 283,080..432,427 ppm |
+| W | layer precedence | 193.201 | 142.090 | 256,429..276,538 ppm |
+| W | record codec | 154.738 | 108.001 | 285,360..326,914 ppm |
+| C | duration | 142.044 | 97.030 | 235,941..356,025 ppm |
+| C | layer precedence | 187.838 | 137.811 | 251,829..283,305 ppm |
+| C | record codec | 161.987 | 111.450 | 284,296..340,571 ppm |
+
+Across all hits, the container is 176,771,072 B. Mean hit `kv.read_ns` is 152,434,203 under W and
+158,201,417 under C; mean lookup is 7,086 ns and 6,305 ns; mean resident fill is 1,827,265,386 ns
+and 1,942,992,111 ns. These remain reported components, not alternate verdict inputs.
+
+### 8.4 Miss, eviction, and compressor observations
+
+Miss cost is secondary as precommitted. Break-even is the exact section 2.4 formula against that
+suffix/protocol's five mean legs; zero is possible when the single observed miss happened to be
+faster than the five-run single-shot mean.
+
+| Protocol | Suffix | Miss first token | Container write | Bytes | Break-even reuses |
+| --- | --- | ---: | ---: | ---: | ---: |
+| W | duration | 140.107 s | 376.092 ms | 176,771,072 | 0 |
+| W | layer precedence | 193.235 s | 356.708 ms | 176,771,072 | 1 |
+| W | record codec | 159.452 s | 454.219 ms | 176,771,072 | 1 |
+| C | duration | 135.811 s | 325.249 ms | 176,771,072 | 0 |
+| C | layer precedence | 177.941 s | 222.426 ms | 176,771,072 | 0 |
+| C | record codec | 163.760 s | 348.238 ms | 176,771,072 | 1 |
+
+Protocol C completed 33 full-file reads — one before each of 30 timed legs and one before each of
+three miss setups — at exactly 63,999,836,160 B each. Elapsed read time ranged 18.300..19.845 s,
+mean 19.119 s. W deliberately recorded no eviction.
+
+Summed over all 33 processes per protocol, W moved stored/occupied compressor pages by
++66,898/+17,796 and swapouts by zero. C moved them by -252,375/-120,566 and swapouts by +4,108.
+All C swapouts occurred in duration pair 1's single-shot leg. The observation is retained exactly
+as section 4.2 requires. It does not carry the verdict: C's **minimum** leave-one-suffix-out value is
+the 289,169 ppm row that excludes the entire duration cluster, and W — with zero swapouts — is the
+worse protocol and independently clears the floor.
+
+### 8.5 Closure disposition
+
+Every section 5 cell maps to the final diff or retained evidence:
+
+- the dense/routed declarations and staging cells map to `src/layer_qwen2.align`,
+  `src/layer_olmoe.align`, the 512 MiB stub arena, and the exact 2,048 boundary rows in
+  `layer-forward-smoke`;
+- suffix success/refusal and allocation/early-exit/cleanup map to the exact-cap oracle-S row, both
+  2,049 sequence refusals, the unchanged budget refusal, and the enlarged resident lifetime rows;
+- persisted compatibility and layout map to the 32-token legacy goldens plus independent 33, 370,
+  2,048, and 2,049 arm/reader fixtures;
+- corpus construction/malformed cells map to `scripts/check-prefix-corpus` and its five mutation
+  classes;
+- W/C measurement success maps to the 30-pair summary above, while partial failure maps to the
+  discarded first invocation's bounded `ERROR` summary and cleanup; and
+- long real activations remain qualification-only, while the seven-token transcript refusals and
+  six-token oracle constant are unchanged and pass in the same owner.
+
+There is no deferred applicable closure cell.

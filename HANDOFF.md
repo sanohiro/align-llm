@@ -9,8 +9,9 @@ Branch `agent/r6-prefix-ttft`, based on `main` merge commit
 `c16f14ea5ec2e42d61f7e6644716854d9ca61c2c` (C4-REPAIR-TEMPLATE, PR #156). Authoritative charter
 `docs/specs/r6-prefix-key-corpus.md` section 11; capability ledger and closure matrix
 `docs/specs/r6-prefix-ttft.md`. The pre-implementation design is commit `a3c5e9e`; implementation
-is complete and owner-tested in the worktree, before its checkpoint commit and reference-host
-measurement.
+is `17cce70`, and the qualification-contract correction is `eb832bf`. The reference-host
+measurement is complete and MET; its ledger/HANDOFF transcription is intentionally uncommitted
+until the measurement record is checked and committed.
 
 **Required first-action probe is complete.** A throwaway build changed only the Qwen cap to 2,048,
 measured a 1,200-token resident `--decode-step` prefill three times, and restored the source. The
@@ -45,21 +46,43 @@ shared prefix plus `[696, 1049, 825]` suffixes, and five malformed corpus classe
 `gmake format-check`, Python syntax compilation, dispatch N/A/arity probes, statistic-helper edge
 cases, and `git diff --check` pass.
 
-**Next actions.** (1) Commit this coherent implementation checkpoint. (2) Run the five-repeat W/C
-reference-host measurement with the pinned model/instruments and the existing unrelated >=20 GiB
-Docker disk image as eviction input. (3) Append results and the one optional summary-path contract
-clarification without rewriting the precommitted ceiling/floor. (4) Run one comprehensive review,
-repair once if required, preflight, publish, merge, refresh `main`, and start the next eligible
-roadmap capability.
+**Reference-host gate: MET at exact head `eb832bf34e8e1e8d31f6aa9d78590f211e009f55`.** The canonical
+49,218-byte summary is outside Git at SHA-256 `aa1627a0…f833`. All 30 paired observations and 66
+fresh processes completed. W has protocol mean 304,668 ppm and leave-one-suffix-out range
+**283,489..324,752 ppm**; C has mean 298,502 ppm and range **289,169..314,613 ppm**. W is worse,
+and its 283,489 ppm minimum clears the 150,000 ppm floor by 133,489 ppm. The improvement gate and
+shipping verdict are both MET. C completed 33 reads of an existing unrelated 63,999,836,160-byte
+file. W had zero swapouts; C had 4,108, all in duration pair 1's single-shot leg. The observation is
+retained; C's minimum leave-one-out row excludes that entire suffix, and swapout-free W is the worse
+protocol. An independent summary audit recomputed every pair and aggregate exactly and passed.
+
+The first gate invocation correctly produced no verdict after a qualification-only assertion
+expected `reference.verdict=IDENTICAL` on a keyed hit. A hit deliberately skips the prefix graph
+and publishes `-`; hosted oracle K/S owns its equivalence. `eb832bf` makes that leg-specific,
+syntax verification passes, and the complete run above started again from zero. No failed-run
+observation was reused.
+
+**Next actions.** (1) Author-check and commit the post-measurement ledger and roadmap result. (2)
+Run one comprehensive review over the stable candidate; validate and consolidate any findings. (3)
+Run exact-head publication preflight, publish, merge, refresh `main`, and start item 40 below. (4)
+After item 40 publishes, continue to R7 or the next eligible product blocker.
+
+**User-requested next capability: DEV-OUTPUT-SUMMARY, roadmap item 40.** Successful owner and
+toolchain phases repeatedly emitted 912 lines / approximately 45,720 transport tokens and 564
+lines / approximately 30,038 transport tokens before useful result/progress lines in this session.
+Item 40 will baseline exact bytes/lines, retain complete logs and digests, summarize warning classes
+on success, expose bounded diagnostics on failure, preserve exit/signal/pipe semantics, and keep
+minute-level progress visible. It is planned as a separate consumer-complete developer capability,
+not folded into this performance claim.
 
 **Blockers.** None. Request 22 remains non-blocking because the checked-in ids come from the pinned
 Python/instrument path and Align consumes decimal ids only. The reference host must be serialized
 for the multi-hour measurement.
 
-**Intentional uncommitted files.** The implementation and generated corpus named above until the
-implementation checkpoint commit. Build products and the 4.4 GiB throwaway probe pack live under
-the session scratch root, outside Git. Measurement summaries remain outside Git until their
-aggregates are transcribed into the ledger.
+**Intentional uncommitted files.** `HANDOFF.md`, `docs/specs/r6-prefix-ttft.md`, and
+`docs/specs/roadmap.md` contain the measurement/result transcription and item 40 plan. Build
+products and the 4.4 GiB throwaway probe pack live under the session scratch root, outside Git. The
+canonical measurement summary remains outside Git; only its aggregates and digest are persisted.
 
 ## Merged checkpoint: C4-REPAIR-TEMPLATE review repair (2026-08-30)
 

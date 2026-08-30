@@ -987,7 +987,8 @@ The current forward delivery order is:
     the gate measurement.
 
 38. **R6-PREFIX-TTFT — the prefill cap lifted, the corpus pinned, and the R6 gate measured.**
-    **Active; design complete before implementation.** Its charter is section 11 of
+    **Implemented and measured at `eb832bf`; publication is active. Both the roadmap improvement
+    gate and the 150,000 ppm shipping floor are MET.** Its charter is section 11 of
     [`r6-prefix-key-corpus.md`](r6-prefix-key-corpus.md), written **before** item 37 was implemented
     so the split is a schedule rather than a hope, and it needs its own design gate and its own
     ledger before implementation. The ledger and closure matrix are
@@ -1007,6 +1008,14 @@ The current forward delivery order is:
     written before any number exists. The floor (150,000 ppm, adopted from `r6-resident-weights.md`
     section 3.4), the two cache protocols, and the pre-committed MET / NOT_MET / INDETERMINATE rule
     are all fixed in section 11 in advance.
+
+    The frozen corpus is a 370-id shared prefix plus three suffixes of 696, 1,049, and 825 ids.
+    Five paired repeats under each of warm and complete-file eviction pressure produced jackknife
+    ranges **283,489..324,752 ppm** and **289,169..314,613 ppm**. W is the worse protocol at a
+    283,489 ppm minimum, 133,489 ppm above the floor. All 30 pairs and 66 fresh processes completed;
+    no observation was removed. The exact host, per-suffix means, miss cost, 33 pressure reads,
+    compressor movement, command, and canonical-summary digest are in
+    [`r6-prefix-ttft.md`](r6-prefix-ttft.md) section 8.
 
 > Items 35 and 36 are claimed on sibling branches (`agent/r6-moe-resident-dense`,
 > `agent/mf-single-token-logits`); 37 and 38 are reserved for Track B's `R6-PREFIX-KEY-CORPUS`,
@@ -1086,6 +1095,29 @@ The current forward delivery order is:
     value is the declared policy, machine-checkable refusal vocabulary and aggregate, retained edit
     blocks, and whole-answer identity — not a recovery or speed claim. Evidence and the per-pair
     analysis are in the design's section 11.4.
+
+40. **DEV-OUTPUT-SUMMARY — preserve full verification evidence while making successful local,
+    CI, and toolchain output concise. Planned immediately after item 38 publishes, before R7 unless
+    a product blocker becomes eligible.** Repeated successful Align builds currently send hundreds
+    of identical compiler-warning lines through every owner and qualification: in item 38's session,
+    the first yielded `layer-forward-smoke` payload alone was 912 lines / approximately 45,720
+    transport tokens, and the qualification's ordinary build phase was 564 lines / approximately
+    30,038 transport tokens before any measurement progress. This is a recurring class across local
+    owners, `scripts/pre-pr`, hosted CI, managed-toolchain builds, and capable qualifications, not a
+    one-off test incident.
+
+    The capability will start with a checked-in design and exact byte/line baselines before code,
+    because it changes a developer process boundary and makes a measurable output-volume claim. Its
+    consumer-complete boundary is one shared capture/summarization path actually used by a local
+    owner and the corresponding CI/preflight execution: on success it prints phase, result, elapsed
+    time, warning counts by normalized class, full-log digest, and retained artifact path; on failure
+    it preserves the original exit/signal/pipe status, prints the failing phase plus a bounded useful
+    tail, and retains the complete log. Long-running progress coordinates remain visible at least
+    once per minute. Mutants must prove that the wrapper cannot turn a failure into success, lose the
+    first actionable diagnostic, truncate the retained log, or reorder aggregate phases. The design
+    records a maintenance ceiling and an acceptance floor in exact bytes and lines; tokenizer-specific
+    token counts remain a secondary observation. It will not suppress warnings without summarizing
+    them, replace installed-profile evidence, or add another aggregate merely to test itself.
 
 ### Status (2026-08-28)
 
