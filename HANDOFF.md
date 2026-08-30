@@ -108,15 +108,26 @@ unrelated consumer manifest. Focused `gmake gguf-smoke model-ir-smoke expert-tra
 The failed preflight retained 2,490 lines / 441,553 bytes and ended with a five-line actionable tail;
 that exact baseline is recorded in roadmap item 40, which remains planned and inactive.
 
-**Next actions.** (1) Commit the bounded leak-guard repair. (2) Rerun exact-head publication
-preflight. (3) Publish, merge, and refresh `main`. This pull request is the user-requested stopping
-checkpoint: do not start item 40 or another roadmap capability after merge.
+**Publication environment correction.** The leak-guard repair is commit `cd6c661`. A second
+host-native preflight at that exact head passed the named owner, managed-toolchain ensure, pinned
+build, and all hosted checks, then failed when `fresh-focused` reached
+`run-fresh-source-identity-smoke` on macOS: `/proc/self/fd` is absent. The retained log is 4,374
+lines / 815,682 bytes. This is not a product defect or a portable-owner gap: the Section 9 fresh
+compiler and its descriptor-relative source identity are explicitly Linux-only, and Section 9.11
+requires the focused and installed owners on a native aarch64 Linux host. No skip or Darwin
+substitute is admissible. The publication preflight must therefore run from zero in the existing
+unprivileged Docker-in-Docker Linux wrapper.
+
+**Next actions.** (1) Commit this durable environment correction. (2) Run exact-head publication
+preflight from zero in the unprivileged Docker-in-Docker Linux wrapper. (3) Publish, merge, and
+refresh `main`. This pull request is the user-requested stopping checkpoint: do not start item 40 or
+another roadmap capability after merge.
 
 **Next planned capability, not active: DEV-OUTPUT-SUMMARY, roadmap item 40.** Successful owner and
 toolchain phases repeatedly emitted 912 lines / approximately 45,720 transport tokens and 564
 lines / approximately 30,038 transport tokens before useful result/progress lines in this session;
-the first publication preflight retained 2,490 lines / 441,553 bytes before its five-line failure
-tail.
+the two publication attempts retained 2,490 lines / 441,553 bytes and 4,374 lines / 815,682 bytes
+before their actionable failure tails.
 Item 40 should baseline exact bytes/lines, retain complete logs and digests, summarize warning classes
 on success, expose bounded diagnostics on failure, preserve exit/signal/pipe semantics, and keep
 minute-level progress visible. It is planned as a separate consumer-complete developer capability,
@@ -125,9 +136,8 @@ not folded into this performance claim.
 **Blockers.** None. Request 22 remains non-blocking because the checked-in ids come from the pinned
 Python/instrument path and Align consumes decimal ids only.
 
-**Intentional uncommitted files.** The bounded three-scanner leak-guard repair and its roadmap/handoff
-record are the only intended work-tree changes until commit. Build products and measurement
-summaries remain outside Git.
+**Intentional uncommitted files.** This environment-correction record is the only intended
+work-tree change until commit. Build products and measurement summaries remain outside Git.
 
 ## Merged checkpoint: C4-REPAIR-TEMPLATE review repair (2026-08-30)
 
