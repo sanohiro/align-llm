@@ -1107,8 +1107,12 @@ The current forward delivery order is:
     30,038 transport tokens before any measurement progress. Item 38's first publication preflight
     then retained **2,490 lines / 441,553 bytes** before a five-line actionable failure tail. A
     second host-native attempt retained **4,374 lines / 815,682 bytes** before its late
-    Linux-profile diagnostic. This is a recurring class across local owners, `scripts/pre-pr`,
-    hosted CI, managed-toolchain builds, and capable qualifications, not a one-off test incident.
+    Linux-profile diagnostic. The corrected Linux preflight then retained **4,632 lines / 840,851
+    bytes** before the installed aggregate reduced its actual baseline mismatch to the generic
+    `ERROR CHILD aggregate`; the diagnostic retry captured 16,562 stderr bytes but its bounded
+    8,192-byte tail was dominated by repeated Git graft hints before the useful final failure line.
+    This is a recurring class across local owners, `scripts/pre-pr`, hosted CI,
+    managed-toolchain builds, and capable qualifications, not a one-off test incident.
 
     The capability will start with a checked-in design and exact byte/line baselines before code,
     because it changes a developer process boundary and makes a measurable output-volume claim. Its

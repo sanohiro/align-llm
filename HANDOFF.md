@@ -118,16 +118,32 @@ requires the focused and installed owners on a native aarch64 Linux host. No ski
 substitute is admissible. The publication preflight must therefore run from zero in the existing
 unprivileged Docker-in-Docker Linux wrapper.
 
-**Next actions.** (1) Commit this durable environment correction. (2) Run exact-head publication
-preflight from zero in the unprivileged Docker-in-Docker Linux wrapper. (3) Publish, merge, and
-refresh `main`. This pull request is the user-requested stopping checkpoint: do not start item 40 or
-another roadmap capability after merge.
+**Installed-profile baseline incident.** The corrected Linux preflight at `594dfb5` passed the named
+owner (182,004 ms), managed-toolchain ensure/verify, every hosted owner (732,642 ms), and every
+fresh-focused owner (21,101 ms). The installed image, trust, and boundary phases passed, but the
+worker aggregate failed after 1,417,685 ms with the deliberately generic `ERROR CHILD aggregate`;
+cleanup passed. A same-head installed-only diagnostic retry reproduced the failure after 1,518,283
+ms and exposed the root cause: `baseline error: current evaluation artifacts differ from the
+recorded baseline`. `Makefile` is one of the twenty canonical baseline artifacts and this capability
+adds three focused targets, so Section 2.4 requires a fresh source, immutable-oracle, and canonical
+finalization chain before capable evidence. The diagnostic captured 16,562 stderr bytes; its
+bounded 8,192-byte tail was mostly repeated Git graft deprecation hints before the useful baseline
+failure and Make lines. The full failed Linux preflight retained 4,632 lines / 840,851 bytes.
+
+**Next actions.** (1) Commit this durable incident record as the clean implementation source. (2)
+Record the two-sample deterministic baseline on Linux, commit only its oracle, finalize against that
+full oracle commit, remove the pending record, and commit only the canonical baseline and digest.
+(3) Run `make baseline-check` on Linux, then run exact-head publication preflight from zero in the
+unprivileged Docker-in-Docker Linux wrapper. (4) Publish, merge without squash/rebase, verify all
+three baseline commits are ancestors of refreshed `main`, and stop. This pull request is the
+user-requested stopping checkpoint: do not start item 40 or another roadmap capability after merge.
 
 **Next planned capability, not active: DEV-OUTPUT-SUMMARY, roadmap item 40.** Successful owner and
 toolchain phases repeatedly emitted 912 lines / approximately 45,720 transport tokens and 564
 lines / approximately 30,038 transport tokens before useful result/progress lines in this session;
-the two publication attempts retained 2,490 lines / 441,553 bytes and 4,374 lines / 815,682 bytes
-before their actionable failure tails.
+publication attempts retained 2,490 lines / 441,553 bytes, 4,374 lines / 815,682 bytes, and 4,632
+lines / 840,851 bytes before their actionable failure tails; the installed diagnostic's captured
+16,562-byte stderr needed an 8,192-byte tail that was still dominated by repeated Git hints.
 Item 40 should baseline exact bytes/lines, retain complete logs and digests, summarize warning classes
 on success, expose bounded diagnostics on failure, preserve exit/signal/pipe semantics, and keep
 minute-level progress visible. It is planned as a separate consumer-complete developer capability,
@@ -136,8 +152,8 @@ not folded into this performance claim.
 **Blockers.** None. Request 22 remains non-blocking because the checked-in ids come from the pinned
 Python/instrument path and Align consumes decimal ids only.
 
-**Intentional uncommitted files.** This environment-correction record is the only intended
-work-tree change until commit. Build products and measurement summaries remain outside Git.
+**Intentional uncommitted files.** This baseline-incident record is the only intended work-tree
+change until the new source commit. Build products and measurement summaries remain outside Git.
 
 ## Merged checkpoint: C4-REPAIR-TEMPLATE review repair (2026-08-30)
 
