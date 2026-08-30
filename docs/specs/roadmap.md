@@ -982,25 +982,42 @@ The current forward delivery order is:
     improve on repeated coding tasks sharing a prefix. This discharges two of item 33 section 1.4's
     four reasons — there is now a key and a store — and leaves the corpus and the consumer.
     `MAX_PREFILL_TOKENS` is still **32**, so the largest legal prefix is 32 tokens and no real prompt
-    reaches it; the shared prefix of `eval/prompt/canonical-v1` measures **370 tokens** against
-    suffixes of 696, 825, and 1,049 (section 1.2). Item 38 lifts the cap, pins the corpus, and takes
+    reaches it; the compositional shared prefix of `eval/prompt/canonical-v1` measures **369 tokens** against
+    suffixes of 697, 828, and 1,050 (section 1.2). Item 38 lifts the cap, pins the corpus, and takes
     the gate measurement.
 
 38. **R6-PREFIX-TTFT — the prefill cap lifted, the corpus pinned, and the R6 gate measured.**
-    **Not started.** Its charter is section 11 of
+    **Implemented; the corrected replacement measurement at `de4cb6e` passes both the roadmap
+    improvement gate and the shipping floor. The earlier result measured at `eb832bf` remains
+    withdrawn because the record-codec prompt was escape-rewritten during corpus generation.** Its
+    charter is section 11 of
     [`r6-prefix-key-corpus.md`](r6-prefix-key-corpus.md), written **before** item 37 was implemented
     so the split is a schedule rather than a hope, and it needs its own design gate and its own
-    ledger before implementation. It lifts `MAX_PREFILL_TOKENS` from 32 to 2048 — a constant read as
-    code by seven `.align` modules and three scripts and **bound into a persisted header field**, so
+    ledger before implementation. The ledger and closure matrix are
+    [`r6-prefix-ttft.md`](r6-prefix-ttft.md). The required first-action probe is complete: at 1,200
+    tokens, three resident runs measured mean first-token **129.31 s**, prefill compute **123.41 s**
+    (**95.44%**), and a 38,606 ppm range. The precondition therefore passes. Before the 168 MiB
+    container-read subtraction, the corrected measured ceiling is **290,920 ppm** at the mean prefix share and
+    **248,183 ppm** at the worst, above the unchanged 150,000 ppm floor. Implementation lifts
+    `MAX_PREFILL_TOKENS` from 32 to 2048 — a constant read as
+    code by seven `.align` modules and four scripts and **bound into a persisted header field**, so
     the lift is a one-way compatibility step — pins `eval/kv/prefix-corpus-v1` from the qualification's
     own instrument, and measures TTFT on the paired single-shot and keyed-hit legs. Its first
     implementation step is a **baseline probe, not code**: the ceiling is
     `(T / (T + S)) x (prefill compute / single-shot TTFT)`, whose first factor is already measured at
-    **0.30582 mean and 0.26075 worst**, so the gate is reachable only if this arm's resident prefill
+    **0.30482 mean and 0.26004 worst**, so the gate is reachable only if this arm's resident prefill
     runs at or below roughly 200 tokens per second on the reference host — a falsifiable precondition
     written before any number exists. The floor (150,000 ppm, adopted from `r6-resident-weights.md`
     section 3.4), the two cache protocols, and the pre-committed MET / NOT_MET / INDETERMINATE rule
     are all fixed in section 11 in advance.
+
+    The corrected frozen corpus is a 369-id shared prefix plus three suffixes of 697, 1,050, and 828
+    ids. The replacement five-repeat warm and complete-file-eviction measurement completed all 30
+    pairs and 66 fresh processes. W's leave-one-suffix-out range is 291,511..321,192 ppm; C's is
+    306,038..336,707 ppm. W is worse, and its 291,511 ppm minimum exceeds the 150,000 ppm floor, so
+    both the improvement gate and shipping verdict are **MET**. The audited evidence identity,
+    withdrawn-run isolation, and review finding are recorded in
+    [`r6-prefix-ttft.md`](r6-prefix-ttft.md) section 8.
 
 > Items 35 and 36 are claimed on sibling branches (`agent/r6-moe-resident-dense`,
 > `agent/mf-single-token-logits`); 37 and 38 are reserved for Track B's `R6-PREFIX-KEY-CORPUS`,
@@ -1080,6 +1097,35 @@ The current forward delivery order is:
     value is the declared policy, machine-checkable refusal vocabulary and aggregate, retained edit
     blocks, and whole-answer identity — not a recovery or speed claim. Evidence and the per-pair
     analysis are in the design's section 11.4.
+
+40. **DEV-OUTPUT-SUMMARY — preserve full verification evidence while making successful local,
+    CI, and toolchain output concise. Planned immediately after item 38 publishes, before R7 unless
+    a product blocker becomes eligible.** Repeated successful Align builds currently send hundreds
+    of identical compiler-warning lines through every owner and qualification: in item 38's session,
+    the first yielded `layer-forward-smoke` payload alone was 912 lines / approximately 45,720
+    transport tokens, and the qualification's ordinary build phase was 564 lines / approximately
+    30,038 transport tokens before any measurement progress. Item 38's first publication preflight
+    then retained **2,490 lines / 441,553 bytes** before a five-line actionable failure tail. A
+    second host-native attempt retained **4,374 lines / 815,682 bytes** before its late
+    Linux-profile diagnostic. The corrected Linux preflight then retained **4,632 lines / 840,851
+    bytes** before the installed aggregate reduced its actual baseline mismatch to the generic
+    `ERROR CHILD aggregate`; the diagnostic retry captured 16,562 stderr bytes but its bounded
+    8,192-byte tail was dominated by repeated Git graft hints before the useful final failure line.
+    This is a recurring class across local owners, `scripts/pre-pr`, hosted CI,
+    managed-toolchain builds, and capable qualifications, not a one-off test incident.
+
+    The capability will start with a checked-in design and exact byte/line baselines before code,
+    because it changes a developer process boundary and makes a measurable output-volume claim. Its
+    consumer-complete boundary is one shared capture/summarization path actually used by a local
+    owner and the corresponding CI/preflight execution: on success it prints phase, result, elapsed
+    time, warning counts by normalized class, full-log digest, and retained artifact path; on failure
+    it preserves the original exit/signal/pipe status, prints the failing phase plus a bounded useful
+    tail, and retains the complete log. Long-running progress coordinates remain visible at least
+    once per minute. Mutants must prove that the wrapper cannot turn a failure into success, lose the
+    first actionable diagnostic, truncate the retained log, or reorder aggregate phases. The design
+    records a maintenance ceiling and an acceptance floor in exact bytes and lines; tokenizer-specific
+    token counts remain a secondary observation. It will not suppress warnings without summarizing
+    them, replace installed-profile evidence, or add another aggregate merely to test itself.
 
 ### Status (2026-08-28)
 
@@ -2027,7 +2073,7 @@ prefix再利用とresidency policyが必要である。item 29（R6-KV-PERSIST�
 invalidationは持たず、TTFTの主張もしない。item 37（R6-PREFIX-KEY）はprefix planeの
 content-addressed storeを実装し、keyとstoreという欠けていた4つのうち2つを埋めた——しかしcorpusと
 consumerは依然として存在せず、TTFTの主張もしない。`MAX_PREFILL_TOKENS`が32のままであるため実際の
-promptは1つも入らない（`eval/prompt/canonical-v1`の共有prefixは370 token）。cap引き上げ・corpus
+promptは1つも入らない（`eval/prompt/canonical-v1`の再利用可能な共有prefixは369 token）。cap引き上げ・corpus
 固定・gate測定はitem 38（R6-PREFIX-TTFT）が担う。
 
 **順序についての実測由来の結論（2026-08-28、R3-DECODE-RESIDENCY、roadmap item 25）。**

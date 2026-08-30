@@ -64,15 +64,17 @@ pub CLAIM_ROLE_COUNT := 3
 // Section 3.3's prefill cap, raised from 6 to 32 by `docs/specs/r6-olmoe-decode.md` section 3.8 so
 // that oracle C′ can run `--moe-model-forward` at `TOKENS,d_1..d_k` — `T + k` tokens, 22 of them at
 // the qualification's `T <= 6` and `N = 16`. It is now the value `layer_qwen2.MAX_PREFILL_TOKENS`
-// already holds, so two architectures no longer carry two caps for one reason.
+// held at that checkpoint, so two architectures no longer carried two caps for one reason.
 //
 // **The cap's original reason survives and is not weakened.** R5A section 3.3's reason is the
 // *oracle's*, not the arithmetic's: `llama-eval-callback` prints every row of an axis only while
 // its extent is `<= 6`, and an oracle that compares fewer elements as the input grows while still
 // reporting `PASS` is worse than one that refuses. That refusal is `R5_ORACLE_TRUNCATED`, raised
-// against `TRUNCATION_PRINTED` (6) whenever a transcript is present, and it is byte-unchanged: the
-// range 7..32 is open for arithmetic and closed for comparison, at 32 exactly as it was at 6.
-pub MAX_PREFILL_TOKENS := 32
+// against `TRUNCATION_PRINTED` (6) whenever a transcript is present, and it is byte-unchanged.
+// R6-PREFIX-TTFT (`docs/specs/r6-prefix-ttft.md`) raises the arithmetic cap from 32 to **2048** for
+// the same frozen shared-prefix consumer as Qwen2. The range 7..2048 is open for arithmetic and
+// closed for comparison, at 2048 exactly as it was at 32.
+pub MAX_PREFILL_TOKENS := 2048
 
 // Section 3.4's ceiling on the routed union's three windows, checked at step 26 **after** the
 // routing decision, because `U` does not exist before it.

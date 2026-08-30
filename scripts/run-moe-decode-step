@@ -637,7 +637,7 @@ if resident_leg:
 
     block_align = pack_document["format"]["block_align"]
     MAX_TENSOR_ALIGNMENT = 64
-    MAX_PREFILL_TOKENS = 32
+    MAX_PREFILL_TOKENS = 2048
     step_align = max(block_align, MAX_TENSOR_ALIGNMENT)
 
     def align_up(value, alignment):

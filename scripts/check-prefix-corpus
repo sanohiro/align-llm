@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+"""Generate or verify the frozen R6 keyed-prefix token-id corpus."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CORPUS = ROOT / "eval/kv/prefix-corpus-v1"
+MANIFEST = CORPUS / "manifest.json"
+MAX_PREFILL_TOKENS = 2048
+N_VOCAB = 152064
+KV_WIDTH = 1536
+MODEL_SIZE = 4683073536
+MODEL_SHA256 = "509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c"
+PACK_SOURCE_HEADER_BYTES = 5953536
+PACK_SOURCE_HEADER_SHA256 = "df727e6ef8f16650aacabfa673463efc22a51e5d552c64c5ed23bfe516e1a0ba"
+LLAMA_REVISION = "bb4caa7540188872173c44d161602d9271386413"
+LLAMA_VERSION_PREFIX = "version: 0.2.0 (build 10566, commit bb4caa754)"
+GENERATION_COMMAND = (
+    'ALIGN_LLM_LLAMA_DEBUG=/path/to/pinned/llama-debug '
+    'ALIGN_LLM_GGUF_MODEL=/path/to/qwen2.5-coder-7b-instruct-q4_k_m.gguf '
+    'python3 scripts/check-prefix-corpus generate'
+)
+
+SHARED_SOURCES = (
+    "eval/prompt/canonical-v1/base-prompt.json",
+    "eval/prompt/canonical-v1/repo-prompt.json",
+)
+TASKS = (
+    "duration-half-away-from-zero",
+    "layer-precedence-frozen-module",
+    "record-codec-round-trip",
+)
+
+
+class CorpusError(Exception):
+    pass
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path: Path, limit: int | None = None) -> str:
+    digest = hashlib.sha256()
+    remaining = limit
+    with path.open("rb") as handle:
+        while remaining is None or remaining > 0:
+            size = 1024 * 1024 if remaining is None else min(1024 * 1024, remaining)
+            block = handle.read(size)
+            if not block:
+                break
+            digest.update(block)
+            if remaining is not None:
+                remaining -= len(block)
+    if remaining not in (None, 0):
+        raise CorpusError(f"model: shorter than source header ({limit} bytes)")
+    return digest.hexdigest()
+
+
+def load_json(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as failure:
+        raise CorpusError(f"{path.name}: json") from failure
+    if not isinstance(value, dict):
+        raise CorpusError(f"{path.name}: root")
+    return value
+
+
+def artifact(path_text: str) -> tuple[dict, bytes]:
+    path = ROOT / path_text
+    value = load_json(path)
+    content_sha = value.get("content_sha256")
+    if not isinstance(content_sha, str) or len(content_sha) != 64:
+        raise CorpusError(f"{path_text}: content_sha256")
+    canonical = copy.deepcopy(value)
+    canonical["content_sha256"] = ""
+    encoded = json.dumps(canonical, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if sha256_bytes(encoded) != content_sha:
+        raise CorpusError(f"{path_text}: canonical content_sha256")
+    text = value.get("text")
+    if not isinstance(text, str):
+        raise CorpusError(f"{path_text}: text")
+    return value, text.encode("utf-8")
+
+
+def expected_entries() -> list[dict]:
+    shared_parts = []
+    shared_sources = []
+    for source in SHARED_SOURCES:
+        value, text = artifact(source)
+        shared_parts.append(text)
+        shared_sources.append({"path": source, "content_sha256": value["content_sha256"]})
+    complete_shared = b"".join(shared_parts)
+    if not complete_shared.endswith(b".\n"):
+        raise CorpusError("shared-prefix: expected trailing sentence boundary")
+    # The final period and newline merge under the pinned tokenizer when task bytes follow. Keep
+    # both on the suffix side so shared ids are an exact prefix of every complete prompt rather than
+    # pretending that independently tokenized byte strings are compositional.
+    shared = complete_shared[:-2]
+    boundary = complete_shared[-2:]
+    entries = [{
+        "entry_id": "shared-prefix",
+        "path": "eval/kv/prefix-corpus-v1/shared-prefix.ids",
+        "sources": shared_sources,
+        "prompt": {"bytes": len(shared), "sha256": sha256_bytes(shared)},
+        "complete_prompt": {"bytes": len(shared), "sha256": sha256_bytes(shared)},
+        "_prompt_bytes": shared,
+        "_complete_prompt_bytes": shared,
+    }]
+    for task in TASKS:
+        source = f"eval/tasks/prompt-v1/{task}/task-prompt.json"
+        value, task_prompt = artifact(source)
+        suffix = boundary + task_prompt
+        complete = shared + suffix
+        entries.append({
+            "entry_id": f"{task}.initial.suffix",
+            "path": f"eval/kv/prefix-corpus-v1/{task}.initial.suffix.ids",
+            "sources": [shared_sources[-1],
+                        {"path": source, "content_sha256": value["content_sha256"]}],
+            "prompt": {"bytes": len(suffix), "sha256": sha256_bytes(suffix)},
+            "complete_prompt": {"bytes": len(complete), "sha256": sha256_bytes(complete)},
+            "_prompt_bytes": suffix,
+            "_complete_prompt_bytes": complete,
+        })
+    return entries
+
+
+def read_ids(path: Path) -> tuple[list[int], bytes]:
+    try:
+        raw = path.read_bytes()
+    except OSError as failure:
+        raise CorpusError(f"{path.name}: unreadable") from failure
+    if not raw or not raw.endswith(b"\n"):
+        raise CorpusError(f"{path.name}: grammar")
+    ids = []
+    for index, line in enumerate(raw.splitlines()):
+        if not line or not line.isdigit() or (len(line) > 1 and line.startswith(b"0")):
+            raise CorpusError(f"{path.name}: grammar[{index}]")
+        token_id = int(line)
+        if token_id >= N_VOCAB:
+            raise CorpusError(f"{path.name}: range[{index}]")
+        ids.append(token_id)
+    return ids, raw
+
+
+def validate(corpus: Path = CORPUS) -> dict:
+    manifest = load_json(corpus / "manifest.json")
+    fixed = {
+        "schema_version": 1,
+        "artifact_kind": "KV_PREFIX_CORPUS",
+        "corpus_id": "prefix-corpus-v1",
+        "kv_width": KV_WIDTH,
+        "max_prefill_tokens": MAX_PREFILL_TOKENS,
+        "n_vocab": N_VOCAB,
+        "generation_command": GENERATION_COMMAND,
+    }
+    for key, expected in fixed.items():
+        if manifest.get(key) != expected:
+            raise CorpusError(f"manifest: {key}")
+    if manifest.get("model") != {"bytes": MODEL_SIZE, "sha256": MODEL_SHA256}:
+        raise CorpusError("manifest: model")
+    instrument = manifest.get("instrument")
+    if not isinstance(instrument, dict) or instrument.get("llama_revision") != LLAMA_REVISION \
+            or not str(instrument.get("llama_debug_version", "")).startswith(LLAMA_VERSION_PREFIX) \
+            or instrument.get("pack_source_header_bytes") != PACK_SOURCE_HEADER_BYTES \
+            or instrument.get("pack_source_header_sha256") != PACK_SOURCE_HEADER_SHA256:
+        raise CorpusError("manifest: instrument")
+
+    actual_entries = manifest.get("entries")
+    expected = expected_entries()
+    if not isinstance(actual_entries, list) or len(actual_entries) != len(expected):
+        raise CorpusError("manifest: entries")
+    counts = {}
+    for actual, wanted in zip(actual_entries, expected):
+        if not isinstance(actual, dict):
+            raise CorpusError("manifest: entry")
+        for key in ("entry_id", "path", "sources", "prompt", "complete_prompt"):
+            if actual.get(key) != wanted[key]:
+                raise CorpusError(f"{wanted['entry_id']}: {key}")
+        relative = actual["path"]
+        prefix = "eval/kv/prefix-corpus-v1/"
+        if not relative.startswith(prefix) or "/" in relative[len(prefix):]:
+            raise CorpusError(f"{wanted['entry_id']}: path")
+        ids, raw = read_ids(corpus / relative[len(prefix):])
+        if actual.get("id_count") != len(ids):
+            raise CorpusError(f"{wanted['entry_id']}: id_count")
+        if actual.get("content_sha256") != sha256_bytes(raw):
+            raise CorpusError(f"{wanted['entry_id']}: content_sha256")
+        counts[wanted["entry_id"]] = len(ids)
+    shared_count = counts["shared-prefix"]
+    for task in TASKS:
+        suffix_count = counts[f"{task}.initial.suffix"]
+        if shared_count + suffix_count > MAX_PREFILL_TOKENS:
+            raise CorpusError(f"{task}: sequence[{shared_count + suffix_count}]")
+    return manifest
+
+
+def tokenize(executable: Path, model: Path, prompt: bytes) -> list[int]:
+    with tempfile.TemporaryDirectory(prefix="align-prefix-tokenize-") as temporary:
+        prompt_path = Path(temporary) / "prompt.txt"
+        prompt_path.write_bytes(prompt)
+        output = Path(temporary) / "output"
+        output.mkdir()
+        command = [
+            str(executable), "-m", str(model), "-f", str(prompt_path), "--no-escape", "-n", "1",
+            "-t", "4", "-ngl", "0", "-fa", "off", "-ctk", "f32", "-ctv", "f32", "-nr",
+            "-c", "2048",
+            "--save-logits", "--logits-output-dir", str(output),
+        ]
+        result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            detail = result.stderr.decode("utf-8", "replace").splitlines()[-1:] or ["exit"]
+            raise CorpusError(f"llama-debug: {detail[0]}")
+        token_files = sorted(output.glob("*-tokens.bin"))
+        if len(token_files) != 1:
+            raise CorpusError("llama-debug: token file")
+        raw = token_files[0].read_bytes()
+        if not raw or len(raw) % 4:
+            raise CorpusError("llama-debug: token bytes")
+        ids = list(struct.unpack(f"<{len(raw) // 4}i", raw))
+        if any(token_id < 0 or token_id >= N_VOCAB for token_id in ids):
+            raise CorpusError("llama-debug: token range")
+        return ids
+
+
+def generate() -> None:
+    debug_text = os.environ.get("ALIGN_LLM_LLAMA_DEBUG", "")
+    model_text = os.environ.get("ALIGN_LLM_GGUF_MODEL", "")
+    if not debug_text or not model_text:
+        raise CorpusError("generate: ALIGN_LLM_LLAMA_DEBUG and ALIGN_LLM_GGUF_MODEL are required")
+    debug = Path(debug_text).resolve()
+    model = Path(model_text).resolve()
+    if not debug.is_file() or not os.access(debug, os.X_OK):
+        raise CorpusError("generate: llama-debug is not executable")
+    if not model.is_file() or model.stat().st_size != MODEL_SIZE:
+        raise CorpusError("generate: model size")
+    if sha256_file(model) != MODEL_SHA256:
+        raise CorpusError("generate: model sha256")
+    if sha256_file(model, PACK_SOURCE_HEADER_BYTES) != PACK_SOURCE_HEADER_SHA256:
+        raise CorpusError("generate: pack source header sha256")
+    revision = (ROOT / ".llama-revision").read_text(encoding="ascii").strip()
+    if revision != LLAMA_REVISION:
+        raise CorpusError("generate: .llama-revision")
+    version_result = subprocess.run([str(debug), "--version"], capture_output=True, text=True)
+    version = (version_result.stdout + version_result.stderr).strip()
+    if version_result.returncode != 0 or not version.startswith(LLAMA_VERSION_PREFIX):
+        raise CorpusError("generate: llama-debug version")
+
+    entries = expected_entries()
+    CORPUS.mkdir(parents=True, exist_ok=True)
+    shared_ids = None
+    for entry in entries:
+        entry.pop("_prompt_bytes")
+        complete_ids = tokenize(debug, model, entry.pop("_complete_prompt_bytes"))
+        if shared_ids is None:
+            shared_ids = complete_ids
+            ids = complete_ids
+        else:
+            if complete_ids[:len(shared_ids)] != shared_ids:
+                raise CorpusError(f"{entry['entry_id']}: shared token prefix")
+            ids = complete_ids[len(shared_ids):]
+        raw = b"".join(f"{token_id}\n".encode("ascii") for token_id in ids)
+        (ROOT / entry["path"]).write_bytes(raw)
+        entry["id_count"] = len(ids)
+        entry["content_sha256"] = sha256_bytes(raw)
+    manifest = {
+        "schema_version": 1,
+        "artifact_kind": "KV_PREFIX_CORPUS",
+        "corpus_id": "prefix-corpus-v1",
+        "kv_width": KV_WIDTH,
+        "max_prefill_tokens": MAX_PREFILL_TOKENS,
+        "n_vocab": N_VOCAB,
+        "model": {"bytes": MODEL_SIZE, "sha256": MODEL_SHA256},
+        "instrument": {
+            "llama_revision": LLAMA_REVISION,
+            "llama_debug_version": version,
+            "pack_source_header_bytes": PACK_SOURCE_HEADER_BYTES,
+            "pack_source_header_sha256": PACK_SOURCE_HEADER_SHA256,
+        },
+        "generation_command": GENERATION_COMMAND,
+        "entries": entries,
+    }
+    MANIFEST.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    validate()
+    print("prefix corpus: generated 4 id files from the pinned model and instrument")
+
+
+def mutation_checks() -> None:
+    mutations = (
+        ("grammar", lambda root, value: (root / "shared-prefix.ids").write_text("01\n", encoding="ascii")),
+        ("count", lambda root, value: value["entries"][0].__setitem__("id_count", -1)),
+        ("digest", lambda root, value: value["entries"][0].__setitem__("content_sha256", "0" * 64)),
+        ("source", lambda root, value: value["entries"][0]["sources"][0].__setitem__("content_sha256", "0" * 64)),
+        ("prompt", lambda root, value: value["entries"][0]["prompt"].__setitem__("sha256", "0" * 64)),
+    )
+    for name, mutate in mutations:
+        with tempfile.TemporaryDirectory(prefix="align-prefix-corpus-check-") as temporary:
+            root = Path(temporary)
+            shutil.copytree(CORPUS, root, dirs_exist_ok=True)
+            value = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            mutate(root, value)
+            (root / "manifest.json").write_text(json.dumps(value), encoding="utf-8")
+            try:
+                validate(root)
+            except CorpusError:
+                continue
+            raise CorpusError(f"mutation: {name} was accepted")
+
+
+def main() -> int:
+    try:
+        if sys.argv[1:] == ["generate"]:
+            generate()
+        elif sys.argv[1:]:
+            raise CorpusError("usage: scripts/check-prefix-corpus [generate]")
+        else:
+            manifest = validate()
+            mutation_checks()
+            counts = [entry["id_count"] for entry in manifest["entries"]]
+            print(f"prefix corpus: PASS shared {counts[0]} ids, suffixes {counts[1:]}, 5 malformed classes refused")
+        return 0
+    except CorpusError as failure:
+        print(f"prefix corpus: FAIL {failure}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

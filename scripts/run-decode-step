@@ -74,6 +74,19 @@ set -euo pipefail
 # refuses any step whose decoded id is a member of a colliding class.
 
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+
+# R6-PREFIX-TTFT is a separate, deliberately expensive qualification. Dispatch before this
+# runner checks the ordinary decode qualification's prerequisites so the two paths cannot silently
+# share fallbacks, prompt selection, repeat counts, or analysis.
+if [ "${1:-}" = "--prefix-ttft" ]; then
+  shift
+  [ "$#" -eq 0 ] || {
+    printf '%s\n' "prefix TTFT qualification: ERROR --prefix-ttft takes no operands" >&2
+    exit 2
+  }
+  exec "${root_dir}/scripts/run-prefix-ttft"
+fi
+
 compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
 
 na() {
@@ -313,11 +326,11 @@ with open(sys.argv[1], "rb") as handle:
     raw = handle.read()
 steps = int(sys.argv[2])
 ids = list(struct.unpack("<%di" % (len(raw) // 4), raw))
-# `T + N <= MAX_PREFILL_TOKENS` (32), because oracle C' runs `--model-forward` at `TOKENS,d_1..d_N`
-# and that arm refuses more than the cap. R6-STEP-N section 2.5 is why the cap is 32 and not 8.
-if not ids or len(ids) + steps > 32:
+# `T + N <= MAX_PREFILL_TOKENS` (2048), because oracle C' runs `--model-forward` at
+# `TOKENS,d_1..d_N` and that arm refuses more than the cap. R6-PREFIX-TTFT owns the current cap.
+if not ids or len(ids) + steps > 2048:
     raise SystemExit("decode step qualification: FAIL %d prompt tokens plus %d steps exceeds "
-                     "MAX_PREFILL_TOKENS (32)" % (len(ids), steps))
+                     "MAX_PREFILL_TOKENS (2048)" % (len(ids), steps))
 print(",".join(str(i) for i in ids))
 PY
 )
@@ -1392,7 +1405,7 @@ for n in sorted({1, 4, steps}):
 # omitted the container's 4,096-byte block alignment; the measured figure is 4,677,533,696 B, and
 # section 11 of that document records the correction. This oracle is the reason the correction is a
 # fact rather than an opinion.
-MAX_PREFILL_TOKENS = 32
+MAX_PREFILL_TOKENS = 2048
 
 
 def independent_resident_bytes(path):
@@ -2142,9 +2155,9 @@ for case in rows:
                     hit["store"]["container_bytes"]))
     print("decode step qualification: R6PK %s timings DIAGNOSTIC first_token_ns miss %d, hit %d; "
           "invocation wall ns miss %s, hit %s; store lookup_ns %d. One run each on one host, and "
-          "**no TTFT claim is made**: this capability ships the key and the store and records no "
-          "performance figure. `MAX_PREFILL_TOKENS` is 32, so no real prompt's shared prefix fits "
-          "and the measurement is roadmap item 38's."
+          "**no TTFT claim is made**: these legacy few-token store samples remain correctness "
+          "diagnostics. R6-PREFIX-TTFT's dedicated `--prefix-ttft` path owns the frozen-corpus "
+          "measurement."
           % (label, miss["timings"]["first_token_ns"], hit["timings"]["first_token_ns"],
              miss_wall[0] if miss_wall else "not measured",
              hit_wall[0] if hit_wall else "not measured", hit["store"]["lookup_ns"]))
@@ -2158,8 +2171,8 @@ print("decode step qualification: %d store prompts PASS -- a keyed miss prefills
       "key the arm derived, and continues; the hit that follows loads it; the two documents are "
       "byte-identical outside %d excluded key groups (oracle K), both are byte-identical to the "
       "single-shot run of the whole prompt (oracle S) and to `llama-debug --save-logits` (gate "
-      "G1), and the container is byte-identical to the one `KV_SAVE` writes. **No TTFT claim, and "
-      "the R6 roadmap gate stays unmet**: the corpus and the prefix-sharing consumer are still "
-      "missing and `MAX_PREFILL_TOKENS` is 32."
+      "G1), and the container is byte-identical to the one `KV_SAVE` writes. **No TTFT claim is "
+      "made by these legacy few-token samples**; R6-PREFIX-TTFT's dedicated `--prefix-ttft` path "
+      "owns that gate."
       % (len(rows), len(STORE_EXCLUDED_BLOCKS) + len(STORE_EXCLUDED_FIELDS)))
 PY

@@ -1,0 +1,682 @@
+#!/usr/bin/env python3
+"""Run the R6 keyed-prefix TTFT qualification on a capable reference host."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CORPUS = ROOT / "eval/kv/prefix-corpus-v1"
+EXPECTED_MODEL_BYTES = 4_683_073_536
+EXPECTED_MODEL_SHA256 = "509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c"
+EXPECTED_LLAMA_REVISION = "bb4caa7540188872173c44d161602d9271386413"
+EXPECTED_VERSION = "version: 0.2.0 (build 10566, commit bb4caa754)"
+MIN_PHYSICAL_BYTES = 12 * 1024**3
+MIN_EVICTION_BYTES = 20 * 1024**3
+CONTAINER_ALLOWANCE = 169 * 1024**2
+STORE_CONTAINER_COUNT = 6
+HEADROOM_BYTES = 3 * 1024**3
+KV_WIDTH = 1536
+STEPS = 1
+GATE_REPEATS = 5
+SHIPPING_FLOOR_PPM = 150_000
+
+
+class QualificationError(Exception):
+    """A measured or setup failure that must produce an ERROR summary."""
+
+
+def named_na(reason: str) -> None:
+    print(f"prefix TTFT qualification: N/A {reason}")
+    raise SystemExit(0)
+
+
+def require_env(name: str) -> str:
+    value = os.environ.get(name, "")
+    if not value:
+        named_na(f"{name} is unset")
+    return value
+
+
+def sha256_file(path: Path, limit: int | None = None) -> str:
+    digest = hashlib.sha256()
+    remaining = limit
+    with path.open("rb") as handle:
+        while remaining is None or remaining > 0:
+            size = 8 * 1024 * 1024 if remaining is None else min(8 * 1024 * 1024, remaining)
+            block = handle.read(size)
+            if not block:
+                break
+            digest.update(block)
+            if remaining is not None:
+                remaining -= len(block)
+    if remaining not in (None, 0):
+        raise QualificationError(f"{path} ended before {limit} identity bytes")
+    return digest.hexdigest()
+
+
+def command_version(executable: Path) -> str:
+    result = subprocess.run(
+        [str(executable), "--version"], capture_output=True, text=True, check=False
+    )
+    value = (result.stdout + result.stderr).strip()
+    if result.returncode != 0:
+        named_na(f"{executable} --version exited {result.returncode}")
+    if not value.startswith(EXPECTED_VERSION):
+        named_na(f"{executable} identity is {value.splitlines()[0] if value else 'empty'}")
+    return value
+
+
+def physical_memory_bytes() -> int:
+    if Path("/proc/meminfo").is_file():
+        for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines():
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) * 1024
+    result = subprocess.run(
+        ["sysctl", "-n", "hw.memsize"], capture_output=True, text=True, check=False
+    )
+    if result.returncode == 0 and result.stdout.strip().isdigit():
+        return int(result.stdout.strip())
+    return 0
+
+
+def vm_state() -> dict[str, int]:
+    if Path("/proc/vmstat").is_file():
+        wanted = {"pswpin", "pswpout", "nr_zswpout"}
+        result = {}
+        for line in Path("/proc/vmstat").read_text(encoding="ascii").splitlines():
+            fields = line.split()
+            if len(fields) == 2 and fields[0] in wanted:
+                result[fields[0]] = int(fields[1])
+        return result
+    invocation = subprocess.run(["vm_stat"], capture_output=True, text=True, check=False)
+    if invocation.returncode != 0:
+        raise QualificationError("vm_stat is unavailable")
+    wanted = {
+        "Pages stored in compressor",
+        "Pages occupied by compressor",
+        "Swapouts",
+    }
+    result = {}
+    for line in invocation.stdout.splitlines():
+        if ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        if name in wanted:
+            result[name] = int(value.strip().rstrip(".").replace(".", ""))
+    if set(result) != wanted:
+        raise QualificationError(f"vm_stat omitted compressor counters: {result}")
+    return result
+
+
+def read_ids(path: Path) -> list[int]:
+    return [int(line) for line in path.read_text(encoding="ascii").splitlines()]
+
+
+def comma_ids(values: list[int]) -> str:
+    return ",".join(str(value) for value in values)
+
+
+def half_away(numerator: int, denominator: int) -> int:
+    if denominator <= 0:
+        raise QualificationError("statistic denominator is not positive")
+    sign = -1 if numerator < 0 else 1
+    quotient, remainder = divmod(abs(numerator), denominator)
+    if remainder * 2 >= denominator:
+        quotient += 1
+    return sign * quotient
+
+
+def reserve_summary_path(
+    path: Path, inputs: tuple[tuple[str, Path], ...], work_tree: Path = ROOT
+) -> tuple[int, int]:
+    resolved = path.resolve(strict=False)
+    if resolved.is_relative_to(work_tree.resolve()):
+        raise QualificationError("ALIGN_LLM_PREFIX_TTFT_SUMMARY must be outside the work tree")
+    for label, input_path in inputs:
+        input_resolved = input_path.resolve(strict=False)
+        aliases = resolved == input_resolved
+        if not aliases and (path.exists() or path.is_symlink()) and input_path.exists():
+            try:
+                aliases = path.samefile(input_path)
+            except OSError:
+                aliases = False
+        if aliases:
+            raise QualificationError(f"ALIGN_LLM_PREFIX_TTFT_SUMMARY aliases {label}")
+    if path.exists() or path.is_symlink():
+        raise QualificationError("ALIGN_LLM_PREFIX_TTFT_SUMMARY already exists")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags, 0o600)
+        os.close(descriptor)
+        reserved = path.lstat()
+    except OSError as failure:
+        raise QualificationError(
+            f"ALIGN_LLM_PREFIX_TTFT_SUMMARY cannot be reserved: {failure}"
+        ) from failure
+    if not stat.S_ISREG(reserved.st_mode):
+        raise QualificationError("ALIGN_LLM_PREFIX_TTFT_SUMMARY reservation is not a regular file")
+    return reserved.st_dev, reserved.st_ino
+
+
+def canonical_write(path: Path, value: dict, reservation: tuple[int, int]) -> str:
+    encoded = (
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    current = path.lstat()
+    if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != reservation:
+        raise QualificationError("ALIGN_LLM_PREFIX_TTFT_SUMMARY reservation changed")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".partial", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def observed_break_even_reuses(miss_ns: int, mean_single_ns: int, mean_hit_ns: int) -> int | None:
+    denominator = mean_single_ns - mean_hit_ns
+    if denominator <= 0:
+        return None
+    numerator = miss_ns - mean_single_ns
+    return max(0, -(-numerator // denominator))
+
+
+def run_checked(command: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> str:
+    result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()[-2000:]
+        raise QualificationError(
+            f"{' '.join(command[:3])} exited {result.returncode}: {detail}"
+        )
+    return result.stdout
+
+
+def read_eviction(path: Path) -> dict[str, int]:
+    started = time.monotonic_ns()
+    count = 0
+    with path.open("rb", buffering=0) as handle:
+        while True:
+            block = handle.read(16 * 1024 * 1024)
+            if not block:
+                break
+            count += len(block)
+    elapsed = time.monotonic_ns() - started
+    expected = path.stat().st_size
+    if count != expected:
+        raise QualificationError(f"eviction read consumed {count} bytes, expected {expected}")
+    return {"bytes": count, "elapsed_ns": elapsed}
+
+
+def build_environment(shim_dir: Path) -> dict[str, str]:
+    environment = dict(os.environ)
+    for name in ("LIBRARY_PATH", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+        old = environment.get(name, "")
+        environment[name] = str(shim_dir) + ((":" + old) if old else "")
+    return environment
+
+
+def selected_metrics(document: dict) -> dict:
+    return {
+        "first_token_ns": document["timings"]["first_token_ns"],
+        "kv_read_ns": document["kv"]["read_ns"],
+        "store_lookup_ns": document["store"]["lookup_ns"],
+        "weights_fill_ns": document["weights"]["fill_ns"],
+        "container_bytes": document["store"]["container_bytes"],
+    }
+
+
+def main() -> int:
+    required = {
+        name: require_env(name)
+        for name in (
+            "ALIGN_LLM_GGML_INCLUDE",
+            "ALIGN_LLM_GGML_LIB",
+            "ALIGN_LLM_GGUF_MODEL",
+            "ALIGN_LLM_LLAMA_EVAL_CALLBACK",
+            "ALIGN_LLM_LLAMA_DEBUG",
+            "ALIGN_LLM_PREFIX_TTFT_EVICTION_FILE",
+        )
+    }
+    include_dir = Path(required["ALIGN_LLM_GGML_INCLUDE"])
+    library_dir = Path(required["ALIGN_LLM_GGML_LIB"])
+    model = Path(required["ALIGN_LLM_GGUF_MODEL"])
+    callback = Path(required["ALIGN_LLM_LLAMA_EVAL_CALLBACK"])
+    llama_debug = Path(required["ALIGN_LLM_LLAMA_DEBUG"])
+    eviction_file = Path(required["ALIGN_LLM_PREFIX_TTFT_EVICTION_FILE"])
+    for label, path, kind in (
+        ("ALIGN_LLM_GGML_INCLUDE", include_dir, "directory"),
+        ("ALIGN_LLM_GGML_LIB", library_dir, "directory"),
+        ("ALIGN_LLM_GGUF_MODEL", model, "file"),
+        ("ALIGN_LLM_PREFIX_TTFT_EVICTION_FILE", eviction_file, "file"),
+    ):
+        valid = path.is_dir() if kind == "directory" else path.is_file()
+        if not valid:
+            named_na(f"{label} is not a {kind}")
+    for label, path in (
+        ("ALIGN_LLM_LLAMA_EVAL_CALLBACK", callback),
+        ("ALIGN_LLM_LLAMA_DEBUG", llama_debug),
+    ):
+        if not path.is_file() or not os.access(path, os.X_OK):
+            named_na(f"{label} is not executable")
+
+    repeats_text = os.environ.get("ALIGN_LLM_PREFIX_TTFT_REPEATS", str(GATE_REPEATS))
+    if not repeats_text.isdecimal() or not 1 <= int(repeats_text) <= 20:
+        named_na(f"ALIGN_LLM_PREFIX_TTFT_REPEATS={repeats_text} is outside 1..20")
+    repeats = int(repeats_text)
+    gate_run = repeats == GATE_REPEATS
+
+    scratch_root = Path(
+        os.environ.get(
+            "ALIGN_LLM_PREFIX_TTFT_TMPDIR", os.environ.get("TMPDIR", tempfile.gettempdir())
+        )
+    )
+    if not scratch_root.is_dir():
+        named_na(f"the scratch root {scratch_root} does not exist")
+    summary_path = Path(
+        os.environ.get(
+            "ALIGN_LLM_PREFIX_TTFT_SUMMARY",
+            str(scratch_root / "align-r6-prefix-ttft-summary.json"),
+        )
+    )
+    memory = physical_memory_bytes()
+    if memory < MIN_PHYSICAL_BYTES:
+        named_na(f"physical memory is {memory} B, below 12 GiB")
+    if eviction_file.stat().st_size < MIN_EVICTION_BYTES:
+        named_na(
+            f"ALIGN_LLM_PREFIX_TTFT_EVICTION_FILE is {eviction_file.stat().st_size} B, below 20 GiB"
+        )
+    model_stat = model.stat()
+    if model_stat.st_size != EXPECTED_MODEL_BYTES:
+        named_na(f"model size is {model_stat.st_size}, expected {EXPECTED_MODEL_BYTES}")
+    free_bytes = shutil.disk_usage(scratch_root).free
+    needed = (
+        model_stat.st_size
+        + STORE_CONTAINER_COUNT * CONTAINER_ALLOWANCE
+        + HEADROOM_BYTES
+    )
+    if free_bytes < needed:
+        named_na(f"free space under {scratch_root} is {free_bytes} B, below {needed} B")
+
+    revision = (ROOT / ".llama-revision").read_text(encoding="ascii").strip()
+    if revision != EXPECTED_LLAMA_REVISION:
+        named_na(f".llama-revision is {revision}, expected {EXPECTED_LLAMA_REVISION}")
+    debug_version = command_version(llama_debug)
+    callback_version = command_version(callback)
+    print("prefix TTFT qualification: verifying corpus and model identity", flush=True)
+    corpus_check = subprocess.run(
+        [str(ROOT / "scripts/check-prefix-corpus")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if corpus_check.returncode != 0:
+        detail = (corpus_check.stderr or corpus_check.stdout).strip().splitlines()
+        named_na(f"prefix corpus consistency failed: {detail[-1] if detail else 'no diagnostic'}")
+    model_sha256 = sha256_file(model)
+    if model_sha256 != EXPECTED_MODEL_SHA256:
+        named_na(f"model SHA-256 is {model_sha256}, expected {EXPECTED_MODEL_SHA256}")
+
+    manifest = json.loads((CORPUS / "manifest.json").read_text(encoding="utf-8"))
+    shared_entry = next(entry for entry in manifest["entries"] if entry["entry_id"] == "shared-prefix")
+    suffix_entries = [entry for entry in manifest["entries"] if entry["entry_id"] != "shared-prefix"]
+    shared = read_ids(ROOT / shared_entry["path"])
+    suffixes = [(entry["entry_id"], read_ids(ROOT / entry["path"])) for entry in suffix_entries]
+
+    try:
+        summary_reservation = reserve_summary_path(
+            summary_path,
+            (
+                ("ALIGN_LLM_GGML_INCLUDE", include_dir),
+                ("ALIGN_LLM_GGML_LIB", library_dir),
+                ("ALIGN_LLM_GGUF_MODEL", model),
+                ("ALIGN_LLM_LLAMA_EVAL_CALLBACK", callback),
+                ("ALIGN_LLM_LLAMA_DEBUG", llama_debug),
+                ("ALIGN_LLM_PREFIX_TTFT_EVICTION_FILE", eviction_file),
+            ),
+        )
+    except QualificationError as failure:
+        named_na(str(failure))
+
+    work_dir = Path(tempfile.mkdtemp(prefix="align-r6-prefix-", dir=scratch_root))
+    shim_built = False
+    completed: list[dict] = []
+    summary: dict = {
+        "kind": "R6_PREFIX_TTFT",
+        "schema_version": 1,
+        "status": "RUNNING",
+        "gate_run": gate_run,
+        "repeats": repeats,
+        "shipping_floor_ppm": SHIPPING_FLOOR_PPM,
+        "head": run_checked(["git", "rev-parse", "HEAD"]).strip(),
+        "host": {
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "physical_memory_bytes": memory,
+        },
+        "model": {
+            "path": str(model),
+            "bytes": model_stat.st_size,
+            "sha256": model_sha256,
+        },
+        "instruments": {
+            "llama_revision": revision,
+            "llama_debug": debug_version,
+            "llama_eval_callback": callback_version,
+        },
+        "corpus": {
+            "corpus_id": manifest["corpus_id"],
+            "shared_count": len(shared),
+            "suffixes": [
+                {"entry_id": name, "count": len(ids)} for name, ids in suffixes
+            ],
+        },
+        "protocols": {},
+        "completed": completed,
+    }
+
+    def interrupted(signum: int, _frame: object) -> None:
+        raise QualificationError(f"interrupted by signal {signum}")
+
+    old_handlers = {
+        signum: signal.signal(signum, interrupted) for signum in (signal.SIGINT, signal.SIGTERM)
+    }
+
+    try:
+        pack = work_dir / "model.alignpack"
+        geometry = work_dir / "geometry.json"
+        print(f"prefix TTFT qualification: packing {model} into {work_dir}", flush=True)
+        run_checked(
+            [str(ROOT / "main"), "--pack", str(model), str(pack), str(work_dir / "pack.json")]
+        )
+        run_checked([str(ROOT / "main"), "--model-ir", str(model), str(geometry)])
+        shim = Path(
+            run_checked(
+                [str(ROOT / "scripts/build-ggml-shim")],
+                env={**os.environ, "ALIGN_LLM_GGML_FORCE": ""},
+            ).strip()
+        )
+        shim_built = True
+        build_env = build_environment(shim)
+        compiler = os.environ.get("ALIGNC", str(ROOT / "scripts/alignc"))
+        run_checked([compiler, "build", "src/ggml_spike.align"], env=build_env)
+        os.replace(ROOT / "ggml_spike", ROOT / "ggml-spike")
+
+        runtime_env = build_environment(shim)
+
+        def invoke(
+            protocol: str,
+            suffix_name: str,
+            repeat: int,
+            leg: str,
+            tokens: list[int],
+            suffix: list[int] | None,
+            store: Path | None,
+        ) -> tuple[dict, dict]:
+            eviction = read_eviction(eviction_file) if protocol == "C" else None
+            stem = f"{protocol}-{suffix_name}-{repeat}-{leg}"
+            document_path = work_dir / "documents" / f"{stem}.json"
+            document_path.parent.mkdir(parents=True, exist_ok=True)
+            before = vm_state()
+            started = time.monotonic_ns()
+            command = [
+                str(ROOT / "ggml-spike"),
+                "--decode-step",
+                str(pack),
+                str(geometry),
+                comma_ids(tokens),
+                str(document_path),
+                str(model),
+                "-",
+                str(KV_WIDTH),
+                "-",
+                str(STEPS),
+                "-",
+                "-",
+                "weights",
+                comma_ids(suffix) if suffix else "-",
+                str(store) if store else "-",
+            ]
+            result = subprocess.run(
+                command, cwd=ROOT, env=runtime_env, capture_output=True, text=True, check=False
+            )
+            wall_ns = time.monotonic_ns() - started
+            after = vm_state()
+            if result.returncode != 0:
+                raise QualificationError(
+                    f"{stem} exited {result.returncode}: {(result.stderr or result.stdout)[-2000:]}"
+                )
+            try:
+                document = json.loads(document_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as failure:
+                raise QualificationError(f"{stem} wrote no parseable document") from failure
+            reference_verdict = document.get("reference", {}).get("verdict")
+            expected_reference = "-" if leg == "hit" else "IDENTICAL"
+            # A keyed hit deliberately skips the prefix graph and therefore has no prefix
+            # self-reference pass. The hosted oracle K/S coverage owns that equivalence; misses and
+            # single-shot legs still compute the prefix and must remain bit-identical here.
+            if document.get("status") != "ok" or document.get("verdict") != "EXTERNAL" \
+                    or reference_verdict != expected_reference:
+                raise QualificationError(
+                    f"{stem} document is {document.get('status')}/{document.get('verdict')}: "
+                    f"reference={reference_verdict}, expected {expected_reference} "
+                    f"{document.get('error_code')} {document.get('error_detail')}"
+                )
+            if document["weights"]["mode"] != "resident":
+                raise QualificationError(f"{stem} did not use resident weights")
+            record = {
+                "protocol": protocol,
+                "suffix": suffix_name,
+                "repeat": repeat,
+                "leg": leg,
+                "wall_ns": wall_ns,
+                "vm_before": before,
+                "vm_after": after,
+                "vm_delta": {name: after[name] - before[name] for name in before},
+                "eviction": eviction,
+                **selected_metrics(document),
+            }
+            completed.append(
+                {"protocol": protocol, "suffix": suffix_name, "repeat": repeat, "leg": leg}
+            )
+            return document, record
+
+        for protocol in ("W", "C"):
+            protocol_pairs = []
+            misses = []
+            for suffix_name, suffix_ids in suffixes:
+                safe_name = suffix_name.replace(".initial.suffix", "")
+                store = work_dir / "stores" / protocol / safe_name
+                store.mkdir(parents=True)
+                print(
+                    f"prefix TTFT qualification: {protocol}/{safe_name} store miss setup",
+                    flush=True,
+                )
+                miss_document, miss_record = invoke(
+                    protocol, safe_name, 0, "miss", shared, suffix_ids, store
+                )
+                if miss_document["store"]["outcome"] != "miss":
+                    raise QualificationError(f"{protocol}/{safe_name} setup was not a store miss")
+                miss_record.update(
+                    {
+                        "write_ns": miss_document["kv"]["write_ns"],
+                        "store_outcome": miss_document["store"]["outcome"],
+                    }
+                )
+                misses.append(miss_record)
+                whole = shared + suffix_ids
+                for repeat in range(1, repeats + 1):
+                    order = ("single", "hit") if repeat % 2 == 1 else ("hit", "single")
+                    legs = {}
+                    for leg in order:
+                        print(
+                            f"prefix TTFT qualification: {protocol}/{safe_name} "
+                            f"pair {repeat}/{repeats} {leg}",
+                            flush=True,
+                        )
+                        if leg == "single":
+                            document, record = invoke(
+                                protocol, safe_name, repeat, leg, whole, None, None
+                            )
+                            if document["store"]["requested"] != 0:
+                                raise QualificationError(
+                                    f"{protocol}/{safe_name}/{repeat} single requested a store"
+                                )
+                        else:
+                            document, record = invoke(
+                                protocol, safe_name, repeat, leg, shared, suffix_ids, store
+                            )
+                            if document["store"]["outcome"] != "hit":
+                                raise QualificationError(
+                                    f"{protocol}/{safe_name}/{repeat} was not a store hit"
+                                )
+                        legs[leg] = record
+                    single_ns = legs["single"]["first_token_ns"]
+                    hit_ns = legs["hit"]["first_token_ns"]
+                    protocol_pairs.append(
+                        {
+                            "suffix": safe_name,
+                            "repeat": repeat,
+                            "order": list(order),
+                            "reduction_ppm": half_away(
+                                (single_ns - hit_ns) * 1_000_000, single_ns
+                            ),
+                            "single": legs["single"],
+                            "hit": legs["hit"],
+                        }
+                    )
+
+            suffix_means = {}
+            for suffix_name, _ in suffixes:
+                safe_name = suffix_name.replace(".initial.suffix", "")
+                values = [
+                    pair["reduction_ppm"]
+                    for pair in protocol_pairs
+                    if pair["suffix"] == safe_name
+                ]
+                suffix_means[safe_name] = half_away(sum(values), len(values))
+            jackknife = {}
+            for excluded in suffix_means:
+                values = [
+                    pair["reduction_ppm"]
+                    for pair in protocol_pairs
+                    if pair["suffix"] != excluded
+                ]
+                jackknife[excluded] = half_away(sum(values), len(values))
+            for miss in misses:
+                suffix_pairs = [
+                    pair for pair in protocol_pairs if pair["suffix"] == miss["suffix"]
+                ]
+                mean_single = half_away(
+                    sum(pair["single"]["first_token_ns"] for pair in suffix_pairs),
+                    len(suffix_pairs),
+                )
+                mean_hit = half_away(
+                    sum(pair["hit"]["first_token_ns"] for pair in suffix_pairs),
+                    len(suffix_pairs),
+                )
+                miss["break_even_reuses"] = observed_break_even_reuses(
+                    miss["first_token_ns"], mean_single, mean_hit
+                )
+            summary["protocols"][protocol] = {
+                "pairs": protocol_pairs,
+                "misses": misses,
+                "mean_ppm": half_away(
+                    sum(pair["reduction_ppm"] for pair in protocol_pairs), len(protocol_pairs)
+                ),
+                "suffix_means_ppm": suffix_means,
+                "leave_one_suffix_out_ppm": jackknife,
+                "jackknife_min_ppm": min(jackknife.values()),
+                "jackknife_max_ppm": max(jackknife.values()),
+            }
+
+        warm = summary["protocols"]["W"]
+        cold = summary["protocols"]["C"]
+        worse_name = "C" if cold["jackknife_min_ppm"] <= warm["jackknife_min_ppm"] else "W"
+        worse = summary["protocols"][worse_name]
+        if not gate_run:
+            verdict = "DIAGNOSTIC"
+        elif warm["jackknife_min_ppm"] > 0 and cold["jackknife_min_ppm"] > 0 \
+                and worse["jackknife_min_ppm"] >= SHIPPING_FLOOR_PPM:
+            verdict = "MET"
+        elif warm["jackknife_max_ppm"] < SHIPPING_FLOOR_PPM \
+                or cold["jackknife_max_ppm"] < SHIPPING_FLOOR_PPM:
+            verdict = "NOT_MET"
+        else:
+            verdict = "INDETERMINATE"
+        if not gate_run:
+            improvement = "DIAGNOSTIC"
+        elif warm["jackknife_min_ppm"] > 0 and cold["jackknife_min_ppm"] > 0:
+            improvement = "MET"
+        elif warm["jackknife_max_ppm"] <= 0 or cold["jackknife_max_ppm"] <= 0:
+            improvement = "NOT_MET"
+        else:
+            improvement = "INDETERMINATE"
+        summary.update(
+            {
+                "status": "PASS",
+                "verdict": verdict,
+                "improvement_gate": improvement,
+                "worse_protocol": worse_name,
+            }
+        )
+        digest = canonical_write(summary_path, summary, summary_reservation)
+        print(
+            f"prefix TTFT qualification: {verdict} improvement={improvement} "
+            f"W=[{warm['jackknife_min_ppm']},{warm['jackknife_max_ppm']}]ppm "
+            f"C=[{cold['jackknife_min_ppm']},{cold['jackknife_max_ppm']}]ppm",
+            flush=True,
+        )
+        print(f"prefix TTFT qualification: summary {summary_path} sha256 {digest}", flush=True)
+        return 0
+    except Exception as failure:
+        summary.update({"status": "ERROR", "verdict": "ERROR", "error": str(failure)})
+        digest = canonical_write(summary_path, summary, summary_reservation)
+        print(f"prefix TTFT qualification: ERROR {failure}", file=sys.stderr, flush=True)
+        print(
+            f"prefix TTFT qualification: summary {summary_path} sha256 {digest}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
+    finally:
+        for signum, handler in old_handlers.items():
+            signal.signal(signum, handler)
+        if shim_built:
+            subprocess.run(
+                [str(ROOT / "scripts/build-ggml-shim")],
+                cwd=ROOT,
+                env={**os.environ, "ALIGN_LLM_GGML_FORCE": ""},
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

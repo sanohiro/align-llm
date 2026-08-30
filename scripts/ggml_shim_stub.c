@@ -638,7 +638,11 @@ int64_t align_ptr_offset(const void *a, const void *b) {
 #define ALIGN_STUB_MAX_GRAPHS      8
 #define ALIGN_STUB_MAX_BUFFERS    16
 #define ALIGN_STUB_MAX_GALLOCRS    8
-#define ALIGN_STUB_ARENA_BYTES (4 * 1024 * 1024)
+/* R6-PREFIX-TTFT raises the hosted legal-boundary fixture from 32 to 2048 tokens. The prefill mask
+ * alone is 2048 x 2048 x 4 B, and this deliberately materializing engine holds the input and graph
+ * arenas together. 512 MiB is a fixed test-double ceiling, not an allocation policy or a production
+ * claim; exhaustion remains a refusal and the process still performs no heap allocation here. */
+#define ALIGN_STUB_ARENA_BYTES (512 * 1024 * 1024)
 
 #define ALIGN_STUB_TYPE_F32  0
 #define ALIGN_STUB_TYPE_I32 26
