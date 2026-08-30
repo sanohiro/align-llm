@@ -57,7 +57,8 @@ rejects the positive `--parse-special` option and already parses by tokenizer-sp
 left adversarial work quadratic; and public count-error details were underspecified. The first
 finding supersedes the earlier `c1050c7` review's contrary flag finding: exact pinned help plus live
 control, USER_DEFINED, and `</s>` invocations prove the earlier source-default inference wrong. The
-current consolidated redesign restores the executable ParseControl command; validates exact
+consolidated repair `74dd39c3c8aaae4656b6b3e147c500af1972c016` restores the executable
+ParseControl command; validates exact
 declared-count and combined-text details; replaces open addressing and byte-string BPE lookup with
 16-link token/Copy-id-pair buckets, prevalidated merge result ids, and exact 16/17 collision owners;
 and records reference bucket peaks 5/6. Per the final-review convergence rule, inspect this complete
@@ -70,17 +71,17 @@ peaks 5/6, and zero unresolved merge components/results. All 299 parity identiti
 error codes, three classifier lock identities, the R6 prefix manifest, Markdown fences, and
 `git diff --check` pass.
 
-**Next actions.** (1) Commit the consolidated redesign. (2) Pass the exact-head docs publication
-preflight, publish the English PR with every review envelope and finding disposition, wait for
-checks, and merge. (3) Implement and publish Request 22 in the sibling Align repository, then adopt
+**Next actions.** (1) Pass the exact-head docs publication preflight, publish the English PR with
+every review envelope and finding disposition, wait for checks, and merge. (2) Implement and
+publish Request 22 in the sibling Align repository, then adopt
 the shipped revision and build the tokenizer consumer without a compatibility layer.
 
 **Blocker.** Align Request 22. Resume when Align ships ordinary borrow indexing for Move array
 elements and its compiler owners pass; the align-llm pin/adoption capability then owns every
 originally named Request 22 migration plus the tokenizer consumer.
 
-**Intentional uncommitted files.** `docs/specs/r7-tokenizer.md` and this handoff while the
-consolidated final-review redesign is author-checked.
+**Intentional uncommitted files.** This continuity-only update records the consolidated repair's
+exact identity; none after it is committed.
 
 ## Merged checkpoint: DEV-OUTPUT-SUMMARY (2026-08-31)
 
