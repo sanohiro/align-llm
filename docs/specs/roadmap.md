@@ -987,10 +987,16 @@ The current forward delivery order is:
     the gate measurement.
 
 38. **R6-PREFIX-TTFT — the prefill cap lifted, the corpus pinned, and the R6 gate measured.**
-    **Not started.** Its charter is section 11 of
+    **Active; design complete before implementation.** Its charter is section 11 of
     [`r6-prefix-key-corpus.md`](r6-prefix-key-corpus.md), written **before** item 37 was implemented
     so the split is a schedule rather than a hope, and it needs its own design gate and its own
-    ledger before implementation. It lifts `MAX_PREFILL_TOKENS` from 32 to 2048 — a constant read as
+    ledger before implementation. The ledger and closure matrix are
+    [`r6-prefix-ttft.md`](r6-prefix-ttft.md). The required first-action probe is complete: at 1,200
+    tokens, three resident runs measured mean first-token **129.31 s**, prefill compute **123.41 s**
+    (**95.44%**), and a 38,606 ppm range. The precondition therefore passes. Before the 168 MiB
+    container-read subtraction, the measured ceiling is **291,880 ppm** at the mean prefix share and
+    **248,864 ppm** at the worst, above the unchanged 150,000 ppm floor. Implementation lifts
+    `MAX_PREFILL_TOKENS` from 32 to 2048 — a constant read as
     code by seven `.align` modules and three scripts and **bound into a persisted header field**, so
     the lift is a one-way compatibility step — pins `eval/kv/prefix-corpus-v1` from the qualification's
     own instrument, and measures TTFT on the paired single-shot and keyed-hit legs. Its first

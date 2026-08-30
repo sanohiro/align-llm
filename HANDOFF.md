@@ -3,7 +3,45 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: C4-REPAIR-TEMPLATE review repair (2026-08-30)
+## Active: R6-PREFIX-TTFT design (2026-08-30)
+
+Branch `agent/r6-prefix-ttft`, based on `main` merge commit
+`c16f14ea5ec2e42d61f7e6644716854d9ca61c2c` (C4-REPAIR-TEMPLATE, PR #156). Authoritative charter
+`docs/specs/r6-prefix-key-corpus.md` section 11; capability ledger and closure matrix
+`docs/specs/r6-prefix-ttft.md`. The design is complete and is the next commit, before any
+production-source change.
+
+**Required first-action probe is complete.** A throwaway build changed only the Qwen cap to 2,048,
+measured a 1,200-token resident `--decode-step` prefill three times, and restored the source. The
+three first-token times were 131.686 s, 126.694 s, and 129.543 s; prefill compute was 125.288 s,
+121.071 s, and 123.872 s. Mean compute share is 95.44%, and the first-token range is 38,606 ppm.
+The precondition passes. Raw ceiling before the measured container-read subtraction is 291,880 ppm
+at the mean original prefix share and 248,864 ppm at the worst, against the unchanged 150,000 ppm
+floor. Swapouts moved by zero; compressor movements are recorded in the ledger.
+
+**Settled design choices.** `MAX_PREFILL_TOKENS` becomes 2,048; the corpus uses `KV_WIDTH=1,536`
+(168 MiB plane); `akvp` and document versions do not move, and compatibility is one-way because old
+readers fail closed on token counts above 32. `canonical-v1e` exists, but its initial task prompts
+reuse `prompt-v1` byte-for-byte and its repair prompts are provider-derived rather than frozen
+source artifacts, so the corpus takes the charter's honest three-cluster fallback. The gate pairs
+single-shot against keyed hit; miss/write cost is a required secondary with an observed break-even
+reuse count. Five repeats, warm and >=20 GiB eviction-pressure protocols, and the charter's verdict
+rule are fixed before implementation.
+
+**Next actions.** (1) Commit the design checkpoint. (2) Implement the cap lift and all synthetic
+boundary coverage. (3) Implement and generate/check `eval/kv/prefix-corpus-v1`. (4) Implement the
+focused `scripts/run-decode-step --prefix-ttft` qualification and run owners. (5) Take the two-
+protocol reference-host measurement, append results without rewriting the precommitted design,
+review once, preflight, publish, and merge.
+
+**Blockers.** None. Request 22 remains non-blocking because the checked-in ids come from the pinned
+Python/instrument path and Align consumes decimal ids only. The reference host must be serialized
+for the multi-hour measurement.
+
+**Intentional uncommitted files.** The three design files above until the design checkpoint commit.
+Build products and the 4.4 GiB throwaway probe pack live under the session scratch root, outside Git.
+
+## Merged checkpoint: C4-REPAIR-TEMPLATE review repair (2026-08-30)
 
 Branch `agent/c4-repair-template`, merged with `agent/c4-repair-editset` (`6ccbb88`) and
 `origin/main` (`451aa66`, PR #155) by merge, never rebase. Stable reviewed head was `6b73560`, with
