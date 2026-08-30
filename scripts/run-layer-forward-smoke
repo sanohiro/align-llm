@@ -4199,7 +4199,7 @@ ENGINE_CASES = [
      ds(load=KV_EXPANDED_33, tokens=",".join(["1"] * 33), width="64", steps="1",
         transcript="-"), ""),
     ("ds-kv-load-expanded-corpus",
-     ds(load=KV_EXPANDED_CORPUS, tokens=",".join(["1"] * 370), width="1536", steps="1",
+     ds(load=KV_EXPANDED_CORPUS, tokens=",".join(["1"] * 369), width="1536", steps="1",
         transcript="-"), ""),
     # R6-RESIDENT-WEIGHTS section 3.1's "absence is `-`", asserted rather than described:
     # `ds-resident-dash` is `ds-kv-args-dash-dash` plus one operand whose value is the default, and
@@ -5435,7 +5435,7 @@ if read_container(KV_GOOD).returncode != 0:
 # not from the fixture generator. Count 2,048 is reader-only because a decode step would require
 # column 2,049, beyond that fixture's intentionally exact width.
 for label, container, count in (("expanded-33", KV_EXPANDED_33, 33),
-                                ("expanded-corpus", KV_EXPANDED_CORPUS, 370),
+                                ("expanded-corpus", KV_EXPANDED_CORPUS, 369),
                                 ("expanded-2048", KV_EXPANDED_2048, 2048)):
     expanded = read_container(container, tokens=",".join(["1"] * count), quiet=False)
     if expanded.returncode != 0:
@@ -5464,7 +5464,7 @@ for label, container, count in (("expanded-33", KV_EXPANDED_33, 33),
                             % (label, field, reported.get(field), expected))
 
 for case, count in (("ds-kv-load-expanded-33", 33),
-                    ("ds-kv-load-expanded-corpus", 370)):
+                    ("ds-kv-load-expanded-corpus", 369)):
     expanded = json.loads(produced[case])
     if expanded["status"] != "ok" or expanded["kv"]["token_count"] != count \
             or expanded["selection"]["token_count"] != count \

@@ -982,40 +982,38 @@ The current forward delivery order is:
     improve on repeated coding tasks sharing a prefix. This discharges two of item 33 section 1.4's
     four reasons — there is now a key and a store — and leaves the corpus and the consumer.
     `MAX_PREFILL_TOKENS` is still **32**, so the largest legal prefix is 32 tokens and no real prompt
-    reaches it; the shared prefix of `eval/prompt/canonical-v1` measures **370 tokens** against
-    suffixes of 696, 825, and 1,049 (section 1.2). Item 38 lifts the cap, pins the corpus, and takes
+    reaches it; the compositional shared prefix of `eval/prompt/canonical-v1` measures **369 tokens** against
+    suffixes of 697, 828, and 1,050 (section 1.2). Item 38 lifts the cap, pins the corpus, and takes
     the gate measurement.
 
 38. **R6-PREFIX-TTFT — the prefill cap lifted, the corpus pinned, and the R6 gate measured.**
-    **Implemented and measured at `eb832bf`; publication is active. Both the roadmap improvement
-    gate and the 150,000 ppm shipping floor are MET.** Its charter is section 11 of
+    **Implemented; review repair and replacement measurement are active. The result measured at
+    `eb832bf` is withdrawn because the record-codec prompt was escape-rewritten during corpus
+    generation, so it establishes no roadmap or shipping verdict.** Its charter is section 11 of
     [`r6-prefix-key-corpus.md`](r6-prefix-key-corpus.md), written **before** item 37 was implemented
     so the split is a schedule rather than a hope, and it needs its own design gate and its own
     ledger before implementation. The ledger and closure matrix are
     [`r6-prefix-ttft.md`](r6-prefix-ttft.md). The required first-action probe is complete: at 1,200
     tokens, three resident runs measured mean first-token **129.31 s**, prefill compute **123.41 s**
     (**95.44%**), and a 38,606 ppm range. The precondition therefore passes. Before the 168 MiB
-    container-read subtraction, the measured ceiling is **291,880 ppm** at the mean prefix share and
-    **248,864 ppm** at the worst, above the unchanged 150,000 ppm floor. Implementation lifts
+    container-read subtraction, the corrected measured ceiling is **290,920 ppm** at the mean prefix share and
+    **248,183 ppm** at the worst, above the unchanged 150,000 ppm floor. Implementation lifts
     `MAX_PREFILL_TOKENS` from 32 to 2048 — a constant read as
-    code by seven `.align` modules and three scripts and **bound into a persisted header field**, so
+    code by seven `.align` modules and four scripts and **bound into a persisted header field**, so
     the lift is a one-way compatibility step — pins `eval/kv/prefix-corpus-v1` from the qualification's
     own instrument, and measures TTFT on the paired single-shot and keyed-hit legs. Its first
     implementation step is a **baseline probe, not code**: the ceiling is
     `(T / (T + S)) x (prefill compute / single-shot TTFT)`, whose first factor is already measured at
-    **0.30582 mean and 0.26075 worst**, so the gate is reachable only if this arm's resident prefill
+    **0.30482 mean and 0.26004 worst**, so the gate is reachable only if this arm's resident prefill
     runs at or below roughly 200 tokens per second on the reference host — a falsifiable precondition
     written before any number exists. The floor (150,000 ppm, adopted from `r6-resident-weights.md`
     section 3.4), the two cache protocols, and the pre-committed MET / NOT_MET / INDETERMINATE rule
     are all fixed in section 11 in advance.
 
-    The frozen corpus is a 370-id shared prefix plus three suffixes of 696, 1,049, and 825 ids.
-    Five paired repeats under each of warm and complete-file eviction pressure produced jackknife
-    ranges **283,489..324,752 ppm** and **289,169..314,613 ppm**. W is the worse protocol at a
-    283,489 ppm minimum, 133,489 ppm above the floor. All 30 pairs and 66 fresh processes completed;
-    no observation was removed. The exact host, per-suffix means, miss cost, 33 pressure reads,
-    compressor movement, command, and canonical-summary digest are in
-    [`r6-prefix-ttft.md`](r6-prefix-ttft.md) section 8.
+    The corrected frozen corpus is a 369-id shared prefix plus three suffixes of 697, 1,050, and 828
+    ids. The replacement five-repeat warm and complete-file-eviction measurement is pending. The
+    withdrawn run's evidence and the review finding are recorded in
+    [`r6-prefix-ttft.md`](r6-prefix-ttft.md) section 8; none of its timing values discharge the gate.
 
 > Items 35 and 36 are claimed on sibling branches (`agent/r6-moe-resident-dense`,
 > `agent/mf-single-token-logits`); 37 and 38 are reserved for Track B's `R6-PREFIX-KEY-CORPUS`,
@@ -2065,7 +2063,7 @@ prefix再利用とresidency policyが必要である。item 29（R6-KV-PERSIST�
 invalidationは持たず、TTFTの主張もしない。item 37（R6-PREFIX-KEY）はprefix planeの
 content-addressed storeを実装し、keyとstoreという欠けていた4つのうち2つを埋めた——しかしcorpusと
 consumerは依然として存在せず、TTFTの主張もしない。`MAX_PREFILL_TOKENS`が32のままであるため実際の
-promptは1つも入らない（`eval/prompt/canonical-v1`の共有prefixは370 token）。cap引き上げ・corpus
+promptは1つも入らない（`eval/prompt/canonical-v1`の再利用可能な共有prefixは369 token）。cap引き上げ・corpus
 固定・gate測定はitem 38（R6-PREFIX-TTFT）が担う。
 
 **順序についての実測由来の結論（2026-08-28、R3-DECODE-RESIDENCY、roadmap item 25）。**

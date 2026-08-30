@@ -31,75 +31,87 @@
         }
       ],
       "prompt": {
-        "bytes": 1735,
-        "sha256": "0ec50330b54a9e665160a895ba7b373d5704884535f59e7c274070e2eac16e02"
+        "bytes": 1733,
+        "sha256": "3c2e3a26638ea3958a2edb57f7dbf65a11fe4a7496b7eebfc3c3602f0e5ca604"
       },
       "complete_prompt": {
-        "bytes": 1735,
-        "sha256": "0ec50330b54a9e665160a895ba7b373d5704884535f59e7c274070e2eac16e02"
+        "bytes": 1733,
+        "sha256": "3c2e3a26638ea3958a2edb57f7dbf65a11fe4a7496b7eebfc3c3602f0e5ca604"
       },
-      "id_count": 370,
-      "content_sha256": "a56be24e13483f0de7881b10866e6b151a0a84668272117d1eaa06ad732b654c"
+      "id_count": 369,
+      "content_sha256": "4fe797aa95e4444ac270989543c4eb0aa417d5c3656a49866126cffdbec072ef"
     },
     {
       "entry_id": "duration-half-away-from-zero.initial.suffix",
       "path": "eval/kv/prefix-corpus-v1/duration-half-away-from-zero.initial.suffix.ids",
       "sources": [
         {
+          "path": "eval/prompt/canonical-v1/repo-prompt.json",
+          "content_sha256": "1be40aada3352a4622eed7446820cacd1127b0ffaecc74a3a796aeba5fcd1d21"
+        },
+        {
           "path": "eval/tasks/prompt-v1/duration-half-away-from-zero/task-prompt.json",
           "content_sha256": "e738dcb2357c998caadffcd8888139750e81ad09d18a72cb83eef33f7c0ffc6a"
         }
       ],
       "prompt": {
-        "bytes": 2976,
-        "sha256": "cd121413e72ed122d0dcf2022bc6537fe5c2ce7d493b0d2e30f26e26a8ca5e27"
+        "bytes": 2978,
+        "sha256": "05a724d5d05e6b85aa9972decb986826d565ecbadc2b8da74af4c14d87cbdcc4"
       },
       "complete_prompt": {
         "bytes": 4711,
         "sha256": "00aa28784d5a3a2078b328882d7778d04fdbb8276025f8fe301da5f166c5a9b3"
       },
-      "id_count": 696,
-      "content_sha256": "a4638e991b5b7d974ce7091d5e8193e91a20e8326602290de0ec97c7bca017f3"
+      "id_count": 697,
+      "content_sha256": "3cfcc7608ea2b6c5c3d02286e2db43d6881e9443285d3fb5f7d9e4a01c55f4bf"
     },
     {
       "entry_id": "layer-precedence-frozen-module.initial.suffix",
       "path": "eval/kv/prefix-corpus-v1/layer-precedence-frozen-module.initial.suffix.ids",
       "sources": [
         {
+          "path": "eval/prompt/canonical-v1/repo-prompt.json",
+          "content_sha256": "1be40aada3352a4622eed7446820cacd1127b0ffaecc74a3a796aeba5fcd1d21"
+        },
+        {
           "path": "eval/tasks/prompt-v1/layer-precedence-frozen-module/task-prompt.json",
           "content_sha256": "c8178fbaf1c181e73b8ec962ca7ade6da7d7575bf59ee024af1a3810498e6547"
         }
       ],
       "prompt": {
-        "bytes": 4771,
-        "sha256": "80c54804da2e0819ac39ef94a07dc3d115fdf6131f801b3ed7b608b06970531a"
+        "bytes": 4773,
+        "sha256": "2fb70a535c016f29c9032c08bf7cf34c9b4f89331b70f62e400c3da97b7b54e7"
       },
       "complete_prompt": {
         "bytes": 6506,
         "sha256": "17efb05144ba8724e2e8efa37bddc82a76957cd7d6e00f21c178394cfe375aa3"
       },
-      "id_count": 1049,
-      "content_sha256": "860e6b4f7b0e6b0899e1d814a07c103b6e06a3bb19244d7b14067f16ccc43896"
+      "id_count": 1050,
+      "content_sha256": "ee7143d4cb088708e0fddc98d94c2755e62b977902cfc83614a6b2e04951ba3e"
     },
     {
       "entry_id": "record-codec-round-trip.initial.suffix",
       "path": "eval/kv/prefix-corpus-v1/record-codec-round-trip.initial.suffix.ids",
       "sources": [
         {
+          "path": "eval/prompt/canonical-v1/repo-prompt.json",
+          "content_sha256": "1be40aada3352a4622eed7446820cacd1127b0ffaecc74a3a796aeba5fcd1d21"
+        },
+        {
           "path": "eval/tasks/prompt-v1/record-codec-round-trip/task-prompt.json",
           "content_sha256": "5dc573af77c905e00152da29c2e742b1bfd510a99f1ce16aa3ee21b96a3157ff"
         }
       ],
       "prompt": {
-        "bytes": 3810,
-        "sha256": "b4fe1ff79b7cd545d8f15c51524a6b274a7558c8619dce74b5ddb484759d50e5"
+        "bytes": 3812,
+        "sha256": "e6e3cb860173cb82f05764110631c7e4d2041a89e6442418f16599dccc65586f"
       },
       "complete_prompt": {
         "bytes": 5545,
         "sha256": "09273a5180788584c7dd7518581defc669646797a7b118d325f18337ecb242e8"
       },
-      "id_count": 825,
-      "content_sha256": "fd13cb841e3addc0ee1f8b45c6a05353c0e03a309c8bc0254e6416606d8399d7"
+      "id_count": 828,
+      "content_sha256": "62b04274c07a04dcdb5f7ecc50aae98f6d1341bdbae692d13ca8d9b420bcdbdc"
     }
   ]
 }

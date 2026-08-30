@@ -51,33 +51,35 @@ successor's charter.
 The work was scoped as one capability, `R6-PREFIX-KEY-CORPUS`. **It is split into two**, and the
 reason is a number this document measured rather than a judgement about effort.
 
-**This document's own probe.** `eval/prompt/canonical-v1`'s shared prefix and the three
-`eval/tasks/prompt-v1/*/task-prompt.json` suffixes were tokenized with the reference model's own
-vocabulary:
+**This document's own probe, corrected by item 38's pinned generation.**
+`eval/prompt/canonical-v1`'s shared prefix and the three
+`eval/tasks/prompt-v1/*/task-prompt.json` suffixes were first tokenized independently with the
+reference model's own vocabulary:
 
 ```sh
 llama-tokenize -m ~/models/qwen2.5-coder-7b-instruct-q4_k_m.gguf -f PREFIX.txt --ids
 ```
 
 where `PREFIX.txt` is `base-prompt.json`'s `text` concatenated with `repo-prompt.json`'s `text`, and
-each suffix file is one `task-prompt.json`'s `text`. No chat template and no BOS were applied; this
-is a **sizing** probe and not the pinned id list, which section 11.3 requires to come from the
-qualification's own pinned instrument (`llama-debug --save-logits`, `*-tokens.bin`). A ±1 id
-difference between the two instruments would not move any conclusion below.
+each suffix file is one `task-prompt.json`'s `text`. No chat template and no BOS were applied. Item
+38's comprehensive review established that independently tokenized pieces are not compositional:
+the pinned tokenizer merges the repository prompt's final `".\n"` at the task boundary. The frozen
+corpus therefore keeps those two bytes on the suffix side and verifies that `shared_ids` is an exact
+prefix of every verbatim complete-prompt tokenization. The corrected exact figures are:
 
 | Artifact | Bytes of `text` | Tokens |
 | --- | --- | --- |
-| Shared prefix — `base-prompt.json` + `repo-prompt.json` | 1,735 | **370** |
-| Suffix — `duration-half-away-from-zero` | 2,976 | **696** |
-| Suffix — `record-codec-round-trip` | 3,810 | **825** |
-| Suffix — `layer-precedence-frozen-module` | 4,771 | **1,049** |
+| Shared prefix — `base-prompt.json` + `repo-prompt.json` before final `".\n"` | 1,733 | **369** |
+| Suffix — boundary plus `duration-half-away-from-zero` | 2,978 | **697** |
+| Suffix — boundary plus `record-codec-round-trip` | 3,812 | **828** |
+| Suffix — boundary plus `layer-precedence-frozen-module` | 4,773 | **1,050** |
 
 | Task | `T_prefix` | `S` | `T + S` | prefix share of the prefill |
 | --- | --- | --- | --- | --- |
-| `duration-half-away-from-zero` | 370 | 696 | 1,066 | 34.71 % |
-| `record-codec-round-trip` | 370 | 825 | 1,195 | 30.96 % |
-| `layer-precedence-frozen-module` | 370 | 1,049 | 1,419 | 26.07 % |
-| — | — | — | — | mean **30.58 %**, worst **26.07 %** |
+| `duration-half-away-from-zero` | 369 | 697 | 1,066 | 34.62 % |
+| `record-codec-round-trip` | 369 | 828 | 1,197 | 30.83 % |
+| `layer-precedence-frozen-module` | 369 | 1,050 | 1,419 | 26.00 % |
+| — | — | — | — | mean **30.48 %**, worst **26.00 %** |
 
 **Two consequences, and both were unknown when the work was scoped.**
 
@@ -87,7 +89,7 @@ difference between the two instruments would not move any conclusion below.
    not the 60–80 % share the phrase "one long stable prefix" suggests, and the design must not be
    written as though it were.
 2. **`MAX_PREFILL_TOKENS` must go from 32 to at least 1,419**, not to "enough for ~450 tokens". The
-   constant is read as code by **seven** `.align` modules and **three** scripts (11.1) — and cited in
+   constant is read as code by **seven** `.align` modules and **four** scripts (11.1) — and cited in
    the comments of a further four — bounds a persisted header field
    (`r6-kv-persist.md` 2.3.1, offset 124), sizes a staging reservation in `model_forward`, and is
    the sequence cap `R6_SUFFIX sequence[<n>]` reports. Lifting it is a capability's worth of blast
@@ -543,7 +545,7 @@ All unchanged, all re-run on the store legs:
 `--model-forward` and `--layer-forward` refuse a prefill above six tokens **with** a transcript
 oracle, as `R5_ORACLE_TRUNCATED`, detail `tokens[<n>]` (`model_forward.align:3103`,
 `layer_forward.align:1603`). The tolerance oracle is therefore unavailable at any `T_prefix` this
-capability's own qualification cares about, and it will be unavailable at 370 tokens for section 11.
+capability's own qualification cares about, and it will be unavailable at 369 tokens for section 11.
 
 **This is recorded, not fixed and not routed around.** Shrinking the prefix to six tokens to keep
 the transcript oracle would make the measurement a number about the shrinking. The oracles that
@@ -880,7 +882,7 @@ To be written into their owning documents at implementation time.
 > discharges two of item 33 section 1.4's four reasons — there is now a key and a store — and leaves
 > the corpus and the consumer. `MAX_PREFILL_TOKENS` is still **32**, so the largest legal prefix is
 > 32 tokens and no real prompt reaches it; the shared prefix of `eval/prompt/canonical-v1` measures
-> **370 tokens** against suffixes of 696, 825, and 1,049 (section 1.2). Item 38, R6-PREFIX-TTFT,
+> **369 tokens** against suffixes of 697, 828, and 1,050 (section 1.2). Item 38, R6-PREFIX-TTFT,
 > lifts the cap, pins the corpus, and takes the gate measurement.
 
 The R6 section's **未達** paragraph gains one sentence:
@@ -907,10 +909,10 @@ the handoff records both.
 > byte layout with three implementations. `docs/specs/r6-prefix-key-corpus.md` is authoritative.
 >
 > **Split, and it is a measured decision.** The work was scoped as `R6-PREFIX-KEY-CORPUS`. This
-> document's own tokenization probe measured `eval/prompt/canonical-v1`'s shared prefix at **370
-> tokens** and the three `prompt-v1` suffixes at **696 / 825 / 1,049** — the suffixes are 1.9x to
+> item 38's pinned compositional tokenization measured `eval/prompt/canonical-v1`'s reusable shared
+> prefix at **369 tokens** and the three `prompt-v1` suffixes at **697 / 828 / 1,050** — the suffixes are 1.9x to
 > 2.8x the prefix, and `T + S` reaches **1,419**. `MAX_PREFILL_TOKENS` is **32**, read as code by
-> seven modules and three scripts and bound into a persisted header field, so lifting it is a capability's
+> seven modules and four scripts and bound into a persisted header field, so lifting it is a capability's
 > worth of blast radius. Section 1.2 splits on the failure-domain test: persisted identity here,
 > prefill capacity and measurement in **item 38, R6-PREFIX-TTFT**, whose charter is section 11 and
 > is written already.
@@ -1018,11 +1020,11 @@ that with headroom for item 34's `canonical-v1e` second family, it is a power of
 | --- | --- |
 | `src/layer_qwen2.align:68`, `src/layer_olmoe.align:75` | the two declarations |
 | `src/layer_forward.align:314`, `src/moe_layer_forward.align:387` | the prefill count guards |
-| `src/model_forward.align:3335` | **the embedding staging reservation**, `row_bytes * MAX_PREFILL_TOKENS`. Qwen2.5-Coder-7B: `14,336 x 2048 = 29,360,128 B` (28 MiB). OLMoE: `8,192 x 2048 = 16,777,216 B` (16 MiB). Both are small beside the 4.68 GB arena and neither approaches the host's limit |
+| `src/model_forward.align:3335` | **the embedding staging reservation**, packed `row_bytes * MAX_PREFILL_TOKENS`, rounded to the pack alignment. Qwen2.5-Coder-7B: `2,016 x 2048 = 4,128,768 B`; OLMoE: `1,152 x 2048 = 2,359,296 B`. Both are small beside the 4.68 GB arena and neither approaches the host's limit |
 | `src/decode_step.align:1835` | the `R6_SUFFIX sequence[<n>]` cap |
-| `src/kv_plane.align:519` | the header's `token_count` bound — **a persisted-format field** (`r6-kv-persist.md` 2.3.1, offset 124). A container written at `token_count = 370` is **unreadable** by a build whose cap is 32, so the lift is a one-way compatibility step and the successor's ledger must say so |
+| `src/kv_plane.align:519` | the header's `token_count` bound — **a persisted-format field** (`r6-kv-persist.md` 2.3.1, offset 124). A container written at `token_count = 369` is **unreadable** by a build whose cap is 32, so the lift is a one-way compatibility step and the successor's ledger must say so |
 | `src/kv_plane.align` token stream region | `token_count * 4` grows from ≤128 B to ≤8,192 B. No layout rule moves; `identity_offset` is already `align_up(192 + token_count * 4, 8)` |
-| `scripts/kv_plane_reader.py:45`, `scripts/run-decode-step:306,1296`, `scripts/run-layer-forward-smoke` (five sites) | the mirrored constants and the cap-boundary cases, which move from "33 repetitions of token id 1" to 2,049 |
+| `scripts/kv_plane_reader.py:45`, `scripts/run-decode-step`, `scripts/run-moe-decode-step`, `scripts/run-layer-forward-smoke` (five sites) | the mirrored constants, independent resident-layout arithmetic, and cap-boundary cases, which move from "33 repetitions of token id 1" to 2,049 |
 | `R5_ORACLE_TRUNCATED` | **unchanged at six tokens.** The transcript oracle stays unavailable (3.4) and the successor must not lift it to chase one |
 | The plane | `KV_WIDTH` must reach `T + S + N`. At 1,419 + 1 the smallest adequate width is 1,536: `1,536 x 114,688 = 176,160,768 B` (168 MiB), under `MAX_KV_PLANE_BYTES` (512 MiB) and under `MAX_ATTENTION_WIDTH`. At 4096 the container is 470,372,352 B, still under both |
 
@@ -1031,7 +1033,7 @@ that this capability adds no activation bytes to any golden. A cap of 2048 makes
 pin a long prefill's activations, and the rule must be restated and enforced there: **hosted goldens
 stay synthetic and short; anything at four or more tokens of real-model activation is
 qualification-only.** The cap-boundary cases (2,049 ids) are **refusals** and carry no activation
-bytes, so they are safe; the danger is a well-meaning "let's pin the 370-token prefix's logits" row.
+bytes, so they are safe; the danger is a well-meaning "let's pin the 369-token prefix's logits" row.
 
 ### 11.2 The gate measurement — ceiling, floor, and a pre-committed verdict
 
@@ -1068,17 +1070,17 @@ ceiling_ppm  =  (T / (T + S))  x  (prefill compute / single-shot TTFT)  x  1e6
                  -  (container read / single-shot TTFT) x 1e6
 ```
 
-The first factor is **measured** (1.2): 0.34709, 0.30962, 0.26075 per task; mean **0.30582**, worst
-**0.26075**. So even if prefill compute were 100 % of TTFT and the container read were free, the
-ceiling would be **305,821 ppm at the mean and 260,747 ppm at the worst suffix**. It is strictly
+The first factor is **measured** (1.2): 0.34615, 0.30827, 0.26004 per task; mean **0.30482**, worst
+**0.26004**. So even if prefill compute were 100 % of TTFT and the container read were free, the
+ceiling would be **304,822 ppm at the mean and 260,042 ppm at the worst suffix**. It is strictly
 below both, because the fixed cost is not zero: `r6-resident-weights.md` 5.8.1 measured `N = 1`
 resident elapsed at 5.819 s and 6.800 s with 0.865 s and 0.939 s of compute at `T = 6`, so roughly
 **4.9–5.9 s** of process start, pack open, geometry load, and arena fill is paid by **both** legs.
 
 **The precondition this makes falsifiable, which is the point of writing it now.** For the mean task
-to clear a 150,000 ppm floor, prefill compute must be at least `150,000 / 305,821 = 49.0 %` of
-single-shot TTFT; for the **worst** suffix, `150,000 / 260,747 = 57.5 %`. With ~5.4 s of fixed cost
-that means prefill compute of roughly **5.2 s at `T + S = 1,195`** and **7.3 s at 1,419** — that is,
+to clear a 150,000 ppm floor, prefill compute must be at least `150,000 / 304,822 = 49.2 %` of
+single-shot TTFT; for the **worst** suffix, `150,000 / 260,042 = 57.7 %`. With ~5.4 s of fixed cost
+that means prefill compute of roughly **5.2 s at `T + S = 1,197`** and **7.3 s at 1,419** — that is,
 **this arm's resident prefill must run at or below roughly 200 tokens per second on the reference
 host.** Faster than that and the gate cannot be met on this corpus at this prefix share, whatever
 the implementation does.
@@ -1106,7 +1108,7 @@ An INDETERMINATE result is a real outcome and not a failure to measure. Item 33 
 **The cost, which is not the gate but is reported beside it.** A miss costs a `T_prefix`-column
 prefill **plus** a 168 MiB container write, and a hit costs a 168 MiB container read. Item 33
 section 1.4's correction 9 is the standing warning: it measured the container read to be a real
-exchange and not free arithmetic, on a **six-token** prompt. At 370 tokens the trade is far more
+exchange and not free arithmetic, on a **six-token** prompt. At 369 tokens the trade is far more
 favourable, but it must be **measured**, and the successor reports the read as a named term of the
 subtraction rather than absorbing it.
 
@@ -1190,7 +1192,7 @@ if it is available and proceed with three suffixes if it is not, recording which
 ### 11.5 What the successor must settle that this document does not
 
 1. Its own ledger, closure matrix, and consistency pass — the lift is a coordinated invariant across
-   seven modules and three scripts and earns its own design gate.
+   seven modules and four scripts and earns its own design gate.
 2. The baseline probe (11.2) and the ceiling derived from it, **before** implementation.
 3. Whether the container write on a miss belongs in the measured path at all, or whether the gate is
    about the hit leg alone. This document's view is that both must be reported, because a store whose

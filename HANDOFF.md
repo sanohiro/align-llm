@@ -9,17 +9,17 @@ Branch `agent/r6-prefix-ttft`, based on `main` merge commit
 `c16f14ea5ec2e42d61f7e6644716854d9ca61c2c` (C4-REPAIR-TEMPLATE, PR #156). Authoritative charter
 `docs/specs/r6-prefix-key-corpus.md` section 11; capability ledger and closure matrix
 `docs/specs/r6-prefix-ttft.md`. The pre-implementation design is commit `a3c5e9e`; implementation
-is `17cce70`, and the qualification-contract correction is `eb832bf`. The reference-host
-measurement is complete and MET; its ledger/HANDOFF transcription is intentionally uncommitted
-until the measurement record is checked and committed.
+is `17cce70`, the qualification-contract correction is `eb832bf`, and the first measurement record
+is `8ebed6b`. The consolidated comprehensive-review repair is the current candidate. The first reference-host
+measurement is withdrawn; no gate verdict currently exists.
 
 **Required first-action probe is complete.** A throwaway build changed only the Qwen cap to 2,048,
 measured a 1,200-token resident `--decode-step` prefill three times, and restored the source. The
 three first-token times were 131.686 s, 126.694 s, and 129.543 s; prefill compute was 125.288 s,
 121.071 s, and 123.872 s. Mean compute share is 95.44%, and the first-token range is 38,606 ppm.
-The precondition passes. Raw ceiling before the measured container-read subtraction is 291,880 ppm
-at the mean original prefix share and 248,864 ppm at the worst, against the unchanged 150,000 ppm
-floor. Swapouts moved by zero; compressor movements are recorded in the ledger.
+The precondition passes. Corrected raw ceiling before the measured container-read subtraction is
+290,920 ppm at the mean compositional prefix share and 248,183 ppm at the worst, against the
+unchanged 150,000 ppm floor. Swapouts moved by zero; compressor movements are recorded in the ledger.
 
 **Settled design choices.** `MAX_PREFILL_TOKENS` becomes 2,048; the corpus uses `KV_WIDTH=1,536`
 (168 MiB plane); `akvp` and document versions do not move, and compatibility is one-way because old
@@ -33,39 +33,52 @@ rule are fixed before implementation.
 **Implementation checkpoint.** Both architecture caps and the independent reader are 2,048. The
 hosted owner reaches dense, routed, suffix, and persisted-reader boundaries at 2,048, refuses 2,049,
 and keeps long activations out of goldens; the fixed test arena is 512 MiB so the enlarged mask is
-real rather than skipped. `eval/kv/prefix-corpus-v1` holds one 370-id shared prefix and suffixes of
-696, 1,049, and 825 ids, with pinned identities and five malformed checker classes.
+real rather than skipped. The repaired `eval/kv/prefix-corpus-v1` holds one 369-id shared prefix and
+suffixes of 697, 1,050, and 828 ids. Generation passes the exact complete prompt through a temporary
+file with `--no-escape`, proves the shared id prefix, and stores the exact tail; the model-free
+checker retains its pinned identities and five malformed classes.
 `scripts/run-decode-step --prefix-ttft` is an independent capable path: resident weights, fresh
 processes, alternating legs, warm and complete-file eviction protocols, five-pair gate semantics,
 compressor records, exact half-away arithmetic, miss cost, and canonical PASS/ERROR summaries.
 
-**Latest durable verification.** With GNU make and the Homebrew library path,
+**Latest durable verification.** With GNU make and the Homebrew library path, repaired
 `gmake layer-forward-smoke prefix-corpus-check` passes: all seven owner blocks, 167 dense decode
-documents (160 golden rows), the exact-cap oracle-S row, 70 routed decode documents, the 370-id
-shared prefix plus `[696, 1049, 825]` suffixes, and five malformed corpus classes. `gmake fmt`,
-`gmake format-check`, Python syntax compilation, dispatch N/A/arity probes, statistic-helper edge
-cases, and `git diff --check` pass.
+documents (160 golden rows), the exact-cap oracle-S row, 70 routed decode documents, shared 369 plus
+`[697, 1050, 828]`, and five malformed corpus classes. `gmake fmt`, `gmake format-check`, Python
+syntax compilation, and `git diff --check` pass. The pinned generator itself completed and proved
+all three complete-prompt compositions. Focused real-OLMoE attempts with one prompt at `N=1` and
+`N=2` stopped before any arm run because the callback produced one graph rather than the required
+2 or 3; this is the runner's early-EOS prerequisite, not an arithmetic failure. Do not repeat the
+unchanged shortened invocation. A fresh real-model pack audit independently walked all 147 dense
+members and reproduced row 1,152 B, stage 2,359,296 B, and region 313,389,056 B; together with the
+hosted routed boundary it owns the repair until a reference instrument configuration can pass that
+prerequisite. The 4 GiB audit pack was moved to Trash after the result was checked.
 
-**Reference-host gate: MET at exact head `eb832bf34e8e1e8d31f6aa9d78590f211e009f55`.** The canonical
+**Withdrawn reference-host run at exact head `eb832bf34e8e1e8d31f6aa9d78590f211e009f55`.** The canonical
 49,218-byte summary is outside Git at SHA-256 `aa1627a0…f833`. All 30 paired observations and 66
 fresh processes completed. W has protocol mean 304,668 ppm and leave-one-suffix-out range
 **283,489..324,752 ppm**; C has mean 298,502 ppm and range **289,169..314,613 ppm**. W is worse,
-and its 283,489 ppm minimum clears the 150,000 ppm floor by 133,489 ppm. The improvement gate and
-shipping verdict are both MET. C completed 33 reads of an existing unrelated 63,999,836,160-byte
+and the old arithmetic labelled its 283,489 ppm minimum above the floor. That label is invalid and
+there is no current improvement or shipping verdict. C completed 33 reads of an existing unrelated 63,999,836,160-byte
 file. W had zero swapouts; C had 4,108, all in duration pair 1's single-shot leg. The observation is
-retained; C's minimum leave-one-out row excludes that entire suffix, and swapout-free W is the worse
-protocol. An independent summary audit recomputed every pair and aggregate exactly and passed.
+retained as incident evidence. An independent summary audit recomputed every pair and aggregate
+exactly, but the corpus identity was invalid, so these numbers establish no improvement or shipping
+verdict and must not be reused.
 
-The first gate invocation correctly produced no verdict after a qualification-only assertion
-expected `reference.verdict=IDENTICAL` on a keyed hit. A hit deliberately skips the prefix graph
-and publishes `-`; hosted oracle K/S owns its equivalence. `eb832bf` makes that leg-specific,
-syntax verification passes, and the complete run above started again from zero. No failed-run
-observation was reused.
+**Comprehensive review.** `codex review --base origin/main` reviewed head `8ebed6b` against base tip
+and merge base `c16f14e` with Codex `gpt-5.6-sol` at xhigh. Four findings are accepted: P1 corpus
+escape rewriting, P1 stale OLMoE cap arithmetic, P2 diagnostic repeats emitting an improvement
+gate, and P2 unpacked embedding row sizes in the allocation ledger. The corpus fix also exposed a
+BPE boundary merge; the final `".\n"` now belongs to each suffix so `shared ++ suffix` is exactly the
+complete prompt's tokenization. The other repairs are implemented locally. Because this repair
+materially changes the measured corpus, a replacement full measurement and one final comprehensive
+review are required.
 
-**Next actions.** (1) Author-check and commit the post-measurement ledger and roadmap result. (2)
-Run one comprehensive review over the stable candidate; validate and consolidate any findings. (3)
-Run exact-head publication preflight, publish, merge, refresh `main`, and start item 40 below. (4)
-After item 40 publishes, continue to R7 or the next eligible product blocker.
+**Next actions.** (1) Commit the verified consolidated repair. (2) Run the replacement five-repeat
+W/C qualification from zero and independently audit its summary. (3) Commit the replacement result,
+perform the required final comprehensive review, and run exact-head publication preflight. (4)
+Publish, merge, refresh `main`, and start item 40 below. (5) After item 40 publishes, continue to R7
+or the next eligible product blocker.
 
 **User-requested next capability: DEV-OUTPUT-SUMMARY, roadmap item 40.** Successful owner and
 toolchain phases repeatedly emitted 912 lines / approximately 45,720 transport tokens and 564
@@ -79,10 +92,8 @@ not folded into this performance claim.
 Python/instrument path and Align consumes decimal ids only. The reference host must be serialized
 for the multi-hour measurement.
 
-**Intentional uncommitted files.** `HANDOFF.md`, `docs/specs/r6-prefix-ttft.md`, and
-`docs/specs/roadmap.md` contain the measurement/result transcription and item 40 plan. Build
-products and the 4.4 GiB throwaway probe pack live under the session scratch root, outside Git. The
-canonical measurement summary remains outside Git; only its aggregates and digest are persisted.
+**Intentional uncommitted files.** None after the consolidated repair commit. Build products and
+measurement summaries remain outside Git.
 
 ## Merged checkpoint: C4-REPAIR-TEMPLATE review repair (2026-08-30)
 

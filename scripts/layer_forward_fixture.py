@@ -1520,14 +1520,14 @@ def write_decode_corpus(g, embed, layers, head, prefill_records, prefill_logits,
                             source_record_offset, text, mutation=mutation)
 
     emit("model-kv-good.akvp", container())
-    # R6-PREFIX-TTFT's one-way reader-policy expansion. Counts 33 and the corpus prefix count 370
+    # R6-PREFIX-TTFT's one-way reader-policy expansion. Counts 33 and the corpus prefix count 369
     # are loaded by the arm; count 2,048 pins the largest token stream and its canonical offsets;
     # 2,049 is well-formed bytes that both readers must refuse at the header bound.
     emit("model-kv-expanded-33.akvp",
          kv_container(g, planes, [1] * 33, prefill_logits, 64, pack_bytes,
                       source_record_offset, geometry_text, zero_plane=True))
     emit("model-kv-expanded-corpus.akvp",
-         kv_container(g, planes, [1] * 370, prefill_logits, 1536, pack_bytes,
+         kv_container(g, planes, [1] * 369, prefill_logits, 1536, pack_bytes,
                       source_record_offset, geometry_text, zero_plane=True))
     emit("model-kv-expanded-2048.akvp",
          kv_container(g, planes, [1] * 2048, prefill_logits, 2048, pack_bytes,

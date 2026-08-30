@@ -33,7 +33,7 @@ Three triggers fire.
 | --- | --- | --- |
 | Public CLI or API | **No** | `--decode-step` keeps the schema-6 arm and its sixteen operands. Existing operands accept longer token lists, but no position, default, result field, or error code changes |
 | Persisted or exchanged format | **Yes** | `akvp` v1's `token_count` field may now contain 33..2,048. The byte layout and all three version fields stay unchanged, but a container in that range is deliberately unreadable by the older 32-token reader |
-| Ownership / allocation boundary | **Yes** | The resident embedding staging reservation grows from 458,752 B to 29,360,128 B for Qwen and from 262,144 B to 16,777,216 B for OLMoE. The owner and lifetime stay run-scoped |
+| Ownership / allocation boundary | **Yes** | The packed resident embedding staging reservation grows from 65,536 B to 4,128,768 B for Qwen and from 36,864 B to 2,359,296 B for OLMoE. The owner and lifetime stay run-scoped |
 | Coordinated invariant across at least three modules | **Yes** | Two declarations, four Align consumers, the persisted-plane reader, and two runners must agree on 2,048 and on the 2,049 refusal boundary |
 
 ### 1.3 Scope and non-goals
@@ -104,8 +104,8 @@ Before subtracting the container read, the probe fixes the ceiling at:
 
 | Prefix share | Share | Raw ceiling |
 | --- | ---: | ---: |
-| Mean of the original three tasks | 0.30582 | **291,880 ppm** |
-| Worst original task | 0.26075 | **248,864 ppm** |
+| Mean of the corrected three tasks | 0.30482 | **290,920 ppm** |
+| Worst corrected task | 0.26004 | **248,183 ppm** |
 
 The read term is not guessed. At the 129.31 s probe mean, the read could cost 18.35 s at the mean
 share or 12.78 s at the worst share before the corresponding ceiling reaches the floor. The actual
@@ -158,8 +158,8 @@ prompt, so one pack has one resident layout at every prompt length.
 
 | Model | Row bytes | 32-token stage | 2,048-token stage | Resident arena consequence |
 | --- | ---: | ---: | ---: | ---: |
-| Qwen2.5-Coder-7B | 14,336 | 458,752 B | **29,360,128 B** | probe observed **4,681,596,928 B** total |
-| OLMoE-1B-7B | 8,192 | 262,144 B | **16,777,216 B** | dense-resident arena grows by 16,515,072 B |
+| Qwen2.5-Coder-7B | 2,016 | 65,536 B | **4,128,768 B** | probe observed **4,681,596,928 B** total; growth is 4,063,232 B |
+| OLMoE-1B-7B | 1,152 | 36,864 B | **2,359,296 B** | dense-resident arena is **313,389,056 B**, growth 2,322,432 B |
 
 The same run-scope `buffer` owns the stage and the same one wrap covers it. No allocation is added
 per layer, per token, or per decode step. Existing `R6_RESIDENT_BUDGET` and degraded-reservation
@@ -207,6 +207,13 @@ Id files contain one unsigned decimal Qwen token id plus newline per record, wit
 sign, leading zero, comma, BOS insertion, chat template, or detokenized text. The checker validates
 the grammar, count, range against `n_vocab = 152,064`, id-file digest, prompt/source digests, and
 `shared + suffix <= 2,048` without loading the model.
+
+The reusable boundary is token-compositional, not an independently tokenized text boundary. The
+pinned tokenizer merges the repository prompt's final `".\n"` when task bytes follow, so those two
+bytes belong to every suffix. Generation tokenizes each complete prompt verbatim through a
+temporary `-f` file with `--no-escape`, requires the complete id list to start with the 369 shared
+ids, and stores its exact remainder as that task's suffix. Thus concatenating checked-in shared and
+suffix ids exactly reproduces the instrument's complete-prompt ids.
 
 `canonical-v1e` is present as a corpus identity, but it did **not** land a second fixed prompt
 family. All three of its task manifests point `task_prompt_path` back to the same
@@ -308,8 +315,8 @@ and summary SHA-256. Individual-pair output stays attached to the pull request a
 | --- | --- | --- |
 | Dense declaration | Qwen cap 2,048 | `layer-forward-smoke`: 2,048-token synthetic boundary passes; 2,049-token `R5_TOKENS` refusal |
 | Routed declaration | OLMoE cap 2,048 | `layer-forward-smoke`: 2,048-token routed synthetic boundary passes; 2,049-token refusal |
-| Dense staging construction | `plan_resident` reserves 29,360,128 B | dense boundary case asserts stage bytes, arena bytes, high slot 2,047, pointer identity, and balanced teardown |
-| Routed staging construction | dense-resident OLMoE stage is 16,777,216 B | routed boundary case asserts stage bytes, region arithmetic, high slot 2,047, oracle D, and balanced teardown |
+| Dense staging construction | `plan_resident` reserves 4,128,768 B | dense boundary case asserts stage bytes, arena bytes, high slot 2,047, pointer identity, and balanced teardown |
+| Routed staging construction | dense-resident OLMoE stage is 2,359,296 B | routed boundary case asserts stage bytes, region arithmetic, high slot 2,047, oracle D, and balanced teardown |
 | Suffix success | prefix plus suffix exactly 2,048 | `ds-suffix-at-cap`, oracle S against its single-shot comparand, no golden activation row |
 | Suffix malformed / over cap | sequence 2,049 | `ds-suffix-over-cap` and `-and-narrow`, exact detail `sequence[2049]` |
 | Persisted old success | token_count 32 | existing save/load/store rows remain byte-identical outside path/timing normalization |
@@ -368,7 +375,7 @@ precedes implementation, exact owner and qualification results, and every findin
 
 ### 8.1 Final implementation and bounded deviations
 
-The pre-implementation design is commit `a3c5e9e`. The measured implementation head is
+The pre-implementation design is commit `a3c5e9e`. The first measured implementation head was
 `eb832bf34e8e1e8d31f6aa9d78590f211e009f55`: `17cce70` implements the cap, corpus, owners, and
 runner; `eb832bf` corrects the runner's qualification-only validation of a keyed hit. A hit skips
 the prefix graph by definition, so its `reference.verdict` is `-`, while a miss and a single-shot
@@ -376,6 +383,17 @@ run compute that graph and remain `IDENTICAL`. Hosted oracle K and oracle S own 
 equivalence. The first attempted qualification stopped at exactly that validation, emitted an
 `ERROR` summary with its two completed timed coordinates, removed scratch state, and made no
 verdict; none of its observations were reused in the run below.
+
+The comprehensive review of `eb832bf` against base `c16f14e` found four valid issues. Corpus
+generation passed decoded prompt text to `llama-debug -p`, whose default escape processing changed
+the record-codec prompt; the independently tokenized pieces also failed to prove that their
+concatenation was the complete prompt's tokenization. The OLMoE qualification still mirrored the
+old cap in its independent resident-layout arithmetic, diagnostic repeat counts could print an
+improvement gate, and this ledger used unpacked F32 embedding sizes instead of packed row bytes.
+The repair uses a byte-verbatim temporary file and `--no-escape`, enforces complete-token-list
+composition at the `".\n"` boundary, updates the OLMoE mirror, suppresses diagnostic gate values,
+and corrects the allocation ledger. Because the corpus changed, every timing below is withdrawn and
+the five-repeat W/C qualification must start again from zero.
 
 Three implementation details refine, but do not change, sections 3 through 5:
 
@@ -386,19 +404,21 @@ Three implementation details refine, but do not change, sections 3 through 5:
    layouts exactly; every semantic field and every other window field stays in the equality.
 2. The stub arena is 512 MiB instead of 4 MiB so the 2,048-column attention mask is really
    allocated and computed. Expanded persisted fixtures cover counts 33, the corpus prefix count
-   370, 2,048, and the 2,049 refusal independently of real-model activation goldens.
+   369, 2,048, and the 2,049 refusal independently of real-model activation goldens.
 3. `ALIGN_LLM_PREFIX_TTFT_SUMMARY` is the optional requested-output path section 4.4 anticipated.
    It defaults to `align-r6-prefix-ttft-summary.json` under the scratch root and must resolve
    outside the work tree. The run directory is still removed; the canonical summary survives at
    that explicit path. Non-five repeat counts are labelled `DIAGNOSTIC` and cannot emit a gate
    verdict.
 
-The generated corpus passed its model-free checker with a 370-id shared prefix and suffix counts
-696, 1,049, and 825. Owner verification passed at the implementation checkpoint: all seven
+The corrected generated corpus passes its model-free checker with a 369-id shared prefix and suffix
+counts 697, 1,050, and 828. Owner verification at the original implementation checkpoint covered all seven
 `layer-forward-smoke` blocks, including 167 dense decode documents and 70 routed decode documents,
-plus the corpus's five malformed classes. Long real activations remain absent from goldens.
+plus the corpus's five malformed classes. After review repair, the same owner passes with the
+369-token persisted fixture and its regenerated golden. Long real activations remain absent from
+goldens.
 
-### 8.2 Reference-host command and evidence identity
+### 8.2 Withdrawn reference-host evidence identity
 
 The gate run used the section 3.6 environment-variable command form below. `$MODEL` was the exact
 model identity in section 2.1; `$EVICTION` was an existing unrelated 63,999,836,160-byte Docker
@@ -418,26 +438,28 @@ ALIGN_LLM_PREFIX_TTFT_SUMMARY=$SUMMARY \
 gmake prefix-ttft-qualification
 ```
 
-Host: Apple M1, arm64, 16 GiB physical memory, macOS 26.5.2. Both instruments reported build
+This command shape remains the replacement command, but the following identity describes only the
+withdrawn run. Host: Apple M1, arm64, 16 GiB physical memory, macOS 26.5.2. Both instruments reported build
 10566 at commit `bb4caa754`; the model was 4,683,073,536 B at SHA-256 `509287f7…d3c`. The canonical
 49,218-byte summary is SHA-256
 `aa1627a074bfec80a5a291a93d2e22b118b2eeea7b7514a0db18e13873f5f833`. An independent read-only
 recalculation verified all 30 unique pair coordinates, alternating orders, every per-pair
 half-away result, both protocol means, all six suffix means, the six leave-one-suffix-out means, 66
-completed fresh processes, and the final rule.
+completed fresh processes, and the final rule over the wrong corpus. It is retained as incident
+evidence and supplies no gate result.
 
-### 8.3 TTFT result
+### 8.3 Withdrawn TTFT readings — no verdict
 
-All figures below are reductions in ppm. No pair was discarded or replaced.
+All figures below are reductions in ppm from the invalid corpus. No pair was discarded or replaced,
+but none is eligible for the roadmap or shipping verdict.
 
 | Protocol | Duration suffix | Layer-precedence suffix | Record-codec suffix | Protocol mean | Leave-one-out values | Jackknife range |
 | --- | ---: | ---: | ---: | ---: | --- | ---: |
 | W | 347,025 | 264,500 | 302,479 | 304,668 | 283,489 / 324,752 / 305,762 | **283,489..324,752** |
 | C | 317,170 | 266,282 | 312,056 | 298,502 | 289,169 / 314,613 / 291,726 | **289,169..314,613** |
 
-The worse protocol is W because its jackknife minimum, **283,489 ppm**, is smaller. Both protocol
-minima are positive, and the worse minimum clears the 150,000 ppm shipping floor by **133,489
-ppm**. The roadmap improvement gate is **MET** and the shipping verdict is **MET**.
+The old arithmetic would select W and report 283,489 ppm. Review invalidated the corpus identity,
+so the roadmap improvement gate and shipping verdict are both **pending**, not MET.
 
 Mean first-token times, in seconds, show the paired quantities behind that result:
 
@@ -454,8 +476,9 @@ Across all hits, the container is 176,771,072 B. Mean hit `kv.read_ns` is 152,43
 158,201,417 under C; mean lookup is 7,086 ns and 6,305 ns; mean resident fill is 1,827,265,386 ns
 and 1,942,992,111 ns. These remain reported components, not alternate verdict inputs.
 
-### 8.4 Miss, eviction, and compressor observations
+### 8.4 Withdrawn miss, eviction, and compressor observations
 
+These observations are retained for diagnosis only and will be replaced with the corrected corpus.
 Miss cost is secondary as precommitted. Break-even is the exact section 2.4 formula against that
 suffix/protocol's five mean legs; zero is possible when the single observed miss happened to be
 faster than the five-run single-shot mean.
@@ -480,7 +503,7 @@ as section 4.2 requires. It does not carry the verdict: C's **minimum** leave-on
 the 289,169 ppm row that excludes the entire duration cluster, and W — with zero swapouts — is the
 worse protocol and independently clears the floor.
 
-### 8.5 Closure disposition
+### 8.5 Closure disposition before replacement measurement
 
 Every section 5 cell maps to the final diff or retained evidence:
 
@@ -489,13 +512,13 @@ Every section 5 cell maps to the final diff or retained evidence:
   `layer-forward-smoke`;
 - suffix success/refusal and allocation/early-exit/cleanup map to the exact-cap oracle-S row, both
   2,049 sequence refusals, the unchanged budget refusal, and the enlarged resident lifetime rows;
-- persisted compatibility and layout map to the 32-token legacy goldens plus independent 33, 370,
+- persisted compatibility and layout map to the 32-token legacy goldens plus independent 33, 369,
   2,048, and 2,049 arm/reader fixtures;
 - corpus construction/malformed cells map to `scripts/check-prefix-corpus` and its five mutation
   classes;
-- W/C measurement success maps to the 30-pair summary above, while partial failure maps to the
-  discarded first invocation's bounded `ERROR` summary and cleanup; and
+- W/C measurement success remains open; the old 30-pair summary is withdrawn, while partial
+  failure maps to the first invocation's bounded `ERROR` summary and cleanup; and
 - long real activations remain qualification-only, while the seven-token transcript refusals and
   six-token oracle constant are unchanged and pass in the same owner.
 
-There is no deferred applicable closure cell.
+The replacement W/C measurement is the only open applicable closure cell.

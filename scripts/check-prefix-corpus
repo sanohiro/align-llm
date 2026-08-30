@@ -103,7 +103,14 @@ def expected_entries() -> list[dict]:
         value, text = artifact(source)
         shared_parts.append(text)
         shared_sources.append({"path": source, "content_sha256": value["content_sha256"]})
-    shared = b"".join(shared_parts)
+    complete_shared = b"".join(shared_parts)
+    if not complete_shared.endswith(b".\n"):
+        raise CorpusError("shared-prefix: expected trailing sentence boundary")
+    # The final period and newline merge under the pinned tokenizer when task bytes follow. Keep
+    # both on the suffix side so shared ids are an exact prefix of every complete prompt rather than
+    # pretending that independently tokenized byte strings are compositional.
+    shared = complete_shared[:-2]
+    boundary = complete_shared[-2:]
     entries = [{
         "entry_id": "shared-prefix",
         "path": "eval/kv/prefix-corpus-v1/shared-prefix.ids",
@@ -111,18 +118,22 @@ def expected_entries() -> list[dict]:
         "prompt": {"bytes": len(shared), "sha256": sha256_bytes(shared)},
         "complete_prompt": {"bytes": len(shared), "sha256": sha256_bytes(shared)},
         "_prompt_bytes": shared,
+        "_complete_prompt_bytes": shared,
     }]
     for task in TASKS:
         source = f"eval/tasks/prompt-v1/{task}/task-prompt.json"
-        value, suffix = artifact(source)
+        value, task_prompt = artifact(source)
+        suffix = boundary + task_prompt
         complete = shared + suffix
         entries.append({
             "entry_id": f"{task}.initial.suffix",
             "path": f"eval/kv/prefix-corpus-v1/{task}.initial.suffix.ids",
-            "sources": [{"path": source, "content_sha256": value["content_sha256"]}],
+            "sources": [shared_sources[-1],
+                        {"path": source, "content_sha256": value["content_sha256"]}],
             "prompt": {"bytes": len(suffix), "sha256": sha256_bytes(suffix)},
             "complete_prompt": {"bytes": len(complete), "sha256": sha256_bytes(complete)},
             "_prompt_bytes": suffix,
+            "_complete_prompt_bytes": complete,
         })
     return entries
 
@@ -199,11 +210,14 @@ def validate(corpus: Path = CORPUS) -> dict:
 
 def tokenize(executable: Path, model: Path, prompt: bytes) -> list[int]:
     with tempfile.TemporaryDirectory(prefix="align-prefix-tokenize-") as temporary:
+        prompt_path = Path(temporary) / "prompt.txt"
+        prompt_path.write_bytes(prompt)
         output = Path(temporary) / "output"
         output.mkdir()
         command = [
-            str(executable), "-m", str(model), "-p", prompt.decode("utf-8"), "-n", "1", "-t", "4",
-            "-ngl", "0", "-fa", "off", "-ctk", "f32", "-ctv", "f32", "-nr", "-c", "2048",
+            str(executable), "-m", str(model), "-f", str(prompt_path), "--no-escape", "-n", "1",
+            "-t", "4", "-ngl", "0", "-fa", "off", "-ctk", "f32", "-ctv", "f32", "-nr",
+            "-c", "2048",
             "--save-logits", "--logits-output-dir", str(output),
         ]
         result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -247,8 +261,17 @@ def generate() -> None:
 
     entries = expected_entries()
     CORPUS.mkdir(parents=True, exist_ok=True)
+    shared_ids = None
     for entry in entries:
-        ids = tokenize(debug, model, entry.pop("_prompt_bytes"))
+        entry.pop("_prompt_bytes")
+        complete_ids = tokenize(debug, model, entry.pop("_complete_prompt_bytes"))
+        if shared_ids is None:
+            shared_ids = complete_ids
+            ids = complete_ids
+        else:
+            if complete_ids[:len(shared_ids)] != shared_ids:
+                raise CorpusError(f"{entry['entry_id']}: shared token prefix")
+            ids = complete_ids[len(shared_ids):]
         raw = b"".join(f"{token_id}\n".encode("ascii") for token_id in ids)
         (ROOT / entry["path"]).write_bytes(raw)
         entry["id_count"] = len(ids)

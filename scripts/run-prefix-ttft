@@ -557,7 +557,9 @@ def main() -> int:
             verdict = "NOT_MET"
         else:
             verdict = "INDETERMINATE"
-        if warm["jackknife_min_ppm"] > 0 and cold["jackknife_min_ppm"] > 0:
+        if not gate_run:
+            improvement = "DIAGNOSTIC"
+        elif warm["jackknife_min_ppm"] > 0 and cold["jackknife_min_ppm"] > 0:
             improvement = "MET"
         elif warm["jackknife_max_ppm"] <= 0 or cold["jackknife_max_ppm"] <= 0:
             improvement = "NOT_MET"

@@ -1942,7 +1942,7 @@ pub fn plan_resident_dense(
   mut span: array_builder<i64> := array_builder()
   step := if block_align > MAX_TENSOR_ALIGNMENT { block_align } else { MAX_TENSOR_ALIGNMENT }
   table_bytes := align_up_checked(e.embed_nbytes, step)
-  // `layer_olmoe.MAX_PREFILL_TOKENS` and not `layer_qwen2`'s. The two are both 32 today, which is
+  // `layer_olmoe.MAX_PREFILL_TOKENS` and not `layer_qwen2`'s. The two are both 2,048 today, which is
   // exactly why calling the dense producer would have worked by accident and broken silently the day
   // one of them moved. `MAX_PREFILL_TOKENS` rows and not `tokens.count`: the stage is the same size
   // on every run of one model, so the region's size is a function of the pack alone.
