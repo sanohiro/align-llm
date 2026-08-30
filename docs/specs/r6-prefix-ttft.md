@@ -131,7 +131,9 @@ single-shot prefill against a prefill plus a container write and answer a differ
 Miss cost is nevertheless a required secondary result. Once per `(suffix, protocol)` before the
 five hit pairs, the runner records miss `first_token_ns`, write elapsed time, and container bytes.
 It reports the observed break-even reuse count
-`ceil((miss - single_shot) / (single_shot - hit))`, or `N/A` when the denominator is not positive.
+`max(0, ceil((miss - single_shot) / (single_shot - hit)))`, or `N/A` when the denominator is not
+positive. A reuse count is never negative when the observed miss is faster than the mean
+single-shot leg.
 No miss is silently amortized into the hit claim.
 
 ## 3. Public-contract ledger
@@ -253,11 +255,14 @@ Required environment is the existing decode-step set plus:
 | `ALIGN_LLM_PREFIX_TTFT_TMPDIR` | Scratch root; defaults by the existing runner convention |
 | `ALIGN_LLM_PREFIX_TTFT_EVICTION_FILE` | Existing unrelated regular file at least 20 GiB; absence makes protocol C explicitly `N/A`, never MET |
 | `ALIGN_LLM_PREFIX_TTFT_REPEATS` | Defaults to and may only equal 5 for a gate run; other values are diagnostic and cannot produce a verdict |
+| `ALIGN_LLM_PREFIX_TTFT_SUMMARY` | Requested nonexistent output outside the work tree; it must not resolve to or alias any input, and is exclusively reserved before packing |
 
-The runner verifies at least 12 GiB physical memory, enough free space for the pack plus one 168 MiB
-container and 3 GiB headroom, corpus consistency, model and instrument identity, and an eviction
-file at least 20 GiB before timing. Any missing prerequisite prints one named `N/A` and exits zero;
-it cannot print MET.
+The runner verifies at least 12 GiB physical memory, enough free space for the pack plus all six
+simultaneously live 169 MiB container allowances and 3 GiB headroom, corpus consistency, model and
+instrument identity, and an eviction file at least 20 GiB before timing. After those read-only
+checks, it creates any requested summary parent and reserves the exact output with exclusive create;
+an existing path, symlink, input alias, non-directory parent, or unwritable destination is `N/A`
+before packing. Any missing prerequisite prints one named `N/A` and exits zero; it cannot print MET.
 
 ## 4. Measurement protocol
 
@@ -304,8 +309,9 @@ bytes, and the miss secondary from section 2.4. Only `timings.first_token_ns` en
 
 ### 4.4 Output and publication
 
-The runner writes no tracked file. It emits one canonical JSON summary to the requested scratch
-path and a concise verdict line. The post-measurement section appended to this document records the
+The runner writes no tracked file. It atomically replaces only its own exclusively reserved summary
+file, using a unique temporary in the same directory, and emits a concise verdict line. The
+post-measurement section appended to this document records the
 exact head, host, command, all aggregate figures, protocol verdicts, miss cost, compressor movement,
 and summary SHA-256. Individual-pair output stays attached to the pull request as check evidence.
 
@@ -328,8 +334,11 @@ and summary SHA-256. Individual-pair output stays attached to the pull request a
 | Cleanup | success and every timed failure | existing lifetime counters plus runner trap removes scratch store, plane, token binary, and logits |
 | Corpus construction | three independent suffixes plus shared prefix | generation reproduces manifest; default checker is read-only and model-free |
 | Corpus malformed | source, digest, grammar, count, or prompt mismatch | checker fixtures mutate one field/class each and fail with a bounded named reason |
+| Summary preflight | existing path, symlink/hardlink/input alias, work-tree path, or unavailable parent | `prefix-ttft-runner-check` refuses before packing and preserves the fixed `.partial` neighbour |
+| Scratch capacity | pack plus six simultaneously live store containers plus 3 GiB headroom | runner constant and model-free owner assert six allowances |
 | Warm measurement success | 15 interleaved pairs | qualification JSON contains every `(suffix, repeat, leg)` exactly once and applies the fixed statistic |
 | Eviction-pressure success | 15 interleaved pairs | each leg has a preceding >=20 GiB read and before/after compressor record |
+| Miss break-even | miss faster than single-shot by more than one hit saving | model-free owner clamps reuse count to zero; nonpositive denominator remains `N/A` |
 | Measurement partial failure | process, document, cache-pressure, or parse failure | no verdict; summary is `ERROR` with completed coordinates, trap cleanup still runs |
 | Cross-platform golden safety | long real activations | no real activation at four or more tokens is checked into a golden; long rows are qualification-only |
 | Six-token oracle | `R5_ORACLE_TRUNCATED` | seven-token transcript cases remain refusals; no cap-derived edit touches the oracle constant |
@@ -339,7 +348,7 @@ and summary SHA-256. Individual-pair output stays attached to the pull request a
 Development owner after each coherent batch:
 
 ```text
-gmake layer-forward-smoke prefix-corpus-check
+gmake layer-forward-smoke prefix-corpus-check prefix-ttft-runner-check
 ```
 
 Named performance qualification on the reference host:
@@ -352,7 +361,7 @@ Publication preflight:
 
 ```text
 python3 scripts/pre-pr --owner-test R6-PREFIX-TTFT -- \
-  gmake layer-forward-smoke prefix-corpus-check
+  gmake layer-forward-smoke prefix-corpus-check prefix-ttft-runner-check
 ```
 
 `make ci` is not selected merely by enlarging the cap or adding a focused qualification. It is
@@ -395,6 +404,16 @@ composition at the `".\n"` boundary, updates the OLMoE mirror, suppresses diagno
 and corrects the allocation ledger. Because the corpus changed, every timing below is withdrawn and
 the five-repeat W/C qualification must start again from zero.
 
+The final comprehensive review of result-record head `913055e` found three further qualification
+defects: the requested summary could alias and overwrite an input, scratch preflight budgeted one of
+six simultaneously live containers, and a sufficiently fast miss could produce a negative
+break-even reuse count. The consolidated repair reserves a nonexistent non-aliasing output before
+packing, uses a unique atomic-write temporary, budgets all six containers, and clamps reuse at zero;
+the model-free runner owner covers every class. These changes alter prerequisite handling and
+secondary reduction only. They do not change a timed command, leg, observation, or primary
+statistic, and the replacement summary's observed break-even values are already zero or one, so the
+audited measurement at `de4cb6e` remains the exact performance evidence without a retake.
+
 Three implementation details refine, but do not change, sections 3 through 5:
 
 1. The synthetic F32 fixture's embedding row is 32 B. Its exact-cap single-shot gather therefore
@@ -406,17 +425,20 @@ Three implementation details refine, but do not change, sections 3 through 5:
    allocated and computed. Expanded persisted fixtures cover counts 33, the corpus prefix count
    369, 2,048, and the 2,049 refusal independently of real-model activation goldens.
 3. `ALIGN_LLM_PREFIX_TTFT_SUMMARY` is the optional requested-output path section 4.4 anticipated.
-   It defaults to `align-r6-prefix-ttft-summary.json` under the scratch root and must resolve
-   outside the work tree. The run directory is still removed; the canonical summary survives at
-   that explicit path. Non-five repeat counts are labelled `DIAGNOSTIC` and cannot emit a gate
-   verdict.
+   It defaults to `align-r6-prefix-ttft-summary.json` under the scratch root, must be nonexistent,
+   must resolve outside the work tree, and must not alias any qualification input. The runner
+   exclusively reserves it before packing and atomically replaces only that reservation through a
+   unique same-directory temporary. The run directory is still removed; the canonical summary
+   survives at that explicit path. Non-five repeat counts are labelled `DIAGNOSTIC` and cannot emit
+   a gate verdict.
 
 The corrected generated corpus passes its model-free checker with a 369-id shared prefix and suffix
 counts 697, 1,050, and 828. Owner verification at the original implementation checkpoint covered all seven
 `layer-forward-smoke` blocks, including 167 dense decode documents and 70 routed decode documents,
 plus the corpus's five malformed classes. After review repair, the same owner passes with the
 369-token persisted fixture and its regenerated golden. Long real activations remain absent from
-goldens.
+goldens. The model-free qualification-runner owner additionally passes the three final-review root
+cause classes.
 
 ### 8.2 Reference-host evidence identity
 

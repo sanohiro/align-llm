@@ -43,9 +43,10 @@ processes, alternating legs, warm and complete-file eviction protocols, five-pai
 compressor records, exact half-away arithmetic, miss cost, and canonical PASS/ERROR summaries.
 
 **Latest durable verification.** With GNU make and the Homebrew library path, repaired
-`gmake layer-forward-smoke prefix-corpus-check` passes: all seven owner blocks, 167 dense decode
+`gmake layer-forward-smoke prefix-corpus-check prefix-ttft-runner-check` passes: all seven owner blocks, 167 dense decode
 documents (160 golden rows), the exact-cap oracle-S row, 70 routed decode documents, shared 369 plus
-`[697, 1050, 828]`, and five malformed corpus classes. `gmake fmt`, `gmake format-check`, Python
+`[697, 1050, 828]`, five malformed corpus classes, six-container scratch budgeting, safe summary
+reservation, and the break-even zero clamp. `gmake fmt`, `gmake format-check`, Python
 syntax compilation, and `git diff --check` pass. The pinned generator itself completed and proved
 all three complete-prompt compositions. Focused real-OLMoE attempts with one prompt at `N=1` and
 `N=2` stopped before any arm run because the callback produced one graph rather than the required
@@ -83,12 +84,21 @@ gate, and P2 unpacked embedding row sizes in the allocation ledger. The corpus f
 BPE boundary merge; the final `".\n"` now belongs to each suffix so `shared ++ suffix` is exactly the
 complete prompt's tokenization. The other repairs are committed in `de4cb6e`. Because this repair
 materially changed the measured corpus, the replacement full measurement was run from zero and is
-audited above. One final comprehensive review of the corrected stable candidate remains required.
+audited above. The required final comprehensive review of the corrected candidate is recorded below.
 
-**Next actions.** (1) Commit the audited replacement result. (2) Perform the required final
-comprehensive review and disposition any findings. (3) Run exact-head publication preflight.
-(4) Publish, merge, and refresh `main`. This pull request is the user-requested stopping checkpoint:
-do not start item 40 or another roadmap capability after merge.
+**Final comprehensive review.** `codex review --base origin/main` reviewed result-record head
+`913055e` against base tip and merge base `c16f14e` with Codex `gpt-5.6-sol` at xhigh. Three
+findings are accepted: P1 summary output could alias and overwrite an input, P2 scratch preflight
+budgeted one of six live containers, and P2 a sufficiently fast miss could produce a negative reuse
+count. The consolidated repair rejects existing, aliased, symlinked, work-tree, and unavailable
+summary destinations before packing; exclusively reserves the output and uses a unique atomic
+temporary; budgets all six containers; and clamps break-even reuse at zero. A new model-free owner
+covers every root-cause class. The repair changes preflight and secondary reduction only, so the
+audited 30-pair timing evidence remains bound to `de4cb6e` and needs no retake.
+
+**Next actions.** (1) Commit the consolidated final-review repair. (2) Run exact-head publication
+preflight. (3) Publish, merge, and refresh `main`. This pull request is the user-requested stopping
+checkpoint: do not start item 40 or another roadmap capability after merge.
 
 **Next planned capability, not active: DEV-OUTPUT-SUMMARY, roadmap item 40.** Successful owner and
 toolchain phases repeatedly emitted 912 lines / approximately 45,720 transport tokens and 564
@@ -101,8 +111,8 @@ not folded into this performance claim.
 **Blockers.** None. Request 22 remains non-blocking because the checked-in ids come from the pinned
 Python/instrument path and Align consumes decimal ids only.
 
-**Intentional uncommitted files.** The audited result documentation is the only intended work-tree
-change until its commit. Build products and measurement summaries remain outside Git.
+**Intentional uncommitted files.** The consolidated final-review repair is the only intended
+work-tree change until its commit. Build products and measurement summaries remain outside Git.
 
 ## Merged checkpoint: C4-REPAIR-TEMPLATE review repair (2026-08-30)
 

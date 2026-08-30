@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Model-free regressions for the R6 prefix-TTFT runner's preflight and reductions."""
+
+from __future__ import annotations
+
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+from pathlib import Path
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+RUNNER = ROOT / "scripts/run-prefix-ttft"
+
+
+def load_runner():
+    loader = SourceFileLoader("run_prefix_ttft", str(RUNNER))
+    specification = importlib.util.spec_from_loader(loader.name, loader)
+    if specification is None or specification.loader is None:
+        raise AssertionError("cannot load scripts/run-prefix-ttft")
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
+def expect_rejected(module, path: Path, inputs, work_tree: Path, fragment: str) -> None:
+    try:
+        module.reserve_summary_path(path, inputs, work_tree)
+    except module.QualificationError as failure:
+        if fragment not in str(failure):
+            raise AssertionError(f"{failure!s} does not contain {fragment!r}") from failure
+    else:
+        raise AssertionError(f"unsafe summary path was accepted: {path}")
+
+
+def main() -> int:
+    module = load_runner()
+    if module.STORE_CONTAINER_COUNT != 6:
+        raise AssertionError("scratch preflight does not budget all six live store containers")
+
+    break_even_rows = (
+        ((50, 100, 80), 0),
+        ((100, 100, 80), 0),
+        ((101, 100, 80), 1),
+        ((121, 100, 80), 2),
+        ((100, 80, 100), None),
+    )
+    for operands, expected in break_even_rows:
+        actual = module.observed_break_even_reuses(*operands)
+        if actual != expected:
+            raise AssertionError(f"break-even {operands} produced {actual}, expected {expected}")
+
+    with tempfile.TemporaryDirectory(prefix="prefix-ttft-runner-check-") as temporary_text:
+        temporary = Path(temporary_text)
+        work_tree = temporary / "work"
+        output_root = temporary / "output"
+        work_tree.mkdir()
+        output_root.mkdir()
+        model = temporary / "model.gguf"
+        eviction = temporary / "eviction.raw"
+        model.write_bytes(b"model")
+        eviction.write_bytes(b"eviction")
+        inputs = (("model", model), ("eviction", eviction))
+
+        expect_rejected(module, model, inputs, work_tree, "aliases model")
+        hardlink = output_root / "model-hardlink"
+        os.link(model, hardlink)
+        expect_rejected(module, hardlink, inputs, work_tree, "aliases model")
+        symlink = output_root / "eviction-symlink"
+        symlink.symlink_to(eviction)
+        expect_rejected(module, symlink, inputs, work_tree, "aliases eviction")
+        expect_rejected(
+            module, work_tree / "summary.json", inputs, work_tree, "outside the work tree"
+        )
+        existing = output_root / "existing.json"
+        existing.write_text("old evidence\n", encoding="utf-8")
+        expect_rejected(module, existing, inputs, work_tree, "already exists")
+        blocked_parent = output_root / "not-a-directory"
+        blocked_parent.write_text("blocked\n", encoding="utf-8")
+        expect_rejected(
+            module,
+            blocked_parent / "summary.json",
+            inputs,
+            work_tree,
+            "cannot be reserved",
+        )
+
+        summary = output_root / "summary.json"
+        fixed_partial = summary.with_name(summary.name + ".partial")
+        fixed_partial.write_text("unrelated input\n", encoding="utf-8")
+        reservation = module.reserve_summary_path(summary, inputs, work_tree)
+        if summary.read_bytes() != b"":
+            raise AssertionError("summary reservation is not empty")
+        digest = module.canonical_write(summary, {"status": "PASS"}, reservation)
+        expected = b'{"status":"PASS"}\n'
+        if summary.read_bytes() != expected:
+            raise AssertionError("canonical summary bytes changed")
+        if fixed_partial.read_text(encoding="utf-8") != "unrelated input\n":
+            raise AssertionError("canonical write clobbered the fixed .partial neighbour")
+        if len(digest) != 64 or json.loads(summary.read_text(encoding="utf-8"))["status"] != "PASS":
+            raise AssertionError("canonical summary digest or document is invalid")
+
+    print("prefix TTFT runner: PASS 6-container budget, safe summary reservation, break-even clamp")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

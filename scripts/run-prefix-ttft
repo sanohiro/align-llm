@@ -10,6 +10,7 @@ from pathlib import Path
 import platform
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,7 @@ EXPECTED_VERSION = "version: 0.2.0 (build 10566, commit bb4caa754)"
 MIN_PHYSICAL_BYTES = 12 * 1024**3
 MIN_EVICTION_BYTES = 20 * 1024**3
 CONTAINER_ALLOWANCE = 169 * 1024**2
+STORE_CONTAINER_COUNT = 6
 HEADROOM_BYTES = 3 * 1024**3
 KV_WIDTH = 1536
 STEPS = 1
@@ -137,15 +139,70 @@ def half_away(numerator: int, denominator: int) -> int:
     return sign * quotient
 
 
-def canonical_write(path: Path, value: dict) -> str:
+def reserve_summary_path(
+    path: Path, inputs: tuple[tuple[str, Path], ...], work_tree: Path = ROOT
+) -> tuple[int, int]:
+    resolved = path.resolve(strict=False)
+    if resolved.is_relative_to(work_tree.resolve()):
+        raise QualificationError("ALIGN_LLM_PREFIX_TTFT_SUMMARY must be outside the work tree")
+    for label, input_path in inputs:
+        input_resolved = input_path.resolve(strict=False)
+        aliases = resolved == input_resolved
+        if not aliases and (path.exists() or path.is_symlink()) and input_path.exists():
+            try:
+                aliases = path.samefile(input_path)
+            except OSError:
+                aliases = False
+        if aliases:
+            raise QualificationError(f"ALIGN_LLM_PREFIX_TTFT_SUMMARY aliases {label}")
+    if path.exists() or path.is_symlink():
+        raise QualificationError("ALIGN_LLM_PREFIX_TTFT_SUMMARY already exists")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(path, flags, 0o600)
+        os.close(descriptor)
+        reserved = path.lstat()
+    except OSError as failure:
+        raise QualificationError(
+            f"ALIGN_LLM_PREFIX_TTFT_SUMMARY cannot be reserved: {failure}"
+        ) from failure
+    if not stat.S_ISREG(reserved.st_mode):
+        raise QualificationError("ALIGN_LLM_PREFIX_TTFT_SUMMARY reservation is not a regular file")
+    return reserved.st_dev, reserved.st_ino
+
+
+def canonical_write(path: Path, value: dict, reservation: tuple[int, int]) -> str:
     encoded = (
         json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode("utf-8")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".partial")
-    temporary.write_bytes(encoded)
-    os.replace(temporary, path)
+    current = path.lstat()
+    if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != reservation:
+        raise QualificationError("ALIGN_LLM_PREFIX_TTFT_SUMMARY reservation changed")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".partial", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
     return hashlib.sha256(encoded).hexdigest()
+
+
+def observed_break_even_reuses(miss_ns: int, mean_single_ns: int, mean_hit_ns: int) -> int | None:
+    denominator = mean_single_ns - mean_hit_ns
+    if denominator <= 0:
+        return None
+    numerator = miss_ns - mean_single_ns
+    return max(0, -(-numerator // denominator))
 
 
 def run_checked(command: list[str], *, cwd: Path = ROOT, env: dict[str, str] | None = None) -> str:
@@ -245,9 +302,6 @@ def main() -> int:
             str(scratch_root / "align-r6-prefix-ttft-summary.json"),
         )
     )
-    if summary_path.resolve().is_relative_to(ROOT.resolve()):
-        named_na("ALIGN_LLM_PREFIX_TTFT_SUMMARY must be outside the work tree")
-
     memory = physical_memory_bytes()
     if memory < MIN_PHYSICAL_BYTES:
         named_na(f"physical memory is {memory} B, below 12 GiB")
@@ -259,7 +313,11 @@ def main() -> int:
     if model_stat.st_size != EXPECTED_MODEL_BYTES:
         named_na(f"model size is {model_stat.st_size}, expected {EXPECTED_MODEL_BYTES}")
     free_bytes = shutil.disk_usage(scratch_root).free
-    needed = model_stat.st_size + CONTAINER_ALLOWANCE + HEADROOM_BYTES
+    needed = (
+        model_stat.st_size
+        + STORE_CONTAINER_COUNT * CONTAINER_ALLOWANCE
+        + HEADROOM_BYTES
+    )
     if free_bytes < needed:
         named_na(f"free space under {scratch_root} is {free_bytes} B, below {needed} B")
 
@@ -288,6 +346,21 @@ def main() -> int:
     suffix_entries = [entry for entry in manifest["entries"] if entry["entry_id"] != "shared-prefix"]
     shared = read_ids(ROOT / shared_entry["path"])
     suffixes = [(entry["entry_id"], read_ids(ROOT / entry["path"])) for entry in suffix_entries]
+
+    try:
+        summary_reservation = reserve_summary_path(
+            summary_path,
+            (
+                ("ALIGN_LLM_GGML_INCLUDE", include_dir),
+                ("ALIGN_LLM_GGML_LIB", library_dir),
+                ("ALIGN_LLM_GGUF_MODEL", model),
+                ("ALIGN_LLM_LLAMA_EVAL_CALLBACK", callback),
+                ("ALIGN_LLM_LLAMA_DEBUG", llama_debug),
+                ("ALIGN_LLM_PREFIX_TTFT_EVICTION_FILE", eviction_file),
+            ),
+        )
+    except QualificationError as failure:
+        named_na(str(failure))
 
     work_dir = Path(tempfile.mkdtemp(prefix="align-r6-prefix-", dir=scratch_root))
     shim_built = False
@@ -526,10 +599,8 @@ def main() -> int:
                     sum(pair["hit"]["first_token_ns"] for pair in suffix_pairs),
                     len(suffix_pairs),
                 )
-                denominator = mean_single - mean_hit
-                numerator = miss["first_token_ns"] - mean_single
-                miss["break_even_reuses"] = (
-                    -(-numerator // denominator) if denominator > 0 else None
+                miss["break_even_reuses"] = observed_break_even_reuses(
+                    miss["first_token_ns"], mean_single, mean_hit
                 )
             summary["protocols"][protocol] = {
                 "pairs": protocol_pairs,
@@ -573,7 +644,7 @@ def main() -> int:
                 "worse_protocol": worse_name,
             }
         )
-        digest = canonical_write(summary_path, summary)
+        digest = canonical_write(summary_path, summary, summary_reservation)
         print(
             f"prefix TTFT qualification: {verdict} improvement={improvement} "
             f"W=[{warm['jackknife_min_ppm']},{warm['jackknife_max_ppm']}]ppm "
@@ -584,7 +655,7 @@ def main() -> int:
         return 0
     except Exception as failure:
         summary.update({"status": "ERROR", "verdict": "ERROR", "error": str(failure)})
-        digest = canonical_write(summary_path, summary)
+        digest = canonical_write(summary_path, summary, summary_reservation)
         print(f"prefix TTFT qualification: ERROR {failure}", file=sys.stderr, flush=True)
         print(
             f"prefix TTFT qualification: summary {summary_path} sha256 {digest}",
