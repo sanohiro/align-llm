@@ -43,8 +43,9 @@ processes, alternating legs, warm and complete-file eviction protocols, five-pai
 compressor records, exact half-away arithmetic, miss cost, and canonical PASS/ERROR summaries.
 
 **Latest durable verification.** With GNU make and the Homebrew library path, repaired
-`gmake layer-forward-smoke prefix-corpus-check prefix-ttft-runner-check` passes: all seven owner blocks, 167 dense decode
-documents (160 golden rows), the exact-cap oracle-S row, 70 routed decode documents, shared 369 plus
+`gmake layer-forward-smoke prefix-corpus-check prefix-ttft-runner-check` passes: all seven owner
+blocks, 167 dense decode documents (160 golden rows), the exact-cap oracle-S row, 70 routed decode
+documents, shared 369 plus
 `[697, 1050, 828]`, five malformed corpus classes, six-container scratch budgeting, safe summary
 reservation, and the break-even zero clamp. `gmake fmt`, `gmake format-check`, Python
 syntax compilation, and `git diff --check` pass. The pinned generator itself completed and proved
@@ -93,16 +94,29 @@ budgeted one of six live containers, and P2 a sufficiently fast miss could produ
 count. The consolidated repair rejects existing, aliased, symlinked, work-tree, and unavailable
 summary destinations before packing; exclusively reserves the output and uses a unique atomic
 temporary; budgets all six containers; and clamps break-even reuse at zero. A new model-free owner
-covers every root-cause class. The repair changes preflight and secondary reduction only, so the
-audited 30-pair timing evidence remains bound to `de4cb6e` and needs no retake.
+covers every root-cause class. The repair is commit `398eadd`. It changes preflight and secondary
+reduction only, so the audited 30-pair timing evidence remains bound to `de4cb6e` and needs no
+retake.
 
-**Next actions.** (1) Commit the consolidated final-review repair. (2) Run exact-head publication
+**Publication preflight incident.** Exact-head preflight at `398eadd` passed the named owner,
+managed-toolchain ensure, and pinned build, then failed in hosted `gguf-smoke`: its leak guard
+treated every repository `manifest.json` as a generated GGUF fixture and rejected the new tracked
+prefix corpus manifest. The same basename-only root cause existed in `model-ir-smoke` and
+`expert-trace-smoke`. The bounded repair keeps each generator's real leak contract — generated
+extensions plus `$root_dir/manifest.json`, because root is the fixed cwd — without rejecting an
+unrelated consumer manifest. Focused `gmake gguf-smoke model-ir-smoke expert-trace-smoke` passes.
+The failed preflight retained 2,490 lines / 441,553 bytes and ended with a five-line actionable tail;
+that exact baseline is recorded in roadmap item 40, which remains planned and inactive.
+
+**Next actions.** (1) Commit the bounded leak-guard repair. (2) Rerun exact-head publication
 preflight. (3) Publish, merge, and refresh `main`. This pull request is the user-requested stopping
 checkpoint: do not start item 40 or another roadmap capability after merge.
 
 **Next planned capability, not active: DEV-OUTPUT-SUMMARY, roadmap item 40.** Successful owner and
 toolchain phases repeatedly emitted 912 lines / approximately 45,720 transport tokens and 564
-lines / approximately 30,038 transport tokens before useful result/progress lines in this session.
+lines / approximately 30,038 transport tokens before useful result/progress lines in this session;
+the first publication preflight retained 2,490 lines / 441,553 bytes before its five-line failure
+tail.
 Item 40 should baseline exact bytes/lines, retain complete logs and digests, summarize warning classes
 on success, expose bounded diagnostics on failure, preserve exit/signal/pipe semantics, and keep
 minute-level progress visible. It is planned as a separate consumer-complete developer capability,
@@ -111,8 +125,9 @@ not folded into this performance claim.
 **Blockers.** None. Request 22 remains non-blocking because the checked-in ids come from the pinned
 Python/instrument path and Align consumes decimal ids only.
 
-**Intentional uncommitted files.** The consolidated final-review repair is the only intended
-work-tree change until its commit. Build products and measurement summaries remain outside Git.
+**Intentional uncommitted files.** The bounded three-scanner leak-guard repair and its roadmap/handoff
+record are the only intended work-tree changes until commit. Build products and measurement
+summaries remain outside Git.
 
 ## Merged checkpoint: C4-REPAIR-TEMPLATE review repair (2026-08-30)
 

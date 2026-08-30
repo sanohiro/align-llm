@@ -327,9 +327,14 @@ PY
   "$root_dir/main" --inspect-gguf "$fixture_dir/full.gguf" >/dev/null
 )
 
-# The generator writes every fixture into the temporary tree and nothing into the repository.
-leaked=$(find "$root_dir" -name '.git' -prune -o \
-  \( -name '*.gguf' -o -name 'manifest.json' \) -print 2>/dev/null || true)
+# The generator runs with the repository root as cwd and receives `fixture_dir`. A dropped fixture
+# argument can therefore leak a GGUF or the generator's root `manifest.json`; an unrelated tracked
+# manifest in a consumer corpus is not this generator's output.
+leaked=$(find "$root_dir" -name '.git' -prune -o -name '*.gguf' -print 2>/dev/null || true)
+if [ -e "$root_dir/manifest.json" ] || [ -L "$root_dir/manifest.json" ]; then
+  leaked="${leaked}${leaked:+
+}${root_dir}/manifest.json"
+fi
 if [ -n "$leaked" ]; then
   printf '%s\n' "gguf smoke: a fixture leaked into the repository:" >&2
   printf '%s\n' "$leaked" >&2
