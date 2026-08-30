@@ -246,13 +246,27 @@ jobs:
       - name: Run supported project checks
         id: supported-checks
         if: (steps.reuse.outputs.reused != 'true' && steps.scope.outputs.hosted == 'true') || (steps.reuse.outputs.reused == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.align-bundle-cache.outputs.cache-hit != 'true')
+        env:
+          ALIGN_LLM_OUTPUT_DIRECTORY: ${{ runner.temp }}/align-llm-output
         run: |
           # coding-v1 requires nested user namespaces, which GitHub-hosted runners deny.
           # Keep that gate in make ci for local or capable self-hosted runners.
           # baseline-check remains in the capable gate with coding-v1.
           test -x "$ALIGNC"
           python3 scripts/check-gate-topology --self-test
-          make -j8 ALIGNC="$ALIGNC" hosted-checks
+          python3 scripts/run-output-summary --phase hosted-checks -- \
+            make -j8 ALIGNC="$ALIGNC" hosted-checks
+
+      - name: Retain supported-check logs
+        if: always() && steps.supported-checks.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verification-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/align-llm-output
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+          include-hidden-files: false
 
       - name: Reverify the apt package cache candidate
         id: apt-llvm-candidate

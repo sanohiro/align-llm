@@ -1127,6 +1127,11 @@ The current forward delivery order is:
     token counts remain a secondary observation. It will not suppress warnings without summarizing
     them, replace installed-profile evidence, or add another aggregate merely to test itself.
 
+    **Active design:** [`dev-output-summary.md`](dev-output-summary.md) fixes the shared command,
+    raw-log identity and lifetime, signal/status rules, warning normalization, bounded diagnostic
+    format, direct-owner/preflight/CI adopters, exact three-sample baseline, output ceilings, and
+    closure matrix before implementation.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:

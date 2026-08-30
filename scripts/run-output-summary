@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Capture a verification command and emit a concise retained-log summary."""
+
+from __future__ import annotations
+
+import sys
+
+sys.dont_write_bytecode = True
+
+from output_summary import main
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

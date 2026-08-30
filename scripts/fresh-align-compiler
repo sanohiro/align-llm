@@ -4810,6 +4810,7 @@ def aggregate_environment(runtime: Sequence[RuntimeBinding]) -> list[str]:
             ("ALIGN_LLM_BWRAP", "/tools/bwrap"),
             ("ALIGN_LLM_PRLIMIT", "/tools/prlimit"),
             ("ALIGN_LLM_FRESH_COMPILER", "1"),
+            ("ALIGN_LLM_OUTPUT_SUMMARY_ACTIVE", "1"),
         )
     )
     result: list[str] = []

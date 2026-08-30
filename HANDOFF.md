@@ -3,7 +3,71 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R6-PREFIX-TTFT publication (2026-08-30)
+## Active: DEV-OUTPUT-SUMMARY publication (2026-08-31)
+
+Branch `agent/dev-output-summary`, based on `main` merge commit
+`e0b851acf1b0b73324be4bdda11c8242505c4415` (R6-PREFIX-TTFT, PR #157). Roadmap item 40 is the
+charter and `docs/specs/dev-output-summary.md` is the capability ledger and closure matrix. The
+pre-implementation design is commit `e1aecfe`.
+
+The direct `layer-forward-smoke` baseline was measured three times with the pinned managed compiler
+and required Homebrew library path. All three runs passed at exactly 922 lines / 185,927 bytes with
+910 warnings in three normalized classes. A separate missing-library-path observation failed with
+status 2 after 917 lines / 183,272 bytes and retained the useful linker cause only at the end.
+
+The shared Python module and CLI now own an exclusive full log, exact digest/line/byte identity,
+fixed warning taxonomy, 60-second progress, bounded useful failure records, exact exit/signal/pipe
+semantics, process-group cleanup, and Git-common-directory storage. Direct
+`layer-forward-smoke`, every external preflight phase, and hosted CI consume it; CI uploads the
+complete aggregate log for 14 days. The deterministic owner covers validation, byte identity,
+warning classes, early/final diagnostics, nonzero status, child/supervisor/pipe signals, a leaked
+descendant, short terminal writes, progress, concurrency, linked worktrees, preflight adaptation,
+and adopter topology. The fresh capable aggregate restores the nesting marker after its fixed
+`--clearenv`, so its read-only Git view does not attempt a second retained log.
+
+**Latest durable verification.** `python3 scripts/test-output-summary`, the focused
+`test-development-preflight` plan/workflow topology functions, Python syntax parsing, and
+`git diff --check` pass after the comprehensive-review repair. The full development-workflow owner
+reaches its pre-existing Linux apt fixture on Darwin and then fails because BSD awk rejects its GNU
+regular expression and the fixture requires `/usr/bin/rmdir`; `run-fresh-worker-unit-smoke`
+likewise stops at the Linux-only `fcntl.F_SEAL_*` import. The normal Linux publication lane owns
+both complete commands. A real missing-library owner run preserved overall Make status 2, emitted
+13 lines / 2,042 bytes with `ld: library 'crypto' not found` as the first actionable diagnostic,
+and retained all 915 child lines / 183,183 bytes at SHA-256 `2c45a848…1394`.
+
+The fresh high-effort comprehensive review covered exact head `66c3288` against base and merge base
+`e0b851a`. Its seven accepted findings were one broken fresh-aggregate nesting path, status and
+diagnostic precedence for descendant cleanup, incomplete terminal short writes, delimiter
+validation, unused-warning precedence, and stale handoff state. The current consolidated repair
+adds a regression for every root-cause class; it does not change the capability approach.
+
+Exact-head Linux publication preflight at `dae6e3f` passed the owner, managed ensure, pinned verify,
+hosted checks, fresh focused owners, and the installed profile. The push workflow then failed before
+creating a job: `${{ runner.temp }}` was placed in job-level `env`, where the runner context does not
+yet exist. The narrow pending repair moves that value to the supported-check step and references it
+directly from the artifact step; the workflow owner now rejects runner context in the job header.
+
+**Output-volume result.** Exact implementation head
+`851988a7be159cd1eed853ecc24473712d58b1fc` passes the real owner in 57.267 s. Visible output is
+6 lines / 777 bytes, a reduction of 916 lines / 185,150 bytes from every three-sample baseline;
+both the maintenance ceiling and acceptance floor are **MET**. The parent Make recipe remains one
+visible 34-byte line. All 921 child lines / 185,893 bytes are retained at SHA-256 `fdd77968…c29a`,
+with the exact 813 / 96 / 1 warning classes and ten owner PASS results. Exact consolidated-repair
+head `24a6686fab1b506111ba218335ab03caa7386822` also passes in 62.597 s. It crossed the 60-second
+interval and therefore emitted one progress record: 7 lines / 872 bytes visible, still a reduction
+of 915 lines / 185,055 bytes and **MET** for both gates. Its retained log remains 921 lines /
+185,893 bytes with the same warning/result invariants at SHA-256 `95811864…e69`.
+
+**Next actions.** (1) Commit the workflow-context repair and record its PR disposition. (2) Rerun
+exact-head publication preflight on Linux, push, and wait for every required check. (3) Merge and
+refresh `main`. (4) Begin the next eligible roadmap capability.
+
+**Blockers.** None.
+
+**Intentional uncommitted files.** The workflow-context repair until its commit. Baseline,
+measurement, retained logs, and PR prose remain outside Git.
+
+## Merged checkpoint: R6-PREFIX-TTFT publication (2026-08-30)
 
 Branch `agent/r6-prefix-ttft`, based on `main` merge commit
 `c16f14ea5ec2e42d61f7e6644716854d9ca61c2c` (C4-REPAIR-TEMPLATE, PR #156). Authoritative charter
