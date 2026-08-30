@@ -26,17 +26,17 @@ merge-rank priority, and special-token classification. Align already ships the r
 byte/text, builder, buffer, and dynamic-array construction primitives; the demonstrated missing
 language-owned operation is non-consuming ordinary access to a Move array element.
 
-**Next actions.** (1) Commit the authored ledger, request lifecycle, roadmap row, and this handoff.
-(2) Run one comprehensive review, validate and repair its findings, then pass the exact-head docs
-publication preflight, PR, and merge. (3) Implement and publish Request 22 in the sibling Align
-repository, then adopt the shipped revision and build the tokenizer consumer without a compatibility
-layer.
+**Next actions.** (1) Commit the consolidated design-review repair. (2) Because the repair changes
+CLI precedence and narrows a public round-trip guarantee, run the required final comprehensive
+review, then pass the exact-head docs publication preflight, PR, and merge. (3) Implement and publish
+Request 22 in the sibling Align repository, then adopt the shipped revision and build the tokenizer
+consumer without a compatibility layer.
 
 **Blocker.** Align Request 22. Resume when Align ships ordinary borrow indexing for Move array
 elements and its compiler owners pass; the align-llm pin/adoption capability then owns every
 originally named Request 22 migration plus the tokenizer consumer.
 
-**Intentional uncommitted files.** None after the design candidate commit.
+**Intentional uncommitted files.** None after the consolidated review-repair commit.
 
 ## Merged checkpoint: DEV-OUTPUT-SUMMARY (2026-08-31)
 

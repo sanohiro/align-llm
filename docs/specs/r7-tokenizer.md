@@ -171,7 +171,7 @@ pub fn decode_model(
 | Surface | Result, ownership, and effects |
 | --- | --- |
 | `encode_model` | Loads one private tokenizer, borrows `text` for the call, and returns an owned id array. Empty text returns `Ok(status=Ok, token_ids=[])`. It reads only `model_path` |
-| `decode_model` | Loads one private tokenizer, borrows but never mutates `token_ids`, and returns one owned string. Empty ids return `Ok(status=Ok, token_count=0, text="")`. It reads only `model_path` |
+| `decode_model` | Loads one private tokenizer, borrows but never mutates `token_ids`, and returns one owned string no larger than `MAX_OPERATION_OUTPUT_BYTES`. Every outer-`Ok` result publishes `token_count=token_ids.len()`, including model and operation failures. Empty ids return `Ok(status=Ok, token_count=0, text="")`. It reads only `model_path` |
 | Recoverable OS failure | The outer `Result` is `Err` with the unchanged `std.fs` error. No partially initialized result is published |
 | Model or operation failure | The outer `Result` is `Ok`; `status=Error`, `error_code` and bounded `error_detail` name the first validation failure, output is empty, and any identity/count known before the failure remains published as specified in 2.9 |
 | Success | `status=Ok`, error strings are empty, `tokenizer_id` is 64 lowercase hex digits, counts are non-negative, and the output field is authoritative |
@@ -268,20 +268,22 @@ main --detokenize MODEL TOKENS.json <render-control|skip-control>
 
 Both input paths use one bounded streaming reader: accumulate at most `MAX_OPERATION_INPUT_BYTES +
 1`, reject overflow before JSON decode or tokenizer work, then validate the complete UTF-8 region
-once. No `fs.read_file` allocation precedes the bound. CLI validation order is:
+once. No `fs.read_file` allocation precedes the bound. Each CLI arm invokes its public one-shot
+operation exactly once; it does not preload a private tokenizer. CLI validation order is:
 
 1. exact arity;
 2. exact mode;
 3. both path grammars;
-4. load and validate the model;
-5. bounded-read the operation input;
-6. for detokenize, JSON-decode and enforce id count;
-7. run the operation;
+4. bounded-read the operation input;
+5. for detokenize, JSON-decode and enforce the id-count cap;
+6. invoke `encode_model` or `decode_model`, which loads and validates the model once;
+7. complete operation validation and computation;
 8. construct the complete output in memory;
 9. write stdout once.
 
-Thus an invalid model wins over invalid input content after all cheap lexical checks, and no later
-failure can leave a valid output prefix on stdout.
+Thus malformed or oversized operation input wins over an invalid model after all cheap lexical
+checks. Once the public operation begins, its section 2.3 model order wins over id-range or decoded
+output failures. No later failure can leave a valid output prefix on stdout.
 
 ### 2.6 Token-id JSON
 
@@ -332,6 +334,7 @@ plus checked per-entry prefixes bounds it. No identity cache or persisted tokeni
 | `MAX_TOKENIZER_TEXT_BYTES` | 268,435,456 | building indexes or identity | observed token bytes 1,374,166 plus merge bytes 1,520,452; cap is over 92x combined |
 | `MAX_OPERATION_INPUT_BYTES` | 1,048,576 | reading text or token JSON | enough for repository prompts; prevents a CLI typo from becoming unbounded tokenizer state |
 | `MAX_OPERATION_TOKEN_IDS` | 1,048,576 | decoding or publishing ids | one id per input byte is the normal worst case; atomic specials cannot increase it |
+| `MAX_OPERATION_OUTPUT_BYTES` | 1,048,576 | appending decoded raw bytes | repeated maximum-size token ids otherwise amplify a bounded id array into gigabytes |
 | `MAX_DETAIL_BYTES` | 256 | publishing an error result | matches existing R1/R2 bounded-detail convention |
 
 Every addition and multiplication involving a file count, text length, hash-table capacity, heap
@@ -366,13 +369,16 @@ error. All accepted attacker-controlled dimensions are nevertheless bounded befo
 | `R7_TEXT_SIZE` | encode text exceeds 1 MiB | decimal bytes |
 | `R7_TOKEN_COUNT` | decode id count exceeds cap | decimal count |
 | `R7_TOKEN_ID` | id negative or not below vocabulary size | `token[i]id[n]` |
+| `R7_OUTPUT_SIZE` | the next decoded piece would exceed 1 MiB | decimal attempted bytes |
 | `R7_TOKEN_LOOKUP` | valid model/input reaches a BPE symbol absent from the token index | bounded symbol bytes as lowercase hex |
 | `R7_DECODE_UTF8` | complete decoded byte stream is not valid UTF-8 | `output` |
 
-On a model-validation failure before step 7, `tokenizer_id=""`, counts are `-1`, and output is
-empty. Once one array count is trusted, that count is retained in its result field; identity stays
-empty until the complete preimage is hashed. An operation failure after load retains identity and
-both counts. There is no partial token-id array or partial text in an error result.
+On a model-validation failure before step 7, `tokenizer_id=""`, vocabulary and merge counts are
+`-1`, and output is empty. `TokenTextResult.token_count` is nevertheless the supplied array length
+for every outer-`Ok` result; it is not a processed-prefix count. Once one model-array count is
+trusted, that count is retained in its result field; identity stays empty until the complete
+preimage is hashed. An operation failure after load retains identity and both model counts. There is
+no partial token-id array or partial text in an error result.
 
 ### 2.10 Prerequisites and metrics
 
@@ -395,8 +401,10 @@ claimed by this capability.
 ### 3.1 The observed reference model
 
 The reference file is
-`qwen2.5-coder-7b-instruct-q4_k_m.gguf` (the same model R1 and dense R5/R6 use). A bounded metadata
-probe on 2026-08-31 observed:
+`qwen2.5-coder-7b-instruct-q4_k_m.gguf` (the same model R1 and dense R5/R6 use), exactly
+4,683,073,536 bytes with SHA-256
+`509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c`. A bounded metadata probe on
+2026-08-31 observed:
 
 | Field | Value |
 | --- | ---: |
@@ -509,7 +517,8 @@ stable. This fixes malformed duplicate/suffix behavior rather than leaving it to
 
 ### 3.6 Decode
 
-Ids are validated in order before any output is published. For each id:
+After the id-count cap is accepted, ids are validated in order before any output is published. For
+each id:
 
 - UNKNOWN and CONTROL append stored token text only in `RenderControl`;
 - USER_DEFINED always appends stored token text;
@@ -518,19 +527,25 @@ Ids are validated in order before any output is published. For each id:
 - BYTE requires exact `<0xHH>` ASCII spelling and appends that byte; malformed spelling is a
   model-load `R7_TOKEN_TEXT` failure rather than a decode-time guess.
 
-All raw bytes accumulate in one bounded buffer. Only after every id is processed does
-`bytes.as_str()` validate the entire sequence. Failure is `R7_DECODE_UTF8` with no partial text.
-There is no leading-space removal and `clean_up_tokenization_spaces` is false, matching Qwen2.
+All ids are range-validated before allocation. Before each raw piece append, checked arithmetic
+proves the new length is at most `MAX_OPERATION_OUTPUT_BYTES`; the first excess is
+`R7_OUTPUT_SIZE`. Only after every id is processed does `bytes.as_str()` validate the entire
+sequence. Failure is `R7_DECODE_UTF8` with no partial text. There is no leading-space removal and
+`clean_up_tokenization_spaces` is false, matching Qwen2.
 
-For every accepted UTF-8 text `x`, both of these are owner properties:
+For every accepted UTF-8 text `x` whose encoded sequence contains no UNUSED id, both of these are
+owner properties:
 
 ```text
 decode(encode(x, ParseControl), RenderControl) == x
 decode(encode(x, LiteralControl), RenderControl) == x
 ```
 
-They are not a substitute for id parity: the real-model qualification separately requires the
-encoded id array to equal pinned llama.cpp.
+The condition is necessary: UNUSED participates in ordinary BPE but decode suppresses it, so a
+synthetic accepted model can intentionally make one such spelling non-reversible. The hosted owner
+pins that counterexample instead of claiming a universal inverse. The conditional properties are
+not a substitute for id parity: the real-model qualification separately requires the encoded id
+array to equal pinned llama.cpp.
 
 ## 4. Acceptance and verification
 
@@ -550,6 +565,7 @@ source and reads no product-generated expectation.
 - parse/literal control, USER_DEFINED in both modes, UNUSED suppression, `</s>` promotion, and
   render/skip control;
 - encode/decode round trips plus arbitrary valid and invalid id streams;
+- one BPE-reachable UNUSED token whose encode/decode pair demonstrates the documented non-roundtrip;
 - exact canonical token JSON and exact no-newline decoded stdout;
 - arity, mode, path, invalid JSON, oversize input, and zero-stdout failures;
 - first-key wins, duplicate token last-wins, and duplicate merge first-wins;
@@ -566,21 +582,38 @@ joins `HOSTED_CHECK_TARGETS` as the narrow durable owner.
 
 The focused qualification uses exactly:
 
-- `ALIGN_LLM_GGUF_MODEL`, the Qwen2.5-Coder-7B Q4_K_M model;
+- `ALIGN_LLM_GGUF_MODEL`, the 4,683,073,536-byte Qwen2.5-Coder-7B Q4_K_M model with SHA-256
+  `509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c`;
 - `ALIGN_LLM_LLAMA_TOKENIZE`, expected to be pinned `llama-tokenize` build 10566 commit
   `bb4caa754`.
 
 Either variable unset or naming an absent file prints one explicit `N/A` line and exits zero. A
-named but wrong model, wrong tool version, tool failure, malformed output, timeout, or mismatch is
-a hard failure. The target stays outside `HOSTED_CHECK_TARGETS`, `CAPABLE_ONLY_CHECK_TARGETS`, and
-every aggregate.
+named model with the wrong byte length or SHA-256, wrong tool version, tool failure, malformed
+output, timeout, or mismatch is a hard failure. Every reference invocation has a 120-second
+subprocess timeout; the fixed corpus has no separate target-wide timeout. The target stays outside
+`HOSTED_CHECK_TARGETS`, `CAPABLE_ONLY_CHECK_TARGETS`, and every aggregate.
 
-The corpus contains the section 4.1 lexical classes, every control and user-defined spelling from
-the real GGUF, boundary overlaps, the checked-in canonical prompt, every task prompt/suffix used by
-the R6 prefix corpus, and deterministic seeded Unicode strings. For every case:
+The corpus order is the section 4.1 named lexical cases, every control and user-defined spelling in
+ascending real-model id order, boundary-overlap cases in fixture-manifest order, the checked-in
+canonical prompt, the three R6 complete task prompts in manifest order, then 256 generated Unicode
+cases numbered `000` through `255`. The generated suffix uses `splitmix64-v1`, initial state
+`0x52375157454e3231`, and unsigned 64-bit wrap. Its exact `next_u64()` is:
 
-- `ParseControl` ids equal `llama-tokenize --ids --no-bos`;
-- `LiteralControl` ids equal the same command with `--no-parse-special`;
+```text
+state = state + 0x9e3779b97f4a7c15
+z = state
+z = (z xor (z >> 30)) * 0xbf58476d1ce4e5b9
+z = (z xor (z >> 27)) * 0x94d049bb133111eb
+return z xor (z >> 31)
+```
+
+Each case has `1 + next_u64() % 64` scalars; each scalar candidate is
+`next_u64() % 0x110000`, retrying only `0xd800..0xdfff`. This fixes seed, generator, case count,
+lengths, scalar domain, rejection rule, and order independently of Python's PRNG or Unicode tables.
+For every case:
+
+- `ParseControl` ids equal `llama-tokenize -m MODEL --stdin --ids --no-bos --no-escape`;
+- `LiteralControl` ids equal the same command with `--no-parse-special` added;
 - Align `RenderControl` of either exact reference id list equals the original UTF-8 bytes;
 - `SkipControl` equals the independent expected filtering of effective CONTROL/UNKNOWN ids;
 - repeated Align runs publish the same ids, text, counts, and `tokenizer_id`.
@@ -641,7 +674,7 @@ coding.
 | Qwen2 scanner | scalar spans plus three compiled classifiers | ordered complete pieces | invalid UTF-8 cannot enter from `str` | total fallback advances one scalar | regex handles/scalar columns drop | lexical category table + seeded cases |
 | GPT-2 byte map | fixed numeric map, validated byte alphabet | reversible mapped bytes | missing/mistyped byte token is load error | first missing byte | fixed Copy tables drop | all 256 bytes and multilingual roundtrip |
 | BPE heap | one symbol per mapped byte, adjacent candidates | rank/left exact ids | absent final token is `R7_TOKEN_LOOKUP` | stale candidates skipped without mutation | word/symbol/heap scratch drops per piece | rank conflict, stale heap, long word |
-| decode | validate ids, append pieces to raw buffer | whole valid UTF-8 string | bad id before output; invalid final UTF-8 is data error | no partial result | raw buffer/private tokenizer drop | negative/high ids, byte fragments, modes |
+| decode | validate ids, append pieces to a 1 MiB-bounded raw buffer | whole valid UTF-8 string | bad id precedes output cap; first oversize append is `R7_OUTPUT_SIZE`; invalid final UTF-8 is data error | no partial result | raw buffer/private tokenizer drop | negative/high ids, exact/over output cap, byte fragments, modes |
 | public result construction | empty error result first, fill only at settled transitions | identity/count/output coherent | output empty, known metadata retained | one first code | result alone transfers | all error rows and repeat loop |
 | `src/main.align` | arity/mode/path, model, bounded input, operation | one stdout write | zero stdout and nonzero result | cheap validation prevents file work | readers/buffers/results drop | CLI matrix, byte-exact stdout |
 | `scripts/tokenizer_fixture.py` | temporary independent GGUF and manifest | deterministic corpus | explicit mutants one root cause each | no committed/generated fixture | runner-owned temp trap | `make tokenizer-smoke` |
@@ -670,7 +703,8 @@ coding.
    pieces. The negative corpus includes individually incomplete byte pieces that become valid
    jointly and a sequence that remains invalid.
 7. **Unbounded model amplification.** Counts, each item, combined text, tables, identity, operation
-   input, ids, and heap all have pre-allocation caps. Outer GGUF validation happens first.
+   input, ids, decoded output, canonical JSON, and heap all have checked pre-allocation caps. Outer
+   GGUF validation happens first.
 8. **Repeated model load.** Two public operations each load once. This capability makes no latency
    claim; a resident handle waits for a measured consumer and an opaque ownership surface.
 9. **Oracle circularity.** The hosted Python oracle neither imports nor parses Align source. The
