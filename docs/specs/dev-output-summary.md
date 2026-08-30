@@ -358,3 +358,87 @@ owner and publication evidence, and the post-change output measurement.
   artifact retention.
 - Warning remediation belongs to the modules that emit each class. A count is visibility, not a
   waiver or suppression policy.
+
+## 8. Implementation and measurement record
+
+### 8.1 Implementation
+
+The pre-implementation design is commit `e1aecfe`. Implementation commit
+`851988a7be159cd1eed853ecc24473712d58b1fc` adds the shared module and CLI, direct-owner recursion
+guard, preflight adapter, hosted CI capture and 14-day artifact upload, deterministic owner, and
+workflow-owner extension.
+
+The implementation follows the ledger with two bounded clarifications found during author-side
+closure:
+
+1. Existing preflight owner labels are not restricted to the lowercase CLI phase grammar. The
+   adapter therefore preserves the original label in existing events and stamps while deriving the
+   summary-only phase by the deterministic normalization in section 3.5. This keeps the existing
+   preflight surface compatible and the log prefix safe.
+2. Direct `gmake layer-forward-smoke` has two producers: Make prints the 34-byte
+   `./scripts/run-layer-forward-smoke\n` recipe before the script starts, then the script produces
+   921 lines / 185,893 bytes. Section 2.2's literal 922-line retained-log expectation incorrectly
+   assigned the parent-owned line to the child wrapper even though section 3.2 defines the log as
+   child stdout/stderr. The wrapper retains all 921 child lines; the parent line remains visible.
+   The exact baseline is therefore partitioned, not truncated. The 922-line terminal baseline and
+   its precommitted reduction ceilings do not change.
+
+The second point is an ownership-boundary correction before independent review, not a selected
+measurement result: all three pre-code baselines have the same first 34 bytes, and subtracting that
+one line gives the same 921 / 185,893 child baseline in every sample.
+
+### 8.2 Output-volume result
+
+At exact clean implementation head `851988a7be159cd1eed853ecc24473712d58b1fc`, the section 2.1
+command passed in 57.267 seconds. The visible output is 6 lines / 777 bytes at SHA-256
+`febd9c91cc4f428d3ee37ffb763581dda0d40882448d46bdf39177b9a9972f53`:
+
+- one unchanged parent Make recipe line;
+- one PASS result;
+- three warning-class records — `align:huge-struct-copy=813`,
+  `align:lossy-conversion=96`, and `align:unused-import=1`; and
+- one retained-log identity.
+
+The retained child log is 921 lines / 185,893 bytes at independently reproduced SHA-256
+`fdd7796834ae2e0b05ce09eca022537dae99020f6fb8a80ba23679a7c632c29a`. It ends with the same ten
+owner PASS results as the three baselines. Together with the visible parent recipe line, it
+reconstructs all 922 baseline records and 185,927 baseline bytes before adding the new summary.
+
+| Gate | Required | Observed | Verdict |
+| --- | ---: | ---: | --- |
+| Successful terminal maintenance ceiling | at most 16 lines / 2,048 B | **6 lines / 777 B** | **MET** |
+| Reduction acceptance floor | at least 900 lines / 180,000 B | **916 lines / 185,150 B** | **MET** |
+| Retained child evidence | 921 lines / 185,893 B, 910 warnings, ten results, digest exact | **all exact** | **MET** |
+
+The output-volume verdict is therefore **MET**. Relative to the full terminal baseline, visible
+lines fall by 99.35% and bytes by 99.58%. Token count is not used for the verdict.
+
+The real failure observation after implementation removed the required Homebrew library path.
+Overall Make status remained 2; its wrapper child status was 1. Terminal output was 13 lines /
+2,042 bytes, below both failure ceilings, and named `ld: library 'crypto' not found` first. The
+complete child log is 915 lines / 183,183 bytes at SHA-256
+`2c45a848ae770f9751a5ce26c2fe1d010c2141ab832e4252952d6db9a5431394`. Make's recipe and final
+failure lines remain its two parent-owned visible records.
+
+### 8.3 Closure disposition
+
+Every applicable section 5 cell maps to the final candidate:
+
+- CLI validation, directory construction, concurrent reservation, argv/environment move-in,
+  byte identity, warning normalization, malformed bytes, nonzero/launch errors, child and
+  supervisor signals, closed summary pipe, leaked descendants, progress, and diagnostic bounds map
+  to `scripts/output_summary.py`, `scripts/run-output-summary`, and
+  `scripts/test-output-summary`;
+- ordinary-clone and linked-worktree default identity map to the same deterministic owner;
+- preflight order, exact argv, environment unsets, canonical summary phase, and preserved public
+  label map to the injected `PlanStep` regression plus the existing plan owner;
+- direct-owner nesting and CI command/artifact retention map to source topology assertions and the
+  focused `test-development-preflight` workflow check; and
+- aggregate order remains in the unchanged Make target vector and passes
+  `scripts/check-gate-topology --self-test` through the workflow owner.
+
+No section 5 cell is deferred. Full `test-development-preflight` is a Linux workflow owner: on the
+reference Darwin host it reaches the pre-existing apt fixture and then stops because BSD awk
+rejects that fixture's GNU expression and `/usr/bin/rmdir` is absent. Its output-summary-specific
+plan and workflow functions pass locally; the selected Linux publication lane owns the complete
+command.
