@@ -1783,6 +1783,17 @@ def test_align_bundle() -> None:
 def test_workflow_topology() -> None:
     workflow = (REPOSITORY / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 
+    def check_step(source: str, name: str) -> str:
+        check_workflow = source[
+            source.index("  check:") : source.index("  fresh-image-profile:")
+        ]
+        marker = f"      - name: {name}\n"
+        start = check_workflow.index(marker)
+        end = check_workflow.find("\n      - name:", start + len(marker))
+        if end < 0:
+            end = len(check_workflow)
+        return check_workflow[start:end]
+
     def fresh_step(source: str, name: str) -> str:
         fresh_workflow = source[source.index("  fresh-image-profile:") :]
         marker = f"      - name: {name}\n"
@@ -1849,14 +1860,23 @@ def test_workflow_topology() -> None:
             "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1"
         )
         == 1
-        and "ALIGN_LLM_OUTPUT_DIRECTORY: ${{ runner.temp }}/align-llm-output" in workflow
-        and "python3 scripts/run-output-summary --phase hosted-checks --" in workflow
-        and 'make -j8 ALIGNC="$ALIGNC" hosted-checks' in workflow
-        and "if: always() && steps.supported-checks.outcome != 'skipped'" in workflow
-        and "name: verification-output-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
-        and "path: ${{ env.ALIGN_LLM_OUTPUT_DIRECTORY }}" in workflow
-        and "if-no-files-found: error" in workflow
-        and "retention-days: 14" in workflow,
+        and "ALIGN_LLM_OUTPUT_DIRECTORY: ${{ runner.temp }}/align-llm-output"
+        in check_step(workflow, "Run supported project checks")
+        and "python3 scripts/run-output-summary --phase hosted-checks --"
+        in check_step(workflow, "Run supported project checks")
+        and 'make -j8 ALIGNC="$ALIGNC" hosted-checks'
+        in check_step(workflow, "Run supported project checks")
+        and "if: always() && steps.supported-checks.outcome != 'skipped'"
+        in check_step(workflow, "Retain supported-check logs")
+        and "name: verification-output-${{ github.run_id }}-${{ github.run_attempt }}"
+        in check_step(workflow, "Retain supported-check logs")
+        and "path: ${{ runner.temp }}/align-llm-output"
+        in check_step(workflow, "Retain supported-check logs")
+        and "if-no-files-found: error" in check_step(workflow, "Retain supported-check logs")
+        and "retention-days: 14" in check_step(workflow, "Retain supported-check logs")
+        and "${{ runner.temp }}" not in workflow[
+            workflow.index("  check:") : workflow.index("    steps:", workflow.index("  check:"))
+        ],
         "CI does not retain the summarized hosted-check evidence",
     )
     cache_pin = "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0"

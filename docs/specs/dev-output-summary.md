@@ -302,7 +302,7 @@ retains that original terminal signal after group cleanup.
 | Aggregate order mutation | unchanged Make vector and topology owner | `check-gate-topology --self-test` plus workflow regression require the original target order and exact wrapped argv |
 | Preflight success/failure | injected `PlanStep` commands | shared runner is called in plan order, environment unset is honored, first failure stops later phases, and stamp remains post-success only |
 | Nested direct owner | active marker, including the fresh aggregate's fixed environment | preflight/CI capture exactly one log and one result sequence for the owner even after fresh `--clearenv` |
-| CI retention success/failure | workflow topology fixture | artifact step is `always()`, names the exact temp directory, and cannot change the supported-check result |
+| CI retention success/failure | workflow topology fixture | the runner-temp context is scoped to steps where the runner exists; the artifact step is `always()`, names the exact temp directory, and cannot change the supported-check result |
 | Return / cleanup | descriptor and process-group owners | success, nonzero, launch error, signal, and summary-pipe fixtures leave no live child and never overwrite a prior log |
 
 Generic monomorphization, Align move/source nulling, native FFI, runtime allocation parity, interface

@@ -25,7 +25,6 @@ jobs:
     name: Pinned Align compiler and supported checks
     runs-on: ubuntu-24.04
     env:
-      ALIGN_LLM_OUTPUT_DIRECTORY: ${{ runner.temp }}/align-llm-output
       ALIGN_APT_PACKAGES: >-
         llvm-22-dev clang-22 libclang-rt-22-dev lld-22
         libssl-dev zlib1g-dev libzstd-dev make perl
@@ -247,6 +246,8 @@ jobs:
       - name: Run supported project checks
         id: supported-checks
         if: (steps.reuse.outputs.reused != 'true' && steps.scope.outputs.hosted == 'true') || (steps.reuse.outputs.reused == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.align-bundle-cache.outputs.cache-hit != 'true')
+        env:
+          ALIGN_LLM_OUTPUT_DIRECTORY: ${{ runner.temp }}/align-llm-output
         run: |
           # coding-v1 requires nested user namespaces, which GitHub-hosted runners deny.
           # Keep that gate in make ci for local or capable self-hosted runners.
@@ -261,7 +262,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: verification-output-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.ALIGN_LLM_OUTPUT_DIRECTORY }}
+          path: ${{ runner.temp }}/align-llm-output
           if-no-files-found: error
           retention-days: 14
           compression-level: 6

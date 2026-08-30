@@ -3,7 +3,7 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: DEV-OUTPUT-SUMMARY implementation (2026-08-30)
+## Active: DEV-OUTPUT-SUMMARY publication (2026-08-31)
 
 Branch `agent/dev-output-summary`, based on `main` merge commit
 `e0b851acf1b0b73324be4bdda11c8242505c4415` (R6-PREFIX-TTFT, PR #157). Roadmap item 40 is the
@@ -41,6 +41,12 @@ diagnostic precedence for descendant cleanup, incomplete terminal short writes, 
 validation, unused-warning precedence, and stale handoff state. The current consolidated repair
 adds a regression for every root-cause class; it does not change the capability approach.
 
+Exact-head Linux publication preflight at `dae6e3f` passed the owner, managed ensure, pinned verify,
+hosted checks, fresh focused owners, and the installed profile. The push workflow then failed before
+creating a job: `${{ runner.temp }}` was placed in job-level `env`, where the runner context does not
+yet exist. The narrow pending repair moves that value to the supported-check step and references it
+directly from the artifact step; the workflow owner now rejects runner context in the job header.
+
 **Output-volume result.** Exact implementation head
 `851988a7be159cd1eed853ecc24473712d58b1fc` passes the real owner in 57.267 s. Visible output is
 6 lines / 777 bytes, a reduction of 916 lines / 185,150 bytes from every three-sample baseline;
@@ -52,14 +58,14 @@ interval and therefore emitted one progress record: 7 lines / 872 bytes visible,
 of 915 lines / 185,055 bytes and **MET** for both gates. Its retained log remains 921 lines /
 185,893 bytes with the same warning/result invariants at SHA-256 `95811864…e69`.
 
-**Next actions.** (1) Commit the repair-head measurement record. (2) Run exact-head publication
-preflight on Linux, publish, and merge. (3) Refresh `main` and begin the next eligible roadmap
-capability.
+**Next actions.** (1) Commit the workflow-context repair and record its PR disposition. (2) Rerun
+exact-head publication preflight on Linux, push, and wait for every required check. (3) Merge and
+refresh `main`. (4) Begin the next eligible roadmap capability.
 
 **Blockers.** None.
 
-**Intentional uncommitted files.** The repair-head measurement record and this handoff update until
-their commit. Baseline, measurement, and retained logs remain outside Git.
+**Intentional uncommitted files.** The workflow-context repair until its commit. Baseline,
+measurement, retained logs, and PR prose remain outside Git.
 
 ## Merged checkpoint: R6-PREFIX-TTFT publication (2026-08-30)
 
