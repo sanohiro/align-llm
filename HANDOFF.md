@@ -46,17 +46,20 @@ adds a regression for every root-cause class; it does not change the capability 
 6 lines / 777 bytes, a reduction of 916 lines / 185,150 bytes from every three-sample baseline;
 both the maintenance ceiling and acceptance floor are **MET**. The parent Make recipe remains one
 visible 34-byte line. All 921 child lines / 185,893 bytes are retained at SHA-256 `fdd77968…c29a`,
-with the exact 813 / 96 / 1 warning classes and ten owner PASS results.
+with the exact 813 / 96 / 1 warning classes and ten owner PASS results. Exact consolidated-repair
+head `24a6686fab1b506111ba218335ab03caa7386822` also passes in 62.597 s. It crossed the 60-second
+interval and therefore emitted one progress record: 7 lines / 872 bytes visible, still a reduction
+of 915 lines / 185,055 bytes and **MET** for both gates. Its retained log remains 921 lines /
+185,893 bytes with the same warning/result invariants at SHA-256 `95811864…e69`.
 
-**Next actions.** (1) Commit the consolidated review repair. (2) Rerun the real output-volume owner
-on that exact executable head and record the replacement evidence. (3) Run exact-head publication
-preflight on Linux, publish, and merge. (4) Refresh `main` and begin the next eligible roadmap
+**Next actions.** (1) Commit the repair-head measurement record. (2) Run exact-head publication
+preflight on Linux, publish, and merge. (3) Refresh `main` and begin the next eligible roadmap
 capability.
 
 **Blockers.** None.
 
-**Intentional uncommitted files.** The consolidated review repair until its commit. Baseline,
-measurement, and retained logs remain outside Git.
+**Intentional uncommitted files.** The repair-head measurement record and this handoff update until
+their commit. Baseline, measurement, and retained logs remain outside Git.
 
 ## Merged checkpoint: R6-PREFIX-TTFT publication (2026-08-30)
 

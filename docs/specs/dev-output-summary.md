@@ -405,10 +405,20 @@ The retained child log is 921 lines / 185,893 bytes at independently reproduced 
 owner PASS results as the three baselines. Together with the visible parent recipe line, it
 reconstructs all 922 baseline records and 185,927 baseline bytes before adding the new summary.
 
+After the comprehensive-review repair, exact executable head
+`24a6686fab1b506111ba218335ab03caa7386822` passed the same command in 62.597 seconds. Because
+that run crossed the fixed 60-second interval, it also exercised one progress record: visible
+output was 7 lines / 872 bytes, a reduction of 915 lines / 185,055 bytes. The complete child log
+remained 921 lines / 185,893 bytes with the same 813 / 96 / 1 warning classes and ten PASS results;
+its independently reproduced SHA-256 for this run was
+`95811864a36658416e896b0e04e4403184cce027bd458301e83301229bc60e69`. The digest is per-run
+identity because temporary fixture paths differ, while the precommitted line, byte, class, and
+result invariants are exact.
+
 | Gate | Required | Observed | Verdict |
 | --- | ---: | ---: | --- |
-| Successful terminal maintenance ceiling | at most 16 lines / 2,048 B | **6 lines / 777 B** | **MET** |
-| Reduction acceptance floor | at least 900 lines / 180,000 B | **916 lines / 185,150 B** | **MET** |
+| Successful terminal maintenance ceiling | at most 16 lines / 2,048 B | **7 lines / 872 B** at repair head | **MET** |
+| Reduction acceptance floor | at least 900 lines / 180,000 B | **915 lines / 185,055 B** at repair head | **MET** |
 | Retained child evidence | 921 lines / 185,893 B, 910 warnings, ten results, digest exact | **all exact** | **MET** |
 
 The output-volume verdict is therefore **MET**. Relative to the full terminal baseline, visible
