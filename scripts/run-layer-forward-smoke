@@ -32,6 +32,9 @@ unset ALIGN_LLM_GGML_INCLUDE ALIGN_LLM_GGML_LIB ALIGN_LLM_GGML_FORCE
 export PYTHONDONTWRITEBYTECODE=1
 
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+if [ "${ALIGN_LLM_OUTPUT_SUMMARY_ACTIVE:-0}" != 1 ]; then
+  exec python3 "${root_dir}/scripts/run-output-summary" --phase layer-forward-smoke -- "$0" "$@"
+fi
 compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
 
 work_dir=$(mktemp -d)

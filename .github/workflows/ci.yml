@@ -25,6 +25,7 @@ jobs:
     name: Pinned Align compiler and supported checks
     runs-on: ubuntu-24.04
     env:
+      ALIGN_LLM_OUTPUT_DIRECTORY: ${{ runner.temp }}/align-llm-output
       ALIGN_APT_PACKAGES: >-
         llvm-22-dev clang-22 libclang-rt-22-dev lld-22
         libssl-dev zlib1g-dev libzstd-dev make perl
@@ -252,7 +253,19 @@ jobs:
           # baseline-check remains in the capable gate with coding-v1.
           test -x "$ALIGNC"
           python3 scripts/check-gate-topology --self-test
-          make -j8 ALIGNC="$ALIGNC" hosted-checks
+          python3 scripts/run-output-summary --phase hosted-checks -- \
+            make -j8 ALIGNC="$ALIGNC" hosted-checks
+
+      - name: Retain supported-check logs
+        if: always() && steps.supported-checks.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verification-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.ALIGN_LLM_OUTPUT_DIRECTORY }}
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+          include-hidden-files: false
 
       - name: Reverify the apt package cache candidate
         id: apt-llvm-candidate

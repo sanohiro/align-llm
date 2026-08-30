@@ -50,6 +50,13 @@ outside GitHub Actions; wrapping provider/model qualifications; changing aggrega
 replacing installed-profile evidence; or changing any product CLI, evaluation schema, baseline
 artifact, compiler pin, or Align source.
 
+The expected executable plus deterministic owner is roughly 1,250 hand-written lines, about half
+of them process/signal/log mutants. The larger boundary is intentional: splitting the shared
+producer from the first local, preflight, or CI consumer would land a dormant path, while splitting
+signal and retained-byte proof would duplicate the same child-process fixtures and leave the public
+status contract only partly reviewed. One consumer-complete change has less duplicated proof and a
+smaller integration failure window than any independently mergeable split.
+
 ## 2. Baseline and output-volume contract
 
 ### 2.1 Reproducible baseline
@@ -198,6 +205,7 @@ lexicographically, compact separators, and `ensure_ascii=true`. The schema versi
 | `verification-log` | `bytes`, `event`, `lines`, `path`, `phase`, `sha256`, `version` | after warnings |
 | `verification-diagnostic-first` | `event`, `phase`, `text`, `truncated`, `version` | failure/signal only, when an actionable line exists |
 | `verification-diagnostic` | `event`, `ordinal`, `phase`, `text`, `truncated`, `version` | failure/signal only; useful tail in original order |
+| `verification-error` | `detail`, `event`, `phase`, `status`, `version` | the only record when setup/finalization cannot produce a complete ordinary result; status is 125 |
 
 Warning normalization is byte-oriented before UTF-8 replacement and has a fixed thirteen-class
 maximum:
@@ -237,6 +245,13 @@ The aggregate target vector remains byte-identical and continues to be owned by
 `scripts/check-gate-topology`. A wrapper accepts one command; it has no API with which to schedule,
 filter, or reorder Make targets.
 
+Preflight preserves its exact user-facing `PlanStep.label` in existing phase records and the stamp.
+For the summary-only `phase`, it lowercases that label, replaces each non-ASCII or disallowed run
+with `-`, trims punctuation, and, when needed, truncates to 51 characters plus `-` and the first 12
+hex characters of SHA-256 over the original UTF-8 label. Empty normalized labels become
+`verification`. Thus existing uppercase owner labels remain accepted without widening the shared
+CLI grammar or producing an unsafe log prefix.
+
 ## 4. Failure and cleanup rules
 
 | Situation | Terminal status | Log and diagnostics |
@@ -255,6 +270,12 @@ writer, close the log, read it for digest/reduction, emit terminal records, then
 self-signal. An exception follows the same cleanup from the latest acquired owner. A failure to
 emit terminal output cannot delete or rewrite the log.
 
+After direct-child wait, a still-live process group is terminated with `TERM`, given two seconds to
+drain, then terminated with `KILL` and given two final seconds. Without an incoming supervisor
+signal, any such descendant leak changes an otherwise successful command to infrastructure status
+125 and names cleanup as the first actionable diagnostic. With an incoming signal, the wrapper
+retains that original terminal signal after group cleanup.
+
 ## 5. Closure matrix
 
 | Cell | Implementation owner | Exact regression or evidence |
@@ -269,6 +290,7 @@ emit terminal output cannot delete or rewrite the log.
 | Missing executable | launch path | status 127, child-side marker absent, empty exclusive log retained |
 | Child signal | child sends `TERM` and `PIPE` to itself | wrapper return code is the same negative signal; no ordinary-success conversion |
 | Supervisor early exit | parent signals live wrapper | signal reaches child group, cleanup marker appears, and wrapper terminates by the original signal |
+| Direct-child exit with live descendant | process-group cleanup | descendant receives `TERM`/`KILL`, wrapper fails 125 instead of passing, and no process survives |
 | Long-running progress | one-second test interval | at least one progress record precedes terminal result; production default remains 60 seconds |
 | Warning normalization | Align, tool, hint, malformed lines | exact sorted classes and counts; raw log remains byte-identical |
 | Malformed UTF-8 / embedded NUL output | byte log plus JSON reducer | log digest is exact; visible text uses JSON escaping and replacement without multiline injection |

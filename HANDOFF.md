@@ -3,28 +3,45 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: DEV-OUTPUT-SUMMARY design (2026-08-30)
+## Active: DEV-OUTPUT-SUMMARY implementation (2026-08-30)
 
 Branch `agent/dev-output-summary`, based on `main` merge commit
 `e0b851acf1b0b73324be4bdda11c8242505c4415` (R6-PREFIX-TTFT, PR #157). Roadmap item 40 is the
 charter and `docs/specs/dev-output-summary.md` is the capability ledger and closure matrix. The
-design is written before executable changes.
+pre-implementation design is commit `e1aecfe`.
 
 The direct `layer-forward-smoke` baseline was measured three times with the pinned managed compiler
 and required Homebrew library path. All three runs passed at exactly 922 lines / 185,927 bytes with
 910 warnings in three normalized classes. A separate missing-library-path observation failed with
 status 2 after 917 lines / 183,272 bytes and retained the useful linker cause only at the end.
 
-**Next actions.** (1) Commit the pre-implementation design. (2) Implement the shared wrapper,
-direct-owner recursion guard, preflight adoption, CI capture/upload, and deterministic mutants.
-(3) Run the focused owner, workflow owner, and exact output-volume measurement. (4) Perform one
-comprehensive review, consolidate accepted repairs, run exact-head publication preflight, publish,
-and merge. (5) Refresh `main` and begin the next eligible roadmap capability.
+The shared Python module and CLI now own an exclusive full log, exact digest/line/byte identity,
+fixed warning taxonomy, 60-second progress, bounded useful failure records, exact exit/signal/pipe
+semantics, process-group cleanup, and Git-common-directory storage. Direct
+`layer-forward-smoke`, every external preflight phase, and hosted CI consume it; CI uploads the
+complete aggregate log for 14 days. The deterministic owner covers validation, byte identity,
+warning classes, early/final diagnostics, nonzero status, child/supervisor/pipe signals, a leaked
+descendant, progress, concurrency, linked worktrees, preflight adaptation, and adopter topology.
+
+**Latest durable verification.** `python3 scripts/test-output-summary`, the focused
+`test-development-preflight` plan/workflow topology functions, Python syntax parsing, and
+`git diff --check` pass. The full development-workflow owner reaches its pre-existing Linux apt
+fixture on Darwin and then fails because BSD awk rejects its GNU regular expression and the fixture
+requires `/usr/bin/rmdir`; the normal Linux publication lane owns that complete command. A real
+missing-library owner run preserved overall Make status 2, emitted 13 lines / 2,042 bytes with
+`ld: library 'crypto' not found` as the first actionable diagnostic, and retained all 915 child
+lines / 183,183 bytes at SHA-256 `2c45a848…1394`.
+
+**Next actions.** (1) Commit the implementation checkpoint. (2) Measure the exact committed head
+against the precommitted success ceiling and append its result. (3) Perform one comprehensive
+review, consolidate accepted repairs, and rerun affected owners. (4) Run exact-head publication
+preflight on Linux, publish, and merge. (5) Refresh `main` and begin the next eligible roadmap
+capability.
 
 **Blockers.** None.
 
-**Intentional uncommitted files.** The pre-implementation design, roadmap link, and this handoff
-update until their design commit. Baseline logs remain outside Git.
+**Intentional uncommitted files.** The implementation and this checkpoint record until their
+implementation commit. Baseline and retained logs remain outside Git.
 
 ## Merged checkpoint: R6-PREFIX-TTFT publication (2026-08-30)
 

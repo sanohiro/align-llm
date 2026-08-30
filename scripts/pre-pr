@@ -17,6 +17,7 @@ from typing import Mapping, Sequence
 
 sys.dont_write_bytecode = True
 
+import output_summary
 from verification_scope import REPOSITORY, Scope, ScopeError, classify_refs, diff_changes
 
 
@@ -129,11 +130,16 @@ def run_step(step: PlanStep, repository: Path) -> None:
         environment = selected
     started = time.monotonic_ns()
     emit_phase(step.label, "start")
-    result = subprocess.run(step.arguments, cwd=repository, env=environment, check=False)
+    status = output_summary.run_command(
+        step.arguments,
+        phase=output_summary.canonical_phase(step.label),
+        repository=repository,
+        environment=environment,
+    )
     duration = max(0, (time.monotonic_ns() - started) // 1_000_000)
-    emit_phase(step.label, "pass" if result.returncode == 0 else "fail", duration)
-    if result.returncode != 0:
-        raise PreflightError(f"{step.label} failed with status {result.returncode}")
+    emit_phase(step.label, "pass" if status == 0 else "fail", duration)
+    if status != 0:
+        raise PreflightError(f"{step.label} failed with status {status}")
 
 
 def validate_markdown_fences(scope: Scope, repository: Path) -> None:

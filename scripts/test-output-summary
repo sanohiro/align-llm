@@ -1,0 +1,636 @@
+#!/usr/bin/env python3
+"""Deterministic owner for retained verification output summarization."""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from types import ModuleType
+
+
+REPOSITORY = Path(__file__).resolve().parent.parent
+SCRIPTS = REPOSITORY / "scripts"
+RUNNER = SCRIPTS / "run-output-summary"
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(SCRIPTS))
+
+import output_summary as summary  # noqa: E402
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise RuntimeError(message)
+
+
+def run(
+    log_directory: Path,
+    phase: str,
+    command: tuple[str, ...],
+    *,
+    environment: dict[str, str] | None = None,
+    progress_seconds: int | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    arguments = [
+        sys.executable,
+        os.fspath(RUNNER),
+        "--phase",
+        phase,
+        "--log-directory",
+        os.fspath(log_directory),
+    ]
+    if progress_seconds is not None:
+        arguments.extend(("--progress-seconds", str(progress_seconds)))
+    arguments.extend(("--", *command))
+    return subprocess.run(
+        arguments,
+        cwd=REPOSITORY,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", **(environment or {})},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def records(output: bytes) -> list[dict[str, object]]:
+    parsed: list[dict[str, object]] = []
+    for line in output.splitlines():
+        value = json.loads(line)
+        require(isinstance(value, dict), "terminal record is not an object")
+        parsed.append(value)
+    return parsed
+
+
+def only_log(log_directory: Path) -> Path:
+    logs = list(log_directory.glob("*.log"))
+    require(len(logs) == 1, f"expected one retained log, got {logs}")
+    return logs[0]
+
+
+def write_emitter(root: Path) -> Path:
+    emitter = root / "emit.py"
+    emitter.write_text(
+        """import os
+import sys
+
+payload = open(sys.argv[1], "rb").read()
+os.write(1, payload)
+raise SystemExit(int(sys.argv[2]))
+""",
+        encoding="utf-8",
+    )
+    return emitter
+
+
+def load_script(name: str, module_name: str) -> ModuleType:
+    loader = importlib.machinery.SourceFileLoader(module_name, str(SCRIPTS / name))
+    specification = importlib.util.spec_from_loader(module_name, loader)
+    if specification is None:
+        raise RuntimeError(f"cannot load {name}")
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[module_name] = module
+    loader.exec_module(module)
+    return module
+
+
+def test_validation(root: Path, emitter: Path) -> None:
+    marker = root / "validation-marker"
+    command = (
+        sys.executable,
+        "-c",
+        "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ran')",
+        os.fspath(marker),
+    )
+    cases = (
+        ("invalid phase", ("--phase", "INVALID", "--", *command), os.environ),
+        (
+            "zero interval",
+            ("--phase", "valid", "--progress-seconds", "0", "--", *command),
+            os.environ,
+        ),
+        ("missing separator", ("--phase", "valid", *command), os.environ),
+        (
+            "empty environment directory",
+            ("--phase", "valid", "--", *command),
+            {**os.environ, summary.OUTPUT_DIRECTORY_VARIABLE: ""},
+        ),
+    )
+    for name, arguments, environment in cases:
+        result = subprocess.run(
+            (sys.executable, os.fspath(RUNNER), *arguments),
+            cwd=REPOSITORY,
+            env={**environment, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        require(result.returncode == 2, f"{name} returned {result.returncode}")
+        require(not marker.exists(), f"{name} launched the child")
+
+    payload = root / "unused"
+    payload.write_bytes(b"")
+    file_directory = root / "not-directory"
+    file_directory.write_bytes(b"occupied")
+    result = run(file_directory, "setup-file", (sys.executable, os.fspath(emitter), os.fspath(payload), "0"))
+    require(result.returncode == 125, "file log directory did not fail with infrastructure status")
+    require(not marker.exists(), "setup failure launched an unrelated command")
+    error = records(result.stderr)
+    require(
+        len(error) == 1
+        and error[0]["event"] == "verification-error"
+        and error[0]["status"] == 125,
+        "setup failure did not emit its bounded structured error",
+    )
+
+    real = root / "real-log-directory"
+    real.mkdir()
+    alias = root / "log-directory-alias"
+    alias.symlink_to(real, target_is_directory=True)
+    result = run(alias, "setup-symlink", (sys.executable, os.fspath(emitter), os.fspath(payload), "0"))
+    require(result.returncode == 125 and not list(real.iterdir()), "symlink log directory was admitted")
+
+
+def test_success_and_identity(root: Path, emitter: Path) -> None:
+    payload = root / "success.bin"
+    expected = (
+        b"src/a.align:1:2: warning: huge struct copy: one\n"
+        b"src/b.align:3:4: warning: huge struct copy: two\n"
+        b"src/c.align:5:6: warning: lossy conversion: three\n"
+        b"src/d.align:7:8: warning: unused import `std.example`\n"
+        b"warning: use of deprecated switch: detail\n"
+        b"hint: repeated Git advice\n"
+        b"owner result PASS\n"
+    )
+    payload.write_bytes(expected)
+    log_directory = root / "success-logs"
+    result = run(
+        log_directory,
+        "success",
+        (sys.executable, os.fspath(emitter), os.fspath(payload), "0"),
+    )
+    require(result.returncode == 0 and not result.stdout, "successful wrapper changed streams/status")
+    parsed = records(result.stderr)
+    require([row["event"] for row in parsed] == [
+        "verification-result",
+        "verification-warning",
+        "verification-warning",
+        "verification-warning",
+        "verification-warning",
+        "verification-warning",
+        "verification-log",
+    ], "successful terminal record order changed")
+    require(parsed[0]["result"] == "PASS" and parsed[0]["status"] == 0, "success became failure")
+    observed_warnings = {
+        row["class"]: row["count"]
+        for row in parsed
+        if row["event"] == "verification-warning"
+    }
+    require(
+        observed_warnings
+        == {
+            "align:huge-struct-copy": 2,
+            "align:lossy-conversion": 1,
+            "align:unused-import": 1,
+            "git:hint": 1,
+            "tool:deprecated": 1,
+        },
+        f"warning normalization changed: {observed_warnings}",
+    )
+    log = only_log(log_directory)
+    require(log.read_bytes() == expected, "success log changed or truncated child bytes")
+    identity = parsed[-1]
+    require(
+        identity["bytes"] == len(expected)
+        and identity["lines"] == 7
+        and identity["sha256"] == hashlib.sha256(expected).hexdigest()
+        and identity["path"] == os.fspath(log.absolute()),
+        "success log identity differs from retained bytes",
+    )
+    require(
+        len(result.stderr.splitlines()) <= 16 and len(result.stderr) <= 2_048,
+        "synthetic success exceeded the maintenance ceiling",
+    )
+
+    environment_log = root / "environment-logs"
+    environment_result = run(
+        environment_log,
+        "environment",
+        (
+            sys.executable,
+            "-c",
+            "import json, os, sys; print(json.dumps({'argv': sys.argv[1:], 'active': "
+            "os.environ.get('ALIGN_LLM_OUTPUT_SUMMARY_ACTIVE'), 'bytecode': "
+            "os.environ.get('PYTHONDONTWRITEBYTECODE')}, sort_keys=True))",
+            "space value",
+            "",
+            "$literal",
+        ),
+    )
+    require(environment_result.returncode == 0, "environment/argv fixture failed")
+    child_record = json.loads(only_log(environment_log).read_text(encoding="utf-8"))
+    require(
+        child_record
+        == {"active": "1", "argv": ["space value", "", "$literal"], "bytecode": "1"},
+        f"child argv or named environment additions changed: {child_record}",
+    )
+
+
+def test_failure_diagnostics(root: Path, emitter: Path) -> None:
+    payload = root / "failure.bin"
+    expected = (
+        b"owner setup\n"
+        b"error: FIRST-ACTIONABLE missing baseline\n"
+        + b"".join(b"hint: repeated graft deprecation text %04d\n" % number for number in range(600))
+        + b"src/a.align:1:2: warning: unused import: detail\n"
+        + b"useful context\n"
+        + b"fatal: FINAL-ROOT-CAUSE\n"
+    )
+    payload.write_bytes(expected)
+    log_directory = root / "failure-logs"
+    result = run(
+        log_directory,
+        "failure",
+        (sys.executable, os.fspath(emitter), os.fspath(payload), "23"),
+    )
+    require(result.returncode == 23 and not result.stdout, "failure status was not preserved")
+    require(len(result.stderr.splitlines()) <= 40, "failure exceeded the line ceiling")
+    require(len(result.stderr) <= 12_288, "failure exceeded the byte ceiling")
+    parsed = records(result.stderr)
+    require(parsed[0]["result"] == "FAIL" and parsed[0]["status"] == 23, "failure became success")
+    first = [row for row in parsed if row["event"] == "verification-diagnostic-first"]
+    tail = [row for row in parsed if row["event"] == "verification-diagnostic"]
+    require(
+        len(first) == 1 and "FIRST-ACTIONABLE" in str(first[0]["text"]),
+        "first actionable diagnostic was lost",
+    )
+    require(any("FINAL-ROOT-CAUSE" in str(row["text"]) for row in tail), "useful failure tail was lost")
+    require(
+        not any("graft deprecation" in str(row.get("text", "")) for row in parsed),
+        "repeated hint dominated the useful tail",
+    )
+    require(only_log(log_directory).read_bytes() == expected, "failure log was truncated")
+
+
+def test_malformed_text(root: Path, emitter: Path) -> None:
+    payload = root / "malformed.bin"
+    expected = b"error: bad\x00\xff diagnostic\nfinal context\n"
+    payload.write_bytes(expected)
+    log_directory = root / "malformed-logs"
+    result = run(
+        log_directory,
+        "malformed",
+        (sys.executable, os.fspath(emitter), os.fspath(payload), "9"),
+    )
+    parsed = records(result.stderr)
+    first = next(row for row in parsed if row["event"] == "verification-diagnostic-first")
+    require("\x00" in str(first["text"]) and "\ufffd" in str(first["text"]), "malformed text escaped JSON rules")
+    require(only_log(log_directory).read_bytes() == expected, "malformed bytes changed in the log")
+
+
+def test_launch_failure(root: Path) -> None:
+    log_directory = root / "launch-logs"
+    result = run(log_directory, "launch", ("/definitely/absent/align-llm-command",))
+    require(result.returncode == 127, "missing executable status changed")
+    parsed = records(result.stderr)
+    require(parsed[0]["result"] == "FAIL" and parsed[0]["status"] == 127, "launch failure became success")
+    require(
+        any(row["event"] == "verification-diagnostic-first" and "launch error" in str(row["text"])
+            for row in parsed),
+        "launch failure lost its bounded diagnostic",
+    )
+    require(only_log(log_directory).read_bytes() == b"", "launch failure wrote invented child bytes")
+
+
+def test_child_signals(root: Path) -> None:
+    for name, selected_signal in (("term", signal.SIGTERM), ("pipe", signal.SIGPIPE)):
+        log_directory = root / f"signal-{name}-logs"
+        result = run(log_directory, f"signal-{name}", ("/bin/sh", "-c", f"kill -{selected_signal.value} $$"))
+        require(result.returncode == -selected_signal.value, f"child {name} signal was not preserved")
+        parsed = records(result.stderr)
+        require(
+            parsed[0]["result"] == "SIGNAL" and parsed[0]["status"] == selected_signal.value,
+            f"child {name} signal did not produce a signal record",
+        )
+
+
+def test_summary_pipe(root: Path) -> None:
+    log_directory = root / "summary-pipe-logs"
+    process = subprocess.Popen(
+        (
+            sys.executable,
+            os.fspath(RUNNER),
+            "--phase",
+            "summary-pipe",
+            "--log-directory",
+            os.fspath(log_directory),
+            "--progress-seconds",
+            "1",
+            "--",
+            "/bin/sleep",
+            "30",
+        ),
+        cwd=REPOSITORY,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    require(process.stderr is not None, "summary pipe fixture has no stderr pipe")
+    process.stderr.close()
+    process.wait(timeout=5)
+    require(process.returncode == -signal.SIGPIPE.value, "closed summary pipe did not remain SIGPIPE")
+    require(len(list(log_directory.glob("*.log"))) == 1, "summary pipe lost its retained log")
+
+
+def test_supervisor_signal(root: Path) -> None:
+    helper = root / "signal-child.py"
+    ready = root / "signal-ready"
+    cleanup = root / "signal-cleanup"
+    helper.write_text(
+        """import signal
+import sys
+import time
+from pathlib import Path
+
+ready = Path(sys.argv[1])
+cleanup = Path(sys.argv[2])
+
+def stop(signum, frame):
+    cleanup.write_text(str(signum), encoding="ascii")
+    print("child cleanup complete", flush=True)
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, stop)
+ready.write_text("ready", encoding="ascii")
+while True:
+    time.sleep(0.05)
+""",
+        encoding="utf-8",
+    )
+    log_directory = root / "supervisor-logs"
+    process = subprocess.Popen(
+        (
+            sys.executable,
+            os.fspath(RUNNER),
+            "--phase",
+            "supervisor",
+            "--log-directory",
+            os.fspath(log_directory),
+            "--",
+            sys.executable,
+            os.fspath(helper),
+            os.fspath(ready),
+            os.fspath(cleanup),
+        ),
+        cwd=REPOSITORY,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + 5
+    while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    require(ready.exists(), "supervisor fixture child did not become ready")
+    process.send_signal(signal.SIGTERM)
+    stdout, stderr = process.communicate(timeout=5)
+    require(process.returncode == -signal.SIGTERM.value and not stdout, "supervisor signal status changed")
+    require(cleanup.read_text(encoding="ascii") == str(signal.SIGTERM.value), "signal missed child cleanup")
+    parsed = records(stderr)
+    require(parsed[0]["result"] == "SIGNAL", "supervisor signal emitted an ordinary result")
+    require(b"child cleanup complete\n" in only_log(log_directory).read_bytes(), "cleanup output was lost")
+
+
+def test_lingering_descendant(root: Path) -> None:
+    helper = root / "lingering-child.py"
+    helper.write_text(
+        """import subprocess
+
+child = subprocess.Popen(['/bin/sleep', '30'])
+print(child.pid, flush=True)
+""",
+        encoding="utf-8",
+    )
+    log_directory = root / "lingering-logs"
+    result = run(log_directory, "lingering", (sys.executable, os.fspath(helper)))
+    require(result.returncode == 125, "lingering descendant was accepted as success")
+    parsed = records(result.stderr)
+    require(
+        parsed[0]["result"] == "FAIL"
+        and any(
+            row["event"] == "verification-diagnostic-first"
+            and "process group outlived" in str(row["text"])
+            for row in parsed
+        ),
+        "lingering descendant lost its cleanup failure",
+    )
+    descendant = int(only_log(log_directory).read_text(encoding="ascii").strip())
+    try:
+        os.kill(descendant, 0)
+    except ProcessLookupError:
+        pass
+    else:
+        raise RuntimeError("lingering descendant remained live after wrapper cleanup")
+
+
+def test_progress(root: Path) -> None:
+    log_directory = root / "progress-logs"
+    result = run(
+        log_directory,
+        "progress",
+        (sys.executable, "-c", "import time; time.sleep(1.2); print('done')"),
+        progress_seconds=1,
+    )
+    parsed = records(result.stderr)
+    events = [row["event"] for row in parsed]
+    require(result.returncode == 0 and events[0] == "verification-progress", "progress was not visible")
+    require(events[-2:] == ["verification-result", "verification-log"], "progress reordered terminal records")
+
+
+def test_concurrency(root: Path, emitter: Path) -> None:
+    payload = root / "concurrent.bin"
+    payload.write_bytes(b"concurrent PASS\n")
+    log_directory = root / "concurrent-logs"
+    arguments = (
+        sys.executable,
+        os.fspath(RUNNER),
+        "--phase",
+        "concurrent",
+        "--log-directory",
+        os.fspath(log_directory),
+        "--",
+        sys.executable,
+        os.fspath(emitter),
+        os.fspath(payload),
+        "0",
+    )
+    processes = [
+        subprocess.Popen(
+            arguments,
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for _ in range(2)
+    ]
+    results = [process.communicate(timeout=5) + (process.returncode,) for process in processes]
+    require(all(not stdout and status == 0 for stdout, _stderr, status in results), "concurrent run failed")
+    logs = list(log_directory.glob("*.log"))
+    require(len(logs) == 2 and logs[0] != logs[1], "concurrent runs aliased one log")
+    require(all(log.read_bytes() == payload.read_bytes() for log in logs), "concurrent log bytes changed")
+
+
+def git(repository: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ("git", *arguments),
+        cwd=repository,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    require(result.returncode == 0, f"Git fixture failed: {arguments!r}: {result.stderr}")
+    return result.stdout.strip()
+
+
+def test_git_common_directory(root: Path) -> None:
+    repository = root / "repository"
+    linked = root / "linked"
+    repository.mkdir()
+    git(repository, "init", "-b", "main")
+    git(repository, "config", "user.name", "Output Summary Fixture")
+    git(repository, "config", "user.email", "output-summary@example.invalid")
+    (repository / "tracked").write_text("base\n", encoding="utf-8")
+    git(repository, "add", "tracked")
+    git(repository, "commit", "-m", "base")
+    git(repository, "worktree", "add", "-b", "linked", os.fspath(linked))
+    ordinary = summary.resolve_log_directory(None, repository, {})
+    worktree = summary.resolve_log_directory(None, linked, {})
+    require(ordinary == worktree, "linked worktree selected a different log namespace")
+    require(ordinary.name == "align-llm-output", "default log namespace changed")
+
+
+def test_preflight_adapter() -> None:
+    preflight = load_script("pre-pr", "align_llm_output_summary_preflight_test")
+    calls: list[dict[str, object]] = []
+    statuses = iter((0, 23))
+    original = preflight.output_summary.run_command
+
+    def fake_run_command(arguments: tuple[str, ...], **keywords: object) -> int:
+        calls.append({"arguments": arguments, **keywords})
+        return next(statuses)
+
+    preflight.output_summary.run_command = fake_run_command
+    try:
+        step = preflight.PlanStep("DEV-OUTPUT-SUMMARY", ("tool", "space value"), ("DROP_ME",))
+        environment = {**os.environ, "DROP_ME": "secret", "KEEP_ME": "visible"}
+        previous = dict(os.environ)
+        os.environ.clear()
+        os.environ.update(environment)
+        try:
+            success_events = io.StringIO()
+            with contextlib.redirect_stderr(success_events):
+                preflight.run_step(step, REPOSITORY)
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    preflight.run_step(step, REPOSITORY)
+            except preflight.PreflightError as error:
+                require("status 23" in str(error), "preflight adapter hid the child status")
+            else:
+                raise RuntimeError("preflight adapter turned failure into success")
+        finally:
+            os.environ.clear()
+            os.environ.update(previous)
+    finally:
+        preflight.output_summary.run_command = original
+    require(
+        len(calls) == 2
+        and all(call["arguments"] == ("tool", "space value") for call in calls)
+        and all(call["phase"] == "dev-output-summary" for call in calls)
+        and all(call["repository"] == REPOSITORY for call in calls),
+        "preflight adapter changed phase order or argv",
+    )
+    require(
+        '"label":"DEV-OUTPUT-SUMMARY"' in success_events.getvalue(),
+        "preflight adapter changed the existing user-facing label",
+    )
+    long_label = "Owner label with spaces / " + "x" * 100
+    canonical = summary.canonical_phase(long_label)
+    require(
+        len(canonical) == 64
+        and summary.PHASE.fullmatch(canonical) is not None
+        and canonical.endswith(hashlib.sha256(long_label.encode("utf-8")).hexdigest()[:12]),
+        "long preflight label did not canonicalize deterministically",
+    )
+    for call in calls:
+        environment = call["environment"]
+        require(
+            isinstance(environment, dict)
+            and "DROP_ME" not in environment
+            and environment.get("KEEP_ME") == "visible",
+            "preflight adapter changed environment-unset semantics",
+        )
+
+
+def test_adopter_topology() -> None:
+    owner = (SCRIPTS / "run-layer-forward-smoke").read_text(encoding="utf-8")
+    workflow = (REPOSITORY / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    require(
+        'if [ "${ALIGN_LLM_OUTPUT_SUMMARY_ACTIVE:-0}" != 1 ]; then' in owner
+        and 'scripts/run-output-summary" --phase layer-forward-smoke -- "$0" "$@"' in owner,
+        "direct owner does not delegate exactly once",
+    )
+    require(
+        "python3 scripts/run-output-summary --phase hosted-checks --" in workflow
+        and 'make -j8 ALIGNC="$ALIGNC" hosted-checks' in workflow,
+        "CI does not wrap the unchanged hosted aggregate argv",
+    )
+    require(
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1"
+        in workflow
+        and "retention-days: 14" in workflow
+        and "if-no-files-found: error" in workflow,
+        "CI does not retain the complete hosted log with the pinned owner",
+    )
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="align-llm-output-summary-") as temporary:
+        root = Path(temporary)
+        emitter = write_emitter(root)
+        test_validation(root, emitter)
+        test_success_and_identity(root, emitter)
+        test_failure_diagnostics(root, emitter)
+        test_malformed_text(root, emitter)
+        test_launch_failure(root)
+        test_child_signals(root)
+        test_summary_pipe(root)
+        test_supervisor_signal(root)
+        test_lingering_descendant(root)
+        test_progress(root)
+        test_concurrency(root, emitter)
+        test_git_common_directory(root)
+        test_preflight_adapter()
+        test_adopter_topology()
+    require(
+        not list((SCRIPTS / "__pycache__").glob("output_summary.*.pyc")),
+        "CLI wrote bytecode",
+    )
+    print(
+        "output summary: validation, identity, warnings, diagnostics, status, signals, progress, "
+        "concurrency, worktrees, and adopters PASS"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
