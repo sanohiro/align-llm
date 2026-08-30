@@ -3,15 +3,16 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R6-PREFIX-TTFT implementation and measurement (2026-08-30)
+## Active: R6-PREFIX-TTFT publication (2026-08-30)
 
 Branch `agent/r6-prefix-ttft`, based on `main` merge commit
 `c16f14ea5ec2e42d61f7e6644716854d9ca61c2c` (C4-REPAIR-TEMPLATE, PR #156). Authoritative charter
 `docs/specs/r6-prefix-key-corpus.md` section 11; capability ledger and closure matrix
 `docs/specs/r6-prefix-ttft.md`. The pre-implementation design is commit `a3c5e9e`; implementation
 is `17cce70`, the qualification-contract correction is `eb832bf`, and the first measurement record
-is `8ebed6b`. The consolidated comprehensive-review repair is the current candidate. The first reference-host
-measurement is withdrawn; no gate verdict currently exists.
+is `8ebed6b`. The consolidated comprehensive-review repair and exact replacement-measurement head is
+`de4cb6ee062d99f173ef8ee1d129588ce00f7d67`. The first reference-host measurement remains withdrawn;
+the corrected replacement establishes a **MET** improvement gate and **MET** shipping verdict.
 
 **Required first-action probe is complete.** A throwaway build changed only the Qwen cap to 2,048,
 measured a 1,200-token resident `--decode-step` prefill three times, and restored the source. The
@@ -65,35 +66,43 @@ retained as incident evidence. An independent summary audit recomputed every pai
 exactly, but the corpus identity was invalid, so these numbers establish no improvement or shipping
 verdict and must not be reused.
 
+**Valid replacement run at exact head `de4cb6ee062d99f173ef8ee1d129588ce00f7d67`.** The canonical
+49,283-byte summary is outside Git at SHA-256 `04ff7d8b…52009f`. All 30 paired observations and 66
+fresh processes completed on the corrected 369-token compositional prefix. W has protocol mean
+305,846 ppm and leave-one-suffix-out range **291,511..321,192 ppm**; C has mean 326,471 ppm and
+range **306,038..336,707 ppm**. W is worse, and its 291,511 ppm minimum clears the 150,000 ppm
+floor, so both the roadmap improvement gate and shipping verdict are **MET**. An independent
+read-only audit reproduced the exact completion sequence, coordinates, alternating orders,
+half-away reductions, aggregates, miss break-even values, 33 exact 63,999,836,160-byte eviction
+reads, VM deltas, and final rule.
+
 **Comprehensive review.** `codex review --base origin/main` reviewed head `8ebed6b` against base tip
 and merge base `c16f14e` with Codex `gpt-5.6-sol` at xhigh. Four findings are accepted: P1 corpus
 escape rewriting, P1 stale OLMoE cap arithmetic, P2 diagnostic repeats emitting an improvement
 gate, and P2 unpacked embedding row sizes in the allocation ledger. The corpus fix also exposed a
 BPE boundary merge; the final `".\n"` now belongs to each suffix so `shared ++ suffix` is exactly the
-complete prompt's tokenization. The other repairs are implemented locally. Because this repair
-materially changes the measured corpus, a replacement full measurement and one final comprehensive
-review are required.
+complete prompt's tokenization. The other repairs are committed in `de4cb6e`. Because this repair
+materially changed the measured corpus, the replacement full measurement was run from zero and is
+audited above. One final comprehensive review of the corrected stable candidate remains required.
 
-**Next actions.** (1) Commit the verified consolidated repair. (2) Run the replacement five-repeat
-W/C qualification from zero and independently audit its summary. (3) Commit the replacement result,
-perform the required final comprehensive review, and run exact-head publication preflight. (4)
-Publish, merge, refresh `main`, and start item 40 below. (5) After item 40 publishes, continue to R7
-or the next eligible product blocker.
+**Next actions.** (1) Commit the audited replacement result. (2) Perform the required final
+comprehensive review and disposition any findings. (3) Run exact-head publication preflight.
+(4) Publish, merge, and refresh `main`. This pull request is the user-requested stopping checkpoint:
+do not start item 40 or another roadmap capability after merge.
 
-**User-requested next capability: DEV-OUTPUT-SUMMARY, roadmap item 40.** Successful owner and
+**Next planned capability, not active: DEV-OUTPUT-SUMMARY, roadmap item 40.** Successful owner and
 toolchain phases repeatedly emitted 912 lines / approximately 45,720 transport tokens and 564
 lines / approximately 30,038 transport tokens before useful result/progress lines in this session.
-Item 40 will baseline exact bytes/lines, retain complete logs and digests, summarize warning classes
+Item 40 should baseline exact bytes/lines, retain complete logs and digests, summarize warning classes
 on success, expose bounded diagnostics on failure, preserve exit/signal/pipe semantics, and keep
 minute-level progress visible. It is planned as a separate consumer-complete developer capability,
 not folded into this performance claim.
 
 **Blockers.** None. Request 22 remains non-blocking because the checked-in ids come from the pinned
-Python/instrument path and Align consumes decimal ids only. The reference host must be serialized
-for the multi-hour measurement.
+Python/instrument path and Align consumes decimal ids only.
 
-**Intentional uncommitted files.** None after the consolidated repair commit. Build products and
-measurement summaries remain outside Git.
+**Intentional uncommitted files.** The audited result documentation is the only intended work-tree
+change until its commit. Build products and measurement summaries remain outside Git.
 
 ## Merged checkpoint: C4-REPAIR-TEMPLATE review repair (2026-08-30)
 

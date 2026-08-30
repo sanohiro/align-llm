@@ -987,9 +987,10 @@ The current forward delivery order is:
     the gate measurement.
 
 38. **R6-PREFIX-TTFT — the prefill cap lifted, the corpus pinned, and the R6 gate measured.**
-    **Implemented; review repair and replacement measurement are active. The result measured at
-    `eb832bf` is withdrawn because the record-codec prompt was escape-rewritten during corpus
-    generation, so it establishes no roadmap or shipping verdict.** Its charter is section 11 of
+    **Implemented; the corrected replacement measurement at `de4cb6e` passes both the roadmap
+    improvement gate and the shipping floor. The earlier result measured at `eb832bf` remains
+    withdrawn because the record-codec prompt was escape-rewritten during corpus generation.** Its
+    charter is section 11 of
     [`r6-prefix-key-corpus.md`](r6-prefix-key-corpus.md), written **before** item 37 was implemented
     so the split is a schedule rather than a hope, and it needs its own design gate and its own
     ledger before implementation. The ledger and closure matrix are
@@ -1011,9 +1012,12 @@ The current forward delivery order is:
     are all fixed in section 11 in advance.
 
     The corrected frozen corpus is a 369-id shared prefix plus three suffixes of 697, 1,050, and 828
-    ids. The replacement five-repeat warm and complete-file-eviction measurement is pending. The
-    withdrawn run's evidence and the review finding are recorded in
-    [`r6-prefix-ttft.md`](r6-prefix-ttft.md) section 8; none of its timing values discharge the gate.
+    ids. The replacement five-repeat warm and complete-file-eviction measurement completed all 30
+    pairs and 66 fresh processes. W's leave-one-suffix-out range is 291,511..321,192 ppm; C's is
+    306,038..336,707 ppm. W is worse, and its 291,511 ppm minimum exceeds the 150,000 ppm floor, so
+    both the improvement gate and shipping verdict are **MET**. The audited evidence identity,
+    withdrawn-run isolation, and review finding are recorded in
+    [`r6-prefix-ttft.md`](r6-prefix-ttft.md) section 8.
 
 > Items 35 and 36 are claimed on sibling branches (`agent/r6-moe-resident-dense`,
 > `agent/mf-single-token-logits`); 37 and 38 are reserved for Track B's `R6-PREFIX-KEY-CORPUS`,

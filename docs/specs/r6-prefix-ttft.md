@@ -418,7 +418,7 @@ plus the corpus's five malformed classes. After review repair, the same owner pa
 369-token persisted fixture and its regenerated golden. Long real activations remain absent from
 goldens.
 
-### 8.2 Withdrawn reference-host evidence identity
+### 8.2 Reference-host evidence identity
 
 The gate run used the section 3.6 environment-variable command form below. `$MODEL` was the exact
 model identity in section 2.1; `$EVICTION` was an existing unrelated 63,999,836,160-byte Docker
@@ -438,72 +438,74 @@ ALIGN_LLM_PREFIX_TTFT_SUMMARY=$SUMMARY \
 gmake prefix-ttft-qualification
 ```
 
-This command shape remains the replacement command, but the following identity describes only the
-withdrawn run. Host: Apple M1, arm64, 16 GiB physical memory, macOS 26.5.2. Both instruments reported build
-10566 at commit `bb4caa754`; the model was 4,683,073,536 B at SHA-256 `509287f7…d3c`. The canonical
-49,218-byte summary is SHA-256
-`aa1627a074bfec80a5a291a93d2e22b118b2eeea7b7514a0db18e13873f5f833`. An independent read-only
-recalculation verified all 30 unique pair coordinates, alternating orders, every per-pair
-half-away result, both protocol means, all six suffix means, the six leave-one-suffix-out means, 66
-completed fresh processes, and the final rule over the wrong corpus. It is retained as incident
-evidence and supplies no gate result.
+The valid replacement ran from exact implementation head
+`de4cb6ee062d99f173ef8ee1d129588ce00f7d67`. Host: Apple M1, arm64, 16 GiB physical memory,
+macOS 26.5.2. Both instruments reported build 10566 at commit `bb4caa754`; the model was
+4,683,073,536 B at SHA-256 `509287f7…d3c`. The canonical 49,283-byte summary is SHA-256
+`04ff7d8be46dd4b710c8d379b1a6af7982ad18873db76a3d731cd8b92c52009f`.
 
-### 8.3 Withdrawn TTFT readings — no verdict
+An independent read-only recalculation verified the exact 66-entry completion sequence, all 30
+unique pair coordinates, alternating orders, every per-pair half-away result, both protocol means,
+all six suffix means, the six leave-one-suffix-out means, miss break-even arithmetic, 66 fresh
+process observations, 33 exact complete-file eviction reads, VM deltas, and the final rule. The
+withdrawn 49,218-byte summary remains incident evidence only and is not mixed into any value below.
 
-All figures below are reductions in ppm from the invalid corpus. No pair was discarded or replaced,
-but none is eligible for the roadmap or shipping verdict.
+### 8.3 TTFT readings and verdict
+
+All figures below are paired reductions in ppm from the corrected compositional corpus. No pair was
+discarded, replaced, or inherited from the withdrawn run.
 
 | Protocol | Duration suffix | Layer-precedence suffix | Record-codec suffix | Protocol mean | Leave-one-out values | Jackknife range |
 | --- | ---: | ---: | ---: | ---: | --- | ---: |
-| W | 347,025 | 264,500 | 302,479 | 304,668 | 283,489 / 324,752 / 305,762 | **283,489..324,752** |
-| C | 317,170 | 266,282 | 312,056 | 298,502 | 289,169 / 314,613 / 291,726 | **289,169..314,613** |
+| W | 334,514 | 275,153 | 307,869 | 305,846 | 291,511 / 321,192 / 304,834 | **291,511..321,192** |
+| C | 367,337 | 306,077 | 305,999 | 326,471 | 306,038 / 336,668 / 336,707 | **306,038..336,707** |
 
-The old arithmetic would select W and report 283,489 ppm. Review invalidated the corpus identity,
-so the roadmap improvement gate and shipping verdict are both **pending**, not MET.
+Both jackknife ranges are wholly above zero, so the roadmap improvement gate is **MET**. W is the
+worse protocol because its 291,511 ppm minimum is lower; that minimum is above the precommitted
+150,000 ppm floor, so the shipping verdict is also **MET**.
 
 Mean first-token times, in seconds, show the paired quantities behind that result:
 
 | Protocol | Suffix | Single-shot | Keyed hit | Pair reduction range |
 | --- | --- | ---: | ---: | ---: |
-| W | duration | 168.860 | 109.934 | 283,080..432,427 ppm |
-| W | layer precedence | 193.201 | 142.090 | 256,429..276,538 ppm |
-| W | record codec | 154.738 | 108.001 | 285,360..326,914 ppm |
-| C | duration | 142.044 | 97.030 | 235,941..356,025 ppm |
-| C | layer precedence | 187.838 | 137.811 | 251,829..283,305 ppm |
-| C | record codec | 161.987 | 111.450 | 284,296..340,571 ppm |
+| W | duration | 128.819 | 85.689 | 304,037..388,832 ppm |
+| W | layer precedence | 201.779 | 145.975 | 239,798..328,283 ppm |
+| W | record codec | 176.387 | 122.152 | 287,360..329,918 ppm |
+| C | duration | 165.177 | 104.393 | 308,077..422,070 ppm |
+| C | layer precedence | 209.229 | 145.139 | 263,042..349,959 ppm |
+| C | record codec | 162.559 | 112.410 | 231,872..368,331 ppm |
 
-Across all hits, the container is 176,771,072 B. Mean hit `kv.read_ns` is 152,434,203 under W and
-158,201,417 under C; mean lookup is 7,086 ns and 6,305 ns; mean resident fill is 1,827,265,386 ns
-and 1,942,992,111 ns. These remain reported components, not alternate verdict inputs.
+Across all hits, the container is 176,771,072 B. Mean hit `kv.read_ns` is 153,377,956 under W and
+161,914,422 under C; mean lookup is 32,964 ns and 8,181 ns; mean resident fill is 1,875,110,945 ns
+and 2,144,056,745 ns. These remain reported components, not alternate verdict inputs.
 
-### 8.4 Withdrawn miss, eviction, and compressor observations
+### 8.4 Miss, eviction, and compressor observations
 
-These observations are retained for diagnosis only and will be replaced with the corrected corpus.
 Miss cost is secondary as precommitted. Break-even is the exact section 2.4 formula against that
 suffix/protocol's five mean legs; zero is possible when the single observed miss happened to be
 faster than the five-run single-shot mean.
 
 | Protocol | Suffix | Miss first token | Container write | Bytes | Break-even reuses |
 | --- | --- | ---: | ---: | ---: | ---: |
-| W | duration | 140.107 s | 376.092 ms | 176,771,072 | 0 |
-| W | layer precedence | 193.235 s | 356.708 ms | 176,771,072 | 1 |
-| W | record codec | 159.452 s | 454.219 ms | 176,771,072 | 1 |
-| C | duration | 135.811 s | 325.249 ms | 176,771,072 | 0 |
-| C | layer precedence | 177.941 s | 222.426 ms | 176,771,072 | 0 |
-| C | record codec | 163.760 s | 348.238 ms | 176,771,072 | 1 |
+| W | duration | 118.976 s | 313.643 ms | 176,771,072 | 0 |
+| W | layer precedence | 192.856 s | 314.478 ms | 176,771,072 | 0 |
+| W | record codec | 168.752 s | 298.736 ms | 176,771,072 | 0 |
+| C | duration | 155.233 s | 283.115 ms | 176,771,072 | 0 |
+| C | layer precedence | 191.763 s | 308.140 ms | 176,771,072 | 0 |
+| C | record codec | 166.276 s | 336.655 ms | 176,771,072 | 1 |
 
 Protocol C completed 33 full-file reads — one before each of 30 timed legs and one before each of
-three miss setups — at exactly 63,999,836,160 B each. Elapsed read time ranged 18.300..19.845 s,
-mean 19.119 s. W deliberately recorded no eviction.
+three miss setups — at exactly 63,999,836,160 B each. Elapsed read time ranged 18.257..20.094 s,
+mean 19.099 s. W deliberately recorded no eviction.
 
 Summed over all 33 processes per protocol, W moved stored/occupied compressor pages by
-+66,898/+17,796 and swapouts by zero. C moved them by -252,375/-120,566 and swapouts by +4,108.
-All C swapouts occurred in duration pair 1's single-shot leg. The observation is retained exactly
-as section 4.2 requires. It does not carry the verdict: C's **minimum** leave-one-suffix-out value is
-the 289,169 ppm row that excludes the entire duration cluster, and W — with zero swapouts — is the
-worse protocol and independently clears the floor.
++92,198/+20,691 and swapouts by +52,840; its swapouts occurred in record-codec pair 5's two legs.
+C moved them by -101,816/-35,988 and swapouts by +72,344, spread across its duration miss, duration
+pairs 2 and 3 single-shot legs, and layer-precedence pairs 1 and 5 single-shot legs. The observation
+is retained exactly as section 4.2 requires. It does not carry the verdict: W is the worse protocol,
+and its leave-one-suffix-out minimum independently clears the floor despite those movements.
 
-### 8.5 Closure disposition before replacement measurement
+### 8.5 Closure disposition
 
 Every section 5 cell maps to the final diff or retained evidence:
 
@@ -516,9 +518,10 @@ Every section 5 cell maps to the final diff or retained evidence:
   2,048, and 2,049 arm/reader fixtures;
 - corpus construction/malformed cells map to `scripts/check-prefix-corpus` and its five mutation
   classes;
-- W/C measurement success remains open; the old 30-pair summary is withdrawn, while partial
-  failure maps to the first invocation's bounded `ERROR` summary and cleanup; and
+- W/C measurement success maps to the audited 30-pair replacement summary, while partial failure
+  maps to the first invocation's bounded `ERROR` summary and cleanup; and
 - long real activations remain qualification-only, while the seven-token transcript refusals and
   six-token oracle constant are unchanged and pass in the same owner.
 
-The replacement W/C measurement is the only open applicable closure cell.
+Every applicable closure cell is complete. The long real-activation exclusion is an intentional
+qualification boundary, not an open implementation cell.
