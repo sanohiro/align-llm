@@ -75,12 +75,11 @@ error codes, three classifier lock identities, the R6 prefix manifest, Markdown 
 
 **Next actions.** (1) Implement and publish Align Request 22's compiler and owner-test closure in
 the sibling Align repository. (2) Adopt the shipped revision and complete
-all three registered Request 22 migrations plus the tokenizer consumer without a compatibility
-layer.
+all three registered Request 22 targets without a compatibility layer.
 
 **Blocker.** Align Request 22. Resume when Align ships ordinary `array<string>[i] -> str` and its
-compiler owners pass; the align-llm pin/adoption capability then owns every
-originally named Request 22 migration plus the tokenizer consumer.
+compiler owners pass; the align-llm pin/adoption capability then owns all three registered Request
+22 targets.
 
 **Intentional uncommitted files.** None after the accepted provider answer is committed.
 
