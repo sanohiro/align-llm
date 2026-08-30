@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Verify the sealed measured `canonical-v1t` and refuse every write attempt.
+
+The provider qualification sealed this identity. `--check` compares all thirteen files against
+their measured raw digests and never writes. Repaired adapter bytes belong to the distinct,
+unqualified `prompt-v1u` scope minted by `scripts/freeze-canonical-v1u`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent.parent
+HISTORICAL_OUTPUTS = {
+    "eval/prompt/canonical-v1t/README.md": "a8905a1401fe13f1802da7c8f4e8e4b938f115fa7f2b8f229fb832ba6e753c43",
+    "eval/prompt/canonical-v1t/corpus-file-set.manifest": "5e38f2e6019ccb18ec94f17e1f659c8f07bc0101c1a6c97ec957a16cdcc0e1b2",
+    "eval/prompt/canonical-v1t/corpus.json": "2694bfd812f05e44f30c4fc7b3fcc7078861c54671357ac54c4892a55be7aa37",
+    "eval/prompt/canonical-v1t/generation-policy.json": "3abcf52dcd790dc483c2be14c48c8f1f1ace27f4c5ce9e56a095e99d677f2ecb",
+    "eval/prompt/canonical-v1t/prompt-activation-baseline-v1t.json": "5488f4388adeb6e59d3b33265dde8dd7987ceaf892304c67c4d89537a4fd7b53",
+    "eval/prompt/canonical-v1t/repair-template.json": "bfa87a297fa2b6b3d472076e8f02158b9a0dfdb732ef7a03182f7fea8da14568",
+    "eval/prompt/canonical-v1t/scope.json": "64434845c85042beb5b0c4fd6431e744593f44a7aa1f9a4ce2e4d25293eb9497",
+    "eval/tasks/prompt-v1t/duration-half-away-from-zero.json": "00a83b9b91be2ce6bcf8d62347fd0bf6922499a7a464afd8191bf7a741458601",
+    "eval/tasks/prompt-v1t/duration-half-away-from-zero/task-prompt.json": "730364d58a530339346c0b9d966aa94d471709ac6b3a791295953f608ddf0c61",
+    "eval/tasks/prompt-v1t/layer-precedence-frozen-module.json": "24021f732b92e9222b7ce3a90538045d189e3541432ee073c8c2b5e9c3b2aaa7",
+    "eval/tasks/prompt-v1t/layer-precedence-frozen-module/task-prompt.json": "08e9d30911704a2de10f708503e88a32295733a4ac97da9887200337da9781e6",
+    "eval/tasks/prompt-v1t/record-codec-round-trip.json": "36494101ea2dca3b2465ce29f09f3ea610991ec56bd117157fd56267f0e8ecf9",
+    "eval/tasks/prompt-v1t/record-codec-round-trip/task-prompt.json": "4e1246c03d0d32750f321bc7a11bbe493eedc30521c4d061a7ea1722ff6fbf6c",
+}
+
+
+def raw_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--provider-service-revision",
+        required=True,
+        help="retained for command compatibility; the sealed bytes already bind this revision",
+    )
+    parser.add_argument("--check", action="store_true", help="verify without writing")
+    return parser.parse_args(arguments)
+
+
+def main(arguments: list[str] | None = None) -> int:
+    values = parse_arguments(sys.argv[1:] if arguments is None else arguments)
+    _ = values.provider_service_revision
+    if not values.check:
+        sys.stderr.write(
+            "freeze canonical-v1t: SEALED after measurement; mint repaired revisions with "
+            "freeze-canonical-v1u\n"
+        )
+        return 2
+    drifted = [
+        relative
+        for relative, expected in HISTORICAL_OUTPUTS.items()
+        if not (ROOT / relative).is_file() or raw_digest(ROOT / relative) != expected
+    ]
+    if drifted:
+        for relative in drifted:
+            sys.stderr.write(f"freeze canonical-v1t: DRIFT {relative}\n")
+        return 1
+    sys.stdout.write(f"freeze canonical-v1t: PASS {len(HISTORICAL_OUTPUTS)} sealed files\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -43,6 +43,7 @@ VALIDATOR = ROOT / "scripts" / "prompt-gate-validator.py"
 # real frozen chain rather than against a rebuilt approximation of it.
 FROZEN_GATE = ROOT / "eval" / "prompt" / "gate"
 FROZEN_C4_GATE = ROOT / "eval" / "prompt" / "c4-repair-gate"
+FROZEN_C4E_GATE = ROOT / "eval" / "prompt" / "c4-editset-gate"
 LINUX = sys.platform.startswith("linux")
 
 
@@ -788,6 +789,7 @@ def binding_rows(root: Path) -> None:
     repair_attempt_rows(root)
     frozen_version_one_chain()
     frozen_version_two_chain()
+    frozen_editset_chain()
     frozen_corpus_rows()
 
 
@@ -1006,8 +1008,17 @@ def repair_attempt_rows(root: Path) -> None:
             fixture.bind(row)
 
     def downgrade_measurement(measurement) -> None:
+        """Make a fixture measurement version 1 by removing **every** member above version 1.
+
+        The fixture emits version 3 from C4-REPAIR-TEMPLATE on, so a helper that stripped only the
+        four version-2 members would leave the version-3 ones behind and every caller below would
+        be rejected for the stray it did not plant rather than the one it did. Named explicitly
+        rather than read from the validator's own tuples, for the reason the caller states: a
+        mutant that empties those tuples must fail these rows, not pass them vacuously.
+        """
         for name in (
             "edit_set", "edit_set_total_bytes", "patch_sha256", "base_adapter_runtime_identity",
+            "edit_refusal", "completion_bytes", "completion_sha256", "completion_text",
         ):
             measurement.pop(name, None)
         measurement["schema_version"] = 1
@@ -1271,6 +1282,27 @@ def repair_attempt_rows(root: Path) -> None:
             failed = str(error)
         require(
             f"carries {member} at version 1" in failed,
+            f"a version-1 measurement carrying {member} was admitted: {failed!r}",
+        )
+
+    # The version-3 half of the same rule at version 1, one member at a time. Without these, a
+    # mutant that dropped the below-version-3 absence check would survive every row above.
+    for member, value in (
+        ("edit_refusal", "NONE"), ("completion_bytes", 1),
+        ("completion_sha256", "e" * 64), ("completion_text", "prose"),
+    ):
+        stray = copy.deepcopy(
+            read(accepted, fixture.EVALUATION_NAME)["rows"][0]["attempts"][0]["measurement"]
+        )
+        downgrade_measurement(stray)
+        stray[member] = value
+        failed = ""
+        try:
+            validator.validate_measurement_version(stray, frozen_task, "row15 case")
+        except validator.GateError as error:
+            failed = str(error)
+        require(
+            f"carries {member} below version 3" in failed,
             f"a version-1 measurement carrying {member} was admitted: {failed!r}",
         )
 
@@ -1617,6 +1649,147 @@ def repair_attempt_rows(root: Path) -> None:
         "a persisted repair aggregate the verifier does not recompute",
         contains="persisted corpus aggregate disagrees with the recomputed value",
     )
+    version_three_rows(root)
+
+
+def refused_attempt(evaluation: dict[str, Any]) -> dict[str, Any]:
+    """The one fixture attempt that records a refusal, which is the shape every v3 rule turns on."""
+    for row in evaluation["rows"]:
+        for attempt in row["attempts"]:
+            measurement = attempt.get("measurement") or {}
+            if measurement.get("edit_refusal") not in (None, "NONE"):
+                return attempt
+    raise SmokeFailure("the version-3 fixture records no refused attempt")
+
+
+def passing_attempt(evaluation: dict[str, Any]) -> dict[str, Any]:
+    for row in evaluation["rows"]:
+        for attempt in row["attempts"]:
+            measurement = attempt.get("measurement") or {}
+            if measurement.get("edit_refusal") == "NONE":
+                return attempt
+    raise SmokeFailure("the version-3 fixture records no unrefused attempt")
+
+
+def rebound_measurement(row_attempt: dict[str, Any]) -> None:
+    """Rebind an edited measurement and every digest the attempt and row pin it by."""
+    fixture.bind(row_attempt["measurement"])
+    row_attempt["measurement_sha256"] = row_attempt["measurement"]["content_sha256"]
+    fixture.bind(row_attempt)
+
+
+def version_three_rows(root: Path) -> None:
+    """Section 6.1: the version-3 presence rules and section 3.3 invariants, one defect each.
+
+    Every case mutates the **persisted wire form**, which is where the rules are actually read, and
+    each one is a shape a producer that stopped mapping a raise site or stopped tying the code to
+    the record would emit. The unmutated fixture already carries a refused attempt with the three
+    `Option` members the wire omits, so the positive direction is covered by every other row here.
+    """
+
+    def unknown_code(evaluation, evidence) -> None:
+        attempt = refused_attempt(evaluation)
+        attempt["measurement"]["edit_refusal"] = "NO_SUCH_REFUSAL"
+        rebound_measurement(attempt)
+
+    rejected(
+        v2_evaluation_case(root, "v3-unknown-refusal", unknown_code),
+        "an edit refusal outside the ten-code vocabulary",
+        contains="carries no valid edit refusal code at version 3",
+    )
+
+    def silent_none(evaluation, evidence) -> None:
+        # The defect this capability exists to make impossible: `failure_kind: PATCH` beside a
+        # refusal code of `NONE`, which is what every row of both prior gate runs would look like.
+        attempt = refused_attempt(evaluation)
+        attempt["measurement"]["edit_refusal"] = "NONE"
+        rebound_measurement(attempt)
+
+    rejected(
+        v2_evaluation_case(root, "v3-silent-none", silent_none),
+        "a PATCH failure carrying no refusal code",
+        contains="refusal class disagrees with its failure kind",
+    )
+
+    def unchanged_without_blocks(evaluation, evidence) -> None:
+        # The invariant this capability exists to establish, inverted.
+        attempt = refused_attempt(evaluation)
+        attempt["measurement"]["edit_refusal"] = "UNCHANGED_FILES"
+        attempt["measurement"]["diagnostic_summary"] = (
+            "the response reproduced the pinned files unchanged"
+        )
+        rebound_measurement(attempt)
+
+    rejected(
+        v2_evaluation_case(root, "v3-unchanged-no-blocks", unchanged_without_blocks),
+        "a reproduced-unchanged refusal that discarded its blocks",
+        contains="discarded the blocks its refusal was computed from",
+    )
+
+    def text_on_passing_row(evaluation, evidence) -> None:
+        attempt = passing_attempt(evaluation)
+        attempt["measurement"]["completion_text"] = "unstructured prose"
+        rebound_measurement(attempt)
+
+    rejected(
+        v2_evaluation_case(root, "v3-text-unrefused", text_on_passing_row),
+        "a completion excerpt persisted where the edit set already explains the failure",
+        contains="persists a completion excerpt where the edit set explains it",
+    )
+
+    def identity_half_present(evaluation, evidence) -> None:
+        attempt = passing_attempt(evaluation)
+        del attempt["measurement"]["completion_bytes"]
+        rebound_measurement(attempt)
+
+    rejected(
+        v2_evaluation_case(root, "v3-identity-half", identity_half_present),
+        "a completion digest with no completion length",
+        contains="completion identity members disagree on presence",
+    )
+
+    def response_without_identity(evaluation, evidence) -> None:
+        attempt = passing_attempt(evaluation)
+        attempt["measurement"]["completion_bytes"] = None
+        attempt["measurement"]["completion_sha256"] = None
+        rebound_measurement(attempt)
+
+    rejected(
+        v2_evaluation_case(root, "v3-response-without-identity", response_without_identity),
+        "a received provider response carrying no completion identity",
+        contains="completion identity disagrees with provider response presence",
+    )
+
+    # Absence below version 3 is required, never defaulted, and the cheapest place to prove it is
+    # against the **real** frozen version-2 chain rather than a rebuilt approximation: that is the
+    # document a version-3-shaped decoder would delete. Driven in process, because the mutation is
+    # one key on one measurement and rebuilding the bundle's whole digest cascade around it would
+    # test the cascade rather than the rule.
+    frozen = json.loads((FROZEN_C4E_GATE / "c4-editset-evaluation.json").read_text("utf-8"))
+    task = frozen["tasks"][0]
+    measurement = copy.deepcopy(frozen["rows"][0]["measurement"])
+    validator.validate_measurement_version(measurement, task, "unmutated version-2 measurement")
+    for member in ("edit_refusal", "completion_bytes", "completion_sha256", "completion_text"):
+        mutated = copy.deepcopy(measurement)
+        mutated[member] = "NONE" if member.endswith(("refusal", "text", "sha256")) else 0
+        try:
+            validator.validate_measurement_version(mutated, task, "version-2 measurement")
+        except validator.GateError as failure:
+            require(
+                "below version 3" in str(failure),
+                f"a version-2 measurement carrying {member} was rejected for another reason",
+            )
+        else:
+            raise SmokeFailure(f"a version-2 measurement carrying {member} was accepted")
+
+    def refusal_aggregate_not_recomputed(evaluation, evidence) -> None:
+        evaluation["corpus_aggregate"]["edit_refusal_count"] = 99
+
+    rejected(
+        v2_evaluation_case(root, "v3-refusal-aggregate", refusal_aggregate_not_recomputed),
+        "a persisted refusal counter the verifier does not recompute",
+        contains="persisted corpus aggregate disagrees with the recomputed value",
+    )
 
 
 def frozen_version_one_chain() -> None:
@@ -1746,6 +1919,77 @@ def frozen_version_two_chain() -> None:
         validator.validate_attempts(
             row, task, generation_policy, pools, f"frozen C4 row {index}",
         )
+
+
+def frozen_editset_chain() -> None:
+    """The frozen C4-REPAIR-EDITSET chain still validates and rescores unchanged.
+
+    The **third** merged chain, and the one a version-3-shaped decoder is most likely to delete:
+    unlike C6's and C4's, its rows carry version-2 *measurements*, so every version-3 presence rule
+    written as key-presence rather than as a version-selected shape would reject it. That is the
+    incident class `c4-repair-editset.md` section 11.3 deviations 2 and 13 record, twice each; this
+    row is what makes a third repetition impossible.
+
+    `validate_evaluation_pair` is not used, for the reason the C4 regression records: this is a
+    published measured negative, not an `IMPROVED` acceptance. The row, attempt, measurement, and
+    aggregate walks it would reach are driven directly instead.
+    """
+    result = json.loads((FROZEN_C4E_GATE / "c4-editset-evaluation.json").read_text("utf-8"))
+    require(result["schema_version"] == 2, "the frozen C4E chain is no longer version 2")
+    require(
+        all(row["measurement"]["schema_version"] == 2 for row in result["rows"]),
+        "the frozen C4E chain no longer carries version-2 measurements",
+    )
+    policy = validator.validate_acceptance_policy(result["acceptance_policy"])
+    status, aggregates, corpus, _ = validator.rescore(result, policy)
+    require(
+        status == result["status"],
+        f"the frozen C4E chain no longer rescores to {result['status']}: {status}",
+    )
+    for persisted, computed in zip(result["task_aggregates"], aggregates):
+        require(
+            validator.completed_record(persisted, validator.TASK_AGGREGATE_V2_FIELDS)
+            == validator.completed_record(computed, validator.TASK_AGGREGATE_V2_FIELDS),
+            "a frozen C4E task aggregate no longer rescores byte-identically",
+        )
+    require(
+        validator.completed_record(
+            result["corpus_aggregate"], validator.CORPUS_AGGREGATE_V2_FIELDS
+        )
+        == validator.completed_record(corpus, validator.CORPUS_AGGREGATE_V2_FIELDS),
+        "the frozen C4E corpus aggregate no longer rescores byte-identically",
+    )
+    # The C4E corpus names the repair adapter, so its `EDITSET` denominator is defined and its
+    # refusal counter is not: the second is undefined for a corpus whose adapter cannot persist
+    # `edit_refusal`, and absent is the correct published statement rather than zero.
+    require(
+        corpus["repair_editset_attempt_count"] == 6,
+        f"the frozen C4E EDITSET denominator moved: {corpus!r}",
+    )
+    require(
+        "edit_refusal_count" not in corpus,
+        "a repair-adapter corpus recomputed an edit-refusal counter",
+    )
+    require(
+        all(
+            "parent_edit_refusal_count" not in aggregate for aggregate in aggregates
+        ),
+        "a repair-adapter task aggregate recomputed an edit-refusal counter",
+    )
+    require(
+        corpus["repair_recovery_paired_count"] == 0 and corpus["repair_attempt_count"] == 10,
+        f"the frozen C4E measured negative moved: {corpus!r}",
+    )
+    pools = validator.validate_snapshot_closure(result, result["rows"])
+    tasks_by_id = {task["task_id"]: task for task in result["tasks"]}
+    generation_policy = result["generation_policy"]
+    for index, row in enumerate(result["rows"]):
+        task = tasks_by_id[row["task_id"]]
+        validator.validate_measurement_version(
+            row["measurement"], task, f"frozen C4E row {index} measurement",
+        )
+        validator.validate_measurement_probe(row["measurement"], task, f"frozen C4E row {index}")
+        validator.validate_attempts(row, task, generation_policy, pools, f"frozen C4E row {index}")
 
 
 def frozen_corpus_rows() -> None:

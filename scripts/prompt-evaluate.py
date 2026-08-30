@@ -114,15 +114,48 @@ TASK_MEASUREMENT_V2_MEMBERS = (
 TASK_MEASUREMENT_V2_FIELDS = (
     TASK_MEASUREMENT_FIELDS[:-1] + TASK_MEASUREMENT_V2_MEMBERS + ("content_sha256",)
 )
+# C4-REPAIR-TEMPLATE. Version 3 appends four more members in the same position and by the same
+# rule: the version selects the tuple, presence never selects the version.
+TASK_MEASUREMENT_V3_MEMBERS = (
+    "edit_refusal", "completion_bytes", "completion_sha256", "completion_text",
+)
+TASK_MEASUREMENT_V3_FIELDS = (
+    TASK_MEASUREMENT_FIELDS[:-1] + TASK_MEASUREMENT_V2_MEMBERS + TASK_MEASUREMENT_V3_MEMBERS
+    + ("content_sha256",)
+)
+# Spec section 3.3. Each code names one raise site of the frozen measurement adapter, so
+# `failure_kind: PATCH` stops conflating a parse failure with a semantically empty answer. The
+# eight `NO_SET` codes are those raised before `validated_edit_set` returned, so no structured
+# record of the model's blocks exists for them; those are exactly the codes that may carry
+# `completion_text`.
+EDIT_REFUSAL_PATCH_CODES = (
+    "NO_FILE_BLOCK", "HEADER_WITHOUT_BLOCK", "UNTERMINATED_BLOCK", "TOO_MANY_BLOCKS",
+    "DUPLICATE_PATH", "BODY_TOO_LARGE", "UNCHANGED_FILES",
+)
+EDIT_REFUSAL_POLICY_CODES = ("PATH_NOT_EDITABLE", "PATH_ESCAPES_SOURCE")
+EDIT_REFUSAL_CODES = ("NONE",) + EDIT_REFUSAL_PATCH_CODES + EDIT_REFUSAL_POLICY_CODES
+EDIT_REFUSAL_NO_SET_CODES = tuple(
+    code for code in EDIT_REFUSAL_CODES if code not in ("NONE", "UNCHANGED_FILES")
+)
+EDIT_POLICY_FIELDS = (
+    "schema_version", "artifact_kind", "maximum_file_blocks", "maximum_edit_bytes",
+    "refuse_unchanged_files", "content_sha256",
+)
 EDIT_SET_BLOCK_FIELDS = (
     "schema_version", "artifact_kind", "path", "body_bytes", "body_sha256", "body_text",
     "content_sha256",
 )
+# Ladder rows 14-16. The version selects the tuple three ways, so every version-3 member is
+# present at 3 and absent at 1 and 2, and presence never stands in for a version in any direction.
+MEASUREMENT_FIELDS_BY_VERSION = {
+    1: TASK_MEASUREMENT_FIELDS, 2: TASK_MEASUREMENT_V2_FIELDS, 3: TASK_MEASUREMENT_V3_FIELDS,
+}
 # The corpus selects the adapter, so the measurement version is a checked function of the corpus
 # rather than a value a producer may choose (spec section 3.5, ladder row 11). The task manifest's
 # `measurement_adapter_runtime` pins this file's digest and the evaluator re-verifies it against the
 # retained helper before the invocation; the path below is the selector that digest pins.
 REPAIR_ADAPTER_RELATIVE = "scripts/prompt-repair-adapter.py"
+TEMPLATE_ADAPTER_RELATIVE = "scripts/prompt-template-adapter.py"
 GENERATION_REQUEST_FIELDS = (
     "schema_version", "artifact_kind", "rendered_prompt_sha256", "system_text_sha256",
     "user_text_sha256", "generation_policy_sha256", "provider_control_sha256",
@@ -193,6 +226,11 @@ PROMPT_TASK_FIELDS = (
     # frozen `eval/tasks/prompt-v1/*.json` manifests keep their exact bytes and their exact
     # `content_sha256`. A task that declares `maximum_repair_loops >= 1` must declare the pair.
     "repair_template_path", "repair_template_sha256",
+    # C4-REPAIR-TEMPLATE's declared edit policy, `Some` exactly for a task running the template
+    # adapter, on the same optional-member mechanism and with the same digest consequence. It
+    # cannot live in the task definition: `eval/runners/run-coding-task.py` is byte-frozen and
+    # rejects any key outside its own required set (spec section 2.6).
+    "edit_policy",
     "content_sha256",
 )
 ACCEPTANCE_POLICY_FIELDS = (
@@ -245,6 +283,11 @@ REPAIR_SECTION_KINDS = ("STATUS", "EDITSET", "SUMMARY", "STDOUT", "STDERR")
 # running the repair adapter must declare all five kinds; any other task must declare exactly the
 # four it always did. A template is never "upgraded" by inference.
 REPAIR_SECTION_KINDS_V1 = ("STATUS", "SUMMARY", "STDOUT", "STDERR")
+# C4-REPAIR-TEMPLATE inserts `POLICY` between `STATUS` and `EDITSET`: the verdict, then the rules
+# the answer must satisfy, then what the previous answer was, then why it failed. The four- and
+# five-kind sets stay admissible for their own corpora and are subsequences of this one, so a
+# single ordered walk renders every corpus's prompt in its own declared order.
+REPAIR_SECTION_KINDS_V3 = ("STATUS", "POLICY", "EDITSET", "SUMMARY", "STDOUT", "STDERR")
 # Fixed drop precedence (spec section 4.4). `STATUS` is never dropped: it is at most
 # REPAIR_STATUS_LIMIT bytes and it is the single most load-bearing fact in the prompt. Dropping is
 # whole-section, never a byte cut, so this capability never splits a UTF-8 code point.
@@ -270,6 +313,12 @@ EDIT_SET_LIMIT = 16_384
 MAXIMUM_FILE_BLOCKS = 32
 MAXIMUM_EDIT_BYTES = 262_144
 REPAIR_STATUS_LIMIT = 128
+# Spec section 4.4. `STATUS` + `POLICY` are at most 2,176 bytes together, which is why `POLICY`
+# joins `STATUS` as never-dropped: it structurally cannot be the reason a prompt exceeds budget.
+REPAIR_POLICY_LIMIT = 2_048
+# Producer-side, whole-field, applied in `scripts/prompt-template-adapter.py`. Declared here so a
+# persisted `completion_text` is checked against the bound its producer applied.
+COMPLETION_LIMIT = 32_768
 REPAIR_TEMPLATE_TEXT_LIMIT = 16_384
 REPAIR_SECTION_HEADER_LIMIT = 256
 # One repair attempt, so at most two attempts per row. The corpus manifest carries the real cap in
@@ -323,7 +372,9 @@ INPUT_ARTIFACT_OPTIONAL = {
     "PROMPT_EXPERIMENT_RESULT": frozenset({"proposal_status_code"}),
     # A schema-1 task manifest written before C4-REPAIR-MEASURED omits the repair-template pair
     # entirely, which is the canonical encoding of `Option::None` and leaves its digest unchanged.
-    "PROMPT_EVALUATION_TASK": frozenset({"repair_template_path", "repair_template_sha256"}),
+    "PROMPT_EVALUATION_TASK": frozenset({
+        "repair_template_path", "repair_template_sha256", "edit_policy",
+    }),
 }
 
 
@@ -927,6 +978,22 @@ def validate_input_artifact_shape(kind: str, value: Mapping[str, Any]) -> None:
                 or (
                     bounded_text(value.get("repair_template_path"), 4096)
                     and valid_hex(value.get("repair_template_sha256"))
+                )
+            )
+            # Ladder rows 8-11, all before any provider call. Presence is adapter-selected, never
+            # version-selected; and the declared bounds must **equal** the constants the pinned
+            # adapters enforce, because those adapters enforce exactly those values and nothing
+            # else. A differing value is refused rather than silently honoured: changing one is a
+            # new adapter and a new corpus, which is what the field says.
+            and (value.get("edit_policy") is not None) == template_adapter_task(value)
+            and (
+                value.get("edit_policy") is None
+                or (
+                    exact_record(value["edit_policy"], EDIT_POLICY_FIELDS, "EDIT_POLICY")
+                    and record_digest_valid(value["edit_policy"])
+                    and value["edit_policy"]["maximum_file_blocks"] == MAXIMUM_FILE_BLOCKS
+                    and value["edit_policy"]["maximum_edit_bytes"] == MAXIMUM_EDIT_BYTES
+                    and value["edit_policy"]["refuse_unchanged_files"] is True
                 )
             )
         )
@@ -1571,10 +1638,26 @@ def render(variant: Mapping[str, Any], task_prompt: Mapping[str, Any], context: 
     return text, sha256
 
 
-def expected_template_kinds(task: Mapping[str, Any]) -> tuple[str, ...]:
-    """Ladder row 8: which section kinds this task's sealed template must declare, exactly."""
+def declared_adapter(task: Mapping[str, Any]) -> str | None:
+    """The adapter this task's corpus names, which selects every adapter-selected rule.
+
+    One reader for the selector, so the measurement version, the template kind set, the declared
+    edit policy, and the aggregates can never disagree about which corpus this is.
+    """
     declared = list(task.get("argv") or [])
-    if len(declared) == 2 and declared[1] == REPAIR_ADAPTER_RELATIVE:
+    return declared[1] if len(declared) == 2 else None
+
+
+def template_adapter_task(task: Mapping[str, Any]) -> bool:
+    return declared_adapter(task) == TEMPLATE_ADAPTER_RELATIVE
+
+
+def expected_template_kinds(task: Mapping[str, Any]) -> tuple[str, ...]:
+    """Ladder row 12: which section kinds this task's sealed template must declare, exactly."""
+    adapter = declared_adapter(task)
+    if adapter == TEMPLATE_ADAPTER_RELATIVE:
+        return REPAIR_SECTION_KINDS_V3
+    if adapter == REPAIR_ADAPTER_RELATIVE:
         return REPAIR_SECTION_KINDS
     return REPAIR_SECTION_KINDS_V1
 
@@ -1607,6 +1690,36 @@ def repair_status_text(measurement: Mapping[str, Any]) -> str:
         f"build_status: {measurement['build_status']}\n"
         f"test_status: {measurement['test_status']}"
     )
+
+
+def repair_policy_text(editable_paths: Sequence[str], policy: Mapping[str, Any] | None) -> str:
+    """Section 2 of a version-3 repair prompt: the rules the answer must satisfy, per task.
+
+    Its two sources are corpus documents, not attempt output: the digest-pinned task definition's
+    `allowed_edits` and the manifest's declared `edit_policy`, both validated at ladder rows 8-11
+    before any provider call. It is therefore identical for both variants, both paired samples,
+    and both attempts of a task, which is what keeps section 4.6's re-derivation total.
+
+    The bounds are rendered from `edit_policy`, never from this module's own constants, so the
+    prompt cannot disagree with the record ladder row 10 validated. The unchanged-file sentence is
+    the one rule the model actually broke in ten of twenty-two attempts and that no prompt in the
+    repository has ever stated.
+    """
+    if policy is None:
+        return ""
+    lines = ["editable paths, spelled exactly:"]
+    lines.extend(f"  {path}" for path in editable_paths)
+    lines.append("A FILE: block naming any other path is refused before the tests run.")
+    if policy["refuse_unchanged_files"]:
+        lines.append(
+            "A FILE: block whose content is identical to that file's current content is refused "
+            "before the\ntests run."
+        )
+    lines.append(
+        f"At most {policy['maximum_file_blocks']} FILE: blocks. "
+        f"At most {policy['maximum_edit_bytes']} bytes in any one block."
+    )
+    return "\n".join(lines)
 
 
 def edit_set_fence(body: str) -> str:
@@ -1661,15 +1774,23 @@ def repair_edit_set_text(measurement: Mapping[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
-def repair_section_sources(measurement: Mapping[str, Any]) -> dict[str, str]:
+def repair_section_sources(
+    measurement: Mapping[str, Any], policy_text: str = "",
+) -> dict[str, str]:
     """Every source is a field of the failing attempt's persisted `TASK_MEASUREMENT`.
 
     Nothing is re-captured, re-read, re-redacted, or re-truncated: the adapter already applied
     `redact_credential` and then bounded each stream, in that order, before these bytes were
     persisted. Consuming its output verbatim is what makes section 4.4's re-derivation close.
+
+    `POLICY` is the one exception and it widens the input rather than weakening the claim: it is a
+    function of two immutable corpus documents this task's manifest digest-pins, precomputed once
+    per task and passed in, so it is still a pure function of verified bytes. It is empty for a
+    corpus whose template declares no `POLICY` kind, exactly as `EDITSET` is at version 1.
     """
     return {
         "STATUS": repair_status_text(measurement),
+        "POLICY": policy_text,
         "EDITSET": repair_edit_set_text(measurement),
         "SUMMARY": measurement["diagnostic_summary"],
         "STDOUT": measurement["diagnostic_stdout"],
@@ -1688,7 +1809,7 @@ def repair_prompt_text(
     """
     headers = template["section_headers"]
     parts = [base_text, "\n\n", template["preamble_text"]]
-    for kind in REPAIR_SECTION_KINDS:
+    for kind in REPAIR_SECTION_KINDS_V3:
         if kind in headers and kind in included:
             parts.extend(("\n\n", headers[kind], "\n", sources[kind]))
     parts.extend(("\n\n", template["closing_text"]))
@@ -1697,7 +1818,7 @@ def repair_prompt_text(
 
 def ordered_sections(kinds: Iterable[str]) -> list[str]:
     selected = set(kinds)
-    return [kind for kind in REPAIR_SECTION_KINDS if kind in selected]
+    return [kind for kind in REPAIR_SECTION_KINDS_V3 if kind in selected]
 
 
 def assemble_repair_prompt(
@@ -1723,7 +1844,7 @@ def assemble_repair_prompt(
     # Only a kind the sealed template declares can be included: the template is the corpus's
     # statement of what its repair prompt carries, and a section with no header has no rendering.
     headers = template["section_headers"]
-    included = [kind for kind in REPAIR_SECTION_KINDS if kind in headers and sources[kind]]
+    included = [kind for kind in REPAIR_SECTION_KINDS_V3 if kind in headers and sources[kind]]
     dropped: list[str] = []
     while True:
         text = repair_prompt_text(template, base_text, sources, included)
@@ -1808,7 +1929,7 @@ def repair_prompt_source_record(
 
 def build_repair_attempt(
     run_attempt: Any, first: Mapping[str, Any], template: Mapping[str, Any] | None,
-    generation: Mapping[str, Any], paired_seed: int,
+    generation: Mapping[str, Any], paired_seed: int, policy_text: str = "",
 ) -> dict[str, Any]:
     """Render the repair prompt from attempt one's own persisted diagnostics and run attempt two.
 
@@ -1832,7 +1953,7 @@ def build_repair_attempt(
     reason = repair_eligibility(measurement)
     if reason != "NONE":
         return skipped(reason, None)
-    sources = repair_section_sources(measurement)
+    sources = repair_section_sources(measurement, policy_text)
     text, included, dropped, assembled = assemble_repair_prompt(
         template, first["rendered_text"], sources, generation["max_prompt_bytes"],
     )
@@ -1845,7 +1966,7 @@ def build_repair_attempt(
     # buys auditability, not independence-from-the-run: the repair prompt's content is a function
     # of the model's attempt-one output, so no verifier can derive it from the frozen assets alone.
     rederived = repair_prompt_text(
-        template, first["rendered_text"], repair_section_sources(measurement),
+        template, first["rendered_text"], repair_section_sources(measurement, policy_text),
         source["included_sections"],
     )
     if rederived != text:
@@ -2174,11 +2295,8 @@ def valid_task_measurement(
         # Ladder rows 9 and 10. The version is read first and the field tuple is selected from it,
         # so every version-2 member is present at version 2 and absent at version 1. Presence never
         # stands in for a version, in either direction.
-        or value.get("schema_version") not in (1, 2)
-        or tuple(value) != (
-            TASK_MEASUREMENT_V2_FIELDS if value.get("schema_version") == 2
-            else TASK_MEASUREMENT_FIELDS
-        )
+        or value.get("schema_version") not in (1, 2, 3)
+        or tuple(value) != MEASUREMENT_FIELDS_BY_VERSION[value.get("schema_version")]
         or value.get("artifact_kind") != "TASK_MEASUREMENT"
         or value.get("status") not in ("PASS", "FAIL", "POLICY_VIOLATION", "ERROR")
         or value.get("failure_kind") not in (
@@ -2353,6 +2471,16 @@ def valid_edit_set_block(value: Any, allowed: frozenset[str]) -> bool:
 
 def task_allowed_edits(task: Mapping[str, Any], project: Path) -> frozenset[str]:
     """The task definition's editable set, read from the manifest-declared, digest-pinned file."""
+    return frozenset(task_editable_paths(task, project))
+
+
+def task_editable_paths(task: Mapping[str, Any], project: Path) -> list[str]:
+    """The same set, in the task definition's declared order, which is what `POLICY` renders.
+
+    The allowlist keeps exactly one owner. Copying it into the manifest would give one value a
+    second writer for no saving, so the renderer reads it from the authority the adapter itself
+    consults (spec section 3.4).
+    """
     resolved = relative_path(project, task["task_definition_path"])
     raw = read_bounded(resolved, ARTIFACT_LIMIT)
     if hashlib.sha256(raw).hexdigest() != task["task_definition_sha256"]:
@@ -2362,35 +2490,59 @@ def task_allowed_edits(task: Mapping[str, Any], project: Path) -> frozenset[str]
     except (UnicodeError, json.JSONDecodeError):
         raise EvaluationError("the task definition is not canonical JSON") from None
     allowed = value.get("allowed_edits") if isinstance(value, dict) else None
+    source_dir = value.get("source_dir") if isinstance(value, dict) else None
     if (
-        not isinstance(allowed, list) or not allowed
+        not isinstance(allowed, list) or not allowed or len(allowed) > MAXIMUM_FILE_BLOCKS
         or not all(isinstance(item, str) and item for item in allowed)
+        or not isinstance(source_dir, str) or not source_dir
     ):
         raise EvaluationError("the task definition declares no usable editable set")
-    return frozenset(allowed)
+    try:
+        source_root = relative_path(project, source_dir)
+    except EvaluationError:
+        raise EvaluationError("the task definition source directory escapes the project") from None
+    if not source_root.is_dir():
+        raise EvaluationError("the task definition source directory is unavailable")
+    if source_dir != task["repo_path"]:
+        raise EvaluationError("the task definition source directory disagrees with the task repository")
+    return list(allowed)
 
 
 def valid_measurement_version_two(
     value: Mapping[str, Any], task: Mapping[str, Any], allowed_edits: frozenset[str],
 ) -> bool:
-    """Ladder rows 11 and 13-17: the version-2 members, and their ties to the version-1 ones.
+    """Ladder rows 16-21: the version-2 and version-3 members and their ties to version 1.
 
-    Row 11 is the rule that makes the measurement's version a checked function of the corpus rather
-    than a value a producer may choose: a task whose declared adapter is
-    `scripts/prompt-repair-adapter.py` must emit version 2, and any other adapter must emit
-    version 1. The measurement's version is decoupled from `PROMPT_TASK_ROW`'s, which does not move;
-    this rule is what keeps the decoupling deterministic.
+    Row 16 is the rule that makes the measurement's version a checked function of the corpus rather
+    than a value a producer may choose, now three-way: the template adapter must emit version 3,
+    the repair adapter version 2, and any other adapter version 1. The measurement's version is
+    decoupled from `PROMPT_TASK_ROW`'s, which does not move; this rule keeps that deterministic.
+
+    Version 3 shares every version-2 member and rule, so the version-2 body runs unchanged and the
+    version-3 additions are checked on top. The one widening is `edit_set` presence, which is not
+    stated here at all: at version 2 the tie is to `execute_validation` having been reached, and at
+    version 3 it is `valid_measurement_version_three`'s refusal-code invariant. Neither is a
+    key-presence rule, so a merged version-2 chain stays valid byte-for-byte.
     """
-    declared = list(task.get("argv") or [])
-    expects_two = len(declared) == 2 and declared[1] == REPAIR_ADAPTER_RELATIVE
-    if (value["schema_version"] == 2) != expects_two:
+    if value["schema_version"] != expected_measurement_version(task):
         return False
     if value["schema_version"] == 1:
         # Ladder row 10 at version 1: absence is required, never defaulted. The field-tuple check
         # in `valid_task_measurement` already rejects a stray key on a document that reached it
         # through the adapter boundary; stating it here as well makes this function total, so the
         # rule has an addressable owner rather than an emergent one.
-        return not any(name in value for name in TASK_MEASUREMENT_V2_MEMBERS)
+        return not any(
+            name in value
+            for name in TASK_MEASUREMENT_V2_MEMBERS + TASK_MEASUREMENT_V3_MEMBERS
+        )
+    if value["schema_version"] == 2 and any(
+        name in value for name in TASK_MEASUREMENT_V3_MEMBERS
+    ):
+        # Ladder row 15 at version 2, the other half of the version-1 rule above: absence below
+        # version 3 is required, never defaulted. The field-tuple check in `valid_task_measurement`
+        # already rejects a stray key at the adapter boundary; stating it here as well makes this
+        # function total, so the rule has an addressable owner rather than an emergent one.
+        return False
     identity = value.get("base_adapter_runtime_identity")
     if (
         not isinstance(identity, str)
@@ -2410,7 +2562,7 @@ def valid_measurement_version_two(
     if (blocks is None) != (total is None):
         return False
     if blocks is None:
-        return True
+        return value["schema_version"] < 3 or valid_measurement_version_three(value)
     if not isinstance(blocks, list) or not blocks or len(blocks) > MAXIMUM_FILE_BLOCKS:
         return False
     if not all(valid_edit_set_block(block, allowed_edits) for block in blocks):
@@ -2447,7 +2599,90 @@ def valid_measurement_version_two(
         named = [item for item in summary.rsplit(marker, 1)[1].split(", ") if item]
         if named != paths:
             return False
-    return True
+    return value["schema_version"] < 3 or valid_measurement_version_three(value)
+
+
+def expected_measurement_version(task: Mapping[str, Any]) -> int:
+    """Ladder row 16, three-way. The corpus names the adapter and the adapter fixes the version."""
+    adapter = declared_adapter(task)
+    if adapter == TEMPLATE_ADAPTER_RELATIVE:
+        return 3
+    return 2 if adapter == REPAIR_ADAPTER_RELATIVE else 1
+
+
+def edit_refusal_summary_matches(code: str, summary: str) -> bool:
+    """Ladder row 18's cheapest cross-check: the code and the free text are one decision.
+
+    The frozen exceptions carry no code, so the producer maps `str(failure)` by shape. Holding the
+    persisted string to the same map is what makes that mapping falsifiable in the evidence rather
+    than only in the owner smoke: a producer that drifted would have to drift both at once.
+    """
+    fixed = {
+        "NO_FILE_BLOCK": "the response declares no file block",
+        "HEADER_WITHOUT_BLOCK": "a FILE header carries no fenced block",
+        "UNTERMINATED_BLOCK": "a fenced file block is not terminated",
+        "TOO_MANY_BLOCKS": "the response declares too many file blocks",
+        "UNCHANGED_FILES": "the response reproduced the pinned files unchanged",
+    }
+    if code in fixed:
+        return summary == fixed[code]
+    if code == "DUPLICATE_PATH":
+        return summary.startswith("the response declares ") and summary.endswith(" twice")
+    if code == "BODY_TOO_LARGE":
+        return summary.startswith("the emitted content for ") and summary.endswith(" exceeds its bound")
+    if code == "PATH_NOT_EDITABLE":
+        return summary.startswith("the response edits a file outside the editable set: ")
+    return summary.startswith("the editable path escapes the pinned source: ")
+
+
+def valid_measurement_version_three(value: Mapping[str, Any]) -> bool:
+    """Ladder rows 17-20: the version-3 members and the section 3.3 invariants tying them down.
+
+    `edit_refusal` is unconditionally `Some` at version 3 — `NONE` when nothing was refused — so
+    the quantity the corpus aggregate counts is defined for every ran attempt rather than inferred
+    from an absence. The refusal class is checked in both directions against `failure_kind`,
+    because a producer that stopped mapping a raise site would otherwise persist a silent `NONE`.
+
+    The `POLICY` class is one-directional on purpose: the frozen prompt-oversized early return also
+    produces `POLICY_VIOLATION`/`POLICY` and never reaches the parser, so it carries `NONE`.
+    """
+    code = value.get("edit_refusal")
+    if code not in EDIT_REFUSAL_CODES:
+        return False
+    if (code in EDIT_REFUSAL_PATCH_CODES) != (value["failure_kind"] == "PATCH"):
+        return False
+    if code in EDIT_REFUSAL_PATCH_CODES and value["patch_size_bytes"] != 0:
+        return False
+    if code in EDIT_REFUSAL_POLICY_CODES and (
+        value["status"] != "POLICY_VIOLATION" or value["failure_kind"] != "POLICY"
+    ):
+        return False
+    # The invariant this capability exists to establish: the reproduced-unchanged refusal keeps the
+    # blocks the producer built one line before the raise, and every other refusal keeps none.
+    if code == "UNCHANGED_FILES" and (
+        value.get("edit_set") is None or value.get("patch_sha256") is not None
+    ):
+        return False
+    if code in EDIT_REFUSAL_NO_SET_CODES and value.get("edit_set") is not None:
+        return False
+    if code != "NONE" and not edit_refusal_summary_matches(code, value["diagnostic_summary"]):
+        return False
+    count = value.get("completion_bytes")
+    if (count is None) != (value.get("completion_sha256") is None):
+        return False
+    response_received = value["generation_request"]["provider_request_sha256"] != "0" * 64
+    if (count is not None) != response_received:
+        return False
+    if count is not None and (
+        not bounded_integer(count, 0, ARTIFACT_LIMIT) or not valid_hex(value["completion_sha256"])
+    ):
+        return False
+    text = value.get("completion_text")
+    return text is None or (
+        code in EDIT_REFUSAL_NO_SET_CODES
+        and bounded_text(text, COMPLETION_LIMIT, empty=True)
+        and count is not None
+    )
 
 
 def classify_task_drift(
@@ -2583,7 +2818,7 @@ def invoke_adapter(
         raise AdapterFailure("ADAPTER_RESULT", "measurement adapter process failed")
     try:
         measurement = load_bound(
-            measurement_path, "TASK_MEASUREMENT", MEASUREMENT_LIMIT, versions=(1, 2),
+            measurement_path, "TASK_MEASUREMENT", MEASUREMENT_LIMIT, versions=(1, 2, 3),
         )
         if not valid_task_measurement(
             measurement, task, adapter_request["rendered_prompt_sha256"], adapter_request, sample, seed,
@@ -3469,6 +3704,23 @@ def row_repair_editset_attempts(row: Mapping[str, Any]) -> int:
     return total
 
 
+def row_edit_refusal_count(row: Mapping[str, Any]) -> int:
+    """Section 3.8: ran attempts on this row whose measurement records a refusal.
+
+    An attempt contributes when it ran — not `SKIPPED` — and its `measurement.edit_refusal` is not
+    `NONE`. Only a version-3 measurement defines the quantity, so a row from an earlier corpus
+    contributes nothing and its corpus records the member as absent rather than as zero.
+    """
+    total = 0
+    for attempt in row["attempts"] if row["schema_version"] >= 2 else []:
+        measurement = attempt.get("measurement")
+        if attempt["status"] == "SKIPPED" or not measurement:
+            continue
+        if measurement.get("edit_refusal") not in (None, "NONE"):
+            total += 1
+    return total
+
+
 def row_repair_recovered(row: Mapping[str, Any]) -> bool:
     """The section 1.4 gate predicate, evaluated on one row."""
     if row["schema_version"] < 2:
@@ -3503,7 +3755,12 @@ def complete_score(
     corpus_repair_recoveries = 0
     corpus_repair_recovery_paired = 0
     corpus_repair_editset = 0
-    editset_corpus = any(expected_template_kinds(task) == REPAIR_SECTION_KINDS for task in tasks)
+    corpus_edit_refusals = 0
+    editset_corpus = any(
+        expected_template_kinds(task) in (REPAIR_SECTION_KINDS, REPAIR_SECTION_KINDS_V3)
+        for task in tasks
+    )
+    template_corpus = any(template_adapter_task(task) for task in tasks)
     parent_passes = 0
     candidate_passes = 0
     paired_passes = 0
@@ -3527,6 +3784,8 @@ def complete_score(
         candidate_recovered = sum(row_repair_recovered(row) for row in candidate_rows)
         parent_editset = sum(row_repair_editset_attempts(row) for row in parent_rows)
         candidate_editset = sum(row_repair_editset_attempts(row) for row in candidate_rows)
+        parent_refusals = sum(row_edit_refusal_count(row) for row in parent_rows)
+        candidate_refusals = sum(row_edit_refusal_count(row) for row in candidate_rows)
         # A (task, variant) pair counts only when *every* paired sample recovered, so a single
         # lucky sample is not a reproducible recovery.
         parent_paired_recovery = bool(parent_rows) and all(row_repair_recovered(row) for row in parent_rows)
@@ -3563,6 +3822,12 @@ def complete_score(
                 "parent_repair_editset_attempt_count": parent_editset,
                 "candidate_repair_editset_attempt_count": candidate_editset,
             })
+        if template_corpus:
+            aggregates[-1].update({
+                "parent_edit_refusal_count": parent_refusals,
+                "candidate_edit_refusal_count": candidate_refusals,
+            })
+        corpus_edit_refusals += parent_refusals + candidate_refusals
         corpus_repair_editset += parent_editset + candidate_editset
         corpus_repair_attempts += parent_attempted + candidate_attempted
         corpus_repair_recoveries += parent_recovered + candidate_recovered
@@ -3605,6 +3870,13 @@ def complete_score(
         # this capability existed. Presence follows the corpus's adapter, exactly as ladder row
         # 11's measurement version does.
         corpus["repair_editset_attempt_count"] = corpus_repair_editset
+    if template_corpus:
+        # C4-REPAIR-TEMPLATE's pre-committed secondary (section 1.5), against a C4E baseline of 10
+        # of 22 derived from the summary strings because that run did not persist the quantity.
+        # The gate still consumes `repair_recovery_paired_count` only. Presence follows the
+        # corpus's adapter: a corpus whose adapter does not persist `edit_refusal` cannot define
+        # the count, so it is absent rather than zero.
+        corpus["edit_refusal_count"] = corpus_edit_refusals
     reasons: list[dict[str, Any]] = []
     if repair_regression > policy["maximum_repair_loop_regression_count"]:
         reasons.append(reason(
@@ -3848,6 +4120,7 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
     task_inputs: list[tuple[dict[str, Any], dict[str, Any]]] = []
     task_snapshot_files: list[list[str]] = []
     task_repair_templates: list[dict[str, Any] | None] = []
+    task_repair_policies: list[str] = []
     task_ids: set[str] = set()
     for task in tasks:
         if (
@@ -3903,12 +4176,38 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         task_environment = load_bound(relative_path(project, task["environment_policy_path"]), "ENVIRONMENT_POLICY")
         if task_generation != generation or task_control != control or task_environment != environment_policy:
             raise EvaluationError("task policies disagree")
+        # Ladder row 13, and it is **adapter-selected**, exactly as rows 8-12 and 16 are. From
+        # C4-REPAIR-TEMPLATE on, the task prompt is a per-corpus asset rather than one shared with
+        # `prompt-v1`, so a task naming the template adapter must declare its own. Membership in
+        # `artifacts` is the half this boundary owns; the digest is not compared here, because
+        # `artifacts[].expected_sha256` is the snapshot expectation — a digest over mode,
+        # repository-relative path, and content, not `sha256(bytes)` — and
+        # `scripts/prompt-snapshot-helper.py` owns it and verifies it before and after every
+        # invocation.
+        #
+        # Enforcing membership unconditionally would have been wrong twice over: it is a
+        # `prompt-v1*` convention rather than a repository-wide one — `eval/tasks/coding-v1.json`
+        # and `smoke-v1.json` declare no `task_prompt_path` at all, and the evaluator smoke's own
+        # synthetic corpora declare one without listing it — so an unconditional rule rejects
+        # corpora this capability never touched. Both mistakes were caught by
+        # `make prompt-evaluate-smoke` under the Linux recipe and by nothing else.
+        if template_adapter_task(task) and task["task_prompt_path"] not in artifact_paths:
+            raise EvaluationError("the task prompt is not a corpus member")
         task_prompt = load_bound(relative_path(project, task["task_prompt_path"]), "TASK_PROMPT")
         context = load_bound(relative_path(project, task["context_sources_path"]), "CONTEXT_SOURCES")
         if context["task_id"] != task["task_id"]:
             raise EvaluationError("task context identity disagrees")
         task_inputs.append((task_prompt, context))
         task_repair_templates.append(validated_repair_template(task, generation, project))
+        # Section 4.1: the rendered policy is a function of the corpus, not of the attempt, so it
+        # is derived once per task from the two digest-pinned documents ladder rows 8-13 already
+        # verified and is identical for both variants, both samples, and both attempts.
+        policy_text = repair_policy_text(
+            task_editable_paths(task, project), task.get("edit_policy"),
+        )
+        if len(policy_text.encode("utf-8")) > REPAIR_POLICY_LIMIT:
+            raise EvaluationError("the rendered edit policy exceeds its section bound")
+        task_repair_policies.append(policy_text)
         task_snapshot_files.append(automatic_snapshot_files(
             request, task_files[len(task_snapshot_files)], task, project,
         ))
@@ -3943,6 +4242,7 @@ def validated_evaluation_inputs(request: Mapping[str, Any], project: Path) -> di
         "generation_child": generation_child,
         "task_inputs": task_inputs, "task_snapshot_files": task_snapshot_files,
         "task_repair_templates": task_repair_templates,
+        "task_repair_policies": task_repair_policies,
         "scope": scope, "candidate": candidate,
         "parent_variant": parent_variant, "task_files": task_files,
     }
@@ -4198,6 +4498,7 @@ def evaluate(
         task_prompt, context = task_inputs[task_ordinal]
         automatic_files = inputs["task_snapshot_files"][task_ordinal]
         repair_template = inputs["task_repair_templates"][task_ordinal]
+        repair_policy = inputs["task_repair_policies"][task_ordinal]
         # The corpus manifest is the cap. A task declaring `0` behaves exactly as it did before
         # C4-REPAIR-MEASURED, which is how `eval/prompt/canonical-v1/` keeps working unchanged.
         repair_limit = min(task["regression_limits"]["maximum_repair_loops"], MAXIMUM_REPAIR_ATTEMPTS)
@@ -4626,7 +4927,8 @@ def evaluate(
                         if repair_limit >= 1 and attempts[0]["measurement"]["status"] == "FAIL":
                             try:
                                 attempts.append(build_repair_attempt(
-                                    run_attempt, attempts[0], repair_template, generation, paired_seed,
+                                    run_attempt, attempts[0], repair_template, generation,
+                                    paired_seed, repair_policy,
                                 ))
                             except EvaluationError as failure:
                                 # Ladder row 15. A prompt the producer cannot re-derive from its

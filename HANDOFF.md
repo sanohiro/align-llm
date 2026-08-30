@@ -3,7 +3,99 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R6-MOE-RESIDENT-DENSE (2026-08-29)
+## Active: C4-REPAIR-TEMPLATE review repair (2026-08-30)
+
+Branch `agent/c4-repair-template`, merged with `agent/c4-repair-editset` (`6ccbb88`) and
+`origin/main` (`451aa66`, PR #155) by merge, never rebase. Stable reviewed head was `6b73560`, with
+base tip and merge base both `451aa66`. The consolidated review repair is committed as
+`a36b15bfce75eebf2b961906220dcfc7842ba7d6`. Final-review re-scope was committed before
+implementation as `f9cd0a59e6b734974614af816ee4f835cfa72c67`; its implementation is owner-verified
+as `d738f56cca23209db1bd1b418c427def87ebc72a` and is the active publication candidate.
+
+**Qualification correction.** The immutable evaluation has 12 initial plus 12 repair attempts:
+**24 provider calls**, not the pre-committed maximum of 22. The wall time was 700.452 s inside the
+separate 3,600 s ceiling, and the persisted arithmetic is `repair_recovery_paired_count: 1`, but the
+named qualification failed its call-cost contract and has no `MET` verdict. The gate record's
+`addressable_ran_attempts: 22` is a hard-coded producer error. The three JSON artifacts remain
+unchanged; `docs/specs/c4-repair-template.md` section 11.4 and the evidence README own the
+correction. Independently, the only observed recovery repairs an attempt-1 regression introduced by
+version 3, candidate pass/gain counts do not improve, and C4 remains open. The secondary remains 10
+against `< 10`; `PATH_NOT_EDITABLE` moves 2 -> 0 but becomes `UNCHANGED_FILES`.
+
+**Comprehensive reviews.** Two explicitly disjoint independent adversarial reviews covered head
+`6b73560`: (A) adapter/import-chain/version-3 producer found five issues; (B)
+evaluator/scorer/validator, Align verifier, freeze, gate evidence, documentation, Makefile, and
+baseline topology found six. Both verdicts were changes requested. All eleven were accepted and
+repaired as root-cause classes: response identity survives post-generation errors and is tied to the
+existing nonzero provider-request digest in all three validators; cleanup clears lower-priority
+refusal classification; completion redaction is single-pass; base-adapter errors normalize; task
+definition edit/source limits are preflighted; freeze `--check` is read-only; call and wall ceilings
+fail publication closed; ran counts and agreement derive from rows; future records include image ID
+and exact command; the immutable historical breach is corrected in prose; and the authoritative
+ledger's member/declared-patch cells are synchronized.
+
+**Repair verification.** All 13 macOS owners pass together: `gmake build check format-check
+gate-topology-check prompt-verifier-smoke prompt-score-smoke prompt-gate-validator-smoke
+prompt-render-parity-smoke prompt-template-adapter-smoke prompt-repair-adapter-smoke
+prompt-measurement-adapter-smoke prompt-model-smoke prompt-state-smoke`. Linux/aarch64
+`run-prompt-evaluate-smoke` and the full `run-prompt-template-adapter-smoke` pass in
+`c4-repair-measure:latest`. `freeze-canonical-v1t --check` and `git diff --check` pass. Evaluator is
+252,862 B, leaving 9,282 B in the four-chunk launch window; its Align source pin is `dc1c7eec…`.
+
+**Coding-baseline chain, re-recorded.** `Makefile` is one of the canonical baseline's recorded
+inputs. The replacement chain is
+`a36b15bfce75eebf2b961906220dcfc7842ba7d6` ->
+`37c09a36b1c79781ec76caa51a2f54c011827f9d` ->
+`c1a52b568902fcb246d39ccd96cb916ea04dcc79` (clean source -> immutable oracle -> finalization),
+measured on Linux/aarch64 with the pinned managed compiler. Linux `gmake baseline-check` ends
+`baseline chain: PASS`. The first attempt mounted the Git common directory read-only and failed
+only when the isolation smoke tried to create its temporary namespaced replacement ref; the normal
+writable mount passed and the smoke removed its ref.
+
+**Final review and re-scope.** Host-native Codex (`gpt-5.6-sol`, xhigh) comprehensively reviewed
+`dc3107e1ca2c9f650c68e1c61e6328111fff9c26` against base/merge-base `451aa66` and requested changes:
+two major and one minor. The repair had re-frozen measured `prompt-v1t` in place even though its
+checked-in evidence binds the old scope and adapter digests; the call and wall ceilings were
+post-hoc publication checks rather than cost-containment boundaries; and the response-identity
+repair was missing from three ledger/mapping statements. Because the two major findings change the
+approach, this is a re-scope rather than another repair/review loop.
+
+**Re-scoped boundary, committed before its implementation.** Restore measured `prompt-v1t` at its
+original immutable identity (`scope` `84a5e395…`, adapter runtime `PYTHON:03379e26…`) and mint
+`prompt-v1u` at new paths and IDs for the repaired adapter. The old three JSON evidence artifacts
+bind only `prompt-v1t`; `prompt-v1u` is explicitly unqualified. Before any provider probe or
+generation, the gate derives the structurally possible call count from the selected corpus and
+rejects the current 24-call topology against the fixed 22-call ceiling. Both the in-container
+evaluator and host Docker boundary receive monotonic deadlines and terminate their exact process
+group/container on expiry. Deterministic stubs own topology rejection, deadline cleanup, and
+no-publication behavior.
+
+**Re-scope implementation and verification.** The thirteen measured v1t files are restored
+byte-for-byte to `6b73560`; its replacement freeze command is check-only and refuses writes. The
+repaired fifth freeze is `canonical-v1u` + `prompt-v1u`, 31 members, and is marked `UNQUALIFIED`.
+The gate derives 24 possible calls and rejects before provider probing or output-directory creation;
+both the host Docker child and in-container evaluator have monotonic process-group deadlines, and
+Linux uses `PR_SET_CHILD_SUBREAPER` to reap terminated grandchildren. Deterministic stubs cover the
+24-vs-22 refusal, an admissible four-call topology, missing exact command, malformed image identity,
+no publication, deadline cleanup, child termination, and Linux reaping.
+
+All 13 macOS owners from section 11.5 pass together with the required Homebrew library path. The
+full Linux/aarch64 template-adapter smoke and `run-prompt-evaluate-smoke` pass in immutable image
+`sha256:33fa9e4446ab…` using the pinned-revision Linux compiler. Both v1t sealed verification and
+v1u reproducibility check pass; the three historical gate JSON artifacts are unchanged. Linux
+`make baseline-check` ends `baseline chain: PASS`; `make fmt`, Python syntax compilation, and
+`git diff --check` pass. The provider qualification was not rerun.
+
+**Next actions.** (1) Run exact-head fresh-image preflight with
+`prompt-template-adapter-smoke` as owner. (2) Publish an English PR with all review envelopes,
+finding dispositions, correction, and exact verification; merge with `--merge`. (3) Refresh `main`
+and begin roadmap item 38, R6-PREFIX-TTFT.
+
+**Blockers.** None technical. Do not rerun the provider qualification: its structurally possible 24
+calls exceed the fixed 22-call contract, and section 11.4 records the required boundary
+reconsideration.
+
+## Merged checkpoint: R6-MOE-RESIDENT-DENSE (PR #155, `main` `451aa66`, 2026-08-30)
 
 Branch `agent/r6-moe-resident-dense`, implemented on `agent/r6-olmoe-decode` head `bf7c87d` and then
 **merged** with `origin/main` `45ff38e` (R6-OLMOE-DECODE, PR #148, which itself carried
@@ -47,7 +139,7 @@ in `f8796ea` **before** the first line of implementation and not rewritten since
 adds one explicitly marked `Shipped:` note. Sections 12 to 14 record the results, every deviation,
 and the ledger-to-diff mapping. All four design-gate triggers fire.
 
-**State.** Implemented, measured, reviewed, and repaired. Implementation and measurement are
+**State.** Implemented, measured, reviewed, repaired, and published as PR #155. Implementation and measurement are
 committed through `a94ab24`; the consolidated review repair is `588bcbf`. A third merge takes
 `origin/main` `c1ad71e` (the session-stop handoff, PR #154) without rebasing; its only conflict was
 this active block, resolved by retaining the completed repair state and queuing the other unfinished
@@ -115,21 +207,13 @@ and `a94ab24` make the supersession explicit. A final host-native review of the 
 found one P3 documentation mismatch: three unchanged golden row counts still described the older
 merge base. They are refreshed to 63, 29, and 99. No finding remains unresolved.
 
-**Next actions, in order.** (1) Run
-`python3 scripts/pre-pr --owner-test layer-forward-smoke -- gmake layer-forward-smoke`. (2) Publish
-the English pull request with section 12.4 as the measurement of record, the `BELOW FLOOR` result,
-the item 32 instrument-skew refusal, both review envelopes, and all dispositions. (3) Merge after
-required checks pass.
+**Publication.** Exact-head preflight passed at `94482e3`; all three required GitHub checks passed,
+and PR #155 merged as `451aa66`.
 
 **Intentional uncommitted files.** None.
 
-## Queued after this capability
+## Queued after C4-REPAIR-TEMPLATE
 
-- `agent/c4-repair-template` (roadmap item **39**, C4-REPAIR-TEMPLATE) is implemented and
-  owner-verified. Its gate result is section 1.6 (b): the version-3 template introduced the
-  attempt-1 regression that it then recovered, so the prompt is not the binding constraint and the
-  C4 gate remains open. Resume its in-progress merge of `origin/main`, then review, repair,
-  fresh-image preflight, pull request, and merge.
 - Roadmap item **38**, R6-PREFIX-TTFT, follows item 39. Its charter is
   `docs/specs/r6-prefix-key-corpus.md` section 11.
 

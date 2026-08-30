@@ -1,0 +1,986 @@
+#!/usr/bin/env python3
+"""Run the C4-REPAIR-TEMPLATE gate: 3 tasks x 2 variants x 2 paired samples, one repair each.
+
+`docs/specs/c4-repair-template.md` section 6.2 owns this contract. This is a named focused
+qualification. It requires a running host `llama-server`, a 4.7 GB model, and a Linux container, so
+it joins no aggregate: `make ci`, `hosted-checks`, and `capable-checks` do not reach it.
+
+Topology, section 3.7, unchanged from the two gates before it in every particular. Validation runs
+in `bwrap` inside a Linux aarch64 container with the repository bind-mounted. The derived
+`./main prompt generate` child runs in that same container and dials `provider_control.endpoint`,
+which is `http://127.0.0.1:18080/...` and is **byte-identical to the frozen C6 provider control**.
+A container-local `socat` forwarder binds that loopback address and proxies to the host. The
+forwarder exists so that no machine-specific hostname ever reaches a persisted artifact; it is run
+topology, recorded in this run's record, not corpus content.
+
+Provider identity is checked twice and fails closed both times: on the host, before the container
+starts, by comparing `scripts/probe-provider-service`'s document against the frozen generation
+policy; and in band, by requiring each generation response's advertised model id to equal the
+policy's model. Neither observes that the process answering the endpoint is the process whose
+binary was hashed — section 3.7 states that residual risk rather than resolving it.
+
+The gate verdict consumes `corpus_aggregate.repair_recovery_paired_count` and nothing else — the
+identical predicate `docs/specs/c4-repair-measured.md` section 1.4 fixed and
+`c4-repair-template.md` section 1.5 restated, so all three runs are directly comparable. The C6
+acceptance verdict (`status`, `gate_eligible`) is recorded alongside as secondary evidence and is
+explicitly not the C4 claim.
+
+**The pre-committed secondary, stated before the run.** `edit_refusal_count` is the number of ran
+attempts whose measurement records a refusal other than `NONE`. Its C4E value, derived from the
+`diagnostic_summary` strings because that run did not persist the quantity, is **10 of 22**; this is
+the first run that persists it. The target is `edit_refusal_count < 10`. It is reported whatever the
+gate says, with its per-code breakdown, and it is **not** a gate input. A value of 10 or more means
+the statement did not change behaviour at all, which is a different and sharper result than "no
+recovery" — section 1.6 fixes both readings before the run.
+
+**The addressable arm, stated before the run.** Unlike C4E, whose arm was six of ten repair
+attempts, this capability's statement reaches **every ran attempt**: the task prompt changes attempt
+1 and the template changes attempt 2. The arm it is built for is the ten refused attempts of section
+1.2 — eight `UNCHANGED_FILES` and two `PATH_NOT_EDITABLE` — spanning three live (task, variant)
+pairs. Every repair attempt can carry `POLICY`, because its source is the corpus rather than the
+failing measurement, so the expected `policy_included` is true on every ran repair.
+
+**Answer identity, reported and new.** `completion_sha256` makes "attempt two re-sent attempt one's
+whole answer" and "the two paired samples produced the same completion" checkable facts.
+`patch_sha256` could state only patch identity. The gate consumes neither.
+
+**No speed claim of any kind.** Two prior runs measured an 8.1x spread over 44 calls at temperature
+0, the repair prompt is a strict textual extension of the attempt-one prompt so prompt-cache reuse
+is an uncontrolled confound, and **attempt 1 itself changed**, so attempt-1 clocks are not
+comparable to either earlier run either. No timing is a gate input, a threshold, or a claim.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import signal
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+HOST_ROOT = Path(__file__).resolve().parent.parent
+CONTAINER_ROOT = "/work/align-llm"
+DEFAULT_IMAGE = "c4-repair-measure:latest"
+# Recorded before implementation, in the plan, and not raised after the fact. A run that exceeds
+# it stops and the capability boundary is reconsidered.
+COST_CEILING_SECONDS = 60 * 60
+PROVIDER_CALL_CEILING = 22
+PAIRED_SAMPLE_COUNT = 2
+VARIANT_COUNT = 2
+TERMINATION_GRACE_SECONDS = 5
+EVALUATION_ID = "c4e-measure"
+# What the evaluation container needs so `bwrap` can build its namespaces. Named here rather than
+# inlined so the run record can publish the exact grant it was given.
+DOCKER_CONTAINMENT_PRIVILEGES = (
+    "--cap-add=SYS_ADMIN",
+    "--security-opt", "seccomp=unconfined",
+    "--security-opt", "apparmor=unconfined",
+    # Docker masks a set of `/proc` paths by default. `bwrap` re-mounts proc inside the user
+    # namespace it was handed, which those masks refuse: the observed failure is
+    # `Can't mount proc on /newroot/proc: Operation not permitted`, and it lands *after* the
+    # generation call for the row is already paid for. `systempaths=unconfined` lifts exactly that
+    # mask and is narrower than `--privileged`, which also works and grants far more.
+    "--security-opt", "systempaths=unconfined",
+)
+
+
+class GateError(RuntimeError):
+    """The run cannot proceed on the evidence available."""
+
+
+def canonical_chunks(value: Any):
+    if isinstance(value, dict):
+        yield b"{"
+        first = True
+        for key, child in value.items():
+            if child is None:
+                continue
+            if not first:
+                yield b","
+            first = False
+            yield from canonical_chunks(key)
+            yield b":"
+            yield from canonical_chunks(child)
+        yield b"}"
+        return
+    if isinstance(value, list):
+        yield b"["
+        for ordinal, child in enumerate(value):
+            if ordinal:
+                yield b","
+            yield from canonical_chunks(child)
+        yield b"]"
+        return
+    yield json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def canonical(value: Any) -> bytes:
+    """The wire form the evaluator reads: an `Option::None` is written, not omitted."""
+    def chunks(item: Any):
+        if isinstance(item, dict):
+            yield b"{"
+            for ordinal, (key, child) in enumerate(item.items()):
+                if ordinal:
+                    yield b","
+                yield json.dumps(key, ensure_ascii=False).encode("utf-8")
+                yield b":"
+                yield from chunks(child)
+            yield b"}"
+            return
+        if isinstance(item, list):
+            yield b"["
+            for ordinal, child in enumerate(item):
+                if ordinal:
+                    yield b","
+                yield from chunks(child)
+            yield b"]"
+            return
+        yield json.dumps(item, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return b"".join(chunks(value))
+
+
+def bind(value: dict[str, Any]) -> dict[str, Any]:
+    value["content_sha256"] = ""
+    value["content_sha256"] = hashlib.sha256(b"".join(canonical_chunks(value))).hexdigest()
+    return value
+
+
+def raw_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def run(command: list[str], **keywords: Any) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(command, capture_output=True, check=False, **keywords)
+
+
+def enable_child_subreaper() -> None:
+    """Make orphaned Linux grandchildren reapable by this gate process."""
+    if not sys.platform.startswith("linux"):
+        return
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+        raise GateError(f"cannot own deadline descendants: {os.strerror(ctypes.get_errno())}")
+
+
+def reap_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Reap terminated members adopted from this process's uniquely owned group."""
+    if not sys.platform.startswith("linux"):
+        return
+    while True:
+        try:
+            pid, status = os.waitpid(-process.pid, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid == 0:
+            return
+        if pid == process.pid:
+            process.returncode = os.waitstatus_to_exitcode(status)
+
+
+def run_with_deadline(
+    command: list[str],
+    timeout_seconds: float,
+    *,
+    label: str,
+    cwd: str | None = None,
+    capture_output: bool = True,
+    timeout_cleanup: Any | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run one owned process group and reap it completely at a monotonic deadline."""
+    enable_child_subreaper()
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE if capture_output else None,
+        stderr=subprocess.PIPE if capture_output else None,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        if timeout_cleanup is not None:
+            try:
+                timeout_cleanup()
+            except (OSError, subprocess.SubprocessError):
+                # Cleanup is defense in depth for a named container. It must not prevent the
+                # process-group kill below from enforcing the deadline.
+                pass
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        grace_deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
+        while time.monotonic() < grace_deadline:
+            reap_process_group(process)
+            try:
+                os.killpg(process.pid, 0)
+            except (ProcessLookupError, PermissionError):
+                break
+            time.sleep(0.01)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        if process.returncode is None:
+            process.wait()
+        reap_process_group(process)
+        raise GateError(f"{label} exceeded the {timeout_seconds:.0f}s monotonic deadline") from None
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def require_qualification_command(value: str | None) -> str:
+    if not value or not value.strip():
+        raise GateError("the exact qualification command is required")
+    return value
+
+
+def immutable_image_id(completed: subprocess.CompletedProcess[bytes]) -> str:
+    image_id = completed.stdout.decode("ascii", "strict").strip()
+    digest = image_id.removeprefix("sha256:")
+    if (
+        completed.returncode != 0
+        or not image_id.startswith("sha256:")
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise GateError("the evaluation image has no immutable local identity")
+    return image_id
+
+
+def planned_provider_calls(tasks: list[dict[str, Any]]) -> int:
+    """The maximum generation calls implied by the selected corpus, before any side effect."""
+    total = 0
+    for task in tasks:
+        limits = task.get("regression_limits") if isinstance(task, dict) else None
+        repairs = limits.get("maximum_repair_loops") if isinstance(limits, dict) else None
+        if not isinstance(repairs, int) or isinstance(repairs, bool) or repairs not in (0, 1):
+            raise GateError("a gate task carries no supported maximum_repair_loops")
+        total += PAIRED_SAMPLE_COUNT * VARIANT_COUNT * (1 + repairs)
+    return total
+
+
+def enforce_provider_call_ceiling(scope_path: Path, project: Path = HOST_ROOT) -> int:
+    """Reject an over-budget topology before provider probing, mutation, or generation."""
+    try:
+        scope_path = scope_path.resolve()
+        scope_path.relative_to(project.resolve())
+    except (OSError, ValueError):
+        raise GateError("the gate scope escapes the project") from None
+    if not scope_path.is_file():
+        raise GateError("the gate scope is unavailable")
+    scope = load(scope_path)
+    corpus_id = scope.get("corpus_id")
+    if not isinstance(corpus_id, str) or not corpus_id:
+        raise GateError("the gate scope has no corpus identity")
+    corpus_path = scope_path.parent / "corpus.json"
+    corpus = load(corpus_path)
+    if corpus.get("corpus_id") != corpus_id:
+        raise GateError("the gate scope and corpus identities disagree")
+    task_files = corpus.get("task_files")
+    if not isinstance(task_files, list) or not task_files:
+        raise GateError("the gate corpus has no tasks")
+    tasks = []
+    for relative in task_files:
+        if not isinstance(relative, str) or not relative:
+            raise GateError("the gate corpus carries an invalid task path")
+        task_path = (project / relative).resolve()
+        try:
+            task_path.relative_to(project.resolve())
+        except ValueError:
+            raise GateError("a gate task path escapes the project") from None
+        tasks.append(load(task_path))
+    possible = planned_provider_calls(tasks)
+    if possible > PROVIDER_CALL_CEILING:
+        raise GateError(
+            f"the selected corpus can make {possible} provider calls, exceeding the precommitted "
+            f"ceiling of {PROVIDER_CALL_CEILING}; rejected before the first call"
+        )
+    return possible
+
+
+def git_head(repository: Path) -> str:
+    completed = run(["git", "-C", str(repository), "rev-parse", "--verify", "HEAD"])
+    if completed.returncode != 0:
+        raise GateError(f"{repository} has no resolvable HEAD")
+    return completed.stdout.decode("ascii").strip()
+
+
+def git_clean(repository: Path) -> bool:
+    completed = run([
+        "git", "-C", str(repository), "status", "--porcelain=v1", "-z", "--untracked-files=all",
+    ])
+    return completed.returncode == 0 and completed.stdout == b""
+
+
+# --------------------------------------------------------------------------------------------
+# Host phase: provider identity, fail closed, before the container starts.
+# --------------------------------------------------------------------------------------------
+
+
+def verify_provider_probe(probe_path: Path, policy: dict[str, Any]) -> dict[str, Any]:
+    probe = load(probe_path)
+    if probe.get("artifact_kind") != "PROVIDER_SERVICE_PROBE" or probe.get("schema_version") != 1:
+        raise GateError("the provider service probe header is invalid")
+    claimed = probe.get("content_sha256")
+    if not isinstance(claimed, str) or bind(dict(probe))["content_sha256"] != claimed:
+        raise GateError("the provider service probe digest does not recompute")
+    if probe.get("provider_service_revision") != policy.get("provider_service_revision"):
+        raise GateError(
+            "the probed provider service is not the one the generation policy records\n"
+            f"  policy: {policy.get('provider_service_revision')}\n"
+            f"  probe:  {probe.get('provider_service_revision')}"
+        )
+    return probe
+
+
+def probe_endpoint_model(endpoint_host: str, port: int, expected_model: str) -> str:
+    """The in-band half of the fail-closed pair: which model does the server say it serves?"""
+    import urllib.error
+    import urllib.request
+
+    url = f"http://{endpoint_host}:{port}/v1/models"
+    try:
+        with urllib.request.urlopen(url, timeout=120) as response:
+            document = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError) as failure:
+        raise GateError(f"the provider endpoint did not answer a model query: {failure}") from None
+    advertised = [item.get("id") for item in document.get("data", []) if isinstance(item, dict)]
+    if expected_model not in advertised:
+        raise GateError(
+            "the answering server does not advertise the recorded model\n"
+            f"  policy:     {expected_model}\n"
+            f"  advertised: {advertised}"
+        )
+    return expected_model
+
+
+# --------------------------------------------------------------------------------------------
+# Request assembly. Every path in the request is a container path.
+# --------------------------------------------------------------------------------------------
+
+
+def build_request_inputs(root: Path, scope_relative: str, run_relative: str) -> dict[str, Any]:
+    """Write the per-run inputs the evaluate request names, and return the request itself.
+
+    The PARENT arm is the frozen `baseline-v1r` activation, whose effective variant is
+    byte-identical to C6's. The CANDIDATE arm is lifted verbatim from the merged C6 evidence. So
+    this run measures exactly the prompt pair C6 measured and differs from it only in the bounded
+    repair attempt — which is what makes the two runs' attempt-1 arms comparable at all.
+    """
+    scope_path = root / scope_relative
+    scope = load(scope_path)
+    corpus = load(scope_path.parent / "corpus.json")
+    corpus_suffix = scope["corpus_id"].removeprefix("prompt-")
+    baseline = load(scope_path.parent / f"prompt-activation-baseline-{corpus_suffix}.json")
+    frozen = load(root / "eval/prompt/gate/prompt-evaluation-improved.json")
+
+    run_directory = root / run_relative
+    # Clear only what this function owns. The derived generation child was already built into the
+    # run directory by the caller, and the workspace must be empty because the evaluator's
+    # preflight refuses to start against a workspace that is not.
+    for owned in ("artifacts", "workspace"):
+        if (run_directory / owned).exists():
+            shutil.rmtree(run_directory / owned)
+    (run_directory / "artifacts").mkdir(parents=True)
+    workspace = run_directory / "workspace"
+    workspace.mkdir()
+    for stale in ("result.json", "evidence.json"):
+        (run_directory / stale).unlink(missing_ok=True)
+
+    baseline_relative = (
+        f"{scope_relative.rsplit('/', 1)[0]}/prompt-activation-baseline-{corpus_suffix}.json"
+    )
+    experiment = dict(frozen["experiment_artifact"])
+    experiment["experiment_id"] = "c4e-experiment"
+    experiment["scope"] = scope
+    experiment["parent_activation"] = {
+        "artifact_kind": "PROMPT_ACTIVATION_RESULT",
+        "path": baseline_relative,
+        "artifact_id": baseline["decision_id"],
+        "content_sha256": baseline["content_sha256"],
+    }
+    bind(experiment)
+    (run_directory / "artifacts/experiment.json").write_bytes(canonical(experiment))
+
+    preflight = bind({
+        "schema_version": 1,
+        "artifact_kind": "WORKSPACE_PREFLIGHT_REQUEST",
+        "evaluation_id": EVALUATION_ID,
+        "project_root": str(root),
+        "workspace_path": str(workspace),
+        "content_sha256": "",
+    })
+    (run_directory / "artifacts/preflight.json").write_bytes(canonical(preflight))
+
+    # Both must be the *physical* files. The evaluator retains each declared executable through
+    # `O_NOFOLLOW`, so a symlink is refused outright — and `/usr/bin/python3` is a symlink to
+    # `python3.12` on this image. That is why the frozen environment policy declares both names.
+    python_path = Path("/usr/bin/python3").resolve()
+    git_path = Path("/usr/bin/git").resolve()
+    helper_relative = "scripts/prompt-source-verifier.py"
+    helper_digest = raw_digest(root / helper_relative)
+    interpreter_digest = raw_digest(python_path)
+    source_policy = bind({
+        "schema_version": 1,
+        "artifact_kind": "PROMPT_SOURCE_VERIFIER_POLICY",
+        "policy_id": "c4e-source",
+        "helper_path": helper_relative,
+        "helper_sha256": helper_digest,
+        "helper_runtime": f"CPYTHON:{interpreter_digest}:{helper_digest}",
+        "interpreter_sha256": interpreter_digest,
+        "git_executable_sha256": raw_digest(git_path),
+        "content_sha256": "",
+    })
+    (run_directory / "artifacts/source-policy.json").write_bytes(canonical(source_policy))
+
+    manifest_relative = f"{scope_relative.rsplit('/', 1)[0]}/corpus-file-set.manifest"
+    align_repository = os.environ.get("C4_TEMPLATE_ALIGN_REPO", "/work/align")
+    request = {
+        "schema_version": 1,
+        "artifact_kind": "PROMPT_EVALUATE_REQUEST",
+        "evaluation_id": EVALUATION_ID,
+        "project_root": str(root),
+        "experiment_path": f"{run_relative}/artifacts/experiment.json",
+        "parent_activation_path": baseline_relative,
+        "corpus_path": f"{scope_relative.rsplit('/', 1)[0]}/corpus.json",
+        "sample_count": PAIRED_SAMPLE_COUNT,
+        "acceptance_policy_path": "eval/prompt/canonical-v1/prompt-acceptance-policy.json",
+        "workspace_path": str(workspace),
+        "workspace_preflight_path": f"{run_relative}/artifacts/preflight.json",
+        "verifier_align_llm_repository_path": str(root),
+        "verifier_align_llm_commit": git_head(root),
+        "verifier_align_repository_path": align_repository,
+        "verifier_align_revision": (root / ".align-revision").read_text().strip(),
+        "verifier_corpus_source_path": str(root),
+        "verifier_corpus_source_kind": corpus["corpus_revision"]["source_kind"],
+        "verifier_corpus_file_set_manifest_path": str(root / manifest_relative),
+        "verifier_corpus_source_repository_id": corpus["corpus_revision"]["source_repository_id"],
+        "verifier_corpus_source_sha256": corpus["corpus_revision"]["source_sha256"],
+        "verifier_source_policy_path": f"{run_relative}/artifacts/source-policy.json",
+        "verifier_source_policy_sha256": source_policy["content_sha256"],
+        "verifier_python_executable_path": str(python_path),
+        "verifier_git_executable_path": str(git_path),
+        "evaluation_evidence_path": f"{run_relative}/evidence.json",
+        "generation_child_path": str(run_directory / "main"),
+        "generation_child_sha256": raw_digest(run_directory / "main"),
+    }
+    (run_directory / "evaluate-request.json").write_bytes(canonical(request))
+    return request
+
+
+# --------------------------------------------------------------------------------------------
+# Verdict.
+# --------------------------------------------------------------------------------------------
+
+
+def gate_verdict(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    corpus = result.get("corpus_aggregate") or {}
+    paired = corpus.get("repair_recovery_paired_count", 0)
+    return ("MET" if paired >= 1 else "NOT_MET"), corpus
+
+
+def attempt_patch_digest(attempt: dict[str, Any] | None) -> str | None:
+    if attempt is None:
+        return None
+    measurement = attempt.get("measurement") or {}
+    return measurement.get("patch_sha256")
+
+
+def attempt_edit_set_paths(attempt: dict[str, Any] | None) -> list[str] | None:
+    if attempt is None:
+        return None
+    measurement = attempt.get("measurement") or {}
+    blocks = measurement.get("edit_set")
+    if blocks is None:
+        return None
+    return [block["path"] for block in blocks]
+
+
+def attempt_member(attempt: dict[str, Any] | None, name: str) -> Any:
+    if attempt is None:
+        return None
+    return (attempt.get("measurement") or {}).get(name)
+
+
+def row_report(result: dict[str, Any]) -> list[dict[str, Any]]:
+    report = []
+    for row in result.get("rows", []):
+        attempts = row.get("attempts", [])
+        first = attempts[0] if attempts else None
+        second = attempts[1] if len(attempts) > 1 else None
+        first_patch = attempt_patch_digest(first)
+        second_patch = attempt_patch_digest(second)
+        first_completion = attempt_member(first, "completion_sha256")
+        second_completion = attempt_member(second, "completion_sha256")
+        report.append({
+            "task_id": row["task_id"],
+            "sample_index": row["sample_index"],
+            "variant": row["variant"],
+            "attempt_1_status": attempts[0]["status"] if attempts else row["measurement"]["status"],
+            "attempt_2_status": attempts[1]["status"] if len(attempts) > 1 else None,
+            "attempt_2_skip_reason": (
+                attempts[1].get("skip_reason") if len(attempts) > 1 else None
+            ),
+            "repair_loop_count": row.get("repair_loop_count"),
+            "generation_to_passing_patch_ns": row.get("generation_to_passing_patch_ns"),
+            "time_to_passing_patch_ns": row.get("time_to_passing_patch_ns"),
+            "adapter_elapsed_ns": [item.get("adapter_elapsed_ns") for item in attempts],
+            "adapter_overhead_ns": [item.get("adapter_overhead_ns") for item in attempts],
+            "repair_prompt_sha256": (
+                attempts[1].get("rendered_prompt_sha256") if len(attempts) > 1 else None
+            ),
+            "included_sections": (
+                (second.get("repair_prompt_source") or {}).get("included_sections")
+                if second is not None else None
+            ),
+            "dropped_sections": (
+                (second.get("repair_prompt_source") or {}).get("dropped_sections")
+                if second is not None else None
+            ),
+            "editset_included": (
+                "EDITSET" in ((second.get("repair_prompt_source") or {}).get(
+                    "included_sections") or [])
+                if second is not None else None
+            ),
+            # `POLICY` is a function of the corpus rather than of the failing attempt, so it is
+            # expected true on every ran repair. A false here means the drop ladder fired, which
+            # section 4.5 argues is structurally impossible below a 65,536-byte budget.
+            "policy_included": (
+                "POLICY" in ((second.get("repair_prompt_source") or {}).get(
+                    "included_sections") or [])
+                if second is not None else None
+            ),
+            # The two facts the C4 run could not state. `patch_size_bytes` said only "the same
+            # size"; these say whether the bytes were the same.
+            "attempt_1_patch_size_bytes": (
+                (first.get("measurement") or {}).get("patch_size_bytes") if first else None
+            ),
+            "attempt_2_patch_size_bytes": (
+                (second.get("measurement") or {}).get("patch_size_bytes") if second else None
+            ),
+            "attempt_1_patch_sha256": first_patch,
+            "attempt_2_patch_sha256": second_patch,
+            "same_patch_resent": (
+                first_patch == second_patch
+                if first_patch is not None and second_patch is not None else None
+            ),
+            "attempt_1_edit_set_paths": attempt_edit_set_paths(first),
+            "attempt_2_edit_set_paths": attempt_edit_set_paths(second),
+            "attempt_1_edit_set_total_bytes": attempt_member(first, "edit_set_total_bytes"),
+            # The named, counted, diagnosable outcome this capability exists to produce. Both
+            # prior runs recorded these ten attempts as `failure_kind: PATCH` and nothing else,
+            # which three design documents read wrong.
+            "attempt_1_edit_refusal": attempt_member(first, "edit_refusal"),
+            "attempt_2_edit_refusal": attempt_member(second, "edit_refusal"),
+            "attempt_1_diagnostic_summary": attempt_member(first, "diagnostic_summary"),
+            "attempt_2_diagnostic_summary": attempt_member(second, "diagnostic_summary"),
+            # Whole-answer identity, which `patch_sha256` could not state: it is `None` on every
+            # refused row, because a refused attempt produced no patch.
+            "attempt_1_completion_bytes": attempt_member(first, "completion_bytes"),
+            "attempt_2_completion_bytes": attempt_member(second, "completion_bytes"),
+            "attempt_1_completion_sha256": first_completion,
+            "attempt_2_completion_sha256": second_completion,
+            "same_completion_resent": (
+                first_completion == second_completion
+                if first_completion is not None and second_completion is not None else None
+            ),
+            # Persisted only where no structured substitute exists, so a reviewer can read what
+            # the model actually emitted on a row nothing else can explain.
+            "attempt_1_completion_text": attempt_member(first, "completion_text"),
+            "attempt_2_completion_text": attempt_member(second, "completion_text"),
+        })
+    return report
+
+
+def refusal_breakdown(result: dict[str, Any]) -> dict[str, int]:
+    """The pre-committed secondary's per-code breakdown, recomputed from the rows themselves."""
+    counts: dict[str, int] = {}
+    for row in result.get("rows", []):
+        for attempt in row.get("attempts", []):
+            if attempt.get("status") == "SKIPPED":
+                continue
+            code = (attempt.get("measurement") or {}).get("edit_refusal")
+            if code and code != "NONE":
+                counts[code] = counts.get(code, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def ran_attempt_count(result: dict[str, Any]) -> int:
+    """Count paid provider attempts from the persisted rows, never from a planned literal."""
+    return sum(
+        1
+        for row in result.get("rows", [])
+        for attempt in row.get("attempts", [])
+        if attempt.get("status") != "SKIPPED"
+    )
+
+
+def paired_completion_agreement(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Whether the two paired samples of a (task, variant) pair produced the same completions.
+
+    A greedy decode at `temperature_micros: 0` cannot be changed by a seed, so disagreement here
+    is server state rather than sampling. Reported, never a gate input.
+    """
+    pairs: dict[tuple[str, str], dict[int, list[str | None]]] = {}
+    for row in result.get("rows", []):
+        key = (row["task_id"], row["variant"])
+        digests = [
+            (attempt.get("measurement") or {}).get("completion_sha256")
+            for attempt in row.get("attempts", [])
+            if attempt.get("status") != "SKIPPED"
+        ]
+        pairs.setdefault(key, {})[row["sample_index"]] = digests
+    report = []
+    for (task_id, variant), samples in sorted(pairs.items()):
+        ordered = [samples[index] for index in sorted(samples)]
+        report.append({
+            "task_id": task_id,
+            "variant": variant,
+            "samples_agree": (
+                len(ordered) > 1
+                and all(digest is not None for item in ordered for digest in item)
+                and all(item == ordered[0] for item in ordered)
+            ),
+        })
+    return report
+
+
+# --------------------------------------------------------------------------------------------
+# Phases.
+# --------------------------------------------------------------------------------------------
+
+
+def in_container(values: argparse.Namespace) -> int:
+    root = Path(CONTAINER_ROOT)
+    scope_relative = values.scope
+    run_relative = values.run_relative
+
+    # Repeat the host's structural guard so the internal mode cannot be invoked directly to
+    # bypass the provider-call ceiling.
+    enforce_provider_call_ceiling(root / scope_relative, root)
+
+    compiler = os.environ.get("C4_TEMPLATE_ALIGNC", "/tc/alignc")
+    run_directory = root / run_relative
+    run_directory.mkdir(parents=True, exist_ok=True)
+    built = run([compiler, "build", str(root / "src/main.align")], cwd=str(run_directory))
+    if built.returncode != 0 or not (run_directory / "main").exists():
+        sys.stderr.write(built.stderr.decode("utf-8", "replace")[-8192:])
+        raise GateError("the derived generation child did not compile")
+
+    if values.diagnose_sandbox:
+        # The validation runner builds its own user namespace and hands the descriptor to
+        # `bwrap --userns`. When that is unavailable every row dies as "contained validation runner
+        # failed" *after* its generation call is already paid for, so this probe answers the
+        # question for free, before any provider work.
+        probe_source = (
+            "import ctypes, os, subprocess, sys\n"
+            "rc = ctypes.CDLL(None, use_errno=True).unshare(0x10000000)\n"
+            "print('unshare(CLONE_NEWUSER) ->', rc, os.strerror(ctypes.get_errno()) if rc else 'ok')\n"
+            "done = subprocess.run(['/usr/bin/bwrap', '--dev-bind', '/', '/', '--unshare-user',\n"
+            "                       '--unshare-pid', '/usr/bin/true'], capture_output=True)\n"
+            "print('bwrap --unshare-user ->', done.returncode,\n"
+            "      done.stderr.decode('utf-8', 'replace').strip())\n"
+            "print('max_user_namespaces:',\n"
+            "      open('/proc/sys/user/max_user_namespaces').read().strip()\n"
+            "      if os.path.exists('/proc/sys/user/max_user_namespaces') else 'absent')\n"
+        )
+        completed = run(["/usr/bin/python3", "-c", probe_source], cwd=str(root))
+        sys.stdout.write(completed.stdout.decode("utf-8", "replace"))
+        sys.stderr.write(completed.stderr.decode("utf-8", "replace"))
+        return 0
+
+    request = build_request_inputs(root, scope_relative, run_relative)
+    started = time.monotonic()
+    if values.diagnose:
+        # `./main` requires the evaluator child to exit zero with empty stderr and reports only
+        # `EVALUATION_FAILED` otherwise, which discards the one thing a failing run needs. This
+        # mode runs the same reviewed evaluator directly so its diagnostics survive. It is a
+        # debugging affordance, never the gate path: it does not publish and its output is not
+        # evidence.
+        completed = run(
+            [
+                "/usr/bin/python3", str(root / "scripts/prompt-evaluate.py"),
+                "--request", str(run_directory / "evaluate-request.json"),
+                "--final-result-relative", f"{run_relative}/result.json",
+                "--final-evidence-relative", f"{run_relative}/evidence.json",
+            ],
+            cwd=str(root),
+        )
+        (run_directory / "diagnose-stdout.bin").write_bytes(completed.stdout)
+        (run_directory / "diagnose-stderr.txt").write_bytes(completed.stderr)
+        sys.stderr.write(completed.stderr.decode("utf-8", "replace")[-16384:])
+        sys.stdout.write(f"diagnose: evaluator exit {completed.returncode}\n")
+        return 0 if completed.returncode == 0 else 1
+    completed = run_with_deadline(
+        [
+            str(run_directory / "main"), "prompt", "evaluate",
+            str(run_directory / "evaluate-request.json"),
+            f"{run_relative}/result.json",
+        ],
+        COST_CEILING_SECONDS,
+        label="container evaluator",
+        cwd=str(root),
+    )
+    elapsed = time.monotonic() - started
+    sys.stdout.write(completed.stdout.decode("utf-8", "replace")[-8192:])
+    sys.stderr.write(completed.stderr.decode("utf-8", "replace")[-8192:])
+    (run_directory / "wall-clock-seconds").write_text(f"{elapsed:.3f}\n")
+    if completed.returncode != 0:
+        raise GateError(f"prompt evaluate failed with status {completed.returncode}")
+    if elapsed > COST_CEILING_SECONDS:
+        raise GateError(
+            f"wall clock {elapsed:.0f}s exceeds the {COST_CEILING_SECONDS}s recorded cost ceiling"
+        )
+    _ = request
+    return 0
+
+
+def on_host(values: argparse.Namespace) -> int:
+    qualification_command = require_qualification_command(values.qualification_command)
+    scope_path = HOST_ROOT / values.scope
+    possible_provider_calls = enforce_provider_call_ceiling(scope_path)
+    policy = load(scope_path.parent / "generation-policy.json")
+    control = load(HOST_ROOT / "eval/prompt/canonical-v1/evaluation-provider-control.json")
+    probe = verify_provider_probe(Path(values.provider_probe), policy)
+    port = int(control["endpoint"].split(":")[2].split("/")[0])
+    # The in-band half of the fail-closed pair runs here, on the host, so it dials the host's own
+    # loopback. `--endpoint-host` names what the *container's* forwarder proxies to, which is a
+    # container-side name and does not resolve out here.
+    model = probe_endpoint_model("127.0.0.1", port, control["model"])
+
+    out = Path(values.out)
+    out.mkdir(parents=True, exist_ok=True)
+    run_relative = "run/c4-template-gate"
+    align_repository = Path(
+        os.environ.get(
+            "C4_TEMPLATE_ALIGN_REPO_HOST",
+            str(Path.home() / ".cache/align-llm/align/dev-v1"
+                / (HOST_ROOT / ".align-revision").read_text().strip()),
+        )
+    )
+    if not (align_repository / ".git").exists():
+        raise GateError(f"no Align checkout at the pinned revision under {align_repository}")
+    toolchain = Path(os.environ.get("C4_TEMPLATE_LINUX_TOOLCHAIN", str(HOST_ROOT.parent / "toolchain")))
+    if not (toolchain / "alignc").exists():
+        raise GateError(f"no Linux aarch64 compiler under {toolchain}")
+
+    if not git_clean(HOST_ROOT):
+        # Not fatal, and said out loud. Source reachability will not be VERIFIED, so the C6
+        # acceptance `gate_eligible` cannot be true. The C4 gate does not consume it.
+        sys.stderr.write(
+            "run-c4-template-gate: WARNING the align-llm checkout is not clean; source "
+            "reachability will not verify and `gate_eligible` will be false. The C4 verdict "
+            "consumes `repair_recovery_paired_count` only.\n"
+        )
+
+    # Every interpolated value is quoted for the shell, without exception. These are operator
+    # inputs — a scope path, an output directory, a probe path, a host name — and one space or
+    # quote in any of them would otherwise be re-split by `sh -lc` into a different command.
+    def quoted(value: object) -> str:
+        return shlex.quote(str(value))
+
+    forwarder = (
+        f"socat TCP-LISTEN:{quoted(port)},fork,reuseaddr,bind=127.0.0.1 "
+        f"TCP:{quoted(values.endpoint_host)}:{quoted(port)} & sleep 1; "
+    )
+    driver = (
+        f"exec /usr/bin/python3 {quoted(CONTAINER_ROOT + '/scripts/run-c4-template-gate')} "
+        f"--in-container "
+        f"--scope {quoted(values.scope)} --run-relative {quoted(run_relative)} "
+        f"--provider-probe {quoted(values.provider_probe)} --out {quoted(values.out)} "
+        f"--endpoint-host {quoted(values.endpoint_host)}"
+        + (" --diagnose" if values.diagnose else "")
+        + (" --diagnose-sandbox" if values.diagnose_sandbox else "")
+    )
+    container_name = f"align-llm-c4-template-{os.getpid()}-{time.monotonic_ns()}"
+    command = [
+        "docker", "run", "--rm", "--name", container_name, "--platform", "linux/arm64",
+        # `bwrap` is the containment boundary the validation runner executes every fixture command
+        # inside, and it creates user, mount, and PID namespaces to do so. Docker's default seccomp
+        # profile denies those outright, so without this the runner fails as "contained validation
+        # runner failed" on every row, with the generation call already paid for.
+        #
+        # This widens the *evaluation container's* privileges, not the validation sandbox's:
+        # `bwrap` still contains each fixture command exactly as it does outside Docker, and the
+        # containment result is still checked and recorded per attempt. The container is a
+        # disposable `--rm` sandbox holding only this repository, an Align checkout, and a
+        # compiler. It is nonetheless a real privilege grant and is recorded as run topology.
+        *DOCKER_CONTAINMENT_PRIVILEGES,
+        "-v", f"{HOST_ROOT}:{CONTAINER_ROOT}",
+        "-v", f"{align_repository}:/work/align:ro",
+        "-v", f"{toolchain}:/tc:ro",
+    ]
+    # A linked worktree's `.git` is a file naming a common directory outside the mount, so the
+    # source verifier's `git rev-parse` would fail inside the container with a bare bind of the
+    # checkout. Mounting the resolved common directory read-only at its own absolute path is what
+    # makes an ordinary clone and a linked worktree behave identically here.
+    common = run(["git", "-C", str(HOST_ROOT), "rev-parse", "--git-common-dir"])
+    if common.returncode == 0:
+        resolved = Path(common.stdout.decode("utf-8").strip())
+        if not resolved.is_absolute():
+            resolved = (HOST_ROOT / resolved).resolve()
+        if not str(resolved).startswith(str(HOST_ROOT)):
+            command += ["-v", f"{resolved}:{resolved}:ro"]
+    command += [
+        "-w", CONTAINER_ROOT,
+        "-e", "PYTHONDONTWRITEBYTECODE=1",
+        values.image, "sh", "-lc", forwarder + driver,
+    ]
+    image_identity = run(["docker", "image", "inspect", values.image, "--format", "{{.Id}}"])
+    image_id = immutable_image_id(image_identity)
+
+    def remove_timed_out_container() -> None:
+        try:
+            subprocess.run(
+                ["docker", "rm", "--force", container_name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            pass
+
+    started = time.monotonic()
+    completed = run_with_deadline(
+        command,
+        COST_CEILING_SECONDS,
+        label="host containerized gate",
+        capture_output=False,
+        timeout_cleanup=remove_timed_out_container,
+    )
+    elapsed = time.monotonic() - started
+    if completed.returncode != 0:
+        raise GateError(f"the containerized gate run failed with status {completed.returncode}")
+    if elapsed > COST_CEILING_SECONDS:
+        raise GateError(
+            f"host wall clock {elapsed:.0f}s exceeds the {COST_CEILING_SECONDS}s recorded cost ceiling"
+        )
+
+    run_directory = HOST_ROOT / run_relative
+    result = load(run_directory / "result.json")
+    evidence = load(run_directory / "evidence.json")
+    ran_attempts = ran_attempt_count(result)
+    if ran_attempts > PROVIDER_CALL_CEILING:
+        raise GateError(
+            f"the run made {ran_attempts} provider calls, exceeding the precommitted "
+            f"ceiling of {PROVIDER_CALL_CEILING}; evidence is not published"
+        )
+    verdict, corpus = gate_verdict(result)
+    record = {
+        "schema_version": 1,
+        "artifact_kind": "C4_TEMPLATE_GATE_RECORD",
+        "gate_id": "c4-repair-template-gate-v1",
+        "verdict": verdict,
+        "align_llm_commit": git_head(HOST_ROOT),
+        "align_llm_clean": git_clean(HOST_ROOT),
+        "align_revision": (HOST_ROOT / ".align-revision").read_text().strip(),
+        "image": values.image,
+        "image_id": image_id,
+        "docker_version": run(["docker", "version", "--format", "{{.Server.Version}}"])
+        .stdout.decode("ascii").strip(),
+        "forwarder": (
+            f"socat TCP-LISTEN:{port},fork,reuseaddr,bind=127.0.0.1 "
+            f"TCP:{values.endpoint_host}:{port}"
+        ),
+        "container_privileges": list(DOCKER_CONTAINMENT_PRIVILEGES),
+        "provider_service_probe": probe,
+        "in_band_model_id": model,
+        "wall_clock_seconds": round(elapsed, 3),
+        "cost_ceiling_seconds": COST_CEILING_SECONDS,
+        "provider_call_ceiling": PROVIDER_CALL_CEILING,
+        "possible_provider_calls": possible_provider_calls,
+        "qualification_command": qualification_command,
+        "evaluation_status": result["status"],
+        "gate_eligible": result["gate_eligible"],
+        "corpus_aggregate": corpus,
+        "addressable_ran_attempts": ran_attempts,
+        "addressable_refused_attempts": corpus.get("edit_refusal_count"),
+        "edit_refusal_count_baseline": 10,
+        "edit_refusal_count_target": "edit_refusal_count < 10",
+        "edit_refusal_breakdown": refusal_breakdown(result),
+        "paired_completion_agreement": paired_completion_agreement(result),
+        "rows": row_report(result),
+        "content_sha256": "",
+    }
+    bind(record)
+
+    shutil.copyfile(run_directory / "result.json", out / "c4-template-evaluation.json")
+    shutil.copyfile(run_directory / "evidence.json", out / "c4-template-evaluation-evidence.json")
+    (out / "c4-template-gate-record.json").write_bytes(
+        (json.dumps(record, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    )
+    _ = evidence
+    rows = record["rows"]
+    resent = [item for item in rows if item["same_patch_resent"] is True]
+    changed = [item for item in rows if item["same_patch_resent"] is False]
+    sys.stdout.write(
+        f"run-c4-template-gate: {verdict} "
+        f"repair_recovery_paired_count={corpus.get('repair_recovery_paired_count')} "
+        f"repair_attempt_count={corpus.get('repair_attempt_count')} "
+        f"repair_recovery_count={corpus.get('repair_recovery_count')} "
+        f"repair_editset_attempt_count={corpus.get('repair_editset_attempt_count')} "
+        f"edit_refusal_count={corpus.get('edit_refusal_count')} (baseline 10, target <10) "
+        f"same_patch_resent={len(resent)} patch_changed={len(changed)} "
+        f"wall_clock={elapsed:.0f}s\n"
+    )
+    sys.stdout.write(f"  edit_refusal breakdown: {record['edit_refusal_breakdown']}\n")
+    for item in rows:
+        sys.stdout.write(
+            f"  {item['task_id']} s{item['sample_index']} {item['variant']}: "
+            f"a1={item['attempt_1_status']}/{item['attempt_1_patch_size_bytes']}B/"
+            f"{item['attempt_1_edit_refusal']} "
+            f"a2={item['attempt_2_status']}/{item['attempt_2_patch_size_bytes']}B/"
+            f"{item['attempt_2_edit_refusal']} "
+            f"policy={item['policy_included']} editset={item['editset_included']} "
+            f"same_patch={item['same_patch_resent']} "
+            f"same_answer={item['same_completion_resent']}\n"
+        )
+    return 0
+
+
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--scope", required=True)
+    parser.add_argument("--provider-probe", required=True)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--image", default=DEFAULT_IMAGE)
+    parser.add_argument("--endpoint-host", default="host.docker.internal")
+    parser.add_argument("--qualification-command")
+    parser.add_argument("--in-container", action="store_true")
+    parser.add_argument("--run-relative", default="run/c4-template-gate")
+    parser.add_argument(
+        "--diagnose-sandbox", action="store_true",
+        help="probe the container's user-namespace support and exit; makes no provider call",
+    )
+    parser.add_argument(
+        "--diagnose", action="store_true",
+        help="run the evaluator directly and surface its diagnostics; publishes nothing",
+    )
+    return parser.parse_args(arguments)
+
+
+def main(arguments: list[str] | None = None) -> int:
+    values = parse_arguments(sys.argv[1:] if arguments is None else arguments)
+    try:
+        return in_container(values) if values.in_container else on_host(values)
+    except (GateError, OSError, ValueError, KeyError) as failure:
+        sys.stderr.write(f"run-c4-template-gate: ERROR {failure}\n")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

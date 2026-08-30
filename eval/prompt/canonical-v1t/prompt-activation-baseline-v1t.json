@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "PROMPT_ACTIVATION_RESULT",
+  "decision_id": "baseline-v1t",
+  "status": "BASELINED",
+  "error_code": "NONE",
+  "error": "",
+  "activation": {
+    "schema_version": 1,
+    "artifact_kind": "PROMPT_ACTIVATION",
+    "activation_id": "baseline-v1t/activation",
+    "operation": "BASELINE",
+    "scope": {
+      "schema_version": 1,
+      "artifact_kind": "PROMPT_SCOPE",
+      "repo_id": "prompt-v1-fixture",
+      "repo_profile_revision": "prompt-v1-repo-profile-1",
+      "align_revision": "3a34febe912db5096c58c74fede36ff53f223e04",
+      "corpus_id": "prompt-v1t",
+      "corpus_revision": {
+        "schema_version": 1,
+        "artifact_kind": "CORPUS_REVISION",
+        "source_kind": "FILE_SET",
+        "source_repository_id": "",
+        "source_sha256": "5e38f2e6019ccb18ec94f17e1f659c8f07bc0101c1a6c97ec957a16cdcc0e1b2",
+        "content_sha256": "43aed43f70aeee14e6c6c625bdc53b338063cbd9aa0fcf7cd342312282f9c141"
+      },
+      "evaluation_provider_kind": "LOCAL_OPENAI",
+      "evaluation_provider_model": "qwen2.5-coder-7b-instruct-q4_k_m",
+      "generation_policy_sha256": "8dd9f0018315376799567adba2d90493c4e654c5be84645ec714558144d1180d",
+      "acceptance_policy_sha256": "7b7070aa292b404908c1a6cac66aa8ec93db1e247971ad3832cddda34793ccc3",
+      "base_prompt_sha256": "a9c23b5ab11aa3b03514db43d4b994ad2f79dbc0040376231f4931e41ff9da0a",
+      "repo_prompt_sha256": "1be40aada3352a4622eed7446820cacd1127b0ffaecc74a3a796aeba5fcd1d21",
+      "content_sha256": "84a5e39536ab756a07f8d73d052a58d9ed01b67a1cf29b571e3282aab5cb6d81"
+    },
+    "parent_activation_id": "",
+    "parent_activation_sha256": "",
+    "effective_variant": {
+      "schema_version": 1,
+      "artifact_kind": "PROMPT_VARIANT",
+      "variant_id": "baseline-v1",
+      "base_prompt": {
+        "schema_version": 1,
+        "artifact_kind": "BASE_PROMPT",
+        "artifact_id": "base-v1",
+        "text": "You are align-llm's repository coding agent.\n\nWork only from the supplied repository context. Produce the smallest change that\nmakes the declared validation command exit zero.\n\nRules:\n- Return whole-file blocks, never a diff. For every file you change, emit\n  one `FILE: <repo-relative-path>` line followed by a fenced block holding\n  that file's complete new content. Text outside those blocks is ignored.\n- Change only the files that the task prompt declares editable; a block\n  naming any other path is rejected before the tests run.\n- Never change, weaken, delete, or skip a test.\n- Never add a dependency; the Python standard library is the only dependency.\n- Keep the observable behaviour of every symbol the task does not name.\n- When a requirement states an exact boundary, reason about that boundary\n  exactly instead of relying on a default numeric helper.\n",
+        "content_sha256": "a9c23b5ab11aa3b03514db43d4b994ad2f79dbc0040376231f4931e41ff9da0a"
+      },
+      "repo_prompt": {
+        "schema_version": 1,
+        "artifact_kind": "REPO_PROMPT",
+        "artifact_id": "repo-v1",
+        "text": "Repository family: prompt-v1-fixture.\n\nEvery task in this family is one small Python package with the same shape:\n\n  src/    pure library modules, standard library only\n  tests/  stdlib unittest modules, executed as `python3 tests/<module>.py -v`\n\nFamily rules:\n- Modules are import-safe. No clock, network, filesystem, environment, or random\n  access happens at import time or inside a public function.\n- Tests are executable specifications. The validation command's exit code is the\n  only success signal, and its alphabetical test order must stay stable.\n- Docstrings state the intended contract. When code and docstring disagree, the\n  tests decide.\n- Do not create, rename, or delete files, and do not add packaging metadata.\n- A patch that touches a file outside the task's editable set is rejected before\n  it is scored, even when it would make the tests pass.\n",
+        "content_sha256": "1be40aada3352a4622eed7446820cacd1127b0ffaecc74a3a796aeba5fcd1d21"
+      },
+      "learned_prompt_append": "",
+      "context_policy": {
+        "include_patch_evaluation": false,
+        "include_failure_memory": false,
+        "include_diagnostics": false,
+        "max_patch_evaluation_bytes": 0,
+        "max_failure_events": 0,
+        "max_failure_context_bytes": 0,
+        "max_diagnostic_bytes_per_stream": 0
+      },
+      "candidate_id": "BASELINE",
+      "content_sha256": "b668cbcdbe7980b968758da020c9d6e203c804ae94cd1a23181ecd3f74368c4c"
+    },
+    "accepted_evaluation_id": "",
+    "accepted_evaluation_sha256": "",
+    "rollback_target_activation_id": "",
+    "rollback_target_activation_sha256": "",
+    "decision_reason": "",
+    "content_sha256": "e826e63e6cbe04118a4df37b36e71bed85947427f3de3a8e4cac1598bbcdf802"
+  },
+  "content_sha256": "eeb544dffeeb1f2fb1b9b6456a81206e88f8885fc9e8a8515630778280f416f9"
+}

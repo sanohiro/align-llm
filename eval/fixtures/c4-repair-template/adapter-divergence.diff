@@ -1,0 +1,128 @@
+--- scripts/prompt-repair-adapter.py:measurement
++++ scripts/prompt-template-adapter.py:measurement
+@@ -1,4 +1,5 @@
+ def measurement(
++    repair: ModuleType,
+     frozen: ModuleType,
+     base_identity: str,
+     request: Mapping[str, Any],
+@@ -21,6 +22,7 @@
+     patch_sha256: str | None = None
+     edit_set: list[dict[str, Any]] | None = None
+     edit_set_total_bytes: int | None = None
++    edit_refusal = "NONE"
+     generation_ns: int | None = None
+     applied_edits: list[str] = []
+     summary = "provider-backed measurement failed"
+@@ -29,7 +31,7 @@
+         return assemble(
+             frozen, base_identity, request, rendered, "POLICY", True, True, b"", b"", 0, None,
+             generation, attestation, "prompt exceeds max_prompt_bytes", credential_value,
+-            None, None, None,
++            None, None, None, "NONE", None,
+         )
+     try:
+         if not frozen.CHILD_SUBREAPER_ENABLED:
+@@ -73,7 +75,7 @@
+             source_root, allowed_edits = frozen.task_edit_policy(task_definition, project)
+             edits = frozen.validated_edit_set(response["content"], allowed_edits)
+             applied_edits = [path for path, _ in edits]
+-            edit_set, edit_set_total_bytes = edit_set_blocks(frozen, edits, credential_value)
++            edit_set, edit_set_total_bytes = repair.edit_set_blocks(frozen, edits, credential_value)
+             raw_patch = frozen.synthesized_patch(edits, source_root)
+             patch_sha256 = hashlib.sha256(
+                 frozen.redacted_bytes(raw_patch, credential_value)
+@@ -94,15 +96,25 @@
+             summary = "contained validation runner failed"
+         summary = f"{summary}; applied edits: {', '.join(applied_edits) or 'declared patch'}"
+     except frozen.PolicyViolation as failure:
+-        outcome, generation_ns = "POLICY", None
++        summary = str(failure)
++        code = classified_refusal(summary, EDIT_REFUSAL_POLICY_CODES)
++        outcome, generation_ns = ("POLICY" if code else "ERROR"), None
++        edit_refusal = code or "NONE"
++        if code is None:
++            summary = f"unmapped edit refusal: {summary}"
+         edit_set, edit_set_total_bytes, patch_sha256 = None, None, None
++        stderr = frozen.bounded_diagnostic(summary, credential_value)
++    except frozen.EditFormatError as failure:
+         summary = str(failure)
+-        stderr = frozen.bounded_diagnostic(str(failure), credential_value)
+-    except frozen.EditFormatError as failure:
+-        outcome, generation_ns = "PATCH", None
+-        edit_set, edit_set_total_bytes, patch_sha256 = None, None, None
+-        summary = str(failure)
+-        stderr = frozen.bounded_diagnostic(str(failure), credential_value)
++        code = classified_refusal(summary, EDIT_REFUSAL_PATCH_CODES)
++        outcome, generation_ns = ("PATCH" if code else "ERROR"), None
++        edit_refusal = code or "NONE"
++        if code is None:
++            summary = f"unmapped edit refusal: {summary}"
++        if code != "UNCHANGED_FILES":
++            edit_set, edit_set_total_bytes = None, None
++        patch_sha256 = None
++        stderr = frozen.bounded_diagnostic(summary, credential_value)
+     except frozen.GenerationFailure as failure:
+         outcome, response, generation_ns = "ERROR", None, None
+         edit_set, edit_set_total_bytes, patch_sha256 = None, None, None
+@@ -111,7 +123,7 @@
+         summary = str(failure)
+         stderr = frozen.bounded_diagnostic(str(failure), credential_value)
+     except (frozen.AdapterError, OSError, TypeError, ValueError, KeyError) as failure:
+-        outcome, response, generation_ns = "ERROR", None, None
++        outcome, generation_ns = "ERROR", None
+         edit_set, edit_set_total_bytes, patch_sha256 = None, None, None
+         summary = str(failure)
+         stderr = frozen.bounded_diagnostic(str(failure), credential_value)
+@@ -121,9 +133,12 @@
+                 item.close()
+             except OSError:
+                 cleanup_passed = False
++    completion: bytes | None = None
++    if response is not None:
++        completion = frozen.redacted_bytes(response["content"].encode("utf-8"), credential_value)
+     generation, attestation = frozen.provider_identities(request, rendered, policy, control, response)
+     return assemble(
+         frozen, base_identity, request, rendered, outcome, cleanup_passed, containment_passed,
+         stdout, stderr, patch_byte_count, generation_ns, generation, attestation, summary,
+-        credential_value, edit_set, edit_set_total_bytes, patch_sha256,
++        credential_value, edit_set, edit_set_total_bytes, patch_sha256, edit_refusal, completion,
+     )
+
+--- scripts/prompt-repair-adapter.py:assemble
++++ scripts/prompt-template-adapter.py:assemble
+@@ -17,7 +17,11 @@
+     edit_set: Sequence[Mapping[str, Any]] | None,
+     edit_set_total_bytes: int | None,
+     patch_sha256: str | None,
++    edit_refusal: str,
++    completion: bytes | None,
+ ) -> dict[str, Any]:
++    if not cleanup_passed or not containment_passed:
++        edit_refusal = "NONE"
+     passed = outcome == "PASS"
+     expected_failure = outcome == "TEST_FAIL"
+     policy_violation = outcome == "POLICY"
+@@ -69,7 +73,22 @@
+         "edit_set_total_bytes": edit_set_total_bytes,
+         "patch_sha256": patch_sha256,
+         "base_adapter_runtime_identity": base_identity,
++        "edit_refusal": edit_refusal,
++        "completion_bytes": None if completion is None else len(completion),
++        "completion_sha256": (
++            None if completion is None else hashlib.sha256(completion).hexdigest()
++        ),
++        "completion_text": None,
+         "content_sha256": "",
+     }
++    carried = (
++        None if completion is None or edit_refusal in ("NONE", "UNCHANGED_FILES")
++        else frozen.bounded_text(completion, COMPLETION_LIMIT, None)
++    )
++    if carried is not None:
++        value["completion_text"] = carried
++        frozen.bind_digest(value)
++        if len(frozen.canonical_bytes(value)) > frozen.RESULT_LIMIT:
++            value["completion_text"] = None
+     frozen.bind_digest(value)
+     return value

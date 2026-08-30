@@ -359,7 +359,7 @@ generation, validation, and edit-parsing functions unchanged. Only the sequencin
 the edit set is a near-copy, and its divergence from the frozen original is asserted against a
 checked-in golden — `eval/fixtures/c4-repair-editset/adapter-divergence.diff`, regenerated with
 `scripts/run-prompt-repair-adapter-smoke --update-golden`. The frozen adapter stays byte-identical
-and remains a member of all three corpus file-set manifests at the same digest.
+and remains a member of all four corpus file-set manifests at the same digest.
 `TASK_MEASUREMENT` moves to `schema_version: 2` under the same `Option` mechanism the row uses, and
 `PROMPT_TASK_ROW` does not move, because the row gains no field.
 
@@ -381,14 +381,15 @@ Four rules that generalize beyond this capability:
   function of redaction as well as of content, which is the correct trade.
 - **A persisted quantity that only some corpora can produce is selected by the corpus, not by the
   container version.** `repair_editset_attempt_count` is `Some` exactly when the corpus names the
-  repair adapter, because a `canonical-v1r` template declares no `EDITSET` kind and the quantity is
-  undefined for it rather than zero. Requiring it at version 2 unconditionally would have rejected
+  repair adapter **or the template adapter**, because a `canonical-v1r` template declares no
+  `EDITSET` kind and the quantity is undefined for it rather than zero. Requiring it at version 2 unconditionally would have rejected
   the merged `eval/prompt/c4-repair-gate/` evidence, which is a version-2 document written before
   the quantity existed. The frozen-chain regression in `make prompt-gate-validator-smoke` is what
   caught that.
 - **Which section kinds a sealed repair template must declare is also selected by the corpus.**
   `canonical-v1r`'s four-kind template stays decodable and its corpus stays runnable; a task naming
-  the repair adapter must declare all five. A template is never "upgraded" by inference.
+  the repair adapter must declare all five, and one naming the template adapter all six. A template
+  is never "upgraded" by inference. The same rule selects the measurement version, three ways.
 
 `scripts/prompt-evaluate.py` is pinned byte-exactly by `src/prompt_evaluate.align` **and** bounded
 by a chunked-argument launch window. That window is now four chunks, 196,609…262,144 bytes, and
@@ -404,6 +405,56 @@ machine-specific hostname reaches a persisted artifact. `scripts/probe-provider-
 `PROVIDER_SERVICE_PROBE` on the host and fails closed unless the build, the server binary digest,
 and the model digest all equal the frozen `provider_service_revision`; the answering server's
 advertised model id is checked in band as the second half of the pair.
+
+#### The declared edit policy, and what the refusal strings actually said
+
+`docs/specs/c4-repair-template.md` is the authoritative plan. It opens with a correction that is
+worth repeating here because three documents got it wrong: `failure_kind: PATCH` does **not** mean
+"the response had no parsable `FILE:` block". `scripts/prompt-measurement-adapter.py` raises
+`EditFormatError` from seven sites and `PolicyViolation` from two more, and `measurement()` maps
+all of them to two enum values, so the only distinguishing signal was the free-text
+`diagnostic_summary`. Read it in both gate runs and every `PATCH` row says `"the response
+reproduced the pinned files unchanged"` — `synthesized_patch`'s refusal, raised after the blocks
+parsed and after every path passed the allowlist. **No attempt in 44 provider calls has ever failed
+to parse.**
+
+Four rules that generalize beyond this capability:
+
+- **A status enum that collapses nine raise sites is not a diagnosis.** `edit_refusal` gives each
+  site a code and the corpus aggregate a counter, so the same mistake cannot be made from the
+  record again. The code is mapped from the frozen exception's message *shape*, which is safe only
+  because the file is digest-pinned in four corpus manifests, and the mapping is **total**: an
+  unmapped message is an adapter error, never a silent `NONE`. Every one of the nine sites is
+  driven against the real loaded module in `make prompt-template-adapter-smoke`, so a message
+  change turns the smoke red before it can persist a wrong code.
+- **A constant that three scripts declare and one function enforces implicitly is not a contract.**
+  `MAXIMUM_FILE_BLOCKS`, `MAXIMUM_EDIT_BYTES`, and the unchanged-file refusal become a declared
+  `EDIT_POLICY` record on the task manifest, validated as *equal to* the constants the pinned
+  adapters enforce. It cannot live in the task definition: `eval/runners/run-coding-task.py` is
+  byte-frozen and does `set(task) != required`, so an extra key there fails the run. Five scripts
+  now declare the two bounds and one owner test asserts all five agree — the first check that the
+  three pre-existing copies ever had.
+- **A capability may change attempt 1 when the failure is at attempt 1, and must then say what it
+  gave up.** `render()` takes the task prompt independently of the variant, so a task-prompt change
+  applies identically to PARENT and CANDIDATE and the C6 contrast survives. What does not survive
+  is byte-comparability of attempt 1 across runs, and the design records that before the run rather
+  than discovering it after.
+- **A record the producer computes and then throws away is evidence you already paid for.** The
+  repair adapter builds the model's edit set one line before `synthesized_patch` raises, then
+  discards it on the refusal path — which is precisely why the mode was unexplainable from the
+  record. Version 3's widened `edit_set` rule keeps it, and persists a bounded completion excerpt
+  only on the eight refusal codes where no structured substitute exists.
+
+`eval/prompt/canonical-v1t/` + `eval/tasks/prompt-v1t/` is the measured fourth freeze, 31 members.
+It is sealed: `scripts/freeze-canonical-v1t --check` verifies its historical bytes and every write
+invocation is refused. Review repair lives instead in `eval/prompt/canonical-v1u/` +
+`eval/tasks/prompt-v1u/`, minted by `scripts/freeze-canonical-v1u`; that successor is explicitly
+unqualified and its 24-call topology is rejected before provider access against the fixed 22-call
+ceiling. The third corpus, `eval/prompt/canonical-v1e/` +
+`eval/tasks/prompt-v1e/`, minted by `scripts/freeze-canonical-v1e`, is the C4-REPAIR-EDITSET freeze
+and was not previously named in this document. The named qualification is `make c4-template-gate`;
+like `make c4-repair-gate` and `make c4-editset-gate` it joins no aggregate, and neither does
+`make prompt-template-adapter-smoke`.
 
 ## Persisted-result development
 

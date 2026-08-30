@@ -580,6 +580,12 @@ pub PromptEvaluationTask {
   // `maximum_repair_loops >= 1` must declare the pair; the scorer enforces that pairing.
   repair_template_path: Option<string>,
   repair_template_sha256: Option<string>,
+  // C4-REPAIR-TEMPLATE's declared edit policy, `Some` exactly for a task whose `argv` names
+  // `scripts/prompt-template-adapter.py` and absent otherwise, on the same optional-member
+  // mechanism the repair-template pair above uses. The producer emits it, so the record must
+  // declare it: a member the evaluator writes and this record omits does not merely go
+  // unvalidated, it makes the whole document fail to decode and the run unpublishable.
+  edit_policy: Option<EditPolicy>,
   content_sha256: string,
 }
 
@@ -656,6 +662,39 @@ pub TaskMeasurement {
   edit_set_total_bytes: Option<i64>,
   patch_sha256: Option<string>,
   base_adapter_runtime_identity: Option<string>,
+  // The four version-3 members, in their declared position immediately before `content_sha256`
+  // and by the same rule version 2 used: the version selects the member list, presence never
+  // selects the version. `edit_refusal` is always `Some` at version 3 — `NONE` when nothing was
+  // refused — so the counted quantity is defined for every ran attempt rather than inferred from
+  // an absence; it names one raise site of the frozen adapter, which `failure_kind: PATCH` alone
+  // could not distinguish and which three design documents therefore read wrong.
+  // `completion_bytes` and `completion_sha256` are `Some` whenever a provider response was
+  // received and digest the **redacted** completion at its full length, so "attempt 2 re-sent
+  // attempt 1's whole answer" is a measured fact at zero disclosure cost. `completion_text` is
+  // `Some` only on the eight refusal codes for which no structured substitute exists, and is
+  // dropped whole rather than partially when the encoded result would exceed its bound.
+  edit_refusal: Option<string>,
+  completion_bytes: Option<i64>,
+  completion_sha256: Option<string>,
+  completion_text: Option<string>,
+  content_sha256: string,
+}
+
+// C4-REPAIR-TEMPLATE. The edit policy the pinned adapters enforce, declared rather than emergent.
+//
+// The two bounds are today's constants in five scripts and `refuse_unchanged_files` was, until
+// this record existed, an unstated consequence of `synthesized_patch` refusing an empty diff — the
+// rule ten of twenty-two ran attempts broke and no prompt in the repository stated. Declaring them
+// changes no behaviour: the evaluator refuses a value that differs from its own constants before
+// any provider call, because the pinned adapters enforce exactly those values and nothing else.
+// The record is carried on the task manifest and not in the task definition, because
+// `eval/runners/run-coding-task.py` is byte-frozen and rejects any key outside its required set.
+pub EditPolicy {
+  schema_version: i64,
+  artifact_kind: string,
+  maximum_file_blocks: i64,
+  maximum_edit_bytes: i64,
+  refuse_unchanged_files: bool,
   content_sha256: string,
 }
 
@@ -905,6 +944,9 @@ pub TaskAggregate {
   // C4-REPAIR-EDITSET: the denominator of every edit-set claim, per variant.
   parent_repair_editset_attempt_count: Option<i64>,
   candidate_repair_editset_attempt_count: Option<i64>,
+  // C4-REPAIR-TEMPLATE: ran attempts refused by the edit policy, per variant.
+  parent_edit_refusal_count: Option<i64>,
+  candidate_edit_refusal_count: Option<i64>,
 }
 
 pub CorpusAggregate {
@@ -928,6 +970,10 @@ pub CorpusAggregate {
   // C4-REPAIR-EDITSET: repair attempts whose prompt actually carried `EDITSET`. A denominator,
   // never a gate input; the gate still consumes `repair_recovery_paired_count` only.
   repair_editset_attempt_count: Option<i64>,
+  // C4-REPAIR-TEMPLATE's pre-committed secondary: ran attempts whose `edit_refusal` is not
+  // `NONE`, against a C4E baseline of 10 of 22 derived from the summary strings. Reported whatever
+  // the gate says; the gate still consumes `repair_recovery_paired_count` only.
+  edit_refusal_count: Option<i64>,
 }
 
 pub RegressionReason {

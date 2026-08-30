@@ -1002,6 +1002,85 @@ The current forward delivery order is:
     section 3.4), the two cache protocols, and the pre-committed MET / NOT_MET / INDETERMINATE rule
     are all fixed in section 11 in advance.
 
+> Items 35 and 36 are claimed on sibling branches (`agent/r6-moe-resident-dense`,
+> `agent/mf-single-token-logits`); 37 and 38 are reserved for Track B's `R6-PREFIX-KEY-CORPUS`,
+> which its own charter note allows to split into `R6-PREFIX-KEY` and `R6-PREFIX-TTFT`. Item 39 is
+> numbered on that assumption and corrected at reconciliation if it changes. The numbering is a
+> name, not a delivery order — item 36's own precedent.
+
+39. **C4-REPAIR-TEMPLATE — the prompt template and the declared edit policy.** The capability
+    item 34 named as its own successor, and the one that corrects the record item 34 wrote.
+    **Read the evidence again and it says something else.** Every `failure_kind: PATCH` row in
+    both gate runs carries `diagnostic_summary: "the response reproduced the pinned files
+    unchanged"` — `synthesized_patch`'s refusal, which fires only *after* `parse_file_blocks`
+    returned terminated blocks and `validated_edit_set` accepted every path. The string "the
+    response declares no file block" appears in **zero** rows. The model never failed to produce
+    a parsable `FILE:` block; it produced correct blocks whose bodies were byte-identical to the
+    pinned source. Ten of twenty-two ran attempts in each run were refused by the edit policy —
+    eight for reproducing the files unchanged, two for naming a path outside the editable set —
+    and that is the largest failure class in either run. Design in
+    [`c4-repair-template.md`](c4-repair-template.md), which owns the contract ledger, the
+    import-chain contract, the closure matrix, the prompt contract version 3, the cost ceiling,
+    and the gate statement. The design gate triggered on the version-3 repair-prompt exchanged
+    format, on `TASK_MEASUREMENT` schema 3 and the declared `edit_policy` persisted format, on a
+    new frozen scope with a **third adapter** and **three new task prompts** as members, and on a
+    coordinated invariant across the new adapter, `scripts/prompt-evaluate.py`,
+    `scripts/prompt-gate-validator.py`, `src/prompt_score.align`, and the corpus assets. **The
+    rule the model actually broke is stated in no prompt in the repository**: nothing anywhere
+    says that a block identical to the file's current content is refused. Version 3 says it, in
+    the task prompt and in the repair template, next to a worked example and the editable-path
+    allowlist — both of which the task prompt already carried and the model violated anyway, so
+    the statement is repeated rather than introduced. **The `FILE:` grammar does not change**: it
+    has never failed in 44 calls. `MAXIMUM_FILE_BLOCKS` (32), `MAXIMUM_EDIT_BYTES` (262,144), and
+    `synthesized_patch`'s unstated unchanged-file refusal become a declared `EDIT_POLICY` record
+    on the task manifest, validated as equal to the constants the pinned adapters enforce and
+    refused as `INVALID_INPUT`/`EDIT_SET` otherwise; it cannot live in the task definition,
+    because the frozen validation runner refuses any extra key there. `TASK_MEASUREMENT` moves to
+    `schema_version: 3` with a ten-code `edit_refusal`, the completion's bounded identity, a
+    **conditional** bounded completion excerpt persisted only where no structured substitute
+    exists, and a widened `edit_set` rule so the reproduced-unchanged refusal keeps the blocks it
+    already built and then threw away. Versions 1 and 2 stay decodable forever and
+    `PROMPT_TASK_ROW` does **not** move. `scripts/prompt-template-adapter.py` loads
+    `scripts/prompt-repair-adapter.py` by path, which loads the frozen base adapter by path, so
+    containment still has exactly one copy and each hop's divergence is a checked-in golden.
+    Measured freeze `eval/prompt/canonical-v1t/` + `eval/tasks/prompt-v1t/`, 31 members, 22 carried
+    from `canonical-v1e` at identical digests and 21 of those identical in all four manifests. It
+    is sealed after measurement: its check command is read-only and write invocations fail. Review
+    repair is isolated in the distinct, unqualified `canonical-v1u` + `prompt-v1u` successor; its
+    24-call topology is rejected before provider access against the unchanged 22-call ceiling.
+    **Attempt 1 changes too**, identically for both variants, because six of the ten refusals are
+    attempt-1 refusals and time to a passing patch is the primary metric; the cost, stated before
+    the run, is that this run measures the version-3 contract end to end rather than the repair
+    template alone. The gate is item 31's predicate unchanged,
+    `repair_recovery_paired_count >= 1`, with a pre-committed secondary `edit_refusal_count < 10`.
+    **The prompt-size hypothesis is refuted before the run**: the largest repair prompt in either
+    run is 16,904 bytes of a 65,536-byte budget, no section was ever dropped, and the refused rows
+    carry the smallest prompts. A `NOT_MET` gate has two readings and both are fixed in advance:
+    refusals fall and nothing recovers, which points at corpus difficulty; or refusals do not
+    fall, which points at the model and the decoding strategy and at nothing in the prompt. No
+    speed claim. Recorded run-cost ceiling 60 minutes, expected 12-30, at most 22 provider calls.
+    Named focused qualification `make c4-template-gate`; it joins no aggregate, and neither does
+    `make prompt-template-adapter-smoke`.
+
+    **The named qualification failed its call ceiling; the observed predicate value is 1 and the
+    capability is unchanged.** The clean committed-head run made 24 calls in 700.452 s, exceeding
+    the pre-committed maximum of 22 calls even though it stayed inside the separate 60-minute wall
+    ceiling. Its immutable gate record incorrectly hard-codes `addressable_ran_attempts: 22`; the
+    correction is recorded in the owning spec and evidence README. `repair_recovery_paired_count`
+    is 1, but its only
+    pair is `duration-half-away-from-zero` CANDIDATE: a pair that passed first-shot at 758 bytes in
+    both prior runs now fails attempt 1 at 724 bytes and recovers to the same 758-byte patch at
+    attempt 2. Version 3 introduced the failure it then repaired. `candidate_pass_count` stays 2,
+    `completion_gain_count` stays 2, and no new task passes. The pre-committed secondary is also
+    unmet: `edit_refusal_count` stays 10 against `< 10`. `PATH_NOT_EDITABLE` does move 2 -> 0, but
+    those attempts become `UNCHANGED_FILES`, whose persisted breakdown is now 10. Section 1.6
+    reading (b) applies: on `layer-precedence-frozen-module` the model re-sends the same pinned file
+    despite the rule appearing three times, so neither adapter nor prompt is binding; the remaining
+    axes are model and decoding strategy and require a different experimental design. The shipped
+    value is the declared policy, machine-checkable refusal vocabulary and aggregate, retained edit
+    blocks, and whole-answer identity — not a recovery or speed claim. Evidence and the per-pair
+    analysis are in the design's section 11.4.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
