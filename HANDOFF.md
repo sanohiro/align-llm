@@ -3,21 +3,23 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R7-TOKENIZER design and Align dependency (2026-08-31)
+## Active: R7-TOKENIZER Align dependency (2026-08-31)
 
-Branch `agent/r7-tokenizer`, based on `main` merge commit
-`5e124c2354ae6b4297fb3aa11b4792247d33b5aa` (DEV-OUTPUT-SUMMARY, PR #158). R7's gate is replacing
+Branch `agent/request22-accepted-sync`, based on `main` merge
+`0ed66483c0a4bee1e98894d204b6fc0954e6df55`; R7-TOKENIZER's design checkpoint merged as PR #159.
+R7's gate is replacing
 an existing `ModelProvider` with `align-runtime` while executing the same fixed coding task. The
 first independently usable consumer boundary is Qwen2 text/token conversion over the model's own
 GGUF vocabulary and merges; R6 deliberately stopped at token ids and cannot cross that boundary.
 
-The capability triggers the proportional design gate: it adds public tokenizer and CLI surfaces,
+The completed proportional design gate adds public tokenizer and CLI surfaces,
 materializes two large GGUF string arrays, defines malformed-model and special-token behavior, and
-coordinates GGUF, tokenizer, CLI, fixtures, and real-model parity. A separate design checkpoint is
-justified because external Align work must consume the contract first. `docs/align-requests.md`
-Request 22 still rejects general borrow indexing of `array<string>` / Move-record arrays at both
-the pinned compiler and current sibling `main`; it becomes blocking when this tokenizer is the
-active consumer. No align-llm source may consume the proposed surface before `ALIGN_MERGED`.
+coordinates GGUF, tokenizer, CLI, fixtures, and real-model parity. The separate design checkpoint
+was required because external Align work must consume the contract first. Request 22 is now
+`ACCEPTED`: Align PR #913 merged as `e6942a025ccc5197cfea95547cefdeee27cb157d` and defines ordinary
+`array<string>[i] -> str`, while the already-shipped
+direct-field and explicit shared-borrow call-place forms cover Move-record arrays. No align-llm
+source may consume the accepted surface before `ALIGN_MERGED`.
 
 **Current evidence.** The official Qwen2.5-Coder tokenizer is ByteLevel BPE with 151,643 base
 vocabulary entries and 151,387 merges; its chat protocol uses `<|im_start|>` and `<|im_end|>`.
@@ -71,17 +73,16 @@ peaks 5/6, and zero unresolved merge components/results. All 299 parity identiti
 error codes, three classifier lock identities, the R6 prefix manifest, Markdown fences, and
 `git diff --check` pass.
 
-**Next actions.** (1) Pass the exact-head docs publication preflight, publish the English PR with
-every review envelope and finding disposition, wait for checks, and merge. (2) Implement and
-publish Request 22 in the sibling Align repository, then adopt
-the shipped revision and build the tokenizer consumer without a compatibility layer.
+**Next actions.** (1) Implement and publish Align Request 22's compiler and owner-test closure in
+the sibling Align repository. (2) Adopt the shipped revision and complete
+all three registered Request 22 migrations plus the tokenizer consumer without a compatibility
+layer.
 
-**Blocker.** Align Request 22. Resume when Align ships ordinary borrow indexing for Move array
-elements and its compiler owners pass; the align-llm pin/adoption capability then owns every
+**Blocker.** Align Request 22. Resume when Align ships ordinary `array<string>[i] -> str` and its
+compiler owners pass; the align-llm pin/adoption capability then owns every
 originally named Request 22 migration plus the tokenizer consumer.
 
-**Intentional uncommitted files.** This continuity-only update records the consolidated repair's
-exact identity; none after it is committed.
+**Intentional uncommitted files.** None after the accepted provider answer is committed.
 
 ## Merged checkpoint: DEV-OUTPUT-SUMMARY (2026-08-31)
 
