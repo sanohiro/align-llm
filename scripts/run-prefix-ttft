@@ -401,11 +401,16 @@ def main() -> int:
                 document = json.loads(document_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError) as failure:
                 raise QualificationError(f"{stem} wrote no parseable document") from failure
+            reference_verdict = document.get("reference", {}).get("verdict")
+            expected_reference = "-" if leg == "hit" else "IDENTICAL"
+            # A keyed hit deliberately skips the prefix graph and therefore has no prefix
+            # self-reference pass. The hosted oracle K/S coverage owns that equivalence; misses and
+            # single-shot legs still compute the prefix and must remain bit-identical here.
             if document.get("status") != "ok" or document.get("verdict") != "EXTERNAL" \
-                    or document.get("reference", {}).get("verdict") != "IDENTICAL":
+                    or reference_verdict != expected_reference:
                 raise QualificationError(
                     f"{stem} document is {document.get('status')}/{document.get('verdict')}: "
-                    f"reference={document.get('reference', {}).get('verdict')} "
+                    f"reference={reference_verdict}, expected {expected_reference} "
                     f"{document.get('error_code')} {document.get('error_detail')}"
                 )
             if document["weights"]["mode"] != "resident":
