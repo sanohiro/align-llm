@@ -3,69 +3,100 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: DEV-OUTPUT-SUMMARY publication (2026-08-31)
+## Active: R7-TOKENIZER design and Align dependency (2026-08-31)
 
-Branch `agent/dev-output-summary`, based on `main` merge commit
-`e0b851acf1b0b73324be4bdda11c8242505c4415` (R6-PREFIX-TTFT, PR #157). Roadmap item 40 is the
-charter and `docs/specs/dev-output-summary.md` is the capability ledger and closure matrix. The
-pre-implementation design is commit `e1aecfe`.
+Branch `agent/r7-tokenizer`, based on `main` merge commit
+`5e124c2354ae6b4297fb3aa11b4792247d33b5aa` (DEV-OUTPUT-SUMMARY, PR #158). R7's gate is replacing
+an existing `ModelProvider` with `align-runtime` while executing the same fixed coding task. The
+first independently usable consumer boundary is Qwen2 text/token conversion over the model's own
+GGUF vocabulary and merges; R6 deliberately stopped at token ids and cannot cross that boundary.
 
-The direct `layer-forward-smoke` baseline was measured three times with the pinned managed compiler
-and required Homebrew library path. All three runs passed at exactly 922 lines / 185,927 bytes with
-910 warnings in three normalized classes. A separate missing-library-path observation failed with
-status 2 after 917 lines / 183,272 bytes and retained the useful linker cause only at the end.
+The capability triggers the proportional design gate: it adds public tokenizer and CLI surfaces,
+materializes two large GGUF string arrays, defines malformed-model and special-token behavior, and
+coordinates GGUF, tokenizer, CLI, fixtures, and real-model parity. A separate design checkpoint is
+justified because external Align work must consume the contract first. `docs/align-requests.md`
+Request 22 still rejects general borrow indexing of `array<string>` / Move-record arrays at both
+the pinned compiler and current sibling `main`; it becomes blocking when this tokenizer is the
+active consumer. No align-llm source may consume the proposed surface before `ALIGN_MERGED`.
 
-The shared Python module and CLI now own an exclusive full log, exact digest/line/byte identity,
-fixed warning taxonomy, 60-second progress, bounded useful failure records, exact exit/signal/pipe
-semantics, process-group cleanup, and Git-common-directory storage. Direct
-`layer-forward-smoke`, every external preflight phase, and hosted CI consume it; CI uploads the
-complete aggregate log for 14 days. The deterministic owner covers validation, byte identity,
-warning classes, early/final diagnostics, nonzero status, child/supervisor/pipe signals, a leaked
-descendant, short terminal writes, progress, concurrency, linked worktrees, preflight adaptation,
-and adopter topology. The fresh capable aggregate restores the nesting marker after its fixed
-`--clearenv`, so its read-only Git view does not attempt a second retained log.
+**Current evidence.** The official Qwen2.5-Coder tokenizer is ByteLevel BPE with 151,643 base
+vocabulary entries and 151,387 merges; its chat protocol uses `<|im_start|>` and `<|im_end|>`.
+The pinned llama.cpp tokenizer uses the Qwen2 pre-tokenization expression, GPT-2 byte encoding,
+merge-rank priority, and special-token classification. Align already ships the required regex,
+byte/text, builder, buffer, and dynamic-array construction primitives; the demonstrated missing
+language-owned operation is non-consuming ordinary access to a Move array element. The reference
+model has 23 effective special candidates after `</s>` promotion, 298 bytes total and 20 bytes at
+maximum. Current Align pins `regex` 1.13.1, `regex-automata` 0.4.16, and `regex-syntax` 0.8.11 by
+exact Cargo checksum; the last package's generated Unicode tables identify Unicode 16.0.0.
 
-**Latest durable verification.** `python3 scripts/test-output-summary`, the focused
-`test-development-preflight` plan/workflow topology functions, Python syntax parsing, and
-`git diff --check` pass after the comprehensive-review repair. The full development-workflow owner
-reaches its pre-existing Linux apt fixture on Darwin and then fails because BSD awk rejects its GNU
-regular expression and the fixture requires `/usr/bin/rmdir`; `run-fresh-worker-unit-smoke`
-likewise stops at the Linux-only `fcntl.F_SEAL_*` import. The normal Linux publication lane owns
-both complete commands. A real missing-library owner run preserved overall Make status 2, emitted
-13 lines / 2,042 bytes with `ld: library 'crypto' not found` as the first actionable diagnostic,
-and retained all 915 child lines / 183,183 bytes at SHA-256 `2c45a848…1394`.
+**Review and redesign checkpoint.** The initial comprehensive review of `f908b25` accepted six
+findings; consolidated repair `18e9bfb` added literal-input oracle flags, the UNUSED round-trip
+condition, one-load CLI precedence, total `token_count`, exact parity bounds, and the frozen Unicode
+corpus. The required final review of `18e9bfb` then accepted five new findings: an unattainable
+scalar-accessor error, candidate-by-candidate special work approaching 10^12 comparisons,
+non-transactional stdout, Unicode classifier drift absent from tokenizer identity, and this stale
+handoff. Repository policy therefore required redesign rather than another repair loop.
+`ebbc794f18a05e5985bf5a8b769b4cc74e7fd41b` is that first redesign: invalid scalar keys return
+`-1`; specials are capped at 256 entries / 32 bytes and use a dense trie bounded to 8,193 nodes and
+33,554,432 input transitions; zero stdout applies only before the final write; and the exact
+managed regex dependency identities enter the tokenizer preimage and owner check.
 
-The fresh high-effort comprehensive review covered exact head `66c3288` against base and merge base
-`e0b851a`. Its seven accepted findings were one broken fresh-aggregate nesting path, status and
-diagnostic precedence for descendant cleanup, incomplete terminal short writes, delimiter
-validation, unused-warning precedence, and stale handoff state. The current consolidated repair
-adds a regression for every root-cause class; it does not change the capability approach.
+A fresh comprehensive review of `c1050c7` accepted four further contract defects, so the oracle and
+malformed-model closure are being redesigned together: ParseControl must pass the pinned
+`--parse-special` flag; capacity/identity arithmetic already proved representable cannot publish
+unreachable data errors; every non-generated parity input needs exact bytes or a frozen source
+identity; and duplicate token text must be rejected because pinned llama.cpp ultimately asserts
+rather than exposing the earlier map overwrite. Second redesign
+`d47592e828e97ad84b750f38444d2e69d2a17455` adds `R7_TOKEN_DUPLICATE`, removes the unreachable
+results, freezes 299 ordered parity cases, and binds the four R6 prompt bytes to
+`prefix-corpus-v1` identities.
 
-Exact-head Linux publication preflight at `dae6e3f` passed the owner, managed ensure, pinned verify,
-hosted checks, fresh focused owners, and the installed profile. The push workflow then failed before
-creating a job: `${{ runner.temp }}` was placed in job-level `env`, where the runner context does not
-yet exist. The narrow pending repair moves that value to the supported-check step and references it
-directly from the artifact step; the workflow owner now rejects runner context in the job header.
+A fresh comprehensive review of `ee37833` accepted four final resource/oracle findings: build 10566
+rejects the positive `--parse-special` option and already parses by tokenizer-specific default; the
+256 MiB token/merge text cap was not enforced across both arrays; load-factor-only linear probing
+left adversarial work quadratic; and public count-error details were underspecified. The first
+finding supersedes the earlier `c1050c7` review's contrary flag finding: exact pinned help plus live
+control, USER_DEFINED, and `</s>` invocations prove the earlier source-default inference wrong. The
+consolidated repair `74dd39c3c8aaae4656b6b3e147c500af1972c016` restores the executable
+ParseControl command; validates exact
+declared-count and combined-text details; replaces open addressing and byte-string BPE lookup with
+16-link token/Copy-id-pair buckets, prevalidated merge result ids, and exact 16/17 collision owners;
+and records reference bucket peaks 5/6. Per the final-review convergence rule, inspect this complete
+repair delta and author evidence rather than starting another review loop.
 
-**Output-volume result.** Exact implementation head
-`851988a7be159cd1eed853ecc24473712d58b1fc` passes the real owner in 57.267 s. Visible output is
-6 lines / 777 bytes, a reduction of 916 lines / 185,150 bytes from every three-sample baseline;
-both the maintenance ceiling and acceptance floor are **MET**. The parent Make recipe remains one
-visible 34-byte line. All 921 child lines / 185,893 bytes are retained at SHA-256 `fdd77968…c29a`,
-with the exact 813 / 96 / 1 warning classes and ten owner PASS results. Exact consolidated-repair
-head `24a6686fab1b506111ba218335ab03caa7386822` also passes in 62.597 s. It crossed the 60-second
-interval and therefore emitted one progress record: 7 lines / 872 bytes visible, still a reduction
-of 915 lines / 185,055 bytes and **MET** for both gates. Its retained log remains 921 lines /
-185,893 bytes with the same warning/result invariants at SHA-256 `95811864…e69`.
+**Author evidence.** The pinned build reports version 10566 / `bb4caa754`; default and
+`--no-parse-special` live probes produce the required atomic/literal control ids while preserving
+USER_DEFINED ids. The model audit reproduces 2,894,618 combined tokenizer bytes, token/merge bucket
+peaks 5/6, and zero unresolved merge components/results. All 299 parity identities, 22 exhaustive
+error codes, three classifier lock identities, the R6 prefix manifest, Markdown fences, and
+`git diff --check` pass.
 
-**Next actions.** (1) Commit the workflow-context repair and record its PR disposition. (2) Rerun
-exact-head publication preflight on Linux, push, and wait for every required check. (3) Merge and
-refresh `main`. (4) Begin the next eligible roadmap capability.
+**Next actions.** (1) Pass the exact-head docs publication preflight, publish the English PR with
+every review envelope and finding disposition, wait for checks, and merge. (2) Implement and
+publish Request 22 in the sibling Align repository, then adopt
+the shipped revision and build the tokenizer consumer without a compatibility layer.
 
-**Blockers.** None.
+**Blocker.** Align Request 22. Resume when Align ships ordinary borrow indexing for Move array
+elements and its compiler owners pass; the align-llm pin/adoption capability then owns every
+originally named Request 22 migration plus the tokenizer consumer.
 
-**Intentional uncommitted files.** The workflow-context repair until its commit. Baseline,
-measurement, retained logs, and PR prose remain outside Git.
+**Intentional uncommitted files.** This continuity-only update records the consolidated repair's
+exact identity; none after it is committed.
+
+## Merged checkpoint: DEV-OUTPUT-SUMMARY (2026-08-31)
+
+PR #158 merged as `5e124c2354ae6b4297fb3aa11b4792247d33b5aa`. The shared wrapper retains
+complete verification logs while success emits bounded phase/result/warning/log records and long
+runs emit progress at least once per minute. Direct `layer-forward-smoke`, every external preflight
+phase, hosted CI, and the fresh aggregate consume it; hosted logs are retained for 14 days.
+
+Against the exact three-run 922-line / 185,927-byte baseline, repaired head `24a6686` emitted
+7 lines / 872 bytes while retaining all 921 child lines / 185,893 bytes and the exact 910-warning
+taxonomy. Both the 16-line / 2,048-byte maintenance ceiling and the 900-line / 180,000-byte
+reduction floor are **MET**. Exact-head Linux publication preflight and all hosted, x86_64, and
+aarch64 required checks passed. The comprehensive review's seven validated root-cause classes and
+the later workflow-context publication incident each have focused regressions; no finding remains
+open.
 
 ## Merged checkpoint: R6-PREFIX-TTFT publication (2026-08-30)
 

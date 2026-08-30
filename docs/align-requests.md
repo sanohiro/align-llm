@@ -6568,9 +6568,10 @@ read-only constructor" claims at `draft.md:2772` and `docs/language-spec.md:1043
 
 ```text
 Status: PROPOSED
-Priority: medium
-Blocking: no
-Blocked gate or slice: none (workaround in place). R1-QWEN-MODEL-IR (`docs/specs/r1-qwen-model-ir.md`
+Priority: high
+Blocking: yes
+Blocked gate or slice: R7-TOKENIZER, the first text/token consumer on the path from the shipped
+token-id runtime to R7's `ModelProvider` replacement gate. R1-QWEN-MODEL-IR (`docs/specs/r1-qwen-model-ir.md`
 section 1.3 and section 5.2) deliberately excludes the tokenizer and reads only the declared length
 of `tokenizer.ggml.tokens`/`tokenizer.ggml.merges` — exactly what R0's decoder already records
 without materializing an element — precisely so this request stays non-blocking through R1, and
@@ -6600,11 +6601,11 @@ splitting an id list the instrument printed, so continuing a saved prefix with a
 needs no detokenization at any point — not in the arm, not in the qualification runner, and not in
 gate G, whose `llama-debug --save-logits` blob for the whole prompt is reused unchanged because
 `TOKENS ++ SUFFIX` is that prompt's id list by construction. It adds **no client** and consumes no
-hypothetical surface. The
-first consumer that would make it blocking is a
-tokenizer/vocabulary-inspection capability, which needs `tokenizer.ggml.tokens` and
-`tokenizer.ggml.merges` as addressable data; per `CLAUDE.md`, this request reclassifies as blocking
-the moment that capability becomes the active consumer.
+hypothetical surface. The first consumer that makes it blocking is now active: roadmap item 41,
+R7-TOKENIZER, needs `tokenizer.ggml.tokens` and `tokenizer.ggml.merges` as addressable data and
+cannot cross the text boundary by reusing an external tokenizer or by adding another
+stream-plus-column compatibility shape. Its design may proceed, but no align-llm implementation may
+consume a hypothetical surface before this request reaches `ALIGN_MERGED`.
 
 C4-REPAIR-EDITSET (`docs/specs/c4-repair-editset.md` section 6.7) is the
 **first client that does not avoid the shape**: `TaskMeasurement.edit_set` is
@@ -6619,15 +6620,16 @@ because it is the same known limitation with a documented workaround, is that ow
 replacement supports only `string` and `Option<string>` leaves: `src/prompt_verifier_smoke.align`
 had to build `PromptEvaluationTask` and `TaskMeasurement` as parameterized literals instead of
 mutating an `array<string>` or an `EnvironmentProbe` field of a copy.
-Independent work that may continue: all of R0, R1-QWEN-MODEL-IR, R1B-GPTOSS-MOE-IR,
-R2A-EXPERT-TRACE-CAPTURE, R1C-OLMOE-MOE-IR, and R6-STEP-N, all of which avoid indexing an
-`array<string>` or an array of a Move-field record
+Independent work that may continue: the R7-TOKENIZER contract ledger and closure matrix, plus all
+already-merged R0 through R6 capabilities that avoid ordinary indexing of an `array<string>` or an
+array of a Move-field record. R7-TOKENIZER source implementation and every later text-generation
+consumer are blocked
 Resume condition: Align ships borrow indexing for Move arrays. Section 5.2 of
 `docs/specs/r1-qwen-model-ir.md` names the resulting producer surface,
 `gguf.read_string_array(path, key) -> Result<array<string>, Error>`, owned by the future tokenizer
 capability, not by R1
 Align commit or pull request: none
-align-llm verification: pending — two targets. `src/gguf.align`'s `render_tensors` NUL-separated
+align-llm verification: pending — three targets. `src/gguf.align`'s `render_tensors` NUL-separated
 `prefixes: str`/parallel-`array<i64>` workaround (`:120`, `:842`, `:1016-1022`) is the first. The
 second, named by `docs/specs/r1-qwen-model-ir.md` section 5.4 as a documentation follow-on now that
 R1-QWEN-MODEL-IR has merged (PR #122): once this request reaches `ALIGN_MERGED`, `GgufTable`'s
@@ -6636,7 +6638,10 @@ accessor signature in that document's section 2.3.2, since every accessor is alr
 index-in/owned-value-out and the stream-plus-column representation is entirely behind them.
 `docs/specs/r1b-gptoss-moe-ir.md` section 2.3.4 repeats the same stream-plus-column shape in the new
 `BlockPlan`, and `model_forward.StepColumns` repeats it again behind `step_digest_at` and
-`step_worst_node_at`, so all three producer surfaces migrate together when this request ships.
+`step_worst_node_at`, so all three producer surfaces migrate together when this request ships. The
+third target is R7-TOKENIZER's `gguf.read_string_array` producer and tokenizer consumer: section
+4.3 of `docs/specs/r7-tokenizer.md` requires its hosted fixture owner and named real-Qwen2 tokenizer
+parity qualification to pass at the adopted pin.
 ```
 
 ### Motivation and current sibling evidence
