@@ -130,13 +130,22 @@ finalization chain before capable evidence. The diagnostic captured 16,562 stder
 bounded 8,192-byte tail was mostly repeated Git graft deprecation hints before the useful baseline
 failure and Make lines. The full failed Linux preflight retained 4,632 lines / 840,851 bytes.
 
-**Next actions.** (1) Commit this durable incident record as the clean implementation source. (2)
-Record the two-sample deterministic baseline on Linux, commit only its oracle, finalize against that
-full oracle commit, remove the pending record, and commit only the canonical baseline and digest.
-(3) Run `make baseline-check` on Linux, then run exact-head publication preflight from zero in the
-unprivileged Docker-in-Docker Linux wrapper. (4) Publish, merge without squash/rebase, verify all
-three baseline commits are ancestors of refreshed `main`, and stop. This pull request is the
-user-requested stopping checkpoint: do not start item 40 or another roadmap capability after merge.
+**Coding baseline refresh complete.** The required Linux/aarch64 chain is source
+`94844afb1b0109154827b0c84dc6e2eea7456ae4` -> immutable oracle
+`ad6a59c0f8ac3228575ab908c896d08762a84138` -> canonical finalization
+`570ac2c13fc7895f059cf62a84d3495fb8f0561b`. The pending record used the unchanged pin
+`3a34febe`, Linux 6.11.11-linuxkit, Python 3.12.3, and two passing samples at 225,612,542 ns and
+180,063,625 ns. The oracle commit changes only
+`eval/expected/coding-v1-reference-oracle.json`; the finalization commit changes only
+`eval/baselines/coding-v1-reference.json` and its digest; the pending file is absent. Linux
+`make baseline-check` passes the canonical verifier, every invalid/failure smoke, Git isolation,
+and the complete strict chain checker.
+
+**Next actions.** (1) Commit this completed-chain record without changing a recorded baseline
+artifact. (2) Run exact-head publication preflight from zero in the unprivileged Docker-in-Docker
+Linux wrapper. (3) Publish, merge without squash/rebase, verify all three baseline commits are
+ancestors of refreshed `main`, and stop. This pull request is the user-requested stopping
+checkpoint: do not start item 40 or another roadmap capability after merge.
 
 **Next planned capability, not active: DEV-OUTPUT-SUMMARY, roadmap item 40.** Successful owner and
 toolchain phases repeatedly emitted 912 lines / approximately 45,720 transport tokens and 564
@@ -152,8 +161,8 @@ not folded into this performance claim.
 **Blockers.** None. Request 22 remains non-blocking because the checked-in ids come from the pinned
 Python/instrument path and Align consumes decimal ids only.
 
-**Intentional uncommitted files.** This baseline-incident record is the only intended work-tree
-change until the new source commit. Build products and measurement summaries remain outside Git.
+**Intentional uncommitted files.** This completed-chain record is the only intended work-tree
+change until commit. Build products and measurement summaries remain outside Git.
 
 ## Merged checkpoint: C4-REPAIR-TEMPLATE review repair (2026-08-30)
 
