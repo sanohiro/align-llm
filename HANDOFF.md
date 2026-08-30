@@ -3,7 +3,30 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R6-PREFIX-TTFT publication (2026-08-30)
+## Active: DEV-OUTPUT-SUMMARY design (2026-08-30)
+
+Branch `agent/dev-output-summary`, based on `main` merge commit
+`e0b851acf1b0b73324be4bdda11c8242505c4415` (R6-PREFIX-TTFT, PR #157). Roadmap item 40 is the
+charter and `docs/specs/dev-output-summary.md` is the capability ledger and closure matrix. The
+design is written before executable changes.
+
+The direct `layer-forward-smoke` baseline was measured three times with the pinned managed compiler
+and required Homebrew library path. All three runs passed at exactly 922 lines / 185,927 bytes with
+910 warnings in three normalized classes. A separate missing-library-path observation failed with
+status 2 after 917 lines / 183,272 bytes and retained the useful linker cause only at the end.
+
+**Next actions.** (1) Commit the pre-implementation design. (2) Implement the shared wrapper,
+direct-owner recursion guard, preflight adoption, CI capture/upload, and deterministic mutants.
+(3) Run the focused owner, workflow owner, and exact output-volume measurement. (4) Perform one
+comprehensive review, consolidate accepted repairs, run exact-head publication preflight, publish,
+and merge. (5) Refresh `main` and begin the next eligible roadmap capability.
+
+**Blockers.** None.
+
+**Intentional uncommitted files.** The pre-implementation design, roadmap link, and this handoff
+update until their design commit. Baseline logs remain outside Git.
+
+## Merged checkpoint: R6-PREFIX-TTFT publication (2026-08-30)
 
 Branch `agent/r6-prefix-ttft`, based on `main` merge commit
 `c16f14ea5ec2e42d61f7e6644716854d9ca61c2c` (C4-REPAIR-TEMPLATE, PR #156). Authoritative charter
