@@ -73,8 +73,9 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-28): Requests 1–20 are CLOSED, Requests 21–43 and 45–46 are PROPOSED and non-blocking, and
-> Request 44 is ALIGN_LLM_VERIFIED pending publication closure. C8-OPTIONAL-TARGETED-STAGE is the
+> **Status (2026-08-31): Requests 1–20 are CLOSED, Request 22 is ACCEPTED and blocking, Requests 21,
+> 23–43, and 45–46 are PROPOSED and non-blocking, and Request 44 is ALIGN_LLM_VERIFIED pending
+> publication closure. C8-OPTIONAL-TARGETED-STAGE is the
 > active stable candidate; its schema/owner matrix and paired acceptance pass at the adopted pin.
 > R5C-METAL-PREFILL-ARM merged as align-llm PR #129, and following the user's
 > decision to download `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, Track B started two consumers on
@@ -84,6 +85,10 @@ boundary changes or an explicit audit selects it, not for an unrelated pin chang
 > `agent/r3-residency-sim`, the expert-residency policy simulator) is the single active Track B
 > consumer, in publication. See the end of this narrative for the next consumer
 > named for each remaining pending user/Align decision.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
+> Request 22 update: Align PR #913 merged as `e6942a025ccc5197cfea95547cefdeee27cb157d`,
+> accepting ordinary `array<string>[i] -> str`; Move-record arrays already have direct field views
+> and explicit shared-borrow call places. R7 makes the request blocking while the Align
+> implementation remains pending.
 > R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
 > parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
 > `borrow t: GgufTable` accessors in `src/gguf.align` get the by-value warning even though no call
@@ -6567,7 +6572,7 @@ read-only constructor" claims at `draft.md:2772` and `docs/language-spec.md:1043
 ## Request 22 — Indexing arrays of Move element types
 
 ```text
-Status: PROPOSED
+Status: ACCEPTED
 Priority: high
 Blocking: yes
 Blocked gate or slice: R7-TOKENIZER, the first text/token consumer on the path from the shipped
@@ -6624,11 +6629,12 @@ Independent work that may continue: the R7-TOKENIZER contract ledger and closure
 already-merged R0 through R6 capabilities that avoid ordinary indexing of an `array<string>` or an
 array of a Move-field record. R7-TOKENIZER source implementation and every later text-generation
 consumer are blocked
-Resume condition: Align ships borrow indexing for Move arrays. Section 5.2 of
+Resume condition: Align ships the accepted ordinary `array<string>[i] -> str` view. Section 5.2 of
 `docs/specs/r1-qwen-model-ir.md` names the resulting producer surface,
 `gguf.read_string_array(path, key) -> Result<array<string>, Error>`, owned by the future tokenizer
 capability, not by R1
-Align commit or pull request: none
+Align commit or pull request: Align PR #913 (`e6942a025ccc5197cfea95547cefdeee27cb157d`)
+accepts the design; implementation commit/PR pending
 align-llm verification: pending — three targets. `src/gguf.align`'s `render_tensors` NUL-separated
 `prefixes: str`/parallel-`array<i64>` workaround (`:120`, `:842`, `:1016-1022`) is the first. The
 second, named by `docs/specs/r1-qwen-model-ir.md` section 5.4 as a documentation follow-on now that
@@ -6684,38 +6690,45 @@ same rendered bodies could not be indexed back out during rendering. The accumul
 array, with `row.offset` / `row.offset_field` pushed onto separate parallel `array<i64>` accumulators
 (`tensor_offsets.push`, `tensor_offset_fields.push`) to keep every field reachable by position.
 
-### Requested capability
+### Accepted Align answer
 
-Borrow-indexing for a Move-element array: `arr[i]` yields a `borrow` (or `str` view, for
-`array<string>`) without consuming or copying the element, following the existing `check_index`
-double-free rationale — the fix is to hand back a borrow instead of a bit-copy, not to make the
-element Copy. Alternatively, an explicit `arr.at(i)` borrow accessor alongside `arr[i]`, matching the
-`.at(i)` naming convention Align already uses for total, Missing-propagating navigation
-(`d.get(k).at(i)` on a `json.doc`, `draft.md:1934`, `docs/language-spec.md:609`). Either spelling is
-acceptable; the requirement is a non-consuming read of a Move array element usable as an ordinary
-expression, not only as a direct call argument to a `borrow` parameter as `docs/language-spec.md:207`
-already admits.
+Align PR #913 settles the missing consumer-complete surface as ordinary
+`array<string>[i] -> str`. The selected owned string remains in the array; the result is the
+canonical non-consuming text view with the source array generation and contained roots. It uses the
+existing index spelling, receiver/index/termination order, hard bounds failure, and explicit
+`.clone()` path to an owned result. There is no element copy, move-out, allocation, source nulling,
+cleanup bit, ABI change, or general reference value.
 
-Scope: `array<string>` and `array<Struct>` where the struct has a Move field, matching exactly the
-element classes `collection_element_is_unsupported_move` rejects today. No change to the existing
-narrower call-argument admission of `docs/language-spec.md:207`, no move-out indexing, and no new
-Move container type.
+The record half of the original request needs no new ordinary whole-record value. Align already
+supports `rows[i].field`, demoting an owned `string` leaf to `str`, and already passes a whole Move
+record element directly to an explicit shared-`borrow` parameter through its checked indexed call
+place. Those two surfaces cover the registered record consumers without making `row := rows[i]`
+valid. Other Move elements, mutable element borrows, partial moves, `arr.at(i)`, and range slices of
+`array<string>` remain outside the accepted scope.
 
 ### Public-contract ledger
 
 | Surface | Exact result/error and precedence | Ownership, allocation, effects, and identity | First real-client acceptance |
 | --- | --- | --- | --- |
-| `arr[i]` on `array<string>` / `array<Struct-with-Move-field>` (or `arr.at(i)`) | Yields a non-consuming `borrow` / `str` view of the element; bounds-checked and aborting exactly like today's Copy-element `xs[i]`; a terminating index forms no bounds action or result, matching the existing convention at `docs/language-spec.md:200-204` | No allocation, no copy of the element's owned buffer, no double-free; the returned view's region is tied to the array's root, following the existing borrowed-place region rules | `align-llm`'s `src/gguf.align` indexes an `array<TensorRow>`/`array<string>` of rendered tensor bodies by position instead of a NUL-separated prefix stream, and `make gguf-smoke` passes |
+| `arr[i]` where `arr: array<string>` | Returns `str`, bounds-checked and aborting exactly like today's Copy-element `xs[i]`; a terminating receiver or index forms no later bounds action, load, or result | The array remains sole owner; the view carries its complete source generation and contained roots with no allocation, clone, transfer, nulling, cleanup bit, or independent Drop | R7's `gguf.read_string_array` producer, hosted tokenizer owner, and named real-Qwen2 tokenizer parity qualification pass at the adopted pin |
+| `rows[i].field` where `rows` contains a Move record | Existing direct-field read remains unchanged; owned `string` leaves return `str`, Copy leaves remain Copy, and other Move leaves reject | Existing bounds, root, no-copy, and cleanup rules remain unchanged | `src/gguf.align::render_tensors` and the grouped `GgufTable`/`BlockPlan`/`StepColumns` migrations replace their stream-plus-column internals and their focused owners pass |
+| `inspect(rows[i])` where the parameter is explicit shared `borrow` | Existing checked indexed call place remains unchanged; the whole element is addressable only for the dynamic extent of the call | The array remains owner; no load, transfer, nulling, allocation, cleanup, or independent Drop occurs | Existing compiler `borrowed_params` owner remains green; align-llm record consumers retain their direct-call behavior |
 
 ### Acceptance criteria
 
-1. A compiler test indexes an `array<string>` by borrow and reads the borrowed view as an ordinary
-   expression (not only as a direct call argument).
-2. A compiler test indexes an `array<Struct>` whose struct has a Move field (e.g. an owned `string`
-   field) by borrow and reads a field off the borrowed element.
-3. `align-llm` verification: `src/gguf.align` replaces the NUL-separated `prefixes: str` /
-   parallel-`array<i64>` workaround (`src/gguf.align:120`, `:842`, `:1016-1022`) with a directly
-   indexed `array<TensorRow>` (or equivalent), and `make gguf-smoke` passes.
+1. Compiler owners read `array<string>[i]` as an ordinary `str` expression across direct, field,
+   projected, temporary, control-wrapper, termination, invalidation, generic, whole/per-unit,
+   checked-HIR, malformed-MIR, and backend no-copy cells.
+2. Existing compiler owners keep `rows[i].string_field` and explicit shared-borrow calls valid while
+   an ordinary whole-record value, by-value call, other Move element, and `borrow mut` element still
+   reject.
+3. `src/gguf.align` replaces the NUL-separated `prefixes: str` / parallel-`array<i64>` workaround
+   with an indexed `array<TensorRow>` or equivalent, and `make gguf-smoke` passes.
+4. `GgufTable`, `BlockPlan`, and `model_forward.StepColumns` migrate their stream-plus-column
+   internals together without changing accessor signatures, and the R1-QWEN-MODEL-IR,
+   R1B-GPTOSS-MOE-IR, and R6-STEP-N focused owners pass.
+5. R7's hosted tokenizer fixture and named real-Qwen2 tokenizer parity qualification pass against
+   `gguf.read_string_array` at the merged Align pin.
 
 ---
 
