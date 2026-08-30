@@ -21,16 +21,25 @@ semantics, process-group cleanup, and Git-common-directory storage. Direct
 `layer-forward-smoke`, every external preflight phase, and hosted CI consume it; CI uploads the
 complete aggregate log for 14 days. The deterministic owner covers validation, byte identity,
 warning classes, early/final diagnostics, nonzero status, child/supervisor/pipe signals, a leaked
-descendant, progress, concurrency, linked worktrees, preflight adaptation, and adopter topology.
+descendant, short terminal writes, progress, concurrency, linked worktrees, preflight adaptation,
+and adopter topology. The fresh capable aggregate restores the nesting marker after its fixed
+`--clearenv`, so its read-only Git view does not attempt a second retained log.
 
 **Latest durable verification.** `python3 scripts/test-output-summary`, the focused
 `test-development-preflight` plan/workflow topology functions, Python syntax parsing, and
-`git diff --check` pass. The full development-workflow owner reaches its pre-existing Linux apt
-fixture on Darwin and then fails because BSD awk rejects its GNU regular expression and the fixture
-requires `/usr/bin/rmdir`; the normal Linux publication lane owns that complete command. A real
-missing-library owner run preserved overall Make status 2, emitted 13 lines / 2,042 bytes with
-`ld: library 'crypto' not found` as the first actionable diagnostic, and retained all 915 child
-lines / 183,183 bytes at SHA-256 `2c45a848…1394`.
+`git diff --check` pass after the comprehensive-review repair. The full development-workflow owner
+reaches its pre-existing Linux apt fixture on Darwin and then fails because BSD awk rejects its GNU
+regular expression and the fixture requires `/usr/bin/rmdir`; `run-fresh-worker-unit-smoke`
+likewise stops at the Linux-only `fcntl.F_SEAL_*` import. The normal Linux publication lane owns
+both complete commands. A real missing-library owner run preserved overall Make status 2, emitted
+13 lines / 2,042 bytes with `ld: library 'crypto' not found` as the first actionable diagnostic,
+and retained all 915 child lines / 183,183 bytes at SHA-256 `2c45a848…1394`.
+
+The fresh high-effort comprehensive review covered exact head `66c3288` against base and merge base
+`e0b851a`. Its seven accepted findings were one broken fresh-aggregate nesting path, status and
+diagnostic precedence for descendant cleanup, incomplete terminal short writes, delimiter
+validation, unused-warning precedence, and stale handoff state. The current consolidated repair
+adds a regression for every root-cause class; it does not change the capability approach.
 
 **Output-volume result.** Exact implementation head
 `851988a7be159cd1eed853ecc24473712d58b1fc` passes the real owner in 57.267 s. Visible output is
@@ -39,14 +48,15 @@ both the maintenance ceiling and acceptance floor are **MET**. The parent Make r
 visible 34-byte line. All 921 child lines / 185,893 bytes are retained at SHA-256 `fdd77968…c29a`,
 with the exact 813 / 96 / 1 warning classes and ten owner PASS results.
 
-**Next actions.** (1) Commit the result record. (2) Perform one comprehensive review, consolidate
-accepted repairs, and rerun affected owners. (3) Run exact-head publication preflight on Linux,
-publish, and merge. (4) Refresh `main` and begin the next eligible roadmap capability.
+**Next actions.** (1) Commit the consolidated review repair. (2) Rerun the real output-volume owner
+on that exact executable head and record the replacement evidence. (3) Run exact-head publication
+preflight on Linux, publish, and merge. (4) Refresh `main` and begin the next eligible roadmap
+capability.
 
 **Blockers.** None.
 
-**Intentional uncommitted files.** The result record and this handoff update until their commit.
-Baseline, measurement, and retained logs remain outside Git.
+**Intentional uncommitted files.** The consolidated review repair until its commit. Baseline,
+measurement, and retained logs remain outside Git.
 
 ## Merged checkpoint: R6-PREFIX-TTFT publication (2026-08-30)
 

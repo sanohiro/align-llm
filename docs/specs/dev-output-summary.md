@@ -239,7 +239,7 @@ lines supply the tail. The full log remains authoritative.
 | Direct local owner | `scripts/run-layer-forward-smoke` delegates itself once unless `ALIGN_LLM_OUTPUT_SUMMARY_ACTIVE=1`; its body and argv are unchanged |
 | `scripts/pre-pr` | every external `PlanStep` uses the shared Python function; existing phase-start/pass/fail JSON records, plan order, environment unsets, stamp semantics, and fail-fast behavior remain |
 | Hosted CI | `Run supported project checks` invokes the CLI around the unchanged `make -j8 ALIGNC="$ALIGNC" hosted-checks` argv; the later `always()` artifact step uploads any retained logs |
-| Nested execution | the preflight/CI marker makes the direct owner run its body without a second log, process group, result, or progress stream |
+| Nested execution | preflight/CI children inherit the marker; the fresh capable aggregate explicitly restores it after its fixed `--clearenv`; the direct owner then runs its body without a second log, process group, result, or progress stream |
 
 The aggregate target vector remains byte-identical and continues to be owned by
 `scripts/check-gate-topology`. A wrapper accepts one command; it has no API with which to schedule,
@@ -280,27 +280,28 @@ retains that original terminal signal after group cleanup.
 
 | Cell | Implementation owner | Exact regression or evidence |
 | --- | --- | --- |
-| CLI formation and validation | `run-output-summary`, `output_summary.parse` | invalid phase, empty command, invalid interval, and empty env directory exit before marker side effect |
+| CLI formation and validation | `run-output-summary`, `output_summary.parse` | invalid phase, empty command, invalid interval, empty env directory, and a command-owned `--` without the required wrapper delimiter exit before marker side effect |
 | Default directory construction | Git-common-directory resolver | ordinary clone and linked-worktree fixtures resolve one common log namespace without assuming `.git` is a directory |
 | Explicit directory construction | log reservation | missing real directory is created; file/symlink directory refuses before child launch |
 | Concurrent construction | exclusive random log reservation | two independent wrappers retain distinct complete files |
 | Child move-in | exact argv plus two named environment additions | fixture records argv including spaces/empty values and environment; no shell expansion occurs |
 | Success | child exit 0 | exact log bytes/digest/lines, three normalized warning classes, PASS and original result lines |
-| Ordinary failure | child exit 23 | wrapper exits 23, never PASS, retains complete log, and exposes early actionable plus final tail |
+| Ordinary failure | child exit 23, with and without a live descendant | wrapper exits 23, never PASS, retains complete log, exposes early actionable plus final tail, and cleans a descendant without replacing status |
 | Missing executable | launch path | status 127, child-side marker absent, empty exclusive log retained |
-| Child signal | child sends `TERM` and `PIPE` to itself | wrapper return code is the same negative signal; no ordinary-success conversion |
+| Child signal | child sends `TERM` and `PIPE` to itself, including `TERM` with a live descendant | wrapper return code is the same negative signal after group cleanup; no ordinary-success conversion |
 | Supervisor early exit | parent signals live wrapper | signal reaches child group, cleanup marker appears, and wrapper terminates by the original signal |
-| Direct-child exit with live descendant | process-group cleanup | descendant receives `TERM`/`KILL`, wrapper fails 125 instead of passing, and no process survives |
+| Direct-child success with live descendant | process-group cleanup | descendant receives `TERM`/`KILL`, wrapper fails 125 instead of passing, names cleanup before a child `error:` line, and no process survives |
 | Long-running progress | one-second test interval | at least one progress record precedes terminal result; production default remains 60 seconds |
 | Warning normalization | Align, tool, hint, malformed lines | exact sorted classes and counts; raw log remains byte-identical |
 | Malformed UTF-8 / embedded NUL output | byte log plus JSON reducer | log digest is exact; visible text uses JSON escaping and replacement without multiline injection |
 | First actionable diagnostic | early error followed by more than 8,192 warning/hint bytes | early error remains visible and final useful tail remains within both failure ceilings |
+| Terminal short write | injected partial `os.write` to the summary descriptor | every JSON record is completed before the next begins and child status remains exact |
 | Complete-log mutation | expected bytes versus retained file | deletion/truncation mutant changes bytes/digest and fails the owner |
 | Exit-status mutation | nonzero child versus wrapper result | zero-on-failure mutant fails the owner |
 | Diagnostic mutation | expected early marker versus terminal JSON | first-line-loss mutant fails the owner |
 | Aggregate order mutation | unchanged Make vector and topology owner | `check-gate-topology --self-test` plus workflow regression require the original target order and exact wrapped argv |
 | Preflight success/failure | injected `PlanStep` commands | shared runner is called in plan order, environment unset is honored, first failure stops later phases, and stamp remains post-success only |
-| Nested direct owner | active marker | preflight/CI capture exactly one log and one result sequence for the owner |
+| Nested direct owner | active marker, including the fresh aggregate's fixed environment | preflight/CI capture exactly one log and one result sequence for the owner even after fresh `--clearenv` |
 | CI retention success/failure | workflow topology fixture | artifact step is `always()`, names the exact temp directory, and cannot change the supported-check result |
 | Return / cleanup | descriptor and process-group owners | success, nonzero, launch error, signal, and summary-pipe fixtures leave no live child and never overwrite a prior log |
 

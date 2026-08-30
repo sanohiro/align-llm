@@ -88,7 +88,11 @@ def compact_record(event: str, **fields: object) -> bytes:
 
 
 def emit_record(descriptor: int, event: str, **fields: object) -> bool:
-    pending = memoryview(compact_record(event, **fields))
+    return emit_bytes(descriptor, compact_record(event, **fields))
+
+
+def emit_bytes(descriptor: int, value: bytes) -> bool:
+    pending = memoryview(value)
     try:
         while pending:
             written = os.write(descriptor, pending)
@@ -107,12 +111,12 @@ def parse(arguments: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--phase", required=True)
     parser.add_argument("--log-directory")
     parser.add_argument("--progress-seconds", type=int, default=DEFAULT_PROGRESS_SECONDS)
-    parser.add_argument("command", nargs=argparse.REMAINDER)
-    if "--" not in arguments:
+    try:
+        separator = arguments.index("--")
+    except ValueError:
         parser.error("command must follow --")
-    values = parser.parse_args(arguments)
-    if values.command and values.command[0] == "--":
-        values.command = values.command[1:]
+    values = parser.parse_args(arguments[:separator])
+    values.command = list(arguments[separator + 1 :])
     if PHASE.fullmatch(values.phase) is None:
         parser.error("phase must match [a-z0-9][a-z0-9._-]{0,63}")
     if not values.command:
@@ -238,7 +242,7 @@ def warning_class(line: bytes) -> str | None:
         detail = lowered[len(b"warning:") :].strip()
         if b"deprecated" in detail:
             return "tool:deprecated"
-        if detail.startswith(b"unused"):
+        if b"unused" in detail:
             return "tool:unused"
         if b"never used" in detail or b"dead code" in detail:
             return "tool:dead-code"
@@ -359,9 +363,11 @@ def terminal_records(
     if result == "PASS":
         return fixed
 
-    first_line = analysis.first_actionable
-    if first_line is None and launch_detail is not None:
-        first_line = RetainedLine(launch_detail.encode("utf-8", "replace"), False)
+    first_line = (
+        RetainedLine(launch_detail.encode("utf-8", "replace"), False)
+        if launch_detail is not None
+        else analysis.first_actionable
+    )
     first_record: bytes | None = None
     if first_line is not None:
         text, truncated = bounded_text(first_line)
@@ -551,7 +557,7 @@ def run_command(
                     while next_progress <= now:
                         next_progress += interval_ns
             group_remained, group_cleaned = stop_remaining_process_group(child.pid)
-            if group_remained and pending_signal is None:
+            if group_remained and pending_signal is None and returncode == 0:
                 returncode = 125
                 launch_detail = (
                     "cleanup error: child process group outlived the direct child"
@@ -590,14 +596,10 @@ def run_command(
             launch_detail=launch_detail,
             forced_signal=pending_signal,
         ):
-            try:
-                os.write(output_descriptor, record)
-            except OSError as error:
-                if error.errno in (errno.EPIPE, errno.EBADF):
-                    output_broken = True
-                    handle_signal(signal.SIGPIPE, None)
-                    break
-                raise
+            output_broken = not emit_bytes(output_descriptor, record)
+            if output_broken:
+                handle_signal(signal.SIGPIPE, None)
+                break
 
     for selected_signal, previous in prior_handlers.items():
         signal.signal(selected_signal, previous)

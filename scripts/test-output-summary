@@ -120,6 +120,11 @@ def test_validation(root: Path, emitter: Path) -> None:
         ),
         ("missing separator", ("--phase", "valid", *command), os.environ),
         (
+            "command-owned separator",
+            ("--phase", "valid", *command, "--", "literal-command-argument"),
+            os.environ,
+        ),
+        (
             "empty environment directory",
             ("--phase", "valid", "--", *command),
             {**os.environ, summary.OUTPUT_DIRECTORY_VARIABLE: ""},
@@ -234,14 +239,32 @@ def test_success_and_identity(root: Path, emitter: Path) -> None:
             "space value",
             "",
             "$literal",
+            "--",
+            "tail",
         ),
     )
     require(environment_result.returncode == 0, "environment/argv fixture failed")
     child_record = json.loads(only_log(environment_log).read_text(encoding="utf-8"))
     require(
         child_record
-        == {"active": "1", "argv": ["space value", "", "$literal"], "bytecode": "1"},
+        == {
+            "active": "1",
+            "argv": ["space value", "", "$literal", "--", "tail"],
+            "bytecode": "1",
+        },
         f"child argv or named environment additions changed: {child_record}",
+    )
+
+    warning_cases = {
+        b"warning: deprecated and unused\n": "tool:deprecated",
+        b"warning: profile data is unused\n": "tool:unused",
+        b"warning: field x is unused\n": "tool:unused",
+        b"warning: dead code from profile generation\n": "tool:dead-code",
+        b"warning: PGO profile missing\n": "tool:pgo",
+    }
+    require(
+        {line: summary.warning_class(line) for line in warning_cases} == warning_cases,
+        "tool warning precedence changed",
     )
 
 
@@ -412,33 +435,93 @@ while True:
 def test_lingering_descendant(root: Path) -> None:
     helper = root / "lingering-child.py"
     helper.write_text(
-        """import subprocess
+        """import os
+import signal
+import subprocess
+import sys
 
 child = subprocess.Popen(['/bin/sleep', '30'])
+print('error: expected child diagnostic', flush=True)
 print(child.pid, flush=True)
+if sys.argv[1] == 'nonzero':
+    raise SystemExit(23)
+if sys.argv[1] == 'signal':
+    os.kill(os.getpid(), signal.SIGTERM)
 """,
         encoding="utf-8",
     )
-    log_directory = root / "lingering-logs"
-    result = run(log_directory, "lingering", (sys.executable, os.fspath(helper)))
-    require(result.returncode == 125, "lingering descendant was accepted as success")
-    parsed = records(result.stderr)
-    require(
-        parsed[0]["result"] == "FAIL"
-        and any(
-            row["event"] == "verification-diagnostic-first"
-            and "process group outlived" in str(row["text"])
-            for row in parsed
-        ),
-        "lingering descendant lost its cleanup failure",
+    cases = (
+        ("success", 125, "FAIL", 125),
+        ("nonzero", 23, "FAIL", 23),
+        ("signal", -signal.SIGTERM.value, "SIGNAL", signal.SIGTERM.value),
     )
-    descendant = int(only_log(log_directory).read_text(encoding="ascii").strip())
+    for mode, expected_status, expected_result, expected_record_status in cases:
+        log_directory = root / f"lingering-{mode}-logs"
+        result = run(
+            log_directory,
+            f"lingering-{mode}",
+            (sys.executable, os.fspath(helper), mode),
+        )
+        require(
+            result.returncode == expected_status,
+            f"lingering {mode} status changed to {result.returncode}",
+        )
+        parsed = records(result.stderr)
+        require(
+            parsed[0]["result"] == expected_result
+            and parsed[0]["status"] == expected_record_status,
+            f"lingering {mode} terminal result changed",
+        )
+        if mode == "success":
+            first = next(
+                row for row in parsed if row["event"] == "verification-diagnostic-first"
+            )
+            require(
+                "process group outlived" in str(first["text"]),
+                "cleanup failure did not take priority over child diagnostics",
+            )
+        descendant = int(only_log(log_directory).read_text(encoding="ascii").splitlines()[-1])
+        try:
+            os.kill(descendant, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            raise RuntimeError(f"lingering {mode} descendant remained live after cleanup")
+
+
+def test_short_summary_write(root: Path) -> None:
+    output = root / "short-summary-output"
+    output_descriptor = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    original_write = summary.os.write
+    shortened = False
+
+    def short_once(descriptor: int, value: bytes | memoryview) -> int:
+        nonlocal shortened
+        if descriptor == output_descriptor and not shortened:
+            shortened = True
+            return original_write(descriptor, value[:10])
+        return original_write(descriptor, value)
+
+    summary.os.write = short_once
     try:
-        os.kill(descendant, 0)
-    except ProcessLookupError:
-        pass
-    else:
-        raise RuntimeError("lingering descendant remained live after wrapper cleanup")
+        status = summary.run_command(
+            (sys.executable, "-c", "pass"),
+            phase="short-summary-write",
+            repository=REPOSITORY,
+            log_directory=root / "short-summary-logs",
+            output_descriptor=output_descriptor,
+        )
+    finally:
+        summary.os.write = original_write
+        os.close(output_descriptor)
+    parsed = records(output.read_bytes())
+    require(
+        shortened
+        and status == 0
+        and [row["event"] for row in parsed]
+        == ["verification-result", "verification-log"],
+        "short summary write produced a partial terminal record",
+    )
 
 
 def test_progress(root: Path) -> None:
@@ -584,10 +667,18 @@ def test_preflight_adapter() -> None:
 def test_adopter_topology() -> None:
     owner = (SCRIPTS / "run-layer-forward-smoke").read_text(encoding="utf-8")
     workflow = (REPOSITORY / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    fresh_worker = (SCRIPTS / "fresh-align-compiler").read_text(encoding="utf-8")
+    aggregate_start = fresh_worker.index("def aggregate_environment")
+    aggregate_end = fresh_worker.index("\n\n@dataclass", aggregate_start)
+    aggregate_environment = fresh_worker[aggregate_start:aggregate_end]
     require(
         'if [ "${ALIGN_LLM_OUTPUT_SUMMARY_ACTIVE:-0}" != 1 ]; then' in owner
         and 'scripts/run-output-summary" --phase layer-forward-smoke -- "$0" "$@"' in owner,
         "direct owner does not delegate exactly once",
+    )
+    require(
+        '("ALIGN_LLM_OUTPUT_SUMMARY_ACTIVE", "1")' in aggregate_environment,
+        "fresh capable aggregate does not preserve outer summary ownership",
     )
     require(
         "python3 scripts/run-output-summary --phase hosted-checks --" in workflow
@@ -616,6 +707,7 @@ def main() -> int:
         test_summary_pipe(root)
         test_supervisor_signal(root)
         test_lingering_descendant(root)
+        test_short_summary_write(root)
         test_progress(root)
         test_concurrency(root, emitter)
         test_git_common_directory(root)
@@ -626,8 +718,8 @@ def main() -> int:
         "CLI wrote bytecode",
     )
     print(
-        "output summary: validation, identity, warnings, diagnostics, status, signals, progress, "
-        "concurrency, worktrees, and adopters PASS"
+        "output summary: validation, identity, warnings, diagnostics, status, signals, terminal "
+        "writes, progress, concurrency, worktrees, and adopters PASS"
     )
     return 0
 
