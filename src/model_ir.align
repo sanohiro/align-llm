@@ -78,11 +78,9 @@ pub ModelIr {
   document: string,
 }
 
-// Everything one architecture knows, expressed as data. `names` is one concatenated stream carrying
-// every expected tensor name and every role label, addressed by explicit `[start, end)` spans,
-// because a span is the shape `GgufTable` already proves and because a raw name may contain any
-// byte. Every per-block column holds exactly `block_count` entries and every per-member column
-// exactly `member_count`.
+// Everything one architecture knows, expressed as data. Request 22 replaces the former shared
+// text stream and span columns with owned role/name arrays. Every per-block column holds exactly
+// `block_count` entries and every per-member column exactly `member_count`.
 pub BlockPlan {
   arch: string,
   arch_present: bool,
@@ -106,8 +104,6 @@ pub BlockPlan {
   file_type: i64,
   file_type_present: bool,
 
-  names: string,
-
   block_count: i64,
   // 0 WeightBlock, 1 AttentionBlock, 2 MlpBlock, 3 ExpertBlock, 4 RouterBlock.
   block_kind: array<i64>,
@@ -117,10 +113,8 @@ pub BlockPlan {
   block_member_end: array<i64>,
 
   member_count: i64,
-  member_role_start: array<i64>,
-  member_role_end: array<i64>,
-  member_name_start: array<i64>,
-  member_name_end: array<i64>,
+  member_roles: array<string>,
+  member_names: array<string>,
   // 1 required; 0 optional, and an absent optional member is dropped from the block.
   member_required: array<i64>,
   member_n_dims: array<i64>,
@@ -350,7 +344,7 @@ fn name_index(borrow t: gguf.GgufTable) -> array<i64> {
   mut index := 0
   loop {
     if index >= t.tensor_count { break }
-    if t.name_valid[index] != 0 {
+    if t.tensor_entries[index].name_valid {
       name := gguf.tensor_name(t, index)
       name_view: str := name
       column.push(packed_entry(name_hash(name_view), index))
@@ -483,7 +477,7 @@ pub fn size_tensors(borrow t: gguf.GgufTable) -> Geometry {
       detail = tensor_detail(t, index)
       break
     }
-    type_id := t.tensor_types[index]
+    type_id := t.tensor_entries[index].type_id
     block_size := gguf.ggml_block_size(type_id)
     type_bytes := gguf.ggml_type_size(type_id)
     if block_size == 0 || type_bytes == 0 {
@@ -495,17 +489,17 @@ pub fn size_tensors(borrow t: gguf.GgufTable) -> Geometry {
     // "the element product is a multiple of the block size" — a Q6_K `[64, 64]` tensor satisfies
     // the product rule and is still unrepresentable — and it is what makes `tensor_nbytes` agree
     // with `ggml_row_size` byte for byte.
-    row_extent := t.tensor_dim0[index]
+    row_extent := t.tensor_entries[index].dim0
     if row_extent % block_size != 0 {
       code = "R1_TENSOR_SHAPE_UNALIGNED".clone()
       detail = tensor_detail(t, index)
       break
     }
     n_elements := element_count(
-      t.tensor_dim0[index],
-      t.tensor_dim1[index],
-      t.tensor_dim2[index],
-      t.tensor_dim3[index],
+      t.tensor_entries[index].dim0,
+      t.tensor_entries[index].dim1,
+      t.tensor_entries[index].dim2,
+      t.tensor_entries[index].dim3,
     )
     if n_elements < 0 {
       code = "R1_SIZE_OVERFLOW".clone()
@@ -535,9 +529,14 @@ pub fn size_tensors(borrow t: gguf.GgufTable) -> Geometry {
   }
 }
 
-fn span_text(borrow plan: BlockPlan, start: i64, end: i64) -> string {
-  if start < 0 || end < start || end > plan.names.len() { return "".clone() }
-  return plan.names[start..end].clone()
+fn member_name(borrow plan: BlockPlan, index: i64) -> string {
+  if index < 0 || index >= plan.member_names.len() { return "".clone() }
+  return plan.member_names[index].clone()
+}
+
+fn member_role(borrow plan: BlockPlan, index: i64) -> string {
+  if index < 0 || index >= plan.member_roles.len() { return "".clone() }
+  return plan.member_roles[index].clone()
 }
 
 fn dims_json(n_dims: i64, d0: i64, d1: i64, d2: i64, d3: i64) -> string {
@@ -574,13 +573,13 @@ fn member_claim(
   slice_index: i64,
   slice_count: i64,
 ) -> Claim {
-  absolute := t.tensor_absolute_offsets[index]
+  absolute := t.tensor_entries[index].absolute_offset
   nbytes := g.nbytes[index]
   if slice_index < 0 {
     return Claim { offset: absolute, nbytes: nbytes, code: 0 }
   }
   // Step 8b, the stacked-tensor rule, tested before any slice arithmetic.
-  n_dims := t.tensor_n_dims[index]
+  n_dims := t.tensor_entries[index].n_dims
   if n_dims < 2 || slice_count < 1 || slice_index >= slice_count {
     return Claim { offset: -1, nbytes: -1, code: 1 }
   }
@@ -635,7 +634,7 @@ pub fn resolve_claims(
     mut member_at := plan.block_member_start[slot]
     loop {
       if member_at >= plan.block_member_end[slot] { break }
-      wanted := span_text(plan, plan.member_name_start[member_at], plan.member_name_end[member_at])
+      wanted := member_name(plan, member_at)
       wanted_view: str := wanted
       found := indexed_tensor(t, g.order, wanted_view)
       if found < 0 && plan.member_required[member_at] != 0 {
@@ -646,7 +645,7 @@ pub fn resolve_claims(
       }
       if found >= 0 {
         want_dims := plan.member_n_dims[member_at]
-        got_dims := t.tensor_n_dims[found]
+        got_dims := t.tensor_entries[found].n_dims
         mut shape_ok := got_dims == want_dims
         if shape_ok {
           mut axis := 0
@@ -861,7 +860,7 @@ fn ordered_checks(
       // A whole-tensor claim beside a slice claim overlaps it by definition.
       if whole != run_end - run_at { broken = true }
     } else {
-      n_dims := t.tensor_n_dims[subject]
+      n_dims := t.tensor_entries[subject].n_dims
       last := gguf.tensor_dim(t, subject, n_dims - 1)
       if expected != last { broken = true }
     }
@@ -973,15 +972,15 @@ fn tensor_json(
 ) -> string {
   name := gguf.tensor_name(t, index)
   name_view: str := name
-  type_id := t.tensor_types[index]
+  type_id := t.tensor_entries[index].type_id
   type_label := gguf.ggml_type_name(type_id)
-  n_dims := t.tensor_n_dims[index]
+  n_dims := t.tensor_entries[index].n_dims
   dims := dims_json(
     n_dims,
-    t.tensor_dim0[index],
-    t.tensor_dim1[index],
-    t.tensor_dim2[index],
-    t.tensor_dim3[index],
+    t.tensor_entries[index].dim0,
+    t.tensor_entries[index].dim1,
+    t.tensor_entries[index].dim2,
+    t.tensor_entries[index].dim3,
   )
   dims_view: str := dims
   b := builder()
@@ -1006,9 +1005,9 @@ fn tensor_json(
   b.write(",\"nbytes\":")
   b.write_int(nbytes)
   b.write(",\"offset\":")
-  b.write_int(t.tensor_offsets[index])
+  b.write_int(t.tensor_entries[index].offset)
   b.write(",\"absolute_offset\":")
-  b.write_int(t.tensor_absolute_offsets[index])
+  b.write_int(t.tensor_entries[index].absolute_offset)
   // Schema 2's two additive fields. `n_dims`, `dims`, `n_elements`, and `nbytes` continue to
   // describe the tensor as the container declares it, never the slice: a document that reshaped a
   // declared 3-axis tensor into one expert's plane would contradict `--inspect-gguf` about the same
@@ -1083,7 +1082,7 @@ pub fn build(
       mut scan := 0
       loop {
         if scan >= t.tensor_count { break }
-        if t.tensor_types[scan] == type_id {
+        if t.tensor_entries[scan].type_id == type_id {
           rows = rows + 1
           bytes = bytes + g.nbytes[scan]
         }
@@ -1136,7 +1135,7 @@ pub fn build(
         member_at := resolved.member_slot[resolved_at]
         claim_offset := resolved.member_offset[resolved_at]
         claim_nbytes := resolved.member_nbytes[resolved_at]
-        role := span_text(plan, plan.member_role_start[member_at], plan.member_role_end[member_at])
+        role := member_role(plan, member_at)
         role_view: str := role
         if member_count > 0 { members.write(",") }
         member_json := tensor_json(

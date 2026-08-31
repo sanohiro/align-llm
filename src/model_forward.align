@@ -346,6 +346,11 @@ pub fn empty_array() -> array<i64> {
   return b.build()
 }
 
+fn empty_string_array() -> array<string> {
+  values: array_builder<string> := array_builder()
+  return values.build()
+}
+
 pub TokenColumns { count: i64, ids: array<i64> }
 
 pub fn empty_tokens() -> TokenColumns = TokenColumns { count: 0, ids: empty_array() }
@@ -411,11 +416,8 @@ pub fn empty_top() -> TopColumns = TopColumns { index: empty_array(), bits: empt
 // it is passed by value at some twenty-five call sites, so per-step scalars would make it grow with
 // an operand.
 //
-// **`sha256` and `worst_node` are concatenated strings, not `array<str>`.** Indexing an array of a
-// Move element type is Align Request 22 and stays unconsumed here, so the digests are one string of
-// fixed-width hex sliced by `step_digest_at` — exactly the shape `ScheduleColumns.digests` has
-// carried since R5B — and the variable-length node names are one string with a start/end column
-// pair, exactly the shape `GraphMembers.names` has carried since R5A. Neither is a new pattern.
+// Request 22 replaces the former fixed-width digest stream and variable-width name stream with
+// directly indexed owned strings. The accessors remain unchanged.
 pub StepColumns {
   count: i64,
   n_past: array<i64>,
@@ -436,10 +438,8 @@ pub StepColumns {
   oracle_layers: array<i64>,
   oracle_graph: array<i64>,
   oracle_worst_layer: array<i64>,
-  digests: string,
-  worst_names: string,
-  worst_name_start: array<i64>,
-  worst_name_end: array<i64>,
+  digests: array<string>,
+  worst_names: array<string>,
 }
 
 pub fn empty_steps() -> StepColumns = StepColumns {
@@ -462,25 +462,18 @@ pub fn empty_steps() -> StepColumns = StepColumns {
   oracle_layers: empty_array(),
   oracle_graph: empty_array(),
   oracle_worst_layer: empty_array(),
-  digests: "".clone(),
-  worst_names: "".clone(),
-  worst_name_start: empty_array(),
-  worst_name_end: empty_array(),
+  digests: empty_string_array(),
+  worst_names: empty_string_array(),
 }
 
 pub fn step_digest_at(borrow s: StepColumns, index: i64) -> str {
-  view: str := s.digests
-  start := index * DIGEST_HEX_BYTES
-  if start < 0 || start + DIGEST_HEX_BYTES > view.len() { return "" }
-  return view[start..start + DIGEST_HEX_BYTES]
+  if index < 0 || index >= s.digests.len() { return "" }
+  return s.digests[index]
 }
 
 pub fn step_worst_node_at(borrow s: StepColumns, index: i64) -> str {
-  view: str := s.worst_names
-  start := column_at(s.worst_name_start, index)
-  end := column_at(s.worst_name_end, index)
-  if start < 0 || end < start || end > view.len() { return "" }
-  return view[start..end]
+  if index < 0 || index >= s.worst_names.len() { return "" }
+  return s.worst_names[index]
 }
 
 // Everything the run learned that is a scalar or a name, whether or not it finished.

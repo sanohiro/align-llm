@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+"""R7-TOKENIZER synthetic CLI/API owner."""
+
+from __future__ import annotations
+
+import json
+import atexit
+import subprocess
+import sys
+import tempfile
+import tomllib
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+HARNESS = ROOT / "tokenizer_api_smoke"
+atexit.register(lambda: HARNESS.unlink(missing_ok=True))
+
+import tokenizer_fixture as fixture  # noqa: E402
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"tokenizer smoke: FAIL {message}")
+
+
+def command(arguments: list[str], *, timeout: int = 20) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        arguments,
+        cwd=ROOT,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def require_regex_lock(source: Path) -> None:
+    lock = tomllib.loads((source / "Cargo.lock").read_text(encoding="utf-8"))
+    expected = {
+        "regex": ("1.13.1", "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"),
+        "regex-automata": ("0.4.16", "8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad"),
+        "regex-syntax": ("0.8.11", "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"),
+    }
+    packages = {row["name"]: row for row in lock["package"] if row["name"] in expected}
+    for name, (version, checksum) in expected.items():
+        row = packages.get(name)
+        if row is None or (row.get("version"), row.get("checksum")) != (version, checksum):
+            fail(f"managed Align regex lock drifted for {name}: {row!r}")
+
+
+def run_cli(model: Path, input_path: Path, operation: str, mode: str) -> subprocess.CompletedProcess[bytes]:
+    return command([str(ROOT / "main"), operation, str(model), str(input_path), mode])
+
+
+def fnv(value: str) -> int:
+    result = 0xCBF29CE484222325
+    for byte in value.encode("utf-8"):
+        result = ((result ^ byte) * 1099511628211) & ((1 << 64) - 1)
+    return result
+
+
+def bucket_count(count: int) -> int:
+    result = 1
+    while result < max(1, count * 2):
+        result *= 2
+    return result
+
+
+def token_colliders(tokens: list[str], wanted: int) -> list[str]:
+    buckets = bucket_count(len(tokens) + wanted)
+    occupied: dict[int, int] = {}
+    for token in tokens:
+        bucket = fnv(token) & (buckets - 1)
+        occupied[bucket] = occupied.get(bucket, 0) + 1
+    groups: dict[int, list[str]] = {}
+    candidate = 0
+    while True:
+        spelling = f"unused-collider-{candidate}"
+        bucket = fnv(spelling) & (buckets - 1)
+        if occupied.get(bucket, 0) == 0:
+            group = groups.setdefault(bucket, [])
+            group.append(spelling)
+            if len(group) == wanted:
+                return group
+        candidate += 1
+
+
+def expect_success(result: subprocess.CompletedProcess[bytes], expected: bytes, label: str) -> None:
+    if result.returncode != 0 or result.stdout != expected:
+        fail(
+            f"{label}: exit={result.returncode} stdout={result.stdout!r} "
+            f"stderr={result.stderr.decode('utf-8', 'replace')!r}, expected={expected!r}"
+        )
+
+
+def expect_failure(result: subprocess.CompletedProcess[bytes], label: str) -> None:
+    if result.returncode == 0 or result.stdout:
+        fail(f"{label}: expected nonzero/empty stdout, got exit={result.returncode} stdout={result.stdout!r}")
+
+
+def main() -> int:
+    source_result = command([str(ROOT / "scripts/align-toolchain"), "path", "source"])
+    if source_result.returncode != 0:
+        fail("could not resolve managed Align source")
+    require_regex_lock(Path(source_result.stdout.decode().strip()))
+
+    with tempfile.TemporaryDirectory(prefix="align-r7-tokenizer-") as raw_temp:
+        work = Path(raw_temp)
+        manifest = fixture.build(work)
+        model = work / str(manifest["model"])
+
+        cases = [
+            ("empty", ""),
+            ("ascii", "hello, world!"),
+            ("contractions", "I'm I'M we'll WE'LL he'd HE'D can't CAN'T"),
+            ("digits", "a12345b"),
+            ("whitespace", " alpha  beta   "),
+            ("newlines", "a\r\n \n\r\nb"),
+            ("punctuation", "foo...?! -- bar"),
+            ("nul", "a\0b"),
+            ("cjk", "漢字かなカナ"),
+            ("combining", "e\u0301 café"),
+            ("emoji", "👩‍💻🚀"),
+            ("four-byte", "𐍈\U0010ffff"),
+            ("bpe-rank", "hellohehello"),
+        ]
+        for label, text in cases:
+            input_path = work / f"{label}.txt"
+            input_path.write_bytes(text.encode("utf-8"))
+            expected_ids = fixture.encode(text, True)
+            expected_json = (json.dumps(expected_ids, separators=(",", ":")) + "\n").encode()
+            expect_success(run_cli(model, input_path, "--tokenize", "parse-control"), expected_json, label)
+            ids_path = work / f"{label}.json"
+            ids_path.write_bytes(expected_json)
+            expect_success(run_cli(model, ids_path, "--detokenize", "render-control"), text.encode(), f"{label}-decode")
+
+        ids = manifest["ids"]
+        for spelling in ("<UNK>", "<CTRL>", "<USER>", "</s>"):
+            special_input = work / "special.txt"
+            special_input.write_text(f"a{spelling}b", encoding="utf-8")
+            for mode, parse in (("parse-control", True), ("literal-control", False)):
+                expected = fixture.encode(f"a{spelling}b", parse)
+                encoded = (json.dumps(expected, separators=(",", ":")) + "\n").encode()
+                expect_success(run_cli(model, special_input, "--tokenize", mode), encoded, f"{spelling}-{mode}")
+
+        control_ids = work / "control.json"
+        control_ids.write_text(json.dumps([ids["<CTRL>"], ids["<USER>"], ids["</s>"]]), encoding="ascii")
+        expect_success(
+            run_cli(model, control_ids, "--detokenize", "render-control"),
+            b"<CTRL><USER></s>",
+            "render-control",
+        )
+        expect_success(
+            run_cli(model, control_ids, "--detokenize", "skip-control"), b"<USER>", "skip-control"
+        )
+
+        unused_input = work / "unused.txt"
+        unused_input.write_text("xy", encoding="ascii")
+        unused_id = (json.dumps([ids["xy"]]) + "\n").encode()
+        expect_success(run_cli(model, unused_input, "--tokenize", "parse-control"), unused_id, "unused-encode")
+        unused_json = work / "unused.json"
+        unused_json.write_bytes(unused_id)
+        expect_success(run_cli(model, unused_json, "--detokenize", "render-control"), b"", "unused-decode")
+
+        byte_json = work / "byte.json"
+        byte_json.write_text(json.dumps([ids["<0x41>"]]), encoding="ascii")
+        expect_success(run_cli(model, byte_json, "--detokenize", "render-control"), b"A", "byte-token")
+        byte_json.write_text(json.dumps([ids["<0xFF>"]]), encoding="ascii")
+        expect_failure(run_cli(model, byte_json, "--detokenize", "render-control"), "invalid-final-utf8")
+
+        malformed_json = work / "bad.json"
+        malformed_json.write_text('{"ids":[1]}', encoding="ascii")
+        expect_failure(run_cli(model, malformed_json, "--detokenize", "render-control"), "json-shape")
+        malformed_json.write_text("[999999]", encoding="ascii")
+        expect_failure(run_cli(model, malformed_json, "--detokenize", "render-control"), "id-range")
+        oversize = work / "oversize.txt"
+        oversize.write_bytes(b"a" * 1_048_577)
+        expect_failure(run_cli(model, oversize, "--tokenize", "parse-control"), "input-cap")
+        expect_failure(command([str(ROOT / "main"), "--tokenize", str(model)]), "arity")
+        expect_failure(run_cli(model, unused_input, "--tokenize", "PARSE"), "mode")
+
+        tokens, types, merges = fixture.fixture_data()
+        mutations: list[tuple[str, list[str], list[int], list[str], str, str]] = []
+        mutations.append(("unsupported", tokens, types, merges, "bpe", "qwen2"))
+        mutations.append(("empty-vocab", [], [], [], "gpt2", "qwen2"))
+        mutations.append(("type-count", tokens, types[:-1], merges, "gpt2", "qwen2"))
+        changed = list(tokens); changed[0] = ""
+        mutations.append(("empty-token", changed, types, merges, "gpt2", "qwen2"))
+        changed_types = list(types); changed_types[0] = 7
+        mutations.append(("token-type", tokens, changed_types, merges, "gpt2", "qwen2"))
+        changed = list(tokens); changed[1] = changed[0]
+        mutations.append(("duplicate-token", changed, types, merges, "gpt2", "qwen2"))
+        mutations.append(("bad-merge", tokens, types, ["broken"], "gpt2", "qwen2"))
+        mutations.append(("missing-merge-token", tokens, types, ["h absent"], "gpt2", "qwen2"))
+        changed = list(tokens); changed[0] = "zz"
+        mutations.append(("byte-alphabet", changed, types, [], "gpt2", "qwen2"))
+
+        changed = list(tokens); changed[0] = "漢"
+        mutations.append(("token-text", changed, types, [], "gpt2", "qwen2"))
+        oversized = list(tokens); oversized[0] = "a" * 4097
+        mutations.append(("array-item", oversized, types, [], "gpt2", "qwen2"))
+        long_special = list(tokens) + ["<" + "s" * 31 + ">"]
+        mutations.append(("special-text", long_special, types + [3], merges, "gpt2", "qwen2"))
+        special_additions = [f"<S{index:03d}>" for index in range(253)]
+        mutations.append((
+            "special-count", tokens + special_additions, types + [3] * len(special_additions),
+            merges, "gpt2", "qwen2",
+        ))
+        colliders = token_colliders(tokens, 17)
+        accepted_collision_model = work / "hash-bucket-16.gguf"
+        fixture.write_model(
+            accepted_collision_model, tokens + colliders[:16], types + [5] * 16, merges
+        )
+        collision_input = work / "hash-bucket-16.txt"
+        collision_input.write_text("hello", encoding="ascii")
+        expect_success(
+            run_cli(accepted_collision_model, collision_input, "--tokenize", "parse-control"),
+            (json.dumps(fixture.encode("hello"), separators=(",", ":")) + "\n").encode(),
+            "hash-bucket-16",
+        )
+        mutations.append((
+            "hash-bucket", tokens + colliders, types + [5] * len(colliders), merges, "gpt2", "qwen2",
+        ))
+
+        expected_codes = [
+            "R7_UNSUPPORTED_TOKENIZER", "R7_VOCAB_SIZE", "R7_VOCAB_SIZE", "R7_TOKEN_EMPTY",
+            "R7_TOKEN_TYPE", "R7_TOKEN_DUPLICATE", "R7_MERGE", "R7_MERGE_TOKEN",
+            "R7_BYTE_ALPHABET", "R7_TOKEN_TEXT", "R7_TOKENIZER_ARRAY", "R7_SPECIAL_TEXT",
+            "R7_SPECIAL_COUNT", "R7_HASH_BUCKET",
+        ]
+        mutation_paths = []
+        for name, changed_tokens, changed_types, changed_merges, model_name, pre_name in mutations:
+            mutation_path = work / f"{name}.gguf"
+            fixture.write_model(
+                mutation_path, changed_tokens, changed_types, changed_merges, model=model_name, pre=pre_name
+            )
+            mutation_paths.append(mutation_path)
+
+        malformed_model = work / "malformed.gguf"
+        malformed_model.write_bytes(b"GGUF")
+        mutation_paths.append(malformed_model)
+        expected_codes.append("R7_GGUF")
+
+        missing_metadata = work / "missing-metadata.gguf"
+        fixture.write_kvs(missing_metadata, [
+            fixture.Kv("tokenizer.ggml.pre", fixture.strv("qwen2")),
+            fixture.Kv("tokenizer.ggml.tokens", fixture.Array(
+                fixture.STRING, [fixture.strv(value) for value in tokens])),
+            fixture.Kv("tokenizer.ggml.token_type", fixture.Array(
+                fixture.INT32, [fixture.i32v(value) for value in types])),
+            fixture.Kv("tokenizer.ggml.merges", fixture.Array(
+                fixture.STRING, [fixture.strv(value) for value in merges])),
+        ])
+        mutation_paths.append(missing_metadata)
+        expected_codes.append("R7_TOKENIZER_METADATA")
+
+        too_many_tokens = work / "too-many-tokens.gguf"
+        huge_token_values = [fixture.strv("a")] * 1_048_577
+        fixture.write_kvs(too_many_tokens, [
+            fixture.Kv("tokenizer.ggml.model", fixture.strv("gpt2")),
+            fixture.Kv("tokenizer.ggml.pre", fixture.strv("qwen2")),
+            fixture.Kv("tokenizer.ggml.tokens", fixture.Array(fixture.STRING, huge_token_values)),
+            fixture.Kv("tokenizer.ggml.token_type", fixture.Array(fixture.INT32, [fixture.i32v(1)])),
+            fixture.Kv("tokenizer.ggml.merges", fixture.Array(fixture.STRING, [])),
+        ])
+        mutation_paths.append(too_many_tokens)
+        expected_codes.append("R7_VOCAB_SIZE")
+
+        too_many_merges = work / "too-many-merges.gguf"
+        huge_merge_values = [fixture.strv("")] * 1_048_577
+        fixture.write_kvs(too_many_merges, [
+            fixture.Kv("tokenizer.ggml.model", fixture.strv("gpt2")),
+            fixture.Kv("tokenizer.ggml.pre", fixture.strv("qwen2")),
+            fixture.Kv("tokenizer.ggml.tokens", fixture.Array(
+                fixture.STRING, [fixture.strv(value) for value in tokens])),
+            fixture.Kv("tokenizer.ggml.token_type", fixture.Array(
+                fixture.INT32, [fixture.i32v(value) for value in types])),
+            fixture.Kv("tokenizer.ggml.merges", fixture.Array(fixture.STRING, huge_merge_values)),
+        ])
+        mutation_paths.append(too_many_merges)
+        expected_codes.append("R7_MERGE_COUNT")
+
+        combined_tokens = ["a" * 2048] * 4097
+        combined_types = [1] * len(combined_tokens)
+        combined_merges = ["b" * 2048] * 4097
+        combined_model = work / "combined-text.gguf"
+        fixture.write_model(combined_model, combined_tokens, combined_types, combined_merges)
+        mutation_paths.append(combined_model)
+        expected_codes.append("R7_TOKENIZER_TEXT_SIZE")
+
+        long_tokens = list(tokens) + ["a" * 4096]
+        long_model = work / "long-token.gguf"
+        fixture.write_model(long_model, long_tokens, types + [1], merges)
+
+        harness_build = command([str(ROOT / "scripts/alignc"), "build", "src/tokenizer_api_smoke.align"], timeout=120)
+        if harness_build.returncode != 0:
+            fail(f"API harness build failed: {harness_build.stderr.decode('utf-8', 'replace')}")
+        api_result = command([str(HARNESS), str(model), *map(str, mutation_paths)], timeout=30)
+        if api_result.returncode != 0:
+            fail(f"API harness failed: {api_result.stderr.decode('utf-8', 'replace')}")
+        lines = api_result.stdout.decode().splitlines()
+        if len(lines) != 1 + len(expected_codes) or not lines[0].startswith(
+            f"OK:{manifest['vocab_size']}:{manifest['merge_count']}:1:"
+        ) or len(lines[0].rsplit(":", 1)[-1]) != 64:
+            fail(f"API success publication drifted: {lines!r}")
+        if lines[1:] != expected_codes:
+            fail(f"API failure precedence drifted: {lines[1:]!r}, expected {expected_codes!r}")
+
+        operation_result = command([
+            str(HARNESS), "--operations", str(model), str(long_model),
+            str(ids["<0xFF>"]), str(len(long_tokens) - 1),
+        ], timeout=120)
+        operation_codes = operation_result.stdout.decode().splitlines()
+        expected_operations = [
+            "R7_TEXT_SIZE", "R7_TOKEN_COUNT", "R7_TOKEN_ID", "R7_DECODE_UTF8", "R7_OUTPUT_SIZE",
+        ]
+        if operation_result.returncode != 0 or operation_codes != expected_operations:
+            fail(
+                f"API operation precedence drifted: exit={operation_result.returncode} "
+                f"codes={operation_codes!r}, expected={expected_operations!r}"
+            )
+
+    print(
+        f"tokenizer smoke: PASS ({len(cases)} text cases, 4 special spellings, "
+        f"{len(expected_codes)} model failures, 5 operation failures)"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

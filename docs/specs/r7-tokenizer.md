@@ -1,7 +1,6 @@
 # R7-TOKENIZER
 
-Status: contract ready after consolidated final-review redesign, 2026-08-31; align-llm source
-blocked on Align Request 22
+Status: implementation candidate owner-verified, 2026-09-01; publication review and preflight pending
 
 ## 1. Decision and boundary
 
@@ -65,15 +64,15 @@ operations load and release one private tokenizer per call. That is useful for t
 future provider's one prompt encode plus one final decode. A resident handle may be added only
 with its own public ownership contract when a consumer measures that the second load matters.
 
-### 1.4 Blocking Align dependency
+### 1.4 Shipped Align dependency
 
 Align Request 22 in [`../align-requests.md`](../align-requests.md) asks for non-consuming ordinary
-indexing of `array<string>` and arrays whose element record has a Move field. Current Align `main`
-at `4b515f8d` and the pinned `.align-revision` reject that expression outside the already-shipped
-direct-borrow-call exception. A real tokenizer needs to compare an indexed token or merge string
-many times and cannot be built on the exception.
+indexing of `array<string>` and arrays whose element record has a Move field. At the design
+checkpoint, Align `4b515f8d` and the pinned `.align-revision` rejected that expression outside the
+already-shipped direct-borrow-call exception. A real tokenizer needs to compare an indexed token or
+merge string many times and cannot be built on the exception.
 
-The request is therefore **blocking** now. The allowed order is exact:
+The request was therefore blocking for source implementation. The required order was exact:
 
 1. publish and coordinate this contract;
 2. implement and merge Request 22 in Align, including compiler owners and documentation;
@@ -84,9 +83,11 @@ The request is therefore **blocking** now. The allowed order is exact:
 5. pass every request owner plus the tokenizer owners, then advance through
    `ALIGN_LLM_VERIFIED` to `CLOSED`.
 
-No align-llm source on this branch may name a proposed accessor, imitate it with an FFI helper,
-flatten the vocabulary into another stream-plus-column compatibility representation, or use an
-external tokenizer as the product implementation before step 3.
+That order is complete. Align PR #920 shipped the designed surface as
+`27770420555d19b98eced133369c168e9c6d4a2f`; the pin selects it, the real client uses only its
+ordinary indexing spelling, all registered migrations and owners pass, and Request 22 is `CLOSED`.
+No compatibility accessor, FFI helper, new stream-plus-column representation, or external product
+tokenizer was introduced.
 
 ## 2. Public-contract ledger
 
@@ -457,7 +458,7 @@ no partial token-id array or partial text in an error result.
 | --- | --- |
 | R0 GGUF decoder and R1 first-key accessors | shipped |
 | R6 token-id runtime and frozen prompt corpus | shipped |
-| Align Request 22 | blocking; `PROPOSED` at contract publication |
+| Align Request 22 | shipped as `27770420555d19b98eced133369c168e9c6d4a2f`; adopted and `CLOSED` |
 | `std.regex` Unicode `\p{L}`, `\p{N}`, and `\s` classifiers | shipped; exact dependency identity is in 2.7 and no look-around is required by section 3.2 |
 | `std.crypto.sha256`, `std.encoding`, bounded buffer append, and raw stdout writer | shipped |
 | pinned llama.cpp tokenizer | `.llama-revision`, build 10566 commit `bb4caa754`; qualification only |
@@ -912,29 +913,20 @@ acceptance.
 
 ## 8. Align capability-request lifecycle
 
-At design publication, Request 22 is `PROPOSED`, priority high, blocking R7-TOKENIZER. Its current
-sibling evidence and requested language surface remain authoritative in
-[`docs/align-requests.md`](../align-requests.md). This document adds no proposed Align spelling.
-
-When Align merges:
-
-- record the exact Align commit/PR in the request;
-- update `.align-revision` and materialize the managed release compiler;
-- use only the shipped borrow-index spelling;
-- run the Align adoption owners in 4.3 plus this capability's owners;
-- record exact commands/results before `ALIGN_LLM_VERIFIED`;
-- close only after the shipped ownership limits and all three client targets are documented.
-
-If Align chooses `arr.at(i)` rather than changing `arr[i]`, only implementation spelling changes.
-The GGUF/tokenizer public surfaces, behavior, ownership, errors, CLI, and acceptance in this ledger
-do not.
+Request 22 is `CLOSED`. Align PR #913 accepted ordinary non-consuming `array<string>[i] -> str`;
+PR #920 shipped it as `27770420555d19b98eced133369c168e9c6d4a2f`. `.align-revision` selects
+that commit, the managed release compiler materializes at the same identity, and source uses only
+the shipped index spelling. The GGUF tensor rows, `GgufTable`, frontend `BlockPlan`, and
+`model_forward.StepColumns` migrations pass their named owners; the hosted tokenizer owner and
+299-case real-model parity qualification pass at the adopted pin. The lifecycle evidence and
+remaining ownership limits are recorded in [`docs/align-requests.md`](../align-requests.md).
 
 ## 9. Author consistency pass
 
 The author pass checks these statements as one contract:
 
-1. Roadmap item 41, `HANDOFF.md`, Request 22, and this section all name the same active capability
-   and blocking resume condition.
+1. Roadmap item 41, `HANDOFF.md`, Request 22, and this section all name the same active capability,
+   shipped dependency, and publication state.
 2. The public inventory in 2.1/2.2 exactly covers the CLI and no hypothetical Align surface.
 3. Qwen2 regex and its locked classifier identity, bounded special-trie classification, duplicate
    rejection, bounded bucket indexes, byte map, BPE priority, decode rules, and the pinned oracle's
@@ -946,15 +938,24 @@ The author pass checks these statements as one contract:
    explicit; genuinely inapplicable fields say why.
 7. The hosted owner is aggregate-safe; the exact 299-case real-model parity corpus is opt-in;
    aggregate membership change names `make ci`.
-8. Request 22 cannot reach `ALIGN_LLM_VERIFIED` from a pin update or tokenizer alone; all previously
-   named migrations remain acceptance.
+8. Request 22 reached `CLOSED` only after the pin, all previously named migrations, hosted owner,
+   and real-model parity passed together.
 
-Result: consistent after the consolidated final-review redesign. Final ledger-to-diff
-reconciliation remains pending until the blocked implementation exists.
+Result: consistent after implementation reconciliation on 2026-09-01.
 
 ## 10. Final ledger-to-diff mapping
 
-Pending implementation. Before review of the executable candidate, replace this paragraph with a
-table mapping every public ledger row and applicable closure-matrix cell to exact source, fixture,
-runner, and passing evidence, plus explicit deviations or deferrals. A missing mapping is a missing
-part of the capability, not review prose to fill later.
+| Contract / closure cells | Final source and owner | Candidate evidence |
+| --- | --- | --- |
+| GGUF array type, offsets, owned string/i32 readers, first-key selection, caps, and Request 22 tensor/table migration | `src/gguf.align`; `scripts/tokenizer_fixture.py`; existing GGUF corpus | `make gguf-smoke` (62 fixtures) and `make tokenizer-smoke` |
+| `GgufTable`, `BlockPlan`, and `StepColumns` representation-only migrations | `src/model_ir.align`, three frontends, `src/alignpack.align`, `src/model_forward.align`, `src/decode_step.align` | `make model-ir-smoke` (49 qwen, 31 gpt-oss, 29 olmoe, 62 re-runs) and `make layer-forward-smoke` |
+| Public tokenizer types/results; ordered model validation; all 17 model codes; identity and cleanup | `src/tokenizer_qwen2.align`; `src/tokenizer_api_smoke.align`; synthetic mutation corpus | `make tokenizer-smoke` (19 model-failure cases covering every model code) |
+| Qwen2 scalar scanner, regex lock, GPT-2 byte map, heap BPE, special trie/modes, encode/decode, five operation codes | `src/tokenizer_qwen2.align`; independent Python oracle and API harness | `make tokenizer-smoke` (13 text classes, four special spellings, five operation failures) |
+| Exact model behavior, all fixed/special/prompt/generated cases, both encode modes and both decode modes | `scripts/run-tokenizer-parity` and pinned model/tool identities | `make tokenizer-parity`: PASS, 299 cases, 50,893 bytes, 69,485 compared ids |
+| CLI arity/mode/path/bounded read, canonical id JSON, raw stdout, and failure isolation | `src/main.align`; both runners | byte-exact synthetic owner plus every real parity invocation |
+| Hosted membership and opt-in qualification topology | `Makefile`, `scripts/check-gate-topology`, topology specification | `make gate-topology-check`; final `make ci` remains publication/preflight evidence |
+
+There is one inherited, explicit limitation rather than a hidden deviation: Align Request 21 has
+not shipped, so GGUF random access still obtains `O_RDWR` through `fs.open_rw` even though this
+capability never writes the model. The new tokenizer reopen path is recorded as additional Request
+21 evidence; it stays non-blocking for the current developer-owned model and is not papered over.

@@ -73,22 +73,15 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-08-31): Requests 1–20 are CLOSED, Request 22 is ACCEPTED and blocking, Requests 21,
-> 23–43, and 45–46 are PROPOSED and non-blocking, and Request 44 is ALIGN_LLM_VERIFIED pending
-> publication closure. C8-OPTIONAL-TARGETED-STAGE is the
-> active stable candidate; its schema/owner matrix and paired acceptance pass at the adopted pin.
-> R5C-METAL-PREFILL-ARM merged as align-llm PR #129, and following the user's
-> decision to download `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, Track B started two consumers on
-> that model: R2-LOCALITY-GATE merged as align-llm PR #131 (`fff5806` -> `546b5cc`) with the R2
-> locality gate met in the prefill direction, R1C-OLMOE-MOE-IR merged as align-llm PR #132, and
-> MOE-PREREQ-DISCHARGE merged as align-llm PR #133. R3-RESIDENCY-SIM (branch
-> `agent/r3-residency-sim`, the expert-residency policy simulator) is the single active Track B
-> consumer, in publication. See the end of this narrative for the next consumer
-> named for each remaining pending user/Align decision.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
+> **Status (2026-09-01): Requests 1–20 and 22 are CLOSED. Request 21 and Requests 23–43 and
+> 45–46 are PROPOSED and non-blocking; Request 44 remains ALIGN_LLM_VERIFIED. R7-TOKENIZER is the
+> active owner-verified implementation candidate, with publication review and preflight pending.
+> See the end of this narrative for the next consumer named for each remaining pending user/Align
+> decision.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
 > Request 22 update: Align PR #913 merged as `e6942a025ccc5197cfea95547cefdeee27cb157d`,
-> accepting ordinary `array<string>[i] -> str`; Move-record arrays already have direct field views
-> and explicit shared-borrow call places. R7 makes the request blocking while the Align
-> implementation remains pending.
+> accepting ordinary `array<string>[i] -> str`, and PR #920 shipped it as
+> `27770420555d19b98eced133369c168e9c6d4a2f`. R7 adopts that pin, migrates every registered
+> representation, passes the hosted owners and 299-case real-model parity, and closes the request.
 > R1-QWEN-MODEL-IR then added Request 23, the huge-struct-copy lint firing on `borrow`/`borrow mut`
 > parameters: it consults only the parameter's struct type and never its `ParamMode`, so all ten
 > `borrow t: GgufTable` accessors in `src/gguf.align` get the by-value warning even though no call
@@ -6396,11 +6389,22 @@ integration binary on a leg that already compiles the workspace and is not the c
 Status: PROPOSED
 Priority: medium
 Blocking: no
-Blocked gate or slice: none today — R0-GGUF-INSPECT (merged, PR #121), R1-QWEN-MODEL-IR (merged, PR #122), R1B-GPTOSS-MOE-IR (merged, PR #123), and the active R2A-EXPERT-TRACE-CAPTURE (`docs/specs/r2a-expert-trace.md` section 2.1) all ship on `fs.open_rw`. R2A opens **no** GGUF at all: its input is a `llama-eval-callback` transcript, which is a second class of read-only input — a transcript captured into a root-owned or read-only artifact directory, exactly where a CI-produced trace lives, cannot be opened at all. It becomes blocking for the first align-runtime consumer that must read a model from a read-only mount, a root-owned shared cache, or a container image layer, where `O_RDWR` cannot be obtained at all
-Independent work that may continue: all of R0-GGUF-INSPECT, R1-QWEN-MODEL-IR, R1B-GPTOSS-MOE-IR (each opening the model with `fs.open_rw`), and all of R2A-EXPERT-TRACE-CAPTURE (opening its transcript with the same constructor); every one of them documents the writable-path precondition, and every later Track B slice that can copy or own its input file
-Resume condition: Align ships a read-only `file` constructor whose handle supports `pread` and `len`; align-llm then adopts it in `src/gguf.align` and `src/expert_trace.align`, and `make gguf-smoke`, `make model-ir-smoke`, `make expert-trace-smoke`, `scripts/run-gguf-reference-parity`, and `scripts/run-model-ir-parity` pass against input files the invoking user cannot write
+Blocked gate or slice: none today — all shipped GGUF/runtime readers and R7-TOKENIZER continue on
+`fs.open_rw`. It becomes blocking for the first align-runtime consumer that must read a model from
+a read-only mount, a root-owned shared cache, or a container image layer, where `O_RDWR` cannot be
+obtained at all
+Independent work that may continue: all current consumers that can require a writable input path or
+copy/own their input file, including R7-TOKENIZER
+Resume condition: Align ships a read-only `file` constructor whose handle supports `pread` and
+`len`; align-llm then adopts it in `src/gguf.align`, `src/expert_trace.align`, and every dependent
+reader, and the GGUF/model/tokenizer owners and real-model qualifications pass against input files
+the invoking user cannot write
 Align commit or pull request: none
-align-llm verification: pending — `make gguf-smoke` extended with a `chmod 444` model fixture case, `make expert-trace-smoke`'s existing `read-only-transcript` case (mode `0444`) flipped from "exits nonzero with no document" to a successful derivation, and `scripts/run-gguf-reference-parity` run once against a model on a read-only mount
+align-llm verification: pending — `make gguf-smoke` extended with a `chmod 444` model fixture case,
+`make expert-trace-smoke`'s existing `read-only-transcript` case (mode `0444`) flipped from "exits
+nonzero with no document" to a successful derivation, `make tokenizer-smoke` exercises its GGUF
+fixture read-only, and the GGUF/model/tokenizer real-model qualifications run once against a model
+on a read-only mount
 ```
 
 ### Motivation and current sibling evidence
@@ -6502,6 +6506,15 @@ R2A's `fs.open_rw`-based scan cannot. This is additional evidence for the `fs.si
 this request's motivation already names (from R4's paragraph above), not a seventh client of the
 `fs.open_ro` constructor itself.
 
+**R7-TOKENIZER adds another direct GGUF client.** `gguf.read_string_array` and
+`gguf.read_i32_array` complete the validated table walk and then reopen the selected payload to
+materialize the model-owned vocabulary, types, and merges. Both opens still use `fs.open_rw`, even
+though neither operation writes, because Request 21 remains unshipped. This is non-blocking on the
+current developer-owned reference model and therefore does not justify a compatibility layer, but
+it means a tokenizer that otherwise needs only model bytes still cannot serve a model mounted
+read-only. The eventual adoption owner must include `tokenizer-smoke` and `tokenizer-parity` so the
+new reopen path cannot retain a hidden `O_RDWR` requirement.
+
 ### Requested capability
 
 One read-only sibling of the existing `file` constructors, following the established `_rw`/`_ro`
@@ -6572,11 +6585,12 @@ read-only constructor" claims at `draft.md:2772` and `docs/language-spec.md:1043
 ## Request 22 — Indexing arrays of Move element types
 
 ```text
-Status: ACCEPTED
+Status: CLOSED
 Priority: high
-Blocking: yes
-Blocked gate or slice: R7-TOKENIZER, the first text/token consumer on the path from the shipped
-token-id runtime to R7's `ModelProvider` replacement gate. R1-QWEN-MODEL-IR (`docs/specs/r1-qwen-model-ir.md`
+Blocking: no
+Blocked gate or slice: none. Historical blocker: R7-TOKENIZER, the first text/token consumer on the
+path from the shipped token-id runtime to R7's `ModelProvider` replacement gate.
+R1-QWEN-MODEL-IR (`docs/specs/r1-qwen-model-ir.md`
 section 1.3 and section 5.2) deliberately excludes the tokenizer and reads only the declared length
 of `tokenizer.ggml.tokens`/`tokenizer.ggml.merges` — exactly what R0's decoder already records
 without materializing an element — precisely so this request stays non-blocking through R1, and
@@ -6625,20 +6639,26 @@ because it is the same known limitation with a documented workaround, is that ow
 replacement supports only `string` and `Option<string>` leaves: `src/prompt_verifier_smoke.align`
 had to build `PromptEvaluationTask` and `TaskMeasurement` as parameterized literals instead of
 mutating an `array<string>` or an `EnvironmentProbe` field of a copy.
-Independent work that may continue: the R7-TOKENIZER contract ledger and closure matrix, plus all
-already-merged R0 through R6 capabilities that avoid ordinary indexing of an `array<string>` or an
-array of a Move-field record. R7-TOKENIZER source implementation and every later text-generation
-consumer are blocked
-Resume condition: Align ships the accepted ordinary `array<string>[i] -> str` view. Section 5.2 of
+Independent work that may continue: all. Historical state: the R7-TOKENIZER contract ledger and
+closure matrix, plus all already-merged R0 through R6 capabilities that avoid ordinary indexing of
+an `array<string>` or an array of a Move-field record. R7-TOKENIZER source implementation and every
+later text-generation consumer were blocked
+Resume condition: N/A — shipped and verified. Section 5.2 of
 `docs/specs/r1-qwen-model-ir.md` names the resulting producer surface,
-`gguf.read_string_array(path, key) -> Result<array<string>, Error>`, owned by the future tokenizer
-capability, not by R1
+`gguf.read_string_array(path, key) -> Result<array<string>, Error>`, owned by R7-TOKENIZER rather
+than R1
 Align commit or pull request: Align PR #913 (`e6942a025ccc5197cfea95547cefdeee27cb157d`)
-accepts the design; implementation commit/PR pending
-align-llm verification: pending — three targets. `src/gguf.align`'s `render_tensors` NUL-separated
+accepted the design; Align PR #920 shipped it as
+`27770420555d19b98eced133369c168e9c6d4a2f`
+align-llm verification: `.align-revision` selects the shipped commit and the managed compiler was
+materialized at that identity. `make gguf-smoke model-ir-smoke layer-forward-smoke
+tokenizer-smoke` passes after all three registered representation migrations. The exact 299-case
+real-Qwen2 `make tokenizer-parity` qualification passes against llama-tokenize build 10566 / commit
+`bb4caa754`, comparing 50,893 input bytes and 69,485 ids with both encode and decode modes. The
+closed targets were: `src/gguf.align`'s `render_tensors` NUL-separated
 `prefixes: str`/parallel-`array<i64>` workaround (`:120`, `:842`, `:1016-1022`) is the first. The
-second, named by `docs/specs/r1-qwen-model-ir.md` section 5.4 as a documentation follow-on now that
-R1-QWEN-MODEL-IR has merged (PR #122): once this request reaches `ALIGN_MERGED`, `GgufTable`'s
+second, named by `docs/specs/r1-qwen-model-ir.md` section 5.4 as a documentation follow-on after
+R1-QWEN-MODEL-IR merged (PR #122): after this request reached `ALIGN_MERGED`, `GgufTable`'s
 internals can become indexable `array<KvEntry>`/`array<TensorEntry>` records with no change to any
 accessor signature in that document's section 2.3.2, since every accessor is already
 index-in/owned-value-out and the stream-plus-column representation is entirely behind them.

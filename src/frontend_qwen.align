@@ -408,17 +408,13 @@ pub fn prepare(borrow table: gguf.GgufTable) -> model_ir.Prepared {
     model_ir.empty_geometry()
   }
 
-  mut names := builder()
-  mut names_at := 0
+  mut member_roles: array_builder<string> := array_builder()
+  mut member_names: array_builder<string> := array_builder()
   mut block_kind_column: array_builder<i64> := array_builder()
   mut block_layer_column: array_builder<i64> := array_builder()
   mut block_expert_column: array_builder<i64> := array_builder()
   mut block_member_start_column: array_builder<i64> := array_builder()
   mut block_member_end_column: array_builder<i64> := array_builder()
-  mut member_role_start_column: array_builder<i64> := array_builder()
-  mut member_role_end_column: array_builder<i64> := array_builder()
-  mut member_name_start_column: array_builder<i64> := array_builder()
-  mut member_name_end_column: array_builder<i64> := array_builder()
   mut member_required_column: array_builder<i64> := array_builder()
   mut member_n_dims_column: array_builder<i64> := array_builder()
   mut member_dim0_column: array_builder<i64> := array_builder()
@@ -511,11 +507,7 @@ pub fn prepare(borrow table: gguf.GgufTable) -> model_ir.Prepared {
         role := block_role_at(kind, member_slot)
         if role < 0 { break }
         label := role_label(role)
-        role_start := names_at
-        names.write(label)
-        names_at = names_at + label.bytes().len()
-        member_role_start_column.push(role_start)
-        member_role_end_column.push(names_at)
+        member_roles.push(label.clone())
 
         wanted := role_tensor_name(role, layer)
         wanted_view: str := wanted
@@ -527,12 +519,7 @@ pub fn prepare(borrow table: gguf.GgufTable) -> model_ir.Prepared {
         } else {
           wanted.clone()
         }
-        resolved_view: str := resolved
-        name_start := names_at
-        names.write(resolved_view)
-        names_at = names_at + resolved_view.bytes().len()
-        member_name_start_column.push(name_start)
-        member_name_end_column.push(names_at)
+        member_names.push(resolved)
 
         want := expected_shape(role, hyper)
         member_required_column.push(1)
@@ -626,7 +613,6 @@ pub fn prepare(borrow table: gguf.GgufTable) -> model_ir.Prepared {
     rms_eps_bits: rms_eps_bits,
     file_type: file_type,
     file_type_present: file_type_present,
-    names: names.to_string(),
     block_count: plan_blocks,
     block_kind: block_kind_column.build(),
     block_layer: block_layer_column.build(),
@@ -634,10 +620,8 @@ pub fn prepare(borrow table: gguf.GgufTable) -> model_ir.Prepared {
     block_member_start: block_member_start_column.build(),
     block_member_end: block_member_end_column.build(),
     member_count: plan_members,
-    member_role_start: member_role_start_column.build(),
-    member_role_end: member_role_end_column.build(),
-    member_name_start: member_name_start_column.build(),
-    member_name_end: member_name_end_column.build(),
+    member_roles: member_roles.build(),
+    member_names: member_names.build(),
     member_required: member_required_column.build(),
     member_n_dims: member_n_dims_column.build(),
     member_dim0: member_dim0_column.build(),

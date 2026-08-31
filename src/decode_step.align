@@ -2305,8 +2305,8 @@ fn decode_loop(
   borrow mut decoded: Decode,
   borrow mut o: model_forward.Outcome,
 ) -> model_forward.StepColumns {
-  digests := builder()
-  worst_names := builder()
+  mut digests: array_builder<string> := array_builder()
+  mut worst_names: array_builder<string> := array_builder()
   mut n_past_column: array_builder<i64> := array_builder()
   mut token_column: array_builder<i64> := array_builder()
   mut argmax_column: array_builder<i64> := array_builder()
@@ -2325,9 +2325,6 @@ fn decode_loop(
   mut layers_column: array_builder<i64> := array_builder()
   mut graph_column: array_builder<i64> := array_builder()
   mut worst_layer_column: array_builder<i64> := array_builder()
-  mut worst_start: array_builder<i64> := array_builder()
-  mut worst_end: array_builder<i64> := array_builder()
-  mut worst_at := 0
   mut aggregate_max_abs := 0
   mut aggregate_max_sum := 0
   mut aggregate_elements := 0
@@ -2432,12 +2429,9 @@ fn decode_loop(
     graph_column.push(if o.transcript_present { step + 1 } else { 0 })
     worst_layer_column.push(o.oracle_worst_layer)
     step_sha: str := decoded.sha256
-    digests.write(step_sha)
+    digests.push(step_sha.clone())
     step_worst: str := o.oracle_worst_node
-    worst_names.write(step_worst)
-    worst_start.push(worst_at)
-    worst_at = worst_at + step_worst.len()
-    worst_end.push(worst_at)
+    worst_names.push(step_worst.clone())
     if o.transcript_present && (o.oracle_max_abs > aggregate_max_abs || worst_unset) {
       worst_unset = false
       aggregate_max_abs = o.oracle_max_abs
@@ -2510,10 +2504,8 @@ fn decode_loop(
     oracle_layers: layers_column.build(),
     oracle_graph: graph_column.build(),
     oracle_worst_layer: worst_layer_column.build(),
-    digests: digests.to_string(),
-    worst_names: worst_names.to_string(),
-    worst_name_start: worst_start.build(),
-    worst_name_end: worst_end.build(),
+    digests: digests.build(),
+    worst_names: worst_names.build(),
   }
 }
 

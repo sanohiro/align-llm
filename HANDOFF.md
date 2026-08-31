@@ -3,85 +3,35 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R7-TOKENIZER Align dependency (2026-08-31)
+## Active: R7-TOKENIZER implementation publication (2026-09-01)
 
-Branch `agent/request22-accepted-sync`, based on `main` merge
-`0ed66483c0a4bee1e98894d204b6fc0954e6df55`; R7-TOKENIZER's design checkpoint merged as PR #159.
-R7's gate is replacing
-an existing `ModelProvider` with `align-runtime` while executing the same fixed coding task. The
-first independently usable consumer boundary is Qwen2 text/token conversion over the model's own
-GGUF vocabulary and merges; R6 deliberately stopped at token ids and cannot cross that boundary.
+Branch `agent/request22-adoption-r7`, based on `main` merge `62c2073`; R7-TOKENIZER's design
+checkpoint merged as PR #159. Align PR #920 shipped Request 22 as
+`27770420555d19b98eced133369c168e9c6d4a2f`; `.align-revision` selects it and the managed compiler
+was materialized at that identity.
 
-The completed proportional design gate adds public tokenizer and CLI surfaces,
-materializes two large GGUF string arrays, defines malformed-model and special-token behavior, and
-coordinates GGUF, tokenizer, CLI, fixtures, and real-model parity. The separate design checkpoint
-was required because external Align work must consume the contract first. Request 22 is now
-`ACCEPTED`: Align PR #913 merged as `e6942a025ccc5197cfea95547cefdeee27cb157d` and defines ordinary
-`array<string>[i] -> str`, while the already-shipped
-direct-field and explicit shared-borrow call-place forms cover Move-record arrays. No align-llm
-source may consume the accepted surface before `ALIGN_MERGED`.
+The implementation candidate adds the public GGUF array readers, private Qwen2 tokenizer, and exact
+`--tokenize` / `--detokenize` CLI. GGUF tensor rows, `GgufTable`, frontend `BlockPlan`, and
+`model_forward.StepColumns` now use directly indexed Move-field arrays without a compatibility
+layer. Request 22 is `CLOSED` after all registered consumer targets and real-model parity passed.
 
-**Current evidence.** The official Qwen2.5-Coder tokenizer is ByteLevel BPE with 151,643 base
-vocabulary entries and 151,387 merges; its chat protocol uses `<|im_start|>` and `<|im_end|>`.
-The pinned llama.cpp tokenizer uses the Qwen2 pre-tokenization expression, GPT-2 byte encoding,
-merge-rank priority, and special-token classification. Align already ships the required regex,
-byte/text, builder, buffer, and dynamic-array construction primitives; the demonstrated missing
-language-owned operation is non-consuming ordinary access to a Move array element. The reference
-model has 23 effective special candidates after `</s>` promotion, 298 bytes total and 20 bytes at
-maximum. Current Align pins `regex` 1.13.1, `regex-automata` 0.4.16, and `regex-syntax` 0.8.11 by
-exact Cargo checksum; the last package's generated Unicode tables identify Unicode 16.0.0.
+**Latest durable verification.** `make gguf-smoke` passes 62 fixtures; `make model-ir-smoke` passes
+49 qwen, 31 gpt-oss, 29 olmoe, and 62 re-run fixtures; `make layer-forward-smoke` passes; and
+`make tokenizer-smoke` passes 13 text classes, four special spellings, all 17 model-error codes
+across 19 failure cases, and all five operation-error codes. The real 4,683,073,536-byte model
+encodes `Hello, world!` to `[9707,11,1879,0]`
+and decodes exactly. The full `make tokenizer-parity` qualification passes all 299 cases against
+llama-tokenize build 10566: 50,893 input bytes and 69,485 compared ids. Managed-toolchain
+materialization, `make gate-topology-check`, formatting, and `git diff --check` pass.
 
-**Review and redesign checkpoint.** The initial comprehensive review of `f908b25` accepted six
-findings; consolidated repair `18e9bfb` added literal-input oracle flags, the UNUSED round-trip
-condition, one-load CLI precedence, total `token_count`, exact parity bounds, and the frozen Unicode
-corpus. The required final review of `18e9bfb` then accepted five new findings: an unattainable
-scalar-accessor error, candidate-by-candidate special work approaching 10^12 comparisons,
-non-transactional stdout, Unicode classifier drift absent from tokenizer identity, and this stale
-handoff. Repository policy therefore required redesign rather than another repair loop.
-`ebbc794f18a05e5985bf5a8b769b4cc74e7fd41b` is that first redesign: invalid scalar keys return
-`-1`; specials are capped at 256 entries / 32 bytes and use a dense trie bounded to 8,193 nodes and
-33,554,432 input transitions; zero stdout applies only before the final write; and the exact
-managed regex dependency identities enter the tokenizer preimage and owner check.
+**Next actions.** (1) Commit the reconciled candidate and run one comprehensive `codex review
+--base origin/main`. (2) Apply validated findings and run affected evidence plus the exact clean-HEAD
+publication preflight owner. (3) Publish the PR, merge after checks, then refresh `main` and start
+the next eligible roadmap capability.
 
-A fresh comprehensive review of `c1050c7` accepted four further contract defects, so the oracle and
-malformed-model closure are being redesigned together: ParseControl must pass the pinned
-`--parse-special` flag; capacity/identity arithmetic already proved representable cannot publish
-unreachable data errors; every non-generated parity input needs exact bytes or a frozen source
-identity; and duplicate token text must be rejected because pinned llama.cpp ultimately asserts
-rather than exposing the earlier map overwrite. Second redesign
-`d47592e828e97ad84b750f38444d2e69d2a17455` adds `R7_TOKEN_DUPLICATE`, removes the unreachable
-results, freezes 299 ordered parity cases, and binds the four R6 prompt bytes to
-`prefix-corpus-v1` identities.
+**Blocker.** None.
 
-A fresh comprehensive review of `ee37833` accepted four final resource/oracle findings: build 10566
-rejects the positive `--parse-special` option and already parses by tokenizer-specific default; the
-256 MiB token/merge text cap was not enforced across both arrays; load-factor-only linear probing
-left adversarial work quadratic; and public count-error details were underspecified. The first
-finding supersedes the earlier `c1050c7` review's contrary flag finding: exact pinned help plus live
-control, USER_DEFINED, and `</s>` invocations prove the earlier source-default inference wrong. The
-consolidated repair `74dd39c3c8aaae4656b6b3e147c500af1972c016` restores the executable
-ParseControl command; validates exact
-declared-count and combined-text details; replaces open addressing and byte-string BPE lookup with
-16-link token/Copy-id-pair buckets, prevalidated merge result ids, and exact 16/17 collision owners;
-and records reference bucket peaks 5/6. Per the final-review convergence rule, inspect this complete
-repair delta and author evidence rather than starting another review loop.
-
-**Author evidence.** The pinned build reports version 10566 / `bb4caa754`; default and
-`--no-parse-special` live probes produce the required atomic/literal control ids while preserving
-USER_DEFINED ids. The model audit reproduces 2,894,618 combined tokenizer bytes, token/merge bucket
-peaks 5/6, and zero unresolved merge components/results. All 299 parity identities, 22 exhaustive
-error codes, three classifier lock identities, the R6 prefix manifest, Markdown fences, and
-`git diff --check` pass.
-
-**Next actions.** (1) Implement and publish Align Request 22's compiler and owner-test closure in
-the sibling Align repository. (2) Adopt the shipped revision and complete
-all three registered Request 22 targets without a compatibility layer.
-
-**Blocker.** Align Request 22. Resume when Align ships ordinary `array<string>[i] -> str` and its
-compiler owners pass; the align-llm pin/adoption capability then owns all three registered Request
-22 targets.
-
-**Intentional uncommitted files.** None after the accepted provider answer is committed.
+**Intentional uncommitted files.** The complete R7 implementation/adoption candidate on this branch.
 
 ## Merged checkpoint: DEV-OUTPUT-SUMMARY (2026-08-31)
 

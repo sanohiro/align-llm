@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""R7-TOKENIZER focused parity qualification against pinned llama-tokenize."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import runpy
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MODEL_BYTES = 4_683_073_536
+MODEL_SHA256 = "509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c"
+VERSION = "version: 0.2.0 (build 10566, commit bb4caa754)"
+
+
+def na(reason: str) -> int:
+    print(f"tokenizer parity: N/A ({reason})")
+    return 0
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"tokenizer parity: FAIL {message}")
+
+
+def digest(path: Path) -> str:
+    value = hashlib.sha256()
+    with path.open("rb") as handle:
+        while block := handle.read(1024 * 1024):
+            value.update(block)
+    return value.hexdigest()
+
+
+def run(arguments: list[str], *, stdin: bytes | None = None, timeout: int = 120) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(arguments, input=stdin, capture_output=True, check=False, timeout=timeout)
+
+
+def reference_ids(executable: Path, model: Path, text: bytes, literal: bool) -> list[int]:
+    arguments = [
+        str(executable), "-m", str(model), "--stdin", "--ids", "--no-bos", "--no-escape",
+    ]
+    if literal:
+        arguments.append("--no-parse-special")
+    completed = run(arguments, stdin=text)
+    if completed.returncode != 0:
+        fail(f"reference exited {completed.returncode}: {completed.stderr.decode('utf-8', 'replace')[-500:]}")
+    rendered = completed.stdout.decode("ascii", "strict").strip()
+    if not re.fullmatch(r"\[\s*-?\d+(?:\s*,\s*-?\d+)*\s*\]|\[\s*\]", rendered):
+        fail(f"reference emitted malformed ids: {rendered!r}")
+    return [int(value) for value in re.findall(r"-?\d+", rendered)]
+
+
+def align_encode(model: Path, text_path: Path, literal: bool) -> list[int]:
+    mode = "literal-control" if literal else "parse-control"
+    completed = run([str(ROOT / "main"), "--tokenize", str(model), str(text_path), mode])
+    if completed.returncode != 0:
+        fail(f"Align encode exited {completed.returncode}: {completed.stderr.decode('utf-8', 'replace')[-500:]}")
+    try:
+        values = json.loads(completed.stdout)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        fail(f"Align encode JSON: {error}")
+    if not isinstance(values, list) or any(type(value) is not int for value in values):
+        fail("Align encode returned a non-integer array")
+    if completed.stdout != (json.dumps(values, separators=(",", ":")) + "\n").encode("ascii"):
+        fail("Align encode output is not canonical")
+    return values
+
+
+def align_decode(model: Path, ids_path: Path, render: bool) -> bytes:
+    mode = "render-control" if render else "skip-control"
+    completed = run([str(ROOT / "main"), "--detokenize", str(model), str(ids_path), mode])
+    if completed.returncode != 0:
+        fail(f"Align decode exited {completed.returncode}: {completed.stderr.decode('utf-8', 'replace')[-500:]}")
+    return completed.stdout
+
+
+def fixed_cases() -> list[tuple[str, bytes]]:
+    hex_rows = [
+        ("00-empty", ""),
+        ("01-ascii", "48656c6c6f2c20776f726c6421"),
+        ("02-contractions", "49276d2049274d207765276c6c205745274c4c206865276420484527442063616e27742043414e2754"),
+        ("03-digits", "61313233343562"),
+        ("04-whitespace", "20616c706861202062657461202020"),
+        ("05-newlines", "610d0a200a0d0a62"),
+        ("06-punctuation", "666f6f2e2e2e3f21202d2d20626172"),
+        ("07-nul", "610062"),
+        ("08-cjk", "e6bca2e5ad97e3818be381aae382abe3838a"),
+        ("09-combining", "65cc8120636166c3a9"),
+        ("10-emoji", "f09f91a9e2808df09f92bbf09f9a80"),
+        ("11-four-byte", "f0908d88f48fbfbf"),
+        ("12-control-boundary", "783c7c696d5f73746172747c3e79"),
+        ("13-adjacent-controls", "3c7c696d5f73746172747c3e3c7c696d5f656e647c3e"),
+        ("14-mixed-specials", "3c746f6f6c5f63616c6c3e3c7c696d5f656e647c3e3c2f746f6f6c5f63616c6c3e"),
+        ("15-promoted-control", "613c2f733e62"),
+    ]
+    return [(name, bytes.fromhex(value) if value else b"") for name, value in hex_rows]
+
+
+def special_cases() -> list[tuple[str, bytes, int, int]]:
+    rows = [
+        (128247, 1, "</s>"),
+        (151643, 3, "<|endoftext|>"), (151644, 3, "<|im_start|>"),
+        (151645, 3, "<|im_end|>"), (151646, 3, "<|object_ref_start|>"),
+        (151647, 3, "<|object_ref_end|>"), (151648, 3, "<|box_start|>"),
+        (151649, 3, "<|box_end|>"), (151650, 3, "<|quad_start|>"),
+        (151651, 3, "<|quad_end|>"), (151652, 3, "<|vision_start|>"),
+        (151653, 3, "<|vision_end|>"), (151654, 3, "<|vision_pad|>"),
+        (151655, 3, "<|image_pad|>"), (151656, 3, "<|video_pad|>"),
+        (151657, 4, "<tool_call>"), (151658, 4, "</tool_call>"),
+        (151659, 3, "<|fim_prefix|>"), (151660, 3, "<|fim_middle|>"),
+        (151661, 3, "<|fim_suffix|>"), (151662, 3, "<|fim_pad|>"),
+        (151663, 3, "<|repo_name|>"), (151664, 3, "<|file_sep|>"),
+    ]
+    return [(f"special-{token_id}", text.encode(), token_id, token_type) for token_id, token_type, text in rows]
+
+
+def generated_cases() -> list[tuple[str, bytes]]:
+    state = 0x52375157454E3231
+
+    def next_u64() -> int:
+        nonlocal state
+        mask = (1 << 64) - 1
+        state = (state + 0x9E3779B97F4A7C15) & mask
+        value = state
+        value = ((value ^ (value >> 30)) * 0xBF58476D1CE4E5B9) & mask
+        value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & mask
+        return value ^ (value >> 31)
+
+    rows = []
+    for index in range(256):
+        scalars = []
+        for _ in range(1 + next_u64() % 64):
+            while True:
+                candidate = next_u64() % 0x110000
+                if not 0xD800 <= candidate <= 0xDFFF:
+                    scalars.append(chr(candidate))
+                    break
+        rows.append((f"unicode-{index:03d}", "".join(scalars).encode("utf-8")))
+    return rows
+
+
+def prompt_cases() -> list[tuple[str, bytes]]:
+    checked = subprocess.run([sys.executable, str(ROOT / "scripts/check-prefix-corpus")], cwd=ROOT)
+    if checked.returncode != 0:
+        fail("prefix corpus validation failed")
+    namespace = runpy.run_path(str(ROOT / "scripts/check-prefix-corpus"), run_name="tokenizer_parity_import")
+    entries = namespace["expected_entries"]()
+    return [(row["entry_id"], row["_complete_prompt_bytes"]) for row in entries]
+
+
+def skip_control_text(text: bytes, specials: list[tuple[str, bytes, int, int]]) -> bytes:
+    candidates = sorted(
+        (spelling for _, spelling, _, token_type in specials if token_type != 4),
+        key=len,
+        reverse=True,
+    )
+    output = bytearray()
+    at = 0
+    while at < len(text):
+        matched = next((candidate for candidate in candidates if text.startswith(candidate, at)), None)
+        if matched is None:
+            output.append(text[at])
+            at += 1
+        else:
+            at += len(matched)
+    return bytes(output)
+
+
+def main() -> int:
+    reference_text = os.environ.get("ALIGN_LLM_LLAMA_TOKENIZE", "")
+    model_text = os.environ.get("ALIGN_LLM_GGUF_MODEL", "")
+    if not reference_text:
+        return na("ALIGN_LLM_LLAMA_TOKENIZE unset")
+    reference = Path(reference_text)
+    if not reference.is_file() or not os.access(reference, os.X_OK):
+        return na("ALIGN_LLM_LLAMA_TOKENIZE is not executable")
+    if not model_text:
+        return na("ALIGN_LLM_GGUF_MODEL unset")
+    model = Path(model_text)
+    if not model.is_file():
+        return na("ALIGN_LLM_GGUF_MODEL is absent")
+    if model.stat().st_size != MODEL_BYTES or digest(model) != MODEL_SHA256:
+        fail("model size or SHA-256 differs from the pinned reference")
+    version_result = run([str(reference), "--version"])
+    version = (version_result.stdout + version_result.stderr).decode("utf-8", "replace")
+    if version_result.returncode != 0 or not version.startswith(VERSION):
+        fail(f"reference version differs: {version!r}")
+    if not (ROOT / "main").is_file():
+        fail("product executable is missing; run make build")
+
+    specials = special_cases()
+    cases = fixed_cases() + [(name, value) for name, value, _, _ in specials] + prompt_cases() + generated_cases()
+    if len(cases) != 299:
+        fail(f"corpus count is {len(cases)}, expected 299")
+    total_bytes = 0
+    total_ids = 0
+    with tempfile.TemporaryDirectory(prefix="align-r7-parity-") as raw_temp:
+        temporary = Path(raw_temp)
+        input_path = temporary / "input.txt"
+        ids_path = temporary / "ids.json"
+        for case_index, (name, text) in enumerate(cases):
+            try:
+                text.decode("utf-8")
+            except UnicodeDecodeError:
+                fail(f"{name}: corpus text is not UTF-8")
+            input_path.write_bytes(text)
+            total_bytes += len(text)
+            for literal in (False, True):
+                expected = reference_ids(reference, model, text, literal)
+                observed = align_encode(model, input_path, literal)
+                if observed != expected:
+                    fail(f"{name}/{'literal' if literal else 'parse'} ids differ: {observed[:20]} != {expected[:20]}")
+                total_ids += len(expected)
+                ids_path.write_text(json.dumps(expected, separators=(",", ":")), encoding="ascii")
+                if align_decode(model, ids_path, True) != text:
+                    fail(f"{name}/render does not reproduce input")
+                skipped = align_decode(model, ids_path, False)
+                expected_skip = text if literal else skip_control_text(text, specials)
+                if skipped != expected_skip:
+                    fail(f"{name}/skip differs")
+            if case_index % 25 == 0:
+                print(f"tokenizer parity: progress {case_index + 1}/299", file=sys.stderr)
+
+    print(
+        f"tokenizer parity: PASS (build 10566, model {MODEL_SHA256}, "
+        f"299 cases, {total_bytes} input bytes, {total_ids} compared ids)"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
