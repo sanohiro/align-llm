@@ -18,20 +18,31 @@ layer. Request 22 is `CLOSED` after all registered consumer targets and real-mod
 **Latest durable verification.** `make gguf-smoke` passes 62 fixtures; `make model-ir-smoke` passes
 49 qwen, 31 gpt-oss, 29 olmoe, and 62 re-run fixtures; `make layer-forward-smoke` passes; and
 `make tokenizer-smoke` passes 13 text classes, four special spellings, all 17 model-error codes
-across 19 failure cases, and all five operation-error codes. The real 4,683,073,536-byte model
+across 19 failure cases, all five operation-error codes, and a deterministic atomic-replacement
+snapshot case. The real 4,683,073,536-byte model
 encodes `Hello, world!` to `[9707,11,1879,0]`
 and decodes exactly. The full `make tokenizer-parity` qualification passes all 299 cases against
 llama-tokenize build 10566: 50,893 input bytes and 69,485 compared ids. Managed-toolchain
 materialization, `make gate-topology-check`, formatting, and `git diff --check` pass.
 
-**Next actions.** (1) Commit the reconciled candidate and run one comprehensive `codex review
---base origin/main`. (2) Apply validated findings and run affected evidence plus the exact clean-HEAD
+**Comprehensive review.** `codex review --base origin/main` reviewed implementation head `cd6f0c2`
+against base tip and merge base `62c2073` with Codex `gpt-5.6-sol` at high effort. Verdict: one P2
+finding. The tokenizer validated counts from one open and materialized each array through later
+opens, so an atomic path replacement could combine generations and reach an out-of-bounds access.
+The finding is accepted. Consolidated repair `0799ad217449219b35d3e7b62499af6681c31e9c` retains one
+validated `GgufSnapshot` handle for the table and all payload reads and adds a deterministic
+replacement-at-a-barrier regression. Its
+public ownership surface materially changes the reviewed approach, so one final comprehensive
+review is required after the repair is committed.
+
+**Next actions.** (1) Commit the accepted-finding repair and run the required final comprehensive
+review. (2) Run affected evidence, replacement real-model parity, and the exact clean-HEAD
 publication preflight owner. (3) Publish the PR, merge after checks, then refresh `main` and start
 the next eligible roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The complete R7 implementation/adoption candidate on this branch.
+**Intentional uncommitted files.** None after this handoff update is committed.
 
 ## Merged checkpoint: DEV-OUTPUT-SUMMARY (2026-08-31)
 
