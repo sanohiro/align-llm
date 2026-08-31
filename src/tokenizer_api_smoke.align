@@ -1,7 +1,9 @@
 module tokenizer_api_smoke
 
 import core.json
+import gguf
 import tokenizer_qwen2
+import std.io
 
 fn print_ids_code(result_value: tokenizer_qwen2.TokenIdsResult) {
   match result_value.status {
@@ -64,7 +66,30 @@ fn operation_failures(model_path: str, long_model_path: str, byte_id_text: str, 
   return Ok(())
 }
 
+fn snapshot_replacement(path: str) -> Result<(), Error> {
+  snapshot := gguf.open_snapshot(path)?
+  io.stdout.write("READY\n")?
+  mut gate := buffer(1)
+  if io.stdin.read(gate)? != 1 { return Err(Error.Invalid) }
+  tokens := gguf.snapshot_string_array(snapshot, "tokenizer.ggml.tokens")?
+  types := gguf.snapshot_i32_array(snapshot, "tokenizer.ggml.token_type")?
+  merges := gguf.snapshot_string_array(snapshot, "tokenizer.ggml.merges")?
+  line := builder()
+  line.write("SNAP:")
+  line.write_int(tokens.len())
+  line.write(":")
+  line.write_int(types.len())
+  line.write(":")
+  line.write_int(merges.len())
+  line.write("\n")
+  io.stdout.write(line)?
+  return Ok(())
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 3 && args[1] == "--snapshot" {
+    return snapshot_replacement(args[2])
+  }
   if args.len() == 6 && args[1] == "--operations" {
     return operation_failures(args[2], args[3], args[4], args[5])
   }

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import atexit
+import os
 import subprocess
 import sys
 import tempfile
@@ -295,6 +296,34 @@ def main() -> int:
         harness_build = command([str(ROOT / "scripts/alignc"), "build", "src/tokenizer_api_smoke.align"], timeout=120)
         if harness_build.returncode != 0:
             fail(f"API harness build failed: {harness_build.stderr.decode('utf-8', 'replace')}")
+
+        snapshot_model = work / "snapshot-model.gguf"
+        fixture.write_model(snapshot_model, tokens, types, merges)
+        replacement_model = work / "snapshot-replacement.gguf"
+        fixture.write_model(replacement_model, tokens[:256], types[:256], [])
+        snapshot_process = subprocess.Popen(
+            [str(HARNESS), "--snapshot", str(snapshot_model)],
+            cwd=ROOT,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert snapshot_process.stdin is not None
+        assert snapshot_process.stdout is not None
+        if snapshot_process.stdout.readline() != b"READY\n":
+            snapshot_process.kill()
+            fail("snapshot harness did not reach the replacement barrier")
+        os.replace(replacement_model, snapshot_model)
+        snapshot_process.stdin.write(b"x")
+        snapshot_process.stdin.flush()
+        snapshot_stdout, snapshot_stderr = snapshot_process.communicate(timeout=20)
+        expected_snapshot = f"SNAP:{len(tokens)}:{len(types)}:{len(merges)}\n".encode()
+        if snapshot_process.returncode != 0 or snapshot_stdout != expected_snapshot:
+            fail(
+                f"snapshot replacement drifted: exit={snapshot_process.returncode} "
+                f"stdout={snapshot_stdout!r} stderr={snapshot_stderr.decode('utf-8', 'replace')!r}"
+            )
+
         api_result = command([str(HARNESS), str(model), *map(str, mutation_paths)], timeout=30)
         if api_result.returncode != 0:
             fail(f"API harness failed: {api_result.stderr.decode('utf-8', 'replace')}")
@@ -322,7 +351,7 @@ def main() -> int:
 
     print(
         f"tokenizer smoke: PASS ({len(cases)} text cases, 4 special spellings, "
-        f"{len(expected_codes)} model failures, 5 operation failures)"
+        f"{len(expected_codes)} model failures, 5 operation failures, 1 replacement snapshot)"
     )
     return 0
 

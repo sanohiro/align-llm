@@ -6507,13 +6507,14 @@ this request's motivation already names (from R4's paragraph above), not a seven
 `fs.open_ro` constructor itself.
 
 **R7-TOKENIZER adds another direct GGUF client.** `gguf.read_string_array` and
-`gguf.read_i32_array` complete the validated table walk and then reopen the selected payload to
-materialize the model-owned vocabulary, types, and merges. Both opens still use `fs.open_rw`, even
-though neither operation writes, because Request 21 remains unshipped. This is non-blocking on the
-current developer-owned reference model and therefore does not justify a compatibility layer, but
-it means a tokenizer that otherwise needs only model bytes still cannot serve a model mounted
-read-only. The eventual adoption owner must include `tokenizer-smoke` and `tokenizer-parity` so the
-new reopen path cannot retain a hidden `O_RDWR` requirement.
+`gguf.read_i32_array` materialize the model-owned vocabulary, types, and merges. The tokenizer's
+`GgufSnapshot` opens once and retains that handle across the complete table walk and all three
+payload reads, so atomic path replacement cannot mix generations. The one open still uses
+`fs.open_rw`, even though no operation writes, because Request 21 remains unshipped. This is
+non-blocking on the current developer-owned reference model and therefore does not justify a
+compatibility layer, but it means a tokenizer that otherwise needs only model bytes still cannot
+serve a model mounted read-only. The eventual adoption owner must include `tokenizer-smoke` and
+`tokenizer-parity` so the snapshot cannot retain a hidden `O_RDWR` requirement.
 
 ### Requested capability
 

@@ -482,23 +482,23 @@ fn array_read_failure(e: Error) -> bool = match e {
 
 fn load_model(path: str) -> Result<LoadResult, Error> {
   if !path_valid(path) { return Err(Error.Invalid) }
-  table := gguf.read_table(path)?
-  if !table_ok(table.status) {
+  snapshot := gguf.open_snapshot(path)?
+  if !table_ok(snapshot.table.status) {
     detail := builder()
-    code_view: str := table.error_code
+    code_view: str := snapshot.table.error_code
     detail.write(code_view)
     detail.write("@")
-    detail.write_int(table.error_offset)
+    detail.write_int(snapshot.table.error_offset)
     rendered := detail.to_string()
     rendered_view: str := rendered
     return Ok(failed_load("R7_GGUF", rendered_view, -1, -1))
   }
 
-  model := match gguf.kv_string(table, "tokenizer.ggml.model") {
+  model := match gguf.kv_string(snapshot.table, "tokenizer.ggml.model") {
     Some(value) => value,
     None => { return Ok(failed_load("R7_TOKENIZER_METADATA", "tokenizer.ggml.model", -1, -1)) },
   }
-  pre := match gguf.kv_string(table, "tokenizer.ggml.pre") {
+  pre := match gguf.kv_string(snapshot.table, "tokenizer.ggml.pre") {
     Some(value) => value,
     None => { return Ok(failed_load("R7_TOKENIZER_METADATA", "tokenizer.ggml.pre", -1, -1)) },
   }
@@ -514,28 +514,28 @@ fn load_model(path: str) -> Result<LoadResult, Error> {
     return Ok(failed_load("R7_UNSUPPORTED_TOKENIZER", rendered_view, -1, -1))
   }
 
-  if gguf.kv_type(table, "tokenizer.ggml.tokens") != 9
-    || gguf.kv_array_element_type(table, "tokenizer.ggml.tokens") != 8 {
+  if gguf.kv_type(snapshot.table, "tokenizer.ggml.tokens") != 9
+    || gguf.kv_array_element_type(snapshot.table, "tokenizer.ggml.tokens") != 8 {
     return Ok(failed_load("R7_TOKENIZER_METADATA", "tokenizer.ggml.tokens", -1, -1))
   }
-  if gguf.kv_type(table, "tokenizer.ggml.token_type") != 9
-    || gguf.kv_array_element_type(table, "tokenizer.ggml.token_type") != 5 {
+  if gguf.kv_type(snapshot.table, "tokenizer.ggml.token_type") != 9
+    || gguf.kv_array_element_type(snapshot.table, "tokenizer.ggml.token_type") != 5 {
     return Ok(failed_load("R7_TOKENIZER_METADATA", "tokenizer.ggml.token_type", -1, -1))
   }
-  if gguf.kv_type(table, "tokenizer.ggml.merges") != 9
-    || gguf.kv_array_element_type(table, "tokenizer.ggml.merges") != 8 {
+  if gguf.kv_type(snapshot.table, "tokenizer.ggml.merges") != 9
+    || gguf.kv_array_element_type(snapshot.table, "tokenizer.ggml.merges") != 8 {
     return Ok(failed_load("R7_TOKENIZER_METADATA", "tokenizer.ggml.merges", -1, -1))
   }
 
-  token_count := match gguf.kv_array_length(table, "tokenizer.ggml.tokens") {
+  token_count := match gguf.kv_array_length(snapshot.table, "tokenizer.ggml.tokens") {
     Some(value) => value,
     None => -1,
   }
-  type_count := match gguf.kv_array_length(table, "tokenizer.ggml.token_type") {
+  type_count := match gguf.kv_array_length(snapshot.table, "tokenizer.ggml.token_type") {
     Some(value) => value,
     None => -1,
   }
-  merge_count := match gguf.kv_array_length(table, "tokenizer.ggml.merges") {
+  merge_count := match gguf.kv_array_length(snapshot.table, "tokenizer.ggml.merges") {
     Some(value) => value,
     None => -1,
   }
@@ -557,7 +557,7 @@ fn load_model(path: str) -> Result<LoadResult, Error> {
     return Ok(failed_load("R7_MERGE_COUNT", indexed_detail("merges", merge_count), token_count, -1))
   }
 
-  tokens := match gguf.read_string_array(path, "tokenizer.ggml.tokens") {
+  tokens := match gguf.snapshot_string_array(snapshot, "tokenizer.ggml.tokens") {
     Ok(value) => value,
     Err(e) => {
       if array_read_failure(e) {
@@ -566,7 +566,7 @@ fn load_model(path: str) -> Result<LoadResult, Error> {
       return Err(e)
     },
   }
-  types := match gguf.read_i32_array(path, "tokenizer.ggml.token_type") {
+  types := match gguf.snapshot_i32_array(snapshot, "tokenizer.ggml.token_type") {
     Ok(value) => value,
     Err(e) => {
       if array_read_failure(e) {
@@ -575,7 +575,7 @@ fn load_model(path: str) -> Result<LoadResult, Error> {
       return Err(e)
     },
   }
-  merges := match gguf.read_string_array(path, "tokenizer.ggml.merges") {
+  merges := match gguf.snapshot_string_array(snapshot, "tokenizer.ggml.merges") {
     Ok(value) => value,
     Err(e) => {
       if array_read_failure(e) {

@@ -1498,13 +1498,9 @@ pub fn tensor_dim(borrow t: GgufTable, index: i64, axis: i64) -> i64 {
 // operating-system failure; every structural defect in the file is data, exactly as for `inspect`.
 // The rendering work `decode_kv` / `decode_tensor` perform is discarded here, which buys the one
 // property that matters: there is exactly one implementation of GGUF container interpretation in the
-// repository, so `--inspect-gguf` and `--model-ir` cannot disagree about what a file says.
-pub fn read_table(path: str) -> Result<GgufTable, Error> {
-  if !valid_path(path) {
-    return Err(Error.Invalid)
-  }
-  handle := fs.open_rw(path)?
-  file_size := handle.len()?
+// repository, so `--inspect-gguf` and `--model-ir` cannot disagree about what a file says. Snapshot
+// consumers reuse this same walk without reopening the path between validation and payload reads.
+fn read_table_from_handle(borrow handle: file, file_size: i64) -> Result<GgufTable, Error> {
   mut window := buffer(WINDOW_BYTES)
   mut c := Cursor {
     file_size: file_size,
@@ -1673,25 +1669,44 @@ pub fn read_table(path: str) -> Result<GgufTable, Error> {
     })
 }
 
-pub fn read_string_array(path: str, key: str) -> Result<array<string>, Error> {
-  if !valid_key(key) || !valid_path(path) { return Err(Error.Invalid) }
-  table := read_table(path)?
-  if !status_ok(table.status) { return Err(Error.Invalid) }
-  index := find_key(table, key)
-  if index < 0 || table.kv_entries[index].value_type != 9
-    || table.kv_entries[index].array_elem_type != 8 {
-    return Err(Error.Invalid)
-  }
-  count := table.kv_entries[index].array_length
-  if count < 0 || count > MAX_MATERIALIZED_ELEMENTS { return Err(Error.Invalid) }
+pub fn read_table(path: str) -> Result<GgufTable, Error> {
+  if !valid_path(path) { return Err(Error.Invalid) }
   handle := fs.open_rw(path)?
   file_size := handle.len()?
+  return read_table_from_handle(handle, file_size)
+}
+
+// A validated table and its still-open source. This is intentionally a public ownership boundary:
+// a consumer that must validate metadata before selecting large payloads can keep every read on one
+// kernel file description even if another process atomically replaces `path`.
+pub GgufSnapshot { handle: file, table: GgufTable }
+
+pub fn open_snapshot(path: str) -> Result<GgufSnapshot, Error> {
+  if !valid_path(path) { return Err(Error.Invalid) }
+  handle := fs.open_rw(path)?
+  file_size := handle.len()?
+  table := read_table_from_handle(handle, file_size)?
+  return Ok(GgufSnapshot { handle: handle, table: table })
+}
+
+fn read_string_array_from_snapshot(
+  borrow snapshot: GgufSnapshot,
+  key: str,
+) -> Result<array<string>, Error> {
+  if !status_ok(snapshot.table.status) { return Err(Error.Invalid) }
+  index := find_key(snapshot.table, key)
+  if index < 0 || snapshot.table.kv_entries[index].value_type != 9
+    || snapshot.table.kv_entries[index].array_elem_type != 8 {
+    return Err(Error.Invalid)
+  }
+  count := snapshot.table.kv_entries[index].array_length
+  if count < 0 || count > MAX_MATERIALIZED_ELEMENTS { return Err(Error.Invalid) }
   mut window := buffer(WINDOW_BYTES)
   mut c := Cursor {
-    file_size: file_size,
+    file_size: snapshot.table.file_size,
     window_base: -1,
     window_len: 0,
-    pos: table.kv_entries[index].array_payload_offset,
+    pos: snapshot.table.kv_entries[index].array_payload_offset,
     capacity: WINDOW_BYTES,
     bytes_read: 0,
   }
@@ -1700,7 +1715,7 @@ pub fn read_string_array(path: str, key: str) -> Result<array<string>, Error> {
   mut at := 0
   loop {
     if at >= count { break }
-    length := match read_declared_length(handle, window, c) {
+    length := match read_declared_length(snapshot.handle, window, c) {
       Ok(value) => value,
       Err(detected) => {
         if detected.os { return Err(detected.os_error) }
@@ -1711,7 +1726,7 @@ pub fn read_string_array(path: str, key: str) -> Result<array<string>, Error> {
       || total > MAX_MATERIALIZED_STRING_BYTES - length {
       return Err(Error.Invalid)
     }
-    decoded := match decode_text(handle, window, c, length) {
+    decoded := match decode_text(snapshot.handle, window, c, length) {
       Ok(value) => value,
       Err(detected) => {
         if detected.os { return Err(detected.os_error) }
@@ -1726,25 +1741,24 @@ pub fn read_string_array(path: str, key: str) -> Result<array<string>, Error> {
   return Ok(values.build())
 }
 
-pub fn read_i32_array(path: str, key: str) -> Result<array<i64>, Error> {
-  if !valid_key(key) || !valid_path(path) { return Err(Error.Invalid) }
-  table := read_table(path)?
-  if !status_ok(table.status) { return Err(Error.Invalid) }
-  index := find_key(table, key)
-  if index < 0 || table.kv_entries[index].value_type != 9
-    || table.kv_entries[index].array_elem_type != 5 {
+fn read_i32_array_from_snapshot(
+  borrow snapshot: GgufSnapshot,
+  key: str,
+) -> Result<array<i64>, Error> {
+  if !status_ok(snapshot.table.status) { return Err(Error.Invalid) }
+  index := find_key(snapshot.table, key)
+  if index < 0 || snapshot.table.kv_entries[index].value_type != 9
+    || snapshot.table.kv_entries[index].array_elem_type != 5 {
     return Err(Error.Invalid)
   }
-  count := table.kv_entries[index].array_length
+  count := snapshot.table.kv_entries[index].array_length
   if count < 0 || count > MAX_MATERIALIZED_ELEMENTS { return Err(Error.Invalid) }
-  handle := fs.open_rw(path)?
-  file_size := handle.len()?
   mut window := buffer(WINDOW_BYTES)
   mut c := Cursor {
-    file_size: file_size,
+    file_size: snapshot.table.file_size,
     window_base: -1,
     window_len: 0,
-    pos: table.kv_entries[index].array_payload_offset,
+    pos: snapshot.table.kv_entries[index].array_payload_offset,
     capacity: WINDOW_BYTES,
     bytes_read: 0,
   }
@@ -1752,7 +1766,7 @@ pub fn read_i32_array(path: str, key: str) -> Result<array<i64>, Error> {
   mut at := 0
   loop {
     if at >= count { break }
-    value := match read_i32(handle, window, c) {
+    value := match read_i32(snapshot.handle, window, c) {
       Ok(decoded) => decoded,
       Err(detected) => {
         if detected.os { return Err(detected.os_error) }
@@ -1763,4 +1777,32 @@ pub fn read_i32_array(path: str, key: str) -> Result<array<i64>, Error> {
     at = at + 1
   }
   return Ok(values.build())
+}
+
+pub fn snapshot_string_array(
+  borrow snapshot: GgufSnapshot,
+  key: str,
+) -> Result<array<string>, Error> {
+  if !valid_key(key) { return Err(Error.Invalid) }
+  return read_string_array_from_snapshot(snapshot, key)
+}
+
+pub fn snapshot_i32_array(
+  borrow snapshot: GgufSnapshot,
+  key: str,
+) -> Result<array<i64>, Error> {
+  if !valid_key(key) { return Err(Error.Invalid) }
+  return read_i32_array_from_snapshot(snapshot, key)
+}
+
+pub fn read_string_array(path: str, key: str) -> Result<array<string>, Error> {
+  if !valid_key(key) || !valid_path(path) { return Err(Error.Invalid) }
+  snapshot := open_snapshot(path)?
+  return read_string_array_from_snapshot(snapshot, key)
+}
+
+pub fn read_i32_array(path: str, key: str) -> Result<array<i64>, Error> {
+  if !valid_key(key) || !valid_path(path) { return Err(Error.Invalid) }
+  snapshot := open_snapshot(path)?
+  return read_i32_array_from_snapshot(snapshot, key)
 }

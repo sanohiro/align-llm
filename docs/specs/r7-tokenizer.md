@@ -98,6 +98,16 @@ surfaces:
 
 ```align
 pub fn kv_array_element_type(borrow table: GgufTable, key: str) -> i64
+pub GgufSnapshot { handle: file, table: GgufTable }
+pub fn open_snapshot(path: str) -> Result<GgufSnapshot, Error>
+pub fn snapshot_string_array(
+  borrow snapshot: GgufSnapshot,
+  key: str,
+) -> Result<array<string>, Error>
+pub fn snapshot_i32_array(
+  borrow snapshot: GgufSnapshot,
+  key: str,
+) -> Result<array<i64>, Error>
 pub fn read_string_array(path: str, key: str) -> Result<array<string>, Error>
 pub fn read_i32_array(path: str, key: str) -> Result<array<i64>, Error>
 ```
@@ -106,13 +116,15 @@ pub fn read_i32_array(path: str, key: str) -> Result<array<i64>, Error>
 | --- | --- |
 | Key selection | The first valid UTF-8 metadata key equal to `key`, matching `find_key` and every existing R1 accessor. A later duplicate is ignored |
 | `kv_array_element_type` | Returns the GGUF element type id for an ARRAY; `-1` when `key` is lexically invalid, absent, or not an ARRAY. It allocates nothing and has no error channel |
+| `open_snapshot` | Opens `path` once, performs the complete table walk on that owned `file`, and returns the still-open handle with its validated table. An atomic replacement of `path` cannot change subsequent snapshot reads. In-place mutation of the already-open file is outside the contract; model inputs must remain immutable for the snapshot lifetime |
+| Snapshot array readers | Materialize through the snapshot's original handle and table. They never resolve `path`, open another handle, or mutate the snapshot. The tokenizer uses these after its ordered metadata and count checks |
 | `read_string_array` success | The selected value is ARRAY/STRING; every element is valid UTF-8 and within the bounds below; result order equals file order; every result element is an owned `string`; no view or file handle escapes |
 | `read_i32_array` success | The selected value is ARRAY/INT32; each little-endian element is sign-extended to `i64`; result order equals file order; the result is owned |
-| Structural validation | Each reader first obtains a successful complete `read_table(path)`. A table with `GgufStatus.Error`, a missing key, wrong outer or element type, truncated payload, invalid UTF-8 string element, or violated materialization bound is `Err(Error.Invalid)` |
+| Structural validation | A snapshot and each one-shot reader perform one complete table walk on the same handle later used for payload reads. A table with `GgufStatus.Error`, a missing key, wrong outer or element type, truncated payload, invalid UTF-8 string element, or violated materialization bound is `Err(Error.Invalid)` |
 | Reader OS errors | `NotFound`, `Denied`, and other `std.fs` errors propagate unchanged. For `read_string_array` and `read_i32_array`, a lexically invalid path or key is `Error.Invalid` |
-| Allocation | At most one selected array is materialized. The temporary table, window, and file are released before return; success transfers only the returned array |
+| Allocation / cleanup | A one-shot reader materializes at most one selected array and releases its table, window, and file before return. A snapshot owns its file and table until dropped; each snapshot reader drops its window and partial builder on every return. Success transfers only the returned array |
 | Effects | Reads the named path. No write, mapping, process, network, environment, cache, or cwd effect |
-| Persisted/cache identity | N/A: the readers persist and cache nothing. File order and bytes are the result's identity |
+| Persisted/cache identity | N/A: the readers persist and cache nothing. A snapshot's kernel file description, rather than the reusable path spelling, identifies its source for the call |
 
 The path grammar remains R0's: non-empty, at most 4,096 UTF-8 bytes, no NUL. The key is non-empty,
 at most 4,096 bytes, and contains no NUL. Because the scalar accessor cannot return `Error`, an
@@ -125,9 +137,10 @@ cumulative string payload over 16,777,216 bytes. Those checks happen from declar
 prefixes before each clone, so an accepted container cannot force a multi-gigabyte temporary array
 before section 2.8's tokenizer check.
 
-The implementation may retain each selected value's absolute payload offset in `GgufTable` and
-reopen that bounded region after the complete walk. It may not create a second GGUF type grammar or
-make `read_table`, `inspect`, and the array readers disagree about malformed input.
+The implementation retains each selected value's absolute payload offset in `GgufTable` and reads
+that bounded region through the same handle after the complete walk. The one-shot readers are
+snapshot wrappers, not a second open. The implementation may not create a second GGUF type grammar
+or make `read_table`, `inspect`, and the array readers disagree about malformed input.
 
 ### 2.2 Public tokenizer types and functions
 
@@ -838,10 +851,10 @@ coding.
 | Owner / path | Construction | S | F / M | E | C | Regression |
 | --- | --- | --- | --- | --- | --- | --- |
 | `src/gguf.align`: array offsets/accessor | Complete `read_table` records first-key array type and payload offset from the one decoder | Borrowed lookup returns exact type | Invalid/absent/wrong-type key is `-1`; structural table status remains data | Invalid key returns before lookup; no payload open before table success | temporary columns/table drop | `tokenizer-smoke`: invalid/first-key/wrong-type/structural corpus; `gguf-smoke` parity |
-| `src/gguf.align`: `read_string_array` | Reopen selected bounded payload only after complete validation | owned strings, file order | invalid key/UTF-8/truncation/cap is `Invalid` | invalid key before path; stop materialization at first bad element | file/window/partial builder drop | `tokenizer-smoke`: invalid key, early/tail invalid strings, truncation, caps |
-| `src/gguf.align`: `read_i32_array` | same selected-offset route | sign-extended owned `i64` values | invalid key/wrong width/truncation/cap is `Invalid` | invalid key before path; first bad scalar | same | `tokenizer-smoke`: invalid key, types positive/wrong/truncated |
+| `src/gguf.align`: snapshot / `read_string_array` | One open owns complete validation and selected bounded payload reads | owned strings, file order; atomic path replacement retains the opened source | invalid key/UTF-8/truncation/cap is `Invalid` | invalid key before path; stop materialization at first bad element | snapshot file/table and file/window/partial builder drop | `tokenizer-smoke`: invalid key, early/tail invalid strings, truncation, caps, deterministic atomic-replacement barrier |
+| `src/gguf.align`: snapshot / `read_i32_array` | same-handle selected-offset route | sign-extended owned `i64` values | invalid key/wrong width/truncation/cap is `Invalid` | invalid key before path; first bad scalar | same | `tokenizer-smoke`: invalid key, types positive/wrong/truncated, replacement snapshot |
 | Request 22 migrations | Build direct Move-record/string arrays | unchanged accessors/documents | existing failure documents unchanged | existing first-failure order | element-wise Drop exactly once | `gguf-smoke`, `model-ir-smoke`, `layer-forward-smoke` |
-| `src/tokenizer_qwen2.align`: loader | tokens, types, merges in step order; checked tables, trie, and identity | private immutable tokenizer | first code in 2.3/2.9, no partial output | no later index after failure | all arrays/regex/index/trie/preimage state drop | `tokenizer-smoke` full model matrix |
+| `src/tokenizer_qwen2.align`: loader | One GGUF snapshot; tokens, types, merges in step order; checked tables, trie, and identity | private immutable tokenizer from one opened source | first code in 2.3/2.9, no partial output or mixed path generations | no later index after failure | snapshot handle plus all arrays/regex/index/trie/preimage state drop | `tokenizer-smoke` full model matrix and atomic replacement barrier |
 | token hash index | ascending ids into head/next buckets; 16-link cap | complete-string lookup within 16 links | duplicate is `R7_TOKEN_DUPLICATE` before distinct-entry `R7_HASH_BUCKET`; hash never equals without byte compare | no seventeenth insertion or lookup | Copy heads/links drop | exact 16/17 colliders, duplicate precedence, ordinary collision fixture |
 | merge hash index | resolve left/right/result ids, then insert first-ranked Copy pair into 16-link bucket | first rank and prevalidated result id | missing component/result is `R7_MERGE_TOKEN`; duplicate ignored before distinct-entry `R7_HASH_BUCKET` | malformed/unresolved row before insert; no seventeenth insert | Copy id/head/link arrays drop; strings stay owned by merges | missing left/right/result, exact 16/17 colliders, rank/duplicate cases |
 | special trie/partition | ascending unique ids into checked dense transitions and two mode terminals | longest atomic match within 32 probes per position | count/length cap errors; disabled control flows to BPE | raw segment flush before atomic id | trie and raw-span scratch drop | all modes, overlaps, exact maximum common-prefix case |
@@ -947,7 +960,7 @@ Result: consistent after implementation reconciliation on 2026-09-01.
 
 | Contract / closure cells | Final source and owner | Candidate evidence |
 | --- | --- | --- |
-| GGUF array type, offsets, owned string/i32 readers, first-key selection, caps, and Request 22 tensor/table migration | `src/gguf.align`; `scripts/tokenizer_fixture.py`; existing GGUF corpus | `make gguf-smoke` (62 fixtures) and `make tokenizer-smoke` |
+| GGUF array type, offsets, same-handle snapshot, owned string/i32 readers, first-key selection, caps, atomic-replacement isolation, and Request 22 tensor/table migration | `src/gguf.align`; `scripts/tokenizer_fixture.py`; existing GGUF corpus | `make gguf-smoke` (62 fixtures) and `make tokenizer-smoke` |
 | `GgufTable`, `BlockPlan`, and `StepColumns` representation-only migrations | `src/model_ir.align`, three frontends, `src/alignpack.align`, `src/model_forward.align`, `src/decode_step.align` | `make model-ir-smoke` (49 qwen, 31 gpt-oss, 29 olmoe, 62 re-runs) and `make layer-forward-smoke` |
 | Public tokenizer types/results; ordered model validation; all 17 model codes; identity and cleanup | `src/tokenizer_qwen2.align`; `src/tokenizer_api_smoke.align`; synthetic mutation corpus | `make tokenizer-smoke` (19 model-failure cases covering every model code) |
 | Qwen2 scalar scanner, regex lock, GPT-2 byte map, heap BPE, special trie/modes, encode/decode, five operation codes | `src/tokenizer_qwen2.align`; independent Python oracle and API harness | `make tokenizer-smoke` (13 text classes, four special spellings, five operation failures) |
@@ -957,5 +970,6 @@ Result: consistent after implementation reconciliation on 2026-09-01.
 
 There is one inherited, explicit limitation rather than a hidden deviation: Align Request 21 has
 not shipped, so GGUF random access still obtains `O_RDWR` through `fs.open_rw` even though this
-capability never writes the model. The new tokenizer reopen path is recorded as additional Request
-21 evidence; it stays non-blocking for the current developer-owned model and is not papered over.
+capability never writes the model. The tokenizer now retains that single opened handle across table
+and payload reads; this is recorded as additional Request 21 evidence and stays non-blocking for the
+current developer-owned model.
