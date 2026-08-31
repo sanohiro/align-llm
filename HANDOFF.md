@@ -21,9 +21,10 @@ layer. Request 22 is `CLOSED` after all registered consumer targets and real-mod
 across 19 failure cases, all five operation-error codes, and a deterministic atomic-replacement
 snapshot case. The real 4,683,073,536-byte model
 encodes `Hello, world!` to `[9707,11,1879,0]`
-and decodes exactly. The full `make tokenizer-parity` qualification passes all 299 cases against
-llama-tokenize build 10566: 50,893 input bytes and 69,485 compared ids. Managed-toolchain
-materialization, `make gate-topology-check`, formatting, and `git diff --check` pass.
+and decodes exactly. After the snapshot repair, the full `make tokenizer-parity` qualification was
+rerun from zero at reviewed head `4840cc4` and passes all 299 cases against llama-tokenize build
+10566: 50,893 input bytes and 69,485 compared ids. Managed-toolchain materialization,
+`make gate-topology-check`, formatting, and `git diff --check` pass.
 
 **Comprehensive review.** `codex review --base origin/main` reviewed implementation head `cd6f0c2`
 against base tip and merge base `62c2073` with Codex `gpt-5.6-sol` at high effort. Verdict: one P2
@@ -33,12 +34,14 @@ The finding is accepted. Consolidated repair `0799ad217449219b35d3e7b62499af6681
 validated `GgufSnapshot` handle for the table and all payload reads and adds a deterministic
 replacement-at-a-barrier regression. Its
 public ownership surface materially changes the reviewed approach, so one final comprehensive
-review is required after the repair is committed.
+review was required after the repair was committed. That final `codex review --base origin/main`
+reviewed head `4840cc4` against base tip and merge base `62c2073`, again with Codex
+`gpt-5.6-sol` at high effort. Verdict: clean, with no actionable correctness defects. Its
+supplemental synthetic Qwen2 comparison also matched pinned llama-tokenize across 196 text cases.
 
-**Next actions.** (1) Commit the accepted-finding repair and run the required final comprehensive
-review. (2) Run affected evidence, replacement real-model parity, and the exact clean-HEAD
-publication preflight owner. (3) Publish the PR, merge after checks, then refresh `main` and start
-the next eligible roadmap capability.
+**Next actions.** (1) Run the exact clean-HEAD publication preflight owner. (2) Publish the PR and
+record the review envelope and finding disposition, then merge after checks. (3) Refresh `main` and
+start the next eligible roadmap capability.
 
 **Blocker.** None.
 
