@@ -39,9 +39,19 @@ reviewed head `4840cc4` against base tip and merge base `62c2073`, again with Co
 `gpt-5.6-sol` at high effort. Verdict: clean, with no actionable correctness defects. Its
 supplemental synthetic Qwen2 comparison also matched pinned llama-tokenize across 196 text cases.
 
-**Next actions.** (1) Run the exact clean-HEAD publication preflight owner. (2) Publish the PR and
-record the review envelope and finding disposition, then merge after checks. (3) Refresh `main` and
-start the next eligible roadmap capability.
+**Coding baseline refresh.** The pin and `Makefile` changes invalidate the prior identity-bound
+coding baseline. The required Linux/aarch64 chain is source `b776442` -> immutable oracle
+`8c27703673506ae3b4cb0cf0846594c36ab9a28a` -> canonical finalization
+`144bb9419f5549f9db8950f023868cdd30e1d61d`. Both deterministic-reference samples pass at
+156,824,375 ns and 135,042,458 ns on Linux 6.11.11-linuxkit with Python 3.12.3; the pending record
+is absent and `python3 scripts/check-baseline-chain` passes. A host preflight reached PASS for the
+R7 owner, managed ensure, pinned build, and the complete hosted aggregate before the expected
+macOS-only `/proc/self/fd` absence stopped `fresh-focused`; final publication evidence must run from
+zero in the unprivileged Linux Docker-in-Docker wrapper.
+
+**Next actions.** (1) Run the exact clean-HEAD publication preflight owner in that Linux wrapper.
+(2) Publish the PR and record the review envelope and finding disposition, then merge after checks.
+(3) Refresh `main` and start the next eligible roadmap capability.
 
 **Blocker.** None.
 
