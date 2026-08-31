@@ -25,6 +25,8 @@ and decodes exactly. After the snapshot repair, the full `make tokenizer-parity`
 rerun from zero at reviewed head `4840cc4` and passes all 299 cases against llama-tokenize build
 10566: 50,893 input bytes and 69,485 compared ids. Managed-toolchain materialization,
 `make gate-topology-check`, formatting, and `git diff --check` pass.
+The topology self-test also passes in its Linux publication environment after the fixture repair
+described below.
 
 **Comprehensive review.** `codex review --base origin/main` reviewed implementation head `cd6f0c2`
 against base tip and merge base `62c2073` with Codex `gpt-5.6-sol` at high effort. Verdict: one P2
@@ -39,15 +41,22 @@ reviewed head `4840cc4` against base tip and merge base `62c2073`, again with Co
 `gpt-5.6-sol` at high effort. Verdict: clean, with no actionable correctness defects. Its
 supplemental synthetic Qwen2 comparison also matched pinned llama-tokenize across 196 text cases.
 
-**Coding baseline refresh.** The pin and `Makefile` changes invalidate the prior identity-bound
-coding baseline. The required Linux/aarch64 chain is source `b776442` -> immutable oracle
-`8c27703673506ae3b4cb0cf0846594c36ab9a28a` -> canonical finalization
-`144bb9419f5549f9db8950f023868cdd30e1d61d`. Both deterministic-reference samples pass at
-156,824,375 ns and 135,042,458 ns on Linux 6.11.11-linuxkit with Python 3.12.3; the pending record
-is absent and `python3 scripts/check-baseline-chain` passes. A host preflight reached PASS for the
-R7 owner, managed ensure, pinned build, and the complete hosted aggregate before the expected
-macOS-only `/proc/self/fd` absence stopped `fresh-focused`; final publication evidence must run from
-zero in the unprivileged Linux Docker-in-Docker wrapper.
+**Coding baseline refresh.** The pin, `Makefile`, and topology-check changes invalidate the prior
+identity-bound coding baseline. The final required Linux/aarch64 chain is source
+`c49ff5720aabbe3468743e7aa252709077e26cdf` -> immutable oracle
+`207262bcbc54c0ca677781b79156f8e436f34f3c` -> canonical finalization
+`bd5f93257c4add753ec4ea407755fc79114fcba2`. Both deterministic-reference samples pass at
+146,034,041 ns and 149,513,542 ns on Linux 6.11.11-linuxkit with Python 3.12.3; the pending record
+is absent and `python3 scripts/check-baseline-chain` passes.
+
+**Publication preflight incident.** A host preflight passed the R7 owner, managed ensure, pinned
+build, and the complete hosted aggregate before the expected macOS-only `/proc/self/fd` absence
+stopped `fresh-focused`. The subsequent Linux Docker-in-Docker run passed the R7 owner, managed
+ensure, pinned build, and hosted aggregate, then its topology self-test exposed that
+`exact_environment()` omitted the newly hosted `tokenizer-smoke`. Repair `c49ff57` updates that
+normal-case fixture; both `make gate-topology-check` and the Linux self-test pass. Because the
+checker is a recorded baseline artifact, the repair owns the replacement chain above. Final
+publication evidence must now run from zero at the unchanged final head.
 
 **Next actions.** (1) Run the exact clean-HEAD publication preflight owner in that Linux wrapper.
 (2) Publish the PR and record the review envelope and finding disposition, then merge after checks.
