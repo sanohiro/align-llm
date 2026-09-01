@@ -56,7 +56,15 @@ ensure, pinned build, and hosted aggregate, then its topology self-test exposed 
 `exact_environment()` omitted the newly hosted `tokenizer-smoke`. Repair `c49ff57` updates that
 normal-case fixture; both `make gate-topology-check` and the Linux self-test pass. Because the
 checker is a recorded baseline artifact, the repair owns the replacement chain above. Final
-publication evidence must now run from zero at the unchanged final head.
+publication evidence then reached the installed image: image construction and the boundary profile
+passed, but the worker aggregate failed because `run-tokenizer-smoke` tried to resolve the managed
+checkout beneath the contained `HOME=/nonexistent`. The diagnostic retry captured 16,562 stderr
+bytes and exposed the missing `Cargo.lock` path. The bounded repair keeps the normal owner's exact
+three-entry lock check, requires the complete fixed compiler vector in fresh containment, and
+documents why the private Align source is unavailable there; partial vectors fail before product
+execution. Normal `make tokenizer-smoke`, simulated complete/partial vector cases, formatting, and
+the baseline chain pass. Final publication evidence must run from zero at the unchanged final head
+after the repaired candidate's comprehensive review.
 
 **Next actions.** (1) Run the exact clean-HEAD publication preflight owner in that Linux wrapper.
 (2) Publish the PR and record the review envelope and finding disposition, then merge after checks.

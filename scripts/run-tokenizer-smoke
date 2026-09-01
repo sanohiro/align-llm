@@ -17,6 +17,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 HARNESS = ROOT / "tokenizer_api_smoke"
 atexit.register(lambda: HARNESS.unlink(missing_ok=True))
+FRESH_REGEX_LOCK_ENVIRONMENT = {
+    "ALIGN_LLM_FRESH_COMPILER": "1",
+    "ALIGN_LLM_TOOL_ROOT": "/tools",
+    "ALIGNC": "/tools/fresh-alignc",
+    "ALIGNC_CACHE": "off",
+}
 
 import tokenizer_fixture as fixture  # noqa: E402
 
@@ -47,6 +53,19 @@ def require_regex_lock(source: Path) -> None:
         row = packages.get(name)
         if row is None or (row.get("version"), row.get("checksum")) != (version, checksum):
             fail(f"managed Align regex lock drifted for {name}: {row!r}")
+
+
+def require_regex_provenance() -> None:
+    if "ALIGN_LLM_FRESH_COMPILER" in os.environ:
+        actual = {name: os.environ.get(name) for name in FRESH_REGEX_LOCK_ENVIRONMENT}
+        if actual != FRESH_REGEX_LOCK_ENVIRONMENT:
+            fail(f"fresh compiler environment cannot attest the regex lock: {actual!r}")
+        return
+
+    source_result = command([str(ROOT / "scripts/align-toolchain"), "path", "source"])
+    if source_result.returncode != 0:
+        fail("could not resolve managed Align source")
+    require_regex_lock(Path(source_result.stdout.decode().strip()))
 
 
 def run_cli(model: Path, input_path: Path, operation: str, mode: str) -> subprocess.CompletedProcess[bytes]:
@@ -100,10 +119,7 @@ def expect_failure(result: subprocess.CompletedProcess[bytes], label: str) -> No
 
 
 def main() -> int:
-    source_result = command([str(ROOT / "scripts/align-toolchain"), "path", "source"])
-    if source_result.returncode != 0:
-        fail("could not resolve managed Align source")
-    require_regex_lock(Path(source_result.stdout.decode().strip()))
+    require_regex_provenance()
 
     with tempfile.TemporaryDirectory(prefix="align-r7-tokenizer-") as raw_temp:
         work = Path(raw_temp)

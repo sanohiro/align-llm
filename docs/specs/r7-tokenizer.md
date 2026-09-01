@@ -359,10 +359,17 @@ align-regex-v1;regex=1.13.1+f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a11
 
 Those versions and Cargo checksums are the exact dependency identities in current Align
 `Cargo.lock`; the `regex-syntax` package's generated category and Perl-space tables identify
-Unicode 16.0.0. `tokenizer-smoke` resolves the managed checkout selected by `.align-revision` and
-requires all three lock entries to equal this constant before compiling or executing the product.
-An Align pin whose classifier dependency identity differs must update the identity schema and this
-contract before it can be adopted; it cannot silently reuse an old tokenizer id.
+Unicode 16.0.0. A normal `tokenizer-smoke` resolves the managed checkout selected by
+`.align-revision` and requires all three lock entries to equal this constant before compiling or
+executing the product. The authenticated fresh aggregate deliberately does not expose its private
+Align source to repository commands. In that containment only, the owner instead requires the
+complete fixed fresh compiler environment (`ALIGN_LLM_FRESH_COMPILER=1`,
+`ALIGN_LLM_TOOL_ROOT=/tools`, `ALIGNC=/tools/fresh-alignc`, and `ALIGNC_CACHE=off`); its compiler is
+built from the attested pin with `cargo --locked --offline`, and publication has already run the
+same-head normal lock owner before entering the fresh aggregate. A partial or different marker
+vector fails before product execution. An Align pin whose classifier dependency identity differs
+must update the identity schema and this contract before it can be adopted; it cannot silently
+reuse an old tokenizer id.
 
 The path, tensor bytes, quantization, chat template, special ids, and unrelated GGUF metadata are
 excluded because they cannot affect these operations. File order, duplicate merge entries, unused
@@ -685,7 +692,8 @@ source and reads no product-generated expectation.
   text cap, and token/merge bucket acceptance at 16 versus rejection at 17 distinct colliders;
 - exact special count/length rejection boundaries, prefix trie matching, and a 1 MiB
   adversarial-prefix case that completes within the owner timeout with expected output;
-- the managed Align checkout's exact three regex lock identities from 2.7 before product compile;
+- the managed Align checkout's exact three regex lock identities from 2.7 before a normal product
+  compile, plus fail-closed recognition of the complete fixed compiler vector in fresh containment;
 - every error code in 2.9 through missing/wrong arrays, declared count mismatch, text/bucket caps,
   invalid UTF-8, empty/duplicate token, invalid type, malformed or unresolved merge/BYTE, missing
   byte alphabet, bad id, output cap, and invalid final UTF-8;
@@ -858,14 +866,14 @@ coding.
 | token hash index | ascending ids into head/next buckets; 16-link cap | complete-string lookup within 16 links | duplicate is `R7_TOKEN_DUPLICATE` before distinct-entry `R7_HASH_BUCKET`; hash never equals without byte compare | no seventeenth insertion or lookup | Copy heads/links drop | exact 16/17 colliders, duplicate precedence, ordinary collision fixture |
 | merge hash index | resolve left/right/result ids, then insert first-ranked Copy pair into 16-link bucket | first rank and prevalidated result id | missing component/result is `R7_MERGE_TOKEN`; duplicate ignored before distinct-entry `R7_HASH_BUCKET` | malformed/unresolved row before insert; no seventeenth insert | Copy id/head/link arrays drop; strings stay owned by merges | missing left/right/result, exact 16/17 colliders, rank/duplicate cases |
 | special trie/partition | ascending unique ids into checked dense transitions and two mode terminals | longest atomic match within 32 probes per position | count/length cap errors; disabled control flows to BPE | raw segment flush before atomic id | trie and raw-span scratch drop | all modes, overlaps, exact maximum common-prefix case |
-| Qwen2 scanner | exact managed-regex identity, scalar spans, then three compiled classifiers | ordered complete pieces | lock mismatch rejects in the owner; invalid UTF-8 cannot enter from `str` | total fallback advances one scalar | regex handles/scalar columns drop | lock-identity check + lexical category table + seeded cases |
+| Qwen2 scanner | exact managed-regex identity, scalar spans, then three compiled classifiers | ordered complete pieces | normal-owner lock mismatch or partial/different fresh compiler vector rejects; invalid UTF-8 cannot enter from `str` | total fallback advances one scalar | regex handles/scalar columns drop | lock-identity / fresh-vector check + lexical category table + seeded cases |
 | GPT-2 byte map | fixed numeric map, validated byte alphabet | reversible mapped bytes | missing/mistyped byte token is load error | first missing byte | fixed Copy tables drop | all 256 bytes and multilingual roundtrip |
 | BPE heap | one token id per mapped byte, adjacent Copy-id candidates | rank/left exact ids; merge carries result id | accepted-model pair lookup is bounded and total | stale candidates skipped without mutation | id/symbol/heap scratch drops per piece | rank conflict, stale heap, long word, fewer-than-48b pair-check ceiling |
 | decode | validate ids, append pieces to a 1 MiB-bounded raw buffer | whole valid UTF-8 string | bad id precedes output cap; first oversize append is `R7_OUTPUT_SIZE`; invalid final UTF-8 is data error | no partial result | raw buffer/private tokenizer drop | negative/high ids, exact/over output cap, byte fragments, modes |
 | public result construction | empty error result first, fill only at settled transitions | identity/count/output coherent | output empty, known metadata retained | one first code | result alone transfers | all error rows and repeat loop |
 | `src/main.align` | arity/mode/path, model, bounded input, operation | one stdout write | product/pre-write failure has zero stdout; sink failure may retain a prefix and propagates OS status/signal | cheap validation prevents file work | readers/buffers/results drop | CLI matrix, byte-exact success, zero stdout for pre-write failures |
 | `scripts/tokenizer_fixture.py` | temporary independent GGUF and manifest | deterministic corpus | explicit mutants one root cause each | no committed/generated fixture | runner-owned temp trap | `make tokenizer-smoke` |
-| `scripts/run-tokenizer-smoke` | managed compiler + fixture | all API/CLI assertions | refuses missing case/output and vacuous corpus | first command failure stops | trap removes temp tree | itself |
+| `scripts/run-tokenizer-smoke` | managed lock owner or exact fresh compiler vector + fixture | all API/CLI assertions | refuses lock/vector drift, missing case/output, and vacuous corpus | first command failure stops | trap removes temp tree | itself in normal and capable aggregates |
 | `scripts/run-tokenizer-parity` | validates two opt-in operands, pin, 299-case frozen corpus, and R6 prompt manifest | exact ids/roundtrips | wrong pin/tool/model/corpus/mismatch hard fails | absent prerequisite one N/A line | temporary inputs/results removed | `make tokenizer-parity` |
 | `Makefile` / topology | add two phony targets; hosted owner once | hosted graph reaches smoke | topology duplication/omission fails | parity never enters aggregate | N/A | `gate-topology-check`, `make ci` |
 
