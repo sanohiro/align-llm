@@ -1221,7 +1221,10 @@ The current forward delivery order is:
     Linux/aarch64 publication run found that the original 1 TiB sparse regression was rejected by
     the installed worker's 512 MiB file-size ceiling before it reached generation; the fixture is
     now 16 MiB plus one byte and asserts the exact capped-read refusal. A fresh exact-head
-    publication rerun remains before merge. The final Linux/aarch64
+    installed run then reached a second clean-link consumer in the capable-only prompt evaluation
+    adoption. The evaluator and all three opt-in C4 measurement gates now route their derived main
+    builds through the same static-shim wrapper as every other hosted main consumer. A fresh
+    exact-head publication rerun remains before merge. The final Linux/aarch64
     coding-baseline chain is source `0278e6e`
     -> oracle `2ccb385` -> finalization `94fee50`; it binds the new wrapper, shim builder, and static
     stub source and passes the complete `make baseline-check`.

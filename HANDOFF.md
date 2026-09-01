@@ -114,10 +114,17 @@ the profile reached `runtime-provider-smoke` and found that the 1 TiB sparse reg
 worker's intentional 512 MiB `RLIMIT_FSIZE`. The regression now creates a sparse 16 MiB-plus-one
 file and asserts `R6_GEOMETRY_UNREADABLE` / `Invalid`, which still distinguishes the bounded reopen
 from the old unbounded read followed by `R6_GEOMETRY` / `identity` while remaining inside the
-installed profile's resource contract.
+installed profile's resource contract. That repair passed its former aggregate failure point; the
+same installed run then failed at `c6-evaluation-adoption` because `run-prompt-evaluate-smoke`
+directly built `src/main.align` without the static shim. The complete direct-main-build audit found
+the same latent call in the three opt-in C4 measurement gates. All four now use
+`scripts/run-main-with-shim`, closing the root-cause class rather than repairing only the aggregate
+consumer. The direct-main audit leaves only the runtime provider owner's intentional real-shim
+build outside the wrapper, and the complete privileged Linux/aarch64 `prompt-evaluate-smoke`
+passes with the repaired derived generation child.
 
-**Next actions.** (1) Verify and commit the installed-profile regression repair. (2) Re-run
-exact-head Linux publication preflight. (3) Publish and merge after required checks and recorded finding
+**Next actions.** (1) Verify and commit the direct-main clean-link repair. (2) Re-run exact-head
+Linux publication preflight. (3) Publish and merge after required checks and recorded finding
 dispositions, pull the latest `main` including concurrent work, and continue the next eligible
 roadmap capability.
 
