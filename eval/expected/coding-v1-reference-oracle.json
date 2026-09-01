@@ -1,7 +1,9 @@
 {
   "schema_version": 1,
   "baseline_id": "coding-v1-deterministic-reference-checked-in-patch",
-  "align_llm_commit": "dbbb52eaf776b1d567df34a02c7232c6469cb52f",
+  "recorded_at": "2026-09-01T12:52:45+00:00",
+  "align_llm_commit": "4fc0f26cdb8e4b3b0a2b8f0e8168466a445be8ed",
+  "canonical_oracle_commit": "",
   "align_revision": "27770420555d19b98eced133369c168e9c6d4a2f",
   "corpus": {
     "id": "coding-v1",
@@ -21,7 +23,7 @@
       },
       {
         "path": "Makefile",
-        "sha256": "d9c2e9b66afd9674b4fda65084450242a47604caa3fd3ff94f2b4297a3ff2c09"
+        "sha256": "9e68d82894ba70400e056c47ea18a0f67bb50bc11d19d13190caad041f0d094c"
       },
       {
         "path": "eval/baselines/patches/python-inclusive-range.patch",
@@ -77,7 +79,7 @@
       },
       {
         "path": "src/main.align",
-        "sha256": "f0a36fed6aad0864d256a6602f9282fc1002bc9266557919f8a051913f177261"
+        "sha256": "f0221774183235edf6cd7e9d995622859a5a8dcc90f4ee9a60060b57b41cced6"
       },
       {
         "path": "src/project.align",
@@ -119,10 +121,10 @@
           "verdict": "PASS",
           "expected_code": 0,
           "actual_code": 0,
-          "duration_ns": 169066709,
-          "time_to_passing_patch_ns": 169066709,
+          "duration_ns": 150181541,
+          "time_to_passing_patch_ns": 150181541,
           "stdout": "fixture revision: 1adf3697ea82a2da6fa9b9aa76f24fb51625ffca\npre-repair validation exit code: 1\npost-repair validation exit code: 0\n",
-          "stderr": "test_descending_interval_is_empty (__main__.InclusiveTotalTests.test_descending_interval_is_empty) ... ok\ntest_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero) ... FAIL\ntest_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop) ... FAIL\ntest_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval) ... FAIL\n\n======================================================================\nFAIL: test_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-43260jtx/repository/tests/test_inclusive_range.py\", line 19, in test_interval_crossing_zero\n    self.assertEqual(inclusive_total(-2, 2), 0)\nAssertionError: -2 != 0\n\n======================================================================\nFAIL: test_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-43260jtx/repository/tests/test_inclusive_range.py\", line 13, in test_positive_interval_includes_stop\n    self.assertEqual(inclusive_total(1, 5), 15)\nAssertionError: 10 != 15\n\n======================================================================\nFAIL: test_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-43260jtx/repository/tests/test_inclusive_range.py\", line 16, in test_single_value_interval\n    self.assertEqual(inclusive_total(4, 4), 4)\nAssertionError: 0 != 4\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nFAILED (failures=3)\ntest_descending_interval_is_empty (__main__.InclusiveTotalTests.test_descending_interval_is_empty) ... ok\ntest_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero) ... ok\ntest_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop) ... ok\ntest_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n"
+          "stderr": "test_descending_interval_is_empty (__main__.InclusiveTotalTests.test_descending_interval_is_empty) ... ok\ntest_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero) ... FAIL\ntest_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop) ... FAIL\ntest_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval) ... FAIL\n\n======================================================================\nFAIL: test_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-1g4kk4q_/repository/tests/test_inclusive_range.py\", line 19, in test_interval_crossing_zero\n    self.assertEqual(inclusive_total(-2, 2), 0)\nAssertionError: -2 != 0\n\n======================================================================\nFAIL: test_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-1g4kk4q_/repository/tests/test_inclusive_range.py\", line 13, in test_positive_interval_includes_stop\n    self.assertEqual(inclusive_total(1, 5), 15)\nAssertionError: 10 != 15\n\n======================================================================\nFAIL: test_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-1g4kk4q_/repository/tests/test_inclusive_range.py\", line 16, in test_single_value_interval\n    self.assertEqual(inclusive_total(4, 4), 4)\nAssertionError: 0 != 4\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nFAILED (failures=3)\ntest_descending_interval_is_empty (__main__.InclusiveTotalTests.test_descending_interval_is_empty) ... ok\ntest_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero) ... ok\ntest_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop) ... ok\ntest_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n"
         }
       ],
       "summary": {
@@ -139,10 +141,10 @@
           "verdict": "PASS",
           "expected_code": 0,
           "actual_code": 0,
-          "duration_ns": 140072458,
-          "time_to_passing_patch_ns": 140072458,
+          "duration_ns": 140904167,
+          "time_to_passing_patch_ns": 140904167,
           "stdout": "fixture revision: 1adf3697ea82a2da6fa9b9aa76f24fb51625ffca\npre-repair validation exit code: 1\npost-repair validation exit code: 0\n",
-          "stderr": "test_descending_interval_is_empty (__main__.InclusiveTotalTests.test_descending_interval_is_empty) ... ok\ntest_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero) ... FAIL\ntest_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop) ... FAIL\ntest_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval) ... FAIL\n\n======================================================================\nFAIL: test_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-9gk42tks/repository/tests/test_inclusive_range.py\", line 19, in test_interval_crossing_zero\n    self.assertEqual(inclusive_total(-2, 2), 0)\nAssertionError: -2 != 0\n\n======================================================================\nFAIL: test_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-9gk42tks/repository/tests/test_inclusive_range.py\", line 13, in test_positive_interval_includes_stop\n    self.assertEqual(inclusive_total(1, 5), 15)\nAssertionError: 10 != 15\n\n======================================================================\nFAIL: test_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-9gk42tks/repository/tests/test_inclusive_range.py\", line 16, in test_single_value_interval\n    self.assertEqual(inclusive_total(4, 4), 4)\nAssertionError: 0 != 4\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nFAILED (failures=3)\ntest_descending_interval_is_empty (__main__.InclusiveTotalTests.test_descending_interval_is_empty) ... ok\ntest_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero) ... ok\ntest_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop) ... ok\ntest_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n"
+          "stderr": "test_descending_interval_is_empty (__main__.InclusiveTotalTests.test_descending_interval_is_empty) ... ok\ntest_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero) ... FAIL\ntest_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop) ... FAIL\ntest_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval) ... FAIL\n\n======================================================================\nFAIL: test_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-b_0si1ww/repository/tests/test_inclusive_range.py\", line 19, in test_interval_crossing_zero\n    self.assertEqual(inclusive_total(-2, 2), 0)\nAssertionError: -2 != 0\n\n======================================================================\nFAIL: test_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-b_0si1ww/repository/tests/test_inclusive_range.py\", line 13, in test_positive_interval_includes_stop\n    self.assertEqual(inclusive_total(1, 5), 15)\nAssertionError: 10 != 15\n\n======================================================================\nFAIL: test_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-b_0si1ww/repository/tests/test_inclusive_range.py\", line 16, in test_single_value_interval\n    self.assertEqual(inclusive_total(4, 4), 4)\nAssertionError: 0 != 4\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nFAILED (failures=3)\ntest_descending_interval_is_empty (__main__.InclusiveTotalTests.test_descending_interval_is_empty) ... ok\ntest_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero) ... ok\ntest_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop) ... ok\ntest_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n"
         }
       ],
       "summary": {
@@ -156,9 +158,9 @@
     "task_attempt_count": 2,
     "passing_attempt_count": 2,
     "time_to_passing_patch_ns": {
-      "minimum": 140072458,
-      "median": 154569583,
-      "maximum": 169066709
+      "minimum": 140904167,
+      "median": 145542854,
+      "maximum": 150181541
     }
   }
 }
