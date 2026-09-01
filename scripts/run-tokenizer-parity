@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
@@ -15,6 +16,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+HARNESS = ROOT / "tokenizer_api_smoke"
+atexit.register(lambda: HARNESS.unlink(missing_ok=True))
 MODEL_BYTES = 4_683_073_536
 MODEL_SHA256 = "509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c"
 VERSION = "version: 0.2.0 (build 10566, commit bb4caa754)"
@@ -78,6 +81,41 @@ def align_decode(model: Path, ids_path: Path, render: bool) -> bytes:
     if completed.returncode != 0:
         fail(f"Align decode exited {completed.returncode}: {completed.stderr.decode('utf-8', 'replace')[-500:]}")
     return completed.stdout
+
+
+def publication(model: Path, expected_ids: list[int]) -> tuple[str, int, int]:
+    built = run([str(ROOT / "scripts/alignc"), "build", "src/tokenizer_api_smoke.align"])
+    if built.returncode != 0:
+        fail(f"API harness build failed: {built.stderr.decode('utf-8', 'replace')[-500:]}")
+    outputs = []
+    for _ in range(2):
+        completed = run([str(HARNESS), "--publication", str(model)])
+        if completed.returncode != 0:
+            fail(f"API publication exited {completed.returncode}: {completed.stderr.decode('utf-8', 'replace')[-500:]}")
+        outputs.append(completed.stdout)
+    if outputs[0] != outputs[1]:
+        fail("API publication differs across repeated real-model runs")
+    try:
+        fields = outputs[0].decode("utf-8", "strict").removesuffix("\n").split(":")
+        if len(fields) != 9:
+            raise ValueError("field count")
+        tokenizer_id, vocab_text, merge_text, ids_text, decoded_id, decoded_vocab, decoded_merges, count_text, text = fields
+        ids = [] if not ids_text else [int(value) for value in ids_text.split(",")]
+        vocab_size = int(vocab_text)
+        merge_count = int(merge_text)
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", tokenizer_id) is None
+            or decoded_id != tokenizer_id
+            or int(decoded_vocab) != vocab_size
+            or int(decoded_merges) != merge_count
+            or ids != expected_ids
+            or int(count_text) != len(expected_ids)
+            or text != "hello"
+        ):
+            raise ValueError("publication values")
+    except (UnicodeError, ValueError) as error:
+        fail(f"API publication is malformed or inconsistent: {error}")
+    return tokenizer_id, vocab_size, merge_count
 
 
 def fixed_cases() -> list[tuple[str, bytes]]:
@@ -194,6 +232,9 @@ def main() -> int:
     if not (ROOT / "main").is_file():
         fail("product executable is missing; run make build")
 
+    hello_ids = reference_ids(reference, model, b"hello", False)
+    tokenizer_id, vocab_size, merge_count = publication(model, hello_ids)
+
     specials = special_cases()
     cases = fixed_cases() + [(name, value) for name, value, _, _ in specials] + prompt_cases() + generated_cases()
     if len(cases) != 299:
@@ -229,6 +270,7 @@ def main() -> int:
 
     print(
         f"tokenizer parity: PASS (build 10566, model {MODEL_SHA256}, "
+        f"tokenizer {tokenizer_id}, {vocab_size} tokens, {merge_count} merges, "
         f"299 cases, {total_bytes} input bytes, {total_ids} compared ids)"
     )
     return 0

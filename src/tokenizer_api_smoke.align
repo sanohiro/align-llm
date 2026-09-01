@@ -19,6 +19,104 @@ fn print_text_code(result_value: tokenizer_qwen2.TokenTextResult) {
   }
 }
 
+fn print_text_size(result_value: tokenizer_qwen2.TokenTextResult) {
+  match result_value.status {
+    Ok => {
+      line := builder()
+      line.write("OK:")
+      line.write_int(result_value.text.len())
+      print(line.to_string())
+    },
+    Error => { print(result_value.error_code) },
+  }
+}
+
+fn error_kind(error_value: Error) -> i64 = match error_value {
+  NotFound => 1,
+  Invalid => 2,
+  Denied => 3,
+  Timeout => 4,
+  Code(_) => 5,
+}
+
+fn string_array_error_kind(result_value: Result<array<string>, Error>) -> i64 = match result_value {
+  Ok(_) => 0,
+  Err(error_value) => error_kind(error_value),
+}
+
+fn i32_array_error_kind(result_value: Result<array<i64>, Error>) -> i64 = match result_value {
+  Ok(_) => 0,
+  Err(error_value) => error_kind(error_value),
+}
+
+fn status_ok(status_value: tokenizer_qwen2.TokenizerStatus) -> bool = match status_value {
+  Ok => true,
+  Error => false,
+}
+
+fn publication(model_path: str) -> Result<(), Error> {
+  encoded := tokenizer_qwen2.encode_model(
+    model_path, "hello", tokenizer_qwen2.EncodeSpecials.ParseControl)?
+  if !status_ok(encoded.status) || encoded.error_code != "" || encoded.error_detail != "" {
+    return Err(Error.Invalid)
+  }
+  decoded := tokenizer_qwen2.decode_model(
+    model_path, encoded.token_ids, tokenizer_qwen2.DecodeSpecials.RenderControl)?
+  if !status_ok(decoded.status) || decoded.error_code != "" || decoded.error_detail != "" {
+    return Err(Error.Invalid)
+  }
+
+  line := builder()
+  line.write(encoded.tokenizer_id)
+  line.write(":")
+  line.write_int(encoded.vocab_size)
+  line.write(":")
+  line.write_int(encoded.merge_count)
+  line.write(":")
+  mut at := 0
+  loop {
+    if at >= encoded.token_ids.len() { break }
+    if at > 0 { line.write(",") }
+    line.write_int(encoded.token_ids[at])
+    at = at + 1
+  }
+  line.write(":")
+  line.write(decoded.tokenizer_id)
+  line.write(":")
+  line.write_int(decoded.vocab_size)
+  line.write(":")
+  line.write_int(decoded.merge_count)
+  line.write(":")
+  line.write_int(decoded.token_count)
+  line.write(":")
+  line.write(decoded.text)
+  print(line.to_string())
+  return Ok(())
+}
+
+fn one_shot_readers(model_path: str, absent_path: str) -> Result<(), Error> {
+  tokens := gguf.read_string_array(model_path, "tokenizer.ggml.tokens")?
+  types := gguf.read_i32_array(model_path, "tokenizer.ggml.token_type")?
+  if tokens.len() != types.len() || tokens.len() == 0 { return Err(Error.Invalid) }
+
+  if string_array_error_kind(gguf.read_string_array(model_path, "")) != 2 ||
+  i32_array_error_kind(gguf.read_i32_array(model_path, "")) != 2 ||
+  string_array_error_kind(gguf.read_string_array("\0", "tokenizer.ggml.tokens")) != 2 ||
+  i32_array_error_kind(gguf.read_i32_array("\0", "tokenizer.ggml.token_type")) != 2 ||
+  string_array_error_kind(gguf.read_string_array(absent_path, "tokenizer.ggml.tokens")) != 1 ||
+  i32_array_error_kind(gguf.read_i32_array(absent_path, "tokenizer.ggml.token_type")) != 1 {
+    return Err(Error.Invalid)
+  }
+
+  line := builder()
+  line.write("ONE-SHOT:")
+  line.write_int(tokens.len())
+  line.write(":")
+  line.write_int(types.len())
+  print(line.to_string())
+  return Ok(())
+}
+
 fn operation_failures(model_path: str, long_model_path: str, byte_id_text: str, long_id_text: str) -> Result<(), Error> {
   byte_id: i64 := json.decode(byte_id_text)?
   long_id: i64 := json.decode(long_id_text)?
@@ -52,6 +150,17 @@ fn operation_failures(model_path: str, long_model_path: str, byte_id_text: str, 
   byte_ids := [byte_id].to_array()
   print_text_code(tokenizer_qwen2.decode_model(
       model_path, byte_ids, tokenizer_qwen2.DecodeSpecials.RenderControl)?)
+
+  mut exact_output_ids_builder: array_builder<i64> := array_builder()
+  id_at = 0
+  loop {
+    if id_at >= 256 { break }
+    exact_output_ids_builder.push(long_id)
+    id_at = id_at + 1
+  }
+  exact_output_ids := exact_output_ids_builder.build()
+  print_text_size(tokenizer_qwen2.decode_model(
+      long_model_path, exact_output_ids, tokenizer_qwen2.DecodeSpecials.RenderControl)?)
 
   mut output_ids_builder: array_builder<i64> := array_builder()
   id_at = 0
@@ -87,8 +196,14 @@ fn snapshot_replacement(path: str) -> Result<(), Error> {
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 3 && args[1] == "--publication" {
+    return publication(args[2])
+  }
   if args.len() == 3 && args[1] == "--snapshot" {
     return snapshot_replacement(args[2])
+  }
+  if args.len() == 4 && args[1] == "--one-shot" {
+    return one_shot_readers(args[2], args[3])
   }
   if args.len() == 6 && args[1] == "--operations" {
     return operation_failures(args[2], args[3], args[4], args[5])
