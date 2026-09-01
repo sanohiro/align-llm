@@ -1212,7 +1212,9 @@ The current forward delivery order is:
     reopen itself was not capped before comparison, and prerequisite identity work was outside the
     declared complete-gate timer. The consolidated repair applies the same 16 MiB cap to the exact
     reopen, owns a 1 TiB sparse-replacement regression, and starts timing before every configured
-    prerequisite probe. Fresh publication evidence remains before merge. The final Linux/aarch64
+    prerequisite probe. The repaired complete gate passes in 75.2 seconds and both provider legs
+    again produce the validator-passing `5d6b107e706a` patch. Exact-head publication preflight
+    remains before merge. The final Linux/aarch64
     coding-baseline chain is source `0278e6e`
     -> oracle `2ccb385` -> finalization `94fee50`; it binds the new wrapper, shim builder, and static
     stub source and passes the complete `make baseline-check`.

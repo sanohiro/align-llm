@@ -354,6 +354,10 @@ not qualification evidence: one exposed the 64-token truncation that set the bou
 probes either emitted a malformed hunk count or omitted the fixed diff envelope. The final prompt
 therefore fixes only that envelope and leaves the replacement line to each provider.
 
+After the final timer repair, the complete gate passed in 75.2 seconds on the same host, including
+the validation-image probe, full model digest, server-version check, and scratch check. Both
+provider legs again produced the validator-passing patch with SHA-256 prefix `5d6b107e706a`.
+
 **Pre-implementation maintenance ceiling:** 20 minutes wall time for the complete gate after the
 model and pinned binaries are already materialized, at most one alignpack construction, one local
 server generation, one resident runtime generation, and two task validations on the 16 GiB reference

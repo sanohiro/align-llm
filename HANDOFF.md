@@ -31,7 +31,10 @@ gate-topology-check layer-forward-smoke` passes, including the gate runner self-
 synthetic provider/CLI matrix, six generation-EOG cases, and the complete shared decode regression.
 The re-scoped final-review repair passes `runtime-provider-smoke`, the complete shared
 `layer-forward-smoke` in 64.117 seconds, and `alignpack-smoke` with 27 positive fixtures, 128
-negative sources, and 20,312 assertions.
+negative sources, and 20,312 assertions. After the redesigned-candidate repair, the real
+`runtime-provider-gate` passes in 75.2 seconds with its full prerequisite checks included in the
+measurement; both provider legs again produce the passing patch with SHA-256 prefix
+`5d6b107e706a`.
 The real `runtime-provider-gate` passed after initial review repair in 60.3 seconds with the pinned
 4,683,073,536-byte Qwen model and llama.cpp build 10566: both provider legs produced a passing patch
 with SHA-256 prefix `5d6b107e706a`. The gate's earlier 64-token probe established truncation, so the
@@ -97,9 +100,8 @@ the changed `Makefile` but not its new transitive build wrapper, shim builder, a
 source. The task artifact set now names all three executable inputs. The final direct chain named
 above supersedes both earlier sequences and is the authoritative shipping evidence.
 
-**Next actions.** (1) Commit the narrow redesigned-candidate review repair and re-run the real
-provider gate at the settled head. (2) Run exact-head Linux publication preflight. (3) Publish and
-merge after required checks and recorded finding
+**Next actions.** (1) Re-run the real provider gate on the exact evidence-recording head. (2) Run
+exact-head Linux publication preflight. (3) Publish and merge after required checks and recorded finding
 dispositions, pull the latest `main` including concurrent work, and continue the next eligible
 roadmap capability.
 
