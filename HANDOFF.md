@@ -22,23 +22,28 @@ are `docs/specs/r7-prompt.md`.
 covers six text cases, eight model failures, two size boundaries, and six CLI failures. Focused
 `gmake prompt-parity` passes against the 4,683,073,536-byte reference model and pinned llama.cpp
 build 10566: eight cases, 1,538 rendered prompt bytes, and 303 compared token ids. Python syntax
-compilation and `git diff --check` pass. The Makefile aggregate change intentionally requires a new
-source -> oracle -> finalization coding-baseline chain before publication.
+compilation and `git diff --check` pass.
 
 The first local baseline recording is intentionally rejected: macOS resolves the task manifest's
 fixed `/usr/bin/python3` to Python 3.9, so both task-runner invocations failed before validation.
 The resulting source `0b7433b` -> oracle `52add8b` -> finalization `efc2acd` history is not evidence
-and must be superseded by a complete Linux recording with two passing samples.
+and is superseded by the valid Linux chain below.
 
-**Next actions.** (1) Use the current commit as a fresh baseline source and record/finalize two
-passing deterministic-reference samples on Linux. (2) Run the complete owner and one comprehensive
-review, then consolidate any findings. (3) Run exact-head publication preflight, open the PR, wait
-for CI, repair if required, and merge before starting the next R7 capability.
+**Coding baseline refresh complete.** The required Linux/aarch64 chain is source
+`dbbb52eaf776b1d567df34a02c7232c6469cb52f` -> immutable oracle
+`9359d7bdc18954f261b493020584103258e3b484` -> canonical finalization
+`2586eaed0b0c19b5e956d01f0b8f4e81585e7812`. The pending record used the pinned Align source and
+Python 3.12.3; both samples pass at 169,066,709 ns and 140,072,458 ns, with a 154,569,583 ns median.
+The pending file is absent and `python3 scripts/check-baseline-chain` passes.
+
+**Next actions.** (1) Run the complete owner and one comprehensive review, then consolidate any
+findings. (2) Run exact-head publication preflight, open the PR, wait for CI, repair if required,
+and merge without squash or rebase. (3) Refresh `main` and start the next eligible R7 capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The coherent R7-PROMPT implementation candidate until its
-baseline source commit is created.
+**Intentional uncommitted files.** This handoff checkpoint until committed; no generated or local
+configuration files belong in the change.
 
 ## Merged checkpoint: R7-TOKENIZER (2026-09-01)
 
