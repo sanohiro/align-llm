@@ -51,6 +51,12 @@ changes the build boundary and authoritative design after the original review, s
 final comprehensive review after the current-head coding baseline is re-recorded. Clean default and
 real-shared builds pass on macOS; the aarch64 Linux clean build plus tokenizer, layer-forward
 (128.954 seconds), provider, 48-assertion runtime provider, and topology owners all pass.
+The final coding-baseline chain is source `0278e6e4d57d6796872473f73c86e482c7343845` -> oracle
+`2ccb3854e03b040740e9d9b9cb62dddafd61fdf0` -> finalization
+`94fee5013d4e7af30ed35c02d096599deacd059d`. Its two Linux/aarch64 samples pass in 143.366 and
+150.679 ms (147.023 ms median), bind the wrapper, shim builder, and static stub source, and pass the
+complete Linux `make baseline-check` including malformed, failure, immutable-oracle, and ancestry
+owners.
 
 **Baseline-chain correction.** Clean-build repair `4fc0f26` produced two passing aarch64 Linux
 samples, but the first oracle commit mistakenly retained the pending record's `recorded_at` and
@@ -59,18 +65,18 @@ finalization commit, so `check-baseline-chain` properly rejected that non-direct
 `9096787` through `a4ee218` are retained as failed evidence. A later valid chain (`4db07fd` ->
 `94620c8` -> `52b00eb`) exposed a separate closure omission before review: the recorded task bound
 the changed `Makefile` but not its new transitive build wrapper, shim builder, and static stub
-source. The task artifact set now names all three executable inputs. A final direct chain from this
-corrected source will supersede both earlier sequences and be the authoritative shipping evidence.
+source. The task artifact set now names all three executable inputs. The final direct chain named
+above supersedes both earlier sequences and is the authoritative shipping evidence.
 
-**Next actions.** (1) Re-record the required source -> immutable oracle -> canonical finalization
-chain on Linux from this clean source, then run the final comprehensive review. (2) Run exact-head
-publication preflight, publish and merge after required checks and recorded finding dispositions,
-pull the latest `main` including concurrent work, and continue the next eligible roadmap capability.
+**Next actions.** (1) Run the required final comprehensive review of the stable candidate and
+resolve every finding. (2) Re-run the real provider gate at the settled head, then run exact-head
+Linux publication preflight. (3) Publish and merge after required checks and recorded finding
+dispositions, pull the latest `main` including concurrent work, and continue the next eligible
+roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** This baseline correction record only. Local configuration does
-not belong in the change.
+**Intentional uncommitted files.** None. Local configuration does not belong in the change.
 
 ## Merged checkpoint: R7-PROMPT (2026-09-01)
 

@@ -1203,8 +1203,10 @@ The current forward delivery order is:
     maintenance ceiling. Comprehensive review found and repaired three fixed-gate contract defects.
     Publication preflight then exposed a clean-Linux build dependency on an ambient ggml shim; the
     candidate now owns a temporary static hosted stub and an explicit real-shim build path. Fresh
-    publication verification, the required current-head coding baseline chain, and the resulting
-    final comprehensive review remain before merge.
+    publication verification and the resulting final comprehensive review remain before merge. The
+    final Linux/aarch64 coding-baseline chain is source `0278e6e` -> oracle `2ccb385` -> finalization
+    `94fee50`; it binds the new wrapper, shim builder, and static stub source and passes the complete
+    `make baseline-check`.
 
 ### Status (2026-08-28)
 
