@@ -63,6 +63,10 @@ for key in ("model", "immediate_eog_model", "after_one_eog_model"):
                 "runtime provider smoke: FAIL fixture preparation %r: %s"
                 % (args[1:], result.stderr.decode("utf-8", "replace"))
             )
+oversize_replacement = work / "oversize-replacement-model-ir.json"
+with oversize_replacement.open("wb") as destination:
+    destination.seek(1024**4 - 1)
+    destination.write(b"x")
 PY
 
 cp "${root_dir}/main" "${ordinary_main}"
@@ -93,7 +97,8 @@ normal_pack="${work_dir}/runtime-qwen2.alignpack"
 normal_geometry="${work_dir}/runtime-qwen2-model-ir.json"
 set +e
 api_output=$("${runtime_api}" "${normal_model}" "${normal_pack}" "${normal_geometry}" \
-  "${work_dir}/runtime-qwen2-immediate-eog.alignpack" 2>&1)
+  "${work_dir}/runtime-qwen2-immediate-eog.alignpack" \
+  "${work_dir}/oversize-replacement-model-ir.json" 2>&1)
 api_status=$?
 set -e
 if [ "${api_status}" -ne 0 ] || [ "${api_output}" != "runtime provider API smoke: PASS" ]; then

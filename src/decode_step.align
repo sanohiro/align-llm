@@ -78,6 +78,7 @@ CODE_PLANE_MISMATCH := "R6_PLANE_MISMATCH"
 CODE_TRANSCRIPT := "R6_TRANSCRIPT"
 CODE_ORACLE_MISSING := "R6_ORACLE_MISSING"
 CODE_GEOMETRY_UNREADABLE := "R6_GEOMETRY_UNREADABLE"
+MAX_GENERATION_GEOMETRY_BYTES := 16777216
 // R6-RESIDENT-WEIGHTS section 3.1 and 3.2. `R6_RESIDENT` is the operand's grammar; the other two
 // are the arena's own budget and its one observable reservation failure. There is deliberately no
 // code for an out-of-memory host: `buffer(cap)` cannot report a failed reservation and `append`
@@ -1828,6 +1829,37 @@ fn decode_embed_members(
 // decode step's own column has to fit.
 // ---------------------------------------------------------------------------------------------
 
+// R7-RUNTIME-PROVIDER reopens geometry at its exact consumption boundary. Keep that second read
+// under the same 16 MiB ceiling as the provider's first derivation check, including when an atomic
+// replacement changes a previously small path into a sparse or otherwise enormous file.
+fn read_generation_geometry(path: str) -> Result<string, Error> {
+  source := fs.open(path)?
+  mut accumulated := buffer(0)
+  mut chunk := buffer(65536)
+  mut total := 0
+  loop {
+    if total == MAX_GENERATION_GEOMETRY_BYTES {
+      mut probe := buffer(1)
+      if source.read(probe)? > 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := MAX_GENERATION_GEOMETRY_BYTES - total
+    count := if remaining < 65536 {
+      mut tail := buffer(remaining)
+      read_count := source.read(tail)?
+      accumulated.append(tail.bytes())
+      read_count
+    } else {
+      read_count := source.read(chunk)?
+      accumulated.append(chunk.bytes())
+      read_count
+    }
+    if count == 0 { break }
+    total = total + count
+  }
+  return Ok(accumulated.bytes().as_str()?.clone())
+}
+
 fn stage_inputs(
   tokens_text: str,
   suffix_text: str,
@@ -1907,7 +1939,11 @@ fn stage_inputs(
     o.suffix_first_column = lexical.count
     o.suffix_sequence_length = sequence
   }
-  geometry_text := match fs.read_file(geometry_path) {
+  geometry_text := match if generation {
+    read_generation_geometry(geometry_path)
+  } else {
+    fs.read_file(geometry_path)
+  } {
     Ok(value) => value,
     Err(failure) => {
       fail(o, CODE_GEOMETRY_UNREADABLE, model_forward.error_name(failure))

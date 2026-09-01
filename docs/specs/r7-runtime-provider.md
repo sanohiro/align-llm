@@ -345,6 +345,8 @@ one Markdown `diff` fence with no surrounding non-whitespace text, and invokes
 requires two `status: ok` records and two passing task results; output equality is not required.
 Temporary model-IR, pack, task copies, responses, and server state are removed on every exit.
 
+The 20-minute timer starts as soon as all four configured prerequisites are present, before the
+validation-image probe, full model digest, server-version check, scratch check, or any derived work.
 The first complete qualification on the 16 GiB Apple reference host passed in 62.7 seconds. Both
 the pinned llama.cpp comparison leg and `AlignRuntime` produced a validator-passing patch with
 SHA-256 prefix `5d6b107e706a`; equality was observed, not required. Earlier prompt-shape probes are
@@ -385,7 +387,7 @@ same-tokenizer detokenization; response cap; result persistence. First failure w
 | `ProviderKind` / config constructors | every match and constructor names runtime fields | one explicit runtime arm | old modules reject it; old fields inert | no artifact I/O before kind/config checks | provider compile graph; provider smoke exhaustive info/dispatch |
 | `provider_runtime` request | steps 1-5 in §2.3 | greedy owned text | seed/temp/timeout/field/path/limit matrix | zero file opens on lexical refusal | runtime provider API harness |
 | retained GGUF snapshot | open once; table borrowed for IR/identity then moved to tokenizer | one consistent prompt/model identity | structural, replacement, and reopen-tokenizer mismatch | file drops on every `?`/return | tokenizer snapshot replacement; runtime cross-model identity refusal; final digest guard |
-| geometry | bounded read; exact newly derived schema-2 bytes, then exact reopened-image comparison | the compared reopened image supplies all execution scalars | truncation, alternate path text, scalar drift, oversized file, atomic replacement | no pack/tokenizer/inference after first mismatch; reopened image drops after parse | runtime exact success, byte-drift, oversize, and replacement refusals |
+| geometry | bounded read; exact newly derived schema-2 bytes, then bounded exact reopened-image comparison | the compared reopened image supplies all execution scalars | truncation, alternate path text, scalar drift, oversized or sparse replacement, atomic replacement | no pack/tokenizer/inference after first mismatch; reopened image drops after parse | runtime exact success, byte-drift and ordinary oversize refusals, plus the 1 TiB sparse replacement API refusal |
 | alignpack source identity | format/regions/record then nine identity fields; inference repeats the check on its exact opened handle | no payload read during either check; the checked inference handle supplies weights | header, region, reserved, digest, same-shape-other-model, replacement handle | first-pass handle drops; inference handle drops through converged teardown | existing alignpack malformed corpus, runtime cross-model identity refusal, and exact replacement-handle API refusal |
 | prompt/tokenizer/EOG | existing prompt stages then metadata/text EOG set | owned ids and ordered EOG ids | wrong type/range/empty/overflow/unsupported family combination | both arrays empty on data error | tokenizer generation API result-field matrix |
 | runtime bounds | ids, prompt, width, vocab before arena | legal prefill + at most 127 steps | OOV prompt/EOG, zero/oversize prompt, context/width | no resident buffer on refusal | generation bounds harness |

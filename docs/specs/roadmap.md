@@ -1208,8 +1208,12 @@ The current forward delivery order is:
     generation could publish an argmax from a non-finite logit plane. The re-scoped repair retains
     and rechecks source identity on the exact inference pack handle, compares the exact reopened
     geometry image, and rejects any non-finite prefill or decode step before token publication.
-    Repair verification, fresh publication evidence, and the required review of that redesigned
-    boundary remain before merge. The final Linux/aarch64 coding-baseline chain is source `0278e6e`
+    Review of the redesigned boundary found two narrow contract-enforcement defects: the geometry
+    reopen itself was not capped before comparison, and prerequisite identity work was outside the
+    declared complete-gate timer. The consolidated repair applies the same 16 MiB cap to the exact
+    reopen, owns a 1 TiB sparse-replacement regression, and starts timing before every configured
+    prerequisite probe. Fresh publication evidence remains before merge. The final Linux/aarch64
+    coding-baseline chain is source `0278e6e`
     -> oracle `2ccb385` -> finalization `94fee50`; it binds the new wrapper, shim builder, and static
     stub source and passes the complete `make baseline-check`.
 

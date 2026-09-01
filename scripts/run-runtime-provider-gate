@@ -205,6 +205,7 @@ def main() -> int:
     if prerequisites is None:
         return 0
     model, include, library, server = prerequisites
+    started = time.monotonic()
 
     # Validate task-runner prerequisites without consuming a task-validation slot.
     with tempfile.TemporaryDirectory(prefix="align-r7-runtime-provider-probe-") as raw_probe:
@@ -221,7 +222,6 @@ def main() -> int:
     if free < MODEL_BYTES + 2 * 1024**3:
         raise GateError("scratch space is below model size plus 2 GiB")
 
-    started = time.monotonic()
     scratch = Path(os.environ.get("ALIGN_LLM_RUNTIME_PROVIDER_TMPDIR", "/tmp"))
     with tempfile.TemporaryDirectory(prefix="align-r7-runtime-provider-", dir=scratch) as raw_work:
         work = Path(raw_work)

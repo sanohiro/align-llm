@@ -75,6 +75,18 @@ ids. The existing diagnostic API retains its counter-reporting behavior. This ma
 the public artifact-identity seam and therefore requires focused owner evidence plus one fresh
 comprehensive review of the redesigned candidate before publication.
 
+**Redesigned-candidate review.** `codex review --base origin/main` reviewed head
+`de18ced87c248738ba1b47215a882490ecb1ac29` against base tip and merge base
+`88b77ed112d36cb29b948f7212442b3a4f02afcd`, using Codex gpt-5.6-sol at high effort over the full
+diff. It found two P2 contract-enforcement defects, both accepted: the inference-time geometry
+reopen used unbounded `fs.read_file` before its exact comparison, and the complete-gate timer began
+after validation-image, full-model-digest, server-version, and scratch checks. The narrow
+consolidated repair gives the reopen the same 16 MiB cap as the first pass, owns a 1 TiB sparse-file
+regression that would make the old path attempt an unbounded allocation, and starts timing
+immediately after all configured prerequisites are present. `runtime-provider-smoke` passes with
+both repairs. Neither finding changes the public strategy or baseline-bound artifacts, and no
+finding remains open.
+
 **Baseline-chain correction.** Clean-build repair `4fc0f26` produced two passing aarch64 Linux
 samples, but the first oracle commit mistakenly retained the pending record's `recorded_at` and
 empty `canonical_oracle_commit` fields. The corrected projection then followed an already-created
@@ -85,17 +97,16 @@ the changed `Makefile` but not its new transitive build wrapper, shim builder, a
 source. The task artifact set now names all three executable inputs. The final direct chain named
 above supersedes both earlier sequences and is the authoritative shipping evidence.
 
-**Next actions.** (1) Commit and run one fresh comprehensive review of the redesigned stable
-candidate; do not start another repair loop if it exposes another non-trivial design issue. (2)
-Re-run the real provider gate at the settled head, then run exact-head Linux publication preflight.
-(3) Publish and merge after required checks and recorded finding
+**Next actions.** (1) Commit the narrow redesigned-candidate review repair and re-run the real
+provider gate at the settled head. (2) Run exact-head Linux publication preflight. (3) Publish and
+merge after required checks and recorded finding
 dispositions, pull the latest `main` including concurrent work, and continue the next eligible
 roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** None after the consolidated final-review repair commit. Local
-configuration does not belong in the change.
+**Intentional uncommitted files.** None after the consolidated redesigned-candidate review repair
+commit. Local configuration does not belong in the change.
 
 ## Merged checkpoint: R7-PROMPT (2026-09-01)
 

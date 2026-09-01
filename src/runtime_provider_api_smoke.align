@@ -1,6 +1,7 @@
 module runtime_provider_api_smoke
 
 import alignpack
+import decode_step
 import gguf
 import model
 import provider
@@ -46,11 +47,12 @@ fn expect_error(value: Result<string, Error>) -> Result<(), Error> = match value
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
-  if args.len() != 5 { return Err(Error.Invalid) }
+  if args.len() != 6 { return Err(Error.Invalid) }
   model_path := args[1]
   pack_path := args[2]
   geometry_path := args[3]
   replacement_pack_path := args[4]
+  oversize_geometry_path := args[5]
 
   snapshot := gguf.open_snapshot(model_path)?
   source_identity := alignpack.verify_source_identity_snapshot(snapshot, pack_path)?
@@ -58,6 +60,19 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   match alignpack.verify_source_identity_file(replacement_pack, source_identity) {
     Ok(_) => { return Err(Error.Invalid) },
     Err(_) => {},
+  }
+  expected_geometry := fs.read_file(geometry_path)?
+  mut prompt_builder: array_builder<i64> := array_builder()
+  prompt_builder.push(0)
+  prompt_ids := prompt_builder.build()
+  mut eog_builder: array_builder<i64> := array_builder()
+  eog_builder.push(0)
+  eog_ids := eog_builder.build()
+  oversized := decode_step.generate_resident(
+    pack_path, oversize_geometry_path, expected_geometry, source_identity,
+    prompt_ids, eog_ids, 1)
+  if oversized.outcome.code.len() == 0 || oversized.token_ids_json != "[]" {
+    return Err(Error.Invalid)
   }
 
   base := config(
