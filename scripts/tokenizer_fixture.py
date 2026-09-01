@@ -65,6 +65,7 @@ def write_model(
     *,
     model: str = "gpt2",
     pre: str = "qwen2",
+    chat_template: str | None = None,
 ) -> None:
     kvs = [
         Kv("tokenizer.ggml.model", strv(model)),
@@ -73,6 +74,8 @@ def write_model(
         Kv("tokenizer.ggml.token_type", Array(INT32, [i32v(value) for value in types])),
         Kv("tokenizer.ggml.merges", Array(STRING, [strv(value) for value in merges])),
     ]
+    if chat_template is not None:
+        kvs.append(Kv("tokenizer.chat_template", strv(chat_template)))
     write_kvs(destination, kvs)
 
 
@@ -169,8 +172,13 @@ def qwen_pieces(text: str) -> list[str]:
     return pieces
 
 
-def encode(text: str, parse_control: bool = True) -> list[int]:
-    tokens, types, merges = fixture_data()
+def encode_data(
+    text: str,
+    tokens: list[str],
+    types: list[int],
+    merges: list[str],
+    parse_control: bool = True,
+) -> list[int]:
     token_ids = {token: index for index, token in enumerate(tokens)}
     ranks = {tuple(merge.split(" ", 1)): rank for rank, merge in enumerate(merges)}
     candidates = []
@@ -210,6 +218,11 @@ def encode(text: str, parse_control: bool = True) -> list[int]:
             at += 1
     encode_raw(text[raw_start:])
     return result
+
+
+def encode(text: str, parse_control: bool = True) -> list[int]:
+    tokens, types, merges = fixture_data()
+    return encode_data(text, tokens, types, merges, parse_control)
 
 
 def main(argv: list[str]) -> int:

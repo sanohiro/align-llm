@@ -1153,15 +1153,26 @@ The current forward delivery order is:
     revision and Align `main`. That request blocked source implementation until `ALIGN_MERGED`.
     The authoritative ledger and closure matrix are [`r7-tokenizer.md`](r7-tokenizer.md).
 
-    **Implementation candidate owner-verified 2026-09-01.** Align PR #920 shipped Request 22 as
+    **Merged as PR #161 (`de44bf0`) on 2026-09-01.** Align PR #920 shipped Request 22 as
     `27770420555d19b98eced133369c168e9c6d4a2f`; the pin now selects that revision and all three
     registered stream-plus-column workarounds have migrated to indexed Move-field arrays. The
     hosted tokenizer owns GGUF array materialization, Qwen2 splitting and BPE, explicit special
     modes, canonical token JSON, raw decode output, malformed-model precedence, and CLI isolation.
     `make gguf-smoke model-ir-smoke layer-forward-smoke tokenizer-smoke` passes, and the exact
     299-case real-model `tokenizer-parity` qualification passes against pinned llama-tokenize build
-    10566 with 50,893 input bytes and 69,485 compared ids. Publication preflight and the one stable
-    comprehensive review remain before merge.
+    10566 with 50,893 input bytes and 69,485 compared ids. Exact-head Linux preflight and all
+    hosted, x86_64, and aarch64 required checks passed; Request 22 is closed.
+
+42. **R7-PROMPT — provider text to exact Qwen2.5-Coder prompt token ids. Active.** The existing
+    `GenerationRequest` carries `system` and `user`, while the runtime begins at ids. R7-TOKENIZER
+    can encode arbitrary text but deliberately does not interpret `tokenizer.chat_template`, so a
+    caller still cannot construct the model's actual conversation. This capability validates the
+    exact model-carried supported template, renders one system turn plus one user turn with the
+    assistant generation prefix, and encodes the complete prompt through one retained GGUF
+    snapshot. Its public `prepare_prompt_model` result and `--prepare-prompt` CLI stop at ids; tools,
+    history, inference, sampling, EOG termination, provider dispatch, streaming, and decoded text
+    remain deferred. The authoritative ledger and closure matrix are
+    [`r7-prompt.md`](r7-prompt.md).
 
 ### Status (2026-08-28)
 
