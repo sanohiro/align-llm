@@ -4,6 +4,7 @@ import std.crypto
 import std.encoding
 import std.fs
 import std.time
+import alignpack
 import alignpack_read
 import ggml_ffi
 import kv_plane
@@ -1833,6 +1834,8 @@ fn stage_inputs(
   width_text: str,
   steps_text: str,
   geometry_path: str,
+  expected_geometry: str,
+  generation: bool,
   kv_requested: bool,
   max_steps: i64,
   borrow mut tokens: model_forward.TokenColumns,
@@ -1912,6 +1915,10 @@ fn stage_inputs(
     },
   }
   geometry_view: str := geometry_text
+  if generation && geometry_view != expected_geometry {
+    fail(o, CODE_GEOMETRY, "identity")
+    return g
+  }
   g = layer_qwen2.parse_geometry(geometry_view)
   o.arch = g.arch.clone()
   o.n_layer = g.n_layer
@@ -3392,6 +3399,8 @@ fn publish(borrow p: Plane, borrow k: Decode, borrow mut o: model_forward.Outcom
 fn execute_mode(
   pack_path: str,
   geometry_path: str,
+  expected_geometry: str,
+  borrow source_identity: alignpack.SourceIdentity,
   tokens_text: str,
   reference_path: str,
   transcript_path: str,
@@ -3506,7 +3515,8 @@ fn execute_mode(
 
   max_steps := if generation { 127 } else { layer_qwen2.MAX_DECODE_STEPS }
   g := stage_inputs(
-    tokens_text, suffix_text, width_text, steps_text, geometry_path, kv_requested, max_steps,
+    tokens_text, suffix_text, width_text, steps_text, geometry_path, expected_geometry, generation,
+    kv_requested, max_steps,
     tokens, o)
   if o.code.len() > 0 {
     o.elapsed_ns = time.instant() - started
@@ -3594,6 +3604,16 @@ fn execute_mode(
       o.elapsed_ns = time.instant() - started
       return o
     },
+  }
+  if generation {
+    match alignpack.verify_source_identity_file(pak, source_identity) {
+      Ok(_) => {},
+      Err(_) => {
+        fail(o, "R4_SOURCE_IDENTITY", "source_record")
+        o.elapsed_ns = time.instant() - started
+        return o
+      },
+    }
   }
   // Steps 7 and 8. The container, both ends, the coverage rule, every member record, and the window
   // sweep, taken as one **owned value**: section 2.8's order is `src/model_forward.align`'s and so
@@ -3899,6 +3919,21 @@ fn render_generation_ids(borrow o: model_forward.Outcome, borrow s: model_forwar
   return output.to_string()
 }
 
+fn generation_nonfinite_count(
+  borrow o: model_forward.Outcome,
+  borrow s: model_forward.StepColumns,
+) -> i64 {
+  if o.nonfinite_count > 0 { return o.nonfinite_count }
+  mut at := 0
+  loop {
+    if at >= s.count { break }
+    count := model_forward.column_at(s.nonfinite_count, at)
+    if count > 0 { return count }
+    at = at + 1
+  }
+  return 0
+}
+
 // R7-RUNTIME-PROVIDER's in-memory generation seam. It reuses the complete R6 schedule but carries
 // a separate maximum into the loop, so `max_tokens == 1` can publish the prefill argmax without
 // building a decode graph. Generation admits at most 127 internal steps while the legacy public
@@ -3906,6 +3941,8 @@ fn render_generation_ids(borrow o: model_forward.Outcome, borrow s: model_forwar
 pub fn generate_resident(
   pack_path: str,
   geometry_path: str,
+  expected_geometry: str,
+  source_identity: alignpack.SourceIdentity,
   borrow prompt_token_ids: array<i64>,
   borrow eog_token_ids: array<i64>,
   max_tokens: i64,
@@ -3935,10 +3972,17 @@ pub fn generate_resident(
   mut graphs := model_forward.empty_graphs()
   mut top := model_forward.empty_top()
   mut stepped := model_forward.empty_steps()
-  outcome := execute_mode(
-    pack_path, geometry_path, token_view, "", "", width_view, "", steps_view, "", "",
+  mut outcome := execute_mode(
+    pack_path, geometry_path, expected_geometry, source_identity,
+    token_view, "", "", width_view, "", steps_view, "", "",
     "weights", "-", "-", true, eog_token_ids, max_tokens,
     tokens, schedule, graphs, top, stepped)
+  if outcome.code.len() == 0 {
+    nonfinite := generation_nonfinite_count(outcome, stepped)
+    if nonfinite > 0 {
+      fail(outcome, "R5_LOGITS_NONFINITE", model_forward.labelled("elements", nonfinite))
+    }
+  }
   token_ids_json := render_generation_ids(outcome, stepped)
   return GenerationParts { outcome: outcome, token_ids_json: token_ids_json }
 }
@@ -3966,8 +4010,10 @@ pub fn execute(
   borrow mut stepped: model_forward.StepColumns,
 ) -> model_forward.Outcome {
   eog_ids := model_forward.empty_array()
+  source_identity := alignpack.empty_source_identity()
   return execute_mode(
-    pack_path, geometry_path, tokens_text, reference_path, transcript_path, width_text, logits_path,
+    pack_path, geometry_path, "", source_identity,
+    tokens_text, reference_path, transcript_path, width_text, logits_path,
     steps_text, kv_save_path, kv_load_path, resident_text, suffix_text, store_text, false, eog_ids, 0,
     tokens, schedule, graphs, top, stepped)
 }

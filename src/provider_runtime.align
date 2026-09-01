@@ -107,7 +107,7 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
   derived_view: str := ir.document
   if geometry_view != derived_view { return Err(Error.Invalid) }
 
-  alignpack.verify_source_identity_snapshot(snapshot, config.runtime_pack_path)?
+  source_identity := alignpack.verify_source_identity_snapshot(snapshot, config.runtime_pack_path)?
   prepared := tokenizer_qwen2.prepare_generation_snapshot(snapshot, request.system, request.user)?
   if !tokenizer_ok(prepared.status) { return Err(Error.Invalid) }
   allocation_steps := if request.max_tokens > 1 { request.max_tokens - 1 } else { 1 }
@@ -120,6 +120,8 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
   generated_parts := decode_step.generate_resident(
     config.runtime_pack_path,
     config.runtime_geometry_path,
+    geometry_view,
+    source_identity,
     prepared.token_ids,
     prepared.eog_token_ids,
     request.max_tokens,

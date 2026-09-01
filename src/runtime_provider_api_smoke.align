@@ -1,7 +1,10 @@
 module runtime_provider_api_smoke
 
+import alignpack
+import gguf
 import model
 import provider
+import std.fs
 
 fn config(
   kind: model.ProviderKind,
@@ -43,10 +46,19 @@ fn expect_error(value: Result<string, Error>) -> Result<(), Error> = match value
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
-  if args.len() != 4 { return Err(Error.Invalid) }
+  if args.len() != 5 { return Err(Error.Invalid) }
   model_path := args[1]
   pack_path := args[2]
   geometry_path := args[3]
+  replacement_pack_path := args[4]
+
+  snapshot := gguf.open_snapshot(model_path)?
+  source_identity := alignpack.verify_source_identity_snapshot(snapshot, pack_path)?
+  replacement_pack := fs.open_rw(replacement_pack_path)?
+  match alignpack.verify_source_identity_file(replacement_pack, source_identity) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(_) => {},
+  }
 
   base := config(
     model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 1048576)

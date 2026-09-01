@@ -27,15 +27,18 @@ align-runtime, persists unchanged schema-2 generation records, and requires both
 the existing task validator.
 
 **Latest durable verification.** `make tokenizer-smoke provider-smoke runtime-provider-smoke
-gate-topology-check layer-forward-smoke` passes, including the gate runner self-test, 48-assertion
+gate-topology-check layer-forward-smoke` passes, including the gate runner self-test, 49-assertion
 synthetic provider/CLI matrix, six generation-EOG cases, and the complete shared decode regression.
-The real `runtime-provider-gate` passed after review repair in 60.3 seconds with the pinned
+The re-scoped final-review repair passes `runtime-provider-smoke`, the complete shared
+`layer-forward-smoke` in 64.117 seconds, and `alignpack-smoke` with 27 positive fixtures, 128
+negative sources, and 20,312 assertions.
+The real `runtime-provider-gate` passed after initial review repair in 60.3 seconds with the pinned
 4,683,073,536-byte Qwen model and llama.cpp build 10566: both provider legs produced a passing patch
 with SHA-256 prefix `5d6b107e706a`. The gate's earlier 64-token probe established truncation, so the
 settled request limit is 128. The comprehensive review of `8a17034b` against base and merge base
 `88b77ed` found three valid gate-contract defects: raw completion trailers were admitted,
 configured invalid prerequisites could be hidden by an earlier N/A, and an untimed baseline probe
-consumed a third task validation. Consolidated repair now rejects non-exact fixed-task envelopes,
+consumed a third task validation. Consolidated initial repair rejects non-exact fixed-task envelopes,
 validates every configured prerequisite before N/A, removes the task execution from the topology
 probe, and permanently owns these cases in the hosted self-test. Publication owners and aggregate
 preflight have not completed yet.
@@ -58,6 +61,20 @@ The final coding-baseline chain is source `0278e6e4d57d6796872473f73c86e482c7343
 complete Linux `make baseline-check` including malformed, failure, immutable-oracle, and ancestry
 owners.
 
+**Final review and re-scope.** The comprehensive review of stable head
+`00e67dab9dcfeb952b96ec393ab6a6f1ebcfcba6` against base tip and merge base
+`88b77ed112d36cb29b948f7212442b3a4f02afcd` was performed by Codex gpt-5.6-sol at high effort over
+the full diff. Its verdict contained two findings, both accepted: `[P1]` pack and geometry identity
+did not survive reopening into the exact objects consumed by inference, so atomic replacement could
+retarget validated work; `[P2]` provider generation could render an arbitrary argmax after a
+non-finite prefill or decode-step logit plane. The boundary is re-scoped rather than patched around:
+the first pack pass returns a retained `SourceIdentity`, the exact inference handle revalidates that
+identity, the reopened geometry image must byte-equal the already-derived image before that same
+image is parsed, and generation rejects non-finite prefill or step output before publishing token
+ids. The existing diagnostic API retains its counter-reporting behavior. This materially changes
+the public artifact-identity seam and therefore requires focused owner evidence plus one fresh
+comprehensive review of the redesigned candidate before publication.
+
 **Baseline-chain correction.** Clean-build repair `4fc0f26` produced two passing aarch64 Linux
 samples, but the first oracle commit mistakenly retained the pending record's `recorded_at` and
 empty `canonical_oracle_commit` fields. The corrected projection then followed an already-created
@@ -68,15 +85,17 @@ the changed `Makefile` but not its new transitive build wrapper, shim builder, a
 source. The task artifact set now names all three executable inputs. The final direct chain named
 above supersedes both earlier sequences and is the authoritative shipping evidence.
 
-**Next actions.** (1) Run the required final comprehensive review of the stable candidate and
-resolve every finding. (2) Re-run the real provider gate at the settled head, then run exact-head
-Linux publication preflight. (3) Publish and merge after required checks and recorded finding
+**Next actions.** (1) Commit and run one fresh comprehensive review of the redesigned stable
+candidate; do not start another repair loop if it exposes another non-trivial design issue. (2)
+Re-run the real provider gate at the settled head, then run exact-head Linux publication preflight.
+(3) Publish and merge after required checks and recorded finding
 dispositions, pull the latest `main` including concurrent work, and continue the next eligible
 roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** None. Local configuration does not belong in the change.
+**Intentional uncommitted files.** None after the consolidated final-review repair commit. Local
+configuration does not belong in the change.
 
 ## Merged checkpoint: R7-PROMPT (2026-09-01)
 

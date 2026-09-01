@@ -1202,11 +1202,16 @@ The current forward delivery order is:
     validator-passing patch (SHA-256 prefix `5d6b107e706a`) within the precommitted 20-minute
     maintenance ceiling. Comprehensive review found and repaired three fixed-gate contract defects.
     Publication preflight then exposed a clean-Linux build dependency on an ambient ggml shim; the
-    candidate now owns a temporary static hosted stub and an explicit real-shim build path. Fresh
-    publication verification and the resulting final comprehensive review remain before merge. The
-    final Linux/aarch64 coding-baseline chain is source `0278e6e` -> oracle `2ccb385` -> finalization
-    `94fee50`; it binds the new wrapper, shim builder, and static stub source and passes the complete
-    `make baseline-check`.
+    candidate now owns a temporary static hosted stub and an explicit real-shim build path. The
+    resulting final comprehensive review found two valid inference-boundary defects: artifact
+    identity did not survive path reopen into the exact objects consumed by inference, and provider
+    generation could publish an argmax from a non-finite logit plane. The re-scoped repair retains
+    and rechecks source identity on the exact inference pack handle, compares the exact reopened
+    geometry image, and rejects any non-finite prefill or decode step before token publication.
+    Repair verification, fresh publication evidence, and the required review of that redesigned
+    boundary remain before merge. The final Linux/aarch64 coding-baseline chain is source `0278e6e`
+    -> oracle `2ccb385` -> finalization `94fee50`; it binds the new wrapper, shim builder, and static
+    stub source and passes the complete `make baseline-check`.
 
 ### Status (2026-08-28)
 

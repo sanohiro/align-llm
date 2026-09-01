@@ -108,7 +108,7 @@ effect.
 | 8 | alignpack header/regions/source record are valid and source identity exactly matches that retained snapshot | bounded pack metadata reads; no weight payload read |
 | 9 | chat template, prompt size, tokenizer, and EOG metadata/token set validate through `prepare_generation_snapshot` | bounded tokenizer arrays and prompt ids |
 | 10 | prompt count plus `max_tokens - 1` fits the Qwen prefill/context/attention bounds | no inference allocation |
-| 11 | resident prefill/decode succeeds | resident arena and ggml objects, all run-scoped |
+| 11 | the reopened geometry bytes still equal step 7, the exact opened pack handle still carries step 8's source identity, resident prefill/decode succeeds, and every published logit plane is finite | one bounded geometry read, bounded pack metadata reads, then resident arena and ggml objects, all run-scoped |
 | 12 | generated non-EOG ids decode under a tokenizer whose `tokenizer_id` equals step 9 | one fail-closed path reopen; owned completion text |
 | 13 | completion bytes do not exceed `max_response_bytes` | returned owned text |
 
@@ -119,10 +119,13 @@ seed is not accepted and not ignored: greedy execution has no seeded twin record
 
 The geometry comparison is exact bytes, not a field subset. It binds every scalar consumed by
 `layer_qwen2.parse_geometry`, including RoPE and RMS values that alignpack member-table validation
-alone cannot bind. The source-identity comparison uses the retained snapshot, so replacement of the
-GGUF path cannot splice one tokenizer/model table into another pack. Detokenization reopens the path
-only after the resident arena has dropped; its published tokenizer digest must equal the retained
-snapshot's digest or the call fails without returning text.
+alone cannot bind. Inference compares its reopened geometry image to those retained bytes before
+parsing the same reopened image, and checks the source identity against the exact pack handle that
+the arena will consume. Atomic replacement of either public artifact path therefore cannot retarget
+validated inference. In-place mutation through another handle remains outside the immutable-input,
+single-writer precondition shared by the existing resident runtime. Detokenization reopens the GGUF
+path only after the resident arena has dropped; its published tokenizer digest must equal the
+retained snapshot's digest or the call fails without returning text.
 
 ### 2.4 Snapshot prompt and EOG API
 
@@ -185,22 +188,45 @@ outer `Err` as in R7-TOKENIZER and R7-PROMPT.
 
 ### 2.5 Alignpack source-identity API
 
-`alignpack` adds one bounded verification seam:
+`alignpack` adds a retained identity value and two bounded verification seams:
 
 ```text
+pub SourceIdentity {
+  file_size: i64,
+  data_offset: i64,
+  tensor_count: i64,
+  kv_count: i64,
+  version: i64,
+  alignment: i64,
+  total_tensor_bytes: i64,
+  header_region_sha256: string,
+}
+
+pub fn empty_source_identity() -> SourceIdentity
+
 pub fn verify_source_identity_snapshot(
   borrow snapshot: gguf.GgufSnapshot,
   pack_path: str,
+) -> Result<SourceIdentity, Error>
+
+pub fn verify_source_identity_file(
+  borrow pack: file,
+  borrow expected: SourceIdentity,
 ) -> Result<(), Error>
 ```
 
-It validates the existing format-1 header and region layout, reads the 128-byte source record, and
-compares `file_size`, `data_offset`, `tensor_count`, metadata KV count, GGUF version, alignment,
-header-region byte count, and SHA-256 of exact snapshot bytes `[0, data_offset)`. The header region
-retains the existing 128 MiB ceiling. It reads no alignpack payload and writes nothing. Any invalid
-path, malformed header/region/source record, I/O failure, zero/unsupported reserved field, or
-identity mismatch returns an error; it does not weaken or replace `verify_pack`, whose question is
-whole-payload correctness.
+`empty_source_identity` is the inert value used only by the unchanged non-generation diagnostic
+path; generation never accepts it because its exact file check fails. The snapshot seam validates
+the named pack once and returns the identity derived from the retained GGUF snapshot. The file seam
+validates the existing format-1 header and region layout on an
+already-open handle, reads its 128-byte source record, and compares `file_size`, `data_offset`,
+`tensor_count`, metadata KV count, GGUF version, alignment, header-region byte count,
+`total_tensor_bytes`, and SHA-256 of exact snapshot bytes `[0, data_offset)`. Inference calls the
+file seam on the exact handle it subsequently consumes. The header region retains the existing
+128 MiB ceiling. Neither seam reads alignpack payload or writes anything. Any invalid path,
+malformed header/region/source record, I/O failure, nonzero reserved field, or identity mismatch
+returns an error; neither weakens or replaces `verify_pack`, whose question is whole-payload
+correctness.
 
 ### 2.6 Stop-aware resident generation seam
 
@@ -215,6 +241,8 @@ pub GenerationParts {
 pub fn generate_resident(
   pack_path: str,
   geometry_path: str,
+  expected_geometry: str,
+  source_identity: alignpack.SourceIdentity,
   borrow prompt_token_ids: array<i64>,
   borrow eog_token_ids: array<i64>,
   max_tokens: i64,
@@ -342,6 +370,8 @@ same-tokenizer detokenization; response cap; result persistence. First failure w
 - pack identity mismatch wins over malformed tokenizer/EOG metadata;
 - tokenizer/EOG failure wins over max-width inference refusal after request-level `max_tokens` was
   accepted;
+- a non-finite prefill or decode-step logit plane fails generation before any token-id JSON is
+  published; the existing diagnostic API continues to report its unchanged counters;
 - immediate EOG wins over maximum termination when `max_tokens == 1`, because the generated id is
   classified before the reason is published;
 - inference failure returns no partial completion even if one or more ids were produced;
@@ -355,11 +385,11 @@ same-tokenizer detokenization; response cap; result persistence. First failure w
 | `ProviderKind` / config constructors | every match and constructor names runtime fields | one explicit runtime arm | old modules reject it; old fields inert | no artifact I/O before kind/config checks | provider compile graph; provider smoke exhaustive info/dispatch |
 | `provider_runtime` request | steps 1-5 in §2.3 | greedy owned text | seed/temp/timeout/field/path/limit matrix | zero file opens on lexical refusal | runtime provider API harness |
 | retained GGUF snapshot | open once; table borrowed for IR/identity then moved to tokenizer | one consistent prompt/model identity | structural, replacement, and reopen-tokenizer mismatch | file drops on every `?`/return | tokenizer snapshot replacement; runtime cross-model identity refusal; final digest guard |
-| geometry | bounded read; exact newly derived schema-2 bytes | all execution scalars source-owned | truncation, alternate path text, scalar drift, oversized file | no pack/tokenizer/inference after mismatch | runtime exact success, byte-drift and oversize refusals |
-| alignpack source identity | format/regions/record then eight identity fields | no payload read | header, region, reserved, digest, same-shape-other-model | pack handle and header buffer drop | existing alignpack malformed corpus plus runtime cross-model identity refusal |
+| geometry | bounded read; exact newly derived schema-2 bytes, then exact reopened-image comparison | the compared reopened image supplies all execution scalars | truncation, alternate path text, scalar drift, oversized file, atomic replacement | no pack/tokenizer/inference after first mismatch; reopened image drops after parse | runtime exact success, byte-drift, oversize, and replacement refusals |
+| alignpack source identity | format/regions/record then nine identity fields; inference repeats the check on its exact opened handle | no payload read during either check; the checked inference handle supplies weights | header, region, reserved, digest, same-shape-other-model, replacement handle | first-pass handle drops; inference handle drops through converged teardown | existing alignpack malformed corpus, runtime cross-model identity refusal, and exact replacement-handle API refusal |
 | prompt/tokenizer/EOG | existing prompt stages then metadata/text EOG set | owned ids and ordered EOG ids | wrong type/range/empty/overflow/unsupported family combination | both arrays empty on data error | tokenizer generation API result-field matrix |
 | runtime bounds | ids, prompt, width, vocab before arena | legal prefill + at most 127 steps | OOV prompt/EOG, zero/oversize prompt, context/width | no resident buffer on refusal | generation bounds harness |
-| resident arena / ggml | existing one fill/wrap/backend schedule | one converged teardown | failure in fill, wrap, prefill, step k | created/freed counters balance; no partial text | existing layer-forward forced-failure corpus plus runtime generation successes |
+| resident arena / ggml | exact geometry image and pack handle rechecked before existing one fill/wrap/backend schedule | finite prefill and steps, one converged teardown | identity failure, non-finite prefill/step, failure in fill, wrap, prefill, step k | created/freed counters balance; no token ids or partial text on generation failure | replacement-handle API refusal, forced non-finite runtime provider case, existing layer-forward forced-failure corpus, and runtime generation successes |
 | EOG/max loop | classify d1 before graph; classify every argmax before next graph | exact generated sequence/reason | duplicate EOG ids harmless; empty set refused earlier | zero graph for max1/immediate EOG; no post-EOG graph | deterministic tiny-model argmax cases |
 | detokenization | omit terminal EOG, skip controls, compare tokenizer digest | owned UTF-8, empty allowed | invalid id/output/changed tokenizer | resident memory is gone before reopen | immediate/one-step EOG omission, max inclusion, snapshot replacement, provider digest guard |
 | `count_tokens` / `count_prompt` | same Qwen tokenizer and prompt contract | exact true | `count_prompt` sentinel; token error propagates | tokenizer arrays drop per call | provider count rows |
@@ -371,18 +401,20 @@ same-tokenizer detokenization; response cap; result persistence. First failure w
 Move-in/out is applicable to the consumed `GgufSnapshot`, tokenizer arrays, generated-id builders,
 and completion string and is tested at their module owners. Source nulling is N/A: Align move
 semantics make the moved value unavailable rather than exposing a nullable source. Replacement is
-applicable only to the GGUF path and is fail-closed by retained-source checks plus the final
-tokenizer digest. Generic monomorphization and interface serialization are N/A: all records are
-concrete and Align has no interfaces here. Shared process state is limited to the real gate's one
-runner-owned server; hosted owners use independent processes and temporary roots. Concurrent gate
-runs are supported only with separate temporary roots and server ports.
+applicable to the GGUF, geometry, and alignpack paths: the final tokenizer digest, exact reopened
+geometry comparison, and exact inference-handle source check fail closed at their respective
+consumption boundaries. Generic monomorphization and interface serialization are N/A: all records
+are concrete and Align has no interfaces here. Shared process state is limited to the real gate's
+one runner-owned server; hosted owners use independent processes and temporary roots. Concurrent
+gate runs are supported only with separate temporary roots and server ports.
 
 ## 5. Implementation and acceptance map
 
 1. Add the provider enum/config fields and update every exhaustive match/construction site.
 2. Add snapshot-based generation prompt/EOG preparation without changing R7-PROMPT results.
-3. Add bounded alignpack source-identity verification over the retained snapshot.
-4. Add stop-aware generation mode behind the unchanged decode CLI/API behavior.
+3. Add bounded alignpack source-identity verification over the retained snapshot and exact
+   inference handle.
+4. Add stop-aware finite-only generation mode behind the unchanged decode CLI/API behavior.
 5. Implement `provider_runtime`, exact counting, model info, and runtime CLI/result routing.
 6. Add independent synthetic fixtures for EOG, artifact identity, loop termination, provider errors,
    common result bytes, and old-provider isolation; add the hosted target to `make ci` once.

@@ -91,9 +91,13 @@ export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 normal_model="${work_dir}/runtime-qwen2.gguf"
 normal_pack="${work_dir}/runtime-qwen2.alignpack"
 normal_geometry="${work_dir}/runtime-qwen2-model-ir.json"
-api_output=$("${runtime_api}" "${normal_model}" "${normal_pack}" "${normal_geometry}")
-if [ "${api_output}" != "runtime provider API smoke: PASS" ]; then
-  printf '%s\n' "runtime provider smoke: FAIL API output: ${api_output}" >&2
+set +e
+api_output=$("${runtime_api}" "${normal_model}" "${normal_pack}" "${normal_geometry}" \
+  "${work_dir}/runtime-qwen2-immediate-eog.alignpack" 2>&1)
+api_status=$?
+set -e
+if [ "${api_status}" -ne 0 ] || [ "${api_output}" != "runtime provider API smoke: PASS" ]; then
+  printf '%s\n' "runtime provider smoke: FAIL API status ${api_status}, output: ${api_output}" >&2
   exit 1
 fi
 python3 - "${runtime_main}" "${work_dir}" <<'PY'
@@ -194,5 +198,34 @@ require(result.returncode != 0 and record["status"] == "error", "pack identity d
 result, record = invoke("extra-cli-operand", extra=("extra",))
 require(result.returncode != 0 and record is None, "runtime CLI accepted an extra operand")
 
-print("runtime provider smoke: PASS (%d assertions)" % checks)
 PY
+
+# The diagnostic decode API deliberately reports non-finite primary logits without failing. Text
+# generation must be stricter: no arbitrary argmax may cross the provider boundary. Replacing the
+# dynamically loaded forced shim is sufficient because every CLI assertion above ran in a completed
+# process and the next process resolves this same absolute install name afresh.
+ALIGN_LLM_GGML_SHIM_DIR="${shim_dir}" ALIGN_LLM_GGML_FORCE=engine+inf-readback \
+  "${root_dir}/scripts/build-ggml-shim" >/dev/null
+python3 - "${runtime_main}" "${work_dir}" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+binary, work = sys.argv[1], Path(sys.argv[2])
+result_path = work / "nonfinite-result.json"
+result = subprocess.run(
+    [binary, "--provider", "align-runtime", str(work / "runtime-qwen2.gguf"),
+     str(work / "runtime-qwen2.alignpack"), str(work / "runtime-qwen2-model-ir.json"),
+     "x", str(result_path), "1"],
+    capture_output=True,
+    check=False,
+    timeout=30,
+)
+record = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else None
+if (result.returncode == 0 or record is None or record.get("status") != "error"
+        or record.get("output") != ""):
+    raise SystemExit("runtime provider smoke: FAIL non-finite logits produced completion text")
+PY
+
+echo "runtime provider smoke: PASS (49 assertions)"
