@@ -100,8 +100,16 @@ the changed `Makefile` but not its new transitive build wrapper, shim builder, a
 source. The task artifact set now names all three executable inputs. The final direct chain named
 above supersedes both earlier sequences and is the authoritative shipping evidence.
 
-**Next actions.** (1) Re-run the real provider gate on the exact evidence-recording head. (2) Run
-exact-head Linux publication preflight. (3) Publish and merge after required checks and recorded finding
+**Latest publication incident.** Exact-head Linux/aarch64 preflight at `0e7ff4e` passed the named
+runtime provider owner in 290.777 seconds and managed Align ensure/verify, then failed hosted checks
+at `prompt-seed-attestation-smoke`: that standalone harness imports the exhaustive `provider`
+dispatcher and now reaches the runtime FFI, but invoked `alignc run` without the hosted static-shim
+wrapper. The complete direct-compile harness audit found no other standalone hosted `provider`
+import outside wrapper-owned `main`. The repair routes this one compiler run through
+`scripts/run-main-with-shim`; it changes no baseline-bound artifact or public runtime behavior.
+
+**Next actions.** (1) Verify and commit the prompt seed clean-link repair. (2) Re-run exact-head
+Linux publication preflight. (3) Publish and merge after required checks and recorded finding
 dispositions, pull the latest `main` including concurrent work, and continue the next eligible
 roadmap capability.
 

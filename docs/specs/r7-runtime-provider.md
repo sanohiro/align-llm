@@ -320,6 +320,11 @@ the fresh image's authenticated tool inventory. The default path neither consume
 `build/lib` shim nor leaves an extra fresh-worker overlay entry. No build variable is consulted by
 the runtime provider after process start.
 
+The hosted prompt seed-attestation harness imports the exhaustive `provider` dispatcher directly,
+so it also reaches the runtime FFI even though it never selects `AlignRuntime`. Its compiler `run`
+action routes through the same wrapper and temporary static stub; no other standalone hosted
+harness imports `provider` outside a wrapper-owned `main` build.
+
 ### 2.8 Fixed coding-task gate and cost ceiling
 
 `make runtime-provider-gate` is opt-in through the same pinned real-model/tool inputs as prompt and
@@ -400,7 +405,7 @@ same-tokenizer detokenization; response cap; result persistence. First failure w
 | detokenization | omit terminal EOG, skip controls, compare tokenizer digest | owned UTF-8, empty allowed | invalid id/output/changed tokenizer | resident memory is gone before reopen | immediate/one-step EOG omission, max inclusion, snapshot replacement, provider digest guard |
 | `count_tokens` / `count_prompt` | same Qwen tokenizer and prompt contract | exact true | `count_prompt` sentinel; token error propagates | tokenizer arrays drop per call | provider count rows |
 | CLI/result | runtime grammar selected before legacy parse | unchanged schema-2 success record | outer no-file failures; existing error record after dispatch | sink failure leaves provider result behavior unchanged | byte/field goldens and legacy provider goldens |
-| main build/link | validate wrapper action and static selector before tools; explicit include selects real mode | hosted main embeds the unavailable stub; explicit real main resolves the shared shim | selector/tool/compile/archive/link/load failures are nonzero | temporary archive directory drops on success, error, and signal; no hosted overlay artifact beyond `main` | clean macOS build without `build/lib`; Linux publication owner and installed aggregate |
+| main and provider-harness build/link | validate wrapper action and static selector before tools; explicit include selects real mode | hosted main and the direct provider harness embed the unavailable stub; explicit real main resolves the shared shim | selector/tool/compile/archive/link/load failures are nonzero | temporary archive directory drops on success, error, and signal; no hosted overlay artifact beyond the requested executable | clean macOS build without `build/lib`; clean Linux prompt seed owner; Linux publication owner and installed aggregate |
 | fixed-task runner | prerequisite identity, one temp root, fixed request | two retained records and two passing validations | configured-tool, generation, extraction, validation, timeout | server/process/temp teardown on all signals and exits | runner self-test plus real qualification |
 | Makefile/topology | main shim wrapper, one hosted owner, and one opt-in gate; coding-baseline artifacts bind the wrapper, builder, and static stub source | hosted owner reached once | clean-link, omission/duplication/configured N/A mutant | static shim is temporary; qualification excluded from aggregates | clean `make build`; `gate-topology-check`; direct source -> oracle -> finalization baseline chain; `make ci` because membership changes |
 
