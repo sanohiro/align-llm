@@ -19,6 +19,51 @@ fn print_text_code(result_value: tokenizer_qwen2.TokenTextResult) {
   }
 }
 
+fn status_ok(status_value: tokenizer_qwen2.TokenizerStatus) -> bool = match status_value {
+  Ok => true,
+  Error => false,
+}
+
+fn publication(model_path: str) -> Result<(), Error> {
+  encoded := tokenizer_qwen2.encode_model(
+    model_path, "hello", tokenizer_qwen2.EncodeSpecials.ParseControl)?
+  if !status_ok(encoded.status) || encoded.error_code != "" || encoded.error_detail != "" {
+    return Err(Error.Invalid)
+  }
+  decoded := tokenizer_qwen2.decode_model(
+    model_path, encoded.token_ids, tokenizer_qwen2.DecodeSpecials.RenderControl)?
+  if !status_ok(decoded.status) || decoded.error_code != "" || decoded.error_detail != "" {
+    return Err(Error.Invalid)
+  }
+
+  line := builder()
+  line.write(encoded.tokenizer_id)
+  line.write(":")
+  line.write_int(encoded.vocab_size)
+  line.write(":")
+  line.write_int(encoded.merge_count)
+  line.write(":")
+  mut at := 0
+  loop {
+    if at >= encoded.token_ids.len() { break }
+    if at > 0 { line.write(",") }
+    line.write_int(encoded.token_ids[at])
+    at = at + 1
+  }
+  line.write(":")
+  line.write(decoded.tokenizer_id)
+  line.write(":")
+  line.write_int(decoded.vocab_size)
+  line.write(":")
+  line.write_int(decoded.merge_count)
+  line.write(":")
+  line.write_int(decoded.token_count)
+  line.write(":")
+  line.write(decoded.text)
+  print(line.to_string())
+  return Ok(())
+}
+
 fn operation_failures(model_path: str, long_model_path: str, byte_id_text: str, long_id_text: str) -> Result<(), Error> {
   byte_id: i64 := json.decode(byte_id_text)?
   long_id: i64 := json.decode(long_id_text)?
@@ -87,6 +132,9 @@ fn snapshot_replacement(path: str) -> Result<(), Error> {
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 3 && args[1] == "--publication" {
+    return publication(args[2])
+  }
   if args.len() == 3 && args[1] == "--snapshot" {
     return snapshot_replacement(args[2])
   }
