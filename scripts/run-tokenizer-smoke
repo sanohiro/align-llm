@@ -86,6 +86,17 @@ def bucket_count(count: int) -> int:
     return result
 
 
+def pair_hash(left: int, right: int) -> int:
+    result = 0xCBF29CE484222325
+    for value in (left,):
+        for byte in value.to_bytes(8, "little"):
+            result = ((result ^ byte) * 1099511628211) & ((1 << 64) - 1)
+    result = ((result ^ 255) * 1099511628211) & ((1 << 64) - 1)
+    for byte in right.to_bytes(8, "little"):
+        result = ((result ^ byte) * 1099511628211) & ((1 << 64) - 1)
+    return result
+
+
 def token_colliders(tokens: list[str], wanted: int) -> list[str]:
     buckets = bucket_count(len(tokens) + wanted)
     occupied: dict[int, int] = {}
@@ -103,6 +114,25 @@ def token_colliders(tokens: list[str], wanted: int) -> list[str]:
             if len(group) == wanted:
                 return group
         candidate += 1
+
+
+def merge_colliders(tokens: list[str], base_merges: list[str], wanted: int) -> tuple[list[str], list[str]]:
+    final_merge_count = len(base_merges) + wanted + 1
+    buckets = bucket_count(final_merge_count)
+    groups: dict[int, list[tuple[str, str]]] = {}
+    alphabet = [chr(value) for value in range(33, 127)]
+    for left in alphabet:
+        for right in alphabet:
+            result = left + right
+            if result in tokens:
+                continue
+            bucket = pair_hash(tokens.index(left), tokens.index(right)) & (buckets - 1)
+            group = groups.setdefault(bucket, [])
+            group.append((left, right))
+            if len(group) == wanted:
+                pairs = group
+                return [left + right for left, right in pairs], [f"{left} {right}" for left, right in pairs]
+    raise RuntimeError("could not construct merge hash colliders")
 
 
 def expect_success(result: subprocess.CompletedProcess[bytes], expected: bytes, label: str) -> None:
@@ -239,11 +269,31 @@ def main() -> int:
             "hash-bucket", tokens + colliders, types + [5] * len(colliders), merges, "gpt2", "qwen2",
         ))
 
+        duplicate_then_type = list(tokens)
+        duplicate_then_type[1] = duplicate_then_type[0]
+        later_bad_type = list(types)
+        later_bad_type[2] = 7
+        mutations.append((
+            "duplicate-before-type", duplicate_then_type, later_bad_type, merges, "gpt2", "qwen2",
+        ))
+        long_then_many_specials = list(tokens)
+        long_then_many_specials[260] = "<" + "x" * 31 + ">"
+        special_additions = [f"<P{index:03d}>" for index in range(253)]
+        mutations.append((
+            "special-text-before-count", long_then_many_specials + special_additions,
+            types + [3] * len(special_additions), merges, "gpt2", "qwen2",
+        ))
+        merge_results, merge_hash_colliders = merge_colliders(tokens, merges, 17)
+        mutations.append((
+            "merge-bucket-before-malformed", tokens + merge_results, types + [1] * len(merge_results),
+            merges + merge_hash_colliders + ["broken"], "gpt2", "qwen2",
+        ))
+
         expected_codes = [
             "R7_UNSUPPORTED_TOKENIZER", "R7_VOCAB_SIZE", "R7_VOCAB_SIZE", "R7_TOKEN_EMPTY",
             "R7_TOKEN_TYPE", "R7_TOKEN_DUPLICATE", "R7_MERGE", "R7_MERGE_TOKEN",
             "R7_BYTE_ALPHABET", "R7_TOKEN_TEXT", "R7_TOKENIZER_ARRAY", "R7_SPECIAL_TEXT",
-            "R7_SPECIAL_COUNT", "R7_HASH_BUCKET",
+            "R7_SPECIAL_COUNT", "R7_HASH_BUCKET", "R7_TOKEN_TYPE", "R7_SPECIAL_COUNT", "R7_MERGE",
         ]
         mutation_paths = []
         for name, changed_tokens, changed_types, changed_merges, model_name, pre_name in mutations:

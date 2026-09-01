@@ -625,9 +625,6 @@ fn load_model(path: str) -> Result<LoadResult, Error> {
     return Ok(failed_load("R7_TOKENIZER_TEXT_SIZE", rendered_view, token_count, merge_count))
   }
 
-  bucket_count := bucket_count_for(token_count)
-  mut token_heads := filled_i64(bucket_count, -1)
-  mut token_next := filled_i64(token_count, -1)
   at = 0
   loop {
     if at >= token_count { break }
@@ -646,6 +643,16 @@ fn load_model(path: str) -> Result<LoadResult, Error> {
       rendered_view: str := rendered
       return Ok(failed_load("R7_TOKEN_TYPE", rendered_view, token_count, merge_count))
     }
+    at = at + 1
+  }
+
+  bucket_count := bucket_count_for(token_count)
+  mut token_heads := filled_i64(bucket_count, -1)
+  mut token_next := filled_i64(token_count, -1)
+  at = 0
+  loop {
+    if at >= token_count { break }
+    token: str := tokens[at]
     bucket := bucket_for(fnv_text(token), token_heads.len())
     mut row := token_heads[bucket]
     mut links := 0
@@ -682,6 +689,16 @@ fn load_model(path: str) -> Result<LoadResult, Error> {
       if special_count > MAX_SPECIAL_TOKENS {
         return Ok(failed_load("R7_SPECIAL_COUNT", int_text(special_count), token_count, merge_count))
       }
+    }
+    at = at + 1
+  }
+
+  at = 0
+  loop {
+    if at >= token_count { break }
+    token: str := tokens[at]
+    effective := if types[at] == 1 && token == "</s>" { 3 } else { types[at] }
+    if effective == 2 || effective == 3 || effective == 4 {
       if token.len() > MAX_SPECIAL_TOKEN_BYTES {
         return Ok(failed_load("R7_SPECIAL_TEXT", indexed_detail("token", at), token_count, merge_count))
       }
@@ -703,9 +720,6 @@ fn load_model(path: str) -> Result<LoadResult, Error> {
     at = at + 1
   }
 
-  merge_bucket_count := bucket_count_for(merge_count)
-  mut merge_heads := filled_i64(merge_bucket_count, -1)
-  mut merge_next := filled_i64(merge_count, -1)
   mut merge_left := filled_i64(merge_count, -1)
   mut merge_right := filled_i64(merge_count, -1)
   mut merge_result := filled_i64(merge_count, -1)
@@ -752,6 +766,17 @@ fn load_model(path: str) -> Result<LoadResult, Error> {
     merge_left[at] = left_id
     merge_right[at] = right_id
     merge_result[at] = result_id
+    at = at + 1
+  }
+
+  merge_bucket_count := bucket_count_for(merge_count)
+  mut merge_heads := filled_i64(merge_bucket_count, -1)
+  mut merge_next := filled_i64(merge_count, -1)
+  at = 0
+  loop {
+    if at >= merge_count { break }
+    left_id := merge_left[at]
+    right_id := merge_right[at]
     bucket := bucket_for(pair_hash(left_id, right_id), merge_heads.len())
     mut row := merge_heads[bucket]
     mut links := 0
