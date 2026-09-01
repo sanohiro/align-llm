@@ -1,9 +1,7 @@
 {
   "schema_version": 1,
   "baseline_id": "coding-v1-deterministic-reference-checked-in-patch",
-  "recorded_at": "2026-09-01T12:52:45+00:00",
   "align_llm_commit": "4fc0f26cdb8e4b3b0a2b8f0e8168466a445be8ed",
-  "canonical_oracle_commit": "",
   "align_revision": "27770420555d19b98eced133369c168e9c6d4a2f",
   "corpus": {
     "id": "coding-v1",
