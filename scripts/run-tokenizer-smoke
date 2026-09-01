@@ -42,7 +42,10 @@ def command(arguments: list[str], *, timeout: int = 20) -> subprocess.CompletedP
 
 
 def require_regex_lock(source: Path) -> None:
-    lock = tomllib.loads((source / "Cargo.lock").read_text(encoding="utf-8"))
+    try:
+        lock = tomllib.loads((source / "Cargo.lock").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        fail(f"could not read Align regex lock from {source}: {error}")
     expected = {
         "regex": ("1.13.1", "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"),
         "regex-automata": ("0.4.16", "8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad"),
@@ -60,6 +63,14 @@ def require_regex_provenance() -> None:
         actual = {name: os.environ.get(name) for name in FRESH_REGEX_LOCK_ENVIRONMENT}
         if actual != FRESH_REGEX_LOCK_ENVIRONMENT:
             fail(f"fresh compiler environment cannot attest the regex lock: {actual!r}")
+        return
+
+    explicit_source = os.environ.get("ALIGN_REPO")
+    if explicit_source is not None:
+        source = Path(explicit_source)
+        if not source.is_absolute():
+            fail(f"ALIGN_REPO must be absolute for regex lock provenance: {explicit_source!r}")
+        require_regex_lock(source)
         return
 
     source_result = command([str(ROOT / "scripts/align-toolchain"), "path", "source"])
