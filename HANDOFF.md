@@ -56,9 +56,11 @@ real-shared builds pass on macOS; the aarch64 Linux clean build plus tokenizer, 
 samples, but the first oracle commit mistakenly retained the pending record's `recorded_at` and
 empty `canonical_oracle_commit` fields. The corrected projection then followed an already-created
 finalization commit, so `check-baseline-chain` properly rejected that non-direct topology. Commits
-`9096787` through `a4ee218` are retained as failed evidence and are not the shipping chain. This
-handoff-only checkpoint supersedes them as a clean source with identical executable artifacts; its
-direct oracle child and direct finalization child will be the authoritative chain.
+`9096787` through `a4ee218` are retained as failed evidence. A later valid chain (`4db07fd` ->
+`94620c8` -> `52b00eb`) exposed a separate closure omission before review: the recorded task bound
+the changed `Makefile` but not its new transitive build wrapper, shim builder, and static stub
+source. The task artifact set now names all three executable inputs. A final direct chain from this
+corrected source will supersede both earlier sequences and be the authoritative shipping evidence.
 
 **Next actions.** (1) Re-record the required source -> immutable oracle -> canonical finalization
 chain on Linux from this clean source, then run the final comprehensive review. (2) Run exact-head
