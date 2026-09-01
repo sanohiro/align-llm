@@ -74,7 +74,17 @@ three-entry lock check, requires the complete fixed compiler vector in fresh con
 documents why the private Align source is unavailable there; partial vectors fail before product
 execution. Normal `make tokenizer-smoke`, simulated complete/partial vector cases, formatting, and
 the baseline chain pass. The repaired candidate's comprehensive review and its bounded precedence
-repair are complete. Final publication evidence must run from zero at the unchanged final head.
+repair are complete. Exact-head Linux preflight at `3629660` then passed every phase, including the
+owner in 427,618 ms, hosted checks in 363,749 ms, fresh-focused in 21,095 ms, and the installed
+profile in 2,396,519 ms. PR #161's first hosted run exposed a distinct cache-topology omission:
+the compiler bundle was valid, but `tokenizer-smoke` looked beneath the empty managed-cache path
+instead of the separately checked-out pinned source and failed opening `Cargo.lock`. Repair
+`e88a2e47d98ddc754362516f1b048c260686f503` makes an absolute explicit `ALIGN_REPO` the normal
+lock source, keeps managed fallback and the fixed fresh vector, checks out the exact pin for hosted
+bundle hits and misses, and passes that source to supported checks. Explicit-source owner,
+relative-source refusal, workflow topology, formatting, gate topology, and the baseline chain pass.
+Final publication evidence must run from zero at the unchanged repaired head; the prior stamp is
+intentionally invalid after this executable workflow repair.
 
 **Next actions.** (1) Run the exact clean-HEAD publication preflight owner in that Linux wrapper.
 (2) Publish the PR and record the review envelope and finding disposition, then merge after checks.
