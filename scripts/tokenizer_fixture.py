@@ -66,6 +66,7 @@ def write_model(
     model: str = "gpt2",
     pre: str = "qwen2",
     chat_template: str | None = None,
+    extra_kvs: list[Kv] | None = None,
 ) -> None:
     kvs = [
         Kv("tokenizer.ggml.model", strv(model)),
@@ -76,6 +77,7 @@ def write_model(
     ]
     if chat_template is not None:
         kvs.append(Kv("tokenizer.chat_template", strv(chat_template)))
+    kvs.extend(extra_kvs or [])
     write_kvs(destination, kvs)
 
 

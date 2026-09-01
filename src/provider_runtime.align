@@ -1,0 +1,193 @@
+module provider_runtime
+
+import alignpack
+import decode_step
+import frontend_qwen
+import gguf
+import model
+import model_ir
+import tokenizer_qwen2
+import core.json
+import std.fs
+
+MAX_PATH_BYTES := 4096
+MAX_GEOMETRY_BYTES := 16777216
+MAX_RESPONSE_BYTES := 1048576
+
+fn valid_path(value: str) -> bool {
+  return value.len() > 0 && value.len() <= MAX_PATH_BYTES && !value.contains("\0")
+}
+
+fn tokenizer_ok(value: tokenizer_qwen2.TokenizerStatus) -> bool = match value {
+  Ok => true,
+  Error => false,
+}
+
+fn ir_ok(value: model_ir.IrStatus) -> bool = match value {
+  Ok => true,
+  Error => false,
+}
+
+fn validate_kind(kind: model.ProviderKind) -> Result<(), Error> = match kind {
+  AlignRuntime => Ok(()),
+  _ => Err(Error.Invalid),
+}
+
+fn validate_generate(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<(), Error> {
+  validate_kind(config.kind)?
+  if config.endpoint.len() > 0 || config.api_key.len() > 0 || config.tokenize_endpoint.len() > 0
+    || config.timeout_ns != 0 {
+    return Err(Error.Invalid)
+  }
+  if !valid_path(config.model) || !valid_path(config.runtime_pack_path)
+    || !valid_path(config.runtime_geometry_path) {
+    return Err(Error.Invalid)
+  }
+  if config.max_response_bytes < 1 || config.max_response_bytes > MAX_RESPONSE_BYTES {
+    return Err(Error.Invalid)
+  }
+  if request.temperature != 0.0 || request.max_tokens < 1 || request.max_tokens > 128 {
+    return Err(Error.Invalid)
+  }
+  match request.seed {
+    Some(_) => { return Err(Error.Invalid) },
+    None => {},
+  }
+  return Ok(())
+}
+
+fn read_geometry(path: str) -> Result<string, Error> {
+  source := fs.open(path)?
+  mut accumulated := buffer(0)
+  mut chunk := buffer(65536)
+  mut total := 0
+  loop {
+    if total == MAX_GEOMETRY_BYTES {
+      mut probe := buffer(1)
+      if source.read(probe)? > 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := MAX_GEOMETRY_BYTES - total
+    count := if remaining < 65536 {
+      mut tail := buffer(remaining)
+      read_count := source.read(tail)?
+      accumulated.append(tail.bytes())
+      read_count
+    } else {
+      read_count := source.read(chunk)?
+      accumulated.append(chunk.bytes())
+      read_count
+    }
+    if count == 0 { break }
+    total = total + count
+  }
+  return Ok(accumulated.bytes().as_str()?.clone())
+}
+
+fn contains_id(borrow ids: array<i64>, value: i64) -> bool {
+  mut at := 0
+  loop {
+    if at >= ids.len() { break }
+    if ids[at] == value { return true }
+    at = at + 1
+  }
+  return false
+}
+
+pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
+  validate_generate(config, request)?
+
+  snapshot := gguf.open_snapshot(config.model)?
+  table_ok := match snapshot.table.status { Ok => true, Error => false }
+  if !table_ok { return Err(Error.Invalid) }
+  ir := frontend_qwen.build_model_ir(snapshot.table, config.model)
+  if !ir_ok(ir.status) { return Err(Error.Invalid) }
+  geometry := read_geometry(config.runtime_geometry_path)?
+  geometry_view: str := geometry
+  derived_view: str := ir.document
+  if geometry_view != derived_view { return Err(Error.Invalid) }
+
+  alignpack.verify_source_identity_snapshot(snapshot, config.runtime_pack_path)?
+  prepared := tokenizer_qwen2.prepare_generation_snapshot(snapshot, request.system, request.user)?
+  if !tokenizer_ok(prepared.status) { return Err(Error.Invalid) }
+  allocation_steps := if request.max_tokens > 1 { request.max_tokens - 1 } else { 1 }
+  if prepared.token_ids.len() < 1 || prepared.token_ids.len() > 2048
+    || prepared.token_ids.len() + allocation_steps > ir.context_length
+    || prepared.token_ids.len() + allocation_steps > 4096 {
+    return Err(Error.Invalid)
+  }
+
+  generated_parts := decode_step.generate_resident(
+    config.runtime_pack_path,
+    config.runtime_geometry_path,
+    prepared.token_ids,
+    prepared.eog_token_ids,
+    request.max_tokens,
+  )
+  if generated_parts.outcome.code.len() > 0 { return Err(Error.Invalid) }
+  generated_ids: array<i64> := json.decode(generated_parts.token_ids_json)?
+  if generated_ids.len() < 1 || generated_ids.len() > request.max_tokens {
+    return Err(Error.Invalid)
+  }
+  last := generated_ids[generated_ids.len() - 1]
+  stopped_eog := contains_id(prepared.eog_token_ids, last)
+  if !stopped_eog && generated_ids.len() != request.max_tokens { return Err(Error.Invalid) }
+  completion_count := if stopped_eog { generated_ids.len() - 1 } else { generated_ids.len() }
+  mut completion: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= completion_count { break }
+    completion.push(generated_ids[at])
+    at = at + 1
+  }
+  completion_ids := completion.build()
+  decoded := tokenizer_qwen2.decode_model(
+    config.model,
+    completion_ids,
+    tokenizer_qwen2.DecodeSpecials.SkipControl,
+  )?
+  if !tokenizer_ok(decoded.status) { return Err(Error.Invalid) }
+  prepared_tokenizer_id: str := prepared.tokenizer_id
+  decoded_tokenizer_id: str := decoded.tokenizer_id
+  if decoded_tokenizer_id != prepared_tokenizer_id || decoded.text.len() > config.max_response_bytes {
+    return Err(Error.Invalid)
+  }
+  return Ok(decoded.text.clone())
+}
+
+pub fn stream(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
+  validate_kind(config.kind)?
+  return Err(Error.Invalid)
+}
+
+pub fn count_tokens(config: model.ProviderConfig, text: str) -> Result<model.TokenCount, Error> {
+  validate_kind(config.kind)?
+  if !valid_path(config.model) { return Err(Error.Invalid) }
+  encoded := tokenizer_qwen2.encode_model(
+    config.model,
+    text,
+    tokenizer_qwen2.EncodeSpecials.LiteralControl,
+  )?
+  if !tokenizer_ok(encoded.status) { return Err(Error.Invalid) }
+  return Ok(model.TokenCount { count: encoded.token_ids.len(), exact: true })
+}
+
+pub fn count_prompt(config: model.ProviderConfig, request: model.GenerationRequest) -> model.TokenCount {
+  validate_kind(config.kind) else {
+    return model.TokenCount { count: -1, exact: false }
+  }
+  if !valid_path(config.model) {
+    return model.TokenCount { count: -1, exact: false }
+  }
+  prepared := tokenizer_qwen2.prepare_generation_model(
+    config.model,
+    request.system,
+    request.user,
+  ) else {
+    return model.TokenCount { count: -1, exact: false }
+  }
+  if !tokenizer_ok(prepared.status) {
+    return model.TokenCount { count: -1, exact: false }
+  }
+  return model.TokenCount { count: prepared.token_ids.len(), exact: true }
+}

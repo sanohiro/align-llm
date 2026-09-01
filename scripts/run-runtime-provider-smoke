@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R7-RUNTIME-PROVIDER section 4.1 hosted owner. It builds three tiny F32 Qwen GGUFs, derives each
+# exact model-IR document, packs each real GGUF, and runs the public provider CLI with the
+# deterministic stub engine. No model download, network service, or llama.cpp process is needed.
+
+unset ALIGN_LLM_GGML_INCLUDE ALIGN_LLM_GGML_LIB ALIGN_LLM_GGML_FORCE
+export PYTHONDONTWRITEBYTECODE=1
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+work_dir=$(mktemp -d)
+shim_dir="${work_dir}/lib"
+ordinary_main="${work_dir}/ordinary-main"
+runtime_main="${work_dir}/runtime-main"
+runtime_api="${work_dir}/runtime-provider-api-smoke"
+main_saved=0
+
+cleanup() {
+  status=$?
+  if [ "${main_saved}" = 1 ] && [ -f "${ordinary_main}" ]; then
+    cp "${ordinary_main}" "${root_dir}/main"
+  fi
+  rm -rf "${work_dir}"
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+python3 "${root_dir}/scripts/runtime_provider_fixture.py" "${work_dir}"
+
+python3 - "${root_dir}/main" "${work_dir}" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+binary, work = sys.argv[1], Path(sys.argv[2])
+manifest = json.loads((work / "runtime-manifest.json").read_text(encoding="utf-8"))
+for key in ("model", "immediate_eog_model", "after_one_eog_model"):
+    model = work / manifest[key]
+    stem = model.stem
+    geometry = work / (stem + "-model-ir.json")
+    pack = work / (stem + ".alignpack")
+    pack_document = work / (stem + "-pack.json")
+    for args in (
+        [binary, "--model-ir", str(model), str(geometry)],
+        [binary, "--pack", str(model), str(pack), str(pack_document)],
+    ):
+        result = subprocess.run(args, capture_output=True, check=False)
+        if result.returncode != 0:
+            raise SystemExit(
+                "runtime provider smoke: FAIL fixture preparation %r: %s"
+                % (args[1:], result.stderr.decode("utf-8", "replace"))
+            )
+PY
+
+cp "${root_dir}/main" "${ordinary_main}"
+main_saved=1
+ALIGN_LLM_GGML_SHIM_DIR="${shim_dir}" ALIGN_LLM_GGML_FORCE=engine \
+  "${root_dir}/scripts/build-ggml-shim" >/dev/null
+(
+  cd "${root_dir}"
+  export LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+  diagnostic="${work_dir}/alignc-diagnostic.txt"
+  if ! "${compiler}" build src/main.align >/dev/null 2>"${diagnostic}"; then
+    cat "${diagnostic}" >&2
+    exit 1
+  fi
+  mv main "${runtime_main}"
+  if ! "${compiler}" build src/runtime_provider_api_smoke.align >/dev/null 2>"${diagnostic}"; then
+    cat "${diagnostic}" >&2
+    exit 1
+  fi
+  mv runtime_provider_api_smoke "${runtime_api}"
+  cp "${ordinary_main}" main
+)
+
+export DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+normal_model="${work_dir}/runtime-qwen2.gguf"
+normal_pack="${work_dir}/runtime-qwen2.alignpack"
+normal_geometry="${work_dir}/runtime-qwen2-model-ir.json"
+api_output=$("${runtime_api}" "${normal_model}" "${normal_pack}" "${normal_geometry}")
+if [ "${api_output}" != "runtime provider API smoke: PASS" ]; then
+  printf '%s\n' "runtime provider smoke: FAIL API output: ${api_output}" >&2
+  exit 1
+fi
+python3 - "${runtime_main}" "${work_dir}" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+binary, work = sys.argv[1], Path(sys.argv[2])
+manifest = json.loads((work / "runtime-manifest.json").read_text(encoding="utf-8"))
+checks = 0
+
+
+def require(condition, message):
+    global checks
+    checks += 1
+    if not condition:
+        raise SystemExit("runtime provider smoke: FAIL " + message)
+
+
+def paths(key):
+    model = work / manifest[key]
+    stem = model.stem
+    return model, work / (stem + ".alignpack"), work / (stem + "-model-ir.json")
+
+
+def invoke(label, key="model", max_tokens=3, *, pack_key=None, geometry=None, extra=()):
+    model, pack, derived = paths(key)
+    if pack_key is not None:
+        _, pack, _ = paths(pack_key)
+    result_path = work / (label + "-result.json")
+    args = [
+        binary,
+        "--provider",
+        "align-runtime",
+        str(model),
+        str(pack),
+        str(geometry or derived),
+        "x",
+        str(result_path),
+        str(max_tokens),
+        *extra,
+    ]
+    result = subprocess.run(args, capture_output=True, check=False, timeout=30)
+    record = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else None
+    return result, record
+
+
+def successful(label, key, max_tokens, completion_tokens):
+    result, record = invoke(label, key, max_tokens)
+    require(result.returncode == 0, "%s exited %d: %s" % (
+        label, result.returncode, result.stderr.decode("utf-8", "replace")))
+    require(record is not None, label + " wrote no GenerationRecord")
+    require(record["schema_version"] == 2 and record["operation"] == "generate", label + " schema")
+    require(record["provider"] == "align-runtime" and record["endpoint"] == "in-process",
+            label + " provider identity")
+    require(record["status"] == "ok" and record["error"] == "", label + " status")
+    require(record["completion_tokens"] == completion_tokens, "%s completion count %r" % (
+        label, record["completion_tokens"]))
+    require(record["prompt_tokens"] == manifest["prompt_tokens"], "%s prompt count %r" % (
+        label, record["prompt_tokens"]))
+    require(record["total_tokens"] == manifest["prompt_tokens"] + completion_tokens,
+            label + " total count")
+    require(record["token_count_exact"] is True, label + " exact token count")
+    return record
+
+
+one = successful("max-one", "model", 1, 1)
+three = successful("max-three", "model", 3, 3)
+immediate = successful("immediate-eog", "immediate_eog_model", 3, 0)
+after_one = successful("after-one-eog", "after_one_eog_model", 3, 1)
+require(len(one["output"].encode("utf-8")) == 1, "max-one output width")
+require(len(three["output"].encode("utf-8")) == 3, "max-three output width")
+require(immediate["output"] == "", "immediate EOG leaked into completion")
+require(after_one["output"] == one["output"], "post-step EOG leaked or first id drifted")
+
+for label, max_tokens in (("zero-max", 0), ("over-max", 129)):
+    result, record = invoke(label, max_tokens=max_tokens)
+    require(result.returncode != 0 and record is not None, label + " was not recorded as failure")
+    require(record["status"] == "error" and record["error"] == "invalid", label + " error mapping")
+
+drift = work / "drift-model-ir.json"
+_, _, normal_geometry = paths("model")
+drift.write_bytes(normal_geometry.read_bytes() + b"\n")
+result, record = invoke("geometry-drift", geometry=drift)
+require(result.returncode != 0 and record["status"] == "error", "geometry drift was accepted")
+
+oversize_geometry = work / "oversize-model-ir.json"
+with oversize_geometry.open("wb") as destination:
+    destination.seek(16_777_216)
+    destination.write(b"x")
+result, record = invoke("geometry-oversize", geometry=oversize_geometry)
+require(result.returncode != 0 and record["status"] == "error", "oversize geometry was accepted")
+
+result, record = invoke("identity-drift", pack_key="immediate_eog_model")
+require(result.returncode != 0 and record["status"] == "error", "pack identity drift was accepted")
+
+result, record = invoke("extra-cli-operand", extra=("extra",))
+require(result.returncode != 0 and record is None, "runtime CLI accepted an extra operand")
+
+print("runtime provider smoke: PASS (%d assertions)" % checks)
+PY

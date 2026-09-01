@@ -16,28 +16,32 @@ termination behavior, and coordinates seven modules plus CLI and evaluation. The
 ledger, exact validation order, EOG/max-token semantics, closure matrix, fixed coding-task gate, and
 pre-implementation 20-minute qualification ceiling are `docs/specs/r7-runtime-provider.md`.
 
-The settled implementation boundary retains one GGUF snapshot while deriving exact model geometry,
-checking the alignpack source record, and preparing prompt/EOG ids. Generation is greedy, CPU,
-resident, at most 64 tokens, non-streaming, unseeded, and without an internal timeout. It returns no
+Design checkpoint `fe3665d44148f4d840d098b394e17a48938e7c4f` is complete. The implementation
+candidate retains one GGUF snapshot while deriving exact model geometry, checking the alignpack
+source record, and preparing prompt/EOG ids. Generation is greedy, CPU, resident, at most 128
+tokens, non-streaming, unseeded, and without an internal timeout. It returns no
 partial text on failure and excludes the terminal EOG id from detokenization. The fixed gate runs
 the existing `python-inclusive-range` request through both local OpenAI-compatible llama.cpp and
 align-runtime, persists unchanged schema-2 generation records, and requires both patches to pass
 the existing task validator.
 
-**Latest durable verification.** The design was authored against `main` `88b77ed` after reading the
-R7 prompt contract, provider/runtime code, pinned llama.cpp build 10566 EOG construction, and the
-existing coding-task fixture/validator. Implementation verification has not started.
+**Latest durable verification.** `make tokenizer-smoke provider-smoke runtime-provider-smoke
+gate-topology-check layer-forward-smoke` passes, including the 48-assertion synthetic provider/CLI
+matrix, six generation-EOG cases, and the complete shared decode regression. The real
+`runtime-provider-gate` passed in 62.7 seconds with the pinned
+4,683,073,536-byte Qwen model and llama.cpp build 10566: both provider legs produced a passing patch
+with SHA-256 prefix `5d6b107e706a`. The gate's earlier 64-token probe established truncation, so the
+settled request limit is 128. Publication owners and aggregate preflight have not run yet.
 
-**Next actions.** (1) Complete the author ledger-to-prose consistency pass and commit the design
-checkpoint. (2) Implement snapshot EOG preparation, bounded pack identity verification,
-stop-aware decode generation, explicit provider dispatch/CLI, and hosted owners. (3) Run focused
-owners and the real fixed-task gate, perform one comprehensive review and consolidated repair, run
-exact-head publication preflight, publish/merge the PR, pull latest `main`, and continue the roadmap.
+**Next actions.** (1) Finish the implementation-to-ledger evidence map and focused owners, then
+commit the stable candidate. (2) Run one comprehensive review, validate and consolidate findings,
+and rerun affected owners. (3) Run exact-head publication preflight, publish/merge the PR, pull the
+latest `main` including concurrent work, and continue the next eligible roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The R7-RUNTIME-PROVIDER design/roadmap/handoff changes until the
-design checkpoint is committed. Local configuration does not belong in the change.
+**Intentional uncommitted files.** The complete R7-RUNTIME-PROVIDER implementation candidate and
+its post-design documentation/evidence update. Local configuration does not belong in the change.
 
 ## Merged checkpoint: R7-PROMPT (2026-09-01)
 

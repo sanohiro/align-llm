@@ -1,0 +1,105 @@
+module runtime_provider_api_smoke
+
+import model
+import provider
+
+fn config(
+  kind: model.ProviderKind,
+  model_path: str,
+  pack_path: str,
+  geometry_path: str,
+  endpoint: str,
+  api_key: str,
+  timeout_ns: i64,
+  tokenize_endpoint: str,
+  max_response_bytes: i64,
+) -> model.ProviderConfig {
+  return model.ProviderConfig {
+    kind: kind,
+    endpoint: endpoint,
+    model: model_path,
+    api_key: api_key,
+    timeout_ns: timeout_ns,
+    tokenize_endpoint: tokenize_endpoint,
+    max_response_bytes: max_response_bytes,
+    runtime_pack_path: pack_path,
+    runtime_geometry_path: geometry_path,
+  }
+}
+
+fn request(max_tokens: i64, temperature: f64, seed: Option<i64>) -> model.GenerationRequest {
+  return model.GenerationRequest {
+    system: "You are a coding assistant. Return a concise patch-oriented answer.",
+    user: "x",
+    max_tokens: max_tokens,
+    temperature: temperature,
+    seed: seed,
+  }
+}
+
+fn expect_error(value: Result<string, Error>) -> Result<(), Error> = match value {
+  Ok(_) => Err(Error.Invalid),
+  Err(_) => Ok(()),
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 4 { return Err(Error.Invalid) }
+  model_path := args[1]
+  pack_path := args[2]
+  geometry_path := args[3]
+
+  base := config(
+    model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 1048576)
+  generated := provider.generate(base, request(1, 0.0, None))?
+  if generated.len() != 1 { return Err(Error.Invalid) }
+  counted := provider.count_tokens(base, generated)?
+  prompt_count := provider.count_prompt(base, request(1, 0.0, None))
+  info := provider.model_info(base)
+  if counted.count != 1 || !counted.exact || prompt_count.count != 148 || !prompt_count.exact
+    || info.provider != "align-runtime" || info.endpoint != "in-process"
+    || info.supports_stream || info.supports_seed || !info.token_count_exact {
+    return Err(Error.Invalid)
+  }
+
+  expect_error(provider.generate(
+      config(model.ProviderKind.LocalOpenAI, model_path, pack_path, geometry_path, "", "", 0, "", 1048576),
+      request(1, 0.0, None)))?
+  expect_error(provider.generate(
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "socket", "", 0, "", 1048576),
+      request(1, 0.0, None)))?
+  expect_error(provider.generate(
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "secret", 0, "", 1048576),
+      request(1, 0.0, None)))?
+  expect_error(provider.generate(
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 1, "", 1048576),
+      request(1, 0.0, None)))?
+  expect_error(provider.generate(
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "tokenize", 1048576),
+      request(1, 0.0, None)))?
+  expect_error(provider.generate(
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 0),
+      request(1, 0.0, None)))?
+  expect_error(provider.generate(
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 1048577),
+      request(1, 0.0, None)))?
+  expect_error(provider.generate(base, request(0, 0.0, None)))?
+  expect_error(provider.generate(base, request(129, 0.0, None)))?
+  expect_error(provider.generate(base, request(1, 0.1, None)))?
+  expect_error(provider.generate(base, request(1, 0.0, Some(0))))?
+  expect_error(provider.generate(
+      config(model.ProviderKind.AlignRuntime, "", pack_path, geometry_path, "", "", 0, "", 1048576),
+      request(1, 0.0, None)))?
+  expect_error(provider.generate(
+      config(model.ProviderKind.AlignRuntime, model_path, "", geometry_path, "", "", 0, "", 1048576),
+      request(1, 0.0, None)))?
+  expect_error(provider.generate(
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, "", "", "", 0, "", 1048576),
+      request(1, 0.0, None)))?
+  expect_error(provider.stream(base, request(1, 0.0, None)))?
+  expect_error(provider.generate(
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 1),
+      request(3, 0.0, None)))?
+
+  print("runtime provider API smoke: PASS")
+  return Ok(())
+}

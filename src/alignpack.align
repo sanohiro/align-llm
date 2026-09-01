@@ -3229,6 +3229,91 @@ fn execute_verify(
   return inspect_pack(t, g, expected, source, pack_path, c, limits.copy_window_bytes)
 }
 
+// R7-RUNTIME-PROVIDER's bounded source-binding seam. It stops after the existing source record and
+// never reads one byte of the weight payload: whole-payload equivalence remains `verify_pack`'s
+// question. The caller retains the snapshot across this borrow and can then move that exact source
+// into tokenizer preparation.
+pub fn verify_source_identity_snapshot(
+  borrow snapshot: gguf.GgufSnapshot,
+  pack_path: str,
+) -> Result<(), Error> {
+  if !valid_path(pack_path) { return Err(Error.Invalid) }
+  status_ok := match snapshot.table.status { Ok => true, Error => false }
+  if !status_ok { return Err(Error.Invalid) }
+  geometry := model_ir.size_tensors(snapshot.table)
+  if geometry.failed { return Err(Error.Invalid) }
+
+  pak := fs.open_rw(pack_path)?
+  pack_len := pak.len()?
+  if pack_len < HEADER_BYTES { return Err(Error.Invalid) }
+  mut counters := new_counters()
+  mut window := buffer(0)
+  match read_exact(pak, window, counters, "R4_PACK_UNREADABLE", 0, HEADER_BYTES) {
+    Ok(_) => {},
+    Err(_) => { return Err(Error.Invalid) },
+  }
+  header := match decode_header(window) {
+    Ok(value) => value,
+    Err(_) => { return Err(Error.Invalid) },
+  }
+  if pack_len != header.total_bytes { return Err(Error.Invalid) }
+  match validate_regions(header) {
+    Ok(_) => {},
+    Err(_) => { return Err(Error.Invalid) },
+  }
+  match read_exact(
+    pak,
+    window,
+    counters,
+    "R4_PACK_UNREADABLE",
+    header.source_record_offset,
+    SOURCE_RECORD_BYTES,
+  ) {
+    Ok(_) => {},
+    Err(_) => { return Err(Error.Invalid) },
+  }
+  record := window.bytes()
+  if record.u64_le(0) as i64 != snapshot.table.file_size
+    || record.u64_le(8) as i64 != snapshot.table.data_offset
+    || record.u64_le(16) as i64 != snapshot.table.tensor_count
+    || record.u64_le(24) as i64 != snapshot.table.kv_count
+    || record.u32_le(32) as i64 != snapshot.table.version
+    || record.u32_le(36) as i64 != snapshot.table.alignment
+    || record.u64_le(40) as i64 != snapshot.table.data_offset
+    || record.u64_le(80) as i64 != geometry.total_bytes
+    || record.u64_le(88) as i64 != 0 {
+    return Err(Error.Invalid)
+  }
+  mut reserved_at := 96
+  loop {
+    if reserved_at >= SOURCE_RECORD_BYTES { break }
+    if record.u8(reserved_at) != 0 { return Err(Error.Invalid) }
+    reserved_at = reserved_at + 1
+  }
+  observed_digest := hex_of(window, 48, 32)
+  observed_digest_view: str := observed_digest
+  if snapshot.table.data_offset < 0 || snapshot.table.data_offset > MAX_HEADER_REGION_BYTES {
+    return Err(Error.Invalid)
+  }
+  match read_exact(
+    snapshot.handle,
+    window,
+    counters,
+    "R4_SOURCE_UNREADABLE",
+    0,
+    snapshot.table.data_offset,
+  ) {
+    Ok(_) => {},
+    Err(_) => { return Err(Error.Invalid) },
+  }
+  digest := crypto.sha256(window.bytes())
+  if digest.len() != 32 { return Err(Error.Invalid) }
+  expected_digest := encoding.hex_encode(digest[0..digest.len()])
+  expected_digest_view: str := expected_digest
+  if expected_digest_view != observed_digest_view { return Err(Error.Invalid) }
+  return Ok(())
+}
+
 // `--pack-verify`. Both containers are streamed and every claimed byte is compared; the statistics
 // and the `blocks` array are recomputed from the pack's **own** tables and the source's own tensor
 // table, so the improvement number in a verify document is derived from two files that both exist.

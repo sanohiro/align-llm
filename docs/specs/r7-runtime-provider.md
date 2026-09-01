@@ -37,9 +37,9 @@ error, validation order, owner, and acceptance target in this capability.
 | Termination | first generated EOG token, excluded from text; otherwise exactly `max_tokens` generated ids |
 | Owner modules | `tokenizer_qwen2`, `alignpack`, `decode_step`, `provider_runtime`, `provider`, `model`, `main` |
 | Hosted owner | `make runtime-provider-smoke` |
-| Regression owners | `make tokenizer-smoke decode-step-smoke provider-smoke runtime-provider-smoke` |
+| Regression owners | `make tokenizer-smoke layer-forward-smoke provider-smoke runtime-provider-smoke` |
 | Real qualification | `make runtime-provider-gate` |
-| Publication owner | `python3 scripts/pre-pr --owner-test R7-RUNTIME-PROVIDER -- make tokenizer-smoke decode-step-smoke provider-smoke runtime-provider-smoke` |
+| Publication owner | `python3 scripts/pre-pr --owner-test R7-RUNTIME-PROVIDER -- make tokenizer-smoke layer-forward-smoke provider-smoke runtime-provider-smoke` |
 | Prerequisites | merged R7-PROMPT and `.align-revision` `27770420555d19b98eced133369c168e9c6d4a2f` |
 | Persisted/cache identity | no new persisted format or cache; the CLI writes unchanged `GenerationRecord` schema 2; alignpack remains format 1 and is source-bound by its existing source record |
 | Schema version | N/A for new surfaces: all new values are in-memory; existing result schema stays 2 |
@@ -101,7 +101,7 @@ effect.
 | 2 | endpoint, API key, and tokenizer endpoint are empty; `timeout_ns == 0` | none |
 | 3 | GGUF, pack, and geometry paths each satisfy the existing non-empty, at-most-4096-byte, no-NUL grammar | none |
 | 4 | `max_response_bytes` is in `1..=1,048,576` | none |
-| 5 | `temperature == 0.0`, `seed == None`, and `max_tokens` is in `1..=64` | none |
+| 5 | `temperature == 0.0`, `seed == None`, and `max_tokens` is in `1..=128` | none |
 | 6 | one `GgufSnapshot` opens and its table is structurally valid | one retained file description |
 | 7 | Qwen frontend derivation succeeds and the supplied geometry is at most 16,777,216 bytes and exactly equals its complete `R1_MODEL_IR` schema-2 document | one bounded geometry read; no pack payload read |
 | 8 | alignpack header/regions/source record are valid and source identity exactly matches that retained snapshot | bounded pack metadata reads; no weight payload read |
@@ -206,19 +206,26 @@ whole-payload correctness.
 `decode_step` adds this public generation entry point:
 
 ```text
+pub GenerationParts {
+  outcome: model_forward.Outcome,
+  token_ids_json: string,
+}
+
 pub fn generate_resident(
   pack_path: str,
   geometry_path: str,
   borrow prompt_token_ids: array<i64>,
   borrow eog_token_ids: array<i64>,
   max_tokens: i64,
-  borrow mut stepped: model_forward.StepColumns,
-) -> model_forward.Outcome
+) -> GenerationParts
 ```
 
-It returns the existing scalar `Outcome` plus the existing caller-owned `StepColumns`. The prefill
-argmax `d1` is `Outcome.argmax`; each completed generation graph contributes its next id in
-`StepColumns.argmax`. Its implementation shares the current validation, resident allocation,
+It returns the existing scalar `Outcome` plus a bounded owned JSON array of generated ids. The typed
+`StepColumns` stays inside `decode_step`: Align Request 43 still refuses a caller in another module
+to read a `borrow mut` output record after the foreign call, and this uses the already-shipped R5C
+`render_parts` pattern instead of inventing a hypothetical language surface. The prefill argmax
+`d1` is `Outcome.argmax`; each completed generation graph contributes its next id to the JSON array.
+Its implementation shares the current validation, resident allocation,
 prefill, graph, plane, and converged teardown. Internally it uses
 `max(1, max_tokens - 1)` as the allocation/legacy-step operand and carries `max_tokens` separately
 to the stop-aware loop. The existing `execute` and CLI pass `generation = false` and remain
@@ -237,7 +244,7 @@ completion_ids = generated without the final id only when termination == EOG
 completion_text = detokenize(completion_ids, skip-control)
 ```
 
-Thus `max_tokens == 1` and immediate EOG execute no decode graph. At most 63 decode graphs run. The
+Thus `max_tokens == 1` and immediate EOG execute no decode graph. At most 127 decode graphs run. The
 EOG graph is never followed by another graph. An EOG id counts toward the maximum but is never
 rendered. An empty completion is a successful immediate-EOG result. Membership is a bounded linear
 scan of at most 256 ids and happens before each graph.
@@ -279,17 +286,27 @@ model-IR document in a temporary directory, and submits this fixed request to bo
 `LocalOpenAI` and `AlignRuntime`:
 
 - system: the provider CLI's existing fixed coding-assistant sentence;
-- user: the checked-in `python-inclusive-range` source, allowed edit, test intent, and instruction
-  to return only a unified diff;
+- user: the checked-in `python-inclusive-range` source, allowed one-line edit, test intent, and the
+  fixed unified-diff prefix through the removed line; the model must generate the added line and no
+  completion repair is admitted;
 - temperature: `0.0`;
 - seed: absent;
-- maximum: `64` tokens.
+- maximum: `128` tokens. The pre-implementation value of 64 was rejected by the first real gate
+  attempt: llama.cpp produced the correct patch shape but was truncated at `return sum(range` before
+  the closing hunk, so 128 is the smallest power-of-two ceiling that can carry the consumer result.
 
 The runner persists both unchanged schema-2 records, accepts either a raw unified diff or exactly
 one Markdown `diff` fence with no surrounding non-whitespace text, and invokes
 `eval/runners/run-coding-task.py` against the existing task manifest for each extracted patch. It
 requires two `status: ok` records and two passing task results; output equality is not required.
 Temporary model-IR, pack, task copies, responses, and server state are removed on every exit.
+
+The first complete qualification on the 16 GiB Apple reference host passed in 62.7 seconds. Both
+the pinned llama.cpp comparison leg and `AlignRuntime` produced a validator-passing patch with
+SHA-256 prefix `5d6b107e706a`; equality was observed, not required. Earlier prompt-shape probes are
+not qualification evidence: one exposed the 64-token truncation that set the bound, while later
+probes either emitted a malformed hunk count or omitted the fixed diff envelope. The final prompt
+therefore fixes only that envelope and leaves the replacement line to each provider.
 
 **Pre-implementation maintenance ceiling:** 20 minutes wall time for the complete gate after the
 model and pinned binaries are already materialized, at most one alignpack construction, one local
@@ -321,14 +338,14 @@ same-tokenizer detokenization; response cap; result persistence. First failure w
 | --- | --- | --- | --- | --- | --- |
 | `ProviderKind` / config constructors | every match and constructor names runtime fields | one explicit runtime arm | old modules reject it; old fields inert | no artifact I/O before kind/config checks | provider compile graph; provider smoke exhaustive info/dispatch |
 | `provider_runtime` request | steps 1-5 in §2.3 | greedy owned text | seed/temp/timeout/field/path/limit matrix | zero file opens on lexical refusal | runtime provider API harness |
-| retained GGUF snapshot | open once; table borrowed for IR/identity then moved to tokenizer | one consistent prompt/model identity | structural, replacement, and reopen-tokenizer mismatch | file drops on every `?`/return | snapshot replacement and identity mutants |
-| geometry | bounded read; exact newly derived schema-2 bytes | all execution scalars source-owned | truncation, alternate path text, scalar drift, oversized file | no pack/tokenizer/inference after mismatch | exact, one-field drift, oversize, multi-invalid rows |
-| alignpack source identity | format/regions/record then eight identity fields | no payload read | header, region, reserved, digest, same-shape-other-model | pack handle and header buffer drop | identity API corpus and read-count ceiling |
+| retained GGUF snapshot | open once; table borrowed for IR/identity then moved to tokenizer | one consistent prompt/model identity | structural, replacement, and reopen-tokenizer mismatch | file drops on every `?`/return | tokenizer snapshot replacement; runtime cross-model identity refusal; final digest guard |
+| geometry | bounded read; exact newly derived schema-2 bytes | all execution scalars source-owned | truncation, alternate path text, scalar drift, oversized file | no pack/tokenizer/inference after mismatch | runtime exact success, byte-drift and oversize refusals |
+| alignpack source identity | format/regions/record then eight identity fields | no payload read | header, region, reserved, digest, same-shape-other-model | pack handle and header buffer drop | existing alignpack malformed corpus plus runtime cross-model identity refusal |
 | prompt/tokenizer/EOG | existing prompt stages then metadata/text EOG set | owned ids and ordered EOG ids | wrong type/range/empty/overflow/unsupported family combination | both arrays empty on data error | tokenizer generation API result-field matrix |
-| runtime bounds | ids, prompt, width, vocab before arena | legal prefill + at most 63 steps | OOV prompt/EOG, zero/oversize prompt, context/width | no resident buffer on refusal | generation bounds harness |
-| resident arena / ggml | existing one fill/wrap/backend schedule | one converged teardown | failure in fill, wrap, prefill, step k | created/freed counters balance; no partial text | existing decode mutants plus generation failure rows |
+| runtime bounds | ids, prompt, width, vocab before arena | legal prefill + at most 127 steps | OOV prompt/EOG, zero/oversize prompt, context/width | no resident buffer on refusal | generation bounds harness |
+| resident arena / ggml | existing one fill/wrap/backend schedule | one converged teardown | failure in fill, wrap, prefill, step k | created/freed counters balance; no partial text | existing layer-forward forced-failure corpus plus runtime generation successes |
 | EOG/max loop | classify d1 before graph; classify every argmax before next graph | exact generated sequence/reason | duplicate EOG ids harmless; empty set refused earlier | zero graph for max1/immediate EOG; no post-EOG graph | deterministic tiny-model argmax cases |
-| detokenization | omit terminal EOG, skip controls, compare tokenizer digest | owned UTF-8, empty allowed | invalid id/output/changed tokenizer | resident memory is gone before reopen | EOG omitted, max included, replacement mismatch |
+| detokenization | omit terminal EOG, skip controls, compare tokenizer digest | owned UTF-8, empty allowed | invalid id/output/changed tokenizer | resident memory is gone before reopen | immediate/one-step EOG omission, max inclusion, snapshot replacement, provider digest guard |
 | `count_tokens` / `count_prompt` | same Qwen tokenizer and prompt contract | exact true | `count_prompt` sentinel; token error propagates | tokenizer arrays drop per call | provider count rows |
 | CLI/result | runtime grammar selected before legacy parse | unchanged schema-2 success record | outer no-file failures; existing error record after dispatch | sink failure leaves provider result behavior unchanged | byte/field goldens and legacy provider goldens |
 | fixed-task runner | prerequisite identity, one temp root, fixed request | two retained records and two passing validations | configured-tool, generation, extraction, validation, timeout | server/process/temp teardown on all signals and exits | runner self-test plus real qualification |

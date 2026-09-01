@@ -11,6 +11,7 @@ MAX_TOKENIZER_TEXT_BYTES := 16777216
 MAX_HASH_BUCKET_ENTRIES := 16
 MAX_SPECIAL_TOKENS := 256
 MAX_SPECIAL_TOKEN_BYTES := 32
+MAX_EOG_TOKENS := 256
 MAX_OPERATION_INPUT_BYTES := 1048576
 MAX_OPERATION_TOKEN_IDS := 1048576
 MAX_OPERATION_OUTPUT_BYTES := 1048576
@@ -66,6 +67,21 @@ pub PromptIdsResult {
   token_ids: array<i64>,
 }
 
+pub GenerationPromptResult {
+  status: TokenizerStatus,
+  error_code: string,
+  error_detail: string,
+  template_id: string,
+  tokenizer_id: string,
+  vocab_size: i64,
+  merge_count: i64,
+  system_bytes: i64,
+  user_bytes: i64,
+  prompt_bytes: i64,
+  token_ids: array<i64>,
+  eog_token_ids: array<i64>,
+}
+
 Tokenizer {
   tokens: array<string>,
   types: array<i64>,
@@ -111,6 +127,17 @@ fn empty_i64() -> array<i64> {
 
 fn empty_string() -> array<string> {
   values: array_builder<string> := array_builder()
+  return values.build()
+}
+
+fn copy_i64(borrow source: array<i64>) -> array<i64> {
+  mut values: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= source.len() { break }
+    values.push(source[at])
+    at = at + 1
+  }
   return values.build()
 }
 
@@ -1430,7 +1457,7 @@ pub fn encode_model(
   return encode_loaded(loaded, text, specials)
 }
 
-fn failed_prompt(
+fn failed_generation(
   code: str,
   detail: str,
   template_id: str,
@@ -1440,7 +1467,7 @@ fn failed_prompt(
   system_bytes: i64,
   user_bytes: i64,
   prompt_bytes: i64,
-) -> PromptIdsResult = PromptIdsResult {
+) -> GenerationPromptResult = GenerationPromptResult {
   status: TokenizerStatus.Error,
   error_code: code.clone(),
   error_detail: bounded_detail(detail),
@@ -1452,6 +1479,144 @@ fn failed_prompt(
   user_bytes: user_bytes,
   prompt_bytes: prompt_bytes,
   token_ids: empty_i64(),
+  eog_token_ids: empty_i64(),
+}
+
+EogMetadata {
+  ok: bool,
+  detail: string,
+  ids: array<i64>,
+}
+
+EogSet {
+  ok: bool,
+  code: string,
+  detail: string,
+  ids: array<i64>,
+}
+
+fn collect_eog_metadata(borrow table: gguf.GgufTable) -> EogMetadata {
+  mut keys: array_builder<string> := array_builder()
+  keys.push("tokenizer.ggml.eos_token_id".clone())
+  keys.push("tokenizer.ggml.eot_token_id".clone())
+  keys.push("tokenizer.ggml.eom_token_id".clone())
+  keys.push("tokenizer.ggml.fim_pad_token_id".clone())
+  keys.push("tokenizer.ggml.fim_rep_token_id".clone())
+  keys.push("tokenizer.ggml.fim_sep_token_id".clone())
+  key_values := keys.build()
+  mut ids: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= key_values.len() { break }
+    key_view: str := key_values[at]
+    if gguf.kv_type(table, key_view) >= 0 {
+      match gguf.kv_int(table, key_view) {
+        Some(value) => { ids.push(value) },
+        None => {
+          return EogMetadata { ok: false, detail: key_view.clone(), ids: empty_i64() }
+        },
+      }
+    }
+    at = at + 1
+  }
+  return EogMetadata { ok: true, detail: "".clone(), ids: ids.build() }
+}
+
+fn eog_text(value: str) -> bool {
+  return value == "<|eot_id|>" || value == "<|im_end|>" || value == "<|end|>"
+    || value == "<|return|>" || value == "<|call|>" || value == "<|flush|>"
+    || value == "<|calls|>" || value == "<end_of_turn>" || value == "<|endoftext|>"
+    || value == "</s>" || value == "<|eom_id|>" || value == "<EOT>" || value == "_<EOT>"
+    || value == "[EOT]" || value == "[EOS]" || value == "<|end_of_text|>"
+    || value == "<end_of_utterance>" || value == "<eos>" || value == "<turn|>"
+    || value == "<|tool_response>" || value == "<｜end▁of▁sentence｜>" || value == "[e~["
+}
+
+fn build_eog_set(borrow t: Tokenizer, borrow metadata: EogMetadata) -> EogSet {
+  if !metadata.ok {
+    return EogSet {
+      ok: false,
+      code: "R7_EOG_METADATA".clone(),
+      detail: metadata.detail.clone(),
+      ids: empty_i64(),
+    }
+  }
+  mut selected := filled_i64(t.tokens.len(), 0)
+  mut at := 0
+  loop {
+    if at >= metadata.ids.len() { break }
+    id := metadata.ids[at]
+    if id < 0 || id >= t.tokens.len() {
+      return EogSet {
+        ok: false,
+        code: "R7_EOG_METADATA".clone(),
+        detail: indexed_detail("token", id),
+        ids: empty_i64(),
+      }
+    }
+    selected[id] = 1
+    at = at + 1
+  }
+
+  mut has_return := false
+  mut has_call := false
+  mut has_calls := false
+  mut has_flush := false
+  mut has_end := false
+  mut has_tool_response := false
+  mut has_s := false
+  at = 0
+  loop {
+    if at >= t.tokens.len() { break }
+    token_view: str := t.tokens[at]
+    if eog_text(token_view) { selected[at] = 1 }
+    if token_view == "<|return|>" { has_return = true }
+    if token_view == "<|call|>" { has_call = true }
+    if token_view == "<|calls|>" { has_calls = true }
+    if token_view == "<|flush|>" { has_flush = true }
+    if token_view == "<|end|>" { has_end = true }
+    if token_view == "<|tool_response>" { has_tool_response = true }
+    if token_view == "</s>" { has_s = true }
+    at = at + 1
+  }
+  if (has_return && has_call && has_end) || (has_calls && has_flush && has_end)
+    || (has_tool_response && has_s) {
+    return EogSet {
+      ok: false,
+      code: "R7_EOG_UNSUPPORTED".clone(),
+      detail: "token_combination".clone(),
+      ids: empty_i64(),
+    }
+  }
+
+  mut ids: array_builder<i64> := array_builder()
+  mut count := 0
+  at = 0
+  loop {
+    if at >= selected.len() { break }
+    if selected[at] != 0 {
+      count = count + 1
+      if count > MAX_EOG_TOKENS {
+        return EogSet {
+          ok: false,
+          code: "R7_EOG_METADATA".clone(),
+          detail: indexed_detail("count", count),
+          ids: empty_i64(),
+        }
+      }
+      ids.push(at)
+    }
+    at = at + 1
+  }
+  if count == 0 {
+    return EogSet {
+      ok: false,
+      code: "R7_EOG_METADATA".clone(),
+      detail: "empty".clone(),
+      ids: empty_i64(),
+    }
+  }
+  return EogSet { ok: true, code: "".clone(), detail: "".clone(), ids: ids.build() }
 }
 
 fn template_id_of(chat_source: str) -> string {
@@ -1483,15 +1648,14 @@ fn render_prompt(system: str, user: str) -> string {
   return output.to_string()
 }
 
-pub fn prepare_prompt_model(
-  model_path: str,
+fn prepare_snapshot(
+  snapshot: gguf.GgufSnapshot,
   system: str,
   user: str,
-) -> Result<PromptIdsResult, Error> {
-  if !path_valid(model_path) { return Err(Error.Invalid) }
+  require_eog: bool,
+) -> Result<GenerationPromptResult, Error> {
   system_bytes := system.len()
   user_bytes := user.len()
-  snapshot := gguf.open_snapshot(model_path)?
   if !table_ok(snapshot.table.status) {
     detail := builder()
     code_view: str := snapshot.table.error_code
@@ -1500,20 +1664,20 @@ pub fn prepare_prompt_model(
     detail.write_int(snapshot.table.error_offset)
     rendered := detail.to_string()
     rendered_view: str := rendered
-    return Ok(failed_prompt(
+    return Ok(failed_generation(
         "R7_GGUF", rendered_view, "", "", -1, -1, system_bytes, user_bytes, 0))
   }
 
   chat_source := match gguf.kv_string(snapshot.table, "tokenizer.chat_template") {
     Some(value) => value,
     None => {
-      return Ok(failed_prompt(
+      return Ok(failed_generation(
           "R7_CHAT_TEMPLATE_METADATA", "tokenizer.chat_template", "", "", -1, -1,
           system_bytes, user_bytes, 0))
     },
   }
   if chat_source.len() > MAX_CHAT_TEMPLATE_BYTES {
-    return Ok(failed_prompt(
+    return Ok(failed_generation(
         "R7_CHAT_TEMPLATE_SIZE", int_text(chat_source.len()), "", "", -1, -1,
         system_bytes, user_bytes, 0))
   }
@@ -1526,7 +1690,7 @@ pub fn prepare_prompt_model(
     detail.write("]")
     rendered := detail.to_string()
     rendered_view: str := rendered
-    return Ok(failed_prompt(
+    return Ok(failed_generation(
         "R7_UNSUPPORTED_CHAT_TEMPLATE", rendered_view, template_id_view, "", -1, -1,
         system_bytes, user_bytes, 0))
   }
@@ -1541,14 +1705,15 @@ pub fn prepare_prompt_model(
   if attempted < 0 || attempted > MAX_PROMPT_BYTES {
     detail := prompt_size_detail(system_bytes, user_bytes, attempted)
     detail_view: str := detail
-    return Ok(failed_prompt(
+    return Ok(failed_generation(
         "R7_PROMPT_SIZE", detail_view, template_id_view, "", -1, -1,
         system_bytes, user_bytes, 0))
   }
 
+  metadata := collect_eog_metadata(snapshot.table)
   loaded := load_snapshot(snapshot)?
   if !loaded.ok {
-    return Ok(failed_prompt(
+    return Ok(failed_generation(
         loaded.code, loaded.detail, template_id_view, "", loaded.vocab_size, loaded.merge_count,
         system_bytes, user_bytes, attempted))
   }
@@ -1558,11 +1723,25 @@ pub fn prepare_prompt_model(
     detail := indexed_detail("bytes", prompt.len())
     detail_view: str := detail
     tokenizer_id: str := loaded.tokenizer.tokenizer_id
-    return Ok(failed_prompt(
+    return Ok(failed_generation(
         "R7_PROMPT_RENDER", detail_view, template_id_view, tokenizer_id,
         loaded.vocab_size, loaded.merge_count, system_bytes, user_bytes, attempted))
   }
   prompt_view: str := prompt
+  eog := if require_eog {
+    build_eog_set(loaded.tokenizer, metadata)
+  } else {
+    EogSet { ok: true, code: "".clone(), detail: "".clone(), ids: empty_i64() }
+  }
+  if !eog.ok {
+    eog_code: str := eog.code
+    eog_detail: str := eog.detail
+    tokenizer_id: str := loaded.tokenizer.tokenizer_id
+    return Ok(failed_generation(
+        eog_code, eog_detail, template_id_view, tokenizer_id,
+        loaded.vocab_size, loaded.merge_count, system_bytes, user_bytes, attempted))
+  }
+
   encoded_template_id: str := template_id
   encoded_tokenizer_id := loaded.tokenizer.tokenizer_id.clone()
   encoded_tokenizer_id_view: str := encoded_tokenizer_id
@@ -1573,11 +1752,12 @@ pub fn prepare_prompt_model(
   space := regex.compile("^\\s$")?
   ids := encode_text(loaded.tokenizer, prompt_view, true, letter, number, space)
   if ids.len() > MAX_OPERATION_TOKEN_IDS {
-    return Ok(failed_prompt(
+    return Ok(failed_generation(
         "R7_TOKEN_COUNT", int_text(ids.len()), encoded_template_id, encoded_tokenizer_id_view,
         vocab_size, merge_count, system_bytes, user_bytes, attempted))
   }
-  return Ok(PromptIdsResult {
+  eog_ids := copy_i64(eog.ids)
+  return Ok(GenerationPromptResult {
       status: TokenizerStatus.Ok,
       error_code: "".clone(),
       error_detail: "".clone(),
@@ -1589,6 +1769,49 @@ pub fn prepare_prompt_model(
       user_bytes: user_bytes,
       prompt_bytes: attempted,
       token_ids: ids,
+      eog_token_ids: eog_ids,
+    })
+}
+
+pub fn prepare_generation_snapshot(
+  snapshot: gguf.GgufSnapshot,
+  system: str,
+  user: str,
+) -> Result<GenerationPromptResult, Error> {
+  return prepare_snapshot(snapshot, system, user, true)
+}
+
+pub fn prepare_generation_model(
+  model_path: str,
+  system: str,
+  user: str,
+) -> Result<GenerationPromptResult, Error> {
+  if !path_valid(model_path) { return Err(Error.Invalid) }
+  snapshot := gguf.open_snapshot(model_path)?
+  return prepare_generation_snapshot(snapshot, system, user)
+}
+
+pub fn prepare_prompt_model(
+  model_path: str,
+  system: str,
+  user: str,
+) -> Result<PromptIdsResult, Error> {
+  if !path_valid(model_path) { return Err(Error.Invalid) }
+  snapshot := gguf.open_snapshot(model_path)?
+  prepared := prepare_snapshot(snapshot, system, user, false)?
+  prompt_ids := copy_i64(prepared.token_ids)
+  return Ok(PromptIdsResult {
+      status: prepared.status,
+      error_code: prepared.error_code.clone(),
+      error_detail: prepared.error_detail.clone(),
+      template_id: prepared.template_id.clone(),
+      tokenizer_id: prepared.tokenizer_id.clone(),
+      vocab_size: prepared.vocab_size,
+      merge_count: prepared.merge_count,
+      system_bytes: prepared.system_bytes,
+      user_bytes: prepared.user_bytes,
+      prompt_bytes: prepared.prompt_bytes,
+      token_ids: prompt_ids,
     })
 }
 

@@ -25,7 +25,7 @@ FIELDS = (
 )
 EXPECTED = (
     b"hosted=gate-topology-check format-check check build eval-smoke loop-smoke "
-    b"provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
+    b"provider-smoke runtime-provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
     b"verify-loop-smoke failure-memory-smoke prompt-model-smoke "
     b"prompt-render-parity-smoke prompt-score-smoke "
     b"prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke "
@@ -92,7 +92,7 @@ def exact_environment() -> dict[str, str]:
     return {
         "ALIGN_LLM_HOSTED_CHECK_TARGETS": (
             "gate-topology-check format-check check build eval-smoke loop-smoke "
-            "provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
+            "provider-smoke runtime-provider-smoke index-smoke test-selection-smoke patch-eval-smoke "
             "verify-loop-smoke failure-memory-smoke prompt-model-smoke "
             "prompt-render-parity-smoke prompt-score-smoke "
             "prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke "

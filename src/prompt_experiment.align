@@ -416,12 +416,14 @@ fn provider_request_bytes(
   CloudOpenAI => provider_openai.request_bytes(model_name, request, false),
   LocalOpenAI => provider_openai.request_bytes(model_name, request, false),
   LlamaCpp => provider_llama.request_bytes(request, false),
+  AlignRuntime => "".clone(),
 }
 
 fn provider_decode_content(kind: model.ProviderKind, response: str) -> Result<string, Error> = match kind {
   CloudOpenAI => provider_openai.decode_content(response),
   LocalOpenAI => provider_openai.decode_content(response),
   LlamaCpp => provider_llama.decode_content(response),
+  AlignRuntime => Err(Error.Invalid),
 }
 
 // The one function that owns the credential. Everything from the single `env.get` to the redacted,

@@ -3,7 +3,7 @@ module model
 // Provider-independent data types. Provider implementations consume these records and return
 // only the values the current Align ownership model can represent safely at the boundary.
 
-pub ProviderKind { CloudOpenAI, LocalOpenAI, LlamaCpp }
+pub ProviderKind { CloudOpenAI, LocalOpenAI, LlamaCpp, AlignRuntime }
 
 pub ProviderConfig {
   kind: ProviderKind,
@@ -15,6 +15,10 @@ pub ProviderConfig {
   // The caller's bounded-response allowance, carried to the transport. There is no implicit
   // default: every construction site states the cap it is willing to receive.
   max_response_bytes: i64,
+  // Empty on every network provider. The in-process runtime keeps weight and exact derived
+  // geometry artifacts explicit instead of overloading endpoint or tokenizer fields as paths.
+  runtime_pack_path: str,
+  runtime_geometry_path: str,
 }
 
 pub GenerationRequest {

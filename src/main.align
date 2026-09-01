@@ -49,6 +49,7 @@ fn print_help() {
   print("       main --prepare-prompt <model.gguf> <system.txt> <user.txt>")
   print("       main prompt <experiment|generate|evaluate|accept|rollback> <request.json> <result.json>")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
+  print("       main --provider align-runtime <model.gguf> <model.alignpack> <model-ir.json> <prompt> <result.json> [max-tokens]")
 }
 
 fn parse_provider_kind(value: str) -> Result<model.ProviderKind, Error> {
@@ -338,32 +339,41 @@ fn provider_demo(args: array<str>) -> Result<(), Error> {
   if args.len() < 8 {
     return Err(Error.Invalid)
   }
-  kind := parse_provider_kind(args[2])?
-  mode := if args.len() >= 9 { args[8] } else { "generate" }
+  runtime := args[2] == "align-runtime"
+  if runtime && args.len() > 9 { return Err(Error.Invalid) }
+  kind := if runtime { model.ProviderKind.AlignRuntime } else { parse_provider_kind(args[2])? }
+  mode := if runtime { "generate" } else if args.len() >= 9 { args[8] } else { "generate" }
   if mode != "generate" && mode != "stream" {
     return Err(Error.Invalid)
   }
-  api_key := load_api_key(args[5])?
+  api_key := if runtime { "".clone() } else { load_api_key(args[5])? }
   api_key_view: str := api_key
-  tokenize_endpoint := if args.len() >= 10 && args[9] != "-" { args[9] } else { "" }
-  timeout_ns := if args.len() >= 11 { parse_i64(args[10])? } else { 30_000_000_000 }
+  tokenize_endpoint := if !runtime && args.len() >= 10 && args[9] != "-" { args[9] } else { "" }
+  timeout_ns := if runtime { 0 } else if args.len() >= 11 { parse_i64(args[10])? } else { 30_000_000_000 }
   if timeout_ns < 0 {
     return Err(Error.Invalid)
   }
+  endpoint := if runtime { "" } else { args[3] }
+  model_name := if runtime { args[3] } else { args[4] }
+  runtime_pack_path := if runtime { args[4] } else { "" }
+  runtime_geometry_path := if runtime { args[5] } else { "" }
   config := model.ProviderConfig {
     kind: kind,
-    endpoint: args[3],
-    model: args[4],
+    endpoint: endpoint,
+    model: model_name,
     api_key: api_key_view,
     timeout_ns: timeout_ns,
     tokenize_endpoint: tokenize_endpoint,
     // The pre-C6e demo keeps the shipped 256 KiB proposal-response allowance explicitly.
     max_response_bytes: 262_144,
+    runtime_pack_path: runtime_pack_path,
+    runtime_geometry_path: runtime_geometry_path,
   }
+  max_tokens := if runtime && args.len() == 9 { parse_i64(args[8])? } else if runtime { 64 } else { 256 }
   request := model.GenerationRequest {
     system: "You are a coding assistant. Return a concise patch-oriented answer.",
     user: args[6],
-    max_tokens: 256,
+    max_tokens: max_tokens,
     temperature: 0.0,
     seed: None,
   }

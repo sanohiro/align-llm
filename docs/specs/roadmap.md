@@ -1181,7 +1181,8 @@ The current forward delivery order is:
     exact-head Linux preflight and every required hosted platform check passed, and the valid coding
     baseline chain remains reachable from merged `main`.
 
-43. **R7-RUNTIME-PROVIDER — in-process text generation through the resident dense runtime. Active.**
+43. **R7-RUNTIME-PROVIDER — in-process text generation through the resident dense runtime.
+    Implementation candidate.**
     Connect R7-PROMPT's exact prompt ids to the existing resident Qwen2 decode loop, stop before an
     EOG token or at the requested completion bound, detokenize the generated non-EOG ids, and expose
     the result through an explicit `AlignRuntime` `ModelProvider` arm. The provider binds the retained
@@ -1193,6 +1194,13 @@ The current forward delivery order is:
     records, and requires both completions to pass the existing coding-task validator. The
     authoritative public-contract ledger, closure matrix, validation order, and pre-implementation
     qualification ceiling are [`r7-runtime-provider.md`](r7-runtime-provider.md).
+
+    The candidate now carries prompt/EOG preparation, exact geometry and source-identity binding,
+    stop-aware resident generation, detokenization, provider dispatch, the public CLI, a hosted
+    synthetic owner, and the opt-in fixed-task gate. On the 16 GiB Apple reference host the real
+    gate passed in 62.7 seconds: pinned llama.cpp and `AlignRuntime` both produced the same
+    validator-passing patch (SHA-256 prefix `5d6b107e706a`) within the precommitted 20-minute
+    maintenance ceiling. Publication verification and comprehensive review remain before merge.
 
 ### Status (2026-08-28)
 
