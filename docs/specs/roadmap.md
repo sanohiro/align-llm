@@ -1200,7 +1200,11 @@ The current forward delivery order is:
     synthetic owner, and the opt-in fixed-task gate. On the 16 GiB Apple reference host the real
     gate passed in 62.7 seconds: pinned llama.cpp and `AlignRuntime` both produced the same
     validator-passing patch (SHA-256 prefix `5d6b107e706a`) within the precommitted 20-minute
-    maintenance ceiling. Publication verification and comprehensive review remain before merge.
+    maintenance ceiling. Comprehensive review found and repaired three fixed-gate contract defects.
+    Publication preflight then exposed a clean-Linux build dependency on an ambient ggml shim; the
+    candidate now owns a temporary static hosted stub and an explicit real-shim build path. Fresh
+    publication verification, the required current-head coding baseline chain, and the resulting
+    final comprehensive review remain before merge.
 
 ### Status (2026-08-28)
 

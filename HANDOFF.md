@@ -38,16 +38,30 @@ configured invalid prerequisites could be hidden by an earlier N/A, and an untim
 consumed a third task validation. Consolidated repair now rejects non-exact fixed-task envelopes,
 validates every configured prerequisite before N/A, removes the task execution from the topology
 probe, and permanently owns these cases in the hosted self-test. Publication owners and aggregate
-preflight have not run yet.
+preflight have not completed yet.
 
-**Next actions.** (1) Commit the consolidated review repair. (2) Run exact-head publication
-preflight. (3) Publish and merge the PR after required checks and recorded finding dispositions,
-pull the latest `main` including concurrent work, and continue the next eligible roadmap capability.
+**Publication incident.** Host-native preflight passed the named owner in 75.9 seconds and all
+hosted checks in 296.2 seconds, then correctly stopped when the explicitly Linux-only fresh-focused
+owner reached `/proc/self/fd` on macOS. The required uid-501 aarch64 DinD rerun then exposed a real
+candidate defect: `main` now imports the runtime FFI, but `make build` still assumed an ambient
+`libalign_ggml_shim`. A clean Linux owner therefore failed to link. The repair makes `make build`
+and `make run` self-sufficient: the default embeds a temporary static unavailable-engine stub and
+leaves only `main`, while explicit ggml include/lib inputs retain the real shared-shim path. This
+changes the build boundary and authoritative design after the original review, so it triggers one
+final comprehensive review after the current-head coding baseline is re-recorded. Clean default and
+real-shared builds pass on macOS; the aarch64 Linux clean build plus tokenizer, layer-forward
+(128.954 seconds), provider, 48-assertion runtime provider, and topology owners all pass.
+
+**Next actions.** (1) Commit the expanded repair as the baseline source checkpoint. (2) Re-record
+the required source -> immutable oracle -> canonical finalization
+chain on Linux, then run the final comprehensive review. (3) Run exact-head publication preflight,
+publish and merge after required checks and recorded finding dispositions, pull the latest `main`
+including concurrent work, and continue the next eligible roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The consolidated review repair and this durable evidence update.
-Local configuration does not belong in the change.
+**Intentional uncommitted files.** The clean-build repair, its authoritative ledger/developer-guide
+updates, and this durable incident record. Local configuration does not belong in the change.
 
 ## Merged checkpoint: R7-PROMPT (2026-09-01)
 

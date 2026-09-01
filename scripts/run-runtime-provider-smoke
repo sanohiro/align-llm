@@ -28,6 +28,15 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 "${root_dir}/scripts/run-runtime-provider-gate" --self-test
+static_shim_dir="${work_dir}/static-shim"
+ALIGN_LLM_GGML_SHIM_DIR="${static_shim_dir}" ALIGN_LLM_GGML_SHIM_STATIC=1 \
+  "${root_dir}/scripts/build-ggml-shim" >/dev/null
+test -f "${static_shim_dir}/libalign_ggml_shim.a"
+test ! -e "${static_shim_dir}/align_ggml_shim.o"
+if ALIGN_LLM_GGML_SHIM_STATIC=invalid "${root_dir}/scripts/build-ggml-shim" >/dev/null 2>&1; then
+  echo "runtime provider smoke: FAIL invalid static shim selector was accepted" >&2
+  exit 1
+fi
 python3 "${root_dir}/scripts/runtime_provider_fixture.py" "${work_dir}"
 
 python3 - "${root_dir}/main" "${work_dir}" <<'PY'

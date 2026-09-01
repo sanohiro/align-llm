@@ -181,6 +181,14 @@ runtime-provider-smoke` for the hosted synthetic owner. The opt-in real provider
 fixed coding task through both llama.cpp and the in-process runtime. It is deliberately outside all
 aggregates because it materializes and loads the 4.7 GB model.
 
+Because this provider puts the runtime FFI in `main`'s build graph, `make build` and `make run`
+materialize their own shim. With no ggml inputs they embed a temporary static unavailable-engine
+stub, retain only `main`, and keep every non-runtime command usable on hosted machines. For a real
+runtime build, set `ALIGN_LLM_GGML_INCLUDE` and `ALIGN_LLM_GGML_LIB`; the wrapper builds and links
+the existing real shared shim. Do not prepopulate `build/lib` as an implicit prerequisite: the
+default build deliberately ignores it so a clean checkout and a cached developer tree behave the
+same way.
+
 ## Repository-index development
 
 The current C2 slice is `src/repo_index.align`. It asks Git for the tracked file list with

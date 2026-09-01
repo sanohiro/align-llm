@@ -50,19 +50,19 @@ check:
 	fi
 
 run:
-	$(ALIGNC) run $(ENTRY)
+	./scripts/run-main-with-shim $(ALIGNC) run $(ENTRY)
 
 build:
 	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
 	  diagnostic="$$(mktemp)"; \
 	  trap 'rm -f "$$diagnostic"' EXIT HUP INT TERM; \
-	  if $(ALIGNC) build $(ENTRY) 2>"$$diagnostic"; then \
+	  if ./scripts/run-main-with-shim $(ALIGNC) build $(ENTRY) 2>"$$diagnostic"; then \
 	    exit 0; \
 	  fi; \
 	  cat "$$diagnostic" >&2; \
 	  exit 1; \
 	else \
-	  $(ALIGNC) build $(ENTRY); \
+	  ./scripts/run-main-with-shim $(ALIGNC) build $(ENTRY); \
 	fi
 
 fmt:

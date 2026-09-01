@@ -45,6 +45,7 @@ error, validation order, owner, and acceptance target in this capability.
 | Schema version | N/A for new surfaces: all new values are in-memory; existing result schema stays 2 |
 | Network boundary | only the comparison leg uses the existing loopback OpenAI-compatible provider; align-runtime opens no socket |
 | Performance claim | none; the gate has a maintenance ceiling, not a speed claim |
+| Build boundary | `make build` / `make run` own the now-unconditional runtime FFI link through `scripts/run-main-with-shim`; hosted builds embed the unavailable-engine stub, while explicit ggml inputs build the real shared shim |
 
 ### 2.2 Provider data and dispatch
 
@@ -276,6 +277,21 @@ All earlier `--provider cloud|openai-local|llama ...` positional meanings and de
 No environment variable, ambient server, API key, endpoint, `DOCKER_HOST`, or tokenizer endpoint is
 consulted by the runtime arm.
 
+R7 makes the resident runtime part of `main`'s import graph, so the repository wrapper also owns its
+previously separate `align_ggml_shim` link. `make build` and `make run` route through
+`scripts/run-main-with-shim` with exactly two build modes:
+
+| Build input | Shim and result | Allocation / cleanup | Failure |
+| --- | --- | --- | --- |
+| `ALIGN_LLM_GGML_INCLUDE` unset | compile the ordinary unavailable-engine stub as a temporary static archive and embed it in `main`; non-runtime commands work and runtime dispatch fails through the existing unavailable-backend result | one `mktemp -d` outside the work tree, removed after link/run on every exit and signal; `main` is the only retained product | invalid private static selector, missing `cc`/`ar`, compile/archive/link/run failure |
+| `ALIGN_LLM_GGML_INCLUDE` set | existing real shared shim using the explicit include and optional `ALIGN_LLM_GGML_LIB`; `main` can execute align-runtime | explicit `ALIGN_LLM_GGML_SHIM_DIR` or existing `build/lib` default; shared library lifetime remains caller/developer owned | unusable include/lib, incompatible force/static request, compile/link/load failure |
+
+`ALIGN_LLM_GGML_SHIM_STATIC` is a private wrapper-to-builder selector accepting only `0` or `1`;
+static `1` refuses a real include or any forced engine/failure mode. `AR` defaults to `ar`, matching
+the fresh image's authenticated tool inventory. The default path neither consumes a stale
+`build/lib` shim nor leaves an extra fresh-worker overlay entry. No build variable is consulted by
+the runtime provider after process start.
+
 ### 2.8 Fixed coding-task gate and cost ceiling
 
 `make runtime-provider-gate` is opt-in through the same pinned real-model/tool inputs as prompt and
@@ -348,8 +364,9 @@ same-tokenizer detokenization; response cap; result persistence. First failure w
 | detokenization | omit terminal EOG, skip controls, compare tokenizer digest | owned UTF-8, empty allowed | invalid id/output/changed tokenizer | resident memory is gone before reopen | immediate/one-step EOG omission, max inclusion, snapshot replacement, provider digest guard |
 | `count_tokens` / `count_prompt` | same Qwen tokenizer and prompt contract | exact true | `count_prompt` sentinel; token error propagates | tokenizer arrays drop per call | provider count rows |
 | CLI/result | runtime grammar selected before legacy parse | unchanged schema-2 success record | outer no-file failures; existing error record after dispatch | sink failure leaves provider result behavior unchanged | byte/field goldens and legacy provider goldens |
+| main build/link | validate wrapper action and static selector before tools; explicit include selects real mode | hosted main embeds the unavailable stub; explicit real main resolves the shared shim | selector/tool/compile/archive/link/load failures are nonzero | temporary archive directory drops on success, error, and signal; no hosted overlay artifact beyond `main` | clean macOS build without `build/lib`; Linux publication owner and installed aggregate |
 | fixed-task runner | prerequisite identity, one temp root, fixed request | two retained records and two passing validations | configured-tool, generation, extraction, validation, timeout | server/process/temp teardown on all signals and exits | runner self-test plus real qualification |
-| Makefile/topology | one hosted owner and one opt-in gate | hosted owner reached once | omission/duplication/configured N/A mutant | qualification excluded from aggregates | `gate-topology-check`; `make ci` because membership changes |
+| Makefile/topology | main shim wrapper, one hosted owner, and one opt-in gate | hosted owner reached once | clean-link, omission/duplication/configured N/A mutant | static shim is temporary; qualification excluded from aggregates | clean `make build`; `gate-topology-check`; `make ci` because membership changes |
 
 Move-in/out is applicable to the consumed `GgufSnapshot`, tokenizer arrays, generated-id builders,
 and completion string and is tested at their module owners. Source nulling is N/A: Align move
@@ -369,7 +386,8 @@ runs are supported only with separate temporary roots and server ports.
 5. Implement `provider_runtime`, exact counting, model info, and runtime CLI/result routing.
 6. Add independent synthetic fixtures for EOG, artifact identity, loop termination, provider errors,
    common result bytes, and old-provider isolation; add the hosted target to `make ci` once.
-7. Add the opt-in fixed-task gate and topology/configuration tests.
+7. Make the public build wrapper self-sufficient for the runtime FFI, then add the opt-in fixed-task
+   gate and topology/configuration tests.
 8. Run the author ledger-to-prose consistency pass, map every applicable matrix row to final diff
    and passing evidence, then run the publication owner, one comprehensive review, consolidated
    repair, exact-head preflight, PR checks, and merge.
