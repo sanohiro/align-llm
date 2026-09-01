@@ -205,10 +205,12 @@ def main() -> int:
         if not value:
             return na(f"{name} unset")
         path = Path(value)
-        if not path.is_file():
+        if not path.exists():
             return na(f"{name} is absent")
+        if not path.is_file():
+            fail(f"{name} is not a regular file")
         if executable and not os.access(path, os.X_OK):
-            return na(f"{name} is not executable")
+            fail(f"{name} is not executable")
 
     model = Path(model_text)
     server = Path(server_text)

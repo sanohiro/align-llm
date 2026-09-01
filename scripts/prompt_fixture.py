@@ -99,9 +99,11 @@ def build(output: Path) -> dict[str, object]:
 
     wrong_hash = output / "wrong-hash-template.gguf"
     write_model(wrong_hash, tokens, types, merges, chat_template=template + " ")
+    wrong_hash_id = hashlib.sha256((template + " ").encode()).hexdigest()
 
     exact_cap = output / "exact-cap-template.gguf"
     write_model(exact_cap, tokens, types, merges, chat_template="x" * 4096)
+    exact_cap_id = hashlib.sha256(("x" * 4096).encode()).hexdigest()
 
     over_cap = output / "over-cap-template.gguf"
     write_model(over_cap, tokens, types, merges, chat_template="x" * 4097)
@@ -126,15 +128,80 @@ def build(output: Path) -> dict[str, object]:
         "vocab_size": len(tokens),
         "merge_count": len(merges),
         "cases": rendered_cases,
+        "size_precedence_model": supported_bad_tokenizer.name,
         "failures": [
-            [missing.name, "R7_CHAT_TEMPLATE_METADATA"],
-            [wrong_type.name, "R7_CHAT_TEMPLATE_METADATA"],
-            [invalid_text.name, "R7_CHAT_TEMPLATE_METADATA"],
-            [wrong_hash.name, "R7_UNSUPPORTED_CHAT_TEMPLATE"],
-            [exact_cap.name, "R7_UNSUPPORTED_CHAT_TEMPLATE"],
-            [over_cap.name, "R7_CHAT_TEMPLATE_SIZE"],
-            [wrong_template_bad_tokenizer.name, "R7_UNSUPPORTED_CHAT_TEMPLATE"],
-            [supported_bad_tokenizer.name, "R7_TOKEN_TYPE"],
+            {
+                "model": missing.name,
+                "code": "R7_CHAT_TEMPLATE_METADATA",
+                "detail": "tokenizer.chat_template",
+                "template_id": "",
+                "vocab_size": -1,
+                "merge_count": -1,
+                "prompt_bytes": 0,
+            },
+            {
+                "model": wrong_type.name,
+                "code": "R7_CHAT_TEMPLATE_METADATA",
+                "detail": "tokenizer.chat_template",
+                "template_id": "",
+                "vocab_size": -1,
+                "merge_count": -1,
+                "prompt_bytes": 0,
+            },
+            {
+                "model": invalid_text.name,
+                "code": "R7_CHAT_TEMPLATE_METADATA",
+                "detail": "tokenizer.chat_template",
+                "template_id": "",
+                "vocab_size": -1,
+                "merge_count": -1,
+                "prompt_bytes": 0,
+            },
+            {
+                "model": wrong_hash.name,
+                "code": "R7_UNSUPPORTED_CHAT_TEMPLATE",
+                "detail": f"sha256[{wrong_hash_id}]",
+                "template_id": wrong_hash_id,
+                "vocab_size": -1,
+                "merge_count": -1,
+                "prompt_bytes": 0,
+            },
+            {
+                "model": exact_cap.name,
+                "code": "R7_UNSUPPORTED_CHAT_TEMPLATE",
+                "detail": f"sha256[{exact_cap_id}]",
+                "template_id": exact_cap_id,
+                "vocab_size": -1,
+                "merge_count": -1,
+                "prompt_bytes": 0,
+            },
+            {
+                "model": over_cap.name,
+                "code": "R7_CHAT_TEMPLATE_SIZE",
+                "detail": "4097",
+                "template_id": "",
+                "vocab_size": -1,
+                "merge_count": -1,
+                "prompt_bytes": 0,
+            },
+            {
+                "model": wrong_template_bad_tokenizer.name,
+                "code": "R7_UNSUPPORTED_CHAT_TEMPLATE",
+                "detail": f"sha256[{wrong_hash_id}]",
+                "template_id": wrong_hash_id,
+                "vocab_size": -1,
+                "merge_count": -1,
+                "prompt_bytes": 0,
+            },
+            {
+                "model": supported_bad_tokenizer.name,
+                "code": "R7_TOKEN_TYPE",
+                "detail": "token[0]type[7]",
+                "template_id": TEMPLATE_ID,
+                "vocab_size": len(tokens),
+                "merge_count": len(merges),
+                "prompt_bytes": 87,
+            },
         ],
     }
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -23,13 +24,16 @@ def fail(message: str) -> None:
     raise SystemExit(f"prompt smoke: FAIL {message}")
 
 
-def command(arguments: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[bytes]:
+def command(
+    arguments: list[str], *, timeout: int = 30, environment=None
+) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         arguments,
         cwd=ROOT,
         capture_output=True,
         timeout=timeout,
         check=False,
+        env=None if environment is None else {**os.environ, **environment},
     )
 
 
@@ -47,6 +51,26 @@ def expect_failure(result: subprocess.CompletedProcess[bytes], label: str) -> No
             f"{label}: expected nonzero/empty stdout, got exit={result.returncode} "
             f"stdout={result.stdout!r} stderr={result.stderr.decode('utf-8', 'replace')!r}"
         )
+
+
+def error_line(
+    row: dict[str, object], *, system_bytes: int = 3, user_bytes: int = 4
+) -> str:
+    return ":".join(
+        [
+            "ERR",
+            str(row["code"]),
+            str(row["detail"]),
+            str(row["template_id"]),
+            "",
+            str(row["vocab_size"]),
+            str(row["merge_count"]),
+            str(system_bytes),
+            str(user_bytes),
+            str(row["prompt_bytes"]),
+            "0",
+        ]
+    )
 
 
 def main() -> int:
@@ -76,7 +100,7 @@ def main() -> int:
         if build.returncode != 0:
             fail(f"API harness build failed: {build.stderr.decode('utf-8', 'replace')}")
 
-        failure_paths = [work / row[0] for row in manifest["failures"]]
+        failure_paths = [work / row["model"] for row in manifest["failures"]]
         api = command([str(HARNESS), str(model), *map(str, failure_paths)], timeout=60)
         if api.returncode != 0:
             fail(f"API harness failed: {api.stderr.decode('utf-8', 'replace')}")
@@ -95,17 +119,29 @@ def main() -> int:
             or int(success[8]) <= 0
         ):
             fail(f"API success publication drifted: {lines[0]!r}")
-        expected_codes = [row[1] for row in manifest["failures"]]
-        if lines[1:] != expected_codes:
-            fail(f"API failure precedence drifted: {lines[1:]!r}, expected {expected_codes!r}")
+        expected_errors = [error_line(row) for row in manifest["failures"]]
+        if lines[1:] != expected_errors:
+            fail(f"API failure publication drifted: {lines[1:]!r}, expected {expected_errors!r}")
 
-        size = command([str(HARNESS), "--size", str(model)], timeout=120)
+        size = command(
+            [str(HARNESS), "--size", str(model), str(work / manifest["size_precedence_model"])],
+            timeout=120,
+        )
         size_lines = size.stdout.decode().splitlines()
+        size_error = {
+            "code": "R7_PROMPT_SIZE",
+            "detail": "system[1048497]user[0]prompt[1048577]",
+            "template_id": manifest["template_id"],
+            "vocab_size": -1,
+            "merge_count": -1,
+            "prompt_bytes": 0,
+        }
+        expected_size_error = error_line(size_error, system_bytes=1_048_497, user_bytes=0)
         if (
             size.returncode != 0
-            or len(size_lines) != 2
+            or len(size_lines) != 3
             or not size_lines[0].startswith(f"OK:{manifest['template_id']}:")
-            or size_lines[1] != "R7_PROMPT_SIZE"
+            or size_lines[1:] != [expected_size_error, expected_size_error]
         ):
             fail(
                 f"prompt size boundaries drifted: exit={size.returncode} lines={size_lines!r} "
@@ -151,9 +187,40 @@ def main() -> int:
             "missing-model",
         )
 
+        non_executable_server = work / "non-executable-server"
+        executable_server = work / "executable-server"
+        non_executable_tokenizer = work / "non-executable-tokenizer"
+        executable_tokenizer = work / "executable-tokenizer"
+        for path in (
+            non_executable_server,
+            executable_server,
+            non_executable_tokenizer,
+            executable_tokenizer,
+        ):
+            path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            path.chmod(0o600)
+        executable_server.chmod(0o700)
+        executable_tokenizer.chmod(0o700)
+        parity_environment = {
+            "ALIGN_LLM_GGUF_MODEL": str(model),
+            "ALIGN_LLM_LLAMA_SERVER": str(non_executable_server),
+            "ALIGN_LLM_LLAMA_TOKENIZE": str(executable_tokenizer),
+        }
+        expect_failure(
+            command([str(ROOT / "scripts/run-prompt-parity")], environment=parity_environment),
+            "configured-non-executable-server",
+        )
+        parity_environment["ALIGN_LLM_LLAMA_SERVER"] = str(executable_server)
+        parity_environment["ALIGN_LLM_LLAMA_TOKENIZE"] = str(non_executable_tokenizer)
+        expect_failure(
+            command([str(ROOT / "scripts/run-prompt-parity")], environment=parity_environment),
+            "configured-non-executable-tokenizer",
+        )
+
     print(
         f"prompt smoke: PASS ({len(manifest['cases'])} text cases, "
-        f"{len(manifest['failures'])} model failures, 2 size boundaries, 6 CLI failures)"
+        f"{len(manifest['failures'])} model failures, 3 size/precedence boundaries, "
+        "6 CLI failures, 2 qualification failures)"
     )
     return 0
 
