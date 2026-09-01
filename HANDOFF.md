@@ -52,16 +52,23 @@ final comprehensive review after the current-head coding baseline is re-recorded
 real-shared builds pass on macOS; the aarch64 Linux clean build plus tokenizer, layer-forward
 (128.954 seconds), provider, 48-assertion runtime provider, and topology owners all pass.
 
-**Next actions.** (1) Commit the expanded repair as the baseline source checkpoint. (2) Re-record
-the required source -> immutable oracle -> canonical finalization
-chain on Linux, then run the final comprehensive review. (3) Run exact-head publication preflight,
-publish and merge after required checks and recorded finding dispositions, pull the latest `main`
-including concurrent work, and continue the next eligible roadmap capability.
+**Baseline-chain correction.** Clean-build repair `4fc0f26` produced two passing aarch64 Linux
+samples, but the first oracle commit mistakenly retained the pending record's `recorded_at` and
+empty `canonical_oracle_commit` fields. The corrected projection then followed an already-created
+finalization commit, so `check-baseline-chain` properly rejected that non-direct topology. Commits
+`9096787` through `a4ee218` are retained as failed evidence and are not the shipping chain. This
+handoff-only checkpoint supersedes them as a clean source with identical executable artifacts; its
+direct oracle child and direct finalization child will be the authoritative chain.
+
+**Next actions.** (1) Re-record the required source -> immutable oracle -> canonical finalization
+chain on Linux from this clean source, then run the final comprehensive review. (2) Run exact-head
+publication preflight, publish and merge after required checks and recorded finding dispositions,
+pull the latest `main` including concurrent work, and continue the next eligible roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The clean-build repair, its authoritative ledger/developer-guide
-updates, and this durable incident record. Local configuration does not belong in the change.
+**Intentional uncommitted files.** This baseline correction record only. Local configuration does
+not belong in the change.
 
 ## Merged checkpoint: R7-PROMPT (2026-09-01)
 
