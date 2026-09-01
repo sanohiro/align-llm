@@ -65,7 +65,10 @@ for key in ("model", "immediate_eog_model", "after_one_eog_model"):
             )
 oversize_replacement = work / "oversize-replacement-model-ir.json"
 with oversize_replacement.open("wb") as destination:
-    destination.seek(1024**4 - 1)
+    # One byte beyond the generation boundary proves that the capped reopen, rather than the
+    # later identity comparison, owns the refusal. Keep the sparse fixture below the installed
+    # worker's 512 MiB RLIMIT_FSIZE so the owner reaches the behavior it is meant to exercise.
+    destination.seek(16_777_216)
     destination.write(b"x")
 PY
 

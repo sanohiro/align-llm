@@ -71,7 +71,9 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   oversized := decode_step.generate_resident(
     pack_path, oversize_geometry_path, expected_geometry, source_identity,
     prompt_ids, eog_ids, 1)
-  if oversized.outcome.code.len() == 0 || oversized.token_ids_json != "[]" {
+  if oversized.outcome.code != "R6_GEOMETRY_UNREADABLE"
+    || oversized.outcome.detail != "Invalid"
+    || oversized.token_ids_json != "[]" {
     return Err(Error.Invalid)
   }
 

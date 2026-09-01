@@ -84,11 +84,11 @@ comprehensive review of the redesigned candidate before publication.
 diff. It found two P2 contract-enforcement defects, both accepted: the inference-time geometry
 reopen used unbounded `fs.read_file` before its exact comparison, and the complete-gate timer began
 after validation-image, full-model-digest, server-version, and scratch checks. The narrow
-consolidated repair gives the reopen the same 16 MiB cap as the first pass, owns a 1 TiB sparse-file
-regression that would make the old path attempt an unbounded allocation, and starts timing
-immediately after all configured prerequisites are present. `runtime-provider-smoke` passes with
-both repairs. Neither finding changes the public strategy or baseline-bound artifacts, and no
-finding remains open.
+consolidated repair gives the reopen the same 16 MiB cap as the first pass, owns a cap-plus-one
+sparse-file regression that requires the bounded-read error rather than the old path's later
+identity mismatch, and starts timing immediately after all configured prerequisites are present.
+`runtime-provider-smoke` passes with both repairs. Neither finding changes the public strategy or
+baseline-bound artifacts, and no finding remains open.
 
 **Baseline-chain correction.** Clean-build repair `4fc0f26` produced two passing aarch64 Linux
 samples, but the first oracle commit mistakenly retained the pending record's `recorded_at` and
@@ -107,9 +107,17 @@ dispatcher and now reaches the runtime FFI, but invoked `alignc run` without the
 wrapper. The complete direct-compile harness audit found no other standalone hosted `provider`
 import outside wrapper-owned `main`. The repair routes this one compiler run through
 `scripts/run-main-with-shim`; it changes no baseline-bound artifact or public runtime behavior.
+The corrected rerun passed the owner in 264.651 seconds, managed Align ensure/verify, hosted checks
+in 580.463 seconds, and fresh-focused in 29.872 seconds. Its installed profile first exposed an
+outer DinD cgroup-namespace setup error; after the outer wrapper also used the host cgroup namespace,
+the profile reached `runtime-provider-smoke` and found that the 1 TiB sparse regression exceeded the
+worker's intentional 512 MiB `RLIMIT_FSIZE`. The regression now creates a sparse 16 MiB-plus-one
+file and asserts `R6_GEOMETRY_UNREADABLE` / `Invalid`, which still distinguishes the bounded reopen
+from the old unbounded read followed by `R6_GEOMETRY` / `identity` while remaining inside the
+installed profile's resource contract.
 
-**Next actions.** (1) Verify and commit the prompt seed clean-link repair. (2) Re-run exact-head
-Linux publication preflight. (3) Publish and merge after required checks and recorded finding
+**Next actions.** (1) Verify and commit the installed-profile regression repair. (2) Re-run
+exact-head Linux publication preflight. (3) Publish and merge after required checks and recorded finding
 dispositions, pull the latest `main` including concurrent work, and continue the next eligible
 roadmap capability.
 
