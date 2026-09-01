@@ -46,6 +46,7 @@ fn print_help() {
   print("       main --pack-verify <model.gguf> <pack.alignpack> [alignpack-verify.json]")
   print("       main --tokenize <model.gguf> <input.txt> <parse-control|literal-control>")
   print("       main --detokenize <model.gguf> <tokens.json> <render-control|skip-control>")
+  print("       main --prepare-prompt <model.gguf> <system.txt> <user.txt>")
   print("       main prompt <experiment|generate|evaluate|accept|rollback> <request.json> <result.json>")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
 }
@@ -186,6 +187,21 @@ fn detokenize_demo(args: array<str>) -> Result<(), Error> {
   result_value := tokenizer_qwen2.decode_model(args[2], ids, specials)?
   if !tokenizer_status_ok(result_value.status) { return Err(Error.Invalid) }
   io.stdout.write(result_value.text)?
+  return Ok(())
+}
+
+fn prepare_prompt_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() != 5 { return Err(Error.Invalid) }
+  if !tokenizer_path_valid(args[2]) || !tokenizer_path_valid(args[3])
+    || !tokenizer_path_valid(args[4]) {
+    return Err(Error.Invalid)
+  }
+  system := read_tokenizer_input(args[3])?
+  user := read_tokenizer_input(args[4])?
+  result_value := tokenizer_qwen2.prepare_prompt_model(args[2], system, user)?
+  if !tokenizer_status_ok(result_value.status) { return Err(Error.Invalid) }
+  output := render_token_ids(result_value.token_ids)
+  io.stdout.write(output)?
   return Ok(())
 }
 
@@ -1367,6 +1383,8 @@ pub fn main(args: array<str>) -> Result<(), Error> {
                               tokenize_demo(args)?
                             } else if args[1] == "--detokenize" {
                               detokenize_demo(args)?
+                            } else if args[1] == "--prepare-prompt" {
+                              prepare_prompt_demo(args)?
                             } else if c7_selector(args[1]) {
                               persisted_result_demo(args)?
                             } else {

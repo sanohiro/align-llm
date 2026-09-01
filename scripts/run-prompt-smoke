@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""R7-PROMPT synthetic CLI/API owner."""
+
+from __future__ import annotations
+
+import atexit
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+HARNESS = ROOT / "prompt_api_smoke"
+atexit.register(lambda: HARNESS.unlink(missing_ok=True))
+
+import prompt_fixture as fixture  # noqa: E402
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"prompt smoke: FAIL {message}")
+
+
+def command(arguments: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        arguments,
+        cwd=ROOT,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def expect_success(result: subprocess.CompletedProcess[bytes], expected: bytes, label: str) -> None:
+    if result.returncode != 0 or result.stdout != expected:
+        fail(
+            f"{label}: exit={result.returncode} stdout={result.stdout!r} "
+            f"stderr={result.stderr.decode('utf-8', 'replace')!r}, expected={expected!r}"
+        )
+
+
+def expect_failure(result: subprocess.CompletedProcess[bytes], label: str) -> None:
+    if result.returncode == 0 or result.stdout:
+        fail(
+            f"{label}: expected nonzero/empty stdout, got exit={result.returncode} "
+            f"stdout={result.stdout!r} stderr={result.stderr.decode('utf-8', 'replace')!r}"
+        )
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="align-r7-prompt-") as raw_temp:
+        work = Path(raw_temp)
+        manifest = fixture.build(work)
+        model = work / str(manifest["model"])
+
+        for case in manifest["cases"]:
+            system = bytes.fromhex(case["system_hex"])
+            user = bytes.fromhex(case["user_hex"])
+            system_path = work / f"{case['name']}-system.txt"
+            user_path = work / f"{case['name']}-user.txt"
+            system_path.write_bytes(system)
+            user_path.write_bytes(user)
+            expected = (json.dumps(case["token_ids"], separators=(",", ":")) + "\n").encode()
+            result = command([
+                str(ROOT / "main"),
+                "--prepare-prompt",
+                str(model),
+                str(system_path),
+                str(user_path),
+            ])
+            expect_success(result, expected, str(case["name"]))
+
+        build = command([str(ROOT / "scripts/alignc"), "build", "src/prompt_api_smoke.align"], timeout=120)
+        if build.returncode != 0:
+            fail(f"API harness build failed: {build.stderr.decode('utf-8', 'replace')}")
+
+        failure_paths = [work / row[0] for row in manifest["failures"]]
+        api = command([str(HARNESS), str(model), *map(str, failure_paths)], timeout=60)
+        if api.returncode != 0:
+            fail(f"API harness failed: {api.stderr.decode('utf-8', 'replace')}")
+        lines = api.stdout.decode().splitlines()
+        if len(lines) != 1 + len(failure_paths):
+            fail(f"API result count drifted: {lines!r}")
+        success = lines[0].split(":")
+        if (
+            len(success) != 9
+            or success[0] != "OK"
+            or success[1] != manifest["template_id"]
+            or len(success[2]) != 64
+            or success[3] != str(manifest["vocab_size"])
+            or success[4] != str(manifest["merge_count"])
+            or success[5:8] != ["3", "4", "87"]
+            or int(success[8]) <= 0
+        ):
+            fail(f"API success publication drifted: {lines[0]!r}")
+        expected_codes = [row[1] for row in manifest["failures"]]
+        if lines[1:] != expected_codes:
+            fail(f"API failure precedence drifted: {lines[1:]!r}, expected {expected_codes!r}")
+
+        size = command([str(HARNESS), "--size", str(model)], timeout=120)
+        size_lines = size.stdout.decode().splitlines()
+        if (
+            size.returncode != 0
+            or len(size_lines) != 2
+            or not size_lines[0].startswith(f"OK:{manifest['template_id']}:")
+            or size_lines[1] != "R7_PROMPT_SIZE"
+        ):
+            fail(
+                f"prompt size boundaries drifted: exit={size.returncode} lines={size_lines!r} "
+                f"stderr={size.stderr.decode('utf-8', 'replace')!r}"
+            )
+
+        empty = work / "empty.txt"
+        empty.write_bytes(b"")
+        invalid_utf8 = work / "invalid-utf8.txt"
+        invalid_utf8.write_bytes(b"\xff")
+        oversize = work / "oversize.txt"
+        oversize.write_bytes(b"a" * 1_048_577)
+        half_a = work / "half-a.txt"
+        half_b = work / "half-b.txt"
+        half_a.write_bytes(b"a" * 524_300)
+        half_b.write_bytes(b"b" * 524_300)
+
+        expect_failure(command([str(ROOT / "main"), "--prepare-prompt"]), "arity")
+        expect_failure(
+            command([str(ROOT / "main"), "--prepare-prompt", str(model), str(invalid_utf8), str(empty)]),
+            "invalid-system-utf8",
+        )
+        expect_failure(
+            command([str(ROOT / "main"), "--prepare-prompt", str(model), str(empty), str(invalid_utf8)]),
+            "invalid-user-utf8",
+        )
+        expect_failure(
+            command([str(ROOT / "main"), "--prepare-prompt", str(model), str(oversize), str(empty)]),
+            "single-input-cap",
+        )
+        expect_failure(
+            command([str(ROOT / "main"), "--prepare-prompt", str(model), str(half_a), str(half_b)]),
+            "combined-input-cap",
+        )
+        expect_failure(
+            command([
+                str(ROOT / "main"),
+                "--prepare-prompt",
+                str(work / "missing.gguf"),
+                str(empty),
+                str(empty),
+            ]),
+            "missing-model",
+        )
+
+    print(
+        f"prompt smoke: PASS ({len(manifest['cases'])} text cases, "
+        f"{len(manifest['failures'])} model failures, 2 size boundaries, 6 CLI failures)"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

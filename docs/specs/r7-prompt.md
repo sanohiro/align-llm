@@ -219,7 +219,7 @@ ids. It covers:
 - empty, ASCII, multiline, embedded-NUL, CJK/emoji, and literal delimiter content;
 - exact five-fragment placement and parse-control ids;
 - public success identities/counts/byte counts and empty output on every failure;
-- missing, wrong-type, exact-cap, over-cap, and wrong-hash template metadata;
+- missing, wrong-type, invalid-text, exact-cap, over-cap, and wrong-hash template metadata;
 - exact and over-limit combined prompt size;
 - template-before-tokenizer and size-before-tokenizer multi-invalid precedence;
 - one-source snapshot construction, plus the existing deterministic GGUF replacement owner that

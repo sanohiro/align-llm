@@ -1,0 +1,62 @@
+module prompt_api_smoke
+
+import tokenizer_qwen2
+
+fn print_code(result_value: tokenizer_qwen2.PromptIdsResult) {
+  match result_value.status {
+    Ok => {
+      line := builder()
+      line.write("OK:")
+      line.write(result_value.template_id)
+      line.write(":")
+      line.write(result_value.tokenizer_id)
+      line.write(":")
+      line.write_int(result_value.vocab_size)
+      line.write(":")
+      line.write_int(result_value.merge_count)
+      line.write(":")
+      line.write_int(result_value.system_bytes)
+      line.write(":")
+      line.write_int(result_value.user_bytes)
+      line.write(":")
+      line.write_int(result_value.prompt_bytes)
+      line.write(":")
+      line.write_int(result_value.token_ids.len())
+      print(line.to_string())
+    },
+    Error => { print(result_value.error_code) },
+  }
+}
+
+fn size_boundaries(model_path: str) -> Result<(), Error> {
+  exact_builder := builder()
+  mut at := 0
+  loop {
+    if at >= 1048496 { break }
+    exact_builder.write("a")
+    at = at + 1
+  }
+  exact := exact_builder.to_string()
+  print_code(tokenizer_qwen2.prepare_prompt_model(model_path, exact, "")?)
+
+  over_builder := builder()
+  over_builder.write(exact)
+  over_builder.write("a")
+  over := over_builder.to_string()
+  print_code(tokenizer_qwen2.prepare_prompt_model(model_path, over, "")?)
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 3 && args[1] == "--size" {
+    return size_boundaries(args[2])
+  }
+  mut at := 1
+  loop {
+    if at >= args.len() { break }
+    prepared := tokenizer_qwen2.prepare_prompt_model(args[at], "sys", "user")?
+    print_code(prepared)
+    at = at + 1
+  }
+  return Ok(())
+}

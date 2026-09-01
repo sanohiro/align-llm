@@ -15,6 +15,12 @@ MAX_OPERATION_INPUT_BYTES := 1048576
 MAX_OPERATION_TOKEN_IDS := 1048576
 MAX_OPERATION_OUTPUT_BYTES := 1048576
 MAX_DETAIL_BYTES := 256
+MAX_CHAT_TEMPLATE_BYTES := 4096
+MAX_PROMPT_BYTES := 1048576
+PROMPT_FIXED_BYTES := 80
+I64_MAX := 9223372036854775807
+
+SUPPORTED_CHAT_TEMPLATE_ID := "d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4"
 
 CLASSIFIER_ID := "align-regex-v1;regex=1.13.1+f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d;regex-automata=0.4.16+8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad;regex-syntax=0.8.11+d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
@@ -44,6 +50,20 @@ pub TokenTextResult {
   merge_count: i64,
   token_count: i64,
   text: string,
+}
+
+pub PromptIdsResult {
+  status: TokenizerStatus,
+  error_code: string,
+  error_detail: string,
+  template_id: string,
+  tokenizer_id: string,
+  vocab_size: i64,
+  merge_count: i64,
+  system_bytes: i64,
+  user_bytes: i64,
+  prompt_bytes: i64,
+  token_ids: array<i64>,
 }
 
 Tokenizer {
@@ -480,9 +500,7 @@ fn array_read_failure(e: Error) -> bool = match e {
   _ => false,
 }
 
-fn load_model(path: str) -> Result<LoadResult, Error> {
-  if !path_valid(path) { return Err(Error.Invalid) }
-  snapshot := gguf.open_snapshot(path)?
+fn load_snapshot(snapshot: gguf.GgufSnapshot) -> Result<LoadResult, Error> {
   if !table_ok(snapshot.table.status) {
     detail := builder()
     code_view: str := snapshot.table.error_code
@@ -873,6 +891,12 @@ fn load_model(path: str) -> Result<LoadResult, Error> {
       merge_count: merge_count,
       tokenizer: tokenizer,
     })
+}
+
+fn load_model(path: str) -> Result<LoadResult, Error> {
+  if !path_valid(path) { return Err(Error.Invalid) }
+  snapshot := gguf.open_snapshot(path)?
+  return load_snapshot(snapshot)
 }
 
 fn heap_less(rank_a: i64, left_a: i64, rank_b: i64, left_b: i64) -> bool {
@@ -1346,12 +1370,11 @@ fn failed_text(
   text: "".clone(),
 }
 
-pub fn encode_model(
-  model_path: str,
+fn encode_loaded(
+  loaded: LoadResult,
   text: str,
   specials: EncodeSpecials,
 ) -> Result<TokenIdsResult, Error> {
-  loaded := load_model(model_path)?
   if !loaded.ok {
     return Ok(failed_ids(
         loaded.code,
@@ -1394,6 +1417,177 @@ pub fn encode_model(
       tokenizer_id: tokenizer_id_view.clone(),
       vocab_size: vocab_size,
       merge_count: merge_count,
+      token_ids: ids,
+    })
+}
+
+pub fn encode_model(
+  model_path: str,
+  text: str,
+  specials: EncodeSpecials,
+) -> Result<TokenIdsResult, Error> {
+  loaded := load_model(model_path)?
+  return encode_loaded(loaded, text, specials)
+}
+
+fn failed_prompt(
+  code: str,
+  detail: str,
+  template_id: str,
+  tokenizer_id: str,
+  vocab_size: i64,
+  merge_count: i64,
+  system_bytes: i64,
+  user_bytes: i64,
+  prompt_bytes: i64,
+) -> PromptIdsResult = PromptIdsResult {
+  status: TokenizerStatus.Error,
+  error_code: code.clone(),
+  error_detail: bounded_detail(detail),
+  template_id: template_id.clone(),
+  tokenizer_id: tokenizer_id.clone(),
+  vocab_size: vocab_size,
+  merge_count: merge_count,
+  system_bytes: system_bytes,
+  user_bytes: user_bytes,
+  prompt_bytes: prompt_bytes,
+  token_ids: empty_i64(),
+}
+
+fn template_id_of(chat_source: str) -> string {
+  digest := crypto.sha256(chat_source.bytes())
+  return encoding.hex_encode(digest[0..digest.len()]).clone()
+}
+
+fn prompt_size_detail(system_bytes: i64, user_bytes: i64, attempted: i64) -> string {
+  detail := builder()
+  detail.write("system[")
+  detail.write_int(system_bytes)
+  detail.write("]user[")
+  detail.write_int(user_bytes)
+  detail.write("]prompt[")
+  detail.write_int(attempted)
+  detail.write("]")
+  return detail.to_string()
+}
+
+fn render_prompt(system: str, user: str) -> string {
+  output := builder()
+  output.write("<|im_start|>system\n")
+  output.write(system)
+  output.write("<|im_end|>\n")
+  output.write("<|im_start|>user\n")
+  output.write(user)
+  output.write("<|im_end|>\n")
+  output.write("<|im_start|>assistant\n")
+  return output.to_string()
+}
+
+pub fn prepare_prompt_model(
+  model_path: str,
+  system: str,
+  user: str,
+) -> Result<PromptIdsResult, Error> {
+  if !path_valid(model_path) { return Err(Error.Invalid) }
+  system_bytes := system.len()
+  user_bytes := user.len()
+  snapshot := gguf.open_snapshot(model_path)?
+  if !table_ok(snapshot.table.status) {
+    detail := builder()
+    code_view: str := snapshot.table.error_code
+    detail.write(code_view)
+    detail.write("@")
+    detail.write_int(snapshot.table.error_offset)
+    rendered := detail.to_string()
+    rendered_view: str := rendered
+    return Ok(failed_prompt(
+        "R7_GGUF", rendered_view, "", "", -1, -1, system_bytes, user_bytes, 0))
+  }
+
+  chat_source := match gguf.kv_string(snapshot.table, "tokenizer.chat_template") {
+    Some(value) => value,
+    None => {
+      return Ok(failed_prompt(
+          "R7_CHAT_TEMPLATE_METADATA", "tokenizer.chat_template", "", "", -1, -1,
+          system_bytes, user_bytes, 0))
+    },
+  }
+  if chat_source.len() > MAX_CHAT_TEMPLATE_BYTES {
+    return Ok(failed_prompt(
+        "R7_CHAT_TEMPLATE_SIZE", int_text(chat_source.len()), "", "", -1, -1,
+        system_bytes, user_bytes, 0))
+  }
+  template_id := template_id_of(chat_source)
+  template_id_view: str := template_id
+  if template_id_view != SUPPORTED_CHAT_TEMPLATE_ID {
+    detail := builder()
+    detail.write("sha256[")
+    detail.write(template_id_view)
+    detail.write("]")
+    rendered := detail.to_string()
+    rendered_view: str := rendered
+    return Ok(failed_prompt(
+        "R7_UNSUPPORTED_CHAT_TEMPLATE", rendered_view, template_id_view, "", -1, -1,
+        system_bytes, user_bytes, 0))
+  }
+
+  mut attempted := -1
+  if system_bytes <= I64_MAX - user_bytes {
+    combined := system_bytes + user_bytes
+    if combined <= I64_MAX - PROMPT_FIXED_BYTES {
+      attempted = combined + PROMPT_FIXED_BYTES
+    }
+  }
+  if attempted < 0 || attempted > MAX_PROMPT_BYTES {
+    detail := prompt_size_detail(system_bytes, user_bytes, attempted)
+    detail_view: str := detail
+    return Ok(failed_prompt(
+        "R7_PROMPT_SIZE", detail_view, template_id_view, "", -1, -1,
+        system_bytes, user_bytes, 0))
+  }
+
+  loaded := load_snapshot(snapshot)?
+  if !loaded.ok {
+    return Ok(failed_prompt(
+        loaded.code, loaded.detail, template_id_view, "", loaded.vocab_size, loaded.merge_count,
+        system_bytes, user_bytes, attempted))
+  }
+
+  prompt := render_prompt(system, user)
+  if prompt.len() != attempted {
+    detail := indexed_detail("bytes", prompt.len())
+    detail_view: str := detail
+    tokenizer_id: str := loaded.tokenizer.tokenizer_id
+    return Ok(failed_prompt(
+        "R7_PROMPT_RENDER", detail_view, template_id_view, tokenizer_id,
+        loaded.vocab_size, loaded.merge_count, system_bytes, user_bytes, attempted))
+  }
+  prompt_view: str := prompt
+  encoded_template_id: str := template_id
+  encoded_tokenizer_id := loaded.tokenizer.tokenizer_id.clone()
+  encoded_tokenizer_id_view: str := encoded_tokenizer_id
+  vocab_size := loaded.vocab_size
+  merge_count := loaded.merge_count
+  letter := regex.compile("^\\p{L}$")?
+  number := regex.compile("^\\p{N}$")?
+  space := regex.compile("^\\s$")?
+  ids := encode_text(loaded.tokenizer, prompt_view, true, letter, number, space)
+  if ids.len() > MAX_OPERATION_TOKEN_IDS {
+    return Ok(failed_prompt(
+        "R7_TOKEN_COUNT", int_text(ids.len()), encoded_template_id, encoded_tokenizer_id_view,
+        vocab_size, merge_count, system_bytes, user_bytes, attempted))
+  }
+  return Ok(PromptIdsResult {
+      status: TokenizerStatus.Ok,
+      error_code: "".clone(),
+      error_detail: "".clone(),
+      template_id: encoded_template_id.clone(),
+      tokenizer_id: encoded_tokenizer_id_view.clone(),
+      vocab_size: vocab_size,
+      merge_count: merge_count,
+      system_bytes: system_bytes,
+      user_bytes: user_bytes,
+      prompt_bytes: attempted,
       token_ids: ids,
     })
 }

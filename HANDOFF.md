@@ -10,20 +10,30 @@ R7-TOKENIZER is merged and the next consumer boundary is the missing conversion 
 `GenerationRequest { system, user }` text pair to the Qwen2.5-Coder prompt token ids consumed by
 the shipped dense runtime.
 
-R7-PROMPT will validate the model-carried supported chat template, render exactly the no-tools
-system/user conversation with a generation prompt, and tokenize it from one retained GGUF snapshot.
-Its public API and `--prepare-prompt` CLI stop at token ids. Provider dispatch, inference reuse,
-sampling, stop-token policy, streaming, and decoded completion text remain later R7 capabilities.
-The authoritative ledger and closure matrix are `docs/specs/r7-prompt.md`.
+R7-PROMPT validates the model-carried supported chat template, renders exactly the no-tools
+system/user conversation with a generation prompt, and tokenizes it from one retained GGUF snapshot.
+The public API, `--prepare-prompt` CLI, hosted synthetic owner, and pinned real-model parity runner
+are implemented. Provider dispatch, inference reuse, sampling, stop-token policy, streaming, and
+decoded completion text remain later R7 capabilities. The authoritative ledger and closure matrix
+are `docs/specs/r7-prompt.md`.
 
-**Next actions.** (1) Finish the ledger-to-prose consistency pass. (2) Implement the prompt API,
-CLI, synthetic owner, and pinned real-model template/token parity qualification. (3) Run the owner,
-one comprehensive review, exact-head publication preflight, PR, CI, repair if required, and merge.
+**Latest durable verification.** With GNU make and the Homebrew library path, `gmake fmt`,
+`gmake tokenizer-smoke`, `gmake prompt-smoke`, and `gmake gate-topology-check` pass. The prompt owner
+covers six text cases, eight model failures, two size boundaries, and six CLI failures. Focused
+`gmake prompt-parity` passes against the 4,683,073,536-byte reference model and pinned llama.cpp
+build 10566: eight cases, 1,538 rendered prompt bytes, and 303 compared token ids. Python syntax
+compilation and `git diff --check` pass. The Makefile aggregate change intentionally requires a new
+source -> oracle -> finalization coding-baseline chain before publication.
+
+**Next actions.** (1) Commit the final implementation as the baseline source and record/finalize the
+new canonical baseline. (2) Run the complete owner and one comprehensive review, then consolidate
+any findings. (3) Run exact-head publication preflight, open the PR, wait for CI, repair if required,
+and merge before starting the next R7 capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The R7-PROMPT design and merge-dependent handoff correction until
-the first coherent design checkpoint is committed.
+**Intentional uncommitted files.** The coherent R7-PROMPT implementation candidate until its
+baseline source commit is created.
 
 ## Merged checkpoint: R7-TOKENIZER (2026-09-01)
 

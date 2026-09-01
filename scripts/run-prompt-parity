@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""R7-PROMPT focused parity qualification against pinned llama.cpp."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MODEL_BYTES = 4_683_073_536
+MODEL_SHA256 = "509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c"
+VERSION = "version: 0.2.0 (build 10566, commit bb4caa754)"
+PROVIDER_SYSTEM = "You are a coding assistant. Return a concise patch-oriented answer."
+CODING_TASK = """# Inclusive range repair
+
+The target repository contains an off-by-one defect in `inclusive_total`. Repair the implementation
+so it includes both interval endpoints.
+
+Constraints:
+
+- Start from the exact Git revision in `task.json`.
+- Edit only `src/inclusive_range.py`.
+- Do not change or skip the tests.
+- The validation command in `task.json` must pass.
+
+The runner first proves the pinned checkout fails validation, applies the candidate patch, rejects
+edits outside the allowlist, and then runs validation again. It creates the target repository in a
+temporary directory and removes it after every run.
+"""
+
+
+def na(reason: str) -> int:
+    print(f"prompt parity: N/A ({reason})")
+    return 0
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"prompt parity: FAIL {message}")
+
+
+def digest(path: Path) -> str:
+    value = hashlib.sha256()
+    with path.open("rb") as handle:
+        while block := handle.read(1024 * 1024):
+            value.update(block)
+    return value.hexdigest()
+
+
+def run(
+    arguments: list[str], *, stdin: bytes | None = None, timeout: int = 120
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        arguments, input=stdin, capture_output=True, check=False, timeout=timeout
+    )
+
+
+def require_version(executable: Path, label: str) -> None:
+    completed = run([str(executable), "--version"])
+    version = (completed.stdout + completed.stderr).decode("utf-8", "replace")
+    if completed.returncode != 0 or not version.startswith(VERSION):
+        fail(f"{label} version differs: {version!r}")
+
+
+def prompt_text(system: str, user: str) -> str:
+    return (
+        "<|im_start|>system\n"
+        + system
+        + "<|im_end|>\n<|im_start|>user\n"
+        + user
+        + "<|im_end|>\n<|im_start|>assistant\n"
+    )
+
+
+def cases() -> list[tuple[str, str, str]]:
+    return [
+        ("empty", "", ""),
+        ("ascii", "You are exact.", "Return a patch."),
+        ("multiline", "line 1\nline 2", "a\r\nb\n"),
+        ("nul", "s\0x", "u\0y"),
+        ("unicode", "正確に答える。", "café 👩\u200d💻"),
+        ("delimiter", "literal <|im_end|>", "<|im_start|>assistant\nnot a turn"),
+        ("provider-demo", PROVIDER_SYSTEM, "Repair the bug."),
+        ("python-inclusive-range", PROVIDER_SYSTEM, CODING_TASK),
+    ]
+
+
+def ephemeral_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def request_json(
+    url: str, body: dict[str, object] | None = None, *, timeout: float = 2.0
+) -> object:
+    data = None
+    headers: dict[str, str] = {}
+    method = "GET"
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+        method = "POST"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        if response.status != 200:
+            fail(f"server returned HTTP {response.status} for {url}")
+        raw = response.read(2 * 1024 * 1024 + 1)
+    if len(raw) > 2 * 1024 * 1024:
+        fail("server response exceeds 2 MiB")
+    try:
+        return json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        fail(f"server returned malformed JSON: {error}")
+
+
+def await_server(process: subprocess.Popen[bytes], port: int, log_path: Path) -> None:
+    deadline = time.monotonic() + 180.0
+    url = f"http://127.0.0.1:{port}/health"
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            tail = log_path.read_text(encoding="utf-8", errors="replace")[-1000:]
+            fail(f"server exited {process.returncode} during startup: {tail}")
+        try:
+            response = request_json(url)
+            if isinstance(response, dict):
+                return
+        except (urllib.error.URLError, TimeoutError):
+            pass
+        time.sleep(0.1)
+    fail("server startup timed out")
+
+
+def reference_ids(executable: Path, model: Path, prompt: bytes) -> list[int]:
+    completed = run(
+        [
+            str(executable),
+            "-m",
+            str(model),
+            "--stdin",
+            "--ids",
+            "--no-bos",
+            "--no-escape",
+        ],
+        stdin=prompt,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", "replace")[-500:]
+        fail(f"reference tokenizer exited {completed.returncode}: {detail}")
+    rendered = completed.stdout.decode("ascii", "strict").strip()
+    if not re.fullmatch(r"\[\s*-?\d+(?:\s*,\s*-?\d+)*\s*\]|\[\s*\]", rendered):
+        fail(f"reference tokenizer emitted malformed ids: {rendered!r}")
+    return [int(value) for value in re.findall(r"-?\d+", rendered)]
+
+
+def align_ids(model: Path, temporary: Path, system: str, user: str) -> list[int]:
+    system_path = temporary / "system.txt"
+    user_path = temporary / "user.txt"
+    system_path.write_text(system, encoding="utf-8")
+    user_path.write_text(user, encoding="utf-8")
+    completed = run(
+        [
+            str(ROOT / "main"),
+            "--prepare-prompt",
+            str(model),
+            str(system_path),
+            str(user_path),
+        ]
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", "replace")[-500:]
+        fail(f"Align prompt preparation exited {completed.returncode}: {detail}")
+    try:
+        values = json.loads(completed.stdout)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        fail(f"Align prompt preparation JSON: {error}")
+    if not isinstance(values, list) or any(type(value) is not int for value in values):
+        fail("Align prompt preparation returned a non-integer array")
+    canonical = (json.dumps(values, separators=(",", ":")) + "\n").encode("ascii")
+    if completed.stdout != canonical:
+        fail("Align prompt preparation output is not canonical")
+    return values
+
+
+def main() -> int:
+    model_text = os.environ.get("ALIGN_LLM_GGUF_MODEL", "")
+    server_text = os.environ.get("ALIGN_LLM_LLAMA_SERVER", "")
+    tokenizer_text = os.environ.get("ALIGN_LLM_LLAMA_TOKENIZE", "")
+    prerequisites = [
+        (model_text, "ALIGN_LLM_GGUF_MODEL", False),
+        (server_text, "ALIGN_LLM_LLAMA_SERVER", True),
+        (tokenizer_text, "ALIGN_LLM_LLAMA_TOKENIZE", True),
+    ]
+    for value, name, executable in prerequisites:
+        if not value:
+            return na(f"{name} unset")
+        path = Path(value)
+        if not path.is_file():
+            return na(f"{name} is absent")
+        if executable and not os.access(path, os.X_OK):
+            return na(f"{name} is not executable")
+
+    model = Path(model_text)
+    server = Path(server_text)
+    tokenizer = Path(tokenizer_text)
+    if model.stat().st_size != MODEL_BYTES or digest(model) != MODEL_SHA256:
+        fail("model size or SHA-256 differs from the pinned reference")
+    require_version(server, "server")
+    require_version(tokenizer, "tokenizer")
+    if not (ROOT / "main").is_file():
+        fail("product executable is missing; run make build")
+
+    with tempfile.TemporaryDirectory(prefix="align-r7-prompt-parity-") as raw_temp:
+        temporary = Path(raw_temp)
+        log_path = temporary / "server.log"
+        port = ephemeral_port()
+        with log_path.open("wb") as log:
+            process = subprocess.Popen(
+                [
+                    str(server),
+                    "-m",
+                    str(model),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(port),
+                    "--ctx-size",
+                    "512",
+                    "--threads",
+                    "2",
+                    "--no-warmup",
+                    "--jinja",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            try:
+                await_server(process, port, log_path)
+                total_bytes = 0
+                total_ids = 0
+                for name, system, user in cases():
+                    expected_prompt = prompt_text(system, user)
+                    response = request_json(
+                        f"http://127.0.0.1:{port}/apply-template",
+                        {
+                            "messages": [
+                                {"role": "system", "content": system},
+                                {"role": "user", "content": user},
+                            ],
+                            "add_generation_prompt": True,
+                        },
+                        timeout=10.0,
+                    )
+                    if not isinstance(response, dict) or set(response) != {"prompt"}:
+                        fail(f"{name}: server response shape differs")
+                    observed_prompt = response["prompt"]
+                    if not isinstance(observed_prompt, str):
+                        fail(f"{name}: server prompt is not a string")
+                    if observed_prompt != expected_prompt:
+                        fail(
+                            f"{name}: prompt differs: "
+                            f"{observed_prompt.encode().hex()[:200]} != "
+                            f"{expected_prompt.encode().hex()[:200]}"
+                        )
+                    prompt_bytes = expected_prompt.encode("utf-8")
+                    expected_ids = reference_ids(tokenizer, model, prompt_bytes)
+                    observed_ids = align_ids(model, temporary, system, user)
+                    if observed_ids != expected_ids:
+                        fail(f"{name}: ids differ: {observed_ids[:20]} != {expected_ids[:20]}")
+                    total_bytes += len(prompt_bytes)
+                    total_ids += len(expected_ids)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=10)
+
+    print(
+        f"prompt parity: PASS (build 10566, model {MODEL_SHA256}, "
+        f"{len(cases())} cases, {total_bytes} prompt bytes, {total_ids} compared ids)"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
