@@ -19,7 +19,8 @@ are `docs/specs/r7-prompt.md`.
 
 **Latest durable verification.** With GNU make and the Homebrew library path, `gmake fmt`,
 `gmake tokenizer-smoke`, `gmake prompt-smoke`, and `gmake gate-topology-check` pass. The prompt owner
-covers six text cases, eight model failures, two size boundaries, and six CLI failures. Focused
+covers six text cases, eight model failures, three size/precedence boundaries, six CLI failures,
+two configured-tool qualification failures, and exact error-result publication fields. Focused
 `gmake prompt-parity` passes against the 4,683,073,536-byte reference model and pinned llama.cpp
 build 10566: eight cases, 1,538 rendered prompt bytes, and 303 compared token ids. Python syntax
 compilation and `git diff --check` pass.
@@ -35,6 +36,17 @@ and is superseded by the valid Linux chain below.
 `2586eaed0b0c19b5e956d01f0b8f4e81585e7812`. The pending record used the pinned Align source and
 Python 3.12.3; both samples pass at 169,066,709 ns and 140,072,458 ns, with a 154,569,583 ns median.
 The pending file is absent and `python3 scripts/check-baseline-chain` passes.
+
+**Comprehensive review.** `codex review --base origin/main` reviewed head
+`e0a479177145aefd279561426b298920c3e298e0` against base tip and merge base
+`de44bf0971866d51dfe995e9ae9a03e6fe8ce081` with Codex `gpt-5.6-sol` at high effort. Three P2
+findings are accepted: configured non-executable parity tools incorrectly returned `N/A`, the
+hosted owner did not combine an oversized prompt with a malformed tokenizer, and its API harness
+discarded error-result publication fields. Consolidated repair
+`12903046593f9a9a3688cc096d9c0994c170c958` makes configured unusable tools fail hard, exercises
+the missing precedence pair, and asserts exact detail, identities, counts, byte counts, and empty
+token output for every synthetic API failure. No finding remains open; the repair does not change
+the public contract or any identity-bound baseline input.
 
 **Next actions.** (1) Run the complete owner and one comprehensive review, then consolidate any
 findings. (2) Run exact-head publication preflight, open the PR, wait for CI, repair if required,
