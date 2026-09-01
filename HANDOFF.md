@@ -25,10 +25,15 @@ build 10566: eight cases, 1,538 rendered prompt bytes, and 303 compared token id
 compilation and `git diff --check` pass. The Makefile aggregate change intentionally requires a new
 source -> oracle -> finalization coding-baseline chain before publication.
 
-**Next actions.** (1) Commit the final implementation as the baseline source and record/finalize the
-new canonical baseline. (2) Run the complete owner and one comprehensive review, then consolidate
-any findings. (3) Run exact-head publication preflight, open the PR, wait for CI, repair if required,
-and merge before starting the next R7 capability.
+The first local baseline recording is intentionally rejected: macOS resolves the task manifest's
+fixed `/usr/bin/python3` to Python 3.9, so both task-runner invocations failed before validation.
+The resulting source `0b7433b` -> oracle `52add8b` -> finalization `efc2acd` history is not evidence
+and must be superseded by a complete Linux recording with two passing samples.
+
+**Next actions.** (1) Use the current commit as a fresh baseline source and record/finalize two
+passing deterministic-reference samples on Linux. (2) Run the complete owner and one comprehensive
+review, then consolidate any findings. (3) Run exact-head publication preflight, open the PR, wait
+for CI, repair if required, and merge before starting the next R7 capability.
 
 **Blocker.** None.
 
