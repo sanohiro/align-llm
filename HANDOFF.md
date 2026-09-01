@@ -5,8 +5,9 @@ file records durable project state.
 
 ## Active: R7-PROMPT (2026-09-01)
 
-Branch `agent/r7-prompt`, based on `main` merge `de44bf0971866d51dfe995e9ae9a03e6fe8ce081`.
-R7-TOKENIZER is merged and the next consumer boundary is the missing conversion from the existing
+Branch `agent/r7-prompt`, integrating current `main` merge
+`e68a3949dd2a02b006ae9c5f7e7bfdbd668b7415` (PR #162). R7-TOKENIZER is merged and the next
+consumer boundary is the missing conversion from the existing
 `GenerationRequest { system, user }` text pair to the Qwen2.5-Coder prompt token ids consumed by
 the shipped dense runtime.
 
@@ -48,23 +49,27 @@ the missing precedence pair, and asserts exact detail, identities, counts, byte 
 token output for every synthetic API failure. No finding remains open; the repair does not change
 the public contract or any identity-bound baseline input.
 
-**Next actions.** (1) Run the complete owner and one comprehensive review, then consolidate any
-findings. (2) Run exact-head publication preflight, open the PR, wait for CI, repair if required,
-and merge without squash or rebase. (3) Refresh `main` and start the next eligible R7 capability.
+**Next actions.** (1) Complete the current-main merge and rerun the affected tokenizer/prompt owner
+and integration evidence. (2) Run exact-head Linux publication preflight, open the PR, wait for CI,
+repair if required, and merge without squash or rebase. (3) Pull the latest `main`, including any
+concurrent updates, and start the next eligible R7 capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** This handoff checkpoint until committed; no generated or local
-configuration files belong in the change.
+**Intentional uncommitted files.** The current `origin/main` merge until committed; no generated or
+local configuration files belong in the change.
 
-## Merged checkpoint: R7-TOKENIZER (2026-09-01)
+## Merged checkpoint: R7-TOKENIZER evidence completion (2026-09-01)
 
-PR #161 merged as `de44bf0971866d51dfe995e9ae9a03e6fe8ce081`. It ships the public GGUF
+PR #161 merged the implementation as `de44bf0971866d51dfe995e9ae9a03e6fe8ce081`; follow-up PR #162
+merged the complete review evidence as `e68a3949dd2a02b006ae9c5f7e7bfdbd668b7415`. Together they ship the public GGUF
 array readers, snapshot-stable private Qwen2 tokenizer, exact `--tokenize` / `--detokenize` CLI,
-and Request 22's direct Move-field indexing migrations. The real 4,683,073,536-byte model passes
-299 parity cases against pinned llama-tokenize build 10566: 50,893 input bytes and 69,485 compared
-ids. Exact-head Linux preflight and all hosted, x86_64, and aarch64 checks passed. The final
-baseline chain is source `c49ff5720aabbe3468743e7aa252709077e26cdf` -> oracle
+and Request 22's direct Move-field indexing migrations. The hosted owner now covers exact accepted
+special-count/length, merge-bucket, adversarial-prefix, decode-output, one-shot-reader, and snapshot
+replacement boundaries. The real 4,683,073,536-byte model passes 299 parity cases and two complete
+API publication passes against pinned llama-tokenize build 10566: 50,893 input bytes and 69,485
+compared ids. Exact-head Linux preflight and all hosted, x86_64, and aarch64 checks passed. The
+implementation baseline chain is source `c49ff5720aabbe3468743e7aa252709077e26cdf` -> oracle
 `207262bcbc54c0ca677781b79156f8e436f34f3c` -> finalization
 `bd5f93257c4add753ec4ea407755fc79114fcba2`; all are ancestors of merged `main`.
 
