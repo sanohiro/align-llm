@@ -18,7 +18,7 @@ layer. Request 22 is `CLOSED` after all registered consumer targets and real-mod
 **Latest durable verification.** `make gguf-smoke` passes 62 fixtures; `make model-ir-smoke` passes
 49 qwen, 31 gpt-oss, 29 olmoe, and 62 re-run fixtures; `make layer-forward-smoke` passes; and
 `make tokenizer-smoke` passes 13 text classes, four special spellings, all 17 model-error codes
-across 19 failure cases, all five operation-error codes, and a deterministic atomic-replacement
+across 22 failure cases, all five operation-error codes, and a deterministic atomic-replacement
 snapshot case. The real 4,683,073,536-byte model
 encodes `Hello, world!` to `[9707,11,1879,0]`
 and decodes exactly. After the snapshot repair, the full `make tokenizer-parity` qualification was
@@ -40,6 +40,16 @@ review was required after the repair was committed. That final `codex review --b
 reviewed head `4840cc4` against base tip and merge base `62c2073`, again with Codex
 `gpt-5.6-sol` at high effort. Verdict: clean, with no actionable correctness defects. Its
 supplemental synthetic Qwen2 comparison also matched pinned llama-tokenize across 196 text cases.
+The later containment-contract change required a new stable-candidate review. `codex review --base
+origin/main` reviewed head `e365d57d8e21a2d3352dd7085ad4cc8a337c7626` against base tip and
+merge base `62c20735901fb35c24cb682d843f0fc31aaba041` with Codex `gpt-5.6-sol` at
+high effort. Verdict: one P2 finding. The loader fused settled validation stages, so a multi-invalid
+model could publish a later duplicate, special-text, or merge-bucket failure before an earlier
+token-type, special-count, or malformed-merge failure. The finding is accepted. Consolidated repair
+`9a512ef19ffe564eb8327b9170ff346f05553217` separates stages 9/10, 11/12, and
+14/15 and adds one adversarial model for each precedence class. The repair implements the existing
+ledger without changing its public surface or strategy, so it does not trigger another full review;
+the changed slice was inspected and its owner passes all 22 model failures.
 
 **Coding baseline refresh.** The pin, `Makefile`, and topology-check changes invalidate the prior
 identity-bound coding baseline. The final required Linux/aarch64 chain is source
@@ -63,8 +73,8 @@ bytes and exposed the missing `Cargo.lock` path. The bounded repair keeps the no
 three-entry lock check, requires the complete fixed compiler vector in fresh containment, and
 documents why the private Align source is unavailable there; partial vectors fail before product
 execution. Normal `make tokenizer-smoke`, simulated complete/partial vector cases, formatting, and
-the baseline chain pass. Final publication evidence must run from zero at the unchanged final head
-after the repaired candidate's comprehensive review.
+the baseline chain pass. The repaired candidate's comprehensive review and its bounded precedence
+repair are complete. Final publication evidence must run from zero at the unchanged final head.
 
 **Next actions.** (1) Run the exact clean-HEAD publication preflight owner in that Linux wrapper.
 (2) Publish the PR and record the review envelope and finding disposition, then merge after checks.
