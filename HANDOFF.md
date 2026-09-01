@@ -3,10 +3,10 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R7-TOKENIZER implementation publication (2026-09-01)
+## Active: R7-TOKENIZER evidence-completion publication (2026-09-01)
 
-Branch `agent/request22-adoption-r7`, based on `main` merge `62c2073`; R7-TOKENIZER's design
-checkpoint merged as PR #159. Align PR #920 shipped Request 22 as
+Branch `agent/r7-tokenizer-evidence-completion`, based on PR #161's `main` merge `de44bf0`;
+R7-TOKENIZER's design checkpoint merged as PR #159. Align PR #920 shipped Request 22 as
 `27770420555d19b98eced133369c168e9c6d4a2f`; `.align-revision` selects it and the managed compiler
 was materialized at that identity.
 
@@ -26,7 +26,7 @@ passes covering validation and `NotFound` propagation, and a deterministic atomi
 snapshot case. The real 4,683,073,536-byte model
 encodes `Hello, world!` to `[9707,11,1879,0]`
 and decodes exactly. After the snapshot repair, the full `make tokenizer-parity` qualification was
-rerun from zero after review repair `bb3b00d` and passes all 299 cases against llama-tokenize build
+rerun from zero after review repair `216eb11` and passes all 299 cases against llama-tokenize build
 10566: tokenizer `b56e4ff2c7b747e9b209c2dd6cbac8894f25f1361854b344f645c748f2029fe2`,
 152,064 tokens, 151,387 merges, 50,893 input bytes, and 69,485 compared ids. Two independent
 real-model API processes also publish the same complete encode/decode results. Managed-toolchain
@@ -78,7 +78,7 @@ Verdict: four P2 missing-owner-evidence findings. The public one-shot GGUF reade
 success/validation/OS-error coverage; merge-index acceptance at 16, rejection at 17, and duplicate
 first-rank behavior were not independently proved; the accepted 1 MiB adversarial special-prefix
 workload was absent; and decode output had only the over-cap case. All four findings are accepted.
-Consolidated repair `bdeb9ce` adds those exact owner cases without changing product behavior,
+Consolidated repair `38b9428` adds those exact owner cases without changing product behavior,
 public design, or strategy, so another comprehensive review is not required. The repair delta was
 inspected and `make tokenizer-smoke` passes.
 
@@ -114,12 +114,15 @@ instead of the separately checked-out pinned source and failed opening `Cargo.lo
 lock source, keeps managed fallback and the fixed fresh vector, checks out the exact pin for hosted
 bundle hits and misses, and passes that source to supported checks. Explicit-source owner,
 relative-source refusal, workflow topology, formatting, gate topology, and the baseline chain pass.
-The hosted GitHub check passes with that repair. Final publication evidence must run from zero at
-the unchanged integrated head; all earlier stamps are intentionally invalid after the concurrent
-integration and rebase.
+The hosted GitHub check passed with that repair, and PR #161 merged as `de44bf0` while the four
+review-evidence commits were still local. Those four commits are now rebased without content change
+as `216eb11`, `7930a53`, `38b9428`, and `4b7d6ef` on the merge. The earlier exact-head stamp is
+intentionally invalid after the rebase; the follow-up publication evidence must run from zero at
+the unchanged evidence-completion head.
 
-**Next actions.** (1) Run the exact clean-HEAD publication preflight owner in Linux, push, and wait
-for all required checks. (2) Merge PR #161 and refresh `main`.
+**Next actions.** (1) Run the exact clean-HEAD publication preflight owner in Linux, push the
+evidence-completion branch, and open a follow-up PR. (2) Wait for all required checks, merge it, and
+refresh `main`.
 
 **Blocker.** None.
 
