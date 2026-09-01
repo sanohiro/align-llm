@@ -27,6 +27,7 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+"${root_dir}/scripts/run-runtime-provider-gate" --self-test
 python3 "${root_dir}/scripts/runtime_provider_fixture.py" "${work_dir}"
 
 python3 - "${root_dir}/main" "${work_dir}" <<'PY'

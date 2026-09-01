@@ -16,9 +16,10 @@ termination behavior, and coordinates seven modules plus CLI and evaluation. The
 ledger, exact validation order, EOG/max-token semantics, closure matrix, fixed coding-task gate, and
 pre-implementation 20-minute qualification ceiling are `docs/specs/r7-runtime-provider.md`.
 
-Design checkpoint `fe3665d44148f4d840d098b394e17a48938e7c4f` is complete. The implementation
-candidate retains one GGUF snapshot while deriving exact model geometry, checking the alignpack
-source record, and preparing prompt/EOG ids. Generation is greedy, CPU, resident, at most 128
+Design checkpoint `fe3665d44148f4d840d098b394e17a48938e7c4f` and implementation candidate
+`8a17034b7c77d1659d32db4e4567d1b20eab7bf5` are complete. The provider retains one GGUF snapshot
+while deriving exact model geometry, checking the alignpack source record, and preparing prompt/EOG
+ids. Generation is greedy, CPU, resident, at most 128
 tokens, non-streaming, unseeded, and without an internal timeout. It returns no
 partial text on failure and excludes the terminal EOG id from detokenization. The fixed gate runs
 the existing `python-inclusive-range` request through both local OpenAI-compatible llama.cpp and
@@ -26,22 +27,27 @@ align-runtime, persists unchanged schema-2 generation records, and requires both
 the existing task validator.
 
 **Latest durable verification.** `make tokenizer-smoke provider-smoke runtime-provider-smoke
-gate-topology-check layer-forward-smoke` passes, including the 48-assertion synthetic provider/CLI
-matrix, six generation-EOG cases, and the complete shared decode regression. The real
-`runtime-provider-gate` passed in 62.7 seconds with the pinned
+gate-topology-check layer-forward-smoke` passes, including the gate runner self-test, 48-assertion
+synthetic provider/CLI matrix, six generation-EOG cases, and the complete shared decode regression.
+The real `runtime-provider-gate` passed after review repair in 60.3 seconds with the pinned
 4,683,073,536-byte Qwen model and llama.cpp build 10566: both provider legs produced a passing patch
 with SHA-256 prefix `5d6b107e706a`. The gate's earlier 64-token probe established truncation, so the
-settled request limit is 128. Publication owners and aggregate preflight have not run yet.
+settled request limit is 128. The comprehensive review of `8a17034b` against base and merge base
+`88b77ed` found three valid gate-contract defects: raw completion trailers were admitted,
+configured invalid prerequisites could be hidden by an earlier N/A, and an untimed baseline probe
+consumed a third task validation. Consolidated repair now rejects non-exact fixed-task envelopes,
+validates every configured prerequisite before N/A, removes the task execution from the topology
+probe, and permanently owns these cases in the hosted self-test. Publication owners and aggregate
+preflight have not run yet.
 
-**Next actions.** (1) Finish the implementation-to-ledger evidence map and focused owners, then
-commit the stable candidate. (2) Run one comprehensive review, validate and consolidate findings,
-and rerun affected owners. (3) Run exact-head publication preflight, publish/merge the PR, pull the
-latest `main` including concurrent work, and continue the next eligible roadmap capability.
+**Next actions.** (1) Commit the consolidated review repair. (2) Run exact-head publication
+preflight. (3) Publish and merge the PR after required checks and recorded finding dispositions,
+pull the latest `main` including concurrent work, and continue the next eligible roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The complete R7-RUNTIME-PROVIDER implementation candidate and
-its post-design documentation/evidence update. Local configuration does not belong in the change.
+**Intentional uncommitted files.** The consolidated review repair and this durable evidence update.
+Local configuration does not belong in the change.
 
 ## Merged checkpoint: R7-PROMPT (2026-09-01)
 

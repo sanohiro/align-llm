@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,13 @@ CONTAINER_IMAGE = os.environ.get("ALIGN_LLM_RUNTIME_GATE_IMAGE", "c4-repair-meas
 TASK = ROOT / "eval/tasks/coding-v1/python-inclusive-range/task.json"
 RUNNER = ROOT / "eval/runners/run-coding-task.py"
 ALIAS = "qwen2.5-coder-7b-instruct"
+PATCH_PREFIX = (
+    "diff --git a/src/inclusive_range.py b/src/inclusive_range.py\n"
+    "--- a/src/inclusive_range.py\n"
+    "+++ b/src/inclusive_range.py\n"
+    "@@ -3 +3 @@\n"
+    "-    return sum(range(start, stop))\n"
+)
 server_process: subprocess.Popen[bytes] | None = None
 
 
@@ -71,21 +79,40 @@ def extract_patch(value: str) -> str:
         if matched is None:
             raise GateError("completion is neither a raw diff nor one isolated diff fence")
         patch = matched.group(1)
-    if not patch.startswith("diff --git ") or "\0" in patch:
-        raise GateError("extracted completion is not a unified Git diff")
+    if "\0" in patch or re.fullmatch(re.escape(PATCH_PREFIX) + r"\+[^\r\n]*\n?", patch) is None:
+        raise GateError("extracted completion is not the complete fixed-task Git diff")
     return patch if patch.endswith("\n") else patch + "\n"
 
 
 def self_test() -> int:
-    raw = "diff --git a/a b/a\n--- a/a\n+++ b/a\n"
+    raw = PATCH_PREFIX + "+    return sum(range(start, stop + 1))\n"
     if extract_patch(raw) != raw or extract_patch("```diff\n" + raw.rstrip() + "\n```\n") != raw:
         raise GateError("extractor changed an admitted patch")
-    for rejected in ("text\n" + raw, "```diff\n" + raw + "```\ntrailer", "````diff\n"):
+    for rejected in (
+        "text\n" + raw,
+        raw + "Done\n",
+        "```diff\n" + raw + "```\ntrailer",
+        raw.replace("@@ -3 +3 @@", "@@ -3,2 +3,2 @@"),
+        "````diff\n",
+    ):
         try:
             extract_patch(rejected)
         except GateError:
             continue
         raise GateError("extractor admitted surrounding text")
+    with tempfile.TemporaryDirectory(prefix="align-r7-runtime-provider-self-test-") as raw_work:
+        invalid_include = str(Path(raw_work) / "missing-include")
+        with mock.patch.dict(
+            os.environ,
+            {"ALIGN_LLM_GGML_INCLUDE": invalid_include},
+            clear=True,
+        ):
+            try:
+                runtime_prerequisites()
+            except GateError:
+                pass
+            else:
+                raise GateError("an invalid configured prerequisite was hidden by an earlier N/A")
     print("R7-RUNTIME-PROVIDER self-test: PASS")
     return 0
 
@@ -93,13 +120,28 @@ def self_test() -> int:
 def required_path(name: str, *, directory: bool = False, executable: bool = False) -> Path | None:
     value = os.environ.get(name)
     if value is None or value == "":
-        print(f"R7-RUNTIME-PROVIDER: N/A ({name} unset)")
         return None
     path = Path(value)
     good = path.is_dir() if directory else path.is_file()
     if not good or (executable and not os.access(path, os.X_OK)):
         raise GateError(f"configured prerequisite is unusable: {name}={value}")
     return path
+
+
+def runtime_prerequisites() -> tuple[Path, Path, Path, Path] | None:
+    checked = (
+        ("ALIGN_LLM_GGUF_MODEL", required_path("ALIGN_LLM_GGUF_MODEL")),
+        ("ALIGN_LLM_GGML_INCLUDE", required_path("ALIGN_LLM_GGML_INCLUDE", directory=True)),
+        ("ALIGN_LLM_GGML_LIB", required_path("ALIGN_LLM_GGML_LIB", directory=True)),
+        ("ALIGN_LLM_LLAMA_SERVER", required_path("ALIGN_LLM_LLAMA_SERVER", executable=True)),
+    )
+    missing = next((name for name, path in checked if path is None), None)
+    if missing is not None:
+        print(f"R7-RUNTIME-PROVIDER: N/A ({missing} unset)")
+        return None
+    model, include, library, server = (path for _, path in checked)
+    assert model is not None and include is not None and library is not None and server is not None
+    return model, include, library, server
 
 
 def file_sha256(path: Path) -> str:
@@ -159,25 +201,15 @@ def main() -> int:
     if len(sys.argv) != 1:
         raise GateError("runtime provider gate accepts no arguments")
 
-    model = required_path("ALIGN_LLM_GGUF_MODEL")
-    if model is None:
+    prerequisites = runtime_prerequisites()
+    if prerequisites is None:
         return 0
-    include = required_path("ALIGN_LLM_GGML_INCLUDE", directory=True)
-    if include is None:
-        return 0
-    library = required_path("ALIGN_LLM_GGML_LIB", directory=True)
-    if library is None:
-        return 0
-    server = required_path("ALIGN_LLM_LLAMA_SERVER", executable=True)
-    if server is None:
-        return 0
-    assert model and include and library and server
+    model, include, library, server = prerequisites
 
-    # Validate the Linux task runner topology before paying for packing or model inference.
+    # Validate task-runner prerequisites without consuming a task-validation slot.
     with tempfile.TemporaryDirectory(prefix="align-r7-runtime-provider-probe-") as raw_probe:
         probe = Path(raw_probe) / "probe.patch"
-        probe.write_bytes((ROOT / "eval/baselines/patches/python-inclusive-range.patch").read_bytes())
-        run(validation_command(probe, Path(raw_probe)), timeout=120)
+        validation_command(probe, Path(raw_probe))
 
     if model.stat().st_size != MODEL_BYTES or file_sha256(model) != MODEL_SHA256:
         raise GateError("the configured GGUF does not have the pinned size and SHA-256")
