@@ -17,13 +17,17 @@ layer. Request 22 is `CLOSED` after all registered consumer targets and real-mod
 
 **Latest durable verification.** `make gguf-smoke` passes 62 fixtures; `make model-ir-smoke` passes
 49 qwen, 31 gpt-oss, 29 olmoe, and 62 re-run fixtures; `make layer-forward-smoke` passes; and
-`make tokenizer-smoke` passes 13 text classes, four special spellings, all 17 model-error codes
-across 22 failure cases, all five operation-error codes, and a deterministic atomic-replacement
-snapshot case. The real 4,683,073,536-byte model
+`make tokenizer-smoke` passes 13 text classes, four ordinary special spellings, the exact accepted
+256-special / 32-byte overlapping-prefix boundary in all four modes, all 17 model-error codes across
+22 failure cases, all five operation-error codes, and a deterministic atomic-replacement snapshot
+case. The real 4,683,073,536-byte model
 encodes `Hello, world!` to `[9707,11,1879,0]`
 and decodes exactly. After the snapshot repair, the full `make tokenizer-parity` qualification was
-rerun from zero at reviewed head `4840cc4` and passes all 299 cases against llama-tokenize build
-10566: 50,893 input bytes and 69,485 compared ids. Managed-toolchain materialization,
+rerun from zero after review repair `bb3b00d` and passes all 299 cases against llama-tokenize build
+10566: tokenizer `b56e4ff2c7b747e9b209c2dd6cbac8894f25f1361854b344f645c748f2029fe2`,
+152,064 tokens, 151,387 merges, 50,893 input bytes, and 69,485 compared ids. Two independent
+real-model API processes also publish the same complete encode/decode results. Managed-toolchain
+materialization,
 `make gate-topology-check`, formatting, and `git diff --check` pass.
 The topology self-test also passes in its Linux publication environment after the fixture repair
 described below.
@@ -50,6 +54,21 @@ token-type, special-count, or malformed-merge failure. The finding is accepted. 
 14/15 and adds one adversarial model for each precedence class. The repair implements the existing
 ledger without changing its public surface or strategy, so it does not trigger another full review;
 the changed slice was inspected and its owner passes all 22 model failures.
+The locally developed hosted-bundle repair then triggered a fresh stable-candidate review.
+`codex review --base origin/main` reviewed head
+`e6576977ed242688085c857f880cde77421fb990` against base tip and merge base
+`62c20735901fb35c24cb682d843f0fc31aaba041` with Codex `gpt-5.6-sol` at high effort.
+Verdict: two P2 findings. The real-model qualification did not observe or repeat the published
+tokenizer identity/counts, and the synthetic owner did not exercise successful overlapping
+specials at the exact accepted count/length limits. Both findings are accepted. The rebased
+evidence repair `bb3b00d` adds a complete repeated real-model API publication
+comparison and a 256-special 31/32-byte overlap fixture covering parse/literal and render/skip.
+This repair adds only the missing evidence for the settled ledger and does not change product
+behavior, design, or strategy, so it does not trigger another comprehensive review. The repair
+delta was inspected; synthetic and real-model owners pass. The reviewed hosted-bundle route was not
+published: concurrent repair `e88a2e4` instead chose the explicit pinned-source route described
+below. That executable workflow/source-routing change requires one fresh comprehensive review of
+the integrated candidate before publication.
 
 **Coding baseline refresh.** The pin, `Makefile`, and topology-check changes invalidate the prior
 identity-bound coding baseline. The final required Linux/aarch64 chain is source
@@ -83,16 +102,17 @@ instead of the separately checked-out pinned source and failed opening `Cargo.lo
 lock source, keeps managed fallback and the fixed fresh vector, checks out the exact pin for hosted
 bundle hits and misses, and passes that source to supported checks. Explicit-source owner,
 relative-source refusal, workflow topology, formatting, gate topology, and the baseline chain pass.
-Final publication evidence must run from zero at the unchanged repaired head; the prior stamp is
-intentionally invalid after this executable workflow repair.
+The hosted GitHub check passes with that repair. Final publication evidence must run from zero at
+the unchanged integrated head; all earlier stamps are intentionally invalid after the concurrent
+integration and rebase.
 
-**Next actions.** (1) Run the exact clean-HEAD publication preflight owner in that Linux wrapper.
-(2) Publish the PR and record the review envelope and finding disposition, then merge after checks.
-(3) Refresh `main` and start the next eligible roadmap capability.
+**Next actions.** (1) Comprehensively review the integrated source-routing and evidence repairs.
+(2) Run the exact clean-HEAD publication preflight owner in Linux, push, and wait for all required
+checks. (3) Merge PR #161 and refresh `main`.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** None after this handoff update is committed.
+**Intentional uncommitted files.** None.
 
 ## Merged checkpoint: DEV-OUTPUT-SUMMARY (2026-08-31)
 
