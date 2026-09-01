@@ -3,96 +3,38 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R7-TOKENIZER implementation publication (2026-09-01)
+## Active: R7-PROMPT (2026-09-01)
 
-Branch `agent/request22-adoption-r7`, based on `main` merge `62c2073`; R7-TOKENIZER's design
-checkpoint merged as PR #159. Align PR #920 shipped Request 22 as
-`27770420555d19b98eced133369c168e9c6d4a2f`; `.align-revision` selects it and the managed compiler
-was materialized at that identity.
+Branch `agent/r7-prompt`, based on `main` merge `de44bf0971866d51dfe995e9ae9a03e6fe8ce081`.
+R7-TOKENIZER is merged and the next consumer boundary is the missing conversion from the existing
+`GenerationRequest { system, user }` text pair to the Qwen2.5-Coder prompt token ids consumed by
+the shipped dense runtime.
 
-The implementation candidate adds the public GGUF array readers, private Qwen2 tokenizer, and exact
-`--tokenize` / `--detokenize` CLI. GGUF tensor rows, `GgufTable`, frontend `BlockPlan`, and
-`model_forward.StepColumns` now use directly indexed Move-field arrays without a compatibility
-layer. Request 22 is `CLOSED` after all registered consumer targets and real-model parity passed.
+R7-PROMPT will validate the model-carried supported chat template, render exactly the no-tools
+system/user conversation with a generation prompt, and tokenize it from one retained GGUF snapshot.
+Its public API and `--prepare-prompt` CLI stop at token ids. Provider dispatch, inference reuse,
+sampling, stop-token policy, streaming, and decoded completion text remain later R7 capabilities.
+The authoritative ledger and closure matrix are `docs/specs/r7-prompt.md`.
 
-**Latest durable verification.** `make gguf-smoke` passes 62 fixtures; `make model-ir-smoke` passes
-49 qwen, 31 gpt-oss, 29 olmoe, and 62 re-run fixtures; `make layer-forward-smoke` passes; and
-`make tokenizer-smoke` passes 13 text classes, four special spellings, all 17 model-error codes
-across 22 failure cases, all five operation-error codes, and a deterministic atomic-replacement
-snapshot case. The real 4,683,073,536-byte model
-encodes `Hello, world!` to `[9707,11,1879,0]`
-and decodes exactly. After the snapshot repair, the full `make tokenizer-parity` qualification was
-rerun from zero at reviewed head `4840cc4` and passes all 299 cases against llama-tokenize build
-10566: 50,893 input bytes and 69,485 compared ids. Managed-toolchain materialization,
-`make gate-topology-check`, formatting, and `git diff --check` pass.
-The topology self-test also passes in its Linux publication environment after the fixture repair
-described below.
-
-**Comprehensive review.** `codex review --base origin/main` reviewed implementation head `cd6f0c2`
-against base tip and merge base `62c2073` with Codex `gpt-5.6-sol` at high effort. Verdict: one P2
-finding. The tokenizer validated counts from one open and materialized each array through later
-opens, so an atomic path replacement could combine generations and reach an out-of-bounds access.
-The finding is accepted. Consolidated repair `0799ad217449219b35d3e7b62499af6681c31e9c` retains one
-validated `GgufSnapshot` handle for the table and all payload reads and adds a deterministic
-replacement-at-a-barrier regression. Its
-public ownership surface materially changes the reviewed approach, so one final comprehensive
-review was required after the repair was committed. That final `codex review --base origin/main`
-reviewed head `4840cc4` against base tip and merge base `62c2073`, again with Codex
-`gpt-5.6-sol` at high effort. Verdict: clean, with no actionable correctness defects. Its
-supplemental synthetic Qwen2 comparison also matched pinned llama-tokenize across 196 text cases.
-The later containment-contract change required a new stable-candidate review. `codex review --base
-origin/main` reviewed head `e365d57d8e21a2d3352dd7085ad4cc8a337c7626` against base tip and
-merge base `62c20735901fb35c24cb682d843f0fc31aaba041` with Codex `gpt-5.6-sol` at
-high effort. Verdict: one P2 finding. The loader fused settled validation stages, so a multi-invalid
-model could publish a later duplicate, special-text, or merge-bucket failure before an earlier
-token-type, special-count, or malformed-merge failure. The finding is accepted. Consolidated repair
-`9a512ef19ffe564eb8327b9170ff346f05553217` separates stages 9/10, 11/12, and
-14/15 and adds one adversarial model for each precedence class. The repair implements the existing
-ledger without changing its public surface or strategy, so it does not trigger another full review;
-the changed slice was inspected and its owner passes all 22 model failures.
-
-**Coding baseline refresh.** The pin, `Makefile`, and topology-check changes invalidate the prior
-identity-bound coding baseline. The final required Linux/aarch64 chain is source
-`c49ff5720aabbe3468743e7aa252709077e26cdf` -> immutable oracle
-`207262bcbc54c0ca677781b79156f8e436f34f3c` -> canonical finalization
-`bd5f93257c4add753ec4ea407755fc79114fcba2`. Both deterministic-reference samples pass at
-146,034,041 ns and 149,513,542 ns on Linux 6.11.11-linuxkit with Python 3.12.3; the pending record
-is absent and `python3 scripts/check-baseline-chain` passes.
-
-**Publication preflight incident.** A host preflight passed the R7 owner, managed ensure, pinned
-build, and the complete hosted aggregate before the expected macOS-only `/proc/self/fd` absence
-stopped `fresh-focused`. The subsequent Linux Docker-in-Docker run passed the R7 owner, managed
-ensure, pinned build, and hosted aggregate, then its topology self-test exposed that
-`exact_environment()` omitted the newly hosted `tokenizer-smoke`. Repair `c49ff57` updates that
-normal-case fixture; both `make gate-topology-check` and the Linux self-test pass. Because the
-checker is a recorded baseline artifact, the repair owns the replacement chain above. Final
-publication evidence then reached the installed image: image construction and the boundary profile
-passed, but the worker aggregate failed because `run-tokenizer-smoke` tried to resolve the managed
-checkout beneath the contained `HOME=/nonexistent`. The diagnostic retry captured 16,562 stderr
-bytes and exposed the missing `Cargo.lock` path. The bounded repair keeps the normal owner's exact
-three-entry lock check, requires the complete fixed compiler vector in fresh containment, and
-documents why the private Align source is unavailable there; partial vectors fail before product
-execution. Normal `make tokenizer-smoke`, simulated complete/partial vector cases, formatting, and
-the baseline chain pass. The repaired candidate's comprehensive review and its bounded precedence
-repair are complete. Exact-head Linux preflight at `3629660` then passed every phase, including the
-owner in 427,618 ms, hosted checks in 363,749 ms, fresh-focused in 21,095 ms, and the installed
-profile in 2,396,519 ms. PR #161's first hosted run exposed a distinct cache-topology omission:
-the compiler bundle was valid, but `tokenizer-smoke` looked beneath the empty managed-cache path
-instead of the separately checked-out pinned source and failed opening `Cargo.lock`. Repair
-`e88a2e47d98ddc754362516f1b048c260686f503` makes an absolute explicit `ALIGN_REPO` the normal
-lock source, keeps managed fallback and the fixed fresh vector, checks out the exact pin for hosted
-bundle hits and misses, and passes that source to supported checks. Explicit-source owner,
-relative-source refusal, workflow topology, formatting, gate topology, and the baseline chain pass.
-Final publication evidence must run from zero at the unchanged repaired head; the prior stamp is
-intentionally invalid after this executable workflow repair.
-
-**Next actions.** (1) Run the exact clean-HEAD publication preflight owner in that Linux wrapper.
-(2) Publish the PR and record the review envelope and finding disposition, then merge after checks.
-(3) Refresh `main` and start the next eligible roadmap capability.
+**Next actions.** (1) Finish the ledger-to-prose consistency pass. (2) Implement the prompt API,
+CLI, synthetic owner, and pinned real-model template/token parity qualification. (3) Run the owner,
+one comprehensive review, exact-head publication preflight, PR, CI, repair if required, and merge.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** None after this handoff update is committed.
+**Intentional uncommitted files.** The R7-PROMPT design and merge-dependent handoff correction until
+the first coherent design checkpoint is committed.
+
+## Merged checkpoint: R7-TOKENIZER (2026-09-01)
+
+PR #161 merged as `de44bf0971866d51dfe995e9ae9a03e6fe8ce081`. It ships the public GGUF
+array readers, snapshot-stable private Qwen2 tokenizer, exact `--tokenize` / `--detokenize` CLI,
+and Request 22's direct Move-field indexing migrations. The real 4,683,073,536-byte model passes
+299 parity cases against pinned llama-tokenize build 10566: 50,893 input bytes and 69,485 compared
+ids. Exact-head Linux preflight and all hosted, x86_64, and aarch64 checks passed. The final
+baseline chain is source `c49ff5720aabbe3468743e7aa252709077e26cdf` -> oracle
+`207262bcbc54c0ca677781b79156f8e436f34f3c` -> finalization
+`bd5f93257c4add753ec4ea407755fc79114fcba2`; all are ancestors of merged `main`.
 
 ## Merged checkpoint: DEV-OUTPUT-SUMMARY (2026-08-31)
 
