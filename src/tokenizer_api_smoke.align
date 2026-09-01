@@ -1,0 +1,119 @@
+module tokenizer_api_smoke
+
+import core.json
+import gguf
+import tokenizer_qwen2
+import std.io
+
+fn print_ids_code(result_value: tokenizer_qwen2.TokenIdsResult) {
+  match result_value.status {
+    Ok => { print("OK") },
+    Error => { print(result_value.error_code) },
+  }
+}
+
+fn print_text_code(result_value: tokenizer_qwen2.TokenTextResult) {
+  match result_value.status {
+    Ok => { print("OK") },
+    Error => { print(result_value.error_code) },
+  }
+}
+
+fn operation_failures(model_path: str, long_model_path: str, byte_id_text: str, long_id_text: str) -> Result<(), Error> {
+  byte_id: i64 := json.decode(byte_id_text)?
+  long_id: i64 := json.decode(long_id_text)?
+
+  huge_text_builder := builder()
+  mut text_at := 0
+  loop {
+    if text_at >= 1048577 { break }
+    huge_text_builder.write("a")
+    text_at = text_at + 1
+  }
+  huge_text := huge_text_builder.to_string()
+  print_ids_code(tokenizer_qwen2.encode_model(
+      model_path, huge_text, tokenizer_qwen2.EncodeSpecials.ParseControl)?)
+
+  mut huge_ids_builder: array_builder<i64> := array_builder()
+  mut id_at := 0
+  loop {
+    if id_at >= 1048577 { break }
+    huge_ids_builder.push(0)
+    id_at = id_at + 1
+  }
+  huge_ids := huge_ids_builder.build()
+  print_text_code(tokenizer_qwen2.decode_model(
+      model_path, huge_ids, tokenizer_qwen2.DecodeSpecials.RenderControl)?)
+
+  negative_ids := [-1].to_array()
+  print_text_code(tokenizer_qwen2.decode_model(
+      model_path, negative_ids, tokenizer_qwen2.DecodeSpecials.RenderControl)?)
+
+  byte_ids := [byte_id].to_array()
+  print_text_code(tokenizer_qwen2.decode_model(
+      model_path, byte_ids, tokenizer_qwen2.DecodeSpecials.RenderControl)?)
+
+  mut output_ids_builder: array_builder<i64> := array_builder()
+  id_at = 0
+  loop {
+    if id_at >= 257 { break }
+    output_ids_builder.push(long_id)
+    id_at = id_at + 1
+  }
+  output_ids := output_ids_builder.build()
+  print_text_code(tokenizer_qwen2.decode_model(
+      long_model_path, output_ids, tokenizer_qwen2.DecodeSpecials.RenderControl)?)
+  return Ok(())
+}
+
+fn snapshot_replacement(path: str) -> Result<(), Error> {
+  snapshot := gguf.open_snapshot(path)?
+  io.stdout.write("READY\n")?
+  mut gate := buffer(1)
+  if io.stdin.read(gate)? != 1 { return Err(Error.Invalid) }
+  tokens := gguf.snapshot_string_array(snapshot, "tokenizer.ggml.tokens")?
+  types := gguf.snapshot_i32_array(snapshot, "tokenizer.ggml.token_type")?
+  merges := gguf.snapshot_string_array(snapshot, "tokenizer.ggml.merges")?
+  line := builder()
+  line.write("SNAP:")
+  line.write_int(tokens.len())
+  line.write(":")
+  line.write_int(types.len())
+  line.write(":")
+  line.write_int(merges.len())
+  line.write("\n")
+  io.stdout.write(line)?
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 3 && args[1] == "--snapshot" {
+    return snapshot_replacement(args[2])
+  }
+  if args.len() == 6 && args[1] == "--operations" {
+    return operation_failures(args[2], args[3], args[4], args[5])
+  }
+  mut at := 1
+  loop {
+    if at >= args.len() { break }
+    encoded := tokenizer_qwen2.encode_model(
+      args[at], "hello", tokenizer_qwen2.EncodeSpecials.ParseControl)?
+    match encoded.status {
+      Ok => {
+        line := builder()
+        line.write("OK:")
+        line.write_int(encoded.vocab_size)
+        line.write(":")
+        line.write_int(encoded.merge_count)
+        line.write(":")
+        line.write_int(encoded.token_ids.len())
+        line.write(":")
+        line.write(encoded.tokenizer_id)
+        print(line.to_string())
+      },
+      Error => { print(encoded.error_code) },
+    }
+    at = at + 1
+  }
+  return Ok(())
+}

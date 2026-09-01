@@ -24,8 +24,10 @@ import prompt_generate
 import prompt_state
 import verification_loop
 import result
+import tokenizer_qwen2
 import std.env
 import std.fs
+import std.io
 import std.path
 import std.time
 
@@ -42,6 +44,8 @@ fn print_help() {
   print("       main --simulate-residency <traces.txt> <model-ir.json> <budget-bytes> [residency.json]")
   print("       main --pack <model.gguf> <out.alignpack> [alignpack.json]")
   print("       main --pack-verify <model.gguf> <pack.alignpack> [alignpack-verify.json]")
+  print("       main --tokenize <model.gguf> <input.txt> <parse-control|literal-control>")
+  print("       main --detokenize <model.gguf> <tokens.json> <render-control|skip-control>")
   print("       main prompt <experiment|generate|evaluate|accept|rollback> <request.json> <result.json>")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
 }
@@ -78,6 +82,111 @@ fn error_code(e: Error) -> i64 = match e {
 fn parse_i64(value: str) -> Result<i64, Error> {
   number: i64 := json.decode(value)?
   return Ok(number)
+}
+
+fn tokenizer_path_valid(value: str) -> bool {
+  if value.len() <= 0 || value.len() > 4096 { return false }
+  raw := value.bytes()
+  mut at := 0
+  loop {
+    if at >= raw.len() { break }
+    if raw.u8(at) == 0 { return false }
+    at = at + 1
+  }
+  return true
+}
+
+fn tokenizer_decode_failure(value: Error) -> Error {
+  return Error.Invalid
+}
+
+fn read_tokenizer_input(path_value: str) -> Result<string, Error> {
+  source := fs.open(path_value)?
+  mut accumulated := buffer(0)
+  mut chunk := buffer(65536)
+  mut total := 0
+  loop {
+    if total == 1048576 {
+      mut probe := buffer(1)
+      if source.read(probe)? > 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := 1048576 - total
+    count := if remaining < 65536 {
+      mut tail := buffer(remaining)
+      read_count := source.read(tail)?
+      accumulated.append(tail.bytes())
+      read_count
+    } else {
+      read_count := source.read(chunk)?
+      accumulated.append(chunk.bytes())
+      read_count
+    }
+    if count == 0 { break }
+    total = total + count
+  }
+  return Ok(accumulated.bytes().as_str()?.clone())
+}
+
+fn tokenizer_status_ok(status_value: tokenizer_qwen2.TokenizerStatus) -> bool = match status_value {
+  Ok => true,
+  Error => false,
+}
+
+fn render_token_ids(borrow ids: array<i64>) -> string {
+  output := builder()
+  output.write("[")
+  mut at := 0
+  loop {
+    if at >= ids.len() { break }
+    if at > 0 { output.write(",") }
+    output.write_int(ids[at])
+    at = at + 1
+  }
+  output.write("]\n")
+  return output.to_string()
+}
+
+fn tokenize_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() != 5 { return Err(Error.Invalid) }
+  specials := if args[4] == "parse-control" {
+    tokenizer_qwen2.EncodeSpecials.ParseControl
+  } else if args[4] == "literal-control" {
+    tokenizer_qwen2.EncodeSpecials.LiteralControl
+  } else {
+    return Err(Error.Invalid)
+  }
+  if !tokenizer_path_valid(args[2]) || !tokenizer_path_valid(args[3]) {
+    return Err(Error.Invalid)
+  }
+  input := read_tokenizer_input(args[3])?
+  result_value := tokenizer_qwen2.encode_model(args[2], input, specials)?
+  if !tokenizer_status_ok(result_value.status) { return Err(Error.Invalid) }
+  output := render_token_ids(result_value.token_ids)
+  io.stdout.write(output)?
+  return Ok(())
+}
+
+fn detokenize_demo(args: array<str>) -> Result<(), Error> {
+  if args.len() != 5 { return Err(Error.Invalid) }
+  specials := if args[4] == "render-control" {
+    tokenizer_qwen2.DecodeSpecials.RenderControl
+  } else if args[4] == "skip-control" {
+    tokenizer_qwen2.DecodeSpecials.SkipControl
+  } else {
+    return Err(Error.Invalid)
+  }
+  if !tokenizer_path_valid(args[2]) || !tokenizer_path_valid(args[3]) {
+    return Err(Error.Invalid)
+  }
+  document := read_tokenizer_input(args[3])?
+  raw_ids: Result<array<i64>, Error> := json.decode(document)
+  ids: array<i64> := raw_ids.map_err(tokenizer_decode_failure)?
+  if ids.len() > 1048576 { return Err(Error.Invalid) }
+  result_value := tokenizer_qwen2.decode_model(args[2], ids, specials)?
+  if !tokenizer_status_ok(result_value.status) { return Err(Error.Invalid) }
+  io.stdout.write(result_value.text)?
+  return Ok(())
 }
 
 fn count_or_unknown(config: model.ProviderConfig, text: str) -> model.TokenCount {
@@ -1254,6 +1363,10 @@ pub fn main(args: array<str>) -> Result<(), Error> {
                               pack_demo(args)?
                             } else if args[1] == "--pack-verify" {
                               pack_verify_demo(args)?
+                            } else if args[1] == "--tokenize" {
+                              tokenize_demo(args)?
+                            } else if args[1] == "--detokenize" {
+                              detokenize_demo(args)?
                             } else if c7_selector(args[1]) {
                               persisted_result_demo(args)?
                             } else {

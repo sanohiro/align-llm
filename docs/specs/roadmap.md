@@ -1148,11 +1148,20 @@ The current forward delivery order is:
     The proportional design gate fires on public GGUF/tokenizer/CLI surfaces, large owned string
     arrays, malformed-model and special-token precedence, and the invariant spanning GGUF,
     tokenizer, CLI, fixtures, and parity. A design-only publication checkpoint is exceptional but
-    necessary here because external coordination must consume it first: Align Request 22 rejects
-    ordinary borrow indexing of Move array elements at both the pinned revision and current Align
-    `main`. That request is now blocking. Design and request lifecycle work may continue, but source
-    implementation must not consume its proposed surface before `ALIGN_MERGED`. The authoritative
-    ledger and closure matrix are [`r7-tokenizer.md`](r7-tokenizer.md).
+    necessary here because external coordination had to consume it first: at the design checkpoint,
+    Align Request 22 rejected ordinary borrow indexing of Move array elements at both the pinned
+    revision and Align `main`. That request blocked source implementation until `ALIGN_MERGED`.
+    The authoritative ledger and closure matrix are [`r7-tokenizer.md`](r7-tokenizer.md).
+
+    **Implementation candidate owner-verified 2026-09-01.** Align PR #920 shipped Request 22 as
+    `27770420555d19b98eced133369c168e9c6d4a2f`; the pin now selects that revision and all three
+    registered stream-plus-column workarounds have migrated to indexed Move-field arrays. The
+    hosted tokenizer owns GGUF array materialization, Qwen2 splitting and BPE, explicit special
+    modes, canonical token JSON, raw decode output, malformed-model precedence, and CLI isolation.
+    `make gguf-smoke model-ir-smoke layer-forward-smoke tokenizer-smoke` passes, and the exact
+    299-case real-model `tokenizer-parity` qualification passes against pinned llama-tokenize build
+    10566 with 50,893 input bytes and 69,485 compared ids. Publication preflight and the one stable
+    comprehensive review remain before merge.
 
 ### Status (2026-08-28)
 

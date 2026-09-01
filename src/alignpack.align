@@ -570,12 +570,6 @@ fn empty_plan() -> PackPlan {
   }
 }
 
-// `span_text` over a `BlockPlan`, which `model_ir` keeps private.
-fn plan_span(borrow plan: model_ir.BlockPlan, start: i64, end: i64) -> string {
-  if start < 0 || end < start || end > plan.names.len() { return "".clone() }
-  return plan.names[start..end].clone()
-}
-
 // The bytes a pack carries twice because two blocks claim the same tensor plane. The claim key is
 // `model_ir`'s own `(tensor, ordinal)` pairing, so the packer repeats no slice arithmetic; the
 // member ordinal rides below it so one sort settles both the grouping and the lookup of the
@@ -688,17 +682,16 @@ fn plan_layout(
     name_len_column.push(name_bytes)
     names_len = next_len
 
-    role := plan_span(plan, plan.member_role_start[slot], plan.member_role_end[slot])
-    role_view: str := role
+    role_view: str := plan.member_roles[slot]
     role_column.push(role_id(role_view))
     source_offset_column.push(claims.member_offset[at])
     nbytes_column.push(claims.member_nbytes[at])
-    ggml_type_column.push(t.tensor_types[tensor])
-    n_dims_column.push(t.tensor_n_dims[tensor])
-    dim0_column.push(t.tensor_dim0[tensor])
-    dim1_column.push(t.tensor_dim1[tensor])
-    dim2_column.push(t.tensor_dim2[tensor])
-    dim3_column.push(t.tensor_dim3[tensor])
+    ggml_type_column.push(t.tensor_entries[tensor].type_id)
+    n_dims_column.push(t.tensor_entries[tensor].n_dims)
+    dim0_column.push(t.tensor_entries[tensor].dim0)
+    dim1_column.push(t.tensor_entries[tensor].dim1)
+    dim2_column.push(t.tensor_entries[tensor].dim2)
+    dim3_column.push(t.tensor_entries[tensor].dim3)
     slice_index_column.push(plan.member_slice_index[slot])
     slice_count_column.push(plan.member_slice_count[slot])
     at = at + 1

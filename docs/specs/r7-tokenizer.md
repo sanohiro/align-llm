@@ -1,7 +1,6 @@
 # R7-TOKENIZER
 
-Status: contract ready after consolidated final-review redesign, 2026-08-31; align-llm source
-blocked on Align Request 22
+Status: implementation candidate owner-verified, 2026-09-01; publication review and preflight pending
 
 ## 1. Decision and boundary
 
@@ -65,15 +64,15 @@ operations load and release one private tokenizer per call. That is useful for t
 future provider's one prompt encode plus one final decode. A resident handle may be added only
 with its own public ownership contract when a consumer measures that the second load matters.
 
-### 1.4 Blocking Align dependency
+### 1.4 Shipped Align dependency
 
 Align Request 22 in [`../align-requests.md`](../align-requests.md) asks for non-consuming ordinary
-indexing of `array<string>` and arrays whose element record has a Move field. Current Align `main`
-at `4b515f8d` and the pinned `.align-revision` reject that expression outside the already-shipped
-direct-borrow-call exception. A real tokenizer needs to compare an indexed token or merge string
-many times and cannot be built on the exception.
+indexing of `array<string>` and arrays whose element record has a Move field. At the design
+checkpoint, Align `4b515f8d` and the pinned `.align-revision` rejected that expression outside the
+already-shipped direct-borrow-call exception. A real tokenizer needs to compare an indexed token or
+merge string many times and cannot be built on the exception.
 
-The request is therefore **blocking** now. The allowed order is exact:
+The request was therefore blocking for source implementation. The required order was exact:
 
 1. publish and coordinate this contract;
 2. implement and merge Request 22 in Align, including compiler owners and documentation;
@@ -84,9 +83,11 @@ The request is therefore **blocking** now. The allowed order is exact:
 5. pass every request owner plus the tokenizer owners, then advance through
    `ALIGN_LLM_VERIFIED` to `CLOSED`.
 
-No align-llm source on this branch may name a proposed accessor, imitate it with an FFI helper,
-flatten the vocabulary into another stream-plus-column compatibility representation, or use an
-external tokenizer as the product implementation before step 3.
+That order is complete. Align PR #920 shipped the designed surface as
+`27770420555d19b98eced133369c168e9c6d4a2f`; the pin selects it, the real client uses only its
+ordinary indexing spelling, all registered migrations and owners pass, and Request 22 is `CLOSED`.
+No compatibility accessor, FFI helper, new stream-plus-column representation, or external product
+tokenizer was introduced.
 
 ## 2. Public-contract ledger
 
@@ -97,6 +98,16 @@ surfaces:
 
 ```align
 pub fn kv_array_element_type(borrow table: GgufTable, key: str) -> i64
+pub GgufSnapshot { handle: file, table: GgufTable }
+pub fn open_snapshot(path: str) -> Result<GgufSnapshot, Error>
+pub fn snapshot_string_array(
+  borrow snapshot: GgufSnapshot,
+  key: str,
+) -> Result<array<string>, Error>
+pub fn snapshot_i32_array(
+  borrow snapshot: GgufSnapshot,
+  key: str,
+) -> Result<array<i64>, Error>
 pub fn read_string_array(path: str, key: str) -> Result<array<string>, Error>
 pub fn read_i32_array(path: str, key: str) -> Result<array<i64>, Error>
 ```
@@ -105,13 +116,15 @@ pub fn read_i32_array(path: str, key: str) -> Result<array<i64>, Error>
 | --- | --- |
 | Key selection | The first valid UTF-8 metadata key equal to `key`, matching `find_key` and every existing R1 accessor. A later duplicate is ignored |
 | `kv_array_element_type` | Returns the GGUF element type id for an ARRAY; `-1` when `key` is lexically invalid, absent, or not an ARRAY. It allocates nothing and has no error channel |
+| `open_snapshot` | Opens `path` once, performs the complete table walk on that owned `file`, and returns the still-open handle with its validated table. An atomic replacement of `path` cannot change subsequent snapshot reads. In-place mutation of the already-open file is outside the contract; model inputs must remain immutable for the snapshot lifetime |
+| Snapshot array readers | Materialize through the snapshot's original handle and table. They never resolve `path`, open another handle, or mutate the snapshot. The tokenizer uses these after its ordered metadata and count checks |
 | `read_string_array` success | The selected value is ARRAY/STRING; every element is valid UTF-8 and within the bounds below; result order equals file order; every result element is an owned `string`; no view or file handle escapes |
 | `read_i32_array` success | The selected value is ARRAY/INT32; each little-endian element is sign-extended to `i64`; result order equals file order; the result is owned |
-| Structural validation | Each reader first obtains a successful complete `read_table(path)`. A table with `GgufStatus.Error`, a missing key, wrong outer or element type, truncated payload, invalid UTF-8 string element, or violated materialization bound is `Err(Error.Invalid)` |
+| Structural validation | A snapshot and each one-shot reader perform one complete table walk on the same handle later used for payload reads. A table with `GgufStatus.Error`, a missing key, wrong outer or element type, truncated payload, invalid UTF-8 string element, or violated materialization bound is `Err(Error.Invalid)` |
 | Reader OS errors | `NotFound`, `Denied`, and other `std.fs` errors propagate unchanged. For `read_string_array` and `read_i32_array`, a lexically invalid path or key is `Error.Invalid` |
-| Allocation | At most one selected array is materialized. The temporary table, window, and file are released before return; success transfers only the returned array |
+| Allocation / cleanup | A one-shot reader materializes at most one selected array and releases its table, window, and file before return. A snapshot owns its file and table until dropped; each snapshot reader drops its window and partial builder on every return. Success transfers only the returned array |
 | Effects | Reads the named path. No write, mapping, process, network, environment, cache, or cwd effect |
-| Persisted/cache identity | N/A: the readers persist and cache nothing. File order and bytes are the result's identity |
+| Persisted/cache identity | N/A: the readers persist and cache nothing. A snapshot's kernel file description, rather than the reusable path spelling, identifies its source for the call |
 
 The path grammar remains R0's: non-empty, at most 4,096 UTF-8 bytes, no NUL. The key is non-empty,
 at most 4,096 bytes, and contains no NUL. Because the scalar accessor cannot return `Error`, an
@@ -124,9 +137,10 @@ cumulative string payload over 16,777,216 bytes. Those checks happen from declar
 prefixes before each clone, so an accepted container cannot force a multi-gigabyte temporary array
 before section 2.8's tokenizer check.
 
-The implementation may retain each selected value's absolute payload offset in `GgufTable` and
-reopen that bounded region after the complete walk. It may not create a second GGUF type grammar or
-make `read_table`, `inspect`, and the array readers disagree about malformed input.
+The implementation retains each selected value's absolute payload offset in `GgufTable` and reads
+that bounded region through the same handle after the complete walk. The one-shot readers are
+snapshot wrappers, not a second open. The implementation may not create a second GGUF type grammar
+or make `read_table`, `inspect`, and the array readers disagree about malformed input.
 
 ### 2.2 Public tokenizer types and functions
 
@@ -345,10 +359,19 @@ align-regex-v1;regex=1.13.1+f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a11
 
 Those versions and Cargo checksums are the exact dependency identities in current Align
 `Cargo.lock`; the `regex-syntax` package's generated category and Perl-space tables identify
-Unicode 16.0.0. `tokenizer-smoke` resolves the managed checkout selected by `.align-revision` and
+Unicode 16.0.0. A normal `tokenizer-smoke` uses the absolute explicit `ALIGN_REPO` when one selects
+the compiler's source, otherwise resolves the managed checkout selected by `.align-revision`, and
 requires all three lock entries to equal this constant before compiling or executing the product.
-An Align pin whose classifier dependency identity differs must update the identity schema and this
-contract before it can be adopted; it cannot silently reuse an old tokenizer id.
+Hosted CI checks out the exact pin for both compiler-bundle hits and misses and passes that source
+explicitly. The authenticated fresh aggregate deliberately does not expose its private Align source
+to repository commands. In that containment only, the owner instead requires the complete fixed
+fresh compiler environment (`ALIGN_LLM_FRESH_COMPILER=1`,
+`ALIGN_LLM_TOOL_ROOT=/tools`, `ALIGNC=/tools/fresh-alignc`, and `ALIGNC_CACHE=off`); its compiler is
+built from the attested pin with `cargo --locked --offline`, and publication has already run the
+same-head normal lock owner before entering the fresh aggregate. A partial or different marker
+vector fails before product execution. An Align pin whose classifier dependency identity differs
+must update the identity schema and this contract before it can be adopted; it cannot silently
+reuse an old tokenizer id.
 
 The path, tensor bytes, quantization, chat template, special ids, and unrelated GGUF metadata are
 excluded because they cannot affect these operations. File order, duplicate merge entries, unused
@@ -457,7 +480,7 @@ no partial token-id array or partial text in an error result.
 | --- | --- |
 | R0 GGUF decoder and R1 first-key accessors | shipped |
 | R6 token-id runtime and frozen prompt corpus | shipped |
-| Align Request 22 | blocking; `PROPOSED` at contract publication |
+| Align Request 22 | shipped as `27770420555d19b98eced133369c168e9c6d4a2f`; adopted and `CLOSED` |
 | `std.regex` Unicode `\p{L}`, `\p{N}`, and `\s` classifiers | shipped; exact dependency identity is in 2.7 and no look-around is required by section 3.2 |
 | `std.crypto.sha256`, `std.encoding`, bounded buffer append, and raw stdout writer | shipped |
 | pinned llama.cpp tokenizer | `.llama-revision`, build 10566 commit `bb4caa754`; qualification only |
@@ -671,7 +694,8 @@ source and reads no product-generated expectation.
   text cap, and token/merge bucket acceptance at 16 versus rejection at 17 distinct colliders;
 - exact special count/length rejection boundaries, prefix trie matching, and a 1 MiB
   adversarial-prefix case that completes within the owner timeout with expected output;
-- the managed Align checkout's exact three regex lock identities from 2.7 before product compile;
+- the managed Align checkout's exact three regex lock identities from 2.7 before a normal product
+  compile, plus fail-closed recognition of the complete fixed compiler vector in fresh containment;
 - every error code in 2.9 through missing/wrong arrays, declared count mismatch, text/bucket caps,
   invalid UTF-8, empty/duplicate token, invalid type, malformed or unresolved merge/BYTE, missing
   byte alphabet, bad id, output cap, and invalid final UTF-8;
@@ -837,21 +861,21 @@ coding.
 | Owner / path | Construction | S | F / M | E | C | Regression |
 | --- | --- | --- | --- | --- | --- | --- |
 | `src/gguf.align`: array offsets/accessor | Complete `read_table` records first-key array type and payload offset from the one decoder | Borrowed lookup returns exact type | Invalid/absent/wrong-type key is `-1`; structural table status remains data | Invalid key returns before lookup; no payload open before table success | temporary columns/table drop | `tokenizer-smoke`: invalid/first-key/wrong-type/structural corpus; `gguf-smoke` parity |
-| `src/gguf.align`: `read_string_array` | Reopen selected bounded payload only after complete validation | owned strings, file order | invalid key/UTF-8/truncation/cap is `Invalid` | invalid key before path; stop materialization at first bad element | file/window/partial builder drop | `tokenizer-smoke`: invalid key, early/tail invalid strings, truncation, caps |
-| `src/gguf.align`: `read_i32_array` | same selected-offset route | sign-extended owned `i64` values | invalid key/wrong width/truncation/cap is `Invalid` | invalid key before path; first bad scalar | same | `tokenizer-smoke`: invalid key, types positive/wrong/truncated |
+| `src/gguf.align`: snapshot / `read_string_array` | One open owns complete validation and selected bounded payload reads | owned strings, file order; atomic path replacement retains the opened source | invalid key/UTF-8/truncation/cap is `Invalid` | invalid key before path; stop materialization at first bad element | snapshot file/table and file/window/partial builder drop | `tokenizer-smoke`: invalid key, early/tail invalid strings, truncation, caps, deterministic atomic-replacement barrier |
+| `src/gguf.align`: snapshot / `read_i32_array` | same-handle selected-offset route | sign-extended owned `i64` values | invalid key/wrong width/truncation/cap is `Invalid` | invalid key before path; first bad scalar | same | `tokenizer-smoke`: invalid key, types positive/wrong/truncated, replacement snapshot |
 | Request 22 migrations | Build direct Move-record/string arrays | unchanged accessors/documents | existing failure documents unchanged | existing first-failure order | element-wise Drop exactly once | `gguf-smoke`, `model-ir-smoke`, `layer-forward-smoke` |
-| `src/tokenizer_qwen2.align`: loader | tokens, types, merges in step order; checked tables, trie, and identity | private immutable tokenizer | first code in 2.3/2.9, no partial output | no later index after failure | all arrays/regex/index/trie/preimage state drop | `tokenizer-smoke` full model matrix |
+| `src/tokenizer_qwen2.align`: loader | One GGUF snapshot; tokens, types, merges in step order; checked tables, trie, and identity | private immutable tokenizer from one opened source | first code in 2.3/2.9, no partial output or mixed path generations | no later index after failure | snapshot handle plus all arrays/regex/index/trie/preimage state drop | `tokenizer-smoke` full model matrix and atomic replacement barrier |
 | token hash index | ascending ids into head/next buckets; 16-link cap | complete-string lookup within 16 links | duplicate is `R7_TOKEN_DUPLICATE` before distinct-entry `R7_HASH_BUCKET`; hash never equals without byte compare | no seventeenth insertion or lookup | Copy heads/links drop | exact 16/17 colliders, duplicate precedence, ordinary collision fixture |
 | merge hash index | resolve left/right/result ids, then insert first-ranked Copy pair into 16-link bucket | first rank and prevalidated result id | missing component/result is `R7_MERGE_TOKEN`; duplicate ignored before distinct-entry `R7_HASH_BUCKET` | malformed/unresolved row before insert; no seventeenth insert | Copy id/head/link arrays drop; strings stay owned by merges | missing left/right/result, exact 16/17 colliders, rank/duplicate cases |
 | special trie/partition | ascending unique ids into checked dense transitions and two mode terminals | longest atomic match within 32 probes per position | count/length cap errors; disabled control flows to BPE | raw segment flush before atomic id | trie and raw-span scratch drop | all modes, overlaps, exact maximum common-prefix case |
-| Qwen2 scanner | exact managed-regex identity, scalar spans, then three compiled classifiers | ordered complete pieces | lock mismatch rejects in the owner; invalid UTF-8 cannot enter from `str` | total fallback advances one scalar | regex handles/scalar columns drop | lock-identity check + lexical category table + seeded cases |
+| Qwen2 scanner | exact explicit-or-managed regex identity, scalar spans, then three compiled classifiers | ordered complete pieces | normal-owner lock mismatch, relative explicit source, or partial/different fresh compiler vector rejects; invalid UTF-8 cannot enter from `str` | total fallback advances one scalar | regex handles/scalar columns drop | lock-identity / hosted-source routing / fresh-vector check + lexical category table + seeded cases |
 | GPT-2 byte map | fixed numeric map, validated byte alphabet | reversible mapped bytes | missing/mistyped byte token is load error | first missing byte | fixed Copy tables drop | all 256 bytes and multilingual roundtrip |
 | BPE heap | one token id per mapped byte, adjacent Copy-id candidates | rank/left exact ids; merge carries result id | accepted-model pair lookup is bounded and total | stale candidates skipped without mutation | id/symbol/heap scratch drops per piece | rank conflict, stale heap, long word, fewer-than-48b pair-check ceiling |
 | decode | validate ids, append pieces to a 1 MiB-bounded raw buffer | whole valid UTF-8 string | bad id precedes output cap; first oversize append is `R7_OUTPUT_SIZE`; invalid final UTF-8 is data error | no partial result | raw buffer/private tokenizer drop | negative/high ids, exact/over output cap, byte fragments, modes |
 | public result construction | empty error result first, fill only at settled transitions | identity/count/output coherent | output empty, known metadata retained | one first code | result alone transfers | all error rows and repeat loop |
 | `src/main.align` | arity/mode/path, model, bounded input, operation | one stdout write | product/pre-write failure has zero stdout; sink failure may retain a prefix and propagates OS status/signal | cheap validation prevents file work | readers/buffers/results drop | CLI matrix, byte-exact success, zero stdout for pre-write failures |
 | `scripts/tokenizer_fixture.py` | temporary independent GGUF and manifest | deterministic corpus | explicit mutants one root cause each | no committed/generated fixture | runner-owned temp trap | `make tokenizer-smoke` |
-| `scripts/run-tokenizer-smoke` | managed compiler + fixture | all API/CLI assertions | refuses missing case/output and vacuous corpus | first command failure stops | trap removes temp tree | itself |
+| `scripts/run-tokenizer-smoke` | explicit-or-managed lock owner or exact fresh compiler vector + fixture | all API/CLI assertions | refuses relative/missing/drifted lock source, vector drift, missing case/output, and vacuous corpus | first command failure stops | trap removes temp tree | itself in normal and capable aggregates |
 | `scripts/run-tokenizer-parity` | validates two opt-in operands, pin, 299-case frozen corpus, and R6 prompt manifest | exact ids/roundtrips | wrong pin/tool/model/corpus/mismatch hard fails | absent prerequisite one N/A line | temporary inputs/results removed | `make tokenizer-parity` |
 | `Makefile` / topology | add two phony targets; hosted owner once | hosted graph reaches smoke | topology duplication/omission fails | parity never enters aggregate | N/A | `gate-topology-check`, `make ci` |
 
@@ -912,29 +936,20 @@ acceptance.
 
 ## 8. Align capability-request lifecycle
 
-At design publication, Request 22 is `PROPOSED`, priority high, blocking R7-TOKENIZER. Its current
-sibling evidence and requested language surface remain authoritative in
-[`docs/align-requests.md`](../align-requests.md). This document adds no proposed Align spelling.
-
-When Align merges:
-
-- record the exact Align commit/PR in the request;
-- update `.align-revision` and materialize the managed release compiler;
-- use only the shipped borrow-index spelling;
-- run the Align adoption owners in 4.3 plus this capability's owners;
-- record exact commands/results before `ALIGN_LLM_VERIFIED`;
-- close only after the shipped ownership limits and all three client targets are documented.
-
-If Align chooses `arr.at(i)` rather than changing `arr[i]`, only implementation spelling changes.
-The GGUF/tokenizer public surfaces, behavior, ownership, errors, CLI, and acceptance in this ledger
-do not.
+Request 22 is `CLOSED`. Align PR #913 accepted ordinary non-consuming `array<string>[i] -> str`;
+PR #920 shipped it as `27770420555d19b98eced133369c168e9c6d4a2f`. `.align-revision` selects
+that commit, the managed release compiler materializes at the same identity, and source uses only
+the shipped index spelling. The GGUF tensor rows, `GgufTable`, frontend `BlockPlan`, and
+`model_forward.StepColumns` migrations pass their named owners; the hosted tokenizer owner and
+299-case real-model parity qualification pass at the adopted pin. The lifecycle evidence and
+remaining ownership limits are recorded in [`docs/align-requests.md`](../align-requests.md).
 
 ## 9. Author consistency pass
 
 The author pass checks these statements as one contract:
 
-1. Roadmap item 41, `HANDOFF.md`, Request 22, and this section all name the same active capability
-   and blocking resume condition.
+1. Roadmap item 41, `HANDOFF.md`, Request 22, and this section all name the same active capability,
+   shipped dependency, and publication state.
 2. The public inventory in 2.1/2.2 exactly covers the CLI and no hypothetical Align surface.
 3. Qwen2 regex and its locked classifier identity, bounded special-trie classification, duplicate
    rejection, bounded bucket indexes, byte map, BPE priority, decode rules, and the pinned oracle's
@@ -946,15 +961,25 @@ The author pass checks these statements as one contract:
    explicit; genuinely inapplicable fields say why.
 7. The hosted owner is aggregate-safe; the exact 299-case real-model parity corpus is opt-in;
    aggregate membership change names `make ci`.
-8. Request 22 cannot reach `ALIGN_LLM_VERIFIED` from a pin update or tokenizer alone; all previously
-   named migrations remain acceptance.
+8. Request 22 reached `CLOSED` only after the pin, all previously named migrations, hosted owner,
+   and real-model parity passed together.
 
-Result: consistent after the consolidated final-review redesign. Final ledger-to-diff
-reconciliation remains pending until the blocked implementation exists.
+Result: consistent after implementation reconciliation on 2026-09-01.
 
 ## 10. Final ledger-to-diff mapping
 
-Pending implementation. Before review of the executable candidate, replace this paragraph with a
-table mapping every public ledger row and applicable closure-matrix cell to exact source, fixture,
-runner, and passing evidence, plus explicit deviations or deferrals. A missing mapping is a missing
-part of the capability, not review prose to fill later.
+| Contract / closure cells | Final source and owner | Candidate evidence |
+| --- | --- | --- |
+| GGUF array type, offsets, same-handle snapshot, owned string/i32 readers, first-key selection, caps, atomic-replacement isolation, and Request 22 tensor/table migration | `src/gguf.align`; `scripts/tokenizer_fixture.py`; existing GGUF corpus | `make gguf-smoke` (62 fixtures) and `make tokenizer-smoke` |
+| `GgufTable`, `BlockPlan`, and `StepColumns` representation-only migrations | `src/model_ir.align`, three frontends, `src/alignpack.align`, `src/model_forward.align`, `src/decode_step.align` | `make model-ir-smoke` (49 qwen, 31 gpt-oss, 29 olmoe, 62 re-runs) and `make layer-forward-smoke` |
+| Public tokenizer types/results; ordered model validation; all 17 model codes; identity and cleanup | `src/tokenizer_qwen2.align`; `src/tokenizer_api_smoke.align`; synthetic mutation corpus | `make tokenizer-smoke` (19 model-failure cases covering every model code) |
+| Qwen2 scalar scanner, regex lock, GPT-2 byte map, heap BPE, special trie/modes, encode/decode, five operation codes | `src/tokenizer_qwen2.align`; independent Python oracle and API harness | `make tokenizer-smoke` (13 text classes, four special spellings, five operation failures) |
+| Exact model behavior, all fixed/special/prompt/generated cases, both encode modes and both decode modes | `scripts/run-tokenizer-parity` and pinned model/tool identities | `make tokenizer-parity`: PASS, 299 cases, 50,893 bytes, 69,485 compared ids |
+| CLI arity/mode/path/bounded read, canonical id JSON, raw stdout, and failure isolation | `src/main.align`; both runners | byte-exact synthetic owner plus every real parity invocation |
+| Hosted membership and opt-in qualification topology | `Makefile`, `scripts/check-gate-topology`, topology specification | `make gate-topology-check`; final `make ci` remains publication/preflight evidence |
+
+There is one inherited, explicit limitation rather than a hidden deviation: Align Request 21 has
+not shipped, so GGUF random access still obtains `O_RDWR` through `fs.open_rw` even though this
+capability never writes the model. The tokenizer now retains that single opened handle across table
+and payload reads; this is recorded as additional Request 21 evidence and stays non-blocking for the
+current developer-owned model.

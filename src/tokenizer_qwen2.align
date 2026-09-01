@@ -1,0 +1,1539 @@
+module tokenizer_qwen2
+
+import gguf
+import std.crypto
+import std.encoding
+import std.regex
+
+MAX_TOKENIZER_ENTRIES := 1048576
+MAX_TOKENIZER_ITEM_BYTES := 4096
+MAX_TOKENIZER_TEXT_BYTES := 16777216
+MAX_HASH_BUCKET_ENTRIES := 16
+MAX_SPECIAL_TOKENS := 256
+MAX_SPECIAL_TOKEN_BYTES := 32
+MAX_OPERATION_INPUT_BYTES := 1048576
+MAX_OPERATION_TOKEN_IDS := 1048576
+MAX_OPERATION_OUTPUT_BYTES := 1048576
+MAX_DETAIL_BYTES := 256
+
+CLASSIFIER_ID := "align-regex-v1;regex=1.13.1+f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d;regex-automata=0.4.16+8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad;regex-syntax=0.8.11+d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+FNV_OFFSET: u64 := 0xcbf29ce484222325
+FNV_PRIME: u64 := 1099511628211
+
+pub TokenizerStatus { Ok, Error }
+pub EncodeSpecials { ParseControl, LiteralControl }
+pub DecodeSpecials { RenderControl, SkipControl }
+
+pub TokenIdsResult {
+  status: TokenizerStatus,
+  error_code: string,
+  error_detail: string,
+  tokenizer_id: string,
+  vocab_size: i64,
+  merge_count: i64,
+  token_ids: array<i64>,
+}
+
+pub TokenTextResult {
+  status: TokenizerStatus,
+  error_code: string,
+  error_detail: string,
+  tokenizer_id: string,
+  vocab_size: i64,
+  merge_count: i64,
+  token_count: i64,
+  text: string,
+}
+
+Tokenizer {
+  tokens: array<string>,
+  types: array<i64>,
+  merges: array<string>,
+  token_heads: array<i64>,
+  token_next: array<i64>,
+  merge_heads: array<i64>,
+  merge_next: array<i64>,
+  merge_left: array<i64>,
+  merge_right: array<i64>,
+  merge_result: array<i64>,
+  byte_tokens: array<i64>,
+  special_next: array<i64>,
+  special_parse: array<i64>,
+  special_literal: array<i64>,
+  special_nodes: i64,
+  tokenizer_id: string,
+}
+
+LoadResult {
+  ok: bool,
+  code: string,
+  detail: string,
+  vocab_size: i64,
+  merge_count: i64,
+  tokenizer: Tokenizer,
+}
+
+PairLookup { rank: i64, result: i64 }
+
+HeapEntry {
+  rank: i64,
+  left: i64,
+  right: i64,
+  left_length: i64,
+  right_length: i64,
+}
+
+fn empty_i64() -> array<i64> {
+  values: array_builder<i64> := array_builder()
+  return values.build()
+}
+
+fn empty_string() -> array<string> {
+  values: array_builder<string> := array_builder()
+  return values.build()
+}
+
+fn filled_i64(count: i64, value: i64) -> array<i64> {
+  mut values: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= count { break }
+    values.push(value)
+    at = at + 1
+  }
+  return values.build()
+}
+
+fn empty_tokenizer() -> Tokenizer = Tokenizer {
+  tokens: empty_string(),
+  types: empty_i64(),
+  merges: empty_string(),
+  token_heads: empty_i64(),
+  token_next: empty_i64(),
+  merge_heads: empty_i64(),
+  merge_next: empty_i64(),
+  merge_left: empty_i64(),
+  merge_right: empty_i64(),
+  merge_result: empty_i64(),
+  byte_tokens: empty_i64(),
+  special_next: empty_i64(),
+  special_parse: empty_i64(),
+  special_literal: empty_i64(),
+  special_nodes: 0,
+  tokenizer_id: "".clone(),
+}
+
+fn bounded_detail(value: str) -> string {
+  if value.len() <= MAX_DETAIL_BYTES { return value.clone() }
+  mut end := MAX_DETAIL_BYTES
+  loop {
+    if end <= 0 { return "".clone() }
+    match value[0..end].bytes().as_str() {
+      Ok(text) => { return text.clone() },
+      Err(_) => {},
+    }
+    end = end - 1
+  }
+}
+
+fn int_text(value: i64) -> string {
+  b := builder()
+  b.write_int(value)
+  return b.to_string()
+}
+
+fn indexed_detail(prefix: str, index: i64) -> string {
+  b := builder()
+  b.write(prefix)
+  b.write("[")
+  b.write_int(index)
+  b.write("]")
+  return b.to_string()
+}
+
+fn failed_load(code: str, detail: str, vocab_size: i64, merge_count: i64) -> LoadResult = LoadResult {
+  ok: false,
+  code: code.clone(),
+  detail: bounded_detail(detail),
+  vocab_size: vocab_size,
+  merge_count: merge_count,
+  tokenizer: empty_tokenizer(),
+}
+
+fn path_valid(path: str) -> bool {
+  return path.len() > 0 && path.len() <= 4096 && !path.contains("\0")
+}
+
+fn table_ok(status: gguf.GgufStatus) -> bool = match status {
+  Ok => true,
+  Error => false,
+}
+
+fn encode_parse(mode: EncodeSpecials) -> bool = match mode {
+  ParseControl => true,
+  LiteralControl => false,
+}
+
+fn decode_render(mode: DecodeSpecials) -> bool = match mode {
+  RenderControl => true,
+  SkipControl => false,
+}
+
+fn fnv_byte(hash: u64, value: u8) -> u64 = (hash ^ (value as u64)) * FNV_PRIME
+
+fn fnv_text(value: str) -> u64 {
+  raw := value.bytes()
+  mut hash: u64 := FNV_OFFSET
+  mut at := 0
+  loop {
+    if at >= raw.len() { break }
+    hash = fnv_byte(hash, raw.u8(at))
+    at = at + 1
+  }
+  return hash
+}
+
+fn fnv_join(left: str, right: str) -> u64 {
+  mut hash := fnv_text(left)
+  raw := right.bytes()
+  mut at := 0
+  loop {
+    if at >= raw.len() { break }
+    hash = fnv_byte(hash, raw.u8(at))
+    at = at + 1
+  }
+  return hash
+}
+
+fn fnv_u64(hash_in: u64, value: i64) -> u64 {
+  mut hash := hash_in
+  raw := value as u64
+  mut at := 0
+  loop {
+    if at >= 8 { break }
+    hash = fnv_byte(hash, ((raw >> (at as u64 * 8)) & 255) as u8)
+    at = at + 1
+  }
+  return hash
+}
+
+fn pair_hash(left: i64, right: i64) -> u64 {
+  mut hash: u64 := FNV_OFFSET
+  hash = fnv_u64(hash, left)
+  hash = fnv_byte(hash, 255)
+  return fnv_u64(hash, right)
+}
+
+fn bucket_count_for(count: i64) -> i64 {
+  wanted := if count <= 0 { 1 } else { count * 2 }
+  mut buckets := 1
+  loop {
+    if buckets >= wanted { break }
+    buckets = buckets * 2
+  }
+  return buckets
+}
+
+fn bucket_for(hash: u64, count: i64) -> i64 = (hash & ((count - 1) as u64)) as i64
+
+fn token_lookup(
+  borrow tokens: array<string>,
+  borrow heads: array<i64>,
+  borrow next: array<i64>,
+  text: str,
+) -> i64 {
+  if heads.len() == 0 { return -1 }
+  bucket := bucket_for(fnv_text(text), heads.len())
+  mut row := heads[bucket]
+  mut links := 0
+  loop {
+    if row < 0 || links >= MAX_HASH_BUCKET_ENTRIES { break }
+    if tokens[row] == text { return row }
+    row = next[row]
+    links = links + 1
+  }
+  return -1
+}
+
+fn token_lookup_join(
+  borrow tokens: array<string>,
+  borrow heads: array<i64>,
+  borrow next: array<i64>,
+  left: str,
+  right: str,
+) -> i64 {
+  if heads.len() == 0 { return -1 }
+  bucket := bucket_for(fnv_join(left, right), heads.len())
+  mut row := heads[bucket]
+  mut links := 0
+  loop {
+    if row < 0 || links >= MAX_HASH_BUCKET_ENTRIES { break }
+    candidate: str := tokens[row]
+    if joined_equal(candidate, left, right) {
+      return row
+    }
+    row = next[row]
+    links = links + 1
+  }
+  return -1
+}
+
+fn joined_equal(candidate: str, left: str, right: str) -> bool {
+  if candidate.len() != left.len() + right.len() { return false }
+  candidate_bytes := candidate.bytes()
+  left_bytes := left.bytes()
+  right_bytes := right.bytes()
+  mut at := 0
+  loop {
+    if at >= left_bytes.len() { break }
+    if candidate_bytes.u8(at) != left_bytes.u8(at) { return false }
+    at = at + 1
+  }
+  mut right_at := 0
+  loop {
+    if right_at >= right_bytes.len() { break }
+    if candidate_bytes.u8(at + right_at) != right_bytes.u8(right_at) { return false }
+    right_at = right_at + 1
+  }
+  return true
+}
+
+fn pair_lookup(borrow t: Tokenizer, left: i64, right: i64) -> PairLookup {
+  if t.merge_heads.len() == 0 { return PairLookup { rank: -1, result: -1 } }
+  bucket := bucket_for(pair_hash(left, right), t.merge_heads.len())
+  mut row := t.merge_heads[bucket]
+  mut links := 0
+  loop {
+    if row < 0 || links >= MAX_HASH_BUCKET_ENTRIES { break }
+    if t.merge_left[row] == left && t.merge_right[row] == right {
+      return PairLookup { rank: row, result: t.merge_result[row] }
+    }
+    row = t.merge_next[row]
+    links = links + 1
+  }
+  return PairLookup { rank: -1, result: -1 }
+}
+
+fn direct_byte(value: i64) -> bool {
+  return (value >= 33 && value <= 126)
+    || (value >= 161 && value <= 172)
+    || (value >= 174 && value <= 255)
+}
+
+fn byte_scalar(value: i64) -> i64 {
+  if direct_byte(value) { return value }
+  mut rank := 0
+  mut at := 0
+  loop {
+    if at >= value { break }
+    if !direct_byte(at) { rank = rank + 1 }
+    at = at + 1
+  }
+  return 256 + rank
+}
+
+fn scalar_byte(value: i64) -> i64 {
+  if direct_byte(value) { return value }
+  if value < 256 || value > 323 { return -1 }
+  target := value - 256
+  mut rank := 0
+  mut at := 0
+  loop {
+    if at >= 256 { break }
+    if !direct_byte(at) {
+      if rank == target { return at }
+      rank = rank + 1
+    }
+    at = at + 1
+  }
+  return -1
+}
+
+fn scalar_string(value: i64) -> string {
+  mut b := buffer(4)
+  if value <= 127 {
+    b.put_u8(value as u8)
+  } else if value <= 2047 {
+    b.put_u8((192 | (value >> 6)) as u8)
+    b.put_u8((128 | (value & 63)) as u8)
+  } else if value <= 65535 {
+    b.put_u8((224 | (value >> 12)) as u8)
+    b.put_u8((128 | ((value >> 6) & 63)) as u8)
+    b.put_u8((128 | (value & 63)) as u8)
+  } else {
+    b.put_u8((240 | (value >> 18)) as u8)
+    b.put_u8((128 | ((value >> 12) & 63)) as u8)
+    b.put_u8((128 | ((value >> 6) & 63)) as u8)
+    b.put_u8((128 | (value & 63)) as u8)
+  }
+  return match b.bytes().as_str() {
+    Ok(text) => text.clone(),
+    Err(_) => "".clone(),
+  }
+}
+
+fn scalar_width(first: i64) -> i64 {
+  if first < 128 { return 1 }
+  if first < 224 { return 2 }
+  if first < 240 { return 3 }
+  return 4
+}
+
+fn scalar_code(value: str, at: i64) -> i64 {
+  raw := value.bytes()
+  first := raw.u8(at) as i64
+  width := scalar_width(first)
+  if width == 1 { return first }
+  if width == 2 {
+    return ((first & 31) << 6) | ((raw.u8(at + 1) as i64) & 63)
+  }
+  if width == 3 {
+    return ((first & 15) << 12)
+      | (((raw.u8(at + 1) as i64) & 63) << 6)
+      | ((raw.u8(at + 2) as i64) & 63)
+  }
+  return ((first & 7) << 18)
+    | (((raw.u8(at + 1) as i64) & 63) << 12)
+    | (((raw.u8(at + 2) as i64) & 63) << 6)
+    | ((raw.u8(at + 3) as i64) & 63)
+}
+
+fn normal_text_valid(value: str) -> bool {
+  mut at := 0
+  loop {
+    if at >= value.len() { break }
+    code := scalar_code(value, at)
+    if scalar_byte(code) < 0 { return false }
+    at = at + scalar_width(value.bytes().u8(at) as i64)
+  }
+  return true
+}
+
+fn hex_nibble(value: i64) -> i64 {
+  if value >= 48 && value <= 57 { return value - 48 }
+  if value >= 65 && value <= 70 { return value - 65 + 10 }
+  return -1
+}
+
+fn byte_token_value(value: str) -> i64 {
+  raw := value.bytes()
+  if raw.len() != 6 || raw.u8(0) != 60 || raw.u8(1) != 48 || raw.u8(2) != 120
+    || raw.u8(5) != 62 { return -1 }
+  high := hex_nibble(raw.u8(3) as i64)
+  low := hex_nibble(raw.u8(4) as i64)
+  if high < 0 || low < 0 { return -1 }
+  return high * 16 + low
+}
+
+fn first_ascii_space(value: str) -> i64 {
+  raw := value.bytes()
+  mut at := 1
+  loop {
+    if at >= raw.len() { break }
+    if raw.u8(at) == 32 { return at }
+    at = at + 1
+  }
+  return -1
+}
+
+fn effective_type(borrow t: Tokenizer, id: i64) -> i64 {
+  if t.types[id] == 1 && t.tokens[id] == "</s>" { return 3 }
+  return t.types[id]
+}
+
+fn identity(borrow tokens: array<string>, borrow types: array<i64>, borrow merges: array<string>) -> string {
+  mut preimage := buffer(0)
+  preimage.append("R7QW2TOK".bytes())
+  preimage.put_u32_le(1)
+  preimage.put_u64_le(4)
+  preimage.append("gpt2".bytes())
+  preimage.put_u64_le(5)
+  preimage.append("qwen2".bytes())
+  preimage.put_u64_le(CLASSIFIER_ID.len() as u64)
+  preimage.append(CLASSIFIER_ID.bytes())
+  preimage.put_u64_le(tokens.len() as u64)
+  mut at := 0
+  loop {
+    if at >= tokens.len() { break }
+    token: str := tokens[at]
+    preimage.put_u64_le(token.len() as u64)
+    preimage.append(token.bytes())
+    preimage.put_u32_le(types[at] as u32)
+    at = at + 1
+  }
+  preimage.put_u64_le(merges.len() as u64)
+  at = 0
+  loop {
+    if at >= merges.len() { break }
+    merge: str := merges[at]
+    preimage.put_u64_le(merge.len() as u64)
+    preimage.append(merge.bytes())
+    at = at + 1
+  }
+  digest := crypto.sha256(preimage.bytes())
+  return encoding.hex_encode(digest[0..digest.len()]).clone()
+}
+
+fn array_read_failure(e: Error) -> bool = match e {
+  Invalid => true,
+  _ => false,
+}
+
+fn load_model(path: str) -> Result<LoadResult, Error> {
+  if !path_valid(path) { return Err(Error.Invalid) }
+  snapshot := gguf.open_snapshot(path)?
+  if !table_ok(snapshot.table.status) {
+    detail := builder()
+    code_view: str := snapshot.table.error_code
+    detail.write(code_view)
+    detail.write("@")
+    detail.write_int(snapshot.table.error_offset)
+    rendered := detail.to_string()
+    rendered_view: str := rendered
+    return Ok(failed_load("R7_GGUF", rendered_view, -1, -1))
+  }
+
+  model := match gguf.kv_string(snapshot.table, "tokenizer.ggml.model") {
+    Some(value) => value,
+    None => { return Ok(failed_load("R7_TOKENIZER_METADATA", "tokenizer.ggml.model", -1, -1)) },
+  }
+  pre := match gguf.kv_string(snapshot.table, "tokenizer.ggml.pre") {
+    Some(value) => value,
+    None => { return Ok(failed_load("R7_TOKENIZER_METADATA", "tokenizer.ggml.pre", -1, -1)) },
+  }
+  model_view: str := model
+  pre_view: str := pre
+  if model_view != "gpt2" || pre_view != "qwen2" {
+    detail := builder()
+    detail.write(model_view)
+    detail.write("/")
+    detail.write(pre_view)
+    rendered := detail.to_string()
+    rendered_view: str := rendered
+    return Ok(failed_load("R7_UNSUPPORTED_TOKENIZER", rendered_view, -1, -1))
+  }
+
+  if gguf.kv_type(snapshot.table, "tokenizer.ggml.tokens") != 9
+    || gguf.kv_array_element_type(snapshot.table, "tokenizer.ggml.tokens") != 8 {
+    return Ok(failed_load("R7_TOKENIZER_METADATA", "tokenizer.ggml.tokens", -1, -1))
+  }
+  if gguf.kv_type(snapshot.table, "tokenizer.ggml.token_type") != 9
+    || gguf.kv_array_element_type(snapshot.table, "tokenizer.ggml.token_type") != 5 {
+    return Ok(failed_load("R7_TOKENIZER_METADATA", "tokenizer.ggml.token_type", -1, -1))
+  }
+  if gguf.kv_type(snapshot.table, "tokenizer.ggml.merges") != 9
+    || gguf.kv_array_element_type(snapshot.table, "tokenizer.ggml.merges") != 8 {
+    return Ok(failed_load("R7_TOKENIZER_METADATA", "tokenizer.ggml.merges", -1, -1))
+  }
+
+  token_count := match gguf.kv_array_length(snapshot.table, "tokenizer.ggml.tokens") {
+    Some(value) => value,
+    None => -1,
+  }
+  type_count := match gguf.kv_array_length(snapshot.table, "tokenizer.ggml.token_type") {
+    Some(value) => value,
+    None => -1,
+  }
+  merge_count := match gguf.kv_array_length(snapshot.table, "tokenizer.ggml.merges") {
+    Some(value) => value,
+    None => -1,
+  }
+  if token_count < 1 || token_count > MAX_TOKENIZER_ENTRIES {
+    return Ok(failed_load("R7_VOCAB_SIZE", indexed_detail("tokens", token_count), -1, -1))
+  }
+  if type_count != token_count || type_count > MAX_TOKENIZER_ENTRIES {
+    detail := builder()
+    detail.write("tokens[")
+    detail.write_int(token_count)
+    detail.write("]types[")
+    detail.write_int(type_count)
+    detail.write("]")
+    rendered := detail.to_string()
+    rendered_view: str := rendered
+    return Ok(failed_load("R7_VOCAB_SIZE", rendered_view, token_count, -1))
+  }
+  if merge_count < 0 || merge_count > MAX_TOKENIZER_ENTRIES {
+    return Ok(failed_load("R7_MERGE_COUNT", indexed_detail("merges", merge_count), token_count, -1))
+  }
+
+  tokens := match gguf.snapshot_string_array(snapshot, "tokenizer.ggml.tokens") {
+    Ok(value) => value,
+    Err(e) => {
+      if array_read_failure(e) {
+        return Ok(failed_load("R7_TOKENIZER_ARRAY", "tokenizer.ggml.tokens", token_count, merge_count))
+      }
+      return Err(e)
+    },
+  }
+  types := match gguf.snapshot_i32_array(snapshot, "tokenizer.ggml.token_type") {
+    Ok(value) => value,
+    Err(e) => {
+      if array_read_failure(e) {
+        return Ok(failed_load("R7_TOKENIZER_ARRAY", "tokenizer.ggml.token_type", token_count, merge_count))
+      }
+      return Err(e)
+    },
+  }
+  merges := match gguf.snapshot_string_array(snapshot, "tokenizer.ggml.merges") {
+    Ok(value) => value,
+    Err(e) => {
+      if array_read_failure(e) {
+        return Ok(failed_load("R7_TOKENIZER_ARRAY", "tokenizer.ggml.merges", token_count, merge_count))
+      }
+      return Err(e)
+    },
+  }
+
+  mut token_bytes := 0
+  mut at := 0
+  loop {
+    if at >= tokens.len() { break }
+    length := tokens[at].len()
+    if length > MAX_TOKENIZER_ITEM_BYTES || token_bytes > MAX_TOKENIZER_TEXT_BYTES - length {
+      token_bytes = MAX_TOKENIZER_TEXT_BYTES + 1
+      break
+    }
+    token_bytes = token_bytes + length
+    at = at + 1
+  }
+  mut merge_bytes := 0
+  at = 0
+  loop {
+    if at >= merges.len() { break }
+    length := merges[at].len()
+    if length > MAX_TOKENIZER_ITEM_BYTES || merge_bytes > MAX_TOKENIZER_TEXT_BYTES - length {
+      merge_bytes = MAX_TOKENIZER_TEXT_BYTES + 1
+      break
+    }
+    merge_bytes = merge_bytes + length
+    at = at + 1
+  }
+  if token_bytes > MAX_TOKENIZER_TEXT_BYTES
+    || merge_bytes > MAX_TOKENIZER_TEXT_BYTES
+    || token_bytes > MAX_TOKENIZER_TEXT_BYTES - merge_bytes {
+    detail := builder()
+    detail.write("tokens[")
+    detail.write_int(token_bytes)
+    detail.write("]merges[")
+    detail.write_int(merge_bytes)
+    detail.write("]total[")
+    detail.write_int(token_bytes + merge_bytes)
+    detail.write("]")
+    rendered := detail.to_string()
+    rendered_view: str := rendered
+    return Ok(failed_load("R7_TOKENIZER_TEXT_SIZE", rendered_view, token_count, merge_count))
+  }
+
+  at = 0
+  loop {
+    if at >= token_count { break }
+    token: str := tokens[at]
+    if token.len() == 0 {
+      return Ok(failed_load("R7_TOKEN_EMPTY", indexed_detail("token", at), token_count, merge_count))
+    }
+    token_type := types[at]
+    if token_type < 1 || token_type > 6 {
+      detail := builder()
+      detail.write(indexed_detail("token", at))
+      detail.write("type[")
+      detail.write_int(token_type)
+      detail.write("]")
+      rendered := detail.to_string()
+      rendered_view: str := rendered
+      return Ok(failed_load("R7_TOKEN_TYPE", rendered_view, token_count, merge_count))
+    }
+    at = at + 1
+  }
+
+  bucket_count := bucket_count_for(token_count)
+  mut token_heads := filled_i64(bucket_count, -1)
+  mut token_next := filled_i64(token_count, -1)
+  at = 0
+  loop {
+    if at >= token_count { break }
+    token: str := tokens[at]
+    bucket := bucket_for(fnv_text(token), token_heads.len())
+    mut row := token_heads[bucket]
+    mut links := 0
+    mut duplicate := false
+    loop {
+      if row < 0 { break }
+      if tokens[row] == token {
+        duplicate = true
+        break
+      }
+      links = links + 1
+      row = token_next[row]
+    }
+    if duplicate {
+      return Ok(failed_load("R7_TOKEN_DUPLICATE", indexed_detail("token", at), token_count, merge_count))
+    }
+    if links >= MAX_HASH_BUCKET_ENTRIES {
+      return Ok(failed_load("R7_HASH_BUCKET", indexed_detail("token", at), token_count, merge_count))
+    }
+    token_next[at] = token_heads[bucket]
+    token_heads[bucket] = at
+    at = at + 1
+  }
+
+  mut special_count := 0
+  mut special_bytes := 0
+  at = 0
+  loop {
+    if at >= token_count { break }
+    token: str := tokens[at]
+    effective := if types[at] == 1 && token == "</s>" { 3 } else { types[at] }
+    if effective == 2 || effective == 3 || effective == 4 {
+      special_count = special_count + 1
+      if special_count > MAX_SPECIAL_TOKENS {
+        return Ok(failed_load("R7_SPECIAL_COUNT", int_text(special_count), token_count, merge_count))
+      }
+    }
+    at = at + 1
+  }
+
+  at = 0
+  loop {
+    if at >= token_count { break }
+    token: str := tokens[at]
+    effective := if types[at] == 1 && token == "</s>" { 3 } else { types[at] }
+    if effective == 2 || effective == 3 || effective == 4 {
+      if token.len() > MAX_SPECIAL_TOKEN_BYTES {
+        return Ok(failed_load("R7_SPECIAL_TEXT", indexed_detail("token", at), token_count, merge_count))
+      }
+      special_bytes = special_bytes + token.len()
+    }
+    at = at + 1
+  }
+
+  at = 0
+  loop {
+    if at >= token_count { break }
+    token: str := tokens[at]
+    if types[at] == 1 && !normal_text_valid(token) {
+      return Ok(failed_load("R7_TOKEN_TEXT", indexed_detail("token", at), token_count, merge_count))
+    }
+    if types[at] == 6 && byte_token_value(token) < 0 {
+      return Ok(failed_load("R7_TOKEN_TEXT", indexed_detail("token", at), token_count, merge_count))
+    }
+    at = at + 1
+  }
+
+  mut merge_left := filled_i64(merge_count, -1)
+  mut merge_right := filled_i64(merge_count, -1)
+  mut merge_result := filled_i64(merge_count, -1)
+  at = 0
+  loop {
+    if at >= merge_count { break }
+    merge: str := merges[at]
+    separator := first_ascii_space(merge)
+    if separator <= 0 || separator + 1 >= merge.len() {
+      return Ok(failed_load("R7_MERGE", indexed_detail("merge", at), token_count, merge_count))
+    }
+    left: str := merge[0..separator]
+    right: str := merge[separator + 1..merge.len()]
+    left_id := token_lookup(tokens, token_heads, token_next, left)
+    if left_id < 0 {
+      detail := indexed_detail("merge", at)
+      out := builder()
+      out.write(detail)
+      out.write("left")
+      rendered := out.to_string()
+      rendered_view: str := rendered
+      return Ok(failed_load("R7_MERGE_TOKEN", rendered_view, token_count, merge_count))
+    }
+    right_id := token_lookup(tokens, token_heads, token_next, right)
+    if right_id < 0 {
+      detail := indexed_detail("merge", at)
+      out := builder()
+      out.write(detail)
+      out.write("right")
+      rendered := out.to_string()
+      rendered_view: str := rendered
+      return Ok(failed_load("R7_MERGE_TOKEN", rendered_view, token_count, merge_count))
+    }
+    result_id := token_lookup_join(tokens, token_heads, token_next, left, right)
+    if result_id < 0 {
+      detail := indexed_detail("merge", at)
+      out := builder()
+      out.write(detail)
+      out.write("result")
+      rendered := out.to_string()
+      rendered_view: str := rendered
+      return Ok(failed_load("R7_MERGE_TOKEN", rendered_view, token_count, merge_count))
+    }
+    merge_left[at] = left_id
+    merge_right[at] = right_id
+    merge_result[at] = result_id
+    at = at + 1
+  }
+
+  merge_bucket_count := bucket_count_for(merge_count)
+  mut merge_heads := filled_i64(merge_bucket_count, -1)
+  mut merge_next := filled_i64(merge_count, -1)
+  at = 0
+  loop {
+    if at >= merge_count { break }
+    left_id := merge_left[at]
+    right_id := merge_right[at]
+    bucket := bucket_for(pair_hash(left_id, right_id), merge_heads.len())
+    mut row := merge_heads[bucket]
+    mut links := 0
+    mut duplicate := false
+    loop {
+      if row < 0 { break }
+      if merge_left[row] == left_id && merge_right[row] == right_id {
+        duplicate = true
+        break
+      }
+      links = links + 1
+      row = merge_next[row]
+    }
+    if !duplicate {
+      if links >= MAX_HASH_BUCKET_ENTRIES {
+        return Ok(failed_load("R7_HASH_BUCKET", indexed_detail("merge", at), token_count, merge_count))
+      }
+      merge_next[at] = merge_heads[bucket]
+      merge_heads[bucket] = at
+    }
+    at = at + 1
+  }
+
+  mut byte_tokens := filled_i64(256, -1)
+  at = 0
+  loop {
+    if at >= 256 { break }
+    spelling := scalar_string(byte_scalar(at))
+    spelling_view: str := spelling
+    id := token_lookup(tokens, token_heads, token_next, spelling_view)
+    if id < 0 || types[id] != 1 {
+      return Ok(failed_load("R7_BYTE_ALPHABET", indexed_detail("byte", at), token_count, merge_count))
+    }
+    byte_tokens[at] = id
+    at = at + 1
+  }
+
+  node_capacity := special_bytes + 1
+  mut special_next := filled_i64(node_capacity * 256, -1)
+  mut special_parse := filled_i64(node_capacity, -1)
+  mut special_literal := filled_i64(node_capacity, -1)
+  mut node_count := 1
+  at = 0
+  loop {
+    if at >= token_count { break }
+    token: str := tokens[at]
+    effective := if types[at] == 1 && token == "</s>" { 3 } else { types[at] }
+    if effective == 2 || effective == 3 || effective == 4 {
+      raw := token.bytes()
+      mut node := 0
+      mut byte_at := 0
+      loop {
+        if byte_at >= raw.len() { break }
+        slot := node * 256 + raw.u8(byte_at) as i64
+        mut next_node := special_next[slot]
+        if next_node < 0 {
+          next_node = node_count
+          node_count = node_count + 1
+          special_next[slot] = next_node
+        }
+        node = next_node
+        byte_at = byte_at + 1
+      }
+      special_parse[node] = at
+      if effective == 4 { special_literal[node] = at }
+    }
+    at = at + 1
+  }
+
+  tokenizer_id := identity(tokens, types, merges)
+  tokenizer := Tokenizer {
+    tokens: tokens,
+    types: types,
+    merges: merges,
+    token_heads: token_heads,
+    token_next: token_next,
+    merge_heads: merge_heads,
+    merge_next: merge_next,
+    merge_left: merge_left,
+    merge_right: merge_right,
+    merge_result: merge_result,
+    byte_tokens: byte_tokens,
+    special_next: special_next,
+    special_parse: special_parse,
+    special_literal: special_literal,
+    special_nodes: node_count,
+    tokenizer_id: tokenizer_id,
+  }
+  return Ok(LoadResult {
+      ok: true,
+      code: "".clone(),
+      detail: "".clone(),
+      vocab_size: token_count,
+      merge_count: merge_count,
+      tokenizer: tokenizer,
+    })
+}
+
+fn heap_less(rank_a: i64, left_a: i64, rank_b: i64, left_b: i64) -> bool {
+  return rank_a < rank_b || (rank_a == rank_b && left_a < left_b)
+}
+
+fn heap_swap(
+  borrow mut ranks: array<i64>,
+  borrow mut lefts: array<i64>,
+  borrow mut rights: array<i64>,
+  borrow mut left_lengths: array<i64>,
+  borrow mut right_lengths: array<i64>,
+  a: i64,
+  b: i64,
+) {
+  mut value := ranks[a]
+  ranks[a] = ranks[b]
+  ranks[b] = value
+  value = lefts[a]
+  lefts[a] = lefts[b]
+  lefts[b] = value
+  value = rights[a]
+  rights[a] = rights[b]
+  rights[b] = value
+  value = left_lengths[a]
+  left_lengths[a] = left_lengths[b]
+  left_lengths[b] = value
+  value = right_lengths[a]
+  right_lengths[a] = right_lengths[b]
+  right_lengths[b] = value
+}
+
+fn heap_push(
+  borrow mut ranks: array<i64>,
+  borrow mut lefts: array<i64>,
+  borrow mut rights: array<i64>,
+  borrow mut left_lengths: array<i64>,
+  borrow mut right_lengths: array<i64>,
+  borrow mut size: i64,
+  entry: HeapEntry,
+) {
+  at := size
+  ranks[at] = entry.rank
+  lefts[at] = entry.left
+  rights[at] = entry.right
+  left_lengths[at] = entry.left_length
+  right_lengths[at] = entry.right_length
+  size = size + 1
+  mut child := at
+  loop {
+    if child == 0 { break }
+    parent := (child - 1) / 2
+    if !heap_less(ranks[child], lefts[child], ranks[parent], lefts[parent]) { break }
+    heap_swap(ranks, lefts, rights, left_lengths, right_lengths, child, parent)
+    child = parent
+  }
+}
+
+fn heap_pop(
+  borrow mut ranks: array<i64>,
+  borrow mut lefts: array<i64>,
+  borrow mut rights: array<i64>,
+  borrow mut left_lengths: array<i64>,
+  borrow mut right_lengths: array<i64>,
+  borrow mut size: i64,
+) -> HeapEntry {
+  result := HeapEntry {
+    rank: ranks[0],
+    left: lefts[0],
+    right: rights[0],
+    left_length: left_lengths[0],
+    right_length: right_lengths[0],
+  }
+  size = size - 1
+  if size > 0 {
+    ranks[0] = ranks[size]
+    lefts[0] = lefts[size]
+    rights[0] = rights[size]
+    left_lengths[0] = left_lengths[size]
+    right_lengths[0] = right_lengths[size]
+    mut parent := 0
+    loop {
+      left_child := parent * 2 + 1
+      if left_child >= size { break }
+      right_child := left_child + 1
+      child := if right_child < size
+        && heap_less(ranks[right_child], lefts[right_child], ranks[left_child], lefts[left_child]) {
+        right_child
+      } else { left_child }
+      if !heap_less(ranks[child], lefts[child], ranks[parent], lefts[parent]) { break }
+      heap_swap(ranks, lefts, rights, left_lengths, right_lengths, parent, child)
+      parent = child
+    }
+  }
+  return result
+}
+
+fn enqueue_pair(
+  borrow t: Tokenizer,
+  borrow ids: array<i64>,
+  borrow lengths: array<i64>,
+  left: i64,
+  right: i64,
+  borrow mut ranks: array<i64>,
+  borrow mut lefts: array<i64>,
+  borrow mut rights: array<i64>,
+  borrow mut left_lengths: array<i64>,
+  borrow mut right_lengths: array<i64>,
+  borrow mut size: i64,
+) {
+  if left < 0 || right < 0 || lengths[left] == 0 || lengths[right] == 0 { return }
+  found := pair_lookup(t, ids[left], ids[right])
+  if found.rank < 0 { return }
+  heap_push(
+    ranks,
+    lefts,
+    rights,
+    left_lengths,
+    right_lengths,
+    size,
+    HeapEntry {
+      rank: found.rank,
+      left: left,
+      right: right,
+      left_length: lengths[left],
+      right_length: lengths[right],
+    },
+  )
+}
+
+fn bpe_piece(borrow t: Tokenizer, piece: str) -> array<i64> {
+  count := piece.len()
+  if count == 0 { return empty_i64() }
+  mut ids := filled_i64(count, -1)
+  mut lengths := filled_i64(count, 1)
+  mut prev := filled_i64(count, -1)
+  mut next := filled_i64(count, -1)
+  raw := piece.bytes()
+  mut at := 0
+  loop {
+    if at >= count { break }
+    ids[at] = t.byte_tokens[raw.u8(at) as i64]
+    prev[at] = at - 1
+    next[at] = if at + 1 < count { at + 1 } else { -1 }
+    at = at + 1
+  }
+
+  capacity := if count <= 1 { 1 } else { count * 3 }
+  mut heap_rank := filled_i64(capacity, -1)
+  mut heap_left := filled_i64(capacity, -1)
+  mut heap_right := filled_i64(capacity, -1)
+  mut heap_left_length := filled_i64(capacity, -1)
+  mut heap_right_length := filled_i64(capacity, -1)
+  mut heap_size := 0
+  at = 0
+  loop {
+    if at + 1 >= count { break }
+    enqueue_pair(
+      t, ids, lengths, at, at + 1,
+      heap_rank, heap_left, heap_right, heap_left_length, heap_right_length, heap_size,
+    )
+    at = at + 1
+  }
+
+  loop {
+    if heap_size == 0 { break }
+    entry := heap_pop(
+      heap_rank, heap_left, heap_right, heap_left_length, heap_right_length, heap_size)
+    left := entry.left
+    right := entry.right
+    fresh := left >= 0 && right >= 0 && lengths[left] != 0 && lengths[right] != 0
+      && lengths[left] == entry.left_length && lengths[right] == entry.right_length
+      && next[left] == right && prev[right] == left
+    if fresh {
+      found := pair_lookup(t, ids[left], ids[right])
+      if found.rank == entry.rank {
+        ids[left] = found.result
+        lengths[left] = lengths[left] + lengths[right]
+        lengths[right] = 0
+        after := next[right]
+        next[left] = after
+        if after >= 0 { prev[after] = left }
+        before := prev[left]
+        enqueue_pair(
+          t, ids, lengths, before, left,
+          heap_rank, heap_left, heap_right, heap_left_length, heap_right_length, heap_size,
+        )
+        enqueue_pair(
+          t, ids, lengths, left, after,
+          heap_rank, heap_left, heap_right, heap_left_length, heap_right_length, heap_size,
+        )
+      }
+    }
+  }
+
+  mut output: array_builder<i64> := array_builder()
+  at = 0
+  loop {
+    if at < 0 || at >= count { break }
+    if lengths[at] > 0 { output.push(ids[at]) }
+    at = next[at]
+  }
+  return output.build()
+}
+
+fn ascii_fold(value: str) -> str {
+  if value == "S" { return "s" }
+  if value == "T" { return "t" }
+  if value == "R" { return "r" }
+  if value == "E" { return "e" }
+  if value == "V" { return "v" }
+  if value == "M" { return "m" }
+  if value == "L" { return "l" }
+  if value == "D" { return "d" }
+  return value
+}
+
+fn contraction_end(raw: str, borrow starts: array<i64>, borrow ends: array<i64>, at: i64) -> i64 {
+  if raw[starts[at]..ends[at]] != "'" || at + 1 >= starts.len() { return -1 }
+  one := ascii_fold(raw[starts[at + 1]..ends[at + 1]])
+  if one == "s" || one == "t" || one == "m" || one == "d" { return at + 2 }
+  if at + 2 >= starts.len() { return -1 }
+  two := ascii_fold(raw[starts[at + 2]..ends[at + 2]])
+  if (one == "r" && two == "e") || (one == "v" && two == "e")
+    || (one == "l" && two == "l") { return at + 3 }
+  return -1
+}
+
+fn qwen_pieces(
+  raw: str,
+  borrow letter: regex,
+  borrow number: regex,
+  borrow space: regex,
+) -> array<string> {
+  mut starts: array_builder<i64> := array_builder()
+  mut ends: array_builder<i64> := array_builder()
+  mut classes: array_builder<i64> := array_builder()
+  mut byte_at := 0
+  loop {
+    if byte_at >= raw.len() { break }
+    width := scalar_width(raw.bytes().u8(byte_at) as i64)
+    end := byte_at + width
+    scalar := raw[byte_at..end]
+    class := if letter.is_match(scalar) { 1 } else if number.is_match(scalar) {
+      2
+    } else if space.is_match(scalar) { 3 } else { 0 }
+    starts.push(byte_at)
+    ends.push(end)
+    classes.push(class)
+    byte_at = end
+  }
+  scalar_starts := starts.build()
+  scalar_ends := ends.build()
+  scalar_classes := classes.build()
+  mut pieces: array_builder<string> := array_builder()
+  mut at := 0
+  loop {
+    if at >= scalar_starts.len() { break }
+    start := at
+    mut handled := false
+    contraction := contraction_end(raw, scalar_starts, scalar_ends, at)
+    if contraction > at {
+      pieces.push(raw[scalar_starts[start]..scalar_ends[contraction - 1]].clone())
+      at = contraction
+      handled = true
+    }
+
+    if !handled {
+      current := raw[scalar_starts[at]..scalar_ends[at]]
+      mut letter_at := at
+      if scalar_classes[at] != 1 && scalar_classes[at] != 2
+        && current != "\r" && current != "\n"
+        && at + 1 < scalar_starts.len() && scalar_classes[at + 1] == 1 {
+        letter_at = at + 1
+      }
+      if scalar_classes[letter_at] == 1 {
+        mut end_at := letter_at + 1
+        loop {
+          if end_at >= scalar_starts.len() || scalar_classes[end_at] != 1 { break }
+          end_at = end_at + 1
+        }
+        pieces.push(raw[scalar_starts[start]..scalar_ends[end_at - 1]].clone())
+        at = end_at
+        handled = true
+      }
+    }
+
+    if !handled && scalar_classes[at] == 2 {
+      current := raw[scalar_starts[at]..scalar_ends[at]]
+      pieces.push(current.clone())
+      at = at + 1
+      handled = true
+    }
+
+    if !handled {
+      current := raw[scalar_starts[at]..scalar_ends[at]]
+      mut punct_at := at
+      if current == " " && at + 1 < scalar_starts.len() && scalar_classes[at + 1] == 0 {
+        punct_at = at + 1
+      }
+      if scalar_classes[punct_at] == 0 {
+        mut end_at := punct_at + 1
+        loop {
+          if end_at >= scalar_starts.len() || scalar_classes[end_at] != 0 { break }
+          end_at = end_at + 1
+        }
+        loop {
+          if end_at >= scalar_starts.len() { break }
+          value := raw[scalar_starts[end_at]..scalar_ends[end_at]]
+          if value != "\r" && value != "\n" { break }
+          end_at = end_at + 1
+        }
+        pieces.push(raw[scalar_starts[start]..scalar_ends[end_at - 1]].clone())
+        at = end_at
+        handled = true
+      }
+    }
+
+    if !handled && scalar_classes[at] == 3 {
+      current := raw[scalar_starts[at]..scalar_ends[at]]
+      mut run_end := at + 1
+      mut last_newline := -1
+      if current == "\r" || current == "\n" { last_newline = at }
+      loop {
+        if run_end >= scalar_starts.len() || scalar_classes[run_end] != 3 { break }
+        value := raw[scalar_starts[run_end]..scalar_ends[run_end]]
+        if value == "\r" || value == "\n" { last_newline = run_end }
+        run_end = run_end + 1
+      }
+      if last_newline >= at {
+        pieces.push(raw[scalar_starts[at]..scalar_ends[last_newline]].clone())
+        at = last_newline + 1
+      } else {
+        emit_end := if run_end < scalar_starts.len() && run_end - at > 1 { run_end - 1 } else { run_end }
+        pieces.push(raw[scalar_starts[at]..scalar_ends[emit_end - 1]].clone())
+        at = emit_end
+      }
+      handled = true
+    }
+
+    if !handled {
+      current := raw[scalar_starts[at]..scalar_ends[at]]
+      pieces.push(current.clone())
+      at = at + 1
+    }
+  }
+  return pieces.build()
+}
+
+fn encode_raw(
+  borrow t: Tokenizer,
+  raw: str,
+  borrow letter: regex,
+  borrow number: regex,
+  borrow space: regex,
+) -> array<i64> {
+  pieces := qwen_pieces(raw, letter, number, space)
+  mut output: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= pieces.len() { break }
+    ids := bpe_piece(t, pieces[at])
+    mut id_at := 0
+    loop {
+      if id_at >= ids.len() { break }
+      output.push(ids[id_at])
+      id_at = id_at + 1
+    }
+    at = at + 1
+  }
+  return output.build()
+}
+
+fn special_terminal(borrow t: Tokenizer, node: i64, parse: bool) -> i64 {
+  if parse { return t.special_parse[node] }
+  return t.special_literal[node]
+}
+
+fn encode_text(
+  borrow t: Tokenizer,
+  text: str,
+  parse: bool,
+  borrow letter: regex,
+  borrow number: regex,
+  borrow space: regex,
+) -> array<i64> {
+  mut output: array_builder<i64> := array_builder()
+  raw := text.bytes()
+  mut raw_start := 0
+  mut at := 0
+  loop {
+    if at >= text.len() { break }
+    mut node := 0
+    mut probe := at
+    mut steps := 0
+    mut best_id := -1
+    mut best_end := at
+    loop {
+      if probe >= text.len() || steps >= MAX_SPECIAL_TOKEN_BYTES { break }
+      next_node := t.special_next[node * 256 + raw.u8(probe) as i64]
+      if next_node < 0 { break }
+      node = next_node
+      probe = probe + 1
+      steps = steps + 1
+      terminal := special_terminal(t, node, parse)
+      if terminal >= 0 {
+        best_id = terminal
+        best_end = probe
+      }
+    }
+    if best_id >= 0 {
+      if raw_start < at {
+        raw_ids := encode_raw(t, text[raw_start..at], letter, number, space)
+        mut id_at := 0
+        loop {
+          if id_at >= raw_ids.len() { break }
+          output.push(raw_ids[id_at])
+          id_at = id_at + 1
+        }
+      }
+      output.push(best_id)
+      at = best_end
+      raw_start = at
+    } else {
+      at = at + 1
+    }
+  }
+  if raw_start < text.len() {
+    raw_ids := encode_raw(t, text[raw_start..text.len()], letter, number, space)
+    mut id_at := 0
+    loop {
+      if id_at >= raw_ids.len() { break }
+      output.push(raw_ids[id_at])
+      id_at = id_at + 1
+    }
+  }
+  return output.build()
+}
+
+fn failed_ids(
+  code: str,
+  detail: str,
+  tokenizer_id: str,
+  vocab_size: i64,
+  merge_count: i64,
+) -> TokenIdsResult = TokenIdsResult {
+  status: TokenizerStatus.Error,
+  error_code: code.clone(),
+  error_detail: bounded_detail(detail),
+  tokenizer_id: tokenizer_id.clone(),
+  vocab_size: vocab_size,
+  merge_count: merge_count,
+  token_ids: empty_i64(),
+}
+
+fn failed_text(
+  code: str,
+  detail: str,
+  tokenizer_id: str,
+  vocab_size: i64,
+  merge_count: i64,
+  token_count: i64,
+) -> TokenTextResult = TokenTextResult {
+  status: TokenizerStatus.Error,
+  error_code: code.clone(),
+  error_detail: bounded_detail(detail),
+  tokenizer_id: tokenizer_id.clone(),
+  vocab_size: vocab_size,
+  merge_count: merge_count,
+  token_count: token_count,
+  text: "".clone(),
+}
+
+pub fn encode_model(
+  model_path: str,
+  text: str,
+  specials: EncodeSpecials,
+) -> Result<TokenIdsResult, Error> {
+  loaded := load_model(model_path)?
+  if !loaded.ok {
+    return Ok(failed_ids(
+        loaded.code,
+        loaded.detail,
+        "",
+        loaded.vocab_size,
+        loaded.merge_count,
+      ))
+  }
+  vocab_size := loaded.vocab_size
+  merge_count := loaded.merge_count
+  tokenizer_id := loaded.tokenizer.tokenizer_id.clone()
+  tokenizer_id_view: str := tokenizer_id
+  if text.len() > MAX_OPERATION_INPUT_BYTES {
+    return Ok(failed_ids(
+        "R7_TEXT_SIZE",
+        int_text(text.len()),
+        tokenizer_id_view,
+        vocab_size,
+        merge_count,
+      ))
+  }
+  letter := regex.compile("^\\p{L}$")?
+  number := regex.compile("^\\p{N}$")?
+  space := regex.compile("^\\s$")?
+  ids := encode_text(loaded.tokenizer, text, encode_parse(specials), letter, number, space)
+  if ids.len() > MAX_OPERATION_TOKEN_IDS {
+    return Ok(failed_ids(
+        "R7_TOKEN_COUNT",
+        int_text(ids.len()),
+        tokenizer_id_view,
+        vocab_size,
+        merge_count,
+      ))
+  }
+  return Ok(TokenIdsResult {
+      status: TokenizerStatus.Ok,
+      error_code: "".clone(),
+      error_detail: "".clone(),
+      tokenizer_id: tokenizer_id_view.clone(),
+      vocab_size: vocab_size,
+      merge_count: merge_count,
+      token_ids: ids,
+    })
+}
+
+pub fn decode_model(
+  model_path: str,
+  borrow token_ids: array<i64>,
+  specials: DecodeSpecials,
+) -> Result<TokenTextResult, Error> {
+  token_count := token_ids.len()
+  loaded := load_model(model_path)?
+  if !loaded.ok {
+    return Ok(failed_text(
+        loaded.code,
+        loaded.detail,
+        "",
+        loaded.vocab_size,
+        loaded.merge_count,
+        token_count,
+      ))
+  }
+  vocab_size := loaded.vocab_size
+  merge_count := loaded.merge_count
+  tokenizer_id := loaded.tokenizer.tokenizer_id.clone()
+  tokenizer_id_view: str := tokenizer_id
+  if token_count > MAX_OPERATION_TOKEN_IDS {
+    return Ok(failed_text(
+        "R7_TOKEN_COUNT",
+        int_text(token_count),
+        tokenizer_id_view,
+        vocab_size,
+        merge_count,
+        token_count,
+      ))
+  }
+  mut at := 0
+  loop {
+    if at >= token_count { break }
+    id := token_ids[at]
+    if id < 0 || id >= vocab_size {
+      detail := builder()
+      detail.write(indexed_detail("token", at))
+      detail.write("id[")
+      detail.write_int(id)
+      detail.write("]")
+      rendered := detail.to_string()
+      rendered_view: str := rendered
+      return Ok(failed_text(
+          "R7_TOKEN_ID",
+          rendered_view,
+          tokenizer_id_view,
+          vocab_size,
+          merge_count,
+          token_count,
+        ))
+    }
+    at = at + 1
+  }
+
+  mut output := buffer(0)
+  mut output_bytes := 0
+  at = 0
+  loop {
+    if at >= token_count { break }
+    id := token_ids[at]
+    token: str := loaded.tokenizer.tokens[id]
+    token_type := effective_type(loaded.tokenizer, id)
+    append_text := token_type == 4
+      || ((token_type == 2 || token_type == 3) && decode_render(specials))
+    if append_text {
+      attempted := output_bytes + token.len()
+      if attempted > MAX_OPERATION_OUTPUT_BYTES {
+        return Ok(failed_text(
+            "R7_OUTPUT_SIZE",
+            int_text(attempted),
+            tokenizer_id_view,
+            vocab_size,
+            merge_count,
+            token_count,
+          ))
+      }
+      output.append(token.bytes())
+      output_bytes = attempted
+    } else if token_type == 1 {
+      mut token_at := 0
+      loop {
+        if token_at >= token.len() { break }
+        code := scalar_code(token, token_at)
+        byte := scalar_byte(code)
+        attempted := output_bytes + 1
+        if attempted > MAX_OPERATION_OUTPUT_BYTES {
+          return Ok(failed_text(
+              "R7_OUTPUT_SIZE",
+              int_text(attempted),
+              tokenizer_id_view,
+              vocab_size,
+              merge_count,
+              token_count,
+            ))
+        }
+        output.put_u8(byte as u8)
+        output_bytes = attempted
+        token_at = token_at + scalar_width(token.bytes().u8(token_at) as i64)
+      }
+    } else if token_type == 6 {
+      attempted := output_bytes + 1
+      if attempted > MAX_OPERATION_OUTPUT_BYTES {
+        return Ok(failed_text(
+            "R7_OUTPUT_SIZE",
+            int_text(attempted),
+            tokenizer_id_view,
+            vocab_size,
+            merge_count,
+            token_count,
+          ))
+      }
+      output.put_u8(byte_token_value(token) as u8)
+      output_bytes = attempted
+    }
+    at = at + 1
+  }
+  text := match output.bytes().as_str() {
+    Ok(value) => value.clone(),
+    Err(_) => { return Ok(failed_text(
+          "R7_DECODE_UTF8",
+          "output",
+          tokenizer_id_view,
+          vocab_size,
+          merge_count,
+          token_count,
+        )) },
+  }
+  return Ok(TokenTextResult {
+      status: TokenizerStatus.Ok,
+      error_code: "".clone(),
+      error_detail: "".clone(),
+      tokenizer_id: tokenizer_id_view.clone(),
+      vocab_size: vocab_size,
+      merge_count: merge_count,
+      token_count: token_count,
+      text: text,
+    })
+}

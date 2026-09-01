@@ -1862,6 +1862,8 @@ def test_workflow_topology() -> None:
         == 1
         and "ALIGN_LLM_OUTPUT_DIRECTORY: ${{ runner.temp }}/align-llm-output"
         in check_step(workflow, "Run supported project checks")
+        and "ALIGN_REPO: ${{ github.workspace }}/align"
+        in check_step(workflow, "Run supported project checks")
         and "python3 scripts/run-output-summary --phase hosted-checks --"
         in check_step(workflow, "Run supported project checks")
         and 'make -j8 ALIGNC="$ALIGNC" hosted-checks'
@@ -1905,7 +1907,12 @@ def test_workflow_topology() -> None:
         "github.event_name == 'push' && github.ref == 'refs/heads/main')"
     )
     require(
-        workflow.count(bundle_route) == 2
+        workflow.count(bundle_route) == 3
+        and bundle_route in check_step(workflow, "Check out pinned Align revision")
+        and 'git -C align fetch --depth 1 origin "$revision"'
+        in check_step(workflow, "Check out pinned Align revision")
+        and "git -C align checkout --detach FETCH_HEAD"
+        in check_step(workflow, "Check out pinned Align revision")
         and workflow.count("python3 scripts/ci-align-bundle key") == 1
         and workflow.count("python3 scripts/ci-align-bundle create") == 1
         and workflow.count("python3 scripts/ci-align-bundle verify") == 2
@@ -1943,7 +1950,7 @@ def test_workflow_topology() -> None:
         "steps.apt-llvm-cache.outputs.cache-hit != 'true'"
     )
     require(
-        workflow.count(bundle_miss_route) == 7
+        workflow.count(bundle_miss_route) == 6
         and bundle_consumer_route in workflow
         and save_condition in workflow
         and "id: apt-llvm-candidate" in workflow

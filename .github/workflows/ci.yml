@@ -200,7 +200,7 @@ jobs:
           rustup default "$RUST_VERSION"
 
       - name: Check out pinned Align revision
-        if: ((steps.reuse.outputs.reused != 'true' && steps.scope.outputs.hosted == 'true') || (steps.reuse.outputs.reused == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main')) && steps.align-bundle-cache.outputs.cache-hit != 'true'
+        if: (steps.reuse.outputs.reused != 'true' && steps.scope.outputs.hosted == 'true') || (steps.reuse.outputs.reused == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main')
         shell: bash
         run: |
           revision="$(tr -d '[:space:]' < .align-revision)"
@@ -248,6 +248,7 @@ jobs:
         if: (steps.reuse.outputs.reused != 'true' && steps.scope.outputs.hosted == 'true') || (steps.reuse.outputs.reused == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.align-bundle-cache.outputs.cache-hit != 'true')
         env:
           ALIGN_LLM_OUTPUT_DIRECTORY: ${{ runner.temp }}/align-llm-output
+          ALIGN_REPO: ${{ github.workspace }}/align
         run: |
           # coding-v1 requires nested user namespaces, which GitHub-hosted runners deny.
           # Keep that gate in make ci for local or capable self-hosted runners.
