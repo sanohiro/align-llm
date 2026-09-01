@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "baseline_id": "coding-v1-deterministic-reference-checked-in-patch",
-  "recorded_at": "2026-08-31T22:22:02+00:00",
-  "align_llm_commit": "c49ff5720aabbe3468743e7aa252709077e26cdf",
-  "canonical_oracle_commit": "207262bcbc54c0ca677781b79156f8e436f34f3c",
+  "recorded_at": "2026-09-01T04:00:28+00:00",
+  "align_llm_commit": "0b7433b0f01ba9932485b2db2ffae58e9e1f92ca",
+  "canonical_oracle_commit": "52add8b1ffd87f36ec17a1d06c4fe8fd33578c27",
   "align_revision": "27770420555d19b98eced133369c168e9c6d4a2f",
   "corpus": {
     "id": "coding-v1",
@@ -23,7 +23,7 @@
       },
       {
         "path": "Makefile",
-        "sha256": "d74d4053726d5c61183cc402a7385ab0c4640b746ff4d7208f298c0f978c1cc9"
+        "sha256": "d9c2e9b66afd9674b4fda65084450242a47604caa3fd3ff94f2b4297a3ff2c09"
       },
       {
         "path": "eval/baselines/patches/python-inclusive-range.patch",
@@ -79,7 +79,7 @@
       },
       {
         "path": "src/main.align",
-        "sha256": "56bd5c37c11e1bab1d0c01768043e5672497b2ae6a24b8d5fa32b6931c6cb2f4"
+        "sha256": "f0a36fed6aad0864d256a6602f9282fc1002bc9266557919f8a051913f177261"
       },
       {
         "path": "src/project.align",
@@ -101,14 +101,14 @@
     "prompt_version": "none"
   },
   "environment": {
-    "os": "Linux",
-    "os_release": "6.11.11-linuxkit",
-    "architecture": "aarch64",
-    "cpu": "aarch64",
+    "os": "Darwin",
+    "os_release": "25.5.0",
+    "architecture": "arm64",
+    "cpu": "arm",
     "logical_cpu_count": 8,
     "task_python_executable": "/usr/bin/python3",
-    "task_python_resolved_executable": "/usr/bin/python3.12",
-    "task_python_version": "3.12.3",
+    "task_python_resolved_executable": "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3.9",
+    "task_python_version": "3.9.6",
     "gpu": "not used"
   },
   "sample_count": 2,
@@ -118,19 +118,19 @@
       "task_results": [
         {
           "task_id": "python-inclusive-range",
-          "verdict": "PASS",
+          "verdict": "FAIL",
           "expected_code": 0,
-          "actual_code": 0,
-          "duration_ns": 146034041,
-          "time_to_passing_patch_ns": 146034041,
-          "stdout": "fixture revision: 1adf3697ea82a2da6fa9b9aa76f24fb51625ffca\npre-repair validation exit code: 1\npost-repair validation exit code: 0\n",
-          "stderr": "test_descending_interval_is_empty (__main__.InclusiveTotalTests.test_descending_interval_is_empty) ... ok\ntest_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero) ... FAIL\ntest_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop) ... FAIL\ntest_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval) ... FAIL\n\n======================================================================\nFAIL: test_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-bxv7pwa7/repository/tests/test_inclusive_range.py\", line 19, in test_interval_crossing_zero\n    self.assertEqual(inclusive_total(-2, 2), 0)\nAssertionError: -2 != 0\n\n======================================================================\nFAIL: test_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-bxv7pwa7/repository/tests/test_inclusive_range.py\", line 13, in test_positive_interval_includes_stop\n    self.assertEqual(inclusive_total(1, 5), 15)\nAssertionError: 10 != 15\n\n======================================================================\nFAIL: test_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-bxv7pwa7/repository/tests/test_inclusive_range.py\", line 16, in test_single_value_interval\n    self.assertEqual(inclusive_total(4, 4), 4)\nAssertionError: 0 != 4\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nFAILED (failures=3)\ntest_descending_interval_is_empty (__main__.InclusiveTotalTests.test_descending_interval_is_empty) ... ok\ntest_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero) ... ok\ntest_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop) ... ok\ntest_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n"
+          "actual_code": 1,
+          "duration_ns": 94521208,
+          "time_to_passing_patch_ns": null,
+          "stdout": "",
+          "stderr": "Traceback (most recent call last):\n  File \"/Users/hiro/Projects/align-llm/eval/runners/run-coding-task.py\", line 138, in <module>\n    root_pids: set[int], deadline: float | None = None\nTypeError: unsupported operand type(s) for |: 'type' and 'NoneType'\n"
         }
       ],
       "summary": {
         "task_count": 1,
-        "pass_count": 1,
-        "fail_count": 0
+        "pass_count": 0,
+        "fail_count": 1
       }
     },
     {
@@ -138,29 +138,25 @@
       "task_results": [
         {
           "task_id": "python-inclusive-range",
-          "verdict": "PASS",
+          "verdict": "FAIL",
           "expected_code": 0,
-          "actual_code": 0,
-          "duration_ns": 149513542,
-          "time_to_passing_patch_ns": 149513542,
-          "stdout": "fixture revision: 1adf3697ea82a2da6fa9b9aa76f24fb51625ffca\npre-repair validation exit code: 1\npost-repair validation exit code: 0\n",
-          "stderr": "test_descending_interval_is_empty (__main__.InclusiveTotalTests.test_descending_interval_is_empty) ... ok\ntest_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero) ... FAIL\ntest_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop) ... FAIL\ntest_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval) ... FAIL\n\n======================================================================\nFAIL: test_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-x9klfalv/repository/tests/test_inclusive_range.py\", line 19, in test_interval_crossing_zero\n    self.assertEqual(inclusive_total(-2, 2), 0)\nAssertionError: -2 != 0\n\n======================================================================\nFAIL: test_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-x9klfalv/repository/tests/test_inclusive_range.py\", line 13, in test_positive_interval_includes_stop\n    self.assertEqual(inclusive_total(1, 5), 15)\nAssertionError: 10 != 15\n\n======================================================================\nFAIL: test_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/tmp/align-llm-coding-task-x9klfalv/repository/tests/test_inclusive_range.py\", line 16, in test_single_value_interval\n    self.assertEqual(inclusive_total(4, 4), 4)\nAssertionError: 0 != 4\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nFAILED (failures=3)\ntest_descending_interval_is_empty (__main__.InclusiveTotalTests.test_descending_interval_is_empty) ... ok\ntest_interval_crossing_zero (__main__.InclusiveTotalTests.test_interval_crossing_zero) ... ok\ntest_positive_interval_includes_stop (__main__.InclusiveTotalTests.test_positive_interval_includes_stop) ... ok\ntest_single_value_interval (__main__.InclusiveTotalTests.test_single_value_interval) ... ok\n\n----------------------------------------------------------------------\nRan 4 tests in 0.000s\n\nOK\n"
+          "actual_code": 1,
+          "duration_ns": 74349250,
+          "time_to_passing_patch_ns": null,
+          "stdout": "",
+          "stderr": "Traceback (most recent call last):\n  File \"/Users/hiro/Projects/align-llm/eval/runners/run-coding-task.py\", line 138, in <module>\n    root_pids: set[int], deadline: float | None = None\nTypeError: unsupported operand type(s) for |: 'type' and 'NoneType'\n"
         }
       ],
       "summary": {
         "task_count": 1,
-        "pass_count": 1,
-        "fail_count": 0
+        "pass_count": 0,
+        "fail_count": 1
       }
     }
   ],
   "aggregate": {
     "task_attempt_count": 2,
-    "passing_attempt_count": 2,
-    "time_to_passing_patch_ns": {
-      "minimum": 146034041,
-      "median": 147773791,
-      "maximum": 149513542
-    }
+    "passing_attempt_count": 0,
+    "time_to_passing_patch_ns": null
   }
 }
