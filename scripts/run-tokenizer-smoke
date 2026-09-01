@@ -79,8 +79,10 @@ def require_regex_provenance() -> None:
     require_regex_lock(Path(source_result.stdout.decode().strip()))
 
 
-def run_cli(model: Path, input_path: Path, operation: str, mode: str) -> subprocess.CompletedProcess[bytes]:
-    return command([str(ROOT / "main"), operation, str(model), str(input_path), mode])
+def run_cli(
+    model: Path, input_path: Path, operation: str, mode: str, *, timeout: int = 20
+) -> subprocess.CompletedProcess[bytes]:
+    return command([str(ROOT / "main"), operation, str(model), str(input_path), mode], timeout=timeout)
 
 
 def fnv(value: str) -> int:
@@ -127,8 +129,9 @@ def token_colliders(tokens: list[str], wanted: int) -> list[str]:
         candidate += 1
 
 
-def merge_colliders(tokens: list[str], base_merges: list[str], wanted: int) -> tuple[list[str], list[str]]:
-    final_merge_count = len(base_merges) + wanted + 1
+def merge_colliders(
+    tokens: list[str], final_merge_count: int, wanted: int
+) -> tuple[list[str], list[str]]:
     buckets = bucket_count(final_merge_count)
     groups: dict[int, list[tuple[str, str]]] = {}
     alphabet = [chr(value) for value in range(33, 127)]
@@ -202,8 +205,8 @@ def main() -> int:
                 expect_success(run_cli(model, special_input, "--tokenize", mode), encoded, f"{spelling}-{mode}")
 
         tokens, types, merges = fixture.fixture_data()
-        shared_prefix = "<" + "x" * 30
-        maximum_special = shared_prefix + ">"
+        shared_prefix = "x" * 31
+        maximum_special = shared_prefix + "y"
         boundary_specials = [shared_prefix, maximum_special] + [f"<L{index:03d}>" for index in range(250)]
         boundary_model = work / "special-boundaries.gguf"
         fixture.write_model(
@@ -220,7 +223,7 @@ def main() -> int:
             (json.dumps([maximum_id]) + "\n").encode(),
             "special-maximum-longest-parse",
         )
-        raw_ids = [tokens.index(character) for character in maximum_special]
+        raw_ids = fixture.encode(maximum_special, False)
         expect_success(
             run_cli(boundary_model, boundary_input, "--tokenize", "literal-control"),
             (json.dumps(raw_ids, separators=(",", ":")) + "\n").encode(),
@@ -243,6 +246,18 @@ def main() -> int:
             run_cli(boundary_model, boundary_ids, "--detokenize", "skip-control"),
             b"",
             "special-maximum-skip",
+        )
+        boundary_input.write_bytes(b"x" * 1_048_576)
+        raw_x_id = tokens.index("x")
+        exact_boundary_json = (
+            "[" + f"{raw_x_id}," * 1_048_575 + f"{raw_x_id}]\n"
+        ).encode()
+        expect_success(
+            run_cli(
+                boundary_model, boundary_input, "--tokenize", "literal-control", timeout=120
+            ),
+            exact_boundary_json,
+            "special-prefix-exact-input-boundary",
         )
 
         control_ids = work / "control.json"
@@ -323,6 +338,49 @@ def main() -> int:
             "hash-bucket", tokens + colliders, types + [5] * len(colliders), merges, "gpt2", "qwen2",
         ))
 
+        accepted_merge_results, accepted_merge_colliders = merge_colliders(
+            tokens, len(merges) + 16, 16
+        )
+        accepted_merge_model = work / "merge-bucket-16.gguf"
+        fixture.write_model(
+            accepted_merge_model,
+            tokens + accepted_merge_results,
+            types + [1] * len(accepted_merge_results),
+            merges + accepted_merge_colliders,
+        )
+        expect_success(
+            run_cli(accepted_merge_model, collision_input, "--tokenize", "parse-control"),
+            (json.dumps(fixture.encode("hello"), separators=(",", ":")) + "\n").encode(),
+            "merge-bucket-16",
+        )
+        rejected_merge_results, rejected_merge_colliders = merge_colliders(
+            tokens, len(merges) + 17, 17
+        )
+        mutations.append((
+            "merge-bucket",
+            tokens + rejected_merge_results,
+            types + [1] * len(rejected_merge_results),
+            merges + rejected_merge_colliders,
+            "gpt2",
+            "qwen2",
+        ))
+
+        duplicate_merge_tokens = tokens + ["el"]
+        duplicate_merge_model = work / "duplicate-merge-first-rank.gguf"
+        fixture.write_model(
+            duplicate_merge_model,
+            duplicate_merge_tokens,
+            types + [1],
+            ["h e", "e l", "he l", "h e"],
+        )
+        duplicate_merge_input = work / "duplicate-merge-first-rank.txt"
+        duplicate_merge_input.write_text("hel", encoding="ascii")
+        expect_success(
+            run_cli(duplicate_merge_model, duplicate_merge_input, "--tokenize", "parse-control"),
+            (json.dumps([tokens.index("hel")]) + "\n").encode(),
+            "duplicate-merge-first-rank",
+        )
+
         duplicate_then_type = list(tokens)
         duplicate_then_type[1] = duplicate_then_type[0]
         later_bad_type = list(types)
@@ -337,7 +395,9 @@ def main() -> int:
             "special-text-before-count", long_then_many_specials + special_additions,
             types + [3] * len(special_additions), merges, "gpt2", "qwen2",
         ))
-        merge_results, merge_hash_colliders = merge_colliders(tokens, merges, 17)
+        merge_results, merge_hash_colliders = merge_colliders(
+            tokens, len(merges) + 18, 17
+        )
         mutations.append((
             "merge-bucket-before-malformed", tokens + merge_results, types + [1] * len(merge_results),
             merges + merge_hash_colliders + ["broken"], "gpt2", "qwen2",
@@ -347,7 +407,8 @@ def main() -> int:
             "R7_UNSUPPORTED_TOKENIZER", "R7_VOCAB_SIZE", "R7_VOCAB_SIZE", "R7_TOKEN_EMPTY",
             "R7_TOKEN_TYPE", "R7_TOKEN_DUPLICATE", "R7_MERGE", "R7_MERGE_TOKEN",
             "R7_BYTE_ALPHABET", "R7_TOKEN_TEXT", "R7_TOKENIZER_ARRAY", "R7_SPECIAL_TEXT",
-            "R7_SPECIAL_COUNT", "R7_HASH_BUCKET", "R7_TOKEN_TYPE", "R7_SPECIAL_COUNT", "R7_MERGE",
+            "R7_SPECIAL_COUNT", "R7_HASH_BUCKET", "R7_HASH_BUCKET", "R7_TOKEN_TYPE",
+            "R7_SPECIAL_COUNT", "R7_MERGE",
         ]
         mutation_paths = []
         for name, changed_tokens, changed_types, changed_merges, model_name, pre_name in mutations:
@@ -417,6 +478,14 @@ def main() -> int:
         if harness_build.returncode != 0:
             fail(f"API harness build failed: {harness_build.stderr.decode('utf-8', 'replace')}")
 
+        absent_model = work / "absent-one-shot.gguf"
+        expected_one_shot = f"ONE-SHOT:{len(tokens)}:{len(types)}\n".encode()
+        for attempt in range(2):
+            one_shot_result = command([
+                str(HARNESS), "--one-shot", str(model), str(absent_model),
+            ])
+            expect_success(one_shot_result, expected_one_shot, f"one-shot-readers-{attempt + 1}")
+
         snapshot_model = work / "snapshot-model.gguf"
         fixture.write_model(snapshot_model, tokens, types, merges)
         replacement_model = work / "snapshot-replacement.gguf"
@@ -461,7 +530,8 @@ def main() -> int:
         ], timeout=120)
         operation_codes = operation_result.stdout.decode().splitlines()
         expected_operations = [
-            "R7_TEXT_SIZE", "R7_TOKEN_COUNT", "R7_TOKEN_ID", "R7_DECODE_UTF8", "R7_OUTPUT_SIZE",
+            "R7_TEXT_SIZE", "R7_TOKEN_COUNT", "R7_TOKEN_ID", "R7_DECODE_UTF8",
+            "OK:1048576", "R7_OUTPUT_SIZE",
         ]
         if operation_result.returncode != 0 or operation_codes != expected_operations:
             fail(
@@ -472,7 +542,8 @@ def main() -> int:
     print(
         f"tokenizer smoke: PASS ({len(cases)} text cases, 4 ordinary specials, "
         f"256-special accepted boundary, "
-        f"{len(expected_codes)} model failures, 5 operation failures, 1 replacement snapshot)"
+        f"{len(expected_codes)} model failures, 6 operation boundaries, "
+        f"2 one-shot reader passes, 1 replacement snapshot)"
     )
     return 0
 
