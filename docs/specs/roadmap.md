@@ -1163,7 +1163,7 @@ The current forward delivery order is:
     10566 with 50,893 input bytes and 69,485 compared ids. Exact-head Linux preflight and all
     hosted, x86_64, and aarch64 required checks passed; Request 22 is closed.
 
-42. **R7-PROMPT — provider text to exact Qwen2.5-Coder prompt token ids. Active.** The existing
+42. **R7-PROMPT — provider text to exact Qwen2.5-Coder prompt token ids.** The existing
     `GenerationRequest` carries `system` and `user`, while the runtime begins at ids. R7-TOKENIZER
     can encode arbitrary text but deliberately does not interpret `tokenizer.chat_template`, so a
     caller still cannot construct the model's actual conversation. This capability validates the
@@ -1173,6 +1173,26 @@ The current forward delivery order is:
     history, inference, sampling, EOG termination, provider dispatch, streaming, and decoded text
     remain deferred. The authoritative ledger and closure matrix are
     [`r7-prompt.md`](r7-prompt.md).
+
+    **Merged as PR #163 (`88b77ed`) on 2026-09-01.** The public prompt preparation API and CLI
+    validate the model-carried supported template, retain one GGUF snapshot across template and
+    tokenizer reads, and match pinned llama.cpp build 10566 on eight real-model cases (1,538 prompt
+    bytes and 303 token ids). The repaired candidate closes all three comprehensive-review findings,
+    exact-head Linux preflight and every required hosted platform check passed, and the valid coding
+    baseline chain remains reachable from merged `main`.
+
+43. **R7-RUNTIME-PROVIDER — in-process text generation through the resident dense runtime. Active.**
+    Connect R7-PROMPT's exact prompt ids to the existing resident Qwen2 decode loop, stop before an
+    EOG token or at the requested completion bound, detokenize the generated non-EOG ids, and expose
+    the result through an explicit `AlignRuntime` `ModelProvider` arm. The provider binds the retained
+    GGUF snapshot to both the alignpack source identity and the exact model-derived geometry before
+    inference; it does not trust three independently named artifacts. Streaming, non-greedy sampling,
+    seeds, runtime timeouts, prefix-cache reuse, GPU execution, and MoE execution remain deferred.
+    A named real-model qualification runs the same fixed `python-inclusive-range` request through
+    local OpenAI-compatible llama.cpp and align-runtime, persists both existing schema-2 generation
+    records, and requires both completions to pass the existing coding-task validator. The
+    authoritative public-contract ledger, closure matrix, validation order, and pre-implementation
+    qualification ceiling are [`r7-runtime-provider.md`](r7-runtime-provider.md).
 
 ### Status (2026-08-28)
 

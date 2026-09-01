@@ -3,61 +3,52 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R7-PROMPT (2026-09-01)
+## Active: R7-RUNTIME-PROVIDER (2026-09-01)
 
-Branch `agent/r7-prompt`, integrating current `main` merge
-`e68a3949dd2a02b006ae9c5f7e7bfdbd668b7415` (PR #162). R7-TOKENIZER is merged and the next
-consumer boundary is the missing conversion from the existing
-`GenerationRequest { system, user }` text pair to the Qwen2.5-Coder prompt token ids consumed by
-the shipped dense runtime.
+Branch `agent/r7-runtime-provider`, based on merged `main`
+`88b77ed112d36cb29b948f7212442b3a4f02afcd` (R7-PROMPT PR #163 plus the concurrent R7-TOKENIZER
+evidence update). The next consumer-complete R7 boundary is an explicit in-process provider that
+turns the existing `GenerationRequest` into completion text through the resident dense runtime.
 
-R7-PROMPT validates the model-carried supported chat template, renders exactly the no-tools
-system/user conversation with a generation prompt, and tokenizes it from one retained GGUF snapshot.
-The public API, `--prepare-prompt` CLI, hosted synthetic owner, and pinned real-model parity runner
-are implemented. Provider dispatch, inference reuse, sampling, stop-token policy, streaming, and
-decoded completion text remain later R7 capabilities. The authoritative ledger and closure matrix
-are `docs/specs/r7-prompt.md`.
+The proportional design gate is active because this changes the public provider enum/configuration,
+adds snapshot and artifact-identity ownership seams, changes the resident decode loop's internal
+termination behavior, and coordinates seven modules plus CLI and evaluation. The authoritative
+ledger, exact validation order, EOG/max-token semantics, closure matrix, fixed coding-task gate, and
+pre-implementation 20-minute qualification ceiling are `docs/specs/r7-runtime-provider.md`.
 
-**Latest durable verification.** With GNU make and the Homebrew library path, `gmake fmt`,
-`gmake tokenizer-smoke`, `gmake prompt-smoke`, and `gmake gate-topology-check` pass. The prompt owner
-covers six text cases, eight model failures, three size/precedence boundaries, six CLI failures,
-two configured-tool qualification failures, and exact error-result publication fields. Focused
-`gmake prompt-parity` passes against the 4,683,073,536-byte reference model and pinned llama.cpp
-build 10566: eight cases, 1,538 rendered prompt bytes, and 303 compared token ids. Python syntax
-compilation and `git diff --check` pass.
+The settled implementation boundary retains one GGUF snapshot while deriving exact model geometry,
+checking the alignpack source record, and preparing prompt/EOG ids. Generation is greedy, CPU,
+resident, at most 64 tokens, non-streaming, unseeded, and without an internal timeout. It returns no
+partial text on failure and excludes the terminal EOG id from detokenization. The fixed gate runs
+the existing `python-inclusive-range` request through both local OpenAI-compatible llama.cpp and
+align-runtime, persists unchanged schema-2 generation records, and requires both patches to pass
+the existing task validator.
 
-The first local baseline recording is intentionally rejected: macOS resolves the task manifest's
-fixed `/usr/bin/python3` to Python 3.9, so both task-runner invocations failed before validation.
-The resulting source `0b7433b` -> oracle `52add8b` -> finalization `efc2acd` history is not evidence
-and is superseded by the valid Linux chain below.
+**Latest durable verification.** The design was authored against `main` `88b77ed` after reading the
+R7 prompt contract, provider/runtime code, pinned llama.cpp build 10566 EOG construction, and the
+existing coding-task fixture/validator. Implementation verification has not started.
 
-**Coding baseline refresh complete.** The required Linux/aarch64 chain is source
-`dbbb52eaf776b1d567df34a02c7232c6469cb52f` -> immutable oracle
-`9359d7bdc18954f261b493020584103258e3b484` -> canonical finalization
-`2586eaed0b0c19b5e956d01f0b8f4e81585e7812`. The pending record used the pinned Align source and
-Python 3.12.3; both samples pass at 169,066,709 ns and 140,072,458 ns, with a 154,569,583 ns median.
-The pending file is absent and `python3 scripts/check-baseline-chain` passes.
-
-**Comprehensive review.** `codex review --base origin/main` reviewed head
-`e0a479177145aefd279561426b298920c3e298e0` against base tip and merge base
-`de44bf0971866d51dfe995e9ae9a03e6fe8ce081` with Codex `gpt-5.6-sol` at high effort. Three P2
-findings are accepted: configured non-executable parity tools incorrectly returned `N/A`, the
-hosted owner did not combine an oversized prompt with a malformed tokenizer, and its API harness
-discarded error-result publication fields. Consolidated repair
-`12903046593f9a9a3688cc096d9c0994c170c958` makes configured unusable tools fail hard, exercises
-the missing precedence pair, and asserts exact detail, identities, counts, byte counts, and empty
-token output for every synthetic API failure. No finding remains open; the repair does not change
-the public contract or any identity-bound baseline input.
-
-**Next actions.** (1) Complete the current-main merge and rerun the affected tokenizer/prompt owner
-and integration evidence. (2) Run exact-head Linux publication preflight, open the PR, wait for CI,
-repair if required, and merge without squash or rebase. (3) Pull the latest `main`, including any
-concurrent updates, and start the next eligible R7 capability.
+**Next actions.** (1) Complete the author ledger-to-prose consistency pass and commit the design
+checkpoint. (2) Implement snapshot EOG preparation, bounded pack identity verification,
+stop-aware decode generation, explicit provider dispatch/CLI, and hosted owners. (3) Run focused
+owners and the real fixed-task gate, perform one comprehensive review and consolidated repair, run
+exact-head publication preflight, publish/merge the PR, pull latest `main`, and continue the roadmap.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The current `origin/main` merge until committed; no generated or
-local configuration files belong in the change.
+**Intentional uncommitted files.** The R7-RUNTIME-PROVIDER design/roadmap/handoff changes until the
+design checkpoint is committed. Local configuration does not belong in the change.
+
+## Merged checkpoint: R7-PROMPT (2026-09-01)
+
+PR #163 merged as `88b77ed112d36cb29b948f7212442b3a4f02afcd`. The public prompt API and CLI
+validate the exact model-carried chat template and tokenize one system/user conversation from a
+single retained GGUF snapshot. Focused real-model parity passes against pinned llama.cpp build
+10566 on eight cases, 1,538 rendered bytes, and 303 ids. Comprehensive review found three valid
+owner/precedence/publication gaps; consolidated repair `1290304` closes all of them. Exact-head
+Linux preflight and every required hosted, x86_64, and aarch64 check passed. The valid coding
+baseline chain is source `dbbb52e` -> oracle `9359d7b` -> finalization `2586eae`, all reachable from
+merged `main`.
 
 ## Merged checkpoint: R7-TOKENIZER evidence completion (2026-09-01)
 
