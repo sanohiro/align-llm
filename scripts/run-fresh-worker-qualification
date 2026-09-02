@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
-from contextlib import contextmanager
 import json
 import os
 import re
@@ -17,7 +15,8 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Iterator
+
+from signal_subprocess import signal_subprocess_owner
 
 
 REPOSITORY = Path(__file__).resolve().parent.parent
@@ -129,6 +128,7 @@ COMPLETE_AGGREGATE_CASES = {
 FIXED_CHILD_PATH = "/usr/bin:/bin"
 INSTALLED_OWNER = "run-fresh-image-profile-smoke"
 AGGREGATE_DIAGNOSTIC_VARIABLE = "ALIGN_LLM_AGGREGATE_DIAGNOSTIC"
+SIGNAL_CLEANUP_SECONDS = 4.5
 QUALIFICATION_SIGNALS = tuple(
     selected
     for selected in (
@@ -139,41 +139,6 @@ QUALIFICATION_SIGNALS = tuple(
     )
     if selected is not None
 )
-
-
-@contextmanager
-def cleanup_signal_handlers() -> Iterator[Callable[[], None]]:
-    pending_signal: int | None = None
-    cleanup_started = False
-    caught: BaseException | None = None
-    previous_handlers: dict[int, signal.Handlers] = {}
-
-    def begin_cleanup() -> None:
-        nonlocal cleanup_started
-        cleanup_started = True
-
-    def handle_signal(signum: int, _frame: object) -> None:
-        nonlocal pending_signal
-        if pending_signal is None:
-            pending_signal = signum
-        if not cleanup_started:
-            raise SystemExit(128 + signum)
-
-    try:
-        for selected_signal in QUALIFICATION_SIGNALS:
-            previous_handlers[selected_signal] = signal.getsignal(selected_signal)
-            signal.signal(selected_signal, handle_signal)
-        try:
-            yield begin_cleanup
-        except BaseException as error:
-            caught = error
-    finally:
-        for selected_signal, previous in previous_handlers.items():
-            signal.signal(selected_signal, previous)
-    if pending_signal is not None:
-        raise SystemExit(128 + pending_signal)
-    if caught is not None:
-        raise caught
 
 
 def qualification_environment(owner: str) -> dict[str, str]:
@@ -231,19 +196,21 @@ def run(owner: str, *arguments: str) -> None:
     emit_phase(owner, "start")
     environment = qualification_environment(owner)
     if owner == INSTALLED_OWNER:
-        with cleanup_signal_handlers() as begin_cleanup:
+        with signal_subprocess_owner(
+            QUALIFICATION_SIGNALS, SIGNAL_CLEANUP_SECONDS
+        ) as signal_owner:
             directory = tempfile.mkdtemp(prefix="align-llm-docker-config-", dir="/tmp")
             try:
                 os.chmod(directory, 0o700)
                 environment["DOCKER_CONFIG"] = directory
-                result = subprocess.run(
+                result = signal_owner.run(
                     arguments,
                     cwd=REPOSITORY,
                     env=environment,
                     check=False,
                 )
             finally:
-                begin_cleanup()
+                signal_owner.begin_cleanup()
                 shutil.rmtree(directory)
     else:
         result = subprocess.run(

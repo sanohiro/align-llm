@@ -17,7 +17,6 @@ import sys
 import tempfile
 import time
 from contextlib import contextmanager
-from collections.abc import Callable
 from pathlib import Path
 from typing import Iterator
 
@@ -27,6 +26,7 @@ sys.path.insert(0, str(REPOSITORY / "scripts"))
 
 from fresh_attestation import ed25519_public_key  # noqa: E402
 from fresh_manifest import serialized_digest, validate_manifest_bytes  # noqa: E402
+from signal_subprocess import SignalSubprocessOwner, signal_subprocess_owner  # noqa: E402
 
 
 PROVENANCE_SCRIPTS = (
@@ -41,6 +41,8 @@ TEST_UID = 12345
 WORKER_INVOCATION_TIMEOUT = 5_100
 PREPARED_IMAGE_PATTERN = re.compile(r"align-llm-fresh-test:[0-9a-f]{32}\Z")
 AGGREGATE_DIAGNOSTIC_VARIABLE = "ALIGN_LLM_AGGREGATE_DIAGNOSTIC"
+SIGNAL_CLEANUP_SECONDS = 2.0
+ACTIVE_SIGNAL_OWNER: SignalSubprocessOwner | None = None
 PROFILE_SIGNALS = tuple(
     selected
     for selected in (
@@ -54,38 +56,14 @@ PROFILE_SIGNALS = tuple(
 
 
 @contextmanager
-def cleanup_signal_handlers() -> Iterator[Callable[[], None]]:
-    pending_signal: int | None = None
-    cleanup_started = False
-    caught: BaseException | None = None
-    previous_handlers: dict[int, signal.Handlers] = {}
-
-    def begin_cleanup() -> None:
-        nonlocal cleanup_started
-        cleanup_started = True
-
-    def handle_signal(signum: int, _frame: object) -> None:
-        nonlocal pending_signal
-        if pending_signal is None:
-            pending_signal = signum
-        if not cleanup_started:
-            raise SystemExit(128 + signum)
-
+def active_signal_owner(owner: SignalSubprocessOwner) -> Iterator[None]:
+    global ACTIVE_SIGNAL_OWNER
+    previous = ACTIVE_SIGNAL_OWNER
+    ACTIVE_SIGNAL_OWNER = owner
     try:
-        for selected_signal in PROFILE_SIGNALS:
-            previous_handlers[selected_signal] = signal.getsignal(selected_signal)
-            signal.signal(selected_signal, handle_signal)
-        try:
-            yield begin_cleanup
-        except BaseException as error:
-            caught = error
+        yield
     finally:
-        for selected_signal, previous in previous_handlers.items():
-            signal.signal(selected_signal, previous)
-    if pending_signal is not None:
-        raise SystemExit(128 + pending_signal)
-    if caught is not None:
-        raise caught
+        ACTIVE_SIGNAL_OWNER = previous
 
 
 def aggregate_diagnostic_requested() -> bool:
@@ -170,16 +148,18 @@ def run(
     }
     if arguments and arguments[0] == "docker" and "DOCKER_CONFIG" in os.environ:
         environment["DOCKER_CONFIG"] = os.environ["DOCKER_CONFIG"]
-    return subprocess.run(
-        arguments,
-        cwd=REPOSITORY,
-        env=environment,
-        stdin=subprocess.DEVNULL,
-        stdout=stdout,
-        stderr=stderr,
-        check=check,
-        timeout=timeout,
-    )
+    keywords = {
+        "cwd": REPOSITORY,
+        "env": environment,
+        "stdin": subprocess.DEVNULL,
+        "stdout": stdout,
+        "stderr": stderr,
+        "check": check,
+        "timeout": timeout,
+    }
+    if ACTIVE_SIGNAL_OWNER is not None:
+        return ACTIVE_SIGNAL_OWNER.run(arguments, **keywords)
+    return subprocess.run(arguments, **keywords)
 
 
 def prepared_seed(path: Path, label: str) -> bytes:
@@ -824,7 +804,9 @@ def main() -> int:
     boundary_source_volume = f"align-llm-fresh-boundary-source-{unique}"
     ordinary_source_volume = f"align-llm-fresh-ordinary-source-{unique}"
     cgroup_ready = False
-    with cleanup_signal_handlers() as begin_cleanup, tempfile.TemporaryDirectory(
+    with signal_subprocess_owner(
+        PROFILE_SIGNALS, SIGNAL_CLEANUP_SECONDS
+    ) as signal_owner, active_signal_owner(signal_owner), tempfile.TemporaryDirectory(
         prefix="fresh-image-profile-"
     ) as temporary_name:
         temporary = Path(temporary_name)
@@ -1486,7 +1468,7 @@ def main() -> int:
             if worker_result.stdout != expected_worker_output or worker_result.stderr:
                 raise RuntimeError(f"fresh {worker_phase} output is not canonical")
         finally:
-            begin_cleanup()
+            signal_owner.begin_cleanup()
             phases.finish("fail" if sys.exc_info()[0] is not None else "pass")
             phases.enter("cleanup")
             if cgroup_ready:

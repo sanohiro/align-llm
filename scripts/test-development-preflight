@@ -141,6 +141,7 @@ def test_classifier() -> None:
         ".github/workflows/ci.yml",
         "image/fresh/Dockerfile",
         "scripts/run-fresh-worker-qualification",
+        "scripts/signal_subprocess.py",
         "scripts/verification_scope.py",
         "scripts/classify-verification",
         "scripts/ci-align-bundle",
@@ -1316,6 +1317,7 @@ def test_qualification_modes() -> None:
     captured_environments: list[dict[str, str]] = []
     docker_config_paths: list[Path] = []
     original_run = qualification.subprocess.run
+    original_signal_owner = qualification.signal_subprocess_owner
 
     def capture_run(*_arguments, **keywords):
         environment = dict(keywords["env"])
@@ -1332,13 +1334,26 @@ def test_qualification_modes() -> None:
             docker_config_paths.append(docker_config)
         return SimpleNamespace(returncode=0)
 
+    class CapturingSignalOwner:
+        def begin_cleanup(self) -> None:
+            pass
+
+        def run(self, *_arguments, **keywords):
+            return capture_run(**keywords)
+
+    @contextlib.contextmanager
+    def capture_signal_owner(*_arguments, **_keywords):
+        yield CapturingSignalOwner()
+
     qualification.subprocess.run = capture_run
+    qualification.signal_subprocess_owner = capture_signal_owner
     try:
         with contextlib.redirect_stderr(io.StringIO()):
             qualification.run(qualification.INSTALLED_OWNER, "installed")
             qualification.run("run-fresh-worker-unit-smoke", "focused")
     finally:
         qualification.subprocess.run = original_run
+        qualification.signal_subprocess_owner = original_signal_owner
     require(
         len(captured_environments) == 2
         and "DOCKER_CONFIG" in captured_environments[0]
@@ -1353,6 +1368,7 @@ def test_qualification_modes() -> None:
         temporary = Path(temporary_name)
         driver = temporary / "driver.py"
         marker = temporary / "docker-config"
+        child_cleanup = temporary / "child-cleanup"
         driver.write_text(
             """import importlib.machinery
 import importlib.util
@@ -1361,6 +1377,8 @@ import sys
 
 repository = pathlib.Path(sys.argv[1])
 marker = pathlib.Path(sys.argv[2])
+child_cleanup = pathlib.Path(sys.argv[3])
+sys.path.insert(0, str(repository / "scripts"))
 loader = importlib.machinery.SourceFileLoader(
     "qualification_signal_test", str(repository / "scripts/run-fresh-worker-qualification")
 )
@@ -1369,32 +1387,38 @@ module = importlib.util.module_from_spec(specification)
 sys.modules[loader.name] = module
 loader.exec_module(module)
 child = (
-    "import os,pathlib,time; "
-    "pathlib.Path(__import__('sys').argv[1]).write_text(os.environ['DOCKER_CONFIG']); "
-    "time.sleep(30)"
+    "import os,pathlib,signal,sys,time\\n"
+    "marker=pathlib.Path(sys.argv[1]); cleaned=pathlib.Path(sys.argv[2])\\n"
+    "def stop(_signum, _frame):\\n"
+    "    cleaned.write_text('cleaned', encoding='ascii')\\n"
+    "    raise SystemExit(0)\\n"
+    "signal.signal(signal.SIGTERM, stop)\\n"
+    "marker.write_text(os.environ['DOCKER_CONFIG'], encoding='utf-8')\\n"
+    "while True: time.sleep(0.05)\\n"
 )
-module.run(module.INSTALLED_OWNER, sys.executable, "-c", child, str(marker))
+module.run(module.INSTALLED_OWNER, sys.executable, "-c", child, str(marker), str(child_cleanup))
 """,
             encoding="utf-8",
         )
         process = subprocess.Popen(
-            (sys.executable, str(driver), str(REPOSITORY), str(marker)),
+            (sys.executable, str(driver), str(REPOSITORY), str(marker), str(child_cleanup)),
             cwd=REPOSITORY,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            start_new_session=True,
         )
         deadline = time.monotonic() + 5
         while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
             time.sleep(0.02)
         require(marker.exists(), "installed owner did not expose its private Docker config")
         interrupted_config = Path(marker.read_text(encoding="utf-8"))
-        os.killpg(process.pid, signal.SIGTERM)
+        process.send_signal(signal.SIGTERM)
         process.communicate(timeout=5)
         require(
-            process.returncode == 128 + signal.SIGTERM and not interrupted_config.exists(),
-            "installed owner cancellation leaked its private Docker config",
+            process.returncode == 128 + signal.SIGTERM
+            and child_cleanup.read_text(encoding="ascii") == "cleaned"
+            and not interrupted_config.exists(),
+            "installed owner cancellation was not relayed, reaped, and cleaned",
         )
     qualification.verify_contract_inventory = lambda: None
     calls: list[tuple[str, tuple[str, ...]]] = []
@@ -1546,18 +1570,21 @@ module.run(module.INSTALLED_OWNER, sys.executable, "-c", child, str(marker))
         "installed profile does not retain build while gating the aggregate on explicit input",
     )
     require(
-        "with cleanup_signal_handlers() as begin_cleanup, tempfile.TemporaryDirectory("
+        "with signal_subprocess_owner(" in image_profile_source
+        and "as signal_owner, active_signal_owner(signal_owner), tempfile.TemporaryDirectory("
         in image_profile_source,
         "installed profile cleanup is outside catchable signal ownership",
     )
     previous_term = signal.getsignal(signal.SIGTERM)
     unwound = False
     try:
-        with image_profile.cleanup_signal_handlers() as begin_cleanup:
+        with image_profile.signal_subprocess_owner(
+            image_profile.PROFILE_SIGNALS, image_profile.SIGNAL_CLEANUP_SECONDS
+        ) as signal_owner:
             try:
                 os.kill(os.getpid(), signal.SIGTERM)
             finally:
-                begin_cleanup()
+                signal_owner.begin_cleanup()
                 unwound = True
     except SystemExit as error:
         require(error.code == 128 + signal.SIGTERM, "profile signal status changed")
@@ -1567,6 +1594,67 @@ module.run(module.INSTALLED_OWNER, sys.executable, "-c", child, str(marker))
         unwound and signal.getsignal(signal.SIGTERM) == previous_term,
         "profile signal did not unwind or restore its handler",
     )
+    with tempfile.TemporaryDirectory(prefix="profile-signal-relay-") as temporary_name:
+        temporary = Path(temporary_name)
+        ready = temporary / "ready"
+        child_cleanup = temporary / "child-cleanup"
+        final_cleanup = temporary / "final-cleanup"
+        child = (
+            "import pathlib,signal,sys,time\n"
+            "ready=pathlib.Path(sys.argv[1]); cleaned=pathlib.Path(sys.argv[2])\n"
+            "def stop(_signum, _frame):\n"
+            "    cleaned.write_text('cleaned', encoding='ascii')\n"
+            "    raise SystemExit(0)\n"
+            "signal.signal(signal.SIGTERM, stop)\n"
+            "ready.write_text('ready', encoding='ascii')\n"
+            "while True: time.sleep(0.05)\n"
+        )
+        notifier = subprocess.Popen(
+            (
+                sys.executable,
+                "-c",
+                "import os,pathlib,sys,time\n"
+                "ready=pathlib.Path(sys.argv[1]); deadline=time.monotonic()+5\n"
+                "while not ready.exists() and time.monotonic()<deadline: time.sleep(0.02)\n"
+                "os.kill(int(sys.argv[2]), int(sys.argv[3]))\n",
+                str(ready),
+                str(os.getpid()),
+                str(signal.SIGTERM.value),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        try:
+            with image_profile.signal_subprocess_owner(
+                image_profile.PROFILE_SIGNALS, image_profile.SIGNAL_CLEANUP_SECONDS
+            ) as signal_owner, image_profile.active_signal_owner(signal_owner):
+                try:
+                    image_profile.run(
+                        [sys.executable, "-c", child, str(ready), str(child_cleanup)],
+                        timeout=10,
+                    )
+                finally:
+                    signal_owner.begin_cleanup()
+                    image_profile.run(
+                        [
+                            sys.executable,
+                            "-c",
+                            "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('cleaned')",
+                            str(final_cleanup),
+                        ],
+                        timeout=5,
+                    )
+        except SystemExit as error:
+            require(error.code == 128 + signal.SIGTERM, "profile relay signal status changed")
+        else:
+            raise RuntimeError("profile parent-only signal was accepted")
+        finally:
+            notifier.wait(timeout=5)
+        require(
+            child_cleanup.read_text(encoding="ascii") == "cleaned"
+            and final_cleanup.read_text(encoding="ascii") == "cleaned",
+            "profile parent-only signal did not relay, reap, and finish cleanup",
+        )
     cleanup_calls: list[list[str]] = []
 
     def interrupt_image_build(arguments: list[str], **_keywords: object) -> SimpleNamespace:

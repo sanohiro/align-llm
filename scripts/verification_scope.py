@@ -45,6 +45,7 @@ FRESH_IMAGE_PATTERNS = (
     "scripts/run-fresh-worker-*",
     "scripts/run-loop-smoke",
     "scripts/select-ci-reuse",
+    "scripts/signal_subprocess.py",
     "scripts/test-development-preflight",
     "scripts/test-ci-align-bundle",
     "scripts/verification_scope.py",
