@@ -899,7 +899,7 @@ On success it prints `check gate topology self-test: PASS` plus LF and nothing e
 | Argument/result ownership lifecycle | N/A | Make target names and scalar variables are not Align values | N/A. |
 | Implementation-only ownership types | N/A | no ownership type is added | N/A. |
 | Native boundary and embedded NUL | operating-system environment | N/A: environment values cannot contain NUL; no file or wire input exists | N/A with stated platform reason. |
-| Monomorphization, interface, whole/per-unit parity | N/A | no Align code or interface changes | Existing `check` and `build` remain in both graphs. |
+| Monomorphization, interface, whole/per-unit parity | N/A | no Align code or interface changes | `make check` retains the explicit per-unit diagnostic surface outside the aggregates; the shared aggregate `build` retains the per-unit package frontend and executable boundary. Align's compiler owners retain checker parity; this aggregate makes no new parity claim. |
 | Runtime provenance or allocation parity | N/A | no runtime behavior or allocation change | N/A. |
 
 ## 7. Historical acceptance and pull request boundaries

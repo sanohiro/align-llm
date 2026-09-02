@@ -20,15 +20,33 @@ provider candidate were 177.42s for uncached `make check`, 10.74s for `format-ch
 an immediately warm `make build`. The authoritative contract and closure matrix are
 `docs/specs/check-gate-topology.md` sections 1.2 and 2.
 
-**Next actions.** (1) Validate topology, workflow, and exact aggregate membership. (2) Record any
-required baseline identity update. (3) Review, publish, and merge the repair. (4) Refresh the held
-provider branch onto latest `main`, rerun its required checks once, then merge it.
+The identity-bound baseline chain is source `d62e7a1e34fe390596131b16e1777d66ad6cdb48`
+-> oracle `92cf3bdbb024606aec74a9d3e4eebb2547af1827` -> finalization
+`dcb893d93612d5afb13cdd7b43e04bf0c9d17e7a`. Its two fixed-task samples passed on Linux/aarch64,
+kernel 6.11.11-linuxkit, Python 3.12.3, with the exact pinned Align compiler. In the same Linux
+boundary, `make baseline-check` ended `baseline chain: PASS` and
+`python3 scripts/check-gate-topology --self-test` passed. The normal exact topology owner also
+passes. The macOS self-test's existing reader-start fault injection records a post-exit
+`sigkill-PermissionError`; unmodified `origin/main` reproduces it, so Linux owns publication
+evidence for that platform-sensitive lifecycle case.
+
+The comprehensive Codex CLI review covered head
+`dcb893d93612d5afb13cdd7b43e04bf0c9d17e7a` against base tip and merge base
+`c987838130077d5b6119ee20b717774c1c913fbe`, using gpt-5.6-sol at high effort over the full diff.
+It found one accepted P2: a historical closure row still claimed both `check` and `build` remained
+in both aggregate graphs. The documentation-only repair states the actual allocation: standalone
+`make check`, aggregate `build`, and compiler-owned checker parity. It changes no implementation,
+baseline artifact, or verification behavior, so it does not trigger another comprehensive review.
+
+**Next actions.** (1) Run exact-head publication preflight. (2) Publish and merge the repair after
+required checks pass. (3) Refresh the held provider branch onto latest `main`, rerun its required
+checks once, then merge it.
 
 **Blocker.** The provider capability cannot merge until the required hosted graph completes within
 its configured boundary; this repair is the resume condition.
 
-**Intentional uncommitted files.** The bounded CI repair until committed. Local configuration
-remains outside the change.
+**Intentional uncommitted files.** The review's documentation-only closure repair until committed.
+Local configuration remains outside the change.
 
 ## Merged checkpoint: R8-OLMOE-TEXT (2026-09-03)
 
