@@ -111,17 +111,20 @@ def run(
     stderr: int | None = subprocess.PIPE,
     timeout: int = 1_800,
 ) -> subprocess.CompletedProcess[bytes]:
+    environment = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LC_ALL": "C",
+        "DOCKER_BUILDKIT": "1",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    if arguments and arguments[0] == "docker" and "DOCKER_CONFIG" in os.environ:
+        environment["DOCKER_CONFIG"] = os.environ["DOCKER_CONFIG"]
     return subprocess.run(
         arguments,
         cwd=REPOSITORY,
-        env={
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "LC_ALL": "C",
-            "DOCKER_BUILDKIT": "1",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_TERMINAL_PROMPT": "0",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        },
+        env=environment,
         stdin=subprocess.DEVNULL,
         stdout=stdout,
         stderr=stderr,
@@ -538,8 +541,10 @@ def worker_profile_run(
     runtime_volume: str,
     source_volume: str,
     cgroup_driver: str,
+    *,
+    complete_aggregate: bool,
 ) -> subprocess.CompletedProcess[bytes]:
-    diagnostic = aggregate_diagnostic_requested()
+    diagnostic = complete_aggregate and aggregate_diagnostic_requested()
     arguments = [
         "docker",
         "run",
@@ -552,7 +557,12 @@ def worker_profile_run(
     ]
     if diagnostic:
         arguments.extend(("--env", f"{AGGREGATE_DIAGNOSTIC_VARIABLE}=1"))
-    command = [image, "make", "--no-print-directory", "ci"]
+    request = (
+        ["make", "--no-print-directory", "ci"]
+        if complete_aggregate
+        else ["--mode", "build"]
+    )
+    command = [image, *request]
     if cgroup_driver == "cgroupfs":
         arguments.extend(
             [
@@ -581,7 +591,7 @@ if child == 0:
         os.setuid({TEST_UID})
         os.chdir('/work/project')
         os.execve('/usr/local/libexec/align-llm/fresh-supervise',
-                  ['fresh-supervise', 'make', '--no-print-directory', 'ci'],
+                  {['fresh-supervise', *request]!r},
                   {launcher_environment})
     except BaseException:
         os._exit(127)
@@ -1401,22 +1411,29 @@ def main() -> int:
                 "ordinary invalid Align revision",
                 b"json-scan adoption: ERROR revision\n",
             )
-            if values.complete_aggregate:
-                phases.enter("worker-aggregate")
-                worker_result = worker_profile_run(
-                    image, volume, runtime_volume, source_volume, cgroup_driver
+            worker_phase = "worker-aggregate" if values.complete_aggregate else "worker-build"
+            phases.enter(worker_phase)
+            worker_result = worker_profile_run(
+                image,
+                volume,
+                runtime_volume,
+                source_volume,
+                cgroup_driver,
+                complete_aggregate=values.complete_aggregate,
+            )
+            expected_worker_output = (
+                b"fresh compiler and capable checks: PASS\n"
+                if values.complete_aggregate
+                else b"fresh compiler: PASS\n"
+            )
+            if worker_result.returncode != 0:
+                raise RuntimeError(
+                    f"fresh {worker_phase} failed:\n"
+                    + worker_result.stdout.decode("utf-8", "replace")
+                    + worker_result.stderr.decode("utf-8", "replace")
                 )
-                if worker_result.returncode != 0:
-                    raise RuntimeError(
-                        "fresh worker aggregate failed:\n"
-                        + worker_result.stdout.decode("utf-8", "replace")
-                        + worker_result.stderr.decode("utf-8", "replace")
-                    )
-                if (
-                    worker_result.stdout != b"fresh compiler and capable checks: PASS\n"
-                    or worker_result.stderr
-                ):
-                    raise RuntimeError("fresh worker aggregate output is not canonical")
+            if worker_result.stdout != expected_worker_output or worker_result.stderr:
+                raise RuntimeError(f"fresh {worker_phase} output is not canonical")
         finally:
             phases.finish("fail" if sys.exc_info()[0] is not None else "pass")
             phases.enter("cleanup")

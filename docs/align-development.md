@@ -112,7 +112,8 @@ baseline verification in a deterministic order. It is complete for that declared
 every focused qualification script in the repository, and is not routine pull-request evidence.
 Select it only when an aggregate-only owner changes or an explicit audit requests it. Routine
 publication runs `make hosted-checks` once and the two native installed profiles without the
-complete aggregate; every required GitHub job has a 15-minute wall-clock ceiling. A focused target
+complete aggregate; each native profile still runs the worker's compiler-only `build` boundary.
+Every required GitHub job has a 15-minute wall-clock ceiling. A focused target
 is diagnostic evidence for that surface, not evidence that either aggregate completed.
 
 Resource-limit, race, security, fuzz, stress, platform, mutation, and benchmark qualification run

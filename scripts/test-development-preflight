@@ -1493,9 +1493,10 @@ def test_qualification_modes() -> None:
     require(
         'parser.add_argument("--complete-aggregate", action="store_true")'
         in image_profile_source
-        and 'if values.complete_aggregate:\n                phases.enter("worker-aggregate")'
-        in image_profile_source,
-        "installed profile does not gate the complete aggregate on explicit input",
+        and 'worker_phase = "worker-aggregate" if values.complete_aggregate else "worker-build"'
+        in image_profile_source
+        and "complete_aggregate=values.complete_aggregate" in image_profile_source,
+        "installed profile does not retain build while gating the aggregate on explicit input",
     )
     image_profile.run = lambda *arguments, **keywords: SimpleNamespace(returncode=1)
 
@@ -1754,6 +1755,33 @@ def test_image_profile_plan() -> None:
     revision = (REPOSITORY / ".align-revision").read_text(encoding="ascii").strip()
     calls: list[tuple[list[str], dict[str, object]]] = []
 
+    inner_environments: list[dict[str, str]] = []
+    original_subprocess_run = image_profile.subprocess.run
+
+    def capture_subprocess(*_arguments, **keywords):
+        inner_environments.append(dict(keywords["env"]))
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    with tempfile.TemporaryDirectory(prefix="inner-docker-config-", dir="/tmp") as directory:
+        prior_config = os.environ.get("DOCKER_CONFIG")
+        os.environ["DOCKER_CONFIG"] = directory
+        image_profile.subprocess.run = capture_subprocess
+        try:
+            image_profile.run(["docker", "info"])
+            image_profile.run(["git", "status"])
+        finally:
+            image_profile.subprocess.run = original_subprocess_run
+            if prior_config is None:
+                os.environ.pop("DOCKER_CONFIG", None)
+            else:
+                os.environ["DOCKER_CONFIG"] = prior_config
+    require(
+        len(inner_environments) == 2
+        and inner_environments[0].get("DOCKER_CONFIG") == directory
+        and "DOCKER_CONFIG" not in inner_environments[1],
+        "private Docker config did not reach only the inner Docker CLI",
+    )
+
     def capture(arguments: list[str], **keywords: object) -> SimpleNamespace:
         calls.append((arguments, keywords))
         if "config" in arguments:
@@ -1808,6 +1836,36 @@ def test_image_profile_plan() -> None:
             "ordinary-adoption-boundary",
         ],
         "cgroupfs boundary does not reconstruct the exact environment",
+    )
+
+    calls.clear()
+    image_profile.worker_profile_run(
+        "image",
+        "profile-volume",
+        "runtime-volume",
+        "source-volume",
+        "cgroupfs",
+        complete_aggregate=False,
+    )
+    worker_build = calls[-1][0]
+    require(
+        worker_build[-3:] == ["image", "--mode", "build"]
+        and image_profile.AGGREGATE_DIAGNOSTIC_VARIABLE not in " ".join(worker_build),
+        "routine installed profile does not retain only the worker build boundary",
+    )
+    calls.clear()
+    image_profile.worker_profile_run(
+        "image",
+        "profile-volume",
+        "runtime-volume",
+        "source-volume",
+        "cgroupfs",
+        complete_aggregate=True,
+    )
+    worker_audit = calls[-1][0]
+    require(
+        worker_audit[-4:] == ["image", "make", "--no-print-directory", "ci"],
+        "explicit complete audit did not select the worker aggregate",
     )
 
     dockerfile = (REPOSITORY / "image/fresh/Dockerfile").read_text(encoding="utf-8")
