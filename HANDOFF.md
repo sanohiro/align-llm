@@ -3,7 +3,34 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: REQUIRED-CI-UNDER-15 (2026-09-02)
+## Active: ALIGN-LATEST-PREREQUISITE (2026-09-02)
+
+Branch `agent/align-latest-prerequisite`, based on merged `main`
+`edc5c132225f567c7810f8809819d18b3d4ec45d` (REQUIRED-CI-UNDER-15 PR #165). The user requested
+that the Align prerequisite advance after that merge. The candidate moves `.align-revision` from
+`27770420555d19b98eced133369c168e9c6d4a2f` to the current merged Align `origin/main`,
+`b6f95a261e1434d705d7de006484ffa66b1542f0`. The new identity is 45 commits ahead and includes
+Align v0.6.0 plus the later merged `pkg.kv` timeout and SIGPIPE runtime repairs.
+
+No align-llm request is waiting in `ALIGN_MERGED`, so this adoption changes no request lifecycle
+state and consumes no proposed language or library surface. Its consumer boundary is compatibility
+of the existing complete Align source graph with the newer compiler. `make check` owns that graph;
+managed toolchain materialization and verification own the exact compiler/runtime identity. The pin
+alone does not select `make ci`, a native installed profile, or an unrelated qualification.
+
+**Latest durable verification.** The managed release compiler/runtime materialized successfully
+with Align's LLVM-aware Cargo wrapper. `scripts/align-toolchain verify` passed in 0.127 seconds at
+the exact new identity, and `make check` checked all 40 units per-unit in 2m00.91s.
+
+**Next actions.** (1) Commit the coherent adoption and perform one comprehensive review. (2) Run
+exact-HEAD pin preflight, publish, merge after required checks, pull current `main`, and continue
+the next eligible roadmap capability.
+
+**Blocker.** None.
+
+**Intentional uncommitted files.** None; local configuration remains outside the change.
+
+## Merged checkpoint: REQUIRED-CI-UNDER-15 (PR #165, 2026-09-02)
 
 Branch `agent/ci-under-15`, based on merged `main` `29b54757c837fdfc610e413acd297d253644e292`
 (R7-RUNTIME-PROVIDER PR #164). The user-set operating target is roughly 15 minutes for each
@@ -138,9 +165,11 @@ the explicit aggregate's new `fresh-v2-published-elf-smoke` inventory row. The t
 qualification owners, output-summary suite, qualification inventory, and `format-check` pass. The
 repair delta changes no product or aggregate execution behavior; no review finding remains open.
 
-**Next actions.** (1) Run exact-head fresh-image publication preflight. (2) Publish with all review
-envelopes, inspect all three GitHub checks for distinct value and duration, merge, pull current
-`main`, and continue the next eligible capability.
+PR #165 merged as `edc5c132225f567c7810f8809819d18b3d4ec45d`. Its exact final head
+`2f0a8ac6decd900d44496d90696c029e70a4d258` passed the required hosted check in 12m26s, the
+x86_64 installed profile in 12m28s, and the aarch64 installed profile in 13m37s. Each remained
+inside the configured 15-minute timeout and approximate operating target without duplicate common
+aggregate execution.
 
 **Blocker.** None.
 

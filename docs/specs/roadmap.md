@@ -1238,7 +1238,8 @@ The current forward delivery order is:
     all three required checks passed at `cf76641`; the merge commit preserves the full baseline
     chain.
 
-44. **REQUIRED-CI-UNDER-15 — remove duplicate complete-graph execution from every PR. Active.**
+44. **REQUIRED-CI-UNDER-15 — remove duplicate complete-graph execution from every PR. Merged in
+    PR #165.**
     PR #164 measured the pinned hosted check at 12m19s, native x86_64 installed evidence at 43m22s,
     and native aarch64 installed evidence at 46m57s. The aarch64 profile spent 37m14s rerunning the
     complete common capable graph after the hosted job already owned common functional behavior;
