@@ -109,6 +109,10 @@ def bytes_sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def command_output_sha256(result: subprocess.CompletedProcess[bytes]) -> str:
+    return bytes_sha256(result.stdout + result.stderr)
+
+
 def sanitized_environment() -> dict[str, str]:
     return {
         name: value
@@ -488,6 +492,9 @@ def self_test() -> int:
         raise DecisionError("balanced pair schedule drifted")
     if extract_patch(KNOWN_GOOD_PATCH) != KNOWN_GOOD_PATCH:
         raise DecisionError("fixed patch extractor drifted")
+    digest_fixture = subprocess.CompletedProcess([], 0, stdout=b"out", stderr=b"err")
+    if command_output_sha256(digest_fixture) != bytes_sha256(b"outerr"):
+        raise DecisionError("command identity digest drifted")
     try:
         extract_patch("explanation\n" + KNOWN_GOOD_PATCH)
     except DecisionError:
@@ -621,7 +628,7 @@ def main() -> int:
         c_compiler_version = run_checked(
             [c_compiler, "--version"], deadline=deadline, maximum=30, env=clean_env
         )
-        c_compiler_version_sha256 = bytes_sha256(c_compiler.stdout + c_compiler.stderr)
+        c_compiler_version_sha256 = command_output_sha256(c_compiler_version)
         ggml_libraries = library_identities(library)
         version = run_checked(
             [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env
