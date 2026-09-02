@@ -3,7 +3,30 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-RESET-CACHE-DECISION (2026-09-02)
+## Active: R8-PARTIAL-LRU-CACHE (2026-09-02)
+
+Branch `agent/r8-partial-lru-cache`, based on pulled merged `main`
+`d3b04b08d44bafa1afa28438e2229333e14810ec` (R8-RESET-CACHE-DECISION PR #167). The sibling Align
+checkout was fast-forwarded after the merge and now exactly matches `.align-revision` at
+`b6f95a261e1434d705d7de006484ffa66b1542f0`; no pin adoption is needed.
+
+The active capability implements the measured 975,175,680-byte LRU policy in the existing real
+`--moe-decode-step` consumer. Its authoritative contract, public CLI/schema ledger, closure matrix,
+byte shipping floor, memory bound, and approximately-15-minute focused qualification ceiling are
+in `docs/specs/r8-partial-lru-cache.md`. It combines dense residency with an invocation-local expert
+cache, preserves the claim-window/graph boundary, and makes no elapsed or provider-level
+time-to-passing-patch claim.
+
+**Next actions.** (1) Commit the design checkpoint. (2) Implement cache staging and schema-3
+evidence with synthetic owner coverage. (3) Run the narrow owner and one bounded paired real
+qualification. (4) Review, repair, publish, and merge.
+
+**Blocker.** None.
+
+**Intentional uncommitted files.** The design checkpoint files above until committed. Local
+configuration remains outside the change.
+
+## Merged checkpoint: R8-RESET-CACHE-DECISION (PR #167, 2026-09-02)
 
 Branch `agent/r8-reset-cache-decision`, based on merged `main`
 `c1338f1cf95d99255bcbb62c2b60d39522394411` (R8-SCORE-BASED-CACHE PR #166). PR #166 passed its
