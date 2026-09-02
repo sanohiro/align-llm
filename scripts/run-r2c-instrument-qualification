@@ -218,6 +218,8 @@ def parse_trace(transcript: Path, destination: Path) -> dict[str, object]:
         raise QualificationError(
             f"parser refused transcript: {document.get('error_code')} {document.get('error_detail')}"
         )
+    if document.get("kind") != "R2_ACTIVATION_TRACE" or document.get("schema_version") != 2:
+        raise QualificationError("parser did not emit R2_ACTIVATION_TRACE schema 2")
     return document
 
 
@@ -264,8 +266,11 @@ def assert_moe(document: dict[str, object]) -> tuple[int, int, int, int]:
     for row in selections:
         key = (row.get("graph"), row.get("layer"), row.get("token"))
         slot = row.get("slot")
+        weight = row.get("router_weight_ten_thousandths")
         if not all(isinstance(value, int) for value in (*key, slot)):
             raise QualificationError("patched MoE trace contains a non-integer selection key")
+        if not isinstance(weight, int) or isinstance(weight, bool) or not 0 <= weight <= 10000:
+            raise QualificationError("patched MoE trace contains an invalid selected router weight")
         groups.setdefault(key, set()).add(slot)
         tokens_by_layer.setdefault((key[0], key[1]), set()).add(key[2])
     expected_slots = set(range(used))

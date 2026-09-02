@@ -20,15 +20,27 @@ with selected router weights and let the residency simulator evaluate one fixed 
 policy. [`docs/specs/r8-score-cache.md`](docs/specs/r8-score-cache.md) owns the public-contract
 ledger, closure matrix, cost ceilings, and exact exclusions.
 
+The implementation candidate now extends the managed instrument to print full
+`ffn_moe_weights`, emits one exact selected weight in every `R2_ACTIVATION_TRACE` schema-2
+selection, and evaluates `router_weight_lfu` as the eleventh `R3_RESIDENCY_SIM` schema-2 policy.
+The independent oracle, golden, compact/full pairing errors, old-schema refusal, and a scripted
+weighted-LFU/count-LFU discriminator are included.
+
 **Latest durable verification.** The managed release compiler/runtime materialized successfully
 with Align's LLVM-aware Cargo wrapper. `scripts/align-toolchain verify` passed in 0.127 seconds at
-the exact new identity, and `make check` checked all 40 units per-unit in 2m00.91s.
+the exact new identity, and `make check` checked all 40 units per-unit in 2m00.91s. On the stable
+R8 candidate: `scripts/run-expert-trace-smoke` passed 116 fixtures in 13.15s;
+`scripts/run-residency-sim-smoke` passed 31 traces and every policy/budget/order in 3.19s;
+`scripts/run-r2c-instrument-smoke` passed 55 groups in 2.63s. The first uncached compiled
+instrument qualification passed in 4m52.38s, then the cached real OLMoE qualification passed three
+graphs and 384 full-width weighted selections in 5.09s. Independent real OLMoE expert-trace parity
+passed 488 weighted selections in 24.03s. Shell, Python, embedded-Python syntax, and
+`git diff --check` pass.
 
-**Next actions.** (1) Finish and author-check the R8 ledger, then implement the instrument,
-`R2_ACTIVATION_TRACE` schema 2, and the eleven-policy simulator. (2) Run only the three narrow
-owners and the input-dependent compiled instrument qualification, perform one comprehensive review,
-and consolidate accepted repairs. (3) Run exact-HEAD publication preflight, publish, merge after
-required checks, pull current `main`, and continue the next eligible roadmap capability.
+**Next actions.** (1) Commit the coherent R8 implementation candidate and perform one comprehensive
+review of the full diff. (2) Validate findings, consolidate any accepted repair, and rerun only its
+affected owner. (3) Run exact-HEAD publication preflight, publish, merge after required checks,
+pull current `main`, and continue the next eligible roadmap capability.
 
 **Blocker.** None.
 

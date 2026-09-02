@@ -22,8 +22,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 TOOL_PATH = ROOT / "scripts" / "llama-eval-callback-toolchain"
 EXPECTED_REVISION = "bb4caa7540188872173c44d161602d9271386413"
-EXPECTED_PATCH_SHA256 = "fcab7ca9b6bbdc760da19e075a2c66d670d4737d7f7f07074676ec67dbd7d0ab"
-EXPECTED_PATCH_BYTES = 2170
+EXPECTED_PATCH_SHA256 = "32fb1eb9dd6a24d2e9a503c8b30bc3a65a8ed4c4866179296e25bbe31afc502a"
+EXPECTED_PATCH_BYTES = 2610
 EXPECTED_PATHS = (
     "common/debug.cpp",
     "examples/eval-callback/eval-callback.cpp",
@@ -95,6 +95,8 @@ def patch_contract() -> None:
         raise SmokeFailure(f"wrong patch paths {paths!r}")
     required = (
         'static constexpr char moe_topk_prefix[] = "ffn_moe_topk";',
+        'static constexpr char moe_weights_prefix[] = "ffn_moe_weights";',
+        "if (!is_moe_topk && !is_moe_weights)",
         "return 3;",
         "return *std::max_element(t->ne, t->ne + GGML_MAX_DIMS);",
         '#include "sampling.h"',
@@ -160,7 +162,7 @@ def cache_contract() -> None:
         raise SmokeFailure(f"wrong explicit root {explicit}")
     if xdg != Path("/xdg/align-llm/llama.cpp/r2c-v2"):
         raise SmokeFailure(f"wrong XDG root {xdg}")
-    if home != Path("/home/test/.cache/align-llm/llama.cpp/r2c-v2"):
+    if home != Path("/home/test/.cache/align-llm/llama.cpp/r2c-v2").resolve():
         raise SmokeFailure(f"wrong HOME root {home}")
     entry = tool.entry_path(explicit, EXPECTED_REVISION, EXPECTED_PATCH_SHA256)
     if tool.selected_path(entry, "source") != entry / "source":
@@ -661,13 +663,13 @@ def parse_trace_statuses() -> None:
     rejected as a process failure; every other nonzero status still is one.
     """
     document = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "R2_ACTIVATION_TRACE",
         "status": "error",
         "error_code": "R2_ROW_COUNT",
         "error_detail": "ffn_moe_topk-0",
     }
-    accepted = {"schema_version": 1, "kind": "R2_ACTIVATION_TRACE", "status": "ok",
+    accepted = {"schema_version": 2, "kind": "R2_ACTIVATION_TRACE", "status": "ok",
                 "error_code": "", "error_detail": ""}
 
     def make_product(path: Path, payload: dict[str, object], status: int, message: str) -> None:
@@ -723,7 +725,8 @@ def moe_full_axis_threshold() -> None:
             "moe": {"present": True, "n_expert_used": used, "slots_truncated": False},
             "graphs": [{"phase": "decode", "tokens_truncated": False}],
             "selections": [
-                {"graph": 0, "layer": 0, "token": token, "slot": slot}
+                {"graph": 0, "layer": 0, "token": token, "slot": slot,
+                 "router_weight_ten_thousandths": 5000}
                 for token in range(tokens)
                 for slot in range(used)
             ],

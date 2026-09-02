@@ -99,7 +99,10 @@ main --simulate-residency TRACE_LIST MODEL_IR.json BUDGET_BYTES OUT.json
 
 Every admitted trace must be `R2_ACTIVATION_TRACE` schema 2 and every selection must contain the
 bounded integer weight above. Schema 1 is refused as `R3_TRACE_SCHEMA`; there is no synthesized
-default score. The simulator output has `schema_version: 2`, reports
+default score. A decoded integer outside `[0, 10000]` is refused as `R3_ROUTER_WEIGHT_RANGE` with
+the one-based trace-list ordinal as detail, after trace shape validation and before expert/block
+range validation. A missing or non-integer member is a structural `R3_TRACE_DECODE` failure. The
+simulator output has `schema_version: 2`, reports
 `inputs.trace_schema_version: 2`, and advances `verdict.rule_version` to `2` because the fixed
 candidate set changes from ten to eleven policies.
 
@@ -120,6 +123,14 @@ array `(observation_order << 14) | weight`; the existing unique observation orde
 independent sort align exactly without a lookup. Layer-major uses the source-order weight column.
 Any count or order disagreement is an internal construction failure owned by the narrow smoke,
 not a recoverable document condition.
+
+At `MAX_DEMANDS`, each weight column is 2 MiB. The two pooled replay-order columns retain 4 MiB;
+while one trace is transferred into them, its sorted token-major and source-order columns add at
+most another 4 MiB, for an 8 MiB incremental peak owned by `simulate`. The sweep grows from at most
+`2 * 9 * 10 = 180` to `2 * 9 * 11 = 198` ordinary replays; the existing jackknife algorithm and
+`R3_SIMULATION_COST` per-replay guard are unchanged. The focused owner measured 3.19 seconds on the
+development host, below its predeclared five-minute diagnostic ceiling; no performance claim is
+made from that observation.
 
 All existing result-row fields remain unchanged. The policy's value is visible through its ordinary
 hits, misses, `bytes_fetched`, per-layer rows, sweep result, and verdict participation; no bespoke
@@ -163,7 +174,7 @@ policy must establish its own hardware baseline and R8 gate evidence.
 | Success, full | both router families full, unrelated tensors compact | every slot/token gets its paired weight | weighted-LFU differs from LFU on scripted stream | full-weight and `score-discriminates-lfu` |
 | Dense | no router family required | schema 2, empty selections | trace admitted only when stream remains valid under existing rules | dense producer cases |
 | Token-reduced tail | pair retains reduced shape | validate and omit both ids and weights | omitted accounting unchanged | reduced-tail pair |
-| Malformed value | N/A | first bad fixed decimal is `R2_ROUTER_WEIGHT_VALUE` | malformed JSON/type/range fails closed | weight value mutations |
+| Malformed value | N/A | first bad fixed decimal is `R2_ROUTER_WEIGHT_VALUE` | missing/type is `R3_TRACE_DECODE`; range is `R3_ROUTER_WEIGHT_RANGE` | weight value mutations |
 | Missing/duplicate/order/shape | N/A | `R2_ROUTER_WEIGHT_MISMATCH` at line order or graph close | no partial successful stream | pairing mutations |
 | Unsupported old schema | N/A | always emits schema 2 | schema 1 is `R3_TRACE_SCHEMA` | future/old schema cases |
 | Early exit / cleanup | partial cache entry never admitted | truthful error prefix, owned arrays released | truthful error document, owned arrays released | existing CLI/error owners plus new malformed cases |
@@ -177,8 +188,17 @@ generic public API, or ABI record.
 
 ## 4. Final mapping and completion
 
-Before review, map every applicable ledger and matrix row to the final diff and passing command in
-this section. Completion requires:
+The stable implementation candidate maps the ledger and closure matrix as follows:
+
+| Contract / closure cells | Final diff | Passing evidence |
+| --- | --- | --- |
+| Align prerequisite identity | `.align-revision`, toolchain/request/roadmap handoff updates | `scripts/align-toolchain verify` (0.127 s); `make check` (40 units, 2m00.91s) |
+| Instrument identity, full pair, cache, refusal, compiled behavior | `patches/llama.cpp/r2c-decode-instrument.patch`, toolchain, smoke, qualification, R2c contract | `scripts/run-r2c-instrument-smoke` (55 groups, 2.63 s); uncached compiled qualification (4m52.38s); cached real OLMoE qualification (3 graphs, 384 weighted selections, 5.09 s) |
+| Producer construction, compact/full/dense/reduced/malformed/error cleanup | `src/expert_trace.align`, fixture generator, smoke and parity owners | `scripts/run-expert-trace-smoke` (116 fixtures, 19 codes, 13.15 s); real OLMoE `scripts/run-expert-trace-parity` (488 weighted selections, 24.03 s) |
+| Stream construction, old-schema refusal, weighted eviction, both orders, verdict | `src/residency_sim.align`, independent oracle, golden, simulator/gate runners | `scripts/run-residency-sim-smoke` (31 traces, every policy/budget/order, 3.19 s), including `score-discriminates-lfu`, weight decode/range, duplicate-order, and schema-1 refusal cases |
+| Current public documentation and compatibility | this contract, R2A/R2c/R3 supersession notes, `docs/align-development.md` | `git diff --check`; shell syntax, Python module syntax, and embedded-Python AST checks |
+
+Completion requires:
 
 1. the exact Align pin materializes and `make check` passes once for the coherent adoption;
 2. all three narrow local owners pass within their diagnostic ceilings;

@@ -6,6 +6,12 @@ Status: plan of record for the Track B R3 capability named by `docs/specs/roadma
 `src/residency_sim.align` owner module, the demand-stream derivation from `R2_ACTIVATION_TRACE`, the
 policy set, the budget sweep, and the verdict rule that answers the roadmap gate numerically.
 
+R8-SCORE-BASED-CACHE (`docs/specs/r8-score-cache.md`) supersedes only the current trace input,
+policy-set, and exchanged-document versions: the simulator now consumes R2 schema 2, emits R3
+schema 2 with verdict rule 2, and inserts `router_weight_lfu` after `lfu`. The schema-1 contract and
+evidence below remain the historical base for every unchanged field, replay, validation rule, and
+CLI behavior.
+
 `docs/specs/roadmap.md` remains authoritative for delivery order and for the R3 gate itself.
 `docs/specs/align-llm.md` remains authoritative for the architecture this simulation serves —
 section 6's VRAM / DRAM / NVMe tiers, section 7.1's prefill/decode split, section 7.4's score-based

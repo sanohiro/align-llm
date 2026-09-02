@@ -54,6 +54,8 @@ MAX_BYTE_TOTAL := 9223372036854775
 // word is a positive `i64` and the reordering is the shipped comparator-free `array<i64>` sort.
 KEY_BITS := 17
 KEY_MASK := 131071
+WEIGHT_BITS := 14
+WEIGHT_MASK := 16383
 MAX_GRAPHS := 4096
 MAX_TOKENS := 262144
 MAX_LAYERS := 256
@@ -63,13 +65,13 @@ LAYER_SLOT_BITS := 15
 
 // Section 2.8. The effect floor, in per mille, stated before any measurement.
 MARGIN := 50
-RULE_VERSION := 1
+RULE_VERSION := 2
 
 // The trace list holds at most `MAX_TRACE_PATHS` = 4096 lines, so a 13-bit ordinal rides below a
 // 49-bit line hash and the packed duplicate-scan word stays positive.
 LINE_HASH_MASK := 562949953421311
 
-POLICY_COUNT := 10
+POLICY_COUNT := 11
 ORDER_COUNT := 2
 RESULT_FIELDS := 7
 SWEEP_POINTS := 8
@@ -80,8 +82,9 @@ POLICY_COMPULSORY := 1
 POLICY_BELADY := 2
 POLICY_LRU := 3
 POLICY_LFU := 4
-POLICY_RECENT := 5
-POLICY_TOPK := 6
+POLICY_WEIGHTED := 5
+POLICY_RECENT := 6
+POLICY_TOPK := 7
 
 // ---------------------------------------------------------------------------------------------
 // Decode records. Only the members R3 consumes are declared (rule 2).
@@ -103,7 +106,14 @@ IrDocument {
 // `n_tokens` and `ordinal`, both of which are declared here (section 6, correction 1).
 TraceGraphRow { ordinal: i64, n_tokens: Option<i64>, tokens_truncated: bool }
 
-TraceSelectionRow { graph: i64, layer: i64, token: i64, slot: i64, expert: i64 }
+TraceSelectionRow {
+  graph: i64,
+  layer: i64,
+  token: i64,
+  slot: i64,
+  expert: i64,
+  router_weight_ten_thousandths: i64,
+}
 
 TraceMoeSection { present: bool, n_expert: Option<i64>, n_expert_used: Option<i64> }
 
@@ -188,8 +198,10 @@ TraceLoad {
   phase_decode: i64,
   phase_single: i64,
   words: array<i64>,
+  weight_words: array<i64>,
   observation_key: array<i64>,
   observation_ident: array<i64>,
+  observation_weight: array<i64>,
   slot_mask: array<i64>,
 }
 
@@ -284,29 +296,31 @@ fn policy_name(index: i64) -> str {
   if index == 2 { return "belady" }
   if index == 3 { return "lru" }
   if index == 4 { return "lfu" }
-  if index == 5 { return "recent_reuse_w2" }
-  if index == 6 { return "recent_reuse_w8" }
-  if index == 7 { return "recent_reuse_w32" }
-  if index == 8 { return "topk_prefetch_k1" }
+  if index == 5 { return "router_weight_lfu" }
+  if index == 6 { return "recent_reuse_w2" }
+  if index == 7 { return "recent_reuse_w8" }
+  if index == 8 { return "recent_reuse_w32" }
+  if index == 9 { return "topk_prefetch_k1" }
   return "topk_prefetch_k8"
 }
 
 fn policy_family(index: i64) -> i64 {
   if index <= 4 { return index }
-  if index <= 7 { return POLICY_RECENT }
+  if index == 5 { return POLICY_WEIGHTED }
+  if index <= 8 { return POLICY_RECENT }
   return POLICY_TOPK
 }
 
 fn policy_window(index: i64) -> i64 {
-  if index == 5 { return 2 }
-  if index == 6 { return 8 }
-  if index == 7 { return 32 }
+  if index == 6 { return 2 }
+  if index == 7 { return 8 }
+  if index == 8 { return 32 }
   return 0
 }
 
 fn policy_topk(index: i64) -> i64 {
-  if index == 8 { return 1 }
-  if index == 9 { return 8 }
+  if index == 9 { return 1 }
+  if index == 10 { return 8 }
   return 0
 }
 
@@ -496,8 +510,10 @@ fn empty_trace_load(code: string, detail: string, bytes_read: i64) -> TraceLoad 
   phase_decode: 0,
   phase_single: 0,
   words: filled_table(0, 0),
+  weight_words: filled_table(0, 0),
   observation_key: filled_table(0, 0),
   observation_ident: filled_table(0, 0),
+  observation_weight: filled_table(0, 0),
   slot_mask: filled_table(MAX_SLOTS, 0),
 }
 
@@ -524,7 +540,7 @@ fn trace_load(
     Err(_) => { return empty_trace_load("R3_TRACE_DECODE".clone(), detail, bytes_read) },
   }
   kind_view: str := document.kind
-  if kind_view != "R2_ACTIVATION_TRACE" || document.schema_version != 1 {
+  if kind_view != "R2_ACTIVATION_TRACE" || document.schema_version != 2 {
     return empty_trace_load("R3_TRACE_SCHEMA".clone(), detail, bytes_read)
   }
   status_view: str := document.status
@@ -575,8 +591,10 @@ fn trace_load(
     graph_at = graph_at + 1
   }
   mut words: array_builder<i64> := array_builder()
+  mut weight_words: array_builder<i64> := array_builder()
   mut observation_key: array_builder<i64> := array_builder()
   mut observation_ident: array_builder<i64> := array_builder()
+  mut observation_weight: array_builder<i64> := array_builder()
   mut at := 0
   loop {
     if at >= document.selections.len() { break }
@@ -585,6 +603,7 @@ fn trace_load(
     token := document.selections[at].token
     slot := document.selections[at].slot
     expert := document.selections[at].expert
+    weight := document.selections[at].router_weight_ten_thousandths
     // A graph ordinal that cannot ride the packed word, and a selection naming a graph the
     // document never declared, both fail closed. Dropping them silently would let a demand stream
     // shrink to the selections that happen to name a declared graph, which is the same silent
@@ -594,6 +613,9 @@ fn trace_load(
     }
     if truncated[graph] == 1 {
       return empty_trace_load("R3_SELECTION_UNPACKABLE".clone(), detail, bytes_read)
+    }
+    if weight < 0 || weight > 10000 {
+      return empty_trace_load("R3_ROUTER_WEIGHT_RANGE".clone(), detail, bytes_read)
     }
     if truncated[graph] == 0 {
       if layer < 0 || layer >= n_layer || expert < 0 || expert >= n_expert {
@@ -613,12 +635,28 @@ fn trace_load(
       ident := graph * MAX_TOKENS + token
       order := (ident * MAX_LAYERS + layer) * MAX_SLOTS + slot
       words.push((order << KEY_BITS) | key)
+      weight_words.push((order << WEIGHT_BITS) | weight)
       observation_key.push(key)
       observation_ident.push(ident)
+      observation_weight.push(weight)
     }
     at = at + 1
   }
   raw := words.build()
+  raw_weights := weight_words.build()
+  sorted_words := raw.sort()
+  sorted_weight_words := raw_weights.sort()
+  mut sorted_at := 0
+  mut previous_order := -1
+  loop {
+    if sorted_at >= sorted_words.len() { break }
+    order := sorted_words[sorted_at] >> KEY_BITS
+    if order == previous_order || order != sorted_weight_words[sorted_at] >> WEIGHT_BITS {
+      return empty_trace_load("R3_SELECTION_UNPACKABLE".clone(), detail, bytes_read)
+    }
+    previous_order = order
+    sorted_at = sorted_at + 1
+  }
   // The decoded document owns `run.build_source`; moving the field out of it would leave the
   // record's drop to free a string this result also owns, so the view is cloned.
   source_view: str := document.run.build_source
@@ -636,9 +674,11 @@ fn trace_load(
     phase_prefill: phase_prefill,
     phase_decode: phase_decode,
     phase_single: phase_single,
-    words: raw.sort(),
+    words: sorted_words,
+    weight_words: sorted_weight_words,
     observation_key: observation_key.build(),
     observation_ident: observation_ident.build(),
+    observation_weight: observation_weight.build(),
     slot_mask: slot_mask,
   }
 }
@@ -660,6 +700,7 @@ fn trace_load(
 fn replay(
   borrow keys: array<i64>,
   borrow toks: array<i64>,
+  borrow weights: array<i64>,
   borrow sizes: array<i64>,
   demand_count: i64,
   drop_lo: i64,
@@ -678,6 +719,7 @@ fn replay(
   mut resident_list := filled_table(key_space, 0)
   mut last_use := filled_table(key_space, -1)
   mut freq := filled_table(key_space, 0)
+  mut router_score := filled_table(key_space, 0)
   mut recent_count := filled_table(key_space, 0)
   mut next_of := filled_table(key_space, demand_count + 1)
   mut prefetched := filled_table(key_space, 0)
@@ -866,6 +908,8 @@ fn replay(
               entry := resident_list[scan]
               primary := if family == POLICY_LFU {
                 freq[entry]
+              } else if family == POLICY_WEIGHTED {
+                router_score[entry]
               } else if family == POLICY_RECENT {
                 recent_count[entry]
               } else if family == POLICY_BELADY {
@@ -908,6 +952,7 @@ fn replay(
         }
       }
       freq[key] = freq[key] + 1
+      router_score[key] = router_score[key] + weights[index]
       last_use[key] = ordinal
       if family == POLICY_RECENT { recent_count[key] = recent_count[key] + 1 }
       if family == POLICY_BELADY { next_of[key] = next_use[index] }
@@ -1205,7 +1250,7 @@ fn render_document(borrow d: Derived) -> string {
   list_view: str := d.list_path
   ir_view: str := d.ir_path
   document := builder()
-  document.write("{\"schema_version\":1,\"kind\":\"R3_RESIDENCY_SIM\",\"trace_list_path\":")
+  document.write("{\"schema_version\":2,\"kind\":\"R3_RESIDENCY_SIM\",\"trace_list_path\":")
   document.write(json_string(list_view))
   document.write(",\"model_ir_path\":")
   document.write(json_string(ir_view))
@@ -1543,16 +1588,20 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
   // Steps 8 and 9. Every trace, in list order.
   mut token_key := filled_table(0, 0)
   mut token_tok := filled_table(0, 0)
+  mut token_weight := filled_table(0, 0)
   mut layer_key := filled_table(0, 0)
   mut layer_tok := filled_table(0, 0)
+  mut layer_weight := filled_table(0, 0)
   mut doc_start := filled_table(0, 0)
   mut doc_end := filled_table(0, 0)
   if code.len() == 0 {
     list_view: str := list_text
     mut token_key_b: array_builder<i64> := array_builder()
     mut token_tok_b: array_builder<i64> := array_builder()
+    mut token_weight_b: array_builder<i64> := array_builder()
     mut layer_key_b: array_builder<i64> := array_builder()
     mut layer_tok_b: array_builder<i64> := array_builder()
+    mut layer_weight_b: array_builder<i64> := array_builder()
     mut doc_start_b: array_builder<i64> := array_builder()
     mut doc_end_b: array_builder<i64> := array_builder()
     mut build_column: array_builder<i64> := array_builder()
@@ -1574,7 +1623,7 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
         detail = load_detail.clone()
         break
       }
-      trace_schema = 1
+      trace_schema = 2
       admitted = admitted + 1
       mut slot := 0
       loop {
@@ -1619,6 +1668,7 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
         }
         token_key_b.push(word & KEY_MASK)
         token_tok_b.push(token_ordinal - 1)
+        token_weight_b.push(load.weight_words[scan] & WEIGHT_MASK)
         written = written + 1
         scan = scan + 1
       }
@@ -1640,14 +1690,17 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
         }
         layer_key_b.push(load.observation_key[scan])
         layer_tok_b.push(layer_ordinal - 1)
+        layer_weight_b.push(load.observation_weight[scan])
         scan = scan + 1
       }
       at = at + 1
     }
     token_key = token_key_b.build()
     token_tok = token_tok_b.build()
+    token_weight = token_weight_b.build()
     layer_key = layer_key_b.build()
     layer_tok = layer_tok_b.build()
+    layer_weight = layer_weight_b.build()
     doc_start = doc_start_b.build()
     doc_end = doc_end_b.build()
     raw_builds := build_column.build()
@@ -1767,10 +1820,12 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
         loop {
           if policy >= POLICY_COUNT { break }
           answer := if order == 0 {
-            replay(token_key, token_tok, sizes, demand_count, -1, -1, budget_bytes[budget_at],
+            replay(token_key, token_tok, token_weight, sizes, demand_count, -1, -1,
+              budget_bytes[budget_at],
               policy, n_layer, n_expert, key_space)
           } else {
-            replay(layer_key, layer_tok, sizes, layer_key.len(), -1, -1, budget_bytes[budget_at],
+            replay(layer_key, layer_tok, layer_weight, sizes, layer_key.len(), -1, -1,
+              budget_bytes[budget_at],
               policy, n_layer, n_expert, key_space)
           }
           base := ((order * budget_count + budget_at) * POLICY_COUNT + policy) * RESULT_FIELDS
@@ -1847,10 +1902,11 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
         mut fold := 0
         loop {
           if fold >= folds { break }
-          fold_base := replay(token_key, token_tok, sizes, demand_count, doc_start[fold],
+          fold_base := replay(token_key, token_tok, token_weight, sizes, demand_count, doc_start[fold],
             doc_end[fold], budget_bytes[requested_index], POLICY_LRU, meta[0], meta[1], meta[8])
           fold_baseline := fold_base.totals[2]
-          fold_candidate := replay(token_key, token_tok, sizes, demand_count, doc_start[fold],
+          fold_candidate := replay(token_key, token_tok, token_weight, sizes, demand_count,
+            doc_start[fold],
             doc_end[fold], budget_bytes[requested_index], best, meta[0], meta[1], meta[8])
           fold_gain := if fold_baseline > 0 {
             (fold_baseline - fold_candidate.totals[2]) * 1000 / fold_baseline

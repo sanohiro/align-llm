@@ -13,9 +13,9 @@ set -euo pipefail
 # worse than no qualification, so a missing input prints one exact N/A line and exits 0 without
 # claiming a pass.
 #
-# On this host only a dense model exists, so `moe.present` is false and every locality aggregate is
-# `null`. That half of the R2 gate is a recorded N/A (section 4.5) and never a pass: the parser is
-# correct and the measurement does not exist yet.
+# A dense input exercises the empty-selection branch and a MoE input exercises selected identities,
+# weights, and locality. One invocation owns exactly the branch named by its model and reports the
+# other branch as N/A.
 
 unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE
 export PYTHONDONTWRITEBYTECODE=1
@@ -137,6 +137,7 @@ HEADER = re.compile(
 ROW = re.compile(r"^            \[(?P<body>.*)  \],$")
 SUFFIX = re.compile(r"^(?P<family>.+)-(?P<layer>\d+)$")
 ELEMENT = re.compile(r"^(?P<whole>\d+)\.(?P<fraction>0+)$")
+WEIGHT_ELEMENT = re.compile(r"^(?P<whole>[01])\.(?P<fraction>\d{4})$")
 
 
 def printed_indices(ne):
@@ -151,6 +152,7 @@ def parse(path):
     ops = set()
     graphs = []
     selections = []
+    weights = []
     reduced_layers = set()
     callback_lines = 0
     skipped = 0
@@ -160,6 +162,8 @@ def parse(path):
                "tokens_observed": None, "tokens_truncated": None}
     block = None
     row_position = 0
+    pending_weight_layer = None
+    pending_weight_reduced = False
     n_layer = -1
     topk_present = False
     slots_truncated = None
@@ -194,18 +198,26 @@ def parse(path):
                 if name == "embd":
                     current["n_tokens"] = ne[1]
                 topk = bool(suffix) and suffix.group("family") == "ffn_moe_topk"
+                weight = bool(suffix) and suffix.group("family") == "ffn_moe_weights"
                 topk_present = topk_present or topk
                 # Build 10566 applies the output-token `GET_ROWS` reduction *before* the last
                 # layer's feed-forward, so that layer's `ffn_moe_topk` carries a shorter token axis
                 # than the graph and the leaf naming the retained tokens is never printed. Such a
                 # block yields no selection: its token indices are not recoverable and a fabricated
                 # one would corrupt every adjacency.
-                reduced = bool(topk and current["n_tokens"] is not None
-                               and ne[1] < current["n_tokens"])
-                if reduced:
+                reduced = bool(
+                    (topk and current["n_tokens"] is not None
+                     and ne[1] < current["n_tokens"])
+                    or (weight and layer == pending_weight_layer and pending_weight_reduced)
+                )
+                if topk and reduced:
                     reduced_layers.add(layer)
+                if topk:
+                    pending_weight_layer = layer
+                    pending_weight_reduced = reduced
                 block = {"name": name, "ne": ne, "layer": layer, "topk": topk,
-                         "reduced": reduced, "token_marked": False, "graph": current}
+                         "weight": weight, "reduced": reduced, "axis1_marked": False,
+                         "axis2_marked": False, "graph": current}
                 row_position = 0
                 continue
             if block is None:
@@ -215,7 +227,7 @@ def parse(path):
             if row:
                 if block["topk"]:
                     token = (printed_indices(block["ne"][1])[row_position]
-                             if block["token_marked"] else row_position)
+                             if block["axis1_marked"] else row_position)
                     raw_pieces = row.group("body").split(", ")
                     slot_marked = "   ..." in raw_pieces
                     slots = (printed_indices(block["ne"][0]) if slot_marked
@@ -239,11 +251,27 @@ def parse(path):
                             slots_truncated = slot_marked
                         elif slots_truncated != slot_marked:
                             fail("independent parse: mixed full and compact slot axes")
+                elif block["weight"]:
+                    pieces = [piece for piece in row.group("body").split(", ")
+                              if piece != "   ..."]
+                    if len(pieces) != 1:
+                        fail("independent parse: %s row has %d weight elements, expected 1"
+                             % (block["name"], len(pieces)))
+                    element = WEIGHT_ELEMENT.match(pieces[0].strip())
+                    if not element:
+                        fail("independent parse: %s weight %r is not an exact fixed decimal"
+                             % (block["name"], pieces[0]))
+                    value = int(element.group("whole")) * 10000 + int(element.group("fraction"))
+                    if value > 10000:
+                        fail("independent parse: %s weight %r exceeds one"
+                             % (block["name"], pieces[0]))
+                    if not block["reduced"]:
+                        weights.append(value)
                 row_position += 1
                 continue
             if line.startswith("    sum = "):
                 if block["topk"]:
-                    expected_rows = (TRUNCATION_PRINTED if block["token_marked"]
+                    expected_rows = (TRUNCATION_PRINTED if block["axis1_marked"]
                                      else block["ne"][1])
                     if row_position != expected_rows:
                         fail("independent parse: %s has %d rows, expected %d"
@@ -252,14 +280,25 @@ def parse(path):
                         graph = block["graph"]
                         if graph["tokens_observed"] is None:
                             graph["tokens_observed"] = row_position
-                            graph["tokens_truncated"] = block["token_marked"]
+                            graph["tokens_truncated"] = block["axis1_marked"]
                         elif (graph["tokens_observed"] != row_position
-                              or graph["tokens_truncated"] != block["token_marked"]):
+                              or graph["tokens_truncated"] != block["axis1_marked"]):
                             fail("independent parse: mixed full and compact token axes")
+                elif block["weight"]:
+                    axis1 = (TRUNCATION_PRINTED if block["axis1_marked"] else block["ne"][1])
+                    axis2 = (TRUNCATION_PRINTED if block["axis2_marked"] else block["ne"][2])
+                    if row_position != axis1 * axis2:
+                        fail("independent parse: %s has %d weights, expected %d"
+                             % (block["name"], row_position, axis1 * axis2))
+                    pending_weight_layer = None
+                    pending_weight_reduced = False
                 block = None
                 continue
             if line == "            ..., ":
-                block["token_marked"] = True
+                block["axis1_marked"] = True
+                continue
+            if line == "        ..., ":
+                block["axis2_marked"] = True
                 continue
             if line in ("    [", "    ]", "        [", "        ],", "        ..., ",
                         ):
@@ -267,6 +306,11 @@ def parse(path):
             fail("independent parse: unrecognized line inside a block: %r" % line)
     if current["nodes"]:
         graphs.append(current)
+    if len(weights) != len(selections):
+        fail("independent parse: %d selections have %d paired weights"
+             % (len(selections), len(weights)))
+    for selection, weight in zip(selections, weights):
+        selection["router_weight_ten_thousandths"] = weight
     return {"families": sorted(families), "plains": sorted(plains), "ops": sorted(ops),
             "graphs": graphs, "selections": selections, "callback_lines": callback_lines,
             "skipped": skipped, "line_count": line_count, "n_layer": n_layer,
@@ -279,7 +323,7 @@ reference = parse(transcript)
 if document["status"] != "ok":
     fail("the derivation reported %r (%r/%r)"
          % (document["status"], document["error_code"], document["error_detail"]))
-if document["schema_version"] != 1 or document["kind"] != "R2_ACTIVATION_TRACE":
+if document["schema_version"] != 2 or document["kind"] != "R2_ACTIVATION_TRACE":
     fail("schema %r kind %r" % (document["schema_version"], document["kind"]))
 
 rows = [
@@ -407,7 +451,7 @@ if moe:
     print("expert trace parity (MoE): PASS")
 else:
     print("expert trace parity (dense): PASS")
-    print("expert trace parity (MoE): N/A - no MoE GGUF on this host; see section 4.5.")
+    print("expert trace parity (MoE): N/A - the selected GGUF is dense")
 PY
 
 printf '%s\n' "expert trace parity: model size and mtime unchanged (read-only proof)"

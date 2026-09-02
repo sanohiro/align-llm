@@ -95,6 +95,7 @@ VERSION_BUILD := "(build "
 
 // The MoE node families of section 2.2 finding 4 that R2A keys on.
 FAMILY_TOPK := "ffn_moe_topk"
+FAMILY_WEIGHTS := "ffn_moe_weights"
 FAMILY_PROBS := "ffn_moe_probs"
 FAMILY_LOGITS := "ffn_moe_logits"
 FAMILY_GATE := "ffn_gate"
@@ -245,6 +246,7 @@ pub TranscriptScan {
   sel_token: array<i64>,
   sel_slot: array<i64>,
   sel_expert: array<i64>,
+  sel_weight: array<i64>,
   sel_key: array<i64>,
 
   topk_layers: array<i64>,
@@ -393,6 +395,26 @@ fn parse_integral_element(text: str) -> i64 {
     at = at + 1
   }
   return whole
+}
+
+// R8-SCORE-BASED-CACHE records the exact four decimal places printed for one selected router
+// weight. The integer result is ten-thousandths; `-1` means malformed or outside [0, 1]. No float
+// parse or rounding occurs here.
+fn parse_router_weight(text: str) -> i64 {
+  trimmed := text.trim()
+  point := match trimmed.find(".") {
+    Some(value) => value,
+    None => { return -1 },
+  }
+  whole_text := trimmed[0..point]
+  if whole_text.len() != 1 { return -1 }
+  whole := parse_uint(whole_text)
+  if whole < 0 || whole > 1 { return -1 }
+  fraction := trimmed[point + 1..trimmed.len()]
+  if fraction.len() != 4 { return -1 }
+  digits := parse_uint(fraction)
+  if digits < 0 || (whole == 1 && digits != 0) { return -1 }
+  return whole * 10000 + digits
 }
 
 // Exactly four non-negative integers separated by `, `, with no representable product overflow.
@@ -900,6 +922,7 @@ fn empty_scan(code: str, detail: string, file_size: i64, bytes_read: i64) -> Tra
     sel_token: filled_table(0, 0),
     sel_slot: filled_table(0, 0),
     sel_expert: filled_table(0, 0),
+    sel_weight: filled_table(0, 0),
     sel_key: filled_table(0, 0),
     topk_layers: filled_table(0, 0),
     token_reduced_layers: filled_table(0, 0),
@@ -997,8 +1020,20 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
   mut sel_token_column: array_builder<i64> := array_builder()
   mut sel_slot_column: array_builder<i64> := array_builder()
   mut sel_expert_column: array_builder<i64> := array_builder()
+  mut sel_weight_column: array_builder<i64> := array_builder()
   mut sel_key_column: array_builder<i64> := array_builder()
   mut selection_count := 0
+  mut weight_count := 0
+  // A selected-weight block immediately follows its top-k block in the instrument graph. Keeping
+  // that pair pending makes pairing linear and lets shape plus print-form equality prove that both
+  // traversals enumerate the same `(token, slot)` sequence.
+  mut pending_weight_layer := -1
+  mut pending_weight_slots := -1
+  mut pending_weight_tokens := -1
+  mut pending_weight_reduced := false
+  mut pending_slot_form := -1
+  mut pending_token_form := -1
+  mut pending_weight_name := "".clone()
   mut topk_layer_column: array_builder<i64> := array_builder()
   mut reduced_layer_column: array_builder<i64> := array_builder()
 
@@ -1018,6 +1053,8 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
   mut block_a2_marked := false
   mut block_a1_marked := false
   mut block_is_topk := false
+  mut block_is_weight := false
+  mut block_is_router := false
   mut block_is_reduced := false
   mut block_layer := -1
   mut block_name := "".clone()
@@ -1079,6 +1116,19 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
             failure = fault("R2_ROW_COUNT", block_name.clone())
             break
           }
+          if block_is_weight {
+            if weight_count != selection_count {
+              failure = fault("R2_ROUTER_WEIGHT_MISMATCH", block_name.clone())
+              break
+            }
+            pending_weight_layer = -1
+            pending_weight_slots = -1
+            pending_weight_tokens = -1
+            pending_weight_reduced = false
+            pending_slot_form = -1
+            pending_token_form = -1
+            pending_weight_name = "".clone()
+          }
           in_block = false
         } else {
           failure = fault("R2_VALUE_GRAMMAR", int_text(line.offset))
@@ -1086,7 +1136,7 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
         }
       } else if block_state == BLOCK_GROUP {
         if text == A2_OPEN {
-          if block_slices >= axis_capacity(block_ne2, block_a2_marked, block_is_topk) {
+          if block_slices >= axis_capacity(block_ne2, block_a2_marked, block_is_router) {
             failure = fault("R2_ROW_COUNT", block_name.clone())
             break
           }
@@ -1101,7 +1151,7 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
           }
           block_a2_marked = true
         } else if text == A3_CLOSE {
-          if !axis_complete(block_slices, block_ne2, block_a2_marked, block_is_topk) {
+          if !axis_complete(block_slices, block_ne2, block_a2_marked, block_is_router) {
             failure = fault("R2_ROW_COUNT", block_name.clone())
             break
           }
@@ -1114,6 +1164,13 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
               break
             }
           }
+          if block_is_weight {
+            token_form := if block_a2_marked { 1 } else { 0 }
+            if token_form != pending_token_form {
+              failure = fault("R2_ROUTER_WEIGHT_MISMATCH", block_name.clone())
+              break
+            }
+          }
           block_state = BLOCK_OUTER
         } else {
           failure = fault("R2_VALUE_GRAMMAR", int_text(line.offset))
@@ -1121,18 +1178,28 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
         }
       } else {
         if text == A2_CLOSE {
-          if !axis_complete(block_rows, block_ne1, block_a1_marked, block_is_topk) {
+          if !axis_complete(block_rows, block_ne1, block_a1_marked, block_is_router) {
             failure = fault("R2_ROW_COUNT", block_name.clone())
             break
           }
-          if block_is_topk && !block_is_reduced {
+          if block_is_topk {
             token_form := if block_a1_marked { 1 } else { 0 }
-            if graph_tokens_observed < 0 {
-              graph_tokens_observed = block_rows
-              graph_tokens_truncated = token_form
-            } else if graph_tokens_observed != block_rows
-              || graph_tokens_truncated != token_form {
-              failure = fault("R2_ROW_COUNT", block_name.clone())
+            pending_token_form = token_form
+            if !block_is_reduced {
+              if graph_tokens_observed < 0 {
+                graph_tokens_observed = block_rows
+                graph_tokens_truncated = token_form
+              } else if graph_tokens_observed != block_rows
+                || graph_tokens_truncated != token_form {
+                failure = fault("R2_ROW_COUNT", block_name.clone())
+                break
+              }
+            }
+          }
+          if block_is_weight {
+            slot_form := if block_a1_marked { 1 } else { 0 }
+            if slot_form != pending_slot_form {
+              failure = fault("R2_ROUTER_WEIGHT_MISMATCH", block_name.clone())
               break
             }
           }
@@ -1146,7 +1213,7 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
         } else if text.len() >= ROW_OPEN.len() + ROW_CLOSE.len()
           && text.starts_with(ROW_OPEN)
           && text.ends_with(ROW_CLOSE) {
-          if block_rows >= axis_capacity(block_ne1, block_a1_marked, block_is_topk) {
+          if block_rows >= axis_capacity(block_ne1, block_a1_marked, block_is_router) {
             failure = fault("R2_ROW_COUNT", block_name.clone())
             break
           }
@@ -1174,7 +1241,7 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
               }
               marked = true
             } else {
-              if elements >= axis_capacity(block_ne0, marked, block_is_topk) {
+              if elements >= axis_capacity(block_ne0, marked, block_is_router) {
                 failure = fault("R2_ROW_COUNT", block_name.clone())
                 row_failed = true
                 break
@@ -1212,13 +1279,24 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
                       | (token << TOKEN_SHIFT) | (expert << EXPERT_SHIFT) | slot)
                   selection_count = selection_count + 1
                 }
+              } else if block_is_weight {
+                weight := parse_router_weight(piece)
+                if weight < 0 {
+                  failure = fault("R2_ROUTER_WEIGHT_VALUE", block_name.clone())
+                  row_failed = true
+                  break
+                }
+                if !block_is_reduced {
+                  sel_weight_column.push(weight)
+                  weight_count = weight_count + 1
+                }
               }
             }
             if cut < 0 { break }
             at = at + cut + 2
           }
           if row_failed { break }
-          if !axis_complete(elements, block_ne0, marked, block_is_topk) {
+          if !axis_complete(elements, block_ne0, marked, block_is_router) {
             failure = fault("R2_ROW_COUNT", block_name.clone())
             break
           }
@@ -1228,6 +1306,15 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
               slots_print_form = row_form
               slots_truncated = marked
             } else if slots_print_form != row_form {
+              failure = fault("R2_ROW_COUNT", block_name.clone())
+              break
+            }
+          }
+          if block_is_topk {
+            row_form := if marked { 1 } else { 0 }
+            if pending_slot_form < 0 {
+              pending_slot_form = row_form
+            } else if pending_slot_form != row_form {
               failure = fault("R2_ROW_COUNT", block_name.clone())
               break
             }
@@ -1380,11 +1467,29 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
       mut tokens_claim := -1
       if family_len < 0 && name == NODE_EMBD { tokens_claim = header.ne.d1 }
       mut is_topk := false
+      mut is_weight := false
       mut is_reduced := false
+      if family_len >= 0 && family == FAMILY_WEIGHTS { is_weight = true }
+      if pending_weight_layer >= 0 {
+        if !is_weight || layer != pending_weight_layer {
+          failure = fault("R2_ROUTER_WEIGHT_MISMATCH", pending_weight_name.clone())
+          break
+        }
+      } else if is_weight {
+        failure = fault("R2_ROUTER_WEIGHT_MISMATCH", bounded_detail(name))
+        break
+      }
       if family_len >= 0 {
         if family == FAMILY_TOPK {
           is_topk = true
           tokens_claim = header.ne.d1
+        } else if family == FAMILY_WEIGHTS {
+          if header.ne.d0 != 1 || header.ne.d1 != pending_weight_slots
+            || header.ne.d2 != pending_weight_tokens || header.ne.d3 != 1 {
+            failure = fault("R2_ROUTER_WEIGHT_MISMATCH", bounded_detail(name))
+            break
+          }
+          is_reduced = pending_weight_reduced
         } else if family == FAMILY_PROBS {
           if probs_experts < 0 {
             probs_experts = header.ne.d0
@@ -1436,6 +1541,13 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
           break
         }
         topk_present = true
+        pending_weight_layer = layer
+        pending_weight_slots = header.ne.d0
+        pending_weight_tokens = header.ne.d1
+        pending_weight_reduced = is_reduced
+        pending_slot_form = -1
+        pending_token_form = -1
+        pending_weight_name = bounded_detail(name)
         if is_reduced {
           // Two token-reduced layers in one graph cannot both be its highest, so the second one
           // refutes the exemption for both.
@@ -1462,6 +1574,8 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
       block_a2_marked = false
       block_a1_marked = false
       block_is_topk = is_topk
+      block_is_weight = is_weight
+      block_is_router = is_topk || is_weight
       block_is_reduced = is_reduced
       block_layer = layer
       block_name = bounded_detail(name)
@@ -1502,6 +1616,9 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
   if failure.code.len() == 0 && in_block {
     failure = fault("R2_SUM_MISSING", block_name.clone())
   }
+  if failure.code.len() == 0 && pending_weight_layer >= 0 {
+    failure = fault("R2_ROUTER_WEIGHT_MISMATCH", pending_weight_name.clone())
+  }
   if graph_nodes > 0 {
     // A graph that carries neither `embd` nor an `ffn_moe_topk` supplies no token axis. That is
     // reported as `n_tokens: null` and `phase: null` rather than refused: nothing is fabricated,
@@ -1541,7 +1658,13 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
   selections_token := sel_token_column.build()
   selections_slot := sel_slot_column.build()
   selections_expert := sel_expert_column.build()
+  selections_weight := sel_weight_column.build()
   selections_key := sel_key_column.build()
+
+  // A malformed top-k or weight block may fail after recording only one side of a pair. Error
+  // documents expose the longest fully paired prefix so rendering remains total and every emitted
+  // selection still satisfies the schema-2 weight invariant.
+  paired_selection_count := if failure.code.len() == 0 { selection_count } else { weight_count }
 
   // Step 10, completed: `n_expert` may be discovered after a `ffn_moe_topk` block in a transcript
   // whose node order differs from this build's, so every recorded id is re-checked against the
@@ -1605,12 +1728,13 @@ fn scan(path: str) -> Result<TranscriptScan, Error> {
       graph_tokens_observed: graph_tokens_observed_column.build(),
       graph_tokens_truncated: graph_tokens_truncated_column.build(),
       graph_nodes: graph_nodes_column.build(),
-      selection_count: selection_count,
+      selection_count: paired_selection_count,
       sel_graph: selections_graph,
       sel_layer: selections_layer,
       sel_token: selections_token,
       sel_slot: selections_slot,
       sel_expert: selections_expert,
+      sel_weight: selections_weight,
       sel_key: selections_key,
       topk_layers: raw_topk.sort(),
       token_reduced_layers: raw_reduced.sort(),
@@ -1887,6 +2011,8 @@ pub fn build(borrow t: TranscriptScan, path: str) -> ExpertTrace {
     selections_body.write_int(t.sel_slot[selection_at])
     selections_body.write(",\"expert\":")
     selections_body.write_int(t.sel_expert[selection_at])
+    selections_body.write(",\"router_weight_ten_thousandths\":")
+    selections_body.write_int(t.sel_weight[selection_at])
     selections_body.write("}")
     selection_at = selection_at + 1
   }
@@ -2158,7 +2284,7 @@ pub fn build(borrow t: TranscriptScan, path: str) -> ExpertTrace {
   ops_list_view: str := ops_json
 
   document := builder()
-  document.write("{\"schema_version\":1,\"kind\":\"R2_ACTIVATION_TRACE\",\"path\":")
+  document.write("{\"schema_version\":2,\"kind\":\"R2_ACTIVATION_TRACE\",\"path\":")
   document.write(json_string(path))
   document.write(",\"status\":")
   document.write(json_string(if failed { "error" } else { "ok" }))

@@ -802,7 +802,8 @@ build 10566), used as a measurement device rather than adopted as a runtime depe
 ```
 
 consumes a `llama-eval-callback` transcript and produces an `R2_ACTIVATION_TRACE`
-(`schema_version: 1`) document with per-(token, layer) expert ids and locality aggregates; a dense
+(`schema_version: 2`) document with per-(token, layer) expert ids, exact selected router weights,
+and locality aggregates; a dense
 (non-MoE) transcript yields `moe: false`. Both operands are validated lexically against
 `MAX_PATH_BYTES` (4096) and rejected for a NUL byte before any file work, so an unusable destination
 never costs a transcript scan.
@@ -864,8 +865,9 @@ R2c's authoritative external-dependency contract is
 `docs/specs/r2c-decode-instrument.md`. `.llama-revision` pins llama.cpp commit
 `bb4caa7540188872173c44d161602d9271386413`, and
 `patches/llama.cpp/r2c-decode-instrument.patch` is the reviewed two-file diff. It changes the
-measurement example only: `ffn_moe_topk` axes print in full, and a positive `-n N` evaluates up to N
-sampled non-EOG tokens as one-token decode graphs. No llama.cpp source or binary is committed.
+measurement example only: `ffn_moe_topk` and `ffn_moe_weights` axes print in full, and a positive
+`-n N` evaluates up to N sampled non-EOG tokens as one-token decode graphs. No llama.cpp source or
+binary is committed.
 
 The managed builder writes outside the work tree and binds its cache entry to both full source
 identities:
@@ -893,9 +895,10 @@ selects one CMake command, and `CMAKE_BUILD_PARALLEL_LEVEL` controls build sched
 relative, whitespace-containing, or semantically drifted inputs fail; no ambient llama.cpp checkout
 or binary is selected.
 
-The schema-1 parser now selects compact versus full axes from the actual ellipsis. Existing
-build-10566 compact transcripts retain first/last-three indices and byte-identical documents; an
-R2c router axis reports every slot/token and false truncation flags. The deterministic owners are:
+The schema-2 parser selects compact versus full axes from the actual ellipsis and pairs each
+selected identity with its exact four-decimal router weight. Existing build-10566 compact print
+forms retain first/last-three indices; an R2c router pair reports every slot/token and false
+truncation flags. The deterministic owners are:
 
 ```sh
 scripts/run-r2c-instrument-smoke
@@ -917,9 +920,10 @@ ALIGN_LLM_GGUF_MODEL=/path/to/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf \
 
 The first command must pass the dense half, proving omitted, zero, and negative `-n` each retain
 one prefill graph while `-n 2` adds two decode graphs, and prints exact N/A for the optional MoE
-half. The second additionally requires `moe.present: true`, at least one decode graph, no slot/token
-truncation, every observed routing group to contain all `n_expert_used` slots, and at least one
-retained router axis extent above six so the changed full-axis branch is actually exercised. Any
+half. The second additionally requires `moe.present: true`, schema-2 selected weights, at least one
+decode graph, no slot/token truncation, every observed routing group to contain all
+`n_expert_used` slots, and at least one retained router axis extent above six so the changed
+full-axis branch is actually exercised. Any
 selected model/instrument failure is a hard failure, transcripts are bounded to 256 MiB and removed,
 and no latency or locality claim is made.
 
@@ -1121,7 +1125,8 @@ profile for a runner that cannot execute in CI anyway.
 R3-RESIDENCY-SIM's authoritative plan is `docs/specs/r3-residency-sim.md`, which owns the contract
 ledger, the policy set, the exchanged document, the validation order, the closure matrix, the
 correction ledger, and the probe record. It replays the demand stream implied by a set of
-`R2_ACTIVATION_TRACE` documents against ten expert-residency cache policies at a nine-point budget
+`R2_ACTIVATION_TRACE` schema-2 documents against eleven expert-residency cache policies at a
+nine-point budget
 sweep, and answers the roadmap section R3 gate question — is any policy materially better than the
 baseline on this hardware condition — with a measured verdict rather than an opinion. It needs no
 model, no instrument, and no GPU: its inputs are two documents this repository already produces.
@@ -1137,7 +1142,8 @@ The CLI arm has the same two forms every other document verb has:
 `R1_MODEL_IR` document, from which only the `ExpertBlock` rows and their `byte_size` are read;
 `BUDGET_BYTES` is the requested residency budget in bytes, parsed by the module's own decimal parser
 rather than through a `json.decode` detour. The three-operand form prints the whole
-`R3_RESIDENCY_SIM` (`schema_version: 1`) document and nothing else, and the four-operand form writes
+`R3_RESIDENCY_SIM` (`schema_version: 2`, verdict rule 2) document and nothing else, and the
+four-operand form writes
 it to `RESIDENCY.json` and prints the stable human summary block instead; both forms produce a
 byte-identical document, which the owner asserts on every case. All four operands are validated
 lexically against `MAX_PATH_BYTES` (4096) and rejected for a NUL byte before any file work, so an

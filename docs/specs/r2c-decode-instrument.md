@@ -21,13 +21,15 @@ both limitations:
   qualification owns a real compiled instrument and the R2A parser boundary.
 
 The patch is an align-llm measurement instrument, not a forked runtime and not an upstream API
-promise. No llama.cpp source or generated binary is committed. R2A's
-`R2_ACTIVATION_TRACE` schema remains version 1: graph segmentation, the three-valued phase rule,
-selection rows, and truncation fields already describe the additional observations. The R2A prose
-said a patched transcript needed no parser change, but its implementation enforced exactly six
-values whenever an axis exceeded six and derived both truncation flags from extent alone. R2c
-corrects that contradiction as part of the same consumer boundary; otherwise the shipped patch
-would produce a transcript the shipped client rejects.
+promise. No llama.cpp source or generated binary is committed. R2c originally left R2A's
+`R2_ACTIVATION_TRACE` at schema 1 because graph segmentation, the three-valued phase rule,
+selection identities, and truncation fields already described the additional observations.
+R8-SCORE-BASED-CACHE advances that document to schema 2 and adds the selected router weight to each
+row; this instrument now exposes both router families in full for that consumer. The R2A prose said
+a patched transcript needed no parser change, but its implementation enforced exactly six values
+whenever an axis exceeded six and derived both truncation flags from extent alone. R2c corrected
+that contradiction as part of the same consumer boundary; otherwise the shipped patch would
+produce a transcript the shipped client rejects.
 
 This capability does not yet claim decode locality, choose an R6 KV layout, add a runtime
 dependency to an Align module, capture a multilingual/task/repository corpus, or alter an existing
@@ -47,7 +49,7 @@ smoke, qualification, and documentation.
 | Upstream pin | `.llama-revision` is exactly one lowercase 40-hex SHA followed by LF. Its value is `bb4caa7540188872173c44d161602d9271386413` |
 | Patch | `patches/llama.cpp/r2c-decode-instrument.patch`, LF zero-context unified diff, applies with `git apply --unidiff-zero` to a clean checkout at the pin |
 | Patch scope | Exactly `common/debug.cpp` and `examples/eval-callback/eval-callback.cpp`; no third tracked path and no untracked source path is admitted |
-| Patch identity | SHA-256 `fcab7ca9b6bbdc760da19e075a2c66d670d4737d7f7f07074676ec67dbd7d0ab`, 2,170 bytes |
+| Patch identity | SHA-256 `32fb1eb9dd6a24d2e9a503c8b30bc3a65a8ed4c4866179296e25bbe31afc502a`, 2,610 bytes |
 | Cache generation | `r2c-v2`. A generation change is required for any incompatible cache layout, build recipe/flags, or verification rule; v2 adds the explicit Metal-off recipe and HEAD-relative tracked-source admission |
 | Effective cache identity | generation + full upstream SHA + full patch SHA-256. Two patches at one upstream commit cannot alias |
 | Instrument contract | llama.cpp build number 10566 and short commit `bb4caa7`; both are passed explicitly to CMake because a one-commit fetch cannot derive the historical build count |
@@ -61,10 +63,11 @@ unchanged ledger is a hard verification failure, not an implicit new build.
 The patch has exactly two semantic changes.
 
 1. `common_debug_cb_eval` retains the upstream print limit of three for every tensor except the
-   exact node family `ffn_moe_topk` (the name is either the family itself or the family followed by
-   `-`). For that family the limit is the largest tensor extent, so every axis is printed in full.
-   This admits all router slots and all prompt token positions without increasing unrelated tensor
-   output. Transcript size remains caller-owned and the qualifications retain file and time bounds.
+   exact node families `ffn_moe_topk` and `ffn_moe_weights` (the name is either the family itself or
+   the family followed by `-`). For those families the limit is the largest tensor extent, so every
+   axis is printed in full. This admits every router identity and its aligned selected weight without
+   increasing unrelated tensor output. Transcript size remains caller-owned and the qualifications
+   retain file and time bounds. R8-SCORE-BASED-CACHE owns the added weights consumer contract.
 2. After the original prompt `llama_decode`, a positive common `--predict` / `-n` value is the
    maximum number of additional one-token `llama_decode` calls. Each iteration samples from the
    current logits using the existing common sampling parameters, stops before decoding an EOG token,

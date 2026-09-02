@@ -14,7 +14,7 @@ import os
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 KIND = "R3_RESIDENCY_SIM"
 MARGIN = 50
 MAX_RESIDENCY_KEYS = 16384
@@ -40,6 +40,7 @@ POLICIES = (
     ("belady", 0),
     ("lru", 0),
     ("lfu", 0),
+    ("router_weight_lfu", 0),
     ("recent_reuse_w2", 2),
     ("recent_reuse_w8", 8),
     ("recent_reuse_w32", 32),
@@ -49,6 +50,7 @@ POLICIES = (
 POLICY_NAMES = [name for name, _ in POLICIES]
 CANDIDATES = [
     "lfu",
+    "router_weight_lfu",
     "recent_reuse_w2",
     "recent_reuse_w8",
     "recent_reuse_w32",
@@ -195,6 +197,7 @@ def build_stream(paths, sizes, state):
     token_major, layer_major = [], []
     bounds_tm, bounds_lm = [], []
     tok_tm, tok_lm = [], []
+    weight_tm, weight_lm = [], []
     next_tm, next_lm = 0, 0
     observed_slots = set()
     omitted_truncated = 0
@@ -211,7 +214,7 @@ def build_stream(paths, sizes, state):
             raise Fault("R3_TRACE_DECODE", detail)
         if not isinstance(doc, dict):
             raise Fault("R3_TRACE_DECODE", detail)
-        if doc.get("kind") != "R2_ACTIVATION_TRACE" or doc.get("schema_version") != 1:
+        if doc.get("kind") != "R2_ACTIVATION_TRACE" or doc.get("schema_version") != 2:
             raise Fault("R3_TRACE_SCHEMA", detail)
         if doc.get("status") != "ok":
             raise Fault("R3_TRACE_STATUS", detail)
@@ -236,13 +239,19 @@ def build_stream(paths, sizes, state):
                     graph_phases[phase] += 1
         rows = []
         observation = []
+        orders = set()
         for selection in doc.get("selections") or []:
             graph, layer, token = selection["graph"], selection["layer"], selection["token"]
             slot, expert = selection["slot"], selection["expert"]
+            weight = selection.get("router_weight_ten_thousandths")
+            if not isinstance(weight, int) or isinstance(weight, bool):
+                raise Fault("R3_TRACE_DECODE", detail)
             # A graph ordinal that cannot ride the packed word, and a selection naming a graph the
             # document never declared, both fail closed rather than shrinking the stream silently.
             if not (0 <= graph < MAX_GRAPHS) or graph not in truncated:
                 raise Fault("R3_SELECTION_UNPACKABLE", detail)
+            if not 0 <= weight <= 10000:
+                raise Fault("R3_ROUTER_WEIGHT_RANGE", detail)
             if truncated[graph]:
                 continue
             if not (0 <= layer < n_layer) or not (0 <= expert < n_expert):
@@ -257,8 +266,12 @@ def build_stream(paths, sizes, state):
             # exceed it is appended (section 6, correction 21).
             if len(token_major) + len(rows) >= MAX_DEMANDS:
                 raise Fault("R3_SELECTION_TOO_MANY", detail)
-            rows.append(((graph, token, layer, slot), (layer, expert)))
-            observation.append(((graph, token), (layer, expert)))
+            order = (graph, token, layer, slot)
+            if order in orders:
+                raise Fault("R3_SELECTION_UNPACKABLE", detail)
+            orders.add(order)
+            rows.append((order, (layer, expert), weight))
+            observation.append(((graph, token), (layer, expert), weight))
         run = doc.get("run") or {}
         if run.get("build") is not None:
             builds.add(run["build"])
@@ -271,25 +284,27 @@ def build_stream(paths, sizes, state):
             build_sources.add(source)
             state["instrument_build_source"] = "mixed"
         state["admitted"] = ordinal
-        state["trace_schema_version"] = 1
+        state["trace_schema_version"] = 2
         rows.sort(key=lambda row: row[0])
         start = len(token_major)
         previous = None
-        for (graph, token, _layer, _slot), key in rows:
+        for (graph, token, _layer, _slot), key, weight in rows:
             if (graph, token) != previous:
                 previous = (graph, token)
                 next_tm += 1
             token_major.append(key)
             tok_tm.append(next_tm - 1)
+            weight_tm.append(weight)
         bounds_tm.append((start, len(token_major)))
         start = len(layer_major)
         previous = None
-        for identity, key in observation:
+        for identity, key, weight in observation:
             if identity != previous:
                 previous = identity
                 next_lm += 1
             layer_major.append(key)
             tok_lm.append(next_lm - 1)
+            weight_lm.append(weight)
         bounds_lm.append((start, len(layer_major)))
     if not token_major:
         raise Fault("R3_EMPTY_STREAM", "")
@@ -328,8 +343,8 @@ def build_stream(paths, sizes, state):
         "graph_phases": graph_phases,
     }
     return {
-        "token_major": (token_major, tok_tm, bounds_tm),
-        "layer_major": (layer_major, tok_lm, bounds_lm),
+        "token_major": (token_major, tok_tm, weight_tm, bounds_tm),
+        "layer_major": (layer_major, tok_lm, weight_lm, bounds_lm),
     }
 
 
@@ -363,14 +378,14 @@ def build_budgets(state, requested):
     ]
 
 
-def replay(keys, toks, sizes, budget, policy, window, topk, n_layer, n_expert, drop=None):
+def replay(keys, toks, weights, sizes, budget, policy, window, topk, n_layer, n_expert, drop=None):
     """Section 2.4. `drop` is the half-open index range of the left-out document, or None."""
     lo, hi = drop if drop else (-1, -1)
     live = [i for i in range(len(keys)) if not (lo <= i < hi)]
     resident = {}
     used = 0
     hits = misses = fetched = prefetches = useful = high_water = 0
-    last, freq, recent, next_use = {}, {}, {}, {}
+    last, freq, router_score, recent, next_use = {}, {}, {}, {}, {}
     prefetched = set()
     per_layer = {}
     nxt = {}
@@ -392,6 +407,8 @@ def replay(keys, toks, sizes, budget, policy, window, topk, n_layer, n_expert, d
         for key in resident:
             if policy == "lfu":
                 primary = freq.get(key, 0)
+            elif policy == "router_weight_lfu":
+                primary = router_score.get(key, 0)
             elif policy.startswith("recent_reuse"):
                 primary = recent.get(key, 0)
             elif policy == "belady":
@@ -469,6 +486,7 @@ def replay(keys, toks, sizes, budget, policy, window, topk, n_layer, n_expert, d
             elif size <= budget:
                 admit(key, size)
         freq[key] = freq.get(key, 0) + 1
+        router_score[key] = router_score.get(key, 0) + weights[index]
         last[key] = position
         if policy.startswith("recent_reuse"):
             recent[key] = recent.get(key, 0) + 1
@@ -602,7 +620,7 @@ def empty_document(state, code, detail):
 
 def blank_verdict(requested):
     return {
-        "rule_version": 1,
+        "rule_version": 2,
         "order": "token_major",
         "budget_bytes": requested,
         "baseline_policy": "lru",
@@ -661,7 +679,7 @@ def sweep_entry(results, order, budget):
 
 def decide(state, streams, sizes, budgets, results, requested):
     model = state["model"]
-    keys, toks, bounds = streams["token_major"]
+    keys, toks, weights, bounds = streams["token_major"]
     lru = results[("token_major", requested, "lru")]["bytes_fetched"]
     optimal = results[("token_major", requested, "belady")]["bytes_fetched"]
     headroom = 1000 * (lru - optimal) // lru if lru else 0
@@ -678,11 +696,11 @@ def decide(state, streams, sizes, budgets, results, requested):
         gains = []
         for drop in bounds:
             fold_lru = replay(
-                keys, toks, sizes, requested, "lru", 0, 0,
+                keys, toks, weights, sizes, requested, "lru", 0, 0,
                 model["n_layer"], model["n_expert"], drop,
             )["bytes_fetched"]
             fold_best = replay(
-                keys, toks, sizes, requested, policy, window_of(policy), topk_of(policy),
+                keys, toks, weights, sizes, requested, policy, window_of(policy), topk_of(policy),
                 model["n_layer"], model["n_expert"], drop,
             )["bytes_fetched"]
             gains.append(truncating(fold_lru - fold_best, fold_lru))
@@ -706,7 +724,7 @@ def decide(state, streams, sizes, budgets, results, requested):
     else:
         result = "NO_POLICY_BEATS_BASELINE"
     return {
-        "rule_version": 1,
+        "rule_version": 2,
         "order": "token_major",
         "budget_bytes": requested,
         "baseline_policy": "lru",
@@ -786,11 +804,11 @@ def simulate(trace_list_path, model_ir_path, budget_text):
         budgets = build_budgets(state, requested)
         results = {}
         for order in ORDERS:
-            keys, toks, _bounds = streams[order]
+            keys, toks, weights, _bounds = streams[order]
             for entry in budgets:
                 for policy in POLICY_NAMES:
                     results[(order, entry["bytes"], policy)] = replay(
-                        keys, toks, sizes, entry["bytes"], policy,
+                        keys, toks, weights, sizes, entry["bytes"], policy,
                         window_of(policy), topk_of(policy),
                         model["n_layer"], model["n_expert"],
                     )

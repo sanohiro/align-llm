@@ -189,6 +189,14 @@ class Router:
             chosen.append(candidate)
         return chosen
 
+    def weight_ten_thousandths(self, graph, layer, token, slot):
+        expert = self.experts(graph, layer, token)[slot]
+        # A deterministic selected gating weight with exact four-decimal representation. It is
+        # deliberately not a function of frequency alone, so the score policy's fixture can
+        # distinguish routing mass from demand count.
+        return 1000 + ((self.seed * 101 + graph * 211 + layer * 307 + token * 401
+                        + slot * 503 + expert * 601) % 8001)
+
 
 def moe_graph(n_layer, n_tokens, router, graph_ordinal, embd=3584, probs=True, logits=True,
               reduced_tail=0, reduced_layer=None, full_topk=False):
@@ -226,6 +234,16 @@ def moe_graph(n_layer, n_tokens, router, graph_ordinal, embd=3584, probs=True, l
         blocks.append(Block("ffn_moe_topk-%d" % layer, "i32", "TOP_K",
                             ("ffn_moe_probs-%d" % layer, [n_expert, layer_tokens, 1, 1]), None,
                             [used, layer_tokens, 1, 1], value,
+                            full_axes=(0, 1, 2) if full_topk else ()))
+
+        def weight(i0, i1, i2, i3, layer=layer):
+            return router.weight_ten_thousandths(graph_ordinal, layer, i2, i1) / 10000.0
+
+        blocks.append(Block("ffn_moe_weights-%d" % layer, "f32", "GET_ROWS",
+                            ("ffn_moe_probs-%d (reshaped)" % layer,
+                             [1, n_expert, layer_tokens, 1]),
+                            ("ffn_moe_topk-%d" % layer, [used, layer_tokens, 1, 1]),
+                            [1, used, layer_tokens, 1], weight,
                             full_axes=(0, 1, 2) if full_topk else ()))
         blocks.append(Block("ffn_moe_out-%d" % layer, "f32", "ADD",
                             ("ffn_moe_topk-%d" % layer, [used, layer_tokens, 1, 1]),
@@ -276,12 +294,15 @@ def expected_selections(graphs):
     rows = []
     for ordinal, blocks in enumerate(graphs):
         _, reduced = token_axis(blocks)
+        weights = {family_of(block.name)[1]: block for block in blocks
+                   if family_of(block.name)[0] == "ffn_moe_weights"}
         for block in blocks:
             family, layer = family_of(block.name)
             if family != "ffn_moe_topk":
                 continue
             if layer in reduced:
                 continue
+            weight_block = weights[layer]
             ne0, ne1 = block.ne[0], block.ne[1]
             for row_position, i1 in enumerate(block.indices(1)):
                 for element_position, i0 in enumerate(block.indices(0)):
@@ -291,6 +312,8 @@ def expected_selections(graphs):
                         "token": i1,
                         "slot": i0,
                         "expert": int(round(block.value(i0, i1, 0, 0))),
+                        "router_weight_ten_thousandths":
+                            int(round(weight_block.value(0, i0, i1, 0) * 10000)),
                     })
     return rows
 
@@ -478,7 +501,7 @@ def expected_document(path, graphs, text, separator=""):
                     "ffn_moe_topk absent, no dense feed-forward family present"))
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "R2_ACTIVATION_TRACE",
         "path": path,
         "status": "ok",
@@ -549,6 +572,21 @@ def transform_first_topk_row(text, transform):
             lines[index] = ROW_OPEN + transform(body) + ROW_CLOSE + ending
             return "".join(lines)
     raise SystemExit("eval_callback_fixture: no top-k row to transform")
+
+
+def transform_first_weight_row(text, transform):
+    lines = text.splitlines(keepends=True)
+    in_weight = False
+    for index, raw in enumerate(lines):
+        line = raw.rstrip("\n")
+        if line.startswith("common_debug_cb_eval:"):
+            in_weight = "ffn_moe_weights-" in line
+        elif in_weight and line.startswith(ROW_OPEN) and line.endswith(ROW_CLOSE):
+            body = line[len(ROW_OPEN):-len(ROW_CLOSE)]
+            ending = "\n" if raw.endswith("\n") else ""
+            lines[index] = ROW_OPEN + transform(body) + ROW_CLOSE + ending
+            return "".join(lines)
+    raise SystemExit("eval_callback_fixture: no router-weight row to transform")
 
 
 def change_first_topk_token_row(text, duplicate):
@@ -695,12 +733,47 @@ def main():
                 # to the compact first/last three, so this case cannot be caught by their owners.
                 block.full_axes = frozenset((0, 1))
     emit(cases, root, "r2c-mixed-axis2-print-form", render([mixed_axis2_graph]),
-         expect="error", code="R2_ROW_COUNT")
+         expect="error", code="R2_ROUTER_WEIGHT_MISMATCH", detail="ffn_moe_weights-0")
     non_router_full = [[Block(
         "embd", "f32", "GET_ROWS", ("token_embd.weight", [8, 64, 1, 1]), None,
         [8, 1, 1, 1], full_axes=(0,))]]
     emit(cases, root, "r2c-non-router-full-axis", render(non_router_full),
          expect="error", code="R2_ROW_COUNT")
+
+    # R8 schema 2 pairs one exact four-decimal selected weight with every top-k identity. The
+    # producer refuses values, missing/duplicate blocks, shape drift, and a full/compact mismatch.
+    weight_graph = moe_graph(2, 8, Router(59, 64, 8), 0, full_topk=True)
+    weight_text = render([weight_graph])
+    emit(cases, root, "router-weight-value",
+         transform_first_weight_row(weight_text, lambda body: body.replace("0.", "1.", 1)),
+         expect="error", code="R2_ROUTER_WEIGHT_VALUE", detail="ffn_moe_weights-0")
+    emit(cases, root, "router-weight-negative",
+         transform_first_weight_row(weight_text, lambda body: body.replace("0.", "-0.", 1)),
+         expect="error", code="R2_ROUTER_WEIGHT_VALUE", detail="ffn_moe_weights-0")
+    emit(cases, root, "router-weight-leading-zero",
+         transform_first_weight_row(weight_text, lambda body: body.replace("0.", "00.", 1)),
+         expect="error", code="R2_ROUTER_WEIGHT_VALUE", detail="ffn_moe_weights-0")
+    emit(cases, root, "router-weight-five-fraction-digits",
+         transform_first_weight_row(weight_text, lambda body: body.replace(".", ".0", 1)),
+         expect="error", code="R2_ROUTER_WEIGHT_VALUE", detail="ffn_moe_weights-0")
+    missing_weight = [block for block in weight_graph if block.name != "ffn_moe_weights-0"]
+    emit(cases, root, "router-weight-missing", render([missing_weight]),
+         expect="error", code="R2_ROUTER_WEIGHT_MISMATCH", detail="ffn_moe_topk-0")
+    duplicate_weight = list(weight_graph)
+    weight_index = next(index for index, block in enumerate(duplicate_weight)
+                        if block.name == "ffn_moe_weights-0")
+    duplicate_weight.insert(weight_index + 1, duplicate_weight[weight_index])
+    emit(cases, root, "router-weight-duplicate", render([duplicate_weight]),
+         expect="error", code="R2_ROUTER_WEIGHT_MISMATCH", detail="ffn_moe_weights-0")
+    wrong_shape = moe_graph(1, 8, Router(61, 64, 8), 0, full_topk=True)
+    next(block for block in wrong_shape if block.name == "ffn_moe_weights-0").ne[0] = 2
+    emit(cases, root, "router-weight-shape", render([wrong_shape]),
+         expect="error", code="R2_ROUTER_WEIGHT_MISMATCH", detail="ffn_moe_weights-0")
+    mixed_weight_form = moe_graph(1, 8, Router(67, 64, 8), 0, full_topk=True)
+    next(block for block in mixed_weight_form if block.name == "ffn_moe_weights-0").full_axes = \
+        frozenset()
+    emit(cases, root, "router-weight-print-form", render([mixed_weight_form]),
+         expect="error", code="R2_ROUTER_WEIGHT_MISMATCH", detail="ffn_moe_weights-0")
 
     # Axis 2 and axis 3 exercised by a three- and four-axis tensor.
     axis_blocks = [
@@ -735,6 +808,10 @@ def main():
         sweep.append(Block("ffn_moe_topk-%d" % layer, "i32", "TOP_K",
                            ("ffn_moe_probs-%d" % layer, [256, 6, 1, 1]), None, [6, 6, 1, 1],
                            (lambda i0, i1, i2, i3, layer=layer: float((layer * 36 + i1 * 6 + i0) % 256))))
+        sweep.append(Block("ffn_moe_weights-%d" % layer, "f32", "GET_ROWS",
+                           ("ffn_moe_probs-%d (reshaped)" % layer, [1, 256, 6, 1]),
+                           ("ffn_moe_topk-%d" % layer, [6, 6, 1, 1]), [1, 6, 6, 1],
+                           (lambda i0, i1, i2, i3: (1000 + i1 * 100 + i2) / 10000.0)))
     positive(cases, root, "expert-id-format", [sweep])
 
     # A transcript with no callback line at all: every loop join terminates on a zero count.
@@ -946,8 +1023,14 @@ def main():
               ("inp_tokens", [2, 1, 1, 1]), [8, 2, 1, 1]),
         Block("ffn_moe_topk-0", "i32", "TOP_K", ("ffn_moe_probs-0", [8, 2, 1, 1]), None,
               [2, 2, 1, 1]),
+        Block("ffn_moe_weights-0", "f32", "GET_ROWS",
+              ("ffn_moe_probs-0 (reshaped)", [1, 8, 2, 1]),
+              ("ffn_moe_topk-0", [2, 2, 1, 1]), [1, 2, 2, 1]),
         Block("ffn_moe_topk-1", "i32", "TOP_K", ("ffn_moe_probs-1", [8, 2, 1, 1]), None,
               [3, 2, 1, 1]),
+        Block("ffn_moe_weights-1", "f32", "GET_ROWS",
+              ("ffn_moe_probs-1 (reshaped)", [1, 8, 2, 1]),
+              ("ffn_moe_topk-1", [3, 2, 1, 1]), [1, 3, 2, 1]),
     ]
     emit(cases, root, "moe-inconsistent-layers", render([inconsistent]), expect="error",
          code="R2_MOE_INCONSISTENT", detail="ffn_moe_topk-1")
@@ -956,12 +1039,18 @@ def main():
               ("inp_tokens", [2, 1, 1, 1]), [8, 2, 1, 1]),
         Block("ffn_moe_topk-0", "i32", "TOP_K", ("ffn_moe_probs-0", [8, 2, 1, 1]), None,
               [2, 2, 1, 1]),
+        Block("ffn_moe_weights-0", "f32", "GET_ROWS",
+              ("ffn_moe_probs-0 (reshaped)", [1, 8, 2, 1]),
+              ("ffn_moe_topk-0", [2, 2, 1, 1]), [1, 2, 2, 1]),
     ]
     graph_b = [
         Block("embd", "f32", "GET_ROWS", ("token_embd.weight", [8, 8, 1, 1]),
               ("inp_tokens", [2, 1, 1, 1]), [8, 2, 1, 1]),
         Block("ffn_moe_topk-0", "i32", "TOP_K", ("ffn_moe_probs-0", [8, 2, 1, 1]), None,
               [4, 2, 1, 1]),
+        Block("ffn_moe_weights-0", "f32", "GET_ROWS",
+              ("ffn_moe_probs-0 (reshaped)", [1, 8, 2, 1]),
+              ("ffn_moe_topk-0", [4, 2, 1, 1]), [1, 4, 2, 1]),
     ]
     emit(cases, root, "moe-inconsistent-graphs", render([graph_a, graph_b]), expect="error",
          code="R2_MOE_INCONSISTENT", detail="ffn_moe_topk-0")
@@ -1074,6 +1163,9 @@ def main():
                                 ("ffn_moe_probs-%d" % layer, [64, 6, 1, 1]), None, [6, 6, 1, 1],
                                 (lambda i0, i1, i2, i3, layer=layer, ordinal=ordinal:
                                  float(selection_router.experts(ordinal, layer, i1)[i0]))))
+            blocks.append(Block("ffn_moe_weights-%d" % layer, "f32", "GET_ROWS",
+                                ("ffn_moe_probs-%d (reshaped)" % layer, [1, 64, 6, 1]),
+                                ("ffn_moe_topk-%d" % layer, [6, 6, 1, 1]), [1, 6, 6, 1]))
         selection_graphs.append(blocks)
     emit(cases, root, "selection-limit", render(selection_graphs), expect="error",
          code="R2_SELECTION_LIMIT", detail=str(MAX_SELECTIONS))

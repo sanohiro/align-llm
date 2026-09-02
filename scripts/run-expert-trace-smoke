@@ -58,7 +58,7 @@ binary, fixture_dir, work_dir, root_dir = (
 manifest = json.loads((fixture_dir / "manifest.json").read_text(encoding="utf-8"))
 WINDOW_BYTES = manifest["window_bytes"]
 WINDOWS = manifest["windows"]
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 TOP_ORDER = ["schema_version", "kind", "path", "status", "error_code", "error_detail",
              "source", "run", "graph", "moe", "graphs", "selections", "locality"]
@@ -72,7 +72,8 @@ MOE_ORDER = ["present", "n_expert", "n_expert_used", "n_expert_source", "topk_la
              "token_reduced_layers", "slots_truncated"]
 GRAPH_ROW_ORDER = ["ordinal", "n_tokens", "phase", "tokens_observed", "tokens_truncated",
                    "observed_token_indices", "node_count"]
-SELECTION_ORDER = ["graph", "layer", "token", "slot", "expert"]
+SELECTION_ORDER = ["graph", "layer", "token", "slot", "expert",
+                   "router_weight_ten_thousandths"]
 LOCALITY_ORDER = ["adjacent_pair_count", "reuse_numerator", "reuse_denominator",
                   "reuse_per_mille", "per_layer", "working_set", "phase_split"]
 PER_LAYER_ORDER = ["layer", "adjacent_pair_count", "reuse_numerator", "reuse_denominator",
@@ -93,6 +94,7 @@ CODES = {
     "R2_NODE_NAME_TOO_LONG", "R2_DIMS_INVALID", "R2_VALUE_GRAMMAR", "R2_SUM_MISSING",
     "R2_GRAPH_LIMIT", "R2_NODE_LIMIT", "R2_LAYER_INDEX", "R2_ROW_COUNT", "R2_TOKEN_COUNT",
     "R2_EXPERT_ID_NOT_INTEGRAL", "R2_EXPERT_BOUNDS", "R2_MOE_INCONSISTENT", "R2_SELECTION_LIMIT",
+    "R2_ROUTER_WEIGHT_VALUE", "R2_ROUTER_WEIGHT_MISMATCH",
 }
 
 

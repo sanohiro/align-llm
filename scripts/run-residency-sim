@@ -290,7 +290,7 @@ by_key = {}
 for order in document["orders"]:
     for row in order["policies"]:
         by_key[(order["order"], row["budget_bytes"], row["policy"])] = row
-EXPECTED_POLICIES = ["null", "compulsory", "belady", "lru", "lfu", "recent_reuse_w2",
+EXPECTED_POLICIES = ["null", "compulsory", "belady", "lru", "lfu", "router_weight_lfu", "recent_reuse_w2",
                      "recent_reuse_w8", "recent_reuse_w32", "topk_prefetch_k1", "topk_prefetch_k8"]
 policies = EXPECTED_POLICIES
 budgets = [entry for entry in document["budgets"]]
@@ -300,8 +300,8 @@ sweep = {entry["budget_bytes"]: entry for entry in verdict["sweep_best"]}
 # contract, not of the corpus: a run whose stream is empty, whose orders are not both reported, or
 # whose verdict does not name one of the three results has not answered the gate.
 problems = []
-if document["kind"] != "R3_RESIDENCY_SIM" or document["schema_version"] != 1:
-    problems.append("the document is not R3_RESIDENCY_SIM schema 1")
+if document["kind"] != "R3_RESIDENCY_SIM" or document["schema_version"] != 2:
+    problems.append("the document is not R3_RESIDENCY_SIM schema 2")
 if inputs["admitted_trace_count"] != inputs["listed_trace_count"]:
     problems.append("a listed trace was not admitted")
 if stream["pooling"] != "continuing":
@@ -312,13 +312,12 @@ if [order["order"] for order in document["orders"]] != ["token_major", "layer_ma
     problems.append("both replay orders of section 2.2.2 are not reported")
 if [order["verdict_bearing"] for order in document["orders"]] != [True, False]:
     problems.append("the verdict-bearing order is not token_major")
-# The name *set* over every reported row, not the first ten of a ten-per-budget list: slicing ten
-# entries can only ever see the first budget's block, so it asserts nothing about the policy set the
+# The name *set* over every reported row, not only one budget's block, so it asserts the policy set the
 # document reports.
 for order in document["orders"]:
     reported = [row["policy"] for row in order["policies"]]
     if sorted(set(reported)) != sorted(EXPECTED_POLICIES):
-        problems.append("%s: the policy set is not the ten rows of section 2.4, it is %r"
+        problems.append("%s: the policy set is not the eleven rows of R8, it is %r"
                         % (order["order"], sorted(set(reported))))
     if len(reported) != len(EXPECTED_POLICIES) * len(budgets):
         problems.append("%s: %d policy rows for %d budget(s) and %d policies"
@@ -329,8 +328,8 @@ for order in document["orders"]:
                             % (order["order"], start))
 if verdict["order"] != "token_major" or verdict["baseline_policy"] != "lru":
     problems.append("the verdict is not defined on token_major against the lru baseline")
-if verdict["rule_version"] != 1 or verdict["margin_per_mille"] != 50:
-    problems.append("the verdict rule is not rule_version 1 at a 50 per mille floor")
+if verdict["rule_version"] != 2 or verdict["margin_per_mille"] != 50:
+    problems.append("the verdict rule is not rule_version 2 at a 50 per mille floor")
 if verdict["result"] not in ("BEATS_BASELINE", "NO_POLICY_BEATS_BASELINE", "NO_HEADROOM"):
     problems.append("the verdict is not one of the three section 2.8 results")
 if verdict["result"] == "BEATS_BASELINE" and not verdict["jackknife_stable"]:

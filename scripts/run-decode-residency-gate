@@ -548,8 +548,8 @@ def check_graph_phases(name, stream):
 def check_arm(name, document):
     """The contract properties of one arm, asserted rather than described."""
     inputs, stream, verdict = document["inputs"], document["stream"], document["verdict"]
-    if document["kind"] != "R3_RESIDENCY_SIM" or document["schema_version"] != 1:
-        problems.append("%s: the document is not R3_RESIDENCY_SIM schema 1" % name)
+    if document["kind"] != "R3_RESIDENCY_SIM" or document["schema_version"] != 2:
+        problems.append("%s: the document is not R3_RESIDENCY_SIM schema 2" % name)
     check_graph_phases(name, stream)
     if inputs["admitted_trace_count"] != inputs["listed_trace_count"]:
         problems.append("%s: a listed trace was not admitted" % name)
@@ -568,7 +568,7 @@ def check_arm(name, document):
     for order in document["orders"]:
         reported = [row["policy"] for row in order["policies"]]
         if sorted(set(reported)) != sorted(EXPECTED_POLICIES):
-            problems.append("%s/%s: the policy set is not the ten rows of section 2.4, it is %r"
+            problems.append("%s/%s: the policy set is not the eleven rows of R8, it is %r"
                             % (name, order["order"], sorted(set(reported))))
         if len(reported) != len(EXPECTED_POLICIES) * len(document["budgets"]):
             problems.append("%s/%s: %d policy rows for %d budget(s)"
@@ -576,20 +576,20 @@ def check_arm(name, document):
     if verdict["order"] != "token_major" or verdict["baseline_policy"] != "lru":
         problems.append("%s: the verdict is not defined on token_major against the lru baseline"
                         % name)
-    if verdict["rule_version"] != 1 or verdict["margin_per_mille"] != MARGIN_PER_MILLE:
-        problems.append("%s: the verdict rule is not rule_version 1 at a 50 per mille floor" % name)
+    if verdict["rule_version"] != 2 or verdict["margin_per_mille"] != MARGIN_PER_MILLE:
+        problems.append("%s: the verdict rule is not rule_version 2 at a 50 per mille floor" % name)
     if verdict["result"] not in ("BEATS_BASELINE", "NO_POLICY_BEATS_BASELINE", "NO_HEADROOM"):
         problems.append("%s: the verdict is not one of the three section 2.8 results" % name)
     if verdict["jackknife_folds"] != inputs["admitted_trace_count"]:
         problems.append("%s: the jackknife did not run one fold per admitted document" % name)
     rows = by_policy(document, "token_major", verdict["budget_bytes"])
-    # Everything below reads named rows out of that table. A document that did not report the ten
-    # rows of section 2.4 at the verdict's own budget is a reportable problem, not a traceback: the
+    # Everything below reads named rows out of that table. A document that did not report all eleven
+    # rows at the verdict's own budget is a reportable problem, not a traceback: the
     # structural findings already recorded above are what a reader needs, and a `KeyError` here
     # would destroy them along with the rest of the output.
     if set(rows) != set(EXPECTED_POLICIES):
-        problems.append("%s: token_major reports %r at the verdict budget, not the ten rows of "
-                        "section 2.4" % (name, sorted(rows)))
+        problems.append("%s: token_major reports %r at the verdict budget, not the eleven R8 rows"
+                        % (name, sorted(rows)))
         return []
     for policy, cell in rows.items():
         if cell["hits"] + cell["misses"] != cell["demands"]:
