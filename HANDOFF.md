@@ -5,10 +5,10 @@ file records durable project state.
 
 ## Active: R8-OLMOE-PROVIDER (2026-09-03)
 
-Branch `agent/r8-olmoe-provider`, based on pulled merged `main`
-`c987838130077d5b6119ee20b717774c1c913fbe` (R8-OLMOE-TEXT PR #169). The sibling Align checkout
-and `.align-revision` both remain at current merged Align
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; a post-merge fetch found no newer prerequisite.
+Branch `agent/r8-olmoe-provider` is integrating pulled merged `main`
+`dc38b7639d86aaea786965487f1b09c806fbc20a` (required-CI latency repair PR #171) into the reviewed
+provider candidate. The sibling Align checkout and `.align-revision` both remain at current merged
+Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; a post-PR-#169 fetch found no newer prerequisite.
 
 The active capability exposes OLMoE greedy generation through the existing in-process provider,
 using an explicit invocation-local partial-LRU cache budget and stop-aware MoE generation. Its
@@ -31,19 +31,67 @@ repair adds a qualification-only exact generation seam consumer and signal-aware
 forced escalation self-test. It does not change provider behavior or expand scope, so another
 comprehensive review is not required.
 
-**Next actions.** (1) Commit the consolidated review repair. (2) Run exact-head publication
-preflight. (3) Publish, merge, and pull current `main` and Align.
+The base integration changes only the hosted-check allocation, its authoritative documentation,
+and the identity-bound baseline chain. It does not materially change the provider risks reviewed
+above, so the existing comprehensive review remains applicable; fresh exact-head integration
+evidence is still required.
+
+**Next actions.** (1) Complete the `main` merge and resolve this continuity record. (2) Run the
+provider owner and exact-head publication preflight once. (3) Push the integration, require the
+shortened hosted graph and both installed classifiers to pass, then merge PR #170 and pull current
+`main` and Align.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The stable candidate until committed. Local configuration remains
-outside the change.
+**Intentional uncommitted files.** The in-progress `main` merge until committed. Local configuration
+remains outside the change.
 
-## Merged checkpoint: R8-OLMOE-TEXT (PR #169, 2026-09-03)
+## Merged checkpoint: REQUIRED-CI latency repair (PR #171, 2026-09-03)
 
-Branch `agent/r8-olmoe-text`, based on pulled merged `main`
-`4d9f9c823dc6596f87c7bb6db1b16e55d9653637` (R8-PARTIAL-LRU-CACHE PR #168). The sibling Align
-checkout was fast-forwarded from the prior pin
+Branch `agent/ci-remove-redundant-check`, based on pulled `main`
+`c987838130077d5b6119ee20b717774c1c913fbe`, merged as PR #171 at
+`dc38b7639d86aaea786965487f1b09c806fbc20a`. The repair followed two PR #170 hosted failures at
+the 15-minute whole-job boundary: the exact-cache attempt completed its aggregate in 14m52s before
+finalization cancellation, and the single cache-miss retry was cancelled 12m45s into that aggregate.
+
+The repair removes only the redundant standalone `check` goal from `HOSTED_CHECK_TARGETS`.
+`make check` remains unchanged for local checkpoints; the aggregate's shared `build` prerequisite
+uses Align's same bottom-up per-unit package frontend and continues through lowering, code
+generation, and linking before every functional owner. Author-host measurements at the unchanged
+provider candidate were 177.42s for uncached `make check`, 10.74s for `format-check`, and 0.87s for
+an immediately warm `make build`. The authoritative contract and closure matrix are
+`docs/specs/check-gate-topology.md` sections 1.2 and 2.
+
+The identity-bound baseline chain is source `d62e7a1e34fe390596131b16e1777d66ad6cdb48`
+-> oracle `92cf3bdbb024606aec74a9d3e4eebb2547af1827` -> finalization
+`dcb893d93612d5afb13cdd7b43e04bf0c9d17e7a`. Its two fixed-task samples passed on Linux/aarch64,
+kernel 6.11.11-linuxkit, Python 3.12.3, with the exact pinned Align compiler. In the same Linux
+boundary, `make baseline-check` ended `baseline chain: PASS` and
+`python3 scripts/check-gate-topology --self-test` passed. The normal exact topology owner also
+passes. The macOS self-test's existing reader-start fault injection records a post-exit
+`sigkill-PermissionError`; unmodified `origin/main` reproduces it, so Linux owns publication
+evidence for that platform-sensitive lifecycle case.
+
+The comprehensive Codex CLI review covered head
+`dcb893d93612d5afb13cdd7b43e04bf0c9d17e7a` against base tip and merge base
+`c987838130077d5b6119ee20b717774c1c913fbe`, using gpt-5.6-sol at high effort over the full diff.
+It found one accepted P2: a historical closure row still claimed both `check` and `build` remained
+in both aggregate graphs. The documentation-only repair states the actual allocation: standalone
+`make check`, aggregate `build`, and compiler-owned checker parity. It changes no implementation,
+baseline artifact, or verification behavior, so it does not trigger another comprehensive review.
+
+On the final synthetic integration tree `5b8895873f026ba3657ade7c2381b7cb4ca9c819`, the required
+hosted job passed in 9m28s, down 5m24s from the exact-cache incident. Installed aarch64 and x86_64
+passed in 12m54s and 11m47s respectively. The provider branch is now consuming this merged repair.
+
+**Blocker.** None; the provider publication gate is resumed.
+
+**Intentional uncommitted files.** None. Local configuration remains outside the change.
+
+## Merged checkpoint: R8-OLMOE-TEXT (2026-09-03)
+
+Branch `agent/r8-olmoe-text` merged as PR #169 at
+`c987838130077d5b6119ee20b717774c1c913fbe`. The sibling Align checkout was fast-forwarded from the prior pin
 `b6f95a261e1434d705d7de006484ffa66b1542f0` to merged `origin/main`
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4` (Align PR #933, `pkg.kv` v1). Commit `5c9ac3c`
 advances `.align-revision` and records compatibility evidence as an internal checkpoint in this
@@ -83,7 +131,8 @@ The repair does not expand the public behavior or capability scope, so another c
 is not required.
 
 PR #169 merged as `c987838130077d5b6119ee20b717774c1c913fbe`; `main` was pulled and no additional
-align-llm or sibling Align update was present.
+align-llm or sibling Align update was present at that checkpoint. Its provider-level successor is
+the current active capability.
 
 **Blocker.** None.
 

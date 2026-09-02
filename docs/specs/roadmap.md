@@ -1253,7 +1253,11 @@ The current forward delivery order is:
     installed owner and leaves the unchanged common graph to required hosted CI. The authoritative contract,
     coverage allocation, and closure matrix are in
     [`check-gate-topology.md`](check-gate-topology.md) section 1.1 and the section 2 ledger. This
-    changes no product behavior or evaluator result.
+    changes no product behavior or evaluator result. A 2026-09-03 repair is active after PR #170's
+    hosted graph completed its owners but exceeded the 15-minute whole-job boundary, then timed out
+    again on its single retry. Section 1.2 removes only the redundant uncached `check-per-unit`
+    invocation from routine hosted/capable aggregates. `make check`, the shared `build` failure
+    boundary, every functional owner, and the configured timeout remain unchanged.
 
 45. **R8-SCORE-BASED-CACHE — selected router weights through one score-based residency policy.
     Merged as PR #166 (`c1338f1`) on 2026-09-02.**

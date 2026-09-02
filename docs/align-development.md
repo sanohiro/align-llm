@@ -113,6 +113,9 @@ every focused qualification script in the repository, and is not routine pull-re
 Select it only when an aggregate-only owner changes or an explicit audit requests it. Routine
 publication runs `make hosted-checks` once and the two native installed profiles without the
 complete aggregate; each native profile still runs the worker's compiler-only `build` boundary.
+The hosted and capable aggregates use their shared `build` prerequisite as the complete parser,
+per-unit interface/import, semantic, lowering, code-generation, and link boundary; they do not also
+rerun the uncached `make check`. That public target remains the narrow local implementation check.
 Every current required GitHub job has a 15-minute timeout. Roughly 15 minutes is the operating
 target and a reason to inspect ownership and cost, not a universal correctness constant. A focused
 target is diagnostic evidence for that surface, not evidence that either aggregate completed.
