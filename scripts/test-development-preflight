@@ -1528,6 +1528,53 @@ def test_qualification_modes() -> None:
         len(docker_config_paths) == 1 and not docker_config_paths[0].exists(),
         "private Docker config was not removed after its owner",
     )
+    with tempfile.TemporaryDirectory(prefix="qualification-signal-") as temporary_name:
+        temporary = Path(temporary_name)
+        driver = temporary / "driver.py"
+        marker = temporary / "docker-config"
+        driver.write_text(
+            """import importlib.machinery
+import importlib.util
+import pathlib
+import sys
+
+repository = pathlib.Path(sys.argv[1])
+marker = pathlib.Path(sys.argv[2])
+loader = importlib.machinery.SourceFileLoader(
+    "qualification_signal_test", str(repository / "scripts/run-fresh-worker-qualification")
+)
+specification = importlib.util.spec_from_loader(loader.name, loader)
+module = importlib.util.module_from_spec(specification)
+sys.modules[loader.name] = module
+loader.exec_module(module)
+child = (
+    "import os,pathlib,time; "
+    "pathlib.Path(__import__('sys').argv[1]).write_text(os.environ['DOCKER_CONFIG']); "
+    "time.sleep(30)"
+)
+module.run(module.INSTALLED_OWNER, sys.executable, "-c", child, str(marker))
+""",
+            encoding="utf-8",
+        )
+        process = subprocess.Popen(
+            (sys.executable, str(driver), str(REPOSITORY), str(marker)),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 5
+        while not marker.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        require(marker.exists(), "installed owner did not expose its private Docker config")
+        interrupted_config = Path(marker.read_text(encoding="utf-8"))
+        os.killpg(process.pid, signal.SIGTERM)
+        process.communicate(timeout=5)
+        require(
+            process.returncode == 128 + signal.SIGTERM and not interrupted_config.exists(),
+            "installed owner cancellation leaked its private Docker config",
+        )
     qualification.verify_contract_inventory = lambda: None
     calls: list[tuple[str, tuple[str, ...]]] = []
     qualification.run = lambda owner, *arguments: calls.append((owner, arguments))
@@ -1678,16 +1725,18 @@ def test_qualification_modes() -> None:
         "installed profile does not retain build while gating the aggregate on explicit input",
     )
     require(
-        "with cleanup_signal_handlers(), tempfile.TemporaryDirectory(" in image_profile_source,
+        "with cleanup_signal_handlers() as begin_cleanup, tempfile.TemporaryDirectory("
+        in image_profile_source,
         "installed profile cleanup is outside catchable signal ownership",
     )
     previous_term = signal.getsignal(signal.SIGTERM)
     unwound = False
     try:
-        with image_profile.cleanup_signal_handlers():
+        with image_profile.cleanup_signal_handlers() as begin_cleanup:
             try:
                 os.kill(os.getpid(), signal.SIGTERM)
             finally:
+                begin_cleanup()
                 unwound = True
     except SystemExit as error:
         require(error.code == 128 + signal.SIGTERM, "profile signal status changed")
@@ -1726,6 +1775,41 @@ def test_qualification_modes() -> None:
         sum(arguments[:3] == ["docker", "volume", "rm"] for arguments in cleanup_calls) == 5
         and sum(arguments[:3] == ["docker", "image", "rm"] for arguments in cleanup_calls) == 1,
         "profile cancellation did not remove every invocation-owned Docker resource",
+    )
+    cleanup_calls.clear()
+    cleanup_interrupted = False
+
+    def interrupt_cleanup(arguments: list[str], **_keywords: object) -> SimpleNamespace:
+        nonlocal cleanup_interrupted
+        cleanup_calls.append(arguments)
+        if arguments[:2] == ["docker", "info"] and "--format" not in arguments:
+            return SimpleNamespace(returncode=0, stdout=b"Cgroup Driver: cgroupfs\n", stderr=b"")
+        if arguments[:2] == ["docker", "info"]:
+            return SimpleNamespace(returncode=0, stdout=b"amd64\n", stderr=b"")
+        if arguments[:2] == ["docker", "build"]:
+            return SimpleNamespace(returncode=1, stdout=b"", stderr=b"")
+        if arguments[:3] == ["docker", "volume", "rm"] and not cleanup_interrupted:
+            cleanup_interrupted = True
+            os.kill(os.getpid(), signal.SIGTERM)
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    image_profile.run = interrupt_cleanup
+    sys.argv = ["run-fresh-image-profile-smoke", "--require-docker"]
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                image_profile.main()
+            except SystemExit as error:
+                require(error.code == 128 + signal.SIGTERM, "cleanup cancellation status changed")
+            else:
+                raise RuntimeError("profile cleanup cancellation was accepted")
+    finally:
+        sys.argv = previous_arguments
+    require(
+        cleanup_interrupted
+        and sum(arguments[:3] == ["docker", "volume", "rm"] for arguments in cleanup_calls) == 5
+        and sum(arguments[:3] == ["docker", "image", "rm"] for arguments in cleanup_calls) == 1,
+        "signal during profile cleanup skipped remaining Docker resources",
     )
     image_profile.run = lambda *arguments, **keywords: SimpleNamespace(returncode=1)
 

@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 from contextlib import contextmanager
+from collections.abc import Callable
 from pathlib import Path
 from typing import Iterator
 
@@ -53,24 +54,38 @@ PROFILE_SIGNALS = tuple(
 
 
 @contextmanager
-def cleanup_signal_handlers() -> Iterator[None]:
+def cleanup_signal_handlers() -> Iterator[Callable[[], None]]:
     pending_signal: int | None = None
+    cleanup_started = False
+    caught: BaseException | None = None
     previous_handlers: dict[int, signal.Handlers] = {}
+
+    def begin_cleanup() -> None:
+        nonlocal cleanup_started
+        cleanup_started = True
 
     def handle_signal(signum: int, _frame: object) -> None:
         nonlocal pending_signal
         if pending_signal is None:
             pending_signal = signum
+        if not cleanup_started:
             raise SystemExit(128 + signum)
 
     try:
         for selected_signal in PROFILE_SIGNALS:
             previous_handlers[selected_signal] = signal.getsignal(selected_signal)
             signal.signal(selected_signal, handle_signal)
-        yield
+        try:
+            yield begin_cleanup
+        except BaseException as error:
+            caught = error
     finally:
         for selected_signal, previous in previous_handlers.items():
             signal.signal(selected_signal, previous)
+    if pending_signal is not None:
+        raise SystemExit(128 + pending_signal)
+    if caught is not None:
+        raise caught
 
 
 def aggregate_diagnostic_requested() -> bool:
@@ -809,7 +824,7 @@ def main() -> int:
     boundary_source_volume = f"align-llm-fresh-boundary-source-{unique}"
     ordinary_source_volume = f"align-llm-fresh-ordinary-source-{unique}"
     cgroup_ready = False
-    with cleanup_signal_handlers(), tempfile.TemporaryDirectory(
+    with cleanup_signal_handlers() as begin_cleanup, tempfile.TemporaryDirectory(
         prefix="fresh-image-profile-"
     ) as temporary_name:
         temporary = Path(temporary_name)
@@ -1471,6 +1486,7 @@ def main() -> int:
             if worker_result.stdout != expected_worker_output or worker_result.stderr:
                 raise RuntimeError(f"fresh {worker_phase} output is not canonical")
         finally:
+            begin_cleanup()
             phases.finish("fail" if sys.exc_info()[0] is not None else "pass")
             phases.enter("cleanup")
             if cgroup_ready:
