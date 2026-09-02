@@ -16,7 +16,7 @@ approximately 15-minute complete-run ceiling, result fields, and closure matrix 
 `docs/specs/r8-olmoe-coding-decision.md`. Four fixed balanced pairs compare the shipped resident
 llama.cpp baseline with the invocation-local partial-LRU Align runtime from provider launch through
 the existing task validator. This capability changes no provider or runtime behavior. Its one
-complete real run finished in 147.288 seconds with `NOT_ELIGIBLE`: both arms emitted the same
+complete bound real run finished in 142.183 seconds with `NOT_ELIGIBLE`: both arms emitted the same
 deterministic patch, but the unchanged validator rejected it in all eight legs. Both pass counts
 are 0/4 and primary medians are therefore null. The first unmet consumer boundary is model/prompt
 patch correctness, not runtime performance.
@@ -25,10 +25,23 @@ patch correctness, not runtime performance.
 focused exact-head publication preflight, publish, merge, and pull current `main`. Per the user's
 instruction, stop after this pull rather than starting another roadmap capability.
 
+The comprehensive Codex CLI review covered head
+`35dceb22fc15268e58df4006ff94a89b83e3da64` against base tip and merge base
+`0eaed918f34b1dbb8a70ef0aaa352cbaec7513e7`, using gpt-5.6-sol at high effort over the full diff.
+It found five accepted evidence/cleanup defects: ambient shim fault injection was not isolated;
+compiler, helper, shim, and ggml identities were not bound; the mutable Docker validator reference
+was not resolved into the result; image inspection was not deadline-bounded; and a timed-out Docker
+client could leave its container running. Consolidated repair commits `222e93a` and `bbd2a47` scrub
+ambient overrides, force and record the managed toolchain plus native identities, revalidate every
+identity after sampling, resolve one immutable validator image under the whole-run deadline, and
+own its container ID through forced cleanup. The repair implements only recorded findings and does
+not change the fixed request, schedule, metric, floor, or verdict logic, so another comprehensive
+review is not required.
+
 **Blocker.** None.
 
-**Intentional uncommitted files.** The recorded decision and continuity update until committed.
-Local configuration remains outside the change.
+**Intentional uncommitted files.** The final bound decision and review disposition update until
+committed. Local configuration remains outside the change.
 
 ## Merged checkpoint: R8-OLMOE-PROVIDER (PR #170, 2026-09-03)
 

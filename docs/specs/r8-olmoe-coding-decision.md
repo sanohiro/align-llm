@@ -148,7 +148,7 @@ repetition with changed prompts, samples, flags, or output repair.
 ## 6. Recorded decision
 
 The one complete real decision ran on clean align-llm head
-`8c9a7e40d8d1c47b316bd1ec52123dd3bc575b89` and finished in 147.288 seconds on Darwin 25.5.0,
+`bbd2a47e6f408678608705576dd3e2ff25adb12d` and finished in 142.183 seconds on Darwin 25.5.0,
 arm64, with 8 logical CPUs. It returned **`NOT_ELIGIBLE`**: local and runtime pass counts were both
 0 of 4, so primary medians and gain are null and no performance shipping claim is made.
 
@@ -157,13 +157,18 @@ Both arms were deterministic and emitted byte-identical output in every sample (
 same one-line patch in all eight legs (patch SHA-256
 `a64bfacadea8cc00cc6b82880db2685d8eb925831971b02b1c83f6f3a17d73ef`), but the unchanged validator
 rejected it every time. The local arm reported 55 completion tokens and provider intervals from
-1.884 to 3.610 seconds; the runtime arm reported 87 completion tokens for the same bytes and
-provider intervals from 24.600 to 27.516 seconds. Validator intervals were 0.388 to 0.692 seconds.
+1.910 to 3.547 seconds; the runtime arm reported 87 completion tokens for the same bytes and
+provider intervals from 25.250 to 26.383 seconds. Validator intervals were 0.413 to 0.653 seconds.
 
 The remaining identities were Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`, AlignPack SHA-256
 `20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae`, geometry SHA-256
 `1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada`, and llama-server SHA-256
-`98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c`. The evidence says not to
-invest in provider-level OLMoE performance on this task yet: the first unmet consumer boundary is
-model/prompt patch correctness, shared by both provider implementations.
+`98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c`. The managed compiler,
+compiled helper, and shim SHA-256 values were respectively
+`f972b4a196ed5608a0c52cc02dbf8267cfc236065359315a572d601aa04ea541`,
+`06e3d1d61283ad0806c55e3ab735ada101b9a2ac3117850b05fffb7b9a5312e8`, and
+`1fa4b55e0140717ba57e5c18ffd905ad73ff40c3721cc6ae78692d1dfa9f7fce`; the validator was immutable
+Docker image `sha256:33fa9e4446ab1a5ca849c57ea49e2e2e4585488aa1cd4d7b2940801bad84cb54`.
+The evidence says not to invest in provider-level OLMoE performance on this task yet: the first
+unmet consumer boundary is model/prompt patch correctness, shared by both provider implementations.

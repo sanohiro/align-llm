@@ -1353,7 +1353,7 @@ The current forward delivery order is:
     incomplete, nondeterministic, or over-ceiling evidence fails. The complete real decision has an
     approximately 15-minute diagnostic ceiling and is run once, without `make ci`, platform
     profiles, the 40-prompt corpus, cache-policy replay, stress, or unrelated benchmarks. The one
-    complete run finished in 147.288 seconds. Both arms deterministically emitted the same patch,
+    complete bound run finished in 142.183 seconds. Both arms deterministically emitted the same patch,
     but that patch failed the unchanged validator in every sample, so both pass counts are 0/4 and
     primary timing medians remain null. The next investment belongs to model/prompt patch
     correctness rather than provider-level runtime optimization.
