@@ -6,9 +6,9 @@ file records durable project state.
 ## Active: REQUIRED-CI-UNDER-15 (2026-09-02)
 
 Branch `agent/ci-under-15`, based on merged `main` `29b54757c837fdfc610e413acd297d253644e292`
-(R7-RUNTIME-PROVIDER PR #164). The user-set shipping constraint is that every required CI check
-and the complete fresh-image publication preflight finish in less than 15 minutes and perform only
-work that distinguishes a required risk.
+(R7-RUNTIME-PROVIDER PR #164). The user-set operating target is roughly 15 minutes for each
+required CI check and the complete fresh-image publication preflight, with only work that
+distinguishes a required risk. The number is diagnostic rather than an absolute correctness limit.
 
 PR #164 is the pre-implementation baseline: hosted 12m19s, native x86_64 installed 43m22s, and
 native aarch64 installed 46m57s. The aarch64 installed-profile log attributes 2,233.685 seconds to
@@ -33,7 +33,7 @@ The exact native Linux/aarch64 installed owner at repair head
 1.786s, compiler self-test 14.482s, trust mutations 12.184s, runtime replacements 21.680s,
 adoption boundary 313.091s, worker build 186.037s, and cleanup 2.059s. No worker aggregate runs.
 This is a 78.3% reduction from PR #164's 2,662.367-second owner and leaves 323.468 seconds beneath
-the 900-second ceiling.
+the current 900-second timeout.
 
 The comprehensive Codex CLI review covered head
 `162ef17653684f037e4b224aed5c73fc3af3c3ea` against base tip and merge base
@@ -48,7 +48,7 @@ private client configuration only to Docker commands. Targeted owners and the ex
 measurement above pass.
 
 Publication preflight's previously serial hosted plus installed tail would itself exceed the
-user's 15-minute constraint despite both phases being meaningful. Checkpoint
+rough 15-minute operating target despite both phases being meaningful. Checkpoint
 `446f0b144e08764bcabf55391603112d97c0388b` therefore runs short owner/toolchain/focused
 prerequisites first, then launches independent hosted and installed owners as one fail-fast parallel
 group. Synchronized success and failure/cancellation regressions pass in 0.6s; the complete
@@ -116,9 +116,17 @@ both qualification-parent and image-parent PID-targeted regressions. The focused
 signal owners pass in 0.647s, the complete Linux development-preflight owner passes, and
 `format-check` passes. The repair delta was inspected; no review finding remains open.
 
-**Next actions.** (1) Run exact-head fresh-image publication preflight below 900 seconds. (2)
-Publish with all review envelopes, require
-all three GitHub checks below 15 minutes, merge, pull current `main`, and continue the next eligible
+Exact-head Linux/aarch64 publication preflight at
+`39863d05ed62437b05007a0834ac81225fca2e83` passes: development owner 14.849s, managed ensure
+0.320s, pin verification 0.072s, fresh-focused 21.456s, and installed owner 586.795s. No common
+aggregate ran locally. The user then clarified that 15 minutes is an approximate diagnostic target,
+not an absolute number. The authoritative wording now retains the current 15-minute workflow
+timeouts while allowing a narrowly longer distinct owner when measurement justifies its value; it
+does not allow a timeout increase to substitute for removing duplicate or unowned work.
+
+**Next actions.** (1) Verify and review the clarified operating-target wording, then run exact-head
+fresh-image publication preflight. (2) Publish with all review envelopes, inspect all three GitHub
+checks for distinct value and duration, merge, pull current `main`, and continue the next eligible
 capability.
 
 **Blocker.** None.

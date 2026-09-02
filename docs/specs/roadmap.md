@@ -1243,11 +1243,12 @@ The current forward delivery order is:
     and native aarch64 installed evidence at 46m57s. The aarch64 profile spent 37m14s rerunning the
     complete common capable graph after the hosted job already owned common functional behavior;
     the installed image's architecture, trust, lifecycle, compiler-self-test, adoption, and cleanup
-    boundary took about 7m09s. Required checks now have a pre-implementation ceiling of 15 minutes
-    of complete GitHub job wall time. The installed matrix keeps both native platform profiles and
+    boundary took about 7m09s. Required checks now use 15 minutes of complete GitHub job wall time
+    as the configured timeout and approximate operating target, not as a universal correctness
+    constant. The installed matrix keeps both native platform profiles and
     every image-specific refusal, but the complete aggregate becomes an explicit owner-triggered
-    audit instead of routine PR evidence. The same 15-minute wall ceiling applies to fresh-image
-    publication preflight: after ordered owner/toolchain/focused prerequisites, it runs only the
+    audit instead of routine PR evidence. Fresh-image publication preflight uses the same approximate
+    operating target: after ordered owner/toolchain/focused prerequisites, it runs only the
     installed owner and leaves the unchanged common graph to required hosted CI. The authoritative contract,
     coverage allocation, and closure matrix are in
     [`check-gate-topology.md`](check-gate-topology.md) section 1.1 and the section 2 ledger. This
