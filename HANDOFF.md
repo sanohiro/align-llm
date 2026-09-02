@@ -3,14 +3,44 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-PARTIAL-LRU-CACHE (2026-09-02)
+## Active: ALIGN-8CEFC803-ADOPTION (2026-09-02)
+
+Branch `agent/align-8cefc803-adoption`, based on pulled merged `main`
+`4d9f9c823dc6596f87c7bb6db1b16e55d9653637` (R8-PARTIAL-LRU-CACHE PR #168). The sibling Align
+checkout was fast-forwarded from the prior pin
+`b6f95a261e1434d705d7de006484ffa66b1542f0` to merged `origin/main`
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4` (Align PR #933, `pkg.kv` v1), and this capability
+advances `.align-revision` to that exact identity.
+
+No align-llm request is waiting in `ALIGN_MERGED`; `pkg.kv` does not implement Request 53's
+`std.fs` directory surface, and align-llm neither vendors nor consumes the package in this
+capability. The consumer boundary is compatibility of the existing complete Align source graph
+with the new compiler/runtime. `make check` owns that boundary; managed materialization and
+verification own the exact pin. The pin alone does not select `make ci`, an installed/native
+profile, a benchmark, or another focused qualification.
+
+**Latest durable verification.** The managed release compiler/runtime materialized in 1m03s with
+the host's explicit LLVM 22 path. `scripts/align-toolchain verify` returned the exact new identity,
+and `make check` passed all 40 units per-unit in about 1m58s. No aggregate, installed/native
+profile, benchmark, or unrelated focused qualification ran.
+
+**Next actions.** (1) Commit the coherent adoption and perform one comprehensive review. (2) Run
+exact-head publication preflight with `make check` as owner, publish, merge, pull current `main`,
+and begin the next eligible consumer capability.
+
+**Blocker.** None.
+
+**Intentional uncommitted files.** The verified adoption candidate until committed.
+
+## Merged checkpoint: R8-PARTIAL-LRU-CACHE (PR #168, 2026-09-02)
 
 Branch `agent/r8-partial-lru-cache`, based on pulled merged `main`
-`d3b04b08d44bafa1afa28438e2229333e14810ec` (R8-RESET-CACHE-DECISION PR #167). The sibling Align
-checkout was fast-forwarded after the merge and now exactly matches `.align-revision` at
-`b6f95a261e1434d705d7de006484ffa66b1542f0`; no pin adoption is needed.
+`d3b04b08d44bafa1afa28438e2229333e14810ec` (R8-RESET-CACHE-DECISION PR #167). PR #168 passed its
+required hosted check in 12m48s; both unaffected installed profiles classified and exited in 8s
+and 10s. It merged as `4d9f9c823dc6596f87c7bb6db1b16e55d9653637`, and `main` was pulled with no
+additional align-llm update.
 
-The active capability implements the measured 975,175,680-byte LRU policy in the existing real
+The capability implements the measured 975,175,680-byte LRU policy in the existing real
 `--moe-decode-step` consumer. Its authoritative contract, public CLI/schema ledger, closure matrix,
 byte shipping floor, memory bound, and approximately-15-minute focused qualification ceiling are
 in `docs/specs/r8-partial-lru-cache.md`. It combines dense residency with an invocation-local expert
@@ -46,14 +76,10 @@ model execution: dense read 7,801,405,440 decode expert-pack bytes, cache read 2
 semantics. Internal elapsed 4.407 seconds dense and 4.435 seconds cache is diagnostic only. No broad
 aggregate, installed profile, stress, benchmark, or unrelated platform suite ran.
 
-**Next actions.** (1) Run exact-head publication preflight with `layer-forward-smoke` as owner.
-(2) Publish and merge after the required hosted check passes. (3) Pull the latest `main` before the
-next roadmap capability.
-
-**Blocker.** None.
-
-**Intentional uncommitted files.** None. Local configuration and reusable real-model artifacts
-remain outside the change.
+Exact-head hosted publication preflight passed in about 6m30s. GitHub's required hosted check
+passed in 12m48s; the two unaffected installed jobs performed only classification and evidence
+binding. No broad `make ci`, installed profile execution, stress, benchmark, or unrelated platform
+suite ran.
 
 ## Merged checkpoint: R8-RESET-CACHE-DECISION (PR #167, 2026-09-02)
 
