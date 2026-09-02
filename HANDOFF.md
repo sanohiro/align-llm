@@ -10,7 +10,8 @@ Branch `agent/r8-reset-cache-decision`, based on merged `main`
 required hosted check in about twelve minutes, merged, and `main` was pulled with no additional
 remote update.
 
-Design checkpoint `ba641e5` and implementation checkpoint `465b0bf` add the explicit
+Design checkpoint `ba641e5`, implementation checkpoint `465b0bf`, and measurement record
+`83420a0` add the explicit
 `--simulate-residency-reset` verb, schema-3 reset documents, exact independent-oracle coverage, and
 continuing plus reset versions of all four real-runner projections from one capture. The existing
 schema-2 command and golden remain byte-identical.
@@ -21,15 +22,24 @@ LRU fetched 144,557,211,648, a 536-per-mille reduction. The conservative all-40-
 524 per mille. `router_weight_lfu` improved on LRU by only 9 per mille, below rule 3's floor, so the
 next runtime capability is eligible with the simpler LRU policy, not weighted LFU.
 
-**Latest durable verification.** `make residency-sim-smoke` passes in 4.3 seconds over both pooling
+The comprehensive Codex CLI review covered head
+`83420a081dded8c9ae28884f0ddc21b4dc65ceec` against base tip and merge base
+`c1338f1cf95d99255bcbb62c2b60d39522394411`, using gpt-5.6-sol at high effort over the full diff.
+It found two accepted P2 reporting and selection defects: the real runner could promote a non-LRU
+policy that had not passed rule 3 when LRU failed the streaming gate, and its refactored human
+report omitted the settled budget sweep. Consolidated repair
+`f514feec3388cd31e5cbda85617b559c119e3fcb` defers when neither a qualified rule-3 winner nor LRU
+clears the investment rule, restores every sweep row for every pooling/arm pair, and binds both
+properties into the narrow owner. No finding remains open and the repair does not change the
+simulator or measured result.
+
+**Latest durable verification.** `make residency-sim-smoke` passes in 5.3 seconds over both pooling
 lifetimes, both orders, every policy/budget, both output forms, and the full error corpus against the
 independent oracle. The real runner passes all eight arm/lifetime results with the model unchanged
 in 213.47 seconds. No aggregate, installed profile, benchmark, or platform suite has run.
 
-**Next actions.** (1) Complete the author ledger-to-diff consistency pass and commit the measurement
-record. (2) Run one fresh comprehensive review, consolidate any valid repairs, and rerun only the
-affected owner. (3) Run exact-head publication preflight, publish, merge after required checks,
-pull `main`, and begin the measured 975,175,680-byte partial LRU cache capability.
+**Next actions.** (1) Run exact-head publication preflight. (2) Publish and merge after required
+checks. (3) Pull `main` and begin the measured 975,175,680-byte partial LRU cache capability.
 
 **Blocker.** None.
 
