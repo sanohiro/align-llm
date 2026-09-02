@@ -3,61 +3,159 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R7-PROMPT (2026-09-01)
+## Active: R7-RUNTIME-PROVIDER (2026-09-01)
 
-Branch `agent/r7-prompt`, integrating current `main` merge
-`e68a3949dd2a02b006ae9c5f7e7bfdbd668b7415` (PR #162). R7-TOKENIZER is merged and the next
-consumer boundary is the missing conversion from the existing
-`GenerationRequest { system, user }` text pair to the Qwen2.5-Coder prompt token ids consumed by
-the shipped dense runtime.
+Branch `agent/r7-runtime-provider`, based on merged `main`
+`88b77ed112d36cb29b948f7212442b3a4f02afcd` (R7-PROMPT PR #163 plus the concurrent R7-TOKENIZER
+evidence update). The next consumer-complete R7 boundary is an explicit in-process provider that
+turns the existing `GenerationRequest` into completion text through the resident dense runtime.
 
-R7-PROMPT validates the model-carried supported chat template, renders exactly the no-tools
-system/user conversation with a generation prompt, and tokenizes it from one retained GGUF snapshot.
-The public API, `--prepare-prompt` CLI, hosted synthetic owner, and pinned real-model parity runner
-are implemented. Provider dispatch, inference reuse, sampling, stop-token policy, streaming, and
-decoded completion text remain later R7 capabilities. The authoritative ledger and closure matrix
-are `docs/specs/r7-prompt.md`.
+The proportional design gate is active because this changes the public provider enum/configuration,
+adds snapshot and artifact-identity ownership seams, changes the resident decode loop's internal
+termination behavior, and coordinates seven modules plus CLI and evaluation. The authoritative
+ledger, exact validation order, EOG/max-token semantics, closure matrix, fixed coding-task gate, and
+pre-implementation 20-minute qualification ceiling are `docs/specs/r7-runtime-provider.md`.
 
-**Latest durable verification.** With GNU make and the Homebrew library path, `gmake fmt`,
-`gmake tokenizer-smoke`, `gmake prompt-smoke`, and `gmake gate-topology-check` pass. The prompt owner
-covers six text cases, eight model failures, three size/precedence boundaries, six CLI failures,
-two configured-tool qualification failures, and exact error-result publication fields. Focused
-`gmake prompt-parity` passes against the 4,683,073,536-byte reference model and pinned llama.cpp
-build 10566: eight cases, 1,538 rendered prompt bytes, and 303 compared token ids. Python syntax
-compilation and `git diff --check` pass.
+Design checkpoint `fe3665d44148f4d840d098b394e17a48938e7c4f` and implementation candidate
+`8a17034b7c77d1659d32db4e4567d1b20eab7bf5` are complete. The provider retains one GGUF snapshot
+while deriving exact model geometry, checking the alignpack source record, and preparing prompt/EOG
+ids. Generation is greedy, CPU, resident, at most 128
+tokens, non-streaming, unseeded, and without an internal timeout. It returns no
+partial text on failure and excludes the terminal EOG id from detokenization. The fixed gate runs
+the existing `python-inclusive-range` request through both local OpenAI-compatible llama.cpp and
+align-runtime, persists unchanged schema-2 generation records, and requires both patches to pass
+the existing task validator.
 
-The first local baseline recording is intentionally rejected: macOS resolves the task manifest's
-fixed `/usr/bin/python3` to Python 3.9, so both task-runner invocations failed before validation.
-The resulting source `0b7433b` -> oracle `52add8b` -> finalization `efc2acd` history is not evidence
-and is superseded by the valid Linux chain below.
+**Latest durable verification.** `make tokenizer-smoke provider-smoke runtime-provider-smoke
+gate-topology-check layer-forward-smoke` passes, including the gate runner self-test, 49-assertion
+synthetic provider/CLI matrix, six generation-EOG cases, and the complete shared decode regression.
+The re-scoped final-review repair passes `runtime-provider-smoke`, the complete shared
+`layer-forward-smoke` in 64.117 seconds, and `alignpack-smoke` with 27 positive fixtures, 128
+negative sources, and 20,312 assertions. After the redesigned-candidate repair, the real
+`runtime-provider-gate` passes in 75.2 seconds with its full prerequisite checks included in the
+measurement; both provider legs again produce the passing patch with SHA-256 prefix
+`5d6b107e706a`.
+The real `runtime-provider-gate` passed after initial review repair in 60.3 seconds with the pinned
+4,683,073,536-byte Qwen model and llama.cpp build 10566: both provider legs produced a passing patch
+with SHA-256 prefix `5d6b107e706a`. The gate's earlier 64-token probe established truncation, so the
+settled request limit is 128. The comprehensive review of `8a17034b` against base and merge base
+`88b77ed` found three valid gate-contract defects: raw completion trailers were admitted,
+configured invalid prerequisites could be hidden by an earlier N/A, and an untimed baseline probe
+consumed a third task validation. Consolidated initial repair rejects non-exact fixed-task envelopes,
+validates every configured prerequisite before N/A, removes the task execution from the topology
+probe, and permanently owns these cases in the hosted self-test. Publication owners and aggregate
+preflight have not completed yet.
 
-**Coding baseline refresh complete.** The required Linux/aarch64 chain is source
-`dbbb52eaf776b1d567df34a02c7232c6469cb52f` -> immutable oracle
-`9359d7bdc18954f261b493020584103258e3b484` -> canonical finalization
-`2586eaed0b0c19b5e956d01f0b8f4e81585e7812`. The pending record used the pinned Align source and
-Python 3.12.3; both samples pass at 169,066,709 ns and 140,072,458 ns, with a 154,569,583 ns median.
-The pending file is absent and `python3 scripts/check-baseline-chain` passes.
+**Publication incident.** Host-native preflight passed the named owner in 75.9 seconds and all
+hosted checks in 296.2 seconds, then correctly stopped when the explicitly Linux-only fresh-focused
+owner reached `/proc/self/fd` on macOS. The required uid-501 aarch64 DinD rerun then exposed a real
+candidate defect: `main` now imports the runtime FFI, but `make build` still assumed an ambient
+`libalign_ggml_shim`. A clean Linux owner therefore failed to link. The repair makes `make build`
+and `make run` self-sufficient: the default embeds a temporary static unavailable-engine stub and
+leaves only `main`, while explicit ggml include/lib inputs retain the real shared-shim path. This
+changes the build boundary and authoritative design after the original review, so it triggers one
+final comprehensive review after the current-head coding baseline is re-recorded. Clean default and
+real-shared builds pass on macOS; the aarch64 Linux clean build plus tokenizer, layer-forward
+(128.954 seconds), provider, 48-assertion runtime provider, and topology owners all pass.
+The final coding-baseline chain is source `0278e6e4d57d6796872473f73c86e482c7343845` -> oracle
+`2ccb3854e03b040740e9d9b9cb62dddafd61fdf0` -> finalization
+`94fee5013d4e7af30ed35c02d096599deacd059d`. Its two Linux/aarch64 samples pass in 143.366 and
+150.679 ms (147.023 ms median), bind the wrapper, shim builder, and static stub source, and pass the
+complete Linux `make baseline-check` including malformed, failure, immutable-oracle, and ancestry
+owners.
 
-**Comprehensive review.** `codex review --base origin/main` reviewed head
-`e0a479177145aefd279561426b298920c3e298e0` against base tip and merge base
-`de44bf0971866d51dfe995e9ae9a03e6fe8ce081` with Codex `gpt-5.6-sol` at high effort. Three P2
-findings are accepted: configured non-executable parity tools incorrectly returned `N/A`, the
-hosted owner did not combine an oversized prompt with a malformed tokenizer, and its API harness
-discarded error-result publication fields. Consolidated repair
-`12903046593f9a9a3688cc096d9c0994c170c958` makes configured unusable tools fail hard, exercises
-the missing precedence pair, and asserts exact detail, identities, counts, byte counts, and empty
-token output for every synthetic API failure. No finding remains open; the repair does not change
-the public contract or any identity-bound baseline input.
+**Final review and re-scope.** The comprehensive review of stable head
+`00e67dab9dcfeb952b96ec393ab6a6f1ebcfcba6` against base tip and merge base
+`88b77ed112d36cb29b948f7212442b3a4f02afcd` was performed by Codex gpt-5.6-sol at high effort over
+the full diff. Its verdict contained two findings, both accepted: `[P1]` pack and geometry identity
+did not survive reopening into the exact objects consumed by inference, so atomic replacement could
+retarget validated work; `[P2]` provider generation could render an arbitrary argmax after a
+non-finite prefill or decode-step logit plane. The boundary is re-scoped rather than patched around:
+the first pack pass returns a retained `SourceIdentity`, the exact inference handle revalidates that
+identity, the reopened geometry image must byte-equal the already-derived image before that same
+image is parsed, and generation rejects non-finite prefill or step output before publishing token
+ids. The existing diagnostic API retains its counter-reporting behavior. This materially changes
+the public artifact-identity seam and therefore requires focused owner evidence plus one fresh
+comprehensive review of the redesigned candidate before publication.
 
-**Next actions.** (1) Complete the current-main merge and rerun the affected tokenizer/prompt owner
-and integration evidence. (2) Run exact-head Linux publication preflight, open the PR, wait for CI,
-repair if required, and merge without squash or rebase. (3) Pull the latest `main`, including any
-concurrent updates, and start the next eligible R7 capability.
+**Redesigned-candidate review.** `codex review --base origin/main` reviewed head
+`de18ced87c248738ba1b47215a882490ecb1ac29` against base tip and merge base
+`88b77ed112d36cb29b948f7212442b3a4f02afcd`, using Codex gpt-5.6-sol at high effort over the full
+diff. It found two P2 contract-enforcement defects, both accepted: the inference-time geometry
+reopen used unbounded `fs.read_file` before its exact comparison, and the complete-gate timer began
+after validation-image, full-model-digest, server-version, and scratch checks. The narrow
+consolidated repair gives the reopen the same 16 MiB cap as the first pass, owns a cap-plus-one
+sparse-file regression that requires the bounded-read error rather than the old path's later
+identity mismatch, and starts timing immediately after all configured prerequisites are present.
+`runtime-provider-smoke` passes with both repairs. Neither finding changes the public strategy or
+baseline-bound artifacts, and no finding remains open.
+
+**Baseline-chain correction.** Clean-build repair `4fc0f26` produced two passing aarch64 Linux
+samples, but the first oracle commit mistakenly retained the pending record's `recorded_at` and
+empty `canonical_oracle_commit` fields. The corrected projection then followed an already-created
+finalization commit, so `check-baseline-chain` properly rejected that non-direct topology. Commits
+`9096787` through `a4ee218` are retained as failed evidence. A later valid chain (`4db07fd` ->
+`94620c8` -> `52b00eb`) exposed a separate closure omission before review: the recorded task bound
+the changed `Makefile` but not its new transitive build wrapper, shim builder, and static stub
+source. The task artifact set now names all three executable inputs. The final direct chain named
+above supersedes both earlier sequences and is the authoritative shipping evidence.
+
+**Latest publication incident.** Exact-head Linux/aarch64 preflight at `0e7ff4e` passed the named
+runtime provider owner in 290.777 seconds and managed Align ensure/verify, then failed hosted checks
+at `prompt-seed-attestation-smoke`: that standalone harness imports the exhaustive `provider`
+dispatcher and now reaches the runtime FFI, but invoked `alignc run` without the hosted static-shim
+wrapper. The complete direct-compile harness audit found no other standalone hosted `provider`
+import outside wrapper-owned `main`. The repair routes this one compiler run through
+`scripts/run-main-with-shim`; it changes no baseline-bound artifact or public runtime behavior.
+The corrected rerun passed the owner in 264.651 seconds, managed Align ensure/verify, hosted checks
+in 580.463 seconds, and fresh-focused in 29.872 seconds. Its installed profile first exposed an
+outer DinD cgroup-namespace setup error; after the outer wrapper also used the host cgroup namespace,
+the profile reached `runtime-provider-smoke` and found that the 1 TiB sparse regression exceeded the
+worker's intentional 512 MiB `RLIMIT_FSIZE`. The regression now creates a sparse 16 MiB-plus-one
+file and asserts `R6_GEOMETRY_UNREADABLE` / `Invalid`, which still distinguishes the bounded reopen
+from the old unbounded read followed by `R6_GEOMETRY` / `identity` while remaining inside the
+installed profile's resource contract. That repair passed its former aggregate failure point; the
+same installed run then failed at `c6-evaluation-adoption` because `run-prompt-evaluate-smoke`
+directly built `src/main.align` without the static shim. The complete direct-main-build audit found
+the same latent call in the three opt-in C4 measurement gates. All four now use
+`scripts/run-main-with-shim`, closing the root-cause class rather than repairing only the aggregate
+consumer. The direct-main audit leaves only the runtime provider owner's intentional real-shim
+build outside the wrapper, and the complete privileged Linux/aarch64 `prompt-evaluate-smoke`
+passes with the repaired derived generation child.
+
+**Hosted publication incident.** The complete Linux/aarch64 exact-head preflight passed at
+`d5d9ec4c98990899c13806f680bb4a11a1d0f477`: runtime-provider owner 230.318 seconds, hosted checks
+521.062 seconds, fresh-focused 21.491 seconds, and fresh-installed 2,491.577 seconds. PR #164's
+required hosted x86_64 pinned-compiler job then exposed one remaining ELF link-order defect. The
+ordinary static shim is one archive object containing both the unavailable path and deterministic
+engine functions that call libm, while pinned Align emits its automatic `-lm` before
+`-lalign_ggml_shim`; GNU ld therefore reported unresolved `expf`, `powf`, `sincosf`, and `sqrtf`.
+The application now explicitly records the shim's real `m` dependency after the shim with the
+shipped empty `extern "C" link("m") {}` form. Align Request 54 owns the compiler root cause and its
+cross-architecture archive regression. A Linux/aarch64 clean build with `ALIGNC_LINKER=system` and
+the complete 49-assertion `runtime-provider-smoke` both pass after the repair. The change does not
+move a canonical coding-baseline artifact, so the final chain above remains binding; it does
+invalidate the publication stamp and required checks.
+
+**Current next actions.** (1) Commit the explicit libm dependency and Request 54 record. (2) Re-run
+exact-head Linux publication preflight. (3) Push PR #164, rerun every required check, merge with a
+merge commit, pull current `main`, and continue the next eligible roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The current `origin/main` merge until committed; no generated or
-local configuration files belong in the change.
+**Intentional uncommitted files.** None after the consolidated redesigned-candidate review repair
+commit. Local configuration does not belong in the change.
+
+## Merged checkpoint: R7-PROMPT (2026-09-01)
+
+PR #163 merged as `88b77ed112d36cb29b948f7212442b3a4f02afcd`. The public prompt API and CLI
+validate the exact model-carried chat template and tokenize one system/user conversation from a
+single retained GGUF snapshot. Focused real-model parity passes against pinned llama.cpp build
+10566 on eight cases, 1,538 rendered bytes, and 303 ids. Comprehensive review found three valid
+owner/precedence/publication gaps; consolidated repair `1290304` closes all of them. Exact-head
+Linux preflight and every required hosted, x86_64, and aarch64 check passed. The valid coding
+baseline chain is source `dbbb52e` -> oracle `9359d7b` -> finalization `2586eae`, all reachable from
+merged `main`.
 
 ## Merged checkpoint: R7-TOKENIZER evidence completion (2026-09-01)
 

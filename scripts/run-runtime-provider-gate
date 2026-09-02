@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+"""R7 provider-swap qualification over one fixed coding task."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import platform
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MODEL_BYTES = 4_683_073_536
+MODEL_SHA256 = "509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c"
+SERVER_BUILD = "build 10566, commit bb4caa754"
+COST_CEILING_SECONDS = 20 * 60
+CONTAINER_IMAGE = os.environ.get("ALIGN_LLM_RUNTIME_GATE_IMAGE", "c4-repair-measure:latest")
+TASK = ROOT / "eval/tasks/coding-v1/python-inclusive-range/task.json"
+RUNNER = ROOT / "eval/runners/run-coding-task.py"
+ALIAS = "qwen2.5-coder-7b-instruct"
+PATCH_PREFIX = (
+    "diff --git a/src/inclusive_range.py b/src/inclusive_range.py\n"
+    "--- a/src/inclusive_range.py\n"
+    "+++ b/src/inclusive_range.py\n"
+    "@@ -3 +3 @@\n"
+    "-    return sum(range(start, stop))\n"
+)
+server_process: subprocess.Popen[bytes] | None = None
+
+
+class GateError(RuntimeError):
+    pass
+
+
+def stop_server() -> None:
+    global server_process
+    if server_process is None or server_process.poll() is not None:
+        return
+    server_process.terminate()
+    try:
+        server_process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        server_process.kill()
+        server_process.wait(timeout=5)
+
+
+def interrupted(_signal: int, _frame: object) -> None:
+    stop_server()
+    raise SystemExit(128 + _signal)
+
+
+def run(argv: list[str], *, timeout: int, env=None, cwd=ROOT) -> subprocess.CompletedProcess[bytes]:
+    result = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=timeout, check=False)
+    if result.returncode != 0:
+        raise GateError(
+            "command failed (%d): %s\n%s"
+            % (result.returncode, " ".join(argv), result.stderr.decode("utf-8", "replace")[-4096:])
+        )
+    return result
+
+
+def extract_patch(value: str) -> str:
+    if value.startswith("diff --git ") and "```" not in value:
+        patch = value
+    else:
+        matched = re.fullmatch(r"\s*```diff\s*\n(.*?)\n```\s*", value, re.DOTALL)
+        if matched is None:
+            raise GateError("completion is neither a raw diff nor one isolated diff fence")
+        patch = matched.group(1)
+    if "\0" in patch or re.fullmatch(re.escape(PATCH_PREFIX) + r"\+[^\r\n]*\n?", patch) is None:
+        raise GateError("extracted completion is not the complete fixed-task Git diff")
+    return patch if patch.endswith("\n") else patch + "\n"
+
+
+def self_test() -> int:
+    raw = PATCH_PREFIX + "+    return sum(range(start, stop + 1))\n"
+    if extract_patch(raw) != raw or extract_patch("```diff\n" + raw.rstrip() + "\n```\n") != raw:
+        raise GateError("extractor changed an admitted patch")
+    for rejected in (
+        "text\n" + raw,
+        raw + "Done\n",
+        "```diff\n" + raw + "```\ntrailer",
+        raw.replace("@@ -3 +3 @@", "@@ -3,2 +3,2 @@"),
+        "````diff\n",
+    ):
+        try:
+            extract_patch(rejected)
+        except GateError:
+            continue
+        raise GateError("extractor admitted surrounding text")
+    with tempfile.TemporaryDirectory(prefix="align-r7-runtime-provider-self-test-") as raw_work:
+        invalid_include = str(Path(raw_work) / "missing-include")
+        with mock.patch.dict(
+            os.environ,
+            {"ALIGN_LLM_GGML_INCLUDE": invalid_include},
+            clear=True,
+        ):
+            try:
+                runtime_prerequisites()
+            except GateError:
+                pass
+            else:
+                raise GateError("an invalid configured prerequisite was hidden by an earlier N/A")
+    print("R7-RUNTIME-PROVIDER self-test: PASS")
+    return 0
+
+
+def required_path(name: str, *, directory: bool = False, executable: bool = False) -> Path | None:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return None
+    path = Path(value)
+    good = path.is_dir() if directory else path.is_file()
+    if not good or (executable and not os.access(path, os.X_OK)):
+        raise GateError(f"configured prerequisite is unusable: {name}={value}")
+    return path
+
+
+def runtime_prerequisites() -> tuple[Path, Path, Path, Path] | None:
+    checked = (
+        ("ALIGN_LLM_GGUF_MODEL", required_path("ALIGN_LLM_GGUF_MODEL")),
+        ("ALIGN_LLM_GGML_INCLUDE", required_path("ALIGN_LLM_GGML_INCLUDE", directory=True)),
+        ("ALIGN_LLM_GGML_LIB", required_path("ALIGN_LLM_GGML_LIB", directory=True)),
+        ("ALIGN_LLM_LLAMA_SERVER", required_path("ALIGN_LLM_LLAMA_SERVER", executable=True)),
+    )
+    missing = next((name for name, path in checked if path is None), None)
+    if missing is not None:
+        print(f"R7-RUNTIME-PROVIDER: N/A ({missing} unset)")
+        return None
+    model, include, library, server = (path for _, path in checked)
+    assert model is not None and include is not None and library is not None and server is not None
+    return model, include, library, server
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validation_command(patch: Path, work: Path) -> list[str]:
+    if platform.system() == "Linux":
+        return [sys.executable, str(RUNNER), str(TASK), str(patch)]
+    docker = shutil.which("docker")
+    if docker is None:
+        raise GateError("Docker is required for the Linux coding-task validator on this host")
+    inspect = subprocess.run([docker, "image", "inspect", CONTAINER_IMAGE], capture_output=True)
+    if inspect.returncode != 0:
+        raise GateError(f"configured validation image is unavailable: {CONTAINER_IMAGE}")
+    container_root = "/work/align-llm"
+    container_gate = "/tmp/align-runtime-gate"
+    return [
+        docker, "run", "--rm", "--platform", "linux/arm64",
+        "--cap-add=SYS_ADMIN", "--security-opt", "seccomp=unconfined",
+        "--security-opt", "apparmor=unconfined", "--security-opt", "systempaths=unconfined",
+        "-v", f"{ROOT}:{container_root}:ro", "-v", f"{work}:{container_gate}:ro",
+        "-e", f"ALIGN_LLM_TEMP_ROOT={container_gate}", "-w", container_root,
+        CONTAINER_IMAGE, "python3", "eval/runners/run-coding-task.py",
+        "eval/tasks/coding-v1/python-inclusive-range/task.json", f"{container_gate}/{patch.name}",
+    ]
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def wait_ready(port: int, deadline: float) -> None:
+    url = f"http://127.0.0.1:{port}/health"
+    while time.monotonic() < deadline:
+        if server_process is not None and server_process.poll() is not None:
+            raise GateError(f"llama-server exited during startup ({server_process.returncode})")
+        try:
+            with urllib.request.urlopen(url, timeout=2) as response:
+                if response.status == 200:
+                    return
+        except (urllib.error.URLError, OSError):
+            time.sleep(0.5)
+    raise GateError("llama-server did not become ready within 180 seconds")
+
+
+def main() -> int:
+    global server_process
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise GateError("runtime provider gate accepts no arguments")
+
+    prerequisites = runtime_prerequisites()
+    if prerequisites is None:
+        return 0
+    model, include, library, server = prerequisites
+    started = time.monotonic()
+
+    # Validate task-runner prerequisites without consuming a task-validation slot.
+    with tempfile.TemporaryDirectory(prefix="align-r7-runtime-provider-probe-") as raw_probe:
+        probe = Path(raw_probe) / "probe.patch"
+        validation_command(probe, Path(raw_probe))
+
+    if model.stat().st_size != MODEL_BYTES or file_sha256(model) != MODEL_SHA256:
+        raise GateError("the configured GGUF does not have the pinned size and SHA-256")
+    version = run([str(server), "--version"], timeout=30)
+    version_text = (version.stdout + version.stderr).decode("utf-8", "replace")
+    if SERVER_BUILD not in version_text:
+        raise GateError("llama-server is not pinned build 10566 commit bb4caa754")
+    free = shutil.disk_usage(Path(os.environ.get("ALIGN_LLM_RUNTIME_PROVIDER_TMPDIR", "/tmp"))).free
+    if free < MODEL_BYTES + 2 * 1024**3:
+        raise GateError("scratch space is below model size plus 2 GiB")
+
+    scratch = Path(os.environ.get("ALIGN_LLM_RUNTIME_PROVIDER_TMPDIR", "/tmp"))
+    with tempfile.TemporaryDirectory(prefix="align-r7-runtime-provider-", dir=scratch) as raw_work:
+        work = Path(raw_work)
+        geometry = work / "model-ir.json"
+        pack = work / "model.alignpack"
+        pack_document = work / "alignpack.json"
+        prompt = work / "prompt.txt"
+        prompt.write_text(
+            "Fix the pinned python-inclusive-range task. Only edit src/inclusive_range.py.\n"
+            "Current file:\n"
+            "def inclusive_total(start: int, stop: int) -> int:\n"
+            "    \"\"\"Return the sum of every integer from start through stop.\"\"\"\n"
+            "    return sum(range(start, stop))\n"
+            "Tests require the stop value to be included and descending intervals to remain empty.\n"
+            "Make the smallest one-line change; do not edit the function signature or docstring.\n"
+            "Return only a unified Git diff. Its exact fixed prefix must be:\n"
+            "diff --git a/src/inclusive_range.py b/src/inclusive_range.py\n"
+            "--- a/src/inclusive_range.py\n"
+            "+++ b/src/inclusive_range.py\n"
+            "@@ -3 +3 @@\n"
+            "-    return sum(range(start, stop))\n"
+            "Complete that diff with exactly one added replacement line.\n",
+            encoding="utf-8",
+        )
+        run([str(ROOT / "main"), "--model-ir", str(model), str(geometry)], timeout=180)
+        run([str(ROOT / "main"), "--pack", str(model), str(pack), str(pack_document)], timeout=600)
+
+        shim_dir = work / "lib"
+        build_env = dict(os.environ)
+        build_env.update({
+            "ALIGN_LLM_GGML_INCLUDE": str(include),
+            "ALIGN_LLM_GGML_LIB": str(library),
+            "ALIGN_LLM_GGML_SHIM_DIR": str(shim_dir),
+        })
+        run([str(ROOT / "scripts/build-ggml-shim")], timeout=180, env=build_env)
+        link_paths = [str(shim_dir), str(library), build_env.get("LIBRARY_PATH", "")]
+        build_env["LIBRARY_PATH"] = ":".join(value for value in link_paths if value)
+        run([str(ROOT / "scripts/alignc"), "build", "src/runtime_provider_gate.align"],
+            timeout=180, env=build_env)
+        helper = work / "runtime-provider-gate"
+        os.replace(ROOT / "runtime_provider_gate", helper)
+        runtime_env = dict(build_env)
+        runtime_env["DYLD_LIBRARY_PATH"] = ":".join([str(shim_dir), str(library)])
+        runtime_env["LD_LIBRARY_PATH"] = runtime_env["DYLD_LIBRARY_PATH"]
+
+        port = free_port()
+        server_log = (work / "llama-server.log").open("wb")
+        server_process = subprocess.Popen(
+            [str(server), "-m", str(model), "--alias", ALIAS, "--host", "127.0.0.1",
+             "--port", str(port), "-ngl", "0", "-t", "4", "-c", "512", "--no-warmup"],
+            cwd=work, stdin=subprocess.DEVNULL, stdout=server_log, stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        try:
+            wait_ready(port, time.monotonic() + 180)
+            local_record = work / "local-result.json"
+            run([str(helper), "local", f"http://127.0.0.1:{port}/v1/chat/completions",
+                 ALIAS, str(prompt), str(local_record)], timeout=360, env=runtime_env)
+        finally:
+            stop_server()
+            server_log.close()
+
+        runtime_record = work / "runtime-result.json"
+        run([str(helper), "runtime", str(model), str(pack), str(geometry), str(prompt),
+             str(runtime_record)], timeout=600, env=runtime_env)
+
+        patches = []
+        for label, record_path in (("local", local_record), ("runtime", runtime_record)):
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            if record.get("schema_version") != 2 or record.get("status") != "ok":
+                raise GateError(f"{label} provider did not produce an OK schema-2 record")
+            patch = work / f"{label}.patch"
+            output = record.get("output", "")
+            try:
+                extracted = extract_patch(output)
+            except GateError as error:
+                raise GateError(
+                    f"{label} extraction failed: {error}; completion={output[:1024]!r}"
+                ) from error
+            patch.write_text(extracted, encoding="utf-8")
+            patches.append(patch)
+        for patch in patches:
+            try:
+                run(validation_command(patch, work), timeout=120)
+            except GateError as error:
+                raise GateError(
+                    f"{patch.stem} validation failed: {error}; "
+                    f"patch={patch.read_text(encoding='utf-8')[:2048]!r}"
+                ) from error
+
+        elapsed = time.monotonic() - started
+        if elapsed > COST_CEILING_SECONDS:
+            raise GateError(f"gate exceeded its 20-minute maintenance ceiling ({elapsed:.1f}s)")
+        print(
+            "R7-RUNTIME-PROVIDER: PASS "
+            f"(elapsed={elapsed:.1f}s local_patch={file_sha256(patches[0])[:12]} "
+            f"runtime_patch={file_sha256(patches[1])[:12]})"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (GateError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+        stop_server()
+        print(f"R7-RUNTIME-PROVIDER: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)

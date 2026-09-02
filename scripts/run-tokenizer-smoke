@@ -478,6 +478,86 @@ def main() -> int:
         if harness_build.returncode != 0:
             fail(f"API harness build failed: {harness_build.stderr.decode('utf-8', 'replace')}")
 
+        template = (ROOT / "scripts/fixtures/qwen2.5-coder-chat-template.jinja").read_text(
+            encoding="utf-8"
+        )
+        text_eos_id = tokens.index("</s>")
+        generation_models = []
+
+        text_only_eog = work / "generation-text-eog.gguf"
+        fixture.write_model(text_only_eog, tokens, types, merges, chat_template=template)
+        generation_models.append(text_only_eog)
+
+        duplicate_eog = work / "generation-deduplicated-eog.gguf"
+        fixture.write_model(
+            duplicate_eog,
+            tokens,
+            types,
+            merges,
+            chat_template=template,
+            extra_kvs=[fixture.Kv("tokenizer.ggml.eos_token_id", fixture.i32v(text_eos_id))],
+        )
+        generation_models.append(duplicate_eog)
+
+        empty_eog = work / "generation-empty-eog.gguf"
+        fixture.write_model(empty_eog, tokens[:-1], types[:-1], merges, chat_template=template)
+        generation_models.append(empty_eog)
+
+        wrong_type_eog = work / "generation-wrong-type-eog.gguf"
+        fixture.write_model(
+            wrong_type_eog,
+            tokens,
+            types,
+            merges,
+            chat_template=template,
+            extra_kvs=[fixture.Kv("tokenizer.ggml.eos_token_id", fixture.strv("266"))],
+        )
+        generation_models.append(wrong_type_eog)
+
+        range_eog = work / "generation-range-eog.gguf"
+        fixture.write_model(
+            range_eog,
+            tokens,
+            types,
+            merges,
+            chat_template=template,
+            extra_kvs=[fixture.Kv("tokenizer.ggml.eos_token_id", fixture.i32v(len(tokens)))],
+        )
+        generation_models.append(range_eog)
+
+        unsupported_tokens = tokens + ["<|return|>", "<|call|>", "<|end|>"]
+        unsupported_eog = work / "generation-unsupported-eog.gguf"
+        fixture.write_model(
+            unsupported_eog,
+            unsupported_tokens,
+            types + [3, 3, 3],
+            merges,
+            chat_template=template,
+        )
+        generation_models.append(unsupported_eog)
+
+        generation_result = command(
+            [str(HARNESS), "--generation", *map(str, generation_models)], timeout=30
+        )
+        generation_lines = generation_result.stdout.decode().splitlines()
+        if (
+            generation_result.returncode != 0
+            or len(generation_lines) != 6
+            or not generation_lines[0].startswith(f"OK:{text_eos_id}:")
+            or generation_lines[0] != generation_lines[1]
+            or generation_lines[2:] != [
+                "R7_EOG_METADATA",
+                "R7_EOG_METADATA",
+                "R7_EOG_METADATA",
+                "R7_EOG_UNSUPPORTED",
+            ]
+        ):
+            fail(
+                f"generation EOG publication drifted: exit={generation_result.returncode} "
+                f"lines={generation_lines!r} "
+                f"stderr={generation_result.stderr.decode('utf-8', 'replace')!r}"
+            )
+
         absent_model = work / "absent-one-shot.gguf"
         expected_one_shot = f"ONE-SHOT:{len(tokens)}:{len(types)}\n".encode()
         for attempt in range(2):
@@ -543,7 +623,7 @@ def main() -> int:
         f"tokenizer smoke: PASS ({len(cases)} text cases, 4 ordinary specials, "
         f"256-special accepted boundary, "
         f"{len(expected_codes)} model failures, 6 operation boundaries, "
-        f"2 one-shot reader passes, 1 replacement snapshot)"
+        f"6 generation EOG cases, 2 one-shot reader passes, 1 replacement snapshot)"
     )
     return 0
 

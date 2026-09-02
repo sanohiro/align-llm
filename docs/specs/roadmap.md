@@ -1163,7 +1163,7 @@ The current forward delivery order is:
     10566 with 50,893 input bytes and 69,485 compared ids. Exact-head Linux preflight and all
     hosted, x86_64, and aarch64 required checks passed; Request 22 is closed.
 
-42. **R7-PROMPT — provider text to exact Qwen2.5-Coder prompt token ids. Active.** The existing
+42. **R7-PROMPT — provider text to exact Qwen2.5-Coder prompt token ids.** The existing
     `GenerationRequest` carries `system` and `user`, while the runtime begins at ids. R7-TOKENIZER
     can encode arbitrary text but deliberately does not interpret `tokenizer.chat_template`, so a
     caller still cannot construct the model's actual conversation. This capability validates the
@@ -1173,6 +1173,68 @@ The current forward delivery order is:
     history, inference, sampling, EOG termination, provider dispatch, streaming, and decoded text
     remain deferred. The authoritative ledger and closure matrix are
     [`r7-prompt.md`](r7-prompt.md).
+
+    **Merged as PR #163 (`88b77ed`) on 2026-09-01.** The public prompt preparation API and CLI
+    validate the model-carried supported template, retain one GGUF snapshot across template and
+    tokenizer reads, and match pinned llama.cpp build 10566 on eight real-model cases (1,538 prompt
+    bytes and 303 token ids). The repaired candidate closes all three comprehensive-review findings,
+    exact-head Linux preflight and every required hosted platform check passed, and the valid coding
+    baseline chain remains reachable from merged `main`.
+
+43. **R7-RUNTIME-PROVIDER — in-process text generation through the resident dense runtime.
+    Implementation candidate.**
+    Connect R7-PROMPT's exact prompt ids to the existing resident Qwen2 decode loop, stop before an
+    EOG token or at the requested completion bound, detokenize the generated non-EOG ids, and expose
+    the result through an explicit `AlignRuntime` `ModelProvider` arm. The provider binds the retained
+    GGUF snapshot to both the alignpack source identity and the exact model-derived geometry before
+    inference; it does not trust three independently named artifacts. Streaming, non-greedy sampling,
+    seeds, runtime timeouts, prefix-cache reuse, GPU execution, and MoE execution remain deferred.
+    A named real-model qualification runs the same fixed `python-inclusive-range` request through
+    local OpenAI-compatible llama.cpp and align-runtime, persists both existing schema-2 generation
+    records, and requires both completions to pass the existing coding-task validator. The
+    authoritative public-contract ledger, closure matrix, validation order, and pre-implementation
+    qualification ceiling are [`r7-runtime-provider.md`](r7-runtime-provider.md).
+
+    The candidate now carries prompt/EOG preparation, exact geometry and source-identity binding,
+    stop-aware resident generation, detokenization, provider dispatch, the public CLI, a hosted
+    synthetic owner, and the opt-in fixed-task gate. On the 16 GiB Apple reference host the real
+    gate passed in 62.7 seconds: pinned llama.cpp and `AlignRuntime` both produced the same
+    validator-passing patch (SHA-256 prefix `5d6b107e706a`) within the precommitted 20-minute
+    maintenance ceiling. Comprehensive review found and repaired three fixed-gate contract defects.
+    Publication preflight then exposed a clean-Linux build dependency on an ambient ggml shim; the
+    candidate now owns a temporary static hosted stub and an explicit real-shim build path. The
+    resulting final comprehensive review found two valid inference-boundary defects: artifact
+    identity did not survive path reopen into the exact objects consumed by inference, and provider
+    generation could publish an argmax from a non-finite logit plane. The re-scoped repair retains
+    and rechecks source identity on the exact inference pack handle, compares the exact reopened
+    geometry image, and rejects any non-finite prefill or decode step before token publication.
+    Review of the redesigned boundary found two narrow contract-enforcement defects: the geometry
+    reopen itself was not capped before comparison, and prerequisite identity work was outside the
+    declared complete-gate timer. The consolidated repair applies the same 16 MiB cap to the exact
+    reopen, owns a cap-plus-one sparse-replacement regression that requires the bounded-read error
+    rather than a later identity mismatch, and starts timing before every configured prerequisite
+    probe. The repaired complete gate passes in 75.2 seconds and both provider legs
+    again produce the validator-passing `5d6b107e706a` patch. Exact-head publication preflight then
+    found one remaining clean-link consumer: the standalone prompt seed-attestation harness imports
+    the exhaustive provider dispatcher and therefore the runtime FFI, but did not use the hosted
+    static-shim wrapper. It now routes its direct compiler run through that wrapper. The next
+    Linux/aarch64 publication run found that the original 1 TiB sparse regression was rejected by
+    the installed worker's 512 MiB file-size ceiling before it reached generation; the fixture is
+    now 16 MiB plus one byte and asserts the exact capped-read refusal. A fresh exact-head
+    installed run then reached a second clean-link consumer in the capable-only prompt evaluation
+    adoption. The evaluator and all three opt-in C4 measurement gates now route their derived main
+    builds through the same static-shim wrapper as every other hosted main consumer. The resulting
+    exact-head Linux/aarch64 publication run passed every phase at `d5d9ec4`, but PR #164's hosted
+    x86_64 pinned-compiler job exposed a GNU ld ordering defect: pinned Align emits automatic
+    `-lm` before the user `libalign_ggml_shim.a`, whose one object contains deterministic engine
+    functions that reference libm even when the ordinary unavailable path is selected. `ggml_ffi`
+    now explicitly records `m` after `align_ggml_shim` with the shipped empty `link("m")` form;
+    Align Request 54 owns the compiler-order root cause. A system-linker Linux/aarch64 clean build
+    and the complete 49-assertion runtime-provider owner pass after the repair; exact-head
+    publication and required checks must be rerun. The final Linux/aarch64
+    coding-baseline chain is source `0278e6e`
+    -> oracle `2ccb385` -> finalization `94fee50`; it binds the new wrapper, shim builder, and static
+    stub source and passes the complete `make baseline-check`.
 
 ### Status (2026-08-28)
 

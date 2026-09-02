@@ -22,7 +22,9 @@ set -euo pipefail
 #                           `engine+pad-oversize` select the ggml-free deterministic engine of
 #                           `docs/specs/r5a-dense-layer-forward.md` section 5.1 and need the stub
 #   ALIGN_LLM_GGML_SHIM_DIR output directory; defaults to `build/lib` inside the work tree
+#   ALIGN_LLM_GGML_SHIM_STATIC `1` builds a static stub archive; it refuses real/forced modes
 #   CC                      C compiler; defaults to `cc`
+#   AR                      archive tool for static mode; defaults to `ar`
 #
 # **Toolchain assumption, stated rather than assumed.** A working `cc` on `PATH` is already a
 # prerequisite of this repository: `alignc` links every executable through it, so `make build` does
@@ -49,6 +51,20 @@ root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 # (`scripts/fresh-align-compiler`), so an aggregate member may not write a build artifact there.
 out_dir="${ALIGN_LLM_GGML_SHIM_DIR:-${root_dir}/build/lib}"
 compiler="${CC:-cc}"
+archiver="${AR:-ar}"
+static_mode="${ALIGN_LLM_GGML_SHIM_STATIC:-0}"
+
+case "${static_mode}" in
+  0|1) ;;
+  *)
+    printf '%s\n' "build-ggml-shim: ALIGN_LLM_GGML_SHIM_STATIC must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
+if [ "${static_mode}" = 1 ] && { [ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ] || [ -n "${ALIGN_LLM_GGML_FORCE:-}" ]; }; then
+  printf '%s\n' "build-ggml-shim: static mode accepts only the ordinary ggml-free stub" >&2
+  exit 1
+fi
 
 # The platform test is bash's own `OSTYPE`, not `uname`. The fresh worker image ships a curated
 # tool set (`image/fresh/Dockerfile`) that has no `uname`, and this script runs inside that image
@@ -57,7 +73,11 @@ case "${OSTYPE:-}" in
   darwin*) suffix=dylib ;;
   *)       suffix=so ;;
 esac
-library="${out_dir}/libalign_ggml_shim.${suffix}"
+if [ "${static_mode}" = 1 ]; then
+  library="${out_dir}/libalign_ggml_shim.a"
+else
+  library="${out_dir}/libalign_ggml_shim.${suffix}"
+fi
 
 source_file="${root_dir}/scripts/ggml_shim_stub.c"
 flavour=stub
@@ -281,13 +301,12 @@ if ! command -v "${compiler}" >/dev/null 2>&1; then
   printf '%s\n' "build-ggml-shim: no C compiler (CC=${compiler}); alignc needs one to link too" >&2
   exit 1
 fi
+if [ "${static_mode}" = 1 ] && ! command -v "${archiver}" >/dev/null 2>&1; then
+  printf '%s\n' "build-ggml-shim: no archive tool (AR=${archiver})" >&2
+  exit 1
+fi
 
 mkdir -p "${out_dir}"
-
-case "${OSTYPE:-}" in
-  darwin*) name_flags=("-install_name" "${library}") ;;
-  *)       name_flags=("-Wl,-soname,${library}") ;;
-esac
 
 # `-ffp-contract=off` is a **correctness** flag here, not an optimisation preference
 # (`docs/specs/r5a-dense-layer-forward.md` section 6, correction C15). `a * b + c` may be
@@ -299,12 +318,26 @@ esac
 # compiler that does not honour or implement the pragma (including GCC 14.2), and
 # `-DALIGN_GGML_FP_CONTRACT_OFF=1` is what lets the two runners assert that the library they loaded
 # was built this way.
-"${compiler}" -O2 -ffp-contract=off -DALIGN_GGML_FP_CONTRACT_OFF=1 \
-  -fPIC -shared -Wall -Wextra -Werror \
-  "${include_flags[@]+"${include_flags[@]}"}" \
-  -o "${library}" "${source_file}" \
-  "${name_flags[@]}" \
-  "${link_flags[@]+"${link_flags[@]}"}"
+if [ "${static_mode}" = 1 ]; then
+  object="${out_dir}/align_ggml_shim.o"
+  "${compiler}" -O2 -ffp-contract=off -DALIGN_GGML_FP_CONTRACT_OFF=1 \
+    -fPIC -Wall -Wextra -Werror -c -o "${object}" "${source_file}"
+  rm -f "${library}"
+  "${archiver}" rcs "${library}" "${object}"
+  rm -f "${object}"
+  flavour="static-${flavour}"
+else
+  case "${OSTYPE:-}" in
+    darwin*) name_flags=("-install_name" "${library}") ;;
+    *)       name_flags=("-Wl,-soname,${library}") ;;
+  esac
+  "${compiler}" -O2 -ffp-contract=off -DALIGN_GGML_FP_CONTRACT_OFF=1 \
+    -fPIC -shared -Wall -Wextra -Werror \
+    "${include_flags[@]+"${include_flags[@]}"}" \
+    -o "${library}" "${source_file}" \
+    "${name_flags[@]}" \
+    "${link_flags[@]+"${link_flags[@]}"}"
+fi
 
 if [ ! -f "${library}" ]; then
   printf '%s\n' "build-ggml-shim: the library was not produced: ${library}" >&2

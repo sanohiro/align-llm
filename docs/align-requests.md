@@ -74,8 +74,9 @@ join routine hosted/capable aggregates merely because it is important; run it wh
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
 > **Status (2026-09-01): Requests 1–20 and 22 are CLOSED. Request 21 and Requests 23–43 and
-> 45–46 are PROPOSED and non-blocking; Request 44 remains ALIGN_LLM_VERIFIED. R7-TOKENIZER is the
-> active owner-verified implementation candidate, with publication review and preflight pending.
+> 45–46 are PROPOSED and non-blocking; Request 44 remains ALIGN_LLM_VERIFIED.
+> R7-RUNTIME-PROVIDER is the active implementation candidate, with publication review and
+> preflight pending.
 > See the end of this narrative for the next consumer named for each remaining pending user/Align
 > decision.** C6-EVALUATION merged as align-llm PR #100 (`282062bf00416f5e0df678b8bd885709084b4e16`); its final capable integration gate passed at head `049172f5be57002c2426f012fe23038f570f5069` in CI run 32490981785, including both installed native profiles, closing Requests 11 and 14. C6-MEASURED then shipped the consuming provider transport and made `c6e-request2-adoption` a hosted-lane member; its focused owner and the complete capable check graph plus the wired `prompt-gate-check` gate passed at head `7273f65bfc1a2604daf37b2bd7748a46d2bd59f2`, closing Request 2 when PR #103 (`c9a510dc6ef4dc123f586eb33f447f02348061fb`) merged. C7-PERSISTED-RESULT then ran Request 9's named adoption fixture, implemented its owned-result consumer, and passed the C7 lifetime/artifact qualification plus the supervised final `make ci` on the same branch, closing Request 9 at the unchanged pin when PR #104 (`a52b9ac69cdd3a47574a5a4dc426e7edc8294dbf`) merged. C7-P then added Request 20 while building the `aarch64-apple-darwin` platform profile: Align CI's `macos-15` leg executed no test binary, so Request 9's own `m5_owned_json` boundary regressions did not run on macOS even though its contract is target-local. Align PR #887 closed that provider-side gap; align-llm pins the containing Align `main`, both the Darwin client profile and supervised capable graph passed, and publication PR #107 (`eb6108693c74ae9933b224db4e6786058b34e9d6`) closed the request. Align PR #891 (`4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`) closed Request 19's provider-side compile-cost gap; align-llm adopted that merge, restored `prompt-verifier-smoke` to the hosted topology, passed its focused owner and the complete fresh-worker graph with the member restored, and publication PR #108 merged as `75d7cc39b40b287d47b1185306d6bd8e7eb582dc`. The request changes no target-local align-llm boundary, so the already-green Align platform CI owns compiler portability and no duplicate pin-bump platform qualification is selected. R0-GGUF-INSPECT then added Request 21, the missing read-only random-access `file` constructor: both constructors Align ships (`fs.create_rw` and `fs.open_rw`) demand `O_RDWR`, so inspecting a model requires write access to a file the client never writes. It is non-blocking — R0 ships on `fs.open_rw` with a documented writable-path precondition — and becomes blocking for the first consumer that must read a model from a read-only mount, a root-owned cache, or an image layer. R0-GGUF-INSPECT also added Request 22, the missing borrow-indexing of Move-element arrays (`array<string>`, arrays of a record with a Move field): `check_index` rejects it outright, so `src/gguf.align` carries deferred tensor `absolute_offset` values as a NUL-separated prefix stream plus a parallel `array<i64>` instead of an indexable record array. It is also non-blocking — the workaround is in place — with all of R0 as independent work.
 > Request 22 update: Align PR #913 merged as `e6942a025ccc5197cfea95547cefdeee27cb157d`,
@@ -9123,6 +9124,15 @@ module split (a `gpu_forward` that computes nothing and delegates every column s
 `model_forward`, reading the typed records itself to build its own device-specific document) is
 unavailable at this pin, and `render_parts` returning strings is the substitute R5C shipped instead.
 
+**R7-RUNTIME-PROVIDER is another direct client.** Its first implementation called
+`decode_step.generate_resident` from `provider_runtime`, then read the filled `StepColumns.argmax`
+array to assemble generated ids. `alignc build` refused that read with the same invalidated-borrow
+diagnostic above; an accessor and a full copying accessor were refused at the call site too. The
+settled client follows `render_parts`: `decode_step` owns the typed columns, renders the generated
+ids as one bounded owned JSON array string inside that module, and returns it beside the scalar
+`Outcome`. `provider_runtime` decodes that owned string and never reads a foreign out-parameter.
+Status, priority, blocking state, and the requested Align capability remain unchanged.
+
 ### Requested capability
 
 Admit a caller in one module to read the fields of a `borrow mut` record out-parameter after the
@@ -10346,6 +10356,95 @@ caller's directory and says so.
    element types is refused by `check_index` at this pin — so a consumer that reads the returned
    array needs 22 as well. That intersection is part of this request rather than a surprise for its
    implementer: either 22 lands first, or `read_dir` ships a shape that can be consumed without it.
+
+---
+
+## Request 54 — ELF support libraries precede user static archives and cannot resolve their symbols
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none after the explicit application dependency below. R7-RUNTIME-PROVIDER's
+  first hosted PR check exposed the gap by failing its clean static-shim link.
+Independent work that may continue: all R7 work. `src/ggml_ffi.align` explicitly records `m` after
+  `align_ggml_shim`, using the shipped `extern "C" link("m")` surface rather than a compatibility
+  layer or proposed API.
+Resume condition: an Align release orders ELF support libraries after every user archive that may
+  reference them, or repeats the support group after user libraries, and passes the archive repro
+  below.
+Align commit or pull request: none
+align-llm verification: remove the explicit empty `extern "C" link("m")` block from
+  `src/ggml_ffi.align`; on Linux, build the ordinary static shim through
+  `scripts/run-main-with-shim` and require `alignc build src/main.align` plus
+  `make runtime-provider-smoke` to pass without unresolved `expf`, `powf`, `sincosf`, or `sqrtf`.
+```
+
+### Motivation and current sibling evidence
+
+At Align commit `27770420555d19b98eced133369c168e9c6d4a2f`, the ELF driver constructs the final link
+in this relevant order:
+
+```text
+objects libalign_runtime.a ... -lpthread -ldl -lm -l<user libraries>
+```
+
+`support_libs(ObjectFormat::Elf)` supplies `-lm`, while `ordered_link_libs` contains libraries from
+`extern "C" link("name")`. This is correct for math references in the preceding runtime archive,
+but not for a later user static archive: ELF archive resolution is left to right, so a math symbol
+first introduced by that archive is still undefined after the earlier `-lm` has been scanned.
+
+R7-RUNTIME-PROVIDER made the failure concrete. Its ordinary hosted build compiles
+`scripts/ggml_shim_stub.c` into `libalign_ggml_shim.a`. The archive contains the unavailable-engine
+entry points selected by normal hosted commands and the deterministic engine used by focused
+owners in one object. The latter calls libm. GitHub's Ubuntu 24.04 pinned-compiler job failed at
+head `d5d9ec4c98990899c13806f680bb4a11a1d0f477` with unresolved `expf`, `powf`, `sincosf`, and
+`sqrtf` after the driver emitted its automatic `-lm` before `-lalign_ggml_shim`. The same source
+links on Mach-O because those symbols are libSystem re-exports, which is why the defect survived the
+Apple host. The earlier Linux/aarch64 publication profile passed and therefore did not substitute
+for this required hosted x86_64 boundary; the hosted bundle job is the evidence that exposed the
+order on its actual platform.
+
+The application repair is explicit and uses only a shipped surface:
+
+```align
+extern "C" link("align_ggml_shim") {
+  // shim declarations
+}
+
+extern "C" link("m") {}
+```
+
+Sema preserves first-seen library order, so the resulting suffix is
+`-lalign_ggml_shim -lm`. The empty block declares no symbol and exists only to state the shim's real
+dependency. It is safe to keep until the compiler repair ships, but requiring every static-library
+consumer to know and compensate for the driver's internal support-library order is not the desired
+Align contract.
+
+### Proposed surface
+
+No language surface change. On ELF, the driver must place the automatic support libraries after
+all object and archive inputs that may reference them. Either of these deterministic command
+shapes is acceptable:
+
+```text
+objects libalign_runtime.a ... -l<user libraries> -lpthread -ldl -lm
+objects libalign_runtime.a ... -lpthread -ldl -lm -l<user libraries> -lpthread -ldl -lm
+```
+
+The first is preferable because it has one support group. Mach-O remains unchanged.
+
+### Acceptance criteria
+
+1. A compiler fixture archives one C object that exports a called symbol and itself calls `expf`.
+   An Align program declares only `extern "C" link("fixture")`, builds on x86_64 and aarch64 ELF
+   without an explicit `link("m")`, runs, and returns the expected value.
+2. A link-plan unit test proves the final user static archive precedes the `-lm` that resolves it;
+   the test covers the ordinary, instrumented-PGO, whole-program, and per-unit link paths that share
+   the plan.
+3. Existing capability-library order, including the `libpq` closure, remains deterministic and all
+   current linker tests pass.
+4. Mach-O emits no new `-lm`, `-ldl`, or `-lpthread` arguments.
 
 ---
 

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# R7-RUNTIME-PROVIDER build owner. `main` now reaches the resident runtime's ggml FFI. An ordinary
+# build links a temporary static unavailable-engine stub so the one-file product remains runnable
+# on every hosted machine and leaves no fresh-worker overlay artifact. Explicit ggml inputs retain
+# the real shared-shim path used by runtime qualification and local inference.
+
+if [ "$#" -ne 3 ]; then
+  printf '%s\n' "run-main-with-shim: expected ALIGNC build|run ENTRY" >&2
+  exit 2
+fi
+
+compiler=$1
+action=$2
+entry=$3
+case "${action}" in
+  build|run) ;;
+  *)
+    printf '%s\n' "run-main-with-shim: action must be build or run" >&2
+    exit 2
+    ;;
+esac
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+temporary=""
+cleanup() {
+  status=$?
+  if [ -n "${temporary}" ] && [ -d "${temporary}" ]; then
+    rm -rf "${temporary}"
+  fi
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+if [ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ]; then
+  shim_dir=$("${root_dir}/scripts/build-ggml-shim")
+else
+  temporary=$(mktemp -d)
+  shim_dir=$(ALIGN_LLM_GGML_SHIM_DIR="${temporary}" ALIGN_LLM_GGML_SHIM_STATIC=1 \
+    ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim")
+fi
+
+export LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+"${compiler}" "${action}" "${entry}"

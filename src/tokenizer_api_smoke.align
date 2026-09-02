@@ -31,6 +31,26 @@ fn print_text_size(result_value: tokenizer_qwen2.TokenTextResult) {
   }
 }
 
+fn print_generation(result_value: tokenizer_qwen2.GenerationPromptResult) {
+  match result_value.status {
+    Error => { print(result_value.error_code) },
+    Ok => {
+      line := builder()
+      line.write("OK:")
+      mut at := 0
+      loop {
+        if at >= result_value.eog_token_ids.len() { break }
+        if at > 0 { line.write(",") }
+        line.write_int(result_value.eog_token_ids[at])
+        at = at + 1
+      }
+      line.write(":")
+      line.write_int(result_value.token_ids.len())
+      print(line.to_string())
+    },
+  }
+}
+
 fn error_kind(error_value: Error) -> i64 = match error_value {
   NotFound => 1,
   Invalid => 2,
@@ -196,6 +216,17 @@ fn snapshot_replacement(path: str) -> Result<(), Error> {
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() >= 3 && args[1] == "--generation" {
+    mut generation_at := 2
+    loop {
+      if generation_at >= args.len() { break }
+      prepared := tokenizer_qwen2.prepare_generation_model(
+        args[generation_at], "sys", "user")?
+      print_generation(prepared)
+      generation_at = generation_at + 1
+    }
+    return Ok(())
+  }
   if args.len() == 3 && args[1] == "--publication" {
     return publication(args[2])
   }

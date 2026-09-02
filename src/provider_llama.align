@@ -123,6 +123,7 @@ fn validate_kind(kind: model.ProviderKind) -> Result<(), Error> = match kind {
   CloudOpenAI => Err(Error.Invalid),
   LocalOpenAI => Err(Error.Invalid),
   LlamaCpp => Ok(()),
+  AlignRuntime => Err(Error.Invalid),
 }
 
 // The single source of llama.cpp request bytes: the same bytes go on the wire and are the SHA-256

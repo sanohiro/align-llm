@@ -8,7 +8,8 @@ output_file="$(mktemp)"
 diagnostic_file="$(mktemp)"
 trap 'rm -f "${output_file}" "${diagnostic_file}"' EXIT
 
-if ! "${compiler}" run "${project_root}/src/prompt_seed_attestation_smoke.align" \
+if ! "${project_root}/scripts/run-main-with-shim" "${compiler}" run \
+  "${project_root}/src/prompt_seed_attestation_smoke.align" \
   >"${output_file}" 2>"${diagnostic_file}"; then
   printf 'prompt seed attestation compiler failed\n' >&2
   tail -c 32768 "${diagnostic_file}" >&2

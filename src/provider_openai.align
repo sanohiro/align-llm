@@ -97,6 +97,7 @@ fn validate_kind(kind: model.ProviderKind) -> Result<(), Error> = match kind {
   CloudOpenAI => Ok(()),
   LocalOpenAI => Ok(()),
   LlamaCpp => Err(Error.Invalid),
+  AlignRuntime => Err(Error.Invalid),
 }
 
 fn validate_request_config(config: model.ProviderConfig) -> Result<(), Error> {
@@ -105,6 +106,7 @@ fn validate_request_config(config: model.ProviderConfig) -> Result<(), Error> {
     CloudOpenAI => true,
     LocalOpenAI => false,
     LlamaCpp => false,
+    AlignRuntime => false,
   }
   if cloud {
     if config.api_key.len() == 0 {

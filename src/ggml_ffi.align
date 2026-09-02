@@ -271,6 +271,15 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_graph_compute(backend: raw, graph: raw) -> i32
 }
 
+// The hosted static shim contains the deterministic engine as well as the ordinary unavailable
+// path, so its one archive object carries libm references even when the executable never selects
+// that engine. The pinned ELF driver places its automatic `-lm` before user-declared archives;
+// repeat the shim's direct dependency after `-lalign_ggml_shim` so a clean static link is ordered
+// correctly. Align Request 54 owns removing this explicit repetition once the driver orders its
+// support libraries after user archives. An empty block is sufficient because `link` records the
+// library dependency independently of foreign declarations.
+extern "C" link("m") {}
+
 // ---------------------------------------------------------------------------------------------
 // The safe API above them
 // ---------------------------------------------------------------------------------------------

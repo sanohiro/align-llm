@@ -675,7 +675,10 @@ def in_container(values: argparse.Namespace) -> int:
     compiler = os.environ.get("C4_TEMPLATE_ALIGNC", "/tc/alignc")
     run_directory = root / run_relative
     run_directory.mkdir(parents=True, exist_ok=True)
-    built = run([compiler, "build", str(root / "src/main.align")], cwd=str(run_directory))
+    built = run(
+        [str(root / "scripts/run-main-with-shim"), compiler, "build", str(root / "src/main.align")],
+        cwd=str(run_directory),
+    )
     if built.returncode != 0 or not (run_directory / "main").exists():
         sys.stderr.write(built.stderr.decode("utf-8", "replace")[-8192:])
         raise GateError("the derived generation child did not compile")

@@ -163,6 +163,32 @@ local OpenAI-compatible and llama.cpp generate/stream calls, checks environment-
 authentication, Cloud HTTP rejection, SSE failure handling, exact tokenizer counts, HTTP status
 diagnostics, and the shared result records. Real Cloud OpenAI calls require HTTPS.
 
+R7 also exposes the dense resident runtime through an explicit `AlignRuntime` provider kind. Its
+configuration uses `model` for the GGUF and the dedicated `runtime_pack_path` and
+`runtime_geometry_path` fields for the source-bound alignpack and exact derived model-IR document;
+endpoint, API key, tokenizer endpoint, timeout, streaming, seed, and nonzero temperature are not
+accepted. The public CLI is:
+
+```sh
+./main --provider align-runtime MODEL.gguf MODEL.alignpack MODEL-IR.json PROMPT RESULT.json [MAX_TOKENS]
+```
+
+The default maximum is 64 and the accepted range is 1 through 128. The terminal EOG id is excluded
+from the returned text, while a maximum-terminated id is included. Use `make
+runtime-provider-smoke` for the hosted synthetic owner. The opt-in real provider-swap gate is
+`make runtime-provider-gate`; it requires `ALIGN_LLM_GGUF_MODEL`, `ALIGN_LLM_GGML_INCLUDE`,
+`ALIGN_LLM_GGML_LIB`, and `ALIGN_LLM_LLAMA_SERVER`, verifies their pinned identities, then runs the
+fixed coding task through both llama.cpp and the in-process runtime. It is deliberately outside all
+aggregates because it materializes and loads the 4.7 GB model.
+
+Because this provider puts the runtime FFI in `main`'s build graph, `make build` and `make run`
+materialize their own shim. With no ggml inputs they embed a temporary static unavailable-engine
+stub, retain only `main`, and keep every non-runtime command usable on hosted machines. For a real
+runtime build, set `ALIGN_LLM_GGML_INCLUDE` and `ALIGN_LLM_GGML_LIB`; the wrapper builds and links
+the existing real shared shim. Do not prepopulate `build/lib` as an implicit prerequisite: the
+default build deliberately ignores it so a clean checkout and a cached developer tree behave the
+same way.
+
 ## Repository-index development
 
 The current C2 slice is `src/repo_index.align`. It asks Git for the tracked file list with

@@ -1,0 +1,116 @@
+module runtime_provider_gate
+
+import model
+import provider
+import result
+import std.fs
+import std.time
+
+fn count_or_unknown(config: model.ProviderConfig, text: str) -> model.TokenCount {
+  return match provider.count_tokens(config, text) {
+    Ok(value) => value,
+    Err(_) => model.TokenCount { count: -1, exact: false },
+  }
+}
+
+fn run_one(
+  config: model.ProviderConfig,
+  request: model.GenerationRequest,
+  result_path: str,
+) -> Result<(), Error> {
+  info := provider.model_info(config)
+  started := time.instant()
+  generated := provider.generate(config, request)
+  elapsed := time.instant() - started
+  return match generated {
+    Err(error_value) => {
+      record := result.GenerationRecord {
+        schema_version: 2,
+        operation: "generate",
+        provider: info.provider,
+        model: info.model,
+        endpoint: info.endpoint,
+        status: "error",
+        output: "",
+        prompt_tokens: -1,
+        completion_tokens: -1,
+        total_tokens: -1,
+        token_count_exact: false,
+        elapsed_ns: elapsed,
+        error: "invalid",
+        error_code: -1,
+      }
+      result.save(result_path, record)?
+      Err(error_value)
+    },
+    Ok(text) => {
+      prompt_count := provider.count_prompt(config, request)
+      completion_count := count_or_unknown(config, text)
+      total := if prompt_count.count >= 0 && completion_count.count >= 0 {
+        prompt_count.count + completion_count.count
+      } else { -1 }
+      text_view: str := text
+      record := result.GenerationRecord {
+        schema_version: 2,
+        operation: "generate",
+        provider: info.provider,
+        model: info.model,
+        endpoint: info.endpoint,
+        status: "ok",
+        output: text_view,
+        prompt_tokens: prompt_count.count,
+        completion_tokens: completion_count.count,
+        total_tokens: total,
+        token_count_exact: prompt_count.exact && completion_count.exact,
+        elapsed_ns: elapsed,
+        error: "",
+        error_code: -1,
+      }
+      result.save(result_path, record)
+    },
+  }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() < 6 { return Err(Error.Invalid) }
+  mode := args[1]
+  user_owned := fs.read_file(args[args.len() - 2])?
+  user: str := user_owned
+  result_path := args[args.len() - 1]
+  request := model.GenerationRequest {
+    system: "You are a coding assistant. Return a concise patch-oriented answer.",
+    user: user,
+    max_tokens: 128,
+    temperature: 0.0,
+    seed: None,
+  }
+  if mode == "local" && args.len() == 6 {
+    config := model.ProviderConfig {
+      kind: model.ProviderKind.LocalOpenAI,
+      endpoint: args[2],
+      model: args[3],
+      api_key: "",
+      timeout_ns: 300000000000,
+      tokenize_endpoint: "",
+      max_response_bytes: 262144,
+      runtime_pack_path: "",
+      runtime_geometry_path: "",
+    }
+    return run_one(config, request, result_path)
+  }
+  if mode == "runtime" && args.len() == 7 {
+    config := model.ProviderConfig {
+      kind: model.ProviderKind.AlignRuntime,
+      endpoint: "",
+      model: args[2],
+      api_key: "",
+      timeout_ns: 0,
+      tokenize_endpoint: "",
+      max_response_bytes: 262144,
+      runtime_pack_path: args[3],
+      runtime_geometry_path: args[4],
+    }
+    return run_one(config, request, result_path)
+  }
+  return Err(Error.Invalid)
+}

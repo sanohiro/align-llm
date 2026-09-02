@@ -3229,6 +3229,142 @@ fn execute_verify(
   return inspect_pack(t, g, expected, source, pack_path, c, limits.copy_window_bytes)
 }
 
+// R7-RUNTIME-PROVIDER's retained source-binding value. It carries the exact source fields needed to
+// check a later-opened pack handle after the snapshot itself has moved into tokenizer preparation.
+// It never stands in for the pack handle: inference rechecks this value against the exact handle it
+// will consume, so atomically replacing the public path cannot retarget validated weights.
+pub SourceIdentity {
+  file_size: i64,
+  data_offset: i64,
+  tensor_count: i64,
+  kv_count: i64,
+  version: i64,
+  alignment: i64,
+  total_tensor_bytes: i64,
+  header_region_sha256: string,
+}
+
+pub fn empty_source_identity() -> SourceIdentity = SourceIdentity {
+  file_size: -1,
+  data_offset: -1,
+  tensor_count: -1,
+  kv_count: -1,
+  version: -1,
+  alignment: -1,
+  total_tensor_bytes: -1,
+  header_region_sha256: "".clone(),
+}
+
+fn source_identity_snapshot(
+  borrow snapshot: gguf.GgufSnapshot,
+) -> Result<SourceIdentity, Error> {
+  status_ok := match snapshot.table.status { Ok => true, Error => false }
+  if !status_ok { return Err(Error.Invalid) }
+  geometry := model_ir.size_tensors(snapshot.table)
+  if geometry.failed { return Err(Error.Invalid) }
+  if snapshot.table.data_offset < 0 || snapshot.table.data_offset > MAX_HEADER_REGION_BYTES {
+    return Err(Error.Invalid)
+  }
+  mut counters := new_counters()
+  mut window := buffer(0)
+  match read_exact(
+    snapshot.handle,
+    window,
+    counters,
+    "R4_SOURCE_UNREADABLE",
+    0,
+    snapshot.table.data_offset,
+  ) {
+    Ok(_) => {},
+    Err(_) => { return Err(Error.Invalid) },
+  }
+  digest := crypto.sha256(window.bytes())
+  if digest.len() != 32 { return Err(Error.Invalid) }
+  encoded := encoding.hex_encode(digest[0..digest.len()])
+  return Ok(SourceIdentity {
+      file_size: snapshot.table.file_size,
+      data_offset: snapshot.table.data_offset,
+      tensor_count: snapshot.table.tensor_count,
+      kv_count: snapshot.table.kv_count,
+      version: snapshot.table.version,
+      alignment: snapshot.table.alignment,
+      total_tensor_bytes: geometry.total_bytes,
+      header_region_sha256: encoded,
+    })
+}
+
+// Validate the exact still-open handle inference will consume. This stops after the existing source
+// record and reads no weight payload; `verify_pack` remains the whole-payload correctness owner.
+pub fn verify_source_identity_file(
+  borrow pak: file,
+  borrow expected: SourceIdentity,
+) -> Result<(), Error> {
+  pack_len := pak.len()?
+  if pack_len < HEADER_BYTES { return Err(Error.Invalid) }
+  mut counters := new_counters()
+  mut window := buffer(0)
+  match read_exact(pak, window, counters, "R4_PACK_UNREADABLE", 0, HEADER_BYTES) {
+    Ok(_) => {},
+    Err(_) => { return Err(Error.Invalid) },
+  }
+  header := match decode_header(window) {
+    Ok(value) => value,
+    Err(_) => { return Err(Error.Invalid) },
+  }
+  if pack_len != header.total_bytes { return Err(Error.Invalid) }
+  match validate_regions(header) {
+    Ok(_) => {},
+    Err(_) => { return Err(Error.Invalid) },
+  }
+  match read_exact(
+    pak,
+    window,
+    counters,
+    "R4_PACK_UNREADABLE",
+    header.source_record_offset,
+    SOURCE_RECORD_BYTES,
+  ) {
+    Ok(_) => {},
+    Err(_) => { return Err(Error.Invalid) },
+  }
+  record := window.bytes()
+  if record.u64_le(0) as i64 != expected.file_size
+    || record.u64_le(8) as i64 != expected.data_offset
+    || record.u64_le(16) as i64 != expected.tensor_count
+    || record.u64_le(24) as i64 != expected.kv_count
+    || record.u32_le(32) as i64 != expected.version
+    || record.u32_le(36) as i64 != expected.alignment
+    || record.u64_le(40) as i64 != expected.data_offset
+    || record.u64_le(80) as i64 != expected.total_tensor_bytes
+    || record.u64_le(88) as i64 != 0 {
+    return Err(Error.Invalid)
+  }
+  mut reserved_at := 96
+  loop {
+    if reserved_at >= SOURCE_RECORD_BYTES { break }
+    if record.u8(reserved_at) != 0 { return Err(Error.Invalid) }
+    reserved_at = reserved_at + 1
+  }
+  observed_digest := hex_of(window, 48, 32)
+  observed_digest_view: str := observed_digest
+  expected_digest_view: str := expected.header_region_sha256
+  if expected_digest_view != observed_digest_view { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+// The provider's first validation pass. It returns the identity that the inference opener must
+// check again after the snapshot moves into tokenizer preparation.
+pub fn verify_source_identity_snapshot(
+  borrow snapshot: gguf.GgufSnapshot,
+  pack_path: str,
+) -> Result<SourceIdentity, Error> {
+  if !valid_path(pack_path) { return Err(Error.Invalid) }
+  pak := fs.open_rw(pack_path)?
+  identity := source_identity_snapshot(snapshot)?
+  verify_source_identity_file(pak, identity)?
+  return Ok(identity)
+}
+
 // `--pack-verify`. Both containers are streamed and every claimed byte is compared; the statistics
 // and the `blocks` array are recomputed from the pack's **own** tables and the source's own tensor
 // table, so the improvement number in a verify document is derived from two files that both exist.

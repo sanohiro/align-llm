@@ -4,6 +4,7 @@ import std.crypto
 import std.encoding
 import std.fs
 import std.time
+import alignpack
 import alignpack_read
 import ggml_ffi
 import kv_plane
@@ -77,6 +78,7 @@ CODE_PLANE_MISMATCH := "R6_PLANE_MISMATCH"
 CODE_TRANSCRIPT := "R6_TRANSCRIPT"
 CODE_ORACLE_MISSING := "R6_ORACLE_MISSING"
 CODE_GEOMETRY_UNREADABLE := "R6_GEOMETRY_UNREADABLE"
+MAX_GENERATION_GEOMETRY_BYTES := 16777216
 // R6-RESIDENT-WEIGHTS section 3.1 and 3.2. `R6_RESIDENT` is the operand's grammar; the other two
 // are the arena's own budget and its one observable reservation failure. There is deliberately no
 // code for an out-of-memory host: `buffer(cap)` cannot report a failed reservation and `append`
@@ -1827,13 +1829,47 @@ fn decode_embed_members(
 // decode step's own column has to fit.
 // ---------------------------------------------------------------------------------------------
 
+// R7-RUNTIME-PROVIDER reopens geometry at its exact consumption boundary. Keep that second read
+// under the same 16 MiB ceiling as the provider's first derivation check, including when an atomic
+// replacement changes a previously small path into a sparse or otherwise enormous file.
+fn read_generation_geometry(path: str) -> Result<string, Error> {
+  source := fs.open(path)?
+  mut accumulated := buffer(0)
+  mut chunk := buffer(65536)
+  mut total := 0
+  loop {
+    if total == MAX_GENERATION_GEOMETRY_BYTES {
+      mut probe := buffer(1)
+      if source.read(probe)? > 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := MAX_GENERATION_GEOMETRY_BYTES - total
+    count := if remaining < 65536 {
+      mut tail := buffer(remaining)
+      read_count := source.read(tail)?
+      accumulated.append(tail.bytes())
+      read_count
+    } else {
+      read_count := source.read(chunk)?
+      accumulated.append(chunk.bytes())
+      read_count
+    }
+    if count == 0 { break }
+    total = total + count
+  }
+  return Ok(accumulated.bytes().as_str()?.clone())
+}
+
 fn stage_inputs(
   tokens_text: str,
   suffix_text: str,
   width_text: str,
   steps_text: str,
   geometry_path: str,
+  expected_geometry: str,
+  generation: bool,
   kv_requested: bool,
+  max_steps: i64,
   borrow mut tokens: model_forward.TokenColumns,
   borrow mut o: model_forward.Outcome,
 ) -> layer_qwen2.Geometry {
@@ -1855,7 +1891,7 @@ fn stage_inputs(
     fail(o, CODE_STEPS, unparsed_view)
     return g
   }
-  if steps < 1 || steps > layer_qwen2.MAX_DECODE_STEPS {
+  if steps < 1 || steps > max_steps {
     ranged := steps_detail_int(steps)
     ranged_view: str := ranged
     fail(o, CODE_STEPS, ranged_view)
@@ -1903,7 +1939,11 @@ fn stage_inputs(
     o.suffix_first_column = lexical.count
     o.suffix_sequence_length = sequence
   }
-  geometry_text := match fs.read_file(geometry_path) {
+  geometry_text := match if generation {
+    read_generation_geometry(geometry_path)
+  } else {
+    fs.read_file(geometry_path)
+  } {
     Ok(value) => value,
     Err(failure) => {
       fail(o, CODE_GEOMETRY_UNREADABLE, model_forward.error_name(failure))
@@ -1911,6 +1951,10 @@ fn stage_inputs(
     },
   }
   geometry_view: str := geometry_text
+  if generation && geometry_view != expected_geometry {
+    fail(o, CODE_GEOMETRY, "identity")
+    return g
+  }
   g = layer_qwen2.parse_geometry(geometry_view)
   o.arch = g.arch.clone()
   o.n_layer = g.n_layer
@@ -2265,6 +2309,16 @@ fn decode_pass(
 // section 2.9's seven loop scalars add 56, and R6-KV-PERSIST section 2.8's `kv` object and
 // `plane.source` add 224 — and it is passed by value at some twenty-five call sites, so `N`
 // per-step scalars would make it grow with an operand.
+fn generation_eog(borrow ids: array<i64>, token: i64) -> bool {
+  mut at := 0
+  loop {
+    if at >= ids.len() { break }
+    if ids[at] == token { return true }
+    at = at + 1
+  }
+  return false
+}
+
 fn decode_loop(
   borrow pak: file,
   device: raw,
@@ -2296,6 +2350,9 @@ fn decode_loop(
   first_token: i64,
   first_n_past: i64,
   steps: i64,
+  generation: bool,
+  borrow eog_ids: array<i64>,
+  generation_max: i64,
   width: i64,
   stride: i64,
   origin: i64,
@@ -2340,7 +2397,15 @@ fn decode_loop(
   mut token := first_token
   mut step := 1
   loop {
-    if step > steps || o.code.len() > 0 { break }
+    if o.code.len() > 0 { break }
+    if generation {
+      // `first_token` is generated id 1. Step `k` consumes generated id `k` and produces id
+      // `k + 1`, so the maximum is reached before step `generation_max`, and EOG is classified
+      // before another graph can consume it.
+      if step >= generation_max || generation_eog(eog_ids, token) { break }
+    } else if step > steps {
+      break
+    }
     n_past := first_n_past + step - 1
     // Oracle A' selects transcript graph `k + 1` by skipping `k`. The rescan is `O(N x file)` and is
     // accepted and measured (section 6 risk 3): the alternative holds `N` graphs' element ranges in
@@ -2911,6 +2976,9 @@ fn schedule_decode(
   borrow pack_digest: slice<u8>,
   borrow geometry_digest: slice<u8>,
   steps: i64,
+  generation: bool,
+  borrow eog_ids: array<i64>,
+  generation_max: i64,
   origin: i64,
   borrow mut schedule: model_forward.ScheduleColumns,
   borrow mut graphs: model_forward.GraphColumns,
@@ -3243,8 +3311,8 @@ fn schedule_decode(
       head_members, window, layout, resident,
       slot_view, decode_ids_view, decode_pos_view, mask_decode_view, decode_out_ids_view,
       decode_residual_view, decode_logits_view, node_view, plane_view, oracle, embed_nodes,
-      head_nodes, transcript_path, token_id, n_past, steps, width, stride, origin, breach,
-      activation, state, decoded, o)
+      head_nodes, transcript_path, token_id, n_past, steps, generation, eog_ids, generation_max,
+      width, stride, origin, breach, activation, state, decoded, o)
   }
   // Section 4.3's ordering, on **every** exit path from here: the wrap is freed before the backend
   // and long before `execute`'s arena leaves scope. There is no path between the arena's
@@ -3364,9 +3432,11 @@ fn publish(borrow p: Plane, borrow k: Decode, borrow mut o: model_forward.Outcom
 // scalars and strings — no array, no view — so a record returned by value has nothing to invalidate.
 // The four column sets stay out-parameters because they carry `array<i64>` built from callee locals,
 // which is the case that cannot be returned at all.
-pub fn execute(
+fn execute_mode(
   pack_path: str,
   geometry_path: str,
+  expected_geometry: str,
+  borrow source_identity: alignpack.SourceIdentity,
   tokens_text: str,
   reference_path: str,
   transcript_path: str,
@@ -3378,6 +3448,9 @@ pub fn execute(
   resident_text: str,
   suffix_text: str,
   store_text: str,
+  generation: bool,
+  borrow eog_ids: array<i64>,
+  generation_max: i64,
   borrow mut tokens: model_forward.TokenColumns,
   borrow mut schedule: model_forward.ScheduleColumns,
   borrow mut graphs: model_forward.GraphColumns,
@@ -3476,11 +3549,37 @@ pub fn execute(
     return o
   }
 
+  max_steps := if generation { 127 } else { layer_qwen2.MAX_DECODE_STEPS }
   g := stage_inputs(
-    tokens_text, suffix_text, width_text, steps_text, geometry_path, kv_requested, tokens, o)
+    tokens_text, suffix_text, width_text, steps_text, geometry_path, expected_geometry, generation,
+    kv_requested, max_steps,
+    tokens, o)
   if o.code.len() > 0 {
     o.elapsed_ns = time.instant() - started
     return o
+  }
+  if generation {
+    if generation_max < 1 || generation_max > 128
+      || eog_ids.len() < 1 || eog_ids.len() > 256 {
+      fail(o, CODE_TOKENS, "generation")
+      o.elapsed_ns = time.instant() - started
+      return o
+    }
+    if o.reconciliation_width > g.context_length {
+      fail(o, CODE_KV_WIDTH, model_forward.labelled("kv_width", o.reconciliation_width))
+      o.elapsed_ns = time.instant() - started
+      return o
+    }
+    mut eog_at := 0
+    loop {
+      if eog_at >= eog_ids.len() { break }
+      if eog_ids[eog_at] < 0 || eog_ids[eog_at] >= g.n_vocab {
+        fail(o, CODE_TOKENS, model_forward.labelled("eog", eog_ids[eog_at]))
+        o.elapsed_ns = time.instant() - started
+        return o
+      }
+      eog_at = eog_at + 1
+    }
   }
   // The suffix ids, re-parsed rather than carried out of `stage_inputs` through a third mutable
   // out-parameter: at this pin the region checker merges the owners of a call's mutable borrows and
@@ -3541,6 +3640,16 @@ pub fn execute(
       o.elapsed_ns = time.instant() - started
       return o
     },
+  }
+  if generation {
+    match alignpack.verify_source_identity_file(pak, source_identity) {
+      Ok(_) => {},
+      Err(_) => {
+        fail(o, "R4_SOURCE_IDENTITY", "source_record")
+        o.elapsed_ns = time.instant() - started
+        return o
+      },
+    }
   }
   // Steps 7 and 8. The container, both ends, the coverage rule, every member record, and the window
   // sweep, taken as one **owned value**: section 2.8's order is `src/model_forward.align`'s and so
@@ -3800,9 +3909,149 @@ pub fn execute(
     context_bytes, width, residual_bytes, logits_bytes, readback_bytes, reference_path,
     transcript_path, logits_path, effective_save_path, effective_load_path,
     store_miss, pack_digest, geometry_digest, steps,
+    generation, eog_ids, generation_max,
     started, schedule, graphs, top, stepped, o)
   o.elapsed_ns = time.instant() - started
   return o
+}
+
+fn render_token_list(borrow ids: array<i64>) -> string {
+  output := builder()
+  mut at := 0
+  loop {
+    if at >= ids.len() { break }
+    if at > 0 { output.write(",") }
+    output.write_int(ids[at])
+    at = at + 1
+  }
+  return output.to_string()
+}
+
+fn render_integer(value: i64) -> string {
+  output := builder()
+  output.write_int(value)
+  return output.to_string()
+}
+
+pub GenerationParts {
+  outcome: model_forward.Outcome,
+  token_ids_json: string,
+}
+
+fn render_generation_ids(borrow o: model_forward.Outcome, borrow s: model_forward.StepColumns) -> string {
+  output := builder()
+  output.write("[")
+  if o.code.len() == 0 {
+    output.write_int(o.argmax)
+    mut at := 0
+    loop {
+      if at >= s.count { break }
+      output.write(",")
+      output.write_int(s.argmax[at])
+      at = at + 1
+    }
+  }
+  output.write("]")
+  return output.to_string()
+}
+
+fn generation_nonfinite_count(
+  borrow o: model_forward.Outcome,
+  borrow s: model_forward.StepColumns,
+) -> i64 {
+  if o.nonfinite_count > 0 { return o.nonfinite_count }
+  mut at := 0
+  loop {
+    if at >= s.count { break }
+    count := model_forward.column_at(s.nonfinite_count, at)
+    if count > 0 { return count }
+    at = at + 1
+  }
+  return 0
+}
+
+// R7-RUNTIME-PROVIDER's in-memory generation seam. It reuses the complete R6 schedule but carries
+// a separate maximum into the loop, so `max_tokens == 1` can publish the prefill argmax without
+// building a decode graph. Generation admits at most 127 internal steps while the legacy public
+// step operand remains inside its shipped `1..=64` grammar.
+pub fn generate_resident(
+  pack_path: str,
+  geometry_path: str,
+  expected_geometry: str,
+  source_identity: alignpack.SourceIdentity,
+  borrow prompt_token_ids: array<i64>,
+  borrow eog_token_ids: array<i64>,
+  max_tokens: i64,
+) -> GenerationParts {
+  if prompt_token_ids.len() < 1 || prompt_token_ids.len() > layer_qwen2.MAX_PREFILL_TOKENS
+    || eog_token_ids.len() < 1 || eog_token_ids.len() > 256
+    || max_tokens < 1 || max_tokens > 128 {
+    mut refused := model_forward.empty_outcome()
+    fail(refused, CODE_TOKENS, "generation")
+    return GenerationParts { outcome: refused, token_ids_json: "[]".clone() }
+  }
+  allocation_steps := if max_tokens > 1 { max_tokens - 1 } else { 1 }
+  width := prompt_token_ids.len() + allocation_steps
+  if width > layer_qwen2.MAX_ATTENTION_WIDTH {
+    mut refused := model_forward.empty_outcome()
+    fail(refused, CODE_KV_WIDTH, model_forward.labelled("kv_width", width))
+    return GenerationParts { outcome: refused, token_ids_json: "[]".clone() }
+  }
+  token_text := render_token_list(prompt_token_ids)
+  width_text := render_integer(width)
+  steps_text := render_integer(allocation_steps)
+  token_view: str := token_text
+  width_view: str := width_text
+  steps_view: str := steps_text
+  mut tokens := model_forward.empty_tokens()
+  mut schedule := model_forward.empty_schedule()
+  mut graphs := model_forward.empty_graphs()
+  mut top := model_forward.empty_top()
+  mut stepped := model_forward.empty_steps()
+  mut outcome := execute_mode(
+    pack_path, geometry_path, expected_geometry, source_identity,
+    token_view, "", "", width_view, "", steps_view, "", "",
+    "weights", "-", "-", true, eog_token_ids, max_tokens,
+    tokens, schedule, graphs, top, stepped)
+  if outcome.code.len() == 0 {
+    nonfinite := generation_nonfinite_count(outcome, stepped)
+    if nonfinite > 0 {
+      fail(outcome, "R5_LOGITS_NONFINITE", model_forward.labelled("elements", nonfinite))
+    }
+  }
+  token_ids_json := render_generation_ids(outcome, stepped)
+  return GenerationParts { outcome: outcome, token_ids_json: token_ids_json }
+}
+
+// The shipped diagnostic API and CLI keep their exact step semantics and pass an empty EOG set to
+// the shared implementation. No generated-text rule is observable on this path.
+pub fn execute(
+  pack_path: str,
+  geometry_path: str,
+  tokens_text: str,
+  reference_path: str,
+  transcript_path: str,
+  width_text: str,
+  logits_path: str,
+  steps_text: str,
+  kv_save_path: str,
+  kv_load_path: str,
+  resident_text: str,
+  suffix_text: str,
+  store_text: str,
+  borrow mut tokens: model_forward.TokenColumns,
+  borrow mut schedule: model_forward.ScheduleColumns,
+  borrow mut graphs: model_forward.GraphColumns,
+  borrow mut top: model_forward.TopColumns,
+  borrow mut stepped: model_forward.StepColumns,
+) -> model_forward.Outcome {
+  eog_ids := model_forward.empty_array()
+  source_identity := alignpack.empty_source_identity()
+  return execute_mode(
+    pack_path, geometry_path, "", source_identity,
+    tokens_text, reference_path, transcript_path, width_text, logits_path,
+    steps_text, kv_save_path, kv_load_path, resident_text, suffix_text, store_text, false, eog_ids, 0,
+    tokens, schedule, graphs, top, stepped)
 }
 
 // ---------------------------------------------------------------------------------------------
