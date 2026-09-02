@@ -85,11 +85,9 @@ def build_plan(
     if managed_ensure is not None:
         plan.append(managed_ensure)
     plan.append(PlanStep("pinned-align-build", align_build))
-    # A pure pin adoption proves its request-owned surface locally and leaves the ordinary broad
-    # graph to hosted CI. Repeating that graph in local preflight would add no platform-specific
-    # evidence. Any other executable change retains the existing hosted integration step.
-    if scope.scope != "pin":
-        plan.append(PlanStep("hosted-checks", ("make", "hosted-checks", f"ALIGNC={alignc}")))
+    # Pin adoption and fresh-image changes prove their change-owned surfaces locally and leave the
+    # common functional graph to required hosted CI. Other executable changes retain the local
+    # hosted integration step because it is their direct owner.
     if scope.fresh_installed:
         plan.extend(
             (
@@ -111,6 +109,8 @@ def build_plan(
                 ),
             )
         )
+    elif scope.scope != "pin":
+        plan.append(PlanStep("hosted-checks", ("make", "hosted-checks", f"ALIGNC={alignc}")))
     return plan
 
 
@@ -121,13 +121,18 @@ def emit_phase(label: str, status: str, duration_ms: int | None = None) -> None:
     print(json.dumps(record, sort_keys=True, separators=(",", ":")), file=sys.stderr)
 
 
-def run_step(step: PlanStep, repository: Path) -> None:
+def step_environment(step: PlanStep) -> Mapping[str, str] | None:
     environment: Mapping[str, str] | None = None
     if step.unset_environment:
         selected = dict(os.environ)
         for name in step.unset_environment:
             selected.pop(name, None)
         environment = selected
+    return environment
+
+
+def run_step(step: PlanStep, repository: Path) -> None:
+    environment = step_environment(step)
     started = time.monotonic_ns()
     emit_phase(step.label, "start")
     status = output_summary.run_command(

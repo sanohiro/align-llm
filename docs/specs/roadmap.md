@@ -1182,7 +1182,7 @@ The current forward delivery order is:
     baseline chain remains reachable from merged `main`.
 
 43. **R7-RUNTIME-PROVIDER — in-process text generation through the resident dense runtime.
-    Implementation candidate.**
+    Merged as PR #164 (`29b5475`) on 2026-09-02.**
     Connect R7-PROMPT's exact prompt ids to the existing resident Qwen2 decode loop, stop before an
     EOG token or at the requested completion bound, detokenize the generated non-EOG ids, and expose
     the result through an explicit `AlignRuntime` `ModelProvider` arm. The provider binds the retained
@@ -1234,7 +1234,25 @@ The current forward delivery order is:
     publication and required checks must be rerun. The final Linux/aarch64
     coding-baseline chain is source `0278e6e`
     -> oracle `2ccb385` -> finalization `94fee50`; it binds the new wrapper, shim builder, and static
-    stub source and passes the complete `make baseline-check`.
+    stub source and passes the complete `make baseline-check`. Exact-head publication preflight and
+    all three required checks passed at `cf76641`; the merge commit preserves the full baseline
+    chain.
+
+44. **REQUIRED-CI-UNDER-15 — remove duplicate complete-graph execution from every PR. Active.**
+    PR #164 measured the pinned hosted check at 12m19s, native x86_64 installed evidence at 43m22s,
+    and native aarch64 installed evidence at 46m57s. The aarch64 profile spent 37m14s rerunning the
+    complete common capable graph after the hosted job already owned common functional behavior;
+    the installed image's architecture, trust, lifecycle, compiler-self-test, adoption, and cleanup
+    boundary took about 7m09s. Required checks now use 15 minutes of complete GitHub job wall time
+    as the configured timeout and approximate operating target, not as a universal correctness
+    constant. The installed matrix keeps both native platform profiles and
+    every image-specific refusal, but the complete aggregate becomes an explicit owner-triggered
+    audit instead of routine PR evidence. Fresh-image publication preflight uses the same approximate
+    operating target: after ordered owner/toolchain/focused prerequisites, it runs only the
+    installed owner and leaves the unchanged common graph to required hosted CI. The authoritative contract,
+    coverage allocation, and closure matrix are in
+    [`check-gate-topology.md`](check-gate-topology.md) section 1.1 and the section 2 ledger. This
+    changes no product behavior or evaluator result.
 
 ### Status (2026-08-28)
 

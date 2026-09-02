@@ -195,10 +195,12 @@ Verification is evidence for a coherent checkpoint, not an edit-loop ritual.
 - A pure `.align-revision` adoption runs the request owner plus managed-toolchain materialization
   and verification locally; ordinary hosted CI owns the broad consumer graph. It does not select
   the installed platform profile. Any other executable path retains its normal classifier scope.
-- `make ci` is the complete capable-host integration graph, not every qualification. Run it when a
-  request changes aggregate membership, check topology, or integration behavior, when its accepted
-  ledger names the aggregate, or for explicit fresh base-integration evidence. Do not select it for
-  an otherwise unrelated `.align-revision` change.
+- `make ci` is the explicit complete capable-host audit, not a routine pull-request gate and not
+  every qualification. Run it only when an accepted ledger names an aggregate-only owner or an
+  explicit audit requests complete fresh integration. Aggregate membership and check-topology
+  changes use their narrow topology owner plus the required workflow unless they change the
+  aggregate namespace, publication, complete-callsite, or baseline-integration boundary itself. Do
+  not select it for an otherwise unrelated `.align-revision` change.
 - Security, resource, race, fuzz, stress, platform, mutation, and benchmark suites remain named
   focused qualifications. Run them only when their owner boundary changes or an explicit audit
   requires them. Changing `.align-revision` alone is not a change to every such owner.

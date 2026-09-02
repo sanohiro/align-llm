@@ -30,6 +30,8 @@ MAX_DIAGNOSTIC_BYTES = 8_192
 MAX_DIAGNOSTIC_TEXT_BYTES = 2_048
 MAX_RETAINED_LINE_PREFIX = 4_096
 PROCESS_GROUP_CLEANUP_SECONDS = 2.0
+SIGNAL_CLEANUP_SECONDS = 5.0
+CHILD_POLL_SECONDS = 0.25
 OUTPUT_DIRECTORY_VARIABLE = "ALIGN_LLM_OUTPUT_DIRECTORY"
 ACTIVE_VARIABLE = "ALIGN_LLM_OUTPUT_SUMMARY_ACTIVE"
 PHASE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z", re.ASCII)
@@ -483,13 +485,17 @@ def run_command(
 
     child: subprocess.Popen[bytes] | None = None
     pending_signal: int | None = None
+    termination_deadline_ns: int | None = None
     output_broken = False
     prior_handlers: dict[int, signal.Handlers] = {}
 
     def handle_signal(signum: int, _frame: object) -> None:
-        nonlocal pending_signal
+        nonlocal pending_signal, termination_deadline_ns
         if pending_signal is None:
             pending_signal = signum
+            termination_deadline_ns = (
+                time.monotonic_ns() + int(SIGNAL_CLEANUP_SECONDS * 1_000_000_000)
+            )
         if child is not None:
             try:
                 os.killpg(child.pid, signum)
@@ -539,13 +545,24 @@ def run_command(
             interval_ns = progress_seconds * 1_000_000_000
             next_progress = started + interval_ns
             while True:
-                remaining = max(0, next_progress - time.monotonic_ns()) / 1_000_000_000
+                now = time.monotonic_ns()
+                deadline = min(next_progress, now + int(CHILD_POLL_SECONDS * 1_000_000_000))
+                if termination_deadline_ns is not None:
+                    deadline = min(deadline, termination_deadline_ns)
+                remaining = max(0, deadline - now) / 1_000_000_000
                 try:
                     returncode = child.wait(timeout=remaining)
                     break
                 except subprocess.TimeoutExpired:
                     now = time.monotonic_ns()
-                    if not output_broken:
+                    if termination_deadline_ns is not None and now >= termination_deadline_ns:
+                        try:
+                            os.killpg(child.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        termination_deadline_ns = None
+                        continue
+                    if now >= next_progress and not output_broken:
                         output_broken = not emit_record(
                             output_descriptor,
                             "verification-progress",
@@ -554,8 +571,9 @@ def run_command(
                         )
                         if output_broken:
                             handle_signal(signal.SIGPIPE, None)
-                    while next_progress <= now:
-                        next_progress += interval_ns
+                    if now >= next_progress:
+                        while next_progress <= now:
+                            next_progress += interval_ns
             group_remained, group_cleaned = stop_remaining_process_group(child.pid)
             if group_remained and pending_signal is None and returncode == 0:
                 returncode = 125

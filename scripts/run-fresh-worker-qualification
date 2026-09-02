@@ -8,11 +8,15 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
+
+from signal_subprocess import signal_subprocess_owner
 
 
 REPOSITORY = Path(__file__).resolve().parent.parent
@@ -53,6 +57,7 @@ FOCUSED_CHECKS = (
         (
             "fresh-v2-bwrap-trust-smoke",
             "fresh-v2-tool-identity-smoke",
+            "fresh-v2-runtime-closure-smoke",
             "fresh-v2-cache-smoke",
             "fresh-v2-root-staging-smoke",
             "fresh-v2-descriptor-file-smoke",
@@ -90,6 +95,7 @@ EXPECTED_CASES = {
     "fresh-v2-root-staging-smoke",
     "fresh-v2-temp-root-callsite-smoke",
     "fresh-v2-aggregate-publication-smoke",
+    "fresh-v2-published-elf-smoke",
     "fresh-v2-build-namespace-smoke",
     "fresh-v2-descriptor-file-smoke",
     "fresh-v2-direct-interposition-smoke",
@@ -106,9 +112,36 @@ EXPECTED_CASES = {
     "fresh-v2-platform-profile-smoke",
 }
 
+# These cases require the complete product graph inside the authenticated worker rather than a
+# narrow native owner or the installed image/profile boundary itself. They remain available through
+# the explicit complete audit, but routine PR evidence does not rerun the common functional graph on
+# both architectures. The native worker unit owner exercises the production parser and dependency
+# validator, while validation of the real published `main` remains with the explicit aggregate.
+# Installed ordinary adoption separately compiles and executes real Align fixtures on each required
+# architecture.
+COMPLETE_AGGREGATE_CASES = {
+    "fresh-v2-temp-root-callsite-smoke",
+    "fresh-v2-aggregate-publication-smoke",
+    "fresh-v2-published-elf-smoke",
+    "fresh-v2-callsite-smoke",
+    "fresh-v2-interpreter-boundary-smoke",
+    "fresh-v2-baseline-integration-smoke",
+}
+
 FIXED_CHILD_PATH = "/usr/bin:/bin"
 INSTALLED_OWNER = "run-fresh-image-profile-smoke"
 AGGREGATE_DIAGNOSTIC_VARIABLE = "ALIGN_LLM_AGGREGATE_DIAGNOSTIC"
+SIGNAL_CLEANUP_SECONDS = 4.5
+QUALIFICATION_SIGNALS = tuple(
+    selected
+    for selected in (
+        getattr(signal, "SIGHUP", None),
+        signal.SIGINT,
+        getattr(signal, "SIGQUIT", None),
+        signal.SIGTERM,
+    )
+    if selected is not None
+)
 
 
 def qualification_environment(owner: str) -> dict[str, str]:
@@ -118,9 +151,9 @@ def qualification_environment(owner: str) -> dict[str, str]:
         "HOME": "/nonexistent",
         "PYTHONDONTWRITEBYTECODE": "1",
     }
-    # Only the installed-profile owner reaches the worker aggregate, so only it needs the aggregate
-    # diagnostic opt-in. Forwarding the variable to every focused owner would widen the qualified
-    # environment of targets that cannot consume it.
+    # Only the installed-profile owner can reach the explicit complete aggregate audit, so only it
+    # needs the aggregate diagnostic opt-in. Forwarding the variable to every focused owner would
+    # widen the qualified environment of targets that cannot consume it.
     if owner == INSTALLED_OWNER and os.environ.get(AGGREGATE_DIAGNOSTIC_VARIABLE) == "1":
         environment[AGGREGATE_DIAGNOSTIC_VARIABLE] = "1"
     return environment
@@ -164,12 +197,31 @@ def qualification_path(owner: str) -> str:
 def run(owner: str, *arguments: str) -> None:
     started = time.monotonic_ns()
     emit_phase(owner, "start")
-    result = subprocess.run(
-        arguments,
-        cwd=REPOSITORY,
-        env=qualification_environment(owner),
-        check=False,
-    )
+    environment = qualification_environment(owner)
+    if owner == INSTALLED_OWNER:
+        with signal_subprocess_owner(
+            QUALIFICATION_SIGNALS, SIGNAL_CLEANUP_SECONDS
+        ) as signal_owner:
+            directory = tempfile.mkdtemp(prefix="align-llm-docker-config-", dir="/tmp")
+            try:
+                os.chmod(directory, 0o700)
+                environment["DOCKER_CONFIG"] = directory
+                result = signal_owner.run(
+                    arguments,
+                    cwd=REPOSITORY,
+                    env=environment,
+                    check=False,
+                )
+            finally:
+                signal_owner.begin_cleanup()
+                shutil.rmtree(directory)
+    else:
+        result = subprocess.run(
+            arguments,
+            cwd=REPOSITORY,
+            env=environment,
+            check=False,
+        )
     duration_ms = max(0, (time.monotonic_ns() - started) // 1_000_000)
     emit_phase(owner, "pass" if result.returncode == 0 else "fail", duration_ms)
     if result.returncode != 0:
@@ -199,6 +251,10 @@ def verify_contract_inventory() -> None:
                 raise RuntimeError(f"FRESH-WORKER focused owner is missing: {path}")
     if not set(owners) <= EXPECTED_CASES:
         raise RuntimeError("FRESH-WORKER focused owner names are outside the contract inventory")
+    if not COMPLETE_AGGREGATE_CASES <= EXPECTED_CASES:
+        raise RuntimeError("complete-audit owner names are outside the contract inventory")
+    if COMPLETE_AGGREGATE_CASES & set(owners):
+        raise RuntimeError("complete-audit cases also have a routine focused owner")
 
     worker = WORKER.read_text(encoding="utf-8")
     forbidden = {
@@ -301,6 +357,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--installed-profile", action="store_true")
     parser.add_argument("--installed-profile-only", action="store_true")
+    parser.add_argument("--complete-aggregate", action="store_true")
     parser.add_argument("--require-docker", action="store_true")
     parser.add_argument("--align-repo", type=Path)
     parser.add_argument("--prepared-image")
@@ -309,11 +366,14 @@ def main() -> int:
     values = parser.parse_args()
     installed_profile = values.installed_profile
     installed_profile_only = values.installed_profile_only
+    complete_aggregate = values.complete_aggregate
     require_docker = values.require_docker
     if installed_profile and installed_profile_only:
         raise SystemExit("--installed-profile and --installed-profile-only are mutually exclusive")
     if require_docker and not (installed_profile or installed_profile_only):
         raise SystemExit("--require-docker requires an installed-profile mode")
+    if complete_aggregate and not (installed_profile or installed_profile_only):
+        raise SystemExit("--complete-aggregate requires an installed-profile mode")
     prepared_values = (
         values.prepared_image,
         values.image_signing_seed,
@@ -340,6 +400,8 @@ def main() -> int:
         arguments = [sys.executable, "scripts/run-fresh-image-profile-smoke"]
         if require_docker:
             arguments.append("--require-docker")
+        if complete_aggregate:
+            arguments.append("--complete-aggregate")
         if values.align_repo is not None:
             arguments.extend(("--align-repo", str(values.align_repo)))
         if values.prepared_image is not None:
@@ -354,10 +416,11 @@ def main() -> int:
                 )
             )
         run("run-fresh-image-profile-smoke", *arguments)
+    audit_suffix = " with complete audit" if complete_aggregate else ""
     if installed_profile_only:
-        mode = "installed profile only"
+        mode = "installed profile only" + audit_suffix
     elif installed_profile:
-        mode = "focused and installed profile"
+        mode = "focused and installed profile" + audit_suffix
     else:
         mode = "focused; installed profile deferred"
     print(
@@ -370,6 +433,13 @@ def main() -> int:
             print(f"  {name}: owner={owners[name]} execution=skipped-by-installed-only")
         elif name in owners:
             print(f"  {name}: owner={owners[name]} execution=focused")
+        elif name in COMPLETE_AGGREGATE_CASES:
+            execution = (
+                "explicit-complete-audit"
+                if complete_aggregate
+                else "deferred-to-explicit-complete-audit"
+            )
+            print(f"  {name}: owner=run-fresh-image-profile-smoke execution={execution}")
         elif installed_profile or installed_profile_only:
             print(f"  {name}: owner=run-fresh-image-profile-smoke execution=installed-profile")
         else:

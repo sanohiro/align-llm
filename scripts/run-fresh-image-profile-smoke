@@ -10,12 +10,15 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 
 REPOSITORY = Path(__file__).resolve().parent.parent
@@ -23,6 +26,7 @@ sys.path.insert(0, str(REPOSITORY / "scripts"))
 
 from fresh_attestation import ed25519_public_key  # noqa: E402
 from fresh_manifest import serialized_digest, validate_manifest_bytes  # noqa: E402
+from signal_subprocess import SignalSubprocessOwner, signal_subprocess_owner  # noqa: E402
 
 
 PROVENANCE_SCRIPTS = (
@@ -37,6 +41,29 @@ TEST_UID = 12345
 WORKER_INVOCATION_TIMEOUT = 5_100
 PREPARED_IMAGE_PATTERN = re.compile(r"align-llm-fresh-test:[0-9a-f]{32}\Z")
 AGGREGATE_DIAGNOSTIC_VARIABLE = "ALIGN_LLM_AGGREGATE_DIAGNOSTIC"
+SIGNAL_CLEANUP_SECONDS = 2.0
+ACTIVE_SIGNAL_OWNER: SignalSubprocessOwner | None = None
+PROFILE_SIGNALS = tuple(
+    selected
+    for selected in (
+        getattr(signal, "SIGHUP", None),
+        signal.SIGINT,
+        getattr(signal, "SIGQUIT", None),
+        signal.SIGTERM,
+    )
+    if selected is not None
+)
+
+
+@contextmanager
+def active_signal_owner(owner: SignalSubprocessOwner) -> Iterator[None]:
+    global ACTIVE_SIGNAL_OWNER
+    previous = ACTIVE_SIGNAL_OWNER
+    ACTIVE_SIGNAL_OWNER = owner
+    try:
+        yield
+    finally:
+        ACTIVE_SIGNAL_OWNER = previous
 
 
 def aggregate_diagnostic_requested() -> bool:
@@ -111,23 +138,28 @@ def run(
     stderr: int | None = subprocess.PIPE,
     timeout: int = 1_800,
 ) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(
-        arguments,
-        cwd=REPOSITORY,
-        env={
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "LC_ALL": "C",
-            "DOCKER_BUILDKIT": "1",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_TERMINAL_PROMPT": "0",
-            "PYTHONDONTWRITEBYTECODE": "1",
-        },
-        stdin=subprocess.DEVNULL,
-        stdout=stdout,
-        stderr=stderr,
-        check=check,
-        timeout=timeout,
-    )
+    environment = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "LC_ALL": "C",
+        "DOCKER_BUILDKIT": "1",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    if arguments and arguments[0] == "docker" and "DOCKER_CONFIG" in os.environ:
+        environment["DOCKER_CONFIG"] = os.environ["DOCKER_CONFIG"]
+    keywords = {
+        "cwd": REPOSITORY,
+        "env": environment,
+        "stdin": subprocess.DEVNULL,
+        "stdout": stdout,
+        "stderr": stderr,
+        "check": check,
+        "timeout": timeout,
+    }
+    if ACTIVE_SIGNAL_OWNER is not None:
+        return ACTIVE_SIGNAL_OWNER.run(arguments, **keywords)
+    return subprocess.run(arguments, **keywords)
 
 
 def prepared_seed(path: Path, label: str) -> bytes:
@@ -538,8 +570,10 @@ def worker_profile_run(
     runtime_volume: str,
     source_volume: str,
     cgroup_driver: str,
+    *,
+    complete_aggregate: bool,
 ) -> subprocess.CompletedProcess[bytes]:
-    diagnostic = aggregate_diagnostic_requested()
+    diagnostic = complete_aggregate and aggregate_diagnostic_requested()
     arguments = [
         "docker",
         "run",
@@ -552,7 +586,12 @@ def worker_profile_run(
     ]
     if diagnostic:
         arguments.extend(("--env", f"{AGGREGATE_DIAGNOSTIC_VARIABLE}=1"))
-    command = [image, "make", "--no-print-directory", "ci"]
+    request = (
+        ["make", "--no-print-directory", "ci"]
+        if complete_aggregate
+        else ["--mode", "build"]
+    )
+    command = [image, *request]
     if cgroup_driver == "cgroupfs":
         arguments.extend(
             [
@@ -581,7 +620,7 @@ if child == 0:
         os.setuid({TEST_UID})
         os.chdir('/work/project')
         os.execve('/usr/local/libexec/align-llm/fresh-supervise',
-                  ['fresh-supervise', 'make', '--no-print-directory', 'ci'],
+                  {['fresh-supervise', *request]!r},
                   {launcher_environment})
     except BaseException:
         os._exit(127)
@@ -700,6 +739,7 @@ def deployment_copy(source: Path, target: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--require-docker", action="store_true")
+    parser.add_argument("--complete-aggregate", action="store_true")
     parser.add_argument("--align-repo", type=Path)
     parser.add_argument("--prepared-image")
     parser.add_argument("--image-signing-seed", type=Path)
@@ -764,7 +804,11 @@ def main() -> int:
     boundary_source_volume = f"align-llm-fresh-boundary-source-{unique}"
     ordinary_source_volume = f"align-llm-fresh-ordinary-source-{unique}"
     cgroup_ready = False
-    with tempfile.TemporaryDirectory(prefix="fresh-image-profile-") as temporary_name:
+    with signal_subprocess_owner(
+        PROFILE_SIGNALS, SIGNAL_CLEANUP_SECONDS
+    ) as signal_owner, active_signal_owner(signal_owner), tempfile.TemporaryDirectory(
+        prefix="fresh-image-profile-"
+    ) as temporary_name:
         temporary = Path(temporary_name)
         image_seed = temporary / "image-signing-seed"
         run_seed = temporary / "run-signing-seed"
@@ -1400,19 +1444,31 @@ def main() -> int:
                 "ordinary invalid Align revision",
                 b"json-scan adoption: ERROR revision\n",
             )
-            phases.enter("worker-aggregate")
+            worker_phase = "worker-aggregate" if values.complete_aggregate else "worker-build"
+            phases.enter(worker_phase)
             worker_result = worker_profile_run(
-                image, volume, runtime_volume, source_volume, cgroup_driver
+                image,
+                volume,
+                runtime_volume,
+                source_volume,
+                cgroup_driver,
+                complete_aggregate=values.complete_aggregate,
+            )
+            expected_worker_output = (
+                b"fresh compiler and capable checks: PASS\n"
+                if values.complete_aggregate
+                else b"fresh compiler: PASS\n"
             )
             if worker_result.returncode != 0:
                 raise RuntimeError(
-                    "fresh worker aggregate failed:\n"
+                    f"fresh {worker_phase} failed:\n"
                     + worker_result.stdout.decode("utf-8", "replace")
                     + worker_result.stderr.decode("utf-8", "replace")
                 )
-            if worker_result.stdout != b"fresh compiler and capable checks: PASS\n" or worker_result.stderr:
-                raise RuntimeError("fresh worker aggregate output is not canonical")
+            if worker_result.stdout != expected_worker_output or worker_result.stderr:
+                raise RuntimeError(f"fresh {worker_phase} output is not canonical")
         finally:
+            signal_owner.begin_cleanup()
             phases.finish("fail" if sys.exc_info()[0] is not None else "pass")
             phases.enter("cleanup")
             if cgroup_ready:

@@ -12,7 +12,7 @@ absence needs explanation; do not manufacture evidence for an unrelated risk.
 - Changed-owner commands and results:
 - Shared preflight command and result:
 - Named focused qualification, when its owner boundary changed:
-- `make ci`, when an integration/adoption trigger applied:
+- `make ci`, only when an aggregate-only owner or explicit complete-audit trigger applied:
 - Align revision, when changed or adopted:
 
 ## Measurement (performance claims only)

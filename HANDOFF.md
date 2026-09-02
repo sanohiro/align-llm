@@ -3,7 +3,150 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R7-RUNTIME-PROVIDER (2026-09-01)
+## Active: REQUIRED-CI-UNDER-15 (2026-09-02)
+
+Branch `agent/ci-under-15`, based on merged `main` `29b54757c837fdfc610e413acd297d253644e292`
+(R7-RUNTIME-PROVIDER PR #164). The user-set operating target is roughly 15 minutes for each
+required CI check and the complete fresh-image publication preflight, with only work that
+distinguishes a required risk. The number is diagnostic rather than an absolute correctness limit.
+
+PR #164 is the pre-implementation baseline: hosted 12m19s, native x86_64 installed 43m22s, and
+native aarch64 installed 46m57s. The aarch64 installed-profile log attributes 2,233.685 seconds to
+the duplicate `worker-aggregate` and 428.396 seconds to the image-specific profile before it. The
+complete common graph is already owned by the hosted job; it is not a benchmark. The authoritative
+cost ceiling, public qualification CLI contract, coverage allocation, and closure matrix are in
+`docs/specs/check-gate-topology.md` section 1.1 and the section 2 ledger. Roadmap item 44 owns the
+consumer-complete change.
+
+Design checkpoint `514f356` and implementation checkpoint `5e1ba3c` make
+`--complete-aggregate` explicit, remove it from routine preflight and hosted CI, set both required
+job definitions to 15 minutes, and preserve the native worker-unit ELF closure plus real
+compiler-generated fixture execution. All ten focused owners and the complete Linux/aarch64
+development-preflight owner pass. Routine installed evidence still covers image admission,
+attestation, lifecycle, compiler self-test, trust and runtime-replacement refusals, ordinary
+adoption, the worker-native build/bundle namespace, and cleanup; only aggregate-owned common
+product behavior is deferred to explicit audit.
+
+The exact native Linux/aarch64 installed owner at repair head
+`64ca4c7f8e4f314a050ffda51144fb65efb88c35` passes without `--complete-aggregate` in
+**576.532 seconds**: Docker daemon 0.077s, image build 21.960s, attestation 2.640s, profile lifecycle
+1.786s, compiler self-test 14.482s, trust mutations 12.184s, runtime replacements 21.680s,
+adoption boundary 313.091s, worker build 186.037s, and cleanup 2.059s. No worker aggregate runs.
+This is a 78.3% reduction from PR #164's 2,662.367-second owner and leaves 323.468 seconds beneath
+the current 900-second timeout.
+
+The comprehensive Codex CLI review covered head
+`162ef17653684f037e4b224aed5c73fc3af3c3ea` against base tip and merge base
+`29b54757c837fdfc610e413acd297d253644e292` at high effort. It found two accepted documentation and
+coverage-allocation defects, repaired in `cfab7340ec8d66078e6c26f12a8604b161bbfd80`.
+The required final review covered head `7ca7f95959fe742984257df8e446e63d34c15de9` against the same
+base and merge base at high effort. It found two accepted issues: routine installed evidence had
+lost the worker-native build boundary, and the outer private Docker configuration did not reach
+the inner Docker CLI calls. Consolidated repair `64ca4c7f8e4f314a050ffda51144fb65efb88c35`
+restores worker mode `build`, reserves mode `ci` for explicit aggregate audit, and forwards the
+private client configuration only to Docker commands. Targeted owners and the exact installed
+measurement above pass.
+
+Publication preflight's previously serial hosted plus installed tail would itself exceed the
+rough 15-minute operating target despite both phases being meaningful. Checkpoint
+`446f0b144e08764bcabf55391603112d97c0388b` therefore runs short owner/toolchain/focused
+prerequisites first, then launches independent hosted and installed owners as one fail-fast parallel
+group. Synchronized success and failure/cancellation regressions pass in 0.6s; the complete
+Linux/aarch64 development-preflight owner passes in 10.0s and `format-check` in 11.9s. This expands
+the public local-preflight execution contract after the prior final review.
+
+The fresh comprehensive review covered head
+`c2c04fc8513c2a832b5b1c106f57a10825df912b` against base tip and merge base
+`29b54757c837fdfc610e413acd297d253644e292`, using Codex gpt-5.6-sol at high effort over the full
+diff. It found two P1 cancellation leaks, both accepted: peer-failure escalation killed only the
+output wrapper while a TERM-resistant managed command group survived, and a top-level termination
+could exit the coordinator before it forwarded signals to either wrapper. Consolidated redesign
+repair `38acbb0c155ad02f4a287e8046aded5abdf677d2` gives the output wrapper a two-second
+signal-to-KILL escalation for its owned command group and makes the coordinator forward and
+preserve HUP/INT/QUIT/TERM after reaping every started wrapper. The resistant-child owner passes in
+6.6s, combined peer/top-level coordination owner in 0.8s, and `format-check` in 12.2s. No finding
+remains open from that review.
+
+The first exact-head parallel preflight stopped at 8m40s when hosted checks could not create the
+Align cache below an outer root-owned `HOME`; this was an invocation defect, not a candidate
+failure. Fail-fast cancellation correctly stopped the installed peer at worker-build, but the
+incident exposed invocation-owned image and volumes left after the installed Python owner received
+TERM. Those exact resources were identified and removed. Re-scoped repair
+`d0eec6a1f60c5bcd1d82ac0a5c7373ddb7ced9ac` gives the installed image owner catchable-signal
+unwinding through its existing finalizer and gives that cleanup five seconds before the output
+wrapper escalates the whole command group to KILL. A synthetic image-build cancellation proves all
+five volumes and the image reach removal; output-summary and profile cancellation owners pass in
+10.1s, the cleanup-specific owner in 0.7s, and `format-check` in 13.4s. This adds installed resource
+cleanup behavior beyond the reviewed head.
+
+The redesigned-candidate review covered head
+`9f3eb7728363196346445bb21bd35016dd4cb6cf` against base tip and merge base
+`29b54757c837fdfc610e413acd297d253644e292`, using Codex gpt-5.6-sol at high effort over the full
+diff. It found two accepted finalization defects: a signal arriving after image cleanup began could
+skip the remaining Docker removals, and peer cancellation could terminate the qualification owner
+before its private Docker configuration directory unwound. Narrow repair
+`60fb1fa6027167655f4367c6871b31b59a72b873` defers a first signal received during finalization
+until every registered removal has run and gives the outer qualification owner the same
+catchable-signal unwinding boundary. The focused
+qualification and both cleanup-interruption regressions pass in 0.464s; `format-check` passes in
+6.3s. The repair delta was inspected for unrelated behavior and no review finding remains open.
+
+Exact-head preflight at `eaa4f174c40d98cd2f44efe5b3f55758c5f61486` passed the 15.015-second
+development owner, 0.393-second managed toolchain verification, 21.624-second focused owner, and
+678.270-second installed owner. The installed owner again ran no aggregate. The publication command
+then reached its 900-second ceiling because the local hosted graph was still running
+`layer-forward-smoke` after 863.302 seconds. That graph is already required once in GitHub hosted CI
+and does not distinguish a fresh-image risk locally. The candidate is therefore re-scoped again:
+fresh-image preflight leaves the common graph to the required hosted check and runs only its local
+owner, toolchain verification, focused qualification, and installed owner. The unused parallel
+coordinator and its regressions are removed, deleting 362 lines of script and test machinery. This
+changes the reviewed execution approach and requires one final comprehensive review after the
+re-scope is committed.
+
+The final comprehensive review covered head
+`af35e22da8c9f158b09143e8c0217e552e7da8c0` against base tip and merge base
+`29b54757c837fdfc610e413acd297d253644e292`, using Codex gpt-5.6-sol at high effort over the full
+diff. It found one accepted P1 cleanup defect: PID-targeted cancellation could terminate the outer
+qualification or an active Docker client without relaying the signal and reaping that child, so the
+installed finalizer was guaranteed only for process-group cancellation. It also identified this
+handoff's stale pre-commit next action. Narrow repair
+`6878ae75657e4c5ffd76ceb4aa97ad9a292b74cb` adds one shared synchronous signal owner, relays and
+reaps the active child before unwinding, permits the remaining cleanup commands to run, and owns
+both qualification-parent and image-parent PID-targeted regressions. The focused classifier and
+signal owners pass in 0.647s, the complete Linux development-preflight owner passes, and
+`format-check` passes. The repair delta was inspected; no review finding remains open.
+
+Exact-head Linux/aarch64 publication preflight at
+`39863d05ed62437b05007a0834ac81225fca2e83` passes: development owner 14.849s, managed ensure
+0.320s, pin verification 0.072s, fresh-focused 21.456s, and installed owner 586.795s. No common
+aggregate ran locally. The user then clarified that 15 minutes is an approximate diagnostic target,
+not an absolute number. The authoritative wording now retains the current 15-minute workflow
+timeouts while allowing a narrowly longer distinct owner when measurement justifies its value; it
+does not allow a timeout increase to substitute for removing duplicate or unowned work.
+
+The post-clarification comprehensive review covered head
+`a8aecdbd752abed04c5e7b7ffea06301988c85f4` against base tip and merge base
+`29b54757c837fdfc610e413acd297d253644e292`, using Codex gpt-5.6-sol at high effort over the full
+diff. It found two accepted ownership defects. First, the PID-targeted signal helper signaled and
+escalated only the direct process, so a descendant retaining captured pipes could block cleanup.
+Second, the focused inventory overstated real generated-output ELF validation: its native unit owner
+feeds `/bin/true` through the production parser, while strict validation of the real published
+`main` occurs only inside the aggregate. Repair `15edbd411291017d3a34f93e8a6ba6ff12c1188b`
+starts each helper child in a new session, relays and escalates to that process group, and adds a
+resistant pipe-owning descendant regression. It also separates focused native parser coverage from
+the explicit aggregate's new `fresh-v2-published-elf-smoke` inventory row. The targeted signal and
+qualification owners, output-summary suite, qualification inventory, and `format-check` pass. The
+repair delta changes no product or aggregate execution behavior; no review finding remains open.
+
+**Next actions.** (1) Run exact-head fresh-image publication preflight. (2) Publish with all review
+envelopes, inspect all three GitHub checks for distinct value and duration, merge, pull current
+`main`, and continue the next eligible capability.
+
+**Blocker.** None.
+
+**Intentional uncommitted files.** None; local configuration remains outside the change.
+
+## Merged checkpoint: R7-RUNTIME-PROVIDER (2026-09-02)
 
 Branch `agent/r7-runtime-provider`, based on merged `main`
 `88b77ed112d36cb29b948f7212442b3a4f02afcd` (R7-PROMPT PR #163 plus the concurrent R7-TOKENIZER
