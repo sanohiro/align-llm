@@ -7,7 +7,8 @@ file records durable project state.
 
 Branch `agent/ci-under-15`, based on merged `main` `29b54757c837fdfc610e413acd297d253644e292`
 (R7-RUNTIME-PROVIDER PR #164). The user-set shipping constraint is that every required CI check
-finish in less than 15 minutes and perform only work that distinguishes a required risk.
+and the complete fresh-image publication preflight finish in less than 15 minutes and perform only
+work that distinguishes a required risk.
 
 PR #164 is the pre-implementation baseline: hosted 12m19s, native x86_64 installed 43m22s, and
 native aarch64 installed 46m57s. The aarch64 installed-profile log attributes 2,233.685 seconds to
@@ -17,49 +18,52 @@ cost ceiling, public qualification CLI contract, coverage allocation, and closur
 `docs/specs/check-gate-topology.md` section 1.1 and the section 2 ledger. Roadmap item 44 owns the
 consumer-complete change.
 
-Design and the pre-implementation ceiling are committed as `514f356`. The coherent implementation
-makes `--complete-aggregate` explicit on both profile commands, honestly reports its five
-aggregate-only closure cases, omits it from routine preflight and hosted CI, sets both required job
-definitions to 15 minutes, and makes the workflow owner reject timeout or routing drift. The native
-worker-unit owner and installed ordinary adoption retain production ELF dependency validation plus
-real compiler-generated fixture execution without restoring the aggregate. Targeted
-qualification-mode, profile-plan, and workflow-topology self-tests pass, as do `format-check`,
-`gate-topology-check`, and `git diff --check`. The full macOS development-preflight owner reaches an
-unrelated pre-existing apt-cache fixture that assumes GNU awk and `/usr/bin/rmdir`; Linux owns that
-test. Linux-only focused owners correctly stop on missing `/proc/self/fd` or Linux `fcntl` seals on
-macOS.
+Design checkpoint `514f356` and implementation checkpoint `5e1ba3c` make
+`--complete-aggregate` explicit, remove it from routine preflight and hosted CI, set both required
+job definitions to 15 minutes, and preserve the native worker-unit ELF closure plus real
+compiler-generated fixture execution. All ten focused owners and the complete Linux/aarch64
+development-preflight owner pass. Routine installed evidence still covers image admission,
+attestation, lifecycle, compiler self-test, trust and runtime-replacement refusals, ordinary
+adoption, the worker-native build/bundle namespace, and cleanup; only aggregate-owned common
+product behavior is deferred to explicit audit.
 
-Implementation checkpoint `5e1ba3c` is owner-tested on Linux/aarch64. The complete
-`scripts/test-development-preflight` passes. All ten focused owners pass; the process-group cleanup
-self-test uses an outer PID 1 reaper, matching its required lifecycle environment. The real native
-installed profile passes without `--complete-aggregate` in **381.028 seconds**: image build 22.211
-seconds, attestation 2.530, profile lifecycle 1.661, compiler self-test 13.970, trust mutations
-11.111, runtime replacements 20.589, adoption boundary 307.843, and cleanup 0.550. No
-`worker-aggregate` phase is emitted. That is an 85.7% reduction from PR #164's 2,662.367-second
-installed owner and leaves 518.972 seconds beneath the 900-second ceiling before accounting for
-the GitHub job's cached image-build wrapper. Corrected local Docker probes use read-only empty mounts
-for repository-local configuration paths, and the candidate worktree is clean.
+The exact native Linux/aarch64 installed owner at repair head
+`64ca4c7f8e4f314a050ffda51144fb65efb88c35` passes without `--complete-aggregate` in
+**576.532 seconds**: Docker daemon 0.077s, image build 21.960s, attestation 2.640s, profile lifecycle
+1.786s, compiler self-test 14.482s, trust mutations 12.184s, runtime replacements 21.680s,
+adoption boundary 313.091s, worker build 186.037s, and cleanup 2.059s. No worker aggregate runs.
+This is a 78.3% reduction from PR #164's 2,662.367-second owner and leaves 323.468 seconds beneath
+the 900-second ceiling.
 
 The comprehensive Codex CLI review covered head
 `162ef17653684f037e4b224aed5c73fc3af3c3ea` against base tip and merge base
-`29b54757c837fdfc610e413acd297d253644e292` at high effort. It found (P1) the generated-output
-runtime-closure case was misreported as installed-profile evidence after the aggregate was removed,
-and (P2) the historical installed-profile command prose still promised a routine aggregate. Both
-findings were accepted. Consolidated repair `cfab7340ec8d66078e6c26f12a8604b161bbfd80`
-classifies the already-required native worker-unit ELF validator as focused evidence, binds it to
-the installed ordinary adoption's three real compiled-and-executed fixtures, adds static regression
-coverage, and explicitly supersedes the historical cadence. The repair does not restore or add a
-heavy owner. Its qualification-mode, profile-plan, workflow-topology, `gate-topology-check`,
-`format-check`, and `git diff --check` owners pass. The repair is narrow and does not trigger a final
-comprehensive review.
+`29b54757c837fdfc610e413acd297d253644e292` at high effort. It found two accepted documentation and
+coverage-allocation defects, repaired in `cfab7340ec8d66078e6c26f12a8604b161bbfd80`.
+The required final review covered head `7ca7f95959fe742984257df8e446e63d34c15de9` against the same
+base and merge base at high effort. It found two accepted issues: routine installed evidence had
+lost the worker-native build boundary, and the outer private Docker configuration did not reach
+the inner Docker CLI calls. Consolidated repair `64ca4c7f8e4f314a050ffda51144fb65efb88c35`
+restores worker mode `build`, reserves mode `ci` for explicit aggregate audit, and forwards the
+private client configuration only to Docker commands. Targeted owners and the exact installed
+measurement above pass.
 
-**Next actions.** (1) Run exact-head publication preflight. (2) Publish with the review envelope,
-require all three hosted checks below 15 minutes, merge, pull current `main`, and continue the next
-eligible capability.
+Publication preflight's previously serial hosted plus installed tail would itself exceed the
+user's 15-minute constraint despite both phases being meaningful. Checkpoint
+`446f0b144e08764bcabf55391603112d97c0388b` therefore runs short owner/toolchain/focused
+prerequisites first, then launches independent hosted and installed owners as one fail-fast parallel
+group. Synchronized success and failure/cancellation regressions pass in 0.6s; the complete
+Linux/aarch64 development-preflight owner passes in 10.0s and `format-check` in 11.9s. This expands
+the public local-preflight execution contract after the prior final review and therefore requires
+one fresh comprehensive review before publication.
+
+**Next actions.** (1) Perform the fresh comprehensive review of `446f0b1` and consolidate any valid
+repair. (2) Commit this durable state, run exact-head publication preflight below 900 seconds,
+publish with both review envelopes, require all three GitHub checks below 15 minutes, merge, pull
+current `main`, and continue the next eligible capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** This durable review update until committed; local configuration
+**Intentional uncommitted files.** This durable handoff update until committed; local configuration
 remains outside the change.
 
 ## Merged checkpoint: R7-RUNTIME-PROVIDER (2026-09-02)
