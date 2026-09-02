@@ -10359,6 +10359,95 @@ caller's directory and says so.
 
 ---
 
+## Request 54 — ELF support libraries precede user static archives and cannot resolve their symbols
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none after the explicit application dependency below. R7-RUNTIME-PROVIDER's
+  first hosted PR check exposed the gap by failing its clean static-shim link.
+Independent work that may continue: all R7 work. `src/ggml_ffi.align` explicitly records `m` after
+  `align_ggml_shim`, using the shipped `extern "C" link("m")` surface rather than a compatibility
+  layer or proposed API.
+Resume condition: an Align release orders ELF support libraries after every user archive that may
+  reference them, or repeats the support group after user libraries, and passes the archive repro
+  below.
+Align commit or pull request: none
+align-llm verification: remove the explicit empty `extern "C" link("m")` block from
+  `src/ggml_ffi.align`; on Linux, build the ordinary static shim through
+  `scripts/run-main-with-shim` and require `alignc build src/main.align` plus
+  `make runtime-provider-smoke` to pass without unresolved `expf`, `powf`, `sincosf`, or `sqrtf`.
+```
+
+### Motivation and current sibling evidence
+
+At Align commit `27770420555d19b98eced133369c168e9c6d4a2f`, the ELF driver constructs the final link
+in this relevant order:
+
+```text
+objects libalign_runtime.a ... -lpthread -ldl -lm -l<user libraries>
+```
+
+`support_libs(ObjectFormat::Elf)` supplies `-lm`, while `ordered_link_libs` contains libraries from
+`extern "C" link("name")`. This is correct for math references in the preceding runtime archive,
+but not for a later user static archive: ELF archive resolution is left to right, so a math symbol
+first introduced by that archive is still undefined after the earlier `-lm` has been scanned.
+
+R7-RUNTIME-PROVIDER made the failure concrete. Its ordinary hosted build compiles
+`scripts/ggml_shim_stub.c` into `libalign_ggml_shim.a`. The archive contains the unavailable-engine
+entry points selected by normal hosted commands and the deterministic engine used by focused
+owners in one object. The latter calls libm. GitHub's Ubuntu 24.04 pinned-compiler job failed at
+head `d5d9ec4c98990899c13806f680bb4a11a1d0f477` with unresolved `expf`, `powf`, `sincosf`, and
+`sqrtf` after the driver emitted its automatic `-lm` before `-lalign_ggml_shim`. The same source
+links on Mach-O because those symbols are libSystem re-exports, which is why the defect survived the
+Apple host. The earlier Linux/aarch64 publication profile passed and therefore did not substitute
+for this required hosted x86_64 boundary; the hosted bundle job is the evidence that exposed the
+order on its actual platform.
+
+The application repair is explicit and uses only a shipped surface:
+
+```align
+extern "C" link("align_ggml_shim") {
+  // shim declarations
+}
+
+extern "C" link("m") {}
+```
+
+Sema preserves first-seen library order, so the resulting suffix is
+`-lalign_ggml_shim -lm`. The empty block declares no symbol and exists only to state the shim's real
+dependency. It is safe to keep until the compiler repair ships, but requiring every static-library
+consumer to know and compensate for the driver's internal support-library order is not the desired
+Align contract.
+
+### Proposed surface
+
+No language surface change. On ELF, the driver must place the automatic support libraries after
+all object and archive inputs that may reference them. Either of these deterministic command
+shapes is acceptable:
+
+```text
+objects libalign_runtime.a ... -l<user libraries> -lpthread -ldl -lm
+objects libalign_runtime.a ... -lpthread -ldl -lm -l<user libraries> -lpthread -ldl -lm
+```
+
+The first is preferable because it has one support group. Mach-O remains unchanged.
+
+### Acceptance criteria
+
+1. A compiler fixture archives one C object that exports a called symbol and itself calls `expf`.
+   An Align program declares only `extern "C" link("fixture")`, builds on x86_64 and aarch64 ELF
+   without an explicit `link("m")`, runs, and returns the expected value.
+2. A link-plan unit test proves the final user static archive precedes the `-lm` that resolves it;
+   the test covers the ordinary, instrumented-PGO, whole-program, and per-unit link paths that share
+   the plan.
+3. Existing capability-library order, including the `libpq` closure, remains deterministic and all
+   current linker tests pass.
+4. Mach-O emits no new `-lm`, `-ldl`, or `-lpthread` arguments.
+
+---
+
 ## Not requested (respecting Align's design)
 
 These were considered and deliberately **not** requested, because they conflict with Align's design

@@ -316,7 +316,10 @@ previously separate `align_ggml_shim` link. `make build` and `make run` route th
 
 `ALIGN_LLM_GGML_SHIM_STATIC` is a private wrapper-to-builder selector accepting only `0` or `1`;
 static `1` refuses a real include or any forced engine/failure mode. `AR` defaults to `ar`, matching
-the fresh image's authenticated tool inventory. The default path neither consumes a stale
+the fresh image's authenticated tool inventory. `ggml_ffi` explicitly records `m` after
+`align_ggml_shim` because the pinned ELF driver places its automatic support libraries before user
+archives; Align Request 54 owns removing that source-level repetition after the driver repairs its
+static-archive order. The default path neither consumes a stale
 `build/lib` shim nor leaves an extra fresh-worker overlay entry. No build variable is consulted by
 the runtime provider after process start.
 

@@ -123,10 +123,23 @@ consumer. The direct-main audit leaves only the runtime provider owner's intenti
 build outside the wrapper, and the complete privileged Linux/aarch64 `prompt-evaluate-smoke`
 passes with the repaired derived generation child.
 
-**Next actions.** (1) Verify and commit the direct-main clean-link repair. (2) Re-run exact-head
-Linux publication preflight. (3) Publish and merge after required checks and recorded finding
-dispositions, pull the latest `main` including concurrent work, and continue the next eligible
-roadmap capability.
+**Hosted publication incident.** The complete Linux/aarch64 exact-head preflight passed at
+`d5d9ec4c98990899c13806f680bb4a11a1d0f477`: runtime-provider owner 230.318 seconds, hosted checks
+521.062 seconds, fresh-focused 21.491 seconds, and fresh-installed 2,491.577 seconds. PR #164's
+required hosted x86_64 pinned-compiler job then exposed one remaining ELF link-order defect. The
+ordinary static shim is one archive object containing both the unavailable path and deterministic
+engine functions that call libm, while pinned Align emits its automatic `-lm` before
+`-lalign_ggml_shim`; GNU ld therefore reported unresolved `expf`, `powf`, `sincosf`, and `sqrtf`.
+The application now explicitly records the shim's real `m` dependency after the shim with the
+shipped empty `extern "C" link("m") {}` form. Align Request 54 owns the compiler root cause and its
+cross-architecture archive regression. A Linux/aarch64 clean build with `ALIGNC_LINKER=system` and
+the complete 49-assertion `runtime-provider-smoke` both pass after the repair. The change does not
+move a canonical coding-baseline artifact, so the final chain above remains binding; it does
+invalidate the publication stamp and required checks.
+
+**Current next actions.** (1) Commit the explicit libm dependency and Request 54 record. (2) Re-run
+exact-head Linux publication preflight. (3) Push PR #164, rerun every required check, merge with a
+merge commit, pull current `main`, and continue the next eligible roadmap capability.
 
 **Blocker.** None.
 

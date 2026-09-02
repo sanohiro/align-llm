@@ -1223,8 +1223,15 @@ The current forward delivery order is:
     now 16 MiB plus one byte and asserts the exact capped-read refusal. A fresh exact-head
     installed run then reached a second clean-link consumer in the capable-only prompt evaluation
     adoption. The evaluator and all three opt-in C4 measurement gates now route their derived main
-    builds through the same static-shim wrapper as every other hosted main consumer. A fresh
-    exact-head publication rerun remains before merge. The final Linux/aarch64
+    builds through the same static-shim wrapper as every other hosted main consumer. The resulting
+    exact-head Linux/aarch64 publication run passed every phase at `d5d9ec4`, but PR #164's hosted
+    x86_64 pinned-compiler job exposed a GNU ld ordering defect: pinned Align emits automatic
+    `-lm` before the user `libalign_ggml_shim.a`, whose one object contains deterministic engine
+    functions that reference libm even when the ordinary unavailable path is selected. `ggml_ffi`
+    now explicitly records `m` after `align_ggml_shim` with the shipped empty `link("m")` form;
+    Align Request 54 owns the compiler-order root cause. A system-linker Linux/aarch64 clean build
+    and the complete 49-assertion runtime-provider owner pass after the repair; exact-head
+    publication and required checks must be rerun. The final Linux/aarch64
     coding-baseline chain is source `0278e6e`
     -> oracle `2ccb385` -> finalization `94fee50`; it binds the new wrapper, shim builder, and static
     stub source and passes the complete `make baseline-check`.
