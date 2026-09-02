@@ -103,15 +103,27 @@ coordinator and its regressions are removed, deleting 362 lines of script and te
 changes the reviewed execution approach and requires one final comprehensive review after the
 re-scope is committed.
 
-**Next actions.** (1) Commit and review the local/hosted ownership re-scope. (2) Run exact-head
-fresh-image publication preflight below 900 seconds. (3) Publish with all review envelopes, require
+The final comprehensive review covered head
+`af35e22da8c9f158b09143e8c0217e552e7da8c0` against base tip and merge base
+`29b54757c837fdfc610e413acd297d253644e292`, using Codex gpt-5.6-sol at high effort over the full
+diff. It found one accepted P1 cleanup defect: PID-targeted cancellation could terminate the outer
+qualification or an active Docker client without relaying the signal and reaping that child, so the
+installed finalizer was guaranteed only for process-group cancellation. It also identified this
+handoff's stale pre-commit next action. Narrow repair
+`6878ae75657e4c5ffd76ceb4aa97ad9a292b74cb` adds one shared synchronous signal owner, relays and
+reaps the active child before unwinding, permits the remaining cleanup commands to run, and owns
+both qualification-parent and image-parent PID-targeted regressions. The focused classifier and
+signal owners pass in 0.647s, the complete Linux development-preflight owner passes, and
+`format-check` passes. The repair delta was inspected; no review finding remains open.
+
+**Next actions.** (1) Run exact-head fresh-image publication preflight below 900 seconds. (2)
+Publish with all review envelopes, require
 all three GitHub checks below 15 minutes, merge, pull current `main`, and continue the next eligible
 capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The ownership re-scope until committed; local configuration
-remains outside the change.
+**Intentional uncommitted files.** None; local configuration remains outside the change.
 
 ## Merged checkpoint: R7-RUNTIME-PROVIDER (2026-09-02)
 
