@@ -1276,12 +1276,20 @@ The current forward delivery order is:
     cache allocation.
 
 46. **R8-RESET-CACHE-DECISION — evaluate cache policy at the runtime's per-request lifetime.
-    Active.** [`r8-reset-cache-decision.md`](r8-reset-cache-decision.md) is the authoritative
+    Implementation and real measurement complete; review/publication active.**
+    [`r8-reset-cache-decision.md`](r8-reset-cache-decision.md) is the authoritative
     implementation contract. Add an explicit reset-per-trace simulator verb and schema-3 result,
     with both replay orders, the independent oracle, and the existing real decode runner using one
     unchanged capture for continuing and reset results. This is a byte-level investment decision,
     not a runtime cache or latency claim. A partial expert cache is eligible only if the reset
     decode-only evidence materially beats streaming and survives leave-one-trace-out folds.
+
+    The 40-prompt, 16-step real run completed in 213.47 seconds total (199.0 seconds for the sole
+    capture). At the 25-per-cent budget, reset decode-only null streaming fetched 312,056,217,600
+    bytes and LRU fetched 144,557,211,648: a 536-per-mille reduction, with a conservative
+    524-per-mille lower bound after any one trace is removed. Weighted LFU fetched
+    143,222,243,328 bytes, only 9 per mille below LRU, so rule 3 does not justify its extra state.
+    The next partial-cache capability is eligible with LRU at 975,175,680 bytes.
 
 ### Status (2026-08-28)
 

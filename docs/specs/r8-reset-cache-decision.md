@@ -135,8 +135,44 @@ This is an investment rule, not R3's candidate-versus-LRU verdict: LRU itself is
 materially beats streaming. If no policy clears it, runtime expert caching is deferred and R8 moves
 to the next independent hybrid prerequisite.
 
+Policy selection remains proportional: use a rule-3 `BEATS_BASELINE` winner when one exists and
+also clears the streaming investment rule; otherwise select LRU when it clears streaming. A
+candidate's sub-50-per-mille byte difference from LRU does not justify implementing the additional
+policy state.
+
 The runner proves the fold direction without forty redundant simulations. Reset totals are sums of
 independent sessions. For each eligible policy, the pooled saving must exceed the largest one
 session's entire null byte volume; after any one session is removed, the remaining null volume is
 therefore still greater than the policy's conservative pooled upper bound. The reported fold gain
 is this proof's lower bound, not an empirical per-fold minimum.
+
+## 5. Measurement (2026-09-02)
+
+The committed implementation checkpoint `465b0bf` completed the named real runner in 213.47 seconds
+of command wall time; the one 40-prompt capture reported 199.0 seconds. The corpus was
+`expert-locality-v1.txt` (`d7fff23f5a1d4f6237e6f848f3318d8b`, 877 bytes), with 16 greedy decode
+steps per prompt, the OLMoE 16-layer / 64-expert / top-8 model, and the requested 975,175,680-byte
+budget (250 per mille of the 3,900,702,720-byte expert footprint). The model's size and mtime were
+unchanged.
+
+On reset `decode_only`, null streaming fetched 312,056,217,600 bytes and LRU fetched
+144,557,211,648 bytes: a 536-per-mille reduction. The maximum one-session null volume was
+7,801,405,440 bytes, so the conservative leave-one-out lower bound is 524 per mille across all 40
+folds. `router_weight_lfu` fetched 143,222,243,328 bytes, only 9 per mille below LRU; rule 3 reports
+`NO_POLICY_BEATS_BASELINE`. The investment gate is therefore **ELIGIBLE with LRU**, not with the
+more complex score-based policy. The next capability may implement a 975,175,680-byte partial LRU
+expert cache and must measure end-to-end time to a passing patch before making a performance claim.
+
+## 6. Final cell-to-evidence map
+
+| Contract cell | Implementation | Passing evidence |
+| --- | --- | --- |
+| Continuing compatibility | `simulate(...false)`, conditional renderer | existing `sim-basic` golden and oracle equality |
+| Reset construction and both orders | `simulate_reset`, `simulate_mode`, order-local boundary columns | `sim-basic-reset` whole-document oracle equality |
+| All policy state and Belady isolation | `replay` boundary clears and reverse next-use boundaries | `sim-basic-reset`; `sim-reset-repeat-reset` |
+| Complete-session jackknife | `replay` drop range plus retained reset starts | reset multi-trace oracle equality |
+| Schema, errors, output forms, arity | conditional renderer and shared CLI adapter | both modes of every error case, both output forms, reset arity cases |
+| One-capture real decision | two verbs over each shared projected list; conservative deletion proof | the section 5 run and its eight labelled result lines |
+
+No ledger or closure cell is deferred. The measurement selects the next capability but does not
+claim its runtime implementation or latency result.

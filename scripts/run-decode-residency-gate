@@ -800,7 +800,21 @@ for policy in online_policies:
                                 pooled_gain, fold_gain_lower))
 investment_rows.sort()
 if investment_rows:
-    _, _, investment_policy, investment_gain, investment_fold_lower = investment_rows[0]
+    qualifying = {row[2]: row for row in investment_rows}
+    # R3 rule 3 owns whether additional policy machinery materially beats LRU. Prefer its
+    # qualifying winner; otherwise choose the simpler LRU baseline when it clears the streaming
+    # investment gate. A sub-floor byte difference is not a reason to implement a more complex
+    # eviction policy.
+    reset_verdict = reset_decode["verdict"]
+    preferred = (reset_verdict["best_policy"]
+                 if reset_verdict["result"] == "BEATS_BASELINE" else "lru")
+    if preferred in qualifying:
+        chosen = qualifying[preferred]
+    elif "lru" in qualifying:
+        chosen = qualifying["lru"]
+    else:
+        chosen = investment_rows[0]
+    _, _, investment_policy, investment_gain, investment_fold_lower = chosen
     investment_result = "ELIGIBLE"
     investment_direction = "yes"
 else:

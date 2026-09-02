@@ -10,23 +10,26 @@ Branch `agent/r8-reset-cache-decision`, based on merged `main`
 required hosted check in about twelve minutes, merged, and `main` was pulled with no additional
 remote update.
 
-The first real schema-2 decode-corpus replay completed in 190.0 seconds. At the requested
-25-per-cent expert-byte budget, `router_weight_lfu` fetched 181, 224, and 110 per mille more bytes
-than LRU on the mixed, decode-only, and head-4 arms, so it is rejected as the runtime policy. The
-measurement pools forty prompts through one continuing cache, while the current runtime owns one
-invocation at a time. [`docs/specs/r8-reset-cache-decision.md`](docs/specs/r8-reset-cache-decision.md)
-therefore defines the next consumer-complete boundary: an explicit reset-per-trace simulator verb,
-schema-3 result, independent oracle coverage, and reset versions of the existing real runner's four
-projections using the same capture.
+Design checkpoint `ba641e5` and implementation checkpoint `465b0bf` add the explicit
+`--simulate-residency-reset` verb, schema-3 reset documents, exact independent-oracle coverage, and
+continuing plus reset versions of all four real-runner projections from one capture. The existing
+schema-2 command and golden remain byte-identical.
 
-**Latest durable verification.** PR #166's exact final head passed publication preflight in 7m24s,
-then all three required checks passed; the hosted check was about twelve minutes and the two
-unaffected installed profiles reused evidence in seconds. The first post-merge real decode replay
-passed all four continuing arms in 190.0 seconds with the model unchanged.
+The real 40-prompt, 16-step run completed in 213.47 seconds total (199.0-second sole capture). On
+reset `decode_only` at the 975,175,680-byte budget, null streaming fetched 312,056,217,600 bytes and
+LRU fetched 144,557,211,648, a 536-per-mille reduction. The conservative all-40-fold lower bound is
+524 per mille. `router_weight_lfu` improved on LRU by only 9 per mille, below rule 3's floor, so the
+next runtime capability is eligible with the simpler LRU policy, not weighted LFU.
 
-**Next actions.** (1) Complete the author consistency pass over the reset contract. (2) Implement
-the reset replay, CLI, independent oracle, narrow owner cases, and one-capture real runner. (3) Run
-the narrow owner and one real measurement, review once, publish, merge, pull `main`, and continue.
+**Latest durable verification.** `make residency-sim-smoke` passes in 4.3 seconds over both pooling
+lifetimes, both orders, every policy/budget, both output forms, and the full error corpus against the
+independent oracle. The real runner passes all eight arm/lifetime results with the model unchanged
+in 213.47 seconds. No aggregate, installed profile, benchmark, or platform suite has run.
+
+**Next actions.** (1) Complete the author ledger-to-diff consistency pass and commit the measurement
+record. (2) Run one fresh comprehensive review, consolidate any valid repairs, and rerun only the
+affected owner. (3) Run exact-head publication preflight, publish, merge after required checks,
+pull `main`, and begin the measured 975,175,680-byte partial LRU cache capability.
 
 **Blocker.** None.
 
