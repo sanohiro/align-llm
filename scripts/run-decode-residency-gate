@@ -769,6 +769,16 @@ for pooling, pooling_results in results_by_pooling.items():
                  ("%d‰" % verdict["jackknife_min_gain_per_mille"])
                  if cleared else "not measured",
                  "yes" if verdict["jackknife_stable"] else "no"))
+        print("      sweep (pooled effect floor only; no row carries a jackknife)")
+        print("        %14s %8s %10s %10s %-18s %s"
+              % ("budget", "share", "gain", "headroom", "best", "result"))
+        sweep = {row["budget_bytes"]: row for row in verdict["sweep_best"]}
+        for entry in document["budgets"]:
+            row = sweep[entry["bytes"]]
+            print("        %14d %7d‰ %9d‰ %9d‰ %-18s %s"
+                  % (entry["bytes"], entry["per_mille_of_expert_bytes"],
+                     row["gain_per_mille"], row["headroom_per_mille"],
+                     row["best_policy"] or "-", row["result"]))
         print()
 
 # Runtime investment compares an online reset policy with null streaming, not R3's candidate-vs-LRU
@@ -813,10 +823,15 @@ if investment_rows:
     elif "lru" in qualifying:
         chosen = qualifying["lru"]
     else:
-        chosen = investment_rows[0]
-    _, _, investment_policy, investment_gain, investment_fold_lower = chosen
-    investment_result = "ELIGIBLE"
-    investment_direction = "yes"
+        chosen = None
+    if chosen is not None:
+        _, _, investment_policy, investment_gain, investment_fold_lower = chosen
+        investment_result = "ELIGIBLE"
+        investment_direction = "yes"
+    else:
+        investment_policy, investment_gain, investment_fold_lower = "none", 0, 0
+        investment_result = "DEFER"
+        investment_direction = "no"
 else:
     investment_policy, investment_gain, investment_fold_lower = "none", 0, 0
     investment_result = "DEFER"

@@ -736,6 +736,10 @@ for expected in ("--simulate-residency-reset", "results_by_pooling", "pooling=%s
     if expected not in decode_runner:
         fail("reset-binding: scripts/run-decode-residency-gate no longer emits the two-lifetime "
              "measurement (%r absent)" % expected)
+for expected in ('verdict["sweep_best"]', 'elif "lru" in qualifying:', 'chosen = None'):
+    if expected not in decode_runner:
+        fail("decision-report-binding: scripts/run-decode-residency-gate no longer preserves the "
+             "settled sweep or proportional fallback (%r absent)" % expected)
 
 # ---- capture-identity: the two decode runners must capture the same transcripts ---------------
 # `docs/specs/r3-residency-sim.md` section 8.1 and `docs/specs/r2a-expert-trace.md` section 9 both
