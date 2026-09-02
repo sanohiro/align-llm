@@ -6585,8 +6585,14 @@ STUB_CASES = [
     ("mdr-cache-mode-missing-budget", mdr(resident="dense+lru"), "R8_CACHE_MODE"),
     ("mdr-cache-mode-zero", mdr(resident="dense+lru:0"), "R8_CACHE_MODE"),
     ("mdr-cache-mode-leading-zero", mdr(resident="dense+lru:09216"), "R8_CACHE_MODE"),
+    ("mdr-cache-mode-long-nondigit", mdr(resident="dense+lru:999999999999999999999x"),
+     "R8_CACHE_MODE"),
     ("mdr-cache-budget-too-small", mdr(resident="dense+lru:3072"), "R8_CACHE_BUDGET"),
     ("mdr-cache-budget-too-large", mdr(resident="dense+lru:8589934593"), "R8_CACHE_BUDGET"),
+    ("mdr-cache-budget-i64-max", mdr(resident="dense+lru:9223372036854775807"),
+     "R8_CACHE_BUDGET"),
+    ("mdr-cache-budget-beyond-i64", mdr(resident="dense+lru:999999999999999999999999999999"),
+     "R8_CACHE_BUDGET"),
     ("mdr-cache-stub-unavailable", mdr(resident="dense+lru:9216"), "R5_GGML_UNAVAILABLE"),
     # The two reserved positions. `kv[save]` is checked before `kv[load]`, and both are checked
     # before `RESIDENT` — the load case carries an otherwise-refusable `RESIDENT` so the precedence
@@ -7446,6 +7452,12 @@ if cache["bytes_served"] != cache["requests"] * cache["key_bytes"] \
         or cache["bytes_fetched"] != cache["miss_bytes"]:
     failures.append("cache byte counters do not reconcile on the unamplified fixture: %r" % cache)
 step_cache = [row["residency"] for row in cache_case["steps"]]
+for row in step_cache:
+    expected_amplification = ((row["expert_pread_bytes"] - row["cache_miss_bytes"])
+                              * 1000000 // row["cache_miss_bytes"]
+                              if row["cache_miss_bytes"] else 0)
+    if row["expert_read_amplification_ppm"] != expected_amplification:
+        failures.append("cache amplification does not use exact logical miss bytes: %r" % row)
 for field, total in (("cache_hits", cache["hits"]), ("cache_misses", cache["misses"]),
                      ("cache_evictions", cache["evictions"]),
                      ("cache_bytes_served", cache["bytes_served"]),

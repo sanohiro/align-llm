@@ -104,6 +104,7 @@ CODE_KV_UNSUPPORTED := "R6M_KV_UNSUPPORTED"
 // 536,870,912 B, so the ceiling is never the binding constraint and is defence rather than a bound.
 MAX_PLANE_BYTES := 8589934592
 MAX_DETAIL_BYTES := 256
+I64_MAX := 9223372036854775807
 
 PLANE_TENSOR_K := 0
 PLANE_TENSOR_V := 1
@@ -375,7 +376,29 @@ fn resident_detail(value: str) -> string {
 
 fn cache_budget(value: str) -> i64 {
   if !value.starts_with("dense+lru:") { return -1 }
-  return moe_model_forward.parse_index(value[10..value.len()])
+  digits := value[10..value.len()]
+  if digits.len() == 0 { return -1 }
+  view := digits.bytes()
+  if view.len() > 1 && view.u8(0) as i64 == 48 { return -1 }
+  mut total := 0
+  mut index := 0
+  mut oversized := false
+  loop {
+    if index >= view.len() { break }
+    byte := view.u8(index) as i64
+    if byte < 48 || byte > 57 { return -1 }
+    digit := byte - 48
+    if !oversized {
+      if total > (I64_MAX - digit) / 10 {
+        oversized = true
+      } else {
+        total = total * 10 + digit
+      }
+    }
+    index = index + 1
+  }
+  if oversized { return moe_model_forward.MAX_WINDOW_BYTES + 1 }
+  return total
 }
 
 fn fail(borrow mut o: moe_model_forward.Outcome, code: str, detail: str) {
@@ -3192,9 +3215,7 @@ fn render_step_row(
   d.write(",\"expert_pread_bytes\":")
   d.write_int(res.expert_pread_bytes)
   d.write(",\"expert_read_amplification_ppm\":")
-  miss_bytes := if cache_mode { res.cache_misses * (if res.keys_demanded > 0 {
-        res.expert_bytes / res.keys_demanded
-      } else { 0 }) } else { res.expert_bytes }
+  miss_bytes := if cache_mode { res.cache_miss_bytes } else { res.expert_bytes }
   d.write_int(if miss_bytes > 0 {
       (res.expert_pread_bytes - miss_bytes) * 1000000 / miss_bytes
     } else {
@@ -4611,11 +4632,12 @@ pub fn render_window(borrow o: moe_model_forward.Outcome) -> string {
 // the operand's default carries, a caller who wants residency and forgets the operand.
 //
 // `step_dense_pack_bytes` is the capability's **primary metric**: a syscall counter, not a clock,
-// identical across runs, and exactly zero in `dense` mode. `step_expert_pack_bytes` is the
-// co-primary invariant and is `487,587,840 * N` in **both** modes. `step_pack_bytes` is their sum
-// and keeps `docs/specs/r6-resident-weights.md` section 3.5's exact meaning — "pack bytes read by
-// decode steps only" — so one field name means one thing across both decode arms; on this arm it is
-// therefore not zero in `dense` mode, and the claim's metric got its own name instead.
+// identical across runs, and exactly zero in `dense` mode. `step_expert_pack_bytes` is the expert
+// read counter: dense residency preserves the prior `487,587,840 * N` invariant, while cache mode
+// reports only physical misses. `step_pack_bytes` is their sum and keeps
+// `docs/specs/r6-resident-weights.md` section 3.5's exact meaning — "pack bytes read by decode steps
+// only" — so one field name means one thing across both decode arms; on this arm it is therefore
+// not zero in `dense` mode, and the claim's metric got its own name instead.
 //
 // It is written here rather than in `moe_model_forward`'s shared renderers for the reason section
 // 5.2 predicts in bytes: `--moe-layer-forward` and `--moe-model-forward` share that module, and
