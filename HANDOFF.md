@@ -3,9 +3,9 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: ALIGN-LATEST-PREREQUISITE (2026-09-02)
+## Active: R8-SCORE-BASED-CACHE (2026-09-02)
 
-Branch `agent/align-latest-prerequisite`, based on merged `main`
+Branch `agent/r8-score-cache`, based on merged `main`
 `edc5c132225f567c7810f8809819d18b3d4ec45d` (REQUIRED-CI-UNDER-15 PR #165). The user requested
 that the Align prerequisite advance after that merge. The candidate moves `.align-revision` from
 `27770420555d19b98eced133369c168e9c6d4a2f` to the current merged Align `origin/main`,
@@ -13,22 +13,27 @@ that the Align prerequisite advance after that merge. The candidate moves `.alig
 Align v0.6.0 plus the later merged `pkg.kv` timeout and SIGPIPE runtime repairs.
 
 No align-llm request is waiting in `ALIGN_MERGED`, so this adoption changes no request lifecycle
-state and consumes no proposed language or library surface. Its consumer boundary is compatibility
-of the existing complete Align source graph with the newer compiler. `make check` owns that graph;
-managed toolchain materialization and verification own the exact compiler/runtime identity. The pin
-alone does not select `make ci`, a native installed profile, or an unrelated qualification.
+state and consumes no proposed language or library surface. In accordance with roadmap's
+ALIGN-ADOPTION rule, checkpoint `04d0156` is an internal prerequisite of the next consumer rather
+than a standalone pull request. That consumer is `R8-SCORE-BASED-CACHE`: extend the activation trace
+with selected router weights and let the residency simulator evaluate one fixed weighted-LFU cache
+policy. [`docs/specs/r8-score-cache.md`](docs/specs/r8-score-cache.md) owns the public-contract
+ledger, closure matrix, cost ceilings, and exact exclusions.
 
 **Latest durable verification.** The managed release compiler/runtime materialized successfully
 with Align's LLVM-aware Cargo wrapper. `scripts/align-toolchain verify` passed in 0.127 seconds at
 the exact new identity, and `make check` checked all 40 units per-unit in 2m00.91s.
 
-**Next actions.** (1) Commit the coherent adoption and perform one comprehensive review. (2) Run
-exact-HEAD pin preflight, publish, merge after required checks, pull current `main`, and continue
-the next eligible roadmap capability.
+**Next actions.** (1) Finish and author-check the R8 ledger, then implement the instrument,
+`R2_ACTIVATION_TRACE` schema 2, and the eleven-policy simulator. (2) Run only the three narrow
+owners and the input-dependent compiled instrument qualification, perform one comprehensive review,
+and consolidate accepted repairs. (3) Run exact-HEAD publication preflight, publish, merge after
+required checks, pull current `main`, and continue the next eligible roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** None; local configuration remains outside the change.
+**Intentional uncommitted files.** The active R8 design and implementation; local configuration
+remains outside the change.
 
 ## Merged checkpoint: REQUIRED-CI-UNDER-15 (PR #165, 2026-09-02)
 

@@ -1255,6 +1255,18 @@ The current forward delivery order is:
     [`check-gate-topology.md`](check-gate-topology.md) section 1.1 and the section 2 ledger. This
     changes no product behavior or evaluator result.
 
+45. **R8-SCORE-BASED-CACHE — selected router weights through one score-based residency policy.
+    Active.** [`r8-score-cache.md`](r8-score-cache.md) is the authoritative implementation contract.
+    The capability upgrades `R2_ACTIVATION_TRACE` and `R3_RESIDENCY_SIM` to schema 2, extends the
+    managed measurement instrument so `ffn_moe_topk` and `ffn_moe_weights` expose identical full
+    axes, and adds one predetermined `router_weight_lfu` candidate to the simulator and its
+    independent oracle. It is the smallest producer-complete consumer of R3's named router-weight
+    prerequisite: every selected expert carries its exact printed four-decimal gating weight and
+    the policy evicts the lowest cumulative routing mass with LRU/key tie breaks. The Align pin to
+    `b6f95a261e1434d705d7de006484ffa66b1542f0` is an internal checkpoint on the same branch. This
+    capability evaluates a cache policy in bytes; it does not yet implement a runtime cache or make
+    the latency claim required to close R8.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
