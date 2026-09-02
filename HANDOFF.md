@@ -36,7 +36,14 @@ simulator or measured result.
 **Latest durable verification.** `make residency-sim-smoke` passes in 5.3 seconds over both pooling
 lifetimes, both orders, every policy/budget, both output forms, and the full error corpus against the
 independent oracle. The real runner passes all eight arm/lifetime results with the model unchanged
-in 213.47 seconds. No aggregate, installed profile, benchmark, or platform suite has run.
+in 213.47 seconds. No aggregate, installed profile, benchmark, or platform suite has completed.
+
+The first publication plan incorrectly selected the fresh-image scope solely because this branch
+had edited the existing `Makefile` owner comment without changing its target or command. A native
+Linux/aarch64 attempt proved the owner and focused qualification, then was stopped after roughly 17
+minutes while a cold inner image was still downloading LLVM. Removing that non-contract comment
+restores the intended hosted scope; the failed cold-image attempt is not candidate evidence and is
+not repeated.
 
 **Next actions.** (1) Run exact-head publication preflight. (2) Publish and merge after required
 checks. (3) Pull `main` and begin the measured 975,175,680-byte partial LRU cache capability.
