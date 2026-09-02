@@ -20,7 +20,9 @@ consumer-complete change.
 Design and the pre-implementation ceiling are committed as `514f356`. The coherent implementation
 makes `--complete-aggregate` explicit on both profile commands, honestly reports its five
 aggregate-only closure cases, omits it from routine preflight and hosted CI, sets both required job
-definitions to 15 minutes, and makes the workflow owner reject timeout or routing drift. Targeted
+definitions to 15 minutes, and makes the workflow owner reject timeout or routing drift. The native
+worker-unit owner and installed ordinary adoption retain production ELF dependency validation plus
+real compiler-generated fixture execution without restoring the aggregate. Targeted
 qualification-mode, profile-plan, and workflow-topology self-tests pass, as do `format-check`,
 `gate-topology-check`, and `git diff --check`. The full macOS development-preflight owner reaches an
 unrelated pre-existing apt-cache fixture that assumes GNU awk and `/usr/bin/rmdir`; Linux owns that
@@ -38,15 +40,27 @@ installed owner and leaves 518.972 seconds beneath the 900-second ceiling before
 the GitHub job's cached image-build wrapper. Corrected local Docker probes use read-only empty mounts
 for repository-local configuration paths, and the candidate worktree is clean.
 
-**Next actions.** (1) Commit this durable owner evidence. (2) Complete one comprehensive review of
-the stable candidate and repair any validated findings. (3) Run exact-head publication preflight.
-(4) Publish, require all three hosted checks below 15 minutes, merge, pull current `main`, and
-continue the next eligible capability.
+The comprehensive Codex CLI review covered head
+`162ef17653684f037e4b224aed5c73fc3af3c3ea` against base tip and merge base
+`29b54757c837fdfc610e413acd297d253644e292` at high effort. It found (P1) the generated-output
+runtime-closure case was misreported as installed-profile evidence after the aggregate was removed,
+and (P2) the historical installed-profile command prose still promised a routine aggregate. Both
+findings were accepted. Consolidated repair `cfab7340ec8d66078e6c26f12a8604b161bbfd80`
+classifies the already-required native worker-unit ELF validator as focused evidence, binds it to
+the installed ordinary adoption's three real compiled-and-executed fixtures, adds static regression
+coverage, and explicitly supersedes the historical cadence. The repair does not restore or add a
+heavy owner. Its qualification-mode, profile-plan, workflow-topology, `gate-topology-check`,
+`format-check`, and `git diff --check` owners pass. The repair is narrow and does not trigger a final
+comprehensive review.
+
+**Next actions.** (1) Run exact-head publication preflight. (2) Publish with the review envelope,
+require all three hosted checks below 15 minutes, merge, pull current `main`, and continue the next
+eligible capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** This durable evidence update until committed; local
-configuration remains outside the change.
+**Intentional uncommitted files.** This durable review update until committed; local configuration
+remains outside the change.
 
 ## Merged checkpoint: R7-RUNTIME-PROVIDER (2026-09-02)
 
