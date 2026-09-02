@@ -1383,15 +1383,58 @@ def test_qualification_modes() -> None:
         ],
         "installed-only mode did not forward the prepared image identity",
     )
+    audited = invoke(
+        "--installed-profile-only", "--complete-aggregate", "--require-docker"
+    )
+    require(
+        audited
+        == [
+            (
+                "run-fresh-image-profile-smoke",
+                (
+                    sys.executable,
+                    "scripts/run-fresh-image-profile-smoke",
+                    "--require-docker",
+                    "--complete-aggregate",
+                ),
+            )
+        ],
+        "complete audit was not forwarded exactly once",
+    )
     complete = invoke("--installed-profile", "--require-docker")
     require(
         len(complete) == len(qualification.FOCUSED_CHECKS) + 1
         and complete[-1][0] == "run-fresh-image-profile-smoke",
         "complete mode does not run each owner once",
     )
+    prior = sys.argv
+    sys.argv = ["run-fresh-worker-qualification", "--complete-aggregate"]
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            try:
+                qualification.main()
+            except SystemExit as error:
+                require(
+                    str(error) == "--complete-aggregate requires an installed-profile mode",
+                    "complete audit without an installed profile did not fail canonically",
+                )
+            else:
+                raise AssertionError("complete audit without an installed profile was accepted")
+    finally:
+        sys.argv = prior
 
     image_profile = load_script(
         "run-fresh-image-profile-smoke", "align_llm_fresh_image_profile_test"
+    )
+    image_profile_source = (
+        REPOSITORY / "scripts" / "run-fresh-image-profile-smoke"
+    ).read_text(encoding="utf-8")
+    require(
+        'parser.add_argument("--complete-aggregate", action="store_true")'
+        in image_profile_source
+        and 'if values.complete_aggregate:\n                phases.enter("worker-aggregate")'
+        in image_profile_source,
+        "installed profile does not gate the complete aggregate on explicit input",
     )
     image_profile.run = lambda *arguments, **keywords: SimpleNamespace(returncode=1)
 
@@ -2026,6 +2069,15 @@ def test_workflow_topology() -> None:
     require(
         "--installed-profile-only --require-docker" in workflow,
         "CI does not use the required installed-only mode",
+    )
+    require(
+        workflow.count("timeout-minutes: 15") == 2
+        and "timeout-minutes: 60" not in workflow,
+        "required CI jobs do not enforce the 15-minute ceiling",
+    )
+    require(
+        "--complete-aggregate" not in workflow,
+        "routine CI still runs the explicit complete aggregate audit",
     )
     require(
         "align-full-source-${{ runner.os }}-${{ matrix.architecture }}-"

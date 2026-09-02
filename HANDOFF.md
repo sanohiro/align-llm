@@ -17,17 +17,26 @@ cost ceiling, public qualification CLI contract, coverage allocation, and closur
 `docs/specs/check-gate-topology.md` section 1.1 and the section 2 ledger. Roadmap item 44 owns the
 consumer-complete change.
 
-**Next actions.** (1) Commit the pre-implementation design and cost ceiling. (2) Make the complete
-aggregate an explicit `--complete-aggregate` audit, absent from routine preflight and GitHub CI.
-(3) Enforce `timeout-minutes: 15` on every required job and make the workflow self-test reject
-budget or routing drift. (4) Run the narrow topology/profile owners, then exact publication
-preflight, comprehensive review, PR, repair, and merge. (5) Pull current `main` and continue the
-next eligible roadmap capability.
+Design and the pre-implementation ceiling are committed as `514f356`. The coherent implementation
+makes `--complete-aggregate` explicit on both profile commands, honestly reports its five
+aggregate-only closure cases, omits it from routine preflight and hosted CI, sets both required job
+definitions to 15 minutes, and makes the workflow owner reject timeout or routing drift. Targeted
+qualification-mode, profile-plan, and workflow-topology self-tests pass, as do `format-check`,
+`gate-topology-check`, and `git diff --check`. The full macOS development-preflight owner reaches an
+unrelated pre-existing apt-cache fixture that assumes GNU awk and `/usr/bin/rmdir`; Linux owns that
+test. Linux-only focused owners correctly stop on missing `/proc/self/fd` or Linux `fcntl` seals on
+macOS.
+
+**Next actions.** (1) Commit the coherent implementation. (2) Run the full Linux development
+preflight owner and the native installed profile without the complete aggregate, recording total
+and phase times against the 900-second ceiling. (3) Complete one comprehensive review, repair any
+validated findings, and run exact-head publication preflight. (4) Publish, require all three hosted
+checks below 15 minutes, merge, pull current `main`, and continue the next eligible capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The design and durable handoff update until the design checkpoint
-is committed; local configuration remains outside the change.
+**Intentional uncommitted files.** The coherent implementation and this durable checkpoint until
+the implementation commit; local configuration remains outside the change.
 
 ## Merged checkpoint: R7-RUNTIME-PROVIDER (2026-09-02)
 

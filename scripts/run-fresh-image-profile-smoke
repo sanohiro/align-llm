@@ -700,6 +700,7 @@ def deployment_copy(source: Path, target: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--require-docker", action="store_true")
+    parser.add_argument("--complete-aggregate", action="store_true")
     parser.add_argument("--align-repo", type=Path)
     parser.add_argument("--prepared-image")
     parser.add_argument("--image-signing-seed", type=Path)
@@ -1400,18 +1401,22 @@ def main() -> int:
                 "ordinary invalid Align revision",
                 b"json-scan adoption: ERROR revision\n",
             )
-            phases.enter("worker-aggregate")
-            worker_result = worker_profile_run(
-                image, volume, runtime_volume, source_volume, cgroup_driver
-            )
-            if worker_result.returncode != 0:
-                raise RuntimeError(
-                    "fresh worker aggregate failed:\n"
-                    + worker_result.stdout.decode("utf-8", "replace")
-                    + worker_result.stderr.decode("utf-8", "replace")
+            if values.complete_aggregate:
+                phases.enter("worker-aggregate")
+                worker_result = worker_profile_run(
+                    image, volume, runtime_volume, source_volume, cgroup_driver
                 )
-            if worker_result.stdout != b"fresh compiler and capable checks: PASS\n" or worker_result.stderr:
-                raise RuntimeError("fresh worker aggregate output is not canonical")
+                if worker_result.returncode != 0:
+                    raise RuntimeError(
+                        "fresh worker aggregate failed:\n"
+                        + worker_result.stdout.decode("utf-8", "replace")
+                        + worker_result.stderr.decode("utf-8", "replace")
+                    )
+                if (
+                    worker_result.stdout != b"fresh compiler and capable checks: PASS\n"
+                    or worker_result.stderr
+                ):
+                    raise RuntimeError("fresh worker aggregate output is not canonical")
         finally:
             phases.finish("fail" if sys.exc_info()[0] is not None else "pass")
             phases.enter("cleanup")

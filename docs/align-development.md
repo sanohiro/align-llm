@@ -106,13 +106,14 @@ required jobs. Direct pushes, squash/rebase or conflict-resolution merges, faile
 and unavailable GitHub evidence run the normal classifier-selected gates. This removes the second
 fresh-image execution after an exact merge without weakening direct-push coverage.
 
-Run `make ci` for the complete capable-host gate. It uses the exact managed pinned Align release compiler,
-then runs the bounded hosted functional graph, the sandboxed coding corpus, and canonical baseline
-verification in a deterministic order. It is complete for that declared graph, not for every
-focused qualification script in the repository. Run `make hosted-checks` only on hosts that cannot
-provide the coding corpus's nested user namespace; it intentionally omits `eval-coding` and
-`baseline-check`. A focused target is diagnostic evidence for that surface, not evidence that
-either aggregate completed.
+`make ci` is an explicit complete capable-host audit. It uses the exact managed pinned Align release
+compiler, then runs the bounded hosted functional graph, the sandboxed coding corpus, and canonical
+baseline verification in a deterministic order. It is complete for that declared graph, not for
+every focused qualification script in the repository, and is not routine pull-request evidence.
+Select it only when an aggregate-only owner changes or an explicit audit requests it. Routine
+publication runs `make hosted-checks` once and the two native installed profiles without the
+complete aggregate; every required GitHub job has a 15-minute wall-clock ceiling. A focused target
+is diagnostic evidence for that surface, not evidence that either aggregate completed.
 
 Resource-limit, race, security, fuzz, stress, platform, mutation, and benchmark qualification run
 through their named owner commands when the owning boundary changes or an explicit audit requires

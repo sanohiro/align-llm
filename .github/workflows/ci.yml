@@ -24,6 +24,7 @@ jobs:
   check:
     name: Pinned Align compiler and supported checks
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
       ALIGN_APT_PACKAGES: >-
         llvm-22-dev clang-22 libclang-rt-22-dev lld-22
@@ -365,7 +366,7 @@ jobs:
           - architecture: aarch64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
