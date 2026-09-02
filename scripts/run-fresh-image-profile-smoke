@@ -10,12 +10,15 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 
 REPOSITORY = Path(__file__).resolve().parent.parent
@@ -37,6 +40,37 @@ TEST_UID = 12345
 WORKER_INVOCATION_TIMEOUT = 5_100
 PREPARED_IMAGE_PATTERN = re.compile(r"align-llm-fresh-test:[0-9a-f]{32}\Z")
 AGGREGATE_DIAGNOSTIC_VARIABLE = "ALIGN_LLM_AGGREGATE_DIAGNOSTIC"
+PROFILE_SIGNALS = tuple(
+    selected
+    for selected in (
+        getattr(signal, "SIGHUP", None),
+        signal.SIGINT,
+        getattr(signal, "SIGQUIT", None),
+        signal.SIGTERM,
+    )
+    if selected is not None
+)
+
+
+@contextmanager
+def cleanup_signal_handlers() -> Iterator[None]:
+    pending_signal: int | None = None
+    previous_handlers: dict[int, signal.Handlers] = {}
+
+    def handle_signal(signum: int, _frame: object) -> None:
+        nonlocal pending_signal
+        if pending_signal is None:
+            pending_signal = signum
+            raise SystemExit(128 + signum)
+
+    try:
+        for selected_signal in PROFILE_SIGNALS:
+            previous_handlers[selected_signal] = signal.getsignal(selected_signal)
+            signal.signal(selected_signal, handle_signal)
+        yield
+    finally:
+        for selected_signal, previous in previous_handlers.items():
+            signal.signal(selected_signal, previous)
 
 
 def aggregate_diagnostic_requested() -> bool:
@@ -775,7 +809,9 @@ def main() -> int:
     boundary_source_volume = f"align-llm-fresh-boundary-source-{unique}"
     ordinary_source_volume = f"align-llm-fresh-ordinary-source-{unique}"
     cgroup_ready = False
-    with tempfile.TemporaryDirectory(prefix="fresh-image-profile-") as temporary_name:
+    with cleanup_signal_handlers(), tempfile.TemporaryDirectory(
+        prefix="fresh-image-profile-"
+    ) as temporary_name:
         temporary = Path(temporary_name)
         image_seed = temporary / "image-signing-seed"
         run_seed = temporary / "run-signing-seed"

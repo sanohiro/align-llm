@@ -1677,6 +1677,56 @@ def test_qualification_modes() -> None:
         and "complete_aggregate=values.complete_aggregate" in image_profile_source,
         "installed profile does not retain build while gating the aggregate on explicit input",
     )
+    require(
+        "with cleanup_signal_handlers(), tempfile.TemporaryDirectory(" in image_profile_source,
+        "installed profile cleanup is outside catchable signal ownership",
+    )
+    previous_term = signal.getsignal(signal.SIGTERM)
+    unwound = False
+    try:
+        with image_profile.cleanup_signal_handlers():
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+            finally:
+                unwound = True
+    except SystemExit as error:
+        require(error.code == 128 + signal.SIGTERM, "profile signal status changed")
+    else:
+        raise RuntimeError("profile cleanup signal did not terminate the owner")
+    require(
+        unwound and signal.getsignal(signal.SIGTERM) == previous_term,
+        "profile signal did not unwind or restore its handler",
+    )
+    cleanup_calls: list[list[str]] = []
+
+    def interrupt_image_build(arguments: list[str], **_keywords: object) -> SimpleNamespace:
+        cleanup_calls.append(arguments)
+        if arguments[:2] == ["docker", "info"] and "--format" not in arguments:
+            return SimpleNamespace(returncode=0, stdout=b"Cgroup Driver: cgroupfs\n", stderr=b"")
+        if arguments[:2] == ["docker", "info"]:
+            return SimpleNamespace(returncode=0, stdout=b"amd64\n", stderr=b"")
+        if arguments[:2] == ["docker", "build"]:
+            os.kill(os.getpid(), signal.SIGTERM)
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    image_profile.run = interrupt_image_build
+    previous_arguments = sys.argv
+    sys.argv = ["run-fresh-image-profile-smoke", "--require-docker"]
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            try:
+                image_profile.main()
+            except SystemExit as error:
+                require(error.code == 128 + signal.SIGTERM, "profile cancellation status changed")
+            else:
+                raise RuntimeError("profile image-build cancellation was accepted")
+    finally:
+        sys.argv = previous_arguments
+    require(
+        sum(arguments[:3] == ["docker", "volume", "rm"] for arguments in cleanup_calls) == 5
+        and sum(arguments[:3] == ["docker", "image", "rm"] for arguments in cleanup_calls) == 1,
+        "profile cancellation did not remove every invocation-owned Docker resource",
+    )
     image_profile.run = lambda *arguments, **keywords: SimpleNamespace(returncode=1)
 
     def unavailable(*arguments: str) -> int:

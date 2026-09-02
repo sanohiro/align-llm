@@ -474,7 +474,7 @@ while True:
     require(ready.exists(), "signal-resistant fixture child did not become ready")
     child = int(ready.read_text(encoding="ascii"))
     process.send_signal(signal.SIGTERM)
-    stdout, stderr = process.communicate(timeout=5)
+    stdout, stderr = process.communicate(timeout=8)
     require(
         process.returncode == -signal.SIGTERM.value and not stdout,
         "signal escalation did not preserve supervisor status",

@@ -30,6 +30,7 @@ MAX_DIAGNOSTIC_BYTES = 8_192
 MAX_DIAGNOSTIC_TEXT_BYTES = 2_048
 MAX_RETAINED_LINE_PREFIX = 4_096
 PROCESS_GROUP_CLEANUP_SECONDS = 2.0
+SIGNAL_CLEANUP_SECONDS = 5.0
 CHILD_POLL_SECONDS = 0.25
 OUTPUT_DIRECTORY_VARIABLE = "ALIGN_LLM_OUTPUT_DIRECTORY"
 ACTIVE_VARIABLE = "ALIGN_LLM_OUTPUT_SUMMARY_ACTIVE"
@@ -493,7 +494,7 @@ def run_command(
         if pending_signal is None:
             pending_signal = signum
             termination_deadline_ns = (
-                time.monotonic_ns() + int(PROCESS_GROUP_CLEANUP_SECONDS * 1_000_000_000)
+                time.monotonic_ns() + int(SIGNAL_CLEANUP_SECONDS * 1_000_000_000)
             )
         if child is not None:
             try:
