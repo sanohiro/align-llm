@@ -1,0 +1,630 @@
+#!/usr/bin/env python3
+"""R8's bounded provider-level OLMoE coding performance decision."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import platform
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MODEL_BYTES = 4_213_512_192
+MODEL_SHA256 = "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f"
+SERVER_BUILD = "build 10566, commit bb4caa754"
+SERVER_COMMIT = "bb4caa754"
+BUDGET = 975_175_680
+CEILING_SECONDS = 15 * 60
+ALIAS = "olmoe"
+CONTAINER_IMAGE = os.environ.get("ALIGN_LLM_RUNTIME_GATE_IMAGE", "c4-repair-measure:latest")
+TASK = ROOT / "eval/tasks/coding-v1/python-inclusive-range/task.json"
+VALIDATOR = ROOT / "eval/runners/run-coding-task.py"
+ORDERS = (("local", "runtime"), ("runtime", "local"), ("runtime", "local"), ("local", "runtime"))
+PROMPT_TEXT = (
+    "Fix the pinned python-inclusive-range task. Only edit src/inclusive_range.py.\n"
+    "Current file:\n"
+    "def inclusive_total(start: int, stop: int) -> int:\n"
+    '    """Return the sum of every integer from start through stop."""\n'
+    "    return sum(range(start, stop))\n"
+    "Tests require the stop value to be included and descending intervals to remain empty.\n"
+    "Make the smallest one-line change; do not edit the function signature or docstring.\n"
+    "Return only a unified Git diff. Its exact fixed prefix must be:\n"
+    "diff --git a/src/inclusive_range.py b/src/inclusive_range.py\n"
+    "--- a/src/inclusive_range.py\n"
+    "+++ b/src/inclusive_range.py\n"
+    "@@ -3 +3 @@\n"
+    "-    return sum(range(start, stop))\n"
+    "Complete that diff with exactly one added replacement line.\n"
+)
+PATCH_PREFIX = (
+    "diff --git a/src/inclusive_range.py b/src/inclusive_range.py\n"
+    "--- a/src/inclusive_range.py\n"
+    "+++ b/src/inclusive_range.py\n"
+    "@@ -3 +3 @@\n"
+    "-    return sum(range(start, stop))\n"
+)
+KNOWN_GOOD_PATCH = PATCH_PREFIX + "+    return sum(range(start, stop + 1))\n"
+server_process: subprocess.Popen[bytes] | None = None
+
+
+class DecisionError(RuntimeError):
+    pass
+
+
+def stop_server() -> None:
+    global server_process
+    if server_process is None or server_process.poll() is not None:
+        return
+    server_process.terminate()
+    try:
+        server_process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        server_process.kill()
+        server_process.wait(timeout=5)
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    stop_server()
+    raise SystemExit(128 + signal_number)
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def bytes_sha256(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def configured_file(name: str, *, executable: bool = False) -> Path | None:
+    value = os.environ.get(name, "")
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_file() or (executable and not os.access(path, os.X_OK)):
+        raise DecisionError(f"configured prerequisite is unusable: {name}={value}")
+    return path
+
+
+def configured_directory(name: str) -> Path | None:
+    value = os.environ.get(name, "")
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_dir():
+        raise DecisionError(f"configured prerequisite is unusable: {name}={value}")
+    return path
+
+
+def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
+    rows = [
+        ("ALIGN_LLM_OLMOE_MODEL", configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", configured_directory("ALIGN_LLM_GGML_LIB")),
+        ("ALIGN_LLM_LLAMA_SERVER", configured_file("ALIGN_LLM_LLAMA_SERVER", executable=True)),
+    ]
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-CODING-DECISION: N/A ({missing} unset)")
+        return None
+    return tuple(path for _, path in rows)  # type: ignore[return-value]
+
+
+def remaining_timeout(deadline: float, maximum: int) -> int:
+    remaining = int(deadline - time.monotonic())
+    if remaining <= 0:
+        raise DecisionError("complete decision exceeded its 15-minute ceiling")
+    return max(1, min(maximum, remaining))
+
+
+def run_checked(
+    argv: list[str], *, deadline: float, maximum: int, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    result = subprocess.run(
+        argv,
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        timeout=remaining_timeout(deadline, maximum),
+        check=False,
+    )
+    if result.returncode != 0:
+        raise DecisionError(
+            "command failed (%d): %s\n%s"
+            % (result.returncode, " ".join(argv), result.stderr.decode("utf-8", "replace")[-4096:])
+        )
+    return result
+
+
+def extract_patch(value: str) -> str:
+    if value.startswith("diff --git ") and "```" not in value:
+        patch = value
+    else:
+        matched = re.fullmatch(r"\s*```diff\s*\n(.*?)\n```\s*", value, re.DOTALL)
+        if matched is None:
+            raise DecisionError("completion is neither a raw diff nor one isolated diff fence")
+        patch = matched.group(1)
+    if "\0" in patch or re.fullmatch(re.escape(PATCH_PREFIX) + r"\+[^\r\n]*\n?", patch) is None:
+        raise DecisionError("extracted completion is not the complete fixed-task Git diff")
+    return patch if patch.endswith("\n") else patch + "\n"
+
+
+def validation_command(patch: Path, work: Path) -> list[str]:
+    if platform.system() == "Linux":
+        return [sys.executable, str(VALIDATOR), str(TASK), str(patch)]
+    docker = shutil.which("docker")
+    if docker is None:
+        raise DecisionError("Docker is required for the Linux coding-task validator on this host")
+    inspect = subprocess.run([docker, "image", "inspect", CONTAINER_IMAGE], capture_output=True)
+    if inspect.returncode != 0:
+        raise DecisionError(f"configured validation image is unavailable: {CONTAINER_IMAGE}")
+    container_root = "/work/align-llm"
+    container_gate = "/tmp/align-olmoe-coding-decision"
+    return [
+        docker,
+        "run",
+        "--rm",
+        "--platform",
+        "linux/arm64",
+        "--cap-add=SYS_ADMIN",
+        "--security-opt",
+        "seccomp=unconfined",
+        "--security-opt",
+        "apparmor=unconfined",
+        "--security-opt",
+        "systempaths=unconfined",
+        "-v",
+        f"{ROOT}:{container_root}:ro",
+        "-v",
+        f"{work}:{container_gate}:ro",
+        "-e",
+        f"ALIGN_LLM_TEMP_ROOT={container_gate}",
+        "-w",
+        container_root,
+        CONTAINER_IMAGE,
+        "python3",
+        "eval/runners/run-coding-task.py",
+        "eval/tasks/coding-v1/python-inclusive-range/task.json",
+        f"{container_gate}/{patch.name}",
+    ]
+
+
+def validate_patch(patch: Path, work: Path, deadline: float) -> tuple[bool, int]:
+    started = time.monotonic_ns()
+    result = subprocess.run(
+        validation_command(patch, work),
+        cwd=ROOT,
+        capture_output=True,
+        timeout=remaining_timeout(deadline, 120),
+        check=False,
+    )
+    elapsed = time.monotonic_ns() - started
+    if result.returncode == 0:
+        return True, elapsed
+    if result.returncode == 4:
+        return False, elapsed
+    raise DecisionError(
+        "validator infrastructure failed (%d): %s"
+        % (result.returncode, result.stderr.decode("utf-8", "replace")[-4096:])
+    )
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def wait_ready(process: subprocess.Popen[bytes], port: int, deadline: float) -> None:
+    startup_deadline = min(deadline, time.monotonic() + 180)
+    while time.monotonic() < startup_deadline:
+        if process.poll() is not None:
+            raise DecisionError(f"llama-server exited during startup ({process.returncode})")
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as response:
+                if response.status == 200:
+                    return
+        except (urllib.error.URLError, OSError):
+            time.sleep(0.25)
+    raise DecisionError("llama-server did not become ready within its bounded startup interval")
+
+
+def parse_record(path: Path, command_wall_ns: int, arm: str) -> dict[str, Any]:
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise DecisionError(f"provider record is unreadable: {error}") from error
+    if not isinstance(record, dict) or record.get("schema_version") != 2:
+        raise DecisionError("provider record is not schema 2")
+    if record.get("operation") != "generate" or record.get("status") not in ("ok", "error"):
+        raise DecisionError("provider record operation or status is invalid")
+    expected_provider = "openai-local" if arm == "local" else "align-runtime"
+    if record.get("provider") != expected_provider:
+        raise DecisionError("provider record identifies the wrong arm")
+    for name in ("model", "endpoint", "output", "error"):
+        if not isinstance(record.get(name), str):
+            raise DecisionError(f"provider record {name} has the wrong type")
+    for name in ("prompt_tokens", "completion_tokens", "total_tokens", "elapsed_ns", "error_code"):
+        value = record.get(name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise DecisionError(f"provider record {name} has the wrong type")
+    if not isinstance(record.get("token_count_exact"), bool):
+        raise DecisionError("provider record token_count_exact has the wrong type")
+    output = record.get("output")
+    elapsed_ns = record.get("elapsed_ns")
+    completion_tokens = record.get("completion_tokens")
+    assert isinstance(output, str) and isinstance(elapsed_ns, int) and isinstance(completion_tokens, int)
+    if elapsed_ns <= 0 or elapsed_ns > command_wall_ns:
+        raise DecisionError("provider elapsed time is outside its command interval")
+    if record["status"] == "ok" and completion_tokens < 0:
+        raise DecisionError("successful provider record lacks a completion token count")
+    if record["status"] == "error" and (output != "" or completion_tokens != -1):
+        raise DecisionError("provider error record carries inconsistent output diagnostics")
+    return record
+
+
+def measure_leg(
+    arm: str,
+    pair_index: int,
+    helper: Path,
+    prompt: Path,
+    work: Path,
+    runtime_env: dict[str, str],
+    endpoint: str,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    deadline: float,
+) -> dict[str, Any]:
+    record_path = work / f"pair-{pair_index}-{arm}.json"
+    if arm == "local":
+        argv = [str(helper), "local", endpoint, ALIAS, str(prompt), str(record_path)]
+    else:
+        argv = [
+            str(helper),
+            "runtime-olmoe",
+            str(model),
+            str(pack),
+            str(geometry),
+            str(BUDGET),
+            str(prompt),
+            str(record_path),
+        ]
+    started_ns = time.monotonic_ns()
+    process = subprocess.run(
+        argv,
+        cwd=ROOT,
+        env=runtime_env,
+        capture_output=True,
+        timeout=remaining_timeout(deadline, 360),
+        check=False,
+    )
+    command_wall_ns = time.monotonic_ns() - started_ns
+    if not record_path.is_file():
+        raise DecisionError(
+            f"{arm} helper returned {process.returncode} without a provider record: "
+            + process.stderr.decode("utf-8", "replace")[-4096:]
+        )
+    record = parse_record(record_path, command_wall_ns, arm)
+    if (record["status"] == "ok") != (process.returncode == 0):
+        raise DecisionError("helper exit status disagrees with its provider record")
+    output = record["output"]
+    output_sha256 = bytes_sha256(output.encode("utf-8"))
+    patch_sha256: str | None = None
+    validation_elapsed_ns = 0
+    time_to_passing_patch_ns: int | None = None
+    status = "NO_PASSING_PATCH"
+    if record["status"] == "ok":
+        try:
+            patch_text = extract_patch(output)
+        except DecisionError:
+            patch_text = None
+        if patch_text is not None:
+            patch = work / f"pair-{pair_index}-{arm}.patch"
+            patch.write_text(patch_text, encoding="utf-8")
+            patch_sha256 = file_sha256(patch)
+            passed, validation_elapsed_ns = validate_patch(patch, work, deadline)
+            if passed:
+                status = "PASS"
+                time_to_passing_patch_ns = time.monotonic_ns() - started_ns
+    return {
+        "status": status,
+        "provider_elapsed_ns": record["elapsed_ns"],
+        "command_wall_ns": command_wall_ns,
+        "validation_elapsed_ns": validation_elapsed_ns,
+        "time_to_passing_patch_ns": time_to_passing_patch_ns,
+        "completion_tokens": record["completion_tokens"],
+        "output_sha256": output_sha256,
+        "patch_sha256": patch_sha256,
+    }
+
+
+def integer_median(values: list[int]) -> int:
+    if len(values) != 4 or any(isinstance(value, bool) or value <= 0 for value in values):
+        raise DecisionError("median requires exactly four positive integer durations")
+    ordered = sorted(values)
+    return (ordered[1] + ordered[2]) // 2
+
+
+def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(samples) != 4:
+        raise DecisionError("decision requires exactly four complete pairs")
+    legs = {arm: [sample[arm] for sample in samples] for arm in ("local", "runtime")}
+    for arm, arm_legs in legs.items():
+        identities = {
+            (leg["status"], leg["completion_tokens"], leg["output_sha256"], leg["patch_sha256"])
+            for leg in arm_legs
+        }
+        if len(identities) != 1:
+            raise DecisionError(f"{arm} output is nondeterministic across samples")
+    pass_counts = {arm: sum(leg["status"] == "PASS" for leg in arm_legs) for arm, arm_legs in legs.items()}
+    result: dict[str, Any] = {
+        "local_pass_count": pass_counts["local"],
+        "runtime_pass_count": pass_counts["runtime"],
+        "local_median_time_to_passing_patch_ns": None,
+        "runtime_median_time_to_passing_patch_ns": None,
+        "gain_ppm": None,
+        "candidate_faster_in_every_pair": False,
+        "verdict": "NOT_ELIGIBLE",
+    }
+    if pass_counts != {"local": 4, "runtime": 4}:
+        return result
+    local_values = [leg["time_to_passing_patch_ns"] for leg in legs["local"]]
+    runtime_values = [leg["time_to_passing_patch_ns"] for leg in legs["runtime"]]
+    local_median = integer_median(local_values)
+    runtime_median = integer_median(runtime_values)
+    faster = all(sample["runtime"]["time_to_passing_patch_ns"] < sample["local"]["time_to_passing_patch_ns"] for sample in samples)
+    gain_ppm = (local_median - runtime_median) * 1_000_000 // local_median
+    result.update(
+        {
+            "local_median_time_to_passing_patch_ns": local_median,
+            "runtime_median_time_to_passing_patch_ns": runtime_median,
+            "gain_ppm": gain_ppm,
+            "candidate_faster_in_every_pair": faster,
+            "verdict": "MET" if faster and gain_ppm >= 50_000 else "NOT_MET",
+        }
+    )
+    return result
+
+
+def self_test() -> int:
+    if ORDERS != (("local", "runtime"), ("runtime", "local"), ("runtime", "local"), ("local", "runtime")):
+        raise DecisionError("balanced pair schedule drifted")
+    if extract_patch(KNOWN_GOOD_PATCH) != KNOWN_GOOD_PATCH:
+        raise DecisionError("fixed patch extractor drifted")
+    try:
+        extract_patch("explanation\n" + KNOWN_GOOD_PATCH)
+    except DecisionError:
+        pass
+    else:
+        raise DecisionError("extractor admitted surrounding text")
+    passing_samples = []
+    for index in range(4):
+        local = {"status": "PASS", "completion_tokens": 4, "output_sha256": "a", "patch_sha256": "b", "time_to_passing_patch_ns": 200 + index}
+        runtime = {"status": "PASS", "completion_tokens": 4, "output_sha256": "c", "patch_sha256": "b", "time_to_passing_patch_ns": 100 + index}
+        passing_samples.append({"local": local, "runtime": runtime})
+    if aggregate(passing_samples)["verdict"] != "MET":
+        raise DecisionError("MET oracle drifted")
+    passing_samples[0]["runtime"]["time_to_passing_patch_ns"] = 300
+    if aggregate(passing_samples)["verdict"] != "NOT_MET":
+        raise DecisionError("pairwise NOT_MET oracle drifted")
+    ineligible_samples = []
+    for index in range(4):
+        local = {"status": "PASS", "completion_tokens": 4, "output_sha256": "a", "patch_sha256": "b", "time_to_passing_patch_ns": 200 + index}
+        runtime = {"status": "NO_PASSING_PATCH", "completion_tokens": 4, "output_sha256": "c", "patch_sha256": None, "time_to_passing_patch_ns": None}
+        ineligible_samples.append({"local": local, "runtime": runtime})
+    if aggregate(ineligible_samples)["verdict"] != "NOT_ELIGIBLE":
+        raise DecisionError("NOT_ELIGIBLE oracle drifted")
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-coding-self-test-") as raw:
+        work = Path(raw)
+        record = work / "record.json"
+        record.write_text('{"schema_version":1}', encoding="utf-8")
+        try:
+            parse_record(record, 100, "local")
+        except DecisionError:
+            pass
+        else:
+            raise DecisionError("malformed provider record was admitted")
+        missing = str(work / "missing")
+        with mock.patch.dict(os.environ, {"ALIGN_LLM_OLMOE_MODEL": missing}, clear=True):
+            try:
+                prerequisites()
+            except DecisionError:
+                pass
+            else:
+                raise DecisionError("invalid configured prerequisite was hidden by N/A")
+    global server_process
+    forced_timeout = subprocess.TimeoutExpired(["llama-server"], 10)
+    fake_server = mock.Mock()
+    fake_server.poll.return_value = None
+    fake_server.wait.side_effect = [forced_timeout, 0]
+    server_process = fake_server
+    stop_server()
+    if fake_server.terminate.call_count != 1 or fake_server.kill.call_count != 1:
+        raise DecisionError("server cleanup did not escalate from terminate to kill")
+    server_process = None
+    print("R8-OLMOE-CODING-DECISION self-test: PASS")
+    return 0
+
+
+def main() -> int:
+    global server_process
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise DecisionError("OLMoE coding decision accepts no arguments")
+    required = prerequisites()
+    if required is None:
+        return 0
+    model, pack, geometry, include, library, server = required
+    started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-coding-decision-") as raw_work:
+        work = Path(raw_work)
+        control = work / "known-good.patch"
+        control.write_text(KNOWN_GOOD_PATCH, encoding="utf-8")
+        passed, _ = validate_patch(control, work, deadline)
+        if not passed:
+            raise DecisionError("known-good validator control did not pass")
+
+        if model.stat().st_size != MODEL_BYTES or file_sha256(model) != MODEL_SHA256:
+            raise DecisionError("configured OLMoE GGUF does not have the pinned size and SHA-256")
+        pack_sha256 = file_sha256(pack)
+        geometry_sha256 = file_sha256(geometry)
+        server_sha256 = file_sha256(server)
+        task_sha256 = file_sha256(TASK)
+        prompt_sha256 = bytes_sha256(PROMPT_TEXT.encode("utf-8"))
+        align_revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        version = run_checked([str(server), "--version"], deadline=deadline, maximum=30)
+        if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
+            raise DecisionError("llama-server is not pinned build 10566 commit bb4caa754")
+
+        prompt = work / "prompt.txt"
+        prompt.write_text(PROMPT_TEXT, encoding="utf-8")
+        shim_dir = work / "lib"
+        helper = work / "runtime-provider-gate"
+        generated_helper = ROOT / "runtime_provider_gate"
+        saved_helper = work / "saved-runtime-provider-gate"
+        if generated_helper.exists():
+            shutil.copy2(generated_helper, saved_helper)
+        build_env = dict(os.environ)
+        build_env.update(
+            {
+                "ALIGN_LLM_GGML_INCLUDE": str(include),
+                "ALIGN_LLM_GGML_LIB": str(library),
+                "ALIGN_LLM_GGML_SHIM_DIR": str(shim_dir),
+            }
+        )
+        try:
+            run_checked([str(ROOT / "scripts/build-ggml-shim")], deadline=deadline, maximum=180, env=build_env)
+            build_env["LIBRARY_PATH"] = ":".join(
+                value for value in (str(shim_dir), str(library), build_env.get("LIBRARY_PATH", "")) if value
+            )
+            compiler = Path(os.environ.get("ALIGNC", str(ROOT / "scripts/alignc")))
+            run_checked(
+                [str(compiler), "build", "src/runtime_provider_gate.align"],
+                deadline=deadline,
+                maximum=300,
+                env=build_env,
+            )
+            shutil.move(generated_helper, helper)
+            runtime_env = dict(os.environ)
+            for name in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+                runtime_env[name] = ":".join(
+                    value for value in (str(shim_dir), str(library), runtime_env.get(name, "")) if value
+                )
+
+            port = free_port()
+            server_log = (work / "llama-server.log").open("wb")
+            server_process = subprocess.Popen(
+                [
+                    str(server), "-m", str(model), "--alias", ALIAS, "--host", "127.0.0.1",
+                    "--port", str(port), "--device", "none", "-ngl", "0", "-t", "4",
+                    "-c", "512", "-np", "1", "--jinja", "--no-warmup",
+                ],
+                cwd=work,
+                stdin=subprocess.DEVNULL,
+                stdout=server_log,
+                stderr=subprocess.STDOUT,
+            )
+            try:
+                wait_ready(server_process, port, deadline)
+                samples = []
+                endpoint = f"http://127.0.0.1:{port}/v1/chat/completions"
+                for pair_index, order in enumerate(ORDERS, start=1):
+                    pair: dict[str, Any] = {"pair_index": pair_index, "order": list(order)}
+                    for arm in order:
+                        pair[arm] = measure_leg(
+                            arm, pair_index, helper, prompt, work, runtime_env, endpoint,
+                            model, pack, geometry, deadline,
+                        )
+                    samples.append(pair)
+            finally:
+                stop_server()
+                server_log.close()
+        finally:
+            if saved_helper.exists():
+                shutil.copy2(saved_helper, generated_helper)
+
+        aggregate_result = aggregate(samples)
+        elapsed_ns = time.monotonic_ns() - started_ns
+        if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+            raise DecisionError(f"complete decision exceeded its 15-minute ceiling ({elapsed_ns / 1e9:.1f}s)")
+        task_document = json.loads(TASK.read_text(encoding="utf-8"))
+        result = {
+            "schema_version": 1,
+            "artifact_kind": "R8_OLMOE_CODING_DECISION",
+            "status": "COMPLETE",
+            "model": {"bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe"},
+            "baseline": {
+                "provider": "local-openai",
+                "runtime_identity": f"llama.cpp build 10566 commit {SERVER_COMMIT}",
+                "server_sha256": server_sha256,
+                "threads": 4,
+                "context": 512,
+                "warmup": False,
+            },
+            "candidate": {
+                "provider": "align-runtime",
+                "align_revision": align_revision,
+                "pack_sha256": pack_sha256,
+                "geometry_sha256": geometry_sha256,
+                "cache_budget_bytes": BUDGET,
+            },
+            "task": {
+                "task_id": task_document["id"],
+                "task_sha256": task_sha256,
+                "prompt_sha256": prompt_sha256,
+                "maximum_completion_tokens": 128,
+            },
+            "environment": {
+                "os": platform.system(),
+                "release": platform.release(),
+                "architecture": platform.machine(),
+                "cpu_count": os.cpu_count(),
+            },
+            "samples": samples,
+            "aggregate": aggregate_result,
+            "elapsed_ns": elapsed_ns,
+        }
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+        summary = result["aggregate"]
+        print(
+            "R8-OLMOE-CODING-DECISION: COMPLETE "
+            f"verdict={summary['verdict']} gain_ppm={summary['gain_ppm']} "
+            f"elapsed={elapsed_ns / 1e9:.2f}s",
+            file=sys.stderr,
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (DecisionError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as error:
+        stop_server()
+        print(f"R8-OLMOE-CODING-DECISION: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)
