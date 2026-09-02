@@ -3,11 +3,55 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-TEXT (2026-09-03)
+## Active: REQUIRED-CI latency repair (2026-09-03)
 
-Branch `agent/r8-olmoe-text`, based on pulled merged `main`
-`4d9f9c823dc6596f87c7bb6db1b16e55d9653637` (R8-PARTIAL-LRU-CACHE PR #168). The sibling Align
-checkout was fast-forwarded from the prior pin
+Branch `agent/ci-remove-redundant-check`, based on pulled `main`
+`c987838130077d5b6119ee20b717774c1c913fbe`. The completed R8 OLMoE provider candidate is held on
+its feature branch because the required hosted job exceeded its 15-minute whole-job boundary twice.
+With an exact cached compiler the aggregate itself took 14m52s and completed successfully before
+the job was cancelled during finalization. The one retry rebuilt the compiler after a cache miss
+and was cancelled 12m45s into the same aggregate. It is intentionally not retried again.
+
+The repair removes only the redundant standalone `check` goal from `HOSTED_CHECK_TARGETS`.
+`make check` remains unchanged for local checkpoints; the aggregate's shared `build` prerequisite
+uses Align's same bottom-up per-unit package frontend and continues through lowering, code
+generation, and linking before every functional owner. Author-host measurements at the unchanged
+provider candidate were 177.42s for uncached `make check`, 10.74s for `format-check`, and 0.87s for
+an immediately warm `make build`. The authoritative contract and closure matrix are
+`docs/specs/check-gate-topology.md` sections 1.2 and 2.
+
+The identity-bound baseline chain is source `d62e7a1e34fe390596131b16e1777d66ad6cdb48`
+-> oracle `92cf3bdbb024606aec74a9d3e4eebb2547af1827` -> finalization
+`dcb893d93612d5afb13cdd7b43e04bf0c9d17e7a`. Its two fixed-task samples passed on Linux/aarch64,
+kernel 6.11.11-linuxkit, Python 3.12.3, with the exact pinned Align compiler. In the same Linux
+boundary, `make baseline-check` ended `baseline chain: PASS` and
+`python3 scripts/check-gate-topology --self-test` passed. The normal exact topology owner also
+passes. The macOS self-test's existing reader-start fault injection records a post-exit
+`sigkill-PermissionError`; unmodified `origin/main` reproduces it, so Linux owns publication
+evidence for that platform-sensitive lifecycle case.
+
+The comprehensive Codex CLI review covered head
+`dcb893d93612d5afb13cdd7b43e04bf0c9d17e7a` against base tip and merge base
+`c987838130077d5b6119ee20b717774c1c913fbe`, using gpt-5.6-sol at high effort over the full diff.
+It found one accepted P2: a historical closure row still claimed both `check` and `build` remained
+in both aggregate graphs. The documentation-only repair states the actual allocation: standalone
+`make check`, aggregate `build`, and compiler-owned checker parity. It changes no implementation,
+baseline artifact, or verification behavior, so it does not trigger another comprehensive review.
+
+**Next actions.** (1) Run exact-head publication preflight. (2) Publish and merge the repair after
+required checks pass. (3) Refresh the held provider branch onto latest `main`, rerun its required
+checks once, then merge it.
+
+**Blocker.** The provider capability cannot merge until the required hosted graph completes within
+its configured boundary; this repair is the resume condition.
+
+**Intentional uncommitted files.** The review's documentation-only closure repair until committed.
+Local configuration remains outside the change.
+
+## Merged checkpoint: R8-OLMOE-TEXT (2026-09-03)
+
+Branch `agent/r8-olmoe-text` merged as PR #169 at
+`c987838130077d5b6119ee20b717774c1c913fbe`. The sibling Align checkout was fast-forwarded from the prior pin
 `b6f95a261e1434d705d7de006484ffa66b1542f0` to merged `origin/main`
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4` (Align PR #933, `pkg.kv` v1). Commit `5c9ac3c`
 advances `.align-revision` and records compatibility evidence as an internal checkpoint in this
@@ -46,13 +90,12 @@ from the exact source through the repository wrapper before testing it.
 The repair does not expand the public behavior or capability scope, so another comprehensive review
 is not required.
 
-**Next actions.** (1) Commit the consolidated repair and final evidence. (2) Run publication
-preflight. (3) Publish, merge, and pull current `main`.
+**Next actions.** Complete. The provider-level successor remains on its held feature branch while
+the active required-CI latency repair restores a usable publication gate.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The consolidated review repair until committed. Local
-configuration remains outside the change.
+**Intentional uncommitted files.** None. Local configuration remains outside the change.
 
 ## Merged checkpoint: R8-PARTIAL-LRU-CACHE (PR #168, 2026-09-02)
 
