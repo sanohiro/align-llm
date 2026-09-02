@@ -10,23 +10,25 @@ Branch `agent/r8-olmoe-coding-decision`, based on pulled merged `main`
 checkout was fetched and pulled after that merge; it and `.align-revision` both remain at current
 merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4` with no newer prerequisite.
 
-The active capability measures the first provider-level OLMoE performance decision on the existing
+The completed candidate measures the first provider-level OLMoE performance decision on the existing
 fixed `python-inclusive-range` coding task. Its authoritative protocol, 50,000-ppm shipping floor,
 approximately 15-minute complete-run ceiling, result fields, and closure matrix are
 `docs/specs/r8-olmoe-coding-decision.md`. Four fixed balanced pairs compare the shipped resident
 llama.cpp baseline with the invocation-local partial-LRU Align runtime from provider launch through
-the existing task validator. This capability changes no provider or runtime behavior; `MET`,
-`NOT_MET`, and `NOT_ELIGIBLE` are all valid investment outcomes.
+the existing task validator. This capability changes no provider or runtime behavior. Its one
+complete real run finished in 147.288 seconds with `NOT_ELIGIBLE`: both arms emitted the same
+deterministic patch, but the unchanged validator rejected it in all eight legs. Both pass counts
+are 0/4 and primary medians are therefore null. The first unmet consumer boundary is model/prompt
+patch correctness, not runtime performance.
 
-**Next actions.** (1) Complete the author ledger-to-prose consistency pass and commit the design
-checkpoint. (2) Implement the qualification-only OLMoE helper mode, bounded paired runner, canonical
-decision result, and model-free self-test. (3) Run the focused owners once and one real decision,
-then record its result before comprehensive review and publication preflight.
+**Next actions.** Perform one comprehensive review, consolidate any valid repairs, then run the
+focused exact-head publication preflight, publish, merge, and pull current `main`. Per the user's
+instruction, stop after this pull rather than starting another roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The active design checkpoint until committed. Local
-configuration remains outside the change.
+**Intentional uncommitted files.** The recorded decision and continuity update until committed.
+Local configuration remains outside the change.
 
 ## Merged checkpoint: R8-OLMOE-PROVIDER (PR #170, 2026-09-03)
 

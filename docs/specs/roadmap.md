@@ -1341,7 +1341,8 @@ The current forward delivery order is:
     candidate passes 61 synthetic assertions and one fixed real-model generation against pinned
     llama.cpp with prompt count 47, emitted ids `[1992,4993]`, and decoded bytes `To fix`.
 
-50. **R8-OLMOE-CODING-DECISION — measure provider-level time to a passing patch. Active.**
+50. **R8-OLMOE-CODING-DECISION — measure provider-level time to a passing patch. Decision recorded:
+    `NOT_ELIGIBLE`.**
     [`r8-olmoe-coding-decision.md`](r8-olmoe-coding-decision.md) is the authoritative measurement
     contract and closure matrix. Run the shipped local llama.cpp and partial-LRU `AlignRuntime`
     OLMoE provider arms over the existing fixed `python-inclusive-range` task in four balanced
@@ -1351,7 +1352,11 @@ The current forward delivery order is:
     median. A negative decision is valid evidence and selects the next investment; malformed,
     incomplete, nondeterministic, or over-ceiling evidence fails. The complete real decision has an
     approximately 15-minute diagnostic ceiling and is run once, without `make ci`, platform
-    profiles, the 40-prompt corpus, cache-policy replay, stress, or unrelated benchmarks.
+    profiles, the 40-prompt corpus, cache-policy replay, stress, or unrelated benchmarks. The one
+    complete run finished in 147.288 seconds. Both arms deterministically emitted the same patch,
+    but that patch failed the unchanged validator in every sample, so both pass counts are 0/4 and
+    primary timing medians remain null. The next investment belongs to model/prompt patch
+    correctness rather than provider-level runtime optimization.
 
 ### Status (2026-08-28)
 

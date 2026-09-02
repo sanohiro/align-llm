@@ -1,6 +1,6 @@
 # R8 OLMoE coding decision
 
-Status: implementation contract, 2026-09-03
+Status: measured implementation candidate, 2026-09-03
 
 ## 1. Decision and boundary
 
@@ -134,3 +134,26 @@ Completion requires the focused owner, one complete real decision, one comprehen
 exact-head publication preflight, and required GitHub checks. A `NOT_MET` or `NOT_ELIGIBLE` result
 orders the next optimization or product decision from its observed failure; it does not authorize
 repetition with changed prompts, samples, flags, or output repair.
+
+## 6. Recorded decision
+
+The one complete real decision ran on clean align-llm head
+`8c9a7e40d8d1c47b316bd1ec52123dd3bc575b89` and finished in 147.288 seconds on Darwin 25.5.0,
+arm64, with 8 logical CPUs. It returned **`NOT_ELIGIBLE`**: local and runtime pass counts were both
+0 of 4, so primary medians and gain are null and no performance shipping claim is made.
+
+Both arms were deterministic and emitted byte-identical output in every sample (output SHA-256
+`4939911998ecc4b4b4893437be1a1e448fc0e8a482fd31c6d6d9204c6aa8ea59`). The extractor admitted the
+same one-line patch in all eight legs (patch SHA-256
+`a64bfacadea8cc00cc6b82880db2685d8eb925831971b02b1c83f6f3a17d73ef`), but the unchanged validator
+rejected it every time. The local arm reported 55 completion tokens and provider intervals from
+1.884 to 3.610 seconds; the runtime arm reported 87 completion tokens for the same bytes and
+provider intervals from 24.600 to 27.516 seconds. Validator intervals were 0.388 to 0.692 seconds.
+
+The remaining identities were Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`, AlignPack SHA-256
+`20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae`, geometry SHA-256
+`1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada`, and llama-server SHA-256
+`98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c`. The evidence says not to
+invest in provider-level OLMoE performance on this task yet: the first unmet consumer boundary is
+model/prompt patch correctness, shared by both provider implementations.
