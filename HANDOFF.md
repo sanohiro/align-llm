@@ -3,7 +3,33 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R7-RUNTIME-PROVIDER (2026-09-01)
+## Active: REQUIRED-CI-UNDER-15 (2026-09-02)
+
+Branch `agent/ci-under-15`, based on merged `main` `29b54757c837fdfc610e413acd297d253644e292`
+(R7-RUNTIME-PROVIDER PR #164). The user-set shipping constraint is that every required CI check
+finish in less than 15 minutes and perform only work that distinguishes a required risk.
+
+PR #164 is the pre-implementation baseline: hosted 12m19s, native x86_64 installed 43m22s, and
+native aarch64 installed 46m57s. The aarch64 installed-profile log attributes 2,233.685 seconds to
+the duplicate `worker-aggregate` and 428.396 seconds to the image-specific profile before it. The
+complete common graph is already owned by the hosted job; it is not a benchmark. The authoritative
+cost ceiling, public qualification CLI contract, coverage allocation, and closure matrix are in
+`docs/specs/check-gate-topology.md` section 1.1 and the section 2 ledger. Roadmap item 44 owns the
+consumer-complete change.
+
+**Next actions.** (1) Commit the pre-implementation design and cost ceiling. (2) Make the complete
+aggregate an explicit `--complete-aggregate` audit, absent from routine preflight and GitHub CI.
+(3) Enforce `timeout-minutes: 15` on every required job and make the workflow self-test reject
+budget or routing drift. (4) Run the narrow topology/profile owners, then exact publication
+preflight, comprehensive review, PR, repair, and merge. (5) Pull current `main` and continue the
+next eligible roadmap capability.
+
+**Blocker.** None.
+
+**Intentional uncommitted files.** The design and durable handoff update until the design checkpoint
+is committed; local configuration remains outside the change.
+
+## Merged checkpoint: R7-RUNTIME-PROVIDER (2026-09-02)
 
 Branch `agent/r7-runtime-provider`, based on merged `main`
 `88b77ed112d36cb29b948f7212442b3a4f02afcd` (R7-PROMPT PR #163 plus the concurrent R7-TOKENIZER

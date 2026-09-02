@@ -46,6 +46,51 @@ earlier `make ci`, `align-build`, compiler-selection, and source-build claims; a
 may not satisfy this prerequisite by retaining the current direct
 `../align/target/release/alignc` path.
 
+### 1.1 Required-CI latency re-scope (2026-09-02)
+
+Routine pull-request evidence must finish quickly enough to remain part of the development loop.
+PR #164 provided the pre-implementation baseline at unchanged head `cf76641`: the pinned hosted
+job took 12 minutes 19 seconds, the native x86_64 installed-profile job took 43 minutes 22 seconds,
+and the native aarch64 job took 46 minutes 57 seconds. The aarch64 installed owner attributed
+2,233.685 seconds to `worker-aggregate`, while the architecture-, trust-, replacement-, lifecycle-,
+compiler-self-test-, and adoption-specific boundary before it took 428.396 seconds. The aggregate
+reran the complete common functional graph already owned by the pinned hosted job; it was not a
+benchmark and provided no second architecture-specific oracle for those product assertions.
+
+The shipping ceiling is **900 seconds of GitHub job wall clock for every required check**, including
+checkout, image preparation, cache restoration, cleanup, and evidence binding. GitHub enforces the
+ceiling with `timeout-minutes: 15` on both required job definitions. A required job that cannot fit
+is re-scoped before publication; increasing the timeout is not an accepted repair. The installed
+matrix continues to run natively on x86_64 and aarch64, but it stops after the installed-image
+profile's real compiler self-test and adoption boundary. The complete capable aggregate remains an
+explicit audit, selected only when its own aggregate namespace, publication, complete-callsite, or
+baseline-integration boundary changes, or when an explicit audit requests it. It is not routine PR
+evidence and does not replace a changed capability's narrow owner.
+
+Coverage is allocated by the risk it can distinguish:
+
+- the pinned hosted job runs the common functional graph once;
+- each native installed job owns image architecture, manifest and attestation identity, profile and
+  cgroup lifecycle, trust mutations, runtime replacement rejection, compiler self-test, ordinary
+  adoption, and cleanup;
+- focused qualification owns the deterministic control plane once per selected native row until a
+  later independently measured de-duplication changes that boundary; and
+- the opt-in complete audit alone owns complete aggregate publication, aggregate temporary-callsite
+  closure, aggregate interpreter closure, and baseline integration through the authenticated worker.
+
+The closure matrix for this re-scope is:
+
+| Path | Construction | Success | Failure or malformed input | Cleanup / early exit | Evidence |
+| --- | --- | --- | --- | --- | --- |
+| Required hosted job | exact pinned compiler bundle or fail-closed source build | one common hosted graph | first owner failure or 900-second job deadline fails the check | existing artifact and cache finalizers | workflow topology self-test plus required PR check duration |
+| Required native installed job | native signed image, full pinned Align source, and prepared secrets | installed profile ends after the existing compiler self-test and ordinary adoption boundary | every existing image/profile/trust/replacement/adoption refusal remains fatal; `--complete-aggregate` is absent | existing user-namespace restore, signing cleanup, image/volume/cgroup cleanup | both native required PR checks below 900 seconds |
+| Explicit complete audit | installed profile plus `--complete-aggregate` | the existing `worker-aggregate` runs after the installed boundary | the flag without an installed-profile mode is usage error; aggregate failure remains fatal | the same profile finalizer owns aggregate success, failure, timeout, and signal | focused owner change or explicit audit only; never routine PR evidence |
+| Coverage reporting | fixed closure inventory and an explicit complete-audit subset | output distinguishes `installed-profile` from `explicit-complete-audit` | unknown, duplicated, or unclassified closure cases fail inventory validation | N/A: read-only report | `scripts/test-development-preflight` |
+
+No product API, compiler pin, persisted product format, evaluator verdict, or source-test assertion
+changes. The old complete aggregate remains available for the risks it uniquely exercises; this
+capability changes its cadence and makes its ownership honest.
+
 ## 2. Public-contract ledger
 
 | Surface | Exact contract |
@@ -55,7 +100,10 @@ may not satisfy this prerequisite by retaining the current direct
 | `make capable-checks` | Run `gate-topology-check`, then clear `MAKEFLAGS` and `GNUMAKEFLAGS`, launch one recursive GNU Make with an explicit `-j1`, consume the compiler selected by `ALIGNC`, and run the complete hosted focused-target list followed by `eval-coding`, `baseline-check`, and `c6-evaluation-adoption` as that child Make's ordered goals. The final target executes the complete evaluator/helper/adapter tree inside the authenticated fresh-worker cgroup. It does not invoke `hosted-checks` as a nested aggregate and does not build Align. |
 | `make ci` | Verify `.align-revision`, release-build the pinned sibling Align compiler, require that compiler to be executable, and invoke `capable-checks` with `ALIGNC` set to that exact release compiler. This remains the canonical complete local or capable-runner gate. |
 | Aggregate coexistence | `hosted-checks`, `capable-checks`, and `ci` are the complete serialized-aggregate set. If a top-level GNU Make invocation requests one of them, that aggregate must be the invocation's sole goal. An aggregate plus any other goal, or a repeated aggregate, fails during Makefile parsing before a prerequisite or recipe runs, with `verification aggregates must be requested alone`. Separate concurrent Make processes are unsupported caller behavior and are not valid verification evidence; this slice adds no cross-process repository lock. The recursive `ci` child is a separate invocation containing only `capable-checks` and remains valid. |
-| GitHub Actions pull-request gate | Resolve the event comparison through `scripts/classify-verification`, the shared local/hosted classifier specified in `docs/specs/development-preflight.md`. Documentation-only changes run static checks. An executable scope checks out `.align-revision`, runs `make align-build`, requires the resulting release compiler, runs `python3 scripts/check-gate-topology --self-test`, and invokes `make -j8 hosted-checks` with `ALIGNC` set to it. A fresh-image scope separately runs focused qualification once and installed-profile-only qualification once. Preserve the aggregate recipe in the job log so review can verify the option-cleared child command, explicit `-j1`, and ordered focused-goal list. |
+| GitHub Actions pull-request gate | Resolve the event comparison through `scripts/classify-verification`, the shared local/hosted classifier specified in `docs/specs/development-preflight.md`. Documentation-only changes run static checks. An executable scope checks out `.align-revision`, runs `make align-build`, requires the resulting release compiler, runs `python3 scripts/check-gate-topology --self-test`, and invokes `make -j8 hosted-checks` with `ALIGNC` set to it. A fresh-image scope separately runs focused qualification and the native installed profile without `--complete-aggregate`. Both required job definitions set `timeout-minutes: 15`; no required check may exceed 900 seconds. Preserve the hosted aggregate recipe in the job log so review can verify the option-cleared child command, explicit `-j1`, and ordered focused-goal list. |
+| Installed-profile default | `scripts/run-fresh-image-profile-smoke` and both installed modes of `scripts/run-fresh-worker-qualification` run image admission, attestation, lifecycle, real compiler self-test, trust and runtime-replacement rejection, ordinary/focused adoption-boundary cases, and cleanup. They do not run the complete capable aggregate by default. Prepared-image and explicit Align-source inputs retain their current all-or-none and identity validation. |
+| Explicit complete audit | `--complete-aggregate` is an opt-in flag on both qualification scripts. It requires `--installed-profile` or `--installed-profile-only` at the outer command, is forwarded exactly once to the image-profile owner, and runs the existing worker aggregate after every installed boundary passes. It changes no aggregate command, timeout, sandbox, result bytes, or cleanup behavior. It is selected only when an aggregate-only owner changes or by explicit audit, and never by routine preflight or GitHub Actions. |
+| Required-check budget | Every required GitHub job has a 15-minute job timeout. The workflow self-test proves both named job definitions carry that exact value and proves the installed invocation omits `--complete-aggregate`. Exact PR check durations below 900 seconds are the acceptance measurement; a timeout increase is a contract change requiring a new measured design. |
 | Focused targets and qualifications | Existing public target commands remain stable, but their declared coverage is explicit. `eval-coding` runs the coding corpus, bounded invalid-input/containment smoke, Git-configuration isolation, and timeout/process cleanup; it intentionally does not run the deep resource/race/failure-injection qualification at `python3 scripts/run-coding-task-resource-scan-smoke`. `prompt-score-prefix-smoke` owns the C6c1p prefix-validator gate and `prompt-state-smoke` owns the C6d offline accept/rollback behavior. `prompt-verifier-smoke` is the decoded C6c2 verifier owner and a hosted member again after Align Request 19 reduced its build from roughly 720 s / 1.5 GiB to 13.27 s / 264,560 KiB on the Align benchmark host. `failure-memory-smoke` continues to depend on `verify-loop-smoke`; naming both in an aggregate graph does not execute the shared recipe twice in one Make invocation. `persisted-result-smoke` is the C7-PERSISTED-RESULT bounded functional owner and is a hosted member by the measured admission decision in `docs/specs/c7-persisted-result.md` section 12: it drives the six `c7-persisted-result-*-smoke` runners in 3.6 s at the pinned compiler, so it is a small stable integration regression rather than a budget risk, and the six member targets stay outside every aggregate so the set runs exactly once. `persisted-result-qualification` owns the seeded differential corpus, the malformed and artifact-mutation corpora, and the temporary source mutation with its extra whole-program compile; it remains a named focused qualification outside every aggregate and is run when the C7 algorithm, wire, digest, validation order, or verifier boundary changes. Admitting the bounded owner changed `Makefile`, so the identity-bound canonical baseline chain is re-finalized with the rest of that capability's Make changes rather than per target. |
 | Canonical C0 baseline | Record two deterministic-reference samples from a clean implementation source commit containing the final `Makefile`; commit the derived immutable oracle; finalize the canonical baseline with that full oracle commit; require the finalized record's source and oracle identities to equal those named commits; and keep the source, oracle, and finalization commits as ancestors of the final reviewed head and merge result. |
 
