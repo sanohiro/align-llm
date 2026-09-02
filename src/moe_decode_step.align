@@ -4,6 +4,7 @@ import std.crypto
 import std.encoding
 import std.fs
 import std.time
+import alignpack
 import alignpack_read
 import ggml_ffi
 import layer_olmoe
@@ -104,6 +105,7 @@ CODE_KV_UNSUPPORTED := "R6M_KV_UNSUPPORTED"
 // 536,870,912 B, so the ceiling is never the binding constraint and is defence rather than a bound.
 MAX_PLANE_BYTES := 8589934592
 MAX_DETAIL_BYTES := 256
+MAX_GENERATION_GEOMETRY_BYTES := 16777216
 I64_MAX := 9223372036854775807
 
 PLANE_TENSOR_K := 0
@@ -225,10 +227,20 @@ pub fn empty_decode() -> Decode = Decode {
 //
 // `token_ids` is the one column kept as an array, because `decode.token_ids` publishes it a second
 // time as a flat list and gate G reads that list without walking objects.
-pub StepRows { count: i64, text: string, token_ids: array<i64> }
+pub StepRows {
+  count: i64,
+  text: string,
+  token_ids: array<i64>,
+  argmax_ids: array<i64>,
+}
 
 pub fn empty_steps() -> StepRows =
-StepRows { count: 0, text: "".clone(), token_ids: moe_model_forward.empty_array() }
+StepRows {
+  count: 0,
+  text: "".clone(),
+  token_ids: moe_model_forward.empty_array(),
+  argmax_ids: moe_model_forward.empty_array(),
+}
 
 // Section 3.11's per-step residency block, produced by the layer loop and consumed by the renderer.
 // It is a plain scalar record returned by value, so it has nothing the region checker can union.
@@ -3271,6 +3283,16 @@ fn render_step_row(
 // dimension.
 // ---------------------------------------------------------------------------------------------
 
+fn generation_eog(borrow ids: array<i64>, token: i64) -> bool {
+  mut at := 0
+  loop {
+    if at >= ids.len() { break }
+    if ids[at] == token { return true }
+    at = at + 1
+  }
+  return false
+}
+
 fn decode_loop(
   borrow pak: file,
   device: raw,
@@ -3308,6 +3330,9 @@ fn decode_loop(
   first_token: i64,
   first_n_past: i64,
   steps: i64,
+  generation: bool,
+  borrow eog_ids: array<i64>,
+  generation_max: i64,
   width: i64,
   stride: i64,
   block_align: i64,
@@ -3321,6 +3346,7 @@ fn decode_loop(
 ) -> StepRows {
   rows := builder()
   mut token_ids: array_builder<i64> := array_builder()
+  mut argmax_ids: array_builder<i64> := array_builder()
   // The union starts at the **prefill's** set, not at the empty set: section 2.4 reading 2 measured
   // that roughly four fifths of every decode demand is already in it, and a curve that started empty
   // would report a marginal cost this run does not pay.
@@ -3356,7 +3382,12 @@ fn decode_loop(
   mut token := first_token
   mut step := 1
   loop {
-    if step > steps || o.code.len() > 0 { break }
+    if o.code.len() > 0 { break }
+    if generation {
+      if step >= generation_max || generation_eog(eog_ids, token) { break }
+    } else if step > steps {
+      break
+    }
     n_past := first_n_past + step - 1
     // Oracle T and oracle R select transcript graph `k + 1` by skipping `k`. The rescan is
     // `O(N x file)` and is accepted and measured (section 6.4): the alternative holds `N` graphs'
@@ -3395,6 +3426,10 @@ fn decode_loop(
       logits_view, node_view, plane_view, oracle, embed_nodes, a_nodes, b_nodes, head_nodes, scan,
       ranges.start, ranges.length, token, n_past, step, width, stride, breach, activation, cache,
       res, state, decoded, o)
+    if o.code.len() == 0 && generation && decoded.nonfinite_count > 0 {
+      fail(o, "R5_LOGITS_NONFINITE", moe_model_forward.labelled(
+          "elements", decoded.nonfinite_count))
+    }
     if o.code.len() > 0 {
       // Section 3.10. A failure inside step `k` publishes `steps_completed = k - 1` and `k - 1`
       // complete objects: **a partial step publishes no object**, because a half-filled row is a row
@@ -3493,6 +3528,7 @@ fn decode_loop(
     decoded.steps_completed = step
     decoded.n_past_last = n_past
     token_ids.push(token)
+    argmax_ids.push(decoded.argmax)
     if rendered > 0 { rows.write(",") }
     row_text := render_step_row(
       step, n_past, token, decoded, res, ids, g.n_layer, g.n_expert_used, cache.enabled,
@@ -3592,6 +3628,7 @@ fn decode_loop(
     count: decoded.steps_completed,
     text: rows.to_string(),
     token_ids: token_ids.build(),
+    argmax_ids: argmax_ids.build(),
   }
 }
 
@@ -3607,11 +3644,42 @@ fn decode_loop(
 // repairs.
 // ---------------------------------------------------------------------------------------------
 
+fn read_generation_geometry(path: str) -> Result<string, Error> {
+  source := fs.open(path)?
+  mut accumulated := buffer(0)
+  mut chunk := buffer(65536)
+  mut total := 0
+  loop {
+    if total == MAX_GENERATION_GEOMETRY_BYTES {
+      mut probe := buffer(1)
+      if source.read(probe)? > 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := MAX_GENERATION_GEOMETRY_BYTES - total
+    count := if remaining < 65536 {
+      mut tail := buffer(remaining)
+      read_count := source.read(tail)?
+      accumulated.append(tail.bytes())
+      read_count
+    } else {
+      read_count := source.read(chunk)?
+      accumulated.append(chunk.bytes())
+      read_count
+    }
+    if count == 0 { break }
+    total = total + count
+  }
+  return Ok(accumulated.bytes().as_str()?.clone())
+}
+
 fn stage_inputs(
   tokens_text: str,
   width_text: str,
   steps_text: str,
   geometry_path: str,
+  expected_geometry: str,
+  generation: bool,
+  max_steps: i64,
   borrow mut tokens: moe_model_forward.TokenColumns,
   borrow mut o: moe_model_forward.Outcome,
 ) -> layer_olmoe.Geometry {
@@ -3629,14 +3697,18 @@ fn stage_inputs(
     fail(o, CODE_STEPS, unparsed_view)
     return g
   }
-  if steps < 1 || steps > layer_olmoe.MAX_DECODE_STEPS {
+  if steps < 1 || steps > max_steps {
     ranged := steps_detail_int(steps)
     ranged_view: str := ranged
     fail(o, CODE_STEPS, ranged_view)
     return g
   }
   o.decode_steps_requested = steps
-  geometry_text := match fs.read_file(geometry_path) {
+  geometry_text := match if generation {
+    read_generation_geometry(geometry_path)
+  } else {
+    fs.read_file(geometry_path)
+  } {
     Ok(value) => value,
     Err(failure) => {
       fail(o, CODE_GEOMETRY_UNREADABLE, moe_model_forward.error_name(failure))
@@ -3644,6 +3716,10 @@ fn stage_inputs(
     },
   }
   geometry_view: str := geometry_text
+  if generation && geometry_view != expected_geometry {
+    fail(o, CODE_GEOMETRY, "identity")
+    return g
+  }
   g = layer_olmoe.parse_geometry(geometry_view)
   o.arch = g.arch.clone()
   o.n_layer = g.n_layer
@@ -3800,6 +3876,9 @@ fn schedule_decode(
   transcript_path: str,
   logits_path: str,
   steps: i64,
+  generation: bool,
+  borrow eog_ids: array<i64>,
+  generation_max: i64,
   origin: i64,
   borrow mut graphs: moe_model_forward.GraphColumns,
   borrow mut top: moe_model_forward.TopColumns,
@@ -3995,6 +4074,9 @@ fn schedule_decode(
     top_k(logits_view, top_index, top_bits)
     top = moe_model_forward.TopColumns { index: top_index.build(), bits: top_bits.build() }
     decoded.token_id = digest.argmax
+    if generation && digest.nonfinite > 0 {
+      fail(o, "R5_LOGITS_NONFINITE", moe_model_forward.labelled("elements", digest.nonfinite))
+    }
   }
   // Gate G1, run before the loop that depends on it: `d_1` is the argmax of a vector that must be
   // byte-identical to llama.cpp's own.
@@ -4012,7 +4094,8 @@ fn schedule_decode(
       mask_decode_view,
       decode_out_ids_view, decode_residual_view, decode_logits_view, node_view, plane_view,
       decode_oracle, embed_nodes, decode_b_nodes, head_nodes, prefill_keys, transcript_path,
-      first_token, n_past, steps, width, stride, block_align, origin, breach, activation, cache,
+      first_token, n_past, steps, generation, eog_ids, generation_max, width, stride, block_align,
+      origin, breach, activation, cache,
       state, decoded, o)
   }
   // Section 4.3's ordering, on **every** exit path from here: the wrap is freed before the backend
@@ -4130,9 +4213,11 @@ fn publish(borrow p: Plane, borrow k: Decode, borrow mut o: moe_model_forward.Ou
 // The whole run (section 3.2's validation order, steps 1 to the loop)
 // ---------------------------------------------------------------------------------------------
 
-pub fn execute(
+fn execute_mode(
   pack_path: str,
   geometry_path: str,
+  expected_geometry: str,
+  borrow source_identity: alignpack.SourceIdentity,
   tokens_text: str,
   reference_path: str,
   transcript_path: str,
@@ -4142,6 +4227,9 @@ pub fn execute(
   kv_save_text: str,
   kv_load_text: str,
   resident_text: str,
+  generation: bool,
+  borrow eog_ids: array<i64>,
+  generation_max: i64,
   borrow mut tokens: moe_model_forward.TokenColumns,
   borrow mut graphs: moe_model_forward.GraphColumns,
   borrow mut top: moe_model_forward.TopColumns,
@@ -4200,10 +4288,31 @@ pub fn execute(
     return o
   }
 
-  g := stage_inputs(tokens_text, width_text, steps_text, geometry_path, tokens, o)
+  max_steps := if generation { 127 } else { layer_olmoe.MAX_DECODE_STEPS }
+  g := stage_inputs(
+    tokens_text, width_text, steps_text, geometry_path, expected_geometry, generation, max_steps,
+    tokens, o)
   if o.code.len() > 0 {
     o.elapsed_ns = time.instant() - started
     return o
+  }
+  if generation {
+    if generation_max < 1 || generation_max > 128
+      || eog_ids.len() < 1 || eog_ids.len() > 256 {
+      fail(o, CODE_TOKENS, "generation")
+      o.elapsed_ns = time.instant() - started
+      return o
+    }
+    mut eog_at := 0
+    loop {
+      if eog_at >= eog_ids.len() { break }
+      if eog_ids[eog_at] < 0 || eog_ids[eog_at] >= g.n_vocab {
+        fail(o, CODE_TOKENS, moe_model_forward.labelled("eog", eog_ids[eog_at]))
+        o.elapsed_ns = time.instant() - started
+        return o
+      }
+      eog_at = eog_at + 1
+    }
   }
   width := o.attention_width
   steps := o.decode_steps_requested
@@ -4215,6 +4324,16 @@ pub fn execute(
       o.elapsed_ns = time.instant() - started
       return o
     },
+  }
+  if generation {
+    match alignpack.verify_source_identity_file(pak, source_identity) {
+      Ok(_) => {},
+      Err(_) => {
+        fail(o, "R4_SOURCE_IDENTITY", "source_record")
+        o.elapsed_ns = time.instant() - started
+        return o
+      },
+    }
   }
   staged := moe_model_forward.stage_plan_owned(pak, g, table, tokens.count)
   o.format_version = staged.format_version
@@ -4439,9 +4558,126 @@ pub fn execute(
     window_view, claim_view, cache_view, layout, resident, device, context_bytes, width,
     residual_bytes,
     logits_bytes, readback_bytes, staged.block_align, reference_path, transcript_path, logits_path,
-    steps, started, graphs, top, stepped, o)
+    steps, generation, eog_ids, generation_max, started, graphs, top, stepped, o)
   o.elapsed_ns = time.instant() - started
   return o
+}
+
+fn render_token_list(borrow ids: array<i64>) -> string {
+  output := builder()
+  mut at := 0
+  loop {
+    if at >= ids.len() { break }
+    if at > 0 { output.write(",") }
+    output.write_int(ids[at])
+    at = at + 1
+  }
+  return output.to_string()
+}
+
+fn render_integer(value: i64) -> string {
+  output := builder()
+  output.write_int(value)
+  return output.to_string()
+}
+
+fn render_cache_mode(value: i64) -> string {
+  output := builder()
+  output.write("dense+lru:")
+  output.write_int(value)
+  return output.to_string()
+}
+
+pub GenerationParts {
+  outcome: moe_model_forward.Outcome,
+  token_ids_json: string,
+}
+
+fn render_generation_ids(borrow o: moe_model_forward.Outcome, borrow s: StepRows) -> string {
+  output := builder()
+  output.write("[")
+  if o.code.len() == 0 {
+    output.write_int(o.argmax)
+    mut at := 0
+    loop {
+      if at >= s.count { break }
+      output.write(",")
+      output.write_int(s.argmax_ids[at])
+      at = at + 1
+    }
+  }
+  output.write("]")
+  return output.to_string()
+}
+
+pub fn generate_resident(
+  pack_path: str,
+  geometry_path: str,
+  expected_geometry: str,
+  source_identity: alignpack.SourceIdentity,
+  borrow prompt_token_ids: array<i64>,
+  borrow eog_token_ids: array<i64>,
+  max_tokens: i64,
+  cache_budget_bytes: i64,
+) -> GenerationParts {
+  if prompt_token_ids.len() < 1 || prompt_token_ids.len() > layer_olmoe.MAX_PREFILL_TOKENS
+    || eog_token_ids.len() < 1 || eog_token_ids.len() > 256
+    || max_tokens < 1 || max_tokens > 128 || cache_budget_bytes <= 0 {
+    mut refused := moe_model_forward.empty_outcome()
+    fail(refused, CODE_TOKENS, "generation")
+    return GenerationParts { outcome: refused, token_ids_json: "[]".clone() }
+  }
+  allocation_steps := if max_tokens > 1 { max_tokens - 1 } else { 1 }
+  width := prompt_token_ids.len() + allocation_steps
+  if width > layer_olmoe.MAX_ATTENTION_WIDTH {
+    mut refused := moe_model_forward.empty_outcome()
+    fail(refused, CODE_KV_WIDTH, moe_model_forward.labelled("kv_width", width))
+    return GenerationParts { outcome: refused, token_ids_json: "[]".clone() }
+  }
+  token_text := render_token_list(prompt_token_ids)
+  width_text := render_integer(width)
+  steps_text := render_integer(allocation_steps)
+  resident_text := render_cache_mode(cache_budget_bytes)
+  token_view: str := token_text
+  width_view: str := width_text
+  steps_view: str := steps_text
+  resident_view: str := resident_text
+  mut tokens := moe_model_forward.empty_tokens()
+  mut graphs := moe_model_forward.empty_graphs()
+  mut top := moe_model_forward.empty_top()
+  mut stepped := empty_steps()
+  outcome := execute_mode(
+    pack_path, geometry_path, expected_geometry, source_identity, token_view, "", "", width_view,
+    "", steps_view, "-", "-", resident_view, true, eog_token_ids, max_tokens,
+    tokens, graphs, top, stepped)
+  token_ids_json := render_generation_ids(outcome, stepped)
+  return GenerationParts { outcome: outcome, token_ids_json: token_ids_json }
+}
+
+// The public diagnostic API retains its existing grammar and exact requested-step semantics.
+pub fn execute(
+  pack_path: str,
+  geometry_path: str,
+  tokens_text: str,
+  reference_path: str,
+  transcript_path: str,
+  width_text: str,
+  logits_path: str,
+  steps_text: str,
+  kv_save_text: str,
+  kv_load_text: str,
+  resident_text: str,
+  borrow mut tokens: moe_model_forward.TokenColumns,
+  borrow mut graphs: moe_model_forward.GraphColumns,
+  borrow mut top: moe_model_forward.TopColumns,
+  borrow mut stepped: StepRows,
+) -> moe_model_forward.Outcome {
+  identity := alignpack.empty_source_identity()
+  eog_ids := moe_model_forward.empty_array()
+  return execute_mode(
+    pack_path, geometry_path, "", identity, tokens_text, reference_path, transcript_path,
+    width_text, logits_path, steps_text, kv_save_text, kv_load_text, resident_text, false, eog_ids, 0,
+    tokens, graphs, top, stepped)
 }
 
 // ---------------------------------------------------------------------------------------------

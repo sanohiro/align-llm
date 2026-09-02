@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# R7-RUNTIME-PROVIDER section 4.1 hosted owner. It builds three tiny F32 Qwen GGUFs, derives each
-# exact model-IR document, packs each real GGUF, and runs the public provider CLI with the
-# deterministic stub engine. No model download, network service, or llama.cpp process is needed.
+# R7-RUNTIME-PROVIDER section 4.1 hosted owner, extended by R8-OLMOE-PROVIDER. It builds tiny F32
+# Qwen and OLMoE GGUFs, derives each exact model-IR document, packs each real GGUF, and runs the
+# public provider CLI with the deterministic stub engine. No model download, network service, or
+# llama.cpp process is needed.
 
 unset ALIGN_LLM_GGML_INCLUDE ALIGN_LLM_GGML_LIB ALIGN_LLM_GGML_FORCE
 export PYTHONDONTWRITEBYTECODE=1
@@ -38,6 +39,7 @@ if ALIGN_LLM_GGML_SHIM_STATIC=invalid "${root_dir}/scripts/build-ggml-shim" >/de
   exit 1
 fi
 python3 "${root_dir}/scripts/runtime_provider_fixture.py" "${work_dir}"
+python3 "${root_dir}/scripts/olmoe_provider_fixture.py" "${work_dir}"
 
 python3 - "${root_dir}/main" "${work_dir}" <<'PY'
 import json
@@ -61,6 +63,23 @@ for key in ("model", "immediate_eog_model", "after_one_eog_model"):
         if result.returncode != 0:
             raise SystemExit(
                 "runtime provider smoke: FAIL fixture preparation %r: %s"
+                % (args[1:], result.stderr.decode("utf-8", "replace"))
+            )
+olmoe = json.loads((work / "olmoe-runtime-manifest.json").read_text(encoding="utf-8"))
+for key in ("model", "immediate_eog_model"):
+    model = work / olmoe[key]
+    stem = model.stem
+    geometry = work / (stem + "-model-ir.json")
+    pack = work / (stem + ".alignpack")
+    pack_document = work / (stem + "-pack.json")
+    for args in (
+        [binary, "--model-ir", str(model), str(geometry)],
+        [binary, "--pack", str(model), str(pack), str(pack_document)],
+    ):
+        result = subprocess.run(args, capture_output=True, check=False)
+        if result.returncode != 0:
+            raise SystemExit(
+                "runtime provider smoke: FAIL OLMoE fixture preparation %r: %s"
                 % (args[1:], result.stderr.decode("utf-8", "replace"))
             )
 oversize_replacement = work / "oversize-replacement-model-ir.json"
@@ -206,6 +225,58 @@ require(result.returncode != 0 and record["status"] == "error", "pack identity d
 result, record = invoke("extra-cli-operand", extra=("extra",))
 require(result.returncode != 0 and record is None, "runtime CLI accepted an extra operand")
 
+olmoe = json.loads((work / "olmoe-runtime-manifest.json").read_text(encoding="utf-8"))
+
+
+def invoke_olmoe(label, key="model", max_tokens=1, budget=None, extra=()):
+    model = work / olmoe[key]
+    stem = model.stem
+    result_path = work / (label + "-result.json")
+    args = [
+        binary,
+        "--provider",
+        "align-runtime",
+        str(model),
+        str(work / (stem + ".alignpack")),
+        str(work / (stem + "-model-ir.json")),
+        "x",
+        str(result_path),
+        str(max_tokens),
+    ]
+    if budget is not None:
+        args.append(str(budget))
+    args.extend(extra)
+    result = subprocess.run(args, capture_output=True, check=False, timeout=30)
+    record = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else None
+    return result, record
+
+
+budget = olmoe["cache_budget_bytes"]
+result, record = invoke_olmoe("olmoe-max-one", budget=budget)
+require(result.returncode == 0 and record is not None and record["status"] == "ok",
+        "OLMoE max-one generation failed")
+require(len(record["output"].encode("utf-8")) == 1 and record["completion_tokens"] == 1,
+        "OLMoE max-one completion drifted: %r" % record)
+result, record = invoke_olmoe("olmoe-max-two", max_tokens=2, budget=budget)
+require(result.returncode == 0 and record is not None and record["status"] == "ok",
+        "OLMoE one-step generation failed")
+require(record["completion_tokens"] == 2, "OLMoE one-step token count drifted")
+result, record = invoke_olmoe(
+    "olmoe-immediate-eog", key="immediate_eog_model", max_tokens=3, budget=budget)
+require(result.returncode == 0 and record is not None and record["output"] == ""
+        and record["completion_tokens"] == 0,
+        "OLMoE immediate EOG was consumed or leaked")
+for label, rejected_budget in (("olmoe-zero-budget", None), ("olmoe-small-budget", 1),
+                               ("olmoe-negative-budget", -1)):
+    result, record = invoke_olmoe(label, budget=rejected_budget)
+    require(result.returncode != 0 and record is not None and record["status"] == "error",
+            label + " was accepted")
+result, record = invoke("qwen-positive-budget", extra=(str(budget),))
+require(result.returncode != 0 and record is not None and record["status"] == "error",
+        "Qwen accepted an expert-cache budget")
+result, record = invoke_olmoe("olmoe-extra-cli", budget=budget, extra=("extra",))
+require(result.returncode != 0 and record is None, "OLMoE CLI accepted an extra operand")
+
 PY
 
 # The diagnostic decode API deliberately reports non-finite primary logits without failing. Text
@@ -234,6 +305,23 @@ record = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exis
 if (result.returncode == 0 or record is None or record.get("status") != "error"
         or record.get("output") != ""):
     raise SystemExit("runtime provider smoke: FAIL non-finite logits produced completion text")
+
+olmoe = json.loads((work / "olmoe-runtime-manifest.json").read_text(encoding="utf-8"))
+model = work / olmoe["model"]
+stem = model.stem
+result_path = work / "olmoe-nonfinite-result.json"
+result = subprocess.run(
+    [binary, "--provider", "align-runtime", str(model),
+     str(work / (stem + ".alignpack")), str(work / (stem + "-model-ir.json")),
+     "x", str(result_path), "1", str(olmoe["cache_budget_bytes"])],
+    capture_output=True,
+    check=False,
+    timeout=30,
+)
+record = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else None
+if (result.returncode == 0 or record is None or record.get("status") != "error"
+        or record.get("output") != ""):
+    raise SystemExit("runtime provider smoke: FAIL non-finite OLMoE logits produced completion text")
 PY
 
-echo "runtime provider smoke: PASS (49 assertions)"
+echo "runtime provider smoke: PASS (61 assertions)"

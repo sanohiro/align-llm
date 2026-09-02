@@ -1306,8 +1306,8 @@ The current forward delivery order is:
     seconds of paired model execution. This capability does not claim provider-level time to a
     passing patch.
 
-48. **R8-OLMOE-TEXT — OLMoE text/token and prompt preparation. Implementation candidate
-    owner-verified on 2026-09-02.**
+48. **R8-OLMOE-TEXT — OLMoE text/token and prompt preparation. Merged as PR #169
+    (`c987838`) on 2026-09-03.**
     [`r8-olmoe-text.md`](r8-olmoe-text.md) is the authoritative implementation contract. Extend
     the existing tokenizer and prompt consumers to the reference model's exact `gpt2`/`olmo`
     profile and 508-byte chat template, while preserving Qwen behavior and identity byte-for-byte.
@@ -1321,6 +1321,16 @@ The current forward delivery order is:
     real 13-case/two-mode tokenizer plus six-prompt parity passes in 23.6 seconds with 332 compared
     ids. Existing Qwen tokenizer and prompt owners pass, and the real Qwen tokenizer identity is
     unchanged.
+
+49. **R8-OLMOE-PROVIDER — expose cache-backed OLMoE generation through `ModelProvider`. Active.**
+    [`r8-olmoe-provider.md`](r8-olmoe-provider.md) is the authoritative implementation contract.
+    Dispatch the existing in-process runtime provider by exact model architecture, carry an explicit
+    invocation-local expert-cache budget, and extend the shipped MoE decoder with the same
+    pre-graph EOG and maximum-token semantics already used by dense generation. Preserve the Qwen
+    provider path and require OLMoE callers to opt into a positive cache budget. Acceptance is a
+    focused synthetic provider owner plus one bounded real-model generation qualification; this
+    correctness capability makes no provider-level latency or time-to-passing-patch claim and does
+    not select `make ci`, platform profiles, stress, or the 40-prompt runtime matrix.
 
 ### Status (2026-08-28)
 

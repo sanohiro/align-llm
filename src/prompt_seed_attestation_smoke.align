@@ -42,6 +42,7 @@ fn config(kind: model.ProviderKind, endpoint: str, model_name: str, tokenize_end
     max_response_bytes: 262_144,
     runtime_pack_path: "",
     runtime_geometry_path: "",
+    runtime_cache_budget_bytes: 0,
   }
 }
 

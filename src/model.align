@@ -19,6 +19,9 @@ pub ProviderConfig {
   // geometry artifacts explicit instead of overloading endpoint or tokenizer fields as paths.
   runtime_pack_path: str,
   runtime_geometry_path: str,
+  // Zero on network providers and the dense Qwen runtime. OLMoE callers state the invocation-local
+  // partial expert-cache budget explicitly; no machine-dependent default crosses this boundary.
+  runtime_cache_budget_bytes: i64,
 }
 
 pub GenerationRequest {

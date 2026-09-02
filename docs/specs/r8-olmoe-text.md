@@ -1,6 +1,6 @@
 # R8 OLMoE text boundary
 
-Status: implementation candidate owner-verified, 2026-09-02
+Status: merged in PR #169 (`c987838`) on 2026-09-03
 
 ## 1. Decision and boundary
 

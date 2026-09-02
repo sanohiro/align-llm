@@ -2,7 +2,9 @@ module provider_runtime
 
 import alignpack
 import decode_step
+import moe_decode_step
 import frontend_qwen
+import frontend_olmoe
 import gguf
 import model
 import model_ir
@@ -46,6 +48,7 @@ fn validate_generate(config: model.ProviderConfig, request: model.GenerationRequ
   if config.max_response_bytes < 1 || config.max_response_bytes > MAX_RESPONSE_BYTES {
     return Err(Error.Invalid)
   }
+  if config.runtime_cache_budget_bytes < 0 { return Err(Error.Invalid) }
   if request.temperature != 0.0 || request.max_tokens < 1 || request.max_tokens > 128 {
     return Err(Error.Invalid)
   }
@@ -94,13 +97,60 @@ fn contains_id(borrow ids: array<i64>, value: i64) -> bool {
   return false
 }
 
+GenerationRun { ok: bool, token_ids_json: string }
+
+fn generate_qwen(
+  config: model.ProviderConfig,
+  geometry: str,
+  source_identity: alignpack.SourceIdentity,
+  borrow prompt_ids: array<i64>,
+  borrow eog_ids: array<i64>,
+  max_tokens: i64,
+) -> GenerationRun {
+  parts := decode_step.generate_resident(
+    config.runtime_pack_path, config.runtime_geometry_path, geometry, source_identity,
+    prompt_ids, eog_ids, max_tokens)
+  return GenerationRun {
+    ok: parts.outcome.code.len() == 0,
+    token_ids_json: parts.token_ids_json.clone(),
+  }
+}
+
+fn generate_olmoe(
+  config: model.ProviderConfig,
+  geometry: str,
+  source_identity: alignpack.SourceIdentity,
+  borrow prompt_ids: array<i64>,
+  borrow eog_ids: array<i64>,
+  max_tokens: i64,
+) -> GenerationRun {
+  parts := moe_decode_step.generate_resident(
+    config.runtime_pack_path, config.runtime_geometry_path, geometry, source_identity,
+    prompt_ids, eog_ids, max_tokens, config.runtime_cache_budget_bytes)
+  return GenerationRun {
+    ok: parts.outcome.code.len() == 0,
+    token_ids_json: parts.token_ids_json.clone(),
+  }
+}
+
 pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
   validate_generate(config, request)?
 
   snapshot := gguf.open_snapshot(config.model)?
   table_ok := match snapshot.table.status { Ok => true, Error => false }
   if !table_ok { return Err(Error.Invalid) }
-  ir := frontend_qwen.build_model_ir(snapshot.table, config.model)
+  architecture: str := snapshot.table.architecture
+  olmoe := snapshot.table.architecture_present && architecture == "olmoe"
+  qwen := snapshot.table.architecture_present && architecture == "qwen2"
+  if (!olmoe && !qwen) || (qwen && config.runtime_cache_budget_bytes != 0)
+    || (olmoe && config.runtime_cache_budget_bytes <= 0) {
+    return Err(Error.Invalid)
+  }
+  ir := if olmoe {
+    frontend_olmoe.build_model_ir(snapshot.table, config.model)
+  } else {
+    frontend_qwen.build_model_ir(snapshot.table, config.model)
+  }
   if !ir_ok(ir.status) { return Err(Error.Invalid) }
   geometry := read_geometry(config.runtime_geometry_path)?
   geometry_view: str := geometry
@@ -117,17 +167,17 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
     return Err(Error.Invalid)
   }
 
-  generated_parts := decode_step.generate_resident(
-    config.runtime_pack_path,
-    config.runtime_geometry_path,
-    geometry_view,
-    source_identity,
-    prepared.token_ids,
-    prepared.eog_token_ids,
-    request.max_tokens,
-  )
-  if generated_parts.outcome.code.len() > 0 { return Err(Error.Invalid) }
-  generated_ids: array<i64> := json.decode(generated_parts.token_ids_json)?
+  generated := if olmoe {
+    generate_olmoe(
+      config, geometry_view, source_identity, prepared.token_ids, prepared.eog_token_ids,
+      request.max_tokens)
+  } else {
+    generate_qwen(
+      config, geometry_view, source_identity, prepared.token_ids, prepared.eog_token_ids,
+      request.max_tokens)
+  }
+  if !generated.ok { return Err(Error.Invalid) }
+  generated_ids: array<i64> := json.decode(generated.token_ids_json)?
   if generated_ids.len() < 1 || generated_ids.len() > request.max_tokens {
     return Err(Error.Invalid)
   }

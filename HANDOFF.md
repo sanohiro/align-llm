@@ -3,7 +3,35 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-TEXT (2026-09-03)
+## Active: R8-OLMOE-PROVIDER (2026-09-03)
+
+Branch `agent/r8-olmoe-provider`, based on pulled merged `main`
+`c987838130077d5b6119ee20b717774c1c913fbe` (R8-OLMOE-TEXT PR #169). The sibling Align checkout
+and `.align-revision` both remain at current merged Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; a post-merge fetch found no newer prerequisite.
+
+The active capability exposes OLMoE greedy generation through the existing in-process provider,
+using an explicit invocation-local partial-LRU cache budget and stop-aware MoE generation. Its
+public-contract ledger and closure matrix are `docs/specs/r8-olmoe-provider.md`. Qwen and the
+diagnostic MoE CLI remain unchanged, and this correctness capability makes no performance claim.
+
+The implementation candidate is complete. `gmake fmt` passed; `gmake runtime-provider-smoke`
+passed 61 assertions; `gmake layer-forward-smoke` passed the unchanged diagnostic/cache boundary;
+and the fixed real-model qualification matched pinned llama.cpp prompt count 47, token ids
+`[1992,4993]`, and bytes `To fix` in 19.07 seconds. The qualification runner self-test,
+Python compilation, and `git diff --check` also passed. No broad aggregate, platform, stress, or
+benchmark suite was selected.
+
+**Next actions.** (1) Commit and perform one comprehensive review of the stable candidate. (2)
+Consolidate any accepted repair and rerun only its affected owner. (3) Run publication preflight,
+publish, merge, and pull current `main` and Align.
+
+**Blocker.** None.
+
+**Intentional uncommitted files.** The stable candidate until committed. Local configuration remains
+outside the change.
+
+## Merged checkpoint: R8-OLMOE-TEXT (PR #169, 2026-09-03)
 
 Branch `agent/r8-olmoe-text`, based on pulled merged `main`
 `4d9f9c823dc6596f87c7bb6db1b16e55d9653637` (R8-PARTIAL-LRU-CACHE PR #168). The sibling Align
@@ -46,13 +74,12 @@ from the exact source through the repository wrapper before testing it.
 The repair does not expand the public behavior or capability scope, so another comprehensive review
 is not required.
 
-**Next actions.** (1) Commit the consolidated repair and final evidence. (2) Run publication
-preflight. (3) Publish, merge, and pull current `main`.
+PR #169 merged as `c987838130077d5b6119ee20b717774c1c913fbe`; `main` was pulled and no additional
+align-llm or sibling Align update was present.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The consolidated review repair until committed. Local
-configuration remains outside the change.
+**Intentional uncommitted files.** None. Local configuration remains outside the change.
 
 ## Merged checkpoint: R8-PARTIAL-LRU-CACHE (PR #168, 2026-09-02)
 

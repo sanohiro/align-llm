@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""R8-OLMOE-PROVIDER's one fixed real-model correctness qualification."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MODEL_BYTES = 4_213_512_192
+MODEL_SHA256 = "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f"
+SERVER_BUILD = "build 10566, commit bb4caa754"
+BUDGET = 975_175_680
+PROMPT = "Fix an off-by-one error in a Python inclusive range."
+EXPECTED_IDS = [1992, 4993]
+EXPECTED_TEXT = "To fix"
+COST_CEILING_SECONDS = 15 * 60
+
+
+class GateError(RuntimeError):
+    pass
+
+
+def configured_file(name: str, executable: bool = False) -> Path | None:
+    value = os.environ.get(name, "")
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_file() or (executable and not os.access(path, os.X_OK)):
+        raise GateError(f"configured prerequisite is unusable: {name}={value}")
+    return path
+
+
+def configured_directory(name: str) -> Path | None:
+    value = os.environ.get(name, "")
+    if not value:
+        return None
+    path = Path(value)
+    if not path.is_dir():
+        raise GateError(f"configured prerequisite is unusable: {name}={value}")
+    return path
+
+
+def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
+    rows = [
+        ("ALIGN_LLM_OLMOE_MODEL", configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", configured_directory("ALIGN_LLM_GGML_LIB")),
+        ("ALIGN_LLM_LLAMA_SERVER", configured_file("ALIGN_LLM_LLAMA_SERVER", executable=True)),
+    ]
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-PROVIDER: N/A ({missing} unset)")
+        return None
+    return tuple(path for _, path in rows)  # type: ignore[return-value]
+
+
+def run(argv: list[str], *, timeout: int, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[bytes]:
+    result = subprocess.run(argv, cwd=ROOT, env=env, capture_output=True, timeout=timeout, check=False)
+    if result.returncode != 0:
+        raise GateError(
+            "command failed (%d): %s\n%s"
+            % (result.returncode, " ".join(argv), result.stderr.decode("utf-8", "replace")[-4096:])
+        )
+    return result
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def wait_ready(process: subprocess.Popen[bytes], port: int) -> None:
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise GateError(f"llama-server exited during startup ({process.returncode})")
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as response:
+                if response.status == 200:
+                    return
+        except (urllib.error.URLError, OSError):
+            time.sleep(0.25)
+    raise GateError("llama-server did not become ready within 180 seconds")
+
+
+def self_test() -> int:
+    if EXPECTED_TEXT.encode("utf-8") != b"To fix" or len(EXPECTED_IDS) != 2:
+        raise GateError("fixed reference expectation drifted")
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-provider-self-test-") as raw:
+        missing = str(Path(raw) / "missing")
+        with mock.patch.dict(os.environ, {"ALIGN_LLM_OLMOE_MODEL": missing}, clear=True):
+            try:
+                prerequisites()
+            except GateError:
+                pass
+            else:
+                raise GateError("an invalid configured model was hidden by a later N/A")
+    print("R8-OLMOE-PROVIDER self-test: PASS")
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise GateError("OLMoE provider gate accepts no arguments")
+    required = prerequisites()
+    if required is None:
+        return 0
+    model, pack, geometry, include, library, server = required
+    started = time.monotonic()
+    if model.stat().st_size != MODEL_BYTES or file_sha256(model) != MODEL_SHA256:
+        raise GateError("the configured OLMoE GGUF does not have the pinned size and SHA-256")
+    version = run([str(server), "--version"], timeout=30)
+    if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
+        raise GateError("llama-server is not pinned build 10566 commit bb4caa754")
+
+    original_main = ROOT / "main"
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-provider-") as raw_work:
+        work = Path(raw_work)
+        saved_main = work / "saved-main"
+        runtime_main = work / "runtime-main"
+        if original_main.exists():
+            shutil.copy2(original_main, saved_main)
+        shim_dir = work / "lib"
+        build_env = dict(os.environ)
+        build_env.update(
+            {
+                "ALIGN_LLM_GGML_INCLUDE": str(include),
+                "ALIGN_LLM_GGML_LIB": str(library),
+                "ALIGN_LLM_GGML_SHIM_DIR": str(shim_dir),
+            }
+        )
+        server_process: subprocess.Popen[bytes] | None = None
+        try:
+            run([str(ROOT / "scripts/build-ggml-shim")], timeout=180, env=build_env)
+            link_path = ":".join(
+                value for value in (str(shim_dir), str(library), build_env.get("LIBRARY_PATH", "")) if value
+            )
+            build_env["LIBRARY_PATH"] = link_path
+            compiler = Path(os.environ.get("ALIGNC", str(ROOT / "scripts/alignc")))
+            run([str(compiler), "build", "src/main.align"], timeout=300, env=build_env)
+            shutil.move(original_main, runtime_main)
+            if saved_main.exists():
+                shutil.copy2(saved_main, original_main)
+
+            runtime_env = dict(os.environ)
+            for name in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+                runtime_env[name] = ":".join(
+                    value for value in (str(shim_dir), str(library), runtime_env.get(name, "")) if value
+                )
+            result_path = work / "provider-result.json"
+            run(
+                [
+                    str(runtime_main), "--provider", "align-runtime", str(model), str(pack),
+                    str(geometry), PROMPT, str(result_path), "2", str(BUDGET),
+                ],
+                timeout=120,
+                env=runtime_env,
+            )
+            record = json.loads(result_path.read_text(encoding="utf-8"))
+            if record.get("status") != "ok" or record.get("output") != EXPECTED_TEXT:
+                raise GateError(f"Align provider completion drifted: {record!r}")
+
+            token_input = work / "completion.txt"
+            token_input.write_text(record["output"], encoding="utf-8")
+            encoded = run(
+                [str(runtime_main), "--tokenize", str(model), str(token_input), "literal-control"],
+                timeout=30,
+                env=runtime_env,
+            )
+            align_ids = json.loads(encoded.stdout.decode("utf-8"))
+            if align_ids != EXPECTED_IDS or record.get("completion_tokens") != len(EXPECTED_IDS):
+                raise GateError(f"Align provider token ids drifted: {align_ids!r}")
+
+            port = free_port()
+            server_process = subprocess.Popen(
+                [
+                    str(server), "-m", str(model), "--host", "127.0.0.1", "--port", str(port),
+                    "--device", "none", "-ngl", "0", "-c", "256", "-np", "1", "--jinja",
+                ],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            wait_ready(server_process, port)
+            body = json.dumps(
+                {
+                    "model": "olmoe",
+                    "messages": [
+                        {"role": "system", "content": "You are a coding assistant. Return a concise patch-oriented answer."},
+                        {"role": "user", "content": PROMPT},
+                    ],
+                    "max_tokens": 2,
+                    "temperature": 0,
+                    "stream": False,
+                    "logprobs": True,
+                    "top_logprobs": 1,
+                }
+            ).encode("utf-8")
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/v1/chat/completions",
+                data=body,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(request, timeout=60) as response:
+                reference = json.load(response)
+            choice = reference["choices"][0]
+            reference_ids = [row["id"] for row in choice["logprobs"]["content"]]
+            if choice["message"]["content"] != EXPECTED_TEXT or reference_ids != EXPECTED_IDS:
+                raise GateError("pinned llama.cpp completion drifted")
+            if record.get("prompt_tokens") != reference["usage"]["prompt_tokens"]:
+                raise GateError("Align and llama.cpp prompt token counts differ")
+        finally:
+            if server_process is not None and server_process.poll() is None:
+                server_process.terminate()
+                try:
+                    server_process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    server_process.kill()
+                    server_process.wait(timeout=5)
+            if saved_main.exists():
+                shutil.copy2(saved_main, original_main)
+
+    elapsed = time.monotonic() - started
+    if elapsed > COST_CEILING_SECONDS:
+        raise GateError(f"qualification took {elapsed:.1f}s, above {COST_CEILING_SECONDS}s")
+    print(
+        "R8-OLMOE-PROVIDER: PASS "
+        f"({elapsed:.2f}s, prompt=47, ids={EXPECTED_IDS}, text={EXPECTED_TEXT!r})"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except GateError as error:
+        sys.stderr.write(f"R8-OLMOE-PROVIDER: FAIL {error}\n")
+        raise SystemExit(1)
