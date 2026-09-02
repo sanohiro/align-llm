@@ -3,7 +3,59 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-RESET-CACHE-DECISION (2026-09-02)
+## Active: R8-PARTIAL-LRU-CACHE (2026-09-02)
+
+Branch `agent/r8-partial-lru-cache`, based on pulled merged `main`
+`d3b04b08d44bafa1afa28438e2229333e14810ec` (R8-RESET-CACHE-DECISION PR #167). The sibling Align
+checkout was fast-forwarded after the merge and now exactly matches `.align-revision` at
+`b6f95a261e1434d705d7de006484ffa66b1542f0`; no pin adoption is needed.
+
+The active capability implements the measured 975,175,680-byte LRU policy in the existing real
+`--moe-decode-step` consumer. Its authoritative contract, public CLI/schema ledger, closure matrix,
+byte shipping floor, memory bound, and approximately-15-minute focused qualification ceiling are
+in `docs/specs/r8-partial-lru-cache.md`. It combines dense residency with an invocation-local expert
+cache, preserves the claim-window/graph boundary, and makes no elapsed or provider-level
+time-to-passing-patch claim.
+
+Design checkpoint `5d5617c`, implementation checkpoint `158c469`, and review repair `46ccede` add
+the schema-3
+`dense+lru:BUDGET_BYTES` mode, deterministic invocation-local LRU staging, aggregate and per-step
+cache evidence, and synthetic grammar/budget/hit/miss/eviction/semantic coverage. The real pack's
+expert keys vary by layer, so the implementation uses the maximum 4,079,616-byte key as its fixed
+slot stride: the selected budget owns 239 slots and 975,028,224 bytes, never the erroneous
+pre-implementation 256 uniform slots.
+
+The comprehensive Codex CLI review covered head
+`158c469f4e30bcec007852447d5cc0a17611e320` against base tip and merge base
+`d3b04b08d44bafa1afa28438e2229333e14810ec`, using gpt-5.6-sol at high effort over the full diff.
+It found two accepted P2 public-reporting defects: amplification estimated logical cache-miss bytes
+from an average key size even though layer key sizes vary, and canonical representable budgets over
+18 digits were misclassified as malformed. Consolidated repair
+`46ccede55b2fe16fa1b867c5ce2e30510aa875f2` uses the exact accumulated logical miss bytes and a
+canonical overflow-safe parser that distinguishes malformed text from every over-budget integer.
+The repair delta also corrects the obsolete expert-read comment and binds the classifications and
+amplification formula into the owner. No finding remains open and the repair does not change cache
+selection, lifetime, or transport behavior, so another comprehensive review is not required.
+
+**Latest durable verification.** The repaired `make layer-forward-smoke` owner passes in 83.577
+seconds, including i64-limit, beyond-i64, trailing-nondigit, and exact amplification regressions.
+The focused real paired qualification reused the existing reference AlignPack and passed in 9.75
+seconds of
+model execution: dense read 7,801,405,440 decode expert-pack bytes, cache read 2,920,955,904, a
+625,585-ppm reduction. It recorded 1,279 hits, 1,112 misses, and 873 evictions with exact normalized
+semantics. Internal elapsed 4.407 seconds dense and 4.435 seconds cache is diagnostic only. No broad
+aggregate, installed profile, stress, benchmark, or unrelated platform suite ran.
+
+**Next actions.** (1) Run exact-head publication preflight with `layer-forward-smoke` as owner.
+(2) Publish and merge after the required hosted check passes. (3) Pull the latest `main` before the
+next roadmap capability.
+
+**Blocker.** None.
+
+**Intentional uncommitted files.** None. Local configuration and reusable real-model artifacts
+remain outside the change.
+
+## Merged checkpoint: R8-RESET-CACHE-DECISION (PR #167, 2026-09-02)
 
 Branch `agent/r8-reset-cache-decision`, based on merged `main`
 `c1338f1cf95d99255bcbb62c2b60d39522394411` (R8-SCORE-BASED-CACHE PR #166). PR #166 passed its

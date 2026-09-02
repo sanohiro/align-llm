@@ -1276,7 +1276,7 @@ The current forward delivery order is:
     cache allocation.
 
 46. **R8-RESET-CACHE-DECISION — evaluate cache policy at the runtime's per-request lifetime.
-    Implementation and real measurement complete; review/publication active.**
+    Merged as PR #167 (`d3b04b0`) on 2026-09-02.**
     [`r8-reset-cache-decision.md`](r8-reset-cache-decision.md) is the authoritative
     implementation contract. Add an explicit reset-per-trace simulator verb and schema-3 result,
     with both replay orders, the independent oracle, and the existing real decode runner using one
@@ -1290,6 +1290,20 @@ The current forward delivery order is:
     524-per-mille lower bound after any one trace is removed. Weighted LFU fetched
     143,222,243,328 bytes, only 9 per mille below LRU, so rule 3 does not justify its extra state.
     The next partial-cache capability is eligible with LRU at 975,175,680 bytes.
+
+47. **R8-PARTIAL-LRU-CACHE — execute the selected bounded expert cache in the real OLMoE decode
+    consumer. Implementation candidate.**
+    [`r8-partial-lru-cache.md`](r8-partial-lru-cache.md) is the authoritative implementation
+    contract. Extend the existing `dense` residency boundary with an invocation-local
+    `dense+lru:BUDGET_BYTES` mode, share its deterministic LRU state from prefill through all decode
+    steps, and publish physical read/hit/eviction evidence without changing the claim window or
+    graph. The selected real budget is 975,175,680 bytes. The precommitted shipping floor is 50,000
+    ppm fewer decode expert pack bytes than the paired `dense` leg on one fixed 16-step task, with
+    exact semantic equality; elapsed time is diagnostic only. The focused real qualification is
+    bounded at approximately 15 minutes and does not repeat the 40-prompt capture or broad OLMoE
+    matrix. The candidate removes 625,585 ppm (7,801,405,440 to 2,920,955,904 bytes) on that task,
+    with 1,279 hits, 1,112 misses, 873 evictions, and exact semantic equality in 9.75 seconds of
+    paired model execution. This capability does not claim provider-level time to a passing patch.
 
 ### Status (2026-08-28)
 

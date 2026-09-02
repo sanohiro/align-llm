@@ -13,8 +13,8 @@ import moe_model_forward
 
 // R6-OLMOE-DECODE (`docs/specs/r6-olmoe-decode.md`). The `--moe-decode-step` arm: `N` greedy decode
 // steps on a **routed** model over one Align-owned KV plane, where each step resolves that step's
-// top-`n_expert_used` expert claims in **every** layer and computes only those experts, with the
-// weights streamed.
+// top-`n_expert_used` expert claims in **every** layer and computes only those experts. Expert
+// bytes are streamed by default and may be served by the invocation-local R8 partial LRU cache.
 //
 // `--decode-step` runs `N` greedy steps on a dense model and refuses an OLMoE geometry by name;
 // `--moe-model-forward` runs one prefill on OLMoE and cannot take a second step. Neither can answer
@@ -23,10 +23,9 @@ import moe_model_forward
 // section 5.4 declares unanswerable from a prefill: within one prefill there are as many demands as
 // distinct keys, so there is nothing for a cache to hit.
 //
-// **The deliverable is a demand stream, not a policy and not a speed.** Per step and per layer, the
-// document publishes exactly which `(layer, expert)` keys were claimed and exactly how many bytes
-// were read for them — twice, arithmetically from the routing decision and from the pack reader's
-// own `pread` accounting, with a bounded relation between the two (section 3.11).
+// R6's deliverable is a demand stream, not a speed claim. Per step and per layer, the document
+// publishes exactly which `(layer, expert)` keys were claimed and exactly how many bytes served
+// them. R8 preserves the logical demand while making physical pack reads cache-miss traffic.
 //
 // It is a **new module** rather than three thousand more lines of `src/moe_model_forward.align`, for
 // that module's own reason: at this pin the checker's per-function cost is superlinear in body
@@ -57,6 +56,7 @@ import moe_model_forward
 // promise" — becomes present by contract, in every document including error documents. A field that
 // was absent by contract becoming present by contract is a format change and is named as one.
 SCHEMA_VERSION := 2
+CACHE_SCHEMA_VERSION := 3
 DOCUMENT_KIND := "R6_MOE_DECODE_STEP"
 
 // Section 3.2's vocabulary. Codes are prefixed `R6M_` and not `R6_`, so a document from this arm can
@@ -74,9 +74,9 @@ CODE_PLANE_MISMATCH := "R6M_PLANE_MISMATCH"
 CODE_TRANSCRIPT := "R6M_TRANSCRIPT"
 CODE_ORACLE_MISSING := "R6M_ORACLE_MISSING"
 CODE_GEOMETRY_UNREADABLE := "R6M_GEOMETRY_UNREADABLE"
-// Section 3.11's fail-closed relation between the arithmetic claim and the reader's own accounting.
-// `expert_pread_bytes >= expert_bytes` and `expert_pread_bytes <= expert_bytes + planes *
-// block_align`: neither side can hold by construction, so neither is vacuous.
+// Section 3.11's fail-closed relation between arithmetic demand and reader accounting. Streaming
+// and dense modes bound physical reads around logical expert bytes. R8 cache mode instead bounds
+// physical reads around the logical bytes of its misses and reconciles every cache counter.
 CODE_CLAIM_ACCOUNTING := "R6M_CLAIM_ACCOUNTING"
 // Section 3.11's second fail-closed relation, on the shape the key arithmetic reads. A step's
 // `ids` is a flat `n_layer * n_expert_used` array whose layer term is recovered by division, and a
@@ -92,6 +92,8 @@ CODE_ROUTED_SHAPE := "R6M_ROUTED_SHAPE"
 // is what section 3.2 refuses for seam codes.
 CODE_RESIDENT := "R6M_RESIDENT"
 CODE_RESIDENT_BUDGET := "R6M_RESIDENT_BUDGET"
+CODE_CACHE_MODE := "R8_CACHE_MODE"
+CODE_CACHE_BUDGET := "R8_CACHE_BUDGET"
 // KV persistence is deferred on this arm on item 32 section 8's two exact couplings. Positions 11
 // and 12 stay **reserved**: they must both be `-`, and anything else is refused by name rather than
 // quietly becoming legal.
@@ -102,6 +104,7 @@ CODE_KV_UNSUPPORTED := "R6M_KV_UNSUPPORTED"
 // 536,870,912 B, so the ceiling is never the binding constraint and is defence rather than a bound.
 MAX_PLANE_BYTES := 8589934592
 MAX_DETAIL_BYTES := 256
+I64_MAX := 9223372036854775807
 
 PLANE_TENSOR_K := 0
 PLANE_TENSOR_V := 1
@@ -240,6 +243,12 @@ pub StepResidency {
   new_bytes: i64,
   union_keys_after: i64,
   union_bytes_after: i64,
+  cache_hits: i64,
+  cache_misses: i64,
+  cache_evictions: i64,
+  cache_bytes_served: i64,
+  cache_miss_bytes: i64,
+  cache_bytes_fetched: i64,
 }
 
 pub fn empty_step_residency() -> StepResidency = StepResidency {
@@ -253,6 +262,72 @@ pub fn empty_step_residency() -> StepResidency = StepResidency {
   new_bytes: 0,
   union_keys_after: 0,
   union_bytes_after: 0,
+  cache_hits: 0,
+  cache_misses: 0,
+  cache_evictions: 0,
+  cache_bytes_served: 0,
+  cache_miss_bytes: 0,
+  cache_bytes_fetched: 0,
+}
+
+// R8-PARTIAL-LRU-CACHE's invocation-local policy state. The byte storage remains a separate
+// `buffer` owned by `execute`; this scalar-and-array record is owned by `schedule_decode` and is
+// threaded through prefill and every decode step without escaping either scope.
+pub ExpertCache {
+  enabled: bool,
+  key_space: i64,
+  key_bytes: i64,
+  slot_count: i64,
+  resident_count: i64,
+  high_water: i64,
+  ordinal: i64,
+  requests: i64,
+  hits: i64,
+  misses: i64,
+  evictions: i64,
+  bytes_served: i64,
+  miss_bytes: i64,
+  bytes_fetched: i64,
+}
+
+fn new_expert_cache(enabled: bool, key_space: i64, key_bytes: i64, slot_count: i64) -> ExpertCache =
+ExpertCache {
+  enabled: enabled,
+  key_space: key_space,
+  key_bytes: key_bytes,
+  slot_count: slot_count,
+  resident_count: 0,
+  high_water: 0,
+  ordinal: 0,
+  requests: 0,
+  hits: 0,
+  misses: 0,
+  evictions: 0,
+  bytes_served: 0,
+  miss_bytes: 0,
+  bytes_fetched: 0,
+}
+
+fn cache_slot(borrow metadata: slice<u8>, key: i64) -> i64 =
+(metadata.u32_le(key * 4) as i64) - 1
+
+fn cache_last_use(borrow metadata: slice<u8>, key_space: i64, key: i64) -> i64 =
+(metadata.u32_le((key_space + key) * 4) as i64) - 1
+
+fn cache_put_u32(
+  borrow metadata: slice<u8>, at: i64, value: i64,
+) -> Result<(), alignpack_read.Fault> {
+  mut image: buffer := buffer(4)
+  image.put_u32_le(value as u32)
+  source := image.bytes()
+  match ggml_ffi.window_copy(metadata, at, source, 4, "expert_cache_metadata") {
+    Ok(_) => { return Ok(()) },
+    Err(f) => {
+      code_view: str := f.code
+      detail_view: str := f.detail
+      return Err(moe_model_forward.pack_fault(code_view, detail_view.clone()))
+    },
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -297,6 +372,33 @@ fn resident_detail(value: str) -> string {
   d.write(value)
   d.write("]")
   return bounded_detail(d.to_string())
+}
+
+fn cache_budget(value: str) -> i64 {
+  if !value.starts_with("dense+lru:") { return -1 }
+  digits := value[10..value.len()]
+  if digits.len() == 0 { return -1 }
+  view := digits.bytes()
+  if view.len() > 1 && view.u8(0) as i64 == 48 { return -1 }
+  mut total := 0
+  mut index := 0
+  mut oversized := false
+  loop {
+    if index >= view.len() { break }
+    byte := view.u8(index) as i64
+    if byte < 48 || byte > 57 { return -1 }
+    digit := byte - 48
+    if !oversized {
+      if total > (I64_MAX - digit) / 10 {
+        oversized = true
+      } else {
+        total = total * 10 + digit
+      }
+    }
+    index = index + 1
+  }
+  if oversized { return moe_model_forward.MAX_WINDOW_BYTES + 1 }
+  return total
 }
 
 fn fail(borrow mut o: moe_model_forward.Outcome, code: str, detail: str) {
@@ -1495,6 +1597,113 @@ fn stage_claims(
   return Ok(())
 }
 
+// The cache changes only how bytes reach `claim_window`. Phase B still sees the same three compact
+// role regions at the same offsets, and a miss uses the existing block scatter before admission so
+// an unreadable block cannot evict a valid entry or become a hit on a later demand.
+fn stage_claims_cached(
+  borrow pak: file,
+  borrow mut temp: buffer,
+  borrow claim_window: slice<u8>,
+  borrow cache_window: slice<u8>,
+  borrow cache_metadata: slice<u8>,
+  borrow p: moe_model_forward.Plan,
+  borrow win: moe_model_forward.ClaimWindow,
+  borrow planes: array<i64>,
+  borrow routing: layer_olmoe.Routing,
+  layer: i64,
+  borrow mut cache: ExpertCache,
+  borrow mut c: alignpack_read.Counters,
+) -> Result<(), alignpack_read.Fault> {
+  mut u := 0
+  loop {
+    if u >= routing.count { break }
+    expert := routing.routed[u]
+    key := layer * p.n_expert + expert
+    slot := cache_slot(cache_metadata, key)
+    if slot >= 0 {
+      mut role_offset := 0
+      mut role := 0
+      loop {
+        if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+        source_at := slot * cache.key_bytes + role_offset
+        destination_at := win.region[role] + u * planes[role]
+        source := cache_window[source_at..source_at + planes[role]]
+        moe_model_forward.window_put(
+          claim_window, destination_at, source, planes[role], "expert_cache_hit")?
+        role_offset = role_offset + planes[role]
+        role = role + 1
+      }
+      cache.hits = cache.hits + 1
+    } else {
+      mut start_builder: array_builder<i64> := array_builder()
+      mut size_builder: array_builder<i64> := array_builder()
+      mut dest_builder: array_builder<i64> := array_builder()
+      mut role := 0
+      loop {
+        if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+        start_builder.push(p.claim_start[key * layer_olmoe.CLAIM_ROLE_COUNT + role])
+        size_builder.push(planes[role])
+        dest_builder.push(win.region[role] + u * planes[role])
+        role = role + 1
+      }
+      starts := start_builder.build()
+      sizes := size_builder.build()
+      dests := dest_builder.build()
+      before := c.bytes_read
+      read_block_scatter(
+        pak, temp, claim_window, p.expert_pack_offset[key], p.expert_pack_bytes[key],
+        starts, sizes, dests, "expert", c)?
+
+      mut destination_slot := cache.resident_count
+      if cache.resident_count >= cache.slot_count {
+        mut victim := -1
+        mut victim_last := 0
+        mut probe := 0
+        loop {
+          if probe >= cache.key_space { break }
+          probe_slot := cache_slot(cache_metadata, probe)
+          probe_last := cache_last_use(cache_metadata, cache.key_space, probe)
+          if probe_slot >= 0
+            && (victim < 0 || probe_last < victim_last
+              || (probe_last == victim_last && probe < victim)) {
+            victim = probe
+            victim_last = probe_last
+          }
+          probe = probe + 1
+        }
+        destination_slot = cache_slot(cache_metadata, victim)
+        cache_put_u32(cache_metadata, victim * 4, 0)?
+        cache.evictions = cache.evictions + 1
+      } else {
+        cache.resident_count = cache.resident_count + 1
+        if cache.resident_count > cache.high_water { cache.high_water = cache.resident_count }
+      }
+      mut role_offset := 0
+      role = 0
+      loop {
+        if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+        source_at := win.region[role] + u * planes[role]
+        source := claim_window[source_at..source_at + planes[role]]
+        moe_model_forward.window_put(
+          cache_window, destination_slot * cache.key_bytes + role_offset, source, planes[role],
+          "expert_cache_miss")?
+        role_offset = role_offset + planes[role]
+        role = role + 1
+      }
+      cache_put_u32(cache_metadata, key * 4, destination_slot + 1)?
+      cache.misses = cache.misses + 1
+      cache.miss_bytes = cache.miss_bytes + expert_key_bytes(p, layer)
+      cache.bytes_fetched = cache.bytes_fetched + (c.bytes_read - before)
+    }
+    cache.requests = cache.requests + 1
+    cache.bytes_served = cache.bytes_served + expert_key_bytes(p, layer)
+    cache_put_u32(cache_metadata, (cache.key_space + key) * 4, cache.ordinal + 1)?
+    cache.ordinal = cache.ordinal + 1
+    u = u + 1
+  }
+  return Ok(())
+}
+
 // The three compact expert stacks, created in the weight context and **placed** at their own region
 // bases in the reused Align-owned claim window. `ne2` is `U`: the one data-dependent shape parameter
 // in either table, and it enters here and nowhere else. It is `n_expert_used` on every decode step
@@ -1667,6 +1876,8 @@ fn run_moe_layer(
   borrow oracle: layer_olmoe.OracleTable,
   borrow window: slice<u8>,
   borrow claim_window: slice<u8>,
+  borrow cache_window: slice<u8>,
+  borrow cache_metadata: slice<u8>,
   borrow slot_view: slice<u8>,
   borrow index_image: slice<u8>,
   borrow mask: slice<u8>,
@@ -1681,6 +1892,7 @@ fn run_moe_layer(
   borrow lengths: array<i64>,
   borrow pak: file,
   borrow mut block_temp: buffer,
+  borrow mut cache: ExpertCache,
   borrow mut claim_counters: alignpack_read.Counters,
   borrow mut breach: bool,
   borrow mut routing: layer_olmoe.Routing,
@@ -1887,8 +2099,14 @@ fn run_moe_layer(
   }
   if o.code.len() == 0 {
     claim_started := time.instant()
-    take_pack(o, stage_claims(
-        pak, block_temp, claim_window, p, win, planes, routing, spec.layer, claim_counters))
+    if cache.enabled {
+      take_pack(o, stage_claims_cached(
+          pak, block_temp, claim_window, cache_window, cache_metadata, p, win, planes, routing,
+          spec.layer, cache, claim_counters))
+    } else {
+      take_pack(o, stage_claims(
+          pak, block_temp, claim_window, p, win, planes, routing, spec.layer, claim_counters))
+    }
     result.claim_pread_ns = time.instant() - claim_started
     o.window_reuse_count = o.window_reuse_count + 1
   }
@@ -2347,6 +2565,8 @@ fn decode_pass(
   borrow head_members: moe_model_forward.GraphMembers,
   borrow window: slice<u8>,
   borrow claim_window: slice<u8>,
+  borrow cache_window: slice<u8>,
+  borrow cache_metadata: slice<u8>,
   borrow layout: model_forward.ResidentLayout,
   resident: bool,
   borrow slot_view: slice<u8>,
@@ -2373,6 +2593,7 @@ fn decode_pass(
   stride: i64,
   borrow mut breach: bool,
   borrow mut activation: array_builder<i64>,
+  borrow mut cache: ExpertCache,
   borrow mut res: StepResidency,
   borrow mut state: Plane,
   borrow mut decoded: Decode,
@@ -2464,10 +2685,11 @@ fn decode_pass(
     run_moe_layer(
       device, backend, resident_buffer, context_bytes, spec, true, n_past, stride, step, g, plan,
       win, members,
-      a_nodes, b_nodes, oracle, layer_view, claim_window, slot_view, pos_view, mask_view,
+      a_nodes, b_nodes, oracle, layer_view, claim_window, cache_window, cache_metadata, slot_view,
+      pos_view, mask_view,
       out_ids_view,
       past_k_view, past_v_view, residual_view, node_view, plane_view, scan, starts, lengths, pak,
-      block_temp, claim_counters, breach, routing, result, state, o)
+      block_temp, cache, claim_counters, breach, routing, result, state, o)
     account(result.activation_a, result.slot_high_water, 0, activation, o)
     account(result.activation_b, result.slot_high_water, 0, activation, o)
     decoded.node_count = decoded.node_count + result.node_count_a + result.node_count_b
@@ -2595,6 +2817,8 @@ fn prefill_pass(
   borrow head_members: moe_model_forward.GraphMembers,
   borrow window: slice<u8>,
   borrow claim_window: slice<u8>,
+  borrow cache_window: slice<u8>,
+  borrow cache_metadata: slice<u8>,
   borrow layout: model_forward.ResidentLayout,
   resident: bool,
   borrow slot_view: slice<u8>,
@@ -2617,6 +2841,7 @@ fn prefill_pass(
   reference_path: str,
   borrow mut breach: bool,
   borrow mut activation: array_builder<i64>,
+  borrow mut cache: ExpertCache,
   borrow mut state: Plane,
   borrow mut o: moe_model_forward.Outcome,
 ) -> array<i64> {
@@ -2697,9 +2922,10 @@ fn prefill_pass(
     run_moe_layer(
       device, backend, resident_buffer, context_bytes, spec, false, tokens.count, stride, 0, g,
       plan, win, members,
-      a_nodes, b_nodes, oracle, layer_view, claim_window, slot_view, index_view, mask_view,
+      a_nodes, b_nodes, oracle, layer_view, claim_window, cache_window, cache_metadata, slot_view,
+      index_view, mask_view,
       out_ids_view, plane_view, plane_view, residual_view, node_view, plane_view, scan, starts,
-      lengths, pak, block_temp, claim_counters, breach, routing, result, state, o)
+      lengths, pak, block_temp, cache, claim_counters, breach, routing, result, state, o)
     account(result.activation_a, result.slot_high_water, result.node_count_a, activation, o)
     account(result.activation_b, result.slot_high_water, result.node_count_b, activation, o)
     o.compute_ns = o.compute_ns + result.compute_a_ns + result.compute_b_ns
@@ -2907,6 +3133,7 @@ fn render_step_row(
   borrow ids: array<i64>,
   n_layer: i64,
   used: i64,
+  cache_mode: bool,
   expert_bytes_in_model: i64,
   step_verdict: i64,
   max_abs: i64,
@@ -2988,8 +3215,9 @@ fn render_step_row(
   d.write(",\"expert_pread_bytes\":")
   d.write_int(res.expert_pread_bytes)
   d.write(",\"expert_read_amplification_ppm\":")
-  d.write_int(if res.expert_bytes > 0 {
-      (res.expert_pread_bytes - res.expert_bytes) * 1000000 / res.expert_bytes
+  miss_bytes := if cache_mode { res.cache_miss_bytes } else { res.expert_bytes }
+  d.write_int(if miss_bytes > 0 {
+      (res.expert_pread_bytes - miss_bytes) * 1000000 / miss_bytes
     } else {
       0
     })
@@ -3007,6 +3235,20 @@ fn render_step_row(
   d.write_int(res.claim_planes_read)
   d.write(",\"claim_peak_use_bytes\":")
   d.write_int(res.claim_peak_use_bytes)
+  if cache_mode {
+    d.write(",\"cache_hits\":")
+    d.write_int(res.cache_hits)
+    d.write(",\"cache_misses\":")
+    d.write_int(res.cache_misses)
+    d.write(",\"cache_evictions\":")
+    d.write_int(res.cache_evictions)
+    d.write(",\"cache_bytes_served\":")
+    d.write_int(res.cache_bytes_served)
+    d.write(",\"cache_miss_bytes\":")
+    d.write_int(res.cache_miss_bytes)
+    d.write(",\"cache_bytes_fetched\":")
+    d.write_int(res.cache_bytes_fetched)
+  }
   d.write("}}")
   return d.to_string()
 }
@@ -3044,6 +3286,8 @@ fn decode_loop(
   borrow head_members: moe_model_forward.GraphMembers,
   borrow window: slice<u8>,
   borrow claim_window: slice<u8>,
+  borrow cache_window: slice<u8>,
+  borrow cache_metadata: slice<u8>,
   borrow layout: model_forward.ResidentLayout,
   resident: bool,
   borrow slot_view: slice<u8>,
@@ -3070,6 +3314,7 @@ fn decode_loop(
   origin: i64,
   borrow mut breach: bool,
   borrow mut activation: array_builder<i64>,
+  borrow mut cache: ExpertCache,
   borrow mut state: Plane,
   borrow mut decoded: Decode,
   borrow mut o: moe_model_forward.Outcome,
@@ -3133,16 +3378,23 @@ fn decode_loop(
     before_nodes := decoded.node_count
     before_compute := decoded.compute_ns
     before_high_water := decoded.slot_high_water
+    before_cache_hits := cache.hits
+    before_cache_misses := cache.misses
+    before_cache_evictions := cache.evictions
+    before_cache_served := cache.bytes_served
+    before_cache_miss_bytes := cache.miss_bytes
+    before_cache_fetched := cache.bytes_fetched
     decoded.token_id = token
     mut res := empty_step_residency()
     ids := decode_pass(
       pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, win, tokens,
       head_members, window,
-      claim_window, layout, resident, slot_view, ids_view, pos_view, mask_view, out_ids_view,
+      claim_window, cache_window, cache_metadata, layout, resident, slot_view, ids_view, pos_view,
+      mask_view, out_ids_view,
       residual_view,
       logits_view, node_view, plane_view, oracle, embed_nodes, a_nodes, b_nodes, head_nodes, scan,
-      ranges.start, ranges.length, token, n_past, step, width, stride, breach, activation, res,
-      state, decoded, o)
+      ranges.start, ranges.length, token, n_past, step, width, stride, breach, activation, cache,
+      res, state, decoded, o)
     if o.code.len() > 0 {
       // Section 3.10. A failure inside step `k` publishes `steps_completed = k - 1` and `k - 1`
       // complete objects: **a partial step publishes no object**, because a half-filled row is a row
@@ -3158,12 +3410,27 @@ fn decode_loop(
       prefix_step(o, step)
       break
     }
+    res.cache_hits = cache.hits - before_cache_hits
+    res.cache_misses = cache.misses - before_cache_misses
+    res.cache_evictions = cache.evictions - before_cache_evictions
+    res.cache_bytes_served = cache.bytes_served - before_cache_served
+    res.cache_miss_bytes = cache.miss_bytes - before_cache_miss_bytes
+    res.cache_bytes_fetched = cache.bytes_fetched - before_cache_fetched
     // Section 3.11's fail-closed relation. `read_block_scatter` reads chunks intersected with the
     // three claim spans, so the excess is the reader's chunk granularity and is a **measurement**;
     // what is asserted is that it is an excess at all and that it is bounded by one block alignment
     // per plane. Neither side can hold by construction, so neither is vacuous.
-    if res.expert_pread_bytes < res.expert_bytes
-      || res.expert_pread_bytes > res.expert_bytes + res.claim_planes_read * block_align {
+    cache_accounting_bad := cache.enabled
+      && (res.cache_hits + res.cache_misses != res.keys_demanded
+        || res.cache_bytes_served != res.expert_bytes
+        || res.cache_bytes_fetched != res.expert_pread_bytes
+        || res.expert_pread_bytes < res.cache_miss_bytes
+        || res.expert_pread_bytes > res.cache_miss_bytes + res.cache_misses
+        * layer_olmoe.CLAIM_ROLE_COUNT * block_align)
+    stream_accounting_bad := !cache.enabled
+      && (res.expert_pread_bytes < res.expert_bytes
+        || res.expert_pread_bytes > res.expert_bytes + res.claim_planes_read * block_align)
+    if cache_accounting_bad || stream_accounting_bad {
       fail(o, CODE_CLAIM_ACCOUNTING, claim_accounting_detail(
           -1, res.expert_bytes, res.expert_pread_bytes))
       prefix_step(o, step)
@@ -3228,7 +3495,7 @@ fn decode_loop(
     token_ids.push(token)
     if rendered > 0 { rows.write(",") }
     row_text := render_step_row(
-      step, n_past, token, decoded, res, ids, g.n_layer, g.n_expert_used,
+      step, n_past, token, decoded, res, ids, g.n_layer, g.n_expert_used, cache.enabled,
       o.expert_bytes_in_model, step_verdict, o.oracle_max_abs, o.oracle_max_sum, o.oracle_elements,
       o.oracle_matched, o.oracle_expected, o.oracle_layers_matched, o.oracle_worst_layer,
       o.oracle_worst_node, if o.transcript_present { step + 1 } else { 0 },
@@ -3454,9 +3721,8 @@ fn stage_inputs(
 // Every **dense** member the run touches — the whole `token_embd.weight` table, the sixteen layers'
 // attention, norm and router weights, and the head — read once, in graph order, straight into its
 // own interior offset in the region, through the same `CHUNK_BYTES` rounds `read_into_window` and
-// `fill_members` already use. The 3.9 GB of expert planes are **not** here and never are: they keep
-// streaming through the claim window exactly as they do today, which is the whole point of the
-// capability.
+// `fill_members` already use. Expert planes never enter this dense layout: they reach the separate
+// claim window either from the pack or from R8's disjoint partial-cache region.
 //
 // The embed **stage** is never filled from the pack. It is the 36,864-byte scratch region the
 // gathered rows are copied into, and 311,027,712 is therefore what `weights.fill_bytes` publishes
@@ -3520,6 +3786,7 @@ fn schedule_decode(
   borrow head_members: moe_model_forward.GraphMembers,
   borrow window: slice<u8>,
   borrow claim_window: slice<u8>,
+  borrow cache_window: slice<u8>,
   borrow layout: model_forward.ResidentLayout,
   resident: bool,
   device: raw,
@@ -3541,6 +3808,19 @@ fn schedule_decode(
 ) {
   mut state := empty_plane()
   mut decoded := empty_decode()
+  mut cache := new_expert_cache(
+    o.expert_cache_mode, g.n_layer * g.n_expert, o.expert_cache_key_bytes,
+    o.expert_cache_slot_count)
+  cache_metadata_bytes := if o.expert_cache_mode { g.n_layer * g.n_expert * 8 } else { 0 }
+  mut cache_metadata_buffer: buffer := buffer(
+    if cache_metadata_bytes > 0 { cache_metadata_bytes } else { 1 })
+  // `prime_window` appends zero-filled chunks and establishes the visible buffer length.
+  moe_model_forward.prime_window(cache_metadata_buffer, cache_metadata_bytes)
+  cache_metadata_view := cache_metadata_buffer.bytes()
+  if cache_metadata_view.len() != cache_metadata_bytes {
+    fail(o, "R4_WINDOW_UNAVAILABLE", "expert_cache_metadata")
+    return
+  }
   n_past := tokens.count
   stride := plane_stride(g, width)
   plane_bytes := plane_bytes_for(g, width)
@@ -3695,11 +3975,12 @@ fn schedule_decode(
     prefill_keys = prefill_pass(
       pak, device, backend, resident_buffer, context_bytes, g, table, plan, win, tokens,
       embed_members,
-      head_members, window, claim_window, layout, resident, slot_view, index_view, mask_wide_view,
+      head_members, window, claim_window, cache_window, cache_metadata_view, layout, resident,
+      slot_view, index_view, mask_wide_view,
       out_ids_view,
       residual_view, logits_view, node_view, plane_view, prefill_oracle, embed_nodes,
       prefill_a_nodes, head_nodes, scan, ranges.start, ranges.length, width, stride,
-      reference_path, breach, activation, state, o)
+      reference_path, breach, activation, cache, state, o)
     if o.code.len() == 0 { o.plane_source = PLANE_SOURCE_PREFILL }
   }
   if o.code.len() == 0 {
@@ -3726,12 +4007,13 @@ fn schedule_decode(
     stepped = decode_loop(
       pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, win, tokens,
       head_members,
-      window, claim_window, layout, resident, slot_view, decode_ids_view, decode_pos_view,
+      window, claim_window, cache_window, cache_metadata_view, layout, resident, slot_view,
+      decode_ids_view, decode_pos_view,
       mask_decode_view,
       decode_out_ids_view, decode_residual_view, decode_logits_view, node_view, plane_view,
       decode_oracle, embed_nodes, decode_b_nodes, head_nodes, prefill_keys, transcript_path,
-      first_token, n_past, steps, width, stride, block_align, origin, breach, activation, state,
-      decoded, o)
+      first_token, n_past, steps, width, stride, block_align, origin, breach, activation, cache,
+      state, decoded, o)
   }
   // Section 4.3's ordering, on **every** exit path from here: the wrap is freed before the backend
   // and long before `execute`'s region leaves scope. There is no path between the region's
@@ -3797,6 +4079,15 @@ fn schedule_decode(
     }
   }
   graphs = moe_model_forward.GraphColumns { activation_bytes: activation.build() }
+  o.expert_cache_requests = cache.requests
+  o.expert_cache_hits = cache.hits
+  o.expert_cache_misses = cache.misses
+  o.expert_cache_evictions = cache.evictions
+  o.expert_cache_resident_final = cache.resident_count
+  o.expert_cache_resident_high_water = cache.high_water
+  o.expert_cache_bytes_served = cache.bytes_served
+  o.expert_cache_miss_bytes = cache.miss_bytes
+  o.expert_cache_bytes_fetched = cache.bytes_fetched
   publish(state, decoded, o)
 }
 
@@ -3885,14 +4176,24 @@ pub fn execute(
     return o
   }
   // Then position 13. `-` is streaming, the shipped behaviour, and is what an absent operand means;
-  // the empty string is **not** absence and is refused with everything else that is not `dense`.
+  // `dense` retains the shipped dense-resident behavior and R8 adds `dense+lru:BUDGET_BYTES`.
   //
   // **`weights` is refused by name.** The dense arm accepts that value and this arm must not: whole
   // model residency makes `residency.expert_bytes` unreachable and this arm exists to publish it. It
   // is refused explicitly by the same grammar rather than falling through a default, and
   // `mdr-resident-weights-refused` is its shipped regression.
-  resident := resident_text == "dense"
+  parsed_cache_budget := cache_budget(resident_text)
+  cache_prefix := resident_text.starts_with("dense+lru")
+  cache_mode := parsed_cache_budget > 0
+  if cache_prefix && !cache_mode {
+    fail(o, CODE_CACHE_MODE, resident_detail(resident_text))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  resident := resident_text == "dense" || cache_mode
   o.resident_mode = resident
+  o.expert_cache_mode = cache_mode
+  o.expert_cache_budget_bytes = if cache_mode { parsed_cache_budget } else { 0 }
   if !resident && resident_text != "-" {
     fail(o, CODE_RESIDENT, resident_detail(resident_text))
     o.elapsed_ns = time.instant() - started
@@ -3948,6 +4249,27 @@ pub fn execute(
     fail(o, staged_code, staged_detail)
     o.elapsed_ns = time.instant() - started
     return o
+  }
+  mut cache_key_bytes := 0
+  if cache_mode {
+    cache_key_bytes = expert_key_bytes(staged.plan, 0)
+    mut cache_layer := 1
+    loop {
+      if cache_layer >= g.n_layer { break }
+      layer_key_bytes := expert_key_bytes(staged.plan, cache_layer)
+      if layer_key_bytes > cache_key_bytes { cache_key_bytes = layer_key_bytes }
+      cache_layer = cache_layer + 1
+    }
+    cache_slots := if cache_key_bytes > 0 { parsed_cache_budget / cache_key_bytes } else { 0 }
+    if cache_key_bytes <= 0 || parsed_cache_budget > model_forward.MAX_WINDOW_BYTES
+      || cache_slots < g.n_expert_used {
+      fail(o, CODE_CACHE_BUDGET, moe_model_forward.labelled("bytes", parsed_cache_budget))
+      o.elapsed_ns = time.instant() - started
+      return o
+    }
+    o.expert_cache_key_bytes = cache_key_bytes
+    o.expert_cache_slot_count = cache_slots
+    o.expert_cache_capacity_bytes = cache_slots * cache_key_bytes
   }
   dense_bytes := staged.dense_window_bytes
   residual_bytes := g.n_embd * tokens.count * 4
@@ -4013,11 +4335,17 @@ pub fn execute(
   // hand ggml an **interior** range that starts on a boundary, allocated exactly once and reused by
   // every graph of the prefill and of every step. Section 9 records this as Request 33's third
   // client in one arm, because the plane pays the same compensation.
-  mut weights: buffer := buffer(region_bytes + moe_model_forward.MAX_TENSOR_ALIGNMENT)
+  combined_bytes := region_bytes + o.expert_cache_capacity_bytes
+  if combined_bytes < region_bytes || combined_bytes > model_forward.MAX_WINDOW_BYTES * 2 {
+    fail(o, CODE_CACHE_BUDGET, moe_model_forward.labelled("bytes", combined_bytes))
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  mut weights: buffer := buffer(combined_bytes + moe_model_forward.MAX_TENSOR_ALIGNMENT)
   moe_model_forward.fill_zero(weights, 1)
   dense_pad := moe_model_forward.MAX_TENSOR_ALIGNMENT
     - moe_model_forward.base_mod(weights, moe_model_forward.MAX_TENSOR_ALIGNMENT)
-  moe_model_forward.prime_window(weights, dense_pad - 1 + region_bytes)
+  moe_model_forward.prime_window(weights, dense_pad - 1 + combined_bytes)
   mut claims: buffer := buffer(staged.claim_window_bytes + moe_model_forward.MAX_TENSOR_ALIGNMENT)
   moe_model_forward.fill_zero(claims, 1)
   claim_pad := moe_model_forward.MAX_TENSOR_ALIGNMENT
@@ -4028,13 +4356,15 @@ pub fn execute(
   // Section 3.3: a degraded reservation on this buffer keeps `R5_WINDOW_UNAVAILABLE` — here spelled
   // with the code this arm already raises for it — rather than gaining a second name for one
   // condition on one buffer.
-  if weights_view.len() != dense_pad + region_bytes
+  if weights_view.len() != dense_pad + combined_bytes
     || claims_view.len() != claim_pad + staged.claim_window_bytes {
     fail(o, "R4_WINDOW_UNAVAILABLE", "weights")
     o.elapsed_ns = time.instant() - started
     return o
   }
   window_view := weights_view[dense_pad..dense_pad + region_bytes]
+  cache_view := weights_view[
+    dense_pad + region_bytes..dense_pad + region_bytes + o.expert_cache_capacity_bytes]
   claim_view := claims_view[claim_pad..claim_pad + staged.claim_window_bytes]
 
   embed_members := moe_model_forward.build_embed_members(g, staged.ends, tokens.count)
@@ -4106,7 +4436,8 @@ pub fn execute(
   }
   schedule_decode(
     pak, g, table, staged.plan, staged.ends, staged.win, tokens, embed_members, head_members,
-    window_view, claim_view, layout, resident, device, context_bytes, width, residual_bytes,
+    window_view, claim_view, cache_view, layout, resident, device, context_bytes, width,
+    residual_bytes,
     logits_bytes, readback_bytes, staged.block_align, reference_path, transcript_path, logits_path,
     steps, started, graphs, top, stepped, o)
   o.elapsed_ns = time.instant() - started
@@ -4301,11 +4632,12 @@ pub fn render_window(borrow o: moe_model_forward.Outcome) -> string {
 // the operand's default carries, a caller who wants residency and forgets the operand.
 //
 // `step_dense_pack_bytes` is the capability's **primary metric**: a syscall counter, not a clock,
-// identical across runs, and exactly zero in `dense` mode. `step_expert_pack_bytes` is the
-// co-primary invariant and is `487,587,840 * N` in **both** modes. `step_pack_bytes` is their sum
-// and keeps `docs/specs/r6-resident-weights.md` section 3.5's exact meaning — "pack bytes read by
-// decode steps only" — so one field name means one thing across both decode arms; on this arm it is
-// therefore not zero in `dense` mode, and the claim's metric got its own name instead.
+// identical across runs, and exactly zero in `dense` mode. `step_expert_pack_bytes` is the expert
+// read counter: dense residency preserves the prior `487,587,840 * N` invariant, while cache mode
+// reports only physical misses. `step_pack_bytes` is their sum and keeps
+// `docs/specs/r6-resident-weights.md` section 3.5's exact meaning — "pack bytes read by decode steps
+// only" — so one field name means one thing across both decode arms; on this arm it is therefore
+// not zero in `dense` mode, and the claim's metric got its own name instead.
 //
 // It is written here rather than in `moe_model_forward`'s shared renderers for the reason section
 // 5.2 predicts in bytes: `--moe-layer-forward` and `--moe-model-forward` share that module, and
@@ -4313,7 +4645,14 @@ pub fn render_window(borrow o: moe_model_forward.Outcome) -> string {
 pub fn render_weights(borrow o: moe_model_forward.Outcome) -> string {
   d := builder()
   d.write("{\"mode\":")
-  d.write(moe_model_forward.json_string(if o.resident_mode { "dense" } else { "stream" }))
+  mode := if o.expert_cache_mode {
+    "dense+lru"
+  } else if o.resident_mode {
+    "dense"
+  } else {
+    "stream"
+  }
+  d.write(moe_model_forward.json_string(mode))
   d.write(",\"resident_bytes\":")
   d.write_int(o.resident_bytes)
   d.write(",\"fill_ns\":")
@@ -4334,6 +4673,35 @@ pub fn render_weights(borrow o: moe_model_forward.Outcome) -> string {
   d.write_int(o.resident_wraps_created)
   d.write(",\"resident_wraps_freed\":")
   d.write_int(o.resident_wraps_freed)
+  if o.expert_cache_mode {
+    d.write(",\"expert_cache\":{\"policy\":\"lru\",\"budget_bytes\":")
+    d.write_int(o.expert_cache_budget_bytes)
+    d.write(",\"capacity_bytes\":")
+    d.write_int(o.expert_cache_capacity_bytes)
+    d.write(",\"key_bytes\":")
+    d.write_int(o.expert_cache_key_bytes)
+    d.write(",\"slot_count\":")
+    d.write_int(o.expert_cache_slot_count)
+    d.write(",\"requests\":")
+    d.write_int(o.expert_cache_requests)
+    d.write(",\"hits\":")
+    d.write_int(o.expert_cache_hits)
+    d.write(",\"misses\":")
+    d.write_int(o.expert_cache_misses)
+    d.write(",\"evictions\":")
+    d.write_int(o.expert_cache_evictions)
+    d.write(",\"resident_keys_final\":")
+    d.write_int(o.expert_cache_resident_final)
+    d.write(",\"resident_keys_high_water\":")
+    d.write_int(o.expert_cache_resident_high_water)
+    d.write(",\"bytes_served\":")
+    d.write_int(o.expert_cache_bytes_served)
+    d.write(",\"miss_bytes\":")
+    d.write_int(o.expert_cache_miss_bytes)
+    d.write(",\"bytes_fetched\":")
+    d.write_int(o.expert_cache_bytes_fetched)
+    d.write("}")
+  }
   d.write("}")
   return d.to_string()
 }
@@ -4577,7 +4945,7 @@ fn render_prologue(
   detail_view: str := o.detail
   d := builder()
   d.write("{\"schema_version\":")
-  d.write_int(SCHEMA_VERSION)
+  d.write_int(if o.expert_cache_mode { CACHE_SCHEMA_VERSION } else { SCHEMA_VERSION })
   d.write(",\"kind\":")
   d.write(moe_model_forward.json_string(DOCUMENT_KIND))
   d.write(",\"pack_path\":")

@@ -6582,6 +6582,18 @@ STUB_CASES = [
     # and this arm exists to publish it, so the value is refused explicitly rather than falling
     # through a default.
     ("mdr-resident-weights-refused", mdr(resident="weights"), "R6M_RESIDENT"),
+    ("mdr-cache-mode-missing-budget", mdr(resident="dense+lru"), "R8_CACHE_MODE"),
+    ("mdr-cache-mode-zero", mdr(resident="dense+lru:0"), "R8_CACHE_MODE"),
+    ("mdr-cache-mode-leading-zero", mdr(resident="dense+lru:09216"), "R8_CACHE_MODE"),
+    ("mdr-cache-mode-long-nondigit", mdr(resident="dense+lru:999999999999999999999x"),
+     "R8_CACHE_MODE"),
+    ("mdr-cache-budget-too-small", mdr(resident="dense+lru:3072"), "R8_CACHE_BUDGET"),
+    ("mdr-cache-budget-too-large", mdr(resident="dense+lru:8589934593"), "R8_CACHE_BUDGET"),
+    ("mdr-cache-budget-i64-max", mdr(resident="dense+lru:9223372036854775807"),
+     "R8_CACHE_BUDGET"),
+    ("mdr-cache-budget-beyond-i64", mdr(resident="dense+lru:999999999999999999999999999999"),
+     "R8_CACHE_BUDGET"),
+    ("mdr-cache-stub-unavailable", mdr(resident="dense+lru:9216"), "R5_GGML_UNAVAILABLE"),
     # The two reserved positions. `kv[save]` is checked before `kv[load]`, and both are checked
     # before `RESIDENT` — the load case carries an otherwise-refusable `RESIDENT` so the precedence
     # is asserted rather than described.
@@ -6644,6 +6656,8 @@ ENGINE_CASES = [
      mdr(resident="dense", steps="1", transcript="-", logits="-"), ""),
     ("mdr-resident-dense-steps",
      mdr(resident="dense", transcript="-", logits="-"), ""),
+    ("mdr-cache-lru-steps",
+     mdr(resident="dense+lru:9216", transcript="-", logits="-"), ""),
 ]
 
 # R6-MOE-RESIDENT-DENSE section 5.3's staging-boundary cell, and the dense arm's
@@ -6823,6 +6837,20 @@ def normalize_resident(text):
     return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
 
 
+def normalize_cache_semantics(text):
+    """Remove only the cache transport/accounting fields before comparing with `dense`."""
+    document = json.loads(normalize_resident(text))
+    document["schema_version"] = 2
+    document["residency"].pop("decode_expert_pread_bytes", None)
+    for row in document["steps"]:
+        residency = row["residency"]
+        for field in ("expert_pread_bytes", "expert_read_amplification_ppm", "cache_hits",
+                      "cache_misses", "cache_evictions", "cache_bytes_served",
+                      "cache_miss_bytes", "cache_bytes_fetched"):
+            residency.pop(field, None)
+    return json.dumps(document, separators=(",", ":"), ensure_ascii=False)
+
+
 def build_shim(force):
     environment = dict(os.environ)
     environment.pop("ALIGN_LLM_GGML_INCLUDE", None)
@@ -6863,15 +6891,17 @@ def record(name, argv, expected):
     if (result.returncode == 0) != (document["status"] == "ok"):
         failures.append("%s: status %r but exit %d"
                         % (name, document["status"], result.returncode))
-    if document["kind"] != "R6_MOE_DECODE_STEP" or document["schema_version"] != 2:
+    weights = document.get("weights")
+    cache_document = isinstance(weights, dict) and weights.get("mode") == "dense+lru"
+    expected_schema = 3 if cache_document else 2
+    if document["kind"] != "R6_MOE_DECODE_STEP" or document["schema_version"] != expected_schema:
         failures.append("%s: wrong document identity %r/%r"
                         % (name, document["kind"], document["schema_version"]))
     # R6-MOE-RESIDENT-DENSE section 3.8: the `weights` object is present in **every** document,
     # including one refused before a file is opened, so the mode a run took is never implicit. The
     # hazard it closes is a caller who wanted residency, forgot the operand, and read a document that
     # did not say so.
-    weights = document.get("weights")
-    if not isinstance(weights, dict) or weights.get("mode") not in ("stream", "dense"):
+    if not isinstance(weights, dict) or weights.get("mode") not in ("stream", "dense", "dense+lru"):
         failures.append("%s: the document published no weights mode: %r" % (name, weights))
     elif weights["mode"] == "stream" and (weights["resident_bytes"] != 0
                                           or weights["fill_ns"] != 0
@@ -6884,6 +6914,10 @@ def record(name, argv, expected):
             and weights["step_pack_bytes"] != (weights["step_dense_pack_bytes"]
                                                + weights["step_expert_pack_bytes"]):
         failures.append("%s: step_pack_bytes is not the sum of its two terms: %r" % (name, weights))
+    if cache_document and not isinstance(weights.get("expert_cache"), dict):
+        failures.append("%s: schema 3 published no expert_cache evidence: %r" % (name, weights))
+    if not cache_document and isinstance(weights, dict) and "expert_cache" in weights:
+        failures.append("%s: schema 2 unexpectedly published expert_cache: %r" % (name, weights))
     if not document["abi"]["fp_contract_off"]:
         failures.append("%s: the shim was not built with -ffp-contract=off; the goldens are not "
                         "reproducible across compilers" % name)
@@ -7013,7 +7047,8 @@ for name, argv, expected in ENGINE_CASES:
     # Section 3.11's fail-closed relation, on every step of every successful case.
     for row in document["steps"]:
         residency = row["residency"]
-        if residency["expert_pread_bytes"] < residency["expert_bytes"]:
+        if document["weights"]["mode"] != "dense+lru" \
+                and residency["expert_pread_bytes"] < residency["expert_bytes"]:
             failures.append("%s: step %d read %d bytes for a %d-byte claim"
                             % (name, row["index"], residency["expert_pread_bytes"],
                                residency["expert_bytes"]))
@@ -7392,6 +7427,49 @@ for streamed_case, resident_case in (("md-engine-ok", "mdr-resident-dense-1"),
         failures.append("oracle D (%s vs %s): %s"
                         % (streamed_case, resident_case, describe_difference(left, right)))
 
+# R8-PARTIAL-LRU-CACHE: the cache changes transport and accounting only. The full three-step
+# semantic document agrees with `dense` after the exact cache fields are removed.
+cache_case = json.loads(produced["mdr-cache-lru-steps"])
+cache_weights = cache_case["weights"]
+cache = cache_weights["expert_cache"]
+if normalize_cache_semantics(produced["mdr-resident-dense-steps"]) \
+        != normalize_cache_semantics(produced["mdr-cache-lru-steps"]):
+    failures.append("cache oracle D (dense vs dense+lru): %s"
+                    % describe_difference(
+                        normalize_cache_semantics(produced["mdr-resident-dense-steps"]),
+                        normalize_cache_semantics(produced["mdr-cache-lru-steps"])))
+if cache_case["schema_version"] != 3 or cache_weights["mode"] != "dense+lru":
+    failures.append("cache document identity is not schema 3/dense+lru: %r" % cache_weights)
+if cache["budget_bytes"] != 9216 or cache["capacity_bytes"] != 9216 \
+        or cache["key_bytes"] != 1536 or cache["slot_count"] != 6:
+    failures.append("cache geometry/accounting is not the fixture's 6-key budget: %r" % cache)
+if cache["requests"] != cache["hits"] + cache["misses"] \
+        or cache["requests"] != 27 or cache["hits"] <= 0 or cache["evictions"] <= 0 \
+        or cache["resident_keys_final"] != 6 or cache["resident_keys_high_water"] != 6:
+    failures.append("cache request/LRU counters do not prove hit plus eviction paths: %r" % cache)
+if cache["bytes_served"] != cache["requests"] * cache["key_bytes"] \
+        or cache["miss_bytes"] != cache["misses"] * cache["key_bytes"] \
+        or cache["bytes_fetched"] != cache["miss_bytes"]:
+    failures.append("cache byte counters do not reconcile on the unamplified fixture: %r" % cache)
+step_cache = [row["residency"] for row in cache_case["steps"]]
+for row in step_cache:
+    expected_amplification = ((row["expert_pread_bytes"] - row["cache_miss_bytes"])
+                              * 1000000 // row["cache_miss_bytes"]
+                              if row["cache_miss_bytes"] else 0)
+    if row["expert_read_amplification_ppm"] != expected_amplification:
+        failures.append("cache amplification does not use exact logical miss bytes: %r" % row)
+for field, total in (("cache_hits", cache["hits"]), ("cache_misses", cache["misses"]),
+                     ("cache_evictions", cache["evictions"]),
+                     ("cache_bytes_served", cache["bytes_served"]),
+                     ("cache_miss_bytes", cache["miss_bytes"]),
+                     ("cache_bytes_fetched", cache["bytes_fetched"])):
+    # Aggregate cache evidence also includes prefill, so each decode-only sum is bounded by it.
+    if sum(row[field] for row in step_cache) > total:
+        failures.append("cache step %s exceeds the run aggregate: %r" % (field, cache))
+if cache_weights["step_expert_pack_bytes"] >= \
+        json.loads(produced["mdr-resident-dense-steps"])["weights"]["step_expert_pack_bytes"]:
+    failures.append("the cache did not reduce decode expert pack bytes: %r" % cache_weights)
+
 # The staging boundary, from the legal side. A `dense` prefill of exactly `MAX_PREFILL_TOKENS` ids
 # stages slot 2047 — the highest index `stage_embed_row` can be asked for — and the streamed twin makes
 # the case an assertion about the **bytes** that slot carries rather than only about the run not
@@ -7572,8 +7650,9 @@ INHERITED_CODES = {
     "R5_GGML_INIT", "R5_ALLOC", "R5_COMPUTE", "R5_SLOT", "R5D_EXPERT_ID", "R5E_CARRY",
     "R5_RESIDUAL",
 }
+DECLARED_R8_CODES = {"R8_CACHE_MODE", "R8_CACHE_BUDGET"}
 reached = codes - {""}
-expected_reached = (DECLARED_R6M_CODES - UNREACHED_R6M_CODES) | INHERITED_CODES
+expected_reached = (DECLARED_R6M_CODES - UNREACHED_R6M_CODES) | DECLARED_R8_CODES | INHERITED_CODES
 if reached != expected_reached:
     if expected_reached - reached:
         failures.append("codes never reached: %s" % ", ".join(sorted(expected_reached - reached)))
@@ -7610,7 +7689,8 @@ if failures:
     raise SystemExit(1)
 
 print("moe decode step smoke: %d no-document cases (R6M_ARITY, R6M_PATH), %d documented cases, "
-      "%d of the %d declared R6M_* codes reached plus %d inherited codes, gate G against the "
+      "%d of the %d declared R6M_* codes and both R8 cache codes reached plus %d inherited codes, "
+      "gate G against the "
       "reference loop's own ids, oracle R MATCH element-wise complete at %d of %d ids over three "
       "steps, oracle B IDENTICAL over %d cumulative bytes, oracle T PASS against transcript graphs "
       "2..4, and arm-r5e/r6-unchanged plus the dense arm's OLMoE refusal PASS"
