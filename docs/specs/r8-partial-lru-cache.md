@@ -1,6 +1,6 @@
 # R8 partial LRU expert cache
 
-Status: implementation and measurement complete; review findings repaired; publication pending
+Status: merged as PR #168 on 2026-09-02
 
 ## 1. Decision and boundary
 

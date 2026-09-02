@@ -3,14 +3,66 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-PARTIAL-LRU-CACHE (2026-09-02)
+## Active: R8-OLMOE-TEXT (2026-09-03)
+
+Branch `agent/r8-olmoe-text`, based on pulled merged `main`
+`4d9f9c823dc6596f87c7bb6db1b16e55d9653637` (R8-PARTIAL-LRU-CACHE PR #168). The sibling Align
+checkout was fast-forwarded from the prior pin
+`b6f95a261e1434d705d7de006484ffa66b1542f0` to merged `origin/main`
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4` (Align PR #933, `pkg.kv` v1). Commit `5c9ac3c`
+advances `.align-revision` and records compatibility evidence as an internal checkpoint in this
+consumer branch; it will not be published as a pin-only pull request.
+
+The capability extends existing tokenize, detokenize, and prompt preparation to the exact
+`gpt2`/`olmo` profile and 508-byte chat template carried by the local OLMoE reference model. Its
+authoritative public-contract ledger and closure matrix are
+`docs/specs/r8-olmoe-text.md`. It deliberately stops before provider dispatch, MoE generation, EOG
+policy, cache configuration, and any latency claim.
+
+Implementation now adds profile-specific identity, the exact OLMo scanner, the valid-UTF-8 byte
+alphabet boundary, model-carried BOS rendering, and independent synthetic and real parity owners.
+
+**Latest durable verification.** The managed release compiler/runtime materialized in 1m03s with
+the host's explicit LLVM 22 path. `scripts/align-toolchain verify` returned the exact new identity,
+and `make check` passed all 40 units per-unit in about 1m58s. The repaired focused synthetic owner
+passes in about one second over 8 lexical cases in both modes, 6 prompt cases, 7 malformed models,
+and 3 byte-boundary models. Real parity against the exact OLMoE model and pinned llama.cpp
+build 10566 passes in 23.6 seconds: 13 lexical cases in both modes, 6 prompts, 805 bytes, and 332
+compared ids. Existing Qwen tokenizer and prompt owners pass after the profile repair in about four
+seconds; the real Qwen identity remains `b56e4ff2...9fe2`. No aggregate, installed/native profile,
+benchmark,
+runtime matrix, or inference ran. The one real Qwen non-regression qualification also passed all
+299 cases and 69,485 compared ids in 4m16s; it will not be repeated absent a relevant repair.
+
+The comprehensive Codex CLI review covered head
+`897d8b91e9dde33394b9f7ba37451d77bc5ab63c` against base tip and merge base
+`4d9f9c823dc6596f87c7bb6db1b16e55d9653637`, using gpt-5.6-sol at high effort over the full diff.
+It found three accepted P2 defects: omitted byte positions also admitted present non-normal entries,
+crossed profiles could reach OLMo-only BOS validation before profile rejection, and the focused
+owner could execute a stale ignored `main`. The consolidated repair requires a normal token for
+every present byte spelling, selects and validates the tokenizer profile before OLMo-only metadata,
+adds the missing malformed-profile regressions, and makes the publication owner rebuild `main`
+from the exact source through the repository wrapper before testing it.
+The repair does not expand the public behavior or capability scope, so another comprehensive review
+is not required.
+
+**Next actions.** (1) Commit the consolidated repair and final evidence. (2) Run publication
+preflight. (3) Publish, merge, and pull current `main`.
+
+**Blocker.** None.
+
+**Intentional uncommitted files.** The consolidated review repair until committed. Local
+configuration remains outside the change.
+
+## Merged checkpoint: R8-PARTIAL-LRU-CACHE (PR #168, 2026-09-02)
 
 Branch `agent/r8-partial-lru-cache`, based on pulled merged `main`
-`d3b04b08d44bafa1afa28438e2229333e14810ec` (R8-RESET-CACHE-DECISION PR #167). The sibling Align
-checkout was fast-forwarded after the merge and now exactly matches `.align-revision` at
-`b6f95a261e1434d705d7de006484ffa66b1542f0`; no pin adoption is needed.
+`d3b04b08d44bafa1afa28438e2229333e14810ec` (R8-RESET-CACHE-DECISION PR #167). PR #168 passed its
+required hosted check in 12m48s; both unaffected installed profiles classified and exited in 8s
+and 10s. It merged as `4d9f9c823dc6596f87c7bb6db1b16e55d9653637`, and `main` was pulled with no
+additional align-llm update.
 
-The active capability implements the measured 975,175,680-byte LRU policy in the existing real
+The capability implements the measured 975,175,680-byte LRU policy in the existing real
 `--moe-decode-step` consumer. Its authoritative contract, public CLI/schema ledger, closure matrix,
 byte shipping floor, memory bound, and approximately-15-minute focused qualification ceiling are
 in `docs/specs/r8-partial-lru-cache.md`. It combines dense residency with an invocation-local expert
@@ -46,14 +98,10 @@ model execution: dense read 7,801,405,440 decode expert-pack bytes, cache read 2
 semantics. Internal elapsed 4.407 seconds dense and 4.435 seconds cache is diagnostic only. No broad
 aggregate, installed profile, stress, benchmark, or unrelated platform suite ran.
 
-**Next actions.** (1) Run exact-head publication preflight with `layer-forward-smoke` as owner.
-(2) Publish and merge after the required hosted check passes. (3) Pull the latest `main` before the
-next roadmap capability.
-
-**Blocker.** None.
-
-**Intentional uncommitted files.** None. Local configuration and reusable real-model artifacts
-remain outside the change.
+Exact-head hosted publication preflight passed in about 6m30s. GitHub's required hosted check
+passed in 12m48s; the two unaffected installed jobs performed only classification and evidence
+binding. No broad `make ci`, installed profile execution, stress, benchmark, or unrelated platform
+suite ran.
 
 ## Merged checkpoint: R8-RESET-CACHE-DECISION (PR #167, 2026-09-02)
 

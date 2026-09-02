@@ -1292,7 +1292,7 @@ The current forward delivery order is:
     The next partial-cache capability is eligible with LRU at 975,175,680 bytes.
 
 47. **R8-PARTIAL-LRU-CACHE — execute the selected bounded expert cache in the real OLMoE decode
-    consumer. Implementation candidate.**
+    consumer. Merged as PR #168 (`4d9f9c8`) on 2026-09-02.**
     [`r8-partial-lru-cache.md`](r8-partial-lru-cache.md) is the authoritative implementation
     contract. Extend the existing `dense` residency boundary with an invocation-local
     `dense+lru:BUDGET_BYTES` mode, share its deterministic LRU state from prefill through all decode
@@ -1301,9 +1301,26 @@ The current forward delivery order is:
     ppm fewer decode expert pack bytes than the paired `dense` leg on one fixed 16-step task, with
     exact semantic equality; elapsed time is diagnostic only. The focused real qualification is
     bounded at approximately 15 minutes and does not repeat the 40-prompt capture or broad OLMoE
-    matrix. The candidate removes 625,585 ppm (7,801,405,440 to 2,920,955,904 bytes) on that task,
-    with 1,279 hits, 1,112 misses, 873 evictions, and exact semantic equality in 9.75 seconds of
-    paired model execution. This capability does not claim provider-level time to a passing patch.
+    matrix. The merged capability removes 625,585 ppm (7,801,405,440 to 2,920,955,904 bytes) on
+    that task, with 1,279 hits, 1,112 misses, 873 evictions, and exact semantic equality in 9.75
+    seconds of paired model execution. This capability does not claim provider-level time to a
+    passing patch.
+
+48. **R8-OLMOE-TEXT — OLMoE text/token and prompt preparation. Implementation candidate
+    owner-verified on 2026-09-02.**
+    [`r8-olmoe-text.md`](r8-olmoe-text.md) is the authoritative implementation contract. Extend
+    the existing tokenizer and prompt consumers to the reference model's exact `gpt2`/`olmo`
+    profile and 508-byte chat template, while preserving Qwen behavior and identity byte-for-byte.
+    This is the smallest independently useful prerequisite for an OLMoE provider: it produces the
+    exact token ids already accepted by the MoE decoder, but does not yet add provider dispatch,
+    generation, EOG policy, cache configuration, or a performance claim. The Align `8cefc803` pin
+    adoption is an internal checkpoint in this consumer branch. Acceptance is one focused
+    synthetic owner, Qwen regression ownership, and focused real parity against pinned llama.cpp;
+    unrelated aggregates, installed profiles, benchmarks, and the OLMoE runtime matrix are not
+    selected by this boundary. The candidate's synthetic owner passes in about one second, and its
+    real 13-case/two-mode tokenizer plus six-prompt parity passes in 23.6 seconds with 332 compared
+    ids. Existing Qwen tokenizer and prompt owners pass, and the real Qwen tokenizer identity is
+    unchanged.
 
 ### Status (2026-08-28)
 
