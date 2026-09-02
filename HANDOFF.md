@@ -124,10 +124,23 @@ not an absolute number. The authoritative wording now retains the current 15-min
 timeouts while allowing a narrowly longer distinct owner when measurement justifies its value; it
 does not allow a timeout increase to substitute for removing duplicate or unowned work.
 
-**Next actions.** (1) Verify and review the clarified operating-target wording, then run exact-head
-fresh-image publication preflight. (2) Publish with all review envelopes, inspect all three GitHub
-checks for distinct value and duration, merge, pull current `main`, and continue the next eligible
-capability.
+The post-clarification comprehensive review covered head
+`a8aecdbd752abed04c5e7b7ffea06301988c85f4` against base tip and merge base
+`29b54757c837fdfc610e413acd297d253644e292`, using Codex gpt-5.6-sol at high effort over the full
+diff. It found two accepted ownership defects. First, the PID-targeted signal helper signaled and
+escalated only the direct process, so a descendant retaining captured pipes could block cleanup.
+Second, the focused inventory overstated real generated-output ELF validation: its native unit owner
+feeds `/bin/true` through the production parser, while strict validation of the real published
+`main` occurs only inside the aggregate. Repair `15edbd411291017d3a34f93e8a6ba6ff12c1188b`
+starts each helper child in a new session, relays and escalates to that process group, and adds a
+resistant pipe-owning descendant regression. It also separates focused native parser coverage from
+the explicit aggregate's new `fresh-v2-published-elf-smoke` inventory row. The targeted signal and
+qualification owners, output-summary suite, qualification inventory, and `format-check` pass. The
+repair delta changes no product or aggregate execution behavior; no review finding remains open.
+
+**Next actions.** (1) Run exact-head fresh-image publication preflight. (2) Publish with all review
+envelopes, inspect all three GitHub checks for distinct value and duration, merge, pull current
+`main`, and continue the next eligible capability.
 
 **Blocker.** None.
 
