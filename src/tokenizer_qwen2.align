@@ -19,9 +19,11 @@ MAX_DETAIL_BYTES := 256
 MAX_CHAT_TEMPLATE_BYTES := 4096
 MAX_PROMPT_BYTES := 1048576
 PROMPT_FIXED_BYTES := 80
+OLMO_PROMPT_FIXED_BYTES := 36
 I64_MAX := 9223372036854775807
 
 SUPPORTED_CHAT_TEMPLATE_ID := "d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4"
+SUPPORTED_OLMO_CHAT_TEMPLATE_ID := "fe689ffbd6a4e2d0532d7480696b065b10e0e1eff3f9b9fc4bea415761e4bf4a"
 
 CLASSIFIER_ID := "align-regex-v1;regex=1.13.1+f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d;regex-automata=0.4.16+8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad;regex-syntax=0.8.11+d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
@@ -83,6 +85,7 @@ pub GenerationPromptResult {
 }
 
 Tokenizer {
+  olmo: bool,
   tokens: array<string>,
   types: array<i64>,
   merges: array<string>,
@@ -153,6 +156,7 @@ fn filled_i64(count: i64, value: i64) -> array<i64> {
 }
 
 fn empty_tokenizer() -> Tokenizer = Tokenizer {
+  olmo: false,
   tokens: empty_string(),
   types: empty_i64(),
   merges: empty_string(),
@@ -489,14 +493,21 @@ fn effective_type(borrow t: Tokenizer, id: i64) -> i64 {
   return t.types[id]
 }
 
-fn identity(borrow tokens: array<string>, borrow types: array<i64>, borrow merges: array<string>) -> string {
+fn identity(
+  borrow tokens: array<string>, borrow types: array<i64>, borrow merges: array<string>, olmo: bool,
+) -> string {
   mut preimage := buffer(0)
-  preimage.append("R7QW2TOK".bytes())
+  if olmo { preimage.append("R8OLMOTK".bytes()) } else { preimage.append("R7QW2TOK".bytes()) }
   preimage.put_u32_le(1)
   preimage.put_u64_le(4)
   preimage.append("gpt2".bytes())
-  preimage.put_u64_le(5)
-  preimage.append("qwen2".bytes())
+  if olmo {
+    preimage.put_u64_le(4)
+    preimage.append("olmo".bytes())
+  } else {
+    preimage.put_u64_le(5)
+    preimage.append("qwen2".bytes())
+  }
   preimage.put_u64_le(CLASSIFIER_ID.len() as u64)
   preimage.append(CLASSIFIER_ID.bytes())
   preimage.put_u64_le(tokens.len() as u64)
@@ -549,7 +560,8 @@ fn load_snapshot(snapshot: gguf.GgufSnapshot) -> Result<LoadResult, Error> {
   }
   model_view: str := model
   pre_view: str := pre
-  if model_view != "gpt2" || pre_view != "qwen2" {
+  olmo := model_view == "gpt2" && pre_view == "olmo"
+  if model_view != "gpt2" || (pre_view != "qwen2" && !olmo) {
     detail := builder()
     detail.write(model_view)
     detail.write("/")
@@ -853,9 +865,15 @@ fn load_snapshot(snapshot: gguf.GgufSnapshot) -> Result<LoadResult, Error> {
     spelling_view: str := spelling
     id := token_lookup(tokens, token_heads, token_next, spelling_view)
     if id < 0 || types[id] != 1 {
-      return Ok(failed_load("R7_BYTE_ALPHABET", indexed_detail("byte", at), token_count, merge_count))
+      // The OLMo vocabulary omits exactly the byte-alphabet scalars for UTF-8 bytes C0, C1, and
+      // F5..FF. No valid `str` can contain those bytes, so they are not reachable by encode or
+      // decode; every byte which can occur in valid UTF-8 remains mandatory.
+      if !olmo || (at != 192 && at != 193 && at < 245) {
+        return Ok(failed_load("R7_BYTE_ALPHABET", indexed_detail("byte", at), token_count, merge_count))
+      }
+    } else {
+      byte_tokens[at] = id
     }
-    byte_tokens[at] = id
     at = at + 1
   }
 
@@ -891,8 +909,9 @@ fn load_snapshot(snapshot: gguf.GgufSnapshot) -> Result<LoadResult, Error> {
     at = at + 1
   }
 
-  tokenizer_id := identity(tokens, types, merges)
+  tokenizer_id := identity(tokens, types, merges, olmo)
   tokenizer := Tokenizer {
+    olmo: olmo,
     tokens: tokens,
     types: types,
     merges: merges,
@@ -1273,6 +1292,124 @@ fn qwen_pieces(
   return pieces.build()
 }
 
+fn olmo_contraction_end(raw: str, borrow starts: array<i64>, borrow ends: array<i64>, at: i64) -> i64 {
+  if raw[starts[at]..ends[at]] != "'" || at + 1 >= starts.len() { return -1 }
+  one := raw[starts[at + 1]..ends[at + 1]]
+  if one == "s" || one == "t" || one == "m" || one == "d" { return at + 2 }
+  if at + 2 >= starts.len() { return -1 }
+  two := raw[starts[at + 2]..ends[at + 2]]
+  if (one == "r" && two == "e") || (one == "v" && two == "e")
+    || (one == "l" && two == "l") { return at + 3 }
+  return -1
+}
+
+fn olmo_pieces(
+  raw: str,
+  borrow letter: regex,
+  borrow number: regex,
+  borrow space: regex,
+) -> array<string> {
+  mut starts: array_builder<i64> := array_builder()
+  mut ends: array_builder<i64> := array_builder()
+  mut classes: array_builder<i64> := array_builder()
+  mut byte_at := 0
+  loop {
+    if byte_at >= raw.len() { break }
+    width := scalar_width(raw.bytes().u8(byte_at) as i64)
+    end := byte_at + width
+    scalar := raw[byte_at..end]
+    class := if letter.is_match(scalar) { 1 } else if number.is_match(scalar) {
+      2
+    } else if space.is_match(scalar) { 3 } else { 0 }
+    starts.push(byte_at)
+    ends.push(end)
+    classes.push(class)
+    byte_at = end
+  }
+  scalar_starts := starts.build()
+  scalar_ends := ends.build()
+  scalar_classes := classes.build()
+  mut pieces: array_builder<string> := array_builder()
+  mut at := 0
+  loop {
+    if at >= scalar_starts.len() { break }
+    start := at
+    mut handled := false
+    contraction := olmo_contraction_end(raw, scalar_starts, scalar_ends, at)
+    if contraction > at {
+      pieces.push(raw[scalar_starts[start]..scalar_ends[contraction - 1]].clone())
+      at = contraction
+      handled = true
+    }
+
+    if !handled {
+      current := raw[scalar_starts[at]..scalar_ends[at]]
+      letter_at := if current == " " && at + 1 < scalar_starts.len()
+        && scalar_classes[at + 1] == 1 { at + 1 } else { at }
+      if scalar_classes[letter_at] == 1 {
+        mut end_at := letter_at + 1
+        loop {
+          if end_at >= scalar_starts.len() || scalar_classes[end_at] != 1 { break }
+          end_at = end_at + 1
+        }
+        pieces.push(raw[scalar_starts[start]..scalar_ends[end_at - 1]].clone())
+        at = end_at
+        handled = true
+      }
+    }
+
+    if !handled {
+      current := raw[scalar_starts[at]..scalar_ends[at]]
+      number_at := if current == " " && at + 1 < scalar_starts.len()
+        && scalar_classes[at + 1] == 2 { at + 1 } else { at }
+      if scalar_classes[number_at] == 2 {
+        mut end_at := number_at + 1
+        loop {
+          if end_at >= scalar_starts.len() || scalar_classes[end_at] != 2 { break }
+          end_at = end_at + 1
+        }
+        pieces.push(raw[scalar_starts[start]..scalar_ends[end_at - 1]].clone())
+        at = end_at
+        handled = true
+      }
+    }
+
+    if !handled {
+      current := raw[scalar_starts[at]..scalar_ends[at]]
+      punct_at := if current == " " && at + 1 < scalar_starts.len()
+        && scalar_classes[at + 1] == 0 { at + 1 } else { at }
+      if scalar_classes[punct_at] == 0 {
+        mut end_at := punct_at + 1
+        loop {
+          if end_at >= scalar_starts.len() || scalar_classes[end_at] != 0 { break }
+          end_at = end_at + 1
+        }
+        pieces.push(raw[scalar_starts[start]..scalar_ends[end_at - 1]].clone())
+        at = end_at
+        handled = true
+      }
+    }
+
+    if !handled && scalar_classes[at] == 3 {
+      mut run_end := at + 1
+      loop {
+        if run_end >= scalar_starts.len() || scalar_classes[run_end] != 3 { break }
+        run_end = run_end + 1
+      }
+      emit_end := if run_end < scalar_starts.len() && run_end - at > 1 { run_end - 1 } else { run_end }
+      pieces.push(raw[scalar_starts[at]..scalar_ends[emit_end - 1]].clone())
+      at = emit_end
+      handled = true
+    }
+
+    if !handled {
+      pieces.push(raw[scalar_starts[at]..scalar_ends[at]].clone())
+      at = at + 1
+    }
+  }
+  return pieces.build()
+}
+
 fn encode_raw(
   borrow t: Tokenizer,
   raw: str,
@@ -1280,7 +1417,11 @@ fn encode_raw(
   borrow number: regex,
   borrow space: regex,
 ) -> array<i64> {
-  pieces := qwen_pieces(raw, letter, number, space)
+  pieces := if t.olmo {
+    olmo_pieces(raw, letter, number, space)
+  } else {
+    qwen_pieces(raw, letter, number, space)
+  }
   mut output: array_builder<i64> := array_builder()
   mut at := 0
   loop {
@@ -1636,15 +1777,24 @@ fn prompt_size_detail(system_bytes: i64, user_bytes: i64, attempted: i64) -> str
   return detail.to_string()
 }
 
-fn render_prompt(system: str, user: str) -> string {
+fn render_prompt(system: str, user: str, olmo: bool, bos_token: str) -> string {
   output := builder()
-  output.write("<|im_start|>system\n")
-  output.write(system)
-  output.write("<|im_end|>\n")
-  output.write("<|im_start|>user\n")
-  output.write(user)
-  output.write("<|im_end|>\n")
-  output.write("<|im_start|>assistant\n")
+  if olmo {
+    output.write(bos_token)
+    output.write("<|system|>\n")
+    output.write(system)
+    output.write("\n<|user|>\n")
+    output.write(user)
+    output.write("\n<|assistant|>\n")
+  } else {
+    output.write("<|im_start|>system\n")
+    output.write(system)
+    output.write("<|im_end|>\n")
+    output.write("<|im_start|>user\n")
+    output.write(user)
+    output.write("<|im_end|>\n")
+    output.write("<|im_start|>assistant\n")
+  }
   return output.to_string()
 }
 
@@ -1683,7 +1833,8 @@ fn prepare_snapshot(
   }
   template_id := template_id_of(chat_source)
   template_id_view: str := template_id
-  if template_id_view != SUPPORTED_CHAT_TEMPLATE_ID {
+  template_olmo := template_id_view == SUPPORTED_OLMO_CHAT_TEMPLATE_ID
+  if template_id_view != SUPPORTED_CHAT_TEMPLATE_ID && !template_olmo {
     detail := builder()
     detail.write("sha256[")
     detail.write(template_id_view)
@@ -1695,14 +1846,26 @@ fn prepare_snapshot(
         system_bytes, user_bytes, 0))
   }
 
+  mut bos_id := -1
+  if template_olmo {
+    bos_id = match gguf.kv_int(snapshot.table, "tokenizer.ggml.bos_token_id") {
+      Some(value) => value,
+      None => {
+        return Ok(failed_generation(
+            "R7_CHAT_TEMPLATE_METADATA", "tokenizer.ggml.bos_token_id", template_id_view,
+            "", -1, -1, system_bytes, user_bytes, 0))
+      },
+    }
+  }
+
   mut attempted := -1
-  if system_bytes <= I64_MAX - user_bytes {
+  if !template_olmo && system_bytes <= I64_MAX - user_bytes {
     combined := system_bytes + user_bytes
     if combined <= I64_MAX - PROMPT_FIXED_BYTES {
       attempted = combined + PROMPT_FIXED_BYTES
     }
   }
-  if attempted < 0 || attempted > MAX_PROMPT_BYTES {
+  if !template_olmo && (attempted < 0 || attempted > MAX_PROMPT_BYTES) {
     detail := prompt_size_detail(system_bytes, user_bytes, attempted)
     detail_view: str := detail
     return Ok(failed_generation(
@@ -1712,13 +1875,48 @@ fn prepare_snapshot(
 
   metadata := collect_eog_metadata(snapshot.table)
   loaded := load_snapshot(snapshot)?
+  pre_load_prompt_bytes := if template_olmo { 0 } else { attempted }
   if !loaded.ok {
     return Ok(failed_generation(
         loaded.code, loaded.detail, template_id_view, "", loaded.vocab_size, loaded.merge_count,
-        system_bytes, user_bytes, attempted))
+        system_bytes, user_bytes, pre_load_prompt_bytes))
   }
 
-  prompt := render_prompt(system, user)
+  if loaded.tokenizer.olmo != template_olmo {
+    tokenizer_id: str := loaded.tokenizer.tokenizer_id
+    return Ok(failed_generation(
+        "R7_UNSUPPORTED_CHAT_TEMPLATE", "tokenizer_profile", template_id_view, tokenizer_id,
+        loaded.vocab_size, loaded.merge_count, system_bytes, user_bytes, pre_load_prompt_bytes))
+  }
+  mut bos_token := "".clone()
+  if template_olmo {
+    if bos_id < 0 || bos_id >= loaded.vocab_size || effective_type(loaded.tokenizer, bos_id) != 3 {
+      tokenizer_id: str := loaded.tokenizer.tokenizer_id
+      return Ok(failed_generation(
+          "R7_UNSUPPORTED_CHAT_TEMPLATE", indexed_detail("bos_token_id", bos_id),
+          template_id_view, tokenizer_id, loaded.vocab_size, loaded.merge_count,
+          system_bytes, user_bytes, 0))
+    }
+    bos_token = loaded.tokenizer.tokens[bos_id].clone()
+    if system_bytes <= I64_MAX - user_bytes {
+      combined := system_bytes + user_bytes
+      if OLMO_PROMPT_FIXED_BYTES <= I64_MAX - bos_token.len()
+        && combined <= I64_MAX - (OLMO_PROMPT_FIXED_BYTES + bos_token.len()) {
+        attempted = combined + OLMO_PROMPT_FIXED_BYTES + bos_token.len()
+      }
+    }
+    if attempted < 0 || attempted > MAX_PROMPT_BYTES {
+      detail := prompt_size_detail(system_bytes, user_bytes, attempted)
+      detail_view: str := detail
+      tokenizer_id: str := loaded.tokenizer.tokenizer_id
+      return Ok(failed_generation(
+          "R7_PROMPT_SIZE", detail_view, template_id_view, tokenizer_id,
+          loaded.vocab_size, loaded.merge_count, system_bytes, user_bytes, 0))
+    }
+  }
+
+  bos_token_view: str := bos_token
+  prompt := render_prompt(system, user, template_olmo, bos_token_view)
   if prompt.len() != attempted {
     detail := indexed_detail("bytes", prompt.len())
     detail_view: str := detail

@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""R8-OLMOE-TEXT focused synthetic API and CLI owner."""
+
+from __future__ import annotations
+
+import atexit
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+TOKENIZER_HARNESS = ROOT / "tokenizer_api_smoke"
+PROMPT_HARNESS = ROOT / "prompt_api_smoke"
+atexit.register(lambda: TOKENIZER_HARNESS.unlink(missing_ok=True))
+atexit.register(lambda: PROMPT_HARNESS.unlink(missing_ok=True))
+
+import olmoe_text_fixture as fixture  # noqa: E402
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"olmoe text smoke: FAIL {message}")
+
+
+def run(arguments: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(arguments, cwd=ROOT, capture_output=True, check=False, timeout=timeout)
+
+
+def expect_success(result: subprocess.CompletedProcess[bytes], expected: bytes, label: str) -> None:
+    if result.returncode != 0 or result.stdout != expected:
+        fail(
+            f"{label}: exit={result.returncode} stdout={result.stdout!r} "
+            f"stderr={result.stderr.decode('utf-8', 'replace')!r}, expected={expected!r}"
+        )
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-text-") as raw_temp:
+        work = Path(raw_temp)
+        manifest = fixture.build(work)
+        model = work / str(manifest["model"])
+
+        for case in manifest["cases"]:
+            text = str(case["text"])
+            text_path = work / f"{case['name']}.txt"
+            text_path.write_text(text, encoding="utf-8")
+            for mode, key in (("parse-control", "parse_ids"), ("literal-control", "literal_ids")):
+                ids = case[key]
+                expected = (json.dumps(ids, separators=(",", ":")) + "\n").encode("ascii")
+                encoded = run([str(ROOT / "main"), "--tokenize", str(model), str(text_path), mode])
+                expect_success(encoded, expected, f"{case['name']}-{mode}")
+                ids_path = work / f"{case['name']}-{mode}.json"
+                ids_path.write_bytes(expected)
+                decoded = run(
+                    [str(ROOT / "main"), "--detokenize", str(model), str(ids_path), "render-control"]
+                )
+                expect_success(decoded, text.encode("utf-8"), f"{case['name']}-{mode}-decode")
+
+        for case in manifest["prompt_cases"]:
+            system_path = work / f"{case['name']}-system.txt"
+            user_path = work / f"{case['name']}-user.txt"
+            system_path.write_text(str(case["system"]), encoding="utf-8")
+            user_path.write_text(str(case["user"]), encoding="utf-8")
+            expected = (json.dumps(case["token_ids"], separators=(",", ":")) + "\n").encode("ascii")
+            prepared = run(
+                [str(ROOT / "main"), "--prepare-prompt", str(model), str(system_path), str(user_path)]
+            )
+            expect_success(prepared, expected, f"prompt-{case['name']}")
+
+        for source, output in (
+            ("src/tokenizer_api_smoke.align", TOKENIZER_HARNESS),
+            ("src/prompt_api_smoke.align", PROMPT_HARNESS),
+        ):
+            built = run([str(ROOT / "scripts/alignc"), "build", source], timeout=120)
+            if built.returncode != 0 or not output.is_file():
+                fail(f"could not build {source}: {built.stderr.decode('utf-8', 'replace')[-1000:]}")
+
+        identities = run(
+            [
+                str(TOKENIZER_HARNESS),
+                str(model),
+                str(work / str(manifest["qwen_model"])),
+                str(work / str(manifest["omitted_invalid_byte_model"])),
+                str(work / str(manifest["missing_reachable_byte_model"])),
+            ]
+        )
+        identity_lines = identities.stdout.decode("utf-8", "strict").splitlines()
+        if identities.returncode != 0 or len(identity_lines) != 4:
+            fail(f"tokenizer API publication failed: {identity_lines!r}")
+        parsed = [line.split(":") for line in identity_lines[:3]]
+        if any(len(row) != 5 or row[0] != "OK" or len(row[4]) != 64 for row in parsed):
+            fail(f"tokenizer API publication malformed: {parsed!r}")
+        if parsed[0][1:3] != [str(manifest["vocab_size"]), str(manifest["merge_count"])]:
+            fail(f"OLMo tokenizer counts drifted: {parsed[0]!r}")
+        if parsed[0][4] == parsed[1][4]:
+            fail("OLMo and Qwen tokenizer identities collided")
+        if identity_lines[3] != "R7_BYTE_ALPHABET":
+            fail(f"reachable-byte omission was admitted: {identity_lines[3]!r}")
+
+        failure_paths = [work / str(row["model"]) for row in manifest["failures"]]
+        publications = run([str(PROMPT_HARNESS), str(model), *map(str, failure_paths)])
+        lines = publications.stdout.decode("utf-8", "strict").splitlines()
+        if publications.returncode != 0 or len(lines) != 1 + len(failure_paths):
+            fail(f"prompt API publication failed: {lines!r}")
+        success = lines[0].split(":")
+        if (
+            len(success) != 9
+            or success[0] != "OK"
+            or success[1] != manifest["template_id"]
+            or len(success[2]) != 64
+            or success[3:5] != [str(manifest["vocab_size"]), str(manifest["merge_count"])]
+            or success[5:8] != ["3", "4", "48"]
+            or int(success[8]) <= 0
+        ):
+            fail(f"prompt API success publication drifted: {success!r}")
+        for line, expected in zip(lines[1:], manifest["failures"], strict=True):
+            fields = line.split(":")
+            if len(fields) != 11 or fields[:3] != ["ERR", expected["code"], expected["detail"]]:
+                fail(f"prompt API failure publication drifted: {fields!r}, expected={expected!r}")
+            if expected["loaded"]:
+                if len(fields[4]) != 64 or fields[5:7] != [
+                    str(manifest["vocab_size"]),
+                    str(manifest["merge_count"]),
+                ]:
+                    fail(f"loaded failure lost tokenizer publication: {fields!r}")
+            elif fields[4:7] != ["", "-1", "-1"]:
+                fail(f"pre-load failure published tokenizer state: {fields!r}")
+
+        empty = work / "empty.txt"
+        empty.write_bytes(b"")
+        for row in manifest["failures"]:
+            failed = run(
+                [
+                    str(ROOT / "main"),
+                    "--prepare-prompt",
+                    str(work / str(row["model"])),
+                    str(empty),
+                    str(empty),
+                ]
+            )
+            if failed.returncode == 0 or failed.stdout:
+                fail(f"CLI failure isolation drifted for {row['model']}: {failed.stdout!r}")
+
+    print(
+        "olmoe text smoke: PASS (8 lexical cases, 6 prompt cases, "
+        "6 malformed models, 2 byte-boundary models)"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

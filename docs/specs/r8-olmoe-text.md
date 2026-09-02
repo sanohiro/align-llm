@@ -1,6 +1,6 @@
 # R8 OLMoE text boundary
 
-Status: design active, 2026-09-02
+Status: implementation candidate owner-verified, 2026-09-02
 
 ## 1. Decision and boundary
 
@@ -63,6 +63,11 @@ by emitting all but the last scalar of a multi-scalar whitespace run when non-wh
 Every fallback advances one scalar. Special-token partition still runs before pre-tokenization and
 retains both existing explicit modes.
 
+The reference vocabulary omits GPT-2 byte-alphabet scalars for bytes `C0`, `C1`, and `F5..FF`.
+Those bytes cannot occur in valid UTF-8, which is the public input and complete decoded-output
+domain, so the OLMo loader admits exactly those thirteen absent entries and still requires every
+reachable byte scalar. Qwen continues to require all 256 entries.
+
 OLMo `tokenizer_id` is SHA-256 over the R7 canonical token/type/merge encoding with domain
 `R8OLMOTK`, identity schema 1, model `gpt2`, pre-tokenizer `olmo`, and the same classifier identity.
 The separate domain prevents profile confusion. The Qwen `R7QW2TOK` preimage is not rewritten.
@@ -96,17 +101,17 @@ uses the tokenizer profile; a Qwen template on an OLMo profile, or the reverse, 
 Tokenizer load keeps every R7 step and failure code, except the profile check now accepts exactly
 `qwen2` or `olmo` when model is `gpt2`. Profile is established before arrays are materialized.
 
-Prompt preparation retains one snapshot and this order:
+Prompt preparation retains one snapshot. Qwen keeps its existing template-hash, prompt-size, then
+tokenizer-load order. OLMo uses this order because its fixed size includes model-carried BOS text:
 
 1. path and complete GGUF structure;
 2. chat-template presence/type and the existing 4,096-byte cap;
-3. tokenizer model/pre presence and supported profile;
-4. template hash for that profile;
-5. for OLMo, BOS metadata presence and integer class;
-6. profile-specific checked prompt size;
-7. complete tokenizer load from the same snapshot;
-8. for OLMo, BOS range and effective-control validation;
-9. exact render, encode, and existing token-count publication.
+3. complete OLMo template hash;
+4. BOS metadata presence and integer class;
+5. complete tokenizer load from the same snapshot and `gpt2/olmo` profile selection;
+6. BOS range and effective-control validation;
+7. checked size using the exact BOS token bytes;
+8. exact render, encode, and existing token-count publication.
 
 Existing `R7_*` result codes remain the wire vocabulary. Missing or wrong-type OLMo BOS metadata is
 `R7_CHAT_TEMPLATE_METADATA` with detail `tokenizer.ggml.bos_token_id`; an out-of-range or non-control
@@ -161,3 +166,17 @@ The ledger, algorithms, errors, acceptance rows, and closure matrix agree: only 
 profiles and two exact template identities are admitted; Qwen is unchanged; OLMo uses its own
 scanner/identity/rendering and model-carried BOS; every new failure is recoverable and ordered; the
 pin is verified through this real consumer; and no runtime or performance promise is made.
+
+## 7. Candidate evidence and ledger mapping
+
+| Contract / closure cells | Candidate implementation and evidence |
+| --- | --- |
+| profile, scanner, reachable-byte admission, and distinct identity | `src/tokenizer_qwen2.align`; `scripts/olmoe_text_fixture.py`; focused owner passes 8 lexical cases in both modes plus omitted-unreachable and missing-reachable byte models |
+| template, model-carried BOS, checked size, prompt result, and failure order | `src/tokenizer_qwen2.align`; exact template fixture; focused owner passes 6 prompt cases and 6 malformed/crossed models through API and CLI |
+| real tokenizer and prompt behavior | `scripts/run-olmoe-text-parity` passes against model `4ddc0e53...9c684f` and pinned llama.cpp build 10566: 13 lexical cases in both modes, 6 prompts, 805 bytes, and 332 compared ids in 23.6 seconds |
+| Qwen non-regression | `make tokenizer-smoke prompt-smoke` passes; `make tokenizer-parity` passes all 299 real-model cases and 69,485 compared ids in 4m16s; tokenizer identity remains exactly `b56e4ff2c7b747e9b209c2dd6cbac8894f25f1361854b344f645c748f2029fe2` |
+| Align pin consumer adoption | managed `8cefc803...3a4` materialized and verified; `make check` passed 40 units before implementation and the new source compiles with that exact toolchain |
+
+No ledger cell maps to a provider, runtime execution, cache allocation, installed/native profile,
+benchmark, or broad OLMoE qualification because those surfaces are unchanged or explicitly
+deferred.

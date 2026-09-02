@@ -19,21 +19,28 @@ authoritative public-contract ledger and closure matrix are
 `docs/specs/r8-olmoe-text.md`. It deliberately stops before provider dispatch, MoE generation, EOG
 policy, cache configuration, and any latency claim.
 
+Implementation now adds profile-specific identity, the exact OLMo scanner, the valid-UTF-8 byte
+alphabet boundary, model-carried BOS rendering, and independent synthetic and real parity owners.
+
 **Latest durable verification.** The managed release compiler/runtime materialized in 1m03s with
 the host's explicit LLVM 22 path. `scripts/align-toolchain verify` returned the exact new identity,
-and `make check` passed all 40 units per-unit in about 1m58s. A bounded metadata probe and pinned
-llama.cpp `/apply-template` established the OLMo profile, exact template identity, BOS spelling,
-and rendered system/user prompt. No aggregate, installed/native profile, benchmark, or unrelated
-focused qualification ran.
+and `make check` passed all 40 units per-unit in about 1m58s. The focused synthetic owner passes in
+about one second over 8 lexical cases in both modes, 6 prompt cases, 6 malformed models, and both
+reachable-byte boundary models. Real parity against the exact OLMoE model and pinned llama.cpp
+build 10566 passes in 23.6 seconds: 13 lexical cases in both modes, 6 prompts, 805 bytes, and 332
+compared ids. Existing Qwen tokenizer and prompt owners pass together in about four seconds; the
+real Qwen identity remains `b56e4ff2...9fe2`. No aggregate, installed/native profile, benchmark,
+runtime matrix, or inference ran. The one real Qwen non-regression qualification also passed all
+299 cases and 69,485 compared ids in 4m16s; it will not be repeated absent a relevant repair.
 
-**Next actions.** (1) Commit the authoritative design checkpoint. (2) Implement the OLMo scanner,
-profile identity, prompt renderer, and focused synthetic/real owners. (3) Run only affected owners,
-one comprehensive review, exact-head preflight, PR, merge, and pull current `main`.
+**Next actions.** (1) Commit the coherent implementation candidate. (2) Perform one comprehensive
+review and consolidate any valid repair. (3) Run exact-head focused owner and publication
+preflight, publish, merge, and pull current `main`.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The design checkpoint until committed. Local configuration
-remains outside the change.
+**Intentional uncommitted files.** The implementation candidate until committed. Local
+configuration remains outside the change.
 
 ## Merged checkpoint: R8-PARTIAL-LRU-CACHE (PR #168, 2026-09-02)
 

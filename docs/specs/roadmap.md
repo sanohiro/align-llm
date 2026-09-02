@@ -1306,7 +1306,8 @@ The current forward delivery order is:
     seconds of paired model execution. This capability does not claim provider-level time to a
     passing patch.
 
-48. **R8-OLMOE-TEXT — OLMoE text/token and prompt preparation. Active on 2026-09-02.**
+48. **R8-OLMOE-TEXT — OLMoE text/token and prompt preparation. Implementation candidate
+    owner-verified on 2026-09-02.**
     [`r8-olmoe-text.md`](r8-olmoe-text.md) is the authoritative implementation contract. Extend
     the existing tokenizer and prompt consumers to the reference model's exact `gpt2`/`olmo`
     profile and 508-byte chat template, while preserving Qwen behavior and identity byte-for-byte.
@@ -1316,7 +1317,10 @@ The current forward delivery order is:
     adoption is an internal checkpoint in this consumer branch. Acceptance is one focused
     synthetic owner, Qwen regression ownership, and focused real parity against pinned llama.cpp;
     unrelated aggregates, installed profiles, benchmarks, and the OLMoE runtime matrix are not
-    selected by this boundary.
+    selected by this boundary. The candidate's synthetic owner passes in about one second, and its
+    real 13-case/two-mode tokenizer plus six-prompt parity passes in 23.6 seconds with 332 compared
+    ids. Existing Qwen tokenizer and prompt owners pass, and the real Qwen tokenizer identity is
+    unchanged.
 
 ### Status (2026-08-28)
 

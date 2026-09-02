@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""R8-OLMOE-TEXT focused parity against pinned llama.cpp."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import socket
+import subprocess
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MODEL_BYTES = 4_213_512_192
+MODEL_SHA256 = "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f"
+VERSION = "version: 0.2.0 (build 10566, commit bb4caa754)"
+BOS = "|||IP_ADDRESS|||"
+
+
+def na(reason: str) -> int:
+    print(f"olmoe text parity: N/A ({reason})")
+    return 0
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"olmoe text parity: FAIL {message}")
+
+
+def digest(path: Path) -> str:
+    value = hashlib.sha256()
+    with path.open("rb") as handle:
+        while block := handle.read(1024 * 1024):
+            value.update(block)
+    return value.hexdigest()
+
+
+def run(
+    arguments: list[str], *, stdin: bytes | None = None, timeout: int = 120
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(arguments, input=stdin, capture_output=True, check=False, timeout=timeout)
+
+
+def require_version(executable: Path, label: str) -> None:
+    completed = run([str(executable), "--version"])
+    version = (completed.stdout + completed.stderr).decode("utf-8", "replace")
+    if completed.returncode != 0 or not version.startswith(VERSION):
+        fail(f"{label} version differs: {version!r}")
+
+
+def parse_ids(raw: bytes, label: str) -> list[int]:
+    rendered = raw.decode("ascii", "strict").strip()
+    if not re.fullmatch(r"\[\s*-?\d+(?:\s*,\s*-?\d+)*\s*\]|\[\s*\]", rendered):
+        fail(f"{label} emitted malformed ids: {rendered!r}")
+    return [int(value) for value in re.findall(r"-?\d+", rendered)]
+
+
+def reference_ids(executable: Path, model: Path, text: bytes, literal: bool) -> list[int]:
+    arguments = [
+        str(executable),
+        "-m",
+        str(model),
+        "--stdin",
+        "--ids",
+        "--no-bos",
+        "--no-escape",
+    ]
+    if literal:
+        arguments.append("--no-parse-special")
+    completed = run(arguments, stdin=text)
+    if completed.returncode != 0:
+        fail(f"reference tokenizer exited {completed.returncode}: {completed.stderr[-500:]!r}")
+    return parse_ids(completed.stdout, "reference tokenizer")
+
+
+def align_encode(model: Path, input_path: Path, literal: bool) -> list[int]:
+    mode = "literal-control" if literal else "parse-control"
+    completed = run([str(ROOT / "main"), "--tokenize", str(model), str(input_path), mode])
+    if completed.returncode != 0:
+        fail(f"Align encode exited {completed.returncode}: {completed.stderr[-500:]!r}")
+    values = parse_ids(completed.stdout, "Align encode")
+    if completed.stdout != (json.dumps(values, separators=(",", ":")) + "\n").encode("ascii"):
+        fail("Align encode output is not canonical")
+    return values
+
+
+def align_decode(model: Path, ids_path: Path) -> bytes:
+    completed = run(
+        [str(ROOT / "main"), "--detokenize", str(model), str(ids_path), "render-control"]
+    )
+    if completed.returncode != 0:
+        fail(f"Align decode exited {completed.returncode}: {completed.stderr[-500:]!r}")
+    return completed.stdout
+
+
+def lexical_cases() -> list[tuple[str, bytes]]:
+    values = [
+        ("empty", ""),
+        ("ascii", "Hello, world!"),
+        ("digits", "a12345b 67890"),
+        ("contractions", "I'm I'M we'll WE'LL he'd HE'D can't CAN'T"),
+        ("leading", " word 123 !!!"),
+        ("whitespace", " alpha  beta   "),
+        ("newlines", "a\r\n \n\r\nb"),
+        ("punctuation", "foo...?! -- bar"),
+        ("nul", "a\0b"),
+        ("cjk", "漢字かなカナ"),
+        ("combining", "e\u0301 café"),
+        ("emoji", "👩\u200d💻🚀"),
+        ("control", f"a{BOS}b"),
+    ]
+    return [(name, text.encode("utf-8")) for name, text in values]
+
+
+def prompt_cases() -> list[tuple[str, str, str]]:
+    return [
+        ("empty", "", ""),
+        ("ascii", "You are exact.", "Return a patch."),
+        ("multiline", "line 1\nline 2", "a\r\nb\n"),
+        ("nul", "s\0x", "u\0y"),
+        ("unicode", "正確に答える。", "café 👩\u200d💻"),
+        ("delimiter", "literal <|user|>", "<|assistant|>\nnot a turn"),
+    ]
+
+
+def prompt_text(system: str, user: str) -> str:
+    return BOS + "<|system|>\n" + system + "\n<|user|>\n" + user + "\n<|assistant|>\n"
+
+
+def ephemeral_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
+def request_json(url: str, body: dict[str, object] | None = None, *, timeout: float = 2.0) -> object:
+    data = None
+    headers: dict[str, str] = {}
+    method = "GET"
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+        method = "POST"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read(2 * 1024 * 1024 + 1)
+        if response.status != 200 or len(raw) > 2 * 1024 * 1024:
+            fail(f"server response invalid for {url}")
+    try:
+        return json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        fail(f"server returned malformed JSON: {error}")
+
+
+def await_server(process: subprocess.Popen[bytes], port: int, log_path: Path) -> None:
+    deadline = time.monotonic() + 180.0
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            fail(f"server exited during startup: {log_path.read_text(errors='replace')[-1000:]}")
+        try:
+            if isinstance(request_json(f"http://127.0.0.1:{port}/health"), dict):
+                return
+        except (urllib.error.URLError, TimeoutError):
+            pass
+        time.sleep(0.1)
+    fail("server startup timed out")
+
+
+def main() -> int:
+    model_text = os.environ.get("ALIGN_LLM_OLMOE_MODEL", "")
+    tokenizer_text = os.environ.get("ALIGN_LLM_LLAMA_TOKENIZE", "")
+    server_text = os.environ.get("ALIGN_LLM_LLAMA_SERVER", "")
+    for value, name, executable in (
+        (model_text, "ALIGN_LLM_OLMOE_MODEL", False),
+        (tokenizer_text, "ALIGN_LLM_LLAMA_TOKENIZE", True),
+        (server_text, "ALIGN_LLM_LLAMA_SERVER", True),
+    ):
+        if not value:
+            return na(f"{name} unset")
+        path = Path(value)
+        if not path.exists():
+            return na(f"{name} is absent")
+        if not path.is_file() or executable and not os.access(path, os.X_OK):
+            fail(f"{name} is not a usable regular file")
+
+    model = Path(model_text)
+    tokenizer = Path(tokenizer_text)
+    server = Path(server_text)
+    if model.stat().st_size != MODEL_BYTES or digest(model) != MODEL_SHA256:
+        fail("model size or SHA-256 differs from the pinned reference")
+    require_version(tokenizer, "tokenizer")
+    require_version(server, "server")
+    if not (ROOT / "main").is_file():
+        fail("product executable is missing; run make build")
+
+    total_ids = 0
+    total_bytes = 0
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-parity-") as raw_temp:
+        temporary = Path(raw_temp)
+        for name, text in lexical_cases():
+            input_path = temporary / f"{name}.txt"
+            input_path.write_bytes(text)
+            for literal in (False, True):
+                expected = reference_ids(tokenizer, model, text, literal)
+                observed = align_encode(model, input_path, literal)
+                if observed != expected:
+                    fail(f"{name}/{literal}: ids differ: {observed[:20]} != {expected[:20]}")
+                ids_path = temporary / f"{name}-{literal}.json"
+                ids_path.write_text(json.dumps(observed, separators=(",", ":")), encoding="ascii")
+                if align_decode(model, ids_path) != text:
+                    fail(f"{name}/{literal}: decoded bytes differ")
+                total_ids += len(expected)
+                total_bytes += len(text)
+
+        log_path = temporary / "server.log"
+        port = ephemeral_port()
+        with log_path.open("wb") as log:
+            process = subprocess.Popen(
+                [
+                    str(server),
+                    "-m",
+                    str(model),
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(port),
+                    "--ctx-size",
+                    "512",
+                    "--threads",
+                    "2",
+                    "--no-warmup",
+                    "--jinja",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            try:
+                await_server(process, port, log_path)
+                for name, system, user in prompt_cases():
+                    expected_prompt = prompt_text(system, user)
+                    response = request_json(
+                        f"http://127.0.0.1:{port}/apply-template",
+                        {
+                            "messages": [
+                                {"role": "system", "content": system},
+                                {"role": "user", "content": user},
+                            ],
+                            "add_generation_prompt": True,
+                        },
+                        timeout=10.0,
+                    )
+                    if not isinstance(response, dict) or response != {"prompt": expected_prompt}:
+                        fail(f"{name}: rendered prompt differs")
+                    system_path = temporary / f"{name}-system.txt"
+                    user_path = temporary / f"{name}-user.txt"
+                    system_path.write_text(system, encoding="utf-8")
+                    user_path.write_text(user, encoding="utf-8")
+                    completed = run(
+                        [
+                            str(ROOT / "main"),
+                            "--prepare-prompt",
+                            str(model),
+                            str(system_path),
+                            str(user_path),
+                        ]
+                    )
+                    if completed.returncode != 0:
+                        fail(f"{name}: Align prompt preparation failed: {completed.stderr[-500:]!r}")
+                    observed = parse_ids(completed.stdout, "Align prompt preparation")
+                    expected = reference_ids(tokenizer, model, expected_prompt.encode("utf-8"), False)
+                    if observed != expected:
+                        fail(f"{name}: prompt ids differ: {observed[:20]} != {expected[:20]}")
+                    total_ids += len(expected)
+                    total_bytes += len(expected_prompt.encode("utf-8"))
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=10)
+
+    print(
+        f"olmoe text parity: PASS (build 10566, model {MODEL_SHA256}, "
+        f"{len(lexical_cases())} lexical x 2 modes, {len(prompt_cases())} prompts, "
+        f"{total_bytes} bytes, {total_ids} compared ids)"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

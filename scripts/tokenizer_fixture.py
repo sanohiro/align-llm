@@ -174,12 +174,76 @@ def qwen_pieces(text: str) -> list[str]:
     return pieces
 
 
+def olmo_pieces(text: str) -> list[str]:
+    classes = []
+    for scalar in text:
+        category = unicodedata.category(scalar)
+        if category.startswith("L"):
+            classes.append(1)
+        elif category.startswith("N"):
+            classes.append(2)
+        elif scalar.isspace():
+            classes.append(3)
+        else:
+            classes.append(0)
+    pieces: list[str] = []
+    at = 0
+    while at < len(text):
+        start = at
+        if text[at] == "'" and at + 1 < len(text):
+            one = text[at + 1]
+            if one in ("s", "t", "m", "d"):
+                pieces.append(text[at : at + 2])
+                at += 2
+                continue
+            if at + 2 < len(text) and one + text[at + 2] in ("re", "ve", "ll"):
+                pieces.append(text[at : at + 3])
+                at += 3
+                continue
+        letter_at = at + 1 if text[at] == " " and at + 1 < len(text) and classes[at + 1] == 1 else at
+        if classes[letter_at] == 1:
+            end = letter_at + 1
+            while end < len(text) and classes[end] == 1:
+                end += 1
+            pieces.append(text[start:end])
+            at = end
+            continue
+        number_at = at + 1 if text[at] == " " and at + 1 < len(text) and classes[at + 1] == 2 else at
+        if classes[number_at] == 2:
+            end = number_at + 1
+            while end < len(text) and classes[end] == 2:
+                end += 1
+            pieces.append(text[start:end])
+            at = end
+            continue
+        punct_at = at + 1 if text[at] == " " and at + 1 < len(text) and classes[at + 1] == 0 else at
+        if classes[punct_at] == 0:
+            end = punct_at + 1
+            while end < len(text) and classes[end] == 0:
+                end += 1
+            pieces.append(text[start:end])
+            at = end
+            continue
+        if classes[at] == 3:
+            end = at + 1
+            while end < len(text) and classes[end] == 3:
+                end += 1
+            emitted = end - 1 if end < len(text) and end - at > 1 else end
+            pieces.append(text[at:emitted])
+            at = emitted
+            continue
+        pieces.append(text[at : at + 1])
+        at += 1
+    return pieces
+
+
 def encode_data(
     text: str,
     tokens: list[str],
     types: list[int],
     merges: list[str],
     parse_control: bool = True,
+    pre: str = "qwen2",
 ) -> list[int]:
     token_ids = {token: index for index, token in enumerate(tokens)}
     ranks = {tuple(merge.split(" ", 1)): rank for rank, merge in enumerate(merges)}
@@ -192,7 +256,8 @@ def encode_data(
     result: list[int] = []
 
     def encode_raw(raw: str) -> None:
-        for piece in qwen_pieces(raw):
+        splitter = olmo_pieces if pre == "olmo" else qwen_pieces
+        for piece in splitter(raw):
             symbols = [byte_spelling(value) for value in piece.encode("utf-8")]
             while len(symbols) > 1:
                 choices = [
