@@ -3,7 +3,7 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-TEXT (2026-09-02)
+## Active: R8-OLMOE-TEXT (2026-09-03)
 
 Branch `agent/r8-olmoe-text`, based on pulled merged `main`
 `4d9f9c823dc6596f87c7bb6db1b16e55d9653637` (R8-PARTIAL-LRU-CACHE PR #168). The sibling Align
@@ -24,22 +24,34 @@ alphabet boundary, model-carried BOS rendering, and independent synthetic and re
 
 **Latest durable verification.** The managed release compiler/runtime materialized in 1m03s with
 the host's explicit LLVM 22 path. `scripts/align-toolchain verify` returned the exact new identity,
-and `make check` passed all 40 units per-unit in about 1m58s. The focused synthetic owner passes in
-about one second over 8 lexical cases in both modes, 6 prompt cases, 6 malformed models, and both
-reachable-byte boundary models. Real parity against the exact OLMoE model and pinned llama.cpp
+and `make check` passed all 40 units per-unit in about 1m58s. The repaired focused synthetic owner
+passes in about one second over 8 lexical cases in both modes, 6 prompt cases, 7 malformed models,
+and 3 byte-boundary models. Real parity against the exact OLMoE model and pinned llama.cpp
 build 10566 passes in 23.6 seconds: 13 lexical cases in both modes, 6 prompts, 805 bytes, and 332
-compared ids. Existing Qwen tokenizer and prompt owners pass together in about four seconds; the
-real Qwen identity remains `b56e4ff2...9fe2`. No aggregate, installed/native profile, benchmark,
+compared ids. Existing Qwen tokenizer and prompt owners pass after the profile repair in about four
+seconds; the real Qwen identity remains `b56e4ff2...9fe2`. No aggregate, installed/native profile,
+benchmark,
 runtime matrix, or inference ran. The one real Qwen non-regression qualification also passed all
 299 cases and 69,485 compared ids in 4m16s; it will not be repeated absent a relevant repair.
 
-**Next actions.** (1) Commit the coherent implementation candidate. (2) Perform one comprehensive
-review and consolidate any valid repair. (3) Run exact-head focused owner and publication
-preflight, publish, merge, and pull current `main`.
+The comprehensive Codex CLI review covered head
+`897d8b91e9dde33394b9f7ba37451d77bc5ab63c` against base tip and merge base
+`4d9f9c823dc6596f87c7bb6db1b16e55d9653637`, using gpt-5.6-sol at high effort over the full diff.
+It found three accepted P2 defects: omitted byte positions also admitted present non-normal entries,
+crossed profiles could reach OLMo-only BOS validation before profile rejection, and the focused
+owner could execute a stale ignored `main`. The consolidated repair requires a normal token for
+every present byte spelling, selects and validates the tokenizer profile before OLMo-only metadata,
+adds the missing malformed-profile regressions, and makes the publication owner rebuild `main`
+from the exact source through the repository wrapper before testing it.
+The repair does not expand the public behavior or capability scope, so another comprehensive review
+is not required.
+
+**Next actions.** (1) Commit the consolidated repair and final evidence. (2) Run publication
+preflight. (3) Publish, merge, and pull current `main`.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The implementation candidate until committed. Local
+**Intentional uncommitted files.** The consolidated review repair until committed. Local
 configuration remains outside the change.
 
 ## Merged checkpoint: R8-PARTIAL-LRU-CACHE (PR #168, 2026-09-02)

@@ -126,7 +126,8 @@ The focused synthetic owner builds one tiny OLMo GGUF and checks:
   trailing/non-trailing whitespace, Unicode, special parsing, and exact decode;
 - deterministic OLMo identity distinct from the unchanged Qwen identity;
 - exact prompt bytes/ids for empty, ASCII, multiline, NUL, Unicode, and delimiter-bearing inputs;
-- cross-profile template rejection plus missing, wrong-type, out-of-range, and non-control BOS cases;
+- cross-profile and unsupported-profile rejection plus missing, wrong-type, out-of-range, and
+  non-control BOS cases;
 - first-failure publication and unchanged CLI JSON/stdout isolation.
 
 The real qualification requires the exact 4,213,512,192-byte model with SHA-256
@@ -171,8 +172,8 @@ pin is verified through this real consumer; and no runtime or performance promis
 
 | Contract / closure cells | Candidate implementation and evidence |
 | --- | --- |
-| profile, scanner, reachable-byte admission, and distinct identity | `src/tokenizer_qwen2.align`; `scripts/olmoe_text_fixture.py`; focused owner passes 8 lexical cases in both modes plus omitted-unreachable and missing-reachable byte models |
-| template, model-carried BOS, checked size, prompt result, and failure order | `src/tokenizer_qwen2.align`; exact template fixture; focused owner passes 6 prompt cases and 6 malformed/crossed models through API and CLI |
+| profile, scanner, reachable-byte admission, and distinct identity | `src/tokenizer_qwen2.align`; `scripts/olmoe_text_fixture.py`; focused owner passes 8 lexical cases in both modes plus omitted-unreachable, missing-reachable, and mistyped-unreachable byte models |
+| template, model-carried BOS, checked size, prompt result, and failure order | `src/tokenizer_qwen2.align`; exact template fixture; focused owner passes 6 prompt cases and 7 malformed/crossed models through API and CLI |
 | real tokenizer and prompt behavior | `scripts/run-olmoe-text-parity` passes against model `4ddc0e53...9c684f` and pinned llama.cpp build 10566: 13 lexical cases in both modes, 6 prompts, 805 bytes, and 332 compared ids in 23.6 seconds |
 | Qwen non-regression | `make tokenizer-smoke prompt-smoke` passes; `make tokenizer-parity` passes all 299 real-model cases and 69,485 compared ids in 4m16s; tokenizer identity remains exactly `b56e4ff2c7b747e9b209c2dd6cbac8894f25f1361854b344f645c748f2029fe2` |
 | Align pin consumer adoption | managed `8cefc803...3a4` materialized and verified; `make check` passed 40 units before implementation and the new source compiles with that exact toolchain |

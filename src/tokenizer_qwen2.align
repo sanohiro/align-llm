@@ -113,6 +113,13 @@ LoadResult {
   tokenizer: Tokenizer,
 }
 
+TokenizerProfile {
+  ok: bool,
+  code: string,
+  detail: string,
+  olmo: bool,
+}
+
 PairLookup { rank: i64, result: i64 }
 
 HeapEntry {
@@ -210,6 +217,42 @@ fn failed_load(code: str, detail: str, vocab_size: i64, merge_count: i64) -> Loa
   vocab_size: vocab_size,
   merge_count: merge_count,
   tokenizer: empty_tokenizer(),
+}
+
+fn failed_profile(code: str, detail: str) -> TokenizerProfile = TokenizerProfile {
+  ok: false,
+  code: code.clone(),
+  detail: bounded_detail(detail),
+  olmo: false,
+}
+
+fn tokenizer_profile(borrow table: gguf.GgufTable) -> TokenizerProfile {
+  model := match gguf.kv_string(table, "tokenizer.ggml.model") {
+    Some(value) => value,
+    None => { return failed_profile("R7_TOKENIZER_METADATA", "tokenizer.ggml.model") },
+  }
+  pre := match gguf.kv_string(table, "tokenizer.ggml.pre") {
+    Some(value) => value,
+    None => { return failed_profile("R7_TOKENIZER_METADATA", "tokenizer.ggml.pre") },
+  }
+  model_view: str := model
+  pre_view: str := pre
+  olmo := model_view == "gpt2" && pre_view == "olmo"
+  if model_view != "gpt2" || (pre_view != "qwen2" && !olmo) {
+    detail := builder()
+    detail.write(model_view)
+    detail.write("/")
+    detail.write(pre_view)
+    rendered := detail.to_string()
+    rendered_view: str := rendered
+    return failed_profile("R7_UNSUPPORTED_TOKENIZER", rendered_view)
+  }
+  return TokenizerProfile {
+    ok: true,
+    code: "".clone(),
+    detail: "".clone(),
+    olmo: olmo,
+  }
 }
 
 fn path_valid(path: str) -> bool {
@@ -550,26 +593,11 @@ fn load_snapshot(snapshot: gguf.GgufSnapshot) -> Result<LoadResult, Error> {
     return Ok(failed_load("R7_GGUF", rendered_view, -1, -1))
   }
 
-  model := match gguf.kv_string(snapshot.table, "tokenizer.ggml.model") {
-    Some(value) => value,
-    None => { return Ok(failed_load("R7_TOKENIZER_METADATA", "tokenizer.ggml.model", -1, -1)) },
+  profile := tokenizer_profile(snapshot.table)
+  if !profile.ok {
+    return Ok(failed_load(profile.code, profile.detail, -1, -1))
   }
-  pre := match gguf.kv_string(snapshot.table, "tokenizer.ggml.pre") {
-    Some(value) => value,
-    None => { return Ok(failed_load("R7_TOKENIZER_METADATA", "tokenizer.ggml.pre", -1, -1)) },
-  }
-  model_view: str := model
-  pre_view: str := pre
-  olmo := model_view == "gpt2" && pre_view == "olmo"
-  if model_view != "gpt2" || (pre_view != "qwen2" && !olmo) {
-    detail := builder()
-    detail.write(model_view)
-    detail.write("/")
-    detail.write(pre_view)
-    rendered := detail.to_string()
-    rendered_view: str := rendered
-    return Ok(failed_load("R7_UNSUPPORTED_TOKENIZER", rendered_view, -1, -1))
-  }
+  olmo := profile.olmo
 
   if gguf.kv_type(snapshot.table, "tokenizer.ggml.tokens") != 9
     || gguf.kv_array_element_type(snapshot.table, "tokenizer.ggml.tokens") != 8 {
@@ -864,13 +892,15 @@ fn load_snapshot(snapshot: gguf.GgufSnapshot) -> Result<LoadResult, Error> {
     spelling := scalar_string(byte_scalar(at))
     spelling_view: str := spelling
     id := token_lookup(tokens, token_heads, token_next, spelling_view)
-    if id < 0 || types[id] != 1 {
+    if id < 0 {
       // The OLMo vocabulary omits exactly the byte-alphabet scalars for UTF-8 bytes C0, C1, and
       // F5..FF. No valid `str` can contain those bytes, so they are not reachable by encode or
       // decode; every byte which can occur in valid UTF-8 remains mandatory.
       if !olmo || (at != 192 && at != 193 && at < 245) {
         return Ok(failed_load("R7_BYTE_ALPHABET", indexed_detail("byte", at), token_count, merge_count))
       }
+    } else if types[id] != 1 {
+      return Ok(failed_load("R7_BYTE_ALPHABET", indexed_detail("byte", at), token_count, merge_count))
     } else {
       byte_tokens[at] = id
     }
@@ -1843,6 +1873,18 @@ fn prepare_snapshot(
     rendered_view: str := rendered
     return Ok(failed_generation(
         "R7_UNSUPPORTED_CHAT_TEMPLATE", rendered_view, template_id_view, "", -1, -1,
+        system_bytes, user_bytes, 0))
+  }
+
+  profile := tokenizer_profile(snapshot.table)
+  if !profile.ok {
+    return Ok(failed_generation(
+        profile.code, profile.detail, template_id_view, "", -1, -1,
+        system_bytes, user_bytes, 0))
+  }
+  if profile.olmo != template_olmo {
+    return Ok(failed_generation(
+        "R7_UNSUPPORTED_CHAT_TEMPLATE", "tokenizer_profile", template_id_view, "", -1, -1,
         system_bytes, user_bytes, 0))
   }
 

@@ -98,6 +98,11 @@ def build(output: Path) -> dict[str, object]:
         pre="olmo",
     )
 
+    mistyped_invalid_byte = output / "mistyped-invalid-byte.gguf"
+    mistyped_types = list(types)
+    mistyped_types[invalid_index] = 3
+    write_model(mistyped_invalid_byte, tokens, mistyped_types, merges, pre="olmo")
+
     lexical = [
         ("empty", ""),
         ("digits", "a12345b"),
@@ -182,7 +187,16 @@ def build(output: Path) -> dict[str, object]:
         merges,
         pre="qwen2",
         chat_template=template,
-        extra_kvs=[Kv("tokenizer.ggml.bos_token_id", i32v(bos_id))],
+    )
+
+    unsupported_profile = output / "unsupported-profile.gguf"
+    write_model(
+        unsupported_profile,
+        tokens,
+        types,
+        merges,
+        pre="unsupported",
+        chat_template=template,
     )
 
     crossed_template = output / "crossed-template.gguf"
@@ -201,6 +215,7 @@ def build(output: Path) -> dict[str, object]:
         "qwen_model": qwen_same_arrays.name,
         "omitted_invalid_byte_model": omitted_invalid_byte.name,
         "missing_reachable_byte_model": missing_reachable_byte.name,
+        "mistyped_invalid_byte_model": mistyped_invalid_byte.name,
         "template_id": TEMPLATE_ID,
         "vocab_size": len(tokens),
         "merge_count": len(merges),
@@ -211,7 +226,8 @@ def build(output: Path) -> dict[str, object]:
             {"model": wrong_type_bos.name, "code": "R7_CHAT_TEMPLATE_METADATA", "detail": "tokenizer.ggml.bos_token_id", "loaded": False},
             {"model": out_of_range_bos.name, "code": "R7_UNSUPPORTED_CHAT_TEMPLATE", "detail": f"bos_token_id[{len(tokens)}]", "loaded": True},
             {"model": non_control_bos.name, "code": "R7_UNSUPPORTED_CHAT_TEMPLATE", "detail": "bos_token_id[104]", "loaded": True},
-            {"model": crossed_profile.name, "code": "R7_UNSUPPORTED_CHAT_TEMPLATE", "detail": "tokenizer_profile", "loaded": True},
-            {"model": crossed_template.name, "code": "R7_UNSUPPORTED_CHAT_TEMPLATE", "detail": "tokenizer_profile", "loaded": True},
+            {"model": crossed_profile.name, "code": "R7_UNSUPPORTED_CHAT_TEMPLATE", "detail": "tokenizer_profile", "loaded": False},
+            {"model": unsupported_profile.name, "code": "R7_UNSUPPORTED_TOKENIZER", "detail": "gpt2/unsupported", "loaded": False},
+            {"model": crossed_template.name, "code": "R7_UNSUPPORTED_CHAT_TEMPLATE", "detail": "tokenizer_profile", "loaded": False},
         ],
     }

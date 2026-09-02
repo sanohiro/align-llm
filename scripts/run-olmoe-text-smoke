@@ -38,6 +38,18 @@ def expect_success(result: subprocess.CompletedProcess[bytes], expected: bytes, 
 
 
 def main() -> int:
+    built = run(
+        [
+            str(ROOT / "scripts/run-main-with-shim"),
+            str(ROOT / "scripts/alignc"),
+            "build",
+            "src/main.align",
+        ],
+        timeout=300,
+    )
+    if built.returncode != 0 or not (ROOT / "main").is_file():
+        fail(f"could not build exact-source product: {built.stderr.decode('utf-8', 'replace')[-1000:]}")
+
     with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-text-") as raw_temp:
         work = Path(raw_temp)
         manifest = fixture.build(work)
@@ -85,10 +97,11 @@ def main() -> int:
                 str(work / str(manifest["qwen_model"])),
                 str(work / str(manifest["omitted_invalid_byte_model"])),
                 str(work / str(manifest["missing_reachable_byte_model"])),
+                str(work / str(manifest["mistyped_invalid_byte_model"])),
             ]
         )
         identity_lines = identities.stdout.decode("utf-8", "strict").splitlines()
-        if identities.returncode != 0 or len(identity_lines) != 4:
+        if identities.returncode != 0 or len(identity_lines) != 5:
             fail(f"tokenizer API publication failed: {identity_lines!r}")
         parsed = [line.split(":") for line in identity_lines[:3]]
         if any(len(row) != 5 or row[0] != "OK" or len(row[4]) != 64 for row in parsed):
@@ -97,8 +110,8 @@ def main() -> int:
             fail(f"OLMo tokenizer counts drifted: {parsed[0]!r}")
         if parsed[0][4] == parsed[1][4]:
             fail("OLMo and Qwen tokenizer identities collided")
-        if identity_lines[3] != "R7_BYTE_ALPHABET":
-            fail(f"reachable-byte omission was admitted: {identity_lines[3]!r}")
+        if identity_lines[3:] != ["R7_BYTE_ALPHABET", "R7_BYTE_ALPHABET"]:
+            fail(f"malformed byte alphabet was admitted: {identity_lines[3:]!r}")
 
         failure_paths = [work / str(row["model"]) for row in manifest["failures"]]
         publications = run([str(PROMPT_HARNESS), str(model), *map(str, failure_paths)])
@@ -146,7 +159,7 @@ def main() -> int:
 
     print(
         "olmoe text smoke: PASS (8 lexical cases, 6 prompt cases, "
-        "6 malformed models, 2 byte-boundary models)"
+        "7 malformed models, 3 byte-boundary models)"
     )
     return 0
 
