@@ -65,11 +65,25 @@ repair `38acbb0c155ad02f4a287e8046aded5abdf677d2` gives the output wrapper a two
 signal-to-KILL escalation for its owned command group and makes the coordinator forward and
 preserve HUP/INT/QUIT/TERM after reaping every started wrapper. The resistant-child owner passes in
 6.6s, combined peer/top-level coordination owner in 0.8s, and `format-check` in 12.2s. No finding
-remains open.
+remains open from that review.
 
-**Next actions.** (1) Commit this durable review state and run exact-head publication preflight
-below 900 seconds. (2) Publish with all review envelopes, require all three GitHub checks below 15
-minutes, merge, pull current `main`, and continue the next eligible capability.
+The first exact-head parallel preflight stopped at 8m40s when hosted checks could not create the
+Align cache below an outer root-owned `HOME`; this was an invocation defect, not a candidate
+failure. Fail-fast cancellation correctly stopped the installed peer at worker-build, but the
+incident exposed invocation-owned image and volumes left after the installed Python owner received
+TERM. Those exact resources were identified and removed. Re-scoped repair
+`d0eec6a1f60c5bcd1d82ac0a5c7373ddb7ced9ac` gives the installed image owner catchable-signal
+unwinding through its existing finalizer and gives that cleanup five seconds before the output
+wrapper escalates the whole command group to KILL. A synthetic image-build cancellation proves all
+five volumes and the image reach removal; output-summary and profile cancellation owners pass in
+10.1s, the cleanup-specific owner in 0.7s, and `format-check` in 13.4s. This adds installed resource
+cleanup behavior beyond the reviewed head and requires one comprehensive review of the redesigned
+candidate before rerunning preflight with the outer `HOME` owned by uid 501.
+
+**Next actions.** (1) Commit this durable incident state and perform the redesigned-candidate
+review. (2) Run exact-head publication preflight below 900 seconds with the corrected outer `HOME`.
+(3) Publish with all review envelopes, require all three GitHub checks below 15 minutes, merge, pull
+current `main`, and continue the next eligible capability.
 
 **Blocker.** None.
 
