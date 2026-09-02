@@ -1306,6 +1306,18 @@ The current forward delivery order is:
     seconds of paired model execution. This capability does not claim provider-level time to a
     passing patch.
 
+48. **R8-OLMOE-TEXT — OLMoE text/token and prompt preparation. Active on 2026-09-02.**
+    [`r8-olmoe-text.md`](r8-olmoe-text.md) is the authoritative implementation contract. Extend
+    the existing tokenizer and prompt consumers to the reference model's exact `gpt2`/`olmo`
+    profile and 508-byte chat template, while preserving Qwen behavior and identity byte-for-byte.
+    This is the smallest independently useful prerequisite for an OLMoE provider: it produces the
+    exact token ids already accepted by the MoE decoder, but does not yet add provider dispatch,
+    generation, EOG policy, cache configuration, or a performance claim. The Align `8cefc803` pin
+    adoption is an internal checkpoint in this consumer branch. Acceptance is one focused
+    synthetic owner, Qwen regression ownership, and focused real parity against pinned llama.cpp;
+    unrelated aggregates, installed profiles, benchmarks, and the OLMoE runtime matrix are not
+    selected by this boundary.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:

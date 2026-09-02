@@ -3,34 +3,37 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: ALIGN-8CEFC803-ADOPTION (2026-09-02)
+## Active: R8-OLMOE-TEXT (2026-09-02)
 
-Branch `agent/align-8cefc803-adoption`, based on pulled merged `main`
+Branch `agent/r8-olmoe-text`, based on pulled merged `main`
 `4d9f9c823dc6596f87c7bb6db1b16e55d9653637` (R8-PARTIAL-LRU-CACHE PR #168). The sibling Align
 checkout was fast-forwarded from the prior pin
 `b6f95a261e1434d705d7de006484ffa66b1542f0` to merged `origin/main`
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4` (Align PR #933, `pkg.kv` v1), and this capability
-advances `.align-revision` to that exact identity.
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4` (Align PR #933, `pkg.kv` v1). Commit `5c9ac3c`
+advances `.align-revision` and records compatibility evidence as an internal checkpoint in this
+consumer branch; it will not be published as a pin-only pull request.
 
-No align-llm request is waiting in `ALIGN_MERGED`; `pkg.kv` does not implement Request 53's
-`std.fs` directory surface, and align-llm neither vendors nor consumes the package in this
-capability. The consumer boundary is compatibility of the existing complete Align source graph
-with the new compiler/runtime. `make check` owns that boundary; managed materialization and
-verification own the exact pin. The pin alone does not select `make ci`, an installed/native
-profile, a benchmark, or another focused qualification.
+The capability extends existing tokenize, detokenize, and prompt preparation to the exact
+`gpt2`/`olmo` profile and 508-byte chat template carried by the local OLMoE reference model. Its
+authoritative public-contract ledger and closure matrix are
+`docs/specs/r8-olmoe-text.md`. It deliberately stops before provider dispatch, MoE generation, EOG
+policy, cache configuration, and any latency claim.
 
 **Latest durable verification.** The managed release compiler/runtime materialized in 1m03s with
 the host's explicit LLVM 22 path. `scripts/align-toolchain verify` returned the exact new identity,
-and `make check` passed all 40 units per-unit in about 1m58s. No aggregate, installed/native
-profile, benchmark, or unrelated focused qualification ran.
+and `make check` passed all 40 units per-unit in about 1m58s. A bounded metadata probe and pinned
+llama.cpp `/apply-template` established the OLMo profile, exact template identity, BOS spelling,
+and rendered system/user prompt. No aggregate, installed/native profile, benchmark, or unrelated
+focused qualification ran.
 
-**Next actions.** (1) Commit the coherent adoption and perform one comprehensive review. (2) Run
-exact-head publication preflight with `make check` as owner, publish, merge, pull current `main`,
-and begin the next eligible consumer capability.
+**Next actions.** (1) Commit the authoritative design checkpoint. (2) Implement the OLMo scanner,
+profile identity, prompt renderer, and focused synthetic/real owners. (3) Run only affected owners,
+one comprehensive review, exact-head preflight, PR, merge, and pull current `main`.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The verified adoption candidate until committed.
+**Intentional uncommitted files.** The design checkpoint until committed. Local configuration
+remains outside the change.
 
 ## Merged checkpoint: R8-PARTIAL-LRU-CACHE (PR #168, 2026-09-02)
 
