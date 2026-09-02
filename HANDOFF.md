@@ -17,28 +17,43 @@ in `docs/specs/r8-partial-lru-cache.md`. It combines dense residency with an inv
 cache, preserves the claim-window/graph boundary, and makes no elapsed or provider-level
 time-to-passing-patch claim.
 
-Design checkpoint `5d5617c` and the implementation candidate add the schema-3
+Design checkpoint `5d5617c`, implementation checkpoint `158c469`, and review repair `46ccede` add
+the schema-3
 `dense+lru:BUDGET_BYTES` mode, deterministic invocation-local LRU staging, aggregate and per-step
 cache evidence, and synthetic grammar/budget/hit/miss/eviction/semantic coverage. The real pack's
 expert keys vary by layer, so the implementation uses the maximum 4,079,616-byte key as its fixed
 slot stride: the selected budget owns 239 slots and 975,028,224 bytes, never the erroneous
 pre-implementation 256 uniform slots.
 
-**Latest durable verification.** `make layer-forward-smoke` passes in 78.936 seconds. The focused
-real paired qualification reused the existing reference AlignPack and passed in 9.75 seconds of
+The comprehensive Codex CLI review covered head
+`158c469f4e30bcec007852447d5cc0a17611e320` against base tip and merge base
+`d3b04b08d44bafa1afa28438e2229333e14810ec`, using gpt-5.6-sol at high effort over the full diff.
+It found two accepted P2 public-reporting defects: amplification estimated logical cache-miss bytes
+from an average key size even though layer key sizes vary, and canonical representable budgets over
+18 digits were misclassified as malformed. Consolidated repair
+`46ccede55b2fe16fa1b867c5ce2e30510aa875f2` uses the exact accumulated logical miss bytes and a
+canonical overflow-safe parser that distinguishes malformed text from every over-budget integer.
+The repair delta also corrects the obsolete expert-read comment and binds the classifications and
+amplification formula into the owner. No finding remains open and the repair does not change cache
+selection, lifetime, or transport behavior, so another comprehensive review is not required.
+
+**Latest durable verification.** The repaired `make layer-forward-smoke` owner passes in 83.577
+seconds, including i64-limit, beyond-i64, trailing-nondigit, and exact amplification regressions.
+The focused real paired qualification reused the existing reference AlignPack and passed in 9.75
+seconds of
 model execution: dense read 7,801,405,440 decode expert-pack bytes, cache read 2,920,955,904, a
 625,585-ppm reduction. It recorded 1,279 hits, 1,112 misses, and 873 evictions with exact normalized
 semantics. Internal elapsed 4.407 seconds dense and 4.435 seconds cache is diagnostic only. No broad
 aggregate, installed profile, stress, benchmark, or unrelated platform suite ran.
 
-**Next actions.** (1) Rerun the exact candidate's narrow owner after formatting. (2) Commit and
-perform one comprehensive review. (3) Repair accepted findings, run publication preflight, publish,
-and merge. (4) Pull the latest `main` before the next roadmap capability.
+**Next actions.** (1) Run exact-head publication preflight with `layer-forward-smoke` as owner.
+(2) Publish and merge after the required hosted check passes. (3) Pull the latest `main` before the
+next roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The implementation candidate until committed. Local
-configuration and reusable real-model artifacts remain outside the change.
+**Intentional uncommitted files.** None. Local configuration and reusable real-model artifacts
+remain outside the change.
 
 ## Merged checkpoint: R8-RESET-CACHE-DECISION (PR #167, 2026-09-02)
 

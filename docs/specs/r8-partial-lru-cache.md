@@ -1,6 +1,6 @@
 # R8 partial LRU expert cache
 
-Status: implementation candidate; measurement passed; review pending
+Status: implementation and measurement complete; review findings repaired; publication pending
 
 ## 1. Decision and boundary
 
