@@ -3,14 +3,56 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: REQUIRED-CI latency repair (2026-09-03)
+## Active: R8-OLMOE-PROVIDER (2026-09-03)
+
+Branch `agent/r8-olmoe-provider` is integrating pulled merged `main`
+`dc38b7639d86aaea786965487f1b09c806fbc20a` (required-CI latency repair PR #171) into the reviewed
+provider candidate. The sibling Align checkout and `.align-revision` both remain at current merged
+Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; a post-PR-#169 fetch found no newer prerequisite.
+
+The active capability exposes OLMoE greedy generation through the existing in-process provider,
+using an explicit invocation-local partial-LRU cache budget and stop-aware MoE generation. Its
+public-contract ledger and closure matrix are `docs/specs/r8-olmoe-provider.md`. Qwen and the
+diagnostic MoE CLI remain unchanged, and this correctness capability makes no performance claim.
+
+The implementation candidate is complete. `gmake fmt` passed; `gmake runtime-provider-smoke`
+passed 61 assertions; `gmake layer-forward-smoke` passed the unchanged diagnostic/cache boundary;
+and the repaired fixed real-model qualification matched pinned llama.cpp prompt count 47, actual
+generated token ids `[1992,4993]`, and bytes `To fix` in 22.62 seconds. The qualification runner self-test,
+Python compilation, and `git diff --check` also passed. No broad aggregate, platform, stress, or
+benchmark suite was selected.
+
+The comprehensive Codex CLI review covered head
+`59e5111e619c25f11bec7c6428f771d91c32d5e6` against base tip and merge base
+`c987838130077d5b6119ee20b717774c1c913fbe`, using gpt-5.6-sol at high effort over the full diff.
+It found two accepted P2 qualification defects: the real gate re-tokenized decoded text instead of
+observing the generated id chain, and SIGTERM could bypass `llama-server` cleanup. The consolidated
+repair adds a qualification-only exact generation seam consumer and signal-aware cleanup with a
+forced escalation self-test. It does not change provider behavior or expand scope, so another
+comprehensive review is not required.
+
+The base integration changes only the hosted-check allocation, its authoritative documentation,
+and the identity-bound baseline chain. It does not materially change the provider risks reviewed
+above, so the existing comprehensive review remains applicable; fresh exact-head integration
+evidence is still required.
+
+**Next actions.** (1) Complete the `main` merge and resolve this continuity record. (2) Run the
+provider owner and exact-head publication preflight once. (3) Push the integration, require the
+shortened hosted graph and both installed classifiers to pass, then merge PR #170 and pull current
+`main` and Align.
+
+**Blocker.** None.
+
+**Intentional uncommitted files.** The in-progress `main` merge until committed. Local configuration
+remains outside the change.
+
+## Merged checkpoint: REQUIRED-CI latency repair (PR #171, 2026-09-03)
 
 Branch `agent/ci-remove-redundant-check`, based on pulled `main`
-`c987838130077d5b6119ee20b717774c1c913fbe`. The completed R8 OLMoE provider candidate is held on
-its feature branch because the required hosted job exceeded its 15-minute whole-job boundary twice.
-With an exact cached compiler the aggregate itself took 14m52s and completed successfully before
-the job was cancelled during finalization. The one retry rebuilt the compiler after a cache miss
-and was cancelled 12m45s into the same aggregate. It is intentionally not retried again.
+`c987838130077d5b6119ee20b717774c1c913fbe`, merged as PR #171 at
+`dc38b7639d86aaea786965487f1b09c806fbc20a`. The repair followed two PR #170 hosted failures at
+the 15-minute whole-job boundary: the exact-cache attempt completed its aggregate in 14m52s before
+finalization cancellation, and the single cache-miss retry was cancelled 12m45s into that aggregate.
 
 The repair removes only the redundant standalone `check` goal from `HOSTED_CHECK_TARGETS`.
 `make check` remains unchanged for local checkpoints; the aggregate's shared `build` prerequisite
@@ -38,15 +80,13 @@ in both aggregate graphs. The documentation-only repair states the actual alloca
 `make check`, aggregate `build`, and compiler-owned checker parity. It changes no implementation,
 baseline artifact, or verification behavior, so it does not trigger another comprehensive review.
 
-**Next actions.** (1) Run exact-head publication preflight. (2) Publish and merge the repair after
-required checks pass. (3) Refresh the held provider branch onto latest `main`, rerun its required
-checks once, then merge it.
+On the final synthetic integration tree `5b8895873f026ba3657ade7c2381b7cb4ca9c819`, the required
+hosted job passed in 9m28s, down 5m24s from the exact-cache incident. Installed aarch64 and x86_64
+passed in 12m54s and 11m47s respectively. The provider branch is now consuming this merged repair.
 
-**Blocker.** The provider capability cannot merge until the required hosted graph completes within
-its configured boundary; this repair is the resume condition.
+**Blocker.** None; the provider publication gate is resumed.
 
-**Intentional uncommitted files.** The review's documentation-only closure repair until committed.
-Local configuration remains outside the change.
+**Intentional uncommitted files.** None. Local configuration remains outside the change.
 
 ## Merged checkpoint: R8-OLMOE-TEXT (2026-09-03)
 
@@ -90,8 +130,9 @@ from the exact source through the repository wrapper before testing it.
 The repair does not expand the public behavior or capability scope, so another comprehensive review
 is not required.
 
-**Next actions.** Complete. The provider-level successor remains on its held feature branch while
-the active required-CI latency repair restores a usable publication gate.
+PR #169 merged as `c987838130077d5b6119ee20b717774c1c913fbe`; `main` was pulled and no additional
+align-llm or sibling Align update was present at that checkpoint. Its provider-level successor is
+the current active capability.
 
 **Blocker.** None.
 

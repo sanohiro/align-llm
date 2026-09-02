@@ -390,6 +390,7 @@ fn run_generation(
     max_response_bytes: request.max_response_bytes,
     runtime_pack_path: "",
     runtime_geometry_path: "",
+    runtime_cache_budget_bytes: 0,
   }
   info := provider.model_info(capability_config)
   seeded_body := provider_request_bytes(kind, model_view, seeded_request)

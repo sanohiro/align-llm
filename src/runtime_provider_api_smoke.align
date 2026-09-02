@@ -17,6 +17,7 @@ fn config(
   timeout_ns: i64,
   tokenize_endpoint: str,
   max_response_bytes: i64,
+  cache_budget_bytes: i64,
 ) -> model.ProviderConfig {
   return model.ProviderConfig {
     kind: kind,
@@ -28,6 +29,7 @@ fn config(
     max_response_bytes: max_response_bytes,
     runtime_pack_path: pack_path,
     runtime_geometry_path: geometry_path,
+    runtime_cache_budget_bytes: cache_budget_bytes,
   }
 }
 
@@ -78,7 +80,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   }
 
   base := config(
-    model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 1048576)
+    model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 1048576, 0)
   generated := provider.generate(base, request(1, 0.0, None))?
   if generated.len() != 1 { return Err(Error.Invalid) }
   counted := provider.count_tokens(base, generated)?
@@ -91,42 +93,45 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   }
 
   expect_error(provider.generate(
-      config(model.ProviderKind.LocalOpenAI, model_path, pack_path, geometry_path, "", "", 0, "", 1048576),
+      config(model.ProviderKind.LocalOpenAI, model_path, pack_path, geometry_path, "", "", 0, "", 1048576, 0),
       request(1, 0.0, None)))?
   expect_error(provider.generate(
-      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "socket", "", 0, "", 1048576),
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "socket", "", 0, "", 1048576, 0),
       request(1, 0.0, None)))?
   expect_error(provider.generate(
-      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "secret", 0, "", 1048576),
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "secret", 0, "", 1048576, 0),
       request(1, 0.0, None)))?
   expect_error(provider.generate(
-      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 1, "", 1048576),
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 1, "", 1048576, 0),
       request(1, 0.0, None)))?
   expect_error(provider.generate(
-      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "tokenize", 1048576),
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "tokenize", 1048576, 0),
       request(1, 0.0, None)))?
   expect_error(provider.generate(
-      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 0),
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 0, 0),
       request(1, 0.0, None)))?
   expect_error(provider.generate(
-      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 1048577),
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 1048577, 0),
       request(1, 0.0, None)))?
   expect_error(provider.generate(base, request(0, 0.0, None)))?
   expect_error(provider.generate(base, request(129, 0.0, None)))?
   expect_error(provider.generate(base, request(1, 0.1, None)))?
   expect_error(provider.generate(base, request(1, 0.0, Some(0))))?
   expect_error(provider.generate(
-      config(model.ProviderKind.AlignRuntime, "", pack_path, geometry_path, "", "", 0, "", 1048576),
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 1048576, 1),
       request(1, 0.0, None)))?
   expect_error(provider.generate(
-      config(model.ProviderKind.AlignRuntime, model_path, "", geometry_path, "", "", 0, "", 1048576),
+      config(model.ProviderKind.AlignRuntime, "", pack_path, geometry_path, "", "", 0, "", 1048576, 0),
       request(1, 0.0, None)))?
   expect_error(provider.generate(
-      config(model.ProviderKind.AlignRuntime, model_path, pack_path, "", "", "", 0, "", 1048576),
+      config(model.ProviderKind.AlignRuntime, model_path, "", geometry_path, "", "", 0, "", 1048576, 0),
+      request(1, 0.0, None)))?
+  expect_error(provider.generate(
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, "", "", "", 0, "", 1048576, 0),
       request(1, 0.0, None)))?
   expect_error(provider.stream(base, request(1, 0.0, None)))?
   expect_error(provider.generate(
-      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 1),
+      config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 1, 0),
       request(3, 0.0, None)))?
 
   print("runtime provider API smoke: PASS")
