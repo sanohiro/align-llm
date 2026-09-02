@@ -3,45 +3,50 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-SCORE-BASED-CACHE (2026-09-02)
+## Active: R8-RESET-CACHE-DECISION (2026-09-02)
 
-Branch `agent/r8-score-cache`, based on merged `main`
-`edc5c132225f567c7810f8809819d18b3d4ec45d` (REQUIRED-CI-UNDER-15 PR #165). The user requested
-that the Align prerequisite advance after that merge. The candidate moves `.align-revision` from
-`27770420555d19b98eced133369c168e9c6d4a2f` to the current merged Align `origin/main`,
-`b6f95a261e1434d705d7de006484ffa66b1542f0`. The new identity is 45 commits ahead and includes
-Align v0.6.0 plus the later merged `pkg.kv` timeout and SIGPIPE runtime repairs.
+Branch `agent/r8-reset-cache-decision`, based on merged `main`
+`c1338f1cf95d99255bcbb62c2b60d39522394411` (R8-SCORE-BASED-CACHE PR #166). PR #166 passed its
+required hosted check in about twelve minutes, merged, and `main` was pulled with no additional
+remote update.
 
-No align-llm request is waiting in `ALIGN_MERGED`, so this adoption changes no request lifecycle
-state and consumes no proposed language or library surface. In accordance with roadmap's
-ALIGN-ADOPTION rule, checkpoint `04d0156` is an internal prerequisite of the next consumer rather
-than a standalone pull request. That consumer is `R8-SCORE-BASED-CACHE`: extend the activation trace
-with selected router weights and let the residency simulator evaluate one fixed weighted-LFU cache
-policy. [`docs/specs/r8-score-cache.md`](docs/specs/r8-score-cache.md) owns the public-contract
-ledger, closure matrix, cost ceilings, and exact exclusions.
+Design checkpoint `ba641e5`, implementation checkpoint `465b0bf`, and measurement record
+`83420a0` add the explicit
+`--simulate-residency-reset` verb, schema-3 reset documents, exact independent-oracle coverage, and
+continuing plus reset versions of all four real-runner projections from one capture. The existing
+schema-2 command and golden remain byte-identical.
 
-The implementation candidate now extends the managed instrument to print full
-`ffn_moe_weights`, emits one exact selected weight in every `R2_ACTIVATION_TRACE` schema-2
-selection, and evaluates `router_weight_lfu` as the eleventh `R3_RESIDENCY_SIM` schema-2 policy.
-The independent oracle, golden, compact/full pairing errors, old-schema refusal, and a scripted
-weighted-LFU/count-LFU discriminator are included. Implementation checkpoint `bae4ff7` is
-committed and its comprehensive review found no implementation defect; the sole finding was this
-handoff's stale pre-commit next action.
+The real 40-prompt, 16-step run completed in 213.47 seconds total (199.0-second sole capture). On
+reset `decode_only` at the 975,175,680-byte budget, null streaming fetched 312,056,217,600 bytes and
+LRU fetched 144,557,211,648, a 536-per-mille reduction. The conservative all-40-fold lower bound is
+524 per mille. `router_weight_lfu` improved on LRU by only 9 per mille, below rule 3's floor, so the
+next runtime capability is eligible with the simpler LRU policy, not weighted LFU.
 
-**Latest durable verification.** The managed release compiler/runtime materialized successfully
-with Align's LLVM-aware Cargo wrapper. `scripts/align-toolchain verify` passed in 0.127 seconds at
-the exact new identity, and `make check` checked all 40 units per-unit in 2m00.91s. On the stable
-R8 candidate: `scripts/run-expert-trace-smoke` passed 116 fixtures in 13.15s;
-`scripts/run-residency-sim-smoke` passed 31 traces and every policy/budget/order in 3.19s;
-`scripts/run-r2c-instrument-smoke` passed 55 groups in 2.63s. The first uncached compiled
-instrument qualification passed in 4m52.38s, then the cached real OLMoE qualification passed three
-graphs and 384 full-width weighted selections in 5.09s. Independent real OLMoE expert-trace parity
-passed 488 weighted selections in 24.03s. Shell, Python, embedded-Python syntax, and
-`git diff --check` pass.
+The comprehensive Codex CLI review covered head
+`83420a081dded8c9ae28884f0ddc21b4dc65ceec` against base tip and merge base
+`c1338f1cf95d99255bcbb62c2b60d39522394411`, using gpt-5.6-sol at high effort over the full diff.
+It found two accepted P2 reporting and selection defects: the real runner could promote a non-LRU
+policy that had not passed rule 3 when LRU failed the streaming gate, and its refactored human
+report omitted the settled budget sweep. Consolidated repair
+`f514feec3388cd31e5cbda85617b559c119e3fcb` defers when neither a qualified rule-3 winner nor LRU
+clears the investment rule, restores every sweep row for every pooling/arm pair, and binds both
+properties into the narrow owner. No finding remains open and the repair does not change the
+simulator or measured result.
 
-**Next actions.** (1) Run exact-HEAD publication preflight, publish with the review envelope and
-finding disposition, and merge after required checks. (2) Pull current `main` and continue the next
-eligible roadmap capability.
+**Latest durable verification.** `make residency-sim-smoke` passes in 5.3 seconds over both pooling
+lifetimes, both orders, every policy/budget, both output forms, and the full error corpus against the
+independent oracle. The real runner passes all eight arm/lifetime results with the model unchanged
+in 213.47 seconds. No aggregate, installed profile, benchmark, or platform suite has completed.
+
+The first publication plan incorrectly selected the fresh-image scope solely because this branch
+had edited the existing `Makefile` owner comment without changing its target or command. A native
+Linux/aarch64 attempt proved the owner and focused qualification, then was stopped after roughly 17
+minutes while a cold inner image was still downloading LLVM. Removing that non-contract comment
+restores the intended hosted scope; the failed cold-image attempt is not candidate evidence and is
+not repeated.
+
+**Next actions.** (1) Run exact-head publication preflight. (2) Publish and merge after required
+checks. (3) Pull `main` and begin the measured 975,175,680-byte partial LRU cache capability.
 
 **Blocker.** None.
 

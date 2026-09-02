@@ -1256,7 +1256,8 @@ The current forward delivery order is:
     changes no product behavior or evaluator result.
 
 45. **R8-SCORE-BASED-CACHE — selected router weights through one score-based residency policy.
-    Active.** [`r8-score-cache.md`](r8-score-cache.md) is the authoritative implementation contract.
+    Merged as PR #166 (`c1338f1`) on 2026-09-02.**
+    [`r8-score-cache.md`](r8-score-cache.md) is the authoritative implementation contract.
     The capability upgrades `R2_ACTIVATION_TRACE` and `R3_RESIDENCY_SIM` to schema 2, extends the
     managed measurement instrument so `ffn_moe_topk` and `ffn_moe_weights` expose identical full
     axes, and adds one predetermined `router_weight_lfu` candidate to the simulator and its
@@ -1266,6 +1267,29 @@ The current forward delivery order is:
     `b6f95a261e1434d705d7de006484ffa66b1542f0` is an internal checkpoint on the same branch. This
     capability evaluates a cache policy in bytes; it does not yet implement a runtime cache or make
     the latency claim required to close R8.
+
+    The first real decode-corpus replay at the merged head completed in 190.0 seconds and rejected
+    `router_weight_lfu` as the runtime candidate at the requested 25-per-cent budget: it fetched
+    181, 224, and 110 per mille more bytes than LRU on the mixed, decode-only, and head-4 arms.
+    That measurement still pooled forty prompts through one continuing cache, while the current
+    runtime owns one invocation at a time. Item 46 closes that lifetime mismatch before any runtime
+    cache allocation.
+
+46. **R8-RESET-CACHE-DECISION — evaluate cache policy at the runtime's per-request lifetime.
+    Implementation and real measurement complete; review/publication active.**
+    [`r8-reset-cache-decision.md`](r8-reset-cache-decision.md) is the authoritative
+    implementation contract. Add an explicit reset-per-trace simulator verb and schema-3 result,
+    with both replay orders, the independent oracle, and the existing real decode runner using one
+    unchanged capture for continuing and reset results. This is a byte-level investment decision,
+    not a runtime cache or latency claim. A partial expert cache is eligible only if the reset
+    decode-only evidence materially beats streaming and survives leave-one-trace-out folds.
+
+    The 40-prompt, 16-step real run completed in 213.47 seconds total (199.0 seconds for the sole
+    capture). At the 25-per-cent budget, reset decode-only null streaming fetched 312,056,217,600
+    bytes and LRU fetched 144,557,211,648: a 536-per-mille reduction, with a conservative
+    524-per-mille lower bound after any one trace is removed. Weighted LFU fetched
+    143,222,243,328 bytes, only 9 per mille below LRU, so rule 3 does not justify its extra state.
+    The next partial-cache capability is eligible with LRU at 975,175,680 bytes.
 
 ### Status (2026-08-28)
 

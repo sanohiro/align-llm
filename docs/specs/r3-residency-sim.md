@@ -12,6 +12,12 @@ schema 2 with verdict rule 2, and inserts `router_weight_lfu` after `lfu`. The s
 evidence below remain the historical base for every unchanged field, replay, validation rule, and
 CLI behavior.
 
+R8-RESET-CACHE-DECISION (`docs/specs/r8-reset-cache-decision.md`) adds a separate
+`--simulate-residency-reset` verb and R3 schema 3 with verdict rule 3. It resets every policy at
+each trace boundary to model the current runtime's per-invocation cache lifetime. The existing verb
+and schema-2 continuing replay remain byte-unchanged; the follow-on contract owns only the reset
+variant and its real-model decision.
+
 `docs/specs/roadmap.md` remains authoritative for delivery order and for the R3 gate itself.
 `docs/specs/align-llm.md` remains authoritative for the architecture this simulation serves —
 section 6's VRAM / DRAM / NVMe tiers, section 7.1's prefill/decode split, section 7.4's score-based

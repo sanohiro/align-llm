@@ -6,7 +6,7 @@ tradition of `scripts/expert_locality_gate.py`. It renders the whole document so
 compare every integer of the Align result against a second implementation rather than against a
 checked-in constant.
 
-Usage: residency_oracle.py TRACE_LIST MODEL_IR.json BUDGET_BYTES
+Usage: residency_oracle.py [--reset] TRACE_LIST MODEL_IR.json BUDGET_BYTES
 """
 
 import json
@@ -14,7 +14,8 @@ import os
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+CONTINUING_SCHEMA_VERSION = 2
+RESET_SCHEMA_VERSION = 3
 KIND = "R3_RESIDENCY_SIM"
 MARGIN = 50
 MAX_RESIDENCY_KEYS = 16384
@@ -191,7 +192,7 @@ def decode_model_ir(path, state):
     return sizes
 
 
-def build_stream(paths, sizes, state):
+def build_stream(paths, sizes, state, reset_per_trace):
     model = state["model"]
     n_layer, n_expert = model["n_layer"], model["n_expert"]
     token_major, layer_major = [], []
@@ -324,7 +325,7 @@ def build_stream(paths, sizes, state):
     first = [token_major[i] for i in range(len(token_major)) if tok_tm[i] == 0]
     token_positions = next_tm
     state["stream"] = {
-        "pooling": "continuing",
+        "pooling": "reset_per_trace" if reset_per_trace else "continuing",
         "demand_count": len(token_major),
         "token_position_count": token_positions,
         "distinct_key_count": len(distinct),
@@ -342,6 +343,14 @@ def build_stream(paths, sizes, state):
         "omitted_layer_positions": token_positions * n_layer - len(positions),
         "graph_phases": graph_phases,
     }
+    if reset_per_trace:
+        # Schema 3 appends this field after `pooling`; rebuild the mapping to preserve the
+        # normative wire order used by the Align renderer and whole-document oracle comparison.
+        state["stream"] = {
+            "pooling": state["stream"]["pooling"],
+            "session_count": len(paths),
+            **{key: value for key, value in state["stream"].items() if key != "pooling"},
+        }
     return {
         "token_major": (token_major, tok_tm, weight_tm, bounds_tm),
         "layer_major": (layer_major, tok_lm, weight_lm, bounds_lm),
@@ -378,7 +387,8 @@ def build_budgets(state, requested):
     ]
 
 
-def replay(keys, toks, weights, sizes, budget, policy, window, topk, n_layer, n_expert, drop=None):
+def replay_continuing(
+        keys, toks, weights, sizes, budget, policy, window, topk, n_layer, n_expert, drop=None):
     """Section 2.4. `drop` is the half-open index range of the left-out document, or None."""
     lo, hi = drop if drop else (-1, -1)
     live = [i for i in range(len(keys)) if not (lo <= i < hi)]
@@ -506,6 +516,52 @@ def replay(keys, toks, weights, sizes, budget, policy, window, topk, n_layer, n_
     }
 
 
+def replay(
+        keys, toks, weights, sizes, budget, policy, window, topk, n_layer, n_expert,
+        drop=None, bounds=(), reset_per_trace=False):
+    """Replay either one continuing stream or isolated trace sessions.
+
+    Reset mode deliberately combines complete one-trace replays instead of sharing any policy
+    state. A jackknife fold omits its complete session before aggregation.
+    """
+    if not reset_per_trace:
+        return replay_continuing(
+            keys, toks, weights, sizes, budget, policy, window, topk, n_layer, n_expert, drop,
+        )
+    total = {
+        "hits": 0,
+        "misses": 0,
+        "demands": 0,
+        "bytes_fetched": 0,
+        "prefetch_fetches": 0,
+        "prefetch_useful": 0,
+        "resident_key_high_water": 0,
+        "hit_per_mille": 0,
+        "per_layer": {},
+    }
+    for lo, hi in bounds:
+        if drop is not None and (lo, hi) == drop:
+            continue
+        result = replay_continuing(
+            keys[lo:hi], toks[lo:hi], weights[lo:hi], sizes, budget, policy, window, topk,
+            n_layer, n_expert,
+        )
+        for field in (
+                "hits", "misses", "demands", "bytes_fetched", "prefetch_fetches",
+                "prefetch_useful"):
+            total[field] += result[field]
+        total["resident_key_high_water"] = max(
+            total["resident_key_high_water"], result["resident_key_high_water"]
+        )
+        for layer, stat in result["per_layer"].items():
+            aggregate = total["per_layer"].setdefault(layer, [0, 0])
+            aggregate[0] += stat[0]
+            aggregate[1] += stat[1]
+    if total["demands"]:
+        total["hit_per_mille"] = 1000 * total["hits"] // total["demands"]
+    return total
+
+
 def window_of(policy):
     return {"recent_reuse_w2": 2, "recent_reuse_w8": 8, "recent_reuse_w32": 32}.get(policy, 0)
 
@@ -568,7 +624,7 @@ def render(state, budgets, results, verdict):
             }
         )
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": state["schema_version"],
         "kind": KIND,
         "trace_list_path": state["trace_list_path"],
         "model_ir_path": state["model_ir_path"],
@@ -593,8 +649,15 @@ def render(state, budgets, results, verdict):
 
 
 def empty_document(state, code, detail):
+    stream = state["stream"]
+    if state["schema_version"] == RESET_SCHEMA_VERSION and "session_count" not in stream:
+        stream = {
+            "pooling": stream["pooling"],
+            "session_count": state["admitted"],
+            **{key: value for key, value in stream.items() if key != "pooling"},
+        }
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": state["schema_version"],
         "kind": KIND,
         "trace_list_path": state["trace_list_path"],
         "model_ir_path": state["model_ir_path"],
@@ -611,16 +674,18 @@ def empty_document(state, code, detail):
             "instrument_build_source": state["instrument_build_source"],
         },
         "model": state["model"],
-        "stream": state["stream"],
+        "stream": stream,
         "budgets": [],
         "orders": [],
-        "verdict": blank_verdict(state["requested"]),
+        "verdict": blank_verdict(
+            state["requested"], 3 if state["schema_version"] == RESET_SCHEMA_VERSION else 2
+        ),
     }
 
 
-def blank_verdict(requested):
+def blank_verdict(requested, rule_version=2):
     return {
-        "rule_version": 2,
+        "rule_version": rule_version,
         "order": "token_major",
         "budget_bytes": requested,
         "baseline_policy": "lru",
@@ -677,7 +742,7 @@ def sweep_entry(results, order, budget):
     }
 
 
-def decide(state, streams, sizes, budgets, results, requested):
+def decide(state, streams, sizes, budgets, results, requested, reset_per_trace):
     model = state["model"]
     keys, toks, weights, bounds = streams["token_major"]
     lru = results[("token_major", requested, "lru")]["bytes_fetched"]
@@ -697,11 +762,11 @@ def decide(state, streams, sizes, budgets, results, requested):
         for drop in bounds:
             fold_lru = replay(
                 keys, toks, weights, sizes, requested, "lru", 0, 0,
-                model["n_layer"], model["n_expert"], drop,
+                model["n_layer"], model["n_expert"], drop, bounds, reset_per_trace,
             )["bytes_fetched"]
             fold_best = replay(
                 keys, toks, weights, sizes, requested, policy, window_of(policy), topk_of(policy),
-                model["n_layer"], model["n_expert"], drop,
+                model["n_layer"], model["n_expert"], drop, bounds, reset_per_trace,
             )["bytes_fetched"]
             gains.append(truncating(fold_lru - fold_best, fold_lru))
         if not tested:
@@ -724,7 +789,7 @@ def decide(state, streams, sizes, budgets, results, requested):
     else:
         result = "NO_POLICY_BEATS_BASELINE"
     return {
-        "rule_version": 2,
+        "rule_version": 3 if reset_per_trace else 2,
         "order": "token_major",
         "budget_bytes": requested,
         "baseline_policy": "lru",
@@ -744,8 +809,9 @@ def decide(state, streams, sizes, budgets, results, requested):
     }
 
 
-def simulate(trace_list_path, model_ir_path, budget_text):
+def simulate(trace_list_path, model_ir_path, budget_text, reset_per_trace=False):
     state = {
+        "schema_version": RESET_SCHEMA_VERSION if reset_per_trace else CONTINUING_SCHEMA_VERSION,
         "trace_list_path": trace_list_path,
         "model_ir_path": model_ir_path,
         "listed": 0,
@@ -768,7 +834,7 @@ def simulate(trace_list_path, model_ir_path, budget_text):
             "uniform_expert_bytes": False,
         },
         "stream": {
-            "pooling": "continuing",
+            "pooling": "reset_per_trace" if reset_per_trace else "continuing",
             "demand_count": 0,
             "token_position_count": 0,
             "distinct_key_count": 0,
@@ -794,35 +860,39 @@ def simulate(trace_list_path, model_ir_path, budget_text):
         sizes = decode_model_ir(model_ir_path, state)
         if requested < state["model"]["largest_expert_bytes"]:
             raise Fault("R3_BUDGET_TOO_SMALL", "")
-        streams = build_stream(paths, sizes, state)
+        streams = build_stream(paths, sizes, state, reset_per_trace)
         model = state["model"]
         key_space = model["n_layer"] * model["n_expert"]
         smallest = model["smallest_expert_bytes"]
         capacity = min(key_space, requested // smallest if smallest else key_space)
-        if state["stream"]["demand_count"] * capacity > MAX_SIMULATION_STEPS:
+        replay_work = state["stream"]["demand_count"] * capacity
+        reset_work = len(paths) * key_space if reset_per_trace else 0
+        if replay_work > MAX_SIMULATION_STEPS - reset_work:
             raise Fault("R3_SIMULATION_COST", "")
         budgets = build_budgets(state, requested)
         results = {}
         for order in ORDERS:
-            keys, toks, weights, _bounds = streams[order]
+            keys, toks, weights, bounds = streams[order]
             for entry in budgets:
                 for policy in POLICY_NAMES:
                     results[(order, entry["bytes"], policy)] = replay(
                         keys, toks, weights, sizes, entry["bytes"], policy,
                         window_of(policy), topk_of(policy),
-                        model["n_layer"], model["n_expert"],
+                        model["n_layer"], model["n_expert"], None, bounds, reset_per_trace,
                     )
-        verdict = decide(state, streams, sizes, budgets, results, requested)
+        verdict = decide(state, streams, sizes, budgets, results, requested, reset_per_trace)
         return render(state, budgets, results, verdict)
     except Fault as fault:
         return empty_document(state, fault.code, fault.detail)
 
 
 def main(argv):
-    if len(argv) != 4:
-        sys.stderr.write("usage: residency_oracle.py TRACE_LIST MODEL_IR.json BUDGET_BYTES\n")
+    reset_per_trace = len(argv) == 5 and argv[1] == "--reset"
+    offset = 2 if reset_per_trace else 1
+    if len(argv) != offset + 3:
+        sys.stderr.write("usage: residency_oracle.py [--reset] TRACE_LIST MODEL_IR.json BUDGET_BYTES\n")
         return 2
-    document = simulate(argv[1], argv[2], argv[3])
+    document = simulate(argv[offset], argv[offset + 1], argv[offset + 2], reset_per_trace)
     sys.stdout.write(json.dumps(document, separators=(",", ":"), sort_keys=False) + "\n")
     return 0 if document["status"] == "ok" else 1
 

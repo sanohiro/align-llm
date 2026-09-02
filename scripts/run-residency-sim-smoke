@@ -213,12 +213,13 @@ def normalized(document):
     return copy
 
 
-def check_case(name, listing, ir_path, budget, asserts=None, expect_exit=0):
+def check_case(name, listing, ir_path, budget, asserts=None, expect_exit=0, reset=False):
     """Both CLI forms, byte-identical documents, and every integer against the oracle."""
-    printed = run(["--simulate-residency", str(listing), str(ir_path), str(budget)],
+    verb = "--simulate-residency-reset" if reset else "--simulate-residency"
+    printed = run([verb, str(listing), str(ir_path), str(budget)],
                   expect_exit=expect_exit)
     destination = work_dir / ("%s-out.json" % name)
-    written = run(["--simulate-residency", str(listing), str(ir_path), str(budget),
+    written = run([verb, str(listing), str(ir_path), str(budget),
                    str(destination)], expect_exit=expect_exit)
     on_disk = destination.read_text()
     if printed.stdout != on_disk + "\n":
@@ -233,7 +234,7 @@ def check_case(name, listing, ir_path, budget, asserts=None, expect_exit=0):
         fail("%s: the run exited 0 with %s %s rather than an ok document"
              % (name, document.get("error_code"), document.get("error_detail")))
         raise SystemExit(1)
-    expected = oracle.simulate(str(listing), str(ir_path), str(budget))
+    expected = oracle.simulate(str(listing), str(ir_path), str(budget), reset_per_trace=reset)
     if document != expected:
         report_difference(name, document, expected, "")
         fail("%s: the document disagrees with the oracle" % name)
@@ -301,6 +302,38 @@ for order in document["orders"]:
                  % (order["order"], start))
 if document["stream"]["slot_coverage_per_mille"] != 1000:
     fail("sim-basic: a synthetic transcript prints every slot, so coverage must be 1000 per mille")
+
+# ---- sim-basic-reset: every policy starts from empty state at every trace boundary ----------
+# The same four-trace corpus is replayed through the schema-3 entrypoint. Whole-document equality
+# with the independent oracle covers resident contents, recency, count and weighted frequency,
+# recent-reuse rings, prefetch learning, and Belady future-use state in both stream orders.
+reset_document = check_case(
+    "sim-basic-reset", basic_list, uniform_ir, basic_budget, reset=True, asserts={
+        "schema_version": 3,
+        "inputs/admitted_trace_count": 4,
+        "stream/pooling": "reset_per_trace",
+        "stream/session_count": 4,
+        "verdict/rule_version": 3,
+        "verdict/jackknife_folds": 4,
+    })
+if reset_document["stream"]["demand_count"] != document["stream"]["demand_count"]:
+    fail("sim-basic-reset: changing pooling changed the admitted demand stream")
+
+# Two distinct trace paths carry identical selections. With the whole expert footprint resident,
+# continuing LRU fetches each selected block once and reuses it in the second document; reset LRU
+# must fetch the same compulsory set once per session. This makes a missing boundary observable
+# independently of the oracle's complete policy comparison above.
+repeat = [make_trace("reset-repeat-%d" % i, [moe(97, 2, 4, UNIFORM)]) for i in range(2)]
+repeat_list = trace_list("sim-reset-repeat", repeat)
+repeat_continuing = check_case(
+    "sim-reset-repeat-continuing", repeat_list, uniform_ir, uniform_expert_total)
+repeat_reset = check_case(
+    "sim-reset-repeat-reset", repeat_list, uniform_ir, uniform_expert_total, reset=True)
+continuing_lru = by_policy(repeat_continuing, "token_major", uniform_expert_total)["lru"]
+reset_lru = by_policy(repeat_reset, "token_major", uniform_expert_total)["lru"]
+if reset_lru["bytes_fetched"] != 2 * continuing_lru["bytes_fetched"]:
+    fail("sim-reset-repeat: reset LRU fetched %d bytes, expected twice continuing LRU's %d"
+         % (reset_lru["bytes_fetched"], continuing_lru["bytes_fetched"]))
 
 # `null` is the floor and `compulsory` the lower bound no policy at any budget can beat.
 for order in document["orders"]:
@@ -699,6 +732,14 @@ if any(("def project_%s" % arm) in decode_runner for arm in projection.ARM_NAMES
 for arm in projection.ARM_NAMES:
     if ('"%s"' % arm) not in decode_runner:
         fail("projection-binding: scripts/run-decode-residency-gate never names the %r arm" % arm)
+for expected in ("--simulate-residency-reset", "results_by_pooling", "pooling=%s"):
+    if expected not in decode_runner:
+        fail("reset-binding: scripts/run-decode-residency-gate no longer emits the two-lifetime "
+             "measurement (%r absent)" % expected)
+for expected in ('verdict["sweep_best"]', 'elif "lru" in qualifying:', 'chosen = None'):
+    if expected not in decode_runner:
+        fail("decision-report-binding: scripts/run-decode-residency-gate no longer preserves the "
+             "settled sweep or proportional fallback (%r absent)" % expected)
 
 # ---- capture-identity: the two decode runners must capture the same transcripts ---------------
 # `docs/specs/r3-residency-sim.md` section 8.1 and `docs/specs/r2a-expert-trace.md` section 9 both
@@ -996,6 +1037,10 @@ runs = {run(["--simulate-residency", str(basic_list), str(uniform_ir),
              str(basic_budget)], expect_exit=0).stdout for _ in range(3)}
 if len(runs) != 1:
     fail("determinism: three runs produced different documents")
+reset_runs = {run(["--simulate-residency-reset", str(basic_list), str(uniform_ir),
+                   str(basic_budget)], expect_exit=0).stdout for _ in range(2)}
+if len(reset_runs) != 1:
+    fail("determinism: two reset runs produced different documents")
 
 # ---- the golden: one checked-in document, normalized on its two path operands ---------------
 golden_path = Path(root_dir) / "eval/fixtures/residency-sim/sim-basic.golden.json"
@@ -1049,17 +1094,31 @@ sys.stderr.write(
 # Section 2.6. One fixture per reachable code, plus the ordering assertion.
 
 def error_case(name, listing, ir_path, budget, code, detail=None, asserts=None):
-    document = check_case(name, listing, ir_path, budget, expect_exit=2, asserts=asserts)
-    if document["status"] != "error" or document["error_code"] != code:
-        fail("%s: reported %r/%r, expected %r"
-             % (name, document["status"], document["error_code"], code))
-    if detail is not None and document["error_detail"] != detail:
-        fail("%s: detail %r, expected %r" % (name, document["error_detail"], detail))
-    if document["budgets"] or document["orders"]:
-        fail("%s: a failed run must not report a sweep or a replay" % name)
-    if document["stream"]["demand_count"] != 0:
-        fail("%s: a failed run reports an empty stream" % name)
-    return document
+    documents = []
+    for reset in (False, True):
+        mode = "reset" if reset else "continuing"
+        document = check_case(
+            "%s-%s" % (name, mode), listing, ir_path, budget, expect_exit=2,
+            asserts=asserts if not reset else None, reset=reset)
+        documents.append(document)
+        if document["status"] != "error" or document["error_code"] != code:
+            fail("%s/%s: reported %r/%r, expected %r"
+                 % (name, mode, document["status"], document["error_code"], code))
+        if detail is not None and document["error_detail"] != detail:
+            fail("%s/%s: detail %r, expected %r"
+                 % (name, mode, document["error_detail"], detail))
+        if document["budgets"] or document["orders"]:
+            fail("%s/%s: a failed run must not report a sweep or a replay" % (name, mode))
+        if document["stream"]["demand_count"] != 0:
+            fail("%s/%s: a failed run reports a non-empty stream" % (name, mode))
+        if reset:
+            if document["schema_version"] != 3 \
+                    or document["stream"]["pooling"] != "reset_per_trace" \
+                    or document["verdict"]["rule_version"] != 3:
+                fail("%s/reset: the error document does not identify schema-3 reset pooling" % name)
+            if document["stream"]["session_count"] != document["inputs"]["admitted_trace_count"]:
+                fail("%s/reset: session_count is not the truthful admitted prefix" % name)
+    return documents[0]
 
 
 def write_json(name, payload):
@@ -1312,14 +1371,15 @@ error_case("order-ir-before-budget-floor", basic_list, not_json, 0, "R3_IR_DECOD
 # Early exit. An arity failure produces no output at all and leaves the destination untouched.
 
 untouched = work_dir / "untouched.json"
-for args in (["--simulate-residency"],
-             ["--simulate-residency", str(basic_list)],
-             ["--simulate-residency", str(basic_list), str(uniform_ir)],
-             ["--simulate-residency", str(basic_list), str(uniform_ir), str(basic_budget),
-              str(untouched), "extra"]):
-    completed = run(args, expect_exit=2)
-    if completed.stdout:
-        fail("arity-no-output: %r produced stdout" % args)
+for verb in ("--simulate-residency", "--simulate-residency-reset"):
+    for args in ([verb],
+                 [verb, str(basic_list)],
+                 [verb, str(basic_list), str(uniform_ir)],
+                 [verb, str(basic_list), str(uniform_ir), str(basic_budget),
+                  str(untouched), "extra"]):
+        completed = run(args, expect_exit=2)
+        if completed.stdout:
+            fail("arity-no-output: %r produced stdout" % args)
 if untouched.exists():
     fail("arity-no-output: the destination was written by an arity failure")
 
