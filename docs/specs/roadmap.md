@@ -1246,9 +1246,12 @@ The current forward delivery order is:
     boundary took about 7m09s. Required checks now have a pre-implementation ceiling of 15 minutes
     of complete GitHub job wall time. The installed matrix keeps both native platform profiles and
     every image-specific refusal, but the complete aggregate becomes an explicit owner-triggered
-    audit instead of routine PR evidence. The authoritative contract, coverage allocation, and
-    closure matrix are in [`check-gate-topology.md`](check-gate-topology.md) section 1.1 and the
-    section 2 ledger. This changes no product behavior or evaluator result.
+    audit instead of routine PR evidence. The same 15-minute wall ceiling applies to fresh-image
+    publication preflight: after ordered owner/toolchain/focused prerequisites, its independent
+    hosted and installed owners run concurrently and fail as one group. The authoritative contract,
+    coverage allocation, and closure matrix are in
+    [`check-gate-topology.md`](check-gate-topology.md) section 1.1 and the section 2 ledger. This
+    changes no product behavior or evaluator result.
 
 ### Status (2026-08-28)
 

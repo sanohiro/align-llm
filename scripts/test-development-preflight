@@ -14,6 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -777,13 +778,23 @@ def test_plan() -> None:
         == [
             "workflow-owner",
             "pinned-align-build",
-            "hosted-checks",
             "fresh-focused",
+            "hosted-checks",
             "fresh-installed",
         ],
         "fresh plan order changed",
     )
     installed = fresh[-1]
+    hosted_parallel = fresh[-2]
+    require(
+        hosted_parallel.parallel_group == "fresh-independent"
+        and installed.parallel_group == "fresh-independent",
+        "fresh independent owners lost their parallel group",
+    )
+    require(
+        hosted_parallel.record()["parallel_group"] == "fresh-independent",
+        "preflight plan record hid the parallel group",
+    )
     require(installed.unset_environment == ("DOCKER_HOST",), "installed plan retained DOCKER_HOST")
     require(
         installed.arguments[-4:]
@@ -847,12 +858,115 @@ def test_plan() -> None:
                 "workflow-owner",
                 "managed-align-ensure",
                 "pinned-align-build",
-                "hosted-checks",
                 "fresh-focused",
+                "hosted-checks",
                 "fresh-installed",
             ],
             f"{label} lost the fail-closed local plan",
         )
+
+    batches = preflight.execution_batches(fresh)
+    require(
+        [[step.label for step in batch] for batch in batches]
+        == [
+            ["workflow-owner"],
+            ["pinned-align-build"],
+            ["fresh-focused"],
+            ["hosted-checks", "fresh-installed"],
+        ],
+        "fresh preflight execution dependencies changed",
+    )
+    for malformed in (
+        (preflight.PlanStep("single", ("true",), parallel_group="one"),),
+        (
+            preflight.PlanStep("a", ("true",), parallel_group="split"),
+            preflight.PlanStep("middle", ("true",)),
+            preflight.PlanStep("b", ("true",), parallel_group="split"),
+        ),
+    ):
+        try:
+            preflight.execution_batches(malformed)
+        except preflight.PreflightError:
+            pass
+        else:
+            raise RuntimeError("malformed parallel preflight plan was accepted")
+
+
+def test_parallel_plan_execution() -> None:
+    preflight = load_script("pre-pr", "align_llm_parallel_pre_pr_test")
+    rendezvous = (
+        "import pathlib,sys,time\n"
+        "mine=pathlib.Path(sys.argv[1])\n"
+        "other=pathlib.Path(sys.argv[2])\n"
+        "mine.write_text('ready', encoding='ascii')\n"
+        "deadline=time.monotonic()+3\n"
+        "while not other.exists() and time.monotonic()<deadline:\n"
+        "    time.sleep(0.01)\n"
+        "sys.exit(0 if other.exists() else 19)\n"
+    )
+    # The rendezvous cannot pass if the two owners run serially.
+    with tempfile.TemporaryDirectory(prefix="align-llm-pre-pr-parallel-") as temporary:
+        root = Path(temporary)
+        left = root / "left"
+        right = root / "right"
+        steps = (
+            preflight.PlanStep(
+                "parallel-left",
+                (sys.executable, "-c", rendezvous, str(left), str(right)),
+                parallel_group="fixture",
+            ),
+            preflight.PlanStep(
+                "parallel-right",
+                (sys.executable, "-c", rendezvous, str(right), str(left)),
+                parallel_group="fixture",
+            ),
+        )
+        preflight.run_parallel_steps(steps, REPOSITORY)
+        require(left.exists() and right.exists(), "parallel owners did not both start")
+
+        sleeper_pid = root / "sleeper-pid"
+        sleeper = (
+            "import os,pathlib,sys,time; "
+            "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()), encoding='ascii'); "
+            "time.sleep(20)"
+        )
+        failure = (
+            "import pathlib,sys,time\n"
+            "p=pathlib.Path(sys.argv[1])\n"
+            "deadline=time.monotonic()+3\n"
+            "while not p.exists() and time.monotonic()<deadline:\n"
+            "    time.sleep(0.01)\n"
+            "sys.exit(23 if p.exists() else 24)\n"
+        )
+        started = time.monotonic()
+        try:
+            preflight.run_parallel_steps(
+                (
+                    preflight.PlanStep(
+                        "parallel-sleeper",
+                        (sys.executable, "-c", sleeper, str(sleeper_pid)),
+                        parallel_group="failure-fixture",
+                    ),
+                    preflight.PlanStep(
+                        "parallel-failure",
+                        (sys.executable, "-c", failure, str(sleeper_pid)),
+                        parallel_group="failure-fixture",
+                    ),
+                ),
+                REPOSITORY,
+            )
+        except preflight.PreflightError as error:
+            require("parallel-failure failed with status 23" in str(error), "parallel failure changed")
+        else:
+            raise RuntimeError("parallel owner failure was accepted")
+        require(time.monotonic() - started < 8, "parallel failure did not stop its peer promptly")
+        pid = int(sleeper_pid.read_text(encoding="ascii"))
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            raise RuntimeError("parallel failure left its peer running")
 
 
 def git(repository: Path, *arguments: str) -> str:
@@ -2378,6 +2492,7 @@ def main() -> int:
     test_classifier()
     test_runtime_materialization()
     test_plan()
+    test_parallel_plan_execution()
     test_ci_reuse()
     test_qualification_modes()
     test_image_build_material()

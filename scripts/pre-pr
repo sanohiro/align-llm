@@ -7,6 +7,7 @@ import argparse
 import datetime
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -30,12 +31,14 @@ class PlanStep:
     label: str
     arguments: tuple[str, ...]
     unset_environment: tuple[str, ...] = ()
+    parallel_group: str | None = None
 
     def record(self) -> dict[str, object]:
         return {
             "label": self.label,
             "arguments": list(self.arguments),
             "unset_environment": list(self.unset_environment),
+            "parallel_group": self.parallel_group,
         }
 
 
@@ -88,14 +91,17 @@ def build_plan(
     # A pure pin adoption proves its request-owned surface locally and leaves the ordinary broad
     # graph to hosted CI. Repeating that graph in local preflight would add no platform-specific
     # evidence. Any other executable change retains the existing hosted integration step.
-    if scope.scope != "pin":
-        plan.append(PlanStep("hosted-checks", ("make", "hosted-checks", f"ALIGNC={alignc}")))
     if scope.fresh_installed:
         plan.extend(
             (
                 PlanStep(
                     "fresh-focused",
                     (sys.executable, "scripts/run-fresh-worker-qualification"),
+                ),
+                PlanStep(
+                    "hosted-checks",
+                    ("make", "hosted-checks", f"ALIGNC={alignc}"),
+                    parallel_group="fresh-independent",
                 ),
                 PlanStep(
                     "fresh-installed",
@@ -108,9 +114,12 @@ def build_plan(
                         str(align_repository),
                     ),
                     ("DOCKER_HOST",),
+                    "fresh-independent",
                 ),
             )
         )
+    elif scope.scope != "pin":
+        plan.append(PlanStep("hosted-checks", ("make", "hosted-checks", f"ALIGNC={alignc}")))
     return plan
 
 
@@ -121,13 +130,18 @@ def emit_phase(label: str, status: str, duration_ms: int | None = None) -> None:
     print(json.dumps(record, sort_keys=True, separators=(",", ":")), file=sys.stderr)
 
 
-def run_step(step: PlanStep, repository: Path) -> None:
+def step_environment(step: PlanStep) -> Mapping[str, str] | None:
     environment: Mapping[str, str] | None = None
     if step.unset_environment:
         selected = dict(os.environ)
         for name in step.unset_environment:
             selected.pop(name, None)
         environment = selected
+    return environment
+
+
+def run_step(step: PlanStep, repository: Path) -> None:
+    environment = step_environment(step)
     started = time.monotonic_ns()
     emit_phase(step.label, "start")
     status = output_summary.run_command(
@@ -140,6 +154,128 @@ def run_step(step: PlanStep, repository: Path) -> None:
     emit_phase(step.label, "pass" if status == 0 else "fail", duration)
     if status != 0:
         raise PreflightError(f"{step.label} failed with status {status}")
+
+
+def run_parallel_steps(steps: Sequence[PlanStep], repository: Path) -> None:
+    if len(steps) < 2:
+        raise PreflightError("parallel group must contain at least two steps")
+    labels = [step.label for step in steps]
+    if len(labels) != len(set(labels)):
+        raise PreflightError("parallel group contains duplicate labels")
+
+    wrapper = repository / "scripts" / "run-output-summary"
+    running: list[tuple[PlanStep, subprocess.Popen[bytes], int]] = []
+    terminal: set[str] = set()
+
+    def finish(processes: Sequence[tuple[PlanStep, subprocess.Popen[bytes], int]]) -> None:
+        for _step, process, _started in processes:
+            if process.poll() is None:
+                try:
+                    process.send_signal(signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+        deadline = time.monotonic() + 8.0
+        for _step, process, _started in processes:
+            if process.poll() is not None:
+                continue
+            try:
+                process.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+    try:
+        for step in steps:
+            started = time.monotonic_ns()
+            emit_phase(step.label, "start")
+            try:
+                process = subprocess.Popen(
+                    (
+                        sys.executable,
+                        os.fspath(wrapper),
+                        "--phase",
+                        output_summary.canonical_phase(step.label),
+                        "--",
+                        *step.arguments,
+                    ),
+                    cwd=repository,
+                    env=step_environment(step),
+                    stdin=None,
+                    stdout=None,
+                    stderr=None,
+                )
+            except OSError as error:
+                terminal.add(step.label)
+                emit_phase(
+                    step.label,
+                    "fail",
+                    max(0, (time.monotonic_ns() - started) // 1_000_000),
+                )
+                raise PreflightError(f"cannot launch {step.label}: {error}") from error
+            running.append((step, process, started))
+
+        first_failure: PreflightError | None = None
+        while len(terminal) < len(running):
+            made_progress = False
+            for step, process, started in running:
+                if step.label in terminal:
+                    continue
+                status = process.poll()
+                if status is None:
+                    continue
+                made_progress = True
+                terminal.add(step.label)
+                duration = max(0, (time.monotonic_ns() - started) // 1_000_000)
+                emit_phase(step.label, "pass" if status == 0 else "fail", duration)
+                if status != 0 and first_failure is None:
+                    first_failure = PreflightError(f"{step.label} failed with status {status}")
+                    finish(
+                        tuple(
+                            candidate
+                            for candidate in running
+                            if candidate[0].label not in terminal
+                        )
+                    )
+            if not made_progress and len(terminal) < len(running):
+                time.sleep(0.05)
+        if first_failure is not None:
+            raise first_failure
+    except BaseException:
+        finish(running)
+        for step, process, started in running:
+            if step.label in terminal:
+                continue
+            status = process.poll()
+            if status is None:
+                status = process.wait()
+            terminal.add(step.label)
+            duration = max(0, (time.monotonic_ns() - started) // 1_000_000)
+            emit_phase(step.label, "pass" if status == 0 else "fail", duration)
+        raise
+
+
+def execution_batches(plan: Sequence[PlanStep]) -> tuple[tuple[PlanStep, ...], ...]:
+    batches: list[tuple[PlanStep, ...]] = []
+    seen_groups: set[str] = set()
+    index = 0
+    while index < len(plan):
+        step = plan[index]
+        if step.parallel_group is None:
+            batches.append((step,))
+            index += 1
+            continue
+        group = step.parallel_group
+        if group in seen_groups:
+            raise PreflightError(f"parallel group is not contiguous: {group}")
+        selected: list[PlanStep] = []
+        while index < len(plan) and plan[index].parallel_group == group:
+            selected.append(plan[index])
+            index += 1
+        if len(selected) < 2:
+            raise PreflightError(f"parallel group has fewer than two steps: {group}")
+        seen_groups.add(group)
+        batches.append(tuple(selected))
+    return tuple(batches)
 
 
 def validate_markdown_fences(scope: Scope, repository: Path) -> None:
@@ -264,7 +400,11 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
-        for step in plan:
+        for batch in execution_batches(plan):
+            if len(batch) > 1:
+                run_parallel_steps(batch, REPOSITORY)
+                continue
+            step = batch[0]
             if step.label == "markdown-fences":
                 started = time.monotonic_ns()
                 emit_phase(step.label, "start")

@@ -57,11 +57,15 @@ compiler-self-test-, and adoption-specific boundary before it took 428.396 secon
 reran the complete common functional graph already owned by the pinned hosted job; it was not a
 benchmark and provided no second architecture-specific oracle for those product assertions.
 
-The shipping ceiling is **900 seconds of GitHub job wall clock for every required check**, including
-checkout, image preparation, cache restoration, cleanup, and evidence binding. GitHub enforces the
-ceiling with `timeout-minutes: 15` on both required job definitions. A required job that cannot fit
-is re-scoped before publication; increasing the timeout is not an accepted repair. The installed
-matrix continues to run natively on x86_64 and aarch64, but it stops after the installed-image
+The shipping ceiling is **900 seconds of wall clock for every required check and for the complete
+fresh-image publication preflight**, including checkout or local admission, image preparation,
+cache restoration, cleanup, and evidence binding. GitHub enforces the check ceiling with
+`timeout-minutes: 15` on both required job definitions. A required job or publication preflight
+that cannot fit is re-scoped before publication; increasing the timeout is not an accepted repair.
+After the owner, pinned-toolchain, and short focused prerequisites pass, local preflight launches
+the independent hosted and native installed owners concurrently. Either failure terminates the
+other owner, every started phase still emits terminal evidence, and no stamp is written. The
+installed matrix continues to run natively on x86_64 and aarch64, but it stops after the installed-image
 profile's real compiler self-test, adoption, and worker-native compiler build/bundle boundary. The
 complete capable aggregate remains an
 explicit audit, selected only when its own aggregate namespace, publication, complete-callsite, or
@@ -89,6 +93,7 @@ The closure matrix for this re-scope is:
 | Required native installed job | native signed image, full pinned Align source, prepared secrets, native focused owners, and an owner-private temporary Docker client configuration | focused qualification validates ELF closure with the production parser and dependency validator; installed ordinary adoption compiles and executes real Align fixtures; worker mode `build` validates its native compiler namespace and installed bundle without running the common graph | every existing focused/image/profile/trust/replacement/adoption/build refusal remains fatal; `--complete-aggregate` is absent; caller and repository-local Docker configuration is never consumed | existing user-namespace restore, signing cleanup, private Docker configuration removal, and image/volume/cgroup cleanup | both native required PR checks below 900 seconds |
 | Explicit complete audit | installed profile plus `--complete-aggregate` | the existing `worker-aggregate` runs after the installed boundary | the flag without an installed-profile mode is usage error; aggregate failure remains fatal | the same profile finalizer owns aggregate success, failure, timeout, and signal | focused owner change or explicit audit only; never routine PR evidence |
 | Coverage reporting | fixed closure inventory and an explicit complete-audit subset | output distinguishes `installed-profile` from `explicit-complete-audit` | unknown, duplicated, or unclassified closure cases fail inventory validation | N/A: read-only report | `scripts/test-development-preflight` |
+| Fresh-image publication preflight | clean exact head, owner, managed toolchain ensure/verify, then focused qualification | after those prerequisites pass, run hosted and installed owners as one declared parallel group and stamp only after both pass | first parallel failure terminates its still-running peer; a launch failure, signal, nonzero status, head drift, or dirty worktree prevents the stamp | each output-summary wrapper owns its command process group; preflight waits for both terminal records before returning | exact-head preflight wall clock below 900 seconds plus development-preflight plan/concurrency regression |
 
 No product API, compiler pin, persisted product format, evaluator verdict, or source-test assertion
 changes. The old complete aggregate remains available for the risks it uniquely exercises; this
