@@ -14,8 +14,8 @@ set -euo pipefail
 # It captures one prompt-plus-decode transcript per prompt from the same checked-in corpus with the
 # same contractual flags `scripts/run-decode-locality-gate` established, derives one
 # `R2_ACTIVATION_TRACE` per transcript with `main --expert-trace`, deletes the transcript, admits
-# the corpus with R2D's `require_full_router_axes`, and runs `main --simulate-residency` four
-# times over one capture:
+# the corpus with R2D's `require_full_router_axes`, and runs both `main --simulate-residency` and
+# `main --simulate-residency-reset` for four projections over one capture:
 #
 #   mixed         every admitted graph — the prompt's prefill graph and its decode graphs — pooled
 #                 into one continuing stream, which is what a session of short requests looks like
@@ -468,31 +468,41 @@ smallest = min(expert_sizes)
 # 2^32, and every arm must sit inside it before the replays are launched.
 resident_bound = min(key_space, int(budget) // smallest)
 cost = {name: total * resident_bound for name, total in arm_demands.items()}
-for name, value in sorted(cost.items()):
+reset_cost = {name: value + len(labels) * key_space for name, value in cost.items()}
+for name, value in sorted(reset_cost.items()):
     if value > MAX_SIMULATION_STEPS:
         raise SystemExit(
-            "decode residency gate: the %s arm's simulation cost %d exceeds MAX_SIMULATION_STEPS %d"
+            "decode residency gate: the %s reset arm's simulation cost %d exceeds "
+            "MAX_SIMULATION_STEPS %d"
             % (name, value, MAX_SIMULATION_STEPS))
 
-results = {}
+results_by_pooling = {"continuing": {}, "reset_per_trace": {}}
 for name in ARM_NAMES:
     listing = temp_dir / ("traces-%s.txt" % name)
     listing.write_text("".join("%s\n" % path for path in sorted(arm_dirs[name].glob("*.json"))),
                        encoding="utf-8")
-    completed = subprocess.run(
-        [str(root_dir / "main"), "--simulate-residency", str(listing), str(ir_path), str(budget)],
-        capture_output=True, text=True)
-    if not completed.stdout.strip():
-        raise SystemExit("decode residency gate: the %s arm exited %d with no document (stderr %r)"
-                         % (name, completed.returncode, completed.stderr[:400]))
-    document = json.loads(completed.stdout)
-    if document["status"] != "ok":
-        raise SystemExit("decode residency gate: the %s arm could not be measured: %s %s"
-                         % (name, document["error_code"], document["error_detail"]))
-    if completed.returncode != 0:
-        raise SystemExit("decode residency gate: the %s arm exited %d on an ok document"
-                         % (name, completed.returncode))
-    results[name] = document
+    for pooling, verb in (("continuing", "--simulate-residency"),
+                          ("reset_per_trace", "--simulate-residency-reset")):
+        completed = subprocess.run(
+            [str(root_dir / "main"), verb, str(listing), str(ir_path), str(budget)],
+            capture_output=True, text=True)
+        if not completed.stdout.strip():
+            raise SystemExit(
+                "decode residency gate: the %s/%s arm exited %d with no document (stderr %r)"
+                % (pooling, name, completed.returncode, completed.stderr[:400]))
+        document = json.loads(completed.stdout)
+        if document["status"] != "ok":
+            raise SystemExit("decode residency gate: the %s/%s arm could not be measured: %s %s"
+                             % (pooling, name, document["error_code"],
+                                document["error_detail"]))
+        if completed.returncode != 0:
+            raise SystemExit("decode residency gate: the %s/%s arm exited %d on an ok document"
+                             % (pooling, name, completed.returncode))
+        results_by_pooling[pooling][name] = document
+
+# Existing phase and report calculations retain the continuing document as their reference. Reset
+# changes policy lifetime only; it must not change the admitted demand stream or phase census.
+results = results_by_pooling["continuing"]
 
 problems = []
 
@@ -545,16 +555,21 @@ def check_graph_phases(name, stream):
                                                      mixed_phases["decode"]))
 
 
-def check_arm(name, document):
+def check_arm(name, document, pooling):
     """The contract properties of one arm, asserted rather than described."""
     inputs, stream, verdict = document["inputs"], document["stream"], document["verdict"]
-    if document["kind"] != "R3_RESIDENCY_SIM" or document["schema_version"] != 2:
-        problems.append("%s: the document is not R3_RESIDENCY_SIM schema 2" % name)
+    schema = 3 if pooling == "reset_per_trace" else 2
+    rule = schema
+    label = "%s/%s" % (pooling, name)
+    if document["kind"] != "R3_RESIDENCY_SIM" or document["schema_version"] != schema:
+        problems.append("%s: the document is not R3_RESIDENCY_SIM schema %d" % (label, schema))
     check_graph_phases(name, stream)
     if inputs["admitted_trace_count"] != inputs["listed_trace_count"]:
         problems.append("%s: a listed trace was not admitted" % name)
-    if stream["pooling"] != "continuing":
-        problems.append("%s: the stream is not the continuing pooled stream" % name)
+    if stream["pooling"] != pooling:
+        problems.append("%s: stream.pooling is %r" % (label, stream["pooling"]))
+    if pooling == "reset_per_trace" and stream.get("session_count") != inputs["admitted_trace_count"]:
+        problems.append("%s: session_count does not equal admitted_trace_count" % label)
     if stream["demand_count"] != arm_demands[name]:
         problems.append("%s: the simulator replayed %d demand(s), the corpus holds %d"
                         % (name, stream["demand_count"], arm_demands[name]))
@@ -576,8 +591,9 @@ def check_arm(name, document):
     if verdict["order"] != "token_major" or verdict["baseline_policy"] != "lru":
         problems.append("%s: the verdict is not defined on token_major against the lru baseline"
                         % name)
-    if verdict["rule_version"] != 2 or verdict["margin_per_mille"] != MARGIN_PER_MILLE:
-        problems.append("%s: the verdict rule is not rule_version 2 at a 50 per mille floor" % name)
+    if verdict["rule_version"] != rule or verdict["margin_per_mille"] != MARGIN_PER_MILLE:
+        problems.append("%s: the verdict rule is not rule_version %d at a 50 per mille floor"
+                        % (label, rule))
     if verdict["result"] not in ("BEATS_BASELINE", "NO_POLICY_BEATS_BASELINE", "NO_HEADROOM"):
         problems.append("%s: the verdict is not one of the three section 2.8 results" % name)
     if verdict["jackknife_folds"] != inputs["admitted_trace_count"]:
@@ -691,12 +707,12 @@ print("  budget             %s byte(s) = %d per mille of the expert footprint"
          // model_block["total_expert_bytes"]))
 print("  demand bound       %s, MAX_DEMANDS %d"
       % (", ".join("%s %d" % (name, arm_demands[name]) for name in ARM_NAMES), MAX_DEMANDS))
-print("  simulation cost    %s, MAX_SIMULATION_STEPS %d (resident bound %d key(s))"
-      % (", ".join("%s %d" % (name, cost[name]) for name in ARM_NAMES), MAX_SIMULATION_STEPS,
+print("  simulation cost    %s reset, MAX_SIMULATION_STEPS %d (resident bound %d key(s))"
+      % (", ".join("%s %d" % (name, reset_cost[name]) for name in ARM_NAMES), MAX_SIMULATION_STEPS,
          resident_bound))
 print()
 
-ARMS = (("mixed", "mixed         prefill graph + decode graphs, one continuing pooled stream"),
+ARMS = (("mixed", "mixed         prefill graph + decode graphs"),
         ("decode_only", "decode-only   graph 0 projected away, ordinals as captured"),
         ("prefill_only", "prefill-only  decode graphs projected away — the coverage control arm"),
         ("decode_head4",
@@ -704,89 +720,102 @@ ARMS = (("mixed", "mixed         prefill graph + decode graphs, one continuing p
          % DECODE_HEAD_STEPS))
 
 cleared_by_arm = {}
-for name, title in ARMS:
-    document = results[name]
-    cleared = check_arm(name, document)
-    cleared_by_arm[name] = cleared
-    stream, verdict = document["stream"], document["verdict"]
-    rows = by_policy(document, "token_major", verdict["budget_bytes"])
-    print("  %s" % title)
-    print("    traces           %d admitted of %d listed, %d byte(s) read"
-          % (document["inputs"]["admitted_trace_count"], document["inputs"]["listed_trace_count"],
-             document["inputs"]["bytes_read"]))
-    print("    stream           %d demand(s) over %d token position(s), %d distinct key(s)"
-          % (stream["demand_count"], stream["token_position_count"], stream["distinct_key_count"]))
-    print("    graph phases     %s" % json.dumps(stream["graph_phases"], sort_keys=True))
-    print("    layers demanded  %s" % stream["layers_demanded"])
-    # `one_token_working_set_*` is measured over the pooled stream's *first* token position only
-    # (`src/residency_sim.align`: the scan stops at the first demand whose token ordinal is not 0),
-    # so the phase it reports is the phase of that position, not an average over the arm. In the
-    # mixed and prefill-only arms that position is a prompt token; in the two decode arms it is a
-    # generated one, which is why the two differ by exactly the prefill graph's reduced last layer.
-    print("    one token        %d expert(s), %d byte(s) at the stream's first token position, a "
-          "%s token - the LRU cliff"
-          % (stream["one_token_working_set_keys"], stream["one_token_working_set_bytes"],
-             "generated" if name in ("decode_only", "decode_head4") else "prompt"))
-    print("    token_major at the requested budget")
-    print("      %-18s %18s %10s %14s" % ("policy", "bytes fetched", "hit ‰", "vs lru ‰"))
-    # `check_arm` records a problem and stops when the ten rows of section 2.4 are not all present.
-    # This block must not then raise on the same document: the recorded problems are printed to
-    # stderr after the human block, and a `KeyError` here would take them down with it.
-    reported = [policy for policy in EXPECTED_POLICIES if policy in rows]
-    if len(reported) != len(EXPECTED_POLICIES):
-        print("      (incomplete: %d of %d section 2.4 rows at this budget; see the problems below)"
-              % (len(reported), len(EXPECTED_POLICIES)))
-    for policy in reported:
-        cell = rows[policy]
-        gain = per_mille_gain(verdict["baseline_bytes_fetched"], cell["bytes_fetched"])
-        mark = ""
-        if policy == "lru":
-            mark = "  <- baseline"
-        elif policy == verdict["best_policy"]:
-            mark = ("  <- best qualifying candidate" if verdict["result"] == "BEATS_BASELINE"
-                    else "  <- lowest-byte candidate, does NOT qualify")
-        elif policy in cleared:
-            mark = "  (clears the floor, not the jackknife)"
-        print("      %-18s %18d %10d %14d%s"
-              % (policy, cell["bytes_fetched"], cell["hit_per_mille"], gain, mark))
-    print("    verdict (rule_version %d, bytes_fetched on token_major)" % verdict["rule_version"])
-    print("      budget         %d byte(s)" % verdict["budget_bytes"])
-    print("      baseline       lru %d byte(s) fetched" % verdict["baseline_bytes_fetched"])
-    print("      best_policy    %s %d byte(s) fetched (%s)"
-          % (verdict["best_policy"] or "-", verdict["best_bytes_fetched"],
-             "the qualifying candidate" if verdict["result"] == "BEATS_BASELINE"
-             else "the lowest-byte candidate; it does NOT qualify"))
-    print("      candidates clearing the pooled floor: %s" % (", ".join(cleared) or "none"))
-    print("      gain           %d per mille (floor %d)"
-          % (verdict["gain_per_mille"], verdict["margin_per_mille"]))
-    print("      headroom       %d per mille to the offline optimum"
-          % verdict["headroom_per_mille"])
-    # Section 2.8 resamples only over candidates that clear the pooled effect floor, so when none
-    # does the fold loop never runs and `jackknife_min_gain_per_mille` is the untested initial 0
-    # rather than a measured minimum. Printing `40 fold(s), minimum gain 0` without that word reads
-    # as a measured instability. `jackknife_folds` still reports how many folds the document is
-    # *partitioned* into, which is a property of the corpus and is true either way.
-    print("      jackknife      %s; %d fold(s) available, minimum gain %s, stable %s"
-          % ("tested" if cleared else "NOT tested (no candidate cleared the pooled floor)",
-             verdict["jackknife_folds"],
-             ("%d per mille" % verdict["jackknife_min_gain_per_mille"]) if cleared
-             else "not measured",
-             "yes" if verdict["jackknife_stable"] else "no"))
-    print("      result         %s" % verdict["result"])
-    print("    sweep (pooled effect floor only: section 2.8 resamples at the requested budget, so")
-    print("           no row below carries a jackknife of its own)")
-    # The share column reports the document's own `per_mille_of_expert_bytes` rather than a percent
-    # derived from it: dividing by ten here would print the 125-per-mille row as "12%", which
-    # understates the operating point the prose then has to describe.
-    print("      %14s %8s %10s %10s %-18s %s"
-          % ("budget", "share", "gain", "headroom", "best", "result"))
-    sweep = {row["budget_bytes"]: row for row in verdict["sweep_best"]}
-    for entry in document["budgets"]:
-        row = sweep[entry["bytes"]]
-        print("      %14d %7d‰ %9d‰ %9d‰ %-18s %s"
-              % (entry["bytes"], entry["per_mille_of_expert_bytes"], row["gain_per_mille"],
-                 row["headroom_per_mille"], row["best_policy"] or "-", row["result"]))
-    print()
+for pooling, pooling_results in results_by_pooling.items():
+    print("  pooling            %s" % pooling)
+    for name, title in ARMS:
+        document = pooling_results[name]
+        cleared = check_arm(name, document, pooling)
+        cleared_by_arm[(pooling, name)] = cleared
+        stream, verdict = document["stream"], document["verdict"]
+        rows = by_policy(document, "token_major", verdict["budget_bytes"])
+        print("    %s" % title)
+        print("      traces         %d admitted of %d listed, %d byte(s) read"
+              % (document["inputs"]["admitted_trace_count"],
+                 document["inputs"]["listed_trace_count"], document["inputs"]["bytes_read"]))
+        print("      stream         %d demand(s) over %d token position(s), %d distinct key(s)"
+              % (stream["demand_count"], stream["token_position_count"],
+                 stream["distinct_key_count"]))
+        print("      graph phases   %s" % json.dumps(stream["graph_phases"], sort_keys=True))
+        print("      layers         %s" % stream["layers_demanded"])
+        print("      one token      %d expert(s), %d byte(s) at the stream's first %s token"
+              % (stream["one_token_working_set_keys"], stream["one_token_working_set_bytes"],
+                 "generated" if name in ("decode_only", "decode_head4") else "prompt"))
+        print("      token_major at the requested budget")
+        print("        %-18s %18s %10s %14s" % ("policy", "bytes fetched", "hit ‰", "vs lru ‰"))
+        reported = [policy for policy in EXPECTED_POLICIES if policy in rows]
+        if len(reported) != len(EXPECTED_POLICIES):
+            print("        (incomplete: %d of %d policy rows; see problems below)"
+                  % (len(reported), len(EXPECTED_POLICIES)))
+        for policy in reported:
+            cell = rows[policy]
+            gain = per_mille_gain(verdict["baseline_bytes_fetched"], cell["bytes_fetched"])
+            mark = ""
+            if policy == "lru":
+                mark = "  <- baseline"
+            elif policy == verdict["best_policy"]:
+                mark = ("  <- best qualifying candidate"
+                        if verdict["result"] == "BEATS_BASELINE"
+                        else "  <- lowest-byte candidate, does NOT qualify")
+            elif policy in cleared:
+                mark = "  (clears the floor, not the jackknife)"
+            print("        %-18s %18d %10d %14d%s"
+                  % (policy, cell["bytes_fetched"], cell["hit_per_mille"], gain, mark))
+        print("      verdict        %s, rule %d, best %s, gain %d‰, headroom %d‰"
+              % (verdict["result"], verdict["rule_version"], verdict["best_policy"] or "-",
+                 verdict["gain_per_mille"], verdict["headroom_per_mille"]))
+        print("      jackknife      %s; %d fold(s), minimum %s, stable %s"
+              % ("tested" if cleared else "NOT tested",
+                 verdict["jackknife_folds"],
+                 ("%d‰" % verdict["jackknife_min_gain_per_mille"])
+                 if cleared else "not measured",
+                 "yes" if verdict["jackknife_stable"] else "no"))
+        print()
+
+# Runtime investment compares an online reset policy with null streaming, not R3's candidate-vs-LRU
+# verdict. Reset totals are sums of independent sessions. The largest null byte volume of any one
+# decode-only session is therefore a conservative deletion bound: if the pooled saving exceeds it,
+# every leave-one-trace-out fold remains strictly in the same direction even if the removed session
+# contributed none of the policy's fetched bytes. This proves all folds without forty redundant
+# simulator invocations.
+size_by_key = {(row["layer"], row["expert"]): row["byte_size"]
+               for row in ir_document["blocks"] if row["kind"] == "ExpertBlock"}
+session_null_bytes = [
+    sum(size_by_key[(row["layer"], row["expert"])] for row in document.get("selections") or [])
+    for document in arm_documents["decode_only"]
+]
+max_session_null = max(session_null_bytes)
+reset_decode = results_by_pooling["reset_per_trace"]["decode_only"]
+reset_rows = by_policy(reset_decode, "token_major", int(budget))
+reset_null = reset_rows["null"]["bytes_fetched"]
+online_policies = ("lru",) + tuple(CANDIDATES)
+investment_rows = []
+for policy in online_policies:
+    fetched = reset_rows[policy]["bytes_fetched"]
+    pooled_gain = per_mille_gain(reset_null, fetched)
+    fold_direction_proven = reset_null - fetched > max_session_null
+    fold_null_lower = reset_null - max_session_null
+    fold_gain_lower = per_mille_gain(fold_null_lower, fetched)
+    if pooled_gain >= MARGIN_PER_MILLE and fold_direction_proven:
+        investment_rows.append((fetched, EXPECTED_POLICIES.index(policy), policy,
+                                pooled_gain, fold_gain_lower))
+investment_rows.sort()
+if investment_rows:
+    _, _, investment_policy, investment_gain, investment_fold_lower = investment_rows[0]
+    investment_result = "ELIGIBLE"
+    investment_direction = "yes"
+else:
+    investment_policy, investment_gain, investment_fold_lower = "none", 0, 0
+    investment_result = "DEFER"
+    investment_direction = "no"
+
+print("  runtime cache investment")
+print("    result             %s" % investment_result)
+print("    reset decode-only  %s against null streaming" % investment_policy)
+print("    pooled gain        %d per mille (floor %d)" % (investment_gain, MARGIN_PER_MILLE))
+print("    fold proof         %d leave-one-trace-out direction(s); conservative minimum %d‰"
+      % (len(labels), investment_fold_lower))
+print("    deletion bound     largest session null volume %d byte(s)" % max_session_null)
+print()
 
 print("  caveats")
 print("    - the three projected lists are projections of the captured documents: only")
@@ -809,36 +838,44 @@ print("    - the first decode graph of a token-reduced prefill layer is a compul
 print("      prefill capture never charged: the instrument reduces the last layer's token axis, so")
 print("      that layer is demanded for the first time in decode")
 print("    - bytes are counted, never converted to seconds: this makes no performance claim")
-print("    - cross-prompt reuse still carries part of the cache pressure in every arm, so the")
-print("      result reads as \"across a session of many short requests\"")
+print("    - continuing rows include cross-prompt reuse; reset_per_trace rows empty every policy")
+print("      state before each prompt and match the runtime's one-cache-per-invocation lifetime")
 print()
 print("  elapsed            %.1f s for %d capture(s) (diagnostic only; no performance claim)"
       % (elapsed_ns / 1e9, len(labels)))
 print("  transcripts        deleted; the %d document(s) were the evidence" % len(labels))
 print()
 
-for name, _ in ARMS:
-    document = results[name]
-    stream, verdict = document["stream"], document["verdict"]
-    # `jackknife_tested` is the field that keeps the two zeros apart: a `jackknife_min_per_mille=0`
-    # under `jackknife_tested=no` is the untested initial value, not a fold that measured no gain.
-    tested = "yes" if cleared_by_arm[name] else "no"
-    print("decode-residency-gate arm=%s verdict=%s budget=%d baseline_bytes=%d best=%s "
-          "best_bytes=%d gain_per_mille=%d headroom_per_mille=%d jackknife_tested=%s "
-          "jackknife_folds=%d jackknife_min_per_mille=%d jackknife_stable=%s demands=%d "
-          "token_positions=%d distinct_keys=%d slot_coverage_per_mille=%d prefill_graphs=%d "
-          "decode_graphs=%d single_first_graphs=%d one_token_ws_keys=%d one_token_ws_bytes=%d "
-          "prompts=%d decode_steps=%d"
-          % (name, verdict["result"], verdict["budget_bytes"], verdict["baseline_bytes_fetched"],
-             verdict["best_policy"] or "none", verdict["best_bytes_fetched"],
-             verdict["gain_per_mille"], verdict["headroom_per_mille"], tested,
-             verdict["jackknife_folds"], verdict["jackknife_min_gain_per_mille"],
-             "yes" if verdict["jackknife_stable"] else "no", stream["demand_count"],
-             stream["token_position_count"], stream["distinct_key_count"],
-             stream["slot_coverage_per_mille"], stream["graph_phases"]["prefill"],
-             stream["graph_phases"]["decode"], stream["graph_phases"]["single_token_first_graph"],
-             stream["one_token_working_set_keys"], stream["one_token_working_set_bytes"],
-             len(labels), decode_steps))
+for pooling, pooling_results in results_by_pooling.items():
+    for name, _ in ARMS:
+        document = pooling_results[name]
+        stream, verdict = document["stream"], document["verdict"]
+        tested = "yes" if cleared_by_arm[(pooling, name)] else "no"
+        print("decode-residency-gate pooling=%s arm=%s verdict=%s budget=%d baseline_bytes=%d "
+              "best=%s best_bytes=%d gain_per_mille=%d headroom_per_mille=%d "
+              "jackknife_tested=%s jackknife_folds=%d jackknife_min_per_mille=%d "
+              "jackknife_stable=%s demands=%d token_positions=%d distinct_keys=%d "
+              "slot_coverage_per_mille=%d prefill_graphs=%d decode_graphs=%d "
+              "single_first_graphs=%d one_token_ws_keys=%d one_token_ws_bytes=%d prompts=%d "
+              "decode_steps=%d"
+              % (pooling, name, verdict["result"], verdict["budget_bytes"],
+                 verdict["baseline_bytes_fetched"], verdict["best_policy"] or "none",
+                 verdict["best_bytes_fetched"], verdict["gain_per_mille"],
+                 verdict["headroom_per_mille"], tested, verdict["jackknife_folds"],
+                 verdict["jackknife_min_gain_per_mille"],
+                 "yes" if verdict["jackknife_stable"] else "no", stream["demand_count"],
+                 stream["token_position_count"], stream["distinct_key_count"],
+                 stream["slot_coverage_per_mille"], stream["graph_phases"]["prefill"],
+                 stream["graph_phases"]["decode"],
+                 stream["graph_phases"]["single_token_first_graph"],
+                 stream["one_token_working_set_keys"], stream["one_token_working_set_bytes"],
+                 len(labels), decode_steps))
+
+print("decode-residency-gate investment=%s pooling=reset_per_trace arm=decode_only "
+      "policy=%s gain_per_mille=%d fold_direction_proven=%s fold_count=%d "
+      "fold_gain_lower_bound_per_mille=%d max_session_null_bytes=%d"
+      % (investment_result, investment_policy, investment_gain, investment_direction, len(labels),
+         investment_fold_lower, max_session_null))
 
 if problems:
     sys.stdout.flush()

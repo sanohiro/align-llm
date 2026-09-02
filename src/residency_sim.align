@@ -65,7 +65,8 @@ LAYER_SLOT_BITS := 15
 
 // Section 2.8. The effect floor, in per mille, stated before any measurement.
 MARGIN := 50
-RULE_VERSION := 2
+RULE_VERSION_CONTINUING := 2
+RULE_VERSION_RESET := 3
 
 // The trace list holds at most `MAX_TRACE_PATHS` = 4096 lines, so a 13-bit ordinal rides below a
 // 49-bit line hash and the packed duplicate-scan word stays positive.
@@ -687,8 +688,10 @@ fn trace_load(
 // Section 2.4 and 2.8. One replay of one stream against one policy at one budget.
 //
 // `drop_lo`/`drop_hi` is the half-open index range of the leave-one-document-out fold, or `-1`/`-1`
-// for the whole stream. Skipping a contiguous range is what lets the jackknife of section 2.8 reuse
-// the pooled columns instead of materializing `admitted_trace_count` copies of the stream.
+// for the whole stream. `reset_starts` contains the first index of every admitted trace in this
+// exact replay order. In reset mode all policy state is cleared before each later start; in
+// continuing mode the same column is ignored. Skipping a contiguous range lets both jackknives
+// reuse the admitted columns instead of materializing `admitted_trace_count` copies of the stream.
 //
 // Victim selection scans the resident list and minimizes `(policy metric, last use, packed key)`,
 // which is a total order, so the scan order does not affect the answer and every policy is
@@ -702,6 +705,8 @@ fn replay(
   borrow toks: array<i64>,
   borrow weights: array<i64>,
   borrow sizes: array<i64>,
+  borrow reset_starts: array<i64>,
+  reset_per_trace: bool,
   demand_count: i64,
   drop_lo: i64,
   drop_hi: i64,
@@ -742,8 +747,21 @@ fn replay(
     mut seen := filled_table(key_space, live + 1)
     mut position := live
     mut back := demand_count - 1
+    mut boundary_back := reset_starts.len() - 1
     loop {
       if back < 0 { break }
+      if reset_per_trace {
+        loop {
+          if boundary_back <= 0 || reset_starts[boundary_back] != back + 1 { break }
+          mut clear := 0
+          loop {
+            if clear >= key_space { break }
+            seen[clear] = live + 1
+            clear = clear + 1
+          }
+          boundary_back = boundary_back - 1
+        }
+      }
       if back < drop_lo || back >= drop_hi {
         position = position - 1
         next_use[back] = seen[keys[back]]
@@ -756,8 +774,38 @@ fn replay(
   mut ring_lo := 0
   mut ordinal := 0
   mut index := 0
+  mut boundary_at := 1
   loop {
     if index >= demand_count { break }
+    if reset_per_trace {
+      loop {
+        if boundary_at >= reset_starts.len() || reset_starts[boundary_at] != index { break }
+        mut clear := 0
+        loop {
+          if clear >= key_space { break }
+          resident_size[clear] = 0
+          resident_pos[clear] = -1
+          last_use[clear] = -1
+          freq[clear] = 0
+          router_score[clear] = 0
+          recent_count[clear] = 0
+          next_of[clear] = demand_count + 1
+          prefetched[clear] = 0
+          clear = clear + 1
+        }
+        used = 0
+        resident_count = 0
+        current = -1
+        ring_lo = index
+        mut chosen_at := 0
+        loop {
+          if chosen_at >= chosen.len() { break }
+          chosen[chosen_at] = -1
+          chosen_at = chosen_at + 1
+        }
+        boundary_at = boundary_at + 1
+      }
+    }
     if index >= drop_lo && index < drop_hi {
       index = index + 1
     } else {
@@ -1201,6 +1249,7 @@ fn result_name(code: i64) -> str {
 
 // Everything the derivation settled, handed to the renderer as one borrowed record.
 Derived {
+  reset_per_trace: bool,
   list_path: string,
   ir_path: string,
   code: string,
@@ -1250,7 +1299,9 @@ fn render_document(borrow d: Derived) -> string {
   list_view: str := d.list_path
   ir_view: str := d.ir_path
   document := builder()
-  document.write("{\"schema_version\":2,\"kind\":\"R3_RESIDENCY_SIM\",\"trace_list_path\":")
+  document.write("{\"schema_version\":")
+  document.write_int(if d.reset_per_trace { 3 } else { 2 })
+  document.write(",\"kind\":\"R3_RESIDENCY_SIM\",\"trace_list_path\":")
   document.write(json_string(list_view))
   document.write(",\"model_ir_path\":")
   document.write(json_string(ir_view))
@@ -1296,7 +1347,13 @@ fn render_document(borrow d: Derived) -> string {
   document.write_int(d.meta[6])
   document.write(",\"uniform_expert_bytes\":")
   document.write(bool_text(d.meta[3] > 0 && d.meta[5] == d.meta[6]))
-  document.write("},\"stream\":{\"pooling\":\"continuing\",\"demand_count\":")
+  document.write("},\"stream\":{\"pooling\":")
+  document.write(json_string(if d.reset_per_trace { "reset_per_trace" } else { "continuing" }))
+  if d.reset_per_trace {
+    document.write(",\"session_count\":")
+    document.write_int(d.admitted)
+  }
+  document.write(",\"demand_count\":")
   document.write_int(d.demand_count)
   document.write(",\"token_position_count\":")
   document.write_int(d.token_positions)
@@ -1370,7 +1427,7 @@ fn render_document(borrow d: Derived) -> string {
     order = order + 1
   }
   document.write("],\"verdict\":{\"rule_version\":")
-  document.write_int(RULE_VERSION)
+  document.write_int(if d.reset_per_trace { RULE_VERSION_RESET } else { RULE_VERSION_CONTINUING })
   document.write(",\"order\":\"token_major\",\"budget_bytes\":")
   document.write_int(if d.requested > 0 { d.requested } else { 0 })
   document.write(",\"baseline_policy\":\"lru\",\"baseline_bytes_fetched\":")
@@ -1429,7 +1486,9 @@ fn render_document(borrow d: Derived) -> string {
 // The whole derivation, in the order of section 2.6. Every value derived before a failure survives
 // into the document, so a failed run is diagnosable from its own output.
 
-pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim {
+fn simulate_mode(
+  list_path: str, ir_path: str, budget_text: str, reset_per_trace: bool,
+) -> ResidencySim {
   mut code := "".clone()
   mut detail := "".clone()
   mut listed := 0
@@ -1594,6 +1653,7 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
   mut layer_weight := filled_table(0, 0)
   mut doc_start := filled_table(0, 0)
   mut doc_end := filled_table(0, 0)
+  mut layer_doc_start := filled_table(0, 0)
   if code.len() == 0 {
     list_view: str := list_text
     mut token_key_b: array_builder<i64> := array_builder()
@@ -1604,10 +1664,12 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
     mut layer_weight_b: array_builder<i64> := array_builder()
     mut doc_start_b: array_builder<i64> := array_builder()
     mut doc_end_b: array_builder<i64> := array_builder()
+    mut layer_doc_start_b: array_builder<i64> := array_builder()
     mut build_column: array_builder<i64> := array_builder()
     mut token_ordinal := 0
     mut layer_ordinal := 0
     mut written := 0
+    mut layer_written := 0
     mut source_seen := false
     mut source_mixed := false
     mut at := 0
@@ -1679,6 +1741,7 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
       }
       doc_start_b.push(start)
       doc_end_b.push(written)
+      layer_doc_start_b.push(layer_written)
       previous = -1
       scan = 0
       loop {
@@ -1691,6 +1754,7 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
         layer_key_b.push(load.observation_key[scan])
         layer_tok_b.push(layer_ordinal - 1)
         layer_weight_b.push(load.observation_weight[scan])
+        layer_written = layer_written + 1
         scan = scan + 1
       }
       at = at + 1
@@ -1703,6 +1767,7 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
     layer_weight = layer_weight_b.build()
     doc_start = doc_start_b.build()
     doc_end = doc_end_b.build()
+    layer_doc_start = layer_doc_start_b.build()
     raw_builds := build_column.build()
     builds = raw_builds.sort()
     demand_count = token_key.len()
@@ -1788,7 +1853,16 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
   if code.len() == 0 {
     capacity := if meta[5] > 0 { requested / meta[5] } else { meta[8] }
     bounded := if capacity < meta[8] { capacity } else { meta[8] }
-    if bounded > 0 && demand_count > MAX_SIMULATION_STEPS / bounded {
+    mut reset_work := 0
+    if reset_per_trace && meta[8] > 0 {
+      if admitted > MAX_SIMULATION_STEPS / meta[8] {
+        reset_work = MAX_SIMULATION_STEPS
+      } else {
+        reset_work = admitted * meta[8]
+      }
+    }
+    if bounded > 0
+      && (demand_count > (MAX_SIMULATION_STEPS - reset_work) / bounded) {
       code = "R3_SIMULATION_COST".clone()
     }
   }
@@ -1820,11 +1894,13 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
         loop {
           if policy >= POLICY_COUNT { break }
           answer := if order == 0 {
-            replay(token_key, token_tok, token_weight, sizes, demand_count, -1, -1,
+            replay(token_key, token_tok, token_weight, sizes, doc_start, reset_per_trace,
+              demand_count, -1, -1,
               budget_bytes[budget_at],
               policy, n_layer, n_expert, key_space)
           } else {
-            replay(layer_key, layer_tok, layer_weight, sizes, layer_key.len(), -1, -1,
+            replay(layer_key, layer_tok, layer_weight, sizes, layer_doc_start, reset_per_trace,
+              layer_key.len(), -1, -1,
               budget_bytes[budget_at],
               policy, n_layer, n_expert, key_space)
           }
@@ -1902,11 +1978,12 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
         mut fold := 0
         loop {
           if fold >= folds { break }
-          fold_base := replay(token_key, token_tok, token_weight, sizes, demand_count, doc_start[fold],
-            doc_end[fold], budget_bytes[requested_index], POLICY_LRU, meta[0], meta[1], meta[8])
+          fold_base := replay(token_key, token_tok, token_weight, sizes, doc_start,
+            reset_per_trace, demand_count, doc_start[fold], doc_end[fold],
+            budget_bytes[requested_index], POLICY_LRU, meta[0], meta[1], meta[8])
           fold_baseline := fold_base.totals[2]
-          fold_candidate := replay(token_key, token_tok, token_weight, sizes, demand_count,
-            doc_start[fold],
+          fold_candidate := replay(token_key, token_tok, token_weight, sizes, doc_start,
+            reset_per_trace, demand_count, doc_start[fold],
             doc_end[fold], budget_bytes[requested_index], best, meta[0], meta[1], meta[8])
           fold_gain := if fold_baseline > 0 {
             (fold_baseline - fold_candidate.totals[2]) * 1000 / fold_baseline
@@ -1954,6 +2031,7 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
   // ------------------------------------------------------------------------------------------
   // One render, whatever happened above.
   derived := Derived {
+    reset_per_trace: reset_per_trace,
     list_path: list_path.clone(),
     ir_path: ir_path.clone(),
     code: code,
@@ -2038,6 +2116,14 @@ pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim 
     document: document,
   }
 }
+
+// R8-RESET-CACHE-DECISION keeps the historical entrypoint byte-stable and exposes reset lifetime
+// through a separate function, so a caller cannot accidentally relabel one replay as the other.
+pub fn simulate(list_path: str, ir_path: str, budget_text: str) -> ResidencySim =
+simulate_mode(list_path, ir_path, budget_text, false)
+
+pub fn simulate_reset(list_path: str, ir_path: str, budget_text: str) -> ResidencySim =
+simulate_mode(list_path, ir_path, budget_text, true)
 
 // The requested budget's slot into the flat result table, for the `token_major` order.
 fn requested_slot(borrow requested_flag: array<i64>, budget_count: i64) -> i64 {

@@ -163,7 +163,8 @@ expert-trace-parity: build
 	./scripts/run-expert-trace-parity
 
 # The docs/specs/r3-residency-sim.md section 4.2 narrow durable owner. It is the hosted owner of a
-# new consumer surface (`--simulate-residency`) and a new exchanged document (`R3_RESIDENCY_SIM`),
+# the continuing and reset consumer surfaces (`--simulate-residency` and
+# `--simulate-residency-reset`) and the versioned `R3_RESIDENCY_SIM` exchanged document,
 # builds its own synthetic olmoe containers and MoE transcripts, compares every integer of the
 # document against the independent Python oracle scripts/residency_oracle.py, needs no model, no
 # network, no instrument, and no GPU, writes well under a megabyte into a temporary tree, and runs

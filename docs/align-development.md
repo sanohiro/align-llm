@@ -1138,6 +1138,18 @@ The CLI arm has the same two forms every other document verb has:
 ./main --simulate-residency TRACES.txt MODEL-IR.json BUDGET_BYTES RESIDENCY.json
 ```
 
+R8-RESET-CACHE-DECISION adds a separate verb for the runtime's one-cache-per-invocation lifetime:
+
+```sh
+./main --simulate-residency-reset TRACES.txt MODEL-IR.json BUDGET_BYTES
+./main --simulate-residency-reset TRACES.txt MODEL-IR.json BUDGET_BYTES RESIDENCY.json
+```
+
+The historical verb remains byte-identical schema 2 with `stream.pooling: "continuing"`. The reset
+verb emits schema 3, adds `stream.session_count`, reports `stream.pooling: "reset_per_trace"`, and
+empties resident, recency, count, router-weight, prefetch, and Belady future-use state before every
+listed trace. Its authoritative ledger is `docs/specs/r8-reset-cache-decision.md`.
+
 `TRACES.txt` is a list of `R2_ACTIVATION_TRACE` document paths, one per line; `MODEL-IR.json` is an
 `R1_MODEL_IR` document, from which only the `ExpertBlock` rows and their `byte_size` are read;
 `BUDGET_BYTES` is the requested residency budget in bytes, parsed by the module's own decimal parser
@@ -1285,7 +1297,8 @@ decode residency gate: N/A (ALIGN_LLM_GGUF_MODEL is absent)
 The other four variables are **overrides, not switches**: a corpus this script was pointed at and
 cannot read is a broken invocation that exits 1, never `N/A`.
 
-**Four arms, one budget, one rule.** The capture is `scripts/run-decode-locality-gate`'s, flag for
+**Four arms, two pooling lifetimes, one capture.** The capture is
+`scripts/run-decode-locality-gate`'s, flag for
 flag — `-n N --temp 0 --seed 42 -t 4 -fa off -ctk f32 -ctv f32 -nr -c 512` — so the two decode
 measurements are taken over the same greedy continuations. The capture logic is **deliberately
 duplicated** rather than factored into a shared helper: the two runners differ in their N/A
@@ -1324,6 +1337,12 @@ first decode step a `single_token_first_graph`, which is `docs/specs/r2a-expert-
 2.5.6's name for "the transcript cannot tell a one-token prompt from a decode step", and
 `graph_phases` would stop being able to state what was replayed.
 
+Each projected list is replayed once as continuing schema 2 and once as reset-per-trace schema 3;
+the second pass reuses the documents and does not invoke the model again. The runtime investment
+line compares online policies with null streaming on reset `decode_only`. Its leave-one-trace-out
+direction is proved with a conservative deletion bound: the pooled saving must exceed the largest
+single session's entire null byte volume, so removing any one session cannot reverse the saving.
+
 The projections live in `scripts/residency_projection.py`, **imported by both** this runner and
 `scripts/run-residency-sim-smoke`, so the arms the hosted owner checks against the independent
 oracle are the arms the real-model runner replays. `projection-binding` in that smoke pins the
@@ -1353,11 +1372,14 @@ arm and exits nonzero only when the instrument, the corpus, or a parser prevente
 prints one human block per arm and one machine-readable line per arm:
 
 ```text
-decode-residency-gate arm=mixed verdict=... budget=... baseline_bytes=... best=... best_bytes=...
+decode-residency-gate pooling=continuing arm=mixed verdict=... budget=... baseline_bytes=... best=... best_bytes=...
   gain_per_mille=... headroom_per_mille=... jackknife_tested=... jackknife_folds=...
   jackknife_min_per_mille=... jackknife_stable=... demands=... token_positions=...
   distinct_keys=... slot_coverage_per_mille=... prefill_graphs=... decode_graphs=...
   single_first_graphs=... one_token_ws_keys=... one_token_ws_bytes=... prompts=... decode_steps=...
+decode-residency-gate investment=ELIGIBLE|DEFER pooling=reset_per_trace arm=decode_only policy=...
+  gain_per_mille=... fold_direction_proven=... fold_count=...
+  fold_gain_lower_bound_per_mille=... max_session_null_bytes=...
 ```
 
 **`jackknife_tested` is the field that keeps two different zeros apart.** Section 2.8 resamples only

@@ -42,6 +42,7 @@ fn print_help() {
   print("       main --model-ir <model.gguf> [model-ir.json]")
   print("       main --expert-trace <callback.log> [trace.json]")
   print("       main --simulate-residency <traces.txt> <model-ir.json> <budget-bytes> [residency.json]")
+  print("       main --simulate-residency-reset <traces.txt> <model-ir.json> <budget-bytes> [residency.json]")
   print("       main --pack <model.gguf> <out.alignpack> [alignpack.json]")
   print("       main --pack-verify <model.gguf> <pack.alignpack> [alignpack-verify.json]")
   print("       main --tokenize <model.gguf> <input.txt> <parse-control|literal-control>")
@@ -889,7 +890,7 @@ fn expert_trace_demo(args: array<str>) -> Result<(), Error> {
 // select the policy that wins on their own corpus and report it as a finding, both orders are
 // always reported, and a window flag would make the three fixed `recent_reuse` constants tunable
 // against the evaluation corpus (section 2.3).
-fn simulate_residency_demo(args: array<str>) -> Result<(), Error> {
+fn simulate_residency_demo(args: array<str>, reset_per_trace: bool) -> Result<(), Error> {
   if args.len() < 5 || args.len() > 6 {
     return Err(Error.Invalid)
   }
@@ -902,7 +903,11 @@ fn simulate_residency_demo(args: array<str>) -> Result<(), Error> {
   if args.len() == 6 && !residency_sim.valid_path(args[5]) {
     return Err(Error.Invalid)
   }
-  simulated := residency_sim.simulate(args[2], args[3], args[4])
+  simulated := if reset_per_trace {
+    residency_sim.simulate_reset(args[2], args[3], args[4])
+  } else {
+    residency_sim.simulate(args[2], args[3], args[4])
+  }
   document_view: str := simulated.document
   if args.len() == 5 {
     // The machine form: the document and one newline, and nothing else.
@@ -1384,7 +1389,9 @@ pub fn main(args: array<str>) -> Result<(), Error> {
                             } else if args[1] == "--expert-trace" {
                               expert_trace_demo(args)?
                             } else if args[1] == "--simulate-residency" {
-                              simulate_residency_demo(args)?
+                              simulate_residency_demo(args, false)?
+                            } else if args[1] == "--simulate-residency-reset" {
+                              simulate_residency_demo(args, true)?
                             } else if args[1] == "--pack" {
                               pack_demo(args)?
                             } else if args[1] == "--pack-verify" {

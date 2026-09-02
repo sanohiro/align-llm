@@ -134,3 +134,9 @@ the reset `decode_only` arm and the same direction survives all forty leave-one-
 This is an investment rule, not R3's candidate-versus-LRU verdict: LRU itself is eligible when it
 materially beats streaming. If no policy clears it, runtime expert caching is deferred and R8 moves
 to the next independent hybrid prerequisite.
+
+The runner proves the fold direction without forty redundant simulations. Reset totals are sums of
+independent sessions. For each eligible policy, the pooled saving must exceed the largest one
+session's entire null byte volume; after any one session is removed, the remaining null volume is
+therefore still greater than the policy's conservative pooled upper bound. The reported fold gain
+is this proof's lower bound, not an empirical per-fold minimum.
