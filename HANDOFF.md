@@ -27,16 +27,26 @@ unrelated pre-existing apt-cache fixture that assumes GNU awk and `/usr/bin/rmdi
 test. Linux-only focused owners correctly stop on missing `/proc/self/fd` or Linux `fcntl` seals on
 macOS.
 
-**Next actions.** (1) Commit the coherent implementation. (2) Run the full Linux development
-preflight owner and the native installed profile without the complete aggregate, recording total
-and phase times against the 900-second ceiling. (3) Complete one comprehensive review, repair any
-validated findings, and run exact-head publication preflight. (4) Publish, require all three hosted
-checks below 15 minutes, merge, pull current `main`, and continue the next eligible capability.
+Implementation checkpoint `5e1ba3c` is owner-tested on Linux/aarch64. The complete
+`scripts/test-development-preflight` passes. All ten focused owners pass; the process-group cleanup
+self-test uses an outer PID 1 reaper, matching its required lifecycle environment. The real native
+installed profile passes without `--complete-aggregate` in **381.028 seconds**: image build 22.211
+seconds, attestation 2.530, profile lifecycle 1.661, compiler self-test 13.970, trust mutations
+11.111, runtime replacements 20.589, adoption boundary 307.843, and cleanup 0.550. No
+`worker-aggregate` phase is emitted. That is an 85.7% reduction from PR #164's 2,662.367-second
+installed owner and leaves 518.972 seconds beneath the 900-second ceiling before accounting for
+the GitHub job's cached image-build wrapper. Corrected local Docker probes use read-only empty mounts
+for repository-local configuration paths, and the candidate worktree is clean.
+
+**Next actions.** (1) Commit this durable owner evidence. (2) Complete one comprehensive review of
+the stable candidate and repair any validated findings. (3) Run exact-head publication preflight.
+(4) Publish, require all three hosted checks below 15 minutes, merge, pull current `main`, and
+continue the next eligible capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The coherent implementation and this durable checkpoint until
-the implementation commit; local configuration remains outside the change.
+**Intentional uncommitted files.** This durable evidence update until committed; local
+configuration remains outside the change.
 
 ## Merged checkpoint: R7-RUNTIME-PROVIDER (2026-09-02)
 
