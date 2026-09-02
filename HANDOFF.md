@@ -3,14 +3,53 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-PROVIDER (2026-09-03)
+## Active: R8-OLMOE-CODING-DECISION (2026-09-03)
 
-Branch `agent/r8-olmoe-provider` is integrating pulled merged `main`
-`dc38b7639d86aaea786965487f1b09c806fbc20a` (required-CI latency repair PR #171) into the reviewed
-provider candidate. The sibling Align checkout and `.align-revision` both remain at current merged
-Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; a post-PR-#169 fetch found no newer prerequisite.
+Branch `agent/r8-olmoe-coding-decision`, based on pulled merged `main`
+`0eaed918f34b1dbb8a70ef0aaa352cbaec7513e7` (R8-OLMOE-PROVIDER PR #170). The sibling Align
+checkout was fetched and pulled after that merge; it and `.align-revision` both remain at current
+merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4` with no newer prerequisite.
 
-The active capability exposes OLMoE greedy generation through the existing in-process provider,
+The completed candidate measures the first provider-level OLMoE performance decision on the existing
+fixed `python-inclusive-range` coding task. Its authoritative protocol, 50,000-ppm shipping floor,
+approximately 15-minute complete-run ceiling, result fields, and closure matrix are
+`docs/specs/r8-olmoe-coding-decision.md`. Four fixed balanced pairs compare the shipped resident
+llama.cpp baseline with the invocation-local partial-LRU Align runtime from provider launch through
+the existing task validator. This capability changes no provider or runtime behavior. Its one
+complete bound real run finished in 142.183 seconds with `NOT_ELIGIBLE`: both arms emitted the same
+deterministic patch, but the unchanged validator rejected it in all eight legs. Both pass counts
+are 0/4 and primary medians are therefore null. The first unmet consumer boundary is model/prompt
+patch correctness, not runtime performance.
+
+**Next actions.** Perform one comprehensive review, consolidate any valid repairs, then run the
+focused exact-head publication preflight, publish, merge, and pull current `main`. Per the user's
+instruction, stop after this pull rather than starting another roadmap capability.
+
+The comprehensive Codex CLI review covered head
+`35dceb22fc15268e58df4006ff94a89b83e3da64` against base tip and merge base
+`0eaed918f34b1dbb8a70ef0aaa352cbaec7513e7`, using gpt-5.6-sol at high effort over the full diff.
+It found five accepted evidence/cleanup defects: ambient shim fault injection was not isolated;
+compiler, helper, shim, and ggml identities were not bound; the mutable Docker validator reference
+was not resolved into the result; image inspection was not deadline-bounded; and a timed-out Docker
+client could leave its container running. Consolidated repair commits `222e93a` and `bbd2a47` scrub
+ambient overrides, force and record the managed toolchain plus native identities, revalidate every
+identity after sampling, resolve one immutable validator image under the whole-run deadline, and
+own its container ID through forced cleanup. The repair implements only recorded findings and does
+not change the fixed request, schedule, metric, floor, or verdict logic, so another comprehensive
+review is not required.
+
+**Blocker.** None.
+
+**Intentional uncommitted files.** The final bound decision and review disposition update until
+committed. Local configuration remains outside the change.
+
+## Merged checkpoint: R8-OLMOE-PROVIDER (PR #170, 2026-09-03)
+
+Branch `agent/r8-olmoe-provider` merged as PR #170 at
+`0eaed918f34b1dbb8a70ef0aaa352cbaec7513e7` after integrating the required-CI repair at
+`dc38b7639d86aaea786965487f1b09c806fbc20a`.
+
+The merged capability exposes OLMoE greedy generation through the existing in-process provider,
 using an explicit invocation-local partial-LRU cache budget and stop-aware MoE generation. Its
 public-contract ledger and closure matrix are `docs/specs/r8-olmoe-provider.md`. Qwen and the
 diagnostic MoE CLI remain unchanged, and this correctness capability makes no performance claim.
@@ -31,20 +70,16 @@ repair adds a qualification-only exact generation seam consumer and signal-aware
 forced escalation self-test. It does not change provider behavior or expand scope, so another
 comprehensive review is not required.
 
-The base integration changes only the hosted-check allocation, its authoritative documentation,
-and the identity-bound baseline chain. It does not materially change the provider risks reviewed
-above, so the existing comprehensive review remains applicable; fresh exact-head integration
-evidence is still required.
-
-**Next actions.** (1) Complete the `main` merge and resolve this continuity record. (2) Run the
-provider owner and exact-head publication preflight once. (3) Push the integration, require the
-shortened hosted graph and both installed classifiers to pass, then merge PR #170 and pull current
-`main` and Align.
+The base integration changed only hosted-check allocation, documentation, and the identity-bound
+baseline chain, so it did not materially change the reviewed provider risks. Exact-head preflight
+passed with the 61-assertion owner in 7.3 seconds and the shortened local hosted graph in 2m55s.
+Required GitHub checks passed: hosted in 11m47s despite a compiler-cache miss, and the unaffected
+installed classifiers in 8 and 12 seconds. The final tested synthetic integration tree was
+`67bea32a1748afe6f7f20dc32515d90518164b8c`.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The in-progress `main` merge until committed. Local configuration
-remains outside the change.
+**Intentional uncommitted files.** None. Local configuration remains outside the change.
 
 ## Merged checkpoint: REQUIRED-CI latency repair (PR #171, 2026-09-03)
 

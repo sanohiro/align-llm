@@ -1,6 +1,6 @@
 # R8 OLMoE provider boundary
 
-Status: reviewed implementation candidate, 2026-09-03
+Status: merged as PR #170 on 2026-09-03
 
 ## 1. Decision and boundary
 

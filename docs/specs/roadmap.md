@@ -1253,11 +1253,13 @@ The current forward delivery order is:
     installed owner and leaves the unchanged common graph to required hosted CI. The authoritative contract,
     coverage allocation, and closure matrix are in
     [`check-gate-topology.md`](check-gate-topology.md) section 1.1 and the section 2 ledger. This
-    changes no product behavior or evaluator result. A 2026-09-03 repair is active after PR #170's
-    hosted graph completed its owners but exceeded the 15-minute whole-job boundary, then timed out
-    again on its single retry. Section 1.2 removes only the redundant uncached `check-per-unit`
-    invocation from routine hosted/capable aggregates. `make check`, the shared `build` failure
-    boundary, every functional owner, and the configured timeout remain unchanged.
+    changes no product behavior or evaluator result. PR #171 (`dc38b76`) completed the 2026-09-03
+    repair after PR #170's hosted graph exceeded the 15-minute whole-job boundary twice. Section
+    1.2 removes only the redundant uncached `check-per-unit` invocation from routine
+    hosted/capable aggregates. `make check`, the shared `build` failure boundary, every functional
+    owner, and the configured timeout remain unchanged. The repaired required hosted job passed in
+    9m28s, down 5m24s from the exact-cache incident, and both installed profiles passed below 13
+    minutes.
 
 45. **R8-SCORE-BASED-CACHE — selected router weights through one score-based residency policy.
     Merged as PR #166 (`c1338f1`) on 2026-09-02.**
@@ -1326,7 +1328,8 @@ The current forward delivery order is:
     ids. Existing Qwen tokenizer and prompt owners pass, and the real Qwen tokenizer identity is
     unchanged.
 
-49. **R8-OLMOE-PROVIDER — expose cache-backed OLMoE generation through `ModelProvider`. Active.**
+49. **R8-OLMOE-PROVIDER — expose cache-backed OLMoE generation through `ModelProvider`. Merged as
+    PR #170 (`0eaed91`) on 2026-09-03.**
     [`r8-olmoe-provider.md`](r8-olmoe-provider.md) is the authoritative implementation contract.
     Dispatch the existing in-process runtime provider by exact model architecture, carry an explicit
     invocation-local expert-cache budget, and extend the shipped MoE decoder with the same
@@ -1334,7 +1337,26 @@ The current forward delivery order is:
     provider path and require OLMoE callers to opt into a positive cache budget. Acceptance is a
     focused synthetic provider owner plus one bounded real-model generation qualification; this
     correctness capability makes no provider-level latency or time-to-passing-patch claim and does
-    not select `make ci`, platform profiles, stress, or the 40-prompt runtime matrix.
+    not select `make ci`, platform profiles, stress, or the 40-prompt runtime matrix. The merged
+    candidate passes 61 synthetic assertions and one fixed real-model generation against pinned
+    llama.cpp with prompt count 47, emitted ids `[1992,4993]`, and decoded bytes `To fix`.
+
+50. **R8-OLMOE-CODING-DECISION — measure provider-level time to a passing patch. Decision recorded:
+    `NOT_ELIGIBLE`.**
+    [`r8-olmoe-coding-decision.md`](r8-olmoe-coding-decision.md) is the authoritative measurement
+    contract and closure matrix. Run the shipped local llama.cpp and partial-LRU `AlignRuntime`
+    OLMoE provider arms over the existing fixed `python-inclusive-range` task in four balanced
+    paired samples. Each sample measures from provider-helper launch through the unchanged coding
+    validator. R8's performance gate is met only if every leg reaches a passing deterministic patch,
+    the candidate is faster in every pair, and its median is at least 50,000 ppm below the baseline
+    median. A negative decision is valid evidence and selects the next investment; malformed,
+    incomplete, nondeterministic, or over-ceiling evidence fails. The complete real decision has an
+    approximately 15-minute diagnostic ceiling and is run once, without `make ci`, platform
+    profiles, the 40-prompt corpus, cache-policy replay, stress, or unrelated benchmarks. The one
+    complete bound run finished in 142.183 seconds. Both arms deterministically emitted the same patch,
+    but that patch failed the unchanged validator in every sample, so both pass counts are 0/4 and
+    primary timing medians remain null. The next investment belongs to model/prompt patch
+    correctness rather than provider-level runtime optimization.
 
 ### Status (2026-08-28)
 

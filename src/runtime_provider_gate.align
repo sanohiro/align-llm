@@ -4,6 +4,7 @@ import model
 import provider
 import result
 import std.fs
+import core.json
 import std.time
 
 fn count_or_unknown(config: model.ProviderConfig, text: str) -> model.TokenCount {
@@ -111,6 +112,23 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       runtime_pack_path: args[3],
       runtime_geometry_path: args[4],
       runtime_cache_budget_bytes: 0,
+    }
+    return run_one(config, request, result_path)
+  }
+  if mode == "runtime-olmoe" && args.len() == 8 {
+    cache_budget_bytes: i64 := json.decode(args[5])?
+    if cache_budget_bytes <= 0 { return Err(Error.Invalid) }
+    config := model.ProviderConfig {
+      kind: model.ProviderKind.AlignRuntime,
+      endpoint: "",
+      model: args[2],
+      api_key: "",
+      timeout_ns: 0,
+      tokenize_endpoint: "",
+      max_response_bytes: 262144,
+      runtime_pack_path: args[3],
+      runtime_geometry_path: args[4],
+      runtime_cache_budget_bytes: cache_budget_bytes,
     }
     return run_one(config, request, result_path)
   }
