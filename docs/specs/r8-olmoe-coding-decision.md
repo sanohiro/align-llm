@@ -27,7 +27,7 @@ authoritative for their surfaces.
 | Task | checked-in `eval/tasks/coding-v1/python-inclusive-range/task.json` and R7's exact one-file prompt and patch extractor |
 | Subject model | `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, 4,213,512,192 bytes, SHA-256 `4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f` |
 | Baseline | llama.cpp build 10566 commit `bb4caa754`, loopback server, CPU-only, four threads, context 512, no server warmup |
-| Candidate | shipped in-process `AlignRuntime`, exact supplied AlignPack and geometry, invocation-local LRU budget 975,175,680 bytes |
+| Candidate | shipped in-process `AlignRuntime`, exact clean align-llm head and managed pinned compiler, measured helper/shim/ggml identities, exact supplied AlignPack and geometry, invocation-local LRU budget 975,175,680 bytes |
 | Request | identical system/user text, greedy temperature zero, no seed, maximum 128 completion tokens |
 | Opt-in inputs | `ALIGN_LLM_OLMOE_MODEL`, `ALIGN_LLM_MOE_ALIGNPACK`, `ALIGN_LLM_MOE_GEOMETRY`, `ALIGN_LLM_GGML_INCLUDE`, `ALIGN_LLM_GGML_LIB`, and `ALIGN_LLM_LLAMA_SERVER` |
 | Samples | four pairs in fixed leg orders `local,runtime`, `runtime,local`, `runtime,local`, `local,runtime` |
@@ -38,7 +38,7 @@ authoritative for their surfaces.
 | Negative results | `NOT_ELIGIBLE` when either arm does not reach a passing patch in every sample; otherwise `NOT_MET` when timing misses the floor or pairwise direction |
 | Validator control | before model/server work, the existing exact known-good one-line patch must pass once; later ordinary generated-patch rejection is a measured no-passing-patch outcome |
 | Result | canonical `R8_OLMOE_CODING_DECISION` schema 1 JSON on stdout plus one concise stderr summary; no result is committed as a machine-local artifact |
-| Failure | nonzero exit for prerequisite identity drift, malformed records, nondeterminism, timer/accounting errors, validator infrastructure failure, cleanup failure, or ceiling excess |
+| Failure | nonzero exit for prerequisite or mid-run identity drift, malformed records, nondeterminism, timer/accounting errors, validator infrastructure failure, cleanup failure, or ceiling excess |
 | Ownership | the runner owns the server process, temporary shim/helper/results/patches, and validation workspaces; all are released on every exit |
 | Persisted/cache identity | N/A: the supplied model/pack/geometry are immutable inputs; the runner creates no reusable runtime cache or committed result |
 | Owner | `scripts/run-olmoe-coding-decision --self-test`; real decision is `scripts/run-olmoe-coding-decision` with the named opt-in environment |
@@ -71,10 +71,13 @@ artifact_kind: "R8_OLMOE_CODING_DECISION"
 status: "COMPLETE"
 model: {bytes, sha256, architecture}
 baseline: {provider, runtime_identity, server_sha256, threads, context, warmup}
-candidate: {provider, align_llm_head, align_revision, pack_sha256, geometry_sha256,
+candidate: {provider, align_llm_head, align_revision, compiler_sha256, helper_sha256, shim_sha256,
+            ggml_libraries: [{name, bytes, sha256}], pack_sha256, geometry_sha256,
             cache_budget_bytes}
 task: {task_id, task_sha256, prompt_sha256, maximum_completion_tokens}
-environment: {os, release, architecture, cpu_count}
+validator: {kind, image_id}
+environment: {os, release, architecture, cpu_count, c_compiler_sha256,
+              c_compiler_version_sha256}
 samples: [{pair_index, order, local, runtime}]
 aggregate: {local_pass_count, runtime_pass_count, local_median_time_to_passing_patch_ns,
             runtime_median_time_to_passing_patch_ns, gain_ppm, candidate_faster_in_every_pair,
@@ -94,11 +97,18 @@ digests and environment facts, so its numbers cannot be moved to different provi
 task, prompt, compiler pin, or host by relabeling. It is evidence emitted by the runner, not a new
 product interchange format or a promise of cross-host equivalence.
 
+The real runner removes Align/compiler selection, shim fault injection, backend discovery, and
+common math-thread overrides from the child environments. It resolves only the managed compiler for
+`.align-revision`, records the actual compiled helper, shim, C compiler, and every named ggml
+library, and re-hashes all executable/model/pack/toolchain inputs after the samples. On non-Linux
+hosts it resolves the configured validator image to one immutable Docker image ID before the
+control, uses only that ID, and owns the container ID through timeout, interruption, and cleanup.
+
 ## 4. Closure matrix
 
 | Cell | Measurement runner | Helper/provider | Evidence |
 | --- | --- | --- | --- |
-| Construction | validate all named paths and identities before setup | build exact source with real ggml shim | self-test prerequisite precedence; real identity fields |
+| Construction | validate all named paths, resolve the immutable validator, and isolate ambient overrides before setup | build exact source with the managed compiler and real ggml shim | self-test prerequisite/isolation precedence; real identity fields |
 | Validator control | validate the fixed known-good patch once before model/server work | existing task runner and unchanged task | control must pass or the run fails before samples |
 | Baseline success | resident pinned server, loopback request | existing local provider and schema-2 record | four extracted and validated patches |
 | Candidate success | exact supplied pack/geometry and budget | existing OLMoE provider path | four extracted and validated patches |
@@ -108,7 +118,7 @@ product interchange format or a promise of cross-host equivalence.
 | Timing | one monotonic interval per command and validator | provider interval comes from existing record | positive nested accounting and exact median oracle |
 | Pair order | fixed balanced four-pair schedule | no ambient randomization | self-test exact schedule |
 | Early exit | stop after first infrastructure/identity failure | no later sample is reported | partial evidence is never labelled complete |
-| Cleanup | signal-aware terminate then kill, temporary directory cleanup | ordinary provider teardown per invocation | forced escalation self-test and clean real exit |
+| Cleanup | signal-aware server termination, owned Docker container force-removal, and temporary directory cleanup | ordinary provider teardown per invocation | forced server escalation and container-target self-tests; clean real exit |
 | Ceiling | whole runner monotonic deadline | per-command bounds remain narrower | fail with observed elapsed time above approximately 15 minutes |
 
 Public API ownership, replacement/move semantics, generic monomorphization, network credentials,

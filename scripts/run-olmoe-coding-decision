@@ -59,6 +59,21 @@ PATCH_PREFIX = (
 )
 KNOWN_GOOD_PATCH = PATCH_PREFIX + "+    return sum(range(start, stop + 1))\n"
 server_process: subprocess.Popen[bytes] | None = None
+SCRUBBED_ENV_NAMES = {
+    "ALIGNC",
+    "ALIGN_REPO",
+    "ALIGN_TOOLCHAIN_ROOT",
+    "ALIGN_TOOLCHAIN_REPOSITORY",
+    "ALIGN_LLM_GGML_FORCE",
+    "ALIGN_LLM_GGML_SHIM_STATIC",
+    "ALIGN_GGML_BACKEND_DIR",
+    "AR",
+    "CARGO",
+    "CC",
+    "GGML_BACKEND_PATH",
+    "RUSTFLAGS",
+}
+SCRUBBED_ENV_PREFIXES = ("GGML_", "OMP_", "OPENBLAS_", "VECLIB_", "MKL_")
 
 
 class DecisionError(RuntimeError):
@@ -92,6 +107,26 @@ def file_sha256(path: Path) -> str:
 
 def bytes_sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def sanitized_environment() -> dict[str, str]:
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name not in SCRUBBED_ENV_NAMES
+        and not any(name.startswith(prefix) for prefix in SCRUBBED_ENV_PREFIXES)
+    }
+
+
+def library_identities(directory: Path) -> list[dict[str, Any]]:
+    rows = [
+        {"name": path.name, "bytes": path.stat().st_size, "sha256": file_sha256(path)}
+        for path in sorted(directory.iterdir())
+        if path.name.startswith("libggml") and path.is_file()
+    ]
+    if not rows:
+        raise DecisionError("configured ggml library directory contains no libggml files")
+    return rows
 
 
 def configured_file(name: str, *, executable: bool = False) -> Path | None:
@@ -169,21 +204,40 @@ def extract_patch(value: str) -> str:
     return patch if patch.endswith("\n") else patch + "\n"
 
 
-def validation_command(patch: Path, work: Path) -> list[str]:
+def resolve_validator(deadline: float) -> dict[str, Any]:
     if platform.system() == "Linux":
-        return [sys.executable, str(VALIDATOR), str(TASK), str(patch)]
+        return {"kind": "native", "image_id": None, "docker": None}
     docker = shutil.which("docker")
     if docker is None:
         raise DecisionError("Docker is required for the Linux coding-task validator on this host")
-    inspect = subprocess.run([docker, "image", "inspect", CONTAINER_IMAGE], capture_output=True)
-    if inspect.returncode != 0:
-        raise DecisionError(f"configured validation image is unavailable: {CONTAINER_IMAGE}")
+    inspect = run_checked(
+        [docker, "image", "inspect", CONTAINER_IMAGE, "--format", "{{.Id}}"],
+        deadline=deadline,
+        maximum=30,
+    )
+    image_id = inspect.stdout.decode("ascii", "strict").strip()
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+        raise DecisionError("Docker validator did not resolve to an immutable image ID")
+    return {"kind": "docker", "image_id": image_id, "docker": docker}
+
+
+def validation_command(
+    patch: Path, work: Path, validator: dict[str, Any]
+) -> tuple[list[str], Path | None]:
+    if validator["kind"] == "native":
+        return [sys.executable, str(VALIDATOR), str(TASK), str(patch)], None
+    docker = validator["docker"]
+    image_id = validator["image_id"]
+    assert isinstance(docker, str) and isinstance(image_id, str)
+    cid_file = work / f"{patch.stem}.cid"
     container_root = "/work/align-llm"
     container_gate = "/tmp/align-olmoe-coding-decision"
     return [
         docker,
         "run",
         "--rm",
+        "--cidfile",
+        str(cid_file),
         "--platform",
         "linux/arm64",
         "--cap-add=SYS_ADMIN",
@@ -201,23 +255,44 @@ def validation_command(patch: Path, work: Path) -> list[str]:
         f"ALIGN_LLM_TEMP_ROOT={container_gate}",
         "-w",
         container_root,
-        CONTAINER_IMAGE,
+        image_id,
         "python3",
         "eval/runners/run-coding-task.py",
         "eval/tasks/coding-v1/python-inclusive-range/task.json",
         f"{container_gate}/{patch.name}",
-    ]
+    ], cid_file
 
 
-def validate_patch(patch: Path, work: Path, deadline: float) -> tuple[bool, int]:
-    started = time.monotonic_ns()
+def cleanup_container(docker: str, cid_file: Path) -> None:
+    if not cid_file.is_file():
+        return
+    cid = cid_file.read_text(encoding="ascii").strip()
+    if re.fullmatch(r"[0-9a-f]{64}", cid) is None:
+        raise DecisionError("validator wrote a malformed container ID")
     result = subprocess.run(
-        validation_command(patch, work),
-        cwd=ROOT,
-        capture_output=True,
-        timeout=remaining_timeout(deadline, 120),
-        check=False,
+        [docker, "rm", "-f", cid], capture_output=True, timeout=15, check=False
     )
+    diagnostic = (result.stdout + result.stderr).decode("utf-8", "replace")
+    if result.returncode != 0 and "No such container" not in diagnostic:
+        raise DecisionError(f"validator container cleanup failed: {diagnostic[-4096:]}")
+
+
+def validate_patch(
+    patch: Path, work: Path, deadline: float, validator: dict[str, Any]
+) -> tuple[bool, int]:
+    started = time.monotonic_ns()
+    argv, cid_file = validation_command(patch, work, validator)
+    try:
+        result = subprocess.run(
+            argv,
+            cwd=ROOT,
+            capture_output=True,
+            timeout=remaining_timeout(deadline, 120),
+            check=False,
+        )
+    finally:
+        if cid_file is not None:
+            cleanup_container(validator["docker"], cid_file)
     elapsed = time.monotonic_ns() - started
     if result.returncode == 0:
         return True, elapsed
@@ -295,6 +370,7 @@ def measure_leg(
     pack: Path,
     geometry: Path,
     deadline: float,
+    validator: dict[str, Any],
 ) -> dict[str, Any]:
     record_path = work / f"pair-{pair_index}-{arm}.json"
     if arm == "local":
@@ -343,7 +419,7 @@ def measure_leg(
             patch = work / f"pair-{pair_index}-{arm}.patch"
             patch.write_text(patch_text, encoding="utf-8")
             patch_sha256 = file_sha256(patch)
-            passed, validation_elapsed_ns = validate_patch(patch, work, deadline)
+            passed, validation_elapsed_ns = validate_patch(patch, work, deadline, validator)
             if passed:
                 status = "PASS"
                 time_to_passing_patch_ns = time.monotonic_ns() - started_ns
@@ -453,6 +529,26 @@ def self_test() -> int:
                 pass
             else:
                 raise DecisionError("invalid configured prerequisite was hidden by N/A")
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SAFE_VALUE": "kept",
+                "ALIGNC": "/wrong/compiler",
+                "ALIGN_LLM_GGML_FORCE": "compute",
+                "OMP_NUM_THREADS": "99",
+            },
+            clear=True,
+        ):
+            cleaned = sanitized_environment()
+            if cleaned != {"SAFE_VALUE": "kept"}:
+                raise DecisionError("measurement environment isolation drifted")
+        cid_file = work / "validator.cid"
+        cid_file.write_text("a" * 64, encoding="ascii")
+        cleanup_result = mock.Mock(returncode=0, stdout=b"", stderr=b"")
+        with mock.patch("subprocess.run", return_value=cleanup_result) as remove:
+            cleanup_container("docker", cid_file)
+        if remove.call_args.args[0] != ["docker", "rm", "-f", "a" * 64]:
+            raise DecisionError("validator cleanup did not target its recorded container")
     global server_process
     forced_timeout = subprocess.TimeoutExpired(["llama-server"], 10)
     fake_server = mock.Mock()
@@ -492,9 +588,10 @@ def main() -> int:
         align_llm_head = run_checked(
             ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30
         ).stdout.decode("ascii").strip()
+        validator = resolve_validator(deadline)
         control = work / "known-good.patch"
         control.write_text(KNOWN_GOOD_PATCH, encoding="utf-8")
-        passed, _ = validate_patch(control, work, deadline)
+        passed, _ = validate_patch(control, work, deadline, validator)
         if not passed:
             raise DecisionError("known-good validator control did not pass")
 
@@ -506,7 +603,29 @@ def main() -> int:
         task_sha256 = file_sha256(TASK)
         prompt_sha256 = bytes_sha256(PROMPT_TEXT.encode("utf-8"))
         align_revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
-        version = run_checked([str(server), "--version"], deadline=deadline, maximum=30)
+        clean_env = sanitized_environment()
+        compiler_output = run_checked(
+            [str(ROOT / "scripts/align-toolchain"), "ensure", "compiler"],
+            deadline=deadline,
+            maximum=300,
+            env=clean_env,
+        )
+        compiler = Path(compiler_output.stdout.decode("utf-8").strip())
+        if not compiler.is_file() or not os.access(compiler, os.X_OK):
+            raise DecisionError("managed pinned compiler is unusable")
+        compiler_sha256 = file_sha256(compiler)
+        c_compiler = shutil.which("cc", path=clean_env.get("PATH"))
+        if c_compiler is None:
+            raise DecisionError("the default C compiler is unavailable")
+        c_compiler_sha256 = file_sha256(Path(c_compiler).resolve())
+        c_compiler_version = run_checked(
+            [c_compiler, "--version"], deadline=deadline, maximum=30, env=clean_env
+        )
+        c_compiler_version_sha256 = bytes_sha256(c_compiler.stdout + c_compiler.stderr)
+        ggml_libraries = library_identities(library)
+        version = run_checked(
+            [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env
+        )
         if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
             raise DecisionError("llama-server is not pinned build 10566 commit bb4caa754")
 
@@ -518,7 +637,7 @@ def main() -> int:
         saved_helper = work / "saved-runtime-provider-gate"
         if generated_helper.exists():
             shutil.copy2(generated_helper, saved_helper)
-        build_env = dict(os.environ)
+        build_env = dict(clean_env)
         build_env.update(
             {
                 "ALIGN_LLM_GGML_INCLUDE": str(include),
@@ -531,7 +650,6 @@ def main() -> int:
             build_env["LIBRARY_PATH"] = ":".join(
                 value for value in (str(shim_dir), str(library), build_env.get("LIBRARY_PATH", "")) if value
             )
-            compiler = Path(os.environ.get("ALIGNC", str(ROOT / "scripts/alignc")))
             run_checked(
                 [str(compiler), "build", "src/runtime_provider_gate.align"],
                 deadline=deadline,
@@ -539,11 +657,16 @@ def main() -> int:
                 env=build_env,
             )
             shutil.move(generated_helper, helper)
-            runtime_env = dict(os.environ)
+            shim_path = shim_dir / (
+                "libalign_ggml_shim.dylib"
+                if platform.system() == "Darwin"
+                else "libalign_ggml_shim.so"
+            )
+            shim_sha256 = file_sha256(shim_path)
+            helper_sha256 = file_sha256(helper)
+            runtime_env = dict(clean_env)
             for name in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
-                runtime_env[name] = ":".join(
-                    value for value in (str(shim_dir), str(library), runtime_env.get(name, "")) if value
-                )
+                runtime_env[name] = ":".join((str(shim_dir), str(library)))
 
             port = free_port()
             server_log = (work / "llama-server.log").open("wb")
@@ -557,6 +680,7 @@ def main() -> int:
                 stdin=subprocess.DEVNULL,
                 stdout=server_log,
                 stderr=subprocess.STDOUT,
+                env=clean_env,
             )
             try:
                 wait_ready(server_process, port, deadline)
@@ -567,7 +691,7 @@ def main() -> int:
                     for arm in order:
                         pair[arm] = measure_leg(
                             arm, pair_index, helper, prompt, work, runtime_env, endpoint,
-                            model, pack, geometry, deadline,
+                            model, pack, geometry, deadline, validator,
                         )
                     samples.append(pair)
             finally:
@@ -576,6 +700,33 @@ def main() -> int:
         finally:
             if saved_helper.exists():
                 shutil.copy2(saved_helper, generated_helper)
+
+        final_status = run_checked(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline,
+            maximum=30,
+        )
+        final_head = run_checked(
+            ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30
+        ).stdout.decode("ascii").strip()
+        if final_status.stdout or final_head != align_llm_head:
+            raise DecisionError("align-llm source changed during the decision")
+        stable_files = (
+            ("model", model, MODEL_SHA256),
+            ("pack", pack, pack_sha256),
+            ("geometry", geometry, geometry_sha256),
+            ("server", server, server_sha256),
+            ("task", TASK, task_sha256),
+            ("compiler", compiler, compiler_sha256),
+            ("C compiler", Path(c_compiler).resolve(), c_compiler_sha256),
+            ("shim", shim_path, shim_sha256),
+            ("helper", helper, helper_sha256),
+        )
+        for label, path, expected_sha256 in stable_files:
+            if file_sha256(path) != expected_sha256:
+                raise DecisionError(f"{label} identity changed during the decision")
+        if library_identities(library) != ggml_libraries:
+            raise DecisionError("ggml library identities changed during the decision")
 
         aggregate_result = aggregate(samples)
         elapsed_ns = time.monotonic_ns() - started_ns
@@ -599,6 +750,10 @@ def main() -> int:
                 "provider": "align-runtime",
                 "align_llm_head": align_llm_head,
                 "align_revision": align_revision,
+                "compiler_sha256": compiler_sha256,
+                "helper_sha256": helper_sha256,
+                "shim_sha256": shim_sha256,
+                "ggml_libraries": ggml_libraries,
                 "pack_sha256": pack_sha256,
                 "geometry_sha256": geometry_sha256,
                 "cache_budget_bytes": BUDGET,
@@ -609,11 +764,17 @@ def main() -> int:
                 "prompt_sha256": prompt_sha256,
                 "maximum_completion_tokens": 128,
             },
+            "validator": {
+                "kind": validator["kind"],
+                "image_id": validator["image_id"],
+            },
             "environment": {
                 "os": platform.system(),
                 "release": platform.release(),
                 "architecture": platform.machine(),
                 "cpu_count": os.cpu_count(),
+                "c_compiler_sha256": c_compiler_sha256,
+                "c_compiler_version_sha256": c_compiler_version_sha256,
             },
             "samples": samples,
             "aggregate": aggregate_result,
