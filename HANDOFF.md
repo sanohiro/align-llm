@@ -53,13 +53,23 @@ user's 15-minute constraint despite both phases being meaningful. Checkpoint
 prerequisites first, then launches independent hosted and installed owners as one fail-fast parallel
 group. Synchronized success and failure/cancellation regressions pass in 0.6s; the complete
 Linux/aarch64 development-preflight owner passes in 10.0s and `format-check` in 11.9s. This expands
-the public local-preflight execution contract after the prior final review and therefore requires
-one fresh comprehensive review before publication.
+the public local-preflight execution contract after the prior final review.
 
-**Next actions.** (1) Perform the fresh comprehensive review of `446f0b1` and consolidate any valid
-repair. (2) Commit this durable state, run exact-head publication preflight below 900 seconds,
-publish with both review envelopes, require all three GitHub checks below 15 minutes, merge, pull
-current `main`, and continue the next eligible capability.
+The fresh comprehensive review covered head
+`c2c04fc8513c2a832b5b1c106f57a10825df912b` against base tip and merge base
+`29b54757c837fdfc610e413acd297d253644e292`, using Codex gpt-5.6-sol at high effort over the full
+diff. It found two P1 cancellation leaks, both accepted: peer-failure escalation killed only the
+output wrapper while a TERM-resistant managed command group survived, and a top-level termination
+could exit the coordinator before it forwarded signals to either wrapper. Consolidated redesign
+repair `38acbb0c155ad02f4a287e8046aded5abdf677d2` gives the output wrapper a two-second
+signal-to-KILL escalation for its owned command group and makes the coordinator forward and
+preserve HUP/INT/QUIT/TERM after reaping every started wrapper. The resistant-child owner passes in
+6.6s, combined peer/top-level coordination owner in 0.8s, and `format-check` in 12.2s. No finding
+remains open.
+
+**Next actions.** (1) Commit this durable review state and run exact-head publication preflight
+below 900 seconds. (2) Publish with all review envelopes, require all three GitHub checks below 15
+minutes, merge, pull current `main`, and continue the next eligible capability.
 
 **Blocker.** None.
 
