@@ -11,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -179,12 +180,26 @@ def qualification_path(owner: str) -> str:
 def run(owner: str, *arguments: str) -> None:
     started = time.monotonic_ns()
     emit_phase(owner, "start")
-    result = subprocess.run(
-        arguments,
-        cwd=REPOSITORY,
-        env=qualification_environment(owner),
-        check=False,
-    )
+    environment = qualification_environment(owner)
+    if owner == INSTALLED_OWNER:
+        with tempfile.TemporaryDirectory(
+            prefix="align-llm-docker-config-", dir="/tmp"
+        ) as directory:
+            os.chmod(directory, 0o700)
+            environment["DOCKER_CONFIG"] = directory
+            result = subprocess.run(
+                arguments,
+                cwd=REPOSITORY,
+                env=environment,
+                check=False,
+            )
+    else:
+        result = subprocess.run(
+            arguments,
+            cwd=REPOSITORY,
+            env=environment,
+            check=False,
+        )
     duration_ms = max(0, (time.monotonic_ns() - started) // 1_000_000)
     emit_phase(owner, "pass" if result.returncode == 0 else "fail", duration_ms)
     if result.returncode != 0:

@@ -1313,6 +1313,42 @@ def test_qualification_modes() -> None:
             os.environ.pop("PATH", None)
         else:
             os.environ["PATH"] = prior_path
+    captured_environments: list[dict[str, str]] = []
+    docker_config_paths: list[Path] = []
+    original_run = qualification.subprocess.run
+
+    def capture_run(*_arguments, **keywords):
+        environment = dict(keywords["env"])
+        captured_environments.append(environment)
+        if "DOCKER_CONFIG" in environment:
+            docker_config = Path(environment["DOCKER_CONFIG"])
+            require(docker_config.is_dir(), "private Docker config is unavailable to its owner")
+            require(
+                docker_config.parent == Path("/tmp")
+                and not docker_config.is_relative_to(REPOSITORY)
+                and stat.S_IMODE(docker_config.stat().st_mode) == 0o700,
+                "private Docker config path or mode changed",
+            )
+            docker_config_paths.append(docker_config)
+        return SimpleNamespace(returncode=0)
+
+    qualification.subprocess.run = capture_run
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            qualification.run(qualification.INSTALLED_OWNER, "installed")
+            qualification.run("run-fresh-worker-unit-smoke", "focused")
+    finally:
+        qualification.subprocess.run = original_run
+    require(
+        len(captured_environments) == 2
+        and "DOCKER_CONFIG" in captured_environments[0]
+        and "DOCKER_CONFIG" not in captured_environments[1],
+        "private Docker config escaped the installed owner",
+    )
+    require(
+        len(docker_config_paths) == 1 and not docker_config_paths[0].exists(),
+        "private Docker config was not removed after its owner",
+    )
     qualification.verify_contract_inventory = lambda: None
     calls: list[tuple[str, tuple[str, ...]]] = []
     qualification.run = lambda owner, *arguments: calls.append((owner, arguments))
