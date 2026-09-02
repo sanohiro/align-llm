@@ -24,7 +24,9 @@ The implementation candidate now extends the managed instrument to print full
 `ffn_moe_weights`, emits one exact selected weight in every `R2_ACTIVATION_TRACE` schema-2
 selection, and evaluates `router_weight_lfu` as the eleventh `R3_RESIDENCY_SIM` schema-2 policy.
 The independent oracle, golden, compact/full pairing errors, old-schema refusal, and a scripted
-weighted-LFU/count-LFU discriminator are included.
+weighted-LFU/count-LFU discriminator are included. Implementation checkpoint `bae4ff7` is
+committed and its comprehensive review found no implementation defect; the sole finding was this
+handoff's stale pre-commit next action.
 
 **Latest durable verification.** The managed release compiler/runtime materialized successfully
 with Align's LLVM-aware Cargo wrapper. `scripts/align-toolchain verify` passed in 0.127 seconds at
@@ -37,15 +39,13 @@ graphs and 384 full-width weighted selections in 5.09s. Independent real OLMoE e
 passed 488 weighted selections in 24.03s. Shell, Python, embedded-Python syntax, and
 `git diff --check` pass.
 
-**Next actions.** (1) Commit the coherent R8 implementation candidate and perform one comprehensive
-review of the full diff. (2) Validate findings, consolidate any accepted repair, and rerun only its
-affected owner. (3) Run exact-HEAD publication preflight, publish, merge after required checks,
-pull current `main`, and continue the next eligible roadmap capability.
+**Next actions.** (1) Run exact-HEAD publication preflight, publish with the review envelope and
+finding disposition, and merge after required checks. (2) Pull current `main` and continue the next
+eligible roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The active R8 design and implementation; local configuration
-remains outside the change.
+**Intentional uncommitted files.** None. Local configuration remains outside the change.
 
 ## Merged checkpoint: REQUIRED-CI-UNDER-15 (PR #165, 2026-09-02)
 
