@@ -10,6 +10,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -967,6 +968,70 @@ def test_parallel_plan_execution() -> None:
             pass
         else:
             raise RuntimeError("parallel failure left its peer running")
+
+        coordinator = root / "signal-coordinator.py"
+        coordinator.write_text(
+            """import importlib.machinery
+import importlib.util
+import pathlib
+import sys
+
+repository = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[2])
+sys.path.insert(0, str(repository / "scripts"))
+loader = importlib.machinery.SourceFileLoader("signal_pre_pr", str(repository / "scripts/pre-pr"))
+specification = importlib.util.spec_from_loader(loader.name, loader)
+module = importlib.util.module_from_spec(specification)
+sys.modules[loader.name] = module
+loader.exec_module(module)
+sleeper = "import os,pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid()), encoding='ascii'); time.sleep(20)"
+steps = tuple(
+    module.PlanStep(
+        "signal-" + name,
+        (sys.executable, "-c", sleeper, str(root / (name + ".pid"))),
+        parallel_group="signal-fixture",
+    )
+    for name in ("left", "right")
+)
+module.run_parallel_steps(steps, repository)
+""",
+            encoding="utf-8",
+        )
+        coordinator_process = subprocess.Popen(
+            (sys.executable, str(coordinator), str(REPOSITORY), str(root)),
+            cwd=REPOSITORY,
+            env={
+                **os.environ,
+                "ALIGN_LLM_OUTPUT_DIRECTORY": str(root / "logs"),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        child_paths = (root / "left.pid", root / "right.pid")
+        deadline = time.monotonic() + 5
+        while (
+            not all(path.exists() for path in child_paths)
+            and coordinator_process.poll() is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+        require(all(path.exists() for path in child_paths), "parallel signal fixture did not start")
+        children = [int(path.read_text(encoding="ascii")) for path in child_paths]
+        coordinator_process.send_signal(signal.SIGTERM)
+        stdout, stderr = coordinator_process.communicate(timeout=5)
+        require(
+            coordinator_process.returncode == -signal.SIGTERM.value
+            and not stdout
+            and stderr.count(b'"status":"fail"') >= 2,
+            "parallel coordinator did not preserve top-level termination evidence",
+        )
+        for child in children:
+            try:
+                os.kill(child, 0)
+            except ProcessLookupError:
+                continue
+            raise RuntimeError("top-level termination left a parallel owner running")
 
 
 def git(repository: Path, *arguments: str) -> str:

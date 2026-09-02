@@ -22,6 +22,11 @@ import output_summary
 from verification_scope import REPOSITORY, Scope, ScopeError, classify_refs, diff_changes
 
 
+COORDINATOR_SIGNALS = tuple(
+    selected for selected in output_summary.SIGNALS if selected != signal.SIGPIPE
+)
+
+
 class PreflightError(RuntimeError):
     """Raised when a candidate cannot produce valid local evidence."""
 
@@ -166,6 +171,19 @@ def run_parallel_steps(steps: Sequence[PlanStep], repository: Path) -> None:
     wrapper = repository / "scripts" / "run-output-summary"
     running: list[tuple[PlanStep, subprocess.Popen[bytes], int]] = []
     terminal: set[str] = set()
+    pending_signal: int | None = None
+    previous_handlers: dict[int, signal.Handlers] = {}
+
+    def handle_signal(signum: int, _frame: object) -> None:
+        nonlocal pending_signal
+        if pending_signal is None:
+            pending_signal = signum
+        for _step, process, _started in running:
+            if process.poll() is None:
+                try:
+                    process.send_signal(signum)
+                except ProcessLookupError:
+                    pass
 
     def finish(processes: Sequence[tuple[PlanStep, subprocess.Popen[bytes], int]]) -> None:
         for _step, process, _started in processes:
@@ -185,7 +203,20 @@ def run_parallel_steps(steps: Sequence[PlanStep], repository: Path) -> None:
                 process.wait()
 
     try:
+        for selected_signal in COORDINATOR_SIGNALS:
+            previous_handlers[selected_signal] = signal.getsignal(selected_signal)
+            signal.signal(selected_signal, handle_signal)
+    except (OSError, ValueError) as error:
+        for selected_signal, previous in previous_handlers.items():
+            signal.signal(selected_signal, previous)
+        raise PreflightError(f"cannot install parallel signal ownership: {error}") from error
+
+    caught: BaseException | None = None
+    first_failure: PreflightError | None = None
+    try:
         for step in steps:
+            if pending_signal is not None:
+                break
             started = time.monotonic_ns()
             emit_phase(step.label, "start")
             try:
@@ -213,8 +244,12 @@ def run_parallel_steps(steps: Sequence[PlanStep], repository: Path) -> None:
                 )
                 raise PreflightError(f"cannot launch {step.label}: {error}") from error
             running.append((step, process, started))
+            if pending_signal is not None:
+                try:
+                    process.send_signal(pending_signal)
+                except ProcessLookupError:
+                    pass
 
-        first_failure: PreflightError | None = None
         while len(terminal) < len(running):
             made_progress = False
             for step, process, started in running:
@@ -238,9 +273,8 @@ def run_parallel_steps(steps: Sequence[PlanStep], repository: Path) -> None:
                     )
             if not made_progress and len(terminal) < len(running):
                 time.sleep(0.05)
-        if first_failure is not None:
-            raise first_failure
-    except BaseException:
+    except BaseException as error:
+        caught = error
         finish(running)
         for step, process, started in running:
             if step.label in terminal:
@@ -251,7 +285,15 @@ def run_parallel_steps(steps: Sequence[PlanStep], repository: Path) -> None:
             terminal.add(step.label)
             duration = max(0, (time.monotonic_ns() - started) // 1_000_000)
             emit_phase(step.label, "pass" if status == 0 else "fail", duration)
-        raise
+    finally:
+        for selected_signal, previous in previous_handlers.items():
+            signal.signal(selected_signal, previous)
+    if pending_signal is not None:
+        output_summary.self_signal(pending_signal)
+    if caught is not None:
+        raise caught
+    if first_failure is not None:
+        raise first_failure
 
 
 def execution_batches(plan: Sequence[PlanStep]) -> tuple[tuple[PlanStep, ...], ...]:

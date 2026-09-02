@@ -432,6 +432,62 @@ while True:
     require(b"child cleanup complete\n" in only_log(log_directory).read_bytes(), "cleanup output was lost")
 
 
+def test_supervisor_signal_escalation(root: Path) -> None:
+    helper = root / "signal-resistant-child.py"
+    ready = root / "signal-resistant-ready"
+    helper.write_text(
+        """import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+Path(sys.argv[1]).write_text(str(os.getpid()), encoding="ascii")
+while True:
+    time.sleep(0.05)
+""",
+        encoding="utf-8",
+    )
+    log_directory = root / "supervisor-escalation-logs"
+    process = subprocess.Popen(
+        (
+            sys.executable,
+            os.fspath(RUNNER),
+            "--phase",
+            "supervisor-escalation",
+            "--log-directory",
+            os.fspath(log_directory),
+            "--",
+            sys.executable,
+            os.fspath(helper),
+            os.fspath(ready),
+        ),
+        cwd=REPOSITORY,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + 5
+    while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    require(ready.exists(), "signal-resistant fixture child did not become ready")
+    child = int(ready.read_text(encoding="ascii"))
+    process.send_signal(signal.SIGTERM)
+    stdout, stderr = process.communicate(timeout=5)
+    require(
+        process.returncode == -signal.SIGTERM.value and not stdout,
+        "signal escalation did not preserve supervisor status",
+    )
+    try:
+        os.kill(child, 0)
+    except ProcessLookupError:
+        pass
+    else:
+        raise RuntimeError("signal-resistant child survived supervisor escalation")
+    require(records(stderr)[0]["result"] == "SIGNAL", "signal escalation lost terminal evidence")
+
+
 def test_lingering_descendant(root: Path) -> None:
     helper = root / "lingering-child.py"
     helper.write_text(
@@ -706,6 +762,7 @@ def main() -> int:
         test_child_signals(root)
         test_summary_pipe(root)
         test_supervisor_signal(root)
+        test_supervisor_signal_escalation(root)
         test_lingering_descendant(root)
         test_short_summary_write(root)
         test_progress(root)
