@@ -77,18 +77,27 @@ unwinding through its existing finalizer and gives that cleanup five seconds bef
 wrapper escalates the whole command group to KILL. A synthetic image-build cancellation proves all
 five volumes and the image reach removal; output-summary and profile cancellation owners pass in
 10.1s, the cleanup-specific owner in 0.7s, and `format-check` in 13.4s. This adds installed resource
-cleanup behavior beyond the reviewed head and requires one comprehensive review of the redesigned
-candidate before rerunning preflight with the outer `HOME` owned by uid 501.
+cleanup behavior beyond the reviewed head.
 
-**Next actions.** (1) Commit this durable incident state and perform the redesigned-candidate
-review. (2) Run exact-head publication preflight below 900 seconds with the corrected outer `HOME`.
-(3) Publish with all review envelopes, require all three GitHub checks below 15 minutes, merge, pull
-current `main`, and continue the next eligible capability.
+The redesigned-candidate review covered head
+`9f3eb7728363196346445bb21bd35016dd4cb6cf` against base tip and merge base
+`29b54757c837fdfc610e413acd297d253644e292`, using Codex gpt-5.6-sol at high effort over the full
+diff. It found two accepted finalization defects: a signal arriving after image cleanup began could
+skip the remaining Docker removals, and peer cancellation could terminate the qualification owner
+before its private Docker configuration directory unwound. Narrow repair
+`60fb1fa6027167655f4367c6871b31b59a72b873` defers a first signal received during finalization
+until every registered removal has run and gives the outer qualification owner the same
+catchable-signal unwinding boundary. The focused
+qualification and both cleanup-interruption regressions pass in 0.464s; `format-check` passes in
+6.3s. The repair delta was inspected for unrelated behavior and no review finding remains open.
+
+**Next actions.** (1) Run exact-head publication preflight below 900 seconds with the corrected
+outer `HOME`. (2) Publish with all review envelopes, require all three GitHub checks below 15
+minutes, merge, pull current `main`, and continue the next eligible capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** This durable handoff update until committed; local configuration
-remains outside the change.
+**Intentional uncommitted files.** None; local configuration remains outside the change.
 
 ## Merged checkpoint: R7-RUNTIME-PROVIDER (2026-09-02)
 
