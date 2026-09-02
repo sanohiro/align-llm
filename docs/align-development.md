@@ -2630,7 +2630,7 @@ graph already contains. `scripts/ggml_shim_stub.c` gains two forced-failure buil
 shared region — `engine+compute-step2` and `engine+writeback-offset` — which are never defined in an
 ordinary build.
 
-## The `--moe-decode-step` arm (R6-OLMOE-DECODE, R6-MOE-RESIDENT-DENSE)
+## The `--moe-decode-step` arm (R6-OLMOE-DECODE, R6-MOE-RESIDENT-DENSE, R8 partial LRU)
 
 `docs/specs/r6-olmoe-decode.md` is the authoritative ledger. It ships as a **seventh arm of the
 existing `ggml-spike` executable**, `--moe-decode-step`, beside R4.5's positional arm,
@@ -2665,6 +2665,7 @@ between that prose and the source rather than inventing a constant to match it.)
 ./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin
 ./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf -              KV_WIDTH LOGITS.bin STEPS
 ./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS - - dense
+./ggml-spike --moe-decode-step PACK GEOM.json TOKENS DOC.json REF.gguf TRANSCRIPT.txt KV_WIDTH LOGITS.bin STEPS - - dense+lru:975175680
 ```
 
 **The operand shape is `--decode-step`'s, position for position**, so the two decode runners build
@@ -2675,12 +2676,24 @@ the count is never implicit. `-` is legal in the document, transcript, and logit
 `PACK`, `GEOMETRY`, and `REFERENCE` refuse it lexically.
 
 **`RESIDENT` is the fourteenth operand:** `-` (stream the weights, the shipped behaviour, and what an
-absent operand means) or **`dense`** (hold the pack's 147 dense members resident for the process's
-lifetime — the embedding table, the sixteen layers' attention, norm and router weights, and the
-output head — while the 3.9 GB of expert planes keep streaming through the claim window).
+absent operand means), **`dense`** (hold the pack's 147 dense members resident for the process's
+lifetime), or **`dense+lru:BUDGET_BYTES`** (the same dense residency plus an invocation-local
+partial expert cache shared by prefill and decode). The cache budget is canonical positive decimal,
+has the existing 8-GiB ceiling, and must hold at least the routed width of complete expert keys.
 **`weights` is refused by name** with `R6M_RESIDENT`: whole-model residency would make
 `residency.expert_bytes` unreachable, and this arm exists to publish it. Any other value, including
-the empty string, is `R6M_RESIDENT` with detail `resident[<text>]`.
+the empty string, is refused; malformed cache syntax is `R8_CACHE_MODE`, while an unusable parsed
+budget is `R8_CACHE_BUDGET`.
+
+Cache mode selects schema 3 and adds `weights.expert_cache` aggregate evidence plus per-step cache
+counters. `expert_bytes` remains logical demand, while `expert_pread_bytes` and
+`step_expert_pack_bytes` are physical cache-miss traffic. `scripts/run-moe-partial-lru` is the one
+focused real-model paired qualification; its byte-reduction floor is authoritative in
+`docs/specs/r8-partial-lru-cache.md`, and elapsed time is diagnostic rather than a speed claim.
+The runner derives a temporary pack from `ALIGN_LLM_GGUF_MODEL` by default. A previously derived
+pair may instead be supplied as `ALIGN_LLM_MOE_ALIGNPACK` and `ALIGN_LLM_MOE_GEOMETRY`; both are
+required together, and this reuse path avoids an unrelated second multi-gigabyte pack copy. The
+source GGUF remains required as the arm's existing reference operand.
 
 In `dense` mode the arm allocates one region — **311,066,624 B** on the reference model — fills it
 once with 311,027,712 B in one pass before the first graph, wraps it **once** for the whole run

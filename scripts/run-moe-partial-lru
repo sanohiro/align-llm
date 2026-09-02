@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# R8-PARTIAL-LRU-CACHE's one bounded real-model qualification. It deliberately runs only the
+# fixed paired `dense` and `dense+lru` task needed by this cache boundary; the historical OLMoE
+# matrix, llama.cpp transcript capture, and 40-prompt residency replay own different claims.
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+budget=975175680
+tokens=1545,823,9,66,13,270
+steps=16
+kv_width=256
+
+na() {
+  printf '%s\n' "moe partial LRU qualification: N/A $1"
+  exit 0
+}
+
+[ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ] || na "ALIGN_LLM_GGML_INCLUDE is unset"
+[ -n "${ALIGN_LLM_GGML_LIB:-}" ] || na "ALIGN_LLM_GGML_LIB is unset"
+[ -n "${ALIGN_LLM_GGUF_MODEL:-}" ] || na "ALIGN_LLM_GGUF_MODEL is unset"
+[ -d "${ALIGN_LLM_GGML_INCLUDE}" ] || na "ALIGN_LLM_GGML_INCLUDE is not a directory"
+[ -d "${ALIGN_LLM_GGML_LIB}" ] || na "ALIGN_LLM_GGML_LIB is not a directory"
+[ -f "${ALIGN_LLM_GGUF_MODEL}" ] || na "ALIGN_LLM_GGUF_MODEL is not a file"
+
+reuse_pack=0
+if [ -n "${ALIGN_LLM_MOE_ALIGNPACK:-}" ] || [ -n "${ALIGN_LLM_MOE_GEOMETRY:-}" ]; then
+  [ -n "${ALIGN_LLM_MOE_ALIGNPACK:-}" ] || na "ALIGN_LLM_MOE_ALIGNPACK is unset"
+  [ -n "${ALIGN_LLM_MOE_GEOMETRY:-}" ] || na "ALIGN_LLM_MOE_GEOMETRY is unset"
+  [ -f "${ALIGN_LLM_MOE_ALIGNPACK}" ] || na "ALIGN_LLM_MOE_ALIGNPACK is not a file"
+  [ -f "${ALIGN_LLM_MOE_GEOMETRY}" ] || na "ALIGN_LLM_MOE_GEOMETRY is not a file"
+  reuse_pack=1
+fi
+
+scratch_root="${ALIGN_LLM_MOE_DECODE_STEP_TMPDIR:-${TMPDIR:-/tmp}}"
+[ -d "${scratch_root}" ] || na "the scratch root ${scratch_root} does not exist"
+if [ "${reuse_pack}" = 0 ]; then
+  model_bytes=$(wc -c < "${ALIGN_LLM_GGUF_MODEL}" | tr -d ' ')
+  free_kib=$(df -Pk "${scratch_root}" | awk 'NR == 2 { print $4 }')
+  need_kib=$(( model_bytes / 1024 + 2097152 ))
+  if [ "${free_kib}" -lt "${need_kib}" ]; then
+    na "free space under ${scratch_root} is ${free_kib} KiB, below the ${need_kib} KiB requirement"
+  fi
+fi
+
+work_dir=$(mktemp -d "${scratch_root%/}/align-r8-lru-XXXXXX")
+shim_built=0
+cleanup() {
+  status=$?
+  if [ "${shim_built}" = 1 ]; then
+    ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim" >/dev/null 2>&1 || true
+  fi
+  rm -rf "${work_dir}"
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+pack_path="${work_dir}/model.alignpack"
+geometry_path="${work_dir}/geometry.json"
+if [ "${reuse_pack}" = 1 ]; then
+  echo "moe partial LRU qualification: reusing the supplied AlignPack and geometry"
+  pack_path="${ALIGN_LLM_MOE_ALIGNPACK}"
+  geometry_path="${ALIGN_LLM_MOE_GEOMETRY}"
+else
+  echo "moe partial LRU qualification: deriving geometry and one temporary AlignPack"
+  "${root_dir}/main" --model-ir "${ALIGN_LLM_GGUF_MODEL}" "${geometry_path}" >/dev/null
+  "${root_dir}/main" --pack "${ALIGN_LLM_GGUF_MODEL}" "${pack_path}" \
+    "${work_dir}/pack.json" >/dev/null
+fi
+arch=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["model"]["arch"])' \
+  "${geometry_path}")
+[ "${arch}" = "olmoe" ] || na "the subject geometry is not an olmoe model"
+
+shim_dir=$(ALIGN_LLM_GGML_FORCE= "${root_dir}/scripts/build-ggml-shim")
+shim_built=1
+(
+  cd "${root_dir}"
+  LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}" \
+  DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}" \
+  LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+  "${compiler}" build src/ggml_spike.align > "${work_dir}/build.log" 2>&1 || {
+    cat "${work_dir}/build.log" >&2
+    exit 1
+  }
+  mv -f ggml_spike ggml-spike
+)
+export DYLD_LIBRARY_PATH="${shim_dir}:${ALIGN_LLM_GGML_LIB}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${shim_dir}:${ALIGN_LLM_GGML_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+run_leg() {
+  mode=$1
+  output="${work_dir}/${mode}.json"
+  wall="${work_dir}/${mode}.time"
+  resident=dense
+  if [ "${mode}" = cache ]; then resident="dense+lru:${budget}"; fi
+  echo "moe partial LRU qualification: ${mode} leg, N=${steps}"
+  /usr/bin/time -p "${root_dir}/ggml-spike" --moe-decode-step \
+    "${pack_path}" "${geometry_path}" "${tokens}" "${output}" \
+    "${ALIGN_LLM_GGUF_MODEL}" - "${kv_width}" - "${steps}" - - "${resident}" \
+    > "${work_dir}/${mode}.out" 2> "${wall}" || {
+      status=$?
+      cat "${wall}" >&2 || true
+      python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d["error_code"],d["error_detail"])' \
+        "${output}" >&2 || true
+      exit "${status}"
+    }
+  grep '^real ' "${wall}" | sed "s/^/moe partial LRU qualification: ${mode} /" || true
+}
+
+run_leg dense
+run_leg cache
+
+python3 - "${work_dir}/dense.json" "${work_dir}/cache.json" "${budget}" <<'PY'
+import json
+import sys
+
+dense_path, cache_path, budget_text = sys.argv[1:4]
+budget = int(budget_text)
+with open(dense_path, "r", encoding="utf-8") as handle:
+    dense = json.load(handle)
+with open(cache_path, "r", encoding="utf-8") as handle:
+    cached = json.load(handle)
+
+failures = []
+for name, document, schema, mode in (("dense", dense, 2, "dense"),
+                                     ("cache", cached, 3, "dense+lru")):
+    if document["status"] != "ok" or document["error_code"]:
+        failures.append("%s leg failed: %r %r" %
+                        (name, document["error_code"], document["error_detail"]))
+    if document["schema_version"] != schema or document["weights"]["mode"] != mode:
+        failures.append("%s identity is schema/mode %r/%r" %
+                        (name, document["schema_version"], document["weights"]["mode"]))
+
+evidence = cached["weights"]["expert_cache"]
+if evidence["policy"] != "lru" or evidence["budget_bytes"] != budget \
+        or evidence["capacity_bytes"] != 975028224 or evidence["key_bytes"] != 4079616 \
+        or evidence["slot_count"] != 239:
+    failures.append("the selected real cache geometry is wrong: %r" % evidence)
+if evidence["requests"] != evidence["hits"] + evidence["misses"] \
+        or evidence["hits"] <= 0 or evidence["evictions"] <= 0 \
+        or evidence["resident_keys_high_water"] != 239 \
+        or evidence["resident_keys_final"] != 239:
+    failures.append("the real LRU counters do not reconcile: %r" % evidence)
+if evidence["bytes_fetched"] < evidence["miss_bytes"]:
+    failures.append("physical miss bytes are below logical miss demand: %r" % evidence)
+if cached["weights"]["step_expert_pack_bytes"] != sum(
+        row["residency"]["cache_bytes_fetched"] for row in cached["steps"]):
+    failures.append("decode step bytes do not reconcile with cache miss bytes")
+
+dense_bytes = dense["weights"]["step_expert_pack_bytes"]
+cache_bytes = cached["weights"]["step_expert_pack_bytes"]
+gain_ppm = (dense_bytes - cache_bytes) * 1_000_000 // dense_bytes if dense_bytes else -1
+if gain_ppm < 50_000:
+    failures.append("decode expert pack bytes improved only %d ppm, below 50000" % gain_ppm)
+
+def semantic(document):
+    result = json.loads(json.dumps(document))
+    result["schema_version"] = 2
+
+    def zero_clocks(value):
+        if isinstance(value, dict):
+            for key in value:
+                if key.endswith("_ns") and isinstance(value[key], int):
+                    value[key] = 0
+                else:
+                    zero_clocks(value[key])
+        elif isinstance(value, list):
+            for item in value:
+                zero_clocks(item)
+
+    zero_clocks(result)
+    result.pop("weights", None)
+    result["pack"].pop("reader_pread_count", None)
+    result["pack"].pop("reader_bytes_read", None)
+    result["residency"].pop("decode_expert_pread_bytes", None)
+    for row in result["steps"]:
+        residency = row["residency"]
+        for field in ("expert_pread_bytes", "expert_read_amplification_ppm", "cache_hits",
+                      "cache_misses", "cache_evictions", "cache_bytes_served",
+                      "cache_miss_bytes", "cache_bytes_fetched"):
+            residency.pop(field, None)
+    return result
+
+if semantic(dense) != semantic(cached):
+    failures.append("dense and cached semantic documents differ outside transport evidence")
+if failures:
+    for failure in failures:
+        print("moe partial LRU qualification: FAIL " + failure, file=sys.stderr)
+    raise SystemExit(1)
+
+print("moe partial LRU qualification: PASS dense %d bytes, cache %d bytes, %d ppm removed; "
+      "%d hits, %d misses, %d evictions, exact logits/routing semantics"
+      % (dense_bytes, cache_bytes, gain_ppm, evidence["hits"], evidence["misses"],
+         evidence["evictions"]))
+print("moe partial LRU qualification: elapsed diagnostics dense %d ns, cache %d ns; no elapsed "
+      "improvement claim" % (dense["timings"]["elapsed_ns"], cached["timings"]["elapsed_ns"]))
+PY

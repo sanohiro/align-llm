@@ -1292,7 +1292,7 @@ The current forward delivery order is:
     The next partial-cache capability is eligible with LRU at 975,175,680 bytes.
 
 47. **R8-PARTIAL-LRU-CACHE — execute the selected bounded expert cache in the real OLMoE decode
-    consumer. Active.**
+    consumer. Implementation candidate.**
     [`r8-partial-lru-cache.md`](r8-partial-lru-cache.md) is the authoritative implementation
     contract. Extend the existing `dense` residency boundary with an invocation-local
     `dense+lru:BUDGET_BYTES` mode, share its deterministic LRU state from prefill through all decode
@@ -1301,7 +1301,9 @@ The current forward delivery order is:
     ppm fewer decode expert pack bytes than the paired `dense` leg on one fixed 16-step task, with
     exact semantic equality; elapsed time is diagnostic only. The focused real qualification is
     bounded at approximately 15 minutes and does not repeat the 40-prompt capture or broad OLMoE
-    matrix. This capability does not yet claim provider-level time to a passing patch.
+    matrix. The candidate removes 625,585 ppm (7,801,405,440 to 2,920,955,904 bytes) on that task,
+    with 1,279 hits, 1,112 misses, 873 evictions, and exact semantic equality in 9.75 seconds of
+    paired model execution. This capability does not claim provider-level time to a passing patch.
 
 ### Status (2026-08-28)
 

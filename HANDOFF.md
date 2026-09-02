@@ -17,14 +17,28 @@ in `docs/specs/r8-partial-lru-cache.md`. It combines dense residency with an inv
 cache, preserves the claim-window/graph boundary, and makes no elapsed or provider-level
 time-to-passing-patch claim.
 
-**Next actions.** (1) Commit the design checkpoint. (2) Implement cache staging and schema-3
-evidence with synthetic owner coverage. (3) Run the narrow owner and one bounded paired real
-qualification. (4) Review, repair, publish, and merge.
+Design checkpoint `5d5617c` and the implementation candidate add the schema-3
+`dense+lru:BUDGET_BYTES` mode, deterministic invocation-local LRU staging, aggregate and per-step
+cache evidence, and synthetic grammar/budget/hit/miss/eviction/semantic coverage. The real pack's
+expert keys vary by layer, so the implementation uses the maximum 4,079,616-byte key as its fixed
+slot stride: the selected budget owns 239 slots and 975,028,224 bytes, never the erroneous
+pre-implementation 256 uniform slots.
+
+**Latest durable verification.** `make layer-forward-smoke` passes in 78.936 seconds. The focused
+real paired qualification reused the existing reference AlignPack and passed in 9.75 seconds of
+model execution: dense read 7,801,405,440 decode expert-pack bytes, cache read 2,920,955,904, a
+625,585-ppm reduction. It recorded 1,279 hits, 1,112 misses, and 873 evictions with exact normalized
+semantics. Internal elapsed 4.407 seconds dense and 4.435 seconds cache is diagnostic only. No broad
+aggregate, installed profile, stress, benchmark, or unrelated platform suite ran.
+
+**Next actions.** (1) Rerun the exact candidate's narrow owner after formatting. (2) Commit and
+perform one comprehensive review. (3) Repair accepted findings, run publication preflight, publish,
+and merge. (4) Pull the latest `main` before the next roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The design checkpoint files above until committed. Local
-configuration remains outside the change.
+**Intentional uncommitted files.** The implementation candidate until committed. Local
+configuration and reusable real-model artifacts remain outside the change.
 
 ## Merged checkpoint: R8-RESET-CACHE-DECISION (PR #167, 2026-09-02)
 
