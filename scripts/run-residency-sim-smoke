@@ -154,10 +154,11 @@ class ScriptedRouter:
     draw, so a case can engineer the exact demand stream a contract row needs — the cyclic-reference
     stream of section 4.5 finding 1, for instance. It presents `fixture.Router`'s interface."""
 
-    def __init__(self, n_expert, n_expert_used, choose):
+    def __init__(self, n_expert, n_expert_used, choose, weight=None):
         self.n_expert = n_expert
         self.n_expert_used = n_expert_used
         self.choose = choose
+        self.weight = weight
 
     def experts(self, graph, layer, token):
         chosen = list(self.choose(graph, layer, token))
@@ -166,10 +167,19 @@ class ScriptedRouter:
                                  % (self.n_expert_used, chosen))
         return chosen
 
+    def weight_ten_thousandths(self, graph, layer, token, slot):
+        if self.weight is not None:
+            return self.weight(graph, layer, token, slot)
+        expert = self.experts(graph, layer, token)[slot]
+        return 1000 + ((graph * 211 + layer * 307 + token * 401 + slot * 503
+                        + expert * 601) % 8001)
 
-def scripted(n_layer, n_tokens, shape, choose, ordinal=0):
+
+def scripted(n_layer, n_tokens, shape, choose, ordinal=0, weight=None):
     _, n_expert, used = shape
-    return fixture.moe_graph(n_layer, n_tokens, ScriptedRouter(n_expert, used, choose), ordinal)
+    return fixture.moe_graph(
+        n_layer, n_tokens, ScriptedRouter(n_expert, used, choose, weight), ordinal,
+    )
 
 
 def by_policy(document, order, budget):
@@ -255,7 +265,7 @@ basic_budget = uniform_expert_total >> 2
 document = check_case("sim-basic", basic_list, uniform_ir, basic_budget, asserts={
     "status": "ok",
     "kind": "R3_RESIDENCY_SIM",
-    "schema_version": 1,
+    "schema_version": 2,
     "inputs/listed_trace_count": 4,
     "inputs/admitted_trace_count": 4,
     "stream/pooling": "continuing",
@@ -268,7 +278,7 @@ document = check_case("sim-basic", basic_list, uniform_ir, basic_budget, asserts
     "orders/0/verdict_bearing": True,
     "orders/1/order": "layer_major",
     "orders/1/verdict_bearing": False,
-    "verdict/rule_version": 1,
+    "verdict/rule_version": 2,
     "verdict/order": "token_major",
     "verdict/baseline_policy": "lru",
     "verdict/margin_per_mille": 50,
@@ -276,11 +286,11 @@ document = check_case("sim-basic", basic_list, uniform_ir, basic_budget, asserts
 })
 for order in document["orders"]:
     names = [entry["policy"] for entry in order["policies"]]
-    # The name *set* over the whole order, not the first ten rows: slicing ten entries off a list
-    # of ten-per-budget rows can only ever see the first budget's block, so it asserts nothing about
+    # The name *set* over the whole order, not the first eleven rows: slicing one budget's rows off
+    # the list can only ever see that budget's block, so it asserts nothing about
     # the policy set the document actually reports.
     if sorted(set(names)) != sorted(oracle.POLICY_NAMES):
-        fail("sim-basic/%s: the policy set is not the ten rows of section 2.4, it is %r"
+        fail("sim-basic/%s: the policy set is not the eleven rows of R8, it is %r"
              % (order["order"], sorted(set(names))))
     if len(names) != len(oracle.POLICY_NAMES) * len(document["budgets"]):
         fail("sim-basic/%s: %d policy rows for %d budget(s) and %d policies"
@@ -385,7 +395,7 @@ def projected(arm, name, source):
     copy here would let the runner's arms drift from the arms the hosted owner proves correct, which
     is the one thing this case exists to prevent.
 
-    The result must be a legal schema-1 input: the removed graphs become undeclared and no retained
+    The result must be a legal schema-2 input: the removed graphs become undeclared and no retained
     selection names them, so nothing fails closed.
     """
     payload = projection.PROJECTIONS[arm](json.loads(Path(source).read_text()))
@@ -577,7 +587,7 @@ for name, case in (("mixed", mixed_case), ("decode-only", decode_case)):
 
 # The normalized form is what a golden pins, and it includes the per-layer breakdown by digest. A
 # second run of the identical inputs must reproduce it exactly on both arms; the checked-in golden
-# belongs to `sim-basic` and is not touched.
+# belongs to `sim-basic`.
 for name, listing, expected in (
         ("mixed", trace_list("sim-full-axis", mixed_docs), mixed_case),
         ("decode-only", trace_list("sim-full-axis-decode", decode_docs), decode_case),
@@ -841,6 +851,35 @@ if edge["lfu"]["hits"] <= 0 or edge["belady"]["hits"] <= edge["lfu"]["hits"]:
 if by_policy(cyclic_case, "token_major", min(at_or_above))["lru"]["hits"] <= 0:
     fail("sim-cyclic: lru must hit once the budget reaches the one-token working set")
 
+# ---- score-discriminates-lfu: router mass, not selection count, owns eviction ---------------
+# Three equally frequent experts cycle through a two-block budget. Count LFU sees a perfect tie
+# and misses every demand; weighted LFU preserves the two high-mass experts and hits them on the
+# following tokens. The score must survive eviction for this separation to remain true.
+def score_experts(_graph, _layer, _token):
+    return (0, 1, 2)
+
+
+def score_weights(_graph, _layer, _token, slot):
+    return (100, 5000, 4900)[slot]
+
+
+score_trace = make_trace(
+    "score-discriminates-lfu",
+    [scripted(1, 3, UNIFORM, score_experts, weight=score_weights)],
+)
+score_case = check_case(
+    "score-discriminates-lfu",
+    trace_list("score-discriminates-lfu", [score_trace]),
+    uniform_ir,
+    uniform_block * 2,
+)
+score_row = by_policy(score_case, "token_major", uniform_block * 2)
+if score_row["lfu"]["hits"] != 0 or score_row["router_weight_lfu"]["hits"] != 2:
+    fail("score-discriminates-lfu: expected lfu=0 and router_weight_lfu=2 hits, got %d and %d"
+         % (score_row["lfu"]["hits"], score_row["router_weight_lfu"]["hits"]))
+if score_row["router_weight_lfu"]["bytes_fetched"] >= score_row["lfu"]["bytes_fetched"]:
+    fail("score-discriminates-lfu: weighted policy must fetch fewer bytes than count lfu")
+
 # ---- sim-prefetch-useless: a prefetch that never pays for itself ----------------------------
 # The same cyclic stream at the smallest legal budget. Every prefetched block is evicted by the
 # demands of the token position it precedes, so no prefetch is ever hit, and both degrees fetch
@@ -864,8 +903,9 @@ for budget in [entry["bytes"] for entry in useless["budgets"]
 # total while `belady` keeps a large headroom: the gate's "a better policy may exist and none of
 # these is it".
 unstable = [make_trace("jk-%d" % i, [moe(1 + i, 2, 4, UNIFORM)]) for i in range(5)]
+no_policy = [make_trace("no-policy-%d" % i, [moe(3 + i, 2, 4, UNIFORM)]) for i in range(3)]
 no_policy_case = check_case("verdict-no-policy",
-                            trace_list("verdict-no-policy", unstable[:3]),
+                            trace_list("verdict-no-policy", no_policy),
                             uniform_ir, uniform_expert_total >> 1, asserts={
                                 "verdict/result": "NO_POLICY_BEATS_BASELINE",
                                 "verdict/best_policy": "",
@@ -899,7 +939,7 @@ if not cleared:
 # The lowest-byte candidate clears the pooled effect floor and then loses a fold; a later, larger
 # candidate clears every fold. `best_policy` must name the qualifying one, which is what section
 # 2.8's BEATS_BASELINE row requires and what a lowest-byte-only answer gets wrong.
-second = [make_trace("jk2-%d" % i, [moe(44 + i, 2, 4, UNIFORM)]) for i in range(4)]
+second = [make_trace("jk2-%d" % i, [moe(73 + i, 2, 4, UNIFORM)]) for i in range(4)]
 second_case = check_case("jackknife-second-candidate",
                          trace_list("jackknife-second-candidate", second),
                          uniform_ir, uniform_expert_total >> 2, asserts={
@@ -1170,6 +1210,9 @@ error_case("trace-decode", trace_list("trace-decode", [not_json]), uniform_ir, b
 error_case("trace-schema", trace_list("trace-schema", [
     edited_trace("t-kind", lambda d: d.update(kind="R1_MODEL_IR"))]), uniform_ir, basic_budget,
     "R3_TRACE_SCHEMA", detail="1")
+error_case("trace-old-schema", trace_list("trace-old-schema", [
+    edited_trace("t-old-schema", lambda d: d.update(schema_version=1))]), uniform_ir,
+    basic_budget, "R3_TRACE_SCHEMA", detail="1")
 error_case("trace-status", trace_list("trace-status", [
     edited_trace("t-status", lambda d: d.update(status="error"))]), uniform_ir, basic_budget,
     "R3_TRACE_STATUS", detail="1")
@@ -1178,6 +1221,22 @@ error_case("trace-not-moe", trace_list("trace-dense", [
     "R3_TRACE_NOT_MOE", detail="1")
 error_case("shape-mismatch", trace_list("shape-mismatch", [basic[0]]), mixed_ir, basic_budget,
            "R3_SHAPE_MISMATCH", detail="1")
+
+
+def missing_weight(payload):
+    del payload["selections"][0]["router_weight_ten_thousandths"]
+
+
+def weight_out_of_range(payload):
+    payload["selections"][0]["router_weight_ten_thousandths"] = 10001
+
+
+error_case("router-weight-missing", trace_list("router-weight-missing", [
+    edited_trace("t-weight-missing", missing_weight)]), uniform_ir, basic_budget,
+    "R3_TRACE_DECODE", detail="1")
+error_case("router-weight-range", trace_list("router-weight-range", [
+    edited_trace("t-weight-range", weight_out_of_range)]), uniform_ir, basic_budget,
+    "R3_ROUTER_WEIGHT_RANGE", detail="1")
 
 
 def out_of_range(payload):
@@ -1206,6 +1265,15 @@ def undeclared_graph(payload):
 # closed rather than shrinking the stream by one demand that nothing counts.
 error_case("selection-undeclared-graph", trace_list("undeclared", [
     edited_trace("t-undeclared", undeclared_graph)]), uniform_ir, basic_budget,
+    "R3_SELECTION_UNPACKABLE", detail="1")
+
+
+def duplicate_selection(payload):
+    payload["selections"].insert(1, dict(payload["selections"][0]))
+
+
+error_case("selection-duplicate-order", trace_list("selection-duplicate-order", [
+    edited_trace("t-duplicate-order", duplicate_selection)]), uniform_ir, basic_budget,
     "R3_SELECTION_UNPACKABLE", detail="1")
 
 

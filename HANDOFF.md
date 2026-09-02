@@ -3,7 +3,51 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: REQUIRED-CI-UNDER-15 (2026-09-02)
+## Active: R8-SCORE-BASED-CACHE (2026-09-02)
+
+Branch `agent/r8-score-cache`, based on merged `main`
+`edc5c132225f567c7810f8809819d18b3d4ec45d` (REQUIRED-CI-UNDER-15 PR #165). The user requested
+that the Align prerequisite advance after that merge. The candidate moves `.align-revision` from
+`27770420555d19b98eced133369c168e9c6d4a2f` to the current merged Align `origin/main`,
+`b6f95a261e1434d705d7de006484ffa66b1542f0`. The new identity is 45 commits ahead and includes
+Align v0.6.0 plus the later merged `pkg.kv` timeout and SIGPIPE runtime repairs.
+
+No align-llm request is waiting in `ALIGN_MERGED`, so this adoption changes no request lifecycle
+state and consumes no proposed language or library surface. In accordance with roadmap's
+ALIGN-ADOPTION rule, checkpoint `04d0156` is an internal prerequisite of the next consumer rather
+than a standalone pull request. That consumer is `R8-SCORE-BASED-CACHE`: extend the activation trace
+with selected router weights and let the residency simulator evaluate one fixed weighted-LFU cache
+policy. [`docs/specs/r8-score-cache.md`](docs/specs/r8-score-cache.md) owns the public-contract
+ledger, closure matrix, cost ceilings, and exact exclusions.
+
+The implementation candidate now extends the managed instrument to print full
+`ffn_moe_weights`, emits one exact selected weight in every `R2_ACTIVATION_TRACE` schema-2
+selection, and evaluates `router_weight_lfu` as the eleventh `R3_RESIDENCY_SIM` schema-2 policy.
+The independent oracle, golden, compact/full pairing errors, old-schema refusal, and a scripted
+weighted-LFU/count-LFU discriminator are included. Implementation checkpoint `bae4ff7` is
+committed and its comprehensive review found no implementation defect; the sole finding was this
+handoff's stale pre-commit next action.
+
+**Latest durable verification.** The managed release compiler/runtime materialized successfully
+with Align's LLVM-aware Cargo wrapper. `scripts/align-toolchain verify` passed in 0.127 seconds at
+the exact new identity, and `make check` checked all 40 units per-unit in 2m00.91s. On the stable
+R8 candidate: `scripts/run-expert-trace-smoke` passed 116 fixtures in 13.15s;
+`scripts/run-residency-sim-smoke` passed 31 traces and every policy/budget/order in 3.19s;
+`scripts/run-r2c-instrument-smoke` passed 55 groups in 2.63s. The first uncached compiled
+instrument qualification passed in 4m52.38s, then the cached real OLMoE qualification passed three
+graphs and 384 full-width weighted selections in 5.09s. Independent real OLMoE expert-trace parity
+passed 488 weighted selections in 24.03s. Shell, Python, embedded-Python syntax, and
+`git diff --check` pass.
+
+**Next actions.** (1) Run exact-HEAD publication preflight, publish with the review envelope and
+finding disposition, and merge after required checks. (2) Pull current `main` and continue the next
+eligible roadmap capability.
+
+**Blocker.** None.
+
+**Intentional uncommitted files.** None. Local configuration remains outside the change.
+
+## Merged checkpoint: REQUIRED-CI-UNDER-15 (PR #165, 2026-09-02)
 
 Branch `agent/ci-under-15`, based on merged `main` `29b54757c837fdfc610e413acd297d253644e292`
 (R7-RUNTIME-PROVIDER PR #164). The user-set operating target is roughly 15 minutes for each
@@ -138,9 +182,11 @@ the explicit aggregate's new `fresh-v2-published-elf-smoke` inventory row. The t
 qualification owners, output-summary suite, qualification inventory, and `format-check` pass. The
 repair delta changes no product or aggregate execution behavior; no review finding remains open.
 
-**Next actions.** (1) Run exact-head fresh-image publication preflight. (2) Publish with all review
-envelopes, inspect all three GitHub checks for distinct value and duration, merge, pull current
-`main`, and continue the next eligible capability.
+PR #165 merged as `edc5c132225f567c7810f8809819d18b3d4ec45d`. Its exact final head
+`2f0a8ac6decd900d44496d90696c029e70a4d258` passed the required hosted check in 12m26s, the
+x86_64 installed profile in 12m28s, and the aarch64 installed profile in 13m37s. Each remained
+inside the configured 15-minute timeout and approximate operating target without duplicate common
+aggregate execution.
 
 **Blocker.** None.
 

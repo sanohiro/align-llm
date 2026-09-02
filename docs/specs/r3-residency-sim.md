@@ -6,6 +6,12 @@ Status: plan of record for the Track B R3 capability named by `docs/specs/roadma
 `src/residency_sim.align` owner module, the demand-stream derivation from `R2_ACTIVATION_TRACE`, the
 policy set, the budget sweep, and the verdict rule that answers the roadmap gate numerically.
 
+R8-SCORE-BASED-CACHE (`docs/specs/r8-score-cache.md`) supersedes only the current trace input,
+policy-set, and exchanged-document versions: the simulator now consumes R2 schema 2, emits R3
+schema 2 with verdict rule 2, and inserts `router_weight_lfu` after `lfu`. The schema-1 contract and
+evidence below remain the historical base for every unchanged field, replay, validation rule, and
+CLI behavior.
+
 `docs/specs/roadmap.md` remains authoritative for delivery order and for the R3 gate itself.
 `docs/specs/align-llm.md` remains authoritative for the architecture this simulation serves —
 section 6's VRAM / DRAM / NVMe tiers, section 7.1's prefill/decode split, section 7.4's score-based
@@ -1021,12 +1027,10 @@ because their **inputs do not exist**, not because they are unimportant — and 
 is the evidence that they matter.
 
 - **Score-based cache** (`docs/specs/align-llm.md` section 7.4) needs "router score" among its
-  terms. `R2_ACTIVATION_TRACE` records the `ffn_moe_topk` node, which is `ggml_top_k`'s output: the
-  expert **identities**, not the `ffn_moe_probs` weights. A score-based policy simulated without
-  scores would be an arbitrary reweighting of frequency and recency presented under a name that
-  implies more. The prerequisite is a trace that also captures `ffn_moe_weights-N`, which is an R2A
-  schema extension (a `schema_version: 2` with a per-selection weight column) and is named here as
-  R3's first follow-on.
+  terms. `R2_ACTIVATION_TRACE` schema 1 records the `ffn_moe_topk` expert identities, not their
+  selected weights. R8-SCORE-BASED-CACHE is the first follow-on: its authoritative ledger
+  [`r8-score-cache.md`](r8-score-cache.md) defines schema 2's per-selection weight and one fixed
+  cumulative-weight policy without changing this document's historical schema-1 result.
 - **Impact-driven prefetch** (section 7.5) prioritizes blocks whose *miss penalty* is largest.
   R3 has no penalty model: it counts bytes, and bytes are not a penalty until a bandwidth converts
   them. The prerequisite is R4.5's and R5's measured transfer costs.

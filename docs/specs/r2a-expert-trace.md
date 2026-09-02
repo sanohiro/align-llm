@@ -6,6 +6,11 @@ R2 ("R2a: callbackでrouter tensorを観測"). It is authoritative for the R2A p
 `src/expert_trace.align` owner module, the bounded streaming line reader it needs, and the parsing
 contract bound to llama.cpp build 10566.
 
+R8-SCORE-BASED-CACHE (`docs/specs/r8-score-cache.md`) supersedes only the current exchanged-document
+version and router pairing surface: the producer now emits schema 2 with one selected router weight
+per selection. The schema-1 contract and evidence below remain the historical base for every
+unchanged field, aggregate, validation rule, and CLI behavior.
+
 `docs/specs/roadmap.md` remains authoritative for delivery order and for the R2 gate itself.
 `docs/specs/align-llm.md` remains authoritative for the architecture this measurement serves —
 section 5.2's `BlockKind`, section 6's VRAM / DRAM / NVMe tiers, and section 7.4's score-based cache.
@@ -1209,8 +1214,10 @@ triple — and assigns no tier, computes no score, and reads no router *weight*.
 them, and R2A reads `ffn_moe_probs-N`'s *shape* to derive `n_expert` while ignoring its *values*.
 Capturing them would mean parsing `%12.4f` floats whose printed precision is four decimals — enough
 to rank experts, not enough to reproduce a gating computation — and no consumer exists yet.
-Section 7.4's "router score" input becomes a schema 2 field when R3 asks for it, with a stated
-precision limit, rather than a four-decimal number recorded now and trusted later.
+R8-SCORE-BASED-CACHE is that consumer. Its authoritative ledger is
+[`r8-score-cache.md`](r8-score-cache.md): schema 2 pairs every selection with the corresponding
+`ffn_moe_weights-N` value as an integer number of ten-thousandths, explicitly retaining the printed
+four-decimal precision limit rather than claiming to reproduce gating arithmetic.
 
 ### 5.5 Candidate Align capability requests
 

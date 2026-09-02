@@ -42,7 +42,9 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 ```
 
 The currently pinned Align commit is
-`3a34febe912db5096c58c74fede36ff53f223e04`, selected by the Request 44 consumer adoption. The reviewed
+`b6f95a261e1434d705d7de006484ffa66b1542f0`, selected by the latest-prerequisite compatibility
+adoption. It advances from the Request 22 consumer pin without changing any request lifecycle
+state or consuming a proposed surface. The reviewed
 `docs/specs/check-gate-topology.md` fresh-compiler design and its FRESH-WORKER/FRESH-IMAGE base
 capabilities are merged. The closed Request 6 installed profile extends that same trust boundary to
 two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not acceptance

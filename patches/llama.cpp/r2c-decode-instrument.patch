@@ -1,24 +1,30 @@
 diff --git a/common/debug.cpp b/common/debug.cpp
-index 102c692..e07fd68 100644
+index 102c692..db5b726 100644
 --- a/common/debug.cpp
 +++ b/common/debug.cpp
 @@ -5,0 +6 @@
 +#include <algorithm>
 @@ -6,0 +8 @@
 +#include <cstring>
-@@ -76,0 +79,11 @@ static float common_ggml_get_float_value(const uint8_t * data,
+@@ -76,0 +79,17 @@ static float common_ggml_get_float_value(const uint8_t * data,
 +static int64_t common_debug_print_limit(const ggml_tensor * t) {
 +    static constexpr char moe_topk_prefix[] = "ffn_moe_topk";
++    static constexpr char moe_weights_prefix[] = "ffn_moe_weights";
 +    static constexpr size_t moe_topk_prefix_length = sizeof(moe_topk_prefix) - 1;
-+    if (std::strncmp(t->name, moe_topk_prefix, moe_topk_prefix_length) != 0 ||
-+        (t->name[moe_topk_prefix_length] != '\0' && t->name[moe_topk_prefix_length] != '-')) {
++    static constexpr size_t moe_weights_prefix_length = sizeof(moe_weights_prefix) - 1;
++    const bool is_moe_topk = std::strncmp(t->name, moe_topk_prefix, moe_topk_prefix_length) == 0 &&
++        (t->name[moe_topk_prefix_length] == '\0' || t->name[moe_topk_prefix_length] == '-');
++    const bool is_moe_weights =
++        std::strncmp(t->name, moe_weights_prefix, moe_weights_prefix_length) == 0 &&
++        (t->name[moe_weights_prefix_length] == '\0' || t->name[moe_weights_prefix_length] == '-');
++    if (!is_moe_topk && !is_moe_weights) {
 +        return 3;
 +    }
 +
 +    return *std::max_element(t->ne, t->ne + GGML_MAX_DIMS);
 +}
 +
-@@ -186 +199,2 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
+@@ -186 +205,2 @@ bool common_debug_cb_eval(struct ggml_tensor * t, bool ask, void * user_data) {
 -        common_debug_print_tensor(data, t->type, t->ne, t->nb, 3, pimpl->abort_on_nan);
 +        common_debug_print_tensor(
 +            data, t->type, t->ne, t->nb, common_debug_print_limit(t), pimpl->abort_on_nan);

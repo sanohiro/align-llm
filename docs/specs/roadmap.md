@@ -1238,7 +1238,8 @@ The current forward delivery order is:
     all three required checks passed at `cf76641`; the merge commit preserves the full baseline
     chain.
 
-44. **REQUIRED-CI-UNDER-15 — remove duplicate complete-graph execution from every PR. Active.**
+44. **REQUIRED-CI-UNDER-15 — remove duplicate complete-graph execution from every PR. Merged in
+    PR #165.**
     PR #164 measured the pinned hosted check at 12m19s, native x86_64 installed evidence at 43m22s,
     and native aarch64 installed evidence at 46m57s. The aarch64 profile spent 37m14s rerunning the
     complete common capable graph after the hosted job already owned common functional behavior;
@@ -1253,6 +1254,18 @@ The current forward delivery order is:
     coverage allocation, and closure matrix are in
     [`check-gate-topology.md`](check-gate-topology.md) section 1.1 and the section 2 ledger. This
     changes no product behavior or evaluator result.
+
+45. **R8-SCORE-BASED-CACHE — selected router weights through one score-based residency policy.
+    Active.** [`r8-score-cache.md`](r8-score-cache.md) is the authoritative implementation contract.
+    The capability upgrades `R2_ACTIVATION_TRACE` and `R3_RESIDENCY_SIM` to schema 2, extends the
+    managed measurement instrument so `ffn_moe_topk` and `ffn_moe_weights` expose identical full
+    axes, and adds one predetermined `router_weight_lfu` candidate to the simulator and its
+    independent oracle. It is the smallest producer-complete consumer of R3's named router-weight
+    prerequisite: every selected expert carries its exact printed four-decimal gating weight and
+    the policy evicts the lowest cumulative routing mass with LRU/key tie breaks. The Align pin to
+    `b6f95a261e1434d705d7de006484ffa66b1542f0` is an internal checkpoint on the same branch. This
+    capability evaluates a cache policy in bytes; it does not yet implement a runtime cache or make
+    the latency claim required to close R8.
 
 ### Status (2026-08-28)
 
