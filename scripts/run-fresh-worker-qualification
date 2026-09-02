@@ -95,6 +95,7 @@ EXPECTED_CASES = {
     "fresh-v2-root-staging-smoke",
     "fresh-v2-temp-root-callsite-smoke",
     "fresh-v2-aggregate-publication-smoke",
+    "fresh-v2-published-elf-smoke",
     "fresh-v2-build-namespace-smoke",
     "fresh-v2-descriptor-file-smoke",
     "fresh-v2-direct-interposition-smoke",
@@ -114,12 +115,14 @@ EXPECTED_CASES = {
 # These cases require the complete product graph inside the authenticated worker rather than a
 # narrow native owner or the installed image/profile boundary itself. They remain available through
 # the explicit complete audit, but routine PR evidence does not rerun the common functional graph on
-# both architectures. Generated-output ELF closure is deliberately absent: the native worker unit
-# owner exercises the production parser and dependency validator, and the installed ordinary
-# adoption compiles and executes real Align fixtures on each required architecture.
+# both architectures. The native worker unit owner exercises the production parser and dependency
+# validator, while validation of the real published `main` remains with the explicit aggregate.
+# Installed ordinary adoption separately compiles and executes real Align fixtures on each required
+# architecture.
 COMPLETE_AGGREGATE_CASES = {
     "fresh-v2-temp-root-callsite-smoke",
     "fresh-v2-aggregate-publication-smoke",
+    "fresh-v2-published-elf-smoke",
     "fresh-v2-callsite-smoke",
     "fresh-v2-interpreter-boundary-smoke",
     "fresh-v2-baseline-integration-smoke",

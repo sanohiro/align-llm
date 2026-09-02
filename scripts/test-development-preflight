@@ -1262,6 +1262,91 @@ def test_ci_reuse() -> None:
     require(not non_push.reused and non_push.reason == "event-not-push", "PR event queried reuse")
 
 
+def test_signal_subprocess_group() -> None:
+    with tempfile.TemporaryDirectory(prefix="signal-subprocess-group-") as temporary_name:
+        temporary = Path(temporary_name)
+        driver = temporary / "driver.py"
+        ready = temporary / "ready"
+        cleaned = temporary / "cleaned"
+        descendant_pid = temporary / "descendant-pid"
+        driver.write_text(
+            """import os
+import pathlib
+import signal
+import subprocess
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from signal_subprocess import signal_subprocess_owner
+
+ready = pathlib.Path(sys.argv[2])
+cleaned = pathlib.Path(sys.argv[3])
+descendant_pid = pathlib.Path(sys.argv[4])
+child = (
+    "import pathlib,signal,subprocess,sys,time\\n"
+    "ready=pathlib.Path(sys.argv[1]); descendant_pid=pathlib.Path(sys.argv[2])\\n"
+    "descendant=subprocess.Popen([sys.executable, '-c', "
+    "'import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)'])\\n"
+    "descendant_pid.write_text(str(descendant.pid), encoding='ascii')\\n"
+    "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\\n"
+    "ready.write_text('ready', encoding='ascii')\\n"
+    "while True: time.sleep(0.05)\\n"
+)
+with signal_subprocess_owner((signal.SIGTERM,), 0.2) as owner:
+    try:
+        owner.run(
+            [sys.executable, "-c", child, str(ready), str(descendant_pid)],
+            cwd=".",
+            env=dict(os.environ),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+    finally:
+        owner.begin_cleanup()
+        cleaned.write_text("cleaned", encoding="ascii")
+""",
+            encoding="utf-8",
+        )
+        process = subprocess.Popen(
+            (
+                sys.executable,
+                str(driver),
+                str(SCRIPTS),
+                str(ready),
+                str(cleaned),
+                str(descendant_pid),
+            ),
+            cwd=REPOSITORY,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        deadline = time.monotonic() + 5
+        while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        require(ready.exists(), "signal subprocess group fixture did not become ready")
+        process.send_signal(signal.SIGTERM)
+        stdout, stderr = process.communicate(timeout=5)
+        require(
+            process.returncode == 128 + signal.SIGTERM
+            and not stdout
+            and not stderr
+            and cleaned.read_text(encoding="ascii") == "cleaned",
+            "signal subprocess owner did not terminate the child group and finish cleanup",
+        )
+        descendant = int(descendant_pid.read_text(encoding="ascii"))
+        descendant_deadline = time.monotonic() + 2
+        while time.monotonic() < descendant_deadline:
+            try:
+                os.kill(descendant, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        else:
+            raise RuntimeError("signal subprocess descendant remained live")
+
+
 def test_qualification_modes() -> None:
     qualification = load_script(
         "run-fresh-worker-qualification", "align_llm_fresh_qualification_test"
@@ -1443,8 +1528,9 @@ module.run(module.INSTALLED_OWNER, sys.executable, "-c", child, str(marker), str
     require(
         "fresh-v2-runtime-closure-smoke" in focused_cases
         and "fresh-v2-runtime-closure-smoke"
-        not in qualification.COMPLETE_AGGREGATE_CASES,
-        "native generated-output runtime closure is not required focused evidence",
+        not in qualification.COMPLETE_AGGREGATE_CASES
+        and "fresh-v2-published-elf-smoke" in qualification.COMPLETE_AGGREGATE_CASES,
+        "native runtime parsing and real generated-output publication ownership are conflated",
     )
     runtime_owner = (
         REPOSITORY / "scripts" / "run-fresh-worker-unit-smoke"
@@ -1456,7 +1542,7 @@ module.run(module.INSTALLED_OWNER, sys.executable, "-c", child, str(marker), str
         "published_elf_cases(module)" in runtime_owner
         and "module.validate_published_elf(raw, runtime)" in runtime_owner
         and "module.validate_published_elf(raw, missing_runtime)" in runtime_owner,
-        "native runtime-closure owner lost production ELF validation",
+        "native runtime-closure owner lost the production parser and dependency validator",
     )
     require(
         adoption_owner.count("run_accepted(compiler,") == 3,
@@ -2601,6 +2687,7 @@ def main() -> int:
     test_runtime_materialization()
     test_plan()
     test_ci_reuse()
+    test_signal_subprocess_group()
     test_qualification_modes()
     test_image_build_material()
     test_image_profile_plan()

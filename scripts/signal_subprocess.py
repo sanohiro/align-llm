@@ -1,4 +1,4 @@
-"""Catch signals, relay them to one active child, and preserve cleanup before exit."""
+"""Catch signals, relay them to one active child group, and preserve cleanup before exit."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ POLL_SECONDS = 0.25
 
 
 class SignalSubprocessOwner:
-    """Own one synchronous child while a surrounding finalizer remains authoritative."""
+    """Own one synchronous child group while a surrounding finalizer remains authoritative."""
 
     def __init__(self, cleanup_seconds: float) -> None:
         self.cleanup_seconds = cleanup_seconds
@@ -27,14 +27,18 @@ class SignalSubprocessOwner:
     def begin_cleanup(self) -> None:
         self.cleanup_started = True
 
+    @staticmethod
+    def signal_group(process: subprocess.Popen[bytes], signum: int) -> None:
+        try:
+            os.killpg(process.pid, signum)
+        except ProcessLookupError:
+            pass
+
     def handle_signal(self, signum: int, _frame: object) -> None:
         if self.pending_signal is None:
             self.pending_signal = signum
         if self.child is not None:
-            try:
-                self.child.send_signal(signum)
-            except ProcessLookupError:
-                pass
+            self.signal_group(self.child, signum)
             if self.signal_deadline is None:
                 self.signal_deadline = time.monotonic() + self.cleanup_seconds
             return
@@ -64,6 +68,7 @@ class SignalSubprocessOwner:
                 stdin=stdin,
                 stdout=stdout,
                 stderr=stderr,
+                start_new_session=True,
             )
             self.child = process
         finally:
@@ -73,10 +78,7 @@ class SignalSubprocessOwner:
             and self.pending_signal is not None
             and process.poll() is None
         ):
-            try:
-                process.send_signal(self.pending_signal)
-            except ProcessLookupError:
-                pass
+            self.signal_group(process, self.pending_signal)
             self.signal_deadline = time.monotonic() + self.cleanup_seconds
 
         output: bytes | None
@@ -88,11 +90,11 @@ class SignalSubprocessOwner:
             except subprocess.TimeoutExpired:
                 now = time.monotonic()
                 if self.signal_deadline is not None and now >= self.signal_deadline:
-                    process.kill()
+                    self.signal_group(process, signal.SIGKILL)
                     self.signal_deadline = None
                     continue
                 if timeout is not None and now - started >= timeout:
-                    process.kill()
+                    self.signal_group(process, signal.SIGKILL)
                     output, errors = process.communicate()
                     self.child = None
                     raise subprocess.TimeoutExpired(
