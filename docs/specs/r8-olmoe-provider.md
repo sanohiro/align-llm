@@ -1,6 +1,6 @@
 # R8 OLMoE provider boundary
 
-Status: implemented candidate, 2026-09-03
+Status: reviewed implementation candidate, 2026-09-03
 
 ## 1. Decision and boundary
 
@@ -62,10 +62,23 @@ document shape, and token-id meaning.
 | MoE generation | prompt ids, exact geometry/source, positive budget | prefill plus bounded decode ids | drift, context, cache, graph, or nonfinite failure | no partial ids/text escape | one converged graph/backend/cache teardown | forced engine and failure injections |
 | diagnostic decoder | existing operands and mode | byte-identical document semantics | existing codes/order | existing partial-step rules | existing teardown | current MoE/cache owner unchanged |
 | output decode | terminal EOG removed, controls skipped | owned bounded UTF-8 text | tokenizer identity or byte cap mismatch | after successful generation only | temporary ids/result drop | exact completion bytes/counts |
-| real qualification | pinned model, pack, compiler, llama.cpp | one prompt id chain and decoded bytes agree | missing opt-in is N/A; wrong named input fails | one task only | disposable artifacts removed | bounded runner self-test and real run |
+| real qualification | pinned model, pack, compiler, llama.cpp | one prompt's generated id chain and decoded bytes agree | missing opt-in is N/A; wrong named input fails | one task only | signal-aware server teardown and disposable artifacts | bounded runner self-test and real run |
 
 ## 4. Author consistency pass
 
 The ledger and matrix define one architecture discriminator, one explicit cache scalar, one shared
 MoE generation mode, and one output rule. They preserve every Qwen and diagnostic surface, expose
 no partial state, and make no performance statement requiring a benchmark.
+
+## 5. Candidate evidence and ledger mapping
+
+| Contract / closure cells | Candidate implementation and evidence |
+| --- | --- |
+| config, CLI, dispatch, Qwen preservation, EOG, failures, and output | `src/model.align`, `src/main.align`, `src/provider_runtime.align`; `gmake runtime-provider-smoke` passes 61 assertions over Qwen and OLMoE |
+| MoE generation, cache ownership, early exit, and diagnostic preservation | `src/moe_decode_step.align`; focused provider owner passes and `gmake layer-forward-smoke` passes the diagnostic/cache boundary |
+| exact emitted ids and decoded bytes | the fixed real-model gate reads the generation seam's actual ids and matches pinned llama.cpp prompt count 47, ids `[1992,4993]`, and bytes `To fix` in 22.62 seconds |
+| qualification cleanup | signal-aware server teardown plus its forced terminate-to-kill self-test |
+
+The comprehensive review found two P2 qualification defects: re-tokenized output did not prove the
+emitted id chain, and SIGTERM could bypass server cleanup. Both are repaired above without changing
+the provider contract or runtime behavior, so the repair does not trigger another full review.

@@ -17,14 +17,22 @@ diagnostic MoE CLI remain unchanged, and this correctness capability makes no pe
 
 The implementation candidate is complete. `gmake fmt` passed; `gmake runtime-provider-smoke`
 passed 61 assertions; `gmake layer-forward-smoke` passed the unchanged diagnostic/cache boundary;
-and the fixed real-model qualification matched pinned llama.cpp prompt count 47, token ids
-`[1992,4993]`, and bytes `To fix` in 19.07 seconds. The qualification runner self-test,
+and the repaired fixed real-model qualification matched pinned llama.cpp prompt count 47, actual
+generated token ids `[1992,4993]`, and bytes `To fix` in 22.62 seconds. The qualification runner self-test,
 Python compilation, and `git diff --check` also passed. No broad aggregate, platform, stress, or
 benchmark suite was selected.
 
-**Next actions.** (1) Commit and perform one comprehensive review of the stable candidate. (2)
-Consolidate any accepted repair and rerun only its affected owner. (3) Run publication preflight,
-publish, merge, and pull current `main` and Align.
+The comprehensive Codex CLI review covered head
+`59e5111e619c25f11bec7c6428f771d91c32d5e6` against base tip and merge base
+`c987838130077d5b6119ee20b717774c1c913fbe`, using gpt-5.6-sol at high effort over the full diff.
+It found two accepted P2 qualification defects: the real gate re-tokenized decoded text instead of
+observing the generated id chain, and SIGTERM could bypass `llama-server` cleanup. The consolidated
+repair adds a qualification-only exact generation seam consumer and signal-aware cleanup with a
+forced escalation self-test. It does not change provider behavior or expand scope, so another
+comprehensive review is not required.
+
+**Next actions.** (1) Commit the consolidated review repair. (2) Run exact-head publication
+preflight. (3) Publish, merge, and pull current `main` and Align.
 
 **Blocker.** None.
 

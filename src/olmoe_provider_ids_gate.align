@@ -1,0 +1,55 @@
+module olmoe_provider_ids_gate
+
+import alignpack
+import frontend_olmoe
+import gguf
+import model_ir
+import moe_decode_step
+import tokenizer_qwen2
+import std.fs
+
+SYSTEM := "You are a coding assistant. Return a concise patch-oriented answer."
+CACHE_BUDGET_BYTES := 975175680
+
+fn ir_ok(value: model_ir.IrStatus) -> bool = match value {
+  Ok => true,
+  Error => false,
+}
+
+fn tokenizer_ok(value: tokenizer_qwen2.TokenizerStatus) -> bool = match value {
+  Ok => true,
+  Error => false,
+}
+
+// Qualification-only access to the exact generated id chain. The public provider intentionally
+// returns decoded text, so the fixed real-model gate reaches the same in-process generation seam
+// directly instead of pretending that re-tokenizing that text observes the ids the model emitted.
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 5 { return Err(Error.Invalid) }
+  model_path := args[1]
+  pack_path := args[2]
+  geometry_path := args[3]
+  prompt := args[4]
+
+  snapshot := gguf.open_snapshot(model_path)?
+  ir := frontend_olmoe.build_model_ir(snapshot.table, model_path)
+  if !ir_ok(ir.status) { return Err(Error.Invalid) }
+  geometry := fs.read_file(geometry_path)?
+  geometry_view: str := geometry
+  derived_view: str := ir.document
+  if geometry_view != derived_view { return Err(Error.Invalid) }
+  source_identity := alignpack.verify_source_identity_snapshot(snapshot, pack_path)?
+  prepared := tokenizer_qwen2.prepare_generation_snapshot(snapshot, SYSTEM, prompt)?
+  if !tokenizer_ok(prepared.status) { return Err(Error.Invalid) }
+  if prepared.token_ids.len() < 1 || prepared.token_ids.len() > 2048
+    || prepared.token_ids.len() + 1 > ir.context_length
+    || prepared.token_ids.len() + 1 > 4096 {
+    return Err(Error.Invalid)
+  }
+  generated := moe_decode_step.generate_resident(
+    pack_path, geometry_path, geometry_view, source_identity, prepared.token_ids,
+    prepared.eog_token_ids, 2, CACHE_BUDGET_BYTES)
+  if generated.outcome.code.len() > 0 { return Err(Error.Invalid) }
+  print(generated.token_ids_json)
+  return Ok(())
+}

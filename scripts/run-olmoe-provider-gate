@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -27,10 +28,28 @@ PROMPT = "Fix an off-by-one error in a Python inclusive range."
 EXPECTED_IDS = [1992, 4993]
 EXPECTED_TEXT = "To fix"
 COST_CEILING_SECONDS = 15 * 60
+server_process: subprocess.Popen[bytes] | None = None
 
 
 class GateError(RuntimeError):
     pass
+
+
+def stop_server() -> None:
+    global server_process
+    if server_process is None or server_process.poll() is not None:
+        return
+    server_process.terminate()
+    try:
+        server_process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        server_process.kill()
+        server_process.wait(timeout=5)
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    stop_server()
+    raise SystemExit(128 + signal_number)
 
 
 def configured_file(name: str, executable: bool = False) -> Path | None:
@@ -108,6 +127,7 @@ def wait_ready(process: subprocess.Popen[bytes], port: int) -> None:
 
 
 def self_test() -> int:
+    global server_process
     if EXPECTED_TEXT.encode("utf-8") != b"To fix" or len(EXPECTED_IDS) != 2:
         raise GateError("fixed reference expectation drifted")
     with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-provider-self-test-") as raw:
@@ -119,11 +139,21 @@ def self_test() -> int:
                 pass
             else:
                 raise GateError("an invalid configured model was hidden by a later N/A")
+    forced_timeout = subprocess.TimeoutExpired(["llama-server"], 10)
+    fake_server = mock.Mock()
+    fake_server.poll.return_value = None
+    fake_server.wait.side_effect = [forced_timeout, 0]
+    server_process = fake_server
+    stop_server()
+    if fake_server.terminate.call_count != 1 or fake_server.kill.call_count != 1:
+        raise GateError("server cleanup did not escalate from terminate to kill")
+    server_process = None
     print("R8-OLMOE-PROVIDER self-test: PASS")
     return 0
 
 
 def main() -> int:
+    global server_process
     if sys.argv[1:] == ["--self-test"]:
         return self_test()
     if len(sys.argv) != 1:
@@ -144,6 +174,7 @@ def main() -> int:
         work = Path(raw_work)
         saved_main = work / "saved-main"
         runtime_main = work / "runtime-main"
+        ids_gate = work / "olmoe-provider-ids-gate"
         if original_main.exists():
             shutil.copy2(original_main, saved_main)
         shim_dir = work / "lib"
@@ -155,7 +186,6 @@ def main() -> int:
                 "ALIGN_LLM_GGML_SHIM_DIR": str(shim_dir),
             }
         )
-        server_process: subprocess.Popen[bytes] | None = None
         try:
             run([str(ROOT / "scripts/build-ggml-shim")], timeout=180, env=build_env)
             link_path = ":".join(
@@ -165,6 +195,12 @@ def main() -> int:
             compiler = Path(os.environ.get("ALIGNC", str(ROOT / "scripts/alignc")))
             run([str(compiler), "build", "src/main.align"], timeout=300, env=build_env)
             shutil.move(original_main, runtime_main)
+            run(
+                [str(compiler), "build", "src/olmoe_provider_ids_gate.align"],
+                timeout=300,
+                env=build_env,
+            )
+            shutil.move(ROOT / "olmoe_provider_ids_gate", ids_gate)
             if saved_main.exists():
                 shutil.copy2(saved_main, original_main)
 
@@ -186,14 +222,12 @@ def main() -> int:
             if record.get("status") != "ok" or record.get("output") != EXPECTED_TEXT:
                 raise GateError(f"Align provider completion drifted: {record!r}")
 
-            token_input = work / "completion.txt"
-            token_input.write_text(record["output"], encoding="utf-8")
-            encoded = run(
-                [str(runtime_main), "--tokenize", str(model), str(token_input), "literal-control"],
+            emitted = run(
+                [str(ids_gate), str(model), str(pack), str(geometry), PROMPT],
                 timeout=30,
                 env=runtime_env,
             )
-            align_ids = json.loads(encoded.stdout.decode("utf-8"))
+            align_ids = json.loads(emitted.stdout.decode("utf-8"))
             if align_ids != EXPECTED_IDS or record.get("completion_tokens") != len(EXPECTED_IDS):
                 raise GateError(f"Align provider token ids drifted: {align_ids!r}")
 
@@ -236,13 +270,7 @@ def main() -> int:
             if record.get("prompt_tokens") != reference["usage"]["prompt_tokens"]:
                 raise GateError("Align and llama.cpp prompt token counts differ")
         finally:
-            if server_process is not None and server_process.poll() is None:
-                server_process.terminate()
-                try:
-                    server_process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    server_process.kill()
-                    server_process.wait(timeout=5)
+            stop_server()
             if saved_main.exists():
                 shutil.copy2(saved_main, original_main)
 
@@ -257,8 +285,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
     try:
         raise SystemExit(main())
-    except GateError as error:
+    except (GateError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+        stop_server()
         sys.stderr.write(f"R8-OLMOE-PROVIDER: FAIL {error}\n")
         raise SystemExit(1)
