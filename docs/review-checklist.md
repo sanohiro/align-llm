@@ -102,9 +102,10 @@ Trigger the applicable bullets for evaluation, corpus, Git plumbing, or exact-so
 
 ## Verification and terminal state
 
-- Focused owner checks pass. `make ci` appears only for a named integration/adoption gate, aggregate
-  membership or topology change, changed integration behavior, or fresh base-integration evidence;
-  a pin change alone does not select it.
+- Focused owner checks pass. `make ci` appears only when an accepted ledger names an aggregate-only
+  owner or an explicit audit requests complete fresh integration; aggregate membership or topology
+  changes otherwise use their narrow topology owner and required workflow. A pin change alone does
+  not select it.
 - Required security, resource, race, fuzz, stress, platform, mutation, or benchmark qualification
   runs under its named owner command when its boundary changed.
 - The pull request contains the comprehensive review envelope, every finding disposition, any

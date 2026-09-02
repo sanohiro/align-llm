@@ -53,6 +53,7 @@ FOCUSED_CHECKS = (
         (
             "fresh-v2-bwrap-trust-smoke",
             "fresh-v2-tool-identity-smoke",
+            "fresh-v2-runtime-closure-smoke",
             "fresh-v2-cache-smoke",
             "fresh-v2-root-staging-smoke",
             "fresh-v2-descriptor-file-smoke",
@@ -106,9 +107,12 @@ EXPECTED_CASES = {
     "fresh-v2-platform-profile-smoke",
 }
 
-# These cases exercise the complete product graph inside the authenticated worker rather than the
-# installed image/profile boundary itself. They remain available through the explicit complete
-# audit, but routine PR evidence does not rerun the common functional graph on both architectures.
+# These cases require the complete product graph inside the authenticated worker rather than a
+# narrow native owner or the installed image/profile boundary itself. They remain available through
+# the explicit complete audit, but routine PR evidence does not rerun the common functional graph on
+# both architectures. Generated-output ELF closure is deliberately absent: the native worker unit
+# owner exercises the production parser and dependency validator, and the installed ordinary
+# adoption compiles and executes real Align fixtures on each required architecture.
 COMPLETE_AGGREGATE_CASES = {
     "fresh-v2-temp-root-callsite-smoke",
     "fresh-v2-aggregate-publication-smoke",
