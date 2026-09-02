@@ -35,7 +35,7 @@ endif
 endif
 
 .PHONY: check run build fmt format-check ggml-spike ggml-spike-smoke ggml-spike-qualification layer-forward-smoke layer-forward-qualification model-forward-qualification metal-forward-qualification moe-layer-forward-qualification moe-model-forward-qualification decode-step-qualification moe-decode-step-qualification gguf-smoke gguf-reference-parity model-ir-smoke model-ir-parity expert-trace-smoke expert-trace-parity residency-sim-smoke residency-sim-qualification alignpack-smoke alignpack-qualification tokenizer-smoke tokenizer-parity prompt-smoke prompt-parity runtime-provider-smoke runtime-provider-gate eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-source-verifier-smoke prompt-snapshot-helper-smoke prompt-fixed-adapter-smoke prompt-evaluate-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke prompt-gate-check baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption c6e-request2-adoption c6f1-request11-adoption c6f2-request14-adoption c6-evaluation-adoption c7-owned-record-source-expiry-adoption c7-persisted-result-cli-smoke c7-persisted-result-lifetime-smoke c7-persisted-result-owned-move-smoke c7-persisted-result-wire-smoke c7-persisted-result-noncanonical-input-smoke c7-persisted-result-independent-destinations-smoke persisted-result-smoke persisted-result-qualification darwin-profile-gate c4-repair-gate c4-editset-gate c4-template-gate prompt-repair-adapter-smoke prompt-template-adapter-smoke ci
-.PHONY: prefix-corpus-check prefix-ttft-runner-check prefix-ttft-qualification olmoe-coding-decision-check olmoe-coding-decision
+.PHONY: prefix-corpus-check prefix-ttft-runner-check prefix-ttft-qualification
 check:
 	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
 	  diagnostic="$$(mktemp)"; \
@@ -97,15 +97,6 @@ runtime-provider-smoke: build
 # every aggregate because it packs and loads the 4.7 GB model and runs a Linux-contained task gate.
 runtime-provider-gate: build
 	./scripts/run-runtime-provider-gate
-
-# R8-OLMOE-CODING-DECISION's model-free measurement owner and one opt-in real decision. Neither
-# joins an aggregate: the self-test runs in under a second, while the real target consumes the
-# named 4.2 GB model/pack inputs and has its own approximately 15-minute whole-run ceiling.
-olmoe-coding-decision-check:
-	./scripts/run-olmoe-coding-decision --self-test
-
-olmoe-coding-decision:
-	./scripts/run-olmoe-coding-decision
 
 index-smoke: build
 	./scripts/run-index-smoke
