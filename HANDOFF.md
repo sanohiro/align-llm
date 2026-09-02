@@ -91,13 +91,27 @@ catchable-signal unwinding boundary. The focused
 qualification and both cleanup-interruption regressions pass in 0.464s; `format-check` passes in
 6.3s. The repair delta was inspected for unrelated behavior and no review finding remains open.
 
-**Next actions.** (1) Run exact-head publication preflight below 900 seconds with the corrected
-outer `HOME`. (2) Publish with all review envelopes, require all three GitHub checks below 15
-minutes, merge, pull current `main`, and continue the next eligible capability.
+Exact-head preflight at `eaa4f174c40d98cd2f44efe5b3f55758c5f61486` passed the 15.015-second
+development owner, 0.393-second managed toolchain verification, 21.624-second focused owner, and
+678.270-second installed owner. The installed owner again ran no aggregate. The publication command
+then reached its 900-second ceiling because the local hosted graph was still running
+`layer-forward-smoke` after 863.302 seconds. That graph is already required once in GitHub hosted CI
+and does not distinguish a fresh-image risk locally. The candidate is therefore re-scoped again:
+fresh-image preflight leaves the common graph to the required hosted check and runs only its local
+owner, toolchain verification, focused qualification, and installed owner. The unused parallel
+coordinator and its regressions are removed, deleting 362 lines of script and test machinery. This
+changes the reviewed execution approach and requires one final comprehensive review after the
+re-scope is committed.
+
+**Next actions.** (1) Commit and review the local/hosted ownership re-scope. (2) Run exact-head
+fresh-image publication preflight below 900 seconds. (3) Publish with all review envelopes, require
+all three GitHub checks below 15 minutes, merge, pull current `main`, and continue the next eligible
+capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** None; local configuration remains outside the change.
+**Intentional uncommitted files.** The ownership re-scope until committed; local configuration
+remains outside the change.
 
 ## Merged checkpoint: R7-RUNTIME-PROVIDER (2026-09-02)
 

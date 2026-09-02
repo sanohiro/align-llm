@@ -62,16 +62,16 @@ fresh-image publication preflight**, including checkout or local admission, imag
 cache restoration, cleanup, and evidence binding. GitHub enforces the check ceiling with
 `timeout-minutes: 15` on both required job definitions. A required job or publication preflight
 that cannot fit is re-scoped before publication; increasing the timeout is not an accepted repair.
-After the owner, pinned-toolchain, and short focused prerequisites pass, local preflight launches
-the independent hosted and native installed owners concurrently. Either failure terminates the
-other owner. The coordinator forwards HUP, INT, QUIT, and TERM to every active output-summary
-wrapper; each wrapper escalates from that signal to KILL for its owned command process group after
-the fixed five-second cleanup grace. The installed image owner converts its first catchable signal
-to orderly unwinding through the existing profile, volume, image, and cgroup finalizer before that
-deadline. The coordinator waits for every started wrapper, emits
-terminal evidence, then preserves the initiating signal; no stamp is written. The
-installed matrix continues to run natively on x86_64 and aarch64, but it stops after the installed-image
-profile's real compiler self-test, adoption, and worker-native compiler build/bundle boundary. The
+Fresh-image local preflight runs its owner, pinned-toolchain verification, focused qualification,
+and installed-image owner, then leaves the common functional graph to the required hosted GitHub
+check. Repeating that graph locally did not distinguish a fresh-image risk and made the measured
+publication command exceed 900 seconds; the pull request still cannot merge without the hosted
+check. Each output-summary wrapper forwards HUP, INT, QUIT, and TERM to its owned command process
+group and escalates to KILL after the fixed five-second cleanup grace. The installed image owner
+converts its first catchable signal to orderly unwinding through the existing profile, volume,
+image, and cgroup finalizer before that deadline; no signal writes a stamp. The installed matrix
+continues to run natively on x86_64 and aarch64, but it stops after the installed-image profile's
+real compiler self-test, adoption, and worker-native compiler build/bundle boundary. The
 complete capable aggregate remains an
 explicit audit, selected only when its own aggregate namespace, publication, complete-callsite, or
 baseline-integration boundary changes, or when an explicit audit requests it. It is not routine PR
@@ -98,7 +98,7 @@ The closure matrix for this re-scope is:
 | Required native installed job | native signed image, full pinned Align source, prepared secrets, native focused owners, and an owner-private temporary Docker client configuration | focused qualification validates ELF closure with the production parser and dependency validator; installed ordinary adoption compiles and executes real Align fixtures; worker mode `build` validates its native compiler namespace and installed bundle without running the common graph | every existing focused/image/profile/trust/replacement/adoption/build refusal remains fatal; `--complete-aggregate` is absent; caller and repository-local Docker configuration is never consumed | existing user-namespace restore, signing cleanup, private Docker configuration removal, and image/volume/cgroup cleanup | both native required PR checks below 900 seconds |
 | Explicit complete audit | installed profile plus `--complete-aggregate` | the existing `worker-aggregate` runs after the installed boundary | the flag without an installed-profile mode is usage error; aggregate failure remains fatal | the same profile finalizer owns aggregate success, failure, timeout, and signal | focused owner change or explicit audit only; never routine PR evidence |
 | Coverage reporting | fixed closure inventory and an explicit complete-audit subset | output distinguishes `installed-profile` from `explicit-complete-audit` | unknown, duplicated, or unclassified closure cases fail inventory validation | N/A: read-only report | `scripts/test-development-preflight` |
-| Fresh-image publication preflight | clean exact head, owner, managed toolchain ensure/verify, then focused qualification | after those prerequisites pass, run hosted and installed owners as one declared parallel group and stamp only after both pass | first parallel failure terminates its still-running peer; top-level HUP/INT/QUIT/TERM is forwarded to every active wrapper; the installed owner unwinds its Docker resources on the first catchable signal; a launch failure, signal, nonzero status, head drift, or dirty worktree prevents the stamp | each output-summary wrapper signals its owned command process group, escalates to KILL after five seconds, and reaps it; preflight waits for all started wrappers and preserves the initiating signal | exact-head preflight wall clock below 900 seconds plus development-preflight plan/concurrency, signal-resistant-child, and installed cancellation-cleanup regressions |
+| Fresh-image publication preflight | clean exact head, owner, managed toolchain ensure/verify, then focused qualification | run the installed owner after those prerequisites and stamp only after it passes; required hosted CI owns the common graph once after publication | top-level HUP/INT/QUIT/TERM reaches the active command group; the installed owner unwinds its Docker resources on the first catchable signal; a launch failure, signal, nonzero status, head drift, or dirty worktree prevents the stamp | the output-summary wrapper signals its owned command process group, escalates to KILL after five seconds, and reaps it | exact-head local preflight wall clock below 900 seconds plus development-preflight plan, signal-resistant-child, and installed cancellation-cleanup regressions; required hosted CI must pass separately |
 
 No product API, compiler pin, persisted product format, evaluator verdict, or source-test assertion
 changes. The old complete aggregate remains available for the risks it uniquely exercises; this

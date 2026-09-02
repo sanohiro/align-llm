@@ -1247,8 +1247,8 @@ The current forward delivery order is:
     of complete GitHub job wall time. The installed matrix keeps both native platform profiles and
     every image-specific refusal, but the complete aggregate becomes an explicit owner-triggered
     audit instead of routine PR evidence. The same 15-minute wall ceiling applies to fresh-image
-    publication preflight: after ordered owner/toolchain/focused prerequisites, its independent
-    hosted and installed owners run concurrently and fail as one group. The authoritative contract,
+    publication preflight: after ordered owner/toolchain/focused prerequisites, it runs only the
+    installed owner and leaves the unchanged common graph to required hosted CI. The authoritative contract,
     coverage allocation, and closure matrix are in
     [`check-gate-topology.md`](check-gate-topology.md) section 1.1 and the section 2 ledger. This
     changes no product behavior or evaluator result.
