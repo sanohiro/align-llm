@@ -71,7 +71,8 @@ artifact_kind: "R8_OLMOE_CODING_DECISION"
 status: "COMPLETE"
 model: {bytes, sha256, architecture}
 baseline: {provider, runtime_identity, server_sha256, threads, context, warmup}
-candidate: {provider, align_revision, pack_sha256, geometry_sha256, cache_budget_bytes}
+candidate: {provider, align_llm_head, align_revision, pack_sha256, geometry_sha256,
+            cache_budget_bytes}
 task: {task_id, task_sha256, prompt_sha256, maximum_completion_tokens}
 environment: {os, release, architecture, cpu_count}
 samples: [{pair_index, order, local, runtime}]
@@ -88,9 +89,10 @@ never embedded.
 `NOT_ELIGIBLE` uses null medians and null gain when an arm has fewer than four passing samples;
 `NOT_MET` and `MET` contain all three integers.
 
-The document records exact input digests and environment facts so its numbers cannot be moved to a
-different model, task, prompt, compiler pin, or host by relabeling. It is evidence emitted by the
-runner, not a new product interchange format or a promise of cross-host equivalence.
+The runner requires a clean worktree and records its exact align-llm head together with input
+digests and environment facts, so its numbers cannot be moved to different provider source, model,
+task, prompt, compiler pin, or host by relabeling. It is evidence emitted by the runner, not a new
+product interchange format or a promise of cross-host equivalence.
 
 ## 4. Closure matrix
 

@@ -482,6 +482,16 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-coding-decision-") as raw_work:
         work = Path(raw_work)
+        source_status = run_checked(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline,
+            maximum=30,
+        )
+        if source_status.stdout:
+            raise DecisionError("real decision requires a clean worktree")
+        align_llm_head = run_checked(
+            ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30
+        ).stdout.decode("ascii").strip()
         control = work / "known-good.patch"
         control.write_text(KNOWN_GOOD_PATCH, encoding="utf-8")
         passed, _ = validate_patch(control, work, deadline)
@@ -587,6 +597,7 @@ def main() -> int:
             },
             "candidate": {
                 "provider": "align-runtime",
+                "align_llm_head": align_llm_head,
                 "align_revision": align_revision,
                 "pack_sha256": pack_sha256,
                 "geometry_sha256": geometry_sha256,

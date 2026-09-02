@@ -4,7 +4,7 @@ import model
 import provider
 import result
 import std.fs
-import std.json
+import core.json
 import std.time
 
 fn count_or_unknown(config: model.ProviderConfig, text: str) -> model.TokenCount {
