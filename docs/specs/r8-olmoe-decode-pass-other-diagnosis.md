@@ -1,6 +1,6 @@
 # R8 OLMoE decode-pass other-work diagnosis
 
-Status: active, 2026-09-04
+Status: complete, 2026-09-04
 
 Roadmap owner: item 60, `R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS`
 
@@ -101,4 +101,28 @@ no prose renames residual work or authorizes an optimization before measurement.
 
 ## 6. Recorded result
 
-Pending implementation, focused verification, and one clean-head four-repeat diagnosis.
+The clean-head run at `1cc8cb48c2d91680ee4ee4b618b33c4472d1f66f` completed in
+116.826 seconds on the pinned Apple M1 host. All four repetitions produced the fixed 86-token
+completion and output hash, balanced buffers, contexts, backend, allocators, and resident wrap
+exactly, released the native model, and found zero matching llama.cpp processes at all twelve
+required boundaries.
+
+Full-helper wall samples were `[17704139042,18412456541,19080317000,19520549709]`, with an
+18,746,386,770-ns median. The `pass_other` samples and medians were:
+
+| Bucket | Four samples (ns) | Median (ns) |
+| --- | --- | ---: |
+| `PLANE_ROUNDTRIP_COMPARE` | `[2804882618,2912389855,3032260023,3120889620]` | 2,972,324,939 |
+| `GRAPH_MEMBER_SPEC` | `[7296786,7424921,7745205,7449337]` | 7,437,129 |
+| `LAYER_STEP_ACCOUNTING` | `[1395066,1393012,1320370,1301033]` | 1,356,691 |
+| `OTHER_PASS_REMAINDER` | `[16199166,16721317,16684650,17126913]` | 16,702,983 |
+
+The complete `pass_other` totals were `[2829773636,2937929105,3058010248,3146766903]`, with a
+2,997,969,676-ns median. `PLANE_ROUNDTRIP_COMPARE` supplied 991,445 ppm of that median and cleared
+the inherited 921,450,866-ns materiality floor by 2,050,874,073 ns. The decision is therefore
+`MEASURED_BUCKET_ELIGIBLE / PLANE_ROUNDTRIP_COMPARE`.
+
+Inspection maps the winner to the scalar `compare_past_k` and `compare_past_v` loops after each
+concat `slot_get`. Item 61 is selected to preserve the exact byte/layout oracle and first-mismatch
+column while moving those reads to a validated, allocation-free shared-shim comparison. This
+diagnosis does not itself establish a performance win.

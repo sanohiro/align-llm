@@ -3,7 +3,7 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS (2026-09-04)
+## Active: R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS publication (2026-09-04)
 
 Branch `agent/r8-olmoe-decode-pass-other-diagnosis`, based on pulled merged `main`
 `a502f94a22302e4896509204d3423b6e21090ade` (item 59 PR #181). The sibling Align checkout and
@@ -23,25 +23,40 @@ The inherited materiality floor remains 921,450,866 ns. Three broad counters and
 remaining-step deltas will time only the named disjoint operations; the new helper will preserve
 the item 59 schema and add one exact `pass_other` object.
 
-The implementation is complete. `verify_plane`, the exact graph-member/spec constructors, and
-decode-pass-local accounting blocks own three disjoint broad clocks; the existing successful-step
-commit owns their remaining-decode deltas. The shared qualification core has three fixed
-entrypoints whose real maximum-2 records retain the item 57 and item 59 key sets and add
-`pass_other` only for item 60. The new runner independently pins item 59's recorded evidence,
-predecessor/source chain, fixed host, schema, equations, medians, cleanup, and decision.
+The implementation and fixed-host diagnosis are complete. `verify_plane`, the exact
+graph-member/spec constructors, and decode-pass-local accounting blocks own three disjoint broad
+clocks; the existing successful-step commit owns their remaining-decode deltas. The shared
+qualification core has three fixed entrypoints whose real maximum-2 records retain the item 57 and
+item 59 key sets and add `pass_other` only for item 60. The new runner independently pins item 59's
+recorded evidence, predecessor/source chain, fixed host, schema, equations, medians, cleanup, and
+decision.
 
-**Next actions.** Commit the coherent implementation checkpoint, run one clean-head four-repeat
-diagnosis, record the exact decision, then complete comprehensive review, repair, preflight,
-publication, and merge.
+The clean-head run at `1cc8cb48c2d91680ee4ee4b618b33c4472d1f66f` completed in 116.826 seconds,
+reproduced the fixed output in all four repetitions, balanced every native lifetime, and passed all
+twelve isolation boundaries. Full-helper wall had an 18,746,386,770-ns median. Plane round-trip
+comparison dominated at 2,972,324,939 ns and 991,445 ppm of the 2,997,969,676-ns diagnosed total,
+clearing the 921,450,866-ns materiality floor by 2,050,874,073 ns. The decision is
+`MEASURED_BUCKET_ELIGIBLE / PLANE_ROUNDTRIP_COMPARE`.
+
+Item 61, `R8-OLMOE-PLANE-ROUNDTRIP-COMPARE`, is selected but not started. It will preserve the exact
+byte/layout oracle and first-mismatch column while moving the scalar K/V comparison reads to a
+validated, allocation-free shared-shim boundary. Its immutable baseline is item 60's four
+full-helper samples and 18,746,386,770-ns median; its precommitted 50,000-ppm floor is 937,319,339
+ns and candidate ceiling is 17,809,067,431 ns.
+
+**Next actions.** Commit the recorded item 60 decision, complete one comprehensive review, repair
+valid findings, run affected owners and exact-head preflight, publish and merge. Then update
+`main`, create item 61's authoritative ledger and closure matrix, and implement it.
 
 **Blocker.** None.
 
 **Latest durable verification.** The author consistency pass, `make fmt`, `make
 layer-forward-smoke` (98.646 seconds), `make runtime-provider-smoke` (self-test plus 61 CLI
 assertions), Python compilation, the full item 57→60 self-test chain, `git diff --check`, the pinned
-new-helper build, and real maximum-2 schema checks for all three helper entrypoints pass.
+new-helper build, real maximum-2 schema checks for all three helper entrypoints, and the clean-head
+four-repeat diagnosis (116.826 seconds) pass.
 
-**Intentional uncommitted files.** Item 60 implementation and handoff update before commit.
+**Intentional uncommitted files.** Item 60 recorded decision and handoff update before commit.
 Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS (PR #181, 2026-09-04)

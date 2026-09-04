@@ -1519,11 +1519,28 @@ The current forward delivery order is:
     materiality floor. No implementation seam is authorized; item 60 is selected.
 
 60. **R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS — partition the remaining unassigned pass work.
-    Active.** [`r8-olmoe-decode-pass-other-diagnosis.md`](r8-olmoe-decode-pass-other-diagnosis.md)
+    Decision recorded: `MEASURED_BUCKET_ELIGIBLE / PLANE_ROUNDTRIP_COMPARE`.**
+    [`r8-olmoe-decode-pass-other-diagnosis.md`](r8-olmoe-decode-pass-other-diagnosis.md)
     is the authoritative ledger and closure matrix. Preserve item 59's exact request and evidence boundaries while
     separating plane round-trip comparison outside the existing readback clock, graph-member/spec
     construction, per-layer/step accounting, and an explicit remainder. A direct measured winner
     must clear item 59's precommitted materiality floor before it can authorize implementation.
+
+    The clean-head four-repeat diagnosis reproduced the fixed output, balanced every native
+    lifetime, and passed all twelve isolation boundaries. Plane round-trip comparison dominated at
+    a 2.972-second median and 991,445 ppm of the 2.998-second measured total, clearing the inherited
+    0.921-second floor by 2.051 seconds. Graph-member/spec construction, layer/pass accounting, and
+    the explicit remainder measured only 0.007, 0.001, and 0.017 seconds. Item 61 is selected; this
+    diagnosis does not itself establish a performance win.
+
+61. **R8-OLMOE-PLANE-ROUNDTRIP-COMPARE — reduce the measured scalar K/V comparison boundary.
+    Selected; not started.** Preserve the exact canonical-plane and graph-consumed layouts,
+    `slot_get` behavior, first-mismatch tensor/column, output, isolation, cache, and native
+    lifetimes while replacing the scalar `compare_past_k` and `compare_past_v` reads with validated,
+    allocation-free shared-shim comparisons. Item 60's four full-helper samples and
+    18,746,386,770-ns median are the immutable fixed-host baseline. Precommit a 50,000-ppm floor of
+    937,319,339 ns in the implementation ledger; the conditioned candidate must have a median no
+    greater than 17,809,067,431 ns before the intervention can ship.
 
 ### Status (2026-08-28)
 
