@@ -1495,18 +1495,34 @@ The current forward delivery order is:
     the precommitted 50,000-ppm gate, a candidate median no greater than 28,928,313,753 ns.
 
     One combined caller-owned staging range and one validate-before-write shared-shim call preserve
-    the canonical plane and exact K/V graph-input layouts. The 108.362-second qualification
-    reproduced the fixed output and balanced lifetimes in all four repetitions. Full helper wall
-    fell from the immutable 30.451-second baseline to a 16.981-second median, a 442,332-ppm gain;
-    staging upload fell from 11.548 seconds to 1.914 seconds. The intervention ships.
+    the canonical plane and exact K/V graph-input layouts. The post-review 105.628-second
+    qualification bound baseline and candidate to the same Apple M1 host and reproduced the fixed
+    output and balanced lifetimes in all four repetitions. Full helper wall fell from the immutable
+    30.451-second baseline to an 18.429-second median, a 394,794-ppm gain; staging upload fell from
+    11.548 seconds to 2.045 seconds. The intervention ships.
 
 59. **R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS — partition the post-staging decode-pass residual.
-    Selected; not started.** Item 58's four exact sample records leave `PASS_RESIDUAL` as the
-    largest remaining bucket at a 3,805,899,547-ns median, ahead of compute at 3,615,480,386 ns and
-    claim I/O at 3,426,040,742 ns. Define a narrower diagnosis of graph/context construction,
+    Decision recorded: `OTHER_PASS_NEEDS_DIAGNOSIS / OTHER_PASS_RESIDUAL`.** Item 58's post-review
+    four exact sample records leave `PASS_RESIDUAL` as the largest
+    remaining bucket at a 4,172,949,292-ns median, ahead of compute at 4,104,846,715 ns and claim
+    I/O at 3,609,378,007 ns. Define a narrower diagnosis of graph/context construction,
     graph build/allocation/teardown, generic tensor transfer/digest, and other unassigned pass work
     before authorizing another implementation seam. Preserve item 58's fixed workload, output,
     isolation, cache, and lifetime boundaries.
+
+    Review corrected claim-buffer construction attribution and made result publication follow
+    cleanup and the cleanup-inclusive ceiling check. The replacement fixed-host four-repeat run
+    reproduced every output, lifetime, and isolation boundary. Its decode-pass residual median was
+    4.144 seconds. `OTHER_PASS_RESIDUAL` dominated at 2.877 seconds (694,324 ppm), while generic
+    transfer/digest was 0.868 seconds, graph teardown 0.273 seconds, graph build/allocation 0.093
+    seconds, and context/buffer setup 0.025 seconds. Every direct bucket missed the 0.921-second
+    materiality floor. No implementation seam is authorized; item 60 is selected.
+
+60. **R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS — partition the remaining unassigned pass work.
+    Selected; not started.** Preserve item 59's exact request and evidence boundaries while
+    separating plane round-trip comparison outside the existing readback clock, graph-member/spec
+    construction, per-layer/step accounting, and an explicit remainder. A direct measured winner
+    must clear item 59's precommitted materiality floor before it can authorize implementation.
 
 ### Status (2026-08-28)
 

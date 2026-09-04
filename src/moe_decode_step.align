@@ -1865,6 +1865,7 @@ fn run_moe_layer(
   borrow mut state: Plane,
   borrow mut o: moe_model_forward.Outcome,
 ) {
+  mut setup_started := time.instant()
   mut weight_ctx := ggml_ffi.null_handle()
   mut input_ctx := ggml_ffi.null_handle()
   mut graph_a_ctx := ggml_ffi.null_handle()
@@ -1940,6 +1941,8 @@ fn run_moe_layer(
       o.ggml_buffers_created = o.ggml_buffers_created + 1
     }
   }
+  o.graph_setup_ns = o.graph_setup_ns + (time.instant() - setup_started)
+  mut transfer_started := time.instant()
   if o.code.len() == 0 {
     take(o, ggml_ffi.slot_set(
         slot_view, layer_olmoe.MM_SLOT_CUR, residual, 0, g.n_embd * spec.t_in * 4, "cur"))
@@ -1962,6 +1965,9 @@ fn run_moe_layer(
       take(o, ggml_ffi.slot_set(slot_view, layer_olmoe.MM_SLOT_VPAST, past_v, 0, past, "v_past"))
     }
   }
+  o.generic_transfer_digest_ns = o.generic_transfer_digest_ns
+    + (time.instant() - transfer_started)
+  mut graph_started := time.instant()
   if o.code.len() == 0 {
     graph_a = ggml_ffi.graph_new(graph_a_ctx)
     galloc_a = ggml_ffi.gallocr_new(backend)
@@ -2004,6 +2010,7 @@ fn run_moe_layer(
         galloc_a, graph_a, moe_model_forward.layer_named(spec.layer, "stage", "alloc_a")))
     result.node_count_a = ggml_ffi.graph_node_count(graph_a)
   }
+  o.graph_build_alloc_ns = o.graph_build_alloc_ns + (time.instant() - graph_started)
   if o.code.len() == 0 {
     started := time.instant()
     status := ggml_ffi.graph_compute(backend, graph_a)
@@ -2075,6 +2082,7 @@ fn run_moe_layer(
     result.claim_pread_ns = time.instant() - claim_started
     o.window_reuse_count = o.window_reuse_count + 1
   }
+  setup_started = time.instant()
   if o.code.len() == 0 {
     claim_buffer = ggml_ffi.buffer_from_host(device, claim_window, claim_window.len())
     if ggml_ffi.handle_absent(claim_buffer) {
@@ -2092,6 +2100,8 @@ fn run_moe_layer(
     o.claim_placements = o.claim_placements + claim_placements
     o.pointer_identity_failures = o.pointer_identity_failures + claim_identity_failures
   }
+  o.graph_setup_ns = o.graph_setup_ns + (time.instant() - setup_started)
+  transfer_started = time.instant()
   mut topk_image: buffer := buffer(g.n_expert_used * spec.t_out * 4)
   mut compact_image: buffer := buffer(g.n_expert_used * spec.t_out * 4)
   if o.code.len() == 0 {
@@ -2110,6 +2120,9 @@ fn run_moe_layer(
         slot_view, node_window, topk_view, compact_view, g, routing, spec.layer, spec.t_out,
         ffn_norm_node_of(decode), ffn_inp_node_of(decode), probs_node_of(decode)))
   }
+  o.generic_transfer_digest_ns = o.generic_transfer_digest_ns
+    + (time.instant() - transfer_started)
+  graph_started = time.instant()
   if o.code.len() == 0 {
     graph_b = ggml_ffi.graph_new(graph_b_ctx)
     galloc_b = ggml_ffi.gallocr_new(backend)
@@ -2140,6 +2153,7 @@ fn run_moe_layer(
     result.node_count_b = ggml_ffi.graph_node_count(graph_b)
     result.slot_high_water = ggml_ffi.slots_high_water(slot_view)
   }
+  o.graph_build_alloc_ns = o.graph_build_alloc_ns + (time.instant() - graph_started)
   if o.code.len() == 0 {
     started := time.instant()
     status := ggml_ffi.graph_compute(backend, graph_b)
@@ -2149,6 +2163,7 @@ fn run_moe_layer(
           spec.layer, "status_b", moe_model_forward.int_text(status)))
     }
   }
+  transfer_started = time.instant()
   if o.code.len() == 0 {
     output_slot := b_output_slot_of(decode, g.n_expert_used)
     span := ggml_ffi.slot_nbytes(slot_view, output_slot)
@@ -2167,6 +2182,8 @@ fn run_moe_layer(
       result.nonfinite = digest.nonfinite
     }
   }
+  o.generic_transfer_digest_ns = o.generic_transfer_digest_ns
+    + (time.instant() - transfer_started)
   // Section 3.7's ordering invariant, in the order it names. (1) before compute, the plane's columns
   // `0 .. n_past-1` were a `slot_set` **source**; (2) compute — phase A, the routing decision, the
   // claim reads, phase B; (3) after compute, the plane's column `n_past` and only that column is a
@@ -2200,9 +2217,11 @@ fn run_moe_layer(
   }
   // `owned_weight_buffer` and not `weight_buffer`: in `dense` mode the two differ and the graph must
   // free the wrap it created, which is none.
+  teardown_started := time.instant()
   teardown_layer(
     galloc_b, graph_b_ctx, claim_buffer, galloc_a, graph_a_ctx, owned_weight_buffer, weight_ctx,
     input_buffer, input_ctx, o)
+  o.graph_teardown_ns = o.graph_teardown_ns + (time.instant() - teardown_started)
 }
 
 // `verdict` is `EXTERNAL` only when **every** weight tensor of **every** graph landed at its own
@@ -2291,6 +2310,7 @@ fn run_moe_end_graph(
   borrow mut result: moe_model_forward.EndResult,
   borrow mut o: moe_model_forward.Outcome,
 ) {
+  setup_started := time.instant()
   mut weight_ctx := ggml_ffi.null_handle()
   mut input_ctx := ggml_ffi.null_handle()
   mut graph_ctx := ggml_ffi.null_handle()
@@ -2350,6 +2370,8 @@ fn run_moe_end_graph(
       o.ggml_buffers_created = o.ggml_buffers_created + 1
     }
   }
+  o.graph_setup_ns = o.graph_setup_ns + (time.instant() - setup_started)
+  mut transfer_started := time.instant()
   if o.code.len() == 0 {
     if kind == moe_model_forward.GRAPH_EMBED {
       take(o, ggml_ffi.slot_set(
@@ -2359,6 +2381,9 @@ fn run_moe_end_graph(
           slot_view, layer_olmoe.MM_SLOT_CUR, input_view, 0, g.n_embd * tokens_in * 4, "cur"))
     }
   }
+  o.generic_transfer_digest_ns = o.generic_transfer_digest_ns
+    + (time.instant() - transfer_started)
+  graph_started := time.instant()
   if o.code.len() == 0 {
     graph = ggml_ffi.graph_new(graph_ctx)
     galloc = ggml_ffi.gallocr_new(backend)
@@ -2394,6 +2419,7 @@ fn run_moe_end_graph(
     result.node_count = ggml_ffi.graph_node_count(graph)
     result.slot_high_water = ggml_ffi.slots_high_water(slot_view)
   }
+  o.graph_build_alloc_ns = o.graph_build_alloc_ns + (time.instant() - graph_started)
   if o.code.len() == 0 {
     started := time.instant()
     status := ggml_ffi.graph_compute(backend, graph)
@@ -2403,6 +2429,7 @@ fn run_moe_end_graph(
           layer, "status", moe_model_forward.int_text(status)))
     }
   }
+  transfer_started = time.instant()
   if o.code.len() == 0 {
     span := ggml_ffi.slot_nbytes(slot_view, output_slot)
     result.out_ne0 = ggml_ffi.slot_ne(slot_view, output_slot, 0)
@@ -2425,6 +2452,8 @@ fn run_moe_end_graph(
       result.norm_bit_sum = norm.bit_sum
     }
   }
+  o.generic_transfer_digest_ns = o.generic_transfer_digest_ns
+    + (time.instant() - transfer_started)
   if o.code.len() == 0 && compare && o.transcript_present {
     match compare_transcript_rows(
       slot_view, oracle, oracle_base, oracle_count, layer, scan, starts, lengths, node_window,
@@ -2433,9 +2462,11 @@ fn run_moe_end_graph(
       Err(f) => { fault_into(o, f) },
     }
   }
+  teardown_started := time.instant()
   teardown_layer(
     ggml_ffi.null_handle(), ggml_ffi.null_handle(), ggml_ffi.null_handle(), galloc, graph_ctx,
     owned_weight_buffer, weight_ctx, input_buffer, input_ctx, o)
+  o.graph_teardown_ns = o.graph_teardown_ns + (time.instant() - teardown_started)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2719,6 +2750,7 @@ fn decode_pass(
     fail(o, "R5_RESIDUAL", moe_model_forward.labelled("layer", g.n_layer))
     return routed_ids.build()
   }
+  transfer_started := time.instant()
   digest := moe_model_forward.digest_region(logits_view)
   decoded.sha256 = digest.sha.clone()
   decoded.bit_sum = digest.bit_sum
@@ -2731,6 +2763,8 @@ fn decode_pass(
   step_top_index_built := step_top_index.build()
   step_top_bits_built := step_top_bits.build()
   decoded.top_k = render_top_k(step_top_index_built, step_top_bits_built)
+  o.generic_transfer_digest_ns = o.generic_transfer_digest_ns
+    + (time.instant() - transfer_started)
   o.reader_pread_count = o.reader_pread_count + counters.pread_count + claim_counters.pread_count
   o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read + claim_counters.bytes_read
   // R6-MOE-RESIDENT-DENSE section 3.8's **primary metric** and its co-primary invariant, taken from
@@ -3381,6 +3415,10 @@ fn decode_loop(
     before_decide := o.decide_ns
     before_plane_upload := state.upload_ns
     before_plane_readback := state.readback_ns
+    before_graph_setup := o.graph_setup_ns
+    before_graph_build_alloc := o.graph_build_alloc_ns
+    before_generic_transfer_digest := o.generic_transfer_digest_ns
+    before_graph_teardown := o.graph_teardown_ns
     decoded.token_id = token
     mut res := empty_step_residency()
     pass_started := time.instant()
@@ -3567,6 +3605,15 @@ fn decode_loop(
         + (state.upload_ns - before_plane_upload)
       o.remaining_decode_plane_readback_ns = o.remaining_decode_plane_readback_ns
         + (state.readback_ns - before_plane_readback)
+      o.remaining_decode_graph_setup_ns = o.remaining_decode_graph_setup_ns
+        + (o.graph_setup_ns - before_graph_setup)
+      o.remaining_decode_graph_build_alloc_ns = o.remaining_decode_graph_build_alloc_ns
+        + (o.graph_build_alloc_ns - before_graph_build_alloc)
+      o.remaining_decode_generic_transfer_digest_ns =
+      o.remaining_decode_generic_transfer_digest_ns
+        + (o.generic_transfer_digest_ns - before_generic_transfer_digest)
+      o.remaining_decode_graph_teardown_ns = o.remaining_decode_graph_teardown_ns
+        + (o.graph_teardown_ns - before_graph_teardown)
       o.remaining_decode_claim_pread_ns =
       o.remaining_decode_claim_pread_ns + phase_claim_pread_ns
       o.remaining_decode_compute_ns = o.remaining_decode_compute_ns + phase_compute_ns

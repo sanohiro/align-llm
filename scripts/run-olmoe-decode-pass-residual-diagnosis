@@ -1,0 +1,773 @@
+#!/usr/bin/env python3
+"""Partition the fixed OLMoE decode-pass residual after native KV staging."""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+import platform
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Iterator
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+TRANSFER_PATH = ROOT / "scripts/run-olmoe-kv-plane-staging-transfer"
+TRANSFER_LOADER = SourceFileLoader("olmoe_kv_stage_for_pass_residual", str(TRANSFER_PATH))
+TRANSFER_SPEC = importlib.util.spec_from_loader(TRANSFER_LOADER.name, TRANSFER_LOADER)
+if TRANSFER_SPEC is None or TRANSFER_SPEC.loader is None:
+    raise RuntimeError("cannot load the KV staging owner")
+transfer = importlib.util.module_from_spec(TRANSFER_SPEC)
+sys.modules[TRANSFER_LOADER.name] = transfer
+TRANSFER_SPEC.loader.exec_module(transfer)
+diagnosis = transfer.diagnosis
+owner = transfer.owner
+base = transfer.base
+
+MODEL_BYTES = 4_213_512_192
+MODEL_SHA256 = "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f"
+SERVER_BUILD = "build 10566, commit bb4caa754"
+BUDGET = 975_175_680
+SEED = 5
+FULL_TOKENS = 128
+TEMPERATURE_MICROS = 300_000
+FULL_OUTPUT_SHA256 = "aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52"
+REPETITIONS = 4
+CEILING_SECONDS = 8 * 60
+
+BASELINE_VALUES_NS = [17_827_657_250, 17_850_131_083, 19_007_903_542, 19_211_017_875]
+BASELINE_MEDIAN_NS = 18_429_017_312
+FLOOR_PPM = 50_000
+FLOOR_NS = 921_450_866
+
+EXPECTED_TRANSFER_SHA256 = "1d333d2306e6b9e397326fa09c1043c868a5096499341ef9944c0fee2d1f0e5d"
+EXPECTED_SHARED_HELPER_SHA256 = "d2516b7f0a89fa6cb7ab98b58eebbd033d7910fe4a5ac479e651189524a58f53"
+EXPECTED_HELPER_SOURCE_SHA256 = "91e2dedf7eac8f66f11c817797e8541881bfd2c7f71ee4e298b37305c6123a63"
+EXPECTED_DECODE_SOURCE_SHA256 = "dc21c34184774be3451ca0200559f6b00a7cf66956910e901ecda3efdf331bf9"
+EXPECTED_OUTCOME_SOURCE_SHA256 = "47a57132841123090f2e2acebc20f3b6d6b4f44e1f13cc9e64e72f57863c4eae"
+EXPECTED_ALIGN_REVISION = transfer.EXPECTED_ALIGN_REVISION
+EXPECTED_COMPILER_SHA256 = transfer.EXPECTED_COMPILER_SHA256
+EXPECTED_PACK_SHA256 = transfer.EXPECTED_PACK_SHA256
+EXPECTED_GEOMETRY_SHA256 = transfer.EXPECTED_GEOMETRY_SHA256
+EXPECTED_SERVER_SHA256 = transfer.EXPECTED_SERVER_SHA256
+EXPECTED_TASK_SHA256 = transfer.EXPECTED_TASK_SHA256
+EXPECTED_PROMPT_SHA256 = transfer.EXPECTED_PROMPT_SHA256
+EXPECTED_C_COMPILER_SHA256 = transfer.EXPECTED_C_COMPILER_SHA256
+EXPECTED_C_COMPILER_VERSION_SHA256 = transfer.EXPECTED_C_COMPILER_VERSION_SHA256
+EXPECTED_LINKER_SEARCH_SHA256 = transfer.EXPECTED_LINKER_SEARCH_SHA256
+EXPECTED_GGML_LIBRARIES = transfer.EXPECTED_GGML_LIBRARIES
+EXPECTED_BASELINE_HOST = transfer.EXPECTED_BASELINE_HOST
+EXPECTED_BASELINE_HOST_SHA256 = transfer.EXPECTED_BASELINE_HOST_SHA256
+
+DETAIL_KEYS = {
+    "total_ns", "context_buffer_setup_ns", "graph_build_alloc_ns",
+    "generic_transfer_digest_ns", "graph_teardown_ns", "other_ns",
+}
+BUCKET_ORDER = (
+    "CONTEXT_BUFFER_SETUP", "GRAPH_BUILD_ALLOC", "GENERIC_TRANSFER_DIGEST",
+    "GRAPH_TEARDOWN", "OTHER_PASS_RESIDUAL",
+)
+BUCKET_FIELDS = {
+    "CONTEXT_BUFFER_SETUP": "context_buffer_setup_ns",
+    "GRAPH_BUILD_ALLOC": "graph_build_alloc_ns",
+    "GENERIC_TRANSFER_DIGEST": "generic_transfer_digest_ns",
+    "GRAPH_TEARDOWN": "graph_teardown_ns",
+    "OTHER_PASS_RESIDUAL": "other_ns",
+}
+HELPER_KEYS = diagnosis.HELPER_KEYS | {"pass_residual"}
+TOP_KEYS = {
+    "schema_version", "artifact_kind", "status", "model", "baseline", "candidate",
+    "task", "environment", "samples", "aggregate", "elapsed_ns",
+}
+AGGREGATE_KEYS = {
+    "full_helper_wall_median_ns", "pass_residual_median_ns", "bucket_values_ns",
+    "bucket_medians_ns", "selected_bucket", "selected_bucket_median_ns",
+    "selected_bucket_share_ppm", "baseline_median_ns", "floor_ppm", "floor_ns", "decision",
+}
+
+
+class ResidualError(RuntimeError):
+    pass
+
+
+def source_identities() -> tuple[str, str, str, str, str]:
+    return (
+        base.file_sha256(TRANSFER_PATH),
+        base.file_sha256(ROOT / "src/olmoe_remaining_decode_overhead_gate.align"),
+        base.file_sha256(ROOT / "src/olmoe_decode_pass_residual_gate.align"),
+        base.file_sha256(ROOT / "src/moe_decode_step.align"),
+        base.file_sha256(ROOT / "src/moe_model_forward.align"),
+    )
+
+
+def validate_imported_contract() -> None:
+    transfer.validate_imported_contract()
+    actual = (
+        transfer.MODEL_BYTES, transfer.MODEL_SHA256, transfer.SERVER_BUILD, transfer.BUDGET,
+        transfer.SEED, transfer.FULL_TOKENS, transfer.TEMPERATURE_MICROS,
+        transfer.FULL_OUTPUT_SHA256, transfer.REPETITIONS, transfer.CEILING_SECONDS,
+        transfer.EXPECTED_BASELINE_HOST, transfer.EXPECTED_BASELINE_HOST_SHA256,
+        *source_identities(),
+    )
+    expected = (
+        MODEL_BYTES, MODEL_SHA256, SERVER_BUILD, BUDGET, SEED, FULL_TOKENS,
+        TEMPERATURE_MICROS, FULL_OUTPUT_SHA256, REPETITIONS, CEILING_SECONDS,
+        EXPECTED_BASELINE_HOST, EXPECTED_BASELINE_HOST_SHA256,
+        EXPECTED_TRANSFER_SHA256, EXPECTED_SHARED_HELPER_SHA256,
+        EXPECTED_HELPER_SOURCE_SHA256, EXPECTED_DECODE_SOURCE_SHA256,
+        EXPECTED_OUTCOME_SOURCE_SHA256,
+    )
+    if actual != expected:
+        raise ResidualError("imported item 58 contract or source drifted")
+    if diagnosis.integer_median(BASELINE_VALUES_NS) != BASELINE_MEDIAN_NS:
+        raise ResidualError("item 58 baseline median drifted")
+    if (BASELINE_MEDIAN_NS * FLOOR_PPM + 999_999) // 1_000_000 != FLOOR_NS:
+        raise ResidualError("item 59 materiality floor drifted")
+
+
+@contextlib.contextmanager
+def built_helper(
+    work: Path,
+    include: Path,
+    library: Path,
+    clean_env: dict[str, str],
+    deadline: float,
+) -> Iterator[dict[str, Any]]:
+    compiler_output = owner.run_process(
+        [str(ROOT / "scripts/align-toolchain"), "ensure", "compiler"],
+        deadline=deadline, maximum=300, env=clean_env,
+    )
+    compiler = Path(compiler_output.stdout.decode("utf-8").strip())
+    if not compiler.is_file() or not os.access(compiler, os.X_OK):
+        raise ResidualError("managed pinned compiler is unusable")
+    c_compiler_name = shutil.which("cc", path=clean_env.get("PATH"))
+    if c_compiler_name is None:
+        raise ResidualError("the default C compiler is unavailable")
+    c_compiler = Path(c_compiler_name).resolve()
+    c_compiler_version = owner.run_process(
+        [str(c_compiler), "--version"], deadline=deadline, maximum=30, env=clean_env,
+    )
+    shim_dir = work / "lib"
+    generated = ROOT / "olmoe_decode_pass_residual_gate"
+    saved = work / "saved-olmoe-decode-pass-residual-gate"
+    if generated.exists():
+        shutil.copy2(generated, saved)
+    build_env = dict(clean_env)
+    build_env.update({
+        "ALIGN_LLM_GGML_INCLUDE": str(include),
+        "ALIGN_LLM_GGML_LIB": str(library),
+        "ALIGN_LLM_GGML_SHIM_DIR": str(shim_dir),
+    })
+    try:
+        owner.run_process(
+            [str(ROOT / "scripts/build-ggml-shim")], deadline=deadline,
+            maximum=180, env=build_env,
+        )
+        build_env["LIBRARY_PATH"] = ":".join(
+            value for value in (str(shim_dir), str(library), clean_env.get("LIBRARY_PATH", ""))
+            if value
+        )
+        owner.run_process(
+            [str(compiler), "build", "src/olmoe_decode_pass_residual_gate.align"],
+            deadline=deadline, maximum=300, env=build_env,
+        )
+        helper = work / "olmoe-decode-pass-residual-gate"
+        shutil.move(generated, helper)
+        shim = shim_dir / (
+            "libalign_ggml_shim.dylib" if platform.system() == "Darwin"
+            else "libalign_ggml_shim.so"
+        )
+        if not shim.is_file():
+            raise ResidualError("dynamic ggml shim was not produced")
+        runtime_env = dict(clean_env)
+        runtime_env["DYLD_LIBRARY_PATH"] = ":".join((str(shim_dir), str(library)))
+        runtime_env["LD_LIBRARY_PATH"] = ":".join((str(shim_dir), str(library)))
+        yield {
+            "compiler": compiler,
+            "compiler_sha256": base.file_sha256(compiler),
+            "c_compiler": c_compiler,
+            "c_compiler_sha256": base.file_sha256(c_compiler),
+            "c_compiler_version_sha256": base.command_output_sha256(c_compiler_version),
+            "helper": helper,
+            "helper_sha256": base.file_sha256(helper),
+            "shim": shim,
+            "shim_sha256": base.file_sha256(shim),
+            "runtime_env": runtime_env,
+        }
+    finally:
+        owner.restore_generated(generated, saved)
+
+
+def inherited_record(record: dict[str, Any]) -> dict[str, Any]:
+    inherited = dict(record)
+    inherited.pop("pass_residual")
+    return inherited
+
+
+def validate_helper_record(record: dict[str, Any], maximum_tokens: int) -> None:
+    diagnosis.require_exact_keys(record, HELPER_KEYS, "helper record")
+    diagnosis.validate_helper_record(inherited_record(record), maximum_tokens)
+    detail = record["pass_residual"]
+    if not isinstance(detail, dict):
+        raise ResidualError("pass-residual detail was not an object")
+    diagnosis.require_exact_keys(detail, DETAIL_KEYS, "pass residual")
+    if any(not diagnosis.is_int(detail[name]) or detail[name] < 0 for name in DETAIL_KEYS):
+        raise ResidualError("pass-residual timing was invalid")
+    if maximum_tokens == 2:
+        if any(detail.values()):
+            raise ResidualError("conditioning entered pass-residual detail")
+        return
+    if any(detail[name] <= 0 for name in DETAIL_KEYS - {"other_ns"}):
+        raise ResidualError("full pass-residual direct clock was not positive")
+    if detail["total_ns"] != record["remaining_decode"]["pass_residual_ns"]:
+        raise ResidualError("pass-residual total did not match item 58")
+    subtotal = sum(detail[name] for name in DETAIL_KEYS - {"total_ns"})
+    if subtotal != detail["total_ns"]:
+        raise ResidualError("pass-residual detail did not partition its total")
+
+
+def measure_request(
+    helper: Path,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    maximum_tokens: int,
+    runtime_env: dict[str, str],
+    deadline: float,
+) -> tuple[dict[str, Any], int]:
+    started_ns = time.monotonic_ns()
+    completed = owner.run_process(
+        [str(helper), str(model), str(pack), str(geometry), diagnosis.PROMPT_TEXT,
+         str(maximum_tokens), str(SEED)],
+        deadline=deadline, maximum=240, env=runtime_env,
+    )
+    helper_wall_ns = time.monotonic_ns() - started_ns
+    try:
+        record = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ResidualError("helper did not emit one JSON record") from error
+    if not isinstance(record, dict):
+        raise ResidualError("helper record was not an object")
+    validate_helper_record(record, maximum_tokens)
+    if helper_wall_ns < record["phases"]["elapsed_ns"]:
+        raise ResidualError("helper wall interval did not contain helper elapsed")
+    return record, helper_wall_ns
+
+
+def validate_output(conditioning: dict[str, Any], full: dict[str, Any]) -> None:
+    diagnosis.validate_output(inherited_record(conditioning), inherited_record(full))
+
+
+def validate_repeatability(samples: list[dict[str, Any]]) -> None:
+    inherited_samples = []
+    for sample in samples:
+        inherited = dict(sample)
+        inherited["conditioning"] = inherited_record(sample["conditioning"])
+        inherited["full"] = inherited_record(sample["full"])
+        inherited_samples.append(inherited)
+    diagnosis.validate_repeatability(inherited_samples)
+
+
+def measure_sample(
+    index: int,
+    built: dict[str, Any],
+    server: Path,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    clean_env: dict[str, str],
+    deadline: float,
+) -> dict[str, Any]:
+    owner.require_no_matching_process(server, model, deadline, clean_env)
+    conditioning, _ = measure_request(
+        built["helper"], model, pack, geometry, 2, built["runtime_env"], deadline,
+    )
+    owner.require_no_matching_process(server, model, deadline, clean_env)
+    try:
+        full, full_wall = measure_request(
+            built["helper"], model, pack, geometry, FULL_TOKENS,
+            built["runtime_env"], deadline,
+        )
+    finally:
+        owner.require_no_matching_process(server, model, deadline, clean_env)
+    validate_output(conditioning, full)
+    return {
+        "index": index,
+        "conditioning": conditioning,
+        "full": full,
+        "full_helper_wall_ns": full_wall,
+        "isolation": {"matching_before": 0, "matching_between": 0, "matching_after": 0},
+    }
+
+
+def validate_sample(sample: dict[str, Any], expected_index: int) -> None:
+    diagnosis.require_exact_keys(sample, diagnosis.SAMPLE_KEYS, "sample")
+    if sample["index"] != expected_index:
+        raise ResidualError("sample index drifted")
+    validate_helper_record(sample["conditioning"], 2)
+    validate_helper_record(sample["full"], FULL_TOKENS)
+    validate_output(sample["conditioning"], sample["full"])
+    if not diagnosis.is_int(sample["full_helper_wall_ns"]) or sample["full_helper_wall_ns"] <= 0:
+        raise ResidualError("sample wall interval was invalid")
+    isolation = sample["isolation"]
+    if not isinstance(isolation, dict):
+        raise ResidualError("sample isolation was not an object")
+    diagnosis.require_exact_keys(isolation, diagnosis.ISOLATION_KEYS, "sample isolation")
+    if any(not diagnosis.is_int(isolation[name]) or isolation[name] != 0 for name in isolation):
+        raise ResidualError("sample process isolation drifted")
+
+
+def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(samples) != REPETITIONS:
+        raise ResidualError("aggregate requires four samples")
+    for index, sample in enumerate(samples, 1):
+        validate_sample(sample, index)
+    validate_repeatability(samples)
+    bucket_values = {
+        bucket: [sample["full"]["pass_residual"][field] for sample in samples]
+        for bucket, field in BUCKET_FIELDS.items()
+    }
+    bucket_medians = {
+        bucket: diagnosis.integer_median(bucket_values[bucket]) for bucket in BUCKET_ORDER
+    }
+    selected = BUCKET_ORDER[0]
+    for bucket in BUCKET_ORDER[1:]:
+        if bucket_medians[bucket] > bucket_medians[selected]:
+            selected = bucket
+    selected_median = bucket_medians[selected]
+    residual_median = diagnosis.integer_median(
+        [sample["full"]["pass_residual"]["total_ns"] for sample in samples]
+    )
+    if residual_median <= 0 or selected_median > residual_median:
+        raise ResidualError("aggregate pass-residual bounds drifted")
+    if selected_median < FLOOR_NS:
+        decision = "NO_MATERIAL_BUCKET"
+    elif selected == "OTHER_PASS_RESIDUAL":
+        decision = "OTHER_PASS_NEEDS_DIAGNOSIS"
+    else:
+        decision = "MEASURED_BUCKET_ELIGIBLE"
+    return {
+        "full_helper_wall_median_ns": diagnosis.integer_median(
+            [sample["full_helper_wall_ns"] for sample in samples]
+        ),
+        "pass_residual_median_ns": residual_median,
+        "bucket_values_ns": bucket_values,
+        "bucket_medians_ns": bucket_medians,
+        "selected_bucket": selected,
+        "selected_bucket_median_ns": selected_median,
+        "selected_bucket_share_ppm": selected_median * 1_000_000 // residual_median,
+        "baseline_median_ns": BASELINE_MEDIAN_NS,
+        "floor_ppm": FLOOR_PPM,
+        "floor_ns": FLOOR_NS,
+        "decision": decision,
+    }
+
+
+def validate_result(result: dict[str, Any]) -> None:
+    diagnosis.require_exact_keys(result, TOP_KEYS, "result")
+    if (
+        result["schema_version"] != 1
+        or result["artifact_kind"] != "R8_OLMOE_DECODE_PASS_RESIDUAL_DIAGNOSIS"
+        or result["status"] != "COMPLETE"
+    ):
+        raise ResidualError("result scalar identity drifted")
+    nested = {
+        "model": {"bytes", "sha256", "architecture"},
+        "baseline": {"full_helper_wall_values_ns", "full_helper_wall_median_ns", "floor_ppm", "floor_ns"},
+        "candidate": {
+            "provider", "align_llm_head", "align_revision", "compiler_sha256",
+            "helper_sha256", "shim_sha256", "ggml_libraries", "pack_sha256",
+            "geometry_sha256", "cache_budget_bytes",
+        },
+        "task": {
+            "task_id", "task_sha256", "prompt_sha256", "maximum_tokens",
+            "temperature_micros", "seed", "full_output_sha256",
+        },
+        "environment": {
+            "os", "release", "architecture", "cpu_count", "host_model", "cpu_brand",
+            "memory_bytes", "host_fingerprint_sha256", "c_compiler_sha256",
+            "c_compiler_version_sha256", "linker_search_sha256",
+        },
+    }
+    for name, keys in nested.items():
+        if not isinstance(result[name], dict):
+            raise ResidualError(f"result {name} was not an object")
+        diagnosis.require_exact_keys(result[name], keys, f"result {name}")
+    if result["model"] != {
+        "bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe",
+    }:
+        raise ResidualError("result model identity drifted")
+    if result["baseline"] != {
+        "full_helper_wall_values_ns": BASELINE_VALUES_NS,
+        "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+        "floor_ppm": FLOOR_PPM,
+        "floor_ns": FLOOR_NS,
+    }:
+        raise ResidualError("result baseline drifted")
+    candidate = result["candidate"]
+    if (
+        candidate["provider"] != "align-runtime"
+        or not transfer.is_lower_hex(candidate["align_llm_head"], 40)
+        or candidate["align_revision"] != EXPECTED_ALIGN_REVISION
+        or candidate["compiler_sha256"] != EXPECTED_COMPILER_SHA256
+        or not transfer.is_lower_hex(candidate["helper_sha256"], 64)
+        or not transfer.is_lower_hex(candidate["shim_sha256"], 64)
+        or candidate["ggml_libraries"] != EXPECTED_GGML_LIBRARIES
+        or candidate["pack_sha256"] != EXPECTED_PACK_SHA256
+        or candidate["geometry_sha256"] != EXPECTED_GEOMETRY_SHA256
+        or candidate["cache_budget_bytes"] != BUDGET
+    ):
+        raise ResidualError("result candidate identity drifted")
+    if result["task"] != {
+        "task_id": "python-inclusive-range", "task_sha256": EXPECTED_TASK_SHA256,
+        "prompt_sha256": EXPECTED_PROMPT_SHA256, "maximum_tokens": FULL_TOKENS,
+        "temperature_micros": TEMPERATURE_MICROS, "seed": SEED,
+        "full_output_sha256": FULL_OUTPUT_SHA256,
+    }:
+        raise ResidualError("result task identity drifted")
+    if result["environment"] != {
+        **EXPECTED_BASELINE_HOST,
+        "host_fingerprint_sha256": EXPECTED_BASELINE_HOST_SHA256,
+        "c_compiler_sha256": EXPECTED_C_COMPILER_SHA256,
+        "c_compiler_version_sha256": EXPECTED_C_COMPILER_VERSION_SHA256,
+        "linker_search_sha256": EXPECTED_LINKER_SEARCH_SHA256,
+    }:
+        raise ResidualError("result environment identity drifted")
+    if not isinstance(result["samples"], list):
+        raise ResidualError("result samples were not an array")
+    expected_aggregate = aggregate(result["samples"])
+    if result["aggregate"] != expected_aggregate:
+        raise ResidualError("result aggregate drifted")
+    diagnosis.require_exact_keys(result["aggregate"], AGGREGATE_KEYS, "result aggregate")
+    if not diagnosis.is_int(result["elapsed_ns"]) or result["elapsed_ns"] <= 0:
+        raise ResidualError("result elapsed interval was invalid")
+
+
+def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
+    rows = (
+        ("ALIGN_LLM_OLMOE_MODEL", base.configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", base.configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", base.configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", base.configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", base.configured_directory("ALIGN_LLM_GGML_LIB")),
+        ("ALIGN_LLM_LLAMA_SERVER", base.configured_file("ALIGN_LLM_LLAMA_SERVER", executable=True)),
+    )
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS: N/A ({missing} unset)")
+        return None
+    return tuple(path.resolve() for _, path in rows)  # type: ignore[return-value]
+
+
+def synthetic_samples(values: dict[str, int]) -> list[dict[str, Any]]:
+    samples = diagnosis.synthetic_samples()
+    total = sum(values.values())
+    for sample in samples:
+        sample["conditioning"]["pass_residual"] = {name: 0 for name in DETAIL_KEYS}
+        remaining = sample["full"]["remaining_decode"]
+        old_total = remaining["pass_residual_ns"]
+        delta = total - old_total
+        remaining["pass_residual_ns"] = total
+        remaining["pass_ns"] += delta
+        sample["full"]["engine_phases"]["remaining_decode_ns"] += delta
+        sample["full"]["engine"]["elapsed_ns"] += delta
+        sample["full"]["phases"]["engine_wall_ns"] += delta
+        sample["full"]["phases"]["elapsed_ns"] += delta
+        sample["full_helper_wall_ns"] += delta
+        sample["full"]["pass_residual"] = {
+            "total_ns": total,
+            "context_buffer_setup_ns": values["CONTEXT_BUFFER_SETUP"],
+            "graph_build_alloc_ns": values["GRAPH_BUILD_ALLOC"],
+            "generic_transfer_digest_ns": values["GENERIC_TRANSFER_DIGEST"],
+            "graph_teardown_ns": values["GRAPH_TEARDOWN"],
+            "other_ns": values["OTHER_PASS_RESIDUAL"],
+        }
+    return samples
+
+
+def synthetic_result(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    predecessor_samples = []
+    for sample in samples:
+        predecessor = dict(sample)
+        predecessor["conditioning"] = inherited_record(sample["conditioning"])
+        predecessor["full"] = inherited_record(sample["full"])
+        predecessor_samples.append(predecessor)
+    predecessor = transfer.synthetic_result(predecessor_samples)
+    return {
+        "schema_version": 1,
+        "artifact_kind": "R8_OLMOE_DECODE_PASS_RESIDUAL_DIAGNOSIS",
+        "status": "COMPLETE",
+        "model": predecessor["model"],
+        "baseline": {
+            "full_helper_wall_values_ns": BASELINE_VALUES_NS,
+            "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+            "floor_ppm": FLOOR_PPM,
+            "floor_ns": FLOOR_NS,
+        },
+        "candidate": predecessor["candidate"],
+        "task": predecessor["task"],
+        "environment": predecessor["environment"],
+        "samples": samples,
+        "aggregate": aggregate(samples),
+        "elapsed_ns": 1,
+    }
+
+
+def expect_error(action: Any, message: str) -> None:
+    try:
+        action()
+    except (ResidualError, diagnosis.DiagnosisError, transfer.TransferError):
+        return
+    raise ResidualError(message)
+
+
+def complete_result_after_cleanup(result: dict[str, Any], started_ns: int) -> dict[str, Any]:
+    completed = dict(result)
+    elapsed_ns = time.monotonic_ns() - started_ns
+    if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+        raise ResidualError(
+            f"complete diagnosis exceeded its 8-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+        )
+    completed["elapsed_ns"] = elapsed_ns
+    validate_result(completed)
+    return completed
+
+
+def self_test() -> int:
+    if transfer.self_test() != 0:
+        raise ResidualError("item 58 inherited self-test failed")
+    validate_imported_contract()
+    one = {bucket: 1 for bucket in BUCKET_ORDER}
+    at_floor = dict(one)
+    at_floor["GRAPH_BUILD_ALLOC"] = FLOOR_NS
+    at = aggregate(synthetic_samples(at_floor))
+    if at["selected_bucket"] != "GRAPH_BUILD_ALLOC" or at["decision"] != "MEASURED_BUCKET_ELIGIBLE":
+        raise ResidualError("direct bucket at the floor did not select implementation work")
+    below = {bucket: FLOOR_NS - 1 for bucket in BUCKET_ORDER}
+    below_result = aggregate(synthetic_samples(below))
+    if below_result["selected_bucket"] != BUCKET_ORDER[0] or below_result["decision"] != "NO_MATERIAL_BUCKET":
+        raise ResidualError("below-floor tie did not select no material bucket")
+    other = dict(one)
+    other["OTHER_PASS_RESIDUAL"] = FLOOR_NS
+    if aggregate(synthetic_samples(other))["decision"] != "OTHER_PASS_NEEDS_DIAGNOSIS":
+        raise ResidualError("material other residual did not require diagnosis")
+
+    samples = synthetic_samples(at_floor)
+    result = synthetic_result(samples)
+    validate_result(result)
+    malformed = synthetic_samples(at_floor)
+    malformed[0]["full"]["pass_residual"]["graph_teardown_ns"] = True
+    expect_error(lambda: aggregate(malformed), "boolean detail clock was accepted")
+    malformed = synthetic_samples(at_floor)
+    malformed[0]["full"]["pass_residual"]["other_ns"] += 1
+    expect_error(lambda: aggregate(malformed), "inexact detail partition was accepted")
+    malformed_result = dict(result)
+    malformed_result["baseline"] = dict(result["baseline"])
+    malformed_result["baseline"]["floor_ns"] += 1
+    expect_error(lambda: validate_result(malformed_result), "drifted baseline was accepted")
+    malformed_result = dict(result)
+    malformed_result["candidate"] = dict(result["candidate"])
+    malformed_result["candidate"]["provider"] = "bogus-runtime"
+    expect_error(lambda: validate_result(malformed_result), "drifted provider was accepted")
+    with mock.patch.object(transfer, "SEED", 6):
+        expect_error(validate_imported_contract, "drifted imported workload was accepted")
+    incomplete_result = synthetic_result(synthetic_samples({
+        "CONTEXT_BUFFER_SETUP": 1, "GRAPH_BUILD_ALLOC": 2,
+        "GENERIC_TRANSFER_DIGEST": FLOOR_NS, "GRAPH_TEARDOWN": 3,
+        "OTHER_PASS_RESIDUAL": 4,
+    }))
+    incomplete_result.pop("elapsed_ns")
+    with mock.patch.object(time, "monotonic_ns", return_value=10_000):
+        completed_result = complete_result_after_cleanup(incomplete_result, 1_000)
+    if completed_result["elapsed_ns"] != 9_000 or "elapsed_ns" in incomplete_result:
+        raise ResidualError("post-cleanup result finalization mutated or mismeasured its input")
+    with mock.patch.object(
+        time, "monotonic_ns", return_value=CEILING_SECONDS * 1_000_000_000 + 1_001,
+    ):
+        expect_error(
+            lambda: complete_result_after_cleanup(incomplete_result, 1_000),
+            "post-cleanup ceiling excess was accepted",
+        )
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as printed:
+        if prerequisites() is not None:
+            raise ResidualError("missing prerequisites did not produce N/A")
+    printed.assert_called_once_with(
+        "R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS: N/A (ALIGN_LLM_OLMOE_MODEL unset)"
+    )
+    print("R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS self-test: PASS")
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise ResidualError("OLMoE decode-pass residual diagnosis accepts no arguments")
+    required = prerequisites()
+    if required is None:
+        return 0
+    model, pack, geometry, include, library, server = required
+    started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-pass-residual-") as raw:
+        work = Path(raw)
+        clean_env = transfer.phase.decision.decision_environment()
+        linker_search = transfer.phase.decision.validate_linker_search(clean_env)
+        if linker_search:
+            clean_env["LIBRARY_PATH"] = linker_search
+        host_environment = transfer.qualification_host(clean_env, deadline)
+        source_status = owner.run_process(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline, maximum=30, env=clean_env,
+        )
+        if source_status.stdout:
+            raise ResidualError("real diagnosis requires a clean worktree")
+        align_llm_head = owner.run_process(
+            ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+        ).stdout.decode("ascii").strip()
+        validate_imported_contract()
+        align_revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        owner.require_no_matching_process(server, model, deadline, clean_env)
+        if model.stat().st_size != MODEL_BYTES or base.file_sha256(model) != MODEL_SHA256:
+            raise ResidualError("configured OLMoE GGUF does not have the pinned identity")
+        pack_sha256 = base.file_sha256(pack)
+        geometry_sha256 = base.file_sha256(geometry)
+        server_sha256 = base.file_sha256(server)
+        task_sha256 = base.file_sha256(diagnosis.TASK)
+        prompt_sha256 = base.bytes_sha256(diagnosis.PROMPT_TEXT.encode("utf-8"))
+        ggml_libraries = base.library_identities(library)
+        linker_search_sha256 = (
+            None if not linker_search else base.bytes_sha256(linker_search.encode("utf-8"))
+        )
+        diagnosis.validate_external_identity(
+            align_revision=align_revision, pack_sha256=pack_sha256,
+            geometry_sha256=geometry_sha256, server_sha256=server_sha256,
+            task_sha256=task_sha256, prompt_sha256=prompt_sha256,
+            ggml_libraries=ggml_libraries, linker_search_sha256=linker_search_sha256,
+        )
+        version = owner.run_process(
+            [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env,
+        )
+        if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
+            raise ResidualError("llama-server build identity drifted")
+
+        with built_helper(work, include, library, clean_env, deadline) as built:
+            diagnosis.validate_toolchain_identity(built)
+            samples = []
+            for index in range(1, REPETITIONS + 1):
+                samples.append(
+                    measure_sample(
+                        index, built, server, model, pack, geometry, clean_env, deadline,
+                    )
+                )
+                validate_repeatability(samples)
+
+            final_status = owner.run_process(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                deadline=deadline, maximum=30, env=clean_env,
+            )
+            final_head = owner.run_process(
+                ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+            ).stdout.decode("ascii").strip()
+            if final_status.stdout or final_head != align_llm_head:
+                raise ResidualError("align-llm source changed during diagnosis")
+            if source_identities() != (
+                EXPECTED_TRANSFER_SHA256, EXPECTED_SHARED_HELPER_SHA256,
+                EXPECTED_HELPER_SOURCE_SHA256, EXPECTED_DECODE_SOURCE_SHA256,
+                EXPECTED_OUTCOME_SOURCE_SHA256,
+            ):
+                raise ResidualError("diagnosis sources changed during qualification")
+            owner.verify_identities((
+                ("model", model, MODEL_SHA256), ("pack", pack, pack_sha256),
+                ("geometry", geometry, geometry_sha256), ("server", server, server_sha256),
+                ("task", diagnosis.TASK, task_sha256),
+                ("compiler", built["compiler"], built["compiler_sha256"]),
+                ("C compiler", built["c_compiler"], built["c_compiler_sha256"]),
+                ("shim", built["shim"], built["shim_sha256"]),
+                ("helper", built["helper"], built["helper_sha256"]),
+            ))
+            if base.library_identities(library) != ggml_libraries:
+                raise ResidualError("ggml library identities changed during diagnosis")
+            owner.require_no_matching_process(server, model, deadline, clean_env)
+
+            task_document = json.loads(diagnosis.TASK.read_text(encoding="utf-8"))
+            aggregate_result = aggregate(samples)
+            result = {
+                "schema_version": 1,
+                "artifact_kind": "R8_OLMOE_DECODE_PASS_RESIDUAL_DIAGNOSIS",
+                "status": "COMPLETE",
+                "model": {"bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe"},
+                "baseline": {
+                    "full_helper_wall_values_ns": BASELINE_VALUES_NS,
+                    "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+                    "floor_ppm": FLOOR_PPM, "floor_ns": FLOOR_NS,
+                },
+                "candidate": {
+                    "provider": "align-runtime", "align_llm_head": align_llm_head,
+                    "align_revision": align_revision,
+                    "compiler_sha256": built["compiler_sha256"],
+                    "helper_sha256": built["helper_sha256"],
+                    "shim_sha256": built["shim_sha256"], "ggml_libraries": ggml_libraries,
+                    "pack_sha256": pack_sha256, "geometry_sha256": geometry_sha256,
+                    "cache_budget_bytes": BUDGET,
+                },
+                "task": {
+                    "task_id": task_document["id"], "task_sha256": task_sha256,
+                    "prompt_sha256": prompt_sha256, "maximum_tokens": FULL_TOKENS,
+                    "temperature_micros": TEMPERATURE_MICROS, "seed": SEED,
+                    "full_output_sha256": FULL_OUTPUT_SHA256,
+                },
+                "environment": {
+                    **host_environment,
+                    "c_compiler_sha256": built["c_compiler_sha256"],
+                    "c_compiler_version_sha256": built["c_compiler_version_sha256"],
+                    "linker_search_sha256": linker_search_sha256,
+                },
+                "samples": samples, "aggregate": aggregate_result,
+            }
+    result = complete_result_after_cleanup(result, started_ns)
+    elapsed_ns = result["elapsed_ns"]
+    aggregate_result = result["aggregate"]
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    print(
+        "R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS: COMPLETE "
+        f"decision={aggregate_result['decision']} "
+        f"selected={aggregate_result['selected_bucket']} "
+        f"median={aggregate_result['selected_bucket_median_ns'] / 1e9:.3f}s "
+        f"residual={aggregate_result['pass_residual_median_ns'] / 1e9:.3f}s "
+        f"elapsed={elapsed_ns / 1e9:.2f}s",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    owner.stop_owned_processes()
+    raise SystemExit(128 + signal_number)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (
+        ResidualError, transfer.TransferError, diagnosis.DiagnosisError,
+        transfer.phase.DiagnosisError, owner.DiagnosisError,
+        transfer.phase.decision.DecisionError, base.DecisionError,
+        OSError, ValueError, KeyError, TypeError, json.JSONDecodeError,
+        subprocess.TimeoutExpired,
+    ) as error:
+        owner.stop_owned_processes()
+        print(f"R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)
