@@ -1534,14 +1534,29 @@ The current forward delivery order is:
     diagnosis does not itself establish a performance win.
 
 61. **R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY — reduce the measured K/V verification boundary.
-    Selected; not started.** Item 60 measured the complete `verify_plane` call, including concat
+    Complete; review-repaired combined intervention measured `NOT_MET` and was removed.** [`r8-olmoe-plane-roundtrip-boundary.md`](r8-olmoe-plane-roundtrip-boundary.md) is the
+    authoritative implementation ledger and closure matrix. Item 60 measured the complete
+    `verify_plane` call, including concat
     shape reads, two `slot_get` operations, scalar K/V comparison, and result accounting; it did not
     attribute cost among them. Preserve the exact canonical-plane and graph-consumed layouts,
     first-mismatch tensor/column, output, isolation, cache, and native lifetimes while reducing that
     complete boundary. Item 60's four full-helper samples and 18,746,386,770-ns median are the
     immutable fixed-host baseline. Precommit a 50,000-ppm floor of 937,319,339 ns in the
     implementation ledger; the conditioned candidate must have a median no greater than
-    17,809,067,431 ns before the intervention can ship.
+    17,809,067,431 ns before the intervention can ship. Replacing only scalar comparison reduced
+    the boundary median to 1,878,132,280 ns but produced only a 23,162-ppm full-helper gain, so it
+    cannot ship alone. The second intervention removed the remaining two host-to-host
+    `slot_get` copies by comparing host-visible concat tensors in place under an explicit native
+    buffer-visibility check, but its 19,122,598,458-ns median was also `NOT_MET`. Disassembly names
+    the remaining V scalar loop. The final bounded intervention uses exact 4-by-4 AArch64 transpose
+    tiles for success and reruns the original traversal on mismatch; it retained the original
+    baseline and gate, with a scalar non-AArch64 fallback. Its pre-review qualification measured
+    `MET`, but review found an undeclared alignment precondition in the typed NEON loads. After
+    repair to byte-aligned vector loads, the required clean-head full-helper median was
+    18,607,363,375 ns, only 7,416 ppm faster than baseline and 798,295,944 ns above the ceiling,
+    while the plane boundary measured 838,509,258 ns. Every output, lifetime, isolation, cache, and
+    cleanup check passed, but the performance gate did not; all three production interventions and
+    their owner-test additions were removed before publication.
 
 ### Status (2026-08-28)
 
