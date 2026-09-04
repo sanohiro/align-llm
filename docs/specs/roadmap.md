@@ -1574,7 +1574,7 @@ The current forward delivery order is:
     selects item 63; this diagnosis changes no graph and makes no performance claim.
 
 63. **R8-OLMOE-ROUTING-PHASE-A-BOUNDARY — reduce the measured attention/routing graph boundary.
-    Complete; decision `MET`.**
+    Complete; decision `NOT_MET`.**
     [`r8-olmoe-routing-phase-a-boundary.md`](r8-olmoe-routing-phase-a-boundary.md) is the
     authoritative ledger, closure matrix, and recorded result. Preserve item 62's fixed request, output, cache,
     isolation, and native lifetimes. Its four full-helper walls and 19,266,559,229-ns median are
@@ -1584,20 +1584,24 @@ The current forward delivery order is:
     while retaining the full-width canonical plane, mask-prefix values, transcript coverage, and
     every other graph boundary. Directional stack samples and two exact exploratory probes select
     the candidate but do not attribute item 62's graph-level timing or satisfy the shipping gate.
-    The clean-head candidate walls `[17315490209,18232421375,18082976541,18457679541]` ns have an
-    18,157,698,958-ns median: a 1,108,860,271-ns / 57,553-ppm gain and 145,532,309 ns below the
-    ceiling. Every output, cache, isolation, and lifetime boundary remained exact, so the
-    intervention ships. Phase A fell to a 1,453,377,306-ns median and total compute to
-    2,747,113,698 ns; claim I/O is now the largest measured unresolved bucket at 3,778,790,474 ns.
+    The pre-review clean-head candidate walls `[17315490209,18232421375,18082976541,18457679541]`
+    ns had an 18,157,698,958-ns median and provisionally cleared the gate. Review found that the
+    runner did not pin nine transitively loaded qualification owners. After that evidence-identity
+    repair, the required clean-head walls `[16668116584,17859126833,19039104500,19435260625]` ns
+    had an 18,449,115,666-ns median: only an 817,443,563-ns / 42,428-ppm gain and 145,884,399 ns
+    above the ceiling. Every output, cache, isolation, and lifetime boundary remained exact, but
+    the complete-request gate is authoritative. The production intervention and its production
+    owner changes are removed before publication; no performance claim ships.
 
 64. **R8-OLMOE-CLAIM-IO-BOUNDARY — reduce the next-largest remaining decode bucket. Selected; not
-    started.** Preserve item 63's fixed request and exact output, cache, isolation, graph, and native
-    lifetime behavior. Its four candidate walls and 18,157,698,958-ns median become the immutable
-    baseline. Before production changes, the implementation ledger must name the exact claim-I/O
-    intervention and precommit a 50,000-ppm floor of 907,884,948 ns and candidate ceiling of
-    17,249,814,010 ns. Item 63 measured the complete remaining-decode claim-pread bucket at a
-    3,778,790,474-ns median; it did not attribute that time to an individual syscall, copy, lookup,
-    or cache operation.
+    started.** Preserve item 62's shipped fixed request and exact output, cache, isolation, graph,
+    and native lifetime behavior. Its four walls `[18059864416,18927732709,20639199375,19605385750]`
+    ns and 19,266,559,229-ns median remain the immutable baseline. Before production changes, the
+    implementation ledger must name the exact claim-I/O intervention and precommit a 50,000-ppm
+    floor of 963,327,962 ns and candidate ceiling of 18,303,231,267 ns. The shipped predecessor
+    measured the complete remaining-decode claim-I/O bucket at a 3,609,378,007-ns median; it did not
+    attribute that time to an individual syscall, copy, lookup, or cache operation. Item 63's
+    candidate-only claim-I/O samples do not replace this boundary after its `NOT_MET` removal.
 
 ### Status (2026-08-28)
 

@@ -32,19 +32,11 @@ live-width probes produced 17,937,155,959-ns and 18,391,417,042-ns full walls wi
 native lifetime balances. Those probes select the candidate but are not shipping evidence; all
 temporary source and generated artifacts were removed.
 
-The design checkpoint is `5e8157a`; implementation checkpoint is `dd2fd1f`. The live-width graph,
-exact topology owner, updated live-mask mutant, qualification helper, and bounded gate runner are
-implemented. The stub owner
-publishes 100 rather than 104 nodes per two-layer/top-3 step, reduces only the corresponding
-phase-A activation entries, preserves the fixed plane, passes every comparable transcript row,
-and still detects a forced mask error inside the live prefix.
-
-The clean-head four-repeat qualification completed in 116.615 seconds with candidate walls
-`[17315490209,18232421375,18082976541,18457679541]` ns and an 18,157,698,958-ns median. The
-1,108,860,271-ns / 57,553-ppm gain is 145,532,309 ns below the precommitted ceiling, so the decision
-is `MET`. Phase A fell to a 1,453,377,306-ns median and total compute to 2,747,113,698 ns. All
-fixed outputs, lifetimes, and twelve isolation boundaries remained exact. Claim I/O is now the
-largest measured unresolved bucket at 3,778,790,474 ns and selects item 64.
+The design checkpoint is `5e8157a`; implementation checkpoint is `dd2fd1f`. The evaluated
+live-width graph published 100 rather than 104 nodes per two-layer/top-3 step, reduced only the
+corresponding phase-A activation entries, preserved the fixed plane and comparable transcript rows,
+and still detected a forced mask error inside the live prefix. Its pre-review qualification
+completed in 116.615 seconds with an 18,157,698,958-ns median and provisionally met the gate.
 
 The comprehensive Codex CLI review covered head
 `f580dca93f1490c46218e06f3d1869d03edef85a` against base tip and merge base
@@ -55,21 +47,30 @@ pins every runner in that chain and adds a mutation self-test at the deepest imp
 changes evidence identity only, not production or measurement behavior, so another comprehensive
 review is not required.
 
-**Next actions.** Commit the consolidated review repair, rerun its model-free owner and complete
-real qualification at the repaired clean head, record that result, run exact-head preflight,
-publish, merge, then start item 64.
+The required clean-head post-review qualification at repair `fe11ff9` completed in 107.498 seconds.
+Its candidate walls `[16668116584,17859126833,19039104500,19435260625]` ns had an
+18,449,115,666-ns median: only an 817,443,563-ns / 42,428-ppm gain, 145,884,399 ns above the
+precommitted ceiling. The final decision is `NOT_MET`. Exact output, cache, native lifetime
+balances, and all twelve isolation boundaries still passed. Per the ledger, the live-width
+production intervention and its production-owner changes are removed before publication. Item
+62's fixed-width decode and 19,266,559,229-ns baseline remain shipped; its 3,609,378,007-ns
+claim-I/O bucket selects item 64.
+
+**Next actions.** Commit the `NOT_MET` result and production removal, run the affected model-free
+owner and exact-head preflight, publish, merge, then start item 64.
 
 **Blocker.** None.
 
-**Latest durable verification.** `make layer-forward-smoke` passes in 59.127 seconds: 167 decode
-documents retain the exact output, plane, routing, transcript, failure, and lifetime coverage; the
-golden diff is limited to issued-node and phase-A activation sizes. `make runtime-provider-smoke`
-passes its self-test and 61 CLI assertions. The item-63 model-free self-test, Python compilation,
-`make fmt`, and `git diff --check` pass.
+**Latest durable verification.** Before the final decision, `make layer-forward-smoke` passed in
+59.127 seconds with the candidate and `make runtime-provider-smoke` passed its self-test and 61 CLI
+assertions. After removal, regenerated item-62 goldens and `make layer-forward-smoke` pass in 60.214
+seconds; all evaluated production and production-owner files now compare byte-for-byte with merged
+item 62. The item-63 repaired model-free self-test and Python compilation passed before removal;
+rerun against the final source identities remains next.
 
-**Intentional uncommitted files.** The consolidated qualification-runner identity repair and this
-handoff update until committed. Machine-local model/evidence and generated build products remain
-outside Git.
+**Intentional uncommitted files.** The `NOT_MET` result, production removal, final qualification
+source identities, roadmap/specification, and this handoff update until committed. Machine-local
+model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-COMPUTE-DIAGNOSIS (PR #184, 2026-09-05)
 

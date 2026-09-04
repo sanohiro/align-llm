@@ -1,6 +1,6 @@
 # R8 OLMoE routing phase-A boundary
 
-Status: complete, 2026-09-05
+Status: complete, `NOT_MET`, 2026-09-05
 
 Roadmap owner: item 63, `R8-OLMOE-ROUTING-PHASE-A-BOUNDARY`
 
@@ -14,7 +14,7 @@ matrix multiplication, 196 below concat, 184 below graph barriers, and 344 below
 `ggml_compute_forward_mul_mat_id`. Those counts are directional sampling evidence, not operation
 timings or a performance claim.
 
-The selected intervention removes fixed-request-width zero padding from decode attention's K and V
+The evaluated intervention removes fixed-request-width zero padding from decode attention's K and V
 inputs. Each decode step constructs its phase-A graph at the exact live attention width
 `n_past + 1`, consumes the corresponding prefix of the existing causal-mask row, and connects the
 live concat results directly to KQ and KQV. The canonical K/V plane allocation, column stride, and
@@ -34,11 +34,15 @@ thread tuning is rejected and the default four-thread behavior is retained. Two 
 live-width probes produced 17,937,155,959-ns and 18,391,417,042-ns walls and exact output/lifetime
 evidence. They justify the candidate but are not shipping measurements.
 
+This ledger records the evaluated candidate contract. The post-review qualification missed the
+shipping gate, so the final publication removes its production and production-owner changes and
+retains item 62's fixed-width decode behavior.
+
 ## 2. Public-contract ledger
 
 | Surface | Exact contract |
 | --- | --- |
-| Capability/owner | `R8-OLMOE-ROUTING-PHASE-A-BOUNDARY`; `scripts/run-olmoe-routing-phase-a-boundary`, with no arguments for the opt-in real run and `--self-test` for the model-free owner |
+| Capability/owner | `R8-OLMOE-ROUTING-PHASE-A-BOUNDARY`; evaluated production owners were `src/layer_olmoe.align`, `src/moe_decode_step.align`, `scripts/ggml_shim_stub.c`, `scripts/run-layer-forward-smoke`, and its golden; qualification owner is `scripts/run-olmoe-routing-phase-a-boundary`. The evaluated production diff does not ship after `NOT_MET`. |
 | Consumer | the fixed item-62 OLMoE decode request and its next R8 investment decision |
 | Fixed request | inherit item 62 exactly: byte-identical task/system/user prompt, model, AlignPack, geometry, 975,175,680-byte partial-LRU budget, temperature 300,000 micros, seed 5, maximum 128, EOG rule, exact 87-id chain, 86 completion tokens, and output SHA-256 `aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52` |
 | Conditioning/isolation | four sequential fresh-process pairs; each maximum-2 result is the exact prefix of the following maximum-128 result; zero processes matching both pinned llama-server and model paths before, between, and after each pair |
@@ -107,8 +111,9 @@ borrow, allocation, or native lifetime.
    exact-head preflight, publish, merge, and continue to the selected successor.
 
 No `make ci`, installed platform profile, 40-prompt corpus, stress suite, cache replay, or unrelated
-benchmark is selected. The live-width production change, exact topology regression, qualification
-helper, and gate runner form one consumer-complete capability.
+benchmark is selected. The evaluated live-width production change, exact topology regression,
+qualification helper, and gate runner formed one consumer-complete candidate; only the decision,
+helper, and qualification owner remain after `NOT_MET`.
 
 ## 5. Author consistency pass
 
@@ -122,25 +127,35 @@ and 18,303,231,267-nanosecond ceiling are recorded before production code change
 
 ## 6. Recorded result
 
-The complete run at clean implementation head `dd2fd1f91dbf7823f8a56c35a59071baa9041a16`
-finished in 116.615 seconds. Every maximum-2 conditioning record was the exact prefix of its
-maximum-128 record. All four full requests reproduced the fixed 87-token chain, 86 completion
-tokens, and output SHA-256. Each balanced 2,958 ggml buffers, 6,090 contexts, one backend, 2,958
-allocators, and one resident wrap, released before owner-scope exit, with zero matching server
-processes at all twelve isolation boundaries.
+The pre-review qualification at clean implementation head
+`dd2fd1f91dbf7823f8a56c35a59071baa9041a16` finished in 116.615 seconds. Its candidate walls
+`[17315490209,18232421375,18082976541,18457679541]` ns had an 18,157,698,958-ns median, a
+1,108,860,271-ns / 57,553-ppm gain and 145,532,309 ns of apparent margin below the ceiling. That
+run was provisionally `MET`.
 
-Candidate full-helper walls were
-`[17315490209,18232421375,18082976541,18457679541]` ns, for an 18,157,698,958-ns
-integer median. Against the immutable 19,266,559,229-ns baseline, this is a 1,108,860,271-ns /
-57,553-ppm gain and is 145,532,309 ns below the precommitted 18,303,231,267-ns ceiling. The
-decision is therefore `MET`, and the intervention ships.
+Comprehensive review of result head `f580dca93f1490c46218e06f3d1869d03edef85a` found one valid
+P2: the runner pinned its immediate predecessor but not the nine Python qualification owners that
+the predecessor loads transitively. Consolidated repair `fe11ff9b0895b4f6de603a42f4700da7502a71b8`
+pins the complete runner chain and adds a mutation self-test at its deepest dependency. This is an
+evidence-identity repair and does not change production or measurement behavior, so no second
+comprehensive review is required.
 
-Phase-A walls were `[1362582832,1493940595,1430289264,1476465348]` ns, for a
-1,453,377,306-ns median, down from item 62's 2,939,392,017-ns diagnosis. Total decode-compute walls
-had a 2,747,113,698-ns median. Claim I/O measured 3,778,790,474 ns on the same candidate requests,
-so it is now the largest directly measured unresolved remaining-decode bucket and selects item 64.
-These comparisons are whole graph/bucket measurements; they do not attribute the gain to an
-individual PAD invocation or kernel.
+The required post-review qualification at that clean repair head finished in 107.498 seconds.
+Candidate walls were `[16668116584,17859126833,19039104500,19435260625]` ns, for an
+18,449,115,666-ns integer median. Against the immutable 19,266,559,229-ns baseline, this is only an
+817,443,563-ns / 42,428-ppm gain and is 145,884,399 ns above the precommitted
+18,303,231,267-ns ceiling. The final decision is therefore `NOT_MET`.
 
-The exploratory probes remain non-shipping evidence. Only the four clean-head repetitions above
-satisfy the gate.
+Every conditioning record in both qualifications was the exact prefix of its full record. Every
+full request reproduced the fixed 87-token chain, 86 completion tokens, and output SHA-256. The
+post-review run again balanced 2,958 ggml buffers, 6,090 contexts, one backend, 2,958 allocators,
+and one resident wrap per full request, released before owner-scope exit, with zero matching server
+processes at all twelve isolation boundaries. Its phase-A median was 1,468,786,181 ns and total
+decode-compute median was 2,835,431,183 ns, but the complete-request gate is authoritative.
+
+Per the precommitted decision rule, the live-width production intervention and its production-owner
+changes are removed before publication. Item 62's fixed-width decode behavior and immutable
+19,266,559,229-ns baseline remain shipped. The already measured 3,609,378,007-ns claim-I/O bucket
+is the next-largest unresolved shipped boundary and selects item 64; the candidate-only claim-I/O
+samples do not replace that baseline. The exploratory and pre-review `MET` results remain
+non-shipping evidence, and no fixed-request performance claim ships from item 63.
