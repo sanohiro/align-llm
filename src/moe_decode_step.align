@@ -1483,12 +1483,20 @@ fn read_block_scatter(
   borrow dests: array<i64>,
   label: str,
   borrow mut c: alignpack_read.Counters,
+  borrow mut file_pread_ns: i64,
+  borrow mut block_to_claim_copy_ns: i64,
 ) -> Result<(), alignpack_read.Fault> {
   mut done := 0
   loop {
     if done >= block_bytes { break }
-    count := match handle.pread(temp, block_offset + done) {
-      Ok(value) => value,
+    pread_started := time.instant()
+    read_result := handle.pread(temp, block_offset + done)
+    pread_finished := time.instant()
+    count := match read_result {
+      Ok(value) => {
+        file_pread_ns = file_pread_ns + (pread_finished - pread_started)
+        value
+      },
       Err(_) => {
         return Err(moe_model_forward.pack_fault(
             "R4_PACK_UNREADABLE", moe_model_forward.named("role", label)))
@@ -1514,8 +1522,10 @@ fn read_block_scatter(
       hi := if end < done + take { end } else { done + take }
       if hi > lo {
         piece := view[lo - done..hi - done]
+        copy_started := time.instant()
         moe_model_forward.window_put(
           claim_window, dests[role] + (lo - starts[role]), piece, hi - lo, label)?
+        block_to_claim_copy_ns = block_to_claim_copy_ns + (time.instant() - copy_started)
       }
       role = role + 1
     }
@@ -1534,6 +1544,8 @@ fn stage_claims(
   borrow routing: layer_olmoe.Routing,
   layer: i64,
   borrow mut c: alignpack_read.Counters,
+  borrow mut file_pread_ns: i64,
+  borrow mut block_to_claim_copy_ns: i64,
 ) -> Result<(), alignpack_read.Fault> {
   mut u := 0
   loop {
@@ -1556,7 +1568,7 @@ fn stage_claims(
     dests := dest_builder.build()
     read_block_scatter(
       pak, temp, claim_window, p.expert_pack_offset[key], p.expert_pack_bytes[key],
-      starts, sizes, dests, "expert", c)?
+      starts, sizes, dests, "expert", c, file_pread_ns, block_to_claim_copy_ns)?
     u = u + 1
   }
   return Ok(())
@@ -1578,6 +1590,10 @@ fn stage_claims_cached(
   layer: i64,
   borrow mut cache: ExpertCache,
   borrow mut c: alignpack_read.Counters,
+  borrow mut file_pread_ns: i64,
+  borrow mut block_to_claim_copy_ns: i64,
+  borrow mut claim_to_cache_copy_ns: i64,
+  borrow mut cache_to_claim_copy_ns: i64,
 ) -> Result<(), alignpack_read.Fault> {
   mut u := 0
   loop {
@@ -1593,8 +1609,10 @@ fn stage_claims_cached(
         source_at := slot * cache.key_bytes + role_offset
         destination_at := win.region[role] + u * planes[role]
         source := cache_window[source_at..source_at + planes[role]]
+        copy_started := time.instant()
         moe_model_forward.window_put(
           claim_window, destination_at, source, planes[role], "expert_cache_hit")?
+        cache_to_claim_copy_ns = cache_to_claim_copy_ns + (time.instant() - copy_started)
         role_offset = role_offset + planes[role]
         role = role + 1
       }
@@ -1617,7 +1635,7 @@ fn stage_claims_cached(
       before := c.bytes_read
       read_block_scatter(
         pak, temp, claim_window, p.expert_pack_offset[key], p.expert_pack_bytes[key],
-        starts, sizes, dests, "expert", c)?
+        starts, sizes, dests, "expert", c, file_pread_ns, block_to_claim_copy_ns)?
 
       mut destination_slot := cache.resident_count
       if cache.resident_count >= cache.slot_count {
@@ -1649,9 +1667,11 @@ fn stage_claims_cached(
         if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
         source_at := win.region[role] + u * planes[role]
         source := claim_window[source_at..source_at + planes[role]]
+        copy_started := time.instant()
         moe_model_forward.window_put(
           cache_window, destination_slot * cache.key_bytes + role_offset, source, planes[role],
           "expert_cache_miss")?
+        claim_to_cache_copy_ns = claim_to_cache_copy_ns + (time.instant() - copy_started)
         role_offset = role_offset + planes[role]
         role = role + 1
       }
@@ -2070,16 +2090,30 @@ fn run_moe_layer(
     result.claim_planes = routing.count * layer_olmoe.CLAIM_ROLE_COUNT
   }
   if o.code.len() == 0 {
+    mut claim_file_pread_ns := 0
+    mut claim_block_to_claim_copy_ns := 0
+    mut claim_claim_to_cache_copy_ns := 0
+    mut claim_cache_to_claim_copy_ns := 0
     claim_started := time.instant()
     if cache.enabled {
       take_pack(o, stage_claims_cached(
           pak, block_temp, claim_window, cache_window, cache_metadata, p, win, planes, routing,
-          spec.layer, cache, claim_counters))
+          spec.layer, cache, claim_counters, claim_file_pread_ns,
+          claim_block_to_claim_copy_ns, claim_claim_to_cache_copy_ns,
+          claim_cache_to_claim_copy_ns))
     } else {
       take_pack(o, stage_claims(
-          pak, block_temp, claim_window, p, win, planes, routing, spec.layer, claim_counters))
+          pak, block_temp, claim_window, p, win, planes, routing, spec.layer, claim_counters,
+          claim_file_pread_ns, claim_block_to_claim_copy_ns))
     }
     result.claim_pread_ns = time.instant() - claim_started
+    result.claim_file_pread_ns = claim_file_pread_ns
+    result.claim_block_to_claim_copy_ns = claim_block_to_claim_copy_ns
+    result.claim_claim_to_cache_copy_ns = claim_claim_to_cache_copy_ns
+    result.claim_cache_to_claim_copy_ns = claim_cache_to_claim_copy_ns
+    result.claim_other_io_ns = result.claim_pread_ns - claim_file_pread_ns
+      - claim_block_to_claim_copy_ns - claim_claim_to_cache_copy_ns
+      - claim_cache_to_claim_copy_ns
     o.window_reuse_count = o.window_reuse_count + 1
   }
   setup_started = time.instant()
@@ -2720,6 +2754,14 @@ fn decode_pass(
       decoded.slot_high_water = result.slot_high_water
     }
     o.claim_pread_ns = o.claim_pread_ns + result.claim_pread_ns
+    o.claim_file_pread_ns = o.claim_file_pread_ns + result.claim_file_pread_ns
+    o.claim_block_to_claim_copy_ns = o.claim_block_to_claim_copy_ns
+      + result.claim_block_to_claim_copy_ns
+    o.claim_claim_to_cache_copy_ns = o.claim_claim_to_cache_copy_ns
+      + result.claim_claim_to_cache_copy_ns
+    o.claim_cache_to_claim_copy_ns = o.claim_cache_to_claim_copy_ns
+      + result.claim_cache_to_claim_copy_ns
+    o.claim_other_io_ns = o.claim_other_io_ns + result.claim_other_io_ns
     o.decide_ns = o.decide_ns + result.decide_ns
     check_balance(o)
     if o.code.len() == 0 {
@@ -2968,6 +3010,14 @@ fn prefill_pass(
     account(result.activation_b, result.slot_high_water, result.node_count_b, activation, o)
     o.compute_ns = o.compute_ns + result.compute_a_ns + result.compute_b_ns
     o.claim_pread_ns = o.claim_pread_ns + result.claim_pread_ns
+    o.claim_file_pread_ns = o.claim_file_pread_ns + result.claim_file_pread_ns
+    o.claim_block_to_claim_copy_ns = o.claim_block_to_claim_copy_ns
+      + result.claim_block_to_claim_copy_ns
+    o.claim_claim_to_cache_copy_ns = o.claim_claim_to_cache_copy_ns
+      + result.claim_claim_to_cache_copy_ns
+    o.claim_cache_to_claim_copy_ns = o.claim_cache_to_claim_copy_ns
+      + result.claim_cache_to_claim_copy_ns
+    o.claim_other_io_ns = o.claim_other_io_ns + result.claim_other_io_ns
     o.decide_ns = o.decide_ns + result.decide_ns
     check_balance(o)
     if o.code.len() == 0 && o.reference_present {
@@ -3447,6 +3497,11 @@ fn decode_loop(
     before_cache_fetched := cache.bytes_fetched
     before_pread := o.pread_ns
     before_claim_pread := o.claim_pread_ns
+    before_claim_file_pread := o.claim_file_pread_ns
+    before_claim_block_to_claim_copy := o.claim_block_to_claim_copy_ns
+    before_claim_claim_to_cache_copy := o.claim_claim_to_cache_copy_ns
+    before_claim_cache_to_claim_copy := o.claim_cache_to_claim_copy_ns
+    before_claim_other_io := o.claim_other_io_ns
     before_decide := o.decide_ns
     before_plane_upload := state.upload_ns
     before_plane_readback := state.readback_ns
@@ -3673,6 +3728,19 @@ fn decode_loop(
         + (o.decode_head_compute_ns - before_head_compute)
       o.remaining_decode_claim_pread_ns =
       o.remaining_decode_claim_pread_ns + phase_claim_pread_ns
+      o.remaining_decode_claim_file_pread_ns = o.remaining_decode_claim_file_pread_ns
+        + (o.claim_file_pread_ns - before_claim_file_pread)
+      o.remaining_decode_claim_block_to_claim_copy_ns =
+      o.remaining_decode_claim_block_to_claim_copy_ns
+        + (o.claim_block_to_claim_copy_ns - before_claim_block_to_claim_copy)
+      o.remaining_decode_claim_claim_to_cache_copy_ns =
+      o.remaining_decode_claim_claim_to_cache_copy_ns
+        + (o.claim_claim_to_cache_copy_ns - before_claim_claim_to_cache_copy)
+      o.remaining_decode_claim_cache_to_claim_copy_ns =
+      o.remaining_decode_claim_cache_to_claim_copy_ns
+        + (o.claim_cache_to_claim_copy_ns - before_claim_cache_to_claim_copy)
+      o.remaining_decode_claim_other_io_ns = o.remaining_decode_claim_other_io_ns
+        + (o.claim_other_io_ns - before_claim_other_io)
       o.remaining_decode_compute_ns = o.remaining_decode_compute_ns + phase_compute_ns
     }
     step = step + 1

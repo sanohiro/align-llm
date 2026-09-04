@@ -1,0 +1,697 @@
+#!/usr/bin/env python3
+"""Partition item 62's fixed OLMoE remaining-decode claim I/O."""
+
+from __future__ import annotations
+
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PREDECESSOR_PATH = ROOT / "scripts/run-olmoe-decode-compute-diagnosis"
+PREDECESSOR_LOADER = SourceFileLoader("olmoe_compute_for_claim_io", str(PREDECESSOR_PATH))
+PREDECESSOR_SPEC = importlib.util.spec_from_loader(PREDECESSOR_LOADER.name, PREDECESSOR_LOADER)
+if PREDECESSOR_SPEC is None or PREDECESSOR_SPEC.loader is None:
+    raise RuntimeError("cannot load the decode-compute owner")
+compute = importlib.util.module_from_spec(PREDECESSOR_SPEC)
+sys.modules[PREDECESSOR_LOADER.name] = compute
+PREDECESSOR_SPEC.loader.exec_module(compute)
+diagnosis = compute.diagnosis
+owner = compute.owner
+base = compute.base
+transfer = compute.transfer
+
+MODEL_BYTES = 4_213_512_192
+MODEL_SHA256 = "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f"
+SERVER_BUILD = "build 10566, commit bb4caa754"
+BUDGET = 975_175_680
+SEED = 5
+FULL_TOKENS = 128
+TEMPERATURE_MICROS = 300_000
+FULL_OUTPUT_SHA256 = "aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52"
+REPETITIONS = 4
+CEILING_SECONDS = 8 * 60
+
+BASELINE_FULL_VALUES_NS = [
+    18_059_864_416, 18_927_732_709, 20_639_199_375, 19_605_385_750,
+]
+BASELINE_FULL_MEDIAN_NS = 19_266_559_229
+BASELINE_CLAIM_IO_MEDIAN_NS = 3_609_378_007
+FLOOR_PPM = 50_000
+FLOOR_NS = 963_327_962
+
+QUALIFICATION_RUNNER_PATHS = (
+    PREDECESSOR_PATH,
+    ROOT / "scripts/run-olmoe-plane-roundtrip-boundary",
+    ROOT / "scripts/run-olmoe-decode-pass-other-diagnosis",
+    ROOT / "scripts/run-olmoe-decode-pass-residual-diagnosis",
+    ROOT / "scripts/run-olmoe-kv-plane-staging-transfer",
+    ROOT / "scripts/run-olmoe-remaining-decode-overhead-diagnosis",
+    ROOT / "scripts/run-olmoe-first-token-phase-diagnosis",
+    ROOT / "scripts/run-olmoe-runtime-phase-diagnosis",
+    ROOT / "scripts/run-olmoe-sampled-runtime-decision",
+    ROOT / "scripts/run-olmoe-coding-decision",
+)
+SOURCE_PATHS = (
+    *QUALIFICATION_RUNNER_PATHS,
+    ROOT / "src/olmoe_remaining_decode_overhead_gate.align",
+    ROOT / "src/olmoe_decode_pass_residual_gate.align",
+    ROOT / "src/olmoe_decode_pass_other_gate.align",
+    ROOT / "src/olmoe_decode_compute_gate.align",
+    ROOT / "src/olmoe_claim_io_gate.align",
+    ROOT / "src/moe_decode_step.align",
+    ROOT / "src/moe_model_forward.align",
+    ROOT / "src/layer_olmoe.align",
+    ROOT / "src/ggml_ffi.align",
+    ROOT / "scripts/ggml_shim.c",
+    ROOT / "scripts/ggml_shim_stub.c",
+    ROOT / "scripts/build-ggml-shim",
+)
+EXPECTED_SOURCE_IDENTITIES = (
+    "433d848e6a926108cacb0651e08a24df65537225cada07d35bc6a85a295d884f",
+    "69c2a44572029e36c349de5feb061e1ecb597e3fa4de7c7a58341da2bcb05ef9",
+    "b66815c4debfec0f749ac88b39ec8ba9f06e25d1f85b4aba3c760d112748f868",
+    "26887655013f0f68e94705a6addd87dac72ada5d37d08e1421a2daef2e78de5a",
+    "922b29baf0489fd1cec53ce1395849ba69df69d0e69dea44a3f07ec95b42cf65",
+    "de717064f4d2ea89d63a6529d38d37157f7d34f9946db7e6dc350076185157ce",
+    "15fb41454a01e5be87776fedd2081b70b4bd155bd6208de1adb0f26c7ddf9dbc",
+    "1f95cefc30d4e5d772b35d6f739994440ce195facf12d5b359f206428301e9b8",
+    "03ee9abc87d1d167f1bac4878004abb64a0ef8bf50a3dfd96ee66eeba106ad9f",
+    "e3a86592357af4c1c8888689cfc026867842ac05a6f4b5a8b88fcc2f026f0260",
+    "2afa24a4ea8e15a5476b9335ed6cd3b9e683b1f305c32a1783194e04a6005e0e",
+    "91e2dedf7eac8f66f11c817797e8541881bfd2c7f71ee4e298b37305c6123a63",
+    "505efca65a7637b65b26997de200234f44cd8b7cee9db681b9f9161524ecaaaf",
+    "9141bee34a3579482c6c5852eb136810ea909f73575229b411f905ef96635581",
+    "c7e82a8a8374e1c25f1e3b61ce0b89ed8639eaeae6b4e4ae8bee2a88a09b8e8b",
+    "86815bffb5115d92a6d9e7e341b7a73c91c8fe514209fc8b965daf4ae3df34b8",
+    "e8f38cc06b2bf68094a5654ed2f36e917fa86e5d20f7d1f35d1d0a5971705ef2",
+    "b5f1b7f7798239982446f56d9d17eeeca9b87a8a47bd685e6bd9e634a686198e",
+    "080bb5084eaa3687a8237cde9218529e33862d5f2c4a09d0473772dccc42a046",
+    "4c7bc66a3c6d3645db050ef8e3a45bc32b09c34e47238ff1e165190052b21f89",
+    "1620950e2b54e8a37c5e448f6ab464621d7ae091a2e8f074c5f7aef95f1eb0e0",
+    "acf4e97b46d1bbb22b6e043f9d7e8a9c43bce1bb427913c3b17c8b91bf2a72d5",
+)
+EXPECTED_ALIGN_REVISION = compute.EXPECTED_ALIGN_REVISION
+EXPECTED_COMPILER_SHA256 = compute.EXPECTED_COMPILER_SHA256
+EXPECTED_PACK_SHA256 = compute.EXPECTED_PACK_SHA256
+EXPECTED_GEOMETRY_SHA256 = compute.EXPECTED_GEOMETRY_SHA256
+EXPECTED_SERVER_SHA256 = compute.EXPECTED_SERVER_SHA256
+EXPECTED_TASK_SHA256 = compute.EXPECTED_TASK_SHA256
+EXPECTED_PROMPT_SHA256 = compute.EXPECTED_PROMPT_SHA256
+EXPECTED_C_COMPILER_SHA256 = compute.EXPECTED_C_COMPILER_SHA256
+EXPECTED_C_COMPILER_VERSION_SHA256 = compute.EXPECTED_C_COMPILER_VERSION_SHA256
+EXPECTED_LINKER_SEARCH_SHA256 = compute.EXPECTED_LINKER_SEARCH_SHA256
+EXPECTED_GGML_LIBRARIES = compute.EXPECTED_GGML_LIBRARIES
+EXPECTED_GGML_HEADERS = compute.EXPECTED_GGML_HEADERS
+EXPECTED_BASELINE_HOST = compute.EXPECTED_BASELINE_HOST
+EXPECTED_BASELINE_HOST_SHA256 = compute.EXPECTED_BASELINE_HOST_SHA256
+
+DETAIL_KEYS = {
+    "total_ns", "file_pread_ns", "block_to_claim_copy_ns",
+    "claim_to_cache_copy_ns", "cache_to_claim_copy_ns", "other_ns",
+}
+BUCKET_ORDER = (
+    "FILE_PREAD", "BLOCK_TO_CLAIM_COPY", "CLAIM_TO_CACHE_COPY",
+    "CACHE_TO_CLAIM_COPY", "OTHER_CLAIM_IO",
+)
+BUCKET_FIELDS = {
+    "FILE_PREAD": "file_pread_ns",
+    "BLOCK_TO_CLAIM_COPY": "block_to_claim_copy_ns",
+    "CLAIM_TO_CACHE_COPY": "claim_to_cache_copy_ns",
+    "CACHE_TO_CLAIM_COPY": "cache_to_claim_copy_ns",
+    "OTHER_CLAIM_IO": "other_ns",
+}
+HELPER_KEYS = compute.HELPER_KEYS | {"claim_io"}
+TOP_KEYS = {
+    "schema_version", "artifact_kind", "status", "model", "baseline", "candidate",
+    "task", "environment", "samples", "aggregate", "elapsed_ns",
+}
+BASELINE_KEYS = {
+    "full_helper_wall_values_ns", "full_helper_wall_median_ns", "claim_io_median_ns",
+    "floor_ppm", "floor_ns",
+}
+AGGREGATE_KEYS = {
+    "full_helper_wall_median_ns", "claim_io_median_ns", "bucket_values_ns",
+    "bucket_medians_ns", "selected_bucket", "selected_bucket_median_ns",
+    "selected_bucket_share_ppm", "baseline_claim_io_median_ns", "floor_ppm", "floor_ns",
+    "decision",
+}
+
+
+class ClaimIoError(RuntimeError):
+    pass
+
+
+def source_identities() -> tuple[str, ...]:
+    return tuple(base.file_sha256(path) for path in SOURCE_PATHS)
+
+
+def validate_imported_contract() -> None:
+    actual = (
+        compute.MODEL_BYTES, compute.MODEL_SHA256, compute.SERVER_BUILD, compute.BUDGET,
+        compute.SEED, compute.FULL_TOKENS, compute.TEMPERATURE_MICROS,
+        compute.FULL_OUTPUT_SHA256, compute.REPETITIONS, compute.CEILING_SECONDS,
+        compute.EXPECTED_ALIGN_REVISION, compute.EXPECTED_COMPILER_SHA256,
+        compute.EXPECTED_PACK_SHA256, compute.EXPECTED_GEOMETRY_SHA256,
+        compute.EXPECTED_SERVER_SHA256, compute.EXPECTED_TASK_SHA256,
+        compute.EXPECTED_PROMPT_SHA256, compute.EXPECTED_C_COMPILER_SHA256,
+        compute.EXPECTED_C_COMPILER_VERSION_SHA256, compute.EXPECTED_LINKER_SEARCH_SHA256,
+        compute.EXPECTED_GGML_LIBRARIES, compute.EXPECTED_GGML_HEADERS,
+        compute.EXPECTED_BASELINE_HOST, compute.EXPECTED_BASELINE_HOST_SHA256,
+    )
+    expected = (
+        MODEL_BYTES, MODEL_SHA256, SERVER_BUILD, BUDGET, SEED, FULL_TOKENS,
+        TEMPERATURE_MICROS, FULL_OUTPUT_SHA256, REPETITIONS, CEILING_SECONDS,
+        EXPECTED_ALIGN_REVISION, EXPECTED_COMPILER_SHA256, EXPECTED_PACK_SHA256,
+        EXPECTED_GEOMETRY_SHA256, EXPECTED_SERVER_SHA256, EXPECTED_TASK_SHA256,
+        EXPECTED_PROMPT_SHA256, EXPECTED_C_COMPILER_SHA256,
+        EXPECTED_C_COMPILER_VERSION_SHA256, EXPECTED_LINKER_SEARCH_SHA256,
+        EXPECTED_GGML_LIBRARIES, EXPECTED_GGML_HEADERS, EXPECTED_BASELINE_HOST,
+        EXPECTED_BASELINE_HOST_SHA256,
+    )
+    if actual != expected:
+        raise ClaimIoError("imported item 62 workload or environment drifted")
+    if source_identities() != EXPECTED_SOURCE_IDENTITIES:
+        raise ClaimIoError("item 64 imported source chain drifted")
+    if diagnosis.integer_median(BASELINE_FULL_VALUES_NS) != BASELINE_FULL_MEDIAN_NS:
+        raise ClaimIoError("item 62 full-helper baseline median drifted")
+    expected_floor = (BASELINE_FULL_MEDIAN_NS * FLOOR_PPM + 999_999) // 1_000_000
+    if expected_floor != FLOOR_NS:
+        raise ClaimIoError("item 64 materiality floor drifted")
+
+
+def inherited_record(record: dict[str, Any]) -> dict[str, Any]:
+    inherited = dict(record)
+    inherited.pop("claim_io")
+    return inherited
+
+
+def inherited_sample(sample: dict[str, Any]) -> dict[str, Any]:
+    inherited = dict(sample)
+    inherited["conditioning"] = inherited_record(sample["conditioning"])
+    inherited["full"] = inherited_record(sample["full"])
+    return inherited
+
+
+def validate_helper_record(record: dict[str, Any], maximum_tokens: int) -> None:
+    diagnosis.require_exact_keys(record, HELPER_KEYS, "helper record")
+    compute.validate_helper_record(inherited_record(record), maximum_tokens)
+    detail = record["claim_io"]
+    if not isinstance(detail, dict):
+        raise ClaimIoError("claim-I/O detail was not an object")
+    diagnosis.require_exact_keys(detail, DETAIL_KEYS, "claim I/O")
+    if any(not diagnosis.is_int(detail[name]) or detail[name] < 0 for name in DETAIL_KEYS):
+        raise ClaimIoError("claim-I/O timing was invalid")
+    if maximum_tokens == 2:
+        if any(detail.values()):
+            raise ClaimIoError("conditioning entered claim-I/O detail")
+        return
+    if any(detail[name] <= 0 for name in DETAIL_KEYS):
+        raise ClaimIoError("full claim-I/O clock was not positive")
+    if detail["total_ns"] != record["remaining_decode"]["claim_pread_ns"]:
+        raise ClaimIoError("claim-I/O total did not match remaining decode")
+    if sum(detail[name] for name in DETAIL_KEYS - {"total_ns"}) != detail["total_ns"]:
+        raise ClaimIoError("claim-I/O detail did not partition its total")
+
+
+def measure_request(
+    helper: Path,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    maximum_tokens: int,
+    runtime_env: dict[str, str],
+    deadline: float,
+) -> tuple[dict[str, Any], int]:
+    started_ns = time.monotonic_ns()
+    completed = owner.run_process(
+        [str(helper), str(model), str(pack), str(geometry), diagnosis.PROMPT_TEXT,
+         str(maximum_tokens), str(SEED)],
+        deadline=deadline, maximum=240, env=runtime_env,
+    )
+    helper_wall_ns = time.monotonic_ns() - started_ns
+    try:
+        record = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ClaimIoError("helper did not emit one JSON record") from error
+    if not isinstance(record, dict):
+        raise ClaimIoError("helper record was not an object")
+    validate_helper_record(record, maximum_tokens)
+    if helper_wall_ns < record["phases"]["elapsed_ns"]:
+        raise ClaimIoError("helper wall interval did not contain helper elapsed")
+    return record, helper_wall_ns
+
+
+def validate_sample(sample: dict[str, Any], expected_index: int) -> None:
+    compute.validate_sample(inherited_sample(sample), expected_index)
+    validate_helper_record(sample["conditioning"], 2)
+    validate_helper_record(sample["full"], FULL_TOKENS)
+
+
+def validate_repeatability(samples: list[dict[str, Any]]) -> None:
+    compute.validate_repeatability([inherited_sample(sample) for sample in samples])
+
+
+def measure_sample(
+    index: int,
+    built: dict[str, Any],
+    server: Path,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    clean_env: dict[str, str],
+    deadline: float,
+) -> dict[str, Any]:
+    owner.require_no_matching_process(server, model, deadline, clean_env)
+    conditioning, _ = measure_request(
+        built["helper"], model, pack, geometry, 2, built["runtime_env"], deadline,
+    )
+    owner.require_no_matching_process(server, model, deadline, clean_env)
+    try:
+        full, full_wall = measure_request(
+            built["helper"], model, pack, geometry, FULL_TOKENS,
+            built["runtime_env"], deadline,
+        )
+    finally:
+        owner.require_no_matching_process(server, model, deadline, clean_env)
+    sample = {
+        "index": index,
+        "conditioning": conditioning,
+        "full": full,
+        "full_helper_wall_ns": full_wall,
+        "isolation": {"matching_before": 0, "matching_between": 0, "matching_after": 0},
+    }
+    validate_sample(sample, index)
+    return sample
+
+
+def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(samples) != REPETITIONS:
+        raise ClaimIoError("aggregate requires four samples")
+    for index, sample in enumerate(samples, 1):
+        validate_sample(sample, index)
+    validate_repeatability(samples)
+    bucket_values = {
+        bucket: [sample["full"]["claim_io"][field] for sample in samples]
+        for bucket, field in BUCKET_FIELDS.items()
+    }
+    bucket_medians = {
+        bucket: diagnosis.integer_median(bucket_values[bucket]) for bucket in BUCKET_ORDER
+    }
+    selected = BUCKET_ORDER[0]
+    for bucket in BUCKET_ORDER[1:]:
+        if bucket_medians[bucket] > bucket_medians[selected]:
+            selected = bucket
+    selected_median = bucket_medians[selected]
+    claim_io_median = diagnosis.integer_median(
+        [sample["full"]["claim_io"]["total_ns"] for sample in samples]
+    )
+    if claim_io_median <= 0 or selected_median > claim_io_median:
+        raise ClaimIoError("aggregate claim-I/O bounds drifted")
+    decision = "MEASURED_BUCKET_ELIGIBLE" if selected_median >= FLOOR_NS \
+        else "NO_MATERIAL_BUCKET"
+    return {
+        "full_helper_wall_median_ns": diagnosis.integer_median(
+            [sample["full_helper_wall_ns"] for sample in samples]
+        ),
+        "claim_io_median_ns": claim_io_median,
+        "bucket_values_ns": bucket_values,
+        "bucket_medians_ns": bucket_medians,
+        "selected_bucket": selected,
+        "selected_bucket_median_ns": selected_median,
+        "selected_bucket_share_ppm": selected_median * 1_000_000 // claim_io_median,
+        "baseline_claim_io_median_ns": BASELINE_CLAIM_IO_MEDIAN_NS,
+        "floor_ppm": FLOOR_PPM,
+        "floor_ns": FLOOR_NS,
+        "decision": decision,
+    }
+
+
+def predecessor_result(result: dict[str, Any]) -> dict[str, Any]:
+    samples = [inherited_sample(sample) for sample in result["samples"]]
+    return {
+        "schema_version": 1,
+        "artifact_kind": "R8_OLMOE_DECODE_COMPUTE_DIAGNOSIS",
+        "status": "COMPLETE",
+        "model": result["model"],
+        "baseline": {
+            "full_helper_wall_values_ns": compute.BASELINE_FULL_VALUES_NS,
+            "full_helper_wall_median_ns": compute.BASELINE_FULL_MEDIAN_NS,
+            "compute_median_ns": compute.BASELINE_COMPUTE_MEDIAN_NS,
+            "floor_ppm": compute.FLOOR_PPM,
+            "floor_ns": compute.FLOOR_NS,
+        },
+        "candidate": result["candidate"],
+        "task": result["task"],
+        "environment": result["environment"],
+        "samples": samples,
+        "aggregate": compute.aggregate(samples),
+        "elapsed_ns": result["elapsed_ns"],
+    }
+
+
+def validate_result(result: dict[str, Any]) -> None:
+    diagnosis.require_exact_keys(result, TOP_KEYS, "result")
+    if result["schema_version"] != 1 or result["status"] != "COMPLETE" \
+            or result["artifact_kind"] != "R8_OLMOE_CLAIM_IO_DIAGNOSIS":
+        raise ClaimIoError("result identity drifted")
+    compute.validate_result(predecessor_result(result))
+    expected_baseline = {
+        "full_helper_wall_values_ns": BASELINE_FULL_VALUES_NS,
+        "full_helper_wall_median_ns": BASELINE_FULL_MEDIAN_NS,
+        "claim_io_median_ns": BASELINE_CLAIM_IO_MEDIAN_NS,
+        "floor_ppm": FLOOR_PPM,
+        "floor_ns": FLOOR_NS,
+    }
+    diagnosis.require_exact_keys(result["baseline"], BASELINE_KEYS, "result baseline")
+    if result["baseline"] != expected_baseline:
+        raise ClaimIoError("result baseline drifted")
+    diagnosis.require_exact_keys(result["aggregate"], AGGREGATE_KEYS, "result aggregate")
+    if result["aggregate"] != aggregate(result["samples"]):
+        raise ClaimIoError("result aggregate drifted")
+    if not diagnosis.is_int(result["elapsed_ns"]) or result["elapsed_ns"] <= 0:
+        raise ClaimIoError("result elapsed interval was invalid")
+
+
+def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
+    rows = (
+        ("ALIGN_LLM_OLMOE_MODEL", base.configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", base.configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", base.configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", base.configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", base.configured_directory("ALIGN_LLM_GGML_LIB")),
+        ("ALIGN_LLM_LLAMA_SERVER", base.configured_file("ALIGN_LLM_LLAMA_SERVER", executable=True)),
+    )
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-CLAIM-IO-DIAGNOSIS: N/A ({missing} unset)")
+        return None
+    return tuple(path.resolve() for _, path in rows)  # type: ignore[return-value]
+
+
+def synthetic_samples(values: dict[str, int]) -> list[dict[str, Any]]:
+    samples = compute.synthetic_samples({
+        "EMBEDDING": 100, "ROUTING_PHASE_A": 100,
+        "EXPERT_PHASE_B": 100, "OUTPUT_HEAD": 100,
+    })
+    total = sum(values.values())
+    for sample in samples:
+        sample["conditioning"]["claim_io"] = {name: 0 for name in DETAIL_KEYS}
+        remaining = sample["full"]["remaining_decode"]
+        old_total = remaining["claim_pread_ns"]
+        delta = total - old_total
+        remaining["claim_pread_ns"] = total
+        remaining["pass_ns"] += delta
+        phases = sample["full"]["engine_phases"]
+        phases["remaining_decode_claim_pread_ns"] = total
+        phases["remaining_decode_ns"] += delta
+        sample["full"]["engine"]["claim_pread_ns"] += delta
+        sample["full"]["engine"]["elapsed_ns"] += delta
+        sample["full"]["phases"]["engine_wall_ns"] += delta
+        sample["full"]["phases"]["elapsed_ns"] += delta
+        sample["full_helper_wall_ns"] += delta
+        sample["full"]["claim_io"] = {
+            "total_ns": total,
+            "file_pread_ns": values["FILE_PREAD"],
+            "block_to_claim_copy_ns": values["BLOCK_TO_CLAIM_COPY"],
+            "claim_to_cache_copy_ns": values["CLAIM_TO_CACHE_COPY"],
+            "cache_to_claim_copy_ns": values["CACHE_TO_CLAIM_COPY"],
+            "other_ns": values["OTHER_CLAIM_IO"],
+        }
+    return samples
+
+
+def synthetic_result(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    inherited = compute.synthetic_result([inherited_sample(sample) for sample in samples])
+    return {
+        "schema_version": 1,
+        "artifact_kind": "R8_OLMOE_CLAIM_IO_DIAGNOSIS",
+        "status": "COMPLETE",
+        "model": inherited["model"],
+        "baseline": {
+            "full_helper_wall_values_ns": BASELINE_FULL_VALUES_NS,
+            "full_helper_wall_median_ns": BASELINE_FULL_MEDIAN_NS,
+            "claim_io_median_ns": BASELINE_CLAIM_IO_MEDIAN_NS,
+            "floor_ppm": FLOOR_PPM,
+            "floor_ns": FLOOR_NS,
+        },
+        "candidate": inherited["candidate"],
+        "task": inherited["task"],
+        "environment": inherited["environment"],
+        "samples": samples,
+        "aggregate": aggregate(samples),
+        "elapsed_ns": 1,
+    }
+
+
+def expect_error(action: Any, message: str) -> None:
+    try:
+        action()
+    except Exception:
+        return
+    raise ClaimIoError(message)
+
+
+def complete_result_after_cleanup(result: dict[str, Any], started_ns: int) -> dict[str, Any]:
+    completed = dict(result)
+    elapsed_ns = time.monotonic_ns() - started_ns
+    if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+        raise ClaimIoError(
+            f"complete diagnosis exceeded its 8-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+        )
+    completed["elapsed_ns"] = elapsed_ns
+    validate_result(completed)
+    return completed
+
+
+def self_test() -> int:
+    validate_imported_contract()
+    one = {bucket: 1 for bucket in BUCKET_ORDER}
+    at_floor = dict(one)
+    at_floor["BLOCK_TO_CLAIM_COPY"] = FLOOR_NS
+    selected = aggregate(synthetic_samples(at_floor))
+    if selected["selected_bucket"] != "BLOCK_TO_CLAIM_COPY" \
+            or selected["decision"] != "MEASURED_BUCKET_ELIGIBLE":
+        raise ClaimIoError("direct bucket at the floor did not select implementation work")
+    below = {bucket: FLOOR_NS - 1 for bucket in BUCKET_ORDER}
+    below_result = aggregate(synthetic_samples(below))
+    if below_result["selected_bucket"] != BUCKET_ORDER[0] \
+            or below_result["decision"] != "NO_MATERIAL_BUCKET":
+        raise ClaimIoError("below-floor tie did not select no material bucket")
+    result = synthetic_result(synthetic_samples(at_floor))
+    validate_result(result)
+    malformed = synthetic_samples(at_floor)
+    malformed[0]["full"]["claim_io"]["file_pread_ns"] = True
+    expect_error(lambda: aggregate(malformed), "boolean claim-I/O clock was accepted")
+    malformed = synthetic_samples(at_floor)
+    malformed[0]["full"]["claim_io"]["other_ns"] += 1
+    expect_error(lambda: aggregate(malformed), "inexact claim-I/O partition was accepted")
+    malformed_result = dict(result)
+    malformed_result["candidate"] = {"bad": True}
+    expect_error(
+        lambda: validate_result(malformed_result), "malformed inherited candidate was accepted",
+    )
+    with mock.patch.object(base, "file_sha256", return_value="0" * 64):
+        expect_error(validate_imported_contract, "transitive source drift was accepted")
+    incomplete = dict(result)
+    incomplete["elapsed_ns"] = 0
+    with mock.patch.object(time, "monotonic_ns", return_value=2_000):
+        finalized = complete_result_after_cleanup(incomplete, 1_000)
+    if finalized["elapsed_ns"] != 1_000:
+        raise ClaimIoError("cleanup-inclusive elapsed time was not finalized")
+    with mock.patch.object(
+        time, "monotonic_ns", return_value=CEILING_SECONDS * 1_000_000_000 + 1_001,
+    ):
+        expect_error(
+            lambda: complete_result_after_cleanup(incomplete, 1_000),
+            "post-cleanup ceiling excess was accepted",
+        )
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as printed:
+        if prerequisites() is not None:
+            raise ClaimIoError("missing prerequisites did not produce N/A")
+    printed.assert_called_once_with(
+        "R8-OLMOE-CLAIM-IO-DIAGNOSIS: N/A (ALIGN_LLM_OLMOE_MODEL unset)"
+    )
+    print("R8-OLMOE-CLAIM-IO-DIAGNOSIS self-test: PASS")
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise ClaimIoError("OLMoE claim-I/O diagnosis accepts no arguments")
+    required = prerequisites()
+    if required is None:
+        return 0
+    model, pack, geometry, include, library, server = required
+    started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-claim-io-") as raw:
+        work = Path(raw)
+        clean_env = transfer.phase.decision.decision_environment()
+        linker_search = transfer.phase.decision.validate_linker_search(clean_env)
+        if linker_search:
+            clean_env["LIBRARY_PATH"] = linker_search
+        host_environment = transfer.qualification_host(clean_env, deadline)
+        source_status = owner.run_process(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline, maximum=30, env=clean_env,
+        )
+        if source_status.stdout:
+            raise ClaimIoError("real diagnosis requires a clean worktree")
+        align_llm_head = owner.run_process(
+            ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+        ).stdout.decode("ascii").strip()
+        validate_imported_contract()
+        align_revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        owner.require_no_matching_process(server, model, deadline, clean_env)
+        if model.stat().st_size != MODEL_BYTES or base.file_sha256(model) != MODEL_SHA256:
+            raise ClaimIoError("configured OLMoE GGUF does not have the pinned identity")
+        pack_sha256 = base.file_sha256(pack)
+        geometry_sha256 = base.file_sha256(geometry)
+        server_sha256 = base.file_sha256(server)
+        task_sha256 = base.file_sha256(diagnosis.TASK)
+        prompt_sha256 = base.bytes_sha256(diagnosis.PROMPT_TEXT.encode("utf-8"))
+        ggml_libraries = base.library_identities(library)
+        ggml_headers = compute.predecessor.ggml_header_identities(include)
+        if ggml_headers != EXPECTED_GGML_HEADERS:
+            raise ClaimIoError("configured ggml header identity drifted")
+        linker_search_sha256 = (
+            None if not linker_search else base.bytes_sha256(linker_search.encode("utf-8"))
+        )
+        diagnosis.validate_external_identity(
+            align_revision=align_revision, pack_sha256=pack_sha256,
+            geometry_sha256=geometry_sha256, server_sha256=server_sha256,
+            task_sha256=task_sha256, prompt_sha256=prompt_sha256,
+            ggml_libraries=ggml_libraries, linker_search_sha256=linker_search_sha256,
+        )
+        version = owner.run_process(
+            [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env,
+        )
+        if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
+            raise ClaimIoError("llama-server build identity drifted")
+
+        with compute.other.predecessor.built_helper_for(
+            work, include, library, clean_env, deadline,
+            "src/olmoe_claim_io_gate.align", "olmoe_claim_io_gate", "olmoe-claim-io-gate",
+        ) as built:
+            diagnosis.validate_toolchain_identity(built)
+            samples = []
+            for index in range(1, REPETITIONS + 1):
+                samples.append(
+                    measure_sample(index, built, server, model, pack, geometry, clean_env, deadline)
+                )
+                validate_repeatability(samples)
+
+            final_status = owner.run_process(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                deadline=deadline, maximum=30, env=clean_env,
+            )
+            final_head = owner.run_process(
+                ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+            ).stdout.decode("ascii").strip()
+            if final_status.stdout or final_head != align_llm_head:
+                raise ClaimIoError("align-llm source changed during diagnosis")
+            if source_identities() != EXPECTED_SOURCE_IDENTITIES:
+                raise ClaimIoError("diagnosis sources changed during the run")
+            owner.verify_identities((
+                ("model", model, MODEL_SHA256), ("pack", pack, pack_sha256),
+                ("geometry", geometry, geometry_sha256), ("server", server, server_sha256),
+                ("task", diagnosis.TASK, task_sha256),
+                ("compiler", built["compiler"], built["compiler_sha256"]),
+                ("C compiler", built["c_compiler"], built["c_compiler_sha256"]),
+                ("shim", built["shim"], built["shim_sha256"]),
+                ("helper", built["helper"], built["helper_sha256"]),
+            ))
+            if base.library_identities(library) != ggml_libraries:
+                raise ClaimIoError("ggml library identities changed during diagnosis")
+            if compute.predecessor.ggml_header_identities(include) != ggml_headers:
+                raise ClaimIoError("ggml headers changed during diagnosis")
+            owner.require_no_matching_process(server, model, deadline, clean_env)
+
+            task_document = json.loads(diagnosis.TASK.read_text(encoding="utf-8"))
+            result = {
+                "schema_version": 1,
+                "artifact_kind": "R8_OLMOE_CLAIM_IO_DIAGNOSIS",
+                "status": "COMPLETE",
+                "model": {"bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe"},
+                "baseline": {
+                    "full_helper_wall_values_ns": BASELINE_FULL_VALUES_NS,
+                    "full_helper_wall_median_ns": BASELINE_FULL_MEDIAN_NS,
+                    "claim_io_median_ns": BASELINE_CLAIM_IO_MEDIAN_NS,
+                    "floor_ppm": FLOOR_PPM,
+                    "floor_ns": FLOOR_NS,
+                },
+                "candidate": {
+                    "provider": "align-runtime", "align_llm_head": align_llm_head,
+                    "align_revision": align_revision,
+                    "compiler_sha256": built["compiler_sha256"],
+                    "helper_sha256": built["helper_sha256"],
+                    "shim_sha256": built["shim_sha256"], "ggml_libraries": ggml_libraries,
+                    "ggml_headers": ggml_headers, "pack_sha256": pack_sha256,
+                    "geometry_sha256": geometry_sha256, "cache_budget_bytes": BUDGET,
+                },
+                "task": {
+                    "task_id": task_document["id"], "task_sha256": task_sha256,
+                    "prompt_sha256": prompt_sha256, "maximum_tokens": FULL_TOKENS,
+                    "temperature_micros": TEMPERATURE_MICROS, "seed": SEED,
+                    "full_output_sha256": FULL_OUTPUT_SHA256,
+                },
+                "environment": {
+                    **host_environment,
+                    "c_compiler_sha256": built["c_compiler_sha256"],
+                    "c_compiler_version_sha256": built["c_compiler_version_sha256"],
+                    "linker_search_sha256": linker_search_sha256,
+                },
+                "samples": samples,
+                "aggregate": aggregate(samples),
+            }
+    result = complete_result_after_cleanup(result, started_ns)
+    elapsed_ns = result["elapsed_ns"]
+    aggregate_result = result["aggregate"]
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    print(
+        "R8-OLMOE-CLAIM-IO-DIAGNOSIS: COMPLETE "
+        f"decision={aggregate_result['decision']} "
+        f"selected={aggregate_result['selected_bucket']} "
+        f"median={aggregate_result['selected_bucket_median_ns'] / 1e9:.3f}s "
+        f"claim_io={aggregate_result['claim_io_median_ns'] / 1e9:.3f}s "
+        f"elapsed={elapsed_ns / 1e9:.2f}s",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    owner.stop_owned_processes()
+    raise SystemExit(128 + signal_number)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (
+        ClaimIoError, compute.ComputeError, compute.predecessor.BoundaryError,
+        compute.other.OtherError, compute.other.predecessor.ResidualError,
+        transfer.TransferError, diagnosis.DiagnosisError, transfer.phase.DiagnosisError,
+        owner.DiagnosisError, transfer.phase.decision.DecisionError, base.DecisionError,
+        OSError, ValueError, KeyError, TypeError, json.JSONDecodeError,
+        subprocess.TimeoutExpired,
+    ) as error:
+        owner.stop_owned_processes()
+        print(f"R8-OLMOE-CLAIM-IO-DIAGNOSIS: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)

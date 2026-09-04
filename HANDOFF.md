@@ -3,77 +3,93 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-ROUTING-PHASE-A-BOUNDARY (2026-09-05)
+## Active: R8-OLMOE-CLAIM-IO-DIAGNOSIS (2026-09-05)
 
-Branch `agent/r8-olmoe-routing-phase-a-boundary`, based on pulled merged `main`
-`4b69eaa5e7b99e4206b7a4c90e3257e19c8dca07` (item 62 PR #184). The sibling Align checkout and
+Branch `agent/r8-olmoe-claim-io-boundary`, based on pulled merged `main`
+`154133acebe686018d3a4478c50f8ca5d7f83e86` (item 63 PR #185). The sibling Align checkout and
 `.align-revision` remain at merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align
-surface is currently required.
+surface is required for the diagnosis.
 
-Item 62's completed clean-head diagnosis selected `ROUTING_PHASE_A`. Full-helper walls were
-`[18059864416,18927732709,20639199375,19605385750]` ns, median 19,266,559,229 ns. Compute totals
-were `[4032538022,4200052735,4232013000,4234889692]` ns, median 4,216,032,867 ns. Phase-A median
-was 2,939,392,017 ns / 697,193 ppm of compute, ahead of expert phase B at 1,114,674,041 ns, output
-head at 151,386,183 ns, and embedding at 997,788 ns. All four partitions were exact.
+Item 63's post-review qualification missed its precommitted gate, so its production intervention
+was removed. Item 62's shipped fixed-width request remains the immutable baseline: walls
+`[18059864416,18927732709,20639199375,19605385750]` ns, median 19,266,559,229 ns, and materiality
+floor 963,327,962 ns. Its next unresolved shipped bucket is complete remaining-decode claim I/O at
+a 3,609,378,007-ns median.
 
-Item 63's authoritative ledger and closure matrix are
-`docs/specs/r8-olmoe-routing-phase-a-boundary.md`. They precommit item 62's walls and median as the
-immutable baseline, a 963,327,962-ns floor, and an 18,303,231,267-ns candidate ceiling. The exact
-intervention builds each decode phase-A graph at live width `n_past + 1`, takes the identical prefix
-of the existing fixed-width mask row, and skips the K and V PAD nodes when concat already has that
-width. The canonical plane allocation, stride, writeback, verification, transcript coverage,
-prefill, selected-expert phase B, routing arithmetic, output head, cache, and ownership remain
-unchanged.
+The item-64 authoritative ledger and closure matrix are
+`docs/specs/r8-olmoe-claim-io-diagnosis.md`. They partition the unchanged parent clock into file
+`pread`, block-transient-to-claim copy, claim-to-cache copy, cache-to-claim copy, and an exact
+remainder. Four fixed-request records choose the largest median only when it reaches the inherited
+floor. This capability makes an attribution decision, not a speedup claim; the selected successor
+must precommit its own unchanged item-62 full-request 50,000-ppm gate.
 
-A bounded stack sample of the unchanged full request observed PAD most frequently on the main
-thread; it is directional evidence rather than an operation timing. Global ggml thread counts 1,
-2, 4, and 8 were probed and rejected: the default four-thread run was clearly best. Two temporary
-live-width probes produced 17,937,155,959-ns and 18,391,417,042-ns full walls with exact output and
-native lifetime balances. Those probes select the candidate but are not shipping evidence; all
-temporary source and generated artifacts were removed.
+An exploratory unchanged item-62 run observed full walls
+`[18244030209,18110848167,18219119459,18919221458]` ns and claim-I/O values
+`[3711105253,3714488389,3701960381,3645093967]` ns. These current samples do not replace the
+immutable baseline. Each full request issued 11,940 cache demands, with 7,325 hits, 4,615 misses,
+4,376 evictions, and 17,656,872,960 bytes fetched. A five-second directional stack sample observed
+526 main-thread samples in `pread` and 374 in `align_ggml_window_copy`. The pinned pack has zero
+padding and one contiguous three-claim range per expert block, so splitting a block into three
+reads does not reduce bytes.
 
-The design checkpoint is `5e8157a`; implementation checkpoint is `dd2fd1f`. The evaluated
-live-width graph published 100 rather than 104 nodes per two-layer/top-3 step, reduced only the
-corresponding phase-A activation entries, preserved the fixed plane and comparable transcript rows,
-and still detected a forced mask error inside the live prefix. Its pre-review qualification
-completed in 116.615 seconds with an 18,157,698,958-ns median and provisionally met the gate.
+Align Request 38 already owns the missing bounded positional destination-read surface. Item 64 adds
+this client evidence without changing its status and consumes no hypothetical API; application-only
+instrumentation may proceed safely.
+
+Design checkpoint `d200821` and implementation checkpoint `2552b67` are complete. The five clocks
+surround only the four named operation classes, compute the layer remainder from the unchanged
+outer clock, and snapshot/commit their deltas beside the existing successful remaining-step
+counter. The thin helper adds one exact `claim_io` object; the runner pins the full ten-runner
+transitive chain plus every compiled source, shim, library, and header owner.
+
+The clean-head diagnosis ran at `ed8769fcc8fc7a7a54cce4be9d6b95148099ceb9` and completed in
+112.302 seconds. Full walls were `[18914495125,18398295375,20472942875,20646407208]` ns; claim-I/O
+totals were `[3637491036,3692883589,3855587369,3820390875]` ns, median 3,756,637,232 ns. The bucket
+medians were 1,945,780,694 ns for `FILE_PREAD`, 1,072,229,252 ns for cache-to-claim copy,
+457,860,874 ns for claim-to-cache copy, 256,535,752 ns for block-to-claim copy, and 23,737,461 ns
+for exact remainder. `FILE_PREAD` is 517,958 ppm of the parent and clears the inherited
+963,327,962-ns floor, so the decision is `MEASURED_BUCKET_ELIGIBLE` and item 65 owns the selected
+file-read boundary. All four records retained exact output, cache/read counts, twelve isolation
+checks, and native lifetime balances.
 
 The comprehensive Codex CLI review covered head
-`f580dca93f1490c46218e06f3d1869d03edef85a` against base tip and merge base
-`4b69eaa5e7b99e4206b7a4c90e3257e19c8dca07`, using gpt-5.6-sol at high effort over the full diff.
-It found one accepted P2: the item-63 runner pinned only its immediate imported runner even though
-that runner executes nine further Python qualification owners transitively. The consolidated repair
-pins every runner in that chain and adds a mutation self-test at the deepest imported owner. This
-changes evidence identity only, not production or measurement behavior, so another comprehensive
-review is not required.
+`f2c6fe17a6496a5427b338bbe5fdb936142ca008` against base tip and merge base
+`154133acebe686018d3a4478c50f8ca5d7f83e86`, using gpt-5.6-sol at high effort over the full diff.
+It found three accepted P2s: the final validator did not reconstruct and validate the inherited
+result envelope; imported owner exception classes could bypass normalized cleanup; and this handoff
+still described the already committed measured decision as uncommitted. The consolidated repair
+adds inherited envelope validation plus a malformed-candidate regression, catches the full imported
+exception chain, and corrects durable state. These changes harden evidence validation and cleanup
+without changing instrumentation or measurement behavior, so another comprehensive review is not
+required. Consolidated repair `cb4e2c3` passes the focused self-test and revalidates the recorded
+real result through the repaired final envelope validator.
 
-The required clean-head post-review qualification at repair `fe11ff9` completed in 107.498 seconds.
-Its candidate walls `[16668116584,17859126833,19039104500,19435260625]` ns had an
-18,449,115,666-ns median: only an 817,443,563-ns / 42,428-ppm gain, 145,884,399 ns above the
-precommitted ceiling. The final decision is `NOT_MET`. Exact output, cache, native lifetime
-balances, and all twelve isolation boundaries still passed. Per the ledger, the live-width
-production intervention and its production-owner changes are removed before publication. Item
-62's fixed-width decode and 19,266,559,229-ns baseline remain shipped; its 3,609,378,007-ns
-claim-I/O bucket selects item 64.
-
-The `NOT_MET` result and exact production removal are committed at `197aabd`. The final branch diff
-retains only the authoritative decision/specification, roadmap/handoff state, qualification helper,
-and source-pinned qualification owner.
-
-**Next actions.** Run the affected model-free owner and exact-head preflight, publish, merge, then
-start item 64.
+**Next actions.** Run exact-head preflight; publish and merge; then start item 65's shipped-surface
+intervention investigation and ledger.
 
 **Blocker.** None.
 
-**Latest durable verification.** Before the final decision, `make layer-forward-smoke` passed in
-59.127 seconds with the candidate and `make runtime-provider-smoke` passed its self-test and 61 CLI
-assertions. After removal, regenerated item-62 goldens and `make layer-forward-smoke` pass in 60.214
-seconds; all evaluated production and production-owner files now compare byte-for-byte with merged
-item 62. The item-63 repaired model-free self-test and Python compilation passed before removal;
-rerun against the final source identities remains next.
+**Latest durable verification.** `make fmt`, item 64's Python compilation and model-free self-test,
+`make layer-forward-smoke` (100.182 seconds), and `make runtime-provider-smoke` (self-test plus 61
+CLI assertions) pass. The new helper builds with the pinned compiler and real ggml shim; one
+maximum-2 execution returned the exact six-key all-zero `claim_io` object and zero parent clock.
+The exact clean-head diagnosis and result are recorded above. The earlier exploratory unchanged
+request and stack sample remain directional evidence only. After review repair, Python compilation,
+the item-64 self-test, malformed inherited-candidate rejection, and recorded-result revalidation
+pass.
 
-**Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
-remain outside Git.
+**Intentional uncommitted files.** This final handoff correction only, until committed.
+Machine-local model/evidence and generated build products remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-ROUTING-PHASE-A-BOUNDARY (PR #185, 2026-09-05)
+
+PR #185 merged as `154133acebe686018d3a4478c50f8ca5d7f83e86`. The candidate's pre-review
+qualification provisionally met the gate, but comprehensive review found that the runner pinned
+only its immediate imported owner, not nine transitive Python qualification owners. The repaired
+clean-head qualification produced walls `[16668116584,17859126833,19039104500,19435260625]` ns,
+median 18,449,115,666 ns, and a 42,428-ppm gain, so the final decision was `NOT_MET`. The candidate
+production changes were removed. Exact-head preflight and all three required CI jobs passed; item
+64 above owns the next diagnosis.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-COMPUTE-DIAGNOSIS (PR #184, 2026-09-05)
 

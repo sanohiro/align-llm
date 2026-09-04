@@ -1593,15 +1593,30 @@ The current forward delivery order is:
     the complete-request gate is authoritative. The production intervention and its production
     owner changes are removed before publication; no performance claim ships.
 
-64. **R8-OLMOE-CLAIM-IO-BOUNDARY — reduce the next-largest remaining decode bucket. Selected; not
-    started.** Preserve item 62's shipped fixed request and exact output, cache, isolation, graph,
-    and native lifetime behavior. Its four walls `[18059864416,18927732709,20639199375,19605385750]`
-    ns and 19,266,559,229-ns median remain the immutable baseline. Before production changes, the
-    implementation ledger must name the exact claim-I/O intervention and precommit a 50,000-ppm
-    floor of 963,327,962 ns and candidate ceiling of 18,303,231,267 ns. The shipped predecessor
-    measured the complete remaining-decode claim-I/O bucket at a 3,609,378,007-ns median; it did not
-    attribute that time to an individual syscall, copy, lookup, or cache operation. Item 63's
-    candidate-only claim-I/O samples do not replace this boundary after its `NOT_MET` removal.
+64. **R8-OLMOE-CLAIM-IO-DIAGNOSIS — partition the next-largest remaining decode bucket. Complete;
+    publication pending.**
+    [`r8-olmoe-claim-io-diagnosis.md`](r8-olmoe-claim-io-diagnosis.md) is the authoritative ledger
+    and closure matrix. Preserve item 62's shipped fixed request and exact output, cache, isolation,
+    graph, reads, and native lifetimes. Its walls `[18059864416,18927732709,20639199375,19605385750]`
+    ns and 19,266,559,229-ns median remain immutable; the materiality floor is 963,327,962 ns. The
+    shipped predecessor measured complete claim I/O at 3,609,378,007 ns but did not attribute it.
+    Partition that unchanged parent into file pread, block-to-claim copy, claim-to-cache copy,
+    cache-to-claim copy, and exact remainder; select the largest four-sample median only when it
+    reaches the inherited floor. A five-second directional sample observed 526 `pread` and 374
+    `window_copy` main-thread samples, so neither operation is assumed dominant before measurement.
+    The clean-head four-repeat diagnosis selected `FILE_PREAD`: values
+    `[1851147994,1890495528,2036013152,2001065861]` ns, median 1,945,780,694 ns, or 517,958 ppm
+    of the 3,756,637,232-ns instrumented parent median. Every exact parent equation, fixed output,
+    cache/read counter, isolation check, and native lifetime balance passed. The result is
+    `MEASURED_BUCKET_ELIGIBLE`; this is attribution, not a speedup claim.
+
+65. **R8-OLMOE-FILE-PREAD-BOUNDARY — reduce the selected claim-read bucket. Selected; not
+    started.** Preserve item 62's shipped fixed request and immutable walls/median. Before production
+    changes, name an exact intervention using only shipped Align surfaces, or record Request 38 as
+    blocking if no consumer-complete intervention exists. Precommit the unchanged item-62
+    963,327,962-ns floor and 18,303,231,267-ns candidate ceiling; only a complete four-repeat
+    full-request gate can ship a performance claim. Item 64's operation clock selects the boundary
+    but is not a replacement baseline.
 
 ### Status (2026-08-28)
 

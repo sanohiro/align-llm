@@ -130,6 +130,15 @@ DecodeCompute {
   head_ns: i64,
 }
 
+ClaimIo {
+  total_ns: i64,
+  file_pread_ns: i64,
+  block_to_claim_copy_ns: i64,
+  claim_to_cache_copy_ns: i64,
+  cache_to_claim_copy_ns: i64,
+  other_ns: i64,
+}
+
 fn ir_ok(value: model_ir.IrStatus) -> bool = match value {
   Ok => true,
   Error => false,
@@ -187,6 +196,7 @@ fn digest_text(value: str) -> string {
 // The public provider remains the owner of user-facing generation and exposes no timing record.
 fn run(
   args: array<str>, detailed: bool, other_detailed: bool, compute_detailed: bool,
+  claim_detailed: bool,
 ) -> Result<(), Error> {
   if args.len() != 7 { return Err(Error.Invalid) }
   model_path := args[1]
@@ -427,15 +437,39 @@ fn run(
     document.write(",\"decode_compute\":")
     document.write(compute_view)
   }
+  if claim_detailed {
+    claim_subtotal := generated.outcome.remaining_decode_claim_file_pread_ns
+      + generated.outcome.remaining_decode_claim_block_to_claim_copy_ns
+      + generated.outcome.remaining_decode_claim_claim_to_cache_copy_ns
+      + generated.outcome.remaining_decode_claim_cache_to_claim_copy_ns
+      + generated.outcome.remaining_decode_claim_other_io_ns
+    if claim_subtotal != generated.outcome.remaining_decode_claim_pread_ns {
+      return Err(Error.Invalid)
+    }
+    claim_io := ClaimIo {
+      total_ns: generated.outcome.remaining_decode_claim_pread_ns,
+      file_pread_ns: generated.outcome.remaining_decode_claim_file_pread_ns,
+      block_to_claim_copy_ns: generated.outcome.remaining_decode_claim_block_to_claim_copy_ns,
+      claim_to_cache_copy_ns: generated.outcome.remaining_decode_claim_claim_to_cache_copy_ns,
+      cache_to_claim_copy_ns: generated.outcome.remaining_decode_claim_cache_to_claim_copy_ns,
+      other_ns: generated.outcome.remaining_decode_claim_other_io_ns,
+    }
+    claim_json := json.encode(claim_io)
+    claim_view: str := claim_json
+    document.write(",\"claim_io\":")
+    document.write(claim_view)
+  }
   document.write("}")
   print(document.to_string())
   return Ok(())
 }
 
-pub fn compute_detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, true, true)
+pub fn claim_detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, true, true, true)
 
-pub fn other_detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, true, false)
+pub fn compute_detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, true, true, false)
 
-pub fn detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, false, false)
+pub fn other_detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, true, false, false)
 
-pub fn main(args: array<str>) -> Result<(), Error> = run(args, false, false, false)
+pub fn detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, false, false, false)
+
+pub fn main(args: array<str>) -> Result<(), Error> = run(args, false, false, false, false)
