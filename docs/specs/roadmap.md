@@ -1428,10 +1428,15 @@ The current forward delivery order is:
     it dominates unassigned reconstruction. R8 remains open.
 
 55. **R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS — tighten the unresolved reconstructive-work
-    interval. Next.** Partition construction, prefill, first decode, remaining decode, claim I/O,
-    and compute around the fixed sampled request. The capability must narrow the 0.132-to-30.617
-    second setup interval before another isolated-baseline, lifetime, or cache investment decision;
-    it introduces no persistent state itself.
+    interval. Active.**
+    [`r8-olmoe-first-token-phase-diagnosis.md`](r8-olmoe-first-token-phase-diagnosis.md) is the
+    authoritative measurement contract and closure matrix. Run the fixed full sampled request in
+    four balanced solo/co-resident pairs and partition construction, prefill, first decode,
+    remaining decode, claim I/O, and compute. Replace item 54's full-request setup upper bound with
+    provider preparation plus completed pre-prefill engine construction under the same 50,000-ppm
+    attribution deadband. The new upper bound must be below 30.617 seconds before another
+    isolated-baseline, bounded lifetime, or phase-specific diagnosis is selected. The capability
+    introduces no persistent state and makes no R8 performance-win claim.
 
 ### Status (2026-08-28)
 

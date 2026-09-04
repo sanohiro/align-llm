@@ -3,66 +3,40 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-RUNTIME-PHASE-DIAGNOSIS (2026-09-04)
+## Active: R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS (2026-09-04)
 
-Branch `agent/r8-olmoe-runtime-phase-diagnosis`, based on pulled merged `main`
-`f2c83c96ed31aac322ecfbd30efaff75d7917ef9` (R8-OLMOE-SAMPLED-RUNTIME-DECISION PR #175). The
+Branch `agent/r8-olmoe-first-token-phase-diagnosis`, based on pulled merged `main`
+`fdf358ef269f7a016d6925d531a0947bfaeaba22` (R8-OLMOE-RUNTIME-PHASE-DIAGNOSIS PR #176). The
 sibling Align checkout and `.align-revision` remain at merged Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align surface is currently required.
 
-Item 53 showed a 189.005-second runtime portfolio median and rising 27.928-to-40.243-second
-candidate intervals while llama.cpp held the same 4.2-GB model resident. Item 54's authoritative
-contract and closure matrix are `docs/specs/r8-olmoe-runtime-phase-diagnosis.md`. It compares fixed
-seed 5 at maximum 2 and 128 tokens in four balanced solo/co-resident pairs, records production
-preparation plus existing runtime phase/lifetime counters, and compares the co-resident penalty
-with the measured repeated-setup lower bound before any persistent-provider or cache change.
+Item 54 measured a 2.025-second co-resident penalty inside a 0.132-to-30.617-second repeated-setup
+interval and therefore recorded `MIXED_OR_UNRESOLVED`. Item 55's authoritative ledger and closure
+matrix are `docs/specs/r8-olmoe-first-token-phase-diagnosis.md`. It instruments the existing
+invocation-local generation path, repeats only the fixed full request in four balanced pairs, and
+replaces the full-request upper bound with provider preparation plus completed pre-prefill engine
+construction. It also separates prefill, first decode, remaining decode, claim I/O, and compute;
+it introduces no persistent model, cache, backend, or buffer.
 
-Design checkpoint `b3b70f3` completed the ledger-to-prose pass. The qualification-only Align helper
-now follows the production preparation/generation sequence and exposes existing runtime counters;
-the focused runner owns the balanced conditions, schema, repeatability, attribution, and cleanup.
-`gmake fmt`, pinned-compiler helper build against the static shim, Python compilation, the model-free
-self-test, and `git diff --check` pass for the implementation batch.
-
-The first pre-result launch was stopped before one pair completed because process inspection showed
-that health plus `--no-warmup` left llama.cpp at roughly 17 MiB RSS. A second pre-result launch was
-also stopped without output after its first co-resident helper evicted the warmed server from over
-2 GiB to roughly 10 MiB RSS. The corrected contract therefore requires the fixed untimed one-token
-warmup and 2-GiB RSS floor immediately before every timed helper and records RSS immediately after;
-no result or partial evidence was emitted by either discovery run.
-
-The comprehensive review covered head `386b8f6` against base tip and merge base `f2c83c96`, using
-gpt-5.6-sol at high effort over the full diff. It found two accepted defects. P1 showed that the
-first complete run's `CO_RESIDENT_PRESSURE_EXCEEDS_SETUP` classification compared a 2.208-second
-penalty against only the 0.121-second measured setup lower bound, so it could not exclude larger
-unassigned reconstructive work. P3 reproduced the predecessor capability's N/A label when this
-runner's prerequisites were unset. The raw measurements remain discovery evidence, but the
-directional result is withdrawn.
-
-The repair brackets setup with the measured lower bound and the complete solo full helper wall as
-a conservative upper bound; pressure must clear the upper bound, setup must clear pressure with its
-lower bound, and overlap remains unresolved. It also owns the prerequisite wrapper and N/A label.
-The final clean repaired-head run at `bf50e35` completed in 360.313 seconds with stable outputs,
-balanced lifetimes, and canonical `warmup: true` metadata. Solo short/full medians were
-4.941/30.617 seconds; co-resident medians were 6.412/32.242 seconds. The positive paired penalty
-median was 2.025 seconds (66,127 ppm), between the 0.132-second measured lower bound and
-30.617-second conservative upper bound. The valid decision is therefore `MIXED_OR_UNRESOLVED`.
-All eight co-resident helpers began above 2 GiB RSS and ended below it. Item 55, a narrower
-first-token phase instrument, is the selected next work; no isolated baseline, persistent lifetime,
-or retained cache is yet authorized.
-
-The required final comprehensive review covered head `f2366f4` against the same base tip and merge
-base `f2c83c96`, again using gpt-5.6-sol at high effort over the full diff. It found one P2 canonical
-metadata mismatch (`warmup: false` despite eight explicit warmups) and one P3 stale handoff state.
-The narrow repair emits the protocol from one helper with `warmup: true`, fixes it in the self-test,
-and refreshes this handoff. It does not change the measurement or attribution design, so no further
-full review is selected. The exact-head real rerun above closes the canonical-output change.
-
-**Next actions.** Run the clean owner, then run exact-head publication preflight.
+**Next actions.** Complete the author ledger-to-prose pass, implement the engine counters and
+qualification consumer, run the narrow source owners and one complete diagnosis, then review and
+publish the stable candidate.
 
 **Blocker.** None.
 
 **Intentional uncommitted files.** None. Machine-local JSON evidence remains outside Git, and no
 generated binary, model, credential, or profile belongs in Git.
+
+## Merged checkpoint: R8-OLMOE-RUNTIME-PHASE-DIAGNOSIS (PR #176, 2026-09-04)
+
+PR #176 merged as `fdf358ef269f7a016d6925d531a0947bfaeaba22`. The repaired 360.313-second
+diagnosis reproduced the fixed output in all sixteen requests and balanced every native lifetime.
+Solo short/full medians were 4.941/30.617 seconds, co-resident medians were 6.412/32.242 seconds,
+and the positive paired full-request penalty median was 2.025 seconds. It lay between the measured
+0.132-second setup lower bound and conservative 30.617-second full-request upper bound, so the
+decision was `MIXED_OR_UNRESOLVED`. Exact-head preflight and all required CI passed after the
+comprehensive review and its accepted attribution, N/A-label, warmup-metadata, and handoff repairs.
+The active item 55 above owns the selected narrower instrument.
 
 ## Merged checkpoint: R8-OLMOE-SAMPLED-RUNTIME-DECISION (PR #175, 2026-09-04)
 
