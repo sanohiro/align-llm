@@ -3397,6 +3397,8 @@ fn decode_loop(
     } else if step > steps {
       break
     }
+    phase_started := time.instant()
+    before_claim_pread := o.claim_pread_ns
     n_past := first_n_past + step - 1
     // Oracle T and oracle R select transcript graph `k + 1` by skipping `k`. The rescan is
     // `O(N x file)` and is accepted and measured (section 6.4): the alternative holds `N` graphs'
@@ -3586,6 +3588,19 @@ fn decode_loop(
     // absorbed later — it changes step `j`'s `embd`, and every later step's input, `embd`, and
     // logits — so the `N` ids are gated as one chain rooted at a byte-exact `d_1`.
     token = selected
+    phase_ns := time.instant() - phase_started
+    phase_claim_pread_ns := o.claim_pread_ns - before_claim_pread
+    phase_compute_ns := decoded.compute_ns - before_compute
+    if step == 1 {
+      o.first_decode_ns = phase_ns
+      o.first_decode_claim_pread_ns = phase_claim_pread_ns
+      o.first_decode_compute_ns = phase_compute_ns
+    } else {
+      o.remaining_decode_ns = o.remaining_decode_ns + phase_ns
+      o.remaining_decode_claim_pread_ns =
+      o.remaining_decode_claim_pread_ns + phase_claim_pread_ns
+      o.remaining_decode_compute_ns = o.remaining_decode_compute_ns + phase_compute_ns
+    }
     step = step + 1
   }
   // Section 3.10: **never `IDENTICAL` on an error document.** A run that stopped inside step `k` did
@@ -4074,8 +4089,15 @@ fn schedule_decode(
       o.wrap_count = o.wrap_count + 1
     }
   }
+  mut prefill_started := 0
+  mut prefill_claim_pread_before := 0
+  mut prefill_compute_before := 0
   mut prefill_keys: array<i64> := moe_model_forward.empty_array()
   if o.code.len() == 0 {
+    o.construction_ns = time.instant() - origin
+    prefill_started = time.instant()
+    prefill_claim_pread_before = o.claim_pread_ns
+    prefill_compute_before = o.compute_ns
     prefill_keys = prefill_pass(
       pak, device, backend, resident_buffer, context_bytes, g, table, plan, win, tokens,
       embed_members,
@@ -4116,6 +4138,9 @@ fn schedule_decode(
     compare_prefill_logits(logits_path, logits_view, g.n_vocab, top, o)
   }
   if o.code.len() == 0 {
+    o.prefill_ns = time.instant() - prefill_started
+    o.prefill_claim_pread_ns = o.claim_pread_ns - prefill_claim_pread_before
+    o.prefill_compute_ns = o.compute_ns - prefill_compute_before
     first_token := if first_selected >= 0 { first_selected } else { o.argmax }
     stepped = decode_loop(
       pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, win, tokens,
@@ -4130,6 +4155,7 @@ fn schedule_decode(
       origin, breach, activation, cache,
       state, decoded, o)
   }
+  teardown_started := time.instant()
   // Section 4.3's ordering, on **every** exit path from here: the wrap is freed before the backend
   // and long before `execute`'s region leaves scope. There is no path between the region's
   // construction and this teardown that returns early, which is what makes one converged teardown
@@ -4204,6 +4230,7 @@ fn schedule_decode(
   o.expert_cache_miss_bytes = cache.miss_bytes
   o.expert_cache_bytes_fetched = cache.bytes_fetched
   publish(state, decoded, o)
+  o.teardown_ns = time.instant() - teardown_started
 }
 
 // Section 3.10. The plane's and the loop's measurements, copied into the one record the document is

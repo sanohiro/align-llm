@@ -1428,10 +1428,30 @@ The current forward delivery order is:
     it dominates unassigned reconstruction. R8 remains open.
 
 55. **R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS — tighten the unresolved reconstructive-work
-    interval. Next.** Partition construction, prefill, first decode, remaining decode, claim I/O,
-    and compute around the fixed sampled request. The capability must narrow the 0.132-to-30.617
-    second setup interval before another isolated-baseline, lifetime, or cache investment decision;
-    it introduces no persistent state itself.
+    interval. Decision recorded: `CO_RESIDENT_PRESSURE_EXCEEDS_CONSTRUCTION`.**
+    [`r8-olmoe-first-token-phase-diagnosis.md`](r8-olmoe-first-token-phase-diagnosis.md) is the
+    authoritative measurement contract and closure matrix. Run the fixed full sampled request in
+    four balanced solo/co-resident pairs and partition construction, prefill, first decode,
+    remaining decode, claim I/O, and compute. Replace item 54's full-request setup upper bound with
+    provider preparation plus completed pre-prefill engine construction under the same 50,000-ppm
+    attribution deadband. The new upper bound must be below 30.617 seconds before another
+    isolated-baseline, bounded lifetime, or phase-specific diagnosis is selected. The capability
+    introduces no persistent state and makes no R8 performance-win claim.
+
+    After symmetric two-token candidate conditioning, the 363.859-second diagnosis reproduced the
+    fixed output in all eight timed requests and balanced every native lifetime. The new setup
+    interval was 0.068–0.272 seconds, while all four co-resident penalties were positive and their
+    3.052-second median was 102,268 ppm of the 29.843-second solo median. Prefill and remaining
+    decode contributed 1.011 and 1.854 seconds of paired median wall movement; their claim-I/O
+    components contributed 0.958 and 1.555 seconds, while compute movement was small. Pressure
+    therefore clears the construction upper bound and selects an isolated provider-level decision.
+
+56. **R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION — remeasure time to a passing patch without
+    co-resident model pressure. Next.** Repeat item 53's exact sampled coding portfolio and
+    50,000-ppm gate in four balanced local/runtime pairs, but give each local leg its own pinned
+    llama.cpp server lifetime and prove that server terminated and was reaped before any runtime
+    leg. The runtime leg must begin and end without a matching model process. This decision changes
+    no provider lifetime or cache behavior and may record `MET`, `NOT_MET`, or `NOT_ELIGIBLE`.
 
 ### Status (2026-08-28)
 
