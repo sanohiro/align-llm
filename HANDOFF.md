@@ -54,11 +54,11 @@ The comprehensive Codex CLI review covered head
 It found one accepted P2: the AArch64 fast path cast arbitrary byte ranges to `uint32_t *`, adding
 an undeclared four-byte alignment precondition and undefined behavior. The consolidated repair
 loads through byte-aligned NEON vectors before reinterpreting register bits and adds a direct
-unaligned-consumed/nonaligned-plane-base tile regression. This preserves the ABI and does not
-change the capability boundary, so another comprehensive review is not required.
+unaligned-consumed/nonaligned-plane-base tile regression. Consolidated repair `549179f` preserves
+the ABI and does not change the capability boundary, so another comprehensive review is not
+required.
 
-**Next actions.** Commit the consolidated review repair; rerun the production owner, item 57→61
-self-test chain, and one clean-head real qualification; record its exact result; run exact-head
+**Next actions.** Run one clean-head real qualification; record its exact result; run exact-head
 preflight, publish, merge, and continue.
 
 **Blocker.** None.
@@ -70,9 +70,10 @@ vectors (66.198 seconds), real-shim build and AArch64 instruction inspection,
 57→61 self-test chain, and `git diff --check` pass. After review repair, byte-identical shared-shim
 compilation, the new unaligned tile regression through `make layer-forward-smoke` (66.455 seconds),
 an explicit UBSan unaligned V-tile call, emitted IR loads with alignment 1, item 61's focused
-self-test, Python compilation, and `git diff --check` pass.
+self-test, Python compilation, `make runtime-provider-smoke` (self-test plus 61 CLI assertions), the
+full item 57→61 self-test chain, `make fmt`, and `git diff --check` pass.
 
-**Intentional uncommitted files.** The consolidated review repair described above.
+**Intentional uncommitted files.** None.
 Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS (PR #182, 2026-09-04)
