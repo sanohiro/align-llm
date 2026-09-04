@@ -8580,6 +8580,16 @@ arena offset and would delete the transient and the `window_copy` from the fill 
 **No status change**; this is continuing evidence, and the chunked fill is not written against a
 hypothetical surface.
 
+**R8-OLMOE-CLAIM-IO-DIAGNOSIS is a fourth measured client.** The shipped partial-LRU request reads
+17,656,872,960 bytes from 4,615 expert-block cache misses and also copies every one of 11,940 expert
+demands into the compact claim window. A five-second unchanged-request stack sample observed 526
+main-thread samples in `file.pread` and 374 in `align_ggml_window_copy`. The AlignPack's 1,024
+expert blocks have zero padding and one contiguous three-claim pack range, so three smaller reads
+would not reduce bytes. A bounded positional `pread` into the existing claim/cache destination
+would remove the mandatory transient copy while retaining truthful read counters. Item 64 first
+measures the disjoint read and copy clocks and does not consume a hypothetical API; application
+work that uses only shipped surfaces may continue. **No status change.**
+
 ### Requested capability
 
 ```text
