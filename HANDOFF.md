@@ -23,16 +23,21 @@ ownership contract. Item 62's immutable walls
 `[18059864416,18927732709,20639199375,19605385750]` ns, 19,266,559,229-ns median,
 963,327,962-ns floor, and 18,303,231,267-ns ceiling decide publication.
 
-**Next actions.** Commit the design checkpoint; restore the three reviewed production changes and
-their directly required owners; add the combined helper/runner; run narrow owners and one clean-head
-four-repeat qualification; record `MET` or `NOT_MET`; then review, repair, publish, merge, and
-continue.
+Design checkpoint `71a8e4d` fixed the contract before production code. Implementation checkpoint
+`e653aab` restores only the final reviewed item-61, item-63, and item-66 production forms and their
+direct owners. The shared real/stub ABI contract remains byte-identical. The new thin helper emits
+the existing claim-detailed record, while the bounded runner pins the complete transitive source
+and owner chain and applies the immutable full-request gate.
+
+**Next actions.** Commit the qualification owner; run one clean-head four-repeat qualification;
+record `MET` or `NOT_MET`; then review, repair, publish, merge, and continue.
 
 **Blocker.** None.
 
-**Latest durable verification.** Item 66 exact-head preflight passed at `2e12911`; all three PR #188
-checks passed, and merge commit `7ef2124` preserves evaluated commit `3bb7135` as an ancestor. Item
-67 has no implementation evidence yet.
+**Latest durable verification.** For item 67, `make check`, golden regeneration, normal
+`make layer-forward-smoke` (66.288 seconds), `make runtime-provider-smoke`, real shim build,
+`make fmt`, combined runner self-test, shared-region identity, and `git diff --check` pass. The
+four-repeat qualification is pending.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.

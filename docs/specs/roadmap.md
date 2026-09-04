@@ -1638,7 +1638,7 @@ The current forward delivery order is:
     publication and ship no speedup claim.
 
 67. **R8-OLMOE-COMBINED-DECODE-BOUNDARIES — combine three disjoint measured reductions. Active;
-    design complete, implementation pending.**
+    implementation complete, fixed qualification pending.**
     [`r8-olmoe-combined-decode-boundaries.md`](r8-olmoe-combined-decode-boundaries.md) is the
     authoritative ledger and closure matrix. Items 61, 63, and 66 each passed their semantic and
     ownership evidence but missed the same 50,000-ppm complete-request floor alone. Restore only

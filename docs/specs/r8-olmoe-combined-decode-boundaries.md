@@ -1,6 +1,6 @@
 # R8 OLMoE combined decode boundaries
 
-Status: active; design complete, implementation pending, 2026-09-05
+Status: active; implementation complete, fixed qualification pending, 2026-09-05
 
 Roadmap owner: item 67, `R8-OLMOE-COMBINED-DECODE-BOUNDARIES`
 
@@ -109,3 +109,17 @@ evidence only; item 62's unchanged complete-request baseline, 963,327,962-ns flo
 18,303,231,267-ns ceiling solely decide publication. Every construction, success, failure, early
 exit, cleanup, identity, and integration cell names an implementation owner and regression before
 production code changes.
+
+## 6. Implementation checkpoint
+
+Implementation checkpoint `e653aab235ac023255f4156ee82df1a1ccc113d0` restores the final reviewed
+production forms from items 61, 63, and 66. The two shared source files were merged without changing
+their individual contracts: plane verification still precedes stable cache staging, and phase A's
+live width does not change the canonical plane width used by direct comparison.
+
+`make check`, the regenerated deterministic golden owner, normal `make layer-forward-smoke`, and
+`make runtime-provider-smoke` pass. The real shim builds against the pinned Homebrew ggml headers
+and libraries, and the shared real/stub ABI region remains byte-identical. The thin combined helper
+and bounded runner pin the complete transitive production and direct-owner chain, validate all
+three component clocks in one inherited record, and pass their model-free self-test. The clean-head
+four-repeat qualification remains pending.
