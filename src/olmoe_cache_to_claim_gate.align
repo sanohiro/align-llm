@@ -1,0 +1,8 @@
+module olmoe_cache_to_claim_gate
+
+import olmoe_remaining_decode_overhead_gate
+
+// Item 66 keeps item 64's fixed helper envelope and claim-I/O partition. The owning runner changes
+// the expected cache-to-claim bucket to zero and applies item 62's immutable full-request gate.
+pub fn main(args: array<str>) -> Result<(), Error> =
+olmoe_remaining_decode_overhead_gate.claim_detailed_main(args)
