@@ -90,6 +90,11 @@ upper bounds, each bound's share of solo full time, median penalty, penalty ppm 
 and the decision. Paths, prompt or output text, server logs, process identifiers, and credentials
 never appear.
 
+The result's `co_resident` group records `warmup: true`, one explicit warmup request per timed
+helper, two per co-resident leg, eight total, maximum one token, and zero server inference requests
+during timed intervals. The server still starts with its built-in warmup disabled; `warmup` names
+the explicit protocol actually executed after health, not the server's startup flag.
+
 All durations are positive integers. Helper total is at least the sum of its seven sequential
 phases; helper wall is at least helper total. Engine wall contains engine elapsed. Successful
 lifetime counters balance created and freed owners, and `released_before_owner_scope_end` is true.
