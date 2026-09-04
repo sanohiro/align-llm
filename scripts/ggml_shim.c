@@ -1263,6 +1263,60 @@ int64_t align_ggml_slot_nbytes(const void *slots, int64_t index) {
     return (int64_t) ggml_nbytes(tensor);
 }
 
+/* R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY intervention B. Oracle B already runs on the fixed CPU
+ * backend, but validate the tensor's actual buffer rather than trusting that caller context: only
+ * host-visible storage may be dereferenced in place. The shared byte primitive owns traversal and
+ * complete pointer-range validation. Exact tensor extent is checked here so no unrelated bytes can
+ * become part of the oracle contract if a node-table shape drifts.
+ */
+int64_t align_ggml_slot_compare_kv_plane(
+    const void *slots, int64_t index, const void *plane, int64_t plane_bytes,
+    int64_t plane_base, int64_t head_dim, int64_t n_head_kv, int64_t columns,
+    int32_t layout) {
+    struct ggml_tensor *tensor = align_ggml_slot_tensor(slots, index);
+    int64_t elements = 0;
+    int64_t span = 0;
+    size_t tensor_bytes = 0;
+    void *data = NULL;
+    if (tensor == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (plane == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    if (head_dim <= 0 || n_head_kv <= 0 || columns <= 0 ||
+        (layout != ALIGN_GGML_KV_LAYOUT_K && layout != ALIGN_GGML_KV_LAYOUT_V)) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (head_dim > INT64_MAX / n_head_kv) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    elements = head_dim * n_head_kv;
+    if (elements > INT64_MAX / columns) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    elements *= columns;
+    if (elements > INT64_MAX / 4) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    span = elements * 4;
+    tensor_bytes = ggml_nbytes(tensor);
+    if ((uint64_t) tensor_bytes > (uint64_t) INT64_MAX ||
+        (int64_t) tensor_bytes != span) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (tensor->buffer == NULL || !ggml_backend_buffer_is_host(tensor->buffer)) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    data = ggml_get_data(tensor);
+    if (data == NULL) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    return align_ggml_compare_kv_plane(
+        data, span, plane, plane_bytes, plane_base,
+        head_dim, n_head_kv, columns, layout);
+}
+
 int64_t align_ggml_slot_ne(const void *slots, int64_t index, int32_t dim) {
     struct ggml_tensor *tensor = align_ggml_slot_tensor(slots, index);
     if (tensor == NULL || dim < 0 || dim > 3) {

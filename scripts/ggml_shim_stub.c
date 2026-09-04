@@ -1763,6 +1763,47 @@ int64_t align_ggml_slot_nbytes(const void *slots, int64_t index) {
     return align_stub_nbytes(t);
 }
 
+/* R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY intervention B. Every deterministic-engine tensor uses the
+ * host arena, so resolving the slot and its data is the stub counterpart of the real shim's
+ * explicit host-buffer proof. The shared primitive keeps traversal and range validation identical.
+ */
+int64_t align_ggml_slot_compare_kv_plane(
+    const void *slots, int64_t index, const void *plane, int64_t plane_bytes,
+    int64_t plane_base, int64_t head_dim, int64_t n_head_kv, int64_t columns,
+    int32_t layout) {
+    align_stub_tensor *t = align_stub_slot(slots, index);
+    int64_t elements = 0;
+    int64_t span = 0;
+    if (t == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (plane == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    if (head_dim <= 0 || n_head_kv <= 0 || columns <= 0 ||
+        (layout != ALIGN_GGML_KV_LAYOUT_K && layout != ALIGN_GGML_KV_LAYOUT_V)) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (head_dim > INT64_MAX / n_head_kv) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    elements = head_dim * n_head_kv;
+    if (elements > INT64_MAX / columns) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    elements *= columns;
+    if (elements > INT64_MAX / 4) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    span = elements * 4;
+    if (align_stub_nbytes(t) != span || t->data == NULL) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    return align_ggml_compare_kv_plane(
+        t->data, span, plane, plane_bytes, plane_base,
+        head_dim, n_head_kv, columns, layout);
+}
+
 int64_t align_ggml_slot_ne(const void *slots, int64_t index, int32_t dim) {
     align_stub_tensor *t = align_stub_slot(slots, index);
     if (t == NULL || dim < 0 || dim > 3) {

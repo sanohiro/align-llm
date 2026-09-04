@@ -266,6 +266,9 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_compare_kv_plane(
     consumed: slice<u8>, consumed_bytes: i64, plane: slice<u8>, plane_bytes: i64,
     plane_base: i64, head_dim: i64, n_head_kv: i64, columns: i64, layout: i32) -> i64
+  fn align_ggml_slot_compare_kv_plane(
+    slots: slice<u8>, index: i64, plane: slice<u8>, plane_bytes: i64,
+    plane_base: i64, head_dim: i64, n_head_kv: i64, columns: i64, layout: i32) -> i64
   fn align_ggml_graph_context_bytes(node_capacity: i64) -> i64
   fn align_ggml_graph_new(ctx: raw) -> raw
   fn align_ggml_graph_expand(graph: raw, slots: slice<u8>, index: i64) -> i32
@@ -985,6 +988,31 @@ pub fn compare_kv_plane(
   unsafe {
     result := align_ggml_compare_kv_plane(
       consumed, consumed.len(), plane, plane.len(), plane_base,
+      head_dim, n_head_kv, columns, layout as i32)
+    if result < 0 { return Err(r5_fault(result, label)) }
+    return Ok(result - 1)
+  }
+}
+
+// Intervention B keeps the exact result encoding above, but resolves a ggml-owned host-visible
+// tensor through its slot so Oracle B does not copy it into an Align window before comparison.
+pub fn slot_compare_kv_plane(
+  borrow slots: slice<u8>,
+  index: i64,
+  borrow plane: slice<u8>,
+  plane_base: i64,
+  head_dim: i64,
+  n_head_kv: i64,
+  columns: i64,
+  layout: i64,
+  label: str,
+) -> Result<i64, Fault> {
+  if layout != KV_LAYOUT_K && layout != KV_LAYOUT_V {
+    return Err(r5_fault(STATUS_BOUNDS, label))
+  }
+  unsafe {
+    result := align_ggml_slot_compare_kv_plane(
+      slots, index, plane, plane.len(), plane_base,
       head_dim, n_head_kv, columns, layout as i32)
     if result < 0 { return Err(r5_fault(result, label)) }
     return Ok(result - 1)

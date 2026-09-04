@@ -1023,12 +1023,9 @@ fn verify_plane(
     fail(o, CODE_PLANE_MISMATCH, plane_column_detail(layer, label, -1))
     return
   }
-  take(o, ggml_ffi.slot_get(
-      slots, nodes.out[layer_olmoe.MM_DECODE_K_CONCAT_ROW], node_window, 0, span, "k_concat"))
-  if o.code.len() > 0 { return }
-  bad := match ggml_ffi.compare_kv_plane(
-    node_window, plane, k_at, g.head_dim, g.n_head_kv, columns,
-    ggml_ffi.KV_LAYOUT_K, "k_concat_compare") {
+  bad := match ggml_ffi.slot_compare_kv_plane(
+    slots, nodes.out[layer_olmoe.MM_DECODE_K_CONCAT_ROW], plane, k_at,
+    g.head_dim, g.n_head_kv, columns, ggml_ffi.KV_LAYOUT_K, "k_concat_compare") {
     Ok(value) => value,
     Err(_) => {
       state.roundtrip_verdict = ROUNDTRIP_MISMATCH
@@ -1047,12 +1044,9 @@ fn verify_plane(
     fail(o, CODE_PLANE_MISMATCH, plane_column_detail(layer, "k", bad))
     return
   }
-  take(o, ggml_ffi.slot_get(
-      slots, nodes.out[layer_olmoe.MM_DECODE_V_CONCAT_ROW], node_window, 0, span, "v_concat"))
-  if o.code.len() > 0 { return }
-  worst := match ggml_ffi.compare_kv_plane(
-    node_window, plane, v_at, g.head_dim, g.n_head_kv, columns,
-    ggml_ffi.KV_LAYOUT_V, "v_concat_compare") {
+  worst := match ggml_ffi.slot_compare_kv_plane(
+    slots, nodes.out[layer_olmoe.MM_DECODE_V_CONCAT_ROW], plane, v_at,
+    g.head_dim, g.n_head_kv, columns, ggml_ffi.KV_LAYOUT_V, "v_concat_compare") {
     Ok(value) => value,
     Err(_) => {
       state.roundtrip_verdict = ROUNDTRIP_MISMATCH
