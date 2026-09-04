@@ -1,0 +1,521 @@
+#!/usr/bin/env python3
+"""Reselect the largest current OLMoE remaining-decode leaf bucket."""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import io
+import json
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PREDECESSOR_PATH = ROOT / "scripts/run-olmoe-exact-safe-decode-boundaries"
+PREDECESSOR_LOADER = SourceFileLoader(
+    "olmoe_exact_safe_for_post_optimization_diagnosis", str(PREDECESSOR_PATH)
+)
+PREDECESSOR_SPEC = importlib.util.spec_from_loader(
+    PREDECESSOR_LOADER.name, PREDECESSOR_LOADER
+)
+if PREDECESSOR_SPEC is None or PREDECESSOR_SPEC.loader is None:
+    raise RuntimeError("cannot load the exact-safe decode owner")
+previous = importlib.util.module_from_spec(PREDECESSOR_SPEC)
+sys.modules[PREDECESSOR_LOADER.name] = previous
+PREDECESSOR_SPEC.loader.exec_module(previous)
+
+base = previous.base
+diagnosis = previous.diagnosis
+ARTIFACT_KIND = "R8_OLMOE_POST_OPTIMIZATION_REMAINING_DECODE_DIAGNOSIS"
+PREDECESSOR_ARTIFACT_KIND = "R8_OLMOE_EXACT_SAFE_DECODE_BOUNDARIES"
+CEILING_SECONDS = 8 * 60
+INHERITED_CLEANUP_SECONDS = 50
+DELEGATE_TIMEOUT_SECONDS = CEILING_SECONDS + INHERITED_CLEANUP_SECONDS
+BASELINE_VALUES_NS = [17_714_825_083, 16_684_315_166, 17_132_135_334, 21_189_618_042]
+BASELINE_MEDIAN_NS = 17_423_480_208
+FLOOR_PPM = 50_000
+FLOOR_NS = 871_174_011
+
+
+def unique_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    result: list[Path] = []
+    for path in paths:
+        if path not in result:
+            result.append(path)
+    return tuple(result)
+
+
+SOURCE_PATHS = unique_paths((PREDECESSOR_PATH, *previous.SOURCE_PATHS))
+EXPECTED_SOURCE_IDENTITIES = (
+    "30d523f59dca536336004043cbc5b757b19fa7d305bb00a36ab894c5d196e492",
+    "cbe398505f95257c37d57ba4e19fd0b4aca65725f8e3f0f69e865c3f23782728",
+    "ecb3e41b8f874125abc9018066a002cca9faca43d68db05b2fc6e07c31230dc5",
+    "679554fd291a67c447d74ddee721799c2dca1b02af856ca44c8977368ac463c1",
+    "76ccc33af94db50bafdd6db1fd627385c0f7be2fecd087e285d2f3ea02d75cf2",
+    "433d848e6a926108cacb0651e08a24df65537225cada07d35bc6a85a295d884f",
+    "69c2a44572029e36c349de5feb061e1ecb597e3fa4de7c7a58341da2bcb05ef9",
+    "b66815c4debfec0f749ac88b39ec8ba9f06e25d1f85b4aba3c760d112748f868",
+    "26887655013f0f68e94705a6addd87dac72ada5d37d08e1421a2daef2e78de5a",
+    "922b29baf0489fd1cec53ce1395849ba69df69d0e69dea44a3f07ec95b42cf65",
+    "de717064f4d2ea89d63a6529d38d37157f7d34f9946db7e6dc350076185157ce",
+    "15fb41454a01e5be87776fedd2081b70b4bd155bd6208de1adb0f26c7ddf9dbc",
+    "1f95cefc30d4e5d772b35d6f739994440ce195facf12d5b359f206428301e9b8",
+    "03ee9abc87d1d167f1bac4878004abb64a0ef8bf50a3dfd96ee66eeba106ad9f",
+    "e3a86592357af4c1c8888689cfc026867842ac05a6f4b5a8b88fcc2f026f0260",
+    "2afa24a4ea8e15a5476b9335ed6cd3b9e683b1f305c32a1783194e04a6005e0e",
+    "91e2dedf7eac8f66f11c817797e8541881bfd2c7f71ee4e298b37305c6123a63",
+    "505efca65a7637b65b26997de200234f44cd8b7cee9db681b9f9161524ecaaaf",
+    "9141bee34a3579482c6c5852eb136810ea909f73575229b411f905ef96635581",
+    "c7e82a8a8374e1c25f1e3b61ce0b89ed8639eaeae6b4e4ae8bee2a88a09b8e8b",
+    "ee927663616eeb09b7ca2ad5a15ab2e25c1e89935349f70942bfaebe7c7baa83",
+    "ab392dd608d488891f50f5f17330c9c0bb10dadd0fb784b60309892b5c8dbc6e",
+    "b5f1b7f7798239982446f56d9d17eeeca9b87a8a47bd685e6bd9e634a686198e",
+    "972c7509128da11f427a595e67d2903f6f6b30d9039d0de02d8ac66998caec7e",
+    "d791cff7ccc5aab180748efa1fb200bf6573c9762bd75f4e0fdfe35dcdcf4a04",
+    "b435d018a7b3bc3f65ac811e0d9021563d5745b8eaa13788915da1f625956594",
+    "133d3ec5f5f08e8e6e128cd76ed1e4c467c5424bb535a9de8ce8e38f61a7e481",
+    "ff2a3d96ef2bdfdaf3acbc966734b9d813c5b7e105444f122e17fa3cd1561a34",
+    "6a9d948bf265c39570dee1ceca9f76ce361fea88f00f624ee0669d48c53e4824",
+    "14d25ed1209ff6715f44e3c0ef93065da5b23f950f0bfcc8e2c1d4a247c75f63",
+    "b01611151baace6cb59a140eec1dc336c47cd50a8e43dc746337e58e6eb10b50",
+    "cca81cbc741f6fc39f31b8cbda65bc3eed4cbfa2447db8f9cae0ccc4d961e8f9",
+    "edbd49939d82d99ce427ef90d24289765d6db0f0a7d0cb9fe16d0cf940bad977",
+    "d58bfb3b6f9f0714514d74829f72aab117e1f8fe79eacb952108d20fc7231302",
+)
+
+LEAF_FIELDS = (
+    ("PRE_PASS_ORCHESTRATION", "remaining_decode", "pre_pass_ns"),
+    ("PACK_OR_RESIDENT_STAGE", "remaining_decode", "pack_or_resident_stage_ns"),
+    ("FILE_PREAD", "claim_io", "file_pread_ns"),
+    ("BLOCK_TO_CLAIM_COPY", "claim_io", "block_to_claim_copy_ns"),
+    ("CLAIM_TO_CACHE_COPY", "claim_io", "claim_to_cache_copy_ns"),
+    ("CACHE_TO_CLAIM_COPY", "claim_io", "cache_to_claim_copy_ns"),
+    ("OTHER_CLAIM_IO", "claim_io", "other_ns"),
+    ("EMBEDDING", "decode_compute", "embedding_ns"),
+    ("ROUTING_PHASE_A", "decode_compute", "routing_ns"),
+    ("EXPERT_PHASE_B", "decode_compute", "expert_ns"),
+    ("OUTPUT_HEAD", "decode_compute", "head_ns"),
+    ("ROUTING_ORCHESTRATION", "remaining_decode", "routing_ns"),
+    ("PLANE_UPLOAD", "remaining_decode", "plane_upload_ns"),
+    ("PLANE_READBACK", "remaining_decode", "plane_readback_ns"),
+    ("CONTEXT_BUFFER_SETUP", "pass_residual", "context_buffer_setup_ns"),
+    ("GRAPH_BUILD_ALLOC", "pass_residual", "graph_build_alloc_ns"),
+    ("GENERIC_TRANSFER_DIGEST", "pass_residual", "generic_transfer_digest_ns"),
+    ("GRAPH_TEARDOWN", "pass_residual", "graph_teardown_ns"),
+    ("PLANE_ROUNDTRIP_COMPARE", "pass_other", "plane_roundtrip_compare_ns"),
+    ("GRAPH_MEMBER_SPEC", "pass_other", "graph_member_spec_ns"),
+    ("LAYER_STEP_ACCOUNTING", "pass_other", "layer_step_accounting_ns"),
+    ("OTHER_PASS_REMAINDER", "pass_other", "other_ns"),
+    ("POST_PASS_ORCHESTRATION", "remaining_decode", "post_pass_ns"),
+)
+LEAF_ORDER = tuple(name for name, _, _ in LEAF_FIELDS)
+REMAINDER_LEAVES = {"OTHER_CLAIM_IO", "OTHER_PASS_REMAINDER"}
+DIAGNOSIS_KEYS = {
+    "baseline_full_helper_wall_values_ns", "baseline_full_helper_wall_median_ns",
+    "floor_ppm", "floor_ns", "current_full_helper_wall_values_ns",
+    "current_full_helper_wall_median_ns", "remaining_decode_values_ns",
+    "remaining_decode_median_ns", "bucket_values_ns", "bucket_medians_ns",
+    "selected_bucket", "selected_bucket_median_ns", "selected_bucket_share_ppm",
+    "decision",
+}
+TOP_KEYS = previous.TOP_KEYS | {"diagnosis"}
+
+active_process: subprocess.Popen[bytes] | None = None
+
+
+class PostOptimizationDiagnosisError(RuntimeError):
+    pass
+
+
+def source_identities() -> tuple[str, ...]:
+    return tuple(base.file_sha256(path) for path in SOURCE_PATHS)
+
+
+def validate_imported_contract() -> None:
+    previous.validate_imported_contract()
+    imported = (
+        previous.MODEL_BYTES, previous.MODEL_SHA256, previous.SERVER_BUILD,
+        previous.BUDGET, previous.SEED, previous.FULL_TOKENS,
+        previous.TEMPERATURE_MICROS, previous.FULL_OUTPUT_SHA256,
+        previous.REPETITIONS, previous.CEILING_SECONDS, previous.BASELINE_VALUES_NS,
+        previous.BASELINE_MEDIAN_NS, previous.FLOOR_PPM, previous.MINIMUM_GAIN_NS,
+        previous.CANDIDATE_CEILING_NS, previous.EXPECTED_ALIGN_REVISION,
+        previous.EXPECTED_COMPILER_SHA256, previous.EXPECTED_PACK_SHA256,
+        previous.EXPECTED_GEOMETRY_SHA256, previous.EXPECTED_SERVER_SHA256,
+        previous.EXPECTED_TASK_SHA256, previous.EXPECTED_PROMPT_SHA256,
+        previous.EXPECTED_C_COMPILER_SHA256,
+        previous.EXPECTED_C_COMPILER_VERSION_SHA256,
+        previous.EXPECTED_LINKER_SEARCH_SHA256, previous.EXPECTED_GGML_LIBRARIES,
+        previous.EXPECTED_GGML_HEADERS, previous.EXPECTED_BASELINE_HOST,
+        previous.EXPECTED_BASELINE_HOST_SHA256,
+    )
+    expected = (
+        4_213_512_192,
+        "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f",
+        "build 10566, commit bb4caa754", 975_175_680, 5, 128, 300_000,
+        "aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52",
+        4, 8 * 60,
+        [18_059_864_416, 18_927_732_709, 20_639_199_375, 19_605_385_750],
+        19_266_559_229, 50_000, 963_327_962, 18_303_231_267,
+        "8cefc803d5c7f883a8db5b67250ed4ed069b43a4",
+        "f972b4a196ed5608a0c52cc02dbf8267cfc236065359315a572d601aa04ea541",
+        "20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae",
+        "1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada",
+        "98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c",
+        "1884f01a329752c1383081342c65d062241aefaefff2f206f6604008bde74940",
+        "0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b",
+        "179301dcb41ea78accc3fa0048a7e6f6710d891945a751a34addd622020c1818",
+        "ea3037e0630fa16798079372fdc24f6542d021dadda4915cc979799682d78295",
+        "5cb52d849e4b5dd2e0380c9fd272279c8b3e572dc563691f60fc8ecbf72d92cf",
+        previous.EXPECTED_GGML_LIBRARIES, previous.EXPECTED_GGML_HEADERS,
+        previous.EXPECTED_BASELINE_HOST, previous.EXPECTED_BASELINE_HOST_SHA256,
+    )
+    if imported != expected:
+        raise PostOptimizationDiagnosisError("item 68 imported contract drifted")
+    if diagnosis.integer_median(BASELINE_VALUES_NS) != BASELINE_MEDIAN_NS:
+        raise PostOptimizationDiagnosisError("item 68 diagnostic baseline drifted")
+    if (BASELINE_MEDIAN_NS * FLOOR_PPM + 999_999) // 1_000_000 != FLOOR_NS:
+        raise PostOptimizationDiagnosisError("item 70 materiality floor drifted")
+    if source_identities() != EXPECTED_SOURCE_IDENTITIES:
+        raise PostOptimizationDiagnosisError("item 70 source chain drifted")
+
+
+def leaf_values(record: dict[str, Any]) -> dict[str, int]:
+    previous.validate_helper_record(record, previous.FULL_TOKENS)
+    values = {name: record[section][field] for name, section, field in LEAF_FIELDS}
+    if set(values) != set(LEAF_ORDER) or any(
+        not diagnosis.is_int(value) or value < 0 for value in values.values()
+    ):
+        raise PostOptimizationDiagnosisError("remaining-decode leaf values were invalid")
+    if sum(values.values()) != record["engine_phases"]["remaining_decode_ns"]:
+        raise PostOptimizationDiagnosisError("remaining-decode leaf partition drifted")
+    return values
+
+
+def select_bucket(bucket_medians: dict[str, int], remaining_median: int) -> tuple[str, int, str]:
+    if set(bucket_medians) != set(LEAF_ORDER) or any(
+        not diagnosis.is_int(value) or value < 0 for value in bucket_medians.values()
+    ):
+        raise PostOptimizationDiagnosisError("bucket medians were invalid")
+    if not diagnosis.is_int(remaining_median) or remaining_median <= 0:
+        raise PostOptimizationDiagnosisError("remaining-decode median was invalid")
+    selected = LEAF_ORDER[0]
+    for bucket in LEAF_ORDER[1:]:
+        if bucket_medians[bucket] > bucket_medians[selected]:
+            selected = bucket
+    selected_median = bucket_medians[selected]
+    if selected_median > remaining_median:
+        raise PostOptimizationDiagnosisError("selected bucket exceeded remaining decode")
+    if selected_median < FLOOR_NS:
+        decision = "NO_MATERIAL_BUCKET"
+    elif selected in REMAINDER_LEAVES:
+        decision = "NARROWER_DIAGNOSIS_REQUIRED"
+    else:
+        decision = "MEASURED_BUCKET_ELIGIBLE"
+    return selected, selected_median, decision
+
+
+def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    previous.aggregate(samples)
+    if len(samples) != previous.REPETITIONS:
+        raise PostOptimizationDiagnosisError("aggregate requires four samples")
+    projected = [leaf_values(sample["full"]) for sample in samples]
+    bucket_values = {
+        bucket: [sample[bucket] for sample in projected] for bucket in LEAF_ORDER
+    }
+    bucket_medians = {
+        bucket: diagnosis.integer_median(bucket_values[bucket]) for bucket in LEAF_ORDER
+    }
+    walls = [sample["full_helper_wall_ns"] for sample in samples]
+    remaining = [sample["full"]["engine_phases"]["remaining_decode_ns"] for sample in samples]
+    remaining_median = diagnosis.integer_median(remaining)
+    selected, selected_median, decision = select_bucket(bucket_medians, remaining_median)
+    return {
+        "baseline_full_helper_wall_values_ns": BASELINE_VALUES_NS,
+        "baseline_full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+        "floor_ppm": FLOOR_PPM,
+        "floor_ns": FLOOR_NS,
+        "current_full_helper_wall_values_ns": walls,
+        "current_full_helper_wall_median_ns": diagnosis.integer_median(walls),
+        "remaining_decode_values_ns": remaining,
+        "remaining_decode_median_ns": remaining_median,
+        "bucket_values_ns": bucket_values,
+        "bucket_medians_ns": bucket_medians,
+        "selected_bucket": selected,
+        "selected_bucket_median_ns": selected_median,
+        "selected_bucket_share_ppm": selected_median * 1_000_000 // remaining_median,
+        "decision": decision,
+    }
+
+
+def predecessor_projection(result: dict[str, Any]) -> dict[str, Any]:
+    projected = dict(result)
+    projected.pop("diagnosis")
+    projected["artifact_kind"] = PREDECESSOR_ARTIFACT_KIND
+    return projected
+
+
+def adapt_result(result: dict[str, Any]) -> dict[str, Any]:
+    previous.validate_result(result)
+    adapted = dict(result)
+    adapted["artifact_kind"] = ARTIFACT_KIND
+    adapted["diagnosis"] = aggregate(result["samples"])
+    validate_result(adapted)
+    return adapted
+
+
+def validate_result(result: dict[str, Any]) -> None:
+    diagnosis.require_exact_keys(result, TOP_KEYS, "result")
+    if result["schema_version"] != 1 or result["status"] != "COMPLETE" \
+            or result["artifact_kind"] != ARTIFACT_KIND:
+        raise PostOptimizationDiagnosisError("result identity drifted")
+    previous.validate_result(predecessor_projection(result))
+    detail = result["diagnosis"]
+    if not isinstance(detail, dict):
+        raise PostOptimizationDiagnosisError("diagnosis was not an object")
+    diagnosis.require_exact_keys(detail, DIAGNOSIS_KEYS, "diagnosis")
+    if detail != aggregate(result["samples"]):
+        raise PostOptimizationDiagnosisError("diagnosis aggregate drifted")
+    if result["elapsed_ns"] > CEILING_SECONDS * 1_000_000_000:
+        raise PostOptimizationDiagnosisError("delegated result exceeded item 68's ceiling")
+
+
+def prerequisites() -> bool:
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        required = previous.prerequisites()
+    if required is not None:
+        return True
+    line = captured.getvalue().strip()
+    marker = ": N/A ("
+    if marker not in line or not line.endswith(")"):
+        raise PostOptimizationDiagnosisError("predecessor prerequisite result was malformed")
+    print(f"R8-OLMOE-POST-OPTIMIZATION-REMAINING-DECODE-DIAGNOSIS{line[line.index(marker):]}")
+    return False
+
+
+def stop_active_process() -> None:
+    global active_process
+    process = active_process
+    active_process = None
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=INHERITED_CLEANUP_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def delegate_diagnosis() -> dict[str, Any]:
+    global active_process
+    active_process = subprocess.Popen(
+        [sys.executable, str(PREDECESSOR_PATH)], cwd=ROOT, env=os.environ.copy(),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    process = active_process
+    try:
+        stdout, stderr = process.communicate(timeout=DELEGATE_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        stop_active_process()
+        raise PostOptimizationDiagnosisError(
+            "delegated item 68 run exceeded its deadline and cleanup budget"
+        ) from error
+    finally:
+        if active_process is process and process.poll() is not None:
+            active_process = None
+    if process.returncode != 0:
+        detail = stderr.decode("utf-8", "replace").strip().splitlines()
+        suffix = "" if not detail else f": {detail[-1]}"
+        raise PostOptimizationDiagnosisError(f"delegated item 68 run failed{suffix}")
+    try:
+        lines = stdout.decode("utf-8").splitlines()
+    except UnicodeError as error:
+        raise PostOptimizationDiagnosisError("delegated result was not UTF-8") from error
+    if len(lines) != 1:
+        raise PostOptimizationDiagnosisError("delegated run did not emit exactly one result")
+    try:
+        result = json.loads(lines[0])
+    except json.JSONDecodeError as error:
+        raise PostOptimizationDiagnosisError("delegated result was not JSON") from error
+    if not isinstance(result, dict):
+        raise PostOptimizationDiagnosisError("delegated result was not an object")
+    return result
+
+
+def expect_error(action: Any, message: str) -> None:
+    try:
+        action()
+    except Exception:
+        return
+    raise PostOptimizationDiagnosisError(message)
+
+
+def self_test() -> int:
+    validate_imported_contract()
+    with contextlib.redirect_stdout(io.StringIO()):
+        if previous.self_test() != 0:
+            raise PostOptimizationDiagnosisError("item 68 owner failed")
+    samples = previous.synthetic_samples([previous.CANDIDATE_CEILING_NS] * previous.REPETITIONS)
+    original = previous.synthetic_result(samples)
+    adapted = adapt_result(original)
+    if predecessor_projection(adapted) != original:
+        raise PostOptimizationDiagnosisError("result projection changed inherited evidence")
+    validate_result(adapted)
+    if adapted["diagnosis"]["decision"] != "NO_MATERIAL_BUCKET":
+        raise PostOptimizationDiagnosisError("small synthetic leaves cleared the floor")
+
+    below = {bucket: FLOOR_NS - 1 for bucket in LEAF_ORDER}
+    if select_bucket(below, FLOOR_NS * len(LEAF_ORDER))[2] != "NO_MATERIAL_BUCKET":
+        raise PostOptimizationDiagnosisError("below-floor bucket selected work")
+    direct = {bucket: 0 for bucket in LEAF_ORDER}
+    direct["ROUTING_PHASE_A"] = FLOOR_NS
+    if select_bucket(direct, FLOOR_NS)[2] != "MEASURED_BUCKET_ELIGIBLE":
+        raise PostOptimizationDiagnosisError("direct bucket at floor was not eligible")
+    remainder = {bucket: 0 for bucket in LEAF_ORDER}
+    remainder["OTHER_PASS_REMAINDER"] = FLOOR_NS
+    if select_bucket(remainder, FLOOR_NS)[2] != "NARROWER_DIAGNOSIS_REQUIRED":
+        raise PostOptimizationDiagnosisError("remainder at floor selected implementation")
+    tied = {bucket: 1 for bucket in LEAF_ORDER}
+    if select_bucket(tied, len(LEAF_ORDER))[0] != LEAF_ORDER[0]:
+        raise PostOptimizationDiagnosisError("bucket tie order drifted")
+    malformed = {bucket: 0 for bucket in LEAF_ORDER}
+    malformed[LEAF_ORDER[0]] = True
+    expect_error(lambda: select_bucket(malformed, 1), "boolean bucket was accepted")
+    malformed_samples = previous.synthetic_samples(
+        [previous.CANDIDATE_CEILING_NS] * previous.REPETITIONS
+    )
+    malformed_samples[0]["full"]["pass_other"]["other_ns"] += 1
+    expect_error(lambda: aggregate(malformed_samples), "overlapping leaf partition was accepted")
+    malformed_result = dict(adapted)
+    malformed_result["diagnosis"] = {"bad": True}
+    expect_error(lambda: validate_result(malformed_result), "malformed diagnosis was accepted")
+    with mock.patch.object(base, "file_sha256", return_value="0" * 64):
+        expect_error(validate_imported_contract, "source mutation was accepted")
+
+    encoded = json.dumps(original, separators=(",", ":")).encode("utf-8")
+    complete = mock.Mock()
+    complete.communicate.return_value = (encoded + b"\n", b"complete\n")
+    complete.returncode = 0
+    complete.poll.return_value = 0
+    with mock.patch("subprocess.Popen", return_value=complete):
+        if delegate_diagnosis() != original:
+            raise PostOptimizationDiagnosisError("delegated success changed its result")
+    failed = mock.Mock()
+    failed.communicate.return_value = (b"", b"injected failure\n")
+    failed.returncode = 1
+    failed.poll.return_value = 1
+    with mock.patch("subprocess.Popen", return_value=failed):
+        expect_error(delegate_diagnosis, "delegated failure was accepted")
+    multiple = mock.Mock()
+    multiple.communicate.return_value = (encoded + b"\n" + encoded + b"\n", b"")
+    multiple.returncode = 0
+    multiple.poll.return_value = 0
+    with mock.patch("subprocess.Popen", return_value=multiple):
+        expect_error(delegate_diagnosis, "multiple delegated results were accepted")
+
+    global active_process
+    owned = mock.Mock()
+    owned.poll.return_value = None
+    active_process = owned
+    stop_active_process()
+    if active_process is not None or owned.terminate.call_count != 1 \
+            or owned.wait.call_args.kwargs != {"timeout": INHERITED_CLEANUP_SECONDS}:
+        raise PostOptimizationDiagnosisError("active delegated process was not cleared")
+    forced = mock.Mock()
+    forced.poll.return_value = None
+    forced.wait.side_effect = [
+        subprocess.TimeoutExpired([sys.executable, str(PREDECESSOR_PATH)], INHERITED_CLEANUP_SECONDS),
+        0,
+    ]
+    active_process = forced
+    stop_active_process()
+    if forced.terminate.call_count != 1 or forced.kill.call_count != 1:
+        raise PostOptimizationDiagnosisError("delegated cleanup did not escalate")
+    timed_out = mock.Mock()
+    timed_out.communicate.side_effect = subprocess.TimeoutExpired(
+        [sys.executable, str(PREDECESSOR_PATH)], DELEGATE_TIMEOUT_SECONDS
+    )
+    timed_out.poll.return_value = None
+    timed_out.wait.return_value = 0
+    with mock.patch("subprocess.Popen", return_value=timed_out):
+        expect_error(delegate_diagnosis, "delegated timeout was accepted")
+    if timed_out.terminate.call_count != 1 \
+            or timed_out.wait.call_args.kwargs != {"timeout": INHERITED_CLEANUP_SECONDS}:
+        raise PostOptimizationDiagnosisError("delegated timeout skipped inherited cleanup")
+
+    with mock.patch.dict(os.environ, {}, clear=True):
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            if prerequisites():
+                raise PostOptimizationDiagnosisError("missing prerequisites were accepted")
+    if captured.getvalue() != (
+        "R8-OLMOE-POST-OPTIMIZATION-REMAINING-DECODE-DIAGNOSIS: N/A "
+        "(ALIGN_LLM_OLMOE_MODEL unset)\n"
+    ):
+        raise PostOptimizationDiagnosisError("missing prerequisite result drifted")
+    with mock.patch.object(sys, "argv", [sys.argv[0], "unexpected"]):
+        expect_error(main, "unexpected command argument was accepted")
+    print("R8-OLMOE-POST-OPTIMIZATION-REMAINING-DECODE-DIAGNOSIS self-test: PASS")
+    return 0
+
+
+def git_head() -> str:
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+    )
+    return completed.stdout.decode("ascii").strip()
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise PostOptimizationDiagnosisError("diagnosis accepts no arguments or --self-test")
+    if not prerequisites():
+        return 0
+    validate_imported_contract()
+    head = git_head()
+    predecessor_result = delegate_diagnosis()
+    result = adapt_result(predecessor_result)
+    if result["candidate"]["align_llm_head"] != head or git_head() != head:
+        raise PostOptimizationDiagnosisError("evaluated head changed during the diagnosis")
+    validate_imported_contract()
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    detail = result["diagnosis"]
+    print(
+        "R8-OLMOE-POST-OPTIMIZATION-REMAINING-DECODE-DIAGNOSIS: COMPLETE "
+        f"decision={detail['decision']} selected={detail['selected_bucket']} "
+        f"median={detail['selected_bucket_median_ns'] / 1e9:.3f}s "
+        f"remaining={detail['remaining_decode_median_ns'] / 1e9:.3f}s",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    stop_active_process()
+    raise SystemExit(128 + signal_number)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        stop_active_process()
+        print(
+            f"R8-OLMOE-POST-OPTIMIZATION-REMAINING-DECODE-DIAGNOSIS: FAIL {error}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)

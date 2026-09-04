@@ -3,57 +3,61 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-POST-OPTIMIZATION-SAMPLED-RUNTIME-DECISION (2026-09-05)
+## Active: R8-OLMOE-POST-OPTIMIZATION-REMAINING-DECODE-DIAGNOSIS (2026-09-05)
 
-Branch `agent/r8-olmoe-post-optimization-sampled-decision`, based on pulled merged `main`
-`917565deae247f4d75841ad98ca9c5553cd29568` (item 68 PR #190).
+Branch `agent/r8-olmoe-post-optimization-decode-diagnosis`, based on pulled merged `main`
+`cc2b080` (item 69 PR #191).
 The sibling Align checkout and `.align-revision` remain at merged Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
-Item 56's isolated provider-level decision measured a 13.197-second local median and a
-149.273-second AlignRuntime median on the fixed sampled coding portfolio. Items 58 and 68 then
-shipped complete-request reductions on the same model and host, most recently lowering item 62's
-fixed request from a 19.267-second baseline to 17.423 seconds. The primary metric must now be
-remeasured rather than inferred from single-request evidence.
+Item 70's authoritative ledger, closure matrix, and measured result are
+`docs/specs/r8-olmoe-post-optimization-remaining-decode-diagnosis.md`. Item 68's current shipped
+fixed-request walls `[17714825083,16684315166,17132135334,21189618042]` ns and
+17,423,480,208-ns median precommit a 50,000-ppm materiality floor of 871,174,011 ns. The thin
+diagnostic owner delegates item 68's complete current qualification and flattens its nested
+remaining-decode, claim-I/O, compute, pass-residual, and pass-other clocks into 23 mutually
+exclusive deepest leaves. Parent and child totals are never added together.
 
-Item 69's authoritative ledger and closure matrix are
-`docs/specs/r8-olmoe-post-optimization-sampled-runtime-decision.md`. It repeats item 56's exact
-four balanced isolated pairs, fresh local-server ownership, portfolio, primary metric, and
-50,000-ppm gate. A thin qualification owner delegates item 56's complete runner, projects only the
-artifact identity, and independently pins item 56 plus item 68's full shipped source chain.
-Product behavior does not change.
+Design checkpoint `3317e31` fixed the contract. Implementation checkpoint
+`7704d9f18ea4d41681c984420ea7e591450f4a79` added only the thin owner. Its clean-head run completed
+in 125.969 seconds. Current full-helper walls
+`[20098090084,22297438083,23257008916,22355763250]` ns had a 22,326,600,666-ns median; remaining
+decode values `[14740449453,16733289713,16776725004,15902827210]` ns had a
+16,318,058,461-ns median. `ROUTING_PHASE_A` won at 4,620,020,794 ns, 283,123 ppm of remaining
+decode and 3,748,846,783 ns above the floor. Plane upload, file pread, and expert phase B followed
+at 2.711, 2.583, and 1.756 seconds.
 
-Design checkpoint `a2b73d6` fixed the contract. Implementation checkpoint
-`81992f0ac333fb5418c1ded947c099d3af3d179e` added only the thin qualification owner. Its clean-head
-run completed in 506.52 seconds and recorded `NOT_MET`: local times
-`[14017794083,14438206625,13967618667,13916119042]` ns had a 13,992,706,375-ns median; runtime
-times `[89506001833,90883117000,91948687375,93119518084]` ns had a 91,415,902,187-ns median.
-Both arms passed all four portfolios at candidate 5 with the same patch, but runtime was slower in
-every pair and gain was -5,533,111 ppm. Relative to item 56's rounded historical runtime median,
-the new runtime median is 57.857 seconds / 387,592 ppm lower, but remains 6.53 times local.
+The decision is `MEASURED_BUCKET_ELIGIBLE`. All 23 leaves closed exactly in every sample, and every
+output, cache, isolation, lifetime, source, host, and cleanup boundary passed. Item 63 already
+rejected the live-width phase-A candidate, so item 71 is selected to diagnose phase-A operation
+classes before choosing a different exact-safe implementation seam. Product code and the open R8
+gate remain unchanged.
 
-Every local server lifetime and runtime absence boundary passed, and the evaluated head plus full
-source chain remained unchanged. Item 70 is selected to reaggregate the current fixed request's
-remaining-decode clocks after items 58 and 68; item 69 authorizes no product change.
+The comprehensive high-effort Codex review covered `b2c97f8` against base tip and merge base
+`cc2b080`. It found one valid P2: the next-action list still named the already-completed result
+commit. Consolidated repair `828b173` removes that stale action. Measurement and implementation
+behavior are unchanged, so no real rerun or second comprehensive review is required.
 
-The comprehensive high-effort Codex review covered `a43d81f` against base tip and merge base
-`917565d`. It found two valid P2 findings: the outer ten-second wait could kill the delegated owner
-before its sequential descendant cleanup completed, and the handoff retained a completed action.
-Consolidated repair `b7e48d4` grants the full 50-second inherited cleanup budget with timeout and
-escalation regressions and removes the stale action. Successful measurement behavior is unchanged,
-so no real rerun or second comprehensive review is required.
-
-**Next actions.** Rerun affected owners, run exact-head preflight, publish, merge, and continue to
-item 70.
+**Next actions.** Rerun affected owners and exact-head preflight; publish, merge, and continue to
+item 71.
 
 **Blocker.** None.
 
-**Latest durable verification.** Item 56, item 68, and item 69 self-tests plus Python compilation
-and `git diff --check` passed. The clean-head real decision above passed its complete inherited
-schema, determinism, identity, validator, isolation, cleanup, and ceiling checks.
+**Latest durable verification.** Python compilation, item 68's inherited self-test, item 70's
+focused self-test, `git diff --check`, and the clean-head real diagnosis above passed.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-POST-OPTIMIZATION-SAMPLED-RUNTIME-DECISION (PR #191, 2026-09-05)
+
+PR #191 merged as `cc2b080`. The clean-head run completed in 506.52 seconds and recorded
+`NOT_MET`: local median time to a passing patch was 13,992,706,375 ns and runtime median was
+91,415,902,187 ns, with runtime slower in all four pairs and a -5,533,111-ppm gain. Both arms passed
+all four portfolios at candidate 5 with the same patch, and every server lifetime, isolation,
+identity, and cleanup boundary passed. Review found and repaired insufficient delegated cleanup
+grace plus stale handoff state. Exact-head preflight and all three required CI jobs passed. Item 70
+owns the selected current-clock diagnosis.
 
 ## Merged checkpoint: R8-OLMOE-EXACT-SAFE-DECODE-BOUNDARIES (PR #190, 2026-09-05)
 
