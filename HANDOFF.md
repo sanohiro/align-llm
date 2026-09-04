@@ -38,19 +38,27 @@ claim window remains allocated for misses and fallback, but eligible phase B doe
 it. The candidate must report zero cache-to-claim time on all full fixed requests and meet the
 immutable full-request ceiling; otherwise its production changes are removed before publication.
 
-**Next actions.** Commit the design checkpoint; implement the checked real/stub shim surface,
-cache-slot id remap, direct tensor placement and fallback; run narrow owners; build the item-66
-qualification owner; execute the clean-head four-repeat gate; then review, repair, publish, merge,
-and continue.
+Implementation after design checkpoint `afaf5fc` is complete. The real/stub shim constructor
+checks type block shape, row/plane arithmetic, slot stride, reachable span, and slot storage before
+use. Provider generation selects one combined wrap only for an aligned cache layout, skips hit
+copies, re-resolves each routed key after staging, encodes cache-slot ids, and places three
+fixed-stride tensors over the cache. The hosted engine consumes the stored expert stride. An
+injected first combined-wrap refusal proves the original dense-only wrap and compact-copy fallback.
+A real ggml fixed-model conditioning request completed successfully with balanced native resource
+counters.
+
+**Next actions.** Commit the implementation checkpoint; build and self-test the item-66
+qualification owner with exact source identities; execute the clean-head four-repeat gate; record
+`MET` or `NOT_MET`; then review, repair, publish, merge, and continue.
 
 **Blocker.** None.
 
-**Latest durable verification.** Item 65 merged as recorded below. For item 66, the current source
-inspection confirms the fixed cache layout, the shipped ggml 0.9.5 `nb[2]` CPU consumption, exact
-strided reachable-span arithmetic, and the existing single resident-wrap teardown. Design author
-consistency is complete; implementation verification has not started.
+**Latest durable verification.** `make check` passes. `make layer-forward-smoke` passed in 62.076
+seconds. `make runtime-provider-smoke` passes its sampler vectors, 61 CLI assertions, new strided
+constructor vectors, direct hosted OLMoE generation, and combined-wrap fallback. Both real and stub
+shims compile with `-Werror`; the real fixed-model conditioning probe completed successfully.
 
-**Intentional uncommitted files.** None after the item-66 design checkpoint is committed.
+**Intentional uncommitted files.** None after the item-66 implementation checkpoint is committed.
 Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-FILE-PREAD-BOUNDARY (PR #187, 2026-09-05)

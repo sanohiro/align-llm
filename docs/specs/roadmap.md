@@ -1623,7 +1623,7 @@ The current forward delivery order is:
     `NOT_MET`; remove the production intervention before publication and ship no speedup claim.
 
 66. **R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY — reduce the next measured claim-I/O bucket. Active;
-    design complete, implementation not started.**
+    implementation complete, fixed qualification pending.**
     [`r8-olmoe-cache-to-claim-copy-boundary.md`](r8-olmoe-cache-to-claim-copy-boundary.md) is the
     authoritative ledger and closure matrix. Preserve item 62's immutable full-request baseline
     and item 64's 1,072,229,252-ns cache-to-claim median. Pinned ggml's expert dimension is strided

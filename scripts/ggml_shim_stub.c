@@ -836,6 +836,9 @@ static align_stub_buffer  align_stub_buffers[ALIGN_STUB_MAX_BUFFERS];
 static align_stub_gallocr align_stub_gallocrs[ALIGN_STUB_MAX_GALLOCRS];
 static int32_t            align_stub_backend_token;
 static int32_t            align_stub_device_token;
+#ifdef ALIGN_GGML_FORCE_CACHE_WRAP_FAILURE
+static int32_t            align_stub_host_wrap_calls;
+#endif
 
 /* Two arenas so the tiny geometry never has to worry about lifetime: activations are re-assigned by
  * every `gallocr` allocation, weights and inputs are assigned once and outlive them.
@@ -860,6 +863,9 @@ static int64_t align_stub_nelements(const align_stub_tensor *t) {
 }
 
 static int64_t align_stub_nbytes(const align_stub_tensor *t) {
+    if (t->op == ALIGN_STUB_OP_NONE && t->lp[0] > 0) {
+        return (t->ne[2] - 1) * t->lp[0] + t->ne[0] * t->ne[1] * 4;
+    }
     return align_stub_nelements(t) * 4;
 }
 
@@ -1175,7 +1181,9 @@ static void align_stub_run(align_stub_tensor *t) {
                     plane = 0;
                 }
                 for (i0 = 0; i0 < m; i0++) {
-                    const float *av = x + k * (i0 + m * plane);
+                    const unsigned char *plane_base = (const unsigned char *) a->data
+                        + plane * (a->lp[0] > 0 ? a->lp[0] : k * m * 4);
+                    const float *av = (const float *) plane_base + k * i0;
                     float total = 0.0f;
                     int64_t at = 0;
                     for (at = 0; at < k; at++) {
@@ -1474,6 +1482,13 @@ void *align_ggml_buffer_from_host(void *device, void *ptr, int64_t size) {
     (void) ptr;
     (void) size;
     return NULL;
+#endif
+#ifdef ALIGN_GGML_FORCE_CACHE_WRAP_FAILURE
+    if (align_stub_host_wrap_calls == 0) {
+        align_stub_host_wrap_calls++;
+        return NULL;
+    }
+    align_stub_host_wrap_calls++;
 #endif
     if (device == NULL || ptr == NULL || size <= 0) {
         return NULL;
@@ -2469,6 +2484,49 @@ int32_t align_ggml_slot_new_tensor_3d(
     if (t == NULL) {
         return ALIGN_GGML_INIT;
     }
+    return align_ggml_slot_store(slots, out, (void *) t);
+}
+
+int32_t align_ggml_slot_new_strided_tensor_3d(
+    void *ctx, void *slots, int64_t out, int32_t type,
+    int64_t ne0, int64_t ne1, int64_t ne2, int64_t slice_stride) {
+    align_stub_tensor *t = NULL;
+    int row_index = -1;
+    int64_t row_bytes = 0;
+    int64_t plane_bytes = 0;
+    if (align_stub_context_index(ctx) < 0) {
+        return ALIGN_GGML_INIT;
+    }
+    if (ne0 <= 0 || ne1 <= 0 || ne2 <= 0 || slice_stride <= 0) {
+        return ALIGN_GGML_SHAPE;
+    }
+    row_index = align_ggml_table_row(type);
+    if (row_index < 0) {
+        return ALIGN_GGML_TYPE;
+    }
+    if (ne0 % (int64_t) align_ggml_type_table[row_index][1] != 0) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (ne0 / (int64_t) align_ggml_type_table[row_index][1]
+        > INT64_MAX / (int64_t) align_ggml_type_table[row_index][2]) {
+        return ALIGN_GGML_SHAPE;
+    }
+    row_bytes = ne0 / (int64_t) align_ggml_type_table[row_index][1]
+        * (int64_t) align_ggml_type_table[row_index][2];
+    if (ne1 > INT64_MAX / row_bytes) {
+        return ALIGN_GGML_SHAPE;
+    }
+    plane_bytes = row_bytes * ne1;
+    if (slice_stride < plane_bytes
+        || ne2 - 1 > (INT64_MAX - plane_bytes) / slice_stride
+        || ne2 > INT64_MAX / slice_stride) {
+        return ALIGN_GGML_SHAPE;
+    }
+    t = align_stub_new(ctx, type, ne0, ne1, ne2, 1);
+    if (t == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    t->lp[0] = slice_stride;
     return align_ggml_slot_store(slots, out, (void *) t);
 }
 

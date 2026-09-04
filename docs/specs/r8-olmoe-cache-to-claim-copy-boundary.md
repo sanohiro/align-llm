@@ -1,6 +1,6 @@
 # R8 OLMoE cache-to-claim copy boundary
 
-Status: active, design complete; implementation not started, 2026-09-05
+Status: active; implementation complete, fixed qualification pending, 2026-09-05
 
 Roadmap owner: item 66, `R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY`
 
@@ -104,3 +104,17 @@ unchanged; all selected slots are resident and stable before the graph exists. T
 owns byte-stride arithmetic and returns existing fault classes before a ggml assertion. The cache
 budget and every allocation remain unchanged. The immutable baseline, 963,327,962-nanosecond floor,
 and 18,303,231,267-nanosecond ceiling are fixed before production code changes.
+
+## 6. Implementation checkpoint
+
+The implementation adds the checked real/stub constructor, makes the stub kernel consume the
+stored expert stride, validates static cache layout before selecting direct mode, wraps the
+existing dense-plus-cache allocation once, skips hit copies, re-resolves every selected key to a
+cache slot after complete staging, and places the three role tensors over the cache. A refused
+combined wrap retries the original dense-only wrap and compact-copy graph.
+
+`make check`, `make runtime-provider-smoke`, and `make layer-forward-smoke` pass with the pinned
+toolchain environment. The runtime owner now covers constructor success, reachable span, null
+context, zero shape, unsupported type, short stride, row overflow, slot range, direct hosted OLMoE
+generation, and injected combined-wrap fallback. A real ggml fixed-model conditioning request also
+completed with balanced native resources. The four-repeat shipping qualification remains pending.
