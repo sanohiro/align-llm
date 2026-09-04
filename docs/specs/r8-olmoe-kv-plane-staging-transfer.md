@@ -46,7 +46,7 @@ not ship.
 | Fixed baseline | item 57 full helper walls `[28322991875,30172193417,30729519750,30967544875]`, integer median 30,450,856,583 ns; immutable and never recomputed from candidate samples |
 | Shipping gate | four candidate full helper walls under item 57's exact fresh-process conditioning/isolation protocol; `gain_ppm = (baseline_median - candidate_median) * 1,000,000 // baseline_median`; ship only for `gain_ppm >= 50,000`, equivalently candidate median at most 28,928,313,753 ns, with exact output and balanced lifetimes in all repetitions |
 | Result | one exact-key schema-1 `R8_OLMOE_KV_PLANE_STAGING_TRANSFER` JSON document on stdout and one concise stderr summary; decision `MET` or `NOT_MET`; no complete document on failure |
-| Inputs/identity | independently pin item 57's workload, baseline, model, pack, geometry, server, Align revision/compiler, ggml libraries, C compiler/version, task, prompt, exact token chain, helper, shim, linker search, and clean align-llm head |
+| Inputs/identity | independently pin item 57's workload, baseline, model, pack, geometry, server, Align revision/compiler, ggml libraries, C compiler/version, task, prompt, exact token chain, helper, shim, linker search, clean align-llm head, and the baseline host's OS/release, architecture, logical CPU count, hardware model, CPU brand, memory size, and canonical fingerprint |
 | Cost ceiling | one monotonic 8-minute ceiling covers helper/shim build, four conditioning and four full requests, aggregation, identity rechecks, and cleanup; each child retains a narrower bound |
 | Acceptance evidence | `gmake fmt`; `gmake layer-forward-smoke`; `gmake runtime-provider-smoke`; Python compilation; focused performance self-test; one complete real four-repeat qualification; `git diff --check`; one comprehensive review; exact-head `scripts/pre-pr --owner-test R8-OLMOE-KV-PLANE-STAGING-TRANSFER -- scripts/run-olmoe-kv-plane-staging-transfer --self-test` |
 
@@ -80,6 +80,13 @@ elapsed_ns
 `candidate_plane_upload_values_ns`, `candidate_plane_upload_median_ns`, `baseline_median_ns`,
 `gain_ns`, `gain_ppm`, `floor_ppm`, `candidate_ceiling_ns`, and `decision`.
 
+`environment` binds the fixed item 57 baseline and every candidate run to Darwin 25.5.0 on the
+same `MacBookAir10,1` host with Apple M1, 8 logical CPUs, and 17,179,869,184 bytes of memory. Its
+`host_fingerprint_sha256` is the SHA-256 of the canonical exact-key JSON identity containing those
+seven values. It also pins the C compiler binary/version and linker search identities. A host or
+nested identity mismatch rejects the run before measurement or rejects the document before
+`COMPLETE`; the immutable baseline is never compared with a different machine.
+
 All numeric fields are non-boolean integers. The fixed output, token prefix, successful-phase
 equations, and balanced native lifetime rules are exactly item 57's. `MET` requires nonnegative
 `gain_ns`, `gain_ppm >= 50,000`, and candidate median at or below the integer ceiling; otherwise a
@@ -95,7 +102,7 @@ valid exact run records `NOT_MET`. A malformed or inexact run is failure, not `N
 | Plane/cache | retain old plane bases, stride, writeback, and readback | graph consumes byte-identical layouts | oracle/lifetime mismatch rejects qualification | existing failure convergence | old native owners unchanged | existing OLMoE decode smoke and four real balanced runs |
 | Repetition | require process absence; fresh max-2 then max-128 helpers | exact prefix and full output four times | process/helper/repeatability drift aborts | no partial result | active child follows inherited signal/deadline cleanup | inherited item 57 self-tests plus twelve real absence checks |
 | Aggregate | immutable baseline and four candidate walls | integer median/gain and deterministic decision | baseline, ceiling, key, boolean, or arithmetic drift rejects | no partial aggregate | N/A | below/at/above threshold self-test vectors |
-| Identity | pin imports before build; capture helper/shim/head | final hashes/head unchanged | predecessor, source, tool, or external drift fails | missing prerequisite emits inherited N/A line | restore root build product | imported-constant mutation and real recheck |
+| Identity | pin imports and baseline-host fingerprint before build; capture helper/shim/head | final hashes/head unchanged and every nested result identity is exact | predecessor, source, tool, external, host, model, provider, CPU-count, or nested evidence drift fails | missing prerequisite emits inherited N/A line | restore root build product | imported-constant, nested-result, and host-fingerprint mutations plus real recheck |
 | Signal/deadline | install handlers before real work | N/A | interruption/timeout exits nonzero | no complete JSON | stop child; restore helper/temp state | inherited forced timeout/restoration self-tests |
 
 Concurrent mutation, generic monomorphization, move/source-nulling, external server ownership, and

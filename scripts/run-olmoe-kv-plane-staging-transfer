@@ -61,6 +61,18 @@ EXPECTED_C_COMPILER_VERSION_SHA256 = (
     "ea3037e0630fa16798079372fdc24f6542d021dadda4915cc979799682d78295"
 )
 EXPECTED_LINKER_SEARCH_SHA256 = "5cb52d849e4b5dd2e0380c9fd272279c8b3e572dc563691f60fc8ecbf72d92cf"
+EXPECTED_BASELINE_HOST = {
+    "os": "Darwin",
+    "release": "25.5.0",
+    "architecture": "arm64",
+    "cpu_count": 8,
+    "host_model": "MacBookAir10,1",
+    "cpu_brand": "Apple M1",
+    "memory_bytes": 17_179_869_184,
+}
+EXPECTED_BASELINE_HOST_SHA256 = (
+    "0a46a7d41c5f9aa35b62891b272f6bf6c79ec4b97acf0b918685ba82ddee15f1"
+)
 EXPECTED_GGML_LIBRARIES = [
     {"name": "libggml-base.0.21.0.dylib", "bytes": 506_160, "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574"},
     {"name": "libggml-base.0.dylib", "bytes": 506_160, "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574"},
@@ -88,6 +100,43 @@ class TransferError(RuntimeError):
 
 def is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def is_lower_hex(value: object, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def host_fingerprint(identity: dict[str, Any]) -> str:
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base.bytes_sha256(canonical)
+
+
+def qualification_host(clean_env: dict[str, str], deadline: float) -> dict[str, Any]:
+    def sysctl(name: str) -> str:
+        return owner.run_process(
+            ["/usr/sbin/sysctl", "-n", name], deadline=deadline, maximum=30, env=clean_env,
+        ).stdout.decode("utf-8").strip()
+
+    cpu_count = os.cpu_count()
+    if not is_int(cpu_count) or cpu_count <= 0:
+        raise TransferError("qualification host CPU count was unavailable")
+    identity = {
+        "os": platform.system(),
+        "release": platform.release(),
+        "architecture": platform.machine(),
+        "cpu_count": cpu_count,
+        "host_model": sysctl("hw.model"),
+        "cpu_brand": sysctl("machdep.cpu.brand_string"),
+        "memory_bytes": int(sysctl("hw.memsize")),
+    }
+    fingerprint = host_fingerprint(identity)
+    if identity != EXPECTED_BASELINE_HOST or fingerprint != EXPECTED_BASELINE_HOST_SHA256:
+        raise TransferError("qualification host does not match the fixed baseline host")
+    return {**identity, "host_fingerprint_sha256": fingerprint}
 
 
 def validate_imported_contract() -> None:
@@ -118,6 +167,8 @@ def validate_imported_contract() -> None:
         raise TransferError("imported item 57 contract drifted")
     if diagnosis.integer_median(BASELINE_VALUES_NS) != BASELINE_MEDIAN_NS:
         raise TransferError("item 57 baseline median drifted")
+    if host_fingerprint(EXPECTED_BASELINE_HOST) != EXPECTED_BASELINE_HOST_SHA256:
+        raise TransferError("fixed baseline host fingerprint drifted")
     floor_ns = (BASELINE_MEDIAN_NS * FLOOR_PPM + 999_999) // 1_000_000
     if BASELINE_MEDIAN_NS - floor_ns != CANDIDATE_CEILING_NS:
         raise TransferError("candidate ceiling drifted")
@@ -176,7 +227,8 @@ def validate_result(result: dict[str, Any]) -> None:
             "temperature_micros", "seed", "full_output_sha256",
         },
         "environment": {
-            "os", "release", "architecture", "cpu_count", "c_compiler_sha256",
+            "os", "release", "architecture", "cpu_count", "host_model", "cpu_brand",
+            "memory_bytes", "host_fingerprint_sha256", "c_compiler_sha256",
             "c_compiler_version_sha256", "linker_search_sha256",
         },
     }
@@ -191,6 +243,40 @@ def validate_result(result: dict[str, Any]) -> None:
         "candidate_ceiling_ns": CANDIDATE_CEILING_NS,
     }:
         raise TransferError("result baseline drifted")
+    if result["model"] != {
+        "bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe",
+    }:
+        raise TransferError("result model identity drifted")
+    candidate = result["candidate"]
+    if (
+        candidate["provider"] != "align-runtime"
+        or not is_lower_hex(candidate["align_llm_head"], 40)
+        or candidate["align_revision"] != EXPECTED_ALIGN_REVISION
+        or candidate["compiler_sha256"] != EXPECTED_COMPILER_SHA256
+        or not is_lower_hex(candidate["helper_sha256"], 64)
+        or not is_lower_hex(candidate["shim_sha256"], 64)
+        or candidate["ggml_libraries"] != EXPECTED_GGML_LIBRARIES
+        or candidate["pack_sha256"] != EXPECTED_PACK_SHA256
+        or candidate["geometry_sha256"] != EXPECTED_GEOMETRY_SHA256
+        or candidate["cache_budget_bytes"] != BUDGET
+    ):
+        raise TransferError("result candidate identity drifted")
+    if result["task"] != {
+        "task_id": "python-inclusive-range", "task_sha256": EXPECTED_TASK_SHA256,
+        "prompt_sha256": EXPECTED_PROMPT_SHA256, "maximum_tokens": FULL_TOKENS,
+        "temperature_micros": TEMPERATURE_MICROS, "seed": SEED,
+        "full_output_sha256": FULL_OUTPUT_SHA256,
+    }:
+        raise TransferError("result task identity drifted")
+    expected_environment = {
+        **EXPECTED_BASELINE_HOST,
+        "host_fingerprint_sha256": EXPECTED_BASELINE_HOST_SHA256,
+        "c_compiler_sha256": EXPECTED_C_COMPILER_SHA256,
+        "c_compiler_version_sha256": EXPECTED_C_COMPILER_VERSION_SHA256,
+        "linker_search_sha256": EXPECTED_LINKER_SEARCH_SHA256,
+    }
+    if result["environment"] != expected_environment:
+        raise TransferError("result environment identity drifted")
     if not isinstance(result["samples"], list):
         raise TransferError("result samples were not an array")
     expected_aggregate = aggregate(result["samples"])
@@ -239,7 +325,13 @@ def synthetic_result(samples: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "candidate": predecessor["candidate"],
         "task": predecessor["task"],
-        "environment": predecessor["environment"],
+        "environment": {
+            **EXPECTED_BASELINE_HOST,
+            "host_fingerprint_sha256": EXPECTED_BASELINE_HOST_SHA256,
+            "c_compiler_sha256": EXPECTED_C_COMPILER_SHA256,
+            "c_compiler_version_sha256": EXPECTED_C_COMPILER_VERSION_SHA256,
+            "linker_search_sha256": EXPECTED_LINKER_SEARCH_SHA256,
+        },
         "samples": samples,
         "aggregate": aggregate(samples),
         "elapsed_ns": 1,
@@ -291,6 +383,21 @@ def self_test() -> int:
         pass
     else:
         raise TransferError("non-exact result was accepted")
+    for section, field, value in (
+        ("model", "bytes", False),
+        ("candidate", "provider", "bogus-runtime"),
+        ("environment", "cpu_count", None),
+        ("environment", "host_fingerprint_sha256", "0" * 64),
+    ):
+        malformed_result = dict(result)
+        malformed_result[section] = dict(result[section])
+        malformed_result[section][field] = value
+        try:
+            validate_result(malformed_result)
+        except TransferError:
+            pass
+        else:
+            raise TransferError(f"malformed result {section}.{field} was accepted")
     print("R8-OLMOE-KV-PLANE-STAGING-TRANSFER self-test: PASS")
     return 0
 
@@ -313,6 +420,7 @@ def main() -> int:
         linker_search = phase.decision.validate_linker_search(clean_env)
         if linker_search:
             clean_env["LIBRARY_PATH"] = linker_search
+        host_environment = qualification_host(clean_env, deadline)
         source_status = owner.run_process(
             ["git", "status", "--porcelain", "--untracked-files=all"],
             deadline=deadline, maximum=30, env=clean_env,
@@ -415,8 +523,7 @@ def main() -> int:
                     "full_output_sha256": FULL_OUTPUT_SHA256,
                 },
                 "environment": {
-                    "os": platform.system(), "release": platform.release(),
-                    "architecture": platform.machine(), "cpu_count": os.cpu_count(),
+                    **host_environment,
                     "c_compiler_sha256": built["c_compiler_sha256"],
                     "c_compiler_version_sha256": built["c_compiler_version_sha256"],
                     "linker_search_sha256": linker_search_sha256,
