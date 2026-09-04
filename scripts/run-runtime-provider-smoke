@@ -97,50 +97,6 @@ cp "${root_dir}/main" "${ordinary_main}"
 main_saved=1
 ALIGN_LLM_GGML_SHIM_DIR="${shim_dir}" ALIGN_LLM_GGML_FORCE=engine \
   "${root_dir}/scripts/build-ggml-shim" >/dev/null
-python3 - "${shim_dir}" <<'PY'
-import ctypes
-import sys
-from pathlib import Path
-
-library = next(Path(sys.argv[1]).glob("libalign_ggml_shim.*"))
-shim = ctypes.CDLL(str(library))
-shim.align_ggml_context_open.argtypes = [ctypes.c_int64]
-shim.align_ggml_context_open.restype = ctypes.c_void_p
-shim.align_ggml_context_close.argtypes = [ctypes.c_void_p]
-shim.align_ggml_slots_init.argtypes = [ctypes.c_void_p, ctypes.c_int64]
-shim.align_ggml_slots_init.restype = ctypes.c_int32
-shim.align_ggml_slot_new_strided_tensor_3d.argtypes = [
-    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int32,
-    ctypes.c_int64, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
-]
-shim.align_ggml_slot_new_strided_tensor_3d.restype = ctypes.c_int32
-shim.align_ggml_slot_nbytes.argtypes = [ctypes.c_void_p, ctypes.c_int64]
-shim.align_ggml_slot_nbytes.restype = ctypes.c_int64
-
-slots = ctypes.create_string_buffer(16 + 4 * 8)
-context = shim.align_ggml_context_open(4096)
-if not context or shim.align_ggml_slots_init(slots, len(slots)) != 0:
-    raise SystemExit("runtime provider smoke: FAIL strided constructor setup")
-new = shim.align_ggml_slot_new_strided_tensor_3d
-vectors = (
-    ("success", new(context, slots, 0, 0, 2, 3, 4, 32), 0),
-    ("null-context", new(None, slots, 1, 0, 2, 3, 4, 32), -6),
-    ("zero-shape", new(context, slots, 1, 0, 0, 3, 4, 32), -4),
-    ("unsupported-type", new(context, slots, 1, 999, 2, 3, 4, 32), -3),
-    ("short-stride", new(context, slots, 1, 0, 2, 3, 4, 23), -4),
-    ("row-overflow", new(context, slots, 1, 0, 2**63 - 1, 3, 4, 32), -4),
-    ("slot-range", new(context, slots, 4, 0, 2, 3, 4, 32), -9),
-)
-for label, actual, expected in vectors:
-    if actual != expected:
-        raise SystemExit(
-            "runtime provider smoke: FAIL strided %s returned %d, not %d"
-            % (label, actual, expected)
-        )
-if shim.align_ggml_slot_nbytes(slots, 0) != 120:
-    raise SystemExit("runtime provider smoke: FAIL strided reachable span")
-shim.align_ggml_context_close(context)
-PY
 (
   cd "${root_dir}"
   export LIBRARY_PATH="${shim_dir}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
@@ -341,33 +297,6 @@ require(result.returncode != 0 and record is not None and record["status"] == "e
 result, record = invoke_olmoe("olmoe-extra-cli", budget=budget, extra=("extra",))
 require(result.returncode != 0 and record is None, "OLMoE CLI accepted an extra operand")
 
-PY
-
-# Item 66's combined-wrap fallback: the first (dense-plus-cache) wrap is refused, the original
-# dense-only retry succeeds, and the same OLMoE request completes through compact claim tensors.
-ALIGN_LLM_GGML_SHIM_DIR="${shim_dir}" ALIGN_LLM_GGML_FORCE=engine+cache-wrap \
-  "${root_dir}/scripts/build-ggml-shim" >/dev/null
-python3 - "${runtime_main}" "${work_dir}" <<'PY'
-import json
-import subprocess
-import sys
-from pathlib import Path
-
-binary, work = sys.argv[1], Path(sys.argv[2])
-manifest = json.loads((work / "olmoe-runtime-manifest.json").read_text(encoding="utf-8"))
-model = work / manifest["model"]
-stem = model.stem
-result_path = work / "olmoe-cache-wrap-fallback-result.json"
-result = subprocess.run(
-    [binary, "--provider", "align-runtime", str(model),
-     str(work / (stem + ".alignpack")), str(work / (stem + "-model-ir.json")),
-     "x", str(result_path), "2", str(manifest["cache_budget_bytes"])],
-    capture_output=True, check=False, timeout=30,
-)
-record = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else None
-if result.returncode != 0 or record is None or record.get("status") != "ok" \
-        or record.get("completion_tokens") != 2:
-    raise SystemExit("runtime provider smoke: FAIL combined cache-wrap fallback: %r" % record)
 PY
 
 # The diagnostic decode API deliberately reports non-finite primary logits without failing. Text

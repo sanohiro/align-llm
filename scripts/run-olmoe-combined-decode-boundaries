@@ -43,6 +43,7 @@ FULL_OUTPUT_SHA256 = previous.FULL_OUTPUT_SHA256
 FULL_CACHE_BYTES_FETCHED = previous.FULL_CACHE_BYTES_FETCHED
 REPETITIONS = previous.REPETITIONS
 CEILING_SECONDS = previous.CEILING_SECONDS
+EVALUATED_HEAD = "1407d3a0820ff73ae41094a4452630fcd758db53"
 
 BASELINE_VALUES_NS = previous.BASELINE_VALUES_NS
 BASELINE_MEDIAN_NS = previous.BASELINE_MEDIAN_NS
@@ -81,18 +82,18 @@ EXPECTED_SOURCE_IDENTITIES = (
     "505efca65a7637b65b26997de200234f44cd8b7cee9db681b9f9161524ecaaaf",
     "9141bee34a3579482c6c5852eb136810ea909f73575229b411f905ef96635581",
     "c7e82a8a8374e1c25f1e3b61ce0b89ed8639eaeae6b4e4ae8bee2a88a09b8e8b",
-    "1660854dfdef7cb25f4cee5d4f23ab7754d7d95b89bc2017024348219da98a0f",
-    "ab392dd608d488891f50f5f17330c9c0bb10dadd0fb784b60309892b5c8dbc6e",
-    "794598e2217e486e665b622fe8065c9db7ed688badab393ff9684b14d5311dc7",
-    "972c7509128da11f427a595e67d2903f6f6b30d9039d0de02d8ac66998caec7e",
-    "d791cff7ccc5aab180748efa1fb200bf6573c9762bd75f4e0fdfe35dcdcf4a04",
-    "4ec8a3e93e4bc586cc7441ddde5d985e571c8796ccc29e4cd87b07c31d471393",
-    "133d3ec5f5f08e8e6e128cd76ed1e4c467c5424bb535a9de8ce8e38f61a7e481",
+    "86815bffb5115d92a6d9e7e341b7a73c91c8fe514209fc8b965daf4ae3df34b8",
+    "e8f38cc06b2bf68094a5654ed2f36e917fa86e5d20f7d1f35d1d0a5971705ef2",
+    "b5f1b7f7798239982446f56d9d17eeeca9b87a8a47bd685e6bd9e634a686198e",
+    "080bb5084eaa3687a8237cde9218529e33862d5f2c4a09d0473772dccc42a046",
+    "4c7bc66a3c6d3645db050ef8e3a45bc32b09c34e47238ff1e165190052b21f89",
+    "1620950e2b54e8a37c5e448f6ab464621d7ae091a2e8f074c5f7aef95f1eb0e0",
+    "acf4e97b46d1bbb22b6e043f9d7e8a9c43bce1bb427913c3b17c8b91bf2a72d5",
     "ff2a3d96ef2bdfdaf3acbc966734b9d813c5b7e105444f122e17fa3cd1561a34",
     "6a9d948bf265c39570dee1ceca9f76ce361fea88f00f624ee0669d48c53e4824",
-    "c49df7491e8d5c6758ba059e38af193e0bed4e450314738992093b701be7a27a",
-    "34bc2561df894a9459c84f4796e276756dcf06dd5d6a65e4b1189261fabc25d4",
-    "cca81cbc741f6fc39f31b8cbda65bc3eed4cbfa2447db8f9cae0ccc4d961e8f9",
+    "2429cbf4ffccb0da6a70dbdd02092b40d307bfe3f6379ac27007ec65fc84d3fb",
+    "b01611151baace6cb59a140eec1dc336c47cd50a8e43dc746337e58e6eb10b50",
+    "2a5aea8b661952e658706b1c1a557b4539bb88bda4eab15f02989500a508a07c",
     "edbd49939d82d99ce427ef90d24289765d6db0f0a7d0cb9fe16d0cf940bad977",
 )
 
@@ -507,6 +508,10 @@ def self_test() -> int:
     printed.assert_called_once_with(
         "R8-OLMOE-COMBINED-DECODE-BOUNDARIES: N/A (ALIGN_LLM_OLMOE_MODEL unset)"
     )
+    with mock.patch.object(sys, "argv", [sys.argv[0]]):
+        expect_error(main, "publication head accepted a real qualification")
+    with mock.patch.object(sys, "argv", [sys.argv[0], "--real"]):
+        expect_error(main, "publication head accepted an unsupported mode")
     print("R8-OLMOE-COMBINED-DECODE-BOUNDARIES self-test: PASS")
     return 0
 
@@ -514,8 +519,14 @@ def self_test() -> int:
 def main() -> int:
     if sys.argv[1:] == ["--self-test"]:
         return self_test()
-    if len(sys.argv) != 1:
-        raise CombinedBoundaryError("qualification accepts no arguments")
+    if len(sys.argv) == 1:
+        raise CombinedBoundaryError(
+            "combined candidate was removed after cache-accounting drift; reproduce the real "
+            f"qualification from evaluated commit {EVALUATED_HEAD}"
+        )
+    raise CombinedBoundaryError(
+        "published OLMoE combined-boundary qualification accepts only --self-test"
+    )
     required = prerequisites()
     if required is None:
         return 0

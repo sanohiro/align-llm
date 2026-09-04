@@ -1637,17 +1637,21 @@ The current forward delivery order is:
     10,908 ppm faster than item 62. The result is `NOT_MET`; remove all production changes before
     publication and ship no speedup claim.
 
-67. **R8-OLMOE-COMBINED-DECODE-BOUNDARIES — combine three disjoint measured reductions. Active;
-    implementation complete, fixed qualification pending.**
+67. **R8-OLMOE-COMBINED-DECODE-BOUNDARIES — combine three disjoint measured reductions. Complete;
+    candidate rejected before the performance gate.**
     [`r8-olmoe-combined-decode-boundaries.md`](r8-olmoe-combined-decode-boundaries.md) is the
-    authoritative ledger and closure matrix. Items 61, 63, and 66 each passed their semantic and
-    ownership evidence but missed the same 50,000-ppm complete-request floor alone. Restore only
+    authoritative ledger and closure matrix. Items 61, 63, and 66 each passed their selected narrow
+    correctness and ownership evidence but missed the same 50,000-ppm complete-request floor alone.
+    Restore only
     their final reviewed interventions: unaligned-safe direct K/V plane comparison, live-width
     phase A, and fixed-stride cache-backed phase B. Preserve item 62's immutable
     19,266,559,229-ns baseline, 963,327,962-ns floor, and 18,303,231,267-ns ceiling. Four fresh
-    conditioned repetitions decide the combined candidate; component measurements are directional
-    evidence only. Ship all three together on `MET`, or remove all production changes before
-    publication on `NOT_MET`.
+    conditioned repetitions were intended to decide the combined candidate; component
+    measurements remain directional evidence only. The first full request retained 11,940 cache
+    requests but changed item 66's exact 7,325 hits / 4,615 misses / 4,376 evictions to 7,320 /
+    4,620 / 4,381 and increased fetched bytes by 19,857,408. That violates the precommitted routed
+    key/cache invariant, so no latency aggregate or performance decision is claimed. Remove all
+    production changes before publication and retain only the negative decision owner.
 
 ### Status (2026-08-28)
 

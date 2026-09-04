@@ -1,14 +1,15 @@
 # R8 OLMoE combined decode boundaries
 
-Status: active; implementation complete, fixed qualification pending, 2026-09-05
+Status: complete; candidate rejected before the performance gate, 2026-09-05
 
 Roadmap owner: item 67, `R8-OLMOE-COMBINED-DECODE-BOUNDARIES`
 
 ## 1. Decision owned
 
-Items 61, 63, and 66 each evaluated a correctness-preserving reduction of a different shipped
-decode boundary. None cleared a 50,000-ppm complete-request gate alone, so every production change
-was removed. Their fixed-request results nevertheless provide independent directional evidence:
+Items 61, 63, and 66 each evaluated a targeted reduction of a different shipped decode boundary
+under its selected owner evidence. None cleared a 50,000-ppm complete-request gate alone, so every
+production change was removed. Their fixed-request results nevertheless provide independent
+directional evidence:
 
 - item 61's final unaligned-safe plane comparison reduced the complete plane boundary from
   2,972,324,939 ns to 838,509,258 ns and its full wall by 139,023,395 ns;
@@ -28,12 +29,14 @@ immutable baseline. The precommitted 50,000-ppm floor is 963,327,962 ns and the 
 is 18,303,231,267 ns. Four conditioned fresh-process repetitions must preserve every inherited
 semantic, cache, isolation, and lifetime boundary and have an integer median no greater than the
 ceiling. Otherwise all production and production-owner changes are removed before publication.
+The real candidate changed exact cache accounting on its first full request, so it was rejected
+before a latency aggregate or `MET`/`NOT_MET` performance decision could be formed.
 
 ## 2. Public-contract ledger
 
 | Surface | Exact contract |
 | --- | --- |
-| Capability/owner | `R8-OLMOE-COMBINED-DECODE-BOUNDARIES`; production owners are `src/layer_olmoe.align`, `src/moe_decode_step.align`, `src/moe_model_forward.align`, `src/ggml_ffi.align`, both ggml shims, and the shim build; directly required owner changes are the layer-forward and runtime-provider smokes; qualification owner is `scripts/run-olmoe-combined-decode-boundaries` |
+| Capability/owner | `R8-OLMOE-COMBINED-DECODE-BOUNDARIES`; evaluated production owners were `src/layer_olmoe.align`, `src/moe_decode_step.align`, `src/moe_model_forward.align`, `src/ggml_ffi.align`, both ggml shims, and the shim build; directly required owner changes were the layer-forward and runtime-provider smokes. Those changes do not ship; the thin helper and self-test-only `scripts/run-olmoe-combined-decode-boundaries` remain as the decision owner. |
 | Consumer | the fixed item-62 OLMoE provider-generation request and the next R8 shipping decision after three individually negative boundary candidates |
 | Fixed request | inherit item 62 exactly: task/system/user prompt, OLMoE model, AlignPack, geometry, 975,175,680-byte partial-LRU budget, temperature 300,000 micros, seed 5, maximum 128, EOG rule, exact 87-id chain, 86 completion tokens, and output SHA-256 `aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52` |
 | Conditioning/isolation | four sequential fresh-process pairs; each maximum-2 result is the exact prefix of its following maximum-128 result; zero processes matching both pinned llama-server and model paths before, between, and after every pair |
@@ -51,7 +54,7 @@ ceiling. Otherwise all production and production-owner changes are removed befor
 | Existing results | HTTP/provider schemas, diagnostic CLI schemas, `GenerationParts`, and existing qualification records remain byte-shaped and meaning-compatible; timing counters continue to describe their existing complete boundaries |
 | Qualification helper | add thin `olmoe_combined_decode_gate MODEL PACK GEOMETRY PROMPT MAX_TOKENS 5`, delegating to the existing claim-detailed helper so each record includes `pass_other`, `decode_compute`, and `claim_io` |
 | Candidate evidence | record four full walls, phase-A clocks, complete plane-roundtrip clocks, and cache-to-claim clocks. Require every cache-to-claim value to be zero; the other clocks are diagnostic and do not replace the complete-request decision |
-| Result | one exact-key schema-1 `R8_OLMOE_COMBINED_DECODE_BOUNDARIES` JSON document with fixed baseline/gate, exact intervention identity, four inherited samples, aggregate clocks/gain, and `MET` or `NOT_MET`; no complete document on failure |
+| Result | the evaluated candidate would emit one exact-key schema-1 `R8_OLMOE_COMBINED_DECODE_BOUNDARIES` JSON document only after four valid samples; cache drift is a failure and emitted no complete document. Publication mode is self-test-only and points reproduction to the evaluated commit. |
 | Inputs/identity | independently pin the item-66 runner and complete helper/source chain, all newly changed sources and owner scripts, model, pack, geometry, server, Align revision/compiler, ggml libraries and consumed headers, C compiler/version, task, prompt, exact token chain, built helper/shim, clean align-llm head, and fixed host fingerprint |
 | Validation order | arguments/prerequisites; scrubbed environment/linker search; fixed host, clean head, process absence, imported/current/external identities; exact-source build; four conditioned records; schema/equations/output/cache/lifetime/repeatability; aggregate/gate; final identities/head; cleanup-inclusive ceiling; publication |
 | Failure/early exit | native validation and existing first-fault order remain fail-closed; no partial layer, cache admission, graph, or qualification document survives an error; identity drift, contamination, timeout, cleanup failure, or ceiling excess exits nonzero |
@@ -110,9 +113,9 @@ evidence only; item 62's unchanged complete-request baseline, 963,327,962-ns flo
 exit, cleanup, identity, and integration cell names an implementation owner and regression before
 production code changes.
 
-## 6. Implementation checkpoint
+## 6. Evaluation and decision
 
-Implementation checkpoint `e653aab235ac023255f4156ee82df1a1ccc113d0` restores the final reviewed
+Implementation checkpoint `e653aab235ac023255f4156ee82df1a1ccc113d0` restored the final reviewed
 production forms from items 61, 63, and 66. The two shared source files were merged without changing
 their individual contracts: plane verification still precedes stable cache staging, and phase A's
 live width does not change the canonical plane width used by direct comparison.
@@ -120,6 +123,26 @@ live width does not change the canonical plane width used by direct comparison.
 `make check`, the regenerated deterministic golden owner, normal `make layer-forward-smoke`, and
 `make runtime-provider-smoke` pass. The real shim builds against the pinned Homebrew ggml headers
 and libraries, and the shared real/stub ABI region remains byte-identical. The thin combined helper
-and bounded runner pin the complete transitive production and direct-owner chain, validate all
-three component clocks in one inherited record, and pass their model-free self-test. The clean-head
-four-repeat qualification remains pending.
+and bounded runner pin the complete transitive production and direct-owner chain and validate all
+three component clocks in one inherited record.
+
+The real qualification at clean candidate head
+`1407d3a0820ff73ae41094a4452630fcd758db53` passed its pinned host, toolchain, source, model,
+build, isolation, and conditioning boundaries, then rejected the first full request before adding
+a sample. The inherited fixed request requires 11,940 cache requests, 7,325 hits, 4,615 misses,
+4,376 evictions, and 17,656,872,960 fetched bytes. The combined request retained 11,940 requests
+but produced 7,320 hits, 4,620 misses, 4,381 evictions, and 17,676,730,368 fetched bytes. A repeated
+targeted record reproduced the same counters and zero cache-to-claim copy time.
+
+This is deterministic semantic/accounting drift, not timing noise. The hit/miss changes prove that
+the combined routed-key/cache sequence changed; because the plane and cache interventions occur
+after routing, the execution order attributes that interaction to the live-width phase-A result.
+It violates the precommitted exact routing and cache invariant, even though the separately
+evaluated candidates had passed their narrower owners. The qualification therefore emitted no
+complete result and no latency samples or `MET`/`NOT_MET` performance decision are claimed.
+
+Every production and production-owner change from `e653aab` is removed before publication and is
+byte-identical to its parent after removal, including a golden regenerated from the restored source.
+The publication retains the ledger, thin helper, and self-test-only runner; reproducing the failed
+real candidate requires evaluated commit `1407d3a0820ff73ae41094a4452630fcd758db53`. No combined
+provider speedup or routing-equivalence claim ships.

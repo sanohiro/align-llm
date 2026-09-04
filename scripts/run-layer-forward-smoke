@@ -223,176 +223,7 @@ if result != -7:
 if overlap.raw[:len(plane_data)] != before:
     raise SystemExit("layer forward smoke: FAIL overlap refusal modified its shared range")
 
-compare_kv = library.align_ggml_compare_kv_plane
-compare_kv.argtypes = [
-    ctypes.c_void_p, ctypes.c_int64, ctypes.c_void_p, ctypes.c_int64,
-    ctypes.c_int64, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64, ctypes.c_int32,
-]
-compare_kv.restype = ctypes.c_int64
-k_consumed = ctypes.create_string_buffer(stage.raw[:past_bytes])
-v_consumed = ctypes.create_string_buffer(stage.raw[past_bytes:past_bytes * 2])
-
-def compare(consumed, consumed_bytes, base, layout, hd=head_dim, heads=n_head_kv,
-            columns=n_past, plane_arg=plane, plane_bytes=len(plane_data)):
-    return compare_kv(
-        consumed, consumed_bytes, plane_arg, plane_bytes, base, hd, heads, columns, layout,
-    )
-
-if compare(k_consumed, past_bytes, k_base, 0) != 0:
-    raise SystemExit("layer forward smoke: FAIL exact K plane comparison")
-if compare(v_consumed, past_bytes, v_base, 1) != 0:
-    raise SystemExit("layer forward smoke: FAIL exact V plane comparison")
-
-k_mismatch = ctypes.create_string_buffer(k_consumed.raw[:past_bytes])
-k_mismatch[3 * 4] = bytes([k_mismatch[3 * 4][0] ^ 1])
-if compare(k_mismatch, past_bytes, k_base, 0) != 2:
-    raise SystemExit("layer forward smoke: FAIL K mismatch did not report column one")
-
-# V traversal is head, lane, column: column two in lane zero precedes column zero in lane one.
-v_mismatch = ctypes.create_string_buffer(v_consumed.raw[:past_bytes])
-v_mismatch[2 * 4] = bytes([v_mismatch[2 * 4][0] ^ 1])
-v_mismatch[3 * 4] = bytes([v_mismatch[3 * 4][0] ^ 1])
-if compare(v_mismatch, past_bytes, v_base, 1) != 3:
-    raise SystemExit("layer forward smoke: FAIL V mismatch traversal priority drifted")
-
-def compare_refuse(label, expected, consumed=k_consumed, consumed_bytes=past_bytes,
-                   base=k_base, layout=0, hd=head_dim, heads=n_head_kv, columns=n_past,
-                   plane_arg=plane, plane_bytes=len(plane_data)):
-    consumed_before = None if consumed is None else consumed.raw[:min(consumed_bytes, past_bytes)]
-    plane_before = None if plane_arg is None else plane_arg.raw[:len(plane_data)]
-    result = compare(
-        consumed, consumed_bytes, base, layout, hd, heads, columns, plane_arg, plane_bytes,
-    )
-    if result != expected:
-        raise SystemExit("layer forward smoke: FAIL %s compare status %d, not %d"
-                         % (label, result, expected))
-    if consumed is not None and consumed.raw[:min(consumed_bytes, past_bytes)] != consumed_before:
-        raise SystemExit("layer forward smoke: FAIL %s compare modified consumed bytes" % label)
-    if plane_arg is not None and plane_arg.raw[:len(plane_data)] != plane_before:
-        raise SystemExit("layer forward smoke: FAIL %s compare modified plane bytes" % label)
-
-compare_refuse("null-consumed", -6, consumed=None)
-compare_refuse("negative-length", -7, consumed_bytes=-1)
-compare_refuse("invalid-layout", -7, layout=2)
-compare_refuse("zero-columns", -7, columns=0)
-compare_refuse("compare-overflow", -7, hd=2**63 - 1, heads=2)
-compare_refuse("short-consumed", -7, consumed_bytes=past_bytes - 1)
-compare_refuse("plane-out-of-bounds", -7, base=len(plane_data) - past_bytes + 1)
-
-shared = ctypes.create_string_buffer(struct.pack("<3I", 11, 12, 13))
-if compare(shared, 12, 0, 0, hd=1, heads=1, columns=3,
-           plane_arg=shared, plane_bytes=12) != 0:
-    raise SystemExit("layer forward smoke: FAIL read-only overlap was refused")
-
-# A 5-by-5 V matrix reaches one complete AArch64 4-by-4 tile plus both remainder axes. The two
-# mismatches occupy the same tile but scalar traversal sees lane zero / column three before lane
-# one / column zero, proving that the fast detector falls back before it reports a column.
-tiled_plane_values = list(range(25))
-tiled_consumed_values = [
-    tiled_plane_values[column * 5 + lane]
-    for lane in range(5)
-    for column in range(5)
-]
-tiled_plane = ctypes.create_string_buffer(struct.pack("<25I", *tiled_plane_values))
-tiled_consumed = ctypes.create_string_buffer(struct.pack("<25I", *tiled_consumed_values))
-if compare(tiled_consumed, 100, 0, 1, hd=5, heads=1, columns=5,
-           plane_arg=tiled_plane, plane_bytes=100) != 0:
-    raise SystemExit("layer forward smoke: FAIL tiled V exact/remainder comparison")
-
-# The byte-range ABI has no alignment precondition. Exercise the SIMD tile with both an unaligned
-# consumed pointer and a non-four-byte-aligned plane base so typed native loads cannot creep back in.
-unaligned_consumed = ctypes.create_string_buffer(b"\xa5" + tiled_consumed.raw[:100])
-unaligned_plane = ctypes.create_string_buffer(b"\x5a" + tiled_plane.raw[:100])
-if compare(ctypes.byref(unaligned_consumed, 1), 100, 1, 1, hd=5, heads=1, columns=5,
-           plane_arg=unaligned_plane, plane_bytes=101) != 0:
-    raise SystemExit("layer forward smoke: FAIL unaligned tiled V comparison")
-tiled_consumed[3 * 4] = bytes([tiled_consumed[3 * 4][0] ^ 1])
-tiled_consumed[5 * 4] = bytes([tiled_consumed[5 * 4][0] ^ 1])
-if compare(tiled_consumed, 100, 0, 1, hd=5, heads=1, columns=5,
-           plane_arg=tiled_plane, plane_bytes=100) != 4:
-    raise SystemExit("layer forward smoke: FAIL tiled V mismatch fallback priority")
-
-# Intervention B's slot entry owns resolution, exact extent, and host-data validation before it
-# reaches the byte primitive. Construct one deterministic-engine tensor so this tests more than the
-# extern symbol: the ordinary result, a content mismatch, a whole-extent mismatch, and validation
-# precedence all cross the shipped slot ABI.
-slots_init = library.align_ggml_slots_init
-slots_init.argtypes = [ctypes.c_void_p, ctypes.c_int64]
-slots_init.restype = ctypes.c_int32
-context_open = library.align_ggml_context_open
-context_open.argtypes = [ctypes.c_int64]
-context_open.restype = ctypes.c_void_p
-context_close = library.align_ggml_context_close
-context_close.argtypes = [ctypes.c_void_p]
-device_open = library.align_ggml_device_open
-device_open.restype = ctypes.c_void_p
-backend_open = library.align_ggml_backend_open
-backend_open.argtypes = [ctypes.c_void_p]
-backend_open.restype = ctypes.c_void_p
-backend_close = library.align_ggml_backend_close
-backend_close.argtypes = [ctypes.c_void_p]
-alloc_remaining = library.align_ggml_alloc_remaining
-alloc_remaining.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-alloc_remaining.restype = ctypes.c_void_p
-buffer_free = library.align_ggml_buffer_free
-buffer_free.argtypes = [ctypes.c_void_p]
-slot_new_3d = library.align_ggml_slot_new_tensor_3d
-slot_new_3d.argtypes = [
-    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int32,
-    ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
-]
-slot_new_3d.restype = ctypes.c_int32
-slot_set = library.align_ggml_slot_set
-slot_set.argtypes = [
-    ctypes.c_void_p, ctypes.c_int64, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64,
-]
-slot_set.restype = ctypes.c_int32
-slot_compare = library.align_ggml_slot_compare_kv_plane
-slot_compare.argtypes = [
-    ctypes.c_void_p, ctypes.c_int64, ctypes.c_void_p, ctypes.c_int64,
-    ctypes.c_int64, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64, ctypes.c_int32,
-]
-slot_compare.restype = ctypes.c_int64
-
-slots = ctypes.create_string_buffer(24)
-ctx = context_open(4096)
-device = device_open()
-backend = backend_open(device)
-allocation = None
-try:
-    if slots_init(slots, len(slots)) != 0 or not ctx or not device or not backend:
-        raise SystemExit("layer forward smoke: FAIL slot-comparison fixture construction")
-    if slot_new_3d(ctx, slots, 0, 0, head_dim, n_past, n_head_kv) != 0:
-        raise SystemExit("layer forward smoke: FAIL slot-comparison tensor construction")
-    allocation = alloc_remaining(ctx, backend)
-    if not allocation or slot_set(slots, 0, k_consumed, 0, past_bytes) != 0:
-        raise SystemExit("layer forward smoke: FAIL slot-comparison tensor initialization")
-    if slot_compare(slots, 0, plane, len(plane_data), k_base,
-                    head_dim, n_head_kv, n_past, 0) != 0:
-        raise SystemExit("layer forward smoke: FAIL exact slot K comparison")
-    if slot_set(slots, 0, k_mismatch, 0, past_bytes) != 0:
-        raise SystemExit("layer forward smoke: FAIL slot mismatch initialization")
-    if slot_compare(slots, 0, plane, len(plane_data), k_base,
-                    head_dim, n_head_kv, n_past, 0) != 2:
-        raise SystemExit("layer forward smoke: FAIL slot K mismatch column")
-    if slot_compare(slots, 0, plane, len(plane_data), k_base,
-                    head_dim, n_head_kv, n_past - 1, 0) != -7:
-        raise SystemExit("layer forward smoke: FAIL slot exact-extent refusal")
-    if slot_compare(slots, 0, None, len(plane_data), k_base,
-                    head_dim, n_head_kv, n_past, 0) != -6:
-        raise SystemExit("layer forward smoke: FAIL slot null-plane refusal")
-    if slot_compare(slots, 1, None, len(plane_data), k_base,
-                    head_dim, n_head_kv, n_past, 0) != -9:
-        raise SystemExit("layer forward smoke: FAIL slot-resolution precedence")
-finally:
-    if allocation:
-        buffer_free(allocation)
-    if backend:
-        backend_close(backend)
-    if ctx:
-        context_close(ctx)
-
-print("layer forward smoke: KV-plane native staging/comparison layouts and refusals PASS")
+print("layer forward smoke: KV-plane native staging layout and refusals PASS")
 PY
 
 # The compiler's warnings are captured rather than streamed **under the fresh worker**, exactly as
@@ -7276,26 +7107,11 @@ for name, argv, expected in ENGINE_CASES:
     # the same pack at 6 and 8, and every count below that depends on `u` is written as its formula
     # so those cases assert the same relations at their own width instead of being skipped.
     used = document["model"]["n_expert_used"]
-    layers = document["model"]["n_layer"]
     if graph["table_rows_a"] != 35 or graph["table_rows_a_decode"] != 37 \
             or graph["table_rows_b"] != 2 * used + 8:
         failures.append("%s: tables %d/%d/%d, not 35/37/%d at n_expert_used %d"
                         % (name, graph["table_rows_a"], graph["table_rows_a_decode"],
                            graph["table_rows_b"], 2 * used + 8, used))
-    # Item 63 retains all 37 table rows but constructs decode attention at `n_past + 1`, so each
-    # layer omits exactly the K and V PAD rows. A non-last layer also omits the two `WHEN_LAST`
-    # rows. Together with phase B, one embedding node and three head nodes, this is the exact
-    # issued-node count of each completed step.
-    expected_step_nodes = layers * (41 + 2 * used) + 6
-    for row in document["steps"]:
-        if row["node_count"] != expected_step_nodes:
-            failures.append("%s: step %d node_count %d, not %d at %d layers / %d experts"
-                            % (name, row["index"], row["node_count"], expected_step_nodes,
-                               layers, used))
-    if document["decode"]["node_count"] != expected_step_nodes * len(document["steps"]):
-        failures.append("%s: decode.node_count %d, not %d x %d completed steps"
-                        % (name, document["decode"]["node_count"], expected_step_nodes,
-                           len(document["steps"])))
     if document["verdict"] != "EXTERNAL":
         failures.append("%s: verdict %r, not EXTERNAL" % (name, document["verdict"]))
     if document["selection"]["narrow_layer"] != -1 \
@@ -7330,9 +7146,9 @@ for name, argv, expected in ENGINE_CASES:
         if residency["claim_planes_read"] != 2 * used * 3:
             failures.append("%s: step %d read %d claim planes, not 2 layers x %d experts x 3 roles"
                             % (name, row["index"], residency["claim_planes_read"], used))
-    if document["decode"]["graph_count"] != (2 * layers + 2) * completed:
+    if document["decode"]["graph_count"] != (2 * 2 + 2) * completed:
         failures.append("%s: decode.graph_count %d, not %d per step"
-                        % (name, document["decode"]["graph_count"], 2 * layers + 2))
+                        % (name, document["decode"]["graph_count"], 2 * 2 + 2))
 
 # Gate G, oracle R, oracle B, oracle T and the demand stream, all on the one case that runs the
 # whole shape: three steps against a four-graph transcript with the prefill's own logits blob.
