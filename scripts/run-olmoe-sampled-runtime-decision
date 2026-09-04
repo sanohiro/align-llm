@@ -565,7 +565,6 @@ def portfolio_signature(portfolio: dict[str, Any]) -> tuple[Any, ...]:
             candidate["seed"],
             candidate["status"],
             candidate["completion_tokens"],
-            candidate["output_sha256"],
             candidate["patch_sha256"],
         )
         for candidate in portfolio["candidates"]
@@ -866,6 +865,20 @@ def self_test() -> int:
     ]
     if aggregate(samples)["verdict"] != "MET":
         raise DecisionError("MET aggregate drifted")
+    invalid_output_variation = []
+    for sample in samples:
+        local_with_invalid = {
+            **sample["local"],
+            "admitted_patch_count": sample["local"]["admitted_patch_count"] - 1,
+            "candidates": [dict(candidate) for candidate in sample["local"]["candidates"]],
+        }
+        local_with_invalid["candidates"][0] = synthetic_candidate(1, "INVALID_PATCH")
+        invalid_output_variation.append({**sample, "local": local_with_invalid})
+    changed_invalid = dict(invalid_output_variation[1]["local"]["candidates"][0])
+    changed_invalid["output_sha256"] = "e" * 64
+    invalid_output_variation[1]["local"]["candidates"][0] = changed_invalid
+    if aggregate(invalid_output_variation)["verdict"] != "MET":
+        raise DecisionError("invalid-patch output variation changed the task verdict")
     slower = [{**sample, "runtime": dict(sample["runtime"])} for sample in samples]
     slower[0]["runtime"]["time_to_passing_patch_ns"] = 300
     if aggregate(slower)["verdict"] != "NOT_MET":
@@ -875,9 +888,7 @@ def self_test() -> int:
         raise DecisionError("NOT_ELIGIBLE aggregate drifted")
 
     nondeterministic = [{**sample, "runtime": dict(sample["runtime"])} for sample in samples]
-    nondeterministic[0]["runtime"] = synthetic_portfolio(
-        time_ns=100, selected_index=2, salt="c"
-    )
+    nondeterministic[0]["runtime"] = synthetic_portfolio(time_ns=100, selected_index=2, salt="c")
     try:
         aggregate(nondeterministic)
     except DecisionError:

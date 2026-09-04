@@ -19,11 +19,13 @@ order, and closure matrix are `docs/specs/r8-olmoe-sampled-runtime-decision.md`.
 **Next actions.** Commit the design checkpoint, implement the focused decision runner and
 self-test without changing product behavior, run the owner, then execute and record the one real
 decision. The first complete four-pair execution reached final aggregation in about twelve minutes
-but correctly emitted no result because the local seeded portfolio was nondeterministic. Add
-bounded per-pair signatures and fail at the first repeat mismatch, diagnose the exact drift, and
-settle the reproducible baseline before recording the decision. Then complete one comprehensive
-review, repair accepted findings, run exact-head preflight, publish, and merge before starting the
-next eligible capability.
+but correctly emitted no result because exact local output bytes differed. A bounded two-pair
+diagnostic isolated the drift to candidate 1: both rows were 52-token `INVALID_PATCH` results,
+while the following failing patches and the seed-5 passing patch were byte-identical. The contract
+now keys repeatability on task workload — ordered status, token count, admitted patch digest, and
+selection — while retaining invalid output digests as evidence. Rerun the owner and the one complete
+decision, then complete one comprehensive review, repair accepted findings, run exact-head
+preflight, publish, and merge before starting the next eligible capability.
 
 **Blocker.** None.
 

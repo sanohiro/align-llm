@@ -34,7 +34,7 @@ fixed-task result, not a quality-rate, cross-host, throughput, token-parity, or 
 | Pair schedule | `(local,runtime)`, `(runtime,local)`, `(runtime,local)`, `(local,runtime)`; one synchronous leg at a time |
 | Primary metric | nanoseconds from each portfolio leg's first provider-helper launch through successful validation of its first passing patch |
 | Gate | `MET` only when both arms pass all four legs, runtime is faster in every pair, and runtime median is at least 50,000 ppm below local median; `NOT_MET` when both pass all four but the speed rule fails; `NOT_ELIGIBLE` when either arm has fewer than four passing legs |
-| Determinism | within each arm, all four legs must have the same ordered candidate statuses, completion counts, output digests, patch digests, selected index, and selected seed; drift is harness failure, not a verdict |
+| Determinism | within each arm, all four legs must have the same ordered candidate statuses, completion counts, admitted patch digests, selected index, and selected seed; output digests remain evidence but are not a task-workload identity for an `INVALID_PATCH` that never reaches validation |
 | Failure | nonzero exit for prerequisite or identity drift, malformed records, provider/seed refusal, missing/duplicate/out-of-order candidates, validator infrastructure failure, nondeterminism, cleanup failure, or ceiling excess |
 | Result | canonical `R8_OLMOE_SAMPLED_RUNTIME_DECISION` schema 1 JSON on stdout plus one concise stderr summary; no machine-local result is committed |
 | Ownership | the runner owns the server, exact-source helper, dynamic shim, candidate records and patches, validator workspaces, any Docker containers, and all temporary files |
@@ -49,6 +49,14 @@ does not predict a win: item 50 showed higher per-request runtime cost, while th
 may stop at a different seed because Align's shipped Xoshiro stream intentionally does not promise
 llama.cpp token parity. Time to a passing patch measures both effects without substituting an
 isolated decode counter.
+
+The first pre-result execution exposed one correction to the determinism rule. Local candidate 1
+produced two different output digests across repeated portfolios, but both rows had 52 completion
+tokens, were rejected by the extractor, and were followed by byte-identical failing and passing
+patches at the same seeds. Exact bytes of a completion that never becomes a patch are therefore not
+part of the task workload identity. They remain recorded for transparency; status, completion
+count, every admitted patch digest, and portfolio selection remain fail-closed repeatability keys.
+No complete result or performance verdict existed when this rule was corrected.
 
 Median for four values is the integer floor of the sum of the two middle sorted values divided by
 two. Gain is `(local_median - runtime_median) * 1_000_000 // local_median`. Every duration is a
@@ -121,7 +129,7 @@ build artifacts, clean source state, and source head are rechecked after all pai
 | No passing patch | require all eight ordered attempts and null selection/time | successful provider records only | aggregate `NOT_ELIGIBLE` case |
 | Provider or malformed failure | fail without a complete result | nonzero helper exit or malformed/inconsistent schema-2 record | self-test refusal/malformed matrix |
 | Ordering and stop | exact pair order and seed order; stop each leg on first pass | one synchronous call at a time | schedule, gap, duplicate, continuation, and early-stop self-tests |
-| Determinism | compare semantic candidate sequence within each arm, excluding timings | explicit seed per request and no hidden runner randomness | repeated-arm equality and mutation self-tests |
+| Determinism | compare status, completion count, admitted patch identity, and selection within each arm; retain but do not key invalid output bytes | explicit seed per request and no hidden runner randomness | repeated-arm equality, invalid-output variation, and semantic mutation self-tests |
 | Timing and decision | leg interval includes all attempts and final validation; exact median/gain/faster rule | provider interval remains nested in command wall interval | MET, NOT_MET, NOT_ELIGIBLE, median, nesting self-tests |
 | Early exit | first infrastructure or identity failure emits no `COMPLETE` JSON | no inferred or repaired result | malformed, mutation, and deadline self-tests |
 | Cleanup | terminate, then kill and reap the owned server/helper; force-remove only the recorded validator container; restore any prior root helper | request-local allocations and cache die with helper invocation | forced escalation, exact container target, and restoration self-tests |
