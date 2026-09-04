@@ -32,20 +32,27 @@ live-width probes produced 17,937,155,959-ns and 18,391,417,042-ns full walls wi
 native lifetime balances. Those probes select the candidate but are not shipping evidence; all
 temporary source and generated artifacts were removed.
 
-**Next actions.** Commit the authoritative design, implement the live-width graph and exact topology
-owner, add the item-63 helper/runner, run narrow verification and four conditioned repetitions,
-record the gate result, review, publish, merge, and continue.
+The design checkpoint is `5e8157a`. The live-width graph, exact topology owner, updated live-mask
+mutant, qualification helper, and bounded gate runner are implemented locally. The stub owner
+publishes 100 rather than 104 nodes per two-layer/top-3 step, reduces only the corresponding
+phase-A activation entries, preserves the fixed plane, passes every comparable transcript row,
+and still detects a forced mask error inside the live prefix.
+
+**Next actions.** Commit the owner-tested implementation checkpoint, build its pinned real helper,
+run four conditioned repetitions, record the gate result, update the owning specifications as the
+decision requires, review, publish, merge, and continue.
 
 **Blocker.** None.
 
-**Latest durable verification.** Item 62's exact-head preflight and all three required hosted checks
-passed before PR #184 merged. Its fixed request reproduced the exact output and balanced 2,958
-buffers, 6,090 contexts, one backend, 2,958 allocators, and one resident wrap in every full run,
-with twelve clean isolation boundaries.
+**Latest durable verification.** `make layer-forward-smoke` passes in 59.127 seconds: 167 decode
+documents retain the exact output, plane, routing, transcript, failure, and lifetime coverage; the
+golden diff is limited to issued-node and phase-A activation sizes. `make runtime-provider-smoke`
+passes its self-test and 61 CLI assertions. The item-63 model-free self-test, Python compilation,
+`make fmt`, and `git diff --check` pass.
 
-**Intentional uncommitted files.** Item 63's design, roadmap, and handoff updates until the design
-checkpoint is committed. Machine-local model/evidence and generated build products remain outside
-Git.
+**Intentional uncommitted files.** Item 63's production implementation, owner golden/assertions,
+helper, runner, and this checkpoint update until committed. Machine-local model/evidence and
+generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-COMPUTE-DIAGNOSIS (PR #184, 2026-09-05)
 

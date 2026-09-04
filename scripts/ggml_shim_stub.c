@@ -1839,20 +1839,20 @@ int32_t align_ggml_slot_set(void *slots, int64_t index, const void *bytes, int64
 #ifdef ALIGN_GGML_FORCE_MASK_OFFSET_MOE
     /* R6-OLMOE-DECODE's routed counterpart of `ALIGN_GGML_FORCE_MASK_OFFSET`. The routed arm's
      * `kq_mask` is `layer_olmoe.MM_SLOT_MASK` (11), a weight slot in a dense graph, so this too is
-     * a separate build. The row is additionally required to end in `-inf`, which every masked row
-     * at a width above `n_past + 1` does and no weight does. Never defined in an ordinary build. */
-    if (status == ALIGN_GGML_OK && index == 11 && t->ne[1] == 1 && off == 0 && n >= 8
-        && ((float *) (void *) t->data)[n / 4 - 1] == -INFINITY) {
+     * a separate build. Item 63 passes only the live `n_past + 1` prefix, so every lane is zero;
+     * requiring that complete shape keeps the mutant decode-only and changes the last included
+     * lane to `-inf`. Never defined in an ordinary build. */
+    if (status == ALIGN_GGML_OK && index == 11 && t->ne[1] == 1 && off == 0 && n >= 8) {
         int64_t lane = 0;
-        int64_t last = -1;
+        int all_zero = 1;
         float *row = (float *) (void *) t->data;
         for (lane = 0; lane < n / 4; lane++) {
-            if (row[lane] == 0.0f) {
-                last = lane;
+            if (row[lane] != 0.0f) {
+                all_zero = 0;
             }
         }
-        if (last >= 0) {
-            row[last] = -INFINITY;
+        if (all_zero) {
+            row[n / 4 - 1] = -INFINITY;
         }
     }
 #endif

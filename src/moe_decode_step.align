@@ -3433,9 +3433,16 @@ fn decode_loop(
       prefix_step(o, step)
       break
     }
-    a_nodes := layer_olmoe.mm_decode_a_node_table(g, n_past, width)
+    attention_width := n_past + 1
+    if attention_width < 1 || attention_width > width {
+      fail(o, CODE_KV_WIDTH, moe_model_forward.labelled("live_width", attention_width))
+      prefix_step(o, step)
+      break
+    }
+    a_nodes := layer_olmoe.mm_decode_a_node_table(g, n_past, attention_width)
     pos_view := pos_all[(step - 1) * 4..step * 4]
-    mask_view := mask_all[(step - 1) * width * 4..step * width * 4]
+    mask_start := (step - 1) * width * 4
+    mask_view := mask_all[mask_start..mask_start + attention_width * 4]
     before_nodes := decoded.node_count
     before_compute := decoded.compute_ns
     before_high_water := decoded.slot_high_water
@@ -3471,7 +3478,7 @@ fn decode_loop(
       mask_view, out_ids_view,
       residual_view,
       logits_view, node_view, plane_view, oracle, embed_nodes, a_nodes, b_nodes, head_nodes, scan,
-      ranges.start, ranges.length, token, n_past, step, width, stride, breach, activation, cache,
+      ranges.start, ranges.length, token, n_past, step, attention_width, stride, breach, activation, cache,
       res, state, decoded, o)
     pass_finished := time.instant()
     if o.code.len() == 0 && generation && decoded.nonfinite_count > 0 {
