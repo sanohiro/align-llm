@@ -1519,7 +1519,8 @@ The current forward delivery order is:
     materiality floor. No implementation seam is authorized; item 60 is selected.
 
 60. **R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS — partition the remaining unassigned pass work.
-    Selected; not started.** Preserve item 59's exact request and evidence boundaries while
+    Active.** [`r8-olmoe-decode-pass-other-diagnosis.md`](r8-olmoe-decode-pass-other-diagnosis.md)
+    is the authoritative ledger and closure matrix. Preserve item 59's exact request and evidence boundaries while
     separating plane round-trip comparison outside the existing readback clock, graph-member/spec
     construction, per-layer/step accounting, and an explicit remainder. A direct measured winner
     must clear item 59's precommitted materiality floor before it can authorize implementation.

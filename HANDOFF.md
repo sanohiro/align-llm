@@ -3,65 +3,47 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS (2026-09-04)
+## Active: R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS (2026-09-04)
 
-Branch `agent/r8-olmoe-decode-pass-residual-diagnosis`, based on pulled merged `main`
-`ef113f8c049a93334cabd42d17dde6d51f31e1be` (item 58 PR #180). The sibling Align checkout and
+Branch `agent/r8-olmoe-decode-pass-other-diagnosis`, based on pulled merged `main`
+`a502f94a22302e4896509204d3423b6e21090ade` (item 59 PR #181). The sibling Align checkout and
 `.align-revision` remain at merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align
 surface is currently required.
 
-Item 59's authoritative diagnosis ledger and closure matrix are
-`docs/specs/r8-olmoe-decode-pass-residual-diagnosis.md`. It will partition item 58's measured
-4,172,949,292-ns decode-pass residual into context/buffer setup, graph build/allocation, generic
-transfer/digest, graph teardown, and an explicit remainder. It preserves the same fixed request,
-Apple M1 host fingerprint, output, isolation, cache, and native-lifetime boundaries. No item 59
-result directly authorizes an optimization.
+Item 60's authoritative ledger and closure matrix are
+`docs/specs/r8-olmoe-decode-pass-other-diagnosis.md`. It partitions item 59's measured
+2,877,094,540-ns `OTHER_PASS_RESIDUAL` median into KV-plane round-trip comparison,
+graph-member/spec construction, per-layer/pass accounting, and an explicit remainder. It preserves
+item 59's exact fixed request, Apple M1 host fingerprint, output, isolation, cache, native-lifetime,
+and cleanup boundaries.
 
-Item 58's post-review full-helper walls
-`[17827657250,17850131083,19007903542,19211017875]` and 18,429,017,312-ns median are item 59's
-immutable baseline. A sub-bucket must reach the precommitted 921,450,866-ns materiality floor,
-50,000 ppm of that baseline, to select implementation work. Four fresh conditioned repetitions
-will determine the largest eligible sub-bucket.
+Item 59's replacement remainder samples
+`[2882960092,2754901085,2871228989,2926947473]` and 2,877,094,540-ns median are immutable.
+The inherited materiality floor remains 921,450,866 ns. Three broad counters and their successful
+remaining-step deltas will time only the named disjoint operations; the new helper will preserve
+the item 59 schema and add one exact `pass_other` object.
 
-The implementation is complete. Four broad counters cover disjoint context/buffer
-setup, graph build/allocation, generic transfer/digest, and ordered teardown operations. The decode
-loop snapshots them around the existing pass and commits only successful post-first-step deltas.
-The new qualification helper extends the old record without changing the item 57 helper's emitted
-schema, and the new runner owns exact detail equations, medians, decisions, fixed-host identity,
-source pinning, and cleanup.
-
-The first clean-head run at `9639c05f819b96ffc7d66604fa890a61255b5bff` is superseded and is not
-decision evidence. Comprehensive Codex CLI review covered head
-`64a5d34aa7a64f55aaaa077534aaf636b4aafabf` against base tip and merge base
-`ef113f8c049a93334cabd42d17dde6d51f31e1be`, using gpt-5.6-sol at high effort over the full diff.
-Its two accepted P2 findings identified claim-buffer wrapping/tensor placement in the wrong timing
-bucket and COMPLETE publication before cleanup and the cleanup-inclusive ceiling check. The
-consolidated repair moves those operations to setup and finalizes, validates, and publishes the
-result only after both cleanup contexts exit. It also adds focused ceiling/finalization mutants.
-Repair commit `8811725fcca11ac0a4d31b5cf024c105753ba0c9` resolves both findings.
-
-The replacement clean-head run at that repair commit completed in 105.743 seconds, including
-cleanup, and recorded `OTHER_PASS_NEEDS_DIAGNOSIS`. Full-helper walls were
-`[18669300333,18063563792,18698163917,18994733625]` ns (18,683,732,125-ns median), and the
-decode-pass residual median was 4,143,730,497 ns. `OTHER_PASS_RESIDUAL` won at 2,877,094,540 ns
-and 694,324 ppm. Generic transfer/digest measured 867,884,330 ns, 53,566,536 ns below the
-921,450,866-ns floor; teardown measured 272,724,643 ns, build/allocation 93,369,986 ns, and setup
-24,995,614 ns. Every fixed output, token, lifetime, host, cleanup, and isolation boundary passed.
-Roadmap item 60 is selected for a narrower attribution; item 59 authorizes no implementation.
-
-**Next actions.** Run exact-head preflight, publish, and merge. Then pull merged `main` and start
-item 60.
+**Next actions.** Implement the shared counters and clocks, extend the qualification helper through
+a third fixed entrypoint, add the source-pinned item 60 runner and focused tests, then run the named
+owners and one clean-head four-repeat diagnosis.
 
 **Blocker.** None.
 
-**Latest durable verification.** After the review repair, `make fmt`, `make layer-forward-smoke`,
-Python compilation, the inherited item 58 self-test, the new focused self-test, and `git diff
---check` pass. Pre-review `make runtime-provider-smoke` (self-test plus 61 CLI assertions) also
-passed. The replacement real four-repeat diagnosis and exact result are recorded above;
-machine-local evidence remains outside Git.
+**Latest durable verification.** The item 60 author ledger-to-prose consistency pass is complete.
+Item 59's exact-head preflight and all three PR checks passed before merge. Item 60 implementation
+verification has not started.
 
-**Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
-remain outside Git.
+**Intentional uncommitted files.** Item 60 design, roadmap, and handoff updates before commit.
+Machine-local model/evidence and generated build products remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS (PR #181, 2026-09-04)
+
+PR #181 merged as `a502f94a22302e4896509204d3423b6e21090ade`. The repaired fixed-host run
+completed in 105.743 seconds and selected `OTHER_PASS_RESIDUAL` at a 2.877-second median and
+694,324 ppm of the 4.144-second decode-pass residual. Every direct bucket missed the 0.921-second
+floor, so no optimization was authorized and item 60 was selected. Comprehensive review found and
+repaired claim-buffer timing attribution and pre-cleanup result publication; exact-head preflight
+and all three required CI jobs passed.
 
 ## Merged checkpoint: R8-OLMOE-KV-PLANE-STAGING-TRANSFER (PR #180, 2026-09-04)
 
