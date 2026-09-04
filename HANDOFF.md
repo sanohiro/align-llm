@@ -32,10 +32,11 @@ before a four-sample latency aggregate or performance decision.
 
 All production and production-owner changes from `e653aab` are now removed and compare exactly to
 that commit's parent; the golden was regenerated from restored source. The thin helper and bounded
-runner remain as the negative decision owner, with real mode refused on publication.
+runner remain as the negative decision owner, with real mode refused on publication. Negative
+decision/removal checkpoint `356a1a5` is the stable candidate for comprehensive review.
 
-**Next actions.** Finish focused verification and commit the negative decision/removal; perform one
-comprehensive review; repair valid findings; run exact-head preflight; publish, merge, and continue.
+**Next actions.** Perform one comprehensive review; repair valid findings; run exact-head preflight;
+publish, merge, and continue.
 
 **Blocker.** None.
 
@@ -44,11 +45,10 @@ regeneration, normal `make layer-forward-smoke` (66.288 seconds), `make runtime-
 real shim build, `make fmt`, combined runner self-test, shared-region identity, and
 `git diff --check` passed. After removal, official golden regeneration passed in 58.822 seconds and
 the ten production/owner files compare exactly to `e653aab^`. Focused publication verification is
-pending.
+passing: Python compilation, combined runner self-test, and `git diff --check`.
 
-**Intentional uncommitted files.** The item-67 negative-decision, production-removal, runner, spec,
-roadmap, and handoff changes are the active coherent batch. Machine-local model/evidence and
-generated build products remain outside Git.
+**Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
+remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY (PR #188, 2026-09-05)
 
