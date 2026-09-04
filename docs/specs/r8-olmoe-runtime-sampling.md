@@ -38,7 +38,7 @@ penalties, concurrent generation, streaming, or a persisted sampler state.
 | Persisted/cache identity | no sampler artifact is persisted; existing model/pack/geometry identities and cache lifetime are unchanged |
 | Schema version | N/A: neither `GenerationRequest`, `ModelInfo`, nor `GenerationRecord` changes shape, and no new exchanged document is introduced |
 | Owner | `make runtime-provider-smoke`, including pure sampler vectors and synthetic public-provider generation; `make layer-forward-smoke` owns the unchanged diagnostic decode surface |
-| Real qualification | prompt `Fix an off-by-one error in a Python inclusive range.`, maximum 2 tokens, temperature 0.3, seed 5, and cache budget 975,175,680 bytes, repeated twice through `runtime_provider_gate runtime-olmoe-sampled`; require successful byte-identical records against the pinned real OLMoE inputs |
+| Real qualification | prompt `Fix an off-by-one error in a Python inclusive range.`, maximum 2 tokens, temperature 0.3, seed 5, and cache budget 975,175,680 bytes, repeated twice through `runtime_provider_gate runtime-olmoe-sampled`; require two successful byte-identical records with exact decoded output `To fix` and exact counted completion length 2 against the pinned real OLMoE inputs |
 | Cost ceiling | approximately 5 minutes for focused build, synthetic owner, and real repeated qualification on the author host; no performance floor |
 
 The exact temperature is intentionally narrow. Item 51 only established feasibility at 0.3, so a
@@ -79,7 +79,7 @@ independently tested module and must fail closed if another future caller bypass
 | Repeatability | create no hidden state | seed once per invocation and advance returned state once per emitted id | shipped deterministic RNG only | same-seed synthetic and repeated real qualification |
 | Different seeds | accept every `i64` seed | separate invocations have separate state | balanced vector exposes divergent pinned choices | pure vector; no statistical claim |
 | Early exit | propagate `Error.Invalid`; write no successful record | stop before partial generated-id success | return `Err` without a token | malformed vector and provider error cases |
-| Cleanup | existing provider ownership unchanged | temporary builders and RNG die with invocation; expert cache cleanup unchanged | owned arrays die on return | existing smoke lifecycle plus repeated real process exits |
+| Cleanup | existing provider ownership unchanged | temporary builders and RNG die with invocation; expert cache cleanup unchanged | owned arrays die on return | existing smoke lifecycle, repeated real process exits, and qualification signal-escalation self-test |
 
 Streaming, concurrent calls, arbitrary policy composition, sampling penalties, sampling-state
 serialization, GPU execution, and provider-level passing-patch measurement are N/A because this
@@ -116,7 +116,7 @@ misaligned, and non-finite refusal. The synthetic public provider repeats seed 1
 
 The fixed real qualification repeated seed 5 twice through `ModelProvider.generate`. Both calls
 succeeded with two completion tokens and byte-identical output `To fix`, SHA-256
-`354950a4f35909ff2356a417a4ec653f0c5e1a93f6066a97087dcd00e01eeddd`; complete qualification
-time including identity checks and helper construction was 17.40 seconds. This is reproducibility
+`354950a4f35909ff2356a417a4ec653f0c5e1a93f6066a97087dcd00e01eeddd`; repaired qualification
+time including identity checks and helper construction was 17.05 seconds. This is reproducibility
 evidence only and does not imply llama.cpp token parity beyond this coincident two-token output or a
 provider-level passing patch.

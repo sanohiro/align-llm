@@ -21,12 +21,22 @@ ceiling, and closure matrix are `docs/specs/r8-olmoe-runtime-sampling.md`.
 threads one explicit Xoshiro256++ state through the OLMoE selected-token chain, and keeps diagnostic
 argmax evidence separate. The focused provider owner passes pure boundary vectors, sampled public
 API repeatability/EOG/refusal cases, and all 61 existing CLI assertions. Python compilation, helper
-self-test, Align checking, and `git diff --check` pass. The fixed real qualification repeated seed 5
-twice: both calls returned two-token `To fix` (SHA-256 `354950a4f359`) and the complete gate passed
-in 17.40 seconds.
+self-test, Align checking, and `git diff --check` pass. The repaired fixed real qualification
+repeated seed 5 twice: both calls returned exact two-token `To fix` (SHA-256 `354950a4f359`) and the
+complete gate passed in 17.05 seconds.
 
-**Next actions.** Commit the reconciled implementation and evidence, perform one comprehensive
-review, repair any validated findings, then run the exact-head publication preflight and publish.
+The comprehensive Codex CLI review covered head
+`ae5f49a9eb16a9f5433fb8cd5fd4a79cc590f0a7` against base tip and merge base
+`753e7c4acb6284dc495f92a243da081434073b97`, using gpt-5.6-sol at high effort over the full diff.
+It found three accepted P2 qualification defects: deterministic empty or wrong output could pass,
+undeclared forced-shim selectors crossed into the build, and directed termination could orphan the
+model helper. The consolidated repair pins exact `To fix` and counted length 2, removes both shim
+selectors, and adds signal-aware terminate/kill cleanup plus self-tests. It does not change the
+public sampling behavior or expand scope, so another comprehensive review is not required.
+
+**Next actions.** Commit the review repair, run the exact-head publication preflight, publish the
+pull request with its review envelope, merge after required checks, then start the next roadmap
+capability.
 
 **Blocker.** None.
 

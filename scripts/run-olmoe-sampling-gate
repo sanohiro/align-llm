@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -23,7 +24,10 @@ CACHE_BUDGET_BYTES = 975_175_680
 MAX_TOKENS = 2
 TEMPERATURE_MICROS = 300_000
 SEED = 5
+EXPECTED_OUTPUT = "To fix"
+EXPECTED_COMPLETION_TOKENS = 2
 COST_CEILING_SECONDS = 5 * 60
+active_process: subprocess.Popen[bytes] | None = None
 
 
 class GateError(RuntimeError):
@@ -64,16 +68,63 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def stop_active_process() -> None:
+    global active_process
+    process = active_process
+    if process is None or process.poll() is not None:
+        active_process = None
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+    active_process = None
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    stop_active_process()
+    raise SystemExit(128 + signal_number)
+
+
 def run(
     argv: list[str], *, timeout: int, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[bytes]:
-    result = subprocess.run(argv, cwd=ROOT, env=env, capture_output=True, timeout=timeout, check=False)
+    global active_process
+    process = subprocess.Popen(
+        argv, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    active_process = process
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        stop_active_process()
+        raise
+    finally:
+        if active_process is process:
+            active_process = None
+    result = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
     if result.returncode != 0:
         raise GateError(
             "command failed (%d): %s\n%s"
             % (result.returncode, " ".join(argv), result.stderr.decode("utf-8", "replace")[-4096:])
         )
     return result
+
+
+def shim_environment(include: Path, library: Path, shim: Path) -> dict[str, str]:
+    environment = dict(os.environ)
+    environment.pop("ALIGN_LLM_GGML_FORCE", None)
+    environment.pop("ALIGN_LLM_GGML_SHIM_STATIC", None)
+    environment.update(
+        {
+            "ALIGN_LLM_GGML_INCLUDE": str(include),
+            "ALIGN_LLM_GGML_LIB": str(library),
+            "ALIGN_LLM_GGML_SHIM_DIR": str(shim),
+        }
+    )
+    return environment
 
 
 def sampled_command(
@@ -100,6 +151,7 @@ def sampled_command(
 
 
 def self_test() -> int:
+    global active_process
     with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-sampling-self-test-") as raw:
         work = Path(raw)
         missing = str(work / "missing")
@@ -118,6 +170,31 @@ def self_test() -> int:
             "975175680", "2", "300000", "5"
         ]:
             raise GateError("fixed sampled helper command drifted")
+        with mock.patch.dict(
+            os.environ,
+            {"ALIGN_LLM_GGML_FORCE": "compute", "ALIGN_LLM_GGML_SHIM_STATIC": "1"},
+            clear=True,
+        ):
+            isolated = shim_environment(work / "include", work / "library", work / "shim")
+        if "ALIGN_LLM_GGML_FORCE" in isolated or "ALIGN_LLM_GGML_SHIM_STATIC" in isolated:
+            raise GateError("forced shim selectors crossed into the qualification")
+        if isolated.get("ALIGN_LLM_GGML_INCLUDE") != str(work / "include"):
+            raise GateError("declared shim inputs were not retained")
+    forced_timeout = subprocess.TimeoutExpired(["runtime-provider-gate"], 10)
+    fake_process = mock.Mock()
+    fake_process.poll.return_value = None
+    fake_process.wait.side_effect = [forced_timeout, 0]
+    active_process = fake_process
+    try:
+        interrupted(signal.SIGTERM, None)
+    except SystemExit as exit_value:
+        if exit_value.code != 128 + signal.SIGTERM:
+            raise GateError("signal cleanup returned the wrong status")
+    else:
+        raise GateError("signal cleanup did not exit")
+    if fake_process.terminate.call_count != 1 or fake_process.kill.call_count != 1:
+        raise GateError("helper cleanup did not escalate from terminate to kill")
+    active_process = None
     print("R8-OLMOE-RUNTIME-SAMPLING self-test: PASS")
     return 0
 
@@ -127,6 +204,8 @@ def main() -> int:
         return self_test()
     if len(sys.argv) != 1:
         raise GateError("OLMoE sampling gate accepts no arguments")
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
     required = prerequisites()
     if required is None:
         return 0
@@ -143,14 +222,7 @@ def main() -> int:
         helper = work / "runtime-provider-gate"
         prompt = work / "prompt.txt"
         prompt.write_text(PROMPT, encoding="utf-8")
-        build_env = dict(os.environ)
-        build_env.update(
-            {
-                "ALIGN_LLM_GGML_INCLUDE": str(include),
-                "ALIGN_LLM_GGML_LIB": str(library),
-                "ALIGN_LLM_GGML_SHIM_DIR": str(shim),
-            }
-        )
+        build_env = shim_environment(include, library, shim)
         run([str(ROOT / "scripts/build-ggml-shim")], timeout=180, env=build_env)
         build_env["LIBRARY_PATH"] = ":".join(
             value for value in (str(shim), str(library), build_env.get("LIBRARY_PATH", "")) if value
@@ -181,12 +253,12 @@ def main() -> int:
                 or record.get("status") != "ok"
                 or record.get("error") != ""
                 or record.get("token_count_exact") is not True
-                or not isinstance(record.get("output"), str)
+                or record.get("output") != EXPECTED_OUTPUT
                 or not isinstance(record.get("prompt_tokens"), int)
                 or int(record["prompt_tokens"]) < 1
-                or not isinstance(record.get("completion_tokens"), int)
-                or int(record["completion_tokens"]) < 0
-                or int(record["completion_tokens"]) > MAX_TOKENS
+                or record.get("completion_tokens") != EXPECTED_COMPLETION_TOKENS
+                or record.get("total_tokens")
+                != int(record["prompt_tokens"]) + EXPECTED_COMPLETION_TOKENS
             ):
                 raise GateError(f"sampled attempt {attempt} record drifted: {record!r}")
             records.append(record)
