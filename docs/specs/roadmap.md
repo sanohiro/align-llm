@@ -1558,6 +1558,30 @@ The current forward delivery order is:
     cleanup check passed, but the performance gate did not; all three production interventions and
     their owner-test additions were removed before publication.
 
+62. **R8-OLMOE-DECODE-COMPUTE-DIAGNOSIS — partition the next-largest remaining decode bucket.
+    Complete; decision `MEASURED_BUCKET_ELIGIBLE / ROUTING_PHASE_A`.**
+    [`r8-olmoe-decode-compute-diagnosis.md`](r8-olmoe-decode-compute-diagnosis.md) is the
+    authoritative ledger and closure matrix. Item 61's intervention did not ship, so item 59's
+    fixed-request ordering remains authoritative: graph compute is the next-largest unresolved
+    bucket at a 4,104,846,715-ns median, ahead of claim I/O at 3,609,378,007 ns and above the
+    inherited 921,450,866-ns materiality floor. Preserve the same request, output, isolation,
+    cache, and lifetimes while splitting compute into decoded-token embedding, every layer's
+    routing/attention phase A, every layer's selected-expert phase B, and output-head graph walls.
+    The clean-head four-repeat run reproduced the fixed output, exact native lifetimes, and all
+    twelve isolation boundaries. Decode compute measured a 4.216-second median. Phase A dominated
+    at 2.939 seconds and 697,193 ppm, ahead of expert phase B at 1.115 seconds, output head at 0.151
+    seconds, and embedding at 0.001 seconds. It clears the inherited floor by 2.018 seconds and
+    selects item 63; this diagnosis changes no graph and makes no performance claim.
+
+63. **R8-OLMOE-ROUTING-PHASE-A-BOUNDARY — reduce the measured attention/routing graph boundary.
+    Selected; not started.** Preserve item 62's fixed request, output, cache, isolation, and native
+    lifetimes. Its four full-helper walls and 19,266,559,229-ns median are the immutable baseline.
+    The implementation ledger must precommit the 50,000-ppm floor of 963,327,962 ns and candidate
+    ceiling of 18,303,231,267 ns before production code changes; a miss removes the intervention.
+    Phase A includes attention, normalization, router scoring, and argsort, so the ledger must name
+    the exact intervention and may not claim an individual operation from item 62's graph-level
+    timing.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
