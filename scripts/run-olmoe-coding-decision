@@ -282,7 +282,12 @@ def cleanup_container(docker: str, cid_file: Path) -> None:
 
 
 def validate_patch(
-    patch: Path, work: Path, deadline: float, validator: dict[str, Any]
+    patch: Path,
+    work: Path,
+    deadline: float,
+    validator: dict[str, Any],
+    *,
+    env: dict[str, str] | None = None,
 ) -> tuple[bool, int]:
     started = time.monotonic_ns()
     argv, cid_file = validation_command(patch, work, validator)
@@ -290,6 +295,7 @@ def validate_patch(
         result = subprocess.run(
             argv,
             cwd=ROOT,
+            env=env,
             capture_output=True,
             timeout=remaining_timeout(deadline, 120),
             check=False,

@@ -81,15 +81,18 @@ because execution stops immediately.
 The runner requires a clean worktree and records the exact align-llm head, managed compiler,
 compiled helper, temporary static shim, C compiler, model, server, task, prompt, and immutable
 validator image. It re-hashes every persistent input and every retained build artifact after the
-portfolio. Paths, model output, patch text, server logs, and credentials never enter the result.
+portfolio. The known-good control and every candidate validator invocation receive the same
+environment with all validator-routing overrides removed; the native validator therefore uses its
+declared defaults, while the immutable Docker path remains container-isolated. Paths, model output,
+patch text, server logs, and credentials never enter the result.
 
 ## 4. Closure matrix
 
 | Cell | Runner | Provider helper | Evidence |
 | --- | --- | --- | --- |
 | Construction | validate model/server, resolve immutable validator, isolate ambient compiler/shim/math overrides, then build exact source | explicit sampled-local mode constructs temperature and seed in `GenerationRequest` | self-test validation precedence and exact helper request |
-| Validator control | the existing known-good patch passes once before server/model work | N/A | control failure stops before candidates |
-| Candidate success | extract exact existing grammar and validate in an isolated workspace | schema-2 provider record with accepted seed and completion | selected candidate fields and `MET` |
+| Validator control | the existing known-good patch passes once before server/model work under the same override-free environment as every candidate | N/A | control failure stops before candidates; environment isolation self-test |
+| Candidate success | extract exact existing grammar and validate in an isolated workspace under the fixed validator environment | schema-2 provider record with accepted seed and completion | selected candidate fields, environment isolation self-test, and `MET` |
 | Invalid patch | record bounded output identity, do not invoke validator | successful provider generation | `INVALID_PATCH` self-test and real row |
 | Failing patch | retain patch identity and validator duration | successful provider generation | `FAILING_PATCH` self-test and real row |
 | Provider/seed failure | fail the run; never reinterpret it as a candidate | nonzero helper status or malformed/inconsistent record | malformed/error/refusal self-tests |

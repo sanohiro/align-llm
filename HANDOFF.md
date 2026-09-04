@@ -18,19 +18,30 @@ with `MET`; portfolio time to passing patch was 13.176 seconds and complete setu
 34.483 seconds. This is feasibility evidence and makes no speed claim. The authoritative ledger,
 schema, result, and closure matrix are `docs/specs/r8-olmoe-sampled-coding.md`.
 
-**Latest durable verification.** `gmake fmt` passed; the focused model-free owner passed after a
-fresh managed-compiler helper build and exact fake-server wire assertion; `gmake
-runtime-provider-smoke` passed all 61 existing assertions. The one real decision on clean head
+**Latest durable verification.** `gmake fmt` passed; the repaired focused model-free owner passed
+after a fresh managed-compiler helper build, exact fake-server wire assertion, and validator
+environment-isolation regression; `gmake runtime-provider-smoke` passed all 61 existing assertions.
+Python compilation and `git diff --check` also pass. The one real decision on clean head
 `e4a01c9529c579ce6cec57f25a45f099f884faa6` completed `MET` with selected seed 5 and patch digest
 `5d6b107e706a`.
 
-**Next actions.** Commit the bound result, perform one comprehensive review, repair valid findings,
-run affected owner verification and exact-head publication preflight, publish, merge, pull `main`,
-and start the seeded `AlignRuntime` sampling capability selected by this result.
+The comprehensive Codex CLI review covered head
+`479c596157f8533c218bad868e0097957ab33b67` against base tip and merge base
+`8d7ec12415dd0dadc765a29fd1cc3056ddbe18c8`, using gpt-5.6-sol at high effort over the full diff.
+It found one accepted P2: the supported Linux-native validator path inherited ambient executable
+and routing overrides that were absent from the result identity. The consolidated repair gives the
+known-good control and every candidate the same override-free environment and adds a focused
+isolation regression. Docker evidence from the recorded Darwin run was already isolated inside the
+immutable container, so the repair does not invalidate or reinterpret that decision. It does not
+change provider behavior, sampling, extraction, scoring, or scope and does not require another
+comprehensive review.
+
+**Next actions.** Run affected owner verification and exact-head publication preflight, publish,
+merge, pull `main`, and start the seeded `AlignRuntime` sampling capability selected by this result.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The bound result and handoff update until committed. Local
+**Intentional uncommitted files.** The consolidated review repair until committed. Local
 configuration remains outside the change.
 
 ## Merged checkpoint: R8-OLMOE-PROVIDER (PR #170, 2026-09-03)

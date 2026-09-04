@@ -44,6 +44,15 @@ TEMPERATURE_MICROS = 300_000
 SEEDS = tuple(range(1, 9))
 MAX_TOKENS = 128
 CEILING_SECONDS = 10 * 60
+VALIDATOR_ENV_NAMES = {
+    "ALIGN_LLM_BWRAP",
+    "ALIGN_LLM_FRESH_COMPILER",
+    "ALIGN_LLM_PRLIMIT",
+    "ALIGN_LLM_PYTHON",
+    "ALIGN_LLM_TEMP_ROOT",
+    "ALIGN_LLM_TOOL_ROOT",
+    "ALIGN_LLM_VALIDATION_USERNS_PATH",
+}
 server_process: subprocess.Popen[bytes] | None = None
 
 
@@ -88,6 +97,23 @@ def configured_prerequisites() -> tuple[Path, Path] | None:
 
 def command_digest(result: subprocess.CompletedProcess[bytes]) -> str:
     return hashlib.sha256(result.stdout + result.stderr).hexdigest()
+
+
+def decision_environment() -> dict[str, str]:
+    environment = base.sanitized_environment()
+    for name in VALIDATOR_ENV_NAMES:
+        environment.pop(name, None)
+    return environment
+
+
+def validate_patch(
+    patch: Path,
+    work: Path,
+    deadline: float,
+    validator: dict[str, Any],
+    clean_env: dict[str, str],
+) -> tuple[bool, int]:
+    return base.validate_patch(patch, work, deadline, validator, env=clean_env)
 
 
 @contextlib.contextmanager
@@ -228,7 +254,9 @@ def measure_candidate(
         patch = work / f"candidate-{index}.patch"
         patch.write_text(patch_text, encoding="utf-8")
         patch_sha256 = base.file_sha256(patch)
-        passed, validation_elapsed_ns = base.validate_patch(patch, work, deadline, validator)
+        passed, validation_elapsed_ns = validate_patch(
+            patch, work, deadline, validator, clean_env
+        )
         if passed:
             status = "PASS"
             time_to_passing_patch_ns = time.monotonic_ns() - portfolio_started_ns
@@ -494,6 +522,23 @@ def helper_self_test(work: Path, deadline: float) -> None:
 
 def self_test() -> int:
     base.self_test()
+    with mock.patch.dict(
+        os.environ,
+        {
+            **{name: f"ambient-{name}" for name in VALIDATOR_ENV_NAMES},
+            "ALIGN_LLM_UNRELATED_SELF_TEST": "retained",
+        },
+        clear=True,
+    ):
+        validator_env = decision_environment()
+    if any(name in validator_env for name in VALIDATOR_ENV_NAMES):
+        raise DecisionError("validator environment override survived isolation")
+    if validator_env.get("ALIGN_LLM_UNRELATED_SELF_TEST") != "retained":
+        raise DecisionError("unrelated environment input did not retain its value")
+    with mock.patch.object(base, "validate_patch", return_value=(True, 1)) as validate:
+        validate_patch(Path("patch"), Path("work"), 1.0, {"kind": "native"}, validator_env)
+    if validate.call_args.kwargs.get("env") != validator_env:
+        raise DecisionError("validator did not receive the isolated environment")
     common = {
         "provider_elapsed_ns": 10,
         "command_wall_ns": 20,
@@ -611,7 +656,8 @@ def main() -> int:
         validator = base.resolve_validator(deadline)
         control = work / "known-good.patch"
         control.write_text(KNOWN_GOOD_PATCH, encoding="utf-8")
-        passed, _ = base.validate_patch(control, work, deadline, validator)
+        clean_env = decision_environment()
+        passed, _ = validate_patch(control, work, deadline, validator, clean_env)
         if not passed:
             raise DecisionError("known-good validator control did not pass")
         if model.stat().st_size != MODEL_BYTES or base.file_sha256(model) != MODEL_SHA256:
@@ -619,7 +665,6 @@ def main() -> int:
         server_sha256 = base.file_sha256(server)
         task_sha256 = base.file_sha256(TASK)
         prompt_sha256 = base.bytes_sha256(PROMPT_TEXT.encode("utf-8"))
-        clean_env = base.sanitized_environment()
         version = base.run_checked(
             [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env
         )
