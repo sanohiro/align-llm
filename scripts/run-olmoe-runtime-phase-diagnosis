@@ -622,6 +622,25 @@ def repeated_setup(record: dict[str, Any]) -> int:
     ) + record["engine"]["resident_fill_ns"]
 
 
+def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
+    rows = (
+        ("ALIGN_LLM_OLMOE_MODEL", base.configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", base.configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", base.configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", base.configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", base.configured_directory("ALIGN_LLM_GGML_LIB")),
+        (
+            "ALIGN_LLM_LLAMA_SERVER",
+            base.configured_file("ALIGN_LLM_LLAMA_SERVER", executable=True),
+        ),
+    )
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-RUNTIME-PHASE-DIAGNOSIS: N/A ({missing} unset)")
+        return None
+    return tuple(path.resolve() for _, path in rows)  # type: ignore[return-value]
+
+
 def greater_by_deadband(left: int, right: int) -> bool:
     if left <= right:
         return False
@@ -716,12 +735,15 @@ def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
     setups = [repeated_setup(pair["solo"]["full"]) for pair in samples]
     penalties = [co_full[index] - solo_full[index] for index in range(4)]
     solo_full_median = median(solo_full)
-    setup_median = median(setups)
+    setup_lower_median = median(setups)
+    setup_upper_median = solo_full_median
     penalty_median = median(penalties)
     positive_penalty = max(0, penalty_median)
-    if all(value > 0 for value in penalties) and greater_by_deadband(penalty_median, setup_median):
+    if all(value > 0 for value in penalties) and greater_by_deadband(
+        penalty_median, setup_upper_median
+    ):
         decision = "CO_RESIDENT_PRESSURE_EXCEEDS_SETUP"
-    elif greater_by_deadband(setup_median, positive_penalty):
+    elif greater_by_deadband(setup_lower_median, positive_penalty):
         decision = "REPEATED_SETUP_EXCEEDS_PRESSURE"
     else:
         decision = "MIXED_OR_UNRESOLVED"
@@ -730,8 +752,14 @@ def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "co_resident_short_median_ns": median(co_short),
         "solo_full_median_ns": solo_full_median,
         "co_resident_full_median_ns": median(co_full),
-        "solo_repeated_setup_median_ns": setup_median,
-        "solo_repeated_setup_share_ppm": setup_median * 1_000_000 // solo_full_median,
+        "solo_repeated_setup_lower_bound_median_ns": setup_lower_median,
+        "solo_repeated_setup_lower_bound_share_ppm": (
+            setup_lower_median * 1_000_000 // solo_full_median
+        ),
+        "solo_repeated_setup_upper_bound_median_ns": setup_upper_median,
+        "solo_repeated_setup_upper_bound_share_ppm": (
+            setup_upper_median * 1_000_000 // solo_full_median
+        ),
         "co_resident_full_penalties_ns": penalties,
         "co_resident_full_penalty_median_ns": penalty_median,
         "co_resident_full_penalty_ppm": penalty_median * 1_000_000 // solo_full_median,
@@ -852,13 +880,17 @@ def self_test() -> int:
     else:
         raise DiagnosisError("unbalanced helper lifetime was accepted")
 
-    if aggregate(synthetic_samples(1700))["decision"] != "CO_RESIDENT_PRESSURE_EXCEEDS_SETUP":
+    if aggregate(synthetic_samples(2200))["decision"] != "CO_RESIDENT_PRESSURE_EXCEEDS_SETUP":
         raise DiagnosisError("co-resident pressure decision drifted")
     if aggregate(synthetic_samples(1020))["decision"] != "REPEATED_SETUP_EXCEEDS_PRESSURE":
         raise DiagnosisError("repeated setup decision drifted")
     setup = repeated_setup(synthetic_record(FULL_TOKENS))
     if aggregate(synthetic_samples(1000 + setup))["decision"] != "MIXED_OR_UNRESOLVED":
         raise DiagnosisError("diagnosis deadband boundary drifted")
+    if aggregate(synthetic_samples(1700))["decision"] != "MIXED_OR_UNRESOLVED":
+        raise DiagnosisError("unbounded reconstructive work did not keep diagnosis unresolved")
+    if aggregate(synthetic_samples(2050))["decision"] != "MIXED_OR_UNRESOLVED":
+        raise DiagnosisError("upper-bound deadband boundary drifted")
     invalid_residency = synthetic_samples(1700)
     invalid_residency[0]["co_resident"]["short"]["server_rss_before_bytes"] = 1
     try:
@@ -867,6 +899,13 @@ def self_test() -> int:
         pass
     else:
         raise DiagnosisError("co-resident helper without resident model pressure was accepted")
+
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as printed:
+        if prerequisites() is not None:
+            raise DiagnosisError("missing prerequisites did not produce N/A")
+    printed.assert_called_once_with(
+        "R8-OLMOE-RUNTIME-PHASE-DIAGNOSIS: N/A (ALIGN_LLM_OLMOE_MODEL unset)"
+    )
 
     server = Path("/opt/llama server")
     model = Path("/models/model.gguf")
@@ -929,7 +968,7 @@ def main() -> int:
         return self_test()
     if len(sys.argv) != 1:
         raise DiagnosisError("OLMoE runtime phase diagnosis accepts no arguments")
-    required = previous.prerequisites()
+    required = prerequisites()
     if required is None:
         return 0
     model, pack, geometry, include, library, server = required
@@ -1087,7 +1126,10 @@ def main() -> int:
             print(
                 "R8-OLMOE-RUNTIME-PHASE-DIAGNOSIS: COMPLETE "
                 f"decision={aggregate_result['decision']} "
-                f"setup={aggregate_result['solo_repeated_setup_median_ns'] / 1e9:.3f}s "
+                f"setup_lower="
+                f"{aggregate_result['solo_repeated_setup_lower_bound_median_ns'] / 1e9:.3f}s "
+                f"setup_upper="
+                f"{aggregate_result['solo_repeated_setup_upper_bound_median_ns'] / 1e9:.3f}s "
                 f"penalty={aggregate_result['co_resident_full_penalty_median_ns'] / 1e9:.3f}s "
                 f"elapsed={elapsed_ns / 1e9:.2f}s",
                 file=sys.stderr,

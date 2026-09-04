@@ -30,22 +30,27 @@ also stopped without output after its first co-resident helper evicted the warme
 warmup and 2-GiB RSS floor immediately before every timed helper and records RSS immediately after;
 no result or partial evidence was emitted by either discovery run.
 
-The one valid complete run at `fc2f2bf` took 344.545 seconds and recorded
-`CO_RESIDENT_PRESSURE_EXCEEDS_SETUP`. Solo short/full medians were 4.667/29.196 seconds;
-co-resident medians were 6.044/31.187 seconds. All four paired full penalties were positive, with a
-2.208-second median (75,633 ppm), while the repeated-setup lower-bound median was only 0.121 seconds
-(4,129 ppm). All eight co-resident records began above 2 GiB RSS and ended below it. Outputs and
-lifetime counters were stable. The selected next R8 work is an isolated-baseline decision, not a
-persistent-provider or retained-cache design.
+The comprehensive review covered head `386b8f6` against base tip and merge base `f2c83c96`, using
+gpt-5.6-sol at high effort over the full diff. It found two accepted defects. P1 showed that the
+first complete run's `CO_RESIDENT_PRESSURE_EXCEEDS_SETUP` classification compared a 2.208-second
+penalty against only the 0.121-second measured setup lower bound, so it could not exclude larger
+unassigned reconstructive work. P3 reproduced the predecessor capability's N/A label when this
+runner's prerequisites were unset. The raw measurements remain discovery evidence, but the
+directional result is withdrawn.
 
-**Next actions.** Commit the recorded diagnosis, run the clean owner, perform the one comprehensive
-review, repair accepted findings, and run exact-head publication preflight.
+The repair brackets setup with the measured lower bound and the complete solo full helper wall as
+a conservative upper bound; pressure must clear the upper bound, setup must clear pressure with its
+lower bound, and overlap remains unresolved. It also owns the prerequisite wrapper and N/A label.
+Because the decision contract changed materially, the valid result requires a new complete run and
+one final comprehensive review.
+
+**Next actions.** Commit the consolidated logic repair, run the clean owner and one complete real
+diagnosis, record the result, and perform the required final comprehensive review.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The recorded diagnosis documentation above; the machine-local
-JSON evidence remains outside Git, and no generated binary, model, credential, or profile belongs
-in Git.
+**Intentional uncommitted files.** The reviewed attribution/N/A repair above; machine-local JSON
+evidence remains outside Git, and no generated binary, model, credential, or profile belongs in Git.
 
 ## Merged checkpoint: R8-OLMOE-SAMPLED-RUNTIME-DECISION (PR #175, 2026-09-04)
 

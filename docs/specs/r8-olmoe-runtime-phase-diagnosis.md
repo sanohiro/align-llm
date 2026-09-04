@@ -1,6 +1,6 @@
 # R8 OLMoE runtime phase diagnosis
 
-Status: diagnosis recorded, 2026-09-04
+Status: attribution repair awaiting measurement, 2026-09-04
 
 ## 1. Decision and boundary
 
@@ -18,9 +18,9 @@ idle. A qualification-only Align helper times the existing provider preparation 
 existing runtime phase and lifetime counters without adding a persistent provider, retaining cache
 state, or changing generation.
 
-The result compares measured repeated setup with the co-resident full-request penalty. It is a
-single-host diagnosis and next-investment decision, not a shipped latency improvement, throughput
-claim, general benchmark, or persistent-provider design.
+The result brackets repeated setup and compares those bounds with the co-resident full-request
+penalty. It is a single-host diagnosis and next-investment decision, not a shipped latency
+improvement, throughput claim, general benchmark, or persistent-provider design.
 
 ## 2. Measurement-contract ledger
 
@@ -35,9 +35,9 @@ claim, general benchmark, or persistent-provider design.
 | Short/full | short is maximum 2 and its ids must equal the first two full ids; its decoded-output digest must repeat; full maximum 128 must reproduce item 53's exact output digest `aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52`, whose extracted patch had the recorded known-good digest, and must stop on EOG |
 | Timed interval | each helper wall interval contains one complete process and request; the helper separately reports snapshot, model-IR, geometry, source-identity, tokenizer preparation, sampled engine, output decode, and total intervals |
 | Existing runtime evidence | engine outcome reports elapsed, first-token, dense resident-fill, pack/claim reads, routing decision, total/decode compute, graph counts, cache counters, and balanced native-owner counters; no production counter semantics change |
-| Repeated setup | per sample, helper phases before the engine plus `resident_fill_ns`; these non-overlapping measured intervals recur in every fresh helper request and are a lower bound on all reconstructive work because allocation and native owner creation outside the timed fill remain unassigned |
+| Repeated setup bounds | lower bound: per sample, helper phases before the engine plus `resident_fill_ns`; these measured intervals recur in every fresh helper request but leave process startup, allocation, native-owner construction, and other cache work unassigned. Conservative upper bound: the complete solo full helper wall interval, which contains every reconstructive and compute cost in that request |
 | Co-resident penalty | paired full-request wall time `co_resident - solo`; all four differences and the median are recorded, and a negative value remains evidence rather than being clamped |
-| Decision | `CO_RESIDENT_PRESSURE_EXCEEDS_SETUP` when all four penalties are positive and median penalty is more than 50,000 ppm above median solo repeated setup; `REPEATED_SETUP_EXCEEDS_PRESSURE` when median solo repeated setup is more than 50,000 ppm above the positive part of median penalty; otherwise `MIXED_OR_UNRESOLVED` |
+| Decision | `CO_RESIDENT_PRESSURE_EXCEEDS_SETUP` only when all four penalties are positive and median penalty is more than 50,000 ppm above the conservative median setup upper bound; `REPEATED_SETUP_EXCEEDS_PRESSURE` only when the median measured setup lower bound is more than 50,000 ppm above the positive part of median penalty; otherwise `MIXED_OR_UNRESOLVED` |
 | Next action | co-resident pressure selects an isolated-baseline R8 decision; repeated setup selects a bounded persistent-lifetime design only after the measured setup fields identify its owner; mixed/unresolved selects one narrower phase instrument and no lifetime API |
 | Result | canonical `R8_OLMOE_RUNTIME_PHASE_DIAGNOSIS` schema 1 JSON on stdout and a concise summary on stderr; machine-local evidence is not committed |
 | Inputs and identity | item 53's six canonicalized model/runtime path variables; Darwin additionally requires the same explicit ordered `LIBRARY_PATH`; no validator is used; result binds source, Align revision, compiler, helper, shim, ggml libraries, model, pack, geometry, task, prompt, and server identities, and records each timed helper's immediately-before and immediately-after server RSS without paths |
@@ -46,10 +46,11 @@ claim, general benchmark, or persistent-provider design.
 | Owner | `scripts/run-olmoe-runtime-phase-diagnosis --self-test`; the same command without arguments is the opt-in real diagnosis |
 | Performance ceiling | N/A for optimization opportunity: this capability changes no runtime behavior and makes no improvement claim; one complete diagnostic is capped at approximately 20 minutes |
 
-The 50,000-ppm deadband is an attribution stability rule, not R8's shipping floor. Comparing the
-positive co-resident penalty to solo repeated setup keeps the two quantities disjoint. Because
-repeated setup is a measured lower bound, `REPEATED_SETUP_EXCEEDS_PRESSURE` authorizes design work
-only for the named setup phases; it does not claim that every unexplained nanosecond is construction.
+The 50,000-ppm deadband is an attribution stability rule, not R8's shipping floor. A pressure
+decision must clear the conservative setup upper bound; clearing only the measured lower bound is
+insufficient. A repeated-setup decision must clear the positive pressure penalty using the measured
+lower bound. `REPEATED_SETUP_EXCEEDS_PRESSURE` authorizes design work only for the named setup
+phases; it does not claim that every unexplained nanosecond is construction.
 
 ## 3. Schema 1 records
 
@@ -84,9 +85,10 @@ short/full helper records plus helper wall time. Each helper record also contain
 `server_rss_before_bytes` and `server_rss_after_bytes`: both are null for `solo`; for `co_resident`,
 the before value is at least 2 GiB and the positive after value records any eviction caused by that
 helper. The aggregate contains four paired
-full penalties, medians for all four condition/length cells, median solo repeated setup, its share
-of solo full time, median penalty, penalty ppm against solo full, and the decision. Paths, prompt or
-output text, server logs, process identifiers, and credentials never appear.
+full penalties, medians for all four condition/length cells, median solo repeated-setup lower and
+upper bounds, each bound's share of solo full time, median penalty, penalty ppm against solo full,
+and the decision. Paths, prompt or output text, server logs, process identifiers, and credentials
+never appear.
 
 All durations are positive integers. Helper total is at least the sum of its seven sequential
 phases; helper wall is at least helper total. Engine wall contains engine elapsed. Successful
@@ -118,7 +120,7 @@ Persistent inputs and clean source are rechecked after the final pair.
 | Construction | canonical inputs, clean source, exact helper/shim, no matching process | validate fixed operands and prepare the production inputs | invocation-local owners only | self-test precedence/environment/path/process cases; real identities |
 | Solo success | require matching server/model absence around both lengths | fresh process per request | unchanged sampled generation | four short/full solo legs |
 | Co-resident success | own one pinned server; before each helper issue the fixed untimed warmup and require at least 2 GiB RSS; keep it idle during the helper and record RSS afterward | same helper bytes and request | unchanged sampled generation | four short/full co-resident legs, each with before/after RSS |
-| Phase accounting | validate positive sequential/nested clocks and derive repeated setup | time seven production-order phases | publish existing engine counters unchanged | synthetic boundaries and real records |
+| Phase accounting | validate positive sequential/nested clocks and derive setup lower/full-request upper bounds | time seven production-order phases | publish existing engine counters unchanged | synthetic boundaries and real records |
 | Output identity | compare short prefix and full known-good digest across conditions | publish ids, counts, EOG state, and output digest | fixed seed stream and EOG handling | all sixteen records agree |
 | Lifetime | fresh process and record per request | expose existing balanced counters | current teardown remains owner | synthetic imbalance refusal and all real records |
 | Decision | exact paired differences, integer medians, 50,000-ppm comparison | N/A | N/A | three decision vectors plus boundary cases |
@@ -150,42 +152,7 @@ changes their source rather than merely consuming their public records.
 
 ## 7. Recorded diagnosis
 
-The one complete diagnosis ran at align-llm head
-`fc2f2bf6ad486517f7fb091f6e5ea5d55b5de41a` with Align
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4` on Darwin arm64 25.5.0. It bound the
-4,213,512,192-byte model `4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f`,
-pack `20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae`, geometry
-`1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada`, task
-`1884f01a329752c1383081342c65d062241aefaefff2f206f6604008bde74940`, and prompt
-`0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b`. The generated helper
-was `4660c0720154d56e4d561de853e0b8ca6dd3dbb3aabcdeba3ec21e79fbce4869`, its dynamic shim
-was `219224fa78caf10d89f904e24189886b339f375339f93bf42a411b753a436850`, and the llama.cpp
-build 10566 server was `98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c`.
-The fixed full output reproduced
-`aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52` in every
-condition. All native lifetime counters balanced.
-
-The complete run took 344.545 seconds. Solo short/full medians were 4.667 and 29.196 seconds;
-co-resident short/full medians were 6.044 and 31.187 seconds. The four paired full penalties were
-4.576, 1.757, 1.894, and 2.522 seconds: all were positive, with a 2.208-second median equal to
-75,633 ppm of solo full time. The solo repeated-setup lower-bound median was only 0.121 seconds, or
-4,129 ppm of solo full time. Its named components were dominated by an 83.403-ms median resident
-fill and 24.200-ms tokenizer preparation; the remaining pre-engine medians were individually below
-7 ms.
-
-Every co-resident timed helper began with the required server pressure: immediately-before RSS
-ranged from 3,888,021,504 to 7,895,154,688 bytes. Immediately-after RSS ranged from 10,534,912 to
-1,515,143,168 bytes, below 2 GiB in all eight records. Thus the candidate itself evicted much of the
-idle server's resident state, but the per-helper warmup restored the declared condition before the
-next interval instead of silently weakening it.
-
-The decision is **`CO_RESIDENT_PRESSURE_EXCEEDS_SETUP`**. The 2.208-second paired penalty exceeds
-the 0.121-second setup lower bound by far more than the 50,000-ppm deadband, so this evidence does
-not authorize a persistent-provider or retained-cache design. The next R8 capability is an
-isolated-baseline decision that never holds the two model implementations resident during either
-timed arm while preserving the fixed passing-patch portfolio and explicit time-to-passing-patch
-metric. Its contract must settle process startup inclusion before implementation.
-
-This remains a single-host, fixed-request diagnosis. Untimed llama.cpp warmups establish memory
-pressure rather than measuring server performance, post-helper RSS is observational, and no
-throughput, broad latency, persistent-lifetime, or R8 shipping claim follows from the result.
+The reviewed attribution defect invalidated the original directional classification: the
+2.208-second penalty cleared only the 0.121-second measured setup lower bound, not a setup upper
+bound. The raw run remains discovery evidence, but no roadmap decision is taken from it. One
+complete measurement at the repaired decision contract is pending.
