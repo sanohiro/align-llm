@@ -38,11 +38,12 @@ comparison dominated at 2,972,324,939 ns and 991,445 ppm of the 2,997,969,676-ns
 clearing the 921,450,866-ns materiality floor by 2,050,874,073 ns. The decision is
 `MEASURED_BUCKET_ELIGIBLE / PLANE_ROUNDTRIP_COMPARE`.
 
-Item 61, `R8-OLMOE-PLANE-ROUNDTRIP-COMPARE`, is selected but not started. It will preserve the exact
-byte/layout oracle and first-mismatch column while moving the scalar K/V comparison reads to a
-validated, allocation-free shared-shim boundary. Its immutable baseline is item 60's four
-full-helper samples and 18,746,386,770-ns median; its precommitted 50,000-ppm floor is 937,319,339
-ns and candidate ceiling is 17,809,067,431 ns.
+Item 61, `R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY`, is selected but not started. Item 60 measured the
+complete `verify_plane` call—shape reads, two `slot_get` operations, scalar K/V comparison, and
+result accounting—without attributing cost among those operations. Item 61 will preserve the exact
+byte/layout oracle and first-mismatch tensor/column while reducing that complete boundary. Its
+immutable baseline is item 60's four full-helper samples and 18,746,386,770-ns median; its
+precommitted 50,000-ppm floor is 937,319,339 ns and candidate ceiling is 17,809,067,431 ns.
 
 **Next actions.** Commit the recorded item 60 decision, complete one comprehensive review, repair
 valid findings, run affected owners and exact-head preflight, publish and merge. Then update

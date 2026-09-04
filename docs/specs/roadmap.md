@@ -1533,14 +1533,15 @@ The current forward delivery order is:
     the explicit remainder measured only 0.007, 0.001, and 0.017 seconds. Item 61 is selected; this
     diagnosis does not itself establish a performance win.
 
-61. **R8-OLMOE-PLANE-ROUNDTRIP-COMPARE — reduce the measured scalar K/V comparison boundary.
-    Selected; not started.** Preserve the exact canonical-plane and graph-consumed layouts,
-    `slot_get` behavior, first-mismatch tensor/column, output, isolation, cache, and native
-    lifetimes while replacing the scalar `compare_past_k` and `compare_past_v` reads with validated,
-    allocation-free shared-shim comparisons. Item 60's four full-helper samples and
-    18,746,386,770-ns median are the immutable fixed-host baseline. Precommit a 50,000-ppm floor of
-    937,319,339 ns in the implementation ledger; the conditioned candidate must have a median no
-    greater than 17,809,067,431 ns before the intervention can ship.
+61. **R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY — reduce the measured K/V verification boundary.
+    Selected; not started.** Item 60 measured the complete `verify_plane` call, including concat
+    shape reads, two `slot_get` operations, scalar K/V comparison, and result accounting; it did not
+    attribute cost among them. Preserve the exact canonical-plane and graph-consumed layouts,
+    first-mismatch tensor/column, output, isolation, cache, and native lifetimes while reducing that
+    complete boundary. Item 60's four full-helper samples and 18,746,386,770-ns median are the
+    immutable fixed-host baseline. Precommit a 50,000-ppm floor of 937,319,339 ns in the
+    implementation ledger; the conditioned candidate must have a median no greater than
+    17,809,067,431 ns before the intervention can ship.
 
 ### Status (2026-08-28)
 

@@ -122,7 +122,9 @@ The complete `pass_other` totals were `[2829773636,2937929105,3058010248,3146766
 the inherited 921,450,866-ns materiality floor by 2,050,874,073 ns. The decision is therefore
 `MEASURED_BUCKET_ELIGIBLE / PLANE_ROUNDTRIP_COMPARE`.
 
-Inspection maps the winner to the scalar `compare_past_k` and `compare_past_v` loops after each
-concat `slot_get`. Item 61 is selected to preserve the exact byte/layout oracle and first-mismatch
-column while moving those reads to a validated, allocation-free shared-shim comparison. This
-diagnosis does not itself establish a performance win.
+The winner is the complete `verify_plane` boundary: concat shape reads, two `slot_get` operations,
+the scalar `compare_past_k` and `compare_past_v` loops, and comparison-result accounting. This
+measurement does not attribute the 2.972 seconds among those operations. Item 61 is therefore
+selected to reduce that complete boundary while preserving the exact byte/layout oracle and
+first-mismatch tensor/column; its implementation ledger must not assume the scalar loops alone own
+the opportunity. This diagnosis does not itself establish a performance win.
