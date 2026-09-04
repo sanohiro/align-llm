@@ -1,6 +1,6 @@
 # R8 OLMoE first-token phase diagnosis
 
-Status: active design, 2026-09-04
+Status: result recorded, 2026-09-04
 
 Roadmap owner: item 55, `R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS`
 
@@ -42,7 +42,7 @@ no existing renderer or provider response gains a field.
 | Co-resident protocol | one owned pinned build-10566 CPU llama-server, four threads, context 512, no prompt cache; warm once before the untimed candidate helper and again immediately after it, then require RSS at least 2 GiB immediately before the timed helper, record RSS immediately after, and run no server inference during the timed helper; eight server warmups total |
 | Candidate conditioning | one complete untimed two-token invocation immediately before every timed helper, eight total; it pays the same invocation-local construction path and establishes a comparable warm filesystem/process-launch regime without retaining any candidate process state |
 | Fixed identity | item 54's exact model, alignpack, geometry, task, prompt, sampling policy, cache budget 975,175,680 bytes, Align revision/compiler, ggml shim/libraries, C compiler, and llama-server identities; the clean align-llm head and all file identities are rechecked after measurement |
-| Output/repeatability | all eight helpers reproduce item 53's 86 completion tokens plus stripped terminal EOG, exact token ids, output SHA-256 `aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52`, non-time engine counters, and balanced native lifetimes |
+| Output/repeatability | all eight timed helpers reproduce item 53's 86 completion tokens plus stripped terminal EOG, exact token ids, output SHA-256 `aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52`, non-time engine counters, and balanced native lifetimes |
 | Old bounds | recorded lower 132,272,208 ns and upper 30,616,675,916 ns from item 54 are immutable comparison evidence, not recomputed aliases |
 | New setup interval | each solo lower bound is snapshot + model IR + geometry + source identity + tokenizer + resident fill; each solo upper bound is those five provider phases + `construction_ns`; integer medians over four samples; complete evidence requires `lower <= upper < 30,616,675,916` |
 | Pressure penalty | paired co-resident helper wall minus solo helper wall for each pair; record all four signed differences and their integer median; directional pressure requires all four differences positive |
@@ -114,8 +114,8 @@ authorize persistent state by itself.
    schedule without changing execution order or renderer output.
 2. Add one qualification-only Align helper exposing those counters over the fixed request.
 3. Add one bounded runner reusing item 54's pinned identities, environment, server pressure, and
-   cleanup primitives; own the reduced eight-helper schedule, schema, accounting, narrowed bounds,
-   and decision.
+   cleanup primitives; own the eight timed helpers and their eight conditioning invocations,
+   schema, accounting, narrowed bounds, and decision.
 4. Run the source owners, helper build, self-test, and one complete real diagnosis. Record the exact
    result and selected next roadmap item here, in the roadmap, and in `HANDOFF.md`.
 5. Run one comprehensive review, repair the complete accepted finding class once, rerun affected
@@ -138,3 +138,52 @@ an 11.020-second cold construction interval while the other seven construction i
 the other three were positive. The fixed two-token candidate conditioning above removes this
 one-time cache state from every timed leg symmetrically; the complete diagnosis must be rerun before
 any result is recorded.
+
+## 6. Recorded diagnosis
+
+The complete conditioned diagnosis ran at align-llm head
+`6d63a625a981e6ee2510986da6e2de49526af705` with Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4` on Darwin arm64 25.5.0. It bound
+the item 54 model, task, prompt, pack, geometry, server, compiler, and C toolchain identities. The
+qualification helper was
+`84ac159bbf11d09a4fc819c43228ace046be8cd8e13d7e93be32b2dd7acf5311`; its dynamic shim was
+`420c99ad47356dc61a135ae0c4617ffe8c2d81028e76d3a40e0e4ce96e0d6026`. All eight timed
+requests and their conditioning requests reproduced the fixed two-token prefix; every timed request
+then reproduced 86 completion tokens, terminal EOG, one exact token chain, and output SHA-256
+`aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52`. Every native
+lifetime balanced.
+
+The run completed in 363.859 seconds. Solo/co-resident helper-wall medians were 29.843/32.474
+seconds. The four paired penalties were 4.938, 3.149, 2.114, and 2.955 seconds: all positive, with
+a 3.052-second median equal to 102,268 ppm of the solo median. The conditioned repeated-setup
+lower bound was 0.068 seconds and the new upper bound was 0.272 seconds, 11.2 times smaller than the
+penalty and 113 times smaller than item 54's 30.617-second conservative upper bound.
+
+The solo/co-resident phase medians and paired penalty medians were:
+
+| Phase | Solo | Co-resident | Paired penalty |
+| --- | ---: | ---: | ---: |
+| construction | 0.237 s | 0.392 s | 0.157 s |
+| prefill | 4.418 s | 5.430 s | 1.011 s |
+| first decode | 0.283 s | 0.348 s | 0.072 s |
+| remaining decode | 24.803 s | 26.173 s | 1.854 s |
+| teardown | 0.000002 s | 0.000008 s | 0.000006 s |
+
+Claim I/O accounted for most of the movement: prefill, first-decode, and remaining-decode claim
+penalty medians were 0.958, 0.065, and 1.555 seconds. Their corresponding compute penalty medians
+were -0.022, 0.003, and 0.181 seconds. Thus the largest consistent wall movement was remaining
+decode, and its claim-read component dominated its compute movement. Immediately-before server
+RSS was 3,887,923,200–3,891,871,744 bytes; immediately-after RSS was 6,111,232–10,649,600
+bytes, confirming that each timed helper again evicted most of the idle server state despite the
+required re-warm.
+
+The decision is **`CO_RESIDENT_PRESSURE_EXCEEDS_CONSTRUCTION`**. Every pressure penalty was
+positive and the median exceeded the new setup upper bound by far more than the strict 50,000-ppm
+deadband. The next capability is an isolated sampled runtime decision: repeat item 53's exact
+time-to-passing-patch comparison while terminating and reaping each local llama.cpp server before
+the runtime leg. Persistent provider lifetime and retained-cache changes remain unauthorized.
+
+This is still one fixed request on one host. Conditioning makes the repeated portfolio regime
+comparable but excludes first-ever cold startup; phase clocks diagnose the observed penalty and do
+not prove a general throughput result. The isolated provider-level decision remains responsible for
+the R8 gate.

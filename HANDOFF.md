@@ -13,10 +13,10 @@ sibling Align checkout and `.align-revision` remain at merged Align
 Item 54 measured a 2.025-second co-resident penalty inside a 0.132-to-30.617-second repeated-setup
 interval and therefore recorded `MIXED_OR_UNRESOLVED`. Item 55's authoritative ledger and closure
 matrix are `docs/specs/r8-olmoe-first-token-phase-diagnosis.md`. It instruments the existing
-invocation-local generation path, repeats only the fixed full request in four balanced pairs, and
-replaces the full-request upper bound with provider preparation plus completed pre-prefill engine
-construction. It also separates prefill, first decode, remaining decode, claim I/O, and compute;
-it introduces no persistent model, cache, backend, or buffer.
+invocation-local generation path, measures the fixed full request in four balanced pairs after
+fixed two-token conditioning, and replaces the full-request upper bound with provider preparation
+plus completed pre-prefill engine construction. It also separates prefill, first decode, remaining
+decode, claim I/O, and compute; it introduces no persistent model, cache, backend, or buffer.
 
 Implementation checkpoint `70267de` compiled and passed the model-free owner plus the existing
 layer-forward and 61-assertion runtime-provider owners. Its first complete discovery run narrowed
@@ -26,8 +26,16 @@ penalty while the other three were positive. That artifact is not the result. Th
 conditions every timed leg with one untimed two-token candidate invocation and rewarms the server
 after conditioning in co-resident legs, preserving the required immediately-before RSS boundary.
 
-**Next actions.** Finish the conditioning repair and self-test, rerun one complete diagnosis, record
-the valid result, then review and publish the stable candidate.
+The clean conditioned run at `6d63a62` completed in 363.859 seconds and reproduced the fixed output
+and balanced lifetimes in all eight timed requests. It narrowed setup to 0.068–0.272 seconds. All
+four co-resident penalties were positive; their 3.052-second median was 102,268 ppm of the
+29.843-second solo median and cleared the upper bound. Prefill/remaining-decode wall penalties were
+1.011/1.854 seconds, dominated by 0.958/1.555-second claim-I/O penalties rather than compute.
+The decision is `CO_RESIDENT_PRESSURE_EXCEEDS_CONSTRUCTION`, selecting roadmap item 56's isolated
+sampled runtime decision. Persistent provider lifetime and retained cache remain unauthorized.
+
+**Next actions.** Complete the matrix-to-diff pass and comprehensive review, repair accepted
+findings once, run exact-head preflight, publish and merge, then start item 56.
 
 **Blocker.** None.
 
