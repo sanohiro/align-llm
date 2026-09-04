@@ -49,13 +49,14 @@ fn validate_generate(config: model.ProviderConfig, request: model.GenerationRequ
     return Err(Error.Invalid)
   }
   if config.runtime_cache_budget_bytes < 0 { return Err(Error.Invalid) }
-  if request.temperature != 0.0 || request.max_tokens < 1 || request.max_tokens > 128 {
+  if request.max_tokens < 1 || request.max_tokens > 128 {
     return Err(Error.Invalid)
   }
-  match request.seed {
-    Some(_) => { return Err(Error.Invalid) },
-    None => {},
+  valid_sampling := match request.seed {
+    Some(_) => request.temperature == 0.3,
+    None => request.temperature == 0.0,
   }
+  if !valid_sampling { return Err(Error.Invalid) }
   return Ok(())
 }
 
@@ -123,10 +124,16 @@ fn generate_olmoe(
   borrow prompt_ids: array<i64>,
   borrow eog_ids: array<i64>,
   max_tokens: i64,
+  seed: Option<i64>,
 ) -> GenerationRun {
-  parts := moe_decode_step.generate_resident(
-    config.runtime_pack_path, config.runtime_geometry_path, geometry, source_identity,
-    prompt_ids, eog_ids, max_tokens, config.runtime_cache_budget_bytes)
+  parts := match seed {
+    Some(value) => moe_decode_step.generate_resident_sampled(
+      config.runtime_pack_path, config.runtime_geometry_path, geometry, source_identity,
+      prompt_ids, eog_ids, max_tokens, config.runtime_cache_budget_bytes, value),
+    None => moe_decode_step.generate_resident(
+      config.runtime_pack_path, config.runtime_geometry_path, geometry, source_identity,
+      prompt_ids, eog_ids, max_tokens, config.runtime_cache_budget_bytes),
+  }
   return GenerationRun {
     ok: parts.outcome.code.len() == 0,
     token_ids_json: parts.token_ids_json.clone(),
@@ -143,6 +150,7 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
   olmoe := snapshot.table.architecture_present && architecture == "olmoe"
   qwen := snapshot.table.architecture_present && architecture == "qwen2"
   if (!olmoe && !qwen) || (qwen && config.runtime_cache_budget_bytes != 0)
+    || (qwen && request.temperature != 0.0)
     || (olmoe && config.runtime_cache_budget_bytes <= 0) {
     return Err(Error.Invalid)
   }
@@ -170,7 +178,7 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
   generated := if olmoe {
     generate_olmoe(
       config, geometry_view, source_identity, prepared.token_ids, prepared.eog_token_ids,
-      request.max_tokens)
+      request.max_tokens, request.seed)
   } else {
     generate_qwen(
       config, geometry_view, source_identity, prepared.token_ids, prepared.eog_token_ids,

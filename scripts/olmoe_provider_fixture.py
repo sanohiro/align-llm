@@ -134,11 +134,25 @@ def build(output: Path) -> dict[str, object]:
         raise ValueError("synthetic prefill unexpectedly selected the ordinary EOG")
     model = write_model("runtime-olmoe.gguf", ordinary_eog)
     immediate = write_model("runtime-olmoe-immediate-eog.gguf", first_id)
+    # Seed 11 selects byte-token ids 56 (`8`) then 50 (`2`) on this exact fixture. Separate EOG
+    # variants prove that stopping follows the selected chain rather than the diagnostic argmax.
+    sampled_seed = 11
+    sampled_first_id = 56
+    sampled_second_id = 50
+    if tokens[sampled_first_id] != "8" or tokens[sampled_second_id] != "2":
+        raise ValueError("sampled byte-token identities drifted")
+    sampled_immediate = write_model("runtime-olmoe-sampled-immediate-eog.gguf", sampled_first_id)
+    sampled_after_one = write_model("runtime-olmoe-sampled-after-one-eog.gguf", sampled_second_id)
     manifest = {
         "model": model.name,
         "immediate_eog_model": immediate.name,
+        "sampled_immediate_eog_model": sampled_immediate.name,
+        "sampled_after_one_eog_model": sampled_after_one.name,
         "first_id": first_id,
         "ordinary_eog_id": ordinary_eog,
+        "sampled_seed": sampled_seed,
+        "sampled_first_id": sampled_first_id,
+        "sampled_second_id": sampled_second_id,
         "prompt_tokens": len(prompt_ids),
         "cache_budget_bytes": 65536,
     }

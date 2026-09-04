@@ -17,20 +17,21 @@ OLMoE `AlignRuntime` provider while preserving greedy OLMoE, dense Qwen, diagnos
 cache ownership, and EOG behavior. The authoritative public contract, validation order, cost
 ceiling, and closure matrix are `docs/specs/r8-olmoe-runtime-sampling.md`.
 
-**Latest durable verification.** Design evidence confirms that the pinned llama.cpp item-51 chain's
-effective non-no-op filters are top-k 40, top-p 0.95, min-p 0.05, temperature 0.3, then its seeded
-distribution. Align will use the same filter order with stable tie rules, fixed-point categorical
-weights, and its shipped explicit Xoshiro256++ RNG. No implementation owner has run on this branch
-yet.
+**Latest durable verification.** The implementation adds a fixed stable top-k/top-p/min-p sampler,
+threads one explicit Xoshiro256++ state through the OLMoE selected-token chain, and keeps diagnostic
+argmax evidence separate. The focused provider owner passes pure boundary vectors, sampled public
+API repeatability/EOG/refusal cases, and all 61 existing CLI assertions. Python compilation, helper
+self-test, Align checking, and `git diff --check` pass. The fixed real qualification repeated seed 5
+twice: both calls returned two-token `To fix` (SHA-256 `354950a4f359`) and the complete gate passed
+in 17.40 seconds.
 
-**Next actions.** Complete the author ledger-to-prose consistency pass, commit the design
-checkpoint, implement the pure sampler and MoE/provider wiring, then run the focused synthetic and
-real reproducibility owners before comprehensive review and publication.
+**Next actions.** Commit the reconciled implementation and evidence, perform one comprehensive
+review, repair any validated findings, then run the exact-head publication preflight and publish.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The active design edits above are intentional. Local
-configuration remains outside the change.
+**Intentional uncommitted files.** The active implementation and verification changes are
+intentional. Local configuration remains outside the change.
 
 ## Merged checkpoint: R8-OLMOE-SAMPLED-CODING (PR #173, 2026-09-04)
 

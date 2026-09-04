@@ -1,6 +1,6 @@
 # R8 OLMoE runtime sampling
 
-Status: implementation candidate, 2026-09-04
+Status: implemented candidate, 2026-09-04
 
 ## 1. Boundary and decision
 
@@ -31,13 +31,13 @@ penalties, concurrent generation, streaming, or a persisted sampler state.
 | Distribution | subtract the maximum logit, apply temperature, exponentiate in F64, round each relative weight to nearest 1,000,000,000th, draw uniformly with `rng.range(0, total_weight)`, and choose the first cumulative weight strictly above the draw |
 | RNG | one `rand.seed_with(request.seed)` Xoshiro256++ value per provider invocation, advanced exactly once per emitted token including an EOG token; every signed 64-bit seed is accepted |
 | Stop behavior | sample the prefill logits first, then sampled decode logits until the existing maximum-token or EOG rule stops; the terminal EOG id remains in the internal generated-id chain and is omitted from decoded completion text exactly as in greedy mode |
-| Diagnostics | `--moe-decode-step`, its schema-2 document, published argmax fields, greedy `generate_resident`, and dense Qwen generation are byte-for-byte unchanged |
+| Diagnostics | `--moe-decode-step` keeps its schema-2 shape and computed diagnostic fields, including true argmax evidence; greedy `generate_resident` and dense Qwen retain their existing output behavior |
 | Capability report | `ModelInfo.supports_seed` is true for `AlignRuntime` configurations with a positive cache budget and false for zero-budget dense configurations; model-info remains configuration-derived and performs no file I/O or architecture validation |
 | Errors | malformed request pairs fail before model I/O; a valid sampled request against Qwen fails after GGUF architecture discovery; malformed/non-finite logits and empty candidate sets fail closed as `Error.Invalid` through the provider |
-| Ownership/allocation | `runtime_sampler` owns temporary candidate ids, logits, and weights and returns the advanced Copy RNG; `moe_decode_step` owns the invocation-local RNG and generated selected-id chain; no state escapes the call |
+| Ownership/allocation | `runtime_sampler` owns temporary candidate ids, logits, and weights and advances the caller's explicit `borrow mut` Copy RNG; `moe_decode_step` owns the invocation-local RNG and generated selected-id chain; no state escapes the call |
 | Persisted/cache identity | no sampler artifact is persisted; existing model/pack/geometry identities and cache lifetime are unchanged |
 | Schema version | N/A: neither `GenerationRequest`, `ModelInfo`, nor `GenerationRecord` changes shape, and no new exchanged document is introduced |
-| Owner | `make runtime-provider-smoke`, including pure sampler vectors and synthetic public-provider generation |
+| Owner | `make runtime-provider-smoke`, including pure sampler vectors and synthetic public-provider generation; `make layer-forward-smoke` owns the unchanged diagnostic decode surface |
 | Real qualification | prompt `Fix an off-by-one error in a Python inclusive range.`, maximum 2 tokens, temperature 0.3, seed 5, and cache budget 975,175,680 bytes, repeated twice through `runtime_provider_gate runtime-olmoe-sampled`; require successful byte-identical records against the pinned real OLMoE inputs |
 | Cost ceiling | approximately 5 minutes for focused build, synthetic owner, and real repeated qualification on the author host; no performance floor |
 
@@ -68,12 +68,12 @@ independently tested module and must fail closed if another future caller bypass
 
 | Cell | Provider | MoE decoder | Sampler | Exact regression |
 | --- | --- | --- | --- | --- |
-| Construction | classify the request pair and architecture; seed only the sampled OLMoE branch | create one invocation RNG and selected-id builder | allocate at most 40 candidates and return advanced RNG | sampled synthetic provider success and pure fixed vector |
+| Construction | classify the request pair and architecture; seed only the sampled OLMoE branch | create one invocation RNG and selected-id builder | allocate at most 40 candidates and advance the caller's borrowed RNG | sampled synthetic provider success and pure fixed vector |
 | Greedy success | retain the old dispatch | use prefill/decode argmax and old generated-id rendering | N/A | existing Qwen and OLMoE maximum-token cases remain unchanged |
 | Sampled success | dispatch fixed policy with signed seed | use selected token as the next decode operand and render selected ids | stable filters, quantized weights, one draw | same seed repeated, pinned multi-draw sequence, public provider success |
 | EOG | retain existing completion stripping | test the selected token before constructing the next graph | EOG has no special sampler treatment | synthetic immediate and post-step sampled EOG cases |
 | Maximum one | return one sampled prefill token | render the first selected id even though no decode graph runs | advance once | sampled max-one case |
-| Invalid request | reject malformed pair before path I/O; reject sampled Qwen after architecture | never entered | never entered | missing-path precedence and sampled-Qwen API cases |
+| Invalid request | reject malformed pair before path I/O; reject sampled Qwen after architecture | never entered | never entered | malformed-pair API call with missing paths and sampled-Qwen API case |
 | Malformed logits | map decoder failure to `Error.Invalid` | preserve existing non-finite failure and reject sampler error | reject empty, misaligned, or non-finite input | pure refusal vectors plus existing non-finite provider fixture |
 | Tie/filter boundary | N/A | carry exact selected id without rewriting argmax evidence | stable id tie, rank-41 exclusion, top-p inclusion, min-p exclusion | pinned pure boundary vectors |
 | Repeatability | create no hidden state | seed once per invocation and advance returned state once per emitted id | shipped deterministic RNG only | same-seed synthetic and repeated real qualification |
@@ -99,6 +99,24 @@ the next measurement capability after this sampler is merged.
 5. Extend the qualification-only helper with `runtime-olmoe-sampled` carrying explicit maximum
    tokens, fixed-temperature micros, and seed operands, then run the ledger's fixed real request
    twice and require successful byte-identical results. This is reproducibility evidence only.
-6. Run the focused owner, fixed real qualification, one comprehensive review, affected-owner repair
-   checks, exact-head publication preflight, and required GitHub checks. `make ci`, installed
-   profiles, the 40-prompt corpus, cache replay, stress, and benchmarks are not selected.
+6. Run the focused provider and diagnostic owners, fixed real qualification, one comprehensive
+   review, affected-owner repair checks, exact-head publication preflight, and required GitHub
+   checks. `make ci`, installed profiles, the 40-prompt corpus, cache replay, stress, and benchmarks
+   are not selected.
+
+## 6. Candidate evidence
+
+The implemented candidate uses the existing diagnostic argmax fields unchanged and carries its
+generation-only first and subsequent selected ids separately. Its pure vectors pin seed 42's first
+two choices over four equal logits as ids 3 and 1, seed 7's first choice as id 0, rank-41 exclusion,
+the top-p and min-p boundaries, stable equal-logit ordering, both signed seed extremes, and empty,
+misaligned, and non-finite refusal. The synthetic public provider repeats seed 11 as decoded text
+`82`, returns `8` at a one-token maximum, stops immediately when selected id 56 is EOG, stops after
+`8` when selected id 50 is EOG, and retains all 61 existing CLI assertions.
+
+The fixed real qualification repeated seed 5 twice through `ModelProvider.generate`. Both calls
+succeeded with two completion tokens and byte-identical output `To fix`, SHA-256
+`354950a4f35909ff2356a417a4ec653f0c5e1a93f6066a97087dcd00e01eeddd`; complete qualification
+time including identity checks and helper construction was 17.40 seconds. This is reproducibility
+evidence only and does not imply llama.cpp token parity beyond this coincident two-token output or a
+provider-level passing patch.

@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""R8 OLMoE AlignRuntime seeded-sampling reproducibility qualification."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MODEL_BYTES = 4_213_512_192
+MODEL_SHA256 = "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f"
+PROMPT = "Fix an off-by-one error in a Python inclusive range."
+CACHE_BUDGET_BYTES = 975_175_680
+MAX_TOKENS = 2
+TEMPERATURE_MICROS = 300_000
+SEED = 5
+COST_CEILING_SECONDS = 5 * 60
+
+
+class GateError(RuntimeError):
+    pass
+
+
+def configured_path(name: str, *, directory: bool = False) -> Path | None:
+    value = os.environ.get(name, "")
+    if not value:
+        return None
+    path = Path(value)
+    valid = path.is_dir() if directory else path.is_file()
+    if not valid:
+        raise GateError(f"configured prerequisite is unusable: {name}={value}")
+    return path
+
+
+def prerequisites() -> tuple[Path, Path, Path, Path, Path] | None:
+    rows = (
+        ("ALIGN_LLM_OLMOE_MODEL", configured_path("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", configured_path("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", configured_path("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", configured_path("ALIGN_LLM_GGML_INCLUDE", directory=True)),
+        ("ALIGN_LLM_GGML_LIB", configured_path("ALIGN_LLM_GGML_LIB", directory=True)),
+    )
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-RUNTIME-SAMPLING: N/A ({missing} unset)")
+        return None
+    return tuple(path for _, path in rows)  # type: ignore[return-value]
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(8 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def run(
+    argv: list[str], *, timeout: int, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    result = subprocess.run(argv, cwd=ROOT, env=env, capture_output=True, timeout=timeout, check=False)
+    if result.returncode != 0:
+        raise GateError(
+            "command failed (%d): %s\n%s"
+            % (result.returncode, " ".join(argv), result.stderr.decode("utf-8", "replace")[-4096:])
+        )
+    return result
+
+
+def sampled_command(
+    helper: Path,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    prompt: Path,
+    result: Path,
+) -> list[str]:
+    return [
+        str(helper),
+        "runtime-olmoe-sampled",
+        str(model),
+        str(pack),
+        str(geometry),
+        str(CACHE_BUDGET_BYTES),
+        str(MAX_TOKENS),
+        str(TEMPERATURE_MICROS),
+        str(SEED),
+        str(prompt),
+        str(result),
+    ]
+
+
+def self_test() -> int:
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-sampling-self-test-") as raw:
+        work = Path(raw)
+        missing = str(work / "missing")
+        with mock.patch.dict(os.environ, {"ALIGN_LLM_OLMOE_MODEL": missing}, clear=True):
+            try:
+                prerequisites()
+            except GateError:
+                pass
+            else:
+                raise GateError("an invalid configured model was hidden by a later N/A")
+        command = sampled_command(
+            work / "helper", work / "model", work / "pack", work / "geometry",
+            work / "prompt", work / "result",
+        )
+        if command[1] != "runtime-olmoe-sampled" or command[5:9] != [
+            "975175680", "2", "300000", "5"
+        ]:
+            raise GateError("fixed sampled helper command drifted")
+    print("R8-OLMOE-RUNTIME-SAMPLING self-test: PASS")
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise GateError("OLMoE sampling gate accepts no arguments")
+    required = prerequisites()
+    if required is None:
+        return 0
+    model, pack, geometry, include, library = required
+    started = time.monotonic()
+    if model.stat().st_size != MODEL_BYTES or file_sha256(model) != MODEL_SHA256:
+        raise GateError("the configured OLMoE GGUF does not have the pinned size and SHA-256")
+    initial_pack_sha256 = file_sha256(pack)
+    initial_geometry_sha256 = file_sha256(geometry)
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-sampling-") as raw:
+        work = Path(raw)
+        shim = work / "lib"
+        helper = work / "runtime-provider-gate"
+        prompt = work / "prompt.txt"
+        prompt.write_text(PROMPT, encoding="utf-8")
+        build_env = dict(os.environ)
+        build_env.update(
+            {
+                "ALIGN_LLM_GGML_INCLUDE": str(include),
+                "ALIGN_LLM_GGML_LIB": str(library),
+                "ALIGN_LLM_GGML_SHIM_DIR": str(shim),
+            }
+        )
+        run([str(ROOT / "scripts/build-ggml-shim")], timeout=180, env=build_env)
+        build_env["LIBRARY_PATH"] = ":".join(
+            value for value in (str(shim), str(library), build_env.get("LIBRARY_PATH", "")) if value
+        )
+        compiler = Path(os.environ.get("ALIGNC", str(ROOT / "scripts/alignc")))
+        run([str(compiler), "build", "src/runtime_provider_gate.align"], timeout=300, env=build_env)
+        os.replace(ROOT / "runtime_provider_gate", helper)
+
+        runtime_env = dict(os.environ)
+        for name in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+            runtime_env[name] = ":".join(
+                value for value in (str(shim), str(library), runtime_env.get(name, "")) if value
+            )
+        records: list[dict[str, object]] = []
+        for attempt in (1, 2):
+            result_path = work / f"result-{attempt}.json"
+            run(
+                sampled_command(helper, model, pack, geometry, prompt, result_path),
+                timeout=120,
+                env=runtime_env,
+            )
+            record = json.loads(result_path.read_text(encoding="utf-8"))
+            if (
+                record.get("schema_version") != 2
+                or record.get("operation") != "generate"
+                or record.get("provider") != "align-runtime"
+                or record.get("endpoint") != "in-process"
+                or record.get("status") != "ok"
+                or record.get("error") != ""
+                or record.get("token_count_exact") is not True
+                or not isinstance(record.get("output"), str)
+                or not isinstance(record.get("prompt_tokens"), int)
+                or int(record["prompt_tokens"]) < 1
+                or not isinstance(record.get("completion_tokens"), int)
+                or int(record["completion_tokens"]) < 0
+                or int(record["completion_tokens"]) > MAX_TOKENS
+            ):
+                raise GateError(f"sampled attempt {attempt} record drifted: {record!r}")
+            records.append(record)
+        comparable = ("output", "prompt_tokens", "completion_tokens", "total_tokens")
+        if any(records[0][key] != records[1][key] for key in comparable):
+            raise GateError("the repeated seeded provider results differ")
+
+    if file_sha256(model) != MODEL_SHA256:
+        raise GateError("model identity changed during qualification")
+    if file_sha256(pack) != initial_pack_sha256 or file_sha256(geometry) != initial_geometry_sha256:
+        raise GateError("pack or geometry identity changed during qualification")
+    elapsed = time.monotonic() - started
+    if elapsed > COST_CEILING_SECONDS:
+        raise GateError(f"qualification took {elapsed:.1f}s, above {COST_CEILING_SECONDS}s")
+    output_sha256 = hashlib.sha256(str(records[0]["output"]).encode("utf-8")).hexdigest()
+    print(
+        "R8-OLMOE-RUNTIME-SAMPLING: PASS "
+        f"(seed {SEED}, tokens {records[0]['completion_tokens']}, output {output_sha256[:12]}, "
+        f"{elapsed:.2f}s)"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (
+        GateError, OSError, ValueError, KeyError, TypeError, json.JSONDecodeError,
+        subprocess.TimeoutExpired,
+    ) as exc:
+        sys.stderr.write(f"R8-OLMOE-RUNTIME-SAMPLING: FAIL {exc}\n")
+        raise SystemExit(1)

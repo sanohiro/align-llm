@@ -11,6 +11,8 @@ import layer_olmoe
 import model_forward
 import moe_layer_forward
 import moe_model_forward
+import runtime_sampler
+import std.rand
 
 // R6-OLMOE-DECODE (`docs/specs/r6-olmoe-decode.md`). The `--moe-decode-step` arm: `N` greedy decode
 // steps on a **routed** model over one Align-owned KV plane, where each step resolves that step's
@@ -232,6 +234,8 @@ pub StepRows {
   text: string,
   token_ids: array<i64>,
   argmax_ids: array<i64>,
+  first_selected: i64,
+  selected_ids: array<i64>,
 }
 
 pub fn empty_steps() -> StepRows =
@@ -240,6 +244,8 @@ StepRows {
   text: "".clone(),
   token_ids: moe_model_forward.empty_array(),
   argmax_ids: moe_model_forward.empty_array(),
+  first_selected: -1,
+  selected_ids: moe_model_forward.empty_array(),
 }
 
 // Section 3.11's per-step residency block, produced by the layer loop and consumed by the renderer.
@@ -3331,6 +3337,8 @@ fn decode_loop(
   first_n_past: i64,
   steps: i64,
   generation: bool,
+  sampled: bool,
+  borrow mut random: rng,
   borrow eog_ids: array<i64>,
   generation_max: i64,
   width: i64,
@@ -3347,6 +3355,7 @@ fn decode_loop(
   rows := builder()
   mut token_ids: array_builder<i64> := array_builder()
   mut argmax_ids: array_builder<i64> := array_builder()
+  mut selected_ids: array_builder<i64> := array_builder()
   // The union starts at the **prefill's** set, not at the empty set: section 2.4 reading 2 measured
   // that roughly four fifths of every decode demand is already in it, and a curve that started empty
   // would report a marginal cost this run does not pay.
@@ -3429,6 +3438,13 @@ fn decode_loop(
     if o.code.len() == 0 && generation && decoded.nonfinite_count > 0 {
       fail(o, "R5_LOGITS_NONFINITE", moe_model_forward.labelled(
           "elements", decoded.nonfinite_count))
+    }
+    mut selected := decoded.argmax
+    if o.code.len() == 0 && sampled {
+      match runtime_sampler.select(logits_view, random) {
+        Ok(value) => { selected = value.token_id },
+        Err(_) => { fail(o, "R8_SAMPLER", "decode_logits") },
+      }
     }
     if o.code.len() > 0 {
       // Section 3.10. A failure inside step `k` publishes `steps_completed = k - 1` and `k - 1`
@@ -3529,6 +3545,7 @@ fn decode_loop(
     decoded.n_past_last = n_past
     token_ids.push(token)
     argmax_ids.push(decoded.argmax)
+    selected_ids.push(selected)
     if rendered > 0 { rows.write(",") }
     row_text := render_step_row(
       step, n_past, token, decoded, res, ids, g.n_layer, g.n_expert_used, cache.enabled,
@@ -3563,10 +3580,12 @@ fn decode_loop(
       o.decode_oracle_graph_last = step + 1
       o.routing_steps_compared = o.routing_steps_compared + 1
     }
-    // The chain: this step's `argmax` is the next step's input. A divergence at step `j` cannot be
+    // The chain: this step's selected token is the next step's input. In diagnostic and greedy
+    // generation modes selection remains the argmax; sampled generation advances its explicit RNG
+    // once here. A divergence at step `j` cannot be
     // absorbed later — it changes step `j`'s `embd`, and every later step's input, `embd`, and
     // logits — so the `N` ids are gated as one chain rooted at a byte-exact `d_1`.
-    token = decoded.argmax
+    token = selected
     step = step + 1
   }
   // Section 3.10: **never `IDENTICAL` on an error document.** A run that stopped inside step `k` did
@@ -3629,6 +3648,8 @@ fn decode_loop(
     text: rows.to_string(),
     token_ids: token_ids.build(),
     argmax_ids: argmax_ids.build(),
+    first_selected: first_token,
+    selected_ids: selected_ids.build(),
   }
 }
 
@@ -3877,6 +3898,8 @@ fn schedule_decode(
   logits_path: str,
   steps: i64,
   generation: bool,
+  sampled: bool,
+  sampling_seed: i64,
   borrow eog_ids: array<i64>,
   generation_max: i64,
   origin: i64,
@@ -3887,6 +3910,7 @@ fn schedule_decode(
 ) {
   mut state := empty_plane()
   mut decoded := empty_decode()
+  mut random := rand.seed_with(sampling_seed)
   mut cache := new_expert_cache(
     o.expert_cache_mode, g.n_layer * g.n_expert, o.expert_cache_key_bytes,
     o.expert_cache_slot_count)
@@ -4019,6 +4043,7 @@ fn schedule_decode(
   mut breach := false
   mut activation: array_builder<i64> := array_builder()
   mut backend := ggml_ffi.null_handle()
+  mut first_selected := -1
   if o.code.len() == 0 {
     backend = ggml_ffi.backend_open(device)
     if ggml_ffi.handle_absent(backend) {
@@ -4077,6 +4102,13 @@ fn schedule_decode(
     if generation && digest.nonfinite > 0 {
       fail(o, "R5_LOGITS_NONFINITE", moe_model_forward.labelled("elements", digest.nonfinite))
     }
+    first_selected = digest.argmax
+    if o.code.len() == 0 && sampled {
+      match runtime_sampler.select(logits_view, random) {
+        Ok(value) => { first_selected = value.token_id },
+        Err(_) => { fail(o, "R8_SAMPLER", "prefill_logits") },
+      }
+    }
   }
   // Gate G1, run before the loop that depends on it: `d_1` is the argmax of a vector that must be
   // byte-identical to llama.cpp's own.
@@ -4084,8 +4116,7 @@ fn schedule_decode(
     compare_prefill_logits(logits_path, logits_view, g.n_vocab, top, o)
   }
   if o.code.len() == 0 {
-    token_id := decoded.argmax
-    first_token := if token_id >= 0 { token_id } else { o.argmax }
+    first_token := if first_selected >= 0 { first_selected } else { o.argmax }
     stepped = decode_loop(
       pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, win, tokens,
       head_members,
@@ -4094,7 +4125,8 @@ fn schedule_decode(
       mask_decode_view,
       decode_out_ids_view, decode_residual_view, decode_logits_view, node_view, plane_view,
       decode_oracle, embed_nodes, decode_b_nodes, head_nodes, prefill_keys, transcript_path,
-      first_token, n_past, steps, generation, eog_ids, generation_max, width, stride, block_align,
+      first_token, n_past, steps, generation, sampled, random, eog_ids, generation_max, width,
+      stride, block_align,
       origin, breach, activation, cache,
       state, decoded, o)
   }
@@ -4228,6 +4260,8 @@ fn execute_mode(
   kv_load_text: str,
   resident_text: str,
   generation: bool,
+  sampled: bool,
+  sampling_seed: i64,
   borrow eog_ids: array<i64>,
   generation_max: i64,
   borrow mut tokens: moe_model_forward.TokenColumns,
@@ -4558,7 +4592,8 @@ fn execute_mode(
     window_view, claim_view, cache_view, layout, resident, device, context_bytes, width,
     residual_bytes,
     logits_bytes, readback_bytes, staged.block_align, reference_path, transcript_path, logits_path,
-    steps, generation, eog_ids, generation_max, started, graphs, top, stepped, o)
+    steps, generation, sampled, sampling_seed, eog_ids, generation_max, started, graphs, top,
+    stepped, o)
   o.elapsed_ns = time.instant() - started
   return o
 }
@@ -4597,12 +4632,12 @@ fn render_generation_ids(borrow o: moe_model_forward.Outcome, borrow s: StepRows
   output := builder()
   output.write("[")
   if o.code.len() == 0 {
-    output.write_int(o.argmax)
+    output.write_int(s.first_selected)
     mut at := 0
     loop {
       if at >= s.count { break }
       output.write(",")
-      output.write_int(s.argmax_ids[at])
+      output.write_int(s.selected_ids[at])
       at = at + 1
     }
   }
@@ -4610,7 +4645,7 @@ fn render_generation_ids(borrow o: moe_model_forward.Outcome, borrow s: StepRows
   return output.to_string()
 }
 
-pub fn generate_resident(
+fn generate_resident_mode(
   pack_path: str,
   geometry_path: str,
   expected_geometry: str,
@@ -4619,6 +4654,8 @@ pub fn generate_resident(
   borrow eog_token_ids: array<i64>,
   max_tokens: i64,
   cache_budget_bytes: i64,
+  sampled: bool,
+  sampling_seed: i64,
 ) -> GenerationParts {
   if prompt_token_ids.len() < 1 || prompt_token_ids.len() > layer_olmoe.MAX_PREFILL_TOKENS
     || eog_token_ids.len() < 1 || eog_token_ids.len() > 256
@@ -4648,10 +4685,41 @@ pub fn generate_resident(
   mut stepped := empty_steps()
   outcome := execute_mode(
     pack_path, geometry_path, expected_geometry, source_identity, token_view, "", "", width_view,
-    "", steps_view, "-", "-", resident_view, true, eog_token_ids, max_tokens,
+    "", steps_view, "-", "-", resident_view, true, sampled, sampling_seed, eog_token_ids, max_tokens,
     tokens, graphs, top, stepped)
   token_ids_json := render_generation_ids(outcome, stepped)
   return GenerationParts { outcome: outcome, token_ids_json: token_ids_json }
+}
+
+pub fn generate_resident(
+  pack_path: str,
+  geometry_path: str,
+  expected_geometry: str,
+  source_identity: alignpack.SourceIdentity,
+  borrow prompt_token_ids: array<i64>,
+  borrow eog_token_ids: array<i64>,
+  max_tokens: i64,
+  cache_budget_bytes: i64,
+) -> GenerationParts {
+  return generate_resident_mode(
+    pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids,
+    max_tokens, cache_budget_bytes, false, 0)
+}
+
+pub fn generate_resident_sampled(
+  pack_path: str,
+  geometry_path: str,
+  expected_geometry: str,
+  source_identity: alignpack.SourceIdentity,
+  borrow prompt_token_ids: array<i64>,
+  borrow eog_token_ids: array<i64>,
+  max_tokens: i64,
+  cache_budget_bytes: i64,
+  seed: i64,
+) -> GenerationParts {
+  return generate_resident_mode(
+    pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids,
+    max_tokens, cache_budget_bytes, true, seed)
 }
 
 // The public diagnostic API retains its existing grammar and exact requested-step semantics.
@@ -4676,8 +4744,8 @@ pub fn execute(
   eog_ids := moe_model_forward.empty_array()
   return execute_mode(
     pack_path, geometry_path, "", identity, tokens_text, reference_path, transcript_path,
-    width_text, logits_path, steps_text, kv_save_text, kv_load_text, resident_text, false, eog_ids, 0,
-    tokens, graphs, top, stepped)
+    width_text, logits_path, steps_text, kv_save_text, kv_load_text, resident_text, false, false, 0,
+    eog_ids, 0, tokens, graphs, top, stepped)
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -57,7 +57,10 @@ pub fn model_info(config: model.ProviderConfig) -> model.ModelInfo {
     CloudOpenAI => true,
     LocalOpenAI => true,
     LlamaCpp => true,
-    AlignRuntime => false,
+    // The positive cache budget is the caller's existing declaration that this configuration is
+    // for routed OLMoE. Model-info remains side-effect free, so it reports that configured surface
+    // without opening the model to rediscover its architecture.
+    AlignRuntime => config.runtime_cache_budget_bytes > 0,
   }
   endpoint := match config.kind {
     AlignRuntime => "in-process",
