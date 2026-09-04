@@ -52,9 +52,20 @@ for exact remainder. `FILE_PREAD` is 517,958 ppm of the parent and clears the in
 file-read boundary. All four records retained exact output, cache/read counts, twelve isolation
 checks, and native lifetime balances.
 
-**Next actions.** Commit the measured decision, complete one comprehensive review, repair valid
-findings, rerun affected evidence and exact-head preflight, publish and merge, then start item 65's
-shipped-surface intervention investigation and ledger.
+The comprehensive Codex CLI review covered head
+`f2c6fe17a6496a5427b338bbe5fdb936142ca008` against base tip and merge base
+`154133acebe686018d3a4478c50f8ca5d7f83e86`, using gpt-5.6-sol at high effort over the full diff.
+It found three accepted P2s: the final validator did not reconstruct and validate the inherited
+result envelope; imported owner exception classes could bypass normalized cleanup; and this handoff
+still described the already committed measured decision as uncommitted. The consolidated repair
+adds inherited envelope validation plus a malformed-candidate regression, catches the full imported
+exception chain, and corrects durable state. These changes harden evidence validation and cleanup
+without changing instrumentation or measurement behavior, so another comprehensive review is not
+required.
+
+**Next actions.** Finish and commit the consolidated review repair; rerun affected model-free
+evidence and exact-head preflight; publish and merge; then start item 65's shipped-surface
+intervention investigation and ledger.
 
 **Blocker.** None.
 
@@ -65,9 +76,9 @@ maximum-2 execution returned the exact six-key all-zero `claim_io` object and ze
 The exact clean-head diagnosis and result are recorded above. The earlier exploratory unchanged
 request and stack sample remain directional evidence only.
 
-**Intentional uncommitted files.** The measured specification, roadmap, and handoff decision remain
-uncommitted until their consistency check passes. Machine-local model/evidence and generated build
-products remain outside Git.
+**Intentional uncommitted files.** The review repair in the item-64 runner and this handoff update
+remain uncommitted until the focused regression passes. Machine-local model/evidence and generated
+build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-ROUTING-PHASE-A-BOUNDARY (PR #185, 2026-09-05)
 

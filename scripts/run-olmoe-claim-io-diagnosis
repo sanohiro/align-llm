@@ -337,11 +337,35 @@ def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def predecessor_result(result: dict[str, Any]) -> dict[str, Any]:
+    samples = [inherited_sample(sample) for sample in result["samples"]]
+    return {
+        "schema_version": 1,
+        "artifact_kind": "R8_OLMOE_DECODE_COMPUTE_DIAGNOSIS",
+        "status": "COMPLETE",
+        "model": result["model"],
+        "baseline": {
+            "full_helper_wall_values_ns": compute.BASELINE_FULL_VALUES_NS,
+            "full_helper_wall_median_ns": compute.BASELINE_FULL_MEDIAN_NS,
+            "compute_median_ns": compute.BASELINE_COMPUTE_MEDIAN_NS,
+            "floor_ppm": compute.FLOOR_PPM,
+            "floor_ns": compute.FLOOR_NS,
+        },
+        "candidate": result["candidate"],
+        "task": result["task"],
+        "environment": result["environment"],
+        "samples": samples,
+        "aggregate": compute.aggregate(samples),
+        "elapsed_ns": result["elapsed_ns"],
+    }
+
+
 def validate_result(result: dict[str, Any]) -> None:
     diagnosis.require_exact_keys(result, TOP_KEYS, "result")
     if result["schema_version"] != 1 or result["status"] != "COMPLETE" \
             or result["artifact_kind"] != "R8_OLMOE_CLAIM_IO_DIAGNOSIS":
         raise ClaimIoError("result identity drifted")
+    compute.validate_result(predecessor_result(result))
     expected_baseline = {
         "full_helper_wall_values_ns": BASELINE_FULL_VALUES_NS,
         "full_helper_wall_median_ns": BASELINE_FULL_MEDIAN_NS,
@@ -472,6 +496,11 @@ def self_test() -> int:
     malformed = synthetic_samples(at_floor)
     malformed[0]["full"]["claim_io"]["other_ns"] += 1
     expect_error(lambda: aggregate(malformed), "inexact claim-I/O partition was accepted")
+    malformed_result = dict(result)
+    malformed_result["candidate"] = {"bad": True}
+    expect_error(
+        lambda: validate_result(malformed_result), "malformed inherited candidate was accepted",
+    )
     with mock.patch.object(base, "file_sha256", return_value="0" * 64):
         expect_error(validate_imported_contract, "transitive source drift was accepted")
     incomplete = dict(result)
@@ -656,8 +685,12 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (
-        ClaimIoError, OSError, ValueError, KeyError, TypeError, json.JSONDecodeError,
-        subprocess.TimeoutExpired, owner.DiagnosisError,
+        ClaimIoError, compute.ComputeError, compute.predecessor.BoundaryError,
+        compute.other.OtherError, compute.other.predecessor.ResidualError,
+        transfer.TransferError, diagnosis.DiagnosisError, transfer.phase.DiagnosisError,
+        owner.DiagnosisError, transfer.phase.decision.DecisionError, base.DecisionError,
+        OSError, ValueError, KeyError, TypeError, json.JSONDecodeError,
+        subprocess.TimeoutExpired,
     ) as error:
         owner.stop_owned_processes()
         print(f"R8-OLMOE-CLAIM-IO-DIAGNOSIS: FAIL {error}", file=sys.stderr)
