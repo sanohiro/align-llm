@@ -33,8 +33,8 @@ rejected the live-width phase-A candidate, so item 71 is selected to diagnose ph
 classes before choosing a different exact-safe implementation seam. Product code and the open R8
 gate remain unchanged.
 
-**Next actions.** Commit the recorded result; complete one comprehensive review; consolidate valid
-findings; rerun affected owners and exact-head preflight; publish, merge, and continue to item 71.
+**Next actions.** Consolidate the comprehensive review finding; rerun affected owners and exact-head
+preflight; publish, merge, and continue to item 71.
 
 **Blocker.** None.
 
