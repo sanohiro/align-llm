@@ -30,8 +30,13 @@ misses, 4,376 evictions, and 17,656,872,960 fetched bytes. Cache-to-claim clocks
 plane comparison median was 766,726,392 ns. Every native lifetime and twelve isolation boundaries
 passed. The full-width `src/layer_olmoe.align` and decode golden remain byte-identical to item 67.
 
-**Next actions.** Record the completed comprehensive review and its handoff-only repair; rerun the
-focused owner; run exact-head preflight; publish, merge, and continue to item 69.
+The comprehensive Codex review covered `e6b54eb` against base tip and merge base `3b890c3`, using
+gpt-5.6-sol at high effort over the complete diff. It found one valid P2 and no implementation or
+measurement defect: the next-action list still named the already-completed result commit. Repair
+`1f8439b` removes that stale action; it is handoff-only and does not trigger another review.
+
+**Next actions.** Rerun the focused owner; run exact-head preflight; publish, merge, and continue to
+item 69.
 
 **Blocker.** None.
 
