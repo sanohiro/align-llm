@@ -52,7 +52,7 @@ FLOOR_NS = 921_450_866
 EXPECTED_TRANSFER_SHA256 = "1d333d2306e6b9e397326fa09c1043c868a5096499341ef9944c0fee2d1f0e5d"
 EXPECTED_SHARED_HELPER_SHA256 = "d2516b7f0a89fa6cb7ab98b58eebbd033d7910fe4a5ac479e651189524a58f53"
 EXPECTED_HELPER_SOURCE_SHA256 = "91e2dedf7eac8f66f11c817797e8541881bfd2c7f71ee4e298b37305c6123a63"
-EXPECTED_DECODE_SOURCE_SHA256 = "f6988a09f7634677907834169b67453138c4c9a08f7292405c44d522d61f863d"
+EXPECTED_DECODE_SOURCE_SHA256 = "dc21c34184774be3451ca0200559f6b00a7cf66956910e901ecda3efdf331bf9"
 EXPECTED_OUTCOME_SOURCE_SHA256 = "47a57132841123090f2e2acebc20f3b6d6b4f44e1f13cc9e64e72f57863c4eae"
 EXPECTED_ALIGN_REVISION = transfer.EXPECTED_ALIGN_REVISION
 EXPECTED_COMPILER_SHA256 = transfer.EXPECTED_COMPILER_SHA256
@@ -530,6 +530,18 @@ def expect_error(action: Any, message: str) -> None:
     raise ResidualError(message)
 
 
+def complete_result_after_cleanup(result: dict[str, Any], started_ns: int) -> dict[str, Any]:
+    completed = dict(result)
+    elapsed_ns = time.monotonic_ns() - started_ns
+    if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+        raise ResidualError(
+            f"complete diagnosis exceeded its 8-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+        )
+    completed["elapsed_ns"] = elapsed_ns
+    validate_result(completed)
+    return completed
+
+
 def self_test() -> int:
     if transfer.self_test() != 0:
         raise ResidualError("item 58 inherited self-test failed")
@@ -568,6 +580,23 @@ def self_test() -> int:
     expect_error(lambda: validate_result(malformed_result), "drifted provider was accepted")
     with mock.patch.object(transfer, "SEED", 6):
         expect_error(validate_imported_contract, "drifted imported workload was accepted")
+    incomplete_result = synthetic_result(synthetic_samples({
+        "CONTEXT_BUFFER_SETUP": 1, "GRAPH_BUILD_ALLOC": 2,
+        "GENERIC_TRANSFER_DIGEST": FLOOR_NS, "GRAPH_TEARDOWN": 3,
+        "OTHER_PASS_RESIDUAL": 4,
+    }))
+    incomplete_result.pop("elapsed_ns")
+    with mock.patch.object(time, "monotonic_ns", return_value=10_000):
+        completed_result = complete_result_after_cleanup(incomplete_result, 1_000)
+    if completed_result["elapsed_ns"] != 9_000 or "elapsed_ns" in incomplete_result:
+        raise ResidualError("post-cleanup result finalization mutated or mismeasured its input")
+    with mock.patch.object(
+        time, "monotonic_ns", return_value=CEILING_SECONDS * 1_000_000_000 + 1_001,
+    ):
+        expect_error(
+            lambda: complete_result_after_cleanup(incomplete_result, 1_000),
+            "post-cleanup ceiling excess was accepted",
+        )
     with mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as printed:
         if prerequisites() is not None:
             raise ResidualError("missing prerequisites did not produce N/A")
@@ -671,11 +700,6 @@ def main() -> int:
                 raise ResidualError("ggml library identities changed during diagnosis")
             owner.require_no_matching_process(server, model, deadline, clean_env)
 
-            elapsed_ns = time.monotonic_ns() - started_ns
-            if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
-                raise ResidualError(
-                    f"complete diagnosis exceeded its 8-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
-                )
             task_document = json.loads(diagnosis.TASK.read_text(encoding="utf-8"))
             aggregate_result = aggregate(samples)
             result = {
@@ -709,19 +733,21 @@ def main() -> int:
                     "c_compiler_version_sha256": built["c_compiler_version_sha256"],
                     "linker_search_sha256": linker_search_sha256,
                 },
-                "samples": samples, "aggregate": aggregate_result, "elapsed_ns": elapsed_ns,
+                "samples": samples, "aggregate": aggregate_result,
             }
-            validate_result(result)
-            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
-            print(
-                "R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS: COMPLETE "
-                f"decision={aggregate_result['decision']} "
-                f"selected={aggregate_result['selected_bucket']} "
-                f"median={aggregate_result['selected_bucket_median_ns'] / 1e9:.3f}s "
-                f"residual={aggregate_result['pass_residual_median_ns'] / 1e9:.3f}s "
-                f"elapsed={elapsed_ns / 1e9:.2f}s",
-                file=sys.stderr,
-            )
+    result = complete_result_after_cleanup(result, started_ns)
+    elapsed_ns = result["elapsed_ns"]
+    aggregate_result = result["aggregate"]
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    print(
+        "R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS: COMPLETE "
+        f"decision={aggregate_result['decision']} "
+        f"selected={aggregate_result['selected_bucket']} "
+        f"median={aggregate_result['selected_bucket_median_ns'] / 1e9:.3f}s "
+        f"residual={aggregate_result['pass_residual_median_ns'] / 1e9:.3f}s "
+        f"elapsed={elapsed_ns / 1e9:.2f}s",
+        file=sys.stderr,
+    )
     return 0
 
 

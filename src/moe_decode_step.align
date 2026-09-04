@@ -1865,7 +1865,7 @@ fn run_moe_layer(
   borrow mut state: Plane,
   borrow mut o: moe_model_forward.Outcome,
 ) {
-  setup_started := time.instant()
+  mut setup_started := time.instant()
   mut weight_ctx := ggml_ffi.null_handle()
   mut input_ctx := ggml_ffi.null_handle()
   mut graph_a_ctx := ggml_ffi.null_handle()
@@ -2082,7 +2082,7 @@ fn run_moe_layer(
     result.claim_pread_ns = time.instant() - claim_started
     o.window_reuse_count = o.window_reuse_count + 1
   }
-  transfer_started = time.instant()
+  setup_started = time.instant()
   if o.code.len() == 0 {
     claim_buffer = ggml_ffi.buffer_from_host(device, claim_window, claim_window.len())
     if ggml_ffi.handle_absent(claim_buffer) {
@@ -2100,6 +2100,8 @@ fn run_moe_layer(
     o.claim_placements = o.claim_placements + claim_placements
     o.pointer_identity_failures = o.pointer_identity_failures + claim_identity_failures
   }
+  o.graph_setup_ns = o.graph_setup_ns + (time.instant() - setup_started)
+  transfer_started = time.instant()
   mut topk_image: buffer := buffer(g.n_expert_used * spec.t_out * 4)
   mut compact_image: buffer := buffer(g.n_expert_used * spec.t_out * 4)
   if o.code.len() == 0 {

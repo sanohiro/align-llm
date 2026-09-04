@@ -1502,7 +1502,7 @@ The current forward delivery order is:
     11.548 seconds to 2.045 seconds. The intervention ships.
 
 59. **R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS — partition the post-staging decode-pass residual.
-    Decision recorded: `OTHER_PASS_NEEDS_DIAGNOSIS / OTHER_PASS_RESIDUAL`.** Item 58's post-review
+    Qualification pending after review repair.** Item 58's post-review
     four exact sample records leave `PASS_RESIDUAL` as the largest
     remaining bucket at a 4,172,949,292-ns median, ahead of compute at 4,104,846,715 ns and claim
     I/O at 3,609,378,007 ns. Define a narrower diagnosis of graph/context construction,
@@ -1510,15 +1510,12 @@ The current forward delivery order is:
     before authorizing another implementation seam. Preserve item 58's fixed workload, output,
     isolation, cache, and lifetime boundaries.
 
-    The fixed-host four-repeat diagnosis reproduced every output, lifetime, and isolation boundary.
-    Its decode-pass residual median was 4.347 seconds. `OTHER_PASS_RESIDUAL` dominated at 3.054
-    seconds (702,528 ppm), while generic transfer/digest was 0.888 seconds, graph teardown 0.273
-    seconds, graph build/allocation 0.104 seconds, and context/buffer setup 0.026 seconds. The direct
-    transfer/digest seam missed the 0.921-second materiality floor. No implementation seam is
-    authorized; item 60 is selected.
+    The first four-repeat result is superseded: review found claim-buffer construction attributed to
+    generic transfer/digest rather than setup. The repaired attribution and cleanup-inclusive result
+    publication require one replacement clean-head run before a successor is selected.
 
 60. **R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS — partition the remaining unassigned pass work.
-    Selected; not started.** Preserve item 59's exact request and evidence boundaries while
+    Planned; not selected.** If item 59 selects this diagnosis, preserve its exact request and evidence boundaries while
     separating plane round-trip comparison outside the existing readback clock, graph-member/spec
     construction, per-layer/step accounting, and an explicit remainder. A direct measured winner
     must clear item 59's precommitted materiality floor before it can authorize implementation.

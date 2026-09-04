@@ -30,30 +30,29 @@ The new qualification helper extends the old record without changing the item 57
 schema, and the new runner owns exact detail equations, medians, decisions, fixed-host identity,
 source pinning, and cleanup.
 
-The clean-head run at `9639c05f819b96ffc7d66604fa890a61255b5bff` completed in 108.478 seconds
-and recorded `OTHER_PASS_NEEDS_DIAGNOSIS`. Full-helper walls were
-`[17911496916,18801448542,19746240041,19788850166]` ns (19,273,844,291-ns median), and the
-decode-pass residual median was 4,346,921,988 ns. `OTHER_PASS_RESIDUAL` won at 3,053,836,112 ns
-and 702,528 ppm. Generic transfer/digest measured 888,471,033 ns, below the 921,450,866-ns floor;
-teardown measured 273,385,802 ns, build/allocation 104,144,270 ns, and setup 25,836,777 ns. Every
-fixed output, token, lifetime, host, and isolation boundary passed. Roadmap item 60 is selected for
-a narrower attribution of plane comparison, graph-member/spec construction, step accounting, and
-other work; item 59 authorizes no implementation.
+The first clean-head run at `9639c05f819b96ffc7d66604fa890a61255b5bff` is superseded and is not
+decision evidence. Comprehensive Codex CLI review covered head
+`64a5d34aa7a64f55aaaa077534aaf636b4aafabf` against base tip and merge base
+`ef113f8c049a93334cabd42d17dde6d51f31e1be`, using gpt-5.6-sol at high effort over the full diff.
+Its two accepted P2 findings identified claim-buffer wrapping/tensor placement in the wrong timing
+bucket and COMPLETE publication before cleanup and the cleanup-inclusive ceiling check. The
+consolidated repair moves those operations to setup and finalizes, validates, and publishes the
+result only after both cleanup contexts exit. It also adds focused ceiling/finalization mutants.
 
-**Next actions.** Commit the recorded result, complete one comprehensive review, consolidate valid
-findings, run affected owners and exact-head preflight, publish, and merge. Then pull merged `main`
-and start item 60.
+**Next actions.** Commit the consolidated review repair, run a replacement clean-head four-repeat
+diagnosis, record its exact decision, run exact-head preflight, publish, and merge. Then pull merged
+`main` and start the selected successor.
 
 **Blocker.** None.
 
-**Latest durable verification.** `make fmt`, the pinned new-helper build, `make
-layer-forward-smoke` (62.935 seconds), `make runtime-provider-smoke` (self-test plus 61 CLI
-assertions), Python compilation, the inherited item 58 self-test, the new focused self-test, and
-`git diff --check` pass. The complete real four-repeat diagnosis and exact result are recorded
-above; machine-local evidence remains outside Git.
+**Latest durable verification.** After the review repair, `make fmt`, `make layer-forward-smoke`,
+Python compilation, the inherited item 58 self-test, the new focused self-test, and `git diff
+--check` pass. Pre-review `make runtime-provider-smoke` (self-test plus 61 CLI assertions) also
+passed. The replacement real four-repeat diagnosis is pending; machine-local evidence remains
+outside Git.
 
-**Intentional uncommitted files.** Item 59 result, roadmap, and handoff updates before commit.
-Machine-local model/evidence and generated build products remain outside Git.
+**Intentional uncommitted files.** The consolidated review repair and superseded-result records
+before commit. Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-KV-PLANE-STAGING-TRANSFER (PR #180, 2026-09-04)
 

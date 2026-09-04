@@ -100,30 +100,8 @@ renames residual work or authorizes an optimization before measurement.
 
 ## 6. Recorded result
 
-The complete run at clean head `9639c05f819b96ffc7d66604fa890a61255b5bff` finished in
-108.478 seconds and recorded `OTHER_PASS_NEEDS_DIAGNOSIS`. It used baseline-host fingerprint
-`0a46a7d41c5f9aa35b62891b272f6bf6c79ec4b97acf0b918685ba82ddee15f1`.
-All four maximum-2 records were exact prefixes of their maximum-128 records. Every full request
-reproduced the fixed 87-token chain and output digest, balanced 2,958 ggml buffers, 6,090 contexts,
-one backend, 2,958 allocators, and one resident wrap, and recorded zero matching llama.cpp model
-processes at all twelve required boundaries.
-
-Full-helper walls were `[17911496916,18801448542,19746240041,19788850166]` ns, for a
-19,273,844,291-ns median. Decode-pass residual samples were
-`[4045209180,4262615734,4431228242,4482958665]` ns, for a 4,346,921,988-ns median. Sub-bucket
-medians were:
-
-| Bucket | Median (ns) |
-| --- | ---: |
-| `CONTEXT_BUFFER_SETUP` | 25,836,777 |
-| `GRAPH_BUILD_ALLOC` | 104,144,270 |
-| `GENERIC_TRANSFER_DIGEST` | 888,471,033 |
-| `GRAPH_TEARDOWN` | 273,385,802 |
-| `OTHER_PASS_RESIDUAL` | 3,053,836,112 |
-
-The direct generic-transfer/digest seam is 32,979,833 ns below the precommitted 921,450,866-ns
-materiality floor. `OTHER_PASS_RESIDUAL` is the deterministic winner at 702,528 ppm of the total
-residual and clears the floor by 2,132,385,246 ns. Item 60 therefore owns a still narrower
-diagnosis of plane round-trip comparison outside its existing readback clock, graph-member/spec
-construction, per-layer/step accounting, and remaining unassigned work. This item authorizes no
-optimization and does not infer that any one of those candidate boundaries dominates.
+The first complete run at clean head `9639c05f819b96ffc7d66604fa890a61255b5bff` is superseded and
+is not decision evidence. Comprehensive review found that claim-buffer wrapping and tensor
+placement were charged to generic transfer/digest instead of context/buffer setup, and that the
+runner could publish before cleanup and the cleanup-inclusive ceiling check. Both root causes are
+repaired; a new clean-head four-repeat diagnosis must replace this section before publication.
