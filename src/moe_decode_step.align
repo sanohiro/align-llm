@@ -1458,6 +1458,8 @@ fn reset_step_oracle(borrow mut o: moe_model_forward.Outcome) {
 // read the whole layer would publish the same number. The `Counters` handed in here accumulate the
 // reader's own `pread` bytes across this layer's `read_block_scatter` calls **and nothing else**, so
 // the document can publish the claim and the read side by side and require a relation between them.
+// Provider generation's item-65 mapped path deliberately leaves those syscall counters at zero;
+// its cache's `bytes_fetched` independently accounts for the same ExpertBlock source spans.
 // ---------------------------------------------------------------------------------------------
 
 // R5D section 2.7's read shape, and the container's whole contribution: one expert's gate, up, and
@@ -1534,9 +1536,54 @@ fn read_block_scatter(
   return Ok(())
 }
 
+// R8-OLMOE-FILE-PREAD-BOUNDARY. Provider generation has already validated the same AlignPack
+// through its file reader, then maps that immutable file for the lifetime of the complete schedule.
+// A miss can therefore scatter the three claim members directly from the mapped block. The bounds
+// are repeated here before any slice is formed: a mapped view has no fallible `pread` operation to
+// turn a malformed span into a structured fault for us.
+fn read_mapped_block_scatter(
+  borrow pack_view: slice<u8>,
+  borrow claim_window: slice<u8>,
+  block_offset: i64,
+  block_bytes: i64,
+  borrow starts: array<i64>,
+  borrow sizes: array<i64>,
+  borrow dests: array<i64>,
+  label: str,
+  borrow mut block_to_claim_copy_ns: i64,
+) -> Result<(), alignpack_read.Fault> {
+  if block_offset < 0 || block_bytes <= 0 || block_offset > pack_view.len()
+    || block_bytes > pack_view.len() - block_offset
+    || starts.len() != layer_olmoe.CLAIM_ROLE_COUNT
+    || sizes.len() != layer_olmoe.CLAIM_ROLE_COUNT
+    || dests.len() != layer_olmoe.CLAIM_ROLE_COUNT {
+    return Err(moe_model_forward.pack_fault(
+        "R4_PACK_UNREADABLE", moe_model_forward.named("role", label)))
+  }
+  block := pack_view[block_offset..block_offset + block_bytes]
+  mut role := 0
+  loop {
+    if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+    start := starts[role]
+    size := sizes[role]
+    if start < 0 || size < 0 || start > block_bytes || size > block_bytes - start {
+      return Err(moe_model_forward.pack_fault(
+          "R4_PACK_UNREADABLE", moe_model_forward.named("role", label)))
+    }
+    piece := block[start..start + size]
+    copy_started := time.instant()
+    moe_model_forward.window_put(claim_window, dests[role], piece, size, label)?
+    block_to_claim_copy_ns = block_to_claim_copy_ns + (time.instant() - copy_started)
+    role = role + 1
+  }
+  return Ok(())
+}
+
 fn stage_claims(
   borrow pak: file,
   borrow mut temp: buffer,
+  borrow pack_view: slice<u8>,
+  mapped_claims: bool,
   borrow claim_window: slice<u8>,
   borrow p: moe_model_forward.Plan,
   borrow win: moe_model_forward.ClaimWindow,
@@ -1566,9 +1613,15 @@ fn stage_claims(
     starts := start_builder.build()
     sizes := size_builder.build()
     dests := dest_builder.build()
-    read_block_scatter(
-      pak, temp, claim_window, p.expert_pack_offset[key], p.expert_pack_bytes[key],
-      starts, sizes, dests, "expert", c, file_pread_ns, block_to_claim_copy_ns)?
+    if mapped_claims {
+      read_mapped_block_scatter(
+        pack_view, claim_window, p.expert_pack_offset[key], p.expert_pack_bytes[key],
+        starts, sizes, dests, "expert", block_to_claim_copy_ns)?
+    } else {
+      read_block_scatter(
+        pak, temp, claim_window, p.expert_pack_offset[key], p.expert_pack_bytes[key],
+        starts, sizes, dests, "expert", c, file_pread_ns, block_to_claim_copy_ns)?
+    }
     u = u + 1
   }
   return Ok(())
@@ -1580,6 +1633,8 @@ fn stage_claims(
 fn stage_claims_cached(
   borrow pak: file,
   borrow mut temp: buffer,
+  borrow pack_view: slice<u8>,
+  mapped_claims: bool,
   borrow claim_window: slice<u8>,
   borrow cache_window: slice<u8>,
   borrow cache_metadata: slice<u8>,
@@ -1633,9 +1688,15 @@ fn stage_claims_cached(
       sizes := size_builder.build()
       dests := dest_builder.build()
       before := c.bytes_read
-      read_block_scatter(
-        pak, temp, claim_window, p.expert_pack_offset[key], p.expert_pack_bytes[key],
-        starts, sizes, dests, "expert", c, file_pread_ns, block_to_claim_copy_ns)?
+      if mapped_claims {
+        read_mapped_block_scatter(
+          pack_view, claim_window, p.expert_pack_offset[key], p.expert_pack_bytes[key],
+          starts, sizes, dests, "expert", block_to_claim_copy_ns)?
+      } else {
+        read_block_scatter(
+          pak, temp, claim_window, p.expert_pack_offset[key], p.expert_pack_bytes[key],
+          starts, sizes, dests, "expert", c, file_pread_ns, block_to_claim_copy_ns)?
+      }
 
       mut destination_slot := cache.resident_count
       if cache.resident_count >= cache.slot_count {
@@ -1678,7 +1739,11 @@ fn stage_claims_cached(
       cache_put_u32(cache_metadata, key * 4, destination_slot + 1)?
       cache.misses = cache.misses + 1
       cache.miss_bytes = cache.miss_bytes + expert_key_bytes(p, layer)
-      cache.bytes_fetched = cache.bytes_fetched + (c.bytes_read - before)
+      cache.bytes_fetched = cache.bytes_fetched + if mapped_claims {
+        p.expert_pack_bytes[key]
+      } else {
+        c.bytes_read - before
+      }
     }
     cache.requests = cache.requests + 1
     cache.bytes_served = cache.bytes_served + expert_key_bytes(p, layer)
@@ -1876,6 +1941,8 @@ fn run_moe_layer(
   borrow starts: array<i64>,
   borrow lengths: array<i64>,
   borrow pak: file,
+  borrow pack_view: slice<u8>,
+  mapped_claims: bool,
   borrow mut block_temp: buffer,
   borrow mut cache: ExpertCache,
   borrow mut claim_counters: alignpack_read.Counters,
@@ -2097,14 +2164,14 @@ fn run_moe_layer(
     claim_started := time.instant()
     if cache.enabled {
       take_pack(o, stage_claims_cached(
-          pak, block_temp, claim_window, cache_window, cache_metadata, p, win, planes, routing,
-          spec.layer, cache, claim_counters, claim_file_pread_ns,
+          pak, block_temp, pack_view, mapped_claims, claim_window, cache_window, cache_metadata, p,
+          win, planes, routing, spec.layer, cache, claim_counters, claim_file_pread_ns,
           claim_block_to_claim_copy_ns, claim_claim_to_cache_copy_ns,
           claim_cache_to_claim_copy_ns))
     } else {
       take_pack(o, stage_claims(
-          pak, block_temp, claim_window, p, win, planes, routing, spec.layer, claim_counters,
-          claim_file_pread_ns, claim_block_to_claim_copy_ns))
+          pak, block_temp, pack_view, mapped_claims, claim_window, p, win, planes, routing,
+          spec.layer, claim_counters, claim_file_pread_ns, claim_block_to_claim_copy_ns))
     }
     result.claim_pread_ns = time.instant() - claim_started
     result.claim_file_pread_ns = claim_file_pread_ns
@@ -2585,6 +2652,8 @@ fn decode_embed_members(
 
 fn decode_pass(
   borrow pak: file,
+  borrow pack_view: slice<u8>,
+  mapped_claims: bool,
   device: raw,
   backend: raw,
   resident_buffer: raw,
@@ -2634,8 +2703,8 @@ fn decode_pass(
 ) -> array<i64> {
   mut routed_ids: array_builder<i64> := array_builder()
   mut chunk_temp: buffer := buffer(moe_model_forward.CHUNK_BYTES)
-  mut block_temp: buffer :=
-  buffer(if plan.max_block_bytes > 0 { plan.max_block_bytes } else { 1 })
+  mut block_temp: buffer := buffer(
+    if mapped_claims { 1 } else if plan.max_block_bytes > 0 { plan.max_block_bytes } else { 1 })
   mut counters := alignpack_read.new_counters()
   mut claim_counters := alignpack_read.new_counters()
   past_bytes := n_past * g.n_head_kv * g.head_dim * 4
@@ -2742,7 +2811,7 @@ fn decode_pass(
       pos_view, mask_view,
       out_ids_view,
       past_k_view, past_v_view, residual_view, node_view, plane_view, scan, starts, lengths, pak,
-      block_temp, cache, claim_counters, breach, routing, result, state, o)
+      pack_view, mapped_claims, block_temp, cache, claim_counters, breach, routing, result, state, o)
     o.routing_compute_ns = o.routing_compute_ns + result.compute_a_ns
     o.expert_compute_ns = o.expert_compute_ns + result.compute_b_ns
     accounting_started = time.instant()
@@ -2884,6 +2953,8 @@ fn decode_pass(
 
 fn prefill_pass(
   borrow pak: file,
+  borrow pack_view: slice<u8>,
+  mapped_claims: bool,
   device: raw,
   backend: raw,
   resident_buffer: raw,
@@ -2926,8 +2997,8 @@ fn prefill_pass(
   borrow mut o: moe_model_forward.Outcome,
 ) -> array<i64> {
   mut chunk_temp: buffer := buffer(moe_model_forward.CHUNK_BYTES)
-  mut block_temp: buffer :=
-  buffer(if plan.max_block_bytes > 0 { plan.max_block_bytes } else { 1 })
+  mut block_temp: buffer := buffer(
+    if mapped_claims { 1 } else if plan.max_block_bytes > 0 { plan.max_block_bytes } else { 1 })
   mut counters := alignpack_read.new_counters()
   mut claim_counters := alignpack_read.new_counters()
   mut source_counters := alignpack_read.new_counters()
@@ -3005,7 +3076,8 @@ fn prefill_pass(
       a_nodes, b_nodes, oracle, layer_view, claim_window, cache_window, cache_metadata, slot_view,
       index_view, mask_view,
       out_ids_view, plane_view, plane_view, residual_view, node_view, plane_view, scan, starts,
-      lengths, pak, block_temp, cache, claim_counters, breach, routing, result, state, o)
+      lengths, pak, pack_view, mapped_claims, block_temp, cache, claim_counters, breach, routing,
+      result, state, o)
     account(result.activation_a, result.slot_high_water, result.node_count_a, activation, o)
     account(result.activation_b, result.slot_high_water, result.node_count_b, activation, o)
     o.compute_ns = o.compute_ns + result.compute_a_ns + result.compute_b_ns
@@ -3371,6 +3443,8 @@ fn generation_eog(borrow ids: array<i64>, token: i64) -> bool {
 
 fn decode_loop(
   borrow pak: file,
+  borrow pack_view: slice<u8>,
+  mapped_claims: bool,
   device: raw,
   backend: raw,
   resident_buffer: raw,
@@ -3520,7 +3594,8 @@ fn decode_loop(
     mut res := empty_step_residency()
     pass_started := time.instant()
     ids := decode_pass(
-      pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, win, tokens,
+      pak, pack_view, mapped_claims, device, backend, resident_buffer, context_bytes, g, ends, table,
+      plan, win, tokens,
       head_members, window,
       claim_window, cache_window, cache_metadata, layout, resident, slot_view, ids_view, pos_view,
       mask_view, out_ids_view,
@@ -3561,21 +3636,25 @@ fn decode_loop(
     res.cache_bytes_served = cache.bytes_served - before_cache_served
     res.cache_miss_bytes = cache.miss_bytes - before_cache_miss_bytes
     res.cache_bytes_fetched = cache.bytes_fetched - before_cache_fetched
-    // Section 3.11's fail-closed relation. `read_block_scatter` reads chunks intersected with the
-    // three claim spans, so the excess is the reader's chunk granularity and is a **measurement**;
-    // what is asserted is that it is an excess at all and that it is bounded by one block alignment
-    // per plane. Neither side can hold by construction, so neither is vacuous.
-    cache_accounting_bad := cache.enabled
+    // Section 3.11's fail-closed relation. The source-byte bounds apply to both source mechanisms;
+    // the equality to `expert_pread_bytes` applies only to the diagnostic syscall path. Provider
+    // generation instead requires that syscall counter to remain exactly zero while its cache's
+    // `bytes_fetched` continues to account for the same validated ExpertBlock spans.
+    common_cache_accounting_bad := cache.enabled
       && (res.cache_hits + res.cache_misses != res.keys_demanded
-        || res.cache_bytes_served != res.expert_bytes
-        || res.cache_bytes_fetched != res.expert_pread_bytes
-        || res.expert_pread_bytes < res.cache_miss_bytes
-        || res.expert_pread_bytes > res.cache_miss_bytes + res.cache_misses
+        || res.cache_bytes_served != res.expert_bytes)
+    cache_source_bytes_bad := cache.enabled
+      && (res.cache_bytes_fetched < res.cache_miss_bytes
+        || res.cache_bytes_fetched > res.cache_miss_bytes + res.cache_misses
         * layer_olmoe.CLAIM_ROLE_COUNT * block_align)
-    stream_accounting_bad := !cache.enabled
+    cache_pread_accounting_bad := cache.enabled && !mapped_claims
+      && res.cache_bytes_fetched != res.expert_pread_bytes
+    mapped_pread_accounting_bad := mapped_claims && res.expert_pread_bytes != 0
+    stream_accounting_bad := !cache.enabled && !mapped_claims
       && (res.expert_pread_bytes < res.expert_bytes
         || res.expert_pread_bytes > res.expert_bytes + res.claim_planes_read * block_align)
-    if cache_accounting_bad || stream_accounting_bad {
+    if common_cache_accounting_bad || cache_source_bytes_bad || cache_pread_accounting_bad
+      || mapped_pread_accounting_bad || stream_accounting_bad {
       fail(o, CODE_CLAIM_ACCOUNTING, claim_accounting_detail(
           -1, res.expert_bytes, res.expert_pread_bytes))
       prefix_step(o, step)
@@ -4030,6 +4109,8 @@ fn fill_resident_dense(
 
 fn schedule_decode(
   borrow pak: file,
+  borrow pack_view: slice<u8>,
+  mapped_claims: bool,
   borrow g: layer_olmoe.Geometry,
   borrow table: layer_olmoe.MemberTable,
   borrow plan: moe_model_forward.Plan,
@@ -4241,7 +4322,8 @@ fn schedule_decode(
     prefill_claim_pread_before = o.claim_pread_ns
     prefill_compute_before = o.compute_ns
     prefill_keys = prefill_pass(
-      pak, device, backend, resident_buffer, context_bytes, g, table, plan, win, tokens,
+      pak, pack_view, mapped_claims, device, backend, resident_buffer, context_bytes, g, table, plan,
+      win, tokens,
       embed_members,
       head_members, window, claim_window, cache_window, cache_metadata_view, layout, resident,
       slot_view, index_view, mask_wide_view,
@@ -4285,7 +4367,8 @@ fn schedule_decode(
     o.prefill_compute_ns = o.compute_ns - prefill_compute_before
     first_token := if first_selected >= 0 { first_selected } else { o.argmax }
     stepped = decode_loop(
-      pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, win, tokens,
+      pak, pack_view, mapped_claims, device, backend, resident_buffer, context_bytes, g, ends, table,
+      plan, win, tokens,
       head_members,
       window, claim_window, cache_window, cache_metadata_view, layout, resident, slot_view,
       decode_ids_view, decode_pos_view,
@@ -4756,13 +4839,39 @@ fn execute_mode(
     o.elapsed_ns = time.instant() - started
     return o
   }
-  schedule_decode(
-    pak, g, table, staged.plan, staged.ends, staged.win, tokens, embed_members, head_members,
-    window_view, claim_view, cache_view, layout, resident, device, context_bytes, width,
-    residual_bytes,
-    logits_bytes, readback_bytes, staged.block_align, reference_path, transcript_path, logits_path,
-    steps, generation, sampled, sampling_seed, eog_ids, generation_max, started, graphs, top,
-    stepped, o)
+  if generation {
+    // The view's arena encloses every prefill/decode consumer and ends only after the schedule's
+    // converged native teardown. It never enters a result or a ggml tensor: claim bytes are copied
+    // into the existing aligned claim window before that window is wrapped.
+    arena {
+      mapped := match fs.read_bytes_view(pack_path) {
+        Ok(value) => value,
+        Err(failure) => {
+          fail(o, "R4_PACK_UNREADABLE", moe_model_forward.error_name(failure))
+          window_view[0..0]
+        },
+      }
+      if o.code.len() == 0 && mapped.len() != staged.total_bytes {
+        fail(o, "R4_PACK_TRUNCATED", moe_model_forward.labelled("bytes", mapped.len()))
+      }
+      if o.code.len() == 0 {
+        schedule_decode(
+          pak, mapped, true, g, table, staged.plan, staged.ends, staged.win, tokens, embed_members,
+          head_members, window_view, claim_view, cache_view, layout, resident, device, context_bytes,
+          width, residual_bytes, logits_bytes, readback_bytes, staged.block_align, reference_path,
+          transcript_path, logits_path, steps, generation, sampled, sampling_seed, eog_ids,
+          generation_max, started, graphs, top, stepped, o)
+      }
+    }
+  } else {
+    empty_pack_view := window_view[0..0]
+    schedule_decode(
+      pak, empty_pack_view, false, g, table, staged.plan, staged.ends, staged.win, tokens,
+      embed_members, head_members, window_view, claim_view, cache_view, layout, resident, device,
+      context_bytes, width, residual_bytes, logits_bytes, readback_bytes, staged.block_align,
+      reference_path, transcript_path, logits_path, steps, generation, sampled, sampling_seed,
+      eog_ids, generation_max, started, graphs, top, stepped, o)
+  }
   o.elapsed_ns = time.instant() - started
   return o
 }

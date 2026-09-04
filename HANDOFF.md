@@ -30,17 +30,29 @@ lives through the whole synchronous schedule, never enters a cache/result/native
 unmapped after converged schedule teardown. The explicit expert-cache budget is unchanged and does
 not claim to bound the OS file cache.
 
-**Next actions.** Commit the design checkpoint; implement the mapped scatter and arena lifetime;
-extend narrow owners; build the item-65 helper/runner; run the four-repeat fixed-host gate; review,
-repair, preflight, publish, and merge; then continue to the next eligible roadmap capability.
+Design checkpoint `96cfefa` is complete. The implementation threads one mapped view and selection
+bit through the existing synchronous schedule, repeats block/member bounds before slicing, scatters
+before cache admission, keeps the diagnostic path on `pread`, and shrinks each provider-generation
+block transient to one byte. Cache source-span validation is independent from syscall accounting:
+mapped steps require zero expert `pread` bytes while retaining the same bounded fetched spans. The
+item-65 runner pins item 64 plus its complete transitive chain, the new helper and changed compiled
+source, immutable gate/workload/host, toolchain, libraries, headers, cleanup, and exact result
+schema.
+
+**Next actions.** Commit the implementation checkpoint; run the four-repeat fixed-host gate; record
+its result; complete review, repair, preflight, publication, and merge; then continue to the next
+eligible roadmap capability.
 
 **Blocker.** None.
 
-**Latest durable verification.** Item 64 exact-head preflight and all three hosted checks passed;
-PR #186 merged as `3c1a0a8`. Item 65 has completed its author ledger-to-prose consistency pass but
-has not yet changed production code or run owner verification.
+**Latest durable verification.** `make check`, `make runtime-provider-smoke` (sampler vectors plus 61
+CLI assertions), `make layer-forward-smoke` (61.095 seconds), `make fmt`, Python compilation, the
+item-65 model-free self-test, and `git diff --check` pass. The runtime provider smoke exercises the
+mapped OLMoE generation path on deterministic tiny models while the layer-forward owner preserves
+the diagnostic syscall schema and golden.
 
-**Intentional uncommitted files.** Item 65's design, roadmap, and handoff checkpoint until committed.
+**Intentional uncommitted files.** Item 65's production/helper/runner implementation and this durable
+checkpoint until committed.
 Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-CLAIM-IO-DIAGNOSIS (PR #186, 2026-09-05)

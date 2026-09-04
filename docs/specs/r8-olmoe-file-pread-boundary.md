@@ -1,6 +1,6 @@
 # R8 OLMoE file-pread boundary
 
-Status: active, design fixed before implementation, 2026-09-05
+Status: active, implementation complete; qualification pending, 2026-09-05
 
 Roadmap owner: item 65, `R8-OLMOE-FILE-PREAD-BOUNDARY`
 
@@ -35,7 +35,7 @@ before publication.
 | Immutable baseline | item 62's four walls and 19,266,559,229-ns median above; candidate samples never replace it |
 | Shipping gate | 50,000 ppm rounded up is 963,327,962 ns; candidate ceiling is 18,303,231,267 ns; `MET` iff the four-sample candidate wall median is at or below the ceiling |
 | Mapping construction | after the existing path grammar, geometry, source identity, AlignPack index, budget, allocation, ggml-availability, and ABI checks, enter one arena and call `fs.read_bytes_view(pack_path)` exactly once before the decode schedule |
-| Mapping validation | require mapped length to equal the already validated AlignPack `total_bytes`; mapping/open failure remains `R4_PACK_UNREADABLE`; length mismatch is `R4_PACK_LEN` and no graph or cache mutation occurs |
+| Mapping validation | require mapped length to equal the already validated AlignPack `total_bytes`; mapping/open failure remains `R4_PACK_UNREADABLE`; length mismatch is the existing `R4_PACK_TRUNCATED` and no graph or cache mutation occurs |
 | Claim source | provider generation reads every cache-miss ExpertBlock from the mapped byte view at the already validated `expert_pack_offset` and `expert_pack_bytes`; each requested role uses the existing validated relative start and size and the existing `window_put` destination |
 | Copy count | one mapped-pack-to-claim copy per requested role remains; the old file-to-block-temporary copy is removed; hit, claim-to-cache, and cache-to-claim copies are unchanged |
 | Cache accounting | requests, hits, misses, evictions, bytes served, logical miss bytes, and `expert_cache_bytes_fetched` retain their exact values; `bytes_fetched` counts the validated mapped block spans sourced on misses rather than requiring a syscall |
