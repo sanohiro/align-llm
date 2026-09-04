@@ -3398,7 +3398,6 @@ fn decode_loop(
       break
     }
     phase_started := time.instant()
-    before_claim_pread := o.claim_pread_ns
     n_past := first_n_past + step - 1
     // Oracle T and oracle R select transcript graph `k + 1` by skipping `k`. The rescan is
     // `O(N x file)` and is accepted and measured (section 6.4): the alternative holds `N` graphs'
@@ -3426,8 +3425,14 @@ fn decode_loop(
     before_cache_served := cache.bytes_served
     before_cache_miss_bytes := cache.miss_bytes
     before_cache_fetched := cache.bytes_fetched
+    before_pread := o.pread_ns
+    before_claim_pread := o.claim_pread_ns
+    before_decide := o.decide_ns
+    before_plane_upload := state.upload_ns
+    before_plane_readback := state.readback_ns
     decoded.token_id = token
     mut res := empty_step_residency()
+    pass_started := time.instant()
     ids := decode_pass(
       pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, win, tokens,
       head_members, window,
@@ -3437,6 +3442,7 @@ fn decode_loop(
       logits_view, node_view, plane_view, oracle, embed_nodes, a_nodes, b_nodes, head_nodes, scan,
       ranges.start, ranges.length, token, n_past, step, width, stride, breach, activation, cache,
       res, state, decoded, o)
+    pass_finished := time.instant()
     if o.code.len() == 0 && generation && decoded.nonfinite_count > 0 {
       fail(o, "R5_LOGITS_NONFINITE", moe_model_forward.labelled(
           "elements", decoded.nonfinite_count))
@@ -3588,7 +3594,8 @@ fn decode_loop(
     // absorbed later — it changes step `j`'s `embd`, and every later step's input, `embd`, and
     // logits — so the `N` ids are gated as one chain rooted at a byte-exact `d_1`.
     token = selected
-    phase_ns := time.instant() - phase_started
+    phase_finished := time.instant()
+    phase_ns := phase_finished - phase_started
     phase_claim_pread_ns := o.claim_pread_ns - before_claim_pread
     phase_compute_ns := decoded.compute_ns - before_compute
     if step == 1 {
@@ -3597,6 +3604,18 @@ fn decode_loop(
       o.first_decode_compute_ns = phase_compute_ns
     } else {
       o.remaining_decode_ns = o.remaining_decode_ns + phase_ns
+      o.remaining_decode_pre_pass_ns =
+      o.remaining_decode_pre_pass_ns + (pass_started - phase_started)
+      o.remaining_decode_pass_ns =
+      o.remaining_decode_pass_ns + (pass_finished - pass_started)
+      o.remaining_decode_post_pass_ns =
+      o.remaining_decode_post_pass_ns + (phase_finished - pass_finished)
+      o.remaining_decode_pread_ns = o.remaining_decode_pread_ns + (o.pread_ns - before_pread)
+      o.remaining_decode_decide_ns = o.remaining_decode_decide_ns + (o.decide_ns - before_decide)
+      o.remaining_decode_plane_upload_ns = o.remaining_decode_plane_upload_ns
+        + (state.upload_ns - before_plane_upload)
+      o.remaining_decode_plane_readback_ns = o.remaining_decode_plane_readback_ns
+        + (state.readback_ns - before_plane_readback)
       o.remaining_decode_claim_pread_ns =
       o.remaining_decode_claim_pread_ns + phase_claim_pread_ns
       o.remaining_decode_compute_ns = o.remaining_decode_compute_ns + phase_compute_ns

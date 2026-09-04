@@ -3,12 +3,47 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION (2026-09-04)
+## Active: R8-OLMOE-REMAINING-DECODE-OVERHEAD-DIAGNOSIS (2026-09-04)
 
-Branch `agent/r8-olmoe-isolated-sampled-runtime-decision`, based on pulled merged `main`
-`6da234fb6ef3c96d10aec3b07c2cf1b5bd9ab640` (R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS PR #177). The
-sibling Align checkout and `.align-revision` remain at merged Align
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align surface is currently required.
+Branch `agent/r8-olmoe-remaining-decode-overhead-diagnosis`, based on pulled merged `main`
+`6d05d1fbbf79644806edecded24755ae701a6d0a` (item 56 PR #178). The sibling Align checkout and
+`.align-revision` remain at merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align
+surface is currently required.
+
+Item 57's authoritative measurement ledger and closure matrix are
+`docs/specs/r8-olmoe-remaining-decode-overhead-diagnosis.md`. Four fresh-process, conditioned,
+isolated seed-5 full requests divided every successful remaining decode step into pre-pass,
+decode-pass, and post-pass and projected existing staging, claim, compute, routing, and KV-plane
+clocks onto pass. The clean-head run at `ffbe449452f8cbbba378932d2ca8e2eeee6fd683` completed in
+154.183 seconds with the fixed output and balanced lifetimes in all four repetitions.
+
+`KV_PLANE_TRANSFER` won at an 11.555-second median, 457,325 ppm of the 25.267-second remaining-decode
+median and well above the precommitted 1.467-second floor. Its CPU staging/upload component was
+11.548 seconds while readback was only 0.008 seconds. The decision is
+`MEASURED_BUCKET_ELIGIBLE`; item 58, `R8-OLMOE-KV-PLANE-STAGING-TRANSFER`, is selected to define and
+qualify the narrow staging implementation against item 57's fixed 30.451-second full-helper wall
+baseline and a new 50,000-ppm shipping gate.
+
+**Next actions.** Complete item 57's comprehensive review, exact-head preflight, publication, and
+merge. Then pull merged `main`, start item 58, write its implementation ledger and closure matrix,
+and implement the smallest staging-transfer seam that can clear its precommitted gate.
+
+**Blocker.** None.
+
+**Latest durable verification.** `gmake fmt`, the pinned helper build, focused Python self-test,
+`gmake layer-forward-smoke`, `gmake runtime-provider-smoke`, and `git diff --check` pass. The real
+diagnosis and exact result are recorded above; machine-local evidence remains outside Git.
+
+**Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
+remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION (PR #178, 2026-09-04)
+
+PR #178 merged as `6d05d1fbbf79644806edecded24755ae701a6d0a`. The comprehensive review's
+two accepted reproducibility/schema findings were consolidated by independently pinning every
+imported workload value and rejecting boolean server-instance counts. Exact-head preflight and all
+three required CI jobs passed; the active item 57 above owns the selected remaining-decode
+diagnosis.
 
 Item 53's provider-level sampled decision kept one llama.cpp model resident across all four pairs
 and measured runtime at a 189.005-second median versus local at 12.710 seconds. Item 55 then bounded
@@ -30,15 +65,6 @@ before/after absence check passed. Isolation recovered 39.732 seconds, 21.0% of 
 median, but left runtime 11.31 times slower than local. R8 remains open; item 57 is selected to
 partition remaining-decode graph/context lifecycle, transfer/readback, claim, compute, and
 routing/sampling/accounting overhead before any implementation seam is authorized.
-
-**Next actions.** Commit the recorded result, perform the one comprehensive review, consolidate any
-accepted findings, rerun affected owner evidence and exact-head preflight, publish and merge the
-capability, then start item 57's authoritative measurement contract.
-
-**Blocker.** None.
-
-**Intentional uncommitted files.** None. Machine-local JSON evidence remains outside Git, and no
-generated binary, model, credential, or profile belongs in Git.
 
 ## Merged checkpoint: R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS (PR #177, 2026-09-04)
 
