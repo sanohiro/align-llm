@@ -657,7 +657,7 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except (
         ClaimIoError, OSError, ValueError, KeyError, TypeError, json.JSONDecodeError,
-        subprocess.TimeoutExpired,
+        subprocess.TimeoutExpired, owner.DiagnosisError,
     ) as error:
         owner.stop_owned_processes()
         print(f"R8-OLMOE-CLAIM-IO-DIAGNOSIS: FAIL {error}", file=sys.stderr)
