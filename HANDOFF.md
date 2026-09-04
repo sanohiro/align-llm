@@ -12,18 +12,27 @@ surface is currently required.
 
 Item 57's authoritative measurement ledger and closure matrix are
 `docs/specs/r8-olmoe-remaining-decode-overhead-diagnosis.md`. Four fresh-process, conditioned,
-isolated seed-5 full requests will divide every successful remaining decode step into pre-pass,
-decode-pass, and post-pass and project existing staging, claim, compute, routing, and KV-plane
-clocks onto pass. Unassigned graph/context, generic-transfer, digest, allocation, and bookkeeping
-work remains an explicit residual. The fixed item-56 seed-5 runtime median is 29.333 seconds, so the
-precommitted 50,000-ppm materiality floor is 1.467 seconds per request. A residual winner can select
-only another diagnosis, not implementation.
+isolated seed-5 full requests divided every successful remaining decode step into pre-pass,
+decode-pass, and post-pass and projected existing staging, claim, compute, routing, and KV-plane
+clocks onto pass. The clean-head run at `ffbe449452f8cbbba378932d2ca8e2eeee6fd683` completed in
+154.183 seconds with the fixed output and balanced lifetimes in all four repetitions.
 
-**Next actions.** Complete the author ledger-to-prose pass; implement the seven shared counters,
-qualification helper, focused runner, and model-free closure owner; run narrow source owners and one
-real diagnosis; record the decision, review, publish, merge, and continue.
+`KV_PLANE_TRANSFER` won at an 11.555-second median, 457,325 ppm of the 25.267-second remaining-decode
+median and well above the precommitted 1.467-second floor. Its CPU staging/upload component was
+11.548 seconds while readback was only 0.008 seconds. The decision is
+`MEASURED_BUCKET_ELIGIBLE`; item 58, `R8-OLMOE-KV-PLANE-STAGING-TRANSFER`, is selected to define and
+qualify the narrow staging implementation against item 57's fixed 30.451-second full-helper wall
+baseline and a new 50,000-ppm shipping gate.
+
+**Next actions.** Complete item 57's comprehensive review, exact-head preflight, publication, and
+merge. Then pull merged `main`, start item 58, write its implementation ledger and closure matrix,
+and implement the smallest staging-transfer seam that can clear its precommitted gate.
 
 **Blocker.** None.
+
+**Latest durable verification.** `gmake fmt`, the pinned helper build, focused Python self-test,
+`gmake layer-forward-smoke`, `gmake runtime-provider-smoke`, and `git diff --check` pass. The real
+diagnosis and exact result are recorded above; machine-local evidence remains outside Git.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.

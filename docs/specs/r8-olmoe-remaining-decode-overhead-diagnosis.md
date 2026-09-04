@@ -1,6 +1,6 @@
 # R8 OLMoE remaining-decode overhead diagnosis
 
-Status: active design, 2026-09-04
+Status: complete, 2026-09-04
 
 Roadmap owner: item 57, `R8-OLMOE-REMAINING-DECODE-OVERHEAD-DIAGNOSIS`
 
@@ -156,3 +156,35 @@ No `make ci`, installed platform profile, 40-prompt corpus, validator, sampled c
 stress suite, cache replay, or unrelated benchmark is selected. This diagnosis changes shared
 counter structure but no provider behavior, and its precommitted ceiling/floor prevent a measured
 small bucket from becoming an optimization claim.
+
+## 6. Recorded result
+
+The complete run at clean head `ffbe449452f8cbbba378932d2ca8e2eeee6fd683` finished in
+154.183 seconds. All four fresh maximum-2 conditioning requests were exact prefixes of their
+maximum-128 requests; all four full requests reproduced the fixed 87-token chain and output digest,
+balanced every native lifetime, and recorded zero matching llama.cpp model processes before,
+between, and after their two helper invocations.
+
+Full helper walls were `[28322991875,30172193417,30729519750,30967544875]` ns, for a
+30,450,856,583-ns median. Remaining decode measured
+`[23733092295,25121259830,25413715335,25676607750]` ns, for a 25,267,487,582-ns median. The bucket
+medians were:
+
+| Bucket | Median (ns) |
+| --- | ---: |
+| `PACK_OR_RESIDENT_STAGE` | 226,548 |
+| `CLAIM_IO` | 4,014,707,663 |
+| `COMPUTE` | 4,756,204,313 |
+| `ROUTING` | 11,473,270 |
+| `KV_PLANE_TRANSFER` | 11,555,474,575 |
+| `PRE_PASS_ORCHESTRATION` | 867,566 |
+| `POST_PASS_ORCHESTRATION` | 168,450,564 |
+| `PASS_RESIDUAL` | 4,762,058,135 |
+
+`KV_PLANE_TRANSFER` is the deterministic winner at 457,325 ppm of remaining decode and well above
+the fixed 1,466,649,650-ns materiality floor, so the decision is `MEASURED_BUCKET_ELIGIBLE`.
+Its already-separated staging/upload clock contributed an 11,547,535,094-ns median; plane readback
+contributed only 7,939,481 ns. Item 58 therefore owns a bounded KV-plane staging-transfer reduction
+with this run's fixed full-helper wall as its baseline and its own precommitted 50,000-ppm shipping
+gate. This diagnosis itself makes no performance-win claim and authorizes no cache-policy or
+provider-lifetime change.

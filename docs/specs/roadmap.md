@@ -1464,7 +1464,8 @@ The current forward delivery order is:
     50,000-ppm gate. R8 remains open.
 
 57. **R8-OLMOE-REMAINING-DECODE-OVERHEAD-DIAGNOSIS — assign the isolated decode tail before
-    choosing graph, transfer, or orchestration work. Active.**
+    choosing graph, transfer, or orchestration work. Decision recorded:
+    `MEASURED_BUCKET_ELIGIBLE / KV_PLANE_TRANSFER`.**
     [`r8-olmoe-remaining-decode-overhead-diagnosis.md`](r8-olmoe-remaining-decode-overhead-diagnosis.md)
     is the authoritative measurement contract and closure matrix. Reuse the fixed isolated seed-5
     full request and split remaining decode exactly into pre-pass, decode-pass, and post-pass. Within
@@ -1474,6 +1475,22 @@ The current forward delivery order is:
     compare each bucket's removable-work ceiling with the precommitted 1,466,649,650-nanosecond
     floor. A dominant residual selects only a narrower diagnosis; this capability changes no
     provider lifetime, cache policy, or generation behavior.
+
+    The 154.183-second run reproduced the fixed output and balanced native lifetimes in all four
+    full requests, with zero matching llama.cpp processes at all twelve required boundaries.
+    Remaining decode had a 25.267-second median. `KV_PLANE_TRANSFER` was the largest bucket at
+    11.555 seconds (457,325 ppm), ahead of pass residual at 4.762 seconds, compute at 4.756 seconds,
+    and claim I/O at 4.015 seconds. CPU K/V staging supplied 11.548 seconds of the winning bucket;
+    plane readback supplied only 0.008 seconds. The winner clears the 1.467-second floor and selects
+    item 58; it does not itself establish a performance win.
+
+58. **R8-OLMOE-KV-PLANE-STAGING-TRANSFER — reduce the measured scalar K/V staging boundary.
+    Selected; not started.** Define a consumer-complete implementation contract that preserves the
+    current plane, graph-input, token/output, cache, and native-lifetime semantics while replacing
+    the per-scalar host staging path at the narrowest shipped seam. Use item 57's four fixed full
+    helper walls and 30,450,856,583-ns median as the immutable baseline, precommit a 50,000-ppm
+    shipping gate, and retain the exact conditioned four-repeat protocol. Ship only if the fixed
+    output and lifetime gates pass and the candidate median clears that performance floor.
 
 ### Status (2026-08-28)
 
