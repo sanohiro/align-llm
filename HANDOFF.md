@@ -16,10 +16,11 @@ unresolved decode bucket at a 4,104,846,715-ns median, ahead of 3,609,378,007 ns
 above item 58's 921,450,866-ns materiality floor. Item 62's authoritative ledger and closure matrix
 are `docs/specs/r8-olmoe-decode-compute-diagnosis.md`.
 
-The selected diagnostic partitions existing graph-compute wall into decoded-token embedding,
-layer phase A (attention/routing), layer phase B (selected experts), and output head. It preserves
-the fixed request, output, cache, isolation, and native lifetimes and makes no speed claim. A
-measured winner must clear the inherited floor before another implementation seam is eligible.
+The completed clean-head diagnosis selected `ROUTING_PHASE_A`. Full-helper walls were
+`[18059864416,18927732709,20639199375,19605385750]` ns, median 19,266,559,229 ns. Compute totals
+were `[4032538022,4200052735,4232013000,4234889692]` ns, median 4,216,032,867 ns. Phase-A median
+was 2,939,392,017 ns / 697,193 ppm of compute, ahead of expert phase B at 1,114,674,041 ns, output
+head at 151,386,183 ns, and embedding at 997,788 ns. All four partitions were exact.
 
 The shared outcome now classifies the existing decode graph walls into four scalar counters and
 commits their deltas beside `remaining_decode_compute_ns` only after a successful remaining step.
@@ -27,8 +28,14 @@ commits their deltas beside `remaining_decode_compute_ns` only after a successfu
 bounded runner inherits the complete item 57→61 validators, pins the consumed ggml headers and full
 source chain, and owns exact-key, arithmetic, tie, floor, identity, and cleanup tests.
 
-**Next actions.** Commit the coherent implementation checkpoint; run the one clean-head real
-diagnosis; record its selection; review, repair, preflight, publish, merge, and continue.
+Every full request reproduced the fixed output and balanced 2,958 buffers, 6,090 contexts, one
+backend, 2,958 allocators, and one resident wrap, with twelve clean isolation boundaries. The run
+completed in 121.268 seconds at clean head `4de73d64765fc31f35f2c08ca00367d327b00705`.
+Item 63, `R8-OLMOE-ROUTING-PHASE-A-BOUNDARY`, is selected with item 62's full-helper samples as its
+immutable baseline, a 963,327,962-ns floor, and an 18,303,231,267-ns candidate ceiling.
+
+**Next actions.** Commit the result; perform one comprehensive review, repair valid findings, run
+affected owners and exact-head preflight, publish, merge, then start item 63.
 
 **Blocker.** None.
 
@@ -37,7 +44,7 @@ pass. The pinned compiler builds the new helper through the static hosted shim. 
 layer-forward-smoke` passed in 61.819 seconds, `make runtime-provider-smoke` passed its self-test and
 61 CLI assertions, `make fmt`, and `git diff --check` pass.
 
-**Intentional uncommitted files.** The item 62 implementation batch until committed; machine-local
+**Intentional uncommitted files.** The item 62 result documentation until committed; machine-local
 model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY (PR #183, 2026-09-05)

@@ -1,6 +1,6 @@
 # R8 OLMoE decode-compute diagnosis
 
-Status: active, 2026-09-05
+Status: complete, 2026-09-05
 
 Roadmap owner: item 62, `R8-OLMOE-DECODE-COMPUTE-DIAGNOSIS`
 
@@ -99,3 +99,33 @@ after the first reach the remaining-decode totals, and that a measured bucket mu
 921,450,866-nanosecond floor before implementation design is eligible. Every counter has one owner
 and one qualification field; no performance claim or graph change is introduced before the result.
 
+## 6. Recorded result
+
+The complete run at clean implementation head `4de73d64765fc31f35f2c08ca00367d327b00705`
+finished in 121.268 seconds. All four maximum-2 conditioning records were exact prefixes of their
+maximum-128 records. Every full request reproduced the fixed 87-token chain and 86-token output
+digest, balanced 2,958 ggml buffers, 6,090 contexts, one backend, 2,958 allocators, and one resident
+wrap, and recorded zero matching llama.cpp model processes at all twelve required boundaries.
+
+Full-helper walls were `[18059864416,18927732709,20639199375,19605385750]` ns, for a
+19,266,559,229-ns median. Decode-compute totals were
+`[4032538022,4200052735,4232013000,4234889692]` ns, for a 4,216,032,867-ns median and these
+sub-bucket medians:
+
+| Bucket | Median (ns) |
+| --- | ---: |
+| `EMBEDDING` | 997,788 |
+| `ROUTING_PHASE_A` | 2,939,392,017 |
+| `EXPERT_PHASE_B` | 1,114,674,041 |
+| `OUTPUT_HEAD` | 151,386,183 |
+
+Every sample's four sub-buckets sum exactly to its decode-compute total. `ROUTING_PHASE_A` is the
+deterministic winner at 697,193 ppm of the compute total and exceeds the inherited
+921,450,866-ns floor by 2,017,941,151 ns, so the decision is `MEASURED_BUCKET_ELIGIBLE`. Item 63
+owns a bounded phase-A implementation contract. Its immutable full-request baseline is this run's
+four full-helper walls and 19,266,559,229-ns median; its 50,000-ppm floor is 963,327,962 ns and its
+candidate ceiling is 18,303,231,267 ns. The intervention must preserve the fixed output, cache,
+isolation, and lifetime evidence and is removed if that complete fixed-request gate is not met.
+
+This result attributes phase A only as the existing attention/normalization/router/argsort graph.
+It does not identify an individual op or kernel, predict speedup, or establish the R8 gate.
