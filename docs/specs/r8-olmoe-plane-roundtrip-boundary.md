@@ -1,6 +1,6 @@
 # R8 OLMoE plane round-trip boundary
 
-Status: active, 2026-09-04
+Status: active, 2026-09-05
 
 Roadmap owner: item 61, `R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY`
 
@@ -16,12 +16,20 @@ shared-shim call per K/V tensor. Its clean-head qualification reduced the measur
 candidate is `NOT_MET` and cannot ship on its own. The remaining boundary still performs two full
 `ggml_backend_tensor_get` copies for every routed layer and decode step.
 
-The second intervention retains both concat shape reads but compares each host-visible concat
+The second intervention retained both concat shape reads but compared each host-visible concat
 tensor in place through its slot. It removes the two copies into `node_window` without weakening
-validation or oracle semantics. This is still an intervention over item 60's complete measured
-boundary, not an attribution claim. It ships only if the same complete fixed request preserves
-correctness and improves full-helper wall time by at least 50,000 ppm against the immutable item 60
-baseline. A miss records `NOT_MET` and does not authorize either intervention.
+validation or oracle semantics. Its clean-head boundary median was 1,835,826,340 ns and its
+full-helper median was 19,122,598,458 ns: `NOT_MET`, so it cannot ship on its own.
+
+Disassembly of that exact real shim shows the V path still executes the original scalar
+`head -> lane -> column` loop, approximately 30 million four-byte comparisons for the fixed
+request. The third intervention adds an AArch64 exact-success fast path over 4-by-4 transpose tiles.
+It compares every byte but batches sixteen lanes per tile; if any tile differs it reruns the
+existing scalar traversal to recover the same first mismatch column. Non-AArch64 and tile remainders
+use scalar comparison. This is still an intervention over item 60's complete measured boundary,
+not an attribution claim. It ships only if the same complete fixed request preserves correctness
+and improves full-helper wall time by at least 50,000 ppm against the immutable item 60 baseline.
+A miss records `NOT_MET` and requires removal of all three production interventions.
 
 ## 2. Public-contract ledger
 
@@ -36,6 +44,7 @@ baseline. A miss records `NOT_MET` and does not authorize either intervention.
 | K consumed layout/order | consumed offset `(lane + head_dim * (column + columns * head)) * 4`; observable first mismatch follows `head`, then `column`, then `lane`; an implementation may compare one contiguous lane row at a time because only its column is returned |
 | V consumed layout/order | consumed offset `(column + columns * (lane + head_dim * head)) * 4`; observable first mismatch follows `head`, then `lane`, then `column` |
 | Byte semantics | compare the four stored bytes of every F32 lane exactly; no float conversion, tolerance, endianness reinterpretation, or NaN normalization |
+| V exact-success fast path | On AArch64, compare complete 4-lane by 4-column tiles by loading four contiguous consumed rows, transposing them in registers, and byte-comparing the resulting column vectors with four canonical plane ranges; compare remainder lanes/columns scalarly. Any difference transfers to the unchanged `head -> lane -> column` scalar traversal, so only the exact-success cost changes. Other architectures use that scalar traversal directly. |
 | Native validation order | The slot entry resolves the slot or returns `ALIGN_GGML_SLOT`; rejects a null plane with `ALIGN_GGML_INIT`; requires exact tensor bytes `head_dim * n_head_kv * columns * 4`; in the real shim requires a nonnull tensor buffer for which `ggml_backend_buffer_is_host` is true and nonnull data, otherwise `ALIGN_GGML_BOUNDS`; then calls the byte primitive. The primitive rejects a null range with `ALIGN_GGML_INIT`; rejects negative lengths/base, nonpositive dimensions, or an unknown layout with `ALIGN_GGML_BOUNDS`; checked-multiplies the span; requires it within consumed bytes and `[plane_base, plane_base + span)` within plane bytes and representable as `size_t`; and reads no byte before all checks pass. |
 | Ownership/allocation | the byte primitive borrows two caller-owned ranges; the slot entry borrows one ggml-owned tensor range and one caller-owned plane range. Overlap is allowed because both are read-only; neither function writes, allocates, frees, retains, or opens anything or has process-global state. |
 | Align wrapper | `ggml_ffi.slot_compare_kv_plane(...) -> Result<i64, Fault>` passes the slot slice, index, plane slice/length, and fixed layout; maps raw `0` to `Ok(-1)`, raw positive `n` to `Ok(n - 1)`, and a negative status through the existing R5 fault mapping; one `unsafe` block contains the one foreign call. The byte wrapper remains owner-testable but is no longer a production callsite. |
@@ -67,6 +76,7 @@ because both arguments are borrowed slices and the native function creates no ow
 | --- | --- | --- | --- | --- | --- |
 | Shared native K | validate all scalar and byte bounds before reading | contiguous lane-row comparisons preserve head/column priority | first mismatching row returns `column + 1`; malformed input returns before reads | read-only, allocation-free, no state | non-square exact vector, multiple-column mismatch, null/bounds/overflow/layout cases |
 | Shared native V | same complete pre-read validation | four-byte comparisons preserve head/lane/column priority | first mismatch follows traversal, not minimum numeric column | read-only, allocation-free, no state | non-square exact vector with competing mismatch columns |
+| AArch64 V tiles | all shared bounds checks precede vector loads; full tiles only | every byte equal returns exact after tiled/remainder scan | any unequal tile or remainder reruns scalar V traversal and returns its column | register-only; no write or owner | exact non-square vector plus competing mismatch vector on AArch64; scalar fallback on hosted x86 |
 | Real slot entry | resolve slot, exact size, host-visible buffer, and data before the shared primitive | compares ggml-owned host bytes without a copy | missing slot or non-host/null data returns before reads | borrowed tensor/plane; no owner | CPU routed success plus native refusal vectors |
 | Stub slot entry | resolve slot, exact size, and data before the shared primitive | ordinary engine matches real semantics | malformed slot/data refuses before reads; existing capture readback builds perturb the plane independently | borrowed tensor/plane; no owner or lasting state | routed success, writeback-offset, and forced-inf owners |
 | Safe wrapper | compiler supplies both slice lengths and one fixed layout tag | `0 -> -1`, positive result subtracts one | negative result maps through existing fault table | borrows only; one unsafe call | pinned executable build and direct wrapper callsite compilation |
@@ -84,13 +94,15 @@ compilation is N/A because Align modules are built through their importing execu
 
 1. Retain the return/tag/validation contract inside the byte-identical shared shim region and its
    direct native vectors.
-2. Add real/stub slot entries that validate actual host visibility and exact extent before calling
-   the byte primitive; add the safe FFI wrapper and replace both `slot_get`/compare pairs.
-3. Add the source-pinned item 61 performance runner over the unchanged item 60 helper and validate
+2. Retain real/stub slot entries that validate actual host visibility and exact extent before
+   calling the byte primitive, the safe FFI wrapper, and both direct callsites.
+3. Add the guarded AArch64 4-by-4 V exact-success scan with scalar remainder and mismatch fallback;
+   retain the scalar implementation as the complete non-AArch64 path.
+4. Retain the source-pinned item 61 performance runner over the unchanged item 60 helper and validate
    exact gate arithmetic and cleanup-before-publication.
-4. Run focused owners and one clean-head four-repeat qualification. Record `MET` or `NOT_MET` here,
+5. Run focused owners and one clean-head four-repeat qualification. Record `MET` or `NOT_MET` here,
    in the roadmap, and in `HANDOFF.md`; ship the intervention only on `MET`.
-5. Complete one comprehensive review, consolidate valid findings, rerun affected owners and
+6. Complete one comprehensive review, consolidate valid findings, rerun affected owners and
    exact-head preflight, publish, merge, and continue to the next eligible roadmap capability.
 
 No `make ci`, installed platform profile, portfolio, stress suite, cache replay, or unrelated
@@ -101,11 +113,13 @@ qualification, and performance decision are one consumer-complete capability.
 
 The ledger and matrix agree that item 60 measured the complete `verify_plane` boundary and did not
 attribute its sub-operations. Intervention A retained shape reads and both copies and missed the
-full-helper gate despite reducing the boundary. Intervention B retains shape reads, removes only the
-two host-to-host readback copies, and compares the same bytes only after the tensor proves host
-visible. Every return state maps to one wrapper and decode result, all validation precedes reads,
-both shims call one byte-identical primitive, forced readback regressions remain observable, and no
-new owner or schema is introduced.
+full-helper gate despite reducing the boundary. Intervention B retained shape reads, removed only
+the two host-to-host readback copies, and also missed. Intervention C retains that safe direct
+boundary and changes only the exact-success V traversal on the measured AArch64 host; a mismatch
+always falls back to the original traversal before returning. Every return state maps to one wrapper
+and decode result, all validation precedes reads, both shims call one byte-identical primitive,
+forced readback regressions remain observable, non-AArch64 remains scalar, and no new owner or schema
+is introduced.
 
 ## 6. Recorded result
 
@@ -118,5 +132,15 @@ Intervention A was qualified on clean head `9b940fd94acaeea839725f79f7092882e722
 - all four pairs reproduced the fixed 86-token output/hash, exact native lifetimes, twelve clean
   isolation boundaries, fixed cache state, and cleanup.
 
-Intervention B is pending implementation, focused verification, and a new clean-head four-repeat
-qualification against the original item 60 baseline.
+Intervention B was qualified on clean head `c7f5eadf9229422190b056fa507bf3be8ce91994`:
+
+- full-helper samples `[17512885500,18764484375,19480712541,19627866375]`, median
+  19,122,598,458 ns, gain -376,211,688 ns / -20,069 ppm: `NOT_MET`;
+- complete plane-boundary samples `[1672093678,1821507431,1850145250,1869787530]`, median
+  1,835,826,340 ns;
+- all four pairs reproduced the fixed 86-token output/hash, exact native lifetimes, twelve clean
+  isolation boundaries, fixed cache state, and cleanup in 109,940,548,500 ns.
+
+Intervention C is pending implementation, focused verification, and a clean-head qualification
+against the original item 60 baseline. Interventions A and B remain unauthorized unless C makes the
+combined candidate meet the gate.

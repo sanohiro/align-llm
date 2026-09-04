@@ -3,7 +3,7 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY (2026-09-04)
+## Active: R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY (2026-09-05)
 
 Branch `agent/r8-olmoe-plane-roundtrip-boundary`, based on pulled merged `main`
 `8e7be2a77f69d7afb0da34507e90e84f89301871` (item 60 PR #182). The sibling Align checkout and
@@ -18,18 +18,22 @@ call—shape reads, two `slot_get` operations, scalar K/V comparison, and result
 Intervention A retained the shape reads and both `slot_get` calls and replaced scalar K/V comparison
 with one validated shared-shim call per tensor. Its clean-head run reduced the boundary median from
 2,972,324,939 ns to 1,878,132,280 ns but improved the full helper by only 23,162 ppm, so it is
-`NOT_MET` and cannot ship alone. Intervention B removes the remaining two host-to-host copies by
+`NOT_MET` and cannot ship alone. Intervention B removed the remaining two host-to-host copies by
 comparing each concat slot in place only after the real shim proves its backend buffer is host
 visible; the unchanged capture readback preserves the routed-offset and forced-inf regressions.
-Exact K/V traversal and first-mismatch tensor/column semantics remain unchanged. The immutable baseline is
-item 60's full-helper samples
+Its clean-head full-helper median was 19,122,598,458 ns / -20,069 ppm, also `NOT_MET`. Disassembly
+shows that V still executes approximately 30 million scalar four-byte comparisons. Intervention C
+adds an AArch64 4-by-4 exact-success transpose scan and reruns the original scalar traversal on any
+difference, preserving exact K/V traversal and first-mismatch tensor/column semantics. The
+immutable baseline is item 60's full-helper samples
 `[17704139042,18412456541,19080317000,19520549709]` and 18,746,386,770-ns median. The precommitted
 50,000-ppm floor is 937,319,339 ns and candidate ceiling is 17,809,067,431 ns. Only the complete
 fixed-request gate can establish the performance claim.
 
 Intervention A is committed at `9b940fd94acaeea839725f79f7092882e722b057`. Intervention B is
-implemented and ready for its clean-head qualification. The byte-identical
-real/stub shared region validates nulls, dimensions, layout, overflow, byte bounds, and pointer
+implemented and qualified `NOT_MET` at `c7f5eadf9229422190b056fa507bf3be8ce91994`. Intervention C is
+specified and not started. The byte-identical real/stub shared region validates nulls, dimensions,
+layout, overflow, byte bounds, and pointer
 extents before reading; returns exact or column-plus-one without writing; and preserves K and V
 traversal order. Both safe wrappers reject an unrepresentable layout before narrowing. Oracle B
 retains shape reads, replaces its two `slot_get`/compare pairs with direct host-visible slot
@@ -37,8 +41,9 @@ comparison, and maps native validation failure to the existing tensor/-1 mismatc
 runner independently pins item 60's evidence, the full changed source chain, fixed host, helper
 schema, output, lifetimes, isolation, gate arithmetic, and cleanup-before-publication.
 
-**Next actions.** Run a new clean-head four-repeat qualification against item 60; record `MET` or
-`NOT_MET`; then review, repair, preflight, publish, merge, and continue.
+**Next actions.** Commit the intervention C ledger; implement and owner-test the exact-success V
+tiles; run a new clean-head four-repeat qualification against item 60; record `MET` or `NOT_MET`;
+then review, repair, preflight, publish, merge, and continue.
 
 **Blocker.** None.
 
@@ -47,7 +52,7 @@ schema, output, lifetimes, isolation, gate arithmetic, and cleanup-before-public
 build/export inspection, `make runtime-provider-smoke` (self-test plus 61 CLI assertions), Python
 compilation, the full item 57→61 self-test chain, and `git diff --check` pass.
 
-**Intentional uncommitted files.** None.
+**Intentional uncommitted files.** Intervention C ledger/result/handoff update before commit.
 Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS (PR #182, 2026-09-04)
