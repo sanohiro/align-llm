@@ -134,3 +134,10 @@ already-shipped synchronous provider/helper contracts in separate processes.
 No `make ci`, installed profile, broad OLMoE matrix, corpus, cache-policy replay, stress suite,
 unrelated benchmark, or native platform qualification is selected. This qualification makes no
 new target-specific product claim; it measures the fixed provider-level decision on the same host.
+
+The capability exceeds 1,000 hand-written lines only when its authoritative ledger is counted with
+the 924-line runner. The runner imports item 53's provider, portfolio, validator, and aggregate
+implementation; its remaining size is the consumer-owned exact identity/schema proof, four
+non-overlapping external-process lifetimes, signal/failure cleanup, and model-free closure tests.
+Splitting those pieces would create a schema or lifecycle producer without an independently usable
+measurement consumer and would duplicate the same process and identity failure domain.
