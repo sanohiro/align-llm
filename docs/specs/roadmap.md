@@ -1406,7 +1406,7 @@ The current forward delivery order is:
     lifetime or cache behavior.
 
 54. **R8-OLMOE-RUNTIME-PHASE-DIAGNOSIS — separate request-local setup from co-resident model
-    pressure. Active.**
+    pressure. Decision recorded: `CO_RESIDENT_PRESSURE_EXCEEDS_SETUP`.**
     [`r8-olmoe-runtime-phase-diagnosis.md`](r8-olmoe-runtime-phase-diagnosis.md) is the
     authoritative measurement contract and closure matrix. Run fixed seed 5 with two-token and
     full-completion bounds in four balanced pairs, both without a matching llama.cpp model process
@@ -1416,6 +1416,15 @@ The current forward delivery order is:
     bound under a 50,000-ppm attribution deadband. The result selects isolated-baseline work,
     bounded persistent-lifetime design, or one narrower phase instrument; it does not itself change
     provider lifetime, cache behavior, or the open R8 performance gate.
+
+    The 344.545-second diagnosis reproduced the fixed output in all sixteen requests and balanced
+    all native lifetime counters. Solo short/full medians were 4.667/29.196 seconds and co-resident
+    medians were 6.044/31.187 seconds. All four paired full penalties were positive; their
+    2.208-second median was 75,633 ppm of solo full time, while the measured repeated-setup lower
+    bound was only 0.121 seconds or 4,129 ppm. Every co-resident helper began above the 2-GiB RSS
+    floor, and every helper drove the idle server below it, directly confirming eviction pressure.
+    This selects an isolated-baseline R8 decision and rejects persistent-lifetime work on the
+    present evidence; R8 remains open.
 
 ### Status (2026-08-28)
 

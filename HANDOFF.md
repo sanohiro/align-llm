@@ -12,10 +12,10 @@ sibling Align checkout and `.align-revision` remain at merged Align
 
 Item 53 showed a 189.005-second runtime portfolio median and rising 27.928-to-40.243-second
 candidate intervals while llama.cpp held the same 4.2-GB model resident. Item 54's authoritative
-contract and closure matrix are `docs/specs/r8-olmoe-runtime-phase-diagnosis.md`. It will compare
-fixed seed 5 at maximum 2 and 128 tokens in four balanced solo/co-resident pairs, record production
-preparation plus existing runtime phase/lifetime counters, and compare the co-resident penalty with
-the measured repeated-setup lower bound before any persistent-provider or cache change.
+contract and closure matrix are `docs/specs/r8-olmoe-runtime-phase-diagnosis.md`. It compares fixed
+seed 5 at maximum 2 and 128 tokens in four balanced solo/co-resident pairs, records production
+preparation plus existing runtime phase/lifetime counters, and compares the co-resident penalty
+with the measured repeated-setup lower bound before any persistent-provider or cache change.
 
 Design checkpoint `b3b70f3` completed the ledger-to-prose pass. The qualification-only Align helper
 now follows the production preparation/generation sequence and exposes existing runtime counters;
@@ -30,13 +30,22 @@ also stopped without output after its first co-resident helper evicted the warme
 warmup and 2-GiB RSS floor immediately before every timed helper and records RSS immediately after;
 no result or partial evidence was emitted by either discovery run.
 
-**Next actions.** Commit the per-helper pressure correction, run the owner from clean source, then
-execute and record the one complete real diagnosis.
+The one valid complete run at `fc2f2bf` took 344.545 seconds and recorded
+`CO_RESIDENT_PRESSURE_EXCEEDS_SETUP`. Solo short/full medians were 4.667/29.196 seconds;
+co-resident medians were 6.044/31.187 seconds. All four paired full penalties were positive, with a
+2.208-second median (75,633 ppm), while the repeated-setup lower-bound median was only 0.121 seconds
+(4,129 ppm). All eight co-resident records began above 2 GiB RSS and ended below it. Outputs and
+lifetime counters were stable. The selected next R8 work is an isolated-baseline decision, not a
+persistent-provider or retained-cache design.
+
+**Next actions.** Commit the recorded diagnosis, run the clean owner, perform the one comprehensive
+review, repair accepted findings, and run exact-head publication preflight.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The per-helper pressure correction above; no generated binary,
-machine-local evidence, model, credential, or profile belongs in Git.
+**Intentional uncommitted files.** The recorded diagnosis documentation above; the machine-local
+JSON evidence remains outside Git, and no generated binary, model, credential, or profile belongs
+in Git.
 
 ## Merged checkpoint: R8-OLMOE-SAMPLED-RUNTIME-DECISION (PR #175, 2026-09-04)
 

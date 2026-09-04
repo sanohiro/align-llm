@@ -1,6 +1,6 @@
 # R8 OLMoE runtime phase diagnosis
 
-Status: implementation contract, 2026-09-04
+Status: diagnosis recorded, 2026-09-04
 
 ## 1. Decision and boundary
 
@@ -150,4 +150,42 @@ changes their source rather than merely consuming their public records.
 
 ## 7. Recorded diagnosis
 
-Pending the one complete real measurement.
+The one complete diagnosis ran at align-llm head
+`fc2f2bf6ad486517f7fb091f6e5ea5d55b5de41a` with Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4` on Darwin arm64 25.5.0. It bound the
+4,213,512,192-byte model `4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f`,
+pack `20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae`, geometry
+`1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada`, task
+`1884f01a329752c1383081342c65d062241aefaefff2f206f6604008bde74940`, and prompt
+`0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b`. The generated helper
+was `4660c0720154d56e4d561de853e0b8ca6dd3dbb3aabcdeba3ec21e79fbce4869`, its dynamic shim
+was `219224fa78caf10d89f904e24189886b339f375339f93bf42a411b753a436850`, and the llama.cpp
+build 10566 server was `98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c`.
+The fixed full output reproduced
+`aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52` in every
+condition. All native lifetime counters balanced.
+
+The complete run took 344.545 seconds. Solo short/full medians were 4.667 and 29.196 seconds;
+co-resident short/full medians were 6.044 and 31.187 seconds. The four paired full penalties were
+4.576, 1.757, 1.894, and 2.522 seconds: all were positive, with a 2.208-second median equal to
+75,633 ppm of solo full time. The solo repeated-setup lower-bound median was only 0.121 seconds, or
+4,129 ppm of solo full time. Its named components were dominated by an 83.403-ms median resident
+fill and 24.200-ms tokenizer preparation; the remaining pre-engine medians were individually below
+7 ms.
+
+Every co-resident timed helper began with the required server pressure: immediately-before RSS
+ranged from 3,888,021,504 to 7,895,154,688 bytes. Immediately-after RSS ranged from 10,534,912 to
+1,515,143,168 bytes, below 2 GiB in all eight records. Thus the candidate itself evicted much of the
+idle server's resident state, but the per-helper warmup restored the declared condition before the
+next interval instead of silently weakening it.
+
+The decision is **`CO_RESIDENT_PRESSURE_EXCEEDS_SETUP`**. The 2.208-second paired penalty exceeds
+the 0.121-second setup lower bound by far more than the 50,000-ppm deadband, so this evidence does
+not authorize a persistent-provider or retained-cache design. The next R8 capability is an
+isolated-baseline decision that never holds the two model implementations resident during either
+timed arm while preserving the fixed passing-patch portfolio and explicit time-to-passing-patch
+metric. Its contract must settle process startup inclusion before implementation.
+
+This remains a single-host, fixed-request diagnosis. Untimed llama.cpp warmups establish memory
+pressure rather than measuring server performance, post-helper RSS is observational, and no
+throughput, broad latency, persistent-lifetime, or R8 shipping claim follows from the result.
