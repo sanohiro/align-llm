@@ -3,44 +3,54 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-RUNTIME-SAMPLING (2026-09-04)
+## Active: R8-OLMOE-SAMPLED-RUNTIME-DECISION (2026-09-04)
 
-Branch `agent/r8-olmoe-runtime-sampling`, based on pulled merged `main`
-`753e7c4acb6284dc495f92a243da081434073b97` (R8-OLMOE-SAMPLED-CODING PR #173). The sibling Align
-checkout and `.align-revision` remain at merged Align
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; shipped `std.rand` is sufficient and no new Align
-surface is required.
+Branch `agent/r8-olmoe-sampled-runtime-decision`, based on pulled merged `main`
+`728a186fbd7d21d43c3f1d8993adf124444652bc` (R8-OLMOE-RUNTIME-SAMPLING PR #174). The sibling
+Align checkout and `.align-revision` remain at merged Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align surface is required.
 
-Item 51 recorded `MET`: temperature 0.3 seed 5 produced the existing known-good patch after four
-non-passing candidates. This capability implements the selected fixed seeded policy inside the
-OLMoE `AlignRuntime` provider while preserving greedy OLMoE, dense Qwen, diagnostic decode output,
-cache ownership, and EOG behavior. The authoritative public contract, validation order, cost
-ceiling, and closure matrix are `docs/specs/r8-olmoe-runtime-sampling.md`.
+This capability runs the fixed seeds 1 through 8 sampled coding portfolio through both the pinned
+resident llama.cpp baseline and shipped partial-LRU `AlignRuntime` provider in four balanced pairs.
+Its authoritative measurement ledger, 50,000-ppm floor, pre-implementation 800,000-ppm
+attempt-count opportunity ceiling, approximately-25-minute execution ceiling, schema, validation
+order, and closure matrix are `docs/specs/r8-olmoe-sampled-runtime-decision.md`.
 
-**Latest durable verification.** The implementation adds a fixed stable top-k/top-p/min-p sampler,
-threads one explicit Xoshiro256++ state through the OLMoE selected-token chain, and keeps diagnostic
-argmax evidence separate. The focused provider owner passes pure boundary vectors, sampled public
-API repeatability/EOG/refusal cases, and all 61 existing CLI assertions. Python compilation, helper
-self-test, Align checking, and `git diff --check` pass. The repaired fixed real qualification
-repeated seed 5 twice: both calls returned exact two-token `To fix` (SHA-256 `354950a4f359`) and the
-complete gate passed in 17.05 seconds.
+**Latest durable verification.** The focused self-test passes. The one complete real decision ran
+on clean head `d8a3da0` in 801.574 seconds and recorded `NOT_MET`: both arms passed 4/4 at seed 5
+with the same known-good patch, but local median time to passing patch was 12.710 seconds and runtime
+median was 189.005 seconds, a -13,871,021-ppm gain with runtime slower in every pair. Both required
+five candidates, so the 800,000-ppm attempt-count opportunity was not realized. Runtime provider
+intervals rose from 27.928 to 40.243 seconds; a 16-GiB host showed about 4.29 GiB swap used after the
+run, but that non-precommitted observation does not distinguish repeated provider construction from
+co-resident memory pressure. The comprehensive Codex CLI review covered head
+`cf58d064fd84522833fd59721e2d9f33ef5bde1f` against base tip and merge base
+`728a186fbd7d21d43c3f1d8993adf124444652bc`, using gpt-5.6-sol at high effort over the full diff.
+Its three accepted P2 findings require isolating Git routing, canonicalizing configured paths, and
+declaring the validator-image selector while retaining the immutable resolved identity. Consolidated
+repair `770b0aa` resolves all three without changing the absolute inputs or immutable image identity
+used by the recorded decision; Python compilation, the focused self-test, and `git diff --check`
+pass after repair.
 
-The comprehensive Codex CLI review covered head
-`ae5f49a9eb16a9f5433fb8cd5fd4a79cc590f0a7` against base tip and merge base
-`753e7c4acb6284dc495f92a243da081434073b97`, using gpt-5.6-sol at high effort over the full diff.
-It found three accepted P2 qualification defects: deterministic empty or wrong output could pass,
-undeclared forced-shim selectors crossed into the build, and directed termination could orphan the
-model helper. The consolidated repair pins exact `To fix` and counted length 2, removes both shim
-selectors, and adds signal-aware terminate/kill cleanup plus self-tests in commit `a4ebdad`. It does
-not change the public sampling behavior or expand scope, so another comprehensive review is not
-required.
-
-**Next actions.** Run the exact-head publication preflight, publish the pull request with its review
-envelope, merge after required checks, then start the next roadmap capability.
+**Next actions.** Run exact-head preflight, publish, and merge. Then start a bounded phase/lifetime
+diagnosis before proposing persistent provider state or another runtime-cache change.
 
 **Blocker.** None.
 
 **Intentional uncommitted files.** None. Local configuration remains outside the change.
+
+## Merged checkpoint: R8-OLMOE-RUNTIME-SAMPLING (PR #174, 2026-09-04)
+
+PR #174 merged as `728a186fbd7d21d43c3f1d8993adf124444652bc`. The shipped OLMoE provider now accepts the exact
+temperature-0.3 seeded policy selected by item 51, using stable top-k 40, top-p 0.95, min-p 0.05,
+fixed-point categorical weights, and one explicit Xoshiro256++ draw per emitted token. Greedy OLMoE,
+dense Qwen, diagnostic argmax evidence, cache ownership, and EOG semantics remain unchanged.
+
+The fixed real qualification repeated seed 5 twice with exact two-token output `To fix` in 17.05
+seconds. The comprehensive review's three accepted qualification defects were consolidated in
+`a4ebdad`; no valid finding remained. Exact-head preflight passed, required PR CI passed at head
+`e2d405b`, and the merge-head push reused that evidence successfully. The next consumer is the
+active sampled provider-level performance decision above.
 
 ## Merged checkpoint: R8-OLMOE-SAMPLED-CODING (PR #173, 2026-09-04)
 
