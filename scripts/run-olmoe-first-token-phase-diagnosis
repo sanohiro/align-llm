@@ -49,6 +49,58 @@ MIN_SERVER_RSS_BYTES = previous.MIN_SERVER_RSS_BYTES
 OLD_SETUP_LOWER_NS = 132_272_208
 OLD_SETUP_UPPER_NS = 30_616_675_916
 CEILING_SECONDS = 12 * 60
+EXPECTED_ALIGN_REVISION = "8cefc803d5c7f883a8db5b67250ed4ed069b43a4"
+EXPECTED_COMPILER_SHA256 = "f972b4a196ed5608a0c52cc02dbf8267cfc236065359315a572d601aa04ea541"
+EXPECTED_PACK_SHA256 = "20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae"
+EXPECTED_GEOMETRY_SHA256 = "1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada"
+EXPECTED_SERVER_SHA256 = "98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c"
+EXPECTED_TASK_SHA256 = "1884f01a329752c1383081342c65d062241aefaefff2f206f6604008bde74940"
+EXPECTED_PROMPT_SHA256 = "0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b"
+EXPECTED_C_COMPILER_SHA256 = "179301dcb41ea78accc3fa0048a7e6f6710d891945a751a34addd622020c1818"
+EXPECTED_C_COMPILER_VERSION_SHA256 = (
+    "ea3037e0630fa16798079372fdc24f6542d021dadda4915cc979799682d78295"
+)
+EXPECTED_LINKER_SEARCH_SHA256 = "5cb52d849e4b5dd2e0380c9fd272279c8b3e572dc563691f60fc8ecbf72d92cf"
+EXPECTED_GGML_LIBRARIES = [
+    {
+        "name": "libggml-base.0.21.0.dylib",
+        "bytes": 506_160,
+        "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574",
+    },
+    {
+        "name": "libggml-base.0.dylib",
+        "bytes": 506_160,
+        "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574",
+    },
+    {
+        "name": "libggml-base.dylib",
+        "bytes": 506_160,
+        "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574",
+    },
+    {
+        "name": "libggml.0.21.0.dylib",
+        "bytes": 60_272,
+        "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734",
+    },
+    {
+        "name": "libggml.0.dylib",
+        "bytes": 60_272,
+        "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734",
+    },
+    {
+        "name": "libggml.dylib",
+        "bytes": 60_272,
+        "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734",
+    },
+]
+EXPECTED_FULL_TOKEN_IDS = [
+    11202, 13437, 187, 13437, 1969, 14769, 247, 16, 7614, 16, 249, 7426, 64, 6324, 15,
+    4789, 270, 16, 7614, 16, 249, 7426, 64, 6324, 15, 4789, 187, 1532, 247, 16, 7614,
+    16, 249, 7426, 64, 6324, 15, 4789, 187, 3424, 12, 270, 16, 7614, 16, 249, 7426,
+    64, 6324, 15, 4789, 187, 22610, 428, 20, 559, 20, 34346, 187, 14, 50274, 2309,
+    2020, 9, 6324, 9, 5478, 13, 3523, 1228, 187, 12, 50274, 2309, 2020, 9, 6324, 9,
+    5478, 13, 3523, 559, 337, 1228, 187, 11202, 50279,
+]
 
 
 class DiagnosisError(RuntimeError):
@@ -386,6 +438,50 @@ def setup_upper(record: dict[str, Any]) -> int:
     return provider_prepare(record) + record["engine_phases"]["construction_ns"]
 
 
+def validate_inherited_identity(
+    *,
+    align_revision: str,
+    pack_sha256: str,
+    geometry_sha256: str,
+    server_sha256: str,
+    task_sha256: str,
+    prompt_sha256: str,
+    ggml_libraries: list[dict[str, Any]],
+    linker_search_sha256: str | None,
+) -> None:
+    actual = (
+        align_revision,
+        pack_sha256,
+        geometry_sha256,
+        server_sha256,
+        task_sha256,
+        prompt_sha256,
+        ggml_libraries,
+        linker_search_sha256,
+    )
+    expected = (
+        EXPECTED_ALIGN_REVISION,
+        EXPECTED_PACK_SHA256,
+        EXPECTED_GEOMETRY_SHA256,
+        EXPECTED_SERVER_SHA256,
+        EXPECTED_TASK_SHA256,
+        EXPECTED_PROMPT_SHA256,
+        EXPECTED_GGML_LIBRARIES,
+        EXPECTED_LINKER_SEARCH_SHA256,
+    )
+    if actual != expected:
+        raise DiagnosisError("item 54 inherited identity drifted")
+
+
+def validate_toolchain_identity(built: dict[str, Any]) -> None:
+    if (
+        built["compiler_sha256"] != EXPECTED_COMPILER_SHA256
+        or built["c_compiler_sha256"] != EXPECTED_C_COMPILER_SHA256
+        or built["c_compiler_version_sha256"] != EXPECTED_C_COMPILER_VERSION_SHA256
+    ):
+        raise DiagnosisError("item 54 toolchain identity drifted")
+
+
 def validate_repeatability(samples: list[dict[str, Any]]) -> None:
     records = [pair[condition] for pair in samples for condition in ("solo", "co_resident")]
     if not records:
@@ -419,6 +515,7 @@ def validate_repeatability(samples: list[dict[str, Any]]) -> None:
     if (
         not first["stopped_eog"]
         or first["completion_tokens"] != 86
+        or first["token_ids"] != EXPECTED_FULL_TOKEN_IDS
         or first["output_sha256"] != FULL_OUTPUT_SHA256
     ):
         raise DiagnosisError("full request no longer matches item 53")
@@ -558,6 +655,8 @@ def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
 
 def synthetic_record(maximum_tokens: int = FULL_TOKENS, *, salt: int = 0) -> dict[str, Any]:
     record = previous.synthetic_record(maximum_tokens, salt=salt)
+    if salt == 0:
+        record["token_ids"] = EXPECTED_FULL_TOKEN_IDS[:maximum_tokens]
     record["phases"]["engine_wall_ns"] = 120
     record["engine"]["elapsed_ns"] = 110
     record["engine_phases"] = {
@@ -620,6 +719,43 @@ def self_test() -> int:
         pass
     else:
         raise DiagnosisError("non-nested engine phase walls were accepted")
+
+    fixed_identity = {
+        "align_revision": EXPECTED_ALIGN_REVISION,
+        "pack_sha256": EXPECTED_PACK_SHA256,
+        "geometry_sha256": EXPECTED_GEOMETRY_SHA256,
+        "server_sha256": EXPECTED_SERVER_SHA256,
+        "task_sha256": EXPECTED_TASK_SHA256,
+        "prompt_sha256": EXPECTED_PROMPT_SHA256,
+        "ggml_libraries": EXPECTED_GGML_LIBRARIES,
+        "linker_search_sha256": EXPECTED_LINKER_SEARCH_SHA256,
+    }
+    validate_inherited_identity(**fixed_identity)
+    drifted_identity = dict(fixed_identity)
+    drifted_identity["pack_sha256"] = "0" * 64
+    try:
+        validate_inherited_identity(**drifted_identity)
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("drifted inherited identity was accepted")
+    validate_toolchain_identity(
+        {
+            "compiler_sha256": EXPECTED_COMPILER_SHA256,
+            "c_compiler_sha256": EXPECTED_C_COMPILER_SHA256,
+            "c_compiler_version_sha256": EXPECTED_C_COMPILER_VERSION_SHA256,
+        }
+    )
+    drifted_tokens = synthetic_samples(1078)
+    for pair in drifted_tokens:
+        for condition in ("solo", "co_resident"):
+            pair[condition]["token_ids"] = list(range(87))
+    try:
+        aggregate(drifted_tokens)
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("uniformly drifted token chain was accepted")
 
     if aggregate(synthetic_samples(2500))["decision"] != "CO_RESIDENT_PRESSURE_EXCEEDS_CONSTRUCTION":
         raise DiagnosisError("co-resident pressure decision drifted")
@@ -741,6 +877,19 @@ def main() -> int:
         task_sha256 = base.file_sha256(TASK)
         prompt_sha256 = base.bytes_sha256(PROMPT_TEXT.encode("utf-8"))
         ggml_libraries = base.library_identities(library)
+        linker_search_sha256 = (
+            None if not linker_search else base.bytes_sha256(linker_search.encode("utf-8"))
+        )
+        validate_inherited_identity(
+            align_revision=align_revision,
+            pack_sha256=pack_sha256,
+            geometry_sha256=geometry_sha256,
+            server_sha256=server_sha256,
+            task_sha256=task_sha256,
+            prompt_sha256=prompt_sha256,
+            ggml_libraries=ggml_libraries,
+            linker_search_sha256=linker_search_sha256,
+        )
         version = previous.run_process(
             [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env
         )
@@ -748,6 +897,7 @@ def main() -> int:
             raise DiagnosisError("llama-server is not pinned build 10566 commit bb4caa754")
 
         with built_helper(work, include, library, clean_env, deadline) as built:
+            validate_toolchain_identity(built)
             samples = []
             for pair_index, order in enumerate(PAIR_ORDERS, start=1):
                 pair: dict[str, Any] = {"pair_index": pair_index, "order": list(order)}
@@ -835,11 +985,7 @@ def main() -> int:
                     "cpu_count": os.cpu_count(),
                     "c_compiler_sha256": built["c_compiler_sha256"],
                     "c_compiler_version_sha256": built["c_compiler_version_sha256"],
-                    "linker_search_sha256": (
-                        None
-                        if not linker_search
-                        else base.bytes_sha256(linker_search.encode("utf-8"))
-                    ),
+                    "linker_search_sha256": linker_search_sha256,
                 },
                 "samples": samples,
                 "aggregate": aggregate_result,

@@ -34,8 +34,16 @@ four co-resident penalties were positive; their 3.052-second median was 102,268 
 The decision is `CO_RESIDENT_PRESSURE_EXCEEDS_CONSTRUCTION`, selecting roadmap item 56's isolated
 sampled runtime decision. Persistent provider lifetime and retained cache remain unauthorized.
 
-**Next actions.** Complete the matrix-to-diff pass and comprehensive review, repair accepted
-findings once, run exact-head preflight, publish and merge, then start item 56.
+The comprehensive Codex CLI review covered head `d9d110f` against base tip and merge base
+`fdf358e`, using gpt-5.6-sol at high effort over the complete diff. Its two accepted P2 findings
+were one reproducibility class: inherited artifact identities were recorded but not pinned, and the
+eight mutually equal token chains were not compared with item 53's exact chain. The consolidated
+repair pins every inherited input identity, requires the exact 87 token ids, and adds both drift
+regressions. The formal result already matched those identities and ids, so its measurement and
+decision remain valid.
+
+**Next actions.** Run repaired owner verification and exact-head preflight, publish and merge, then
+start item 56.
 
 **Blocker.** None.
 

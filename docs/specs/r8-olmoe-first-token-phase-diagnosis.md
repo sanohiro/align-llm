@@ -41,7 +41,7 @@ no existing renderer or provider response gains a field.
 | Conditions | four balanced pairs in orders solo/co-resident, co-resident/solo, co-resident/solo, solo/co-resident; every leg runs one untimed maximum-2 seed-5 candidate helper followed by one timed maximum-128 seed-5 helper; the conditioning output must be the timed output's exact two-token prefix; solo refuses any matching llama.cpp model process |
 | Co-resident protocol | one owned pinned build-10566 CPU llama-server, four threads, context 512, no prompt cache; warm once before the untimed candidate helper and again immediately after it, then require RSS at least 2 GiB immediately before the timed helper, record RSS immediately after, and run no server inference during the timed helper; eight server warmups total |
 | Candidate conditioning | one complete untimed two-token invocation immediately before every timed helper, eight total; it pays the same invocation-local construction path and establishes a comparable warm filesystem/process-launch regime without retaining any candidate process state |
-| Fixed identity | item 54's exact model, alignpack, geometry, task, prompt, sampling policy, cache budget 975,175,680 bytes, Align revision/compiler, ggml shim/libraries, C compiler, and llama-server identities; the clean align-llm head and all file identities are rechecked after measurement |
+| Fixed identity | item 54's exact model, alignpack, geometry, task, prompt, sampling policy, cache budget 975,175,680 bytes, Align revision/compiler, ggml libraries, C compiler/version, linker search, and llama-server identities are pinned and refused on drift before timed measurement; the capability's newly built helper/shim and clean align-llm head are recorded and all file identities are rechecked after measurement |
 | Output/repeatability | all eight timed helpers reproduce item 53's 86 completion tokens plus stripped terminal EOG, exact token ids, output SHA-256 `aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52`, non-time engine counters, and balanced native lifetimes |
 | Old bounds | recorded lower 132,272,208 ns and upper 30,616,675,916 ns from item 54 are immutable comparison evidence, not recomputed aliases |
 | New setup interval | each solo lower bound is snapshot + model IR + geometry + source identity + tokenizer + resident fill; each solo upper bound is those five provider phases + `construction_ns`; integer medians over four samples; complete evidence requires `lower <= upper < 30,616,675,916` |
@@ -187,3 +187,13 @@ This is still one fixed request on one host. Conditioning makes the repeated por
 comparable but excludes first-ever cold startup; phase clocks diagnose the observed penalty and do
 not prove a general throughput result. The isolated provider-level decision remains responsible for
 the R8 gate.
+
+The comprehensive review covered head `d9d110f9b39d662360883d2b5d443f47bd33b419` against base
+tip and merge base `fdf358ef269f7a016d6925d531a0947bfaeaba22`, using gpt-5.6-sol at high
+effort over the complete diff. Its two accepted P2 findings identified one reproducibility class:
+the runner recorded inherited external identities without pinning them, and required mutual token
+chain agreement without comparing the chain to item 53. The consolidated repair pins every
+item-54 identity that remains an input, requires item 53's exact 87-id chain, and adds drifted
+identity and uniformly drifted-chain regressions. The recorded run already matched those fixed
+values, so the repair strengthens future refusal behavior without changing its measurement or
+decision and does not require another comprehensive review.
