@@ -2641,6 +2641,7 @@ fn decode_pass(
     true, g,
     embed_members, embed_nodes, oracle, embed_view, slot_view, ids_view, residual_view, node_view,
     scan, starts, lengths, breach, embed_result, o)
+  o.embed_compute_ns = o.embed_compute_ns + embed_result.compute_ns
   accounting_started = time.instant()
   account(embed_result.activation_bytes, embed_result.slot_high_water, 0, activation, o)
   decoded.node_count = decoded.node_count + embed_result.node_count
@@ -2708,6 +2709,8 @@ fn decode_pass(
       out_ids_view,
       past_k_view, past_v_view, residual_view, node_view, plane_view, scan, starts, lengths, pak,
       block_temp, cache, claim_counters, breach, routing, result, state, o)
+    o.routing_compute_ns = o.routing_compute_ns + result.compute_a_ns
+    o.expert_compute_ns = o.expert_compute_ns + result.compute_b_ns
     accounting_started = time.instant()
     account(result.activation_a, result.slot_high_water, 0, activation, o)
     account(result.activation_b, result.slot_high_water, 0, activation, o)
@@ -2761,6 +2764,7 @@ fn decode_pass(
     head_base, layer_olmoe.MM_HEAD_ORACLE_COUNT, true, g, head_members, head_nodes, oracle,
     head_view,
     slot_view, residual_view, logits_view, node_view, scan, starts, lengths, breach, head_result, o)
+  o.decode_head_compute_ns = o.decode_head_compute_ns + head_result.compute_ns
   accounting_started = time.instant()
   account(head_result.activation_bytes, head_result.slot_high_water, 0, activation, o)
   decoded.node_count = decoded.node_count + head_result.node_count
@@ -3453,6 +3457,10 @@ fn decode_loop(
     before_plane_roundtrip_compare := o.plane_roundtrip_compare_ns
     before_graph_member_spec := o.graph_member_spec_ns
     before_layer_step_accounting := o.layer_step_accounting_ns
+    before_embed_compute := o.embed_compute_ns
+    before_routing_compute := o.routing_compute_ns
+    before_expert_compute := o.expert_compute_ns
+    before_head_compute := o.decode_head_compute_ns
     decoded.token_id = token
     mut res := empty_step_residency()
     pass_started := time.instant()
@@ -3655,6 +3663,14 @@ fn decode_loop(
         + (o.graph_member_spec_ns - before_graph_member_spec)
       o.remaining_decode_layer_step_accounting_ns = o.remaining_decode_layer_step_accounting_ns
         + (o.layer_step_accounting_ns - before_layer_step_accounting)
+      o.remaining_decode_embed_compute_ns = o.remaining_decode_embed_compute_ns
+        + (o.embed_compute_ns - before_embed_compute)
+      o.remaining_decode_routing_compute_ns = o.remaining_decode_routing_compute_ns
+        + (o.routing_compute_ns - before_routing_compute)
+      o.remaining_decode_expert_compute_ns = o.remaining_decode_expert_compute_ns
+        + (o.expert_compute_ns - before_expert_compute)
+      o.remaining_decode_head_compute_ns = o.remaining_decode_head_compute_ns
+        + (o.decode_head_compute_ns - before_head_compute)
       o.remaining_decode_claim_pread_ns =
       o.remaining_decode_claim_pread_ns + phase_claim_pread_ns
       o.remaining_decode_compute_ns = o.remaining_decode_compute_ns + phase_compute_ns

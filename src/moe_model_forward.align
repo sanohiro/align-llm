@@ -639,6 +639,14 @@ pub Outcome {
   graph_member_spec_ns: i64,
   layer_step_accounting_ns: i64,
 
+  // R8-OLMOE-DECODE-COMPUTE-DIAGNOSIS. These four counters classify the existing decode-pass
+  // graph-compute walls without changing a graph or moving a compute call. The schedule snapshots
+  // them at the same successful-step boundary as `remaining_decode_compute_ns`.
+  embed_compute_ns: i64,
+  routing_compute_ns: i64,
+  expert_compute_ns: i64,
+  decode_head_compute_ns: i64,
+
   // R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS. These qualification-only counters partition the
   // invocation-local generation schedule without changing any existing renderer. Prefill includes
   // first-output selection; first decode consumes that token and selects the second.
@@ -660,6 +668,10 @@ pub Outcome {
   remaining_decode_plane_roundtrip_compare_ns: i64,
   remaining_decode_graph_member_spec_ns: i64,
   remaining_decode_layer_step_accounting_ns: i64,
+  remaining_decode_embed_compute_ns: i64,
+  remaining_decode_routing_compute_ns: i64,
+  remaining_decode_expert_compute_ns: i64,
+  remaining_decode_head_compute_ns: i64,
   teardown_ns: i64,
   prefill_claim_pread_ns: i64,
   first_decode_claim_pread_ns: i64,
@@ -936,6 +948,10 @@ pub fn empty_outcome() -> Outcome = Outcome {
   plane_roundtrip_compare_ns: 0,
   graph_member_spec_ns: 0,
   layer_step_accounting_ns: 0,
+  embed_compute_ns: 0,
+  routing_compute_ns: 0,
+  expert_compute_ns: 0,
+  decode_head_compute_ns: 0,
   construction_ns: 0,
   prefill_ns: 0,
   first_decode_ns: 0,
@@ -954,6 +970,10 @@ pub fn empty_outcome() -> Outcome = Outcome {
   remaining_decode_plane_roundtrip_compare_ns: 0,
   remaining_decode_graph_member_spec_ns: 0,
   remaining_decode_layer_step_accounting_ns: 0,
+  remaining_decode_embed_compute_ns: 0,
+  remaining_decode_routing_compute_ns: 0,
+  remaining_decode_expert_compute_ns: 0,
+  remaining_decode_head_compute_ns: 0,
   teardown_ns: 0,
   prefill_claim_pread_ns: 0,
   first_decode_claim_pread_ns: 0,

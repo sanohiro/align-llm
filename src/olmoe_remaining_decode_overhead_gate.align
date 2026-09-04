@@ -122,6 +122,14 @@ PassOther {
   other_ns: i64,
 }
 
+DecodeCompute {
+  total_ns: i64,
+  embedding_ns: i64,
+  routing_ns: i64,
+  expert_ns: i64,
+  head_ns: i64,
+}
+
 fn ir_ok(value: model_ir.IrStatus) -> bool = match value {
   Ok => true,
   Error => false,
@@ -177,7 +185,9 @@ fn digest_text(value: str) -> string {
 
 // Qualification-only access to the provider preparation and remaining-decode partition counters.
 // The public provider remains the owner of user-facing generation and exposes no timing record.
-fn run(args: array<str>, detailed: bool, other_detailed: bool) -> Result<(), Error> {
+fn run(
+  args: array<str>, detailed: bool, other_detailed: bool, compute_detailed: bool,
+) -> Result<(), Error> {
   if args.len() != 7 { return Err(Error.Invalid) }
   model_path := args[1]
   pack_path := args[2]
@@ -397,13 +407,35 @@ fn run(args: array<str>, detailed: bool, other_detailed: bool) -> Result<(), Err
     document.write(",\"pass_other\":")
     document.write(other_view)
   }
+  if compute_detailed {
+    compute_subtotal := generated.outcome.remaining_decode_embed_compute_ns
+      + generated.outcome.remaining_decode_routing_compute_ns
+      + generated.outcome.remaining_decode_expert_compute_ns
+      + generated.outcome.remaining_decode_head_compute_ns
+    if compute_subtotal != generated.outcome.remaining_decode_compute_ns {
+      return Err(Error.Invalid)
+    }
+    compute := DecodeCompute {
+      total_ns: generated.outcome.remaining_decode_compute_ns,
+      embedding_ns: generated.outcome.remaining_decode_embed_compute_ns,
+      routing_ns: generated.outcome.remaining_decode_routing_compute_ns,
+      expert_ns: generated.outcome.remaining_decode_expert_compute_ns,
+      head_ns: generated.outcome.remaining_decode_head_compute_ns,
+    }
+    compute_json := json.encode(compute)
+    compute_view: str := compute_json
+    document.write(",\"decode_compute\":")
+    document.write(compute_view)
+  }
   document.write("}")
   print(document.to_string())
   return Ok(())
 }
 
-pub fn other_detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, true)
+pub fn compute_detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, true, true)
 
-pub fn detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, false)
+pub fn other_detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, true, false)
 
-pub fn main(args: array<str>) -> Result<(), Error> = run(args, false, false)
+pub fn detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, false, false)
+
+pub fn main(args: array<str>) -> Result<(), Error> = run(args, false, false, false)

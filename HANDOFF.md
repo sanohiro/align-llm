@@ -21,16 +21,24 @@ layer phase A (attention/routing), layer phase B (selected experts), and output 
 the fixed request, output, cache, isolation, and native lifetimes and makes no speed claim. A
 measured winner must clear the inherited floor before another implementation seam is eligible.
 
-**Next actions.** Implement the shared scalar counters, qualification helper, and bounded runner;
-run narrow owners and the one clean-head real diagnosis; record its selection; review, repair,
-preflight, publish, merge, and continue.
+The shared outcome now classifies the existing decode graph walls into four scalar counters and
+commits their deltas beside `remaining_decode_compute_ns` only after a successful remaining step.
+`olmoe_decode_compute_gate` exposes the exact partition without changing predecessor schemas. The
+bounded runner inherits the complete item 57→61 validators, pins the consumed ggml headers and full
+source chain, and owns exact-key, arithmetic, tie, floor, identity, and cleanup tests.
+
+**Next actions.** Commit the coherent implementation checkpoint; run the one clean-head real
+diagnosis; record its selection; review, repair, preflight, publish, merge, and continue.
 
 **Blocker.** None.
 
-**Latest durable verification.** PR #183 passed all three exact-head required checks and merged as
-`9ebcd49e835cd2819e47a4c3b73ec51cfb8b261d`; this branch starts clean from that merge.
+**Latest durable verification.** The item 57→62 model-free self-test chain and Python compilation
+pass. The pinned compiler builds the new helper through the static hosted shim. `make
+layer-forward-smoke` passed in 61.819 seconds, `make runtime-provider-smoke` passed its self-test and
+61 CLI assertions, `make fmt`, and `git diff --check` pass.
 
-**Intentional uncommitted files.** The item 62 ledger/roadmap/handoff design update until committed.
+**Intentional uncommitted files.** The item 62 implementation batch until committed; machine-local
+model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY (PR #183, 2026-09-05)
 
