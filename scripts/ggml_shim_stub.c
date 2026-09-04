@@ -28,6 +28,10 @@
 #include <string.h>
 
 /* --- BEGIN R4.5 SHARED SHIM CONTRACT --- */
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
 /* Everything between these two markers is byte-identical in `scripts/ggml_shim.c` and
  * `scripts/ggml_shim_stub.c`, and `scripts/run-ggml-spike-smoke` asserts that byte-identity on
  * every run. The two files are one contract compiled twice: the real one against the host's ggml
@@ -539,6 +543,190 @@ int32_t align_ggml_stage_kv(const void *plane, int64_t plane_bytes,
 }
 
 
+/* R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY
+ * (`docs/specs/r8-olmoe-plane-roundtrip-boundary.md` section 2). Compare one graph-consumed K or V
+ * image against the canonical plane without interpreting any float. Zero is exact, a positive
+ * result is the first mismatching column plus one, and a negative result is a status. Every scalar,
+ * byte range, and pointer extent is validated before the first read. Both inputs remain borrowed;
+ * overlap is safe because this function writes nothing and retains nothing.
+ */
+#define ALIGN_GGML_KV_LAYOUT_K 0
+#define ALIGN_GGML_KV_LAYOUT_V 1
+
+#if defined(__aarch64__)
+static uint32x4_t align_ggml_load_u32x4(const unsigned char *data) {
+    return vreinterpretq_u32_u8(vld1q_u8(data));
+}
+#endif
+
+int64_t align_ggml_compare_kv_plane(const void *consumed, int64_t consumed_bytes,
+                                    const void *plane, int64_t plane_bytes,
+                                    int64_t plane_base, int64_t head_dim,
+                                    int64_t n_head_kv, int64_t columns, int32_t layout) {
+    int64_t elements = 0;
+    int64_t span = 0;
+    int64_t row_bytes = 0;
+    uintptr_t consumed_address = 0;
+    uintptr_t plane_address = 0;
+    const unsigned char *consumed_data = NULL;
+    const unsigned char *plane_data = NULL;
+    int64_t head = 0;
+    int64_t column = 0;
+    int64_t lane = 0;
+
+    if (consumed == NULL || plane == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    if (consumed_bytes < 0 || plane_bytes < 0 || plane_base < 0 ||
+        head_dim <= 0 || n_head_kv <= 0 || columns <= 0 ||
+        (layout != ALIGN_GGML_KV_LAYOUT_K && layout != ALIGN_GGML_KV_LAYOUT_V)) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (head_dim > INT64_MAX / n_head_kv) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    elements = head_dim * n_head_kv;
+    if (elements > INT64_MAX / columns) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    elements *= columns;
+    if (elements > INT64_MAX / 4 || head_dim > INT64_MAX / 4) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    span = elements * 4;
+    row_bytes = head_dim * 4;
+    if (span > consumed_bytes || plane_base > plane_bytes || span > plane_bytes - plane_base) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if ((uint64_t) consumed_bytes > (uint64_t) SIZE_MAX ||
+        (uint64_t) plane_bytes > (uint64_t) SIZE_MAX) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    consumed_address = (uintptr_t) consumed;
+    plane_address = (uintptr_t) plane;
+    if ((uint64_t) consumed_bytes > (uint64_t) (UINTPTR_MAX - consumed_address) ||
+        (uint64_t) plane_bytes > (uint64_t) (UINTPTR_MAX - plane_address)) {
+        return ALIGN_GGML_BOUNDS;
+    }
+
+    consumed_data = (const unsigned char *) consumed;
+    plane_data = (const unsigned char *) plane;
+    if (layout == ALIGN_GGML_KV_LAYOUT_K) {
+        for (head = 0; head < n_head_kv; head++) {
+            for (column = 0; column < columns; column++) {
+                int64_t source_at =
+                    plane_base + (column * n_head_kv + head) * row_bytes;
+                int64_t consumed_at = (head * columns + column) * row_bytes;
+                if (memcmp(plane_data + (size_t) source_at,
+                           consumed_data + (size_t) consumed_at,
+                           (size_t) row_bytes) != 0) {
+                    return column + 1;
+                }
+            }
+        }
+        return 0;
+    }
+
+#if defined(__aarch64__)
+    /* Consumed V is [head][lane][column], while the plane is [column][head][lane]. Four
+     * contiguous row loads, an in-register transpose, and four contiguous column loads cover
+     * sixteen exact lanes. A difference falls through to the original scalar traversal so its
+     * observable head/lane/column priority remains authoritative.
+     */
+    for (head = 0; head < n_head_kv; head++) {
+        int64_t tiled_lanes = head_dim - head_dim % 4;
+        int64_t tiled_columns = columns - columns % 4;
+        for (lane = 0; lane < tiled_lanes; lane += 4) {
+            for (column = 0; column < tiled_columns; column += 4) {
+                int64_t consumed_at =
+                    (head * head_dim * columns + lane * columns + column) * 4;
+                int64_t plane_at =
+                    plane_base + ((column * n_head_kv + head) * head_dim + lane) * 4;
+                uint32x4_t r0 = align_ggml_load_u32x4(
+                    consumed_data + (size_t) consumed_at);
+                uint32x4_t r1 = align_ggml_load_u32x4(
+                    consumed_data + (size_t) (consumed_at + columns * 4));
+                uint32x4_t r2 = align_ggml_load_u32x4(
+                    consumed_data + (size_t) (consumed_at + columns * 8));
+                uint32x4_t r3 = align_ggml_load_u32x4(
+                    consumed_data + (size_t) (consumed_at + columns * 12));
+                uint32x4x2_t pairs01 = vtrnq_u32(r0, r1);
+                uint32x4x2_t pairs23 = vtrnq_u32(r2, r3);
+                uint64x2_t pairs02_lo = vreinterpretq_u64_u32(pairs01.val[0]);
+                uint64x2_t pairs02_hi = vreinterpretq_u64_u32(pairs23.val[0]);
+                uint64x2_t pairs13_lo = vreinterpretq_u64_u32(pairs01.val[1]);
+                uint64x2_t pairs13_hi = vreinterpretq_u64_u32(pairs23.val[1]);
+                uint32x4_t column0 = vreinterpretq_u32_u64(vtrn1q_u64(pairs02_lo, pairs02_hi));
+                uint32x4_t column2 = vreinterpretq_u32_u64(vtrn2q_u64(pairs02_lo, pairs02_hi));
+                uint32x4_t column1 = vreinterpretq_u32_u64(vtrn1q_u64(pairs13_lo, pairs13_hi));
+                uint32x4_t column3 = vreinterpretq_u32_u64(vtrn2q_u64(pairs13_lo, pairs13_hi));
+                uint32x4_t equal = vceqq_u32(
+                    column0,
+                    align_ggml_load_u32x4(plane_data + (size_t) plane_at));
+                equal = vandq_u32(equal, vceqq_u32(
+                    column1,
+                    align_ggml_load_u32x4(
+                        plane_data + (size_t) (plane_at + n_head_kv * head_dim * 4))));
+                equal = vandq_u32(equal, vceqq_u32(
+                    column2,
+                    align_ggml_load_u32x4(
+                        plane_data + (size_t) (plane_at + n_head_kv * head_dim * 8))));
+                equal = vandq_u32(equal, vceqq_u32(
+                    column3,
+                    align_ggml_load_u32x4(
+                        plane_data + (size_t) (plane_at + n_head_kv * head_dim * 12))));
+                if (vminvq_u32(equal) != UINT32_MAX) {
+                    goto align_ggml_v_scalar_mismatch;
+                }
+            }
+            for (column = tiled_columns; column < columns; column++) {
+                int64_t tile_lane = 0;
+                for (tile_lane = lane; tile_lane < lane + 4; tile_lane++) {
+                    int64_t source_at =
+                        plane_base + ((column * n_head_kv + head) * head_dim + tile_lane) * 4;
+                    int64_t consumed_at =
+                        (column + columns * (tile_lane + head_dim * head)) * 4;
+                    if (memcmp(plane_data + (size_t) source_at,
+                               consumed_data + (size_t) consumed_at, 4) != 0) {
+                        goto align_ggml_v_scalar_mismatch;
+                    }
+                }
+            }
+        }
+        for (lane = tiled_lanes; lane < head_dim; lane++) {
+            for (column = 0; column < columns; column++) {
+                int64_t source_at =
+                    plane_base + ((column * n_head_kv + head) * head_dim + lane) * 4;
+                int64_t consumed_at =
+                    (column + columns * (lane + head_dim * head)) * 4;
+                if (memcmp(plane_data + (size_t) source_at,
+                           consumed_data + (size_t) consumed_at, 4) != 0) {
+                    goto align_ggml_v_scalar_mismatch;
+                }
+            }
+        }
+    }
+    return 0;
+
+align_ggml_v_scalar_mismatch:
+#endif
+    for (head = 0; head < n_head_kv; head++) {
+        for (lane = 0; lane < head_dim; lane++) {
+            for (column = 0; column < columns; column++) {
+                int64_t source_at =
+                    plane_base + ((column * n_head_kv + head) * head_dim + lane) * 4;
+                int64_t consumed_at = (column + columns * (lane + head_dim * head)) * 4;
+                if (memcmp(plane_data + (size_t) source_at,
+                           consumed_data + (size_t) consumed_at, 4) != 0) {
+                    return column + 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+
 /* R5C-METAL-PREFILL-ARM (`docs/specs/r5c-metal-prefill.md` sections 3.4, 3.8, and 3.9). The device
  * selector, the property selector, and the one clamp, shared byte-for-byte by both files so that a
  * stub GPU and a real Metal device answer the same questions with the same field ids.
@@ -836,6 +1024,9 @@ static align_stub_buffer  align_stub_buffers[ALIGN_STUB_MAX_BUFFERS];
 static align_stub_gallocr align_stub_gallocrs[ALIGN_STUB_MAX_GALLOCRS];
 static int32_t            align_stub_backend_token;
 static int32_t            align_stub_device_token;
+#ifdef ALIGN_GGML_FORCE_CACHE_WRAP_FAILURE
+static int32_t            align_stub_host_wrap_calls;
+#endif
 
 /* Two arenas so the tiny geometry never has to worry about lifetime: activations are re-assigned by
  * every `gallocr` allocation, weights and inputs are assigned once and outlive them.
@@ -860,6 +1051,9 @@ static int64_t align_stub_nelements(const align_stub_tensor *t) {
 }
 
 static int64_t align_stub_nbytes(const align_stub_tensor *t) {
+    if (t->op == ALIGN_STUB_OP_NONE && t->lp[0] > 0) {
+        return (t->ne[2] - 1) * t->lp[0] + t->ne[0] * t->ne[1] * 4;
+    }
     return align_stub_nelements(t) * 4;
 }
 
@@ -1175,7 +1369,9 @@ static void align_stub_run(align_stub_tensor *t) {
                     plane = 0;
                 }
                 for (i0 = 0; i0 < m; i0++) {
-                    const float *av = x + k * (i0 + m * plane);
+                    const unsigned char *plane_base = (const unsigned char *) a->data
+                        + plane * (a->lp[0] > 0 ? a->lp[0] : k * m * 4);
+                    const float *av = (const float *) plane_base + k * i0;
                     float total = 0.0f;
                     int64_t at = 0;
                     for (at = 0; at < k; at++) {
@@ -1475,6 +1671,13 @@ void *align_ggml_buffer_from_host(void *device, void *ptr, int64_t size) {
     (void) size;
     return NULL;
 #endif
+#ifdef ALIGN_GGML_FORCE_CACHE_WRAP_FAILURE
+    if (align_stub_host_wrap_calls == 0) {
+        align_stub_host_wrap_calls++;
+        return NULL;
+    }
+    align_stub_host_wrap_calls++;
+#endif
     if (device == NULL || ptr == NULL || size <= 0) {
         return NULL;
     }
@@ -1666,6 +1869,47 @@ int64_t align_ggml_slot_nbytes(const void *slots, int64_t index) {
     }
 #endif
     return align_stub_nbytes(t);
+}
+
+/* R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY intervention B. Every deterministic-engine tensor uses the
+ * host arena, so resolving the slot and its data is the stub counterpart of the real shim's
+ * explicit host-buffer proof. The shared primitive keeps traversal and range validation identical.
+ */
+int64_t align_ggml_slot_compare_kv_plane(
+    const void *slots, int64_t index, const void *plane, int64_t plane_bytes,
+    int64_t plane_base, int64_t head_dim, int64_t n_head_kv, int64_t columns,
+    int32_t layout) {
+    align_stub_tensor *t = align_stub_slot(slots, index);
+    int64_t elements = 0;
+    int64_t span = 0;
+    if (t == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (plane == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    if (head_dim <= 0 || n_head_kv <= 0 || columns <= 0 ||
+        (layout != ALIGN_GGML_KV_LAYOUT_K && layout != ALIGN_GGML_KV_LAYOUT_V)) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (head_dim > INT64_MAX / n_head_kv) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    elements = head_dim * n_head_kv;
+    if (elements > INT64_MAX / columns) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    elements *= columns;
+    if (elements > INT64_MAX / 4) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    span = elements * 4;
+    if (align_stub_nbytes(t) != span || t->data == NULL) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    return align_ggml_compare_kv_plane(
+        t->data, span, plane, plane_bytes, plane_base,
+        head_dim, n_head_kv, columns, layout);
 }
 
 int64_t align_ggml_slot_ne(const void *slots, int64_t index, int32_t dim) {
@@ -2469,6 +2713,49 @@ int32_t align_ggml_slot_new_tensor_3d(
     if (t == NULL) {
         return ALIGN_GGML_INIT;
     }
+    return align_ggml_slot_store(slots, out, (void *) t);
+}
+
+int32_t align_ggml_slot_new_strided_tensor_3d(
+    void *ctx, void *slots, int64_t out, int32_t type,
+    int64_t ne0, int64_t ne1, int64_t ne2, int64_t slice_stride) {
+    align_stub_tensor *t = NULL;
+    int row_index = -1;
+    int64_t row_bytes = 0;
+    int64_t plane_bytes = 0;
+    if (align_stub_context_index(ctx) < 0) {
+        return ALIGN_GGML_INIT;
+    }
+    if (ne0 <= 0 || ne1 <= 0 || ne2 <= 0 || slice_stride <= 0) {
+        return ALIGN_GGML_SHAPE;
+    }
+    row_index = align_ggml_table_row(type);
+    if (row_index < 0) {
+        return ALIGN_GGML_TYPE;
+    }
+    if (ne0 % (int64_t) align_ggml_type_table[row_index][1] != 0) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (ne0 / (int64_t) align_ggml_type_table[row_index][1]
+        > INT64_MAX / (int64_t) align_ggml_type_table[row_index][2]) {
+        return ALIGN_GGML_SHAPE;
+    }
+    row_bytes = ne0 / (int64_t) align_ggml_type_table[row_index][1]
+        * (int64_t) align_ggml_type_table[row_index][2];
+    if (ne1 > INT64_MAX / row_bytes) {
+        return ALIGN_GGML_SHAPE;
+    }
+    plane_bytes = row_bytes * ne1;
+    if (slice_stride < plane_bytes
+        || ne2 - 1 > (INT64_MAX - plane_bytes) / slice_stride
+        || ne2 > INT64_MAX / slice_stride) {
+        return ALIGN_GGML_SHAPE;
+    }
+    t = align_stub_new(ctx, type, ne0, ne1, ne2, 1);
+    if (t == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    t->lp[0] = slice_stride;
     return align_ggml_slot_store(slots, out, (void *) t);
 }
 

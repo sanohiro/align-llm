@@ -804,67 +804,9 @@ fn plane_column_bytes(borrow g: layer_olmoe.Geometry) -> i64 = g.n_head_kv * g.h
 // They are the reason oracle B exists. A transposed plane, an off-by-one stride, or a K/V swap is
 // numerically plausible and would survive oracle T's four printed decimals; it does not survive a
 // byte comparison of what the graph actually consumed against what the prefill actually wrote.
+// R8 item 61 keeps those exact layouts and traversal priorities while moving the byte reads into
+// the validated shared shim.
 // ---------------------------------------------------------------------------------------------
-
-fn compare_past_k(
-  borrow consumed: slice<u8>,
-  borrow plane: slice<u8>,
-  base: i64,
-  head_dim: i64,
-  n_head_kv: i64,
-  n_past: i64,
-  columns: i64,
-) -> i64 {
-  mut head := 0
-  loop {
-    if head >= n_head_kv { break }
-    mut column := 0
-    loop {
-      if column >= n_past { break }
-      mut lane := 0
-      loop {
-        if lane >= head_dim { break }
-        from := base + (lane + head_dim * (head + n_head_kv * column)) * 4
-        into := (lane + head_dim * (column + columns * head)) * 4
-        if plane.u32_le(from) != consumed.u32_le(into) { return column }
-        lane = lane + 1
-      }
-      column = column + 1
-    }
-    head = head + 1
-  }
-  return -1
-}
-
-fn compare_past_v(
-  borrow consumed: slice<u8>,
-  borrow plane: slice<u8>,
-  base: i64,
-  head_dim: i64,
-  n_head_kv: i64,
-  n_past: i64,
-  columns: i64,
-) -> i64 {
-  mut head := 0
-  loop {
-    if head >= n_head_kv { break }
-    mut lane := 0
-    loop {
-      if lane >= head_dim { break }
-      mut column := 0
-      loop {
-        if column >= n_past { break }
-        from := base + (lane + head_dim * (head + n_head_kv * column)) * 4
-        into := (column + columns * (lane + head_dim * head)) * 4
-        if plane.u32_le(from) != consumed.u32_le(into) { return column }
-        column = column + 1
-      }
-      lane = lane + 1
-    }
-    head = head + 1
-  }
-  return -1
-}
 
 // ---------------------------------------------------------------------------------------------
 // The node-table walk and the decode graph's two extra inputs
@@ -1081,10 +1023,19 @@ fn verify_plane(
     fail(o, CODE_PLANE_MISMATCH, plane_column_detail(layer, label, -1))
     return
   }
-  take(o, ggml_ffi.slot_get(
-      slots, nodes.out[layer_olmoe.MM_DECODE_K_CONCAT_ROW], node_window, 0, span, "k_concat"))
-  if o.code.len() > 0 { return }
-  bad := compare_past_k(node_window, plane, k_at, g.head_dim, g.n_head_kv, columns, columns)
+  bad := match ggml_ffi.slot_compare_kv_plane(
+    slots, nodes.out[layer_olmoe.MM_DECODE_K_CONCAT_ROW], plane, k_at,
+    g.head_dim, g.n_head_kv, columns, ggml_ffi.KV_LAYOUT_K, "k_concat_compare") {
+    Ok(value) => value,
+    Err(_) => {
+      state.roundtrip_verdict = ROUNDTRIP_MISMATCH
+      state.first_mismatch_layer = layer
+      state.first_mismatch_tensor = PLANE_TENSOR_K
+      state.first_mismatch_column = -1
+      fail(o, CODE_PLANE_MISMATCH, plane_column_detail(layer, "k", -1))
+      return
+    },
+  }
   if bad >= 0 {
     state.roundtrip_verdict = ROUNDTRIP_MISMATCH
     state.first_mismatch_layer = layer
@@ -1093,10 +1044,19 @@ fn verify_plane(
     fail(o, CODE_PLANE_MISMATCH, plane_column_detail(layer, "k", bad))
     return
   }
-  take(o, ggml_ffi.slot_get(
-      slots, nodes.out[layer_olmoe.MM_DECODE_V_CONCAT_ROW], node_window, 0, span, "v_concat"))
-  if o.code.len() > 0 { return }
-  worst := compare_past_v(node_window, plane, v_at, g.head_dim, g.n_head_kv, columns, columns)
+  worst := match ggml_ffi.slot_compare_kv_plane(
+    slots, nodes.out[layer_olmoe.MM_DECODE_V_CONCAT_ROW], plane, v_at,
+    g.head_dim, g.n_head_kv, columns, ggml_ffi.KV_LAYOUT_V, "v_concat_compare") {
+    Ok(value) => value,
+    Err(_) => {
+      state.roundtrip_verdict = ROUNDTRIP_MISMATCH
+      state.first_mismatch_layer = layer
+      state.first_mismatch_tensor = PLANE_TENSOR_V
+      state.first_mismatch_column = -1
+      fail(o, CODE_PLANE_MISMATCH, plane_column_detail(layer, "v", -1))
+      return
+    },
+  }
   if worst >= 0 {
     state.roundtrip_verdict = ROUNDTRIP_MISMATCH
     state.first_mismatch_layer = layer
@@ -1589,6 +1549,7 @@ fn stage_claims_cached(
   borrow routing: layer_olmoe.Routing,
   layer: i64,
   borrow mut cache: ExpertCache,
+  direct_cache: bool,
   borrow mut c: alignpack_read.Counters,
   borrow mut file_pread_ns: i64,
   borrow mut block_to_claim_copy_ns: i64,
@@ -1602,19 +1563,21 @@ fn stage_claims_cached(
     key := layer * p.n_expert + expert
     slot := cache_slot(cache_metadata, key)
     if slot >= 0 {
-      mut role_offset := 0
-      mut role := 0
-      loop {
-        if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
-        source_at := slot * cache.key_bytes + role_offset
-        destination_at := win.region[role] + u * planes[role]
-        source := cache_window[source_at..source_at + planes[role]]
-        copy_started := time.instant()
-        moe_model_forward.window_put(
-          claim_window, destination_at, source, planes[role], "expert_cache_hit")?
-        cache_to_claim_copy_ns = cache_to_claim_copy_ns + (time.instant() - copy_started)
-        role_offset = role_offset + planes[role]
-        role = role + 1
+      if !direct_cache {
+        mut role_offset := 0
+        mut role := 0
+        loop {
+          if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+          source_at := slot * cache.key_bytes + role_offset
+          destination_at := win.region[role] + u * planes[role]
+          source := cache_window[source_at..source_at + planes[role]]
+          copy_started := time.instant()
+          moe_model_forward.window_put(
+            claim_window, destination_at, source, planes[role], "expert_cache_hit")?
+          cache_to_claim_copy_ns = cache_to_claim_copy_ns + (time.instant() - copy_started)
+          role_offset = role_offset + planes[role]
+          role = role + 1
+        }
       }
       cache.hits = cache.hits + 1
     } else {
@@ -1689,6 +1652,40 @@ fn stage_claims_cached(
   return Ok(())
 }
 
+// Static half of item 66's selection. A role begins at the same offset in every fixed-size slot;
+// both that offset and the next slot must preserve the backend alignment required by placement.
+fn cache_direct_layout(
+  borrow cache_window: slice<u8>,
+  borrow p: moe_model_forward.Plan,
+  borrow g: layer_olmoe.Geometry,
+  borrow cache: ExpertCache,
+  alignment: i64,
+) -> bool {
+  if !cache.enabled || alignment <= 0 || cache.key_bytes <= 0 || cache.slot_count <= 0
+    || cache_window.len() != cache.key_bytes * cache.slot_count
+    || ggml_ffi.align_mod(cache_window, alignment) != 0
+    || cache.key_bytes % alignment != 0 {
+    return false
+  }
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer { break }
+    mut offset := 0
+    mut role := 0
+    loop {
+      if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+      plane := p.plane_bytes[layer * layer_olmoe.CLAIM_ROLE_COUNT + role]
+      if plane <= 0 || offset % alignment != 0 || plane > cache.key_bytes - offset {
+        return false
+      }
+      offset = offset + plane
+      role = role + 1
+    }
+    layer = layer + 1
+  }
+  return true
+}
+
 // The three compact expert stacks, created in the weight context and **placed** at their own region
 // bases in the reused Align-owned claim window. `ne2` is `U`: the one data-dependent shape parameter
 // in either table, and it enters here and nowhere else. It is `n_expert_used` on every decode step
@@ -1725,6 +1722,52 @@ fn claim_tensors(
     if ggml_ffi.slot_data_offset(slots, slot, claim_window) != base {
       identity_failures = identity_failures + 1
     }
+    role = role + 1
+  }
+  return Ok(())
+}
+
+// The same three logical expert stacks, placed directly over each role's bytes in every cache
+// slot. `routing` uses cache-slot ids in this mode, so the tensor depth is the physical slot count
+// and `key_bytes` is its expert stride.
+fn cache_claim_tensors(
+  ctx: raw,
+  handle: raw,
+  borrow slots: slice<u8>,
+  borrow cache_window: slice<u8>,
+  borrow g: layer_olmoe.Geometry,
+  borrow planes: array<i64>,
+  borrow types: array<i64>,
+  slot_count: i64,
+  key_bytes: i64,
+  borrow mut placements: i64,
+  borrow mut identity_failures: i64,
+) -> Result<(), ggml_ffi.Fault> {
+  mut base := 0
+  mut role := 0
+  loop {
+    if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+    label := layer_olmoe.claim_label(role)
+    slot := moe_model_forward.mm_claim_slot(role)
+    span := (slot_count - 1) * key_bytes + planes[role]
+    if span <= 0 || base > cache_window.len() || span > cache_window.len() - base {
+      return Err(moe_model_forward.ffi_fault(
+          "R5_BOUNDS", moe_model_forward.named("role", label)))
+    }
+    ggml_ffi.slot_new_strided_tensor_3d(
+      ctx, slots, slot, types[role], layer_olmoe.claim_ne0(g, role),
+      layer_olmoe.claim_ne1(g, role), slot_count, key_bytes, label)?
+    if ggml_ffi.slot_nbytes(slots, slot) != span {
+      return Err(moe_model_forward.ffi_fault(
+          "R5_SHAPE", moe_model_forward.named("role", label)))
+    }
+    region := cache_window[base..base + span]
+    ggml_ffi.slot_place(handle, slots, slot, region, label)?
+    placements = placements + 1
+    if ggml_ffi.slot_data_offset(slots, slot, cache_window) != base {
+      identity_failures = identity_failures + 1
+    }
+    base = base + planes[role]
     role = role + 1
   }
   return Ok(())
@@ -1846,6 +1889,7 @@ fn run_moe_layer(
   // mode, which is why the per-graph balance check keeps its exact meaning here rather than being
   // loosened, and why the run-scope wrap is counted in its own pair (section 4.3).
   resident_buffer: raw,
+  direct_cache: bool,
   context_bytes: i64,
   borrow spec: moe_model_forward.LayerSpec,
   decode: bool,
@@ -2089,6 +2133,7 @@ fn run_moe_layer(
     result.claim_bytes = used_bytes
     result.claim_planes = routing.count * layer_olmoe.CLAIM_ROLE_COUNT
   }
+  use_cache_tensors := direct_cache && cache.enabled && cache.slot_count >= routing.count
   if o.code.len() == 0 {
     mut claim_file_pread_ns := 0
     mut claim_block_to_claim_copy_ns := 0
@@ -2098,7 +2143,7 @@ fn run_moe_layer(
     if cache.enabled {
       take_pack(o, stage_claims_cached(
           pak, block_temp, claim_window, cache_window, cache_metadata, p, win, planes, routing,
-          spec.layer, cache, claim_counters, claim_file_pread_ns,
+          spec.layer, cache, use_cache_tensors, claim_counters, claim_file_pread_ns,
           claim_block_to_claim_copy_ns, claim_claim_to_cache_copy_ns,
           claim_cache_to_claim_copy_ns))
     } else {
@@ -2117,7 +2162,7 @@ fn run_moe_layer(
     o.window_reuse_count = o.window_reuse_count + 1
   }
   setup_started = time.instant()
-  if o.code.len() == 0 {
+  if o.code.len() == 0 && !use_cache_tensors {
     claim_buffer = ggml_ffi.buffer_from_host(device, claim_window, claim_window.len())
     if ggml_ffi.handle_absent(claim_buffer) {
       fail(o, "R5_GGML_INIT", "claim_buffer")
@@ -2128,9 +2173,15 @@ fn run_moe_layer(
   mut claim_placements := 0
   mut claim_identity_failures := 0
   if o.code.len() == 0 {
-    take(o, claim_tensors(
-        weight_ctx, claim_buffer, slot_view, claim_window, g, win, planes, types,
-        routing.count, claim_placements, claim_identity_failures))
+    if use_cache_tensors {
+      take(o, cache_claim_tensors(
+          weight_ctx, resident_buffer, slot_view, cache_window, g, planes, types,
+          cache.slot_count, cache.key_bytes, claim_placements, claim_identity_failures))
+    } else {
+      take(o, claim_tensors(
+          weight_ctx, claim_buffer, slot_view, claim_window, g, win, planes, types,
+          routing.count, claim_placements, claim_identity_failures))
+    }
     o.claim_placements = o.claim_placements + claim_placements
     o.pointer_identity_failures = o.pointer_identity_failures + claim_identity_failures
   }
@@ -2138,20 +2189,41 @@ fn run_moe_layer(
   transfer_started = time.instant()
   mut topk_image: buffer := buffer(g.n_expert_used * spec.t_out * 4)
   mut compact_image: buffer := buffer(g.n_expert_used * spec.t_out * 4)
+  mut graph_id_builder: array_builder<i64> := array_builder()
   if o.code.len() == 0 {
     mut write_at := 0
     loop {
       if write_at >= routing.topk.len() { break }
       topk_image.put_u32_le(routing.topk[write_at] as u32)
-      compact_image.put_u32_le(routing.compact[write_at] as u32)
+      mut graph_id := routing.compact[write_at]
+      if use_cache_tensors {
+        compact := routing.compact[write_at]
+        if compact < 0 || compact >= routing.count || compact >= routing.routed.len() {
+          fail(o, "R5E_CARRY", moe_model_forward.layer_named(
+              spec.layer, "input", "compact_ids"))
+          break
+        }
+        expert := routing.routed[compact]
+        key := spec.layer * p.n_expert + expert
+        graph_id = cache_slot(cache_metadata, key)
+        if expert < 0 || expert >= p.n_expert || graph_id < 0 || graph_id >= cache.slot_count {
+          fail(o, "R5E_CARRY", moe_model_forward.layer_named(
+              spec.layer, "input", "cache_slot_ids"))
+          break
+        }
+      }
+      graph_id_builder.push(graph_id)
+      compact_image.put_u32_le(graph_id as u32)
       write_at = write_at + 1
     }
   }
+  graph_ids := graph_id_builder.build()
   topk_view := topk_image.bytes()
   compact_view := compact_image.bytes()
   if o.code.len() == 0 {
     take(o, moe_model_forward.stage_carry_at(
-        slot_view, node_window, topk_view, compact_view, g, routing, spec.layer, spec.t_out,
+        slot_view, node_window, topk_view, compact_view, g, routing, graph_ids,
+        if use_cache_tensors { cache.slot_count } else { routing.count }, spec.layer, spec.t_out,
         ffn_norm_node_of(decode), ffn_inp_node_of(decode), probs_node_of(decode)))
   }
   o.generic_transfer_digest_ns = o.generic_transfer_digest_ns
@@ -2588,6 +2660,7 @@ fn decode_pass(
   device: raw,
   backend: raw,
   resident_buffer: raw,
+  direct_cache: bool,
   context_bytes: i64,
   borrow g: layer_olmoe.Geometry,
   borrow ends: moe_model_forward.Ends,
@@ -2736,7 +2809,8 @@ fn decode_pass(
     mut routing := layer_olmoe.empty_routing()
     mut result := moe_model_forward.empty_layer_result()
     run_moe_layer(
-      device, backend, resident_buffer, context_bytes, spec, true, n_past, stride, step, g, plan,
+      device, backend, resident_buffer, direct_cache, context_bytes, spec, true, n_past, stride,
+      step, g, plan,
       win, members,
       a_nodes, b_nodes, oracle, layer_view, claim_window, cache_window, cache_metadata, slot_view,
       pos_view, mask_view,
@@ -2887,6 +2961,7 @@ fn prefill_pass(
   device: raw,
   backend: raw,
   resident_buffer: raw,
+  direct_cache: bool,
   context_bytes: i64,
   borrow g: layer_olmoe.Geometry,
   borrow table: layer_olmoe.MemberTable,
@@ -3000,8 +3075,8 @@ fn prefill_pass(
     mut routing := layer_olmoe.empty_routing()
     mut result := moe_model_forward.empty_layer_result()
     run_moe_layer(
-      device, backend, resident_buffer, context_bytes, spec, false, tokens.count, stride, 0, g,
-      plan, win, members,
+      device, backend, resident_buffer, direct_cache, context_bytes, spec, false, tokens.count,
+      stride, 0, g, plan, win, members,
       a_nodes, b_nodes, oracle, layer_view, claim_window, cache_window, cache_metadata, slot_view,
       index_view, mask_view,
       out_ids_view, plane_view, plane_view, residual_view, node_view, plane_view, scan, starts,
@@ -3374,6 +3449,7 @@ fn decode_loop(
   device: raw,
   backend: raw,
   resident_buffer: raw,
+  direct_cache: bool,
   context_bytes: i64,
   borrow g: layer_olmoe.Geometry,
   borrow ends: moe_model_forward.Ends,
@@ -3520,7 +3596,8 @@ fn decode_loop(
     mut res := empty_step_residency()
     pass_started := time.instant()
     ids := decode_pass(
-      pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, win, tokens,
+      pak, device, backend, resident_buffer, direct_cache, context_bytes, g, ends, table, plan,
+      win, tokens,
       head_members, window,
       claim_window, cache_window, cache_metadata, layout, resident, slot_view, ids_view, pos_view,
       mask_view, out_ids_view,
@@ -4039,6 +4116,7 @@ fn schedule_decode(
   borrow embed_members: moe_model_forward.GraphMembers,
   borrow head_members: moe_model_forward.GraphMembers,
   borrow window: slice<u8>,
+  borrow resident_window: slice<u8>,
   borrow claim_window: slice<u8>,
   borrow cache_window: slice<u8>,
   borrow layout: model_forward.ResidentLayout,
@@ -4219,11 +4297,21 @@ fn schedule_decode(
   // balance is asserted at the scope that owns it, after `backend_close` and before `execute`'s
   // region leaves scope.
   mut resident_buffer := ggml_ffi.null_handle()
+  mut direct_cache := generation && resident && reference_path.len() == 0
+    && transcript_path.len() == 0
+    && cache_direct_layout(cache_window, plan, g, cache, o.tensor_alignment)
   if o.code.len() == 0 && resident {
     fill_resident_dense(pak, g, table, plan, ends, tokens, head_members, window, layout, o)
   }
-  if o.code.len() == 0 && resident {
+  if o.code.len() == 0 && resident && direct_cache {
+    resident_buffer = ggml_ffi.buffer_from_host(
+      device, resident_window, resident_window.len())
+    if ggml_ffi.handle_absent(resident_buffer) { direct_cache = false }
+  }
+  if o.code.len() == 0 && resident && ggml_ffi.handle_absent(resident_buffer) {
     resident_buffer = ggml_ffi.buffer_from_host(device, window, window.len())
+  }
+  if o.code.len() == 0 && resident {
     if ggml_ffi.handle_absent(resident_buffer) {
       fail(o, "R5_GGML_INIT", "resident_buffer")
     } else {
@@ -4241,7 +4329,8 @@ fn schedule_decode(
     prefill_claim_pread_before = o.claim_pread_ns
     prefill_compute_before = o.compute_ns
     prefill_keys = prefill_pass(
-      pak, device, backend, resident_buffer, context_bytes, g, table, plan, win, tokens,
+      pak, device, backend, resident_buffer, direct_cache, context_bytes, g, table, plan, win,
+      tokens,
       embed_members,
       head_members, window, claim_window, cache_window, cache_metadata_view, layout, resident,
       slot_view, index_view, mask_wide_view,
@@ -4285,7 +4374,8 @@ fn schedule_decode(
     o.prefill_compute_ns = o.compute_ns - prefill_compute_before
     first_token := if first_selected >= 0 { first_selected } else { o.argmax }
     stepped = decode_loop(
-      pak, device, backend, resident_buffer, context_bytes, g, ends, table, plan, win, tokens,
+      pak, device, backend, resident_buffer, direct_cache, context_bytes, g, ends, table, plan, win,
+      tokens,
       head_members,
       window, claim_window, cache_window, cache_metadata_view, layout, resident, slot_view,
       decode_ids_view, decode_pos_view,
@@ -4685,6 +4775,7 @@ fn execute_mode(
     return o
   }
   window_view := weights_view[dense_pad..dense_pad + region_bytes]
+  resident_view := weights_view[dense_pad..dense_pad + combined_bytes]
   cache_view := weights_view[
     dense_pad + region_bytes..dense_pad + region_bytes + o.expert_cache_capacity_bytes]
   claim_view := claims_view[claim_pad..claim_pad + staged.claim_window_bytes]
@@ -4758,7 +4849,7 @@ fn execute_mode(
   }
   schedule_decode(
     pak, g, table, staged.plan, staged.ends, staged.win, tokens, embed_members, head_members,
-    window_view, claim_view, cache_view, layout, resident, device, context_bytes, width,
+    window_view, resident_view, claim_view, cache_view, layout, resident, device, context_bytes, width,
     residual_bytes,
     logits_bytes, readback_bytes, staged.block_align, reference_path, transcript_path, logits_path,
     steps, generation, sampled, sampling_seed, eog_ids, generation_max, started, graphs, top,
