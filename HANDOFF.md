@@ -3,9 +3,38 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY (2026-09-05)
+## Active: R8-OLMOE-DECODE-COMPUTE-DIAGNOSIS (2026-09-05)
 
-Branch `agent/r8-olmoe-plane-roundtrip-boundary`, based on pulled merged `main`
+Branch `agent/r8-olmoe-decode-compute-diagnosis`, based on pulled merged `main`
+`9ebcd49e835cd2819e47a4c3b73ec51cfb8b261d` (item 61 PR #183). The sibling Align checkout and
+`.align-revision` remain at merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align
+surface is currently required.
+
+Item 61's complete-boundary optimization measured `NOT_MET` after review repair and shipped no
+production change. Item 59's same fixed request therefore still leaves compute as the next-largest
+unresolved decode bucket at a 4,104,846,715-ns median, ahead of 3,609,378,007 ns of claim I/O and
+above item 58's 921,450,866-ns materiality floor. Item 62's authoritative ledger and closure matrix
+are `docs/specs/r8-olmoe-decode-compute-diagnosis.md`.
+
+The selected diagnostic partitions existing graph-compute wall into decoded-token embedding,
+layer phase A (attention/routing), layer phase B (selected experts), and output head. It preserves
+the fixed request, output, cache, isolation, and native lifetimes and makes no speed claim. A
+measured winner must clear the inherited floor before another implementation seam is eligible.
+
+**Next actions.** Implement the shared scalar counters, qualification helper, and bounded runner;
+run narrow owners and the one clean-head real diagnosis; record its selection; review, repair,
+preflight, publish, merge, and continue.
+
+**Blocker.** None.
+
+**Latest durable verification.** PR #183 passed all three exact-head required checks and merged as
+`9ebcd49e835cd2819e47a4c3b73ec51cfb8b261d`; this branch starts clean from that merge.
+
+**Intentional uncommitted files.** The item 62 ledger/roadmap/handoff design update until committed.
+
+## Merged checkpoint: R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY (PR #183, 2026-09-05)
+
+PR #183 merged as `9ebcd49e835cd2819e47a4c3b73ec51cfb8b261d`. It was based on pulled merged `main`
 `8e7be2a77f69d7afb0da34507e90e84f89301871` (item 60 PR #182). The sibling Align checkout and
 `.align-revision` remain at merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align
 surface is currently required.
@@ -68,7 +97,8 @@ the three headers compiled into its shim. The consolidated repair records exact 
 for `ggml.h`, `ggml-alloc.h`, and `ggml-backend.h`, validates them before build and after
 measurement, adds them to the exact candidate schema, and owns a mutation self-test.
 
-**Next actions.** Run exact-head preflight, publish, merge, and continue.
+**Publication result.** Exact-head preflight and all three required checks passed; PR #183 merged
+with the complete measurement history preserved.
 
 **Blocker.** None.
 

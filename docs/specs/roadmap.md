@@ -1558,6 +1558,19 @@ The current forward delivery order is:
     cleanup check passed, but the performance gate did not; all three production interventions and
     their owner-test additions were removed before publication.
 
+62. **R8-OLMOE-DECODE-COMPUTE-DIAGNOSIS — partition the next-largest remaining decode bucket.
+    Selected; implementation active.**
+    [`r8-olmoe-decode-compute-diagnosis.md`](r8-olmoe-decode-compute-diagnosis.md) is the
+    authoritative ledger and closure matrix. Item 61's intervention did not ship, so item 59's
+    fixed-request ordering remains authoritative: graph compute is the next-largest unresolved
+    bucket at a 4,104,846,715-ns median, ahead of claim I/O at 3,609,378,007 ns and above the
+    inherited 921,450,866-ns materiality floor. Preserve the same request, output, isolation,
+    cache, and lifetimes while splitting compute into decoded-token embedding, every layer's
+    routing/attention phase A, every layer's selected-expert phase B, and output-head graph walls.
+    This diagnosis changes no graph and makes no performance claim. A measured winner must clear
+    the inherited floor before it can authorize an implementation ledger with its own fixed-request
+    50,000-ppm shipping gate.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
