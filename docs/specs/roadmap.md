@@ -1358,6 +1358,17 @@ The current forward delivery order is:
     primary timing medians remain null. The next investment belongs to model/prompt patch
     correctness rather than provider-level runtime optimization.
 
+51. **R8-OLMOE-SAMPLED-CODING — decide whether a bounded sampled portfolio reaches a passing
+    patch. Active.**
+    [`r8-olmoe-sampled-coding.md`](r8-olmoe-sampled-coding.md) is the authoritative measurement
+    contract and closure matrix. Item 50's greedy OLMoE completion chose
+    `range(start, stop, -1)` and repeated it after direct validator feedback. This capability keeps
+    the model, prompt, task, strict extractor, and validator fixed, but uses the existing local
+    provider's seeded sampling surface at temperature 0.3 over ordered seeds 1 through 8, stopping
+    at the first passing patch. `MET` selects seeded sampling as the next `AlignRuntime` consumer;
+    `NOT_MET` redirects to another model. The one run is bounded at approximately 10 minutes and
+    makes no quality-rate, generality, latency, or R8 shipping claim.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:

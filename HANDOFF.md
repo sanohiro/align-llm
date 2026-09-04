@@ -3,45 +3,30 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-CODING-DECISION (2026-09-03)
+## Active: R8-OLMOE-SAMPLED-CODING (2026-09-04)
 
-Branch `agent/r8-olmoe-coding-decision`, based on pulled merged `main`
-`0eaed918f34b1dbb8a70ef0aaa352cbaec7513e7` (R8-OLMOE-PROVIDER PR #170). The sibling Align
-checkout was fetched and pulled after that merge; it and `.align-revision` both remain at current
-merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4` with no newer prerequisite.
+Branch `agent/r8-olmoe-sampled-coding`, based on pulled merged `main`
+`8d7ec12415dd0dadc765a29fd1cc3056ddbe18c8` (R8-OLMOE-CODING-DECISION PR #172). The sibling Align
+checkout and `.align-revision` remain at merged Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; this capability needs no new Align surface.
 
-The completed candidate measures the first provider-level OLMoE performance decision on the existing
-fixed `python-inclusive-range` coding task. Its authoritative protocol, 50,000-ppm shipping floor,
-approximately 15-minute complete-run ceiling, result fields, and closure matrix are
-`docs/specs/r8-olmoe-coding-decision.md`. Four fixed balanced pairs compare the shipped resident
-llama.cpp baseline with the invocation-local partial-LRU Align runtime from provider launch through
-the existing task validator. This capability changes no provider or runtime behavior. Its one
-complete bound real run finished in 142.183 seconds with `NOT_ELIGIBLE`: both arms emitted the same
-deterministic patch, but the unchanged validator rejected it in all eight legs. Both pass counts
-are 0/4 and primary medians are therefore null. The first unmet consumer boundary is model/prompt
-patch correctness, not runtime performance.
+Item 50 recorded `NOT_ELIGIBLE` because greedy OLMoE generation produced
+`range(start, stop, -1)` on the fixed task in both provider arms. A direct feedback repair repeated
+the same error. A bounded local feasibility probe found that temperature 0.3 with seed 5 produces
+the correct strict one-line patch, so the next consumer decision is a fixed ordered eight-seed
+portfolio through the existing local provider and unchanged validator. The authoritative ledger,
+schema, stop rule, approximately 10-minute ceiling, and closure matrix are
+`docs/specs/r8-olmoe-sampled-coding.md`.
 
-**Next actions.** Perform one comprehensive review, consolidate any valid repairs, then run the
-focused exact-head publication preflight, publish, merge, and pull current `main`. Per the user's
-instruction, stop after this pull rather than starting another roadmap capability.
-
-The comprehensive Codex CLI review covered head
-`35dceb22fc15268e58df4006ff94a89b83e3da64` against base tip and merge base
-`0eaed918f34b1dbb8a70ef0aaa352cbaec7513e7`, using gpt-5.6-sol at high effort over the full diff.
-It found five accepted evidence/cleanup defects: ambient shim fault injection was not isolated;
-compiler, helper, shim, and ggml identities were not bound; the mutable Docker validator reference
-was not resolved into the result; image inspection was not deadline-bounded; and a timed-out Docker
-client could leave its container running. Consolidated repair commits `222e93a` and `bbd2a47` scrub
-ambient overrides, force and record the managed toolchain plus native identities, revalidate every
-identity after sampling, resolve one immutable validator image under the whole-run deadline, and
-own its container ID through forced cleanup. The repair implements only recorded findings and does
-not change the fixed request, schedule, metric, floor, or verdict logic, so another comprehensive
-review is not required.
+**Next actions.** Complete the author ledger-to-prose pass, implement the qualification helper and
+runner, run the focused synthetic owner and one complete real decision, record the result, perform
+one comprehensive review, repair valid findings, run exact-head publication preflight, publish,
+merge, pull `main`, and continue to the next eligible capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The final bound decision and review disposition update until
-committed. Local configuration remains outside the change.
+**Intentional uncommitted files.** The active design and handoff update until committed. Local
+configuration remains outside the change.
 
 ## Merged checkpoint: R8-OLMOE-PROVIDER (PR #170, 2026-09-03)
 
