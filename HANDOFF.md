@@ -18,15 +18,23 @@ unchanged. Item 57's 30,450,856,583-ns full-helper wall median is immutable; the
 ship only if four fresh conditioned repetitions have exact output and balanced lifetimes and a
 candidate median no greater than 28,928,313,753 ns (50,000 ppm improvement).
 
-**Next actions.** Implement the shared staging primitive, safe wrapper, combined decode staging,
-hosted exact-layout/refusal owner, and bounded performance runner. Run narrow owners and the real
-qualification; retain the intervention only for `MET`, then review, preflight, publish, and merge.
+The clean-head run at `b3583fe43f9a7350337264e84220e1a2a5dddd4e` completed in 108.362 seconds
+and recorded `MET`. Candidate full helper walls were
+`[16405544166,16623844667,17339086750,17880418791]` ns, with a 16,981,465,708-ns median and
+442,332-ppm gain. Upload fell from an 11,547,535,094-ns median to 1,914,442,353 ns. Every fixed
+output, token, lifetime, and isolation gate passed. The remaining `PASS_RESIDUAL` now leads at
+3,805,899,547 ns and selects roadmap item 59 for a narrower diagnosis after item 58 merges.
+
+**Next actions.** Complete item 58's comprehensive review, consolidate valid findings, rerun
+affected owners and exact-head preflight, publish, and merge. Then pull merged `main` and start item
+59's decode-pass residual diagnosis ledger and closure matrix.
 
 **Blocker.** None.
 
-**Latest durable verification.** Item 57's exact-head preflight and all PR #179 checks passed before
-merge. Item 58 has completed its pre-implementation author consistency pass; no implementation
-verification has run yet.
+**Latest durable verification.** `gmake fmt`, `gmake layer-forward-smoke`, `gmake
+runtime-provider-smoke`, Python compilation, the item 57 and item 58 focused self-tests, and `git
+diff --check` pass. The complete real qualification and exact result are recorded above;
+machine-local evidence remains outside Git.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.

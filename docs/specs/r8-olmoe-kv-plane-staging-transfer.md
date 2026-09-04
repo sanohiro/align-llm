@@ -1,6 +1,6 @@
 # R8 OLMoE KV-plane staging transfer
 
-Status: active, 2026-09-04
+Status: complete, 2026-09-04
 
 Roadmap owner: item 58, `R8-OLMOE-KV-PLANE-STAGING-TRANSFER`
 
@@ -127,4 +127,36 @@ The ledger, schema, closure matrix, and implementation map agree on one combined
 destination, exact K/V byte layouts, validate-before-write behavior, the existing error family and
 upload clock, the immutable item 57 baseline, four fresh conditioned repetitions, and the
 50,000-ppm gate. No prose authorizes a plane, graph, cache, provider-lifetime, token, or output
-change. Candidate evidence and the final diff mapping will be added only after implementation.
+change. Section 7 maps every applicable cell to the shipped diff and passing evidence.
+
+## 7. Recorded result and final mapping
+
+The complete run at clean head `b3583fe43f9a7350337264e84220e1a2a5dddd4e` finished in
+108.362 seconds and recorded `MET`. All four fresh maximum-2 conditioning requests were exact
+prefixes of their maximum-128 requests. All four full requests reproduced the fixed 87-token chain
+and output digest, balanced 2,958 ggml buffers, 6,090 contexts, one backend, 2,958 allocators, and
+one resident wrap, and recorded zero matching llama.cpp model processes at all twelve required
+before/between/after boundaries.
+
+Candidate full helper walls were
+`[16405544166,16623844667,17339086750,17880418791]` ns, for a
+16,981,465,708-ns median. Against the immutable 30,450,856,583-ns baseline, that removes
+13,469,390,875 ns, or 442,332 ppm, and is 11,946,848,045 ns below the precommitted candidate
+ceiling. Candidate upload samples were
+`[1835600002,1859415586,1969469120,2025707279]` ns, for a 1,914,442,353-ns median: the selected
+boundary fell by 9,633,092,741 ns, or 834,212 ppm, from item 57's 11,547,535,094-ns median.
+Remaining decode fell from 25,267,487,582 ns to a 12,879,146,307-ns median.
+
+The shared real/stub functions and `ggml_ffi.stage_kv` implement the ledger's exact ABI and
+validate-before-write ownership boundary. `moe_decode_step.decode_pass` owns the one combined
+primed buffer, timed native call, two exact views, and unchanged failure convergence. The hosted
+layer owner exercised the non-square K/V layout and null, negative, zero, overflow, wrong-size,
+out-of-bounds, and overlap refusals without partial writes. `gmake layer-forward-smoke`, `gmake
+runtime-provider-smoke`, formatting, Python compilation, the focused self-test, and the real run
+all passed.
+
+After this intervention, the four sample records give a 3,805,899,547-ns `PASS_RESIDUAL` median,
+larger than compute at 3,615,480,386 ns, claim I/O at 3,426,040,742 ns, and KV-plane transfer at
+1,921,874,253 ns. Item 57's decision rule therefore selects item 59, a narrower decode-pass
+residual diagnosis; this result does not rename the residual or authorize an implementation seam
+inside it.
