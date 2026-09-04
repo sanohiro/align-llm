@@ -298,6 +298,14 @@ tiled_consumed = ctypes.create_string_buffer(struct.pack("<25I", *tiled_consumed
 if compare(tiled_consumed, 100, 0, 1, hd=5, heads=1, columns=5,
            plane_arg=tiled_plane, plane_bytes=100) != 0:
     raise SystemExit("layer forward smoke: FAIL tiled V exact/remainder comparison")
+
+# The byte-range ABI has no alignment precondition. Exercise the SIMD tile with both an unaligned
+# consumed pointer and a non-four-byte-aligned plane base so typed native loads cannot creep back in.
+unaligned_consumed = ctypes.create_string_buffer(b"\xa5" + tiled_consumed.raw[:100])
+unaligned_plane = ctypes.create_string_buffer(b"\x5a" + tiled_plane.raw[:100])
+if compare(ctypes.byref(unaligned_consumed, 1), 100, 1, 1, hd=5, heads=1, columns=5,
+           plane_arg=unaligned_plane, plane_bytes=101) != 0:
+    raise SystemExit("layer forward smoke: FAIL unaligned tiled V comparison")
 tiled_consumed[3 * 4] = bytes([tiled_consumed[3 * 4][0] ^ 1])
 tiled_consumed[5 * 4] = bytes([tiled_consumed[5 * 4][0] ^ 1])
 if compare(tiled_consumed, 100, 0, 1, hd=5, heads=1, columns=5,

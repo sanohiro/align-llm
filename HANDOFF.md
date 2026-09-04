@@ -42,14 +42,24 @@ comparison, and maps native validation failure to the existing tensor/-1 mismatc
 runner independently pins item 60's evidence, the full changed source chain, fixed host, helper
 schema, output, lifetimes, isolation, gate arithmetic, and cleanup-before-publication.
 
-The final four-repeat full-helper samples were
+The pre-review four-repeat full-helper samples were
 `[16554919250,17140798625,16882099208,17146960833]`, median 17,011,448,916 ns, for a
 1,734,937,854-ns / 92,547-ppm gain against item 60. The plane-boundary median fell to 779,712,734
 ns. All four runs reproduced the fixed 86-token output/hash, exact native lifetime balances, twelve
 clean isolation boundaries, fixed cache state, and cleanup in 100.934 seconds.
 
-**Next actions.** Perform one comprehensive review of the stable candidate; repair valid findings,
-rerun affected owners and exact-head preflight, publish, merge, and continue.
+The comprehensive Codex CLI review covered head
+`fd9835ffa691e8b5d6d06e777ada6d20cf3327a7` against base tip and merge base
+`8e7be2a77f69d7afb0da34507e90e84f89301871`, using gpt-5.6-sol at high effort over the full diff.
+It found one accepted P2: the AArch64 fast path cast arbitrary byte ranges to `uint32_t *`, adding
+an undeclared four-byte alignment precondition and undefined behavior. The consolidated repair
+loads through byte-aligned NEON vectors before reinterpreting register bits and adds a direct
+unaligned-consumed/nonaligned-plane-base tile regression. This preserves the ABI and does not
+change the capability boundary, so another comprehensive review is not required.
+
+**Next actions.** Commit the consolidated review repair; rerun the production owner, item 57→61
+self-test chain, and one clean-head real qualification; record its exact result; run exact-head
+preflight, publish, merge, and continue.
 
 **Blocker.** None.
 
@@ -57,9 +67,12 @@ rerun affected owners and exact-head preflight, publish, merge, and continue.
 `make fmt`, `make layer-forward-smoke` with direct slot ABI and 5-by-5 tiled/remainder/fallback
 vectors (66.198 seconds), real-shim build and AArch64 instruction inspection,
 `make runtime-provider-smoke` (self-test plus 61 CLI assertions), Python compilation, the full item
-57→61 self-test chain, and `git diff --check` pass.
+57→61 self-test chain, and `git diff --check` pass. After review repair, byte-identical shared-shim
+compilation, the new unaligned tile regression through `make layer-forward-smoke` (66.455 seconds),
+an explicit UBSan unaligned V-tile call, emitted IR loads with alignment 1, item 61's focused
+self-test, Python compilation, and `git diff --check` pass.
 
-**Intentional uncommitted files.** None.
+**Intentional uncommitted files.** The consolidated review repair described above.
 Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS (PR #182, 2026-09-04)

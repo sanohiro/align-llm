@@ -553,6 +553,12 @@ int32_t align_ggml_stage_kv(const void *plane, int64_t plane_bytes,
 #define ALIGN_GGML_KV_LAYOUT_K 0
 #define ALIGN_GGML_KV_LAYOUT_V 1
 
+#if defined(__aarch64__)
+static uint32x4_t align_ggml_load_u32x4(const unsigned char *data) {
+    return vreinterpretq_u32_u8(vld1q_u8(data));
+}
+#endif
+
 int64_t align_ggml_compare_kv_plane(const void *consumed, int64_t consumed_bytes,
                                     const void *plane, int64_t plane_bytes,
                                     int64_t plane_base, int64_t head_dim,
@@ -636,14 +642,14 @@ int64_t align_ggml_compare_kv_plane(const void *consumed, int64_t consumed_bytes
                     (head * head_dim * columns + lane * columns + column) * 4;
                 int64_t plane_at =
                     plane_base + ((column * n_head_kv + head) * head_dim + lane) * 4;
-                uint32x4_t r0 = vld1q_u32((const uint32_t *) (const void *)
-                    (consumed_data + (size_t) consumed_at));
-                uint32x4_t r1 = vld1q_u32((const uint32_t *) (const void *)
-                    (consumed_data + (size_t) (consumed_at + columns * 4)));
-                uint32x4_t r2 = vld1q_u32((const uint32_t *) (const void *)
-                    (consumed_data + (size_t) (consumed_at + columns * 8)));
-                uint32x4_t r3 = vld1q_u32((const uint32_t *) (const void *)
-                    (consumed_data + (size_t) (consumed_at + columns * 12)));
+                uint32x4_t r0 = align_ggml_load_u32x4(
+                    consumed_data + (size_t) consumed_at);
+                uint32x4_t r1 = align_ggml_load_u32x4(
+                    consumed_data + (size_t) (consumed_at + columns * 4));
+                uint32x4_t r2 = align_ggml_load_u32x4(
+                    consumed_data + (size_t) (consumed_at + columns * 8));
+                uint32x4_t r3 = align_ggml_load_u32x4(
+                    consumed_data + (size_t) (consumed_at + columns * 12));
                 uint32x4x2_t pairs01 = vtrnq_u32(r0, r1);
                 uint32x4x2_t pairs23 = vtrnq_u32(r2, r3);
                 uint64x2_t pairs02_lo = vreinterpretq_u64_u32(pairs01.val[0]);
@@ -656,20 +662,19 @@ int64_t align_ggml_compare_kv_plane(const void *consumed, int64_t consumed_bytes
                 uint32x4_t column3 = vreinterpretq_u32_u64(vtrn2q_u64(pairs13_lo, pairs13_hi));
                 uint32x4_t equal = vceqq_u32(
                     column0,
-                    vld1q_u32((const uint32_t *) (const void *)
-                        (plane_data + (size_t) plane_at)));
+                    align_ggml_load_u32x4(plane_data + (size_t) plane_at));
                 equal = vandq_u32(equal, vceqq_u32(
                     column1,
-                    vld1q_u32((const uint32_t *) (const void *)
-                        (plane_data + (size_t) (plane_at + n_head_kv * head_dim * 4)))));
+                    align_ggml_load_u32x4(
+                        plane_data + (size_t) (plane_at + n_head_kv * head_dim * 4))));
                 equal = vandq_u32(equal, vceqq_u32(
                     column2,
-                    vld1q_u32((const uint32_t *) (const void *)
-                        (plane_data + (size_t) (plane_at + n_head_kv * head_dim * 8)))));
+                    align_ggml_load_u32x4(
+                        plane_data + (size_t) (plane_at + n_head_kv * head_dim * 8))));
                 equal = vandq_u32(equal, vceqq_u32(
                     column3,
-                    vld1q_u32((const uint32_t *) (const void *)
-                        (plane_data + (size_t) (plane_at + n_head_kv * head_dim * 12)))));
+                    align_ggml_load_u32x4(
+                        plane_data + (size_t) (plane_at + n_head_kv * head_dim * 12))));
                 if (vminvq_u32(equal) != UINT32_MAX) {
                     goto align_ggml_v_scalar_mismatch;
                 }
