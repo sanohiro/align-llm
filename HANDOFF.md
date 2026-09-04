@@ -41,16 +41,21 @@ directional result is withdrawn.
 The repair brackets setup with the measured lower bound and the complete solo full helper wall as
 a conservative upper bound; pressure must clear the upper bound, setup must clear pressure with its
 lower bound, and overlap remains unresolved. It also owns the prerequisite wrapper and N/A label.
-Because the decision contract changed materially, the valid result requires a new complete run and
-one final comprehensive review.
+The clean repaired-head run at `d064d1f` completed in 347.551 seconds with stable outputs and
+balanced lifetimes. Solo short/full medians were 4.692/29.025 seconds; co-resident medians were
+5.889/31.435 seconds. The positive paired penalty median was 2.742 seconds (94,468 ppm), between the
+0.141-second measured lower bound and 29.025-second conservative upper bound. The valid decision is
+therefore `MIXED_OR_UNRESOLVED`. All eight co-resident helpers began above 2 GiB RSS and ended below
+it. Item 55, a narrower first-token phase instrument, is the selected next work; no isolated
+baseline, persistent lifetime, or retained cache is yet authorized.
 
-**Next actions.** Commit the consolidated logic repair, run the clean owner and one complete real
-diagnosis, record the result, and perform the required final comprehensive review.
+**Next actions.** Commit the repaired diagnosis record, run the clean owner, and perform the
+required final comprehensive review before publication preflight.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The reviewed attribution/N/A repair above; machine-local JSON
-evidence remains outside Git, and no generated binary, model, credential, or profile belongs in Git.
+**Intentional uncommitted files.** The repaired diagnosis record above; machine-local JSON evidence
+remains outside Git, and no generated binary, model, credential, or profile belongs in Git.
 
 ## Merged checkpoint: R8-OLMOE-SAMPLED-RUNTIME-DECISION (PR #175, 2026-09-04)
 

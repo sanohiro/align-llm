@@ -1,6 +1,6 @@
 # R8 OLMoE runtime phase diagnosis
 
-Status: attribution repair awaiting measurement, 2026-09-04
+Status: diagnosis recorded, 2026-09-04
 
 ## 1. Decision and boundary
 
@@ -152,7 +152,45 @@ changes their source rather than merely consuming their public records.
 
 ## 7. Recorded diagnosis
 
-The reviewed attribution defect invalidated the original directional classification: the
-2.208-second penalty cleared only the 0.121-second measured setup lower bound, not a setup upper
-bound. The raw run remains discovery evidence, but no roadmap decision is taken from it. One
-complete measurement at the repaired decision contract is pending.
+The valid complete diagnosis ran at repaired align-llm head
+`d064d1fac8bc0feafd5fdec6aafd0293e9067768` with Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4` on Darwin arm64 25.5.0. It bound the
+4,213,512,192-byte model `4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f`,
+pack `20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae`, geometry
+`1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada`, task
+`1884f01a329752c1383081342c65d062241aefaefff2f206f6604008bde74940`, and prompt
+`0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b`. The generated helper
+was `c20ca3bf9a5a9be5dc411d7c6a49ef4aa415c3786a2c0ca68ea49b49a66b5e77`, its dynamic shim
+was `e29506da8382d385383872bdf795c880d5407f431dc2adf227500d8a4a2f52c7`, and the llama.cpp
+build 10566 server was `98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c`.
+The fixed full output reproduced
+`aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52` in every
+condition. All native lifetime counters balanced.
+
+The complete run took 347.551 seconds. Solo short/full medians were 4.692 and 29.025 seconds;
+co-resident short/full medians were 5.889 and 31.435 seconds. The four paired full penalties were
+4.683, 2.258, 2.334, and 3.150 seconds: all were positive, with a 2.742-second median equal to
+94,468 ppm of solo full time. The measured solo repeated-setup lower-bound median was 0.141 seconds
+or 4,860 ppm; the conservative upper-bound median was the complete 29.025-second solo full helper
+wall. The lower bound was dominated by a 105.158-ms median resident fill and 23.917-ms tokenizer
+preparation. Existing engine evidence placed median first token at 4.993 seconds and full-request
+claim reads at 4.397 seconds, but did not partition those intervals into reconstructive and
+request-dependent work.
+
+Every co-resident timed helper began with the required server pressure: immediately-before RSS
+ranged from 3,887,661,056 to 7,928,037,376 bytes. Immediately-after RSS ranged from 6,684,672 to
+1,510,326,272 bytes, below 2 GiB in all eight records. Thus the candidate itself evicted much of the
+idle server's resident state, but the per-helper warmup restored the declared condition before the
+next interval instead of silently weakening it.
+
+The decision is **`MIXED_OR_UNRESOLVED`**. The 2.742-second penalty lies inside the conservative
+0.141-to-29.025-second setup interval, so neither directional rule clears its required bound. No
+isolated-baseline or persistent-lifetime/cache change is authorized. The next capability is one
+narrower first-token phase instrument that separates construction, prefill, first decode, remaining
+decode, claim I/O, and compute sufficiently to tighten the reconstructive bound before another R8
+investment decision.
+
+This remains a single-host, fixed-request diagnosis. Untimed llama.cpp warmups establish memory
+pressure rather than measuring server performance, the upper bound deliberately includes compute,
+post-helper RSS is observational, and no throughput, broad latency, persistent-lifetime, or R8
+shipping claim follows from the result.
