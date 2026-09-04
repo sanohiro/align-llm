@@ -1374,7 +1374,7 @@ The current forward delivery order is:
     `AlignRuntime` consumer capability; R8's performance gate remains open.
 
 52. **R8-OLMOE-RUNTIME-SAMPLING — execute fixed seeded sampling in the real OLMoE provider
-    consumer. Active.**
+    consumer. Merged as PR #174 (`728a186`) on 2026-09-04.**
     [`r8-olmoe-runtime-sampling.md`](r8-olmoe-runtime-sampling.md) is the authoritative public
     contract and closure matrix. Add the fixed policy selected by item 51 to the existing
     in-process OLMoE generation path: stable top-k 40, top-p 0.95, min-p 0.05, temperature 0.3,
@@ -1383,6 +1383,18 @@ The current forward delivery order is:
     pure and synthetic provider owner plus one repeated real-model reproducibility qualification;
     token parity with llama.cpp and performance are not claims. The succeeding capability measures
     the fixed passing-patch portfolio through this shipped path.
+
+53. **R8-OLMOE-SAMPLED-RUNTIME-DECISION — compare provider-level time to a passing patch through
+    the fixed sampled portfolio. Active.**
+    [`r8-olmoe-sampled-runtime-decision.md`](r8-olmoe-sampled-runtime-decision.md) is the
+    authoritative measurement contract and closure matrix. Run four balanced pairs of the same
+    ordered seeds 1 through 8 at temperature 0.3, stopping each local llama.cpp or in-process
+    `AlignRuntime` leg at its first validator-passing patch. The gate requires four passes per arm,
+    runtime faster in every pair, and at least 50,000 ppm lower median time to passing patch. The
+    pre-implementation attempt-count opportunity ceiling is 800,000 ppm because item 51's baseline
+    stopped at candidate five and a portfolio can stop no earlier than candidate one; differing
+    provider costs remain inside the measurement. The one complete decision is bounded at
+    approximately 25 minutes and may validly record `MET`, `NOT_MET`, or `NOT_ELIGIBLE`.
 
 ### Status (2026-08-28)
 
