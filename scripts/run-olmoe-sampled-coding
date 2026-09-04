@@ -1,0 +1,796 @@
+#!/usr/bin/env python3
+"""R8's bounded seeded-portfolio OLMoE coding decision."""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+import platform
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+from typing import Any, Iterator
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+BASE_PATH = ROOT / "scripts/run-olmoe-coding-decision"
+BASE_LOADER = SourceFileLoader("olmoe_coding_decision", str(BASE_PATH))
+BASE_SPEC = importlib.util.spec_from_loader(BASE_LOADER.name, BASE_LOADER)
+if BASE_SPEC is None or BASE_SPEC.loader is None:
+    raise RuntimeError("cannot load the OLMoE coding decision owner")
+base = importlib.util.module_from_spec(BASE_SPEC)
+BASE_SPEC.loader.exec_module(base)
+
+MODEL_BYTES = base.MODEL_BYTES
+MODEL_SHA256 = base.MODEL_SHA256
+SERVER_BUILD = base.SERVER_BUILD
+SERVER_COMMIT = base.SERVER_COMMIT
+TASK = base.TASK
+PROMPT_TEXT = base.PROMPT_TEXT
+KNOWN_GOOD_PATCH = base.KNOWN_GOOD_PATCH
+ALIAS = base.ALIAS
+TEMPERATURE_MICROS = 300_000
+SEEDS = tuple(range(1, 9))
+MAX_TOKENS = 128
+CEILING_SECONDS = 10 * 60
+server_process: subprocess.Popen[bytes] | None = None
+
+
+class DecisionError(RuntimeError):
+    pass
+
+
+def stop_server() -> None:
+    global server_process
+    if server_process is None or server_process.poll() is not None:
+        return
+    server_process.terminate()
+    try:
+        server_process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        server_process.kill()
+        server_process.wait(timeout=5)
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    stop_server()
+    raise SystemExit(128 + signal_number)
+
+
+def configured_prerequisites() -> tuple[Path, Path] | None:
+    rows = (
+        (
+            "ALIGN_LLM_OLMOE_MODEL",
+            base.configured_file("ALIGN_LLM_OLMOE_MODEL"),
+        ),
+        (
+            "ALIGN_LLM_LLAMA_SERVER",
+            base.configured_file("ALIGN_LLM_LLAMA_SERVER", executable=True),
+        ),
+    )
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-SAMPLED-CODING: N/A ({missing} unset)")
+        return None
+    return rows[0][1], rows[1][1]  # type: ignore[return-value]
+
+
+def command_digest(result: subprocess.CompletedProcess[bytes]) -> str:
+    return hashlib.sha256(result.stdout + result.stderr).hexdigest()
+
+
+@contextlib.contextmanager
+def built_helper(
+    work: Path,
+    clean_env: dict[str, str],
+    deadline: float,
+) -> Iterator[dict[str, Any]]:
+    compiler_output = base.run_checked(
+        [str(ROOT / "scripts/align-toolchain"), "ensure", "compiler"],
+        deadline=deadline,
+        maximum=300,
+        env=clean_env,
+    )
+    compiler = Path(compiler_output.stdout.decode("utf-8").strip())
+    if not compiler.is_file() or not os.access(compiler, os.X_OK):
+        raise DecisionError("managed pinned compiler is unusable")
+    c_compiler_name = shutil.which("cc", path=clean_env.get("PATH"))
+    if c_compiler_name is None:
+        raise DecisionError("the default C compiler is unavailable")
+    c_compiler = Path(c_compiler_name).resolve()
+    c_compiler_version = base.run_checked(
+        [str(c_compiler), "--version"],
+        deadline=deadline,
+        maximum=30,
+        env=clean_env,
+    )
+
+    shim_dir = work / "lib"
+    build_env = dict(clean_env)
+    build_env.update(
+        {
+            "ALIGNC": str(compiler),
+            "ALIGN_LLM_GGML_SHIM_DIR": str(shim_dir),
+            "ALIGN_LLM_GGML_SHIM_STATIC": "1",
+            "ALIGN_LLM_GGML_FORCE": "",
+        }
+    )
+    base.run_checked(
+        [str(ROOT / "scripts/build-ggml-shim")],
+        deadline=deadline,
+        maximum=180,
+        env=build_env,
+    )
+    shim = shim_dir / "libalign_ggml_shim.a"
+    if not shim.is_file():
+        raise DecisionError("static unavailable shim was not produced")
+    build_env["LIBRARY_PATH"] = ":".join(
+        value for value in (str(shim_dir), build_env.get("LIBRARY_PATH", "")) if value
+    )
+
+    generated = ROOT / "runtime_provider_gate"
+    saved = work / "saved-runtime-provider-gate"
+    if generated.exists():
+        shutil.copy2(generated, saved)
+    try:
+        base.run_checked(
+            [str(compiler), "build", "src/runtime_provider_gate.align"],
+            deadline=deadline,
+            maximum=300,
+            env=build_env,
+        )
+        helper = work / "runtime-provider-gate"
+        shutil.move(generated, helper)
+        yield {
+            "compiler": compiler,
+            "compiler_sha256": base.file_sha256(compiler),
+            "c_compiler": c_compiler,
+            "c_compiler_sha256": base.file_sha256(c_compiler),
+            "c_compiler_version_sha256": command_digest(c_compiler_version),
+            "shim": shim,
+            "shim_sha256": base.file_sha256(shim),
+            "helper": helper,
+            "helper_sha256": base.file_sha256(helper),
+            "environment": clean_env,
+        }
+    finally:
+        if generated.exists():
+            generated.unlink()
+        if saved.exists():
+            shutil.copy2(saved, generated)
+
+
+def measure_candidate(
+    index: int,
+    seed: int,
+    helper: Path,
+    prompt: Path,
+    work: Path,
+    clean_env: dict[str, str],
+    endpoint: str,
+    deadline: float,
+    validator: dict[str, Any],
+    portfolio_started_ns: int,
+) -> dict[str, Any]:
+    record_path = work / f"candidate-{index}.json"
+    candidate_started_ns = time.monotonic_ns()
+    process = subprocess.run(
+        [
+            str(helper),
+            "local-sampled",
+            endpoint,
+            ALIAS,
+            str(TEMPERATURE_MICROS),
+            str(seed),
+            str(prompt),
+            str(record_path),
+        ],
+        cwd=ROOT,
+        env=clean_env,
+        capture_output=True,
+        timeout=base.remaining_timeout(deadline, 360),
+        check=False,
+    )
+    command_wall_ns = time.monotonic_ns() - candidate_started_ns
+    if not record_path.is_file():
+        raise DecisionError(
+            f"candidate {index} returned {process.returncode} without a provider record: "
+            + process.stderr.decode("utf-8", "replace")[-4096:]
+        )
+    try:
+        record = base.parse_record(record_path, command_wall_ns, "local")
+    except base.DecisionError as error:
+        raise DecisionError(str(error)) from error
+    if record["status"] != "ok" or process.returncode != 0:
+        raise DecisionError(f"candidate {index} provider or seed request failed")
+
+    output = record["output"]
+    patch_sha256: str | None = None
+    validation_elapsed_ns = 0
+    time_to_passing_patch_ns: int | None = None
+    status = "INVALID_PATCH"
+    try:
+        patch_text = base.extract_patch(output)
+    except base.DecisionError:
+        patch_text = None
+    if patch_text is not None:
+        patch = work / f"candidate-{index}.patch"
+        patch.write_text(patch_text, encoding="utf-8")
+        patch_sha256 = base.file_sha256(patch)
+        passed, validation_elapsed_ns = base.validate_patch(patch, work, deadline, validator)
+        if passed:
+            status = "PASS"
+            time_to_passing_patch_ns = time.monotonic_ns() - portfolio_started_ns
+        else:
+            status = "FAILING_PATCH"
+    return {
+        "index": index,
+        "seed": seed,
+        "status": status,
+        "provider_elapsed_ns": record["elapsed_ns"],
+        "command_wall_ns": command_wall_ns,
+        "validation_elapsed_ns": validation_elapsed_ns,
+        "time_to_passing_patch_ns": time_to_passing_patch_ns,
+        "completion_tokens": record["completion_tokens"],
+        "output_sha256": base.bytes_sha256(output.encode("utf-8")),
+        "patch_sha256": patch_sha256,
+    }
+
+
+def aggregate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    if not candidates or len(candidates) > len(SEEDS):
+        raise DecisionError("candidate count is outside the fixed portfolio")
+    passing: list[dict[str, Any]] = []
+    admitted = 0
+    for offset, candidate in enumerate(candidates):
+        validate_candidate(candidate)
+        if candidate.get("index") != offset + 1 or candidate.get("seed") != SEEDS[offset]:
+            raise DecisionError("candidate order does not match the fixed seed portfolio")
+        status = candidate.get("status")
+        if status not in ("PASS", "INVALID_PATCH", "FAILING_PATCH"):
+            raise DecisionError("candidate status is invalid")
+        if status != "INVALID_PATCH":
+            admitted += 1
+        if status == "PASS":
+            passing.append(candidate)
+            if offset != len(candidates) - 1:
+                raise DecisionError("portfolio continued after a passing candidate")
+    if len(passing) > 1:
+        raise DecisionError("portfolio contains more than one passing candidate")
+    if not passing and len(candidates) != len(SEEDS):
+        raise DecisionError("incomplete non-passing portfolio")
+    selected = passing[0] if passing else None
+    return {
+        "attempted_count": len(candidates),
+        "admitted_patch_count": admitted,
+        "passing_count": len(passing),
+        "selected_candidate_index": selected["index"] if selected else None,
+        "selected_seed": selected["seed"] if selected else None,
+        "selected_patch_sha256": selected["patch_sha256"] if selected else None,
+        "verdict": "MET" if selected else "NOT_MET",
+    }
+
+
+def digest_or_none(value: object) -> bool:
+    return value is None or (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def validate_candidate(candidate: dict[str, Any]) -> None:
+    if set(candidate) != {
+        "index",
+        "seed",
+        "status",
+        "provider_elapsed_ns",
+        "command_wall_ns",
+        "validation_elapsed_ns",
+        "time_to_passing_patch_ns",
+        "completion_tokens",
+        "output_sha256",
+        "patch_sha256",
+    }:
+        raise DecisionError("candidate fields are invalid")
+    for name in (
+        "index",
+        "seed",
+        "provider_elapsed_ns",
+        "command_wall_ns",
+        "validation_elapsed_ns",
+        "completion_tokens",
+    ):
+        value = candidate[name]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise DecisionError(f"candidate {name} has the wrong type")
+    if (
+        candidate["provider_elapsed_ns"] <= 0
+        or candidate["provider_elapsed_ns"] > candidate["command_wall_ns"]
+        or candidate["completion_tokens"] < 0
+        or not digest_or_none(candidate["patch_sha256"])
+        or not digest_or_none(candidate["output_sha256"])
+        or candidate["output_sha256"] is None
+    ):
+        raise DecisionError("candidate numeric or digest invariant failed")
+    status = candidate["status"]
+    passing_time = candidate["time_to_passing_patch_ns"]
+    if status == "INVALID_PATCH":
+        valid = (
+            candidate["patch_sha256"] is None
+            and candidate["validation_elapsed_ns"] == 0
+            and passing_time is None
+        )
+    elif status == "FAILING_PATCH":
+        valid = (
+            candidate["patch_sha256"] is not None
+            and candidate["validation_elapsed_ns"] > 0
+            and passing_time is None
+        )
+    elif status == "PASS":
+        valid = (
+            candidate["patch_sha256"] is not None
+            and candidate["validation_elapsed_ns"] > 0
+            and isinstance(passing_time, int)
+            and not isinstance(passing_time, bool)
+            and passing_time > 0
+        )
+    else:
+        valid = False
+    if not valid:
+        raise DecisionError("candidate status fields are inconsistent")
+
+
+def verify_identities(rows: tuple[tuple[str, Path, str], ...]) -> None:
+    for label, path, expected_sha256 in rows:
+        if base.file_sha256(path) != expected_sha256:
+            raise DecisionError(f"{label} identity changed during the decision")
+
+
+class ProbeHandler(BaseHTTPRequestHandler):
+    requests: list[dict[str, Any]] = []
+
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        length = int(self.headers.get("Content-Length", "0"))
+        payload = json.loads(self.rfile.read(length))
+        type(self).requests.append(payload)
+        body = json.dumps(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": KNOWN_GOOD_PATCH,
+                        }
+                    }
+                ]
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args: object) -> None:
+        return
+
+
+def helper_self_test(work: Path, deadline: float) -> None:
+    clean_env = base.sanitized_environment()
+    with built_helper(work, clean_env, deadline) as built:
+        ProbeHandler.requests = []
+        server = HTTPServer(("127.0.0.1", 0), ProbeHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        prompt = work / "self-test-prompt.txt"
+        record = work / "self-test-result.json"
+        prompt.write_text("PROMPT", encoding="utf-8")
+        try:
+            process = subprocess.run(
+                [
+                    str(built["helper"]),
+                    "local-sampled",
+                    f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
+                    ALIAS,
+                    str(TEMPERATURE_MICROS),
+                    "5",
+                    str(prompt),
+                    str(record),
+                ],
+                cwd=ROOT,
+                env=clean_env,
+                capture_output=True,
+                timeout=base.remaining_timeout(deadline, 60),
+                check=False,
+            )
+            greedy_record = work / "self-test-greedy-result.json"
+            greedy = subprocess.run(
+                [
+                    str(built["helper"]),
+                    "local",
+                    f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
+                    ALIAS,
+                    str(prompt),
+                    str(greedy_record),
+                ],
+                cwd=ROOT,
+                env=clean_env,
+                capture_output=True,
+                timeout=base.remaining_timeout(deadline, 60),
+                check=False,
+            )
+            if greedy.returncode != 0 or not greedy_record.is_file():
+                raise DecisionError("legacy greedy helper mode failed")
+            request_count = len(ProbeHandler.requests)
+            for label, temperature, seed in (
+                ("zero-temperature", "0", "5"),
+                ("oversized-temperature", "1000001", "5"),
+                ("malformed-temperature", "0.3", "5"),
+                ("malformed-seed", str(TEMPERATURE_MICROS), "seed"),
+            ):
+                invalid_record = work / f"{label}.json"
+                invalid = subprocess.run(
+                    [
+                        str(built["helper"]),
+                        "local-sampled",
+                        f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
+                        ALIAS,
+                        temperature,
+                        seed,
+                        str(prompt),
+                        str(invalid_record),
+                    ],
+                    cwd=ROOT,
+                    env=clean_env,
+                    capture_output=True,
+                    timeout=base.remaining_timeout(deadline, 60),
+                    check=False,
+                )
+                if invalid.returncode == 0 or invalid_record.exists():
+                    raise DecisionError(f"sampled helper accepted {label}")
+            if len(ProbeHandler.requests) != request_count:
+                raise DecisionError("invalid sampled helper input contacted the provider")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        if process.returncode != 0 or not record.is_file() or len(ProbeHandler.requests) != 2:
+            raise DecisionError("sampled helper did not complete its model-free request")
+        sent, greedy_sent = ProbeHandler.requests
+        if list(sent) != ["model", "messages", "max_tokens", "temperature", "stream", "seed"]:
+            raise DecisionError("sampled helper request fields changed")
+        if (
+            sent["model"] != ALIAS
+            or sent["max_tokens"] != MAX_TOKENS
+            or sent["temperature"] != 0.3
+            or sent["stream"] is not False
+            or sent["seed"] != 5
+            or sent["messages"][1] != {"role": "user", "content": "PROMPT"}
+        ):
+            raise DecisionError("sampled helper request values changed")
+        if (
+            list(greedy_sent) != ["model", "messages", "max_tokens", "temperature", "stream"]
+            or greedy_sent["temperature"] != 0
+            or greedy_sent["stream"] is not False
+        ):
+            raise DecisionError("legacy greedy helper request changed")
+        document = json.loads(record.read_text(encoding="utf-8"))
+        if document.get("status") != "ok" or document.get("output") != KNOWN_GOOD_PATCH:
+            raise DecisionError("sampled helper result changed")
+
+
+def self_test() -> int:
+    base.self_test()
+    common = {
+        "provider_elapsed_ns": 10,
+        "command_wall_ns": 20,
+        "completion_tokens": 4,
+        "output_sha256": "d" * 64,
+    }
+    failing = {
+        **common,
+        "index": 1,
+        "seed": 1,
+        "status": "FAILING_PATCH",
+        "validation_elapsed_ns": 5,
+        "time_to_passing_patch_ns": None,
+        "patch_sha256": "a" * 64,
+    }
+    invalid = {
+        **common,
+        "index": 2,
+        "seed": 2,
+        "status": "INVALID_PATCH",
+        "validation_elapsed_ns": 0,
+        "time_to_passing_patch_ns": None,
+        "patch_sha256": None,
+    }
+    passing = {
+        **common,
+        "index": 3,
+        "seed": 3,
+        "status": "PASS",
+        "validation_elapsed_ns": 5,
+        "time_to_passing_patch_ns": 60,
+        "patch_sha256": "b" * 64,
+    }
+    met = aggregate([failing, invalid, passing])
+    if met != {
+        "attempted_count": 3,
+        "admitted_patch_count": 2,
+        "passing_count": 1,
+        "selected_candidate_index": 3,
+        "selected_seed": 3,
+        "selected_patch_sha256": "b" * 64,
+        "verdict": "MET",
+    }:
+        raise DecisionError("MET aggregate changed")
+    not_met_rows = []
+    for index, seed in enumerate(SEEDS, start=1):
+        not_met_rows.append(
+            {
+                "index": index,
+                "seed": seed,
+                "status": "INVALID_PATCH" if index % 2 == 0 else "FAILING_PATCH",
+                **common,
+                "validation_elapsed_ns": 0 if index % 2 == 0 else 5,
+                "time_to_passing_patch_ns": None,
+                "patch_sha256": None if index % 2 == 0 else "c" * 64,
+            }
+        )
+    not_met = aggregate(not_met_rows)
+    if not_met["verdict"] != "NOT_MET" or not_met["attempted_count"] != 8:
+        raise DecisionError("NOT_MET aggregate changed")
+    for name, rows in (
+        ("gap", [failing, {**passing, "index": 3, "seed": 4}]),
+        ("continued", [passing, {**invalid, "index": 2, "seed": 2}]),
+        ("incomplete", [failing]),
+    ):
+        try:
+            aggregate(rows)
+        except DecisionError:
+            continue
+        raise DecisionError(f"{name} aggregate mutation was accepted")
+    with tempfile.TemporaryDirectory(prefix="align-r8-sampled-self-test-") as raw_work:
+        work = Path(raw_work)
+        identity = work / "identity"
+        identity.write_text("before", encoding="utf-8")
+        expected = base.file_sha256(identity)
+        verify_identities((("fixture", identity, expected),))
+        identity.write_text("after", encoding="utf-8")
+        try:
+            verify_identities((("fixture", identity, expected),))
+        except DecisionError:
+            pass
+        else:
+            raise DecisionError("identity mutation was accepted")
+        helper_self_test(work, time.monotonic() + CEILING_SECONDS)
+    print("R8-OLMOE-SAMPLED-CODING self-test: PASS")
+    return 0
+
+
+def main() -> int:
+    global server_process
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise DecisionError("OLMoE sampled coding decision accepts no arguments")
+    required = configured_prerequisites()
+    if required is None:
+        return 0
+    model, server = required
+    started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-sampled-coding-") as raw_work:
+        work = Path(raw_work)
+        source_status = base.run_checked(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline,
+            maximum=30,
+        )
+        if source_status.stdout:
+            raise DecisionError("real decision requires a clean worktree")
+        align_llm_head = base.run_checked(
+            ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30
+        ).stdout.decode("ascii").strip()
+        align_revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        validator = base.resolve_validator(deadline)
+        control = work / "known-good.patch"
+        control.write_text(KNOWN_GOOD_PATCH, encoding="utf-8")
+        passed, _ = base.validate_patch(control, work, deadline, validator)
+        if not passed:
+            raise DecisionError("known-good validator control did not pass")
+        if model.stat().st_size != MODEL_BYTES or base.file_sha256(model) != MODEL_SHA256:
+            raise DecisionError("configured OLMoE GGUF does not have the pinned size and SHA-256")
+        server_sha256 = base.file_sha256(server)
+        task_sha256 = base.file_sha256(TASK)
+        prompt_sha256 = base.bytes_sha256(PROMPT_TEXT.encode("utf-8"))
+        clean_env = base.sanitized_environment()
+        version = base.run_checked(
+            [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env
+        )
+        if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
+            raise DecisionError("llama-server is not pinned build 10566 commit bb4caa754")
+        prompt = work / "prompt.txt"
+        prompt.write_text(PROMPT_TEXT, encoding="utf-8")
+
+        with built_helper(work, clean_env, deadline) as built:
+            port = base.free_port()
+            server_log = (work / "llama-server.log").open("wb")
+            server_process = subprocess.Popen(
+                [
+                    str(server),
+                    "-m",
+                    str(model),
+                    "--alias",
+                    ALIAS,
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(port),
+                    "--device",
+                    "none",
+                    "-ngl",
+                    "0",
+                    "-t",
+                    "4",
+                    "-c",
+                    "512",
+                    "-np",
+                    "1",
+                    "--jinja",
+                    "--no-warmup",
+                ],
+                cwd=work,
+                stdin=subprocess.DEVNULL,
+                stdout=server_log,
+                stderr=subprocess.STDOUT,
+                env=clean_env,
+            )
+            try:
+                base.wait_ready(server_process, port, deadline)
+                endpoint = f"http://127.0.0.1:{port}/v1/chat/completions"
+                portfolio_started_ns = time.monotonic_ns()
+                candidates = []
+                for index, seed in enumerate(SEEDS, start=1):
+                    candidate = measure_candidate(
+                        index,
+                        seed,
+                        built["helper"],
+                        prompt,
+                        work,
+                        clean_env,
+                        endpoint,
+                        deadline,
+                        validator,
+                        portfolio_started_ns,
+                    )
+                    candidates.append(candidate)
+                    if candidate["status"] == "PASS":
+                        break
+            finally:
+                stop_server()
+                server_log.close()
+
+            final_status = base.run_checked(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                deadline=deadline,
+                maximum=30,
+            )
+            final_head = base.run_checked(
+                ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30
+            ).stdout.decode("ascii").strip()
+            if final_status.stdout or final_head != align_llm_head:
+                raise DecisionError("align-llm source changed during the decision")
+            stable_files = (
+                ("model", model, MODEL_SHA256),
+                ("server", server, server_sha256),
+                ("task", TASK, task_sha256),
+                ("compiler", built["compiler"], built["compiler_sha256"]),
+                ("C compiler", built["c_compiler"], built["c_compiler_sha256"]),
+                ("shim", built["shim"], built["shim_sha256"]),
+                ("helper", built["helper"], built["helper_sha256"]),
+            )
+            verify_identities(stable_files)
+
+            aggregate_result = aggregate(candidates)
+            elapsed_ns = time.monotonic_ns() - started_ns
+            if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+                raise DecisionError(
+                    f"complete decision exceeded its 10-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+                )
+            task_document = json.loads(TASK.read_text(encoding="utf-8"))
+            result = {
+                "schema_version": 1,
+                "artifact_kind": "R8_OLMOE_SAMPLED_CODING",
+                "status": "COMPLETE",
+                "source": {
+                    "align_llm_head": align_llm_head,
+                    "align_revision": align_revision,
+                    "compiler_sha256": built["compiler_sha256"],
+                    "helper_sha256": built["helper_sha256"],
+                    "shim_sha256": built["shim_sha256"],
+                },
+                "model": {
+                    "bytes": MODEL_BYTES,
+                    "sha256": MODEL_SHA256,
+                    "architecture": "olmoe",
+                },
+                "provider": {
+                    "kind": "local-openai",
+                    "runtime_identity": f"llama.cpp build 10566 commit {SERVER_COMMIT}",
+                    "server_sha256": server_sha256,
+                    "threads": 4,
+                    "context": 512,
+                    "warmup": False,
+                },
+                "task": {
+                    "task_id": task_document["id"],
+                    "task_sha256": task_sha256,
+                    "prompt_sha256": prompt_sha256,
+                    "maximum_completion_tokens": MAX_TOKENS,
+                },
+                "sampling": {
+                    "temperature_micros": TEMPERATURE_MICROS,
+                    "ordered_seeds": list(SEEDS),
+                    "maximum_candidates": len(SEEDS),
+                    "stop_on_first_pass": True,
+                },
+                "validator": {
+                    "kind": validator["kind"],
+                    "image_id": validator["image_id"],
+                },
+                "environment": {
+                    "os": platform.system(),
+                    "release": platform.release(),
+                    "architecture": platform.machine(),
+                    "cpu_count": os.cpu_count(),
+                    "c_compiler_sha256": built["c_compiler_sha256"],
+                    "c_compiler_version_sha256": built["c_compiler_version_sha256"],
+                },
+                "candidates": candidates,
+                "aggregate": aggregate_result,
+                "elapsed_ns": elapsed_ns,
+            }
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+            print(
+                "R8-OLMOE-SAMPLED-CODING: COMPLETE "
+                f"verdict={aggregate_result['verdict']} "
+                f"attempted={aggregate_result['attempted_count']} "
+                f"selected_seed={aggregate_result['selected_seed']} "
+                f"elapsed={elapsed_ns / 1e9:.2f}s",
+                file=sys.stderr,
+            )
+    return 0
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (
+        DecisionError,
+        base.DecisionError,
+        OSError,
+        ValueError,
+        KeyError,
+        subprocess.TimeoutExpired,
+    ) as error:
+        stop_server()
+        print(f"R8-OLMOE-SAMPLED-CODING: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)
