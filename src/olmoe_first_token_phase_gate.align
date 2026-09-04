@@ -1,0 +1,301 @@
+module olmoe_first_token_phase_gate
+
+import alignpack
+import frontend_olmoe
+import gguf
+import model_ir
+import moe_decode_step
+import tokenizer_qwen2
+import core.json
+import std.crypto
+import std.encoding
+import std.fs
+import std.time
+
+SYSTEM := "You are a coding assistant. Return a concise patch-oriented answer."
+CACHE_BUDGET_BYTES := 975175680
+MAX_GEOMETRY_BYTES := 16777216
+MAX_RESPONSE_BYTES := 262144
+
+PhaseTimes {
+  snapshot_ns: i64,
+  model_ir_ns: i64,
+  geometry_ns: i64,
+  source_identity_ns: i64,
+  tokenizer_ns: i64,
+  engine_wall_ns: i64,
+  output_decode_ns: i64,
+  elapsed_ns: i64,
+}
+
+EnginePhases {
+  construction_ns: i64,
+  prefill_ns: i64,
+  first_decode_ns: i64,
+  remaining_decode_ns: i64,
+  teardown_ns: i64,
+  prefill_claim_pread_ns: i64,
+  first_decode_claim_pread_ns: i64,
+  remaining_decode_claim_pread_ns: i64,
+  prefill_compute_ns: i64,
+  first_decode_compute_ns: i64,
+  remaining_decode_compute_ns: i64,
+}
+
+EngineTimes {
+  elapsed_ns: i64,
+  first_token_ns: i64,
+  resident_fill_ns: i64,
+  pread_ns: i64,
+  claim_pread_ns: i64,
+  decide_ns: i64,
+  compute_ns: i64,
+  decode_compute_ns: i64,
+  graph_count: i64,
+  decode_steps_completed: i64,
+  resident_fill_bytes: i64,
+  expert_cache_requests: i64,
+  expert_cache_hits: i64,
+  expert_cache_misses: i64,
+  expert_cache_evictions: i64,
+  expert_cache_bytes_fetched: i64,
+}
+
+Lifetime {
+  ggml_buffers_created: i64,
+  ggml_buffers_freed: i64,
+  contexts_created: i64,
+  contexts_freed: i64,
+  backends_created: i64,
+  backends_freed: i64,
+  gallocrs_created: i64,
+  gallocrs_freed: i64,
+  resident_wraps_created: i64,
+  resident_wraps_freed: i64,
+  released_before_owner_scope_end: bool,
+}
+
+PhaseRecord {
+  schema_version: i64,
+  status: string,
+  maximum_tokens: i64,
+  seed: i64,
+  prompt_tokens: i64,
+  completion_tokens: i64,
+  stopped_eog: bool,
+  token_ids: array<i64>,
+  output_sha256: string,
+  phases: PhaseTimes,
+  engine: EngineTimes,
+  engine_phases: EnginePhases,
+  lifetime: Lifetime,
+}
+
+fn ir_ok(value: model_ir.IrStatus) -> bool = match value {
+  Ok => true,
+  Error => false,
+}
+
+fn tokenizer_ok(value: tokenizer_qwen2.TokenizerStatus) -> bool = match value {
+  Ok => true,
+  Error => false,
+}
+
+fn contains_id(borrow ids: array<i64>, value: i64) -> bool {
+  mut at := 0
+  loop {
+    if at >= ids.len() { break }
+    if ids[at] == value { return true }
+    at = at + 1
+  }
+  return false
+}
+
+fn read_geometry(path: str) -> Result<string, Error> {
+  source := fs.open(path)?
+  mut accumulated := buffer(0)
+  mut chunk := buffer(65536)
+  mut total := 0
+  loop {
+    if total == MAX_GEOMETRY_BYTES {
+      mut probe := buffer(1)
+      if source.read(probe)? > 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := MAX_GEOMETRY_BYTES - total
+    count := if remaining < 65536 {
+      mut tail := buffer(remaining)
+      read_count := source.read(tail)?
+      accumulated.append(tail.bytes())
+      read_count
+    } else {
+      read_count := source.read(chunk)?
+      accumulated.append(chunk.bytes())
+      read_count
+    }
+    if count == 0 { break }
+    total = total + count
+  }
+  return Ok(accumulated.bytes().as_str()?.clone())
+}
+
+fn digest_text(value: str) -> string {
+  digest := crypto.sha256(value)
+  return encoding.hex_encode(digest[0..digest.len()]).clone()
+}
+
+// Qualification-only access to provider preparation and the first-token phase counters.
+// The public provider remains the owner of user-facing generation and exposes no timing record.
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 7 { return Err(Error.Invalid) }
+  model_path := args[1]
+  pack_path := args[2]
+  geometry_path := args[3]
+  prompt := args[4]
+  maximum_tokens: i64 := json.decode(args[5])?
+  seed: i64 := json.decode(args[6])?
+  if maximum_tokens != 128 || seed != 5 {
+    return Err(Error.Invalid)
+  }
+
+  started := time.instant()
+  mut phase_started := time.instant()
+  snapshot := gguf.open_snapshot(model_path)?
+  snapshot_ns := time.instant() - phase_started
+  architecture: str := snapshot.table.architecture
+  if !snapshot.table.architecture_present || architecture != "olmoe" {
+    return Err(Error.Invalid)
+  }
+
+  phase_started = time.instant()
+  ir := frontend_olmoe.build_model_ir(snapshot.table, model_path)
+  model_ir_ns := time.instant() - phase_started
+  if !ir_ok(ir.status) { return Err(Error.Invalid) }
+
+  phase_started = time.instant()
+  geometry := read_geometry(geometry_path)?
+  geometry_ns := time.instant() - phase_started
+  geometry_view: str := geometry
+  derived_view: str := ir.document
+  if geometry_view != derived_view { return Err(Error.Invalid) }
+
+  phase_started = time.instant()
+  source_identity := alignpack.verify_source_identity_snapshot(snapshot, pack_path)?
+  source_identity_ns := time.instant() - phase_started
+
+  phase_started = time.instant()
+  prepared := tokenizer_qwen2.prepare_generation_snapshot(snapshot, SYSTEM, prompt)?
+  tokenizer_ns := time.instant() - phase_started
+  if !tokenizer_ok(prepared.status) { return Err(Error.Invalid) }
+  allocation_steps := maximum_tokens - 1
+  if prepared.token_ids.len() < 1 || prepared.token_ids.len() > 2048
+    || prepared.token_ids.len() + allocation_steps > ir.context_length
+    || prepared.token_ids.len() + allocation_steps > 4096 {
+    return Err(Error.Invalid)
+  }
+
+  phase_started = time.instant()
+  generated := moe_decode_step.generate_resident_sampled(
+    pack_path, geometry_path, geometry_view, source_identity, prepared.token_ids,
+    prepared.eog_token_ids, maximum_tokens, CACHE_BUDGET_BYTES, seed)
+  engine_wall_ns := time.instant() - phase_started
+  if generated.outcome.code.len() > 0 { return Err(Error.Invalid) }
+
+  generated_json: str := generated.token_ids_json
+  generated_ids: array<i64> := json.decode(generated_json)?
+  if generated_ids.len() < 1 || generated_ids.len() > maximum_tokens {
+    return Err(Error.Invalid)
+  }
+  last := generated_ids[generated_ids.len() - 1]
+  stopped_eog := contains_id(prepared.eog_token_ids, last)
+  if !stopped_eog && generated_ids.len() != maximum_tokens { return Err(Error.Invalid) }
+  completion_count := if stopped_eog { generated_ids.len() - 1 } else { generated_ids.len() }
+  mut completion: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= completion_count { break }
+    completion.push(generated_ids[at])
+    at = at + 1
+  }
+  completion_ids := completion.build()
+
+  phase_started = time.instant()
+  decoded := tokenizer_qwen2.decode_model(
+    model_path, completion_ids, tokenizer_qwen2.DecodeSpecials.SkipControl)?
+  output_decode_ns := time.instant() - phase_started
+  if !tokenizer_ok(decoded.status) { return Err(Error.Invalid) }
+  prepared_tokenizer_id: str := prepared.tokenizer_id
+  decoded_tokenizer_id: str := decoded.tokenizer_id
+  output: str := decoded.text
+  if decoded_tokenizer_id != prepared_tokenizer_id || output.len() > MAX_RESPONSE_BYTES {
+    return Err(Error.Invalid)
+  }
+
+  record := PhaseRecord {
+    schema_version: 1,
+    status: "ok".clone(),
+    maximum_tokens: maximum_tokens,
+    seed: seed,
+    prompt_tokens: prepared.token_ids.len(),
+    completion_tokens: completion_count,
+    stopped_eog: stopped_eog,
+    token_ids: generated_ids,
+    output_sha256: digest_text(output),
+    phases: PhaseTimes {
+      snapshot_ns: snapshot_ns,
+      model_ir_ns: model_ir_ns,
+      geometry_ns: geometry_ns,
+      source_identity_ns: source_identity_ns,
+      tokenizer_ns: tokenizer_ns,
+      engine_wall_ns: engine_wall_ns,
+      output_decode_ns: output_decode_ns,
+      elapsed_ns: time.instant() - started,
+    },
+    engine: EngineTimes {
+      elapsed_ns: generated.outcome.elapsed_ns,
+      first_token_ns: generated.outcome.first_token_ns,
+      resident_fill_ns: generated.outcome.resident_fill_ns,
+      pread_ns: generated.outcome.pread_ns,
+      claim_pread_ns: generated.outcome.claim_pread_ns,
+      decide_ns: generated.outcome.decide_ns,
+      compute_ns: generated.outcome.compute_ns,
+      decode_compute_ns: generated.outcome.decode_compute_ns,
+      graph_count: generated.outcome.graph_count,
+      decode_steps_completed: generated.outcome.decode_steps_completed,
+      resident_fill_bytes: generated.outcome.resident_fill_bytes,
+      expert_cache_requests: generated.outcome.expert_cache_requests,
+      expert_cache_hits: generated.outcome.expert_cache_hits,
+      expert_cache_misses: generated.outcome.expert_cache_misses,
+      expert_cache_evictions: generated.outcome.expert_cache_evictions,
+      expert_cache_bytes_fetched: generated.outcome.expert_cache_bytes_fetched,
+    },
+    engine_phases: EnginePhases {
+      construction_ns: generated.outcome.construction_ns,
+      prefill_ns: generated.outcome.prefill_ns,
+      first_decode_ns: generated.outcome.first_decode_ns,
+      remaining_decode_ns: generated.outcome.remaining_decode_ns,
+      teardown_ns: generated.outcome.teardown_ns,
+      prefill_claim_pread_ns: generated.outcome.prefill_claim_pread_ns,
+      first_decode_claim_pread_ns: generated.outcome.first_decode_claim_pread_ns,
+      remaining_decode_claim_pread_ns: generated.outcome.remaining_decode_claim_pread_ns,
+      prefill_compute_ns: generated.outcome.prefill_compute_ns,
+      first_decode_compute_ns: generated.outcome.first_decode_compute_ns,
+      remaining_decode_compute_ns: generated.outcome.remaining_decode_compute_ns,
+    },
+    lifetime: Lifetime {
+      ggml_buffers_created: generated.outcome.ggml_buffers_created,
+      ggml_buffers_freed: generated.outcome.ggml_buffers_freed,
+      contexts_created: generated.outcome.contexts_created,
+      contexts_freed: generated.outcome.contexts_freed,
+      backends_created: generated.outcome.backends_created,
+      backends_freed: generated.outcome.backends_freed,
+      gallocrs_created: generated.outcome.gallocrs_created,
+      gallocrs_freed: generated.outcome.gallocrs_freed,
+      resident_wraps_created: generated.outcome.resident_wraps_created,
+      resident_wraps_freed: generated.outcome.resident_wraps_freed,
+      released_before_owner_scope_end: generated.outcome.released_before_owner_scope_end,
+    },
+  }
+  print(json.encode(record))
+  return Ok(())
+}

@@ -1,0 +1,831 @@
+#!/usr/bin/env python3
+"""Bounded first-token phase diagnosis for the sampled OLMoE runtime provider."""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+import platform
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Iterator
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PREVIOUS_PATH = ROOT / "scripts/run-olmoe-runtime-phase-diagnosis"
+PREVIOUS_LOADER = SourceFileLoader("olmoe_runtime_phase_for_first_token", str(PREVIOUS_PATH))
+PREVIOUS_SPEC = importlib.util.spec_from_loader(PREVIOUS_LOADER.name, PREVIOUS_LOADER)
+if PREVIOUS_SPEC is None or PREVIOUS_SPEC.loader is None:
+    raise RuntimeError("cannot load the runtime phase diagnosis owner")
+previous = importlib.util.module_from_spec(PREVIOUS_SPEC)
+PREVIOUS_SPEC.loader.exec_module(previous)
+decision = previous.previous
+base = previous.base
+
+MODEL_BYTES = previous.MODEL_BYTES
+MODEL_SHA256 = previous.MODEL_SHA256
+SERVER_BUILD = previous.SERVER_BUILD
+SERVER_COMMIT = previous.SERVER_COMMIT
+BUDGET = previous.BUDGET
+ALIAS = previous.ALIAS
+TASK = previous.TASK
+PROMPT_TEXT = previous.PROMPT_TEXT
+FULL_OUTPUT_SHA256 = previous.FULL_OUTPUT_SHA256
+SEED = previous.SEED
+FULL_TOKENS = previous.FULL_TOKENS
+PAIR_ORDERS = previous.PAIR_ORDERS
+DEADBAND_PPM = previous.DEADBAND_PPM
+MIN_SERVER_RSS_BYTES = previous.MIN_SERVER_RSS_BYTES
+OLD_SETUP_LOWER_NS = 132_272_208
+OLD_SETUP_UPPER_NS = 30_616_675_916
+CEILING_SECONDS = 12 * 60
+
+
+class DiagnosisError(RuntimeError):
+    pass
+
+
+@contextlib.contextmanager
+def built_helper(
+    work: Path,
+    include: Path,
+    library: Path,
+    clean_env: dict[str, str],
+    deadline: float,
+) -> Iterator[dict[str, Any]]:
+    compiler_output = previous.run_process(
+        [str(ROOT / "scripts/align-toolchain"), "ensure", "compiler"],
+        deadline=deadline,
+        maximum=300,
+        env=clean_env,
+    )
+    compiler = Path(compiler_output.stdout.decode("utf-8").strip())
+    if not compiler.is_file() or not os.access(compiler, os.X_OK):
+        raise DiagnosisError("managed pinned compiler is unusable")
+    c_compiler_name = shutil.which("cc", path=clean_env.get("PATH"))
+    if c_compiler_name is None:
+        raise DiagnosisError("the default C compiler is unavailable")
+    c_compiler = Path(c_compiler_name).resolve()
+    c_compiler_version = previous.run_process(
+        [str(c_compiler), "--version"], deadline=deadline, maximum=30, env=clean_env
+    )
+
+    shim_dir = work / "lib"
+    generated = ROOT / "olmoe_first_token_phase_gate"
+    saved = work / "saved-olmoe-first-token-phase-gate"
+    if generated.exists():
+        shutil.copy2(generated, saved)
+    build_env = dict(clean_env)
+    build_env.update(
+        {
+            "ALIGN_LLM_GGML_INCLUDE": str(include),
+            "ALIGN_LLM_GGML_LIB": str(library),
+            "ALIGN_LLM_GGML_SHIM_DIR": str(shim_dir),
+        }
+    )
+    try:
+        previous.run_process(
+            [str(ROOT / "scripts/build-ggml-shim")],
+            deadline=deadline,
+            maximum=180,
+            env=build_env,
+        )
+        build_env["LIBRARY_PATH"] = ":".join(
+            value
+            for value in (str(shim_dir), str(library), clean_env.get("LIBRARY_PATH", ""))
+            if value
+        )
+        previous.run_process(
+            [str(compiler), "build", "src/olmoe_first_token_phase_gate.align"],
+            deadline=deadline,
+            maximum=300,
+            env=build_env,
+        )
+        helper = work / "olmoe-first-token-phase-gate"
+        shutil.move(generated, helper)
+        shim = shim_dir / (
+            "libalign_ggml_shim.dylib"
+            if platform.system() == "Darwin"
+            else "libalign_ggml_shim.so"
+        )
+        if not shim.is_file():
+            raise DiagnosisError("dynamic ggml shim was not produced")
+        runtime_env = dict(clean_env)
+        runtime_env["DYLD_LIBRARY_PATH"] = ":".join((str(shim_dir), str(library)))
+        runtime_env["LD_LIBRARY_PATH"] = ":".join((str(shim_dir), str(library)))
+        yield {
+            "compiler": compiler,
+            "compiler_sha256": base.file_sha256(compiler),
+            "c_compiler": c_compiler,
+            "c_compiler_sha256": base.file_sha256(c_compiler),
+            "c_compiler_version_sha256": base.command_output_sha256(c_compiler_version),
+            "helper": helper,
+            "helper_sha256": base.file_sha256(helper),
+            "shim": shim,
+            "shim_sha256": base.file_sha256(shim),
+            "runtime_env": runtime_env,
+        }
+    finally:
+        previous.restore_generated(generated, saved)
+
+
+ENGINE_PHASE_KEYS = {
+    "construction_ns",
+    "prefill_ns",
+    "first_decode_ns",
+    "remaining_decode_ns",
+    "teardown_ns",
+    "prefill_claim_pread_ns",
+    "first_decode_claim_pread_ns",
+    "remaining_decode_claim_pread_ns",
+    "prefill_compute_ns",
+    "first_decode_compute_ns",
+    "remaining_decode_compute_ns",
+}
+WALL_PHASES = (
+    "construction_ns",
+    "prefill_ns",
+    "first_decode_ns",
+    "remaining_decode_ns",
+    "teardown_ns",
+)
+CLAIM_PHASES = (
+    "prefill_claim_pread_ns",
+    "first_decode_claim_pread_ns",
+    "remaining_decode_claim_pread_ns",
+)
+COMPUTE_PHASES = (
+    "prefill_compute_ns",
+    "first_decode_compute_ns",
+    "remaining_decode_compute_ns",
+)
+HELPER_KEYS = previous.HELPER_KEYS | {"engine_phases"}
+
+
+def is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def validate_helper_record(record: dict[str, Any]) -> None:
+    previous.require_exact_keys(record, HELPER_KEYS, "helper record")
+    inherited = dict(record)
+    engine_phases = inherited.pop("engine_phases")
+    previous.validate_helper_record(inherited, FULL_TOKENS)
+    if not isinstance(engine_phases, dict):
+        raise DiagnosisError("engine phase record was not an object")
+    previous.require_exact_keys(engine_phases, ENGINE_PHASE_KEYS, "engine phase")
+    if any(not is_int(engine_phases[name]) or engine_phases[name] <= 0 for name in ENGINE_PHASE_KEYS):
+        raise DiagnosisError("engine phase timing was not positive")
+    engine = record["engine"]
+    if sum(engine_phases[name] for name in WALL_PHASES) > engine["elapsed_ns"]:
+        raise DiagnosisError("engine phase walls exceeded engine elapsed")
+    if engine_phases["construction_ns"] < engine["resident_fill_ns"]:
+        raise DiagnosisError("construction did not contain resident fill")
+    if sum(engine_phases[name] for name in CLAIM_PHASES) != engine["claim_pread_ns"]:
+        raise DiagnosisError("claim I/O phase accounting drifted")
+    if engine_phases["prefill_compute_ns"] != engine["compute_ns"]:
+        raise DiagnosisError("prefill compute phase accounting drifted")
+    if (
+        engine_phases["first_decode_compute_ns"]
+        + engine_phases["remaining_decode_compute_ns"]
+        != engine["decode_compute_ns"]
+    ):
+        raise DiagnosisError("decode compute phase accounting drifted")
+    for wall, claim, compute in (
+        ("prefill_ns", "prefill_claim_pread_ns", "prefill_compute_ns"),
+        ("first_decode_ns", "first_decode_claim_pread_ns", "first_decode_compute_ns"),
+        ("remaining_decode_ns", "remaining_decode_claim_pread_ns", "remaining_decode_compute_ns"),
+    ):
+        if engine_phases[claim] + engine_phases[compute] > engine_phases[wall]:
+            raise DiagnosisError("phase subclocks exceeded their wall")
+
+
+def measure_request(
+    helper: Path,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    runtime_env: dict[str, str],
+    deadline: float,
+) -> dict[str, Any]:
+    started_ns = time.monotonic_ns()
+    result = previous.run_process(
+        [
+            str(helper),
+            str(model),
+            str(pack),
+            str(geometry),
+            PROMPT_TEXT,
+            str(FULL_TOKENS),
+            str(SEED),
+        ],
+        deadline=deadline,
+        maximum=240,
+        env=runtime_env,
+    )
+    helper_wall_ns = time.monotonic_ns() - started_ns
+    try:
+        record = json.loads(result.stdout.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise DiagnosisError("helper did not emit one JSON record") from error
+    if not isinstance(record, dict):
+        raise DiagnosisError("helper record was not an object")
+    validate_helper_record(record)
+    if helper_wall_ns < record["phases"]["elapsed_ns"]:
+        raise DiagnosisError("helper wall interval did not contain helper elapsed")
+    return {**record, "helper_wall_ns": helper_wall_ns}
+
+
+def measure_leg(
+    condition: str,
+    pair_index: int,
+    built: dict[str, Any],
+    server: Path,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    work: Path,
+    clean_env: dict[str, str],
+    deadline: float,
+) -> dict[str, Any]:
+    previous.require_no_matching_process(server, model, deadline, clean_env)
+    server_log = None
+    port: int | None = None
+    if condition == "co_resident":
+        port = base.free_port()
+        server_log = (work / f"llama-server-{pair_index}.log").open("wb")
+        previous.server_process = subprocess.Popen(
+            [
+                str(server),
+                "-m",
+                str(model),
+                "--alias",
+                ALIAS,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--device",
+                "none",
+                "-ngl",
+                "0",
+                "-t",
+                "4",
+                "-c",
+                "512",
+                "-np",
+                "1",
+                "--jinja",
+                "--no-warmup",
+            ],
+            cwd=work,
+            env=clean_env,
+            stdin=subprocess.DEVNULL,
+            stdout=server_log,
+            stderr=subprocess.STDOUT,
+        )
+        base.wait_ready(previous.server_process, port, deadline)
+    elif condition != "solo":
+        raise DiagnosisError("unknown diagnosis condition")
+
+    try:
+        server_rss_before: int | None = None
+        if condition == "co_resident":
+            if previous.server_process is None or port is None:
+                raise DiagnosisError("co-resident server ownership was lost")
+            matches = previous.matching_processes(server, model, deadline, clean_env)
+            if matches != [previous.server_process.pid]:
+                raise DiagnosisError("co-resident condition did not own the sole matching process")
+            previous.warm_server(port, deadline)
+            server_rss_before = previous.server_rss_bytes(
+                previous.server_process.pid, deadline, clean_env
+            )
+            if server_rss_before < MIN_SERVER_RSS_BYTES:
+                raise DiagnosisError("co-resident server did not establish the 2-GiB RSS floor")
+        else:
+            previous.require_no_matching_process(server, model, deadline, clean_env)
+        record = measure_request(
+            built["helper"], model, pack, geometry, built["runtime_env"], deadline
+        )
+        server_rss_after = (
+            previous.server_rss_bytes(previous.server_process.pid, deadline, clean_env)
+            if previous.server_process is not None
+            else None
+        )
+        return {
+            **record,
+            "server_rss_before_bytes": server_rss_before,
+            "server_rss_after_bytes": server_rss_after,
+        }
+    finally:
+        previous.stop_process(previous.server_process)
+        previous.server_process = None
+        if server_log is not None:
+            server_log.close()
+        previous.require_no_matching_process(server, model, deadline, clean_env)
+
+
+def provider_prepare(record: dict[str, Any]) -> int:
+    return sum(
+        record["phases"][name]
+        for name in (
+            "snapshot_ns",
+            "model_ir_ns",
+            "geometry_ns",
+            "source_identity_ns",
+            "tokenizer_ns",
+        )
+    )
+
+
+def setup_lower(record: dict[str, Any]) -> int:
+    return provider_prepare(record) + record["engine"]["resident_fill_ns"]
+
+
+def setup_upper(record: dict[str, Any]) -> int:
+    return provider_prepare(record) + record["engine_phases"]["construction_ns"]
+
+
+def validate_repeatability(samples: list[dict[str, Any]]) -> None:
+    records = [pair[condition] for pair in samples for condition in ("solo", "co_resident")]
+    if not records:
+        return
+    first = records[0]
+    identity = (
+        first["prompt_tokens"],
+        first["completion_tokens"],
+        first["stopped_eog"],
+        first["token_ids"],
+        first["output_sha256"],
+        {name: first["engine"][name] for name in previous.ENGINE_KEYS if not name.endswith("_ns")},
+        first["lifetime"],
+    )
+    for record in records[1:]:
+        candidate = (
+            record["prompt_tokens"],
+            record["completion_tokens"],
+            record["stopped_eog"],
+            record["token_ids"],
+            record["output_sha256"],
+            {
+                name: record["engine"][name]
+                for name in previous.ENGINE_KEYS
+                if not name.endswith("_ns")
+            },
+            record["lifetime"],
+        )
+        if candidate != identity:
+            raise DiagnosisError("full runtime evidence was not repeatable")
+    if (
+        not first["stopped_eog"]
+        or first["completion_tokens"] != 86
+        or first["output_sha256"] != FULL_OUTPUT_SHA256
+    ):
+        raise DiagnosisError("full request no longer matches item 53")
+
+
+def phase_summary(samples: list[dict[str, Any]], fields: tuple[str, ...]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for field in fields:
+        solo = [pair["solo"]["engine_phases"][field] for pair in samples]
+        co_resident = [pair["co_resident"]["engine_phases"][field] for pair in samples]
+        penalties = [co_resident[index] - solo[index] for index in range(4)]
+        result[field.removesuffix("_ns")] = {
+            "solo_median_ns": previous.median(solo),
+            "co_resident_median_ns": previous.median(co_resident),
+            "paired_penalties_ns": penalties,
+            "paired_penalty_median_ns": previous.median(penalties),
+        }
+    return result
+
+
+def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(samples) != 4:
+        raise DiagnosisError("diagnosis requires four complete pairs")
+    for index, pair in enumerate(samples):
+        if pair.get("pair_index") != index + 1 or pair.get("order") != list(PAIR_ORDERS[index]):
+            raise DiagnosisError("diagnosis pair schedule drifted")
+        for condition in ("solo", "co_resident"):
+            record = pair.get(condition)
+            if not isinstance(record, dict):
+                raise DiagnosisError("diagnosis helper record was missing")
+            before = record.get("server_rss_before_bytes")
+            after = record.get("server_rss_after_bytes")
+            if condition == "solo":
+                if before is not None or after is not None:
+                    raise DiagnosisError("solo helper unexpectedly recorded server RSS")
+            elif (
+                not is_int(before)
+                or before < MIN_SERVER_RSS_BYTES
+                or not is_int(after)
+                or after <= 0
+            ):
+                raise DiagnosisError("co-resident helper lacked valid before/after RSS")
+    validate_repeatability(samples)
+    solo_walls = [pair["solo"]["helper_wall_ns"] for pair in samples]
+    co_walls = [pair["co_resident"]["helper_wall_ns"] for pair in samples]
+    penalties = [co_walls[index] - solo_walls[index] for index in range(4)]
+    lowers = [setup_lower(pair["solo"]) for pair in samples]
+    uppers = [setup_upper(pair["solo"]) for pair in samples]
+    if any(lower > upper for lower, upper in zip(lowers, uppers, strict=True)):
+        raise DiagnosisError("new setup lower bound exceeded its upper bound")
+    lower_median = previous.median(lowers)
+    upper_median = previous.median(uppers)
+    if upper_median >= OLD_SETUP_UPPER_NS:
+        raise DiagnosisError("first-token instrument did not narrow the setup upper bound")
+    penalty_median = previous.median(penalties)
+    positive_penalty = max(0, penalty_median)
+    if all(value > 0 for value in penalties) and previous.greater_by_deadband(
+        penalty_median, upper_median
+    ):
+        diagnosis = "CO_RESIDENT_PRESSURE_EXCEEDS_CONSTRUCTION"
+    elif previous.greater_by_deadband(lower_median, positive_penalty):
+        diagnosis = "REPEATED_CONSTRUCTION_EXCEEDS_PRESSURE"
+    else:
+        diagnosis = "MIXED_OR_UNRESOLVED"
+    walls = phase_summary(samples, WALL_PHASES)
+    consistent = {
+        name: values
+        for name, values in walls.items()
+        if all(value > 0 for value in values["paired_penalties_ns"])
+        or all(value < 0 for value in values["paired_penalties_ns"])
+    }
+    dominant = (
+        max(consistent, key=lambda name: abs(consistent[name]["paired_penalty_median_ns"]))
+        if consistent
+        else None
+    )
+    solo_median = previous.median(solo_walls)
+    return {
+        "old_setup_lower_bound_ns": OLD_SETUP_LOWER_NS,
+        "old_setup_upper_bound_ns": OLD_SETUP_UPPER_NS,
+        "solo_helper_wall_median_ns": solo_median,
+        "co_resident_helper_wall_median_ns": previous.median(co_walls),
+        "new_setup_lower_bounds_ns": lowers,
+        "new_setup_lower_bound_median_ns": lower_median,
+        "new_setup_upper_bounds_ns": uppers,
+        "new_setup_upper_bound_median_ns": upper_median,
+        "new_setup_upper_bound_share_ppm": upper_median * 1_000_000 // solo_median,
+        "co_resident_penalties_ns": penalties,
+        "co_resident_penalty_median_ns": penalty_median,
+        "co_resident_penalty_ppm": penalty_median * 1_000_000 // solo_median,
+        "phase_walls": walls,
+        "claim_io": phase_summary(samples, CLAIM_PHASES),
+        "compute": phase_summary(samples, COMPUTE_PHASES),
+        "dominant_consistent_wall_phase": dominant,
+        "deadband_ppm": DEADBAND_PPM,
+        "decision": diagnosis,
+    }
+
+
+def co_resident_metadata(server_sha256: str) -> dict[str, Any]:
+    metadata = previous.co_resident_metadata(server_sha256)
+    metadata["warmup_inference_requests_per_co_resident_leg"] = 1
+    metadata["warmup_inference_requests_total"] = 4
+    return metadata
+
+
+def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
+    rows = (
+        ("ALIGN_LLM_OLMOE_MODEL", base.configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", base.configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", base.configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", base.configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", base.configured_directory("ALIGN_LLM_GGML_LIB")),
+        (
+            "ALIGN_LLM_LLAMA_SERVER",
+            base.configured_file("ALIGN_LLM_LLAMA_SERVER", executable=True),
+        ),
+    )
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS: N/A ({missing} unset)")
+        return None
+    return tuple(path.resolve() for _, path in rows)  # type: ignore[return-value]
+
+
+def synthetic_record(*, salt: int = 0) -> dict[str, Any]:
+    record = previous.synthetic_record(FULL_TOKENS, salt=salt)
+    record["phases"]["engine_wall_ns"] = 120
+    record["engine"]["elapsed_ns"] = 110
+    record["engine_phases"] = {
+        "construction_ns": 20,
+        "prefill_ns": 50,
+        "first_decode_ns": 10,
+        "remaining_decode_ns": 20,
+        "teardown_ns": 5,
+        "prefill_claim_pread_ns": 4,
+        "first_decode_claim_pread_ns": 2,
+        "remaining_decode_claim_pread_ns": 4,
+        "prefill_compute_ns": 40,
+        "first_decode_compute_ns": 5,
+        "remaining_decode_compute_ns": 15,
+    }
+    return record
+
+
+def synthetic_samples(co_wall: int, solo_wall: int = 1000) -> list[dict[str, Any]]:
+    samples = []
+    for index, order in enumerate(PAIR_ORDERS):
+        pair: dict[str, Any] = {"pair_index": index + 1, "order": list(order)}
+        for condition in ("solo", "co_resident"):
+            record = synthetic_record()
+            record["helper_wall_ns"] = solo_wall if condition == "solo" else co_wall
+            record["server_rss_before_bytes"] = (
+                None if condition == "solo" else MIN_SERVER_RSS_BYTES
+            )
+            record["server_rss_after_bytes"] = (
+                None if condition == "solo" else 10 * 1024 * 1024
+            )
+            pair[condition] = record
+        samples.append(pair)
+    return samples
+
+
+def self_test() -> int:
+    record = synthetic_record()
+    helper = dict(record)
+    helper.pop("helper_wall_ns")
+    validate_helper_record(helper)
+    malformed = dict(helper)
+    malformed["engine_phases"] = dict(helper["engine_phases"])
+    malformed["engine_phases"]["prefill_compute_ns"] += 1
+    try:
+        validate_helper_record(malformed)
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("inconsistent compute phase accounting was accepted")
+    malformed = dict(helper)
+    malformed["engine_phases"] = dict(helper["engine_phases"])
+    malformed["engine_phases"]["remaining_decode_ns"] = 100
+    try:
+        validate_helper_record(malformed)
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("non-nested engine phase walls were accepted")
+
+    if aggregate(synthetic_samples(2500))["decision"] != "CO_RESIDENT_PRESSURE_EXCEEDS_CONSTRUCTION":
+        raise DiagnosisError("co-resident pressure decision drifted")
+    if aggregate(synthetic_samples(1010))["decision"] != "REPEATED_CONSTRUCTION_EXCEEDS_PRESSURE":
+        raise DiagnosisError("repeated construction decision drifted")
+    if aggregate(synthetic_samples(1078))["decision"] != "MIXED_OR_UNRESOLVED":
+        raise DiagnosisError("overlapping bounds did not remain unresolved")
+    if aggregate(synthetic_samples(1084))["decision"] != "MIXED_OR_UNRESOLVED":
+        raise DiagnosisError("pressure deadband boundary drifted")
+    if aggregate(synthetic_samples(1085))["decision"] != "CO_RESIDENT_PRESSURE_EXCEEDS_CONSTRUCTION":
+        raise DiagnosisError("pressure decision above deadband drifted")
+    not_narrowed = synthetic_samples(1078)
+    for pair in not_narrowed:
+        pair["solo"]["engine_phases"]["construction_ns"] = OLD_SETUP_UPPER_NS
+    try:
+        aggregate(not_narrowed)
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("non-narrowing instrument was accepted")
+    invalid_residency = synthetic_samples(1078)
+    invalid_residency[0]["co_resident"]["server_rss_before_bytes"] = 1
+    try:
+        aggregate(invalid_residency)
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("co-resident helper without model pressure was accepted")
+
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as printed:
+        if prerequisites() is not None:
+            raise DiagnosisError("missing prerequisites did not produce N/A")
+    printed.assert_called_once_with(
+        "R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS: N/A (ALIGN_LLM_OLMOE_MODEL unset)"
+    )
+    protocol = co_resident_metadata("a" * 64)
+    if (
+        protocol["warmup"] is not True
+        or protocol["warmup_inference_requests_per_timed_helper"] != 1
+        or protocol["warmup_inference_requests_per_co_resident_leg"] != 1
+        or protocol["warmup_inference_requests_total"] != 4
+        or protocol["timed_inference_requests"] != 0
+    ):
+        raise DiagnosisError("co-resident warmup metadata drifted")
+
+    server = Path("/opt/llama server")
+    model = Path("/models/model.gguf")
+    process_output = b" 20 /opt/llama server -m /models/model.gguf --port 1\n"
+    if previous.parse_matching_processes(process_output, server, model) != [20]:
+        raise DiagnosisError("matching process classification drifted")
+    previous.validate_warmup_response(
+        {"choices": [{"message": {"content": "x"}}], "usage": {"completion_tokens": 1}}
+    )
+    with tempfile.TemporaryDirectory(prefix="align-r8-first-token-self-test-") as raw:
+        work = Path(raw)
+        generated = work / "generated"
+        saved = work / "saved"
+        generated.write_text("new", encoding="utf-8")
+        saved.write_text("old", encoding="utf-8")
+        previous.restore_generated(generated, saved)
+        if generated.read_text(encoding="utf-8") != "old":
+            raise DiagnosisError("existing generated helper was not restored")
+    forced_timeout = subprocess.TimeoutExpired(["child"], 10)
+    fake_process = mock.Mock()
+    fake_process.poll.return_value = None
+    fake_process.wait.side_effect = [forced_timeout, 0]
+    previous.stop_process(fake_process)
+    if fake_process.terminate.call_count != 1 or fake_process.kill.call_count != 1:
+        raise DiagnosisError("process cleanup did not escalate from terminate to kill")
+    print("R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS self-test: PASS")
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise DiagnosisError("OLMoE first-token phase diagnosis accepts no arguments")
+    required = prerequisites()
+    if required is None:
+        return 0
+    model, pack, geometry, include, library, server = required
+    started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-first-token-") as raw:
+        work = Path(raw)
+        clean_env = decision.decision_environment()
+        linker_search = decision.validate_linker_search(clean_env)
+        if linker_search:
+            clean_env["LIBRARY_PATH"] = linker_search
+        source_status = previous.run_process(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline,
+            maximum=30,
+            env=clean_env,
+        )
+        if source_status.stdout:
+            raise DiagnosisError("real diagnosis requires a clean worktree")
+        align_llm_head = previous.run_process(
+            ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env
+        ).stdout.decode("ascii").strip()
+        align_revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        previous.require_no_matching_process(server, model, deadline, clean_env)
+        if model.stat().st_size != MODEL_BYTES or base.file_sha256(model) != MODEL_SHA256:
+            raise DiagnosisError("configured OLMoE GGUF does not have the pinned identity")
+        pack_sha256 = base.file_sha256(pack)
+        geometry_sha256 = base.file_sha256(geometry)
+        server_sha256 = base.file_sha256(server)
+        task_sha256 = base.file_sha256(TASK)
+        prompt_sha256 = base.bytes_sha256(PROMPT_TEXT.encode("utf-8"))
+        ggml_libraries = base.library_identities(library)
+        version = previous.run_process(
+            [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env
+        )
+        if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
+            raise DiagnosisError("llama-server is not pinned build 10566 commit bb4caa754")
+
+        with built_helper(work, include, library, clean_env, deadline) as built:
+            samples = []
+            for pair_index, order in enumerate(PAIR_ORDERS, start=1):
+                pair: dict[str, Any] = {"pair_index": pair_index, "order": list(order)}
+                for condition in order:
+                    pair[condition] = measure_leg(
+                        condition,
+                        pair_index,
+                        built,
+                        server,
+                        model,
+                        pack,
+                        geometry,
+                        work,
+                        clean_env,
+                        deadline,
+                    )
+                samples.append(pair)
+                validate_repeatability(samples)
+
+            final_status = previous.run_process(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                deadline=deadline,
+                maximum=30,
+                env=clean_env,
+            )
+            final_head = previous.run_process(
+                ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env
+            ).stdout.decode("ascii").strip()
+            if final_status.stdout or final_head != align_llm_head:
+                raise DiagnosisError("align-llm source changed during the diagnosis")
+            previous.verify_identities(
+                (
+                    ("model", model, MODEL_SHA256),
+                    ("pack", pack, pack_sha256),
+                    ("geometry", geometry, geometry_sha256),
+                    ("server", server, server_sha256),
+                    ("task", TASK, task_sha256),
+                    ("compiler", built["compiler"], built["compiler_sha256"]),
+                    ("C compiler", built["c_compiler"], built["c_compiler_sha256"]),
+                    ("shim", built["shim"], built["shim_sha256"]),
+                    ("helper", built["helper"], built["helper_sha256"]),
+                )
+            )
+            if base.library_identities(library) != ggml_libraries:
+                raise DiagnosisError("ggml library identities changed during the diagnosis")
+
+            aggregate_result = aggregate(samples)
+            elapsed_ns = time.monotonic_ns() - started_ns
+            if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+                raise DiagnosisError(
+                    f"complete diagnosis exceeded its 12-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+                )
+            task_document = json.loads(TASK.read_text(encoding="utf-8"))
+            result = {
+                "schema_version": 1,
+                "artifact_kind": "R8_OLMOE_FIRST_TOKEN_PHASE_DIAGNOSIS",
+                "status": "COMPLETE",
+                "model": {"bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe"},
+                "candidate": {
+                    "provider": "align-runtime",
+                    "align_llm_head": align_llm_head,
+                    "align_revision": align_revision,
+                    "compiler_sha256": built["compiler_sha256"],
+                    "helper_sha256": built["helper_sha256"],
+                    "shim_sha256": built["shim_sha256"],
+                    "ggml_libraries": ggml_libraries,
+                    "pack_sha256": pack_sha256,
+                    "geometry_sha256": geometry_sha256,
+                    "cache_budget_bytes": BUDGET,
+                },
+                "co_resident": co_resident_metadata(server_sha256),
+                "task": {
+                    "task_id": task_document["id"],
+                    "task_sha256": task_sha256,
+                    "prompt_sha256": prompt_sha256,
+                    "seed": SEED,
+                    "maximum_tokens": FULL_TOKENS,
+                    "full_output_sha256": FULL_OUTPUT_SHA256,
+                },
+                "environment": {
+                    "os": platform.system(),
+                    "release": platform.release(),
+                    "architecture": platform.machine(),
+                    "cpu_count": os.cpu_count(),
+                    "c_compiler_sha256": built["c_compiler_sha256"],
+                    "c_compiler_version_sha256": built["c_compiler_version_sha256"],
+                    "linker_search_sha256": (
+                        None
+                        if not linker_search
+                        else base.bytes_sha256(linker_search.encode("utf-8"))
+                    ),
+                },
+                "samples": samples,
+                "aggregate": aggregate_result,
+                "elapsed_ns": elapsed_ns,
+            }
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+            print(
+                "R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS: COMPLETE "
+                f"decision={aggregate_result['decision']} "
+                f"setup_lower={aggregate_result['new_setup_lower_bound_median_ns'] / 1e9:.3f}s "
+                f"setup_upper={aggregate_result['new_setup_upper_bound_median_ns'] / 1e9:.3f}s "
+                f"penalty={aggregate_result['co_resident_penalty_median_ns'] / 1e9:.3f}s "
+                f"dominant={aggregate_result['dominant_consistent_wall_phase']} "
+                f"elapsed={elapsed_ns / 1e9:.2f}s",
+                file=sys.stderr,
+            )
+    return 0
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    previous.stop_owned_processes()
+    raise SystemExit(128 + signal_number)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (
+        DiagnosisError,
+        previous.DiagnosisError,
+        decision.DecisionError,
+        base.DecisionError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        json.JSONDecodeError,
+        subprocess.TimeoutExpired,
+    ) as error:
+        previous.stop_owned_processes()
+        print(f"R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)

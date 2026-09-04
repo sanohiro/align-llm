@@ -33,7 +33,7 @@ no existing renderer or provider response gains a field.
 | Prefill boundary | starts immediately before `prefill_pass` and ends after successful prompt-logit digest, top-k construction, sampled first-token selection, and optional prefill-logit comparison, immediately before `decode_loop` |
 | Decode boundaries | `first_decode_ns` records the first successfully completed decode iteration; `remaining_decode_ns` sums every later successfully completed iteration; each iteration includes its oracle preparation, graph execution, selection, accounting, and row construction; an EOG or maximum check before an iteration records no interval |
 | Teardown boundary | starts after `decode_loop` returns and includes resident-wrap/backend release, balance checks, final counter publication, and schedule-owned result construction; the small return-to-`execute_mode` elapsed publication remainder is not assigned |
-| Claim/compute attribution | prefill values are exact deltas of the existing `Outcome.claim_pread_ns` and `Outcome.compute_ns`; first/remaining decode values are exact deltas for successfully completed decode iterations; on a successful run their sums equal the existing total claim/compute counters and the two decode compute fields sum to `decode_compute_ns` |
+| Claim/compute attribution | prefill values are exact deltas of the existing `Outcome.claim_pread_ns` and prefill-side `Outcome.compute_ns`; first/remaining decode values are exact deltas for successfully completed decode iterations; on a successful run the three claim fields sum to `claim_pread_ns`, `prefill_compute_ns` equals `compute_ns`, and the two decode compute fields sum to `decode_compute_ns` |
 | Failure semantics | counters describe completed boundaries only; the existing error, cleanup, lifetime, and partial-step semantics remain authoritative; the qualification emits no complete result for any helper failure or incomplete phase accounting |
 | Existing consumers | `--moe-model-forward`, `--moe-decode-step`, provider output, token generation, sampling, EOG, cache behavior, and existing JSON schemas remain unchanged because none renders the new fields |
 | Qualification helper | `olmoe_first_token_phase_gate MODEL PACK GEOMETRY PROMPT 128 5`; it follows item 54's production-order preparation and generation sequence and emits one schema-1 record with fixed request evidence, provider phases, engine phase walls, per-phase claim/compute clocks, existing totals, and lifetime balance |
@@ -124,3 +124,9 @@ authorize persistent state by itself.
 No `make ci`, installed profile, platform matrix, 40-prompt corpus, coding validator, stress suite,
 or unrelated benchmark is selected. This is a diagnostic measurement with a precommitted runtime
 ceiling, not a product-speed claim.
+
+The capability exceeds 1,000 hand-written lines because its 301-line Align helper must reproduce
+the production preparation boundary while its bounded runner owns identity, balanced pressure,
+schema, decision, signal cleanup, and model-free tests. Splitting counters, helper, and runner would
+leave dormant producers or an unusable measurement consumer and repeat the same identity and
+cleanup proof; they therefore ship as one consumer-complete failure domain.
