@@ -33,8 +33,13 @@ rejected the live-width phase-A candidate, so item 71 is selected to diagnose ph
 classes before choosing a different exact-safe implementation seam. Product code and the open R8
 gate remain unchanged.
 
-**Next actions.** Consolidate the comprehensive review finding; rerun affected owners and exact-head
-preflight; publish, merge, and continue to item 71.
+The comprehensive high-effort Codex review covered `b2c97f8` against base tip and merge base
+`cc2b080`. It found one valid P2: the next-action list still named the already-completed result
+commit. Consolidated repair `828b173` removes that stale action. Measurement and implementation
+behavior are unchanged, so no real rerun or second comprehensive review is required.
+
+**Next actions.** Rerun affected owners and exact-head preflight; publish, merge, and continue to
+item 71.
 
 **Blocker.** None.
 

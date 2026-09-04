@@ -145,3 +145,14 @@ the graph to live width neither preserved exact cache decisions in combination n
 cleared the complete-request gate alone. Item 71 therefore owns a narrower phase-A operation
 diagnosis before another implementation seam is chosen. The existing 37-row phase-A graph and all
 shipped item-68 behavior remain unchanged.
+
+## 7. Review record
+
+One comprehensive Codex CLI review covered head
+`b2c97f8ea0bf198f524d07bca5e85f4649d3b4c2` against base tip and merge base
+`cc2b080a4241c0cb37e254c4a4e17f286c401c54`, using gpt-5.6-sol at high effort over the complete
+diff. It found one valid P2: `HANDOFF.md` still told a resumed session to commit the result even
+though the reviewed head already contained that commit. Consolidated repair
+`828b173613c85943d97b3acb430ec210beca5d41` removes the completed action. The repair changes no
+schema, measurement, decision, or product behavior, so neither a real rerun nor a second
+comprehensive review is required.
