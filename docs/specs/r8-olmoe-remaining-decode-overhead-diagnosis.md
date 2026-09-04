@@ -111,13 +111,16 @@ cache-budget identities. `task` contains task/prompt identities, maximum, temper
 `environment` contains OS, release, architecture, CPU count, C compiler/version, and canonical
 linker-search identities.
 
-Each of four samples has exact keys `index`, `conditioning`, `full`, and `full_helper_wall_ns`.
+Each of four samples has exact keys `index`, `conditioning`, `full`, `full_helper_wall_ns`, and
+`isolation`; isolation contains the exact-zero non-boolean integer fields `matching_before`,
+`matching_between`, and `matching_after`.
 `conditioning` and `full` are helper records with the exact shape above. `aggregate` has exact keys
 `full_helper_wall_median_ns`, `engine_wall_median_ns`, `remaining_decode_median_ns`,
 `bucket_values_ns`, `bucket_medians_ns`, `selected_bucket`, `selected_bucket_median_ns`,
 `selected_bucket_share_ppm`, `floor_ppm`, `floor_ns`, and `decision`. The two bucket objects have
 the eight exact uppercase bucket keys in decision tie order; values has one four-element positive or
-nonnegative duration array per bucket, while medians has one nonnegative integer per bucket. Paths,
+nonnegative duration array per bucket, while medians has one nonnegative integer per bucket.
+`selected_bucket_share_ppm` divides the selected median by `remaining_decode_median_ns`. Paths,
 output text, model bytes, process identifiers, and credentials are excluded.
 
 ## 4. Closure matrix

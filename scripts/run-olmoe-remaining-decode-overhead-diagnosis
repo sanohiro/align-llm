@@ -1,0 +1,918 @@
+#!/usr/bin/env python3
+"""Partition the fixed sampled OLMoE request's remaining-decode overhead."""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+import platform
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Iterator
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PHASE_PATH = ROOT / "scripts/run-olmoe-first-token-phase-diagnosis"
+PHASE_LOADER = SourceFileLoader("olmoe_first_token_for_remaining_decode", str(PHASE_PATH))
+PHASE_SPEC = importlib.util.spec_from_loader(PHASE_LOADER.name, PHASE_LOADER)
+if PHASE_SPEC is None or PHASE_SPEC.loader is None:
+    raise RuntimeError("cannot load the first-token phase owner")
+phase = importlib.util.module_from_spec(PHASE_SPEC)
+PHASE_SPEC.loader.exec_module(phase)
+parent = phase.previous
+base = phase.base
+
+MODEL_BYTES = phase.MODEL_BYTES
+MODEL_SHA256 = phase.MODEL_SHA256
+SERVER_BUILD = phase.SERVER_BUILD
+BUDGET = phase.BUDGET
+TASK = phase.TASK
+PROMPT_TEXT = phase.PROMPT_TEXT
+FULL_OUTPUT_SHA256 = phase.FULL_OUTPUT_SHA256
+SEED = phase.SEED
+FULL_TOKENS = phase.FULL_TOKENS
+TEMPERATURE_MICROS = 300_000
+REPETITIONS = 4
+CEILING_SECONDS = 8 * 60
+BASELINE_VALUES_NS = [28_920_977_916, 29_248_835_083, 29_527_528_125, 29_417_150_916]
+BASELINE_MEDIAN_NS = 29_332_992_999
+FLOOR_PPM = 50_000
+FLOOR_NS = 1_466_649_650
+
+EXPECTED_WORKLOAD = (
+    4_213_512_192,
+    "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f",
+    "build 10566, commit bb4caa754",
+    975_175_680,
+    ROOT / "eval/tasks/coding-v1/python-inclusive-range/task.json",
+    "0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b",
+    "aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52",
+    5,
+    128,
+    300_000,
+)
+EXPECTED_ALIGN_REVISION = "8cefc803d5c7f883a8db5b67250ed4ed069b43a4"
+EXPECTED_COMPILER_SHA256 = "f972b4a196ed5608a0c52cc02dbf8267cfc236065359315a572d601aa04ea541"
+EXPECTED_PACK_SHA256 = "20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae"
+EXPECTED_GEOMETRY_SHA256 = "1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada"
+EXPECTED_SERVER_SHA256 = "98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c"
+EXPECTED_TASK_SHA256 = "1884f01a329752c1383081342c65d062241aefaefff2f206f6604008bde74940"
+EXPECTED_PROMPT_SHA256 = "0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b"
+EXPECTED_C_COMPILER_SHA256 = "179301dcb41ea78accc3fa0048a7e6f6710d891945a751a34addd622020c1818"
+EXPECTED_C_COMPILER_VERSION_SHA256 = (
+    "ea3037e0630fa16798079372fdc24f6542d021dadda4915cc979799682d78295"
+)
+EXPECTED_LINKER_SEARCH_SHA256 = "5cb52d849e4b5dd2e0380c9fd272279c8b3e572dc563691f60fc8ecbf72d92cf"
+EXPECTED_GGML_LIBRARIES = [
+    {"name": "libggml-base.0.21.0.dylib", "bytes": 506_160, "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574"},
+    {"name": "libggml-base.0.dylib", "bytes": 506_160, "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574"},
+    {"name": "libggml-base.dylib", "bytes": 506_160, "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574"},
+    {"name": "libggml.0.21.0.dylib", "bytes": 60_272, "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734"},
+    {"name": "libggml.0.dylib", "bytes": 60_272, "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734"},
+    {"name": "libggml.dylib", "bytes": 60_272, "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734"},
+]
+EXPECTED_FULL_TOKEN_IDS = [
+    11202, 13437, 187, 13437, 1969, 14769, 247, 16, 7614, 16, 249, 7426, 64, 6324, 15,
+    4789, 270, 16, 7614, 16, 249, 7426, 64, 6324, 15, 4789, 187, 1532, 247, 16, 7614,
+    16, 249, 7426, 64, 6324, 15, 4789, 187, 3424, 12, 270, 16, 7614, 16, 249, 7426,
+    64, 6324, 15, 4789, 187, 22610, 428, 20, 559, 20, 34346, 187, 14, 50274, 2309,
+    2020, 9, 6324, 9, 5478, 13, 3523, 1228, 187, 12, 50274, 2309, 2020, 9, 6324, 9,
+    5478, 13, 3523, 559, 337, 1228, 187, 11202, 50279,
+]
+
+REMAINING_KEYS = {
+    "pre_pass_ns", "pass_ns", "post_pass_ns", "pack_or_resident_stage_ns",
+    "claim_pread_ns", "compute_ns", "routing_ns", "plane_upload_ns",
+    "plane_readback_ns", "pass_residual_ns",
+}
+BUCKET_ORDER = (
+    "PACK_OR_RESIDENT_STAGE", "CLAIM_IO", "COMPUTE", "ROUTING",
+    "KV_PLANE_TRANSFER", "PRE_PASS_ORCHESTRATION", "POST_PASS_ORCHESTRATION",
+    "PASS_RESIDUAL",
+)
+BUCKET_FIELDS = {
+    "PACK_OR_RESIDENT_STAGE": ("pack_or_resident_stage_ns",),
+    "CLAIM_IO": ("claim_pread_ns",),
+    "COMPUTE": ("compute_ns",),
+    "ROUTING": ("routing_ns",),
+    "KV_PLANE_TRANSFER": ("plane_upload_ns", "plane_readback_ns"),
+    "PRE_PASS_ORCHESTRATION": ("pre_pass_ns",),
+    "POST_PASS_ORCHESTRATION": ("post_pass_ns",),
+    "PASS_RESIDUAL": ("pass_residual_ns",),
+}
+HELPER_KEYS = phase.HELPER_KEYS | {"remaining_decode"}
+TOP_KEYS = {
+    "schema_version", "artifact_kind", "status", "model", "baseline", "candidate",
+    "task", "environment", "samples", "aggregate", "elapsed_ns",
+}
+SAMPLE_KEYS = {"index", "conditioning", "full", "full_helper_wall_ns", "isolation"}
+ISOLATION_KEYS = {"matching_before", "matching_between", "matching_after"}
+AGGREGATE_KEYS = {
+    "full_helper_wall_median_ns", "engine_wall_median_ns", "remaining_decode_median_ns",
+    "bucket_values_ns", "bucket_medians_ns", "selected_bucket",
+    "selected_bucket_median_ns", "selected_bucket_share_ppm", "floor_ppm", "floor_ns",
+    "decision",
+}
+
+
+class DiagnosisError(RuntimeError):
+    pass
+
+
+def require_exact_keys(value: dict[str, Any], expected: set[str], label: str) -> None:
+    if set(value) != expected:
+        raise DiagnosisError(f"{label} keys drifted")
+
+
+def is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def integer_median(values: list[int]) -> int:
+    if not values:
+        raise DiagnosisError("median requires evidence")
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) // 2
+
+
+def validate_imported_workload() -> None:
+    actual = (
+        phase.MODEL_BYTES, phase.MODEL_SHA256, phase.SERVER_BUILD, phase.BUDGET,
+        phase.TASK.resolve(), base.bytes_sha256(phase.PROMPT_TEXT.encode("utf-8")),
+        phase.FULL_OUTPUT_SHA256, phase.SEED, phase.FULL_TOKENS, TEMPERATURE_MICROS,
+    )
+    if actual != EXPECTED_WORKLOAD:
+        raise DiagnosisError("imported item 55 workload drifted")
+    if phase.EXPECTED_FULL_TOKEN_IDS != EXPECTED_FULL_TOKEN_IDS:
+        raise DiagnosisError("imported item 55 token chain drifted")
+    if phase.EXPECTED_GGML_LIBRARIES != EXPECTED_GGML_LIBRARIES:
+        raise DiagnosisError("imported item 55 ggml identities drifted")
+    if integer_median(BASELINE_VALUES_NS) != BASELINE_MEDIAN_NS:
+        raise DiagnosisError("item 56 baseline median drifted")
+    if (BASELINE_MEDIAN_NS * FLOOR_PPM + 999_999) // 1_000_000 != FLOOR_NS:
+        raise DiagnosisError("item 56 shipping floor drifted")
+
+
+@contextlib.contextmanager
+def built_helper(
+    work: Path,
+    include: Path,
+    library: Path,
+    clean_env: dict[str, str],
+    deadline: float,
+) -> Iterator[dict[str, Any]]:
+    compiler_output = parent.run_process(
+        [str(ROOT / "scripts/align-toolchain"), "ensure", "compiler"],
+        deadline=deadline, maximum=300, env=clean_env,
+    )
+    compiler = Path(compiler_output.stdout.decode("utf-8").strip())
+    if not compiler.is_file() or not os.access(compiler, os.X_OK):
+        raise DiagnosisError("managed pinned compiler is unusable")
+    c_compiler_name = shutil.which("cc", path=clean_env.get("PATH"))
+    if c_compiler_name is None:
+        raise DiagnosisError("the default C compiler is unavailable")
+    c_compiler = Path(c_compiler_name).resolve()
+    c_compiler_version = parent.run_process(
+        [str(c_compiler), "--version"], deadline=deadline, maximum=30, env=clean_env
+    )
+    shim_dir = work / "lib"
+    generated = ROOT / "olmoe_remaining_decode_overhead_gate"
+    saved = work / "saved-olmoe-remaining-decode-overhead-gate"
+    if generated.exists():
+        shutil.copy2(generated, saved)
+    build_env = dict(clean_env)
+    build_env.update({
+        "ALIGN_LLM_GGML_INCLUDE": str(include),
+        "ALIGN_LLM_GGML_LIB": str(library),
+        "ALIGN_LLM_GGML_SHIM_DIR": str(shim_dir),
+    })
+    try:
+        parent.run_process(
+            [str(ROOT / "scripts/build-ggml-shim")], deadline=deadline,
+            maximum=180, env=build_env,
+        )
+        build_env["LIBRARY_PATH"] = ":".join(
+            value for value in (str(shim_dir), str(library), clean_env.get("LIBRARY_PATH", ""))
+            if value
+        )
+        parent.run_process(
+            [str(compiler), "build", "src/olmoe_remaining_decode_overhead_gate.align"],
+            deadline=deadline, maximum=300, env=build_env,
+        )
+        helper = work / "olmoe-remaining-decode-overhead-gate"
+        shutil.move(generated, helper)
+        shim = shim_dir / (
+            "libalign_ggml_shim.dylib" if platform.system() == "Darwin"
+            else "libalign_ggml_shim.so"
+        )
+        if not shim.is_file():
+            raise DiagnosisError("dynamic ggml shim was not produced")
+        runtime_env = dict(clean_env)
+        runtime_env["DYLD_LIBRARY_PATH"] = ":".join((str(shim_dir), str(library)))
+        runtime_env["LD_LIBRARY_PATH"] = ":".join((str(shim_dir), str(library)))
+        yield {
+            "compiler": compiler,
+            "compiler_sha256": base.file_sha256(compiler),
+            "c_compiler": c_compiler,
+            "c_compiler_sha256": base.file_sha256(c_compiler),
+            "c_compiler_version_sha256": base.command_output_sha256(c_compiler_version),
+            "helper": helper,
+            "helper_sha256": base.file_sha256(helper),
+            "shim": shim,
+            "shim_sha256": base.file_sha256(shim),
+            "runtime_env": runtime_env,
+        }
+    finally:
+        parent.restore_generated(generated, saved)
+
+
+def validate_helper_record(record: dict[str, Any], maximum_tokens: int) -> None:
+    require_exact_keys(record, HELPER_KEYS, "helper record")
+    inherited = dict(record)
+    remaining = inherited.pop("remaining_decode")
+    phase.validate_helper_record(inherited, maximum_tokens)
+    if not isinstance(remaining, dict):
+        raise DiagnosisError("remaining-decode record was not an object")
+    require_exact_keys(remaining, REMAINING_KEYS, "remaining decode")
+    if any(not is_int(remaining[name]) or remaining[name] < 0 for name in REMAINING_KEYS):
+        raise DiagnosisError("remaining-decode timing was invalid")
+    if maximum_tokens == 2:
+        if any(remaining.values()):
+            raise DiagnosisError("conditioning entered remaining decode")
+        return
+    if any(remaining[name] <= 0 for name in ("pre_pass_ns", "pass_ns", "post_pass_ns", "claim_pread_ns", "compute_ns")):
+        raise DiagnosisError("full remaining-decode boundary was not positive")
+    if remaining["pre_pass_ns"] + remaining["pass_ns"] + remaining["post_pass_ns"] != record["engine_phases"]["remaining_decode_ns"]:
+        raise DiagnosisError("remaining-decode phase partition drifted")
+    pass_subtotal = sum(
+        remaining[name] for name in (
+            "pack_or_resident_stage_ns", "claim_pread_ns", "compute_ns", "routing_ns",
+            "plane_upload_ns", "plane_readback_ns", "pass_residual_ns",
+        )
+    )
+    if pass_subtotal != remaining["pass_ns"]:
+        raise DiagnosisError("remaining-decode pass partition drifted")
+    if remaining["claim_pread_ns"] != record["engine_phases"]["remaining_decode_claim_pread_ns"] or remaining["compute_ns"] != record["engine_phases"]["remaining_decode_compute_ns"]:
+        raise DiagnosisError("remaining-decode inherited subclock drifted")
+
+
+def validate_toolchain_identity(built: dict[str, Any]) -> None:
+    if (
+        built["compiler_sha256"] != EXPECTED_COMPILER_SHA256
+        or built["c_compiler_sha256"] != EXPECTED_C_COMPILER_SHA256
+        or built["c_compiler_version_sha256"] != EXPECTED_C_COMPILER_VERSION_SHA256
+    ):
+        raise DiagnosisError("fixed toolchain identity drifted")
+
+
+def validate_external_identity(
+    *, align_revision: str, pack_sha256: str, geometry_sha256: str,
+    server_sha256: str, task_sha256: str, prompt_sha256: str,
+    ggml_libraries: list[dict[str, Any]], linker_search_sha256: str | None,
+) -> None:
+    actual = (
+        align_revision, pack_sha256, geometry_sha256, server_sha256, task_sha256,
+        prompt_sha256, ggml_libraries, linker_search_sha256,
+    )
+    expected = (
+        EXPECTED_ALIGN_REVISION, EXPECTED_PACK_SHA256, EXPECTED_GEOMETRY_SHA256,
+        EXPECTED_SERVER_SHA256, EXPECTED_TASK_SHA256, EXPECTED_PROMPT_SHA256,
+        EXPECTED_GGML_LIBRARIES, EXPECTED_LINKER_SEARCH_SHA256,
+    )
+    if actual != expected:
+        raise DiagnosisError("fixed external identity drifted")
+
+
+def measure_request(
+    helper: Path, model: Path, pack: Path, geometry: Path, maximum_tokens: int,
+    runtime_env: dict[str, str], deadline: float,
+) -> tuple[dict[str, Any], int]:
+    started_ns = time.monotonic_ns()
+    result = parent.run_process(
+        [str(helper), str(model), str(pack), str(geometry), PROMPT_TEXT,
+         str(maximum_tokens), str(SEED)],
+        deadline=deadline, maximum=240, env=runtime_env,
+    )
+    helper_wall_ns = time.monotonic_ns() - started_ns
+    try:
+        record = json.loads(result.stdout.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise DiagnosisError("helper did not emit one JSON record") from error
+    if not isinstance(record, dict):
+        raise DiagnosisError("helper record was not an object")
+    validate_helper_record(record, maximum_tokens)
+    if helper_wall_ns < record["phases"]["elapsed_ns"]:
+        raise DiagnosisError("helper wall interval did not contain helper elapsed")
+    return record, helper_wall_ns
+
+
+def validate_output(conditioning: dict[str, Any], full: dict[str, Any]) -> None:
+    if conditioning["stopped_eog"] or conditioning["completion_tokens"] != 2:
+        raise DiagnosisError("conditioning did not reach its exact maximum")
+    if full["token_ids"][: len(conditioning["token_ids"])] != conditioning["token_ids"]:
+        raise DiagnosisError("conditioning was not the full output prefix")
+    if (
+        not full["stopped_eog"] or full["completion_tokens"] != 86
+        or full["token_ids"] != EXPECTED_FULL_TOKEN_IDS
+        or full["output_sha256"] != FULL_OUTPUT_SHA256
+    ):
+        raise DiagnosisError("full request no longer matches item 55")
+    stable_engine = {name: full["engine"][name] for name in parent.ENGINE_KEYS if not name.endswith("_ns")}
+    expected_engine = {name: conditioning["engine"][name] for name in parent.ENGINE_KEYS if not name.endswith("_ns")}
+    # Only generation-dependent counts may differ between the two maximums.
+    for name in stable_engine:
+        if name in {"graph_count", "decode_steps_completed", "expert_cache_requests", "expert_cache_hits", "expert_cache_misses", "expert_cache_evictions", "expert_cache_bytes_fetched"}:
+            continue
+        if stable_engine[name] != expected_engine[name]:
+            raise DiagnosisError("conditioning and full static engine identity drifted")
+
+
+def measure_sample(
+    index: int, built: dict[str, Any], server: Path, model: Path, pack: Path,
+    geometry: Path, clean_env: dict[str, str], deadline: float,
+) -> dict[str, Any]:
+    parent.require_no_matching_process(server, model, deadline, clean_env)
+    before = 0
+    conditioning, _ = measure_request(
+        built["helper"], model, pack, geometry, 2, built["runtime_env"], deadline
+    )
+    parent.require_no_matching_process(server, model, deadline, clean_env)
+    between = 0
+    try:
+        full, full_wall = measure_request(
+            built["helper"], model, pack, geometry, FULL_TOKENS,
+            built["runtime_env"], deadline,
+        )
+    finally:
+        parent.require_no_matching_process(server, model, deadline, clean_env)
+        after = 0
+    validate_output(conditioning, full)
+    return {
+        "index": index,
+        "conditioning": conditioning,
+        "full": full,
+        "full_helper_wall_ns": full_wall,
+        "isolation": {
+            "matching_before": before,
+            "matching_between": between,
+            "matching_after": after,
+        },
+    }
+
+
+def validate_repeatability(samples: list[dict[str, Any]]) -> None:
+    if not samples:
+        return
+    first = samples[0]["full"]
+    identity = (
+        first["prompt_tokens"], first["completion_tokens"], first["stopped_eog"],
+        first["token_ids"], first["output_sha256"], first["lifetime"],
+        {name: first["engine"][name] for name in parent.ENGINE_KEYS if not name.endswith("_ns")},
+    )
+    for sample in samples[1:]:
+        full = sample["full"]
+        candidate = (
+            full["prompt_tokens"], full["completion_tokens"], full["stopped_eog"],
+            full["token_ids"], full["output_sha256"], full["lifetime"],
+            {name: full["engine"][name] for name in parent.ENGINE_KEYS if not name.endswith("_ns")},
+        )
+        if candidate != identity:
+            raise DiagnosisError("full runtime evidence was not repeatable")
+
+
+def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(samples) != REPETITIONS:
+        raise DiagnosisError("diagnosis requires four complete samples")
+    validate_repeatability(samples)
+    for index, sample in enumerate(samples, start=1):
+        require_exact_keys(sample, SAMPLE_KEYS, "sample")
+        if sample["index"] != index or not is_int(sample["full_helper_wall_ns"]) or sample["full_helper_wall_ns"] <= 0:
+            raise DiagnosisError("sample schedule or wall interval drifted")
+        isolation = sample["isolation"]
+        if not isinstance(isolation, dict):
+            raise DiagnosisError("sample isolation was not an object")
+        require_exact_keys(isolation, ISOLATION_KEYS, "sample isolation")
+        if any(not is_int(isolation[name]) or isolation[name] != 0 for name in ISOLATION_KEYS):
+            raise DiagnosisError("sample was not isolated")
+        validate_helper_record(sample["conditioning"], 2)
+        validate_helper_record(sample["full"], FULL_TOKENS)
+        validate_output(sample["conditioning"], sample["full"])
+
+    bucket_values = {
+        bucket: [sum(sample["full"]["remaining_decode"][field] for field in fields) for sample in samples]
+        for bucket, fields in BUCKET_FIELDS.items()
+    }
+    if set(bucket_values) != set(BUCKET_ORDER):
+        raise DiagnosisError("bucket set drifted")
+    bucket_medians = {bucket: integer_median(bucket_values[bucket]) for bucket in BUCKET_ORDER}
+    selected = max(BUCKET_ORDER, key=lambda bucket: (bucket_medians[bucket], -BUCKET_ORDER.index(bucket)))
+    selected_median = bucket_medians[selected]
+    remaining_median = integer_median(
+        [sample["full"]["engine_phases"]["remaining_decode_ns"] for sample in samples]
+    )
+    if remaining_median <= 0:
+        raise DiagnosisError("remaining-decode median was not positive")
+    if selected_median < FLOOR_NS:
+        decision = "NO_MATERIAL_BUCKET"
+    elif selected == "PASS_RESIDUAL":
+        decision = "PASS_RESIDUAL_NEEDS_DIAGNOSIS"
+    else:
+        decision = "MEASURED_BUCKET_ELIGIBLE"
+    return {
+        "full_helper_wall_median_ns": integer_median([sample["full_helper_wall_ns"] for sample in samples]),
+        "engine_wall_median_ns": integer_median([sample["full"]["phases"]["engine_wall_ns"] for sample in samples]),
+        "remaining_decode_median_ns": remaining_median,
+        "bucket_values_ns": bucket_values,
+        "bucket_medians_ns": bucket_medians,
+        "selected_bucket": selected,
+        "selected_bucket_median_ns": selected_median,
+        "selected_bucket_share_ppm": selected_median * 1_000_000 // remaining_median,
+        "floor_ppm": FLOOR_PPM,
+        "floor_ns": FLOOR_NS,
+        "decision": decision,
+    }
+
+
+def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
+    rows = (
+        ("ALIGN_LLM_OLMOE_MODEL", base.configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", base.configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", base.configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", base.configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", base.configured_directory("ALIGN_LLM_GGML_LIB")),
+        ("ALIGN_LLM_LLAMA_SERVER", base.configured_file("ALIGN_LLM_LLAMA_SERVER", executable=True)),
+    )
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-REMAINING-DECODE-OVERHEAD-DIAGNOSIS: N/A ({missing} unset)")
+        return None
+    return tuple(path.resolve() for _, path in rows)  # type: ignore[return-value]
+
+
+def synthetic_record(
+    maximum_tokens: int = FULL_TOKENS,
+    *,
+    bucket: str | None = None,
+    bucket_value: int = 100,
+) -> dict[str, Any]:
+    record = phase.synthetic_record(maximum_tokens)
+    record.pop("helper_wall_ns")
+    if maximum_tokens == 2:
+        record["remaining_decode"] = {name: 0 for name in REMAINING_KEYS}
+        return record
+
+    values = {name: 100 for name in BUCKET_ORDER}
+    if bucket is not None:
+        values[bucket] = bucket_value
+    remaining = {
+        "pre_pass_ns": values["PRE_PASS_ORCHESTRATION"],
+        "pack_or_resident_stage_ns": values["PACK_OR_RESIDENT_STAGE"],
+        "claim_pread_ns": values["CLAIM_IO"],
+        "compute_ns": values["COMPUTE"],
+        "routing_ns": values["ROUTING"],
+        "plane_upload_ns": values["KV_PLANE_TRANSFER"] // 2,
+        "plane_readback_ns": values["KV_PLANE_TRANSFER"] - values["KV_PLANE_TRANSFER"] // 2,
+        "pass_residual_ns": values["PASS_RESIDUAL"],
+        "post_pass_ns": values["POST_PASS_ORCHESTRATION"],
+    }
+    remaining["pass_ns"] = sum(
+        remaining[name] for name in (
+            "pack_or_resident_stage_ns", "claim_pread_ns", "compute_ns", "routing_ns",
+            "plane_upload_ns", "plane_readback_ns", "pass_residual_ns",
+        )
+    )
+    record["remaining_decode"] = remaining
+    engine_phases = record["engine_phases"]
+    engine_phases["remaining_decode_ns"] = (
+        remaining["pre_pass_ns"] + remaining["pass_ns"] + remaining["post_pass_ns"]
+    )
+    engine_phases["remaining_decode_claim_pread_ns"] = remaining["claim_pread_ns"]
+    engine_phases["remaining_decode_compute_ns"] = remaining["compute_ns"]
+    record["engine"]["claim_pread_ns"] = (
+        engine_phases["prefill_claim_pread_ns"]
+        + engine_phases["first_decode_claim_pread_ns"]
+        + remaining["claim_pread_ns"]
+    )
+    record["engine"]["decode_compute_ns"] = (
+        engine_phases["first_decode_compute_ns"] + remaining["compute_ns"]
+    )
+    record["engine"]["elapsed_ns"] = sum(engine_phases[name] for name in phase.WALL_PHASES) + 100
+    record["phases"]["engine_wall_ns"] = record["engine"]["elapsed_ns"] + 100
+    record["phases"]["elapsed_ns"] = (
+        sum(value for name, value in record["phases"].items() if name != "elapsed_ns") + 100
+    )
+    return record
+
+
+def synthetic_samples(
+    bucket: str | None = None, bucket_value: int = 100
+) -> list[dict[str, Any]]:
+    samples = []
+    for index in range(1, REPETITIONS + 1):
+        full = synthetic_record(bucket=bucket, bucket_value=bucket_value)
+        samples.append({
+            "index": index,
+            "conditioning": synthetic_record(2),
+            "full": full,
+            "full_helper_wall_ns": full["phases"]["elapsed_ns"] + 100,
+            "isolation": {
+                "matching_before": 0,
+                "matching_between": 0,
+                "matching_after": 0,
+            },
+        })
+    return samples
+
+
+def validate_result(result: dict[str, Any]) -> None:
+    require_exact_keys(result, TOP_KEYS, "result")
+    if result["schema_version"] != 1 or result["artifact_kind"] != "R8_OLMOE_REMAINING_DECODE_OVERHEAD_DIAGNOSIS" or result["status"] != "COMPLETE":
+        raise DiagnosisError("result scalar identity drifted")
+    expected_nested = {
+        "model": {"bytes", "sha256", "architecture"},
+        "baseline": {"provider_intervals_ns", "median_ns", "floor_ppm", "floor_ns"},
+        "candidate": {"provider", "align_llm_head", "align_revision", "compiler_sha256", "helper_sha256", "shim_sha256", "ggml_libraries", "pack_sha256", "geometry_sha256", "cache_budget_bytes"},
+        "task": {"task_id", "task_sha256", "prompt_sha256", "maximum_tokens", "temperature_micros", "seed", "full_output_sha256"},
+        "environment": {"os", "release", "architecture", "cpu_count", "c_compiler_sha256", "c_compiler_version_sha256", "linker_search_sha256"},
+    }
+    for name, keys in expected_nested.items():
+        if not isinstance(result[name], dict):
+            raise DiagnosisError(f"result {name} was not an object")
+        require_exact_keys(result[name], keys, f"result {name}")
+    if result["baseline"] != {
+        "provider_intervals_ns": BASELINE_VALUES_NS,
+        "median_ns": BASELINE_MEDIAN_NS,
+        "floor_ppm": FLOOR_PPM,
+        "floor_ns": FLOOR_NS,
+    }:
+        raise DiagnosisError("result baseline drifted")
+    if not isinstance(result["samples"], list):
+        raise DiagnosisError("result samples were not an array")
+    expected_aggregate = aggregate(result["samples"])
+    if result["aggregate"] != expected_aggregate:
+        raise DiagnosisError("result aggregate drifted")
+    require_exact_keys(result["aggregate"], AGGREGATE_KEYS, "result aggregate")
+    if not is_int(result["elapsed_ns"]) or result["elapsed_ns"] <= 0:
+        raise DiagnosisError("result elapsed interval was invalid")
+
+
+def self_test() -> int:
+    validate_imported_workload()
+    for maximum in (2, FULL_TOKENS):
+        validate_helper_record(synthetic_record(maximum), maximum)
+
+    malformed = synthetic_record()
+    malformed["remaining_decode"] = dict(malformed["remaining_decode"])
+    malformed["remaining_decode"]["pass_residual_ns"] += 1
+    try:
+        validate_helper_record(malformed, FULL_TOKENS)
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("mutated pass partition was accepted")
+    malformed = synthetic_record()
+    malformed["remaining_decode"] = dict(malformed["remaining_decode"])
+    malformed["remaining_decode"]["routing_ns"] = True
+    try:
+        validate_helper_record(malformed, FULL_TOKENS)
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("boolean timing was accepted")
+
+    with mock.patch.object(phase, "SEED", 6):
+        try:
+            validate_imported_workload()
+        except DiagnosisError:
+            pass
+        else:
+            raise DiagnosisError("drifted imported workload was accepted")
+
+    below = aggregate(synthetic_samples(bucket="COMPUTE", bucket_value=FLOOR_NS - 1))
+    if below["decision"] != "NO_MATERIAL_BUCKET":
+        raise DiagnosisError("below-floor bucket was selected")
+    direct = aggregate(synthetic_samples(bucket="COMPUTE", bucket_value=FLOOR_NS))
+    if direct["decision"] != "MEASURED_BUCKET_ELIGIBLE" or direct["selected_bucket"] != "COMPUTE":
+        raise DiagnosisError("direct measured bucket decision drifted")
+    residual = aggregate(synthetic_samples(bucket="PASS_RESIDUAL", bucket_value=FLOOR_NS))
+    if residual["decision"] != "PASS_RESIDUAL_NEEDS_DIAGNOSIS":
+        raise DiagnosisError("pass-residual decision drifted")
+    tie_samples = synthetic_samples(bucket="CLAIM_IO", bucket_value=FLOOR_NS)
+    for sample in tie_samples:
+        remaining = sample["full"]["remaining_decode"]
+        remaining["compute_ns"] = FLOOR_NS
+        remaining["pass_ns"] += FLOOR_NS - 100
+        sample["full"]["engine_phases"]["remaining_decode_ns"] += FLOOR_NS - 100
+        sample["full"]["engine_phases"]["remaining_decode_compute_ns"] = FLOOR_NS
+        sample["full"]["engine"]["decode_compute_ns"] = (
+            sample["full"]["engine_phases"]["first_decode_compute_ns"] + FLOOR_NS
+        )
+        sample["full"]["engine"]["elapsed_ns"] += FLOOR_NS - 100
+        sample["full"]["phases"]["engine_wall_ns"] += FLOOR_NS - 100
+        sample["full"]["phases"]["elapsed_ns"] += FLOOR_NS - 100
+        sample["full_helper_wall_ns"] += FLOOR_NS - 100
+    if aggregate(tie_samples)["selected_bucket"] != "CLAIM_IO":
+        raise DiagnosisError("bucket tie order drifted")
+
+    invalid_isolation = synthetic_samples()
+    invalid_isolation[0]["isolation"]["matching_between"] = True
+    try:
+        aggregate(invalid_isolation)
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("boolean isolation count was accepted")
+
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as printed:
+        if prerequisites() is not None:
+            raise DiagnosisError("missing prerequisites did not produce N/A")
+    printed.assert_called_once_with(
+        "R8-OLMOE-REMAINING-DECODE-OVERHEAD-DIAGNOSIS: N/A (ALIGN_LLM_OLMOE_MODEL unset)"
+    )
+
+    conditioning = synthetic_record(2)
+    full = synthetic_record()
+    fake_measurements = [(conditioning, 500), (full, 1000)]
+    with mock.patch.object(parent, "require_no_matching_process", side_effect=[None, None, None]) as absent, mock.patch.object(sys.modules[__name__], "measure_request", side_effect=fake_measurements):
+        sample = measure_sample(1, {"helper": Path("/helper"), "runtime_env": {}}, Path("/server"), Path("/model"), Path("/pack"), Path("/geometry"), {}, time.monotonic() + 1)
+    if absent.call_count != 3 or sample["isolation"] != {"matching_before": 0, "matching_between": 0, "matching_after": 0}:
+        raise DiagnosisError("successful sample isolation checks drifted")
+    with mock.patch.object(parent, "require_no_matching_process", side_effect=[None, None, None]) as absent, mock.patch.object(sys.modules[__name__], "measure_request", side_effect=[(conditioning, 500), DiagnosisError("forced")]):
+        try:
+            measure_sample(1, {"helper": Path("/helper"), "runtime_env": {}}, Path("/server"), Path("/model"), Path("/pack"), Path("/geometry"), {}, time.monotonic() + 1)
+        except DiagnosisError:
+            pass
+        else:
+            raise DiagnosisError("failed full request was accepted")
+    if absent.call_count != 3:
+        raise DiagnosisError("failure path skipped final isolation check")
+
+    result = synthetic_result(synthetic_samples())
+    validate_result(result)
+    malformed_result = dict(result)
+    malformed_result["extra"] = 1
+    try:
+        validate_result(malformed_result)
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("non-exact result was accepted")
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-remaining-decode-self-test-") as raw:
+        generated = Path(raw) / "generated"
+        saved = Path(raw) / "saved"
+        generated.write_text("new", encoding="utf-8")
+        saved.write_text("old", encoding="utf-8")
+        parent.restore_generated(generated, saved)
+        if generated.read_text(encoding="utf-8") != "old":
+            raise DiagnosisError("existing generated helper was not restored")
+    forced_timeout = subprocess.TimeoutExpired(["child"], 10)
+    fake_process = mock.Mock()
+    fake_process.poll.return_value = None
+    fake_process.wait.side_effect = [forced_timeout, 0]
+    parent.stop_process(fake_process)
+    if fake_process.terminate.call_count != 1 or fake_process.kill.call_count != 1:
+        raise DiagnosisError("process cleanup did not escalate")
+    print("R8-OLMOE-REMAINING-DECODE-OVERHEAD-DIAGNOSIS self-test: PASS")
+    return 0
+
+
+def synthetic_result(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "artifact_kind": "R8_OLMOE_REMAINING_DECODE_OVERHEAD_DIAGNOSIS",
+        "status": "COMPLETE",
+        "model": {"bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe"},
+        "baseline": {
+            "provider_intervals_ns": BASELINE_VALUES_NS,
+            "median_ns": BASELINE_MEDIAN_NS,
+            "floor_ppm": FLOOR_PPM,
+            "floor_ns": FLOOR_NS,
+        },
+        "candidate": {
+            "provider": "align-runtime",
+            "align_llm_head": "a" * 40,
+            "align_revision": EXPECTED_ALIGN_REVISION,
+            "compiler_sha256": EXPECTED_COMPILER_SHA256,
+            "helper_sha256": "b" * 64,
+            "shim_sha256": "c" * 64,
+            "ggml_libraries": EXPECTED_GGML_LIBRARIES,
+            "pack_sha256": EXPECTED_PACK_SHA256,
+            "geometry_sha256": EXPECTED_GEOMETRY_SHA256,
+            "cache_budget_bytes": BUDGET,
+        },
+        "task": {
+            "task_id": "python-inclusive-range",
+            "task_sha256": EXPECTED_TASK_SHA256,
+            "prompt_sha256": EXPECTED_PROMPT_SHA256,
+            "maximum_tokens": FULL_TOKENS,
+            "temperature_micros": TEMPERATURE_MICROS,
+            "seed": SEED,
+            "full_output_sha256": FULL_OUTPUT_SHA256,
+        },
+        "environment": {
+            "os": "Darwin",
+            "release": "test",
+            "architecture": "arm64",
+            "cpu_count": 1,
+            "c_compiler_sha256": EXPECTED_C_COMPILER_SHA256,
+            "c_compiler_version_sha256": EXPECTED_C_COMPILER_VERSION_SHA256,
+            "linker_search_sha256": EXPECTED_LINKER_SEARCH_SHA256,
+        },
+        "samples": samples,
+        "aggregate": aggregate(samples),
+        "elapsed_ns": 1,
+    }
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise DiagnosisError("OLMoE remaining-decode diagnosis accepts no arguments")
+    required = prerequisites()
+    if required is None:
+        return 0
+    model, pack, geometry, include, library, server = required
+    started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-remaining-decode-") as raw:
+        work = Path(raw)
+        clean_env = phase.decision.decision_environment()
+        linker_search = phase.decision.validate_linker_search(clean_env)
+        if linker_search:
+            clean_env["LIBRARY_PATH"] = linker_search
+        source_status = parent.run_process(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline, maximum=30, env=clean_env,
+        )
+        if source_status.stdout:
+            raise DiagnosisError("real diagnosis requires a clean worktree")
+        align_llm_head = parent.run_process(
+            ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env
+        ).stdout.decode("ascii").strip()
+        validate_imported_workload()
+        align_revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        parent.require_no_matching_process(server, model, deadline, clean_env)
+        if model.stat().st_size != MODEL_BYTES or base.file_sha256(model) != MODEL_SHA256:
+            raise DiagnosisError("configured OLMoE GGUF does not have the pinned identity")
+        pack_sha256 = base.file_sha256(pack)
+        geometry_sha256 = base.file_sha256(geometry)
+        server_sha256 = base.file_sha256(server)
+        task_sha256 = base.file_sha256(TASK)
+        prompt_sha256 = base.bytes_sha256(PROMPT_TEXT.encode("utf-8"))
+        ggml_libraries = base.library_identities(library)
+        linker_search_sha256 = (
+            None if not linker_search else base.bytes_sha256(linker_search.encode("utf-8"))
+        )
+        validate_external_identity(
+            align_revision=align_revision, pack_sha256=pack_sha256,
+            geometry_sha256=geometry_sha256, server_sha256=server_sha256,
+            task_sha256=task_sha256, prompt_sha256=prompt_sha256,
+            ggml_libraries=ggml_libraries,
+            linker_search_sha256=linker_search_sha256,
+        )
+        version = parent.run_process(
+            [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env
+        )
+        if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
+            raise DiagnosisError("llama-server build identity drifted")
+
+        with built_helper(work, include, library, clean_env, deadline) as built:
+            validate_toolchain_identity(built)
+            samples = []
+            for index in range(1, REPETITIONS + 1):
+                samples.append(
+                    measure_sample(
+                        index, built, server, model, pack, geometry, clean_env, deadline
+                    )
+                )
+                validate_repeatability(samples)
+
+            final_status = parent.run_process(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                deadline=deadline, maximum=30, env=clean_env,
+            )
+            final_head = parent.run_process(
+                ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env
+            ).stdout.decode("ascii").strip()
+            if final_status.stdout or final_head != align_llm_head:
+                raise DiagnosisError("align-llm source changed during diagnosis")
+            parent.verify_identities((
+                ("model", model, MODEL_SHA256),
+                ("pack", pack, pack_sha256),
+                ("geometry", geometry, geometry_sha256),
+                ("server", server, server_sha256),
+                ("task", TASK, task_sha256),
+                ("compiler", built["compiler"], built["compiler_sha256"]),
+                ("C compiler", built["c_compiler"], built["c_compiler_sha256"]),
+                ("shim", built["shim"], built["shim_sha256"]),
+                ("helper", built["helper"], built["helper_sha256"]),
+            ))
+            if base.library_identities(library) != ggml_libraries:
+                raise DiagnosisError("ggml library identities changed during diagnosis")
+            parent.require_no_matching_process(server, model, deadline, clean_env)
+
+            elapsed_ns = time.monotonic_ns() - started_ns
+            if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+                raise DiagnosisError(
+                    f"complete diagnosis exceeded its 8-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+                )
+            task_document = json.loads(TASK.read_text(encoding="utf-8"))
+            aggregate_result = aggregate(samples)
+            result = {
+                "schema_version": 1,
+                "artifact_kind": "R8_OLMOE_REMAINING_DECODE_OVERHEAD_DIAGNOSIS",
+                "status": "COMPLETE",
+                "model": {"bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe"},
+                "baseline": {
+                    "provider_intervals_ns": BASELINE_VALUES_NS,
+                    "median_ns": BASELINE_MEDIAN_NS,
+                    "floor_ppm": FLOOR_PPM,
+                    "floor_ns": FLOOR_NS,
+                },
+                "candidate": {
+                    "provider": "align-runtime",
+                    "align_llm_head": align_llm_head,
+                    "align_revision": align_revision,
+                    "compiler_sha256": built["compiler_sha256"],
+                    "helper_sha256": built["helper_sha256"],
+                    "shim_sha256": built["shim_sha256"],
+                    "ggml_libraries": ggml_libraries,
+                    "pack_sha256": pack_sha256,
+                    "geometry_sha256": geometry_sha256,
+                    "cache_budget_bytes": BUDGET,
+                },
+                "task": {
+                    "task_id": task_document["id"],
+                    "task_sha256": task_sha256,
+                    "prompt_sha256": prompt_sha256,
+                    "maximum_tokens": FULL_TOKENS,
+                    "temperature_micros": TEMPERATURE_MICROS,
+                    "seed": SEED,
+                    "full_output_sha256": FULL_OUTPUT_SHA256,
+                },
+                "environment": {
+                    "os": platform.system(),
+                    "release": platform.release(),
+                    "architecture": platform.machine(),
+                    "cpu_count": os.cpu_count(),
+                    "c_compiler_sha256": built["c_compiler_sha256"],
+                    "c_compiler_version_sha256": built["c_compiler_version_sha256"],
+                    "linker_search_sha256": linker_search_sha256,
+                },
+                "samples": samples,
+                "aggregate": aggregate_result,
+                "elapsed_ns": elapsed_ns,
+            }
+            validate_result(result)
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+            print(
+                "R8-OLMOE-REMAINING-DECODE-OVERHEAD-DIAGNOSIS: COMPLETE "
+                f"decision={aggregate_result['decision']} "
+                f"bucket={aggregate_result['selected_bucket']} "
+                f"bucket_median={aggregate_result['selected_bucket_median_ns'] / 1e9:.3f}s "
+                f"remaining={aggregate_result['remaining_decode_median_ns'] / 1e9:.3f}s "
+                f"elapsed={elapsed_ns / 1e9:.2f}s",
+                file=sys.stderr,
+            )
+    return 0
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    parent.stop_owned_processes()
+    raise SystemExit(128 + signal_number)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (
+        DiagnosisError,
+        phase.DiagnosisError,
+        parent.DiagnosisError,
+        phase.decision.DecisionError,
+        base.DecisionError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        json.JSONDecodeError,
+        subprocess.TimeoutExpired,
+    ) as error:
+        parent.stop_owned_processes()
+        print(f"R8-OLMOE-REMAINING-DECODE-OVERHEAD-DIAGNOSIS: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)
