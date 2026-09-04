@@ -32,7 +32,7 @@ fixed-request gate can establish the performance claim.
 
 Intervention A is committed at `9b940fd94acaeea839725f79f7092882e722b057`. Intervention B is
 implemented and qualified `NOT_MET` at `c7f5eadf9229422190b056fa507bf3be8ce91994`. Intervention C is
-implemented and owner-tested, pending its clean-head qualification. The byte-identical real/stub
+implemented and qualified `MET` at `1e121c41c58f39c584bdc43c864aeccae6b16c04`. The byte-identical real/stub
 shared region validates nulls, dimensions,
 layout, overflow, byte bounds, and pointer
 extents before reading; returns exact or column-plus-one without writing; and preserves K and V
@@ -42,9 +42,14 @@ comparison, and maps native validation failure to the existing tensor/-1 mismatc
 runner independently pins item 60's evidence, the full changed source chain, fixed host, helper
 schema, output, lifetimes, isolation, gate arithmetic, and cleanup-before-publication.
 
-**Next actions.** Commit the intervention C implementation; run a new clean-head four-repeat
-qualification against item 60; record `MET` or `NOT_MET`; then review, repair, preflight, publish,
-merge, and continue.
+The final four-repeat full-helper samples were
+`[16554919250,17140798625,16882099208,17146960833]`, median 17,011,448,916 ns, for a
+1,734,937,854-ns / 92,547-ppm gain against item 60. The plane-boundary median fell to 779,712,734
+ns. All four runs reproduced the fixed 86-token output/hash, exact native lifetime balances, twelve
+clean isolation boundaries, fixed cache state, and cleanup in 100.934 seconds.
+
+**Next actions.** Perform one comprehensive review of the stable candidate; repair valid findings,
+rerun affected owners and exact-head preflight, publish, merge, and continue.
 
 **Blocker.** None.
 

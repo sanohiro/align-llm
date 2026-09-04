@@ -1,6 +1,6 @@
 # R8 OLMoE plane round-trip boundary
 
-Status: active, 2026-09-05
+Status: complete, `MET`, 2026-09-05
 
 Roadmap owner: item 61, `R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY`
 
@@ -141,6 +141,18 @@ Intervention B was qualified on clean head `c7f5eadf9229422190b056fa507bf3be8ce9
 - all four pairs reproduced the fixed 86-token output/hash, exact native lifetimes, twelve clean
   isolation boundaries, fixed cache state, and cleanup in 109,940,548,500 ns.
 
-Intervention C is pending implementation, focused verification, and a clean-head qualification
-against the original item 60 baseline. Interventions A and B remain unauthorized unless C makes the
-combined candidate meet the gate.
+Intervention C was qualified on clean head `1e121c41c58f39c584bdc43c864aeccae6b16c04`:
+
+- full-helper samples `[16554919250,17140798625,16882099208,17146960833]`, median
+  17,011,448,916 ns, gain 1,734,937,854 ns / 92,547 ppm: `MET`;
+- complete plane-boundary samples `[751961094,781287535,778137933,791857277]`, median
+  779,712,734 ns, down 2,192,612,205 ns / 737,675 ppm from item 60;
+- the candidate was 797,618,515 ns below the precommitted 17,809,067,431-ns ceiling;
+- all four pairs reproduced the fixed 86-token output and
+  `aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52`, exact native
+  lifetimes (2,958 buffers/gallocrs, 6,090 contexts, one backend and resident wrap, all balanced and
+  released), twelve clean isolation boundaries, fixed cache state, and cleanup in 100,934,477,959
+  ns.
+
+The combined intervention is authorized to ship. The measured claim is only this fixed request on
+the pinned Apple M1 host; the scalar non-AArch64 path makes no performance claim.

@@ -1534,7 +1534,7 @@ The current forward delivery order is:
     diagnosis does not itself establish a performance win.
 
 61. **R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY — reduce the measured K/V verification boundary.
-    Active; first two interventions measured `NOT_MET`.** [`r8-olmoe-plane-roundtrip-boundary.md`](r8-olmoe-plane-roundtrip-boundary.md) is the
+    Complete; final combined intervention measured `MET`.** [`r8-olmoe-plane-roundtrip-boundary.md`](r8-olmoe-plane-roundtrip-boundary.md) is the
     authoritative implementation ledger and closure matrix. Item 60 measured the complete
     `verify_plane` call, including concat
     shape reads, two `slot_get` operations, scalar K/V comparison, and result accounting; it did not
@@ -1550,7 +1550,9 @@ The current forward delivery order is:
     buffer-visibility check, but its 19,122,598,458-ns median was also `NOT_MET`. Disassembly names
     the remaining V scalar loop. The final bounded intervention uses exact 4-by-4 AArch64 transpose
     tiles for success and reruns the original traversal on mismatch; it retains the original
-    baseline and gate, with a scalar non-AArch64 fallback.
+    baseline and gate, with a scalar non-AArch64 fallback. Its clean-head four-repeat full-helper
+    median was 17,011,448,916 ns, a 1,734,937,854-ns / 92,547-ppm gain; the plane boundary fell to
+    779,712,734 ns. Every run preserved the fixed output, lifetimes, isolation, cache, and cleanup.
 
 ### Status (2026-08-28)
 
