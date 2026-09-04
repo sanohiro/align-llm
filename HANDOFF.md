@@ -3,36 +3,30 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-REMAINING-DECODE-OVERHEAD-DIAGNOSIS (2026-09-04)
+## Active: R8-OLMOE-KV-PLANE-STAGING-TRANSFER (2026-09-04)
 
-Branch `agent/r8-olmoe-remaining-decode-overhead-diagnosis`, based on pulled merged `main`
-`6d05d1fbbf79644806edecded24755ae701a6d0a` (item 56 PR #178). The sibling Align checkout and
+Branch `agent/r8-olmoe-kv-plane-staging-transfer`, based on pulled merged `main`
+`c3b87869a424f14eb4d6376a7915eb3e7d3405c8` (item 57 PR #179). The sibling Align checkout and
 `.align-revision` remain at merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align
 surface is currently required.
 
-Item 57's authoritative measurement ledger and closure matrix are
-`docs/specs/r8-olmoe-remaining-decode-overhead-diagnosis.md`. Four fresh-process, conditioned,
-isolated seed-5 full requests divided every successful remaining decode step into pre-pass,
-decode-pass, and post-pass and projected existing staging, claim, compute, routing, and KV-plane
-clocks onto pass. The clean-head run at `ffbe449452f8cbbba378932d2ca8e2eeee6fd683` completed in
-154.183 seconds with the fixed output and balanced lifetimes in all four repetitions.
+Item 58's authoritative implementation ledger and closure matrix are
+`docs/specs/r8-olmoe-kv-plane-staging-transfer.md`. It fixes one validated, allocation-free shared
+shim call that writes byte-identical K and V graph inputs into one caller-owned combined staging
+range. The plane, graph shapes, cache, provider lifetime, output, and native owners remain
+unchanged. Item 57's 30,450,856,583-ns full-helper wall median is immutable; the intervention may
+ship only if four fresh conditioned repetitions have exact output and balanced lifetimes and a
+candidate median no greater than 28,928,313,753 ns (50,000 ppm improvement).
 
-`KV_PLANE_TRANSFER` won at an 11.555-second median, 457,325 ppm of the 25.267-second remaining-decode
-median and well above the precommitted 1.467-second floor. Its CPU staging/upload component was
-11.548 seconds while readback was only 0.008 seconds. The decision is
-`MEASURED_BUCKET_ELIGIBLE`; item 58, `R8-OLMOE-KV-PLANE-STAGING-TRANSFER`, is selected to define and
-qualify the narrow staging implementation against item 57's fixed 30.451-second full-helper wall
-baseline and a new 50,000-ppm shipping gate.
-
-**Next actions.** Complete item 57's comprehensive review, exact-head preflight, publication, and
-merge. Then pull merged `main`, start item 58, write its implementation ledger and closure matrix,
-and implement the smallest staging-transfer seam that can clear its precommitted gate.
+**Next actions.** Implement the shared staging primitive, safe wrapper, combined decode staging,
+hosted exact-layout/refusal owner, and bounded performance runner. Run narrow owners and the real
+qualification; retain the intervention only for `MET`, then review, preflight, publish, and merge.
 
 **Blocker.** None.
 
-**Latest durable verification.** `gmake fmt`, the pinned helper build, focused Python self-test,
-`gmake layer-forward-smoke`, `gmake runtime-provider-smoke`, and `git diff --check` pass. The real
-diagnosis and exact result are recorded above; machine-local evidence remains outside Git.
+**Latest durable verification.** Item 57's exact-head preflight and all PR #179 checks passed before
+merge. Item 58 has completed its pre-implementation author consistency pass; no implementation
+verification has run yet.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.

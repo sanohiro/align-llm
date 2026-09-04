@@ -1485,12 +1485,13 @@ The current forward delivery order is:
     item 58; it does not itself establish a performance win.
 
 58. **R8-OLMOE-KV-PLANE-STAGING-TRANSFER — reduce the measured scalar K/V staging boundary.
-    Selected; not started.** Define a consumer-complete implementation contract that preserves the
-    current plane, graph-input, token/output, cache, and native-lifetime semantics while replacing
-    the per-scalar host staging path at the narrowest shipped seam. Use item 57's four fixed full
-    helper walls and 30,450,856,583-ns median as the immutable baseline, precommit a 50,000-ppm
-    shipping gate, and retain the exact conditioned four-repeat protocol. Ship only if the fixed
-    output and lifetime gates pass and the candidate median clears that performance floor.
+    Active.** [`r8-olmoe-kv-plane-staging-transfer.md`](r8-olmoe-kv-plane-staging-transfer.md) is
+    the authoritative implementation ledger and closure matrix. Preserve the current plane,
+    graph-input, token/output, cache, and native-lifetime semantics while replacing the per-scalar
+    host staging loops with one validated, allocation-free call at the existing shared C shim.
+    Item 57's four fixed full helper walls and 30,450,856,583-ns median are the immutable baseline;
+    the exact conditioned four-repeat qualification must preserve output and lifetimes and clear
+    the precommitted 50,000-ppm gate, a candidate median no greater than 28,928,313,753 ns.
 
 ### Status (2026-08-28)
 
