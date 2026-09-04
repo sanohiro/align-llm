@@ -1,0 +1,120 @@
+module runtime_sampler_smoke
+
+import runtime_sampler
+import std.rand
+
+fn logits(borrow values: slice<f64>) -> buffer {
+  mut encoded := buffer(values.len() * 4)
+  mut at := 0
+  loop {
+    if at >= values.len() { break }
+    encoded.put_f32_le(values[at] as f32)
+    at = at + 1
+  }
+  return encoded
+}
+
+fn expect_error(value: Result<runtime_sampler.Selection, Error>) -> Result<(), Error> = match value {
+  Ok(_) => Err(Error.Invalid),
+  Err(_) => Ok(()),
+}
+
+pub fn main() -> Result<(), Error> {
+  equal_values := [0.0, 0.0, 0.0, 0.0][0..4]
+  equal := logits(equal_values)
+  equal_view := equal.bytes()
+  mut first_rng := rand.seed_with(42)
+  first := runtime_sampler.select(equal_view, first_rng)?
+  second := runtime_sampler.select(equal_view, first_rng)?
+  mut repeat_rng := rand.seed_with(42)
+  repeated_first := runtime_sampler.select(equal_view, repeat_rng)?
+  repeated_second := runtime_sampler.select(equal_view, repeat_rng)?
+  if first.token_id != repeated_first.token_id || second.token_id != repeated_second.token_id
+    || first.token_id != 3 || second.token_id != 1
+    || first.top_token_id != 0 || first.top_k_count != 4 || first.top_p_count != 4
+    || first.min_p_count != 4 {
+    return Err(Error.Invalid)
+  }
+
+  mut other_rng := rand.seed_with(7)
+  other := runtime_sampler.select(equal_view, other_rng)?
+  if other.token_id != 0 || other.token_id == first.token_id { return Err(Error.Invalid) }
+
+  mut forty_one_builder: array_builder<f64> := array_builder()
+  mut candidate := 0
+  loop {
+    if candidate >= 41 { break }
+    forty_one_builder.push(0.0)
+    candidate = candidate + 1
+  }
+  forty_one_values := forty_one_builder.build()
+  forty_one_values_view := forty_one_values[0..forty_one_values.len()]
+  forty_one := logits(forty_one_values_view)
+  forty_one_view := forty_one.bytes()
+  mut top_k_rng := rand.seed_with(1)
+  top_k := runtime_sampler.select(forty_one_view, top_k_rng)?
+  if top_k.top_k_count != 40 || top_k.top_token_id != 0 || top_k.token_id == 40 {
+    return Err(Error.Invalid)
+  }
+
+  mut twenty_builder: array_builder<f64> := array_builder()
+  mut equal_at := 0
+  loop {
+    if equal_at >= 20 { break }
+    twenty_builder.push(0.0)
+    equal_at = equal_at + 1
+  }
+  twenty_values := twenty_builder.build()
+  twenty_values_view := twenty_values[0..twenty_values.len()]
+  twenty := logits(twenty_values_view)
+  twenty_view := twenty.bytes()
+  mut top_p_rng := rand.seed_with(2)
+  top_p := runtime_sampler.select(twenty_view, top_p_rng)?
+  if top_p.top_p_count != 19 || top_p.min_p_count != 19 { return Err(Error.Invalid) }
+
+  mut min_p_builder: array_builder<f64> := array_builder()
+  min_p_builder.push(0.0)
+  mut tail := 0
+  loop {
+    if tail >= 20 { break }
+    min_p_builder.push(-3.1)
+    tail = tail + 1
+  }
+  min_p_source := min_p_builder.build()
+  min_p_source_view := min_p_source[0..min_p_source.len()]
+  min_p_values := logits(min_p_source_view)
+  min_p_view := min_p_values.bytes()
+  mut min_p_rng := rand.seed_with(3)
+  min_p := runtime_sampler.select(min_p_view, min_p_rng)?
+  if min_p.top_p_count <= 1 || min_p.min_p_count != 1 || min_p.token_id != 0 {
+    return Err(Error.Invalid)
+  }
+
+  one_value := [-12.5][0..1]
+  one := logits(one_value)
+  one_view := one.bytes()
+  mut one_rng := rand.seed_with(-9223372036854775807 - 1)
+  only := runtime_sampler.select(one_view, one_rng)?
+  if only.token_id != 0 || only.top_k_count != 1 || only.top_p_count != 1
+    || only.min_p_count != 1 {
+    return Err(Error.Invalid)
+  }
+  mut maximum_rng := rand.seed_with(9223372036854775807)
+  maximum_only := runtime_sampler.select(one_view, maximum_rng)?
+  if maximum_only.token_id != 0 { return Err(Error.Invalid) }
+
+  empty := buffer(0)
+  short := buffer(2)
+  empty_view := empty.bytes()
+  short_view := short.bytes()
+  mut bad_rng := rand.seed_with(0)
+  expect_error(runtime_sampler.select(empty_view, bad_rng))?
+  expect_error(runtime_sampler.select(short_view, bad_rng))?
+  mut nonfinite := buffer(4)
+  nonfinite.put_u32_le(2143289344)
+  nonfinite_view := nonfinite.bytes()
+  expect_error(runtime_sampler.select(nonfinite_view, bad_rng))?
+
+  print("runtime sampler smoke: PASS")
+  return Ok(())
+}

@@ -159,5 +159,35 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     }
     return run_one(config, request, result_path)
   }
+  if mode == "runtime-olmoe-sampled" && args.len() == 11 {
+    cache_budget_bytes: i64 := json.decode(args[5])?
+    max_tokens: i64 := json.decode(args[6])?
+    temperature_micros: i64 := json.decode(args[7])?
+    seed: i64 := json.decode(args[8])?
+    if cache_budget_bytes <= 0 || max_tokens < 1 || max_tokens > 128
+      || temperature_micros != 300000 {
+      return Err(Error.Invalid)
+    }
+    sampled_request := model.GenerationRequest {
+      system: "You are a coding assistant. Return a concise patch-oriented answer.",
+      user: user,
+      max_tokens: max_tokens,
+      temperature: (temperature_micros as f64) / 1000000.0,
+      seed: Some(seed),
+    }
+    config := model.ProviderConfig {
+      kind: model.ProviderKind.AlignRuntime,
+      endpoint: "",
+      model: args[2],
+      api_key: "",
+      timeout_ns: 0,
+      tokenize_endpoint: "",
+      max_response_bytes: 262144,
+      runtime_pack_path: args[3],
+      runtime_geometry_path: args[4],
+      runtime_cache_budget_bytes: cache_budget_bytes,
+    }
+    return run_one(config, sampled_request, result_path)
+  }
   return Err(Error.Invalid)
 }

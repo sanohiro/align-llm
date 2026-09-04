@@ -16,6 +16,7 @@ shim_dir="${work_dir}/lib"
 ordinary_main="${work_dir}/ordinary-main"
 runtime_main="${work_dir}/runtime-main"
 runtime_api="${work_dir}/runtime-provider-api-smoke"
+sampler_smoke="${work_dir}/runtime-sampler-smoke"
 main_saved=0
 
 cleanup() {
@@ -66,7 +67,8 @@ for key in ("model", "immediate_eog_model", "after_one_eog_model"):
                 % (args[1:], result.stderr.decode("utf-8", "replace"))
             )
 olmoe = json.loads((work / "olmoe-runtime-manifest.json").read_text(encoding="utf-8"))
-for key in ("model", "immediate_eog_model"):
+for key in ("model", "immediate_eog_model", "sampled_immediate_eog_model",
+            "sampled_after_one_eog_model"):
     model = work / olmoe[key]
     stem = model.stem
     geometry = work / (stem + "-model-ir.json")
@@ -109,18 +111,36 @@ ALIGN_LLM_GGML_SHIM_DIR="${shim_dir}" ALIGN_LLM_GGML_FORCE=engine \
     exit 1
   fi
   mv runtime_provider_api_smoke "${runtime_api}"
+  if ! "${compiler}" build src/runtime_sampler_smoke.align >/dev/null 2>"${diagnostic}"; then
+    cat "${diagnostic}" >&2
+    exit 1
+  fi
+  mv runtime_sampler_smoke "${sampler_smoke}"
   cp "${ordinary_main}" main
 )
 
 export DYLD_LIBRARY_PATH="${shim_dir}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 export LD_LIBRARY_PATH="${shim_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+sampler_output=$("${sampler_smoke}" 2>&1)
+if [ "${sampler_output}" != "runtime sampler smoke: PASS" ]; then
+  printf '%s\n' "runtime provider smoke: FAIL sampler output: ${sampler_output}" >&2
+  exit 1
+fi
 normal_model="${work_dir}/runtime-qwen2.gguf"
 normal_pack="${work_dir}/runtime-qwen2.alignpack"
 normal_geometry="${work_dir}/runtime-qwen2-model-ir.json"
 set +e
 api_output=$("${runtime_api}" "${normal_model}" "${normal_pack}" "${normal_geometry}" \
   "${work_dir}/runtime-qwen2-immediate-eog.alignpack" \
-  "${work_dir}/oversize-replacement-model-ir.json" 2>&1)
+  "${work_dir}/oversize-replacement-model-ir.json" \
+  "${work_dir}/runtime-olmoe.gguf" "${work_dir}/runtime-olmoe.alignpack" \
+  "${work_dir}/runtime-olmoe-model-ir.json" \
+  "${work_dir}/runtime-olmoe-sampled-immediate-eog.gguf" \
+  "${work_dir}/runtime-olmoe-sampled-immediate-eog.alignpack" \
+  "${work_dir}/runtime-olmoe-sampled-immediate-eog-model-ir.json" \
+  "${work_dir}/runtime-olmoe-sampled-after-one-eog.gguf" \
+  "${work_dir}/runtime-olmoe-sampled-after-one-eog.alignpack" \
+  "${work_dir}/runtime-olmoe-sampled-after-one-eog-model-ir.json" 2>&1)
 api_status=$?
 set -e
 if [ "${api_status}" -ne 0 ] || [ "${api_output}" != "runtime provider API smoke: PASS" ]; then
@@ -324,4 +344,4 @@ if (result.returncode == 0 or record is None or record.get("status") != "error"
     raise SystemExit("runtime provider smoke: FAIL non-finite OLMoE logits produced completion text")
 PY
 
-echo "runtime provider smoke: PASS (61 assertions)"
+echo "runtime provider smoke: PASS (sampler vectors plus 61 CLI assertions)"

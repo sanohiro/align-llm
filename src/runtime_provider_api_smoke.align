@@ -49,12 +49,21 @@ fn expect_error(value: Result<string, Error>) -> Result<(), Error> = match value
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
-  if args.len() != 6 { return Err(Error.Invalid) }
+  if args.len() != 15 { return Err(Error.Invalid) }
   model_path := args[1]
   pack_path := args[2]
   geometry_path := args[3]
   replacement_pack_path := args[4]
   oversize_geometry_path := args[5]
+  olmoe_model_path := args[6]
+  olmoe_pack_path := args[7]
+  olmoe_geometry_path := args[8]
+  olmoe_sampled_eog_model_path := args[9]
+  olmoe_sampled_eog_pack_path := args[10]
+  olmoe_sampled_eog_geometry_path := args[11]
+  olmoe_sampled_after_model_path := args[12]
+  olmoe_sampled_after_pack_path := args[13]
+  olmoe_sampled_after_geometry_path := args[14]
 
   snapshot := gguf.open_snapshot(model_path)?
   source_identity := alignpack.verify_source_identity_snapshot(snapshot, pack_path)?
@@ -92,6 +101,28 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     return Err(Error.Invalid)
   }
 
+  olmoe := config(
+    model.ProviderKind.AlignRuntime, olmoe_model_path, olmoe_pack_path, olmoe_geometry_path,
+    "", "", 0, "", 1048576, 65536)
+  olmoe_info := provider.model_info(olmoe)
+  if !olmoe_info.supports_seed || olmoe_info.supports_stream { return Err(Error.Invalid) }
+  sampled := request(2, 0.3, Some(11))
+  sampled_first := provider.generate(olmoe, sampled)?
+  sampled_repeat := provider.generate(olmoe, sampled)?
+  if sampled_first != "82" || sampled_repeat != sampled_first { return Err(Error.Invalid) }
+  sampled_max_one := provider.generate(olmoe, request(1, 0.3, Some(11)))?
+  if sampled_max_one != "8" { return Err(Error.Invalid) }
+  olmoe_sampled_eog := config(
+    model.ProviderKind.AlignRuntime, olmoe_sampled_eog_model_path, olmoe_sampled_eog_pack_path,
+    olmoe_sampled_eog_geometry_path, "", "", 0, "", 1048576, 65536)
+  sampled_eog := provider.generate(olmoe_sampled_eog, request(3, 0.3, Some(11)))?
+  if sampled_eog.len() != 0 { return Err(Error.Invalid) }
+  olmoe_sampled_after := config(
+    model.ProviderKind.AlignRuntime, olmoe_sampled_after_model_path, olmoe_sampled_after_pack_path,
+    olmoe_sampled_after_geometry_path, "", "", 0, "", 1048576, 65536)
+  sampled_after := provider.generate(olmoe_sampled_after, request(3, 0.3, Some(11)))?
+  if sampled_after != "8" { return Err(Error.Invalid) }
+
   expect_error(provider.generate(
       config(model.ProviderKind.LocalOpenAI, model_path, pack_path, geometry_path, "", "", 0, "", 1048576, 0),
       request(1, 0.0, None)))?
@@ -117,6 +148,14 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   expect_error(provider.generate(base, request(129, 0.0, None)))?
   expect_error(provider.generate(base, request(1, 0.1, None)))?
   expect_error(provider.generate(base, request(1, 0.0, Some(0))))?
+  expect_error(provider.generate(base, request(1, 0.3, Some(0))))?
+  expect_error(provider.generate(olmoe, request(1, 0.3, None)))?
+  expect_error(provider.generate(olmoe, request(1, 0.0, Some(0))))?
+  expect_error(provider.generate(olmoe, request(1, 0.2, Some(0))))?
+  expect_error(provider.generate(
+      config(model.ProviderKind.AlignRuntime, "missing-model", "missing-pack", "missing-geometry",
+        "", "", 0, "", 1048576, 1),
+      request(1, 0.0, Some(0))))?
   expect_error(provider.generate(
       config(model.ProviderKind.AlignRuntime, model_path, pack_path, geometry_path, "", "", 0, "", 1048576, 1),
       request(1, 0.0, None)))?

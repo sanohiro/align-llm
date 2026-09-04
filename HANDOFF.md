@@ -3,45 +3,53 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-SAMPLED-CODING (2026-09-04)
+## Active: R8-OLMOE-RUNTIME-SAMPLING (2026-09-04)
 
-Branch `agent/r8-olmoe-sampled-coding`, based on pulled merged `main`
-`8d7ec12415dd0dadc765a29fd1cc3056ddbe18c8` (R8-OLMOE-CODING-DECISION PR #172). The sibling Align
+Branch `agent/r8-olmoe-runtime-sampling`, based on pulled merged `main`
+`753e7c4acb6284dc495f92a243da081434073b97` (R8-OLMOE-SAMPLED-CODING PR #173). The sibling Align
 checkout and `.align-revision` remain at merged Align
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; this capability needs no new Align surface.
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; shipped `std.rand` is sufficient and no new Align
+surface is required.
 
-Item 50 recorded `NOT_ELIGIBLE` because greedy OLMoE generation produced
-`range(start, stop, -1)` on the fixed task in both provider arms. A direct feedback repair repeated
-the same error. The completed fixed portfolio proves the sampling axis: temperature 0.3 seed 5
-produced the existing known-good patch after four non-passing candidates. The run stopped there
-with `MET`; portfolio time to passing patch was 13.176 seconds and complete setup-to-result time was
-34.483 seconds. This is feasibility evidence and makes no speed claim. The authoritative ledger,
-schema, result, and closure matrix are `docs/specs/r8-olmoe-sampled-coding.md`.
+Item 51 recorded `MET`: temperature 0.3 seed 5 produced the existing known-good patch after four
+non-passing candidates. This capability implements the selected fixed seeded policy inside the
+OLMoE `AlignRuntime` provider while preserving greedy OLMoE, dense Qwen, diagnostic decode output,
+cache ownership, and EOG behavior. The authoritative public contract, validation order, cost
+ceiling, and closure matrix are `docs/specs/r8-olmoe-runtime-sampling.md`.
 
-**Latest durable verification.** `gmake fmt` passed; the repaired focused model-free owner passed
-after a fresh managed-compiler helper build, exact fake-server wire assertion, and validator
-environment-isolation regression; `gmake runtime-provider-smoke` passed all 61 existing assertions.
-Python compilation and `git diff --check` also pass. The one real decision on clean head
-`e4a01c9529c579ce6cec57f25a45f099f884faa6` completed `MET` with selected seed 5 and patch digest
-`5d6b107e706a`.
+**Latest durable verification.** The implementation adds a fixed stable top-k/top-p/min-p sampler,
+threads one explicit Xoshiro256++ state through the OLMoE selected-token chain, and keeps diagnostic
+argmax evidence separate. The focused provider owner passes pure boundary vectors, sampled public
+API repeatability/EOG/refusal cases, and all 61 existing CLI assertions. Python compilation, helper
+self-test, Align checking, and `git diff --check` pass. The repaired fixed real qualification
+repeated seed 5 twice: both calls returned exact two-token `To fix` (SHA-256 `354950a4f359`) and the
+complete gate passed in 17.05 seconds.
 
 The comprehensive Codex CLI review covered head
-`479c596157f8533c218bad868e0097957ab33b67` against base tip and merge base
-`8d7ec12415dd0dadc765a29fd1cc3056ddbe18c8`, using gpt-5.6-sol at high effort over the full diff.
-It found one accepted P2: the supported Linux-native validator path inherited ambient executable
-and routing overrides that were absent from the result identity. The consolidated repair gives the
-known-good control and every candidate the same override-free environment and adds a focused
-isolation regression. Docker evidence from the recorded Darwin run was already isolated inside the
-immutable container, so the repair does not invalidate or reinterpret that decision. It does not
-change provider behavior, sampling, extraction, scoring, or scope and does not require another
-comprehensive review.
+`ae5f49a9eb16a9f5433fb8cd5fd4a79cc590f0a7` against base tip and merge base
+`753e7c4acb6284dc495f92a243da081434073b97`, using gpt-5.6-sol at high effort over the full diff.
+It found three accepted P2 qualification defects: deterministic empty or wrong output could pass,
+undeclared forced-shim selectors crossed into the build, and directed termination could orphan the
+model helper. The consolidated repair pins exact `To fix` and counted length 2, removes both shim
+selectors, and adds signal-aware terminate/kill cleanup plus self-tests in commit `a4ebdad`. It does
+not change the public sampling behavior or expand scope, so another comprehensive review is not
+required.
 
-**Next actions.** Run affected owner verification and exact-head publication preflight, publish,
-merge, pull `main`, and start the seeded `AlignRuntime` sampling capability selected by this result.
+**Next actions.** Run the exact-head publication preflight, publish the pull request with its review
+envelope, merge after required checks, then start the next roadmap capability.
 
 **Blocker.** None.
 
 **Intentional uncommitted files.** None. Local configuration remains outside the change.
+
+## Merged checkpoint: R8-OLMOE-SAMPLED-CODING (PR #173, 2026-09-04)
+
+PR #173 merged as `753e7c4acb6284dc495f92a243da081434073b97`. Its fixed eight-seed local-provider
+portfolio recorded `MET` at candidate 5, seed 5, with passing patch digest `5d6b107e706a` and 13.176
+seconds from portfolio start through validation. The result is feasibility evidence and not a speed
+claim. The comprehensive review found one valid validator-environment isolation defect; repair
+commit `a2537f1` removed ambient native routing overrides from the control and every candidate. The
+exact-head preflight and all required GitHub checks passed before merge.
 
 ## Merged checkpoint: R8-OLMOE-PROVIDER (PR #170, 2026-09-03)
 
