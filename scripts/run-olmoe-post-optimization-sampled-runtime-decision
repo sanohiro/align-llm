@@ -1,0 +1,452 @@
+#!/usr/bin/env python3
+"""Remeasure the isolated sampled portfolio after shipped OLMoE optimizations."""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import io
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PREDECESSOR_PATH = ROOT / "scripts/run-olmoe-isolated-sampled-runtime-decision"
+PREDECESSOR_LOADER = SourceFileLoader("olmoe_isolated_for_post_optimization", str(PREDECESSOR_PATH))
+PREDECESSOR_SPEC = importlib.util.spec_from_loader(PREDECESSOR_LOADER.name, PREDECESSOR_LOADER)
+if PREDECESSOR_SPEC is None or PREDECESSOR_SPEC.loader is None:
+    raise RuntimeError("cannot load the isolated sampled runtime owner")
+previous = importlib.util.module_from_spec(PREDECESSOR_SPEC)
+sys.modules[PREDECESSOR_LOADER.name] = previous
+PREDECESSOR_SPEC.loader.exec_module(previous)
+
+EXACT_SAFE_PATH = ROOT / "scripts/run-olmoe-exact-safe-decode-boundaries"
+EXACT_SAFE_LOADER = SourceFileLoader("olmoe_exact_safe_for_post_optimization", str(EXACT_SAFE_PATH))
+EXACT_SAFE_SPEC = importlib.util.spec_from_loader(EXACT_SAFE_LOADER.name, EXACT_SAFE_LOADER)
+if EXACT_SAFE_SPEC is None or EXACT_SAFE_SPEC.loader is None:
+    raise RuntimeError("cannot load the exact-safe decode owner")
+exact_safe = importlib.util.module_from_spec(EXACT_SAFE_SPEC)
+sys.modules[EXACT_SAFE_LOADER.name] = exact_safe
+EXACT_SAFE_SPEC.loader.exec_module(exact_safe)
+
+base = previous.base
+ARTIFACT_KIND = "R8_OLMOE_POST_OPTIMIZATION_SAMPLED_RUNTIME_DECISION"
+PREDECESSOR_ARTIFACT_KIND = "R8_OLMOE_ISOLATED_SAMPLED_RUNTIME_DECISION"
+CEILING_SECONDS = 25 * 60
+
+EXPECTED_WORKLOAD = (
+    4_213_512_192,
+    "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f",
+    "build 10566, commit bb4caa754",
+    "bb4caa754",
+    975_175_680,
+    "olmoe",
+    ROOT / "eval/tasks/coding-v1/python-inclusive-range/task.json",
+    "0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b",
+    "5d6b107e706a5a55c945bc0b41296e255013a1516e0a6211ccc9da65001252dc",
+    (("local", "runtime"), ("runtime", "local"), ("runtime", "local"), ("local", "runtime")),
+    300_000,
+    (1, 2, 3, 4, 5, 6, 7, 8),
+    128,
+    50_000,
+    CEILING_SECONDS,
+)
+EXPECTED_EXTERNAL_IDENTITY = (
+    "8cefc803d5c7f883a8db5b67250ed4ed069b43a4",
+    "f972b4a196ed5608a0c52cc02dbf8267cfc236065359315a572d601aa04ea541",
+    "20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae",
+    "1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada",
+    "98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c",
+    "1884f01a329752c1383081342c65d062241aefaefff2f206f6604008bde74940",
+    "0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b",
+    "179301dcb41ea78accc3fa0048a7e6f6710d891945a751a34addd622020c1818",
+    "ea3037e0630fa16798079372fdc24f6542d021dadda4915cc979799682d78295",
+    "5cb52d849e4b5dd2e0380c9fd272279c8b3e572dc563691f60fc8ecbf72d92cf",
+    "sha256:33fa9e4446ab1a5ca849c57ea49e2e2e4585488aa1cd4d7b2940801bad84cb54",
+)
+
+
+def unique_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    result: list[Path] = []
+    for path in paths:
+        if path not in result:
+            result.append(path)
+    return tuple(result)
+
+
+SOURCE_PATHS = unique_paths((PREDECESSOR_PATH, EXACT_SAFE_PATH, *exact_safe.SOURCE_PATHS))
+EXPECTED_SOURCE_IDENTITIES = (
+    "4b74f4e321b09b594b4f8fab94354d2cf60e69201efddd680083c4c9e390eee7",
+    "30d523f59dca536336004043cbc5b757b19fa7d305bb00a36ab894c5d196e492",
+    "cbe398505f95257c37d57ba4e19fd0b4aca65725f8e3f0f69e865c3f23782728",
+    "ecb3e41b8f874125abc9018066a002cca9faca43d68db05b2fc6e07c31230dc5",
+    "679554fd291a67c447d74ddee721799c2dca1b02af856ca44c8977368ac463c1",
+    "76ccc33af94db50bafdd6db1fd627385c0f7be2fecd087e285d2f3ea02d75cf2",
+    "433d848e6a926108cacb0651e08a24df65537225cada07d35bc6a85a295d884f",
+    "69c2a44572029e36c349de5feb061e1ecb597e3fa4de7c7a58341da2bcb05ef9",
+    "b66815c4debfec0f749ac88b39ec8ba9f06e25d1f85b4aba3c760d112748f868",
+    "26887655013f0f68e94705a6addd87dac72ada5d37d08e1421a2daef2e78de5a",
+    "922b29baf0489fd1cec53ce1395849ba69df69d0e69dea44a3f07ec95b42cf65",
+    "de717064f4d2ea89d63a6529d38d37157f7d34f9946db7e6dc350076185157ce",
+    "15fb41454a01e5be87776fedd2081b70b4bd155bd6208de1adb0f26c7ddf9dbc",
+    "1f95cefc30d4e5d772b35d6f739994440ce195facf12d5b359f206428301e9b8",
+    "03ee9abc87d1d167f1bac4878004abb64a0ef8bf50a3dfd96ee66eeba106ad9f",
+    "e3a86592357af4c1c8888689cfc026867842ac05a6f4b5a8b88fcc2f026f0260",
+    "2afa24a4ea8e15a5476b9335ed6cd3b9e683b1f305c32a1783194e04a6005e0e",
+    "91e2dedf7eac8f66f11c817797e8541881bfd2c7f71ee4e298b37305c6123a63",
+    "505efca65a7637b65b26997de200234f44cd8b7cee9db681b9f9161524ecaaaf",
+    "9141bee34a3579482c6c5852eb136810ea909f73575229b411f905ef96635581",
+    "c7e82a8a8374e1c25f1e3b61ce0b89ed8639eaeae6b4e4ae8bee2a88a09b8e8b",
+    "ee927663616eeb09b7ca2ad5a15ab2e25c1e89935349f70942bfaebe7c7baa83",
+    "ab392dd608d488891f50f5f17330c9c0bb10dadd0fb784b60309892b5c8dbc6e",
+    "b5f1b7f7798239982446f56d9d17eeeca9b87a8a47bd685e6bd9e634a686198e",
+    "972c7509128da11f427a595e67d2903f6f6b30d9039d0de02d8ac66998caec7e",
+    "d791cff7ccc5aab180748efa1fb200bf6573c9762bd75f4e0fdfe35dcdcf4a04",
+    "b435d018a7b3bc3f65ac811e0d9021563d5745b8eaa13788915da1f625956594",
+    "133d3ec5f5f08e8e6e128cd76ed1e4c467c5424bb535a9de8ce8e38f61a7e481",
+    "ff2a3d96ef2bdfdaf3acbc966734b9d813c5b7e105444f122e17fa3cd1561a34",
+    "6a9d948bf265c39570dee1ceca9f76ce361fea88f00f624ee0669d48c53e4824",
+    "14d25ed1209ff6715f44e3c0ef93065da5b23f950f0bfcc8e2c1d4a247c75f63",
+    "b01611151baace6cb59a140eec1dc336c47cd50a8e43dc746337e58e6eb10b50",
+    "cca81cbc741f6fc39f31b8cbda65bc3eed4cbfa2447db8f9cae0ccc4d961e8f9",
+    "edbd49939d82d99ce427ef90d24289765d6db0f0a7d0cb9fe16d0cf940bad977",
+    "d58bfb3b6f9f0714514d74829f72aab117e1f8fe79eacb952108d20fc7231302",
+)
+
+active_process: subprocess.Popen[bytes] | None = None
+
+
+class PostOptimizationDecisionError(RuntimeError):
+    pass
+
+
+def source_identities() -> tuple[str, ...]:
+    return tuple(base.file_sha256(path) for path in SOURCE_PATHS)
+
+
+def validate_imported_contract() -> None:
+    previous.validate_imported_workload()
+    exact_safe.validate_imported_contract()
+    workload = (
+        previous.MODEL_BYTES,
+        previous.MODEL_SHA256,
+        previous.SERVER_BUILD,
+        previous.SERVER_COMMIT,
+        previous.BUDGET,
+        previous.ALIAS,
+        previous.TASK,
+        base.bytes_sha256(previous.PROMPT_TEXT.encode("utf-8")),
+        base.bytes_sha256(previous.KNOWN_GOOD_PATCH.encode("utf-8")),
+        previous.ORDERS,
+        previous.TEMPERATURE_MICROS,
+        previous.SEEDS,
+        previous.MAX_TOKENS,
+        previous.FLOOR_PPM,
+        previous.CEILING_SECONDS,
+    )
+    if workload != EXPECTED_WORKLOAD:
+        raise PostOptimizationDecisionError("item 56 workload contract drifted")
+    external = (
+        previous.EXPECTED_ALIGN_REVISION,
+        previous.EXPECTED_COMPILER_SHA256,
+        previous.EXPECTED_PACK_SHA256,
+        previous.EXPECTED_GEOMETRY_SHA256,
+        previous.EXPECTED_SERVER_SHA256,
+        previous.EXPECTED_TASK_SHA256,
+        previous.EXPECTED_PROMPT_SHA256,
+        previous.EXPECTED_C_COMPILER_SHA256,
+        previous.EXPECTED_C_COMPILER_VERSION_SHA256,
+        previous.EXPECTED_LINKER_SEARCH_SHA256,
+        previous.EXPECTED_VALIDATOR_IMAGE,
+    )
+    if external != EXPECTED_EXTERNAL_IDENTITY:
+        raise PostOptimizationDecisionError("item 56 external identity drifted")
+    if source_identities() != EXPECTED_SOURCE_IDENTITIES:
+        raise PostOptimizationDecisionError("post-optimization source chain drifted")
+    if (
+        exact_safe.BASELINE_MEDIAN_NS != 19_266_559_229
+        or exact_safe.CANDIDATE_CEILING_NS != 18_303_231_267
+    ):
+        raise PostOptimizationDecisionError("item 68 performance contract drifted")
+
+
+def predecessor_projection(result: dict[str, Any]) -> dict[str, Any]:
+    projected = dict(result)
+    projected["artifact_kind"] = PREDECESSOR_ARTIFACT_KIND
+    return projected
+
+
+def adapt_result(result: dict[str, Any]) -> dict[str, Any]:
+    previous.validate_result(result)
+    adapted = dict(result)
+    adapted["artifact_kind"] = ARTIFACT_KIND
+    validate_result(adapted)
+    return adapted
+
+
+def validate_result(result: dict[str, Any]) -> None:
+    if result.get("artifact_kind") != ARTIFACT_KIND:
+        raise PostOptimizationDecisionError("result artifact identity drifted")
+    previous.validate_result(predecessor_projection(result))
+
+
+def prerequisites() -> bool:
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        required = previous.prerequisites()
+    if required is not None:
+        return True
+    line = captured.getvalue().strip()
+    marker = ": N/A ("
+    if marker not in line or not line.endswith(")"):
+        raise PostOptimizationDecisionError("predecessor prerequisite result was malformed")
+    print(f"R8-OLMOE-POST-OPTIMIZATION-SAMPLED-RUNTIME-DECISION{line[line.index(marker):]}")
+    return False
+
+
+def stop_active_process() -> None:
+    global active_process
+    process = active_process
+    active_process = None
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def delegate_decision() -> dict[str, Any]:
+    global active_process
+    active_process = subprocess.Popen(
+        [sys.executable, str(PREDECESSOR_PATH)],
+        cwd=ROOT,
+        env=os.environ.copy(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    process = active_process
+    try:
+        stdout, stderr = process.communicate(timeout=CEILING_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        stop_active_process()
+        raise PostOptimizationDecisionError("delegated decision exceeded its 25-minute ceiling") from error
+    finally:
+        if active_process is process and process.poll() is not None:
+            active_process = None
+    if process.returncode != 0:
+        detail = stderr.decode("utf-8", "replace").strip().splitlines()
+        suffix = "" if not detail else f": {detail[-1]}"
+        raise PostOptimizationDecisionError(f"delegated decision failed{suffix}")
+    try:
+        lines = stdout.decode("utf-8").splitlines()
+    except UnicodeError as error:
+        raise PostOptimizationDecisionError("delegated result was not UTF-8") from error
+    if len(lines) != 1:
+        raise PostOptimizationDecisionError("delegated decision did not emit exactly one result")
+    try:
+        result = json.loads(lines[0])
+    except json.JSONDecodeError as error:
+        raise PostOptimizationDecisionError("delegated result was not JSON") from error
+    if not isinstance(result, dict):
+        raise PostOptimizationDecisionError("delegated result was not an object")
+    return result
+
+
+def synthetic_predecessor_result() -> dict[str, Any]:
+    samples = previous.synthetic_samples()
+    aggregate = previous.previous.aggregate(samples)
+    return {
+        "schema_version": 1,
+        "artifact_kind": PREDECESSOR_ARTIFACT_KIND,
+        "status": "COMPLETE",
+        "model": {
+            "bytes": previous.MODEL_BYTES,
+            "sha256": previous.MODEL_SHA256,
+            "architecture": "olmoe",
+        },
+        "baseline": previous.baseline_metadata(),
+        "candidate": {
+            "provider": "align-runtime",
+            "align_llm_head": "a" * 40,
+            "align_revision": previous.EXPECTED_ALIGN_REVISION,
+            "compiler_sha256": previous.EXPECTED_COMPILER_SHA256,
+            "helper_sha256": "b" * 64,
+            "shim_sha256": "c" * 64,
+            "ggml_libraries": previous.EXPECTED_GGML_LIBRARIES,
+            "pack_sha256": previous.EXPECTED_PACK_SHA256,
+            "geometry_sha256": previous.EXPECTED_GEOMETRY_SHA256,
+            "cache_budget_bytes": previous.BUDGET,
+        },
+        "task": {
+            "task_id": "python-inclusive-range",
+            "task_sha256": previous.EXPECTED_TASK_SHA256,
+            "prompt_sha256": previous.EXPECTED_PROMPT_SHA256,
+            "maximum_completion_tokens": previous.MAX_TOKENS,
+        },
+        "sampling": {
+            "temperature_micros": previous.TEMPERATURE_MICROS,
+            "ordered_seeds": list(previous.SEEDS),
+            "maximum_candidates": len(previous.SEEDS),
+            "stop_on_first_pass": True,
+        },
+        "validator": {"kind": "docker", "image_id": previous.EXPECTED_VALIDATOR_IMAGE},
+        "environment": {
+            "os": "Darwin",
+            "release": "test",
+            "architecture": "arm64",
+            "cpu_count": 8,
+            "c_compiler_sha256": previous.EXPECTED_C_COMPILER_SHA256,
+            "c_compiler_version_sha256": previous.EXPECTED_C_COMPILER_VERSION_SHA256,
+            "linker_search_sha256": previous.EXPECTED_LINKER_SEARCH_SHA256,
+        },
+        "samples": samples,
+        "aggregate": aggregate,
+        "elapsed_ns": 1,
+    }
+
+
+def expect_error(action: Any, message: str) -> None:
+    try:
+        action()
+    except Exception:
+        return
+    raise PostOptimizationDecisionError(message)
+
+
+def self_test() -> int:
+    validate_imported_contract()
+    with contextlib.redirect_stdout(io.StringIO()):
+        if previous.self_test() != 0 or exact_safe.self_test() != 0:
+            raise PostOptimizationDecisionError("predecessor owner failed")
+    original = synthetic_predecessor_result()
+    adapted = adapt_result(original)
+    if predecessor_projection(adapted) != original:
+        raise PostOptimizationDecisionError("result projection changed inherited evidence")
+    malformed = dict(adapted)
+    malformed["aggregate"] = {"bad": True}
+    expect_error(lambda: validate_result(malformed), "malformed inherited aggregate was accepted")
+    malformed = dict(adapted)
+    malformed["artifact_kind"] = PREDECESSOR_ARTIFACT_KIND
+    expect_error(lambda: validate_result(malformed), "predecessor artifact identity was accepted")
+    with mock.patch.object(base, "file_sha256", return_value="0" * 64):
+        expect_error(validate_imported_contract, "source mutation was accepted")
+
+    encoded = json.dumps(original, separators=(",", ":")).encode("utf-8")
+    complete = mock.Mock()
+    complete.communicate.return_value = (encoded + b"\n", b"complete\n")
+    complete.returncode = 0
+    complete.poll.return_value = 0
+    with mock.patch("subprocess.Popen", return_value=complete):
+        if delegate_decision() != original:
+            raise PostOptimizationDecisionError("delegated success changed its result")
+    failed = mock.Mock()
+    failed.communicate.return_value = (b"", b"injected failure\n")
+    failed.returncode = 1
+    failed.poll.return_value = 1
+    with mock.patch("subprocess.Popen", return_value=failed):
+        expect_error(delegate_decision, "delegated failure was accepted")
+
+    global active_process
+    active_process = mock.Mock()
+    active_process.poll.return_value = None
+    stop_active_process()
+    if active_process is not None:
+        raise PostOptimizationDecisionError("active delegated process was not cleared")
+
+    with mock.patch.dict(os.environ, {}, clear=True):
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            if prerequisites():
+                raise PostOptimizationDecisionError("missing prerequisites were accepted")
+    if captured.getvalue() != (
+        "R8-OLMOE-POST-OPTIMIZATION-SAMPLED-RUNTIME-DECISION: N/A "
+        "(ALIGN_LLM_OLMOE_MODEL unset)\n"
+    ):
+        raise PostOptimizationDecisionError("missing prerequisite result drifted")
+    with mock.patch.object(sys, "argv", [sys.argv[0], "unexpected"]):
+        expect_error(main, "unexpected command argument was accepted")
+    print("R8-OLMOE-POST-OPTIMIZATION-SAMPLED-RUNTIME-DECISION self-test: PASS")
+    return 0
+
+
+def git_head() -> str:
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+    )
+    return completed.stdout.decode("ascii").strip()
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise PostOptimizationDecisionError("decision accepts no arguments or --self-test")
+    if not prerequisites():
+        return 0
+    validate_imported_contract()
+    started_ns = time.monotonic_ns()
+    head = git_head()
+    predecessor_result = delegate_decision()
+    result = adapt_result(predecessor_result)
+    if result["candidate"]["align_llm_head"] != head or git_head() != head:
+        raise PostOptimizationDecisionError("evaluated head changed during the decision")
+    validate_imported_contract()
+    elapsed_ns = time.monotonic_ns() - started_ns
+    if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+        raise PostOptimizationDecisionError(
+            f"complete decision exceeded its 25-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+        )
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    aggregate = result["aggregate"]
+    print(
+        "R8-OLMOE-POST-OPTIMIZATION-SAMPLED-RUNTIME-DECISION: COMPLETE "
+        f"verdict={aggregate['verdict']} gain_ppm={aggregate['gain_ppm']} "
+        f"elapsed={elapsed_ns / 1e9:.2f}s",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    stop_active_process()
+    raise SystemExit(128 + signal_number)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (
+        PostOptimizationDecisionError,
+        previous.DecisionError,
+        exact_safe.ExactSafeBoundaryError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        json.JSONDecodeError,
+        subprocess.SubprocessError,
+    ) as error:
+        stop_active_process()
+        print(
+            f"R8-OLMOE-POST-OPTIMIZATION-SAMPLED-RUNTIME-DECISION: FAIL {error}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
