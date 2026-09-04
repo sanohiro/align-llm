@@ -38,21 +38,30 @@ Its two accepted P2 findings identified claim-buffer wrapping/tensor placement i
 bucket and COMPLETE publication before cleanup and the cleanup-inclusive ceiling check. The
 consolidated repair moves those operations to setup and finalizes, validates, and publishes the
 result only after both cleanup contexts exit. It also adds focused ceiling/finalization mutants.
+Repair commit `8811725fcca11ac0a4d31b5cf024c105753ba0c9` resolves both findings.
 
-**Next actions.** Commit the consolidated review repair, run a replacement clean-head four-repeat
-diagnosis, record its exact decision, run exact-head preflight, publish, and merge. Then pull merged
-`main` and start the selected successor.
+The replacement clean-head run at that repair commit completed in 105.743 seconds, including
+cleanup, and recorded `OTHER_PASS_NEEDS_DIAGNOSIS`. Full-helper walls were
+`[18669300333,18063563792,18698163917,18994733625]` ns (18,683,732,125-ns median), and the
+decode-pass residual median was 4,143,730,497 ns. `OTHER_PASS_RESIDUAL` won at 2,877,094,540 ns
+and 694,324 ppm. Generic transfer/digest measured 867,884,330 ns, 53,566,536 ns below the
+921,450,866-ns floor; teardown measured 272,724,643 ns, build/allocation 93,369,986 ns, and setup
+24,995,614 ns. Every fixed output, token, lifetime, host, cleanup, and isolation boundary passed.
+Roadmap item 60 is selected for a narrower attribution; item 59 authorizes no implementation.
+
+**Next actions.** Run exact-head preflight, publish, and merge. Then pull merged `main` and start
+item 60.
 
 **Blocker.** None.
 
 **Latest durable verification.** After the review repair, `make fmt`, `make layer-forward-smoke`,
 Python compilation, the inherited item 58 self-test, the new focused self-test, and `git diff
 --check` pass. Pre-review `make runtime-provider-smoke` (self-test plus 61 CLI assertions) also
-passed. The replacement real four-repeat diagnosis is pending; machine-local evidence remains
-outside Git.
+passed. The replacement real four-repeat diagnosis and exact result are recorded above;
+machine-local evidence remains outside Git.
 
-**Intentional uncommitted files.** The consolidated review repair and superseded-result records
-before commit. Machine-local model/evidence and generated build products remain outside Git.
+**Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
+remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-KV-PLANE-STAGING-TRANSFER (PR #180, 2026-09-04)
 
