@@ -804,67 +804,9 @@ fn plane_column_bytes(borrow g: layer_olmoe.Geometry) -> i64 = g.n_head_kv * g.h
 // They are the reason oracle B exists. A transposed plane, an off-by-one stride, or a K/V swap is
 // numerically plausible and would survive oracle T's four printed decimals; it does not survive a
 // byte comparison of what the graph actually consumed against what the prefill actually wrote.
+// R8 item 61 keeps those exact layouts and traversal priorities while moving the byte reads into
+// the validated shared shim.
 // ---------------------------------------------------------------------------------------------
-
-fn compare_past_k(
-  borrow consumed: slice<u8>,
-  borrow plane: slice<u8>,
-  base: i64,
-  head_dim: i64,
-  n_head_kv: i64,
-  n_past: i64,
-  columns: i64,
-) -> i64 {
-  mut head := 0
-  loop {
-    if head >= n_head_kv { break }
-    mut column := 0
-    loop {
-      if column >= n_past { break }
-      mut lane := 0
-      loop {
-        if lane >= head_dim { break }
-        from := base + (lane + head_dim * (head + n_head_kv * column)) * 4
-        into := (lane + head_dim * (column + columns * head)) * 4
-        if plane.u32_le(from) != consumed.u32_le(into) { return column }
-        lane = lane + 1
-      }
-      column = column + 1
-    }
-    head = head + 1
-  }
-  return -1
-}
-
-fn compare_past_v(
-  borrow consumed: slice<u8>,
-  borrow plane: slice<u8>,
-  base: i64,
-  head_dim: i64,
-  n_head_kv: i64,
-  n_past: i64,
-  columns: i64,
-) -> i64 {
-  mut head := 0
-  loop {
-    if head >= n_head_kv { break }
-    mut lane := 0
-    loop {
-      if lane >= head_dim { break }
-      mut column := 0
-      loop {
-        if column >= n_past { break }
-        from := base + (lane + head_dim * (head + n_head_kv * column)) * 4
-        into := (column + columns * (lane + head_dim * head)) * 4
-        if plane.u32_le(from) != consumed.u32_le(into) { return column }
-        column = column + 1
-      }
-      lane = lane + 1
-    }
-    head = head + 1
-  }
-  return -1
-}
 
 // ---------------------------------------------------------------------------------------------
 // The node-table walk and the decode graph's two extra inputs
@@ -1084,7 +1026,19 @@ fn verify_plane(
   take(o, ggml_ffi.slot_get(
       slots, nodes.out[layer_olmoe.MM_DECODE_K_CONCAT_ROW], node_window, 0, span, "k_concat"))
   if o.code.len() > 0 { return }
-  bad := compare_past_k(node_window, plane, k_at, g.head_dim, g.n_head_kv, columns, columns)
+  bad := match ggml_ffi.compare_kv_plane(
+    node_window, plane, k_at, g.head_dim, g.n_head_kv, columns,
+    ggml_ffi.KV_LAYOUT_K, "k_concat_compare") {
+    Ok(value) => value,
+    Err(_) => {
+      state.roundtrip_verdict = ROUNDTRIP_MISMATCH
+      state.first_mismatch_layer = layer
+      state.first_mismatch_tensor = PLANE_TENSOR_K
+      state.first_mismatch_column = -1
+      fail(o, CODE_PLANE_MISMATCH, plane_column_detail(layer, "k", -1))
+      return
+    },
+  }
   if bad >= 0 {
     state.roundtrip_verdict = ROUNDTRIP_MISMATCH
     state.first_mismatch_layer = layer
@@ -1096,7 +1050,19 @@ fn verify_plane(
   take(o, ggml_ffi.slot_get(
       slots, nodes.out[layer_olmoe.MM_DECODE_V_CONCAT_ROW], node_window, 0, span, "v_concat"))
   if o.code.len() > 0 { return }
-  worst := compare_past_v(node_window, plane, v_at, g.head_dim, g.n_head_kv, columns, columns)
+  worst := match ggml_ffi.compare_kv_plane(
+    node_window, plane, v_at, g.head_dim, g.n_head_kv, columns,
+    ggml_ffi.KV_LAYOUT_V, "v_concat_compare") {
+    Ok(value) => value,
+    Err(_) => {
+      state.roundtrip_verdict = ROUNDTRIP_MISMATCH
+      state.first_mismatch_layer = layer
+      state.first_mismatch_tensor = PLANE_TENSOR_V
+      state.first_mismatch_column = -1
+      fail(o, CODE_PLANE_MISMATCH, plane_column_detail(layer, "v", -1))
+      return
+    },
+  }
   if worst >= 0 {
     state.roundtrip_verdict = ROUNDTRIP_MISMATCH
     state.first_mismatch_layer = layer

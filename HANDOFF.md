@@ -23,18 +23,27 @@ immutable baseline is item 60's full-helper samples
 50,000-ppm floor is 937,319,339 ns and candidate ceiling is 17,809,067,431 ns. Only the complete
 fixed-request gate can establish the performance claim.
 
-**Next actions.** Commit the ledger checkpoint; implement and directly test the shared shim, safe
-wrapper, and decode integration; add the item 61 qualification runner; run focused owners and one
-clean-head four-repeat qualification; then review, repair, preflight, publish, merge, and continue.
+The implementation is complete. The byte-identical real/stub shared region validates nulls,
+dimensions, layout, overflow, byte bounds, and pointer extents before reading; returns exact or
+column-plus-one without writing; and preserves K and V traversal order. The safe wrapper rejects an
+unrepresentable layout before narrowing. Oracle B retains shape reads and both `slot_get` calls and
+maps native validation failure to the existing tensor/-1 mismatch. The item 61 runner independently
+pins item 60's evidence, the full changed source chain, fixed host, helper schema, output, lifetimes,
+isolation, gate arithmetic, and cleanup-before-publication.
+
+**Next actions.** Commit the coherent implementation checkpoint; build the pinned real helper and
+run one clean-head four-repeat qualification; record `MET` or `NOT_MET`; then review, repair,
+preflight, publish, merge, and continue.
 
 **Blocker.** None.
 
-**Latest durable verification.** Item 60 exact-head preflight and all three PR #182 CI jobs pass at
-`e5baf5d2e8cbc6d117dd1e7d3d47152ad4c810f6`; the fixed-host diagnosis completed in 116.826 seconds.
-Item 61's author consistency pass is complete; implementation verification has not started.
+**Latest durable verification.** The author consistency pass, shared-region byte comparison,
+`make fmt`, `make layer-forward-smoke` (144.368 seconds), `make runtime-provider-smoke` (self-test
+plus 61 CLI assertions), Python compilation, the full item 57→61 self-test chain, and `git diff
+--check` pass.
 
-**Intentional uncommitted files.** Item 61 ledger, roadmap activation, and handoff update before
-commit.
+**Intentional uncommitted files.** Item 61 implementation, runner, source-identity chain, and
+handoff update before commit.
 Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS (PR #182, 2026-09-04)

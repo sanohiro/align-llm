@@ -223,7 +223,68 @@ if result != -7:
 if overlap.raw[:len(plane_data)] != before:
     raise SystemExit("layer forward smoke: FAIL overlap refusal modified its shared range")
 
-print("layer forward smoke: KV-plane native staging layout and refusals PASS")
+compare_kv = library.align_ggml_compare_kv_plane
+compare_kv.argtypes = [
+    ctypes.c_void_p, ctypes.c_int64, ctypes.c_void_p, ctypes.c_int64,
+    ctypes.c_int64, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64, ctypes.c_int32,
+]
+compare_kv.restype = ctypes.c_int64
+k_consumed = ctypes.create_string_buffer(stage.raw[:past_bytes])
+v_consumed = ctypes.create_string_buffer(stage.raw[past_bytes:past_bytes * 2])
+
+def compare(consumed, consumed_bytes, base, layout, hd=head_dim, heads=n_head_kv,
+            columns=n_past, plane_arg=plane, plane_bytes=len(plane_data)):
+    return compare_kv(
+        consumed, consumed_bytes, plane_arg, plane_bytes, base, hd, heads, columns, layout,
+    )
+
+if compare(k_consumed, past_bytes, k_base, 0) != 0:
+    raise SystemExit("layer forward smoke: FAIL exact K plane comparison")
+if compare(v_consumed, past_bytes, v_base, 1) != 0:
+    raise SystemExit("layer forward smoke: FAIL exact V plane comparison")
+
+k_mismatch = ctypes.create_string_buffer(k_consumed.raw[:past_bytes])
+k_mismatch[3 * 4] = bytes([k_mismatch[3 * 4][0] ^ 1])
+if compare(k_mismatch, past_bytes, k_base, 0) != 2:
+    raise SystemExit("layer forward smoke: FAIL K mismatch did not report column one")
+
+# V traversal is head, lane, column: column two in lane zero precedes column zero in lane one.
+v_mismatch = ctypes.create_string_buffer(v_consumed.raw[:past_bytes])
+v_mismatch[2 * 4] = bytes([v_mismatch[2 * 4][0] ^ 1])
+v_mismatch[3 * 4] = bytes([v_mismatch[3 * 4][0] ^ 1])
+if compare(v_mismatch, past_bytes, v_base, 1) != 3:
+    raise SystemExit("layer forward smoke: FAIL V mismatch traversal priority drifted")
+
+def compare_refuse(label, expected, consumed=k_consumed, consumed_bytes=past_bytes,
+                   base=k_base, layout=0, hd=head_dim, heads=n_head_kv, columns=n_past,
+                   plane_arg=plane, plane_bytes=len(plane_data)):
+    consumed_before = None if consumed is None else consumed.raw[:min(consumed_bytes, past_bytes)]
+    plane_before = None if plane_arg is None else plane_arg.raw[:len(plane_data)]
+    result = compare(
+        consumed, consumed_bytes, base, layout, hd, heads, columns, plane_arg, plane_bytes,
+    )
+    if result != expected:
+        raise SystemExit("layer forward smoke: FAIL %s compare status %d, not %d"
+                         % (label, result, expected))
+    if consumed is not None and consumed.raw[:min(consumed_bytes, past_bytes)] != consumed_before:
+        raise SystemExit("layer forward smoke: FAIL %s compare modified consumed bytes" % label)
+    if plane_arg is not None and plane_arg.raw[:len(plane_data)] != plane_before:
+        raise SystemExit("layer forward smoke: FAIL %s compare modified plane bytes" % label)
+
+compare_refuse("null-consumed", -6, consumed=None)
+compare_refuse("negative-length", -7, consumed_bytes=-1)
+compare_refuse("invalid-layout", -7, layout=2)
+compare_refuse("zero-columns", -7, columns=0)
+compare_refuse("compare-overflow", -7, hd=2**63 - 1, heads=2)
+compare_refuse("short-consumed", -7, consumed_bytes=past_bytes - 1)
+compare_refuse("plane-out-of-bounds", -7, base=len(plane_data) - past_bytes + 1)
+
+shared = ctypes.create_string_buffer(struct.pack("<3I", 11, 12, 13))
+if compare(shared, 12, 0, 0, hd=1, heads=1, columns=3,
+           plane_arg=shared, plane_bytes=12) != 0:
+    raise SystemExit("layer forward smoke: FAIL read-only overlap was refused")
+
+print("layer forward smoke: KV-plane native staging/comparison layouts and refusals PASS")
 PY
 
 # The compiler's warnings are captured rather than streamed **under the fresh worker**, exactly as

@@ -547,6 +547,101 @@ int32_t align_ggml_stage_kv(const void *plane, int64_t plane_bytes,
 }
 
 
+/* R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY
+ * (`docs/specs/r8-olmoe-plane-roundtrip-boundary.md` section 2). Compare one graph-consumed K or V
+ * image against the canonical plane without interpreting any float. Zero is exact, a positive
+ * result is the first mismatching column plus one, and a negative result is a status. Every scalar,
+ * byte range, and pointer extent is validated before the first read. Both inputs remain borrowed;
+ * overlap is safe because this function writes nothing and retains nothing.
+ */
+#define ALIGN_GGML_KV_LAYOUT_K 0
+#define ALIGN_GGML_KV_LAYOUT_V 1
+
+int64_t align_ggml_compare_kv_plane(const void *consumed, int64_t consumed_bytes,
+                                    const void *plane, int64_t plane_bytes,
+                                    int64_t plane_base, int64_t head_dim,
+                                    int64_t n_head_kv, int64_t columns, int32_t layout) {
+    int64_t elements = 0;
+    int64_t span = 0;
+    int64_t row_bytes = 0;
+    uintptr_t consumed_address = 0;
+    uintptr_t plane_address = 0;
+    const unsigned char *consumed_data = NULL;
+    const unsigned char *plane_data = NULL;
+    int64_t head = 0;
+    int64_t column = 0;
+    int64_t lane = 0;
+
+    if (consumed == NULL || plane == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    if (consumed_bytes < 0 || plane_bytes < 0 || plane_base < 0 ||
+        head_dim <= 0 || n_head_kv <= 0 || columns <= 0 ||
+        (layout != ALIGN_GGML_KV_LAYOUT_K && layout != ALIGN_GGML_KV_LAYOUT_V)) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (head_dim > INT64_MAX / n_head_kv) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    elements = head_dim * n_head_kv;
+    if (elements > INT64_MAX / columns) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    elements *= columns;
+    if (elements > INT64_MAX / 4 || head_dim > INT64_MAX / 4) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    span = elements * 4;
+    row_bytes = head_dim * 4;
+    if (span > consumed_bytes || plane_base > plane_bytes || span > plane_bytes - plane_base) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if ((uint64_t) consumed_bytes > (uint64_t) SIZE_MAX ||
+        (uint64_t) plane_bytes > (uint64_t) SIZE_MAX) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    consumed_address = (uintptr_t) consumed;
+    plane_address = (uintptr_t) plane;
+    if ((uint64_t) consumed_bytes > (uint64_t) (UINTPTR_MAX - consumed_address) ||
+        (uint64_t) plane_bytes > (uint64_t) (UINTPTR_MAX - plane_address)) {
+        return ALIGN_GGML_BOUNDS;
+    }
+
+    consumed_data = (const unsigned char *) consumed;
+    plane_data = (const unsigned char *) plane;
+    if (layout == ALIGN_GGML_KV_LAYOUT_K) {
+        for (head = 0; head < n_head_kv; head++) {
+            for (column = 0; column < columns; column++) {
+                int64_t source_at =
+                    plane_base + (column * n_head_kv + head) * row_bytes;
+                int64_t consumed_at = (head * columns + column) * row_bytes;
+                if (memcmp(plane_data + (size_t) source_at,
+                           consumed_data + (size_t) consumed_at,
+                           (size_t) row_bytes) != 0) {
+                    return column + 1;
+                }
+            }
+        }
+        return 0;
+    }
+
+    for (head = 0; head < n_head_kv; head++) {
+        for (lane = 0; lane < head_dim; lane++) {
+            for (column = 0; column < columns; column++) {
+                int64_t source_at =
+                    plane_base + ((column * n_head_kv + head) * head_dim + lane) * 4;
+                int64_t consumed_at = (column + columns * (lane + head_dim * head)) * 4;
+                if (memcmp(plane_data + (size_t) source_at,
+                           consumed_data + (size_t) consumed_at, 4) != 0) {
+                    return column + 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+
 /* R5C-METAL-PREFILL-ARM (`docs/specs/r5c-metal-prefill.md` sections 3.4, 3.8, and 3.9). The device
  * selector, the property selector, and the one clamp, shared byte-for-byte by both files so that a
  * stub GPU and a real Metal device answer the same questions with the same field ids.
