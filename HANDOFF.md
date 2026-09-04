@@ -12,20 +12,25 @@ checkout and `.align-revision` remain at merged Align
 
 Item 50 recorded `NOT_ELIGIBLE` because greedy OLMoE generation produced
 `range(start, stop, -1)` on the fixed task in both provider arms. A direct feedback repair repeated
-the same error. A bounded local feasibility probe found that temperature 0.3 with seed 5 produces
-the correct strict one-line patch, so the next consumer decision is a fixed ordered eight-seed
-portfolio through the existing local provider and unchanged validator. The authoritative ledger,
-schema, stop rule, approximately 10-minute ceiling, and closure matrix are
-`docs/specs/r8-olmoe-sampled-coding.md`.
+the same error. The completed fixed portfolio proves the sampling axis: temperature 0.3 seed 5
+produced the existing known-good patch after four non-passing candidates. The run stopped there
+with `MET`; portfolio time to passing patch was 13.176 seconds and complete setup-to-result time was
+34.483 seconds. This is feasibility evidence and makes no speed claim. The authoritative ledger,
+schema, result, and closure matrix are `docs/specs/r8-olmoe-sampled-coding.md`.
 
-**Next actions.** Complete the author ledger-to-prose pass, implement the qualification helper and
-runner, run the focused synthetic owner and one complete real decision, record the result, perform
-one comprehensive review, repair valid findings, run exact-head publication preflight, publish,
-merge, pull `main`, and continue to the next eligible capability.
+**Latest durable verification.** `gmake fmt` passed; the focused model-free owner passed after a
+fresh managed-compiler helper build and exact fake-server wire assertion; `gmake
+runtime-provider-smoke` passed all 61 existing assertions. The one real decision on clean head
+`e4a01c9529c579ce6cec57f25a45f099f884faa6` completed `MET` with selected seed 5 and patch digest
+`5d6b107e706a`.
+
+**Next actions.** Commit the bound result, perform one comprehensive review, repair valid findings,
+run affected owner verification and exact-head publication preflight, publish, merge, pull `main`,
+and start the seeded `AlignRuntime` sampling capability selected by this result.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The active design and handoff update until committed. Local
+**Intentional uncommitted files.** The bound result and handoff update until committed. Local
 configuration remains outside the change.
 
 ## Merged checkpoint: R8-OLMOE-PROVIDER (PR #170, 2026-09-03)

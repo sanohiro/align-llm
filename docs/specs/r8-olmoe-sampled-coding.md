@@ -1,6 +1,6 @@
 # R8 OLMoE sampled coding decision
 
-Status: design candidate, 2026-09-04
+Status: measured implementation candidate, 2026-09-04
 
 ## 1. Decision and boundary
 
@@ -122,3 +122,30 @@ Completion requires the focused owner, one complete real decision, one comprehen
 exact-head publication preflight, and required GitHub checks. A `MET` result makes seeded runtime
 sampling the next eligible capability but does not itself meet R8's performance gate; that still
 requires time to a passing patch or decode latency against the local baseline.
+
+## 6. Recorded decision
+
+The one complete real portfolio ran on clean align-llm head
+`e4a01c9529c579ce6cec57f25a45f099f884faa6` and finished in 34.483 seconds on Darwin 25.5.0,
+arm64, with 8 logical CPUs. It returned **`MET`** and stopped at candidate 5, seed 5. The passing
+patch SHA-256 is `5d6b107e706a5a55c945bc0b41296e255013a1516e0a6211ccc9da65001252dc`,
+identical to the existing known-good patch. Time from portfolio start through its successful
+validation was 13.176 seconds. This is feasibility evidence, not a performance result.
+
+The candidate sequence was `INVALID_PATCH`, `FAILING_PATCH`, `FAILING_PATCH`, `INVALID_PATCH`,
+`PASS`. Candidates 2 and 3 reproduced item 50's greedy wrong-patch digest
+`a64bfacadea8cc00cc6b82880db2685d8eb925831971b02b1c83f6f3a17d73ef`; candidates 1 and 4 did
+not satisfy the unchanged strict extractor. Three patches were admitted, one passed, and seeds 6
+through 8 were correctly not requested after success.
+
+The bound identities were Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`, managed compiler
+SHA-256 `f972b4a196ed5608a0c52cc02dbf8267cfc236065359315a572d601aa04ea541`, helper
+SHA-256 `a9ce76c8bf2ac377ab25c5e31971ef34c4c2fe2ecce944296a7e7ab8070b96e3`, static shim
+SHA-256 `64eb3959ebfbf1794f6b7fae080ff6c08f3de4cad4b8c370892ab40487b2a8f6`, and llama-server
+SHA-256 `b6ff7e912a9690ffec38878cad25b9ec1424a5537bd72010effe2fc9bfe64f74`.
+The immutable validator image was
+`sha256:33fa9e4446ab1a5ca849c57ea49e2e2e4585488aa1cd4d7b2940801bad84cb54`.
+
+The decision selects seeded sampling as the next `AlignRuntime` consumer capability. It does not
+select this particular five-attempt latency as a floor or claim that the fixed portfolio transfers
+to another task, model, prompt, server build, or machine.

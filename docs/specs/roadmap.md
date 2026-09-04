@@ -1359,7 +1359,7 @@ The current forward delivery order is:
     correctness rather than provider-level runtime optimization.
 
 51. **R8-OLMOE-SAMPLED-CODING — decide whether a bounded sampled portfolio reaches a passing
-    patch. Active.**
+    patch. Decision recorded: `MET`.**
     [`r8-olmoe-sampled-coding.md`](r8-olmoe-sampled-coding.md) is the authoritative measurement
     contract and closure matrix. Item 50's greedy OLMoE completion chose
     `range(start, stop, -1)` and repeated it after direct validator feedback. This capability keeps
@@ -1367,7 +1367,11 @@ The current forward delivery order is:
     provider's seeded sampling surface at temperature 0.3 over ordered seeds 1 through 8, stopping
     at the first passing patch. `MET` selects seeded sampling as the next `AlignRuntime` consumer;
     `NOT_MET` redirects to another model. The one run is bounded at approximately 10 minutes and
-    makes no quality-rate, generality, latency, or R8 shipping claim.
+    makes no quality-rate, generality, latency, or R8 shipping claim. The one complete portfolio
+    finished in 34.483 seconds and stopped at seed 5: two candidates were invalid patches, two
+    reproduced the greedy wrong patch, and candidate 5 matched the existing known-good patch and
+    passed in 13.176 seconds from portfolio start. Seeded sampling is therefore the next eligible
+    `AlignRuntime` consumer capability; R8's performance gate remains open.
 
 ### Status (2026-08-28)
 
