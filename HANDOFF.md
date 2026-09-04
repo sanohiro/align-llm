@@ -30,9 +30,8 @@ misses, 4,376 evictions, and 17,656,872,960 fetched bytes. Cache-to-claim clocks
 plane comparison median was 766,726,392 ns. Every native lifetime and twelve isolation boundaries
 passed. The full-width `src/layer_olmoe.align` and decode golden remain byte-identical to item 67.
 
-**Next actions.** Commit the measured result; perform one comprehensive high-effort review against
-merged `main`; validate and consolidate findings; rerun affected owners; run exact-head preflight;
-publish, merge, and continue to item 69.
+**Next actions.** Record the completed comprehensive review and its handoff-only repair; rerun the
+focused owner; run exact-head preflight; publish, merge, and continue to item 69.
 
 **Blocker.** None.
 
