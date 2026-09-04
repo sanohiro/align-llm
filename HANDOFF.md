@@ -41,8 +41,7 @@ merge, pull `main`, and start the seeded `AlignRuntime` sampling capability sele
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The consolidated review repair until committed. Local
-configuration remains outside the change.
+**Intentional uncommitted files.** None. Local configuration remains outside the change.
 
 ## Merged checkpoint: R8-OLMOE-PROVIDER (PR #170, 2026-09-03)
 
