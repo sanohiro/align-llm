@@ -1,6 +1,6 @@
 # R8 OLMoE post-optimization remaining-decode diagnosis
 
-Status: designed; implementation pending, 2026-09-05
+Status: measured; publication pending, 2026-09-05
 
 Roadmap owner: item 70, `R8-OLMOE-POST-OPTIMIZATION-REMAINING-DECODE-DIAGNOSIS`
 
@@ -95,3 +95,53 @@ is replaced by—not added to—its deepest children, every sample must close ex
 decode, explicit remainders cannot directly authorize implementation, and item 68 retains all
 model/native cleanup. No text turns nested timers into an additive hierarchy, changes product
 behavior, or claims that a measured leaf is fully removable.
+
+## 6. Fixed-host result
+
+The clean-head run at `7704d9f18ea4d41681c984420ea7e591450f4a79` completed in
+125,969,460,750 ns. Full-helper walls were
+`[20098090084,22297438083,23257008916,22355763250]` ns, with a current median of
+22,326,600,666 ns. Remaining decode measured
+`[14740449453,16733289713,16776725004,15902827210]` ns, with a 16,318,058,461-ns median.
+The current wall median does not replace item 68's immutable 17,423,480,208-ns diagnostic
+baseline or the precommitted 871,174,011-ns floor; this capability makes no new performance claim.
+
+Every maximum-2 request was the exact prefix of its maximum-128 pair. All four full requests
+reproduced the fixed token/output identity, exact 11,940 cache requests, 7,325 hits, 4,615 misses,
+4,376 evictions, 17,656,872,960 fetched bytes, zero cache-to-claim copies, balanced native
+lifetimes, and zero matching processes at all twelve isolation boundaries. Every sample's 23 leaf
+values summed exactly to its remaining-decode total.
+
+| Leaf | Median (ns) |
+| --- | ---: |
+| `PRE_PASS_ORCHESTRATION` | 1,089,208 |
+| `PACK_OR_RESIDENT_STAGE` | 285,036 |
+| `FILE_PREAD` | 2,582,700,546 |
+| `BLOCK_TO_CLAIM_COPY` | 399,100,251 |
+| `CLAIM_TO_CACHE_COPY` | 708,634,028 |
+| `CACHE_TO_CLAIM_COPY` | 0 |
+| `OTHER_CLAIM_IO` | 38,352,848 |
+| `EMBEDDING` | 1,654,350 |
+| `ROUTING_PHASE_A` | 4,620,020,794 |
+| `EXPERT_PHASE_B` | 1,755,611,568 |
+| `OUTPUT_HEAD` | 222,480,002 |
+| `ROUTING_ORCHESTRATION` | 17,342,259 |
+| `PLANE_UPLOAD` | 2,710,801,676 |
+| `PLANE_READBACK` | 13,012,534 |
+| `CONTEXT_BUFFER_SETUP` | 57,895,992 |
+| `GRAPH_BUILD_ALLOC` | 163,450,911 |
+| `GENERIC_TRANSFER_DIGEST` | 1,154,918,793 |
+| `GRAPH_TEARDOWN` | 400,513,311 |
+| `PLANE_ROUNDTRIP_COMPARE` | 1,177,068,085 |
+| `GRAPH_MEMBER_SPEC` | 11,901,065 |
+| `LAYER_STEP_ACCOUNTING` | 2,140,088 |
+| `OTHER_PASS_REMAINDER` | 25,854,036 |
+| `POST_PASS_ORCHESTRATION` | 187,032,963 |
+
+`ROUTING_PHASE_A` is the deterministic winner at 4,620,020,794 ns, 283,123 ppm of current
+remaining decode and 3,748,846,783 ns above the fixed materiality floor. The decision is
+`MEASURED_BUCKET_ELIGIBLE`. Item 63 already showed that removing fixed-width K/V PAD by changing
+the graph to live width neither preserved exact cache decisions in combination nor reliably
+cleared the complete-request gate alone. Item 71 therefore owns a narrower phase-A operation
+diagnosis before another implementation seam is chosen. The existing 37-row phase-A graph and all
+shipped item-68 behavior remain unchanged.

@@ -10,27 +10,36 @@ Branch `agent/r8-olmoe-post-optimization-decode-diagnosis`, based on pulled merg
 The sibling Align checkout and `.align-revision` remain at merged Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
-Item 70's authoritative ledger and closure matrix are
+Item 70's authoritative ledger, closure matrix, and measured result are
 `docs/specs/r8-olmoe-post-optimization-remaining-decode-diagnosis.md`. Item 68's current shipped
 fixed-request walls `[17714825083,16684315166,17132135334,21189618042]` ns and
 17,423,480,208-ns median precommit a 50,000-ppm materiality floor of 871,174,011 ns. The thin
-diagnostic owner will delegate item 68's complete current qualification and flatten its nested
+diagnostic owner delegates item 68's complete current qualification and flattens its nested
 remaining-decode, claim-I/O, compute, pass-residual, and pass-other clocks into 23 mutually
 exclusive deepest leaves. Parent and child totals are never added together.
 
-A directly measured leaf at or above the floor may select only a successor implementation ledger
-with its own complete-request gate. An at-or-above-floor explicit remainder selects a narrower
-diagnosis; a smaller winner records no material bucket. Product code and the open R8 gate do not
-change in this capability.
+Design checkpoint `3317e31` fixed the contract. Implementation checkpoint
+`7704d9f18ea4d41681c984420ea7e591450f4a79` added only the thin owner. Its clean-head run completed
+in 125.969 seconds. Current full-helper walls
+`[20098090084,22297438083,23257008916,22355763250]` ns had a 22,326,600,666-ns median; remaining
+decode values `[14740449453,16733289713,16776725004,15902827210]` ns had a
+16,318,058,461-ns median. `ROUTING_PHASE_A` won at 4,620,020,794 ns, 283,123 ppm of remaining
+decode and 3,748,846,783 ns above the floor. Plane upload, file pread, and expert phase B followed
+at 2.711, 2.583, and 1.756 seconds.
 
-**Next actions.** Commit the design checkpoint; implement and self-test the thin owner; run one
-clean-head fixed-host four-repeat diagnosis; record the result; review, repair, preflight, publish,
-merge, and continue to the selected successor.
+The decision is `MEASURED_BUCKET_ELIGIBLE`. All 23 leaves closed exactly in every sample, and every
+output, cache, isolation, lifetime, source, host, and cleanup boundary passed. Item 63 already
+rejected the live-width phase-A candidate, so item 71 is selected to diagnose phase-A operation
+classes before choosing a different exact-safe implementation seam. Product code and the open R8
+gate remain unchanged.
+
+**Next actions.** Commit the recorded result; complete one comprehensive review; consolidate valid
+findings; rerun affected owners and exact-head preflight; publish, merge, and continue to item 71.
 
 **Blocker.** None.
 
-**Latest durable verification.** Item 69's exact-head preflight and all three required CI jobs
-passed at `35aa094dd3602af5737fb469aae34431ea768951`; PR #191 merged as `cc2b080`.
+**Latest durable verification.** Python compilation, item 68's inherited self-test, item 70's
+focused self-test, `git diff --check`, and the clean-head real diagnosis above passed.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.

@@ -1685,15 +1685,26 @@ The current forward delivery order is:
     remains 6.53 times local. R8 stays open and item 70 owns the updated remaining-decode diagnosis.
 
 70. **R8-OLMOE-POST-OPTIMIZATION-REMAINING-DECODE-DIAGNOSIS — reselect the largest current
-    fixed-request bucket. Active; design fixed.**
+    fixed-request bucket. Complete; decision `MEASURED_BUCKET_ELIGIBLE / ROUTING_PHASE_A`.**
     [`r8-olmoe-post-optimization-remaining-decode-diagnosis.md`](r8-olmoe-post-optimization-remaining-decode-diagnosis.md)
     is the authoritative ledger and closure matrix. Re-run item 68's exact conditioned four-repeat
     owner after items 58 and 68, preserve its request, output, isolation, cache, source, host, and
     lifetime evidence, and flatten its nested current clocks into 23 mutually exclusive deepest
     leaves. Item 68's shipped 17,423,480,208-ns median fixes the 50,000-ppm materiality floor at
-    871,174,011 ns. A directly measured leaf at or above that floor may select a successor ledger;
-    an explicit remainder selects a narrower diagnosis, and a smaller winner records no material
-    bucket. This is attribution, not an optimization or performance claim.
+    871,174,011 ns. The clean-head run's current full-helper median was 22,326,600,666 ns and its
+    remaining-decode median was 16,318,058,461 ns. `ROUTING_PHASE_A` was largest at
+    4,620,020,794 ns and 283,123 ppm of remaining decode, ahead of plane upload at 2,710,801,676 ns,
+    file pread at 2,582,700,546 ns, and expert phase B at 1,755,611,568 ns. Every exact output,
+    cache, isolation, lifetime, and leaf-accounting boundary passed. This is attribution, not an
+    optimization or performance claim. Because item 63's live-width phase-A intervention did not
+    ship, item 71 owns a narrower operation diagnosis rather than repeating that candidate.
+
+71. **R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS — distinguish the remaining attention and router
+    work without repeating item 63. Selected next; not started.** Preserve item 70's fixed request
+    and 871,174,011-ns floor. Use a bounded diagnostic that does not relabel whole-graph wall time
+    or sampling counts as individual-operation timing, and select a new exact-safe implementation
+    seam only when measured evidence clears the floor. The item-63 live-width intervention remains
+    rejected.
 
 ### Status (2026-08-28)
 
