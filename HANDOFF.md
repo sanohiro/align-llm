@@ -61,10 +61,10 @@ still described the already committed measured decision as uncommitted. The cons
 adds inherited envelope validation plus a malformed-candidate regression, catches the full imported
 exception chain, and corrects durable state. These changes harden evidence validation and cleanup
 without changing instrumentation or measurement behavior, so another comprehensive review is not
-required.
+required. Consolidated repair `cb4e2c3` passes the focused self-test and revalidates the recorded
+real result through the repaired final envelope validator.
 
-**Next actions.** Finish and commit the consolidated review repair; rerun affected model-free
-evidence and exact-head preflight; publish and merge; then start item 65's shipped-surface
+**Next actions.** Run exact-head preflight; publish and merge; then start item 65's shipped-surface
 intervention investigation and ledger.
 
 **Blocker.** None.
@@ -74,11 +74,12 @@ intervention investigation and ledger.
 CLI assertions) pass. The new helper builds with the pinned compiler and real ggml shim; one
 maximum-2 execution returned the exact six-key all-zero `claim_io` object and zero parent clock.
 The exact clean-head diagnosis and result are recorded above. The earlier exploratory unchanged
-request and stack sample remain directional evidence only.
+request and stack sample remain directional evidence only. After review repair, Python compilation,
+the item-64 self-test, malformed inherited-candidate rejection, and recorded-result revalidation
+pass.
 
-**Intentional uncommitted files.** The review repair in the item-64 runner and this handoff update
-remain uncommitted until the focused regression passes. Machine-local model/evidence and generated
-build products remain outside Git.
+**Intentional uncommitted files.** This final handoff correction only, until committed.
+Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-ROUTING-PHASE-A-BOUNDARY (PR #185, 2026-09-05)
 
