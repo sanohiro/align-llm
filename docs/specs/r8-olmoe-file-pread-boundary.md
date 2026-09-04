@@ -1,6 +1,6 @@
 # R8 OLMoE file-pread boundary
 
-Status: active, implementation complete; qualification pending, 2026-09-05
+Status: complete, `NOT_MET`, 2026-09-05
 
 Roadmap owner: item 65, `R8-OLMOE-FILE-PREAD-BOUNDARY`
 
@@ -55,6 +55,10 @@ before publication.
 The capability makes one model/request/host latency claim only. Cross-host, GPU, throughput,
 arbitrary-task, OS-page-cache residency, individual-page-fault, and whole-R8 claims are N/A.
 
+The fixed qualification returned `NOT_MET`, so the final publication removes the mapped production
+path and its production-owner changes. The ledger retains the evaluated contract and result; the
+shipped provider and diagnostic paths both keep item 64's `pread` behavior.
+
 ## 3. Closure matrix
 
 | Path | Construction | Success | Failure/malformed | Early exit | Cleanup | Exact regression/evidence |
@@ -104,3 +108,24 @@ checked again against the mapped view before slicing. Cache-source bytes retain 
 meaning while syscall fields become zero only on the provider path. The immutable baseline,
 963,327,962-nanosecond floor, and 18,303,231,267-nanosecond ceiling are fixed before production
 code changes.
+
+## 6. Recorded result
+
+The clean implementation head `b82ff83daef4d0637ecec22f44c9c56bbcfdd08a` completed the fixed
+four-repeat qualification in 133.354 seconds. Full-helper walls were
+`[24070862584,24437186500,20461090500,20031240292]` ns, with a 22,265,976,542-ns integer median.
+That is 2,999,417,313 ns slower than the immutable baseline, a -155,680-ppm gain, and
+3,962,745,275 ns above the 18,303,231,267-ns shipping ceiling. The decision is `NOT_MET`.
+
+Every full request reported `claim_file_pread_ns = 0`, the exact 17,656,872,960 mapped cache-source
+bytes, 11,940 requests, 7,325 hits, 4,615 misses, and 4,376 evictions. All four reproduced the exact
+87-token chain, 86 completion tokens, output SHA-256, twelve isolation boundaries, and native
+lifetime balances. Removing the syscall did not remove its cost: mapped page faults occurred while
+the destination copy consumed source pages. The block-to-claim values
+`[2375938633,2037292955,2714244236,1733117914]` ns had a 2,206,615,794-ns median, compared with item
+64's 256,535,752-ns median on the `pread` path. Total remaining-decode claim I/O had a
+3,790,142,245-ns median.
+
+Per the precommitted rule, the mapping, threaded view/selection parameters, mapped accounting, and
+production-owner changes are removed before review. The item-65 ledger, thin helper, and bounded
+qualification owner remain as reproducible negative evidence. No provider speedup claim ships.

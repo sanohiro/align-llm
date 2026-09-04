@@ -30,29 +30,38 @@ lives through the whole synchronous schedule, never enters a cache/result/native
 unmapped after converged schedule teardown. The explicit expert-cache budget is unchanged and does
 not claim to bound the OS file cache.
 
-Design checkpoint `96cfefa` is complete. The implementation threads one mapped view and selection
+Design checkpoint `96cfefa` is complete. Evaluated implementation `b82ff83` threaded one mapped view and selection
 bit through the existing synchronous schedule, repeats block/member bounds before slicing, scatters
 before cache admission, keeps the diagnostic path on `pread`, and shrinks each provider-generation
 block transient to one byte. Cache source-span validation is independent from syscall accounting:
 mapped steps require zero expert `pread` bytes while retaining the same bounded fetched spans. The
 item-65 runner pins item 64 plus its complete transitive chain, the new helper and changed compiled
 source, immutable gate/workload/host, toolchain, libraries, headers, cleanup, and exact result
-schema.
+schema. Its fixed-host qualification completed in 133.354 seconds with full walls
+`[24070862584,24437186500,20461090500,20031240292]` ns and a 22,265,976,542-ns median. That is
+2,999,417,313 ns / 155,680 ppm slower than item 62, so the final decision is `NOT_MET`. All runs had
+zero claim-file-pread time and exact output/cache/lifetime/isolation evidence, but block-to-claim
+copy rose to a 2,206,615,794-ns median as mapped page faults moved into source consumption.
 
-**Next actions.** Commit the implementation checkpoint; run the four-repeat fixed-host gate; record
-its result; complete review, repair, preflight, publication, and merge; then continue to the next
-eligible roadmap capability.
+The production mapping and its production-owner changes are removed before publication. The final
+candidate retains only the authoritative negative decision, thin helper, and bounded qualification
+owner. Item 64's second-largest measured bucket, cache-to-claim copy at 1,072,229,252 ns, selects
+item 66.
+
+**Next actions.** Verify the post-removal diff, commit the decision, complete comprehensive review,
+repair, exact-head preflight, publication, and merge; then start item 66.
 
 **Blocker.** None.
 
-**Latest durable verification.** `make check`, `make runtime-provider-smoke` (sampler vectors plus 61
+**Latest durable verification.** Before the decision, `make check`, `make runtime-provider-smoke` (sampler vectors plus 61
 CLI assertions), `make layer-forward-smoke` (61.095 seconds), `make fmt`, Python compilation, the
 item-65 model-free self-test, and `git diff --check` pass. The runtime provider smoke exercises the
 mapped OLMoE generation path on deterministic tiny models while the layer-forward owner preserves
-the diagnostic syscall schema and golden.
+the diagnostic syscall schema and golden. The real qualification result is recorded above; final
+post-removal verification is pending.
 
-**Intentional uncommitted files.** Item 65's production/helper/runner implementation and this durable
-checkpoint until committed.
+**Intentional uncommitted files.** Item 65's production removal, recorded decision, and runner hash
+update until committed.
 Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-CLAIM-IO-DIAGNOSIS (PR #186, 2026-09-05)

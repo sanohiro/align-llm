@@ -1610,16 +1610,26 @@ The current forward delivery order is:
     cache/read counter, isolation check, and native lifetime balance passed. The result is
     `MEASURED_BUCKET_ELIGIBLE`; this is attribution, not a speedup claim.
 
-65. **R8-OLMOE-FILE-PREAD-BOUNDARY — reduce the selected claim-read bucket. Active; design fixed
-    before implementation.**
+65. **R8-OLMOE-FILE-PREAD-BOUNDARY — reduce the selected claim-read bucket. Complete; `NOT_MET`;
+    publication pending.**
     [`r8-olmoe-file-pread-boundary.md`](r8-olmoe-file-pread-boundary.md) is the authoritative ledger
     and closure matrix. Preserve item 62's shipped fixed request and immutable walls/median. Use the
     pinned Align `fs.read_bytes_view` surface to map the validated AlignPack once for provider
     generation, source cache-miss claim slices directly from it, and keep the diagnostic CLI on its
-    existing `pread` path. Precommit the unchanged item-62 963,327,962-ns floor and
-    18,303,231,267-ns candidate ceiling; only a complete four-repeat full-request gate can ship the
-    performance claim. Item 64's operation clock selects the boundary but is not a replacement
-    baseline.
+    existing `pread` path. The clean implementation qualification removed claim file-pread time on
+    all four runs but produced walls `[24070862584,24437186500,20461090500,20031240292]` ns and a
+    22,265,976,542-ns median, 15.6% slower than the immutable item-62 baseline. Mapped page-fault
+    cost moved into block-to-claim copying, whose median rose to 2,206,615,794 ns. The result is
+    `NOT_MET`; remove the production intervention before publication and ship no speedup claim.
+
+66. **R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY — investigate the next measured claim-I/O bucket.
+    Selected; not started.** Preserve item 62's immutable full-request baseline and item 64's
+    1,072,229,252-ns cache-to-claim median. Before production changes, determine whether a shipped
+    Align/ggml surface can reduce copies while preserving the cache's arbitrary eight-key selection,
+    contiguous three-plane claim ABI, fixed memory budget, and exact outputs. If no coherent
+    intervention exists, record that decision and select the next evidence-backed boundary rather
+    than weakening the ABI. Any performance candidate must precommit item 62's unchanged
+    963,327,962-ns floor and 18,303,231,267-ns ceiling.
 
 ### Status (2026-08-28)
 
