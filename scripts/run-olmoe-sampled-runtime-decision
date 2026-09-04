@@ -582,6 +582,40 @@ def portfolio_signature(portfolio: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def portfolio_summary(portfolio: dict[str, Any]) -> str:
+    validate_portfolio(portfolio)
+    candidates = ",".join(
+        "%d:%s:%d:%s:%s"
+        % (
+            candidate["index"],
+            candidate["status"],
+            candidate["completion_tokens"],
+            candidate["output_sha256"][:12],
+            "-" if candidate["patch_sha256"] is None else candidate["patch_sha256"][:12],
+        )
+        for candidate in portfolio["candidates"]
+    )
+    return (
+        f"{portfolio['status']}/selected={portfolio['selected_seed']}/"
+        f"candidates={candidates}"
+    )
+
+
+def validate_repeatability(samples: list[dict[str, Any]]) -> None:
+    for arm in ("local", "runtime"):
+        portfolios = [sample[arm] for sample in samples if isinstance(sample.get(arm), dict)]
+        if len(portfolios) < 2:
+            continue
+        expected = portfolio_signature(portfolios[0])
+        for repeat_index, portfolio in enumerate(portfolios[1:], start=2):
+            if portfolio_signature(portfolio) != expected:
+                raise DecisionError(
+                    f"{arm} sampled portfolio is nondeterministic: "
+                    f"repeat1={portfolio_summary(portfolios[0])} "
+                    f"repeat{repeat_index}={portfolio_summary(portfolio)}"
+                )
+
+
 def integer_median(values: list[int]) -> int:
     if len(values) != 4 or any(
         isinstance(value, bool) or not isinstance(value, int) or value <= 0
@@ -607,9 +641,7 @@ def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
         for arm in ("local", "runtime"):
             validate_portfolio(sample[arm])
             by_arm[arm].append(sample[arm])
-    for arm, portfolios in by_arm.items():
-        if len({portfolio_signature(portfolio) for portfolio in portfolios}) != 1:
-            raise DecisionError(f"{arm} sampled portfolio is nondeterministic")
+    validate_repeatability(samples)
 
     pass_counts = {
         arm: sum(portfolio["status"] == "PASS" for portfolio in portfolios)
@@ -1043,6 +1075,7 @@ def main() -> int:
                             clean_env,
                         )
                     samples.append(pair)
+                    validate_repeatability(samples)
             finally:
                 stop_process(server_process)
                 server_process = None

@@ -18,8 +18,12 @@ order, and closure matrix are `docs/specs/r8-olmoe-sampled-runtime-decision.md`.
 
 **Next actions.** Commit the design checkpoint, implement the focused decision runner and
 self-test without changing product behavior, run the owner, then execute and record the one real
-decision. Complete one comprehensive review, repair accepted findings, run exact-head preflight,
-publish, and merge before starting the next eligible capability.
+decision. The first complete four-pair execution reached final aggregation in about twelve minutes
+but correctly emitted no result because the local seeded portfolio was nondeterministic. Add
+bounded per-pair signatures and fail at the first repeat mismatch, diagnose the exact drift, and
+settle the reproducible baseline before recording the decision. Then complete one comprehensive
+review, repair accepted findings, run exact-head preflight, publish, and merge before starting the
+next eligible capability.
 
 **Blocker.** None.
 
