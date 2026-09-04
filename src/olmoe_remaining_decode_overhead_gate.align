@@ -114,6 +114,14 @@ PassResidual {
   other_ns: i64,
 }
 
+PassOther {
+  total_ns: i64,
+  plane_roundtrip_compare_ns: i64,
+  graph_member_spec_ns: i64,
+  layer_step_accounting_ns: i64,
+  other_ns: i64,
+}
+
 fn ir_ok(value: model_ir.IrStatus) -> bool = match value {
   Ok => true,
   Error => false,
@@ -169,7 +177,7 @@ fn digest_text(value: str) -> string {
 
 // Qualification-only access to the provider preparation and remaining-decode partition counters.
 // The public provider remains the owner of user-facing generation and exposes no timing record.
-fn run(args: array<str>, detailed: bool) -> Result<(), Error> {
+fn run(args: array<str>, detailed: bool, other_detailed: bool) -> Result<(), Error> {
   if args.len() != 7 { return Err(Error.Invalid) }
   model_path := args[1]
   pack_path := args[2]
@@ -372,11 +380,30 @@ fn run(args: array<str>, detailed: bool) -> Result<(), Error> {
   document.write(encoded_view[0..encoded_view.len() - 1])
   document.write(",\"pass_residual\":")
   document.write(detail_view)
+  if other_detailed {
+    other_subtotal := generated.outcome.remaining_decode_plane_roundtrip_compare_ns
+      + generated.outcome.remaining_decode_graph_member_spec_ns
+      + generated.outcome.remaining_decode_layer_step_accounting_ns
+    if other_subtotal > detail.other_ns { return Err(Error.Invalid) }
+    other := PassOther {
+      total_ns: detail.other_ns,
+      plane_roundtrip_compare_ns: generated.outcome.remaining_decode_plane_roundtrip_compare_ns,
+      graph_member_spec_ns: generated.outcome.remaining_decode_graph_member_spec_ns,
+      layer_step_accounting_ns: generated.outcome.remaining_decode_layer_step_accounting_ns,
+      other_ns: detail.other_ns - other_subtotal,
+    }
+    other_json := json.encode(other)
+    other_view: str := other_json
+    document.write(",\"pass_other\":")
+    document.write(other_view)
+  }
   document.write("}")
   print(document.to_string())
   return Ok(())
 }
 
-pub fn detailed_main(args: array<str>) -> Result<(), Error> = run(args, true)
+pub fn other_detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, true)
 
-pub fn main(args: array<str>) -> Result<(), Error> = run(args, false)
+pub fn detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, false)
+
+pub fn main(args: array<str>) -> Result<(), Error> = run(args, false, false)

@@ -23,17 +23,25 @@ The inherited materiality floor remains 921,450,866 ns. Three broad counters and
 remaining-step deltas will time only the named disjoint operations; the new helper will preserve
 the item 59 schema and add one exact `pass_other` object.
 
-**Next actions.** Implement the shared counters and clocks, extend the qualification helper through
-a third fixed entrypoint, add the source-pinned item 60 runner and focused tests, then run the named
-owners and one clean-head four-repeat diagnosis.
+The implementation is complete. `verify_plane`, the exact graph-member/spec constructors, and
+decode-pass-local accounting blocks own three disjoint broad clocks; the existing successful-step
+commit owns their remaining-decode deltas. The shared qualification core has three fixed
+entrypoints whose real maximum-2 records retain the item 57 and item 59 key sets and add
+`pass_other` only for item 60. The new runner independently pins item 59's recorded evidence,
+predecessor/source chain, fixed host, schema, equations, medians, cleanup, and decision.
+
+**Next actions.** Commit the coherent implementation checkpoint, run one clean-head four-repeat
+diagnosis, record the exact decision, then complete comprehensive review, repair, preflight,
+publication, and merge.
 
 **Blocker.** None.
 
-**Latest durable verification.** The item 60 author ledger-to-prose consistency pass is complete.
-Item 59's exact-head preflight and all three PR checks passed before merge. Item 60 implementation
-verification has not started.
+**Latest durable verification.** The author consistency pass, `make fmt`, `make
+layer-forward-smoke` (98.646 seconds), `make runtime-provider-smoke` (self-test plus 61 CLI
+assertions), Python compilation, the full item 57→60 self-test chain, `git diff --check`, the pinned
+new-helper build, and real maximum-2 schema checks for all three helper entrypoints pass.
 
-**Intentional uncommitted files.** Item 60 design, roadmap, and handoff updates before commit.
+**Intentional uncommitted files.** Item 60 implementation and handoff update before commit.
 Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS (PR #181, 2026-09-04)

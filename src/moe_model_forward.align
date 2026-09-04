@@ -633,6 +633,12 @@ pub Outcome {
   generic_transfer_digest_ns: i64,
   graph_teardown_ns: i64,
 
+  // R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS. These counters partition only item 59's explicit
+  // remainder; the corresponding remaining-decode totals retain the same successful-step commit.
+  plane_roundtrip_compare_ns: i64,
+  graph_member_spec_ns: i64,
+  layer_step_accounting_ns: i64,
+
   // R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS. These qualification-only counters partition the
   // invocation-local generation schedule without changing any existing renderer. Prefill includes
   // first-output selection; first decode consumes that token and selects the second.
@@ -651,6 +657,9 @@ pub Outcome {
   remaining_decode_graph_build_alloc_ns: i64,
   remaining_decode_generic_transfer_digest_ns: i64,
   remaining_decode_graph_teardown_ns: i64,
+  remaining_decode_plane_roundtrip_compare_ns: i64,
+  remaining_decode_graph_member_spec_ns: i64,
+  remaining_decode_layer_step_accounting_ns: i64,
   teardown_ns: i64,
   prefill_claim_pread_ns: i64,
   first_decode_claim_pread_ns: i64,
@@ -924,6 +933,9 @@ pub fn empty_outcome() -> Outcome = Outcome {
   graph_build_alloc_ns: 0,
   generic_transfer_digest_ns: 0,
   graph_teardown_ns: 0,
+  plane_roundtrip_compare_ns: 0,
+  graph_member_spec_ns: 0,
+  layer_step_accounting_ns: 0,
   construction_ns: 0,
   prefill_ns: 0,
   first_decode_ns: 0,
@@ -939,6 +951,9 @@ pub fn empty_outcome() -> Outcome = Outcome {
   remaining_decode_graph_build_alloc_ns: 0,
   remaining_decode_generic_transfer_digest_ns: 0,
   remaining_decode_graph_teardown_ns: 0,
+  remaining_decode_plane_roundtrip_compare_ns: 0,
+  remaining_decode_graph_member_spec_ns: 0,
+  remaining_decode_layer_step_accounting_ns: 0,
   teardown_ns: 0,
   prefill_claim_pread_ns: 0,
   first_decode_claim_pread_ns: 0,
