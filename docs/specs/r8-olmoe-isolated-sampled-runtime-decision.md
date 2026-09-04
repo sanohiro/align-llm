@@ -33,7 +33,7 @@ provider state.
 | Fixed workload | item 53's byte-identical task, system/user prompt, maximum 128 completion tokens, temperature 300,000 micros, seeds `[1,2,3,4,5,6,7,8]`, strict extractor, validator, stop-on-first-pass rule, provider arguments, and cache budget 975,175,680 bytes |
 | Subject model | `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, 4,213,512,192 bytes, SHA-256 `4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f` |
 | Pair schedule | `(local,runtime)`, `(runtime,local)`, `(runtime,local)`, `(local,runtime)`; one synchronous arm at a time; four local server instances total |
-| Local server scope | before each local leg require zero processes whose command contains both canonical configured server and model paths; start exactly one pinned build-10566 CPU server with four threads, context 512, one slot, no prompt cache, and `--no-warmup`; require readiness and that the sole matching process is the owned PID; measure one local portfolio; require the server still alive; then terminate, escalate to kill if bounded wait expires, reap, close its log, and require zero matches |
+| Local server scope | before each local leg require zero processes whose command contains both canonical configured server and model paths; start exactly one pinned build-10566 CPU server with four threads, context 512, one slot, item 53's default enabled prompt cache, and `--no-warmup`; require readiness and that the sole matching process is the owned PID; measure one local portfolio; require the server still alive; then terminate, escalate to kill if bounded wait expires, reap, close its log, and require zero matches |
 | Runtime isolation | immediately before and after each runtime portfolio require zero matching server/model processes; a runtime failure still executes the after check and produces no complete result |
 | Primary metric | unchanged item-53 nanoseconds from a portfolio leg's first provider-helper launch through validation of its first passing patch; local server startup/readiness and teardown are excluded; total qualification elapsed includes them |
 | Gate | unchanged item-53 rule: `MET` only when both arms pass all four legs, runtime is faster in every pair, and runtime median is at least 50,000 ppm below local median; `NOT_MET` when both pass four but speed fails; `NOT_ELIGIBLE` when either arm has fewer than four passing legs |
@@ -159,6 +159,11 @@ recorded `INVALID_PATCH`, `FAILING_PATCH`, `FAILING_PATCH`, `INVALID_PATCH`, the
 runtime portfolio recorded four `FAILING_PATCH` candidates, then `PASS`. Thus output rendering
 differed before the common successful candidate, but candidate count did not explain the timing
 difference.
+
+The local arm retained item 53's default enabled llama.cpp prompt cache within each five-candidate
+portfolio; the fresh server boundary prevented that cache from crossing portfolios. This is part of
+the exact inherited baseline behavior and helps explain why candidate count alone is not a timing
+model for the two implementations.
 
 Local pair times were 13.421, 13.294, 13.100, and 13.045 seconds, for a 13.197-second median.
 Runtime pair times were 152.302, 150.714, 147.029, and 147.832 seconds, for a 149.273-second

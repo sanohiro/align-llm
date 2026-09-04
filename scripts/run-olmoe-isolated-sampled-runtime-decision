@@ -48,6 +48,23 @@ MAX_TOKENS = previous.MAX_TOKENS
 FLOOR_PPM = previous.FLOOR_PPM
 CEILING_SECONDS = 25 * 60
 
+EXPECTED_WORKLOAD = (
+    4_213_512_192,
+    "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f",
+    "build 10566, commit bb4caa754",
+    "bb4caa754",
+    975_175_680,
+    "olmoe",
+    ROOT / "eval/tasks/coding-v1/python-inclusive-range/task.json",
+    "0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b",
+    "5d6b107e706a5a55c945bc0b41296e255013a1516e0a6211ccc9da65001252dc",
+    (("local", "runtime"), ("runtime", "local"), ("runtime", "local"), ("local", "runtime")),
+    300_000,
+    (1, 2, 3, 4, 5, 6, 7, 8),
+    128,
+    50_000,
+)
+
 EXPECTED_ALIGN_REVISION = "8cefc803d5c7f883a8db5b67250ed4ed069b43a4"
 EXPECTED_COMPILER_SHA256 = "f972b4a196ed5608a0c52cc02dbf8267cfc236065359315a572d601aa04ea541"
 EXPECTED_PACK_SHA256 = "20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae"
@@ -154,6 +171,27 @@ def valid_digest(value: object, length: int = 64) -> bool:
 def require_exact_keys(value: dict[str, Any], expected: set[str], label: str) -> None:
     if set(value) != expected:
         raise DecisionError(f"{label} keys drifted")
+
+
+def validate_imported_workload() -> None:
+    actual = (
+        previous.MODEL_BYTES,
+        previous.MODEL_SHA256,
+        previous.SERVER_BUILD,
+        previous.SERVER_COMMIT,
+        previous.BUDGET,
+        previous.ALIAS,
+        previous.TASK.resolve(),
+        base.bytes_sha256(previous.PROMPT_TEXT.encode("utf-8")),
+        base.bytes_sha256(previous.KNOWN_GOOD_PATCH.encode("utf-8")),
+        previous.ORDERS,
+        previous.TEMPERATURE_MICROS,
+        previous.SEEDS,
+        previous.MAX_TOKENS,
+        previous.FLOOR_PPM,
+    )
+    if actual != EXPECTED_WORKLOAD:
+        raise DecisionError("imported sampled workload drifted")
 
 
 def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
@@ -321,7 +359,10 @@ def validate_portfolio_shape(portfolio: dict[str, Any]) -> None:
 
 def validate_isolation(isolation: dict[str, Any]) -> None:
     require_exact_keys(isolation, ISOLATION_KEYS, "isolation")
-    if isolation["local_server_instances"] != 1:
+    if (
+        not is_int(isolation["local_server_instances"])
+        or isolation["local_server_instances"] != 1
+    ):
         raise DecisionError("local server instance count drifted")
     for name in (
         "matching_before_local", "matching_after_local", "matching_before_runtime",
@@ -513,6 +554,15 @@ def synthetic_samples() -> list[dict[str, Any]]:
 
 
 def self_test() -> int:
+    validate_imported_workload()
+    with mock.patch.object(previous, "BUDGET", BUDGET + 1):
+        try:
+            validate_imported_workload()
+        except DecisionError:
+            pass
+        else:
+            raise DecisionError("drifted imported workload was accepted")
+
     with contextlib.redirect_stdout(io.StringIO()):
         if previous.self_test() != 0:
             raise DecisionError("predecessor owner failed")
@@ -549,6 +599,14 @@ def self_test() -> int:
         pass
     else:
         raise DecisionError("runtime process pressure was accepted")
+    boolean_isolation = dict(samples[0]["isolation"])
+    boolean_isolation["local_server_instances"] = True
+    try:
+        validate_isolation(boolean_isolation)
+    except DecisionError:
+        pass
+    else:
+        raise DecisionError("boolean local server instance count was accepted")
 
     fixed_identity = {
         "align_revision": EXPECTED_ALIGN_REVISION,
@@ -772,6 +830,7 @@ def main() -> int:
     required = prerequisites()
     if required is None:
         return 0
+    validate_imported_workload()
     model, pack, geometry, include, library, server = required
     started_ns = time.monotonic_ns()
     deadline = time.monotonic() + CEILING_SECONDS
