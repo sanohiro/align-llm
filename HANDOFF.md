@@ -3,83 +3,79 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-CLAIM-IO-DIAGNOSIS (2026-09-05)
+## Active: R8-OLMOE-FILE-PREAD-BOUNDARY (2026-09-05)
 
-Branch `agent/r8-olmoe-claim-io-boundary`, based on pulled merged `main`
-`154133acebe686018d3a4478c50f8ca5d7f83e86` (item 63 PR #185). The sibling Align checkout and
-`.align-revision` remain at merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align
-surface is required for the diagnosis.
+Branch `agent/r8-olmoe-file-pread-boundary`, based on pulled merged `main` `3c1a0a8` (item 64 PR
+#186). The sibling Align checkout and `.align-revision` remain at merged Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
-Item 63's post-review qualification missed its precommitted gate, so its production intervention
-was removed. Item 62's shipped fixed-width request remains the immutable baseline: walls
-`[18059864416,18927732709,20639199375,19605385750]` ns, median 19,266,559,229 ns, and materiality
-floor 963,327,962 ns. Its next unresolved shipped bucket is complete remaining-decode claim I/O at
-a 3,609,378,007-ns median.
+Item 64 selected remaining-decode claim `FILE_PREAD` at a 1,945,780,694-ns median, 517,958 ppm of
+its 3,756,637,232-ns parent. Item 62's shipped fixed request remains the immutable performance
+baseline: walls `[18059864416,18927732709,20639199375,19605385750]` ns, median 19,266,559,229 ns,
+50,000-ppm floor 963,327,962 ns, and candidate ceiling 18,303,231,267 ns.
 
-The item-64 authoritative ledger and closure matrix are
-`docs/specs/r8-olmoe-claim-io-diagnosis.md`. They partition the unchanged parent clock into file
-`pread`, block-transient-to-claim copy, claim-to-cache copy, cache-to-claim copy, and an exact
-remainder. Four fixed-request records choose the largest median only when it reaches the inherited
-floor. This capability makes an attribution decision, not a speedup claim; the selected successor
-must precommit its own unchanged item-62 full-request 50,000-ppm gate.
+The item-65 authoritative ledger and closure matrix are
+`docs/specs/r8-olmoe-file-pread-boundary.md`. The pinned Align toolchain already ships
+`fs.read_bytes_view(path)`: an arena-owned binary mmap. The evaluated intervention mapped the
+validated AlignPack once for provider generation and copied cache-miss claim members directly from
+that view, removing the file-to-block-temporary `pread` copy. The diagnostic `--moe-decode-step`
+path retains its existing reader and syscall-counter schema. The provider owns an immutable regular
+pack during the invocation; mapped length must equal validated `total_bytes`, and pinned Align's
+documented concurrent-truncation `SIGBUS` limitation is explicit. No Align request or hypothetical
+API is needed.
 
-An exploratory unchanged item-62 run observed full walls
-`[18244030209,18110848167,18219119459,18919221458]` ns and claim-I/O values
-`[3711105253,3714488389,3701960381,3645093967]` ns. These current samples do not replace the
-immutable baseline. Each full request issued 11,940 cache demands, with 7,325 hits, 4,615 misses,
-4,376 evictions, and 17,656,872,960 bytes fetched. A five-second directional stack sample observed
-526 main-thread samples in `pread` and 374 in `align_ggml_window_copy`. The pinned pack has zero
-padding and one contiguous three-claim range per expert block, so splitting a block into three
-reads does not reduce bytes.
+The evaluated candidate retained exact cache requests/hits/misses/evictions and fetched block-span
+bytes, while provider-generation claim `pread` counters and `claim_file_pread_ns` became zero. Its
+mapping lived through the whole synchronous schedule, never entered a cache/result/native tensor,
+and was unmapped after converged schedule teardown. The explicit expert-cache budget was unchanged
+and did not claim to bound the OS file cache.
 
-Align Request 38 already owns the missing bounded positional destination-read surface. Item 64 adds
-this client evidence without changing its status and consumes no hypothetical API; application-only
-instrumentation may proceed safely.
+Design checkpoint `96cfefa` is complete. Evaluated implementation `b82ff83` threaded one mapped
+view and selection bit through the existing synchronous schedule, repeated block/member bounds
+before slicing, scattered before cache admission, kept the diagnostic path on `pread`, and shrank
+each provider-generation block transient to one byte. Cache source-span validation was independent
+from syscall accounting: mapped steps required zero expert `pread` bytes while retaining the same
+bounded fetched spans. The item-65 runner pins item 64 plus its complete transitive chain, the new
+helper and changed compiled source, immutable gate/workload/host, toolchain, libraries, headers,
+cleanup, and exact result schema. Its fixed-host qualification completed in 133.354 seconds with
+full walls
+`[24070862584,24437186500,20461090500,20031240292]` ns and a 22,265,976,542-ns median. That is
+2,999,417,313 ns / 155,680 ppm slower than item 62, so the final decision is `NOT_MET`. All runs had
+zero claim-file-pread time and exact output/cache/lifetime/isolation evidence, but block-to-claim
+copy rose to a 2,206,615,794-ns median as mapped page faults moved into source consumption.
 
-Design checkpoint `d200821` and implementation checkpoint `2552b67` are complete. The five clocks
-surround only the four named operation classes, compute the layer remainder from the unchanged
-outer clock, and snapshot/commit their deltas beside the existing successful remaining-step
-counter. The thin helper adds one exact `claim_io` object; the runner pins the full ten-runner
-transitive chain plus every compiled source, shim, library, and header owner.
+The production mapping and its production-owner changes are removed before publication. The final
+candidate retains only the authoritative negative decision, thin helper, and bounded qualification
+owner. Item 64's second-largest measured bucket, cache-to-claim copy at 1,072,229,252 ns, selects
+item 66.
 
-The clean-head diagnosis ran at `ed8769fcc8fc7a7a54cce4be9d6b95148099ceb9` and completed in
-112.302 seconds. Full walls were `[18914495125,18398295375,20472942875,20646407208]` ns; claim-I/O
-totals were `[3637491036,3692883589,3855587369,3820390875]` ns, median 3,756,637,232 ns. The bucket
-medians were 1,945,780,694 ns for `FILE_PREAD`, 1,072,229,252 ns for cache-to-claim copy,
-457,860,874 ns for claim-to-cache copy, 256,535,752 ns for block-to-claim copy, and 23,737,461 ns
-for exact remainder. `FILE_PREAD` is 517,958 ppm of the parent and clears the inherited
-963,327,962-ns floor, so the decision is `MEASURED_BUCKET_ELIGIBLE` and item 65 owns the selected
-file-read boundary. All four records retained exact output, cache/read counts, twelve isolation
-checks, and native lifetime balances.
+Comprehensive review of `eaaa053` found three valid publication defects: real mode could not execute
+the removed intervention, one matrix row named the wrong truncation error, and this handoff was
+stale. The consolidated repair makes the publication runner self-test-only, points real replay to
+evaluated commit `b82ff83`, and corrects the ledger and durable state.
 
-The comprehensive Codex CLI review covered head
-`f2c6fe17a6496a5427b338bbe5fdb936142ca008` against base tip and merge base
-`154133acebe686018d3a4478c50f8ca5d7f83e86`, using gpt-5.6-sol at high effort over the full diff.
-It found three accepted P2s: the final validator did not reconstruct and validate the inherited
-result envelope; imported owner exception classes could bypass normalized cleanup; and this handoff
-still described the already committed measured decision as uncommitted. The consolidated repair
-adds inherited envelope validation plus a malformed-candidate regression, catches the full imported
-exception chain, and corrects durable state. These changes harden evidence validation and cleanup
-without changing instrumentation or measurement behavior, so another comprehensive review is not
-required. Consolidated repair `cb4e2c3` passes the focused self-test and revalidates the recorded
-real result through the repaired final envelope validator.
-
-**Next actions.** Run exact-head preflight; publish and merge; then start item 65's shipped-surface
-intervention investigation and ledger.
+**Next actions.** Run exact-head preflight, publish and merge item 65, then start item 66.
 
 **Blocker.** None.
 
-**Latest durable verification.** `make fmt`, item 64's Python compilation and model-free self-test,
-`make layer-forward-smoke` (100.182 seconds), and `make runtime-provider-smoke` (self-test plus 61
-CLI assertions) pass. The new helper builds with the pinned compiler and real ggml shim; one
-maximum-2 execution returned the exact six-key all-zero `claim_io` object and zero parent clock.
-The exact clean-head diagnosis and result are recorded above. The earlier exploratory unchanged
-request and stack sample remain directional evidence only. After review repair, Python compilation,
-the item-64 self-test, malformed inherited-candidate rejection, and recorded-result revalidation
-pass.
+**Latest durable verification.** Before the decision, `make check`, `make runtime-provider-smoke`
+(sampler vectors plus 61 CLI assertions), `make layer-forward-smoke` (61.095 seconds), `make fmt`,
+Python compilation, the item-65 model-free self-test, and `git diff --check` passed. The runtime
+provider smoke exercised the mapped OLMoE generation path on deterministic tiny models while the
+layer-forward owner preserved the diagnostic syscall schema and golden. After production removal
+and review repair, the item-65 self-test, explicit no-argument refusal, `make fmt`,
+`git diff --check`, and exact production-source comparison with `main` pass. The real qualification
+result is recorded above.
 
-**Intentional uncommitted files.** This final handoff correction only, until committed.
+**Intentional uncommitted files.** None after the consolidated review repair is committed.
 Machine-local model/evidence and generated build products remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-CLAIM-IO-DIAGNOSIS (PR #186, 2026-09-05)
+
+PR #186 merged as `3c1a0a8`. The clean-head four-repeat diagnosis selected `FILE_PREAD` at a
+1,945,780,694-ns median and 517,958 ppm of its claim-I/O parent. Comprehensive review found and
+repaired inherited-result validation, exception normalization, and stale handoff state. Exact-head
+preflight and all three required CI jobs passed; item 65 above owns the selected implementation.
 
 ## Merged checkpoint: R8-OLMOE-ROUTING-PHASE-A-BOUNDARY (PR #185, 2026-09-05)
 

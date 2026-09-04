@@ -1,0 +1,10 @@
+module olmoe_file_pread_gate
+
+import olmoe_remaining_decode_overhead_gate
+
+// Item 65 reuses the fixed item-62 helper envelope and item-64 claim-I/O partition. The owning
+// runner changes the expected file-pread bucket to zero and applies the immutable full-request
+// shipping gate; this entry exists so the candidate binary and complete compiled source chain have
+// their own pinned identities.
+pub fn main(args: array<str>) -> Result<(), Error> =
+olmoe_remaining_decode_overhead_gate.claim_detailed_main(args)
