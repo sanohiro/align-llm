@@ -3,62 +3,47 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS publication (2026-09-04)
+## Active: R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY (2026-09-04)
 
-Branch `agent/r8-olmoe-decode-pass-other-diagnosis`, based on pulled merged `main`
-`a502f94a22302e4896509204d3423b6e21090ade` (item 59 PR #181). The sibling Align checkout and
+Branch `agent/r8-olmoe-plane-roundtrip-boundary`, based on pulled merged `main`
+`8e7be2a77f69d7afb0da34507e90e84f89301871` (item 60 PR #182). The sibling Align checkout and
 `.align-revision` remain at merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align
 surface is currently required.
 
-Item 60's authoritative ledger and closure matrix are
-`docs/specs/r8-olmoe-decode-pass-other-diagnosis.md`. It partitions item 59's measured
-2,877,094,540-ns `OTHER_PASS_RESIDUAL` median into KV-plane round-trip comparison,
-graph-member/spec construction, per-layer/pass accounting, and an explicit remainder. It preserves
-item 59's exact fixed request, Apple M1 host fingerprint, output, isolation, cache, native-lifetime,
-and cleanup boundaries.
+Item 61's authoritative ledger and closure matrix are
+`docs/specs/r8-olmoe-plane-roundtrip-boundary.md`. Item 60 measured the complete `verify_plane`
+call—shape reads, two `slot_get` operations, scalar K/V comparison, and result accounting—at a
+2,972,324,939-ns median, without attributing cost among those operations.
 
-Item 59's replacement remainder samples
-`[2882960092,2754901085,2871228989,2926947473]` and 2,877,094,540-ns median are immutable.
-The inherited materiality floor remains 921,450,866 ns. Three broad counters and their successful
-remaining-step deltas will time only the named disjoint operations; the new helper will preserve
-the item 59 schema and add one exact `pass_other` object.
+The intervention retains the shape reads and both `slot_get` calls and replaces the scalar K/V
+comparison with one validated, allocation-free shared-shim call per tensor over the same borrowed
+byte ranges. It preserves exact K/V traversal and first-mismatch tensor/column semantics. Its
+immutable baseline is item 60's full-helper samples
+`[17704139042,18412456541,19080317000,19520549709]` and 18,746,386,770-ns median. The precommitted
+50,000-ppm floor is 937,319,339 ns and candidate ceiling is 17,809,067,431 ns. Only the complete
+fixed-request gate can establish the performance claim.
 
-The implementation and fixed-host diagnosis are complete. `verify_plane`, the exact
-graph-member/spec constructors, and decode-pass-local accounting blocks own three disjoint broad
-clocks; the existing successful-step commit owns their remaining-decode deltas. The shared
-qualification core has three fixed entrypoints whose real maximum-2 records retain the item 57 and
-item 59 key sets and add `pass_other` only for item 60. The new runner independently pins item 59's
-recorded evidence, predecessor/source chain, fixed host, schema, equations, medians, cleanup, and
-decision.
-
-The clean-head run at `1cc8cb48c2d91680ee4ee4b618b33c4472d1f66f` completed in 116.826 seconds,
-reproduced the fixed output in all four repetitions, balanced every native lifetime, and passed all
-twelve isolation boundaries. Full-helper wall had an 18,746,386,770-ns median. Plane round-trip
-comparison dominated at 2,972,324,939 ns and 991,445 ppm of the 2,997,969,676-ns diagnosed total,
-clearing the 921,450,866-ns materiality floor by 2,050,874,073 ns. The decision is
-`MEASURED_BUCKET_ELIGIBLE / PLANE_ROUNDTRIP_COMPARE`.
-
-Item 61, `R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY`, is selected but not started. Item 60 measured the
-complete `verify_plane` call—shape reads, two `slot_get` operations, scalar K/V comparison, and
-result accounting—without attributing cost among those operations. Item 61 will preserve the exact
-byte/layout oracle and first-mismatch tensor/column while reducing that complete boundary. Its
-immutable baseline is item 60's four full-helper samples and 18,746,386,770-ns median; its
-precommitted 50,000-ppm floor is 937,319,339 ns and candidate ceiling is 17,809,067,431 ns.
-
-**Next actions.** Commit the recorded item 60 decision, complete one comprehensive review, repair
-valid findings, run affected owners and exact-head preflight, publish and merge. Then update
-`main`, create item 61's authoritative ledger and closure matrix, and implement it.
+**Next actions.** Commit the ledger checkpoint; implement and directly test the shared shim, safe
+wrapper, and decode integration; add the item 61 qualification runner; run focused owners and one
+clean-head four-repeat qualification; then review, repair, preflight, publish, merge, and continue.
 
 **Blocker.** None.
 
-**Latest durable verification.** The author consistency pass, `make fmt`, `make
-layer-forward-smoke` (98.646 seconds), `make runtime-provider-smoke` (self-test plus 61 CLI
-assertions), Python compilation, the full item 57→60 self-test chain, `git diff --check`, the pinned
-new-helper build, real maximum-2 schema checks for all three helper entrypoints, and the clean-head
-four-repeat diagnosis (116.826 seconds) pass.
+**Latest durable verification.** Item 60 exact-head preflight and all three PR #182 CI jobs pass at
+`e5baf5d2e8cbc6d117dd1e7d3d47152ad4c810f6`; the fixed-host diagnosis completed in 116.826 seconds.
+Item 61's author consistency pass is complete; implementation verification has not started.
 
-**Intentional uncommitted files.** Item 60 recorded decision and handoff update before commit.
+**Intentional uncommitted files.** Item 61 ledger, roadmap activation, and handoff update before
+commit.
 Machine-local model/evidence and generated build products remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS (PR #182, 2026-09-04)
+
+PR #182 merged as `8e7be2a77f69d7afb0da34507e90e84f89301871`. The clean-head diagnosis
+selected `PLANE_ROUNDTRIP_COMPARE` at a 2.972-second median and 991,445 ppm of its 2.998-second
+parent. Comprehensive review found that the clock covered the complete `verify_plane` boundary,
+not scalar loops alone; the repair broadened item 61 accordingly without changing measurement
+behavior. Exact-head preflight and all three required CI jobs passed.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS (PR #181, 2026-09-04)
 

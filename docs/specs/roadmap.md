@@ -1534,7 +1534,9 @@ The current forward delivery order is:
     diagnosis does not itself establish a performance win.
 
 61. **R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY — reduce the measured K/V verification boundary.
-    Selected; not started.** Item 60 measured the complete `verify_plane` call, including concat
+    Active.** [`r8-olmoe-plane-roundtrip-boundary.md`](r8-olmoe-plane-roundtrip-boundary.md) is the
+    authoritative implementation ledger and closure matrix. Item 60 measured the complete
+    `verify_plane` call, including concat
     shape reads, two `slot_get` operations, scalar K/V comparison, and result accounting; it did not
     attribute cost among them. Preserve the exact canonical-plane and graph-consumed layouts,
     first-mismatch tensor/column, output, isolation, cache, and native lifetimes while reducing that
