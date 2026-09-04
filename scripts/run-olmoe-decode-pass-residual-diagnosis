@@ -49,11 +49,21 @@ BASELINE_MEDIAN_NS = 18_429_017_312
 FLOOR_PPM = 50_000
 FLOOR_NS = 921_450_866
 
-EXPECTED_TRANSFER_SHA256 = "1d333d2306e6b9e397326fa09c1043c868a5096499341ef9944c0fee2d1f0e5d"
-EXPECTED_SHARED_HELPER_SHA256 = "d2516b7f0a89fa6cb7ab98b58eebbd033d7910fe4a5ac479e651189524a58f53"
+# Immutable replacement evidence consumed by the item 60 diagnosis.
+RECORDED_FULL_HELPER_VALUES_NS = [
+    18_669_300_333, 18_063_563_792, 18_698_163_917, 18_994_733_625,
+]
+RECORDED_FULL_HELPER_MEDIAN_NS = 18_683_732_125
+RECORDED_OTHER_PASS_VALUES_NS = [
+    2_882_960_092, 2_754_901_085, 2_871_228_989, 2_926_947_473,
+]
+RECORDED_OTHER_PASS_MEDIAN_NS = 2_877_094_540
+
+EXPECTED_TRANSFER_SHA256 = "86d1f1ad2374417f661e9a0f0f788aa7d0ef3a1586bc20c56383f6767b0384d4"
+EXPECTED_SHARED_HELPER_SHA256 = "5b5d535f15547a573a988444e6bebe149b8597e57b24ee09293d93c5a2bb04ff"
 EXPECTED_HELPER_SOURCE_SHA256 = "91e2dedf7eac8f66f11c817797e8541881bfd2c7f71ee4e298b37305c6123a63"
-EXPECTED_DECODE_SOURCE_SHA256 = "dc21c34184774be3451ca0200559f6b00a7cf66956910e901ecda3efdf331bf9"
-EXPECTED_OUTCOME_SOURCE_SHA256 = "47a57132841123090f2e2acebc20f3b6d6b4f44e1f13cc9e64e72f57863c4eae"
+EXPECTED_DECODE_SOURCE_SHA256 = "03586399bf15b26e405a6aadfac4ce05fb44cf1a354751459bd7f3afe4620a02"
+EXPECTED_OUTCOME_SOURCE_SHA256 = "1cf5f809515128665c9f0d4aea8921c65254880ab71d0ab856107ba21c8ecf9c"
 EXPECTED_ALIGN_REVISION = transfer.EXPECTED_ALIGN_REVISION
 EXPECTED_COMPILER_SHA256 = transfer.EXPECTED_COMPILER_SHA256
 EXPECTED_PACK_SHA256 = transfer.EXPECTED_PACK_SHA256
@@ -135,12 +145,15 @@ def validate_imported_contract() -> None:
 
 
 @contextlib.contextmanager
-def built_helper(
+def built_helper_for(
     work: Path,
     include: Path,
     library: Path,
     clean_env: dict[str, str],
     deadline: float,
+    helper_source: str,
+    generated_name: str,
+    staged_name: str,
 ) -> Iterator[dict[str, Any]]:
     compiler_output = owner.run_process(
         [str(ROOT / "scripts/align-toolchain"), "ensure", "compiler"],
@@ -157,8 +170,8 @@ def built_helper(
         [str(c_compiler), "--version"], deadline=deadline, maximum=30, env=clean_env,
     )
     shim_dir = work / "lib"
-    generated = ROOT / "olmoe_decode_pass_residual_gate"
-    saved = work / "saved-olmoe-decode-pass-residual-gate"
+    generated = ROOT / generated_name
+    saved = work / f"saved-{generated_name.replace('_', '-')}"
     if generated.exists():
         shutil.copy2(generated, saved)
     build_env = dict(clean_env)
@@ -177,10 +190,10 @@ def built_helper(
             if value
         )
         owner.run_process(
-            [str(compiler), "build", "src/olmoe_decode_pass_residual_gate.align"],
+            [str(compiler), "build", helper_source],
             deadline=deadline, maximum=300, env=build_env,
         )
-        helper = work / "olmoe-decode-pass-residual-gate"
+        helper = work / staged_name
         shutil.move(generated, helper)
         shim = shim_dir / (
             "libalign_ggml_shim.dylib" if platform.system() == "Darwin"
@@ -205,6 +218,23 @@ def built_helper(
         }
     finally:
         owner.restore_generated(generated, saved)
+
+
+@contextlib.contextmanager
+def built_helper(
+    work: Path,
+    include: Path,
+    library: Path,
+    clean_env: dict[str, str],
+    deadline: float,
+) -> Iterator[dict[str, Any]]:
+    with built_helper_for(
+        work, include, library, clean_env, deadline,
+        "src/olmoe_decode_pass_residual_gate.align",
+        "olmoe_decode_pass_residual_gate",
+        "olmoe-decode-pass-residual-gate",
+    ) as built:
+        yield built
 
 
 def inherited_record(record: dict[str, Any]) -> dict[str, Any]:

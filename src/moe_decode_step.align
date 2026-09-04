@@ -2201,7 +2201,10 @@ fn run_moe_layer(
     capture_plane(slot_view, a_nodes, plane, g, spec.layer, 1, n_past, stride, state, o)
   }
   if o.code.len() == 0 && decode {
+    compare_started := time.instant()
     verify_plane(slot_view, a_nodes, plane, node_window, g, spec.layer, n_past, stride, state, o)
+    o.plane_roundtrip_compare_ns = o.plane_roundtrip_compare_ns
+      + (time.instant() - compare_started)
   }
   if o.code.len() == 0 && decode && o.transcript_present {
     match compare_transcript_rows(
@@ -2602,7 +2605,9 @@ fn decode_pass(
   mut counters := alignpack_read.new_counters()
   mut claim_counters := alignpack_read.new_counters()
   past_bytes := n_past * g.n_head_kv * g.head_dim * 4
+  mut member_started := time.instant()
   embed_members := decode_embed_members(g, ends, token_id)
+  o.graph_member_spec_ns = o.graph_member_spec_ns + (time.instant() - member_started)
   // In `stream` mode the layout is `model_forward.stream_layout`, so every base is 0 and every span
   // is the whole window and these three views are the window itself, character for character. In
   // `dense` mode they are the region's own sub-slices, and the graph's `m.window[at]` offsets stay
@@ -2625,7 +2630,10 @@ fn decode_pass(
         counters))
   }
   o.pread_ns = o.pread_ns + (time.instant() - read_started)
+  mut accounting_started := time.instant()
   o.window_reuse_count = o.window_reuse_count + 1
+  o.layer_step_accounting_ns = o.layer_step_accounting_ns
+    + (time.instant() - accounting_started)
   if o.code.len() > 0 { return routed_ids.build() }
   mut embed_result := moe_model_forward.empty_end_result()
   run_moe_end_graph(
@@ -2633,6 +2641,7 @@ fn decode_pass(
     true, g,
     embed_members, embed_nodes, oracle, embed_view, slot_view, ids_view, residual_view, node_view,
     scan, starts, lengths, breach, embed_result, o)
+  accounting_started = time.instant()
   account(embed_result.activation_bytes, embed_result.slot_high_water, 0, activation, o)
   decoded.node_count = decoded.node_count + embed_result.node_count
   decoded.compute_ns = decoded.compute_ns + embed_result.compute_ns
@@ -2640,10 +2649,14 @@ fn decode_pass(
     decoded.slot_high_water = embed_result.slot_high_water
   }
   check_balance(o)
+  o.layer_step_accounting_ns = o.layer_step_accounting_ns
+    + (time.instant() - accounting_started)
   mut layer := 0
   loop {
     if layer >= g.n_layer || o.code.len() > 0 { break }
+    member_started = time.instant()
     members := moe_model_forward.build_layer_members(table, plan, layer)
+    o.graph_member_spec_ns = o.graph_member_spec_ns + (time.instant() - member_started)
     layer_base := layout.base[1 + layer]
     layer_view := window[layer_base..layer_base + layout.span[1 + layer]]
     layer_started := time.instant()
@@ -2652,12 +2665,15 @@ fn decode_pass(
         o, moe_model_forward.fill_members(pak, members, tokens, layer_view, chunk_temp, counters))
     }
     o.pread_ns = o.pread_ns + (time.instant() - layer_started)
+    accounting_started = time.instant()
     o.window_reuse_count = o.window_reuse_count + 1
     // Section 4.4: `steps[].residency.dense_bytes` is **arithmetic** — the demand of the step's
     // graph, not what the reader read — and residency changes only the `pread` side. It is therefore
     // unchanged in both legs, and the bytes residency actually removed are published in
     // `weights.step_dense_pack_bytes`.
     res.dense_bytes = res.dense_bytes + plan.layer_member_bytes[layer]
+    o.layer_step_accounting_ns = o.layer_step_accounting_ns
+      + (time.instant() - accounting_started)
     if o.code.len() > 0 { break }
     mut stage: buffer := buffer(past_bytes * 2)
     upload_started := time.instant()
@@ -2677,9 +2693,11 @@ fn decode_pass(
       fail(o, CODE_PLANE_UNAVAILABLE, plane_detail(layer, "stage"))
       break
     }
+    member_started = time.instant()
     last := layer == g.n_layer - 1
     wide := width > n_past + 1
     spec := moe_model_forward.spec_for(layer, 1, 1, width, last, wide, false)
+    o.graph_member_spec_ns = o.graph_member_spec_ns + (time.instant() - member_started)
     mut routing := layer_olmoe.empty_routing()
     mut result := moe_model_forward.empty_layer_result()
     run_moe_layer(
@@ -2690,6 +2708,7 @@ fn decode_pass(
       out_ids_view,
       past_k_view, past_v_view, residual_view, node_view, plane_view, scan, starts, lengths, pak,
       block_temp, cache, claim_counters, breach, routing, result, state, o)
+    accounting_started = time.instant()
     account(result.activation_a, result.slot_high_water, 0, activation, o)
     account(result.activation_b, result.slot_high_water, 0, activation, o)
     decoded.node_count = decoded.node_count + result.node_count_a + result.node_count_b
@@ -2715,6 +2734,8 @@ fn decode_pass(
       }
     }
     layer = layer + 1
+    o.layer_step_accounting_ns = o.layer_step_accounting_ns
+      + (time.instant() - accounting_started)
   }
   if o.code.len() > 0 { return routed_ids.build() }
   head_window_base := layout.base[1 + g.n_layer]
@@ -2725,9 +2746,12 @@ fn decode_pass(
       o, moe_model_forward.fill_members(pak, head_members, tokens, head_view, chunk_temp, counters))
   }
   o.pread_ns = o.pread_ns + (time.instant() - head_started)
+  accounting_started = time.instant()
   o.window_reuse_count = o.window_reuse_count + 1
   res.dense_bytes = res.dense_bytes + head_members.nbytes[0] + head_members.nbytes[1]
     + embed_members.nbytes[0]
+  o.layer_step_accounting_ns = o.layer_step_accounting_ns
+    + (time.instant() - accounting_started)
   if o.code.len() > 0 { return routed_ids.build() }
   mut head_result := moe_model_forward.empty_end_result()
   head_base := layer_olmoe.mm_oracle_head_base(g.n_layer)
@@ -2737,6 +2761,7 @@ fn decode_pass(
     head_base, layer_olmoe.MM_HEAD_ORACLE_COUNT, true, g, head_members, head_nodes, oracle,
     head_view,
     slot_view, residual_view, logits_view, node_view, scan, starts, lengths, breach, head_result, o)
+  accounting_started = time.instant()
   account(head_result.activation_bytes, head_result.slot_high_water, 0, activation, o)
   decoded.node_count = decoded.node_count + head_result.node_count
   decoded.compute_ns = decoded.compute_ns + head_result.compute_ns
@@ -2745,6 +2770,8 @@ fn decode_pass(
   }
   check_balance(o)
   decoded.graph_count = decoded.graph_count + 2 * g.n_layer + 2
+  o.layer_step_accounting_ns = o.layer_step_accounting_ns
+    + (time.instant() - accounting_started)
   if o.code.len() > 0 { return routed_ids.build() }
   if head_result.out_bytes != g.n_vocab * 4 {
     fail(o, "R5_RESIDUAL", moe_model_forward.labelled("layer", g.n_layer))
@@ -2765,6 +2792,7 @@ fn decode_pass(
   decoded.top_k = render_top_k(step_top_index_built, step_top_bits_built)
   o.generic_transfer_digest_ns = o.generic_transfer_digest_ns
     + (time.instant() - transfer_started)
+  accounting_started = time.instant()
   o.reader_pread_count = o.reader_pread_count + counters.pread_count + claim_counters.pread_count
   o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read + claim_counters.bytes_read
   // R6-MOE-RESIDENT-DENSE section 3.8's **primary metric** and its co-primary invariant, taken from
@@ -2781,7 +2809,10 @@ fn decode_pass(
   // reader actually read, accumulated across **this step's** `read_block_scatter` calls and nothing
   // else, because `claim_counters` is a local of this frame and is handed to no other reader.
   res.expert_pread_bytes = claim_counters.bytes_read
-  return routed_ids.build()
+  built_ids := routed_ids.build()
+  o.layer_step_accounting_ns = o.layer_step_accounting_ns
+    + (time.instant() - accounting_started)
+  return built_ids
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -3419,6 +3450,9 @@ fn decode_loop(
     before_graph_build_alloc := o.graph_build_alloc_ns
     before_generic_transfer_digest := o.generic_transfer_digest_ns
     before_graph_teardown := o.graph_teardown_ns
+    before_plane_roundtrip_compare := o.plane_roundtrip_compare_ns
+    before_graph_member_spec := o.graph_member_spec_ns
+    before_layer_step_accounting := o.layer_step_accounting_ns
     decoded.token_id = token
     mut res := empty_step_residency()
     pass_started := time.instant()
@@ -3614,6 +3648,13 @@ fn decode_loop(
         + (o.generic_transfer_digest_ns - before_generic_transfer_digest)
       o.remaining_decode_graph_teardown_ns = o.remaining_decode_graph_teardown_ns
         + (o.graph_teardown_ns - before_graph_teardown)
+      o.remaining_decode_plane_roundtrip_compare_ns =
+      o.remaining_decode_plane_roundtrip_compare_ns
+        + (o.plane_roundtrip_compare_ns - before_plane_roundtrip_compare)
+      o.remaining_decode_graph_member_spec_ns = o.remaining_decode_graph_member_spec_ns
+        + (o.graph_member_spec_ns - before_graph_member_spec)
+      o.remaining_decode_layer_step_accounting_ns = o.remaining_decode_layer_step_accounting_ns
+        + (o.layer_step_accounting_ns - before_layer_step_accounting)
       o.remaining_decode_claim_pread_ns =
       o.remaining_decode_claim_pread_ns + phase_claim_pread_ns
       o.remaining_decode_compute_ns = o.remaining_decode_compute_ns + phase_compute_ns
