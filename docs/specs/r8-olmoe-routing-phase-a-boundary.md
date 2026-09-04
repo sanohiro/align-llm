@@ -1,6 +1,6 @@
 # R8 OLMoE routing phase-A boundary
 
-Status: active, 2026-09-05
+Status: complete, 2026-09-05
 
 Roadmap owner: item 63, `R8-OLMOE-ROUTING-PHASE-A-BOUNDARY`
 
@@ -122,4 +122,25 @@ and 18,303,231,267-nanosecond ceiling are recorded before production code change
 
 ## 6. Recorded result
 
-Not run. The exploratory probes above are explicitly non-shipping evidence.
+The complete run at clean implementation head `dd2fd1f91dbf7823f8a56c35a59071baa9041a16`
+finished in 116.615 seconds. Every maximum-2 conditioning record was the exact prefix of its
+maximum-128 record. All four full requests reproduced the fixed 87-token chain, 86 completion
+tokens, and output SHA-256. Each balanced 2,958 ggml buffers, 6,090 contexts, one backend, 2,958
+allocators, and one resident wrap, released before owner-scope exit, with zero matching server
+processes at all twelve isolation boundaries.
+
+Candidate full-helper walls were
+`[17315490209,18232421375,18082976541,18457679541]` ns, for an 18,157,698,958-ns
+integer median. Against the immutable 19,266,559,229-ns baseline, this is a 1,108,860,271-ns /
+57,553-ppm gain and is 145,532,309 ns below the precommitted 18,303,231,267-ns ceiling. The
+decision is therefore `MET`, and the intervention ships.
+
+Phase-A walls were `[1362582832,1493940595,1430289264,1476465348]` ns, for a
+1,453,377,306-ns median, down from item 62's 2,939,392,017-ns diagnosis. Total decode-compute walls
+had a 2,747,113,698-ns median. Claim I/O measured 3,778,790,474 ns on the same candidate requests,
+so it is now the largest directly measured unresolved remaining-decode bucket and selects item 64.
+These comparisons are whole graph/bucket measurements; they do not attribute the gain to an
+individual PAD invocation or kernel.
+
+The exploratory probes remain non-shipping evidence. Only the four clean-head repetitions above
+satisfy the gate.

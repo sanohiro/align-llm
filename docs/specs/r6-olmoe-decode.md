@@ -2039,3 +2039,30 @@ The second is smaller and is the one this capability recommends. Until then the 
 preflight is what stands in the way of a false result: **the instrument cross-check compares the
 transcript's `result_output` sum against `llama-debug`'s logits before the arm runs**, and it caught
 exactly this, reported it as an instrument skew, and refused. That is the check working.
+
+## 16. Item 63 live-width decode amendment
+
+`docs/specs/r8-olmoe-routing-phase-a-boundary.md` supersedes only this document's decode graph-width
+mechanism. The public `KV_WIDTH`, canonical plane allocation, plane stride, writeback, verification,
+and fixed-width external transcript remain unchanged. Each production decode phase-A graph now uses
+`live_width = n_past + 1` and receives exactly that prefix of the existing mask row. The included
+prefix is all zero; the excluded tail is the same negative-infinity padding this document defined.
+
+The 37-row decode phase-A table remains stable. Its K and V PAD rows now carry `WHEN_WIDE`, consume
+the corresponding concat output, and are not issued when `width == n_past + 1`; KQ and KQV consume
+concat directly in that case. The general wider-table path remains valid. Consequently each
+routed layer issues two fewer decode phase-A nodes, without changing graph count. For `L` layers
+and `U` selected experts, each completed MoE decode step publishes
+`L * (41 + 2 * U) + 6` nodes.
+
+Oracle B still reads the two concat tensors and compares exactly the live columns against the
+fixed plane. Oracle T still validates the fixed-width external transcript: KQ and KQ-softmax were
+already explicitly shape-incomparable, while every comparable row remains exact. The hosted
+`md-oracle-full` regression preserves that coverage, and `md-force-mask-offset` now corrupts the
+last included live-mask lane rather than relying on an excluded negative-infinity tail.
+
+Item 63's four-repeat qualification measured `MET`: the full-helper median fell from
+19,266,559,229 ns to 18,157,698,958 ns, a 57,553-ppm gain, with exact output, plane, isolation,
+cache, and native lifetime evidence. Sections 3.7, 4.5, 5.3, 13, and 14 remain the historical
+construction record; where they say production decode pads K/V or requires KQ `ne0 == KV_WIDTH`,
+this amendment is authoritative.

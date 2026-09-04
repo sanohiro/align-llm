@@ -32,15 +32,23 @@ live-width probes produced 17,937,155,959-ns and 18,391,417,042-ns full walls wi
 native lifetime balances. Those probes select the candidate but are not shipping evidence; all
 temporary source and generated artifacts were removed.
 
-The design checkpoint is `5e8157a`. The live-width graph, exact topology owner, updated live-mask
-mutant, qualification helper, and bounded gate runner are implemented locally. The stub owner
+The design checkpoint is `5e8157a`; implementation checkpoint is `dd2fd1f`. The live-width graph,
+exact topology owner, updated live-mask mutant, qualification helper, and bounded gate runner are
+implemented. The stub owner
 publishes 100 rather than 104 nodes per two-layer/top-3 step, reduces only the corresponding
 phase-A activation entries, preserves the fixed plane, passes every comparable transcript row,
 and still detects a forced mask error inside the live prefix.
 
-**Next actions.** Commit the owner-tested implementation checkpoint, build its pinned real helper,
-run four conditioned repetitions, record the gate result, update the owning specifications as the
-decision requires, review, publish, merge, and continue.
+The clean-head four-repeat qualification completed in 116.615 seconds with candidate walls
+`[17315490209,18232421375,18082976541,18457679541]` ns and an 18,157,698,958-ns median. The
+1,108,860,271-ns / 57,553-ppm gain is 145,532,309 ns below the precommitted ceiling, so the decision
+is `MET`. Phase A fell to a 1,453,377,306-ns median and total compute to 2,747,113,698 ns. All
+fixed outputs, lifetimes, and twelve isolation boundaries remained exact. Claim I/O is now the
+largest measured unresolved bucket at 3,778,790,474 ns and selects item 64.
+
+**Next actions.** Commit the recorded result and directly affected specification, run one fresh
+comprehensive review, consolidate valid findings, rerun affected evidence and exact-head preflight,
+publish, merge, then start item 64.
 
 **Blocker.** None.
 
@@ -50,9 +58,8 @@ golden diff is limited to issued-node and phase-A activation sizes. `make runtim
 passes its self-test and 61 CLI assertions. The item-63 model-free self-test, Python compilation,
 `make fmt`, and `git diff --check` pass.
 
-**Intentional uncommitted files.** Item 63's production implementation, owner golden/assertions,
-helper, runner, and this checkpoint update until committed. Machine-local model/evidence and
-generated build products remain outside Git.
+**Intentional uncommitted files.** Item 63's result, roadmap, R6 amendment, and this handoff update
+until committed. Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-COMPUTE-DIAGNOSIS (PR #184, 2026-09-05)
 
