@@ -1447,7 +1447,7 @@ The current forward delivery order is:
     therefore clears the construction upper bound and selects an isolated provider-level decision.
 
 56. **R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION — remeasure time to a passing patch without
-    co-resident model pressure. Active.**
+    co-resident model pressure. Decision recorded: `NOT_MET`.**
     [`r8-olmoe-isolated-sampled-runtime-decision.md`](r8-olmoe-isolated-sampled-runtime-decision.md)
     is the authoritative measurement contract and closure matrix. Repeat item 53's exact sampled
     coding portfolio and
@@ -1455,6 +1455,22 @@ The current forward delivery order is:
     llama.cpp server lifetime and prove that server terminated and was reaped before any runtime
     leg. The runtime leg must begin and end without a matching model process. This decision changes
     no provider lifetime or cache behavior and may record `MET`, `NOT_MET`, or `NOT_ELIGIBLE`.
+
+    The 724.144-second run proved every local server lifetime and all eight runtime absence
+    boundaries. Both arms passed all four portfolios at candidate 5 with the same patch. Local
+    median time to a passing patch was 13.197 seconds and isolated runtime median was 149.273
+    seconds, a -10,310,731-ppm gain with runtime slower in every pair. Isolation recovered 39.732
+    seconds, or 21.0% of item 53's old co-resident-runtime median, but did not approach the
+    50,000-ppm gate. R8 remains open.
+
+57. **R8-OLMOE-REMAINING-DECODE-OVERHEAD-DIAGNOSIS — assign the isolated decode tail before
+    choosing graph, transfer, or orchestration work. Next.**
+    Reuse the fixed isolated seed-5 full request and item 55's phase boundary, then partition the
+    remaining-decode wall into non-overlapping graph/context lifecycle, data transfer/readback,
+    claim I/O, compute, and routing/sampling/accounting intervals with an explicit residual. Record
+    a precommitted opportunity ceiling and shipping floor for every selectable implementation seam.
+    Select work only when one measured seam can materially reduce the item-56 gap; otherwise retain
+    diagnosis. This capability changes no provider lifetime, cache policy, or generation behavior.
 
 ### Status (2026-08-28)
 

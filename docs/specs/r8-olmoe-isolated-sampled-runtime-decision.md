@@ -1,6 +1,6 @@
 # R8 OLMoE isolated sampled runtime decision
 
-Status: active design, 2026-09-04
+Status: decision recorded, 2026-09-04
 
 Roadmap owner: item 56, `R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION`
 
@@ -141,3 +141,48 @@ implementation; its remaining size is the consumer-owned exact identity/schema p
 non-overlapping external-process lifetimes, signal/failure cleanup, and model-free closure tests.
 Splitting those pieces would create a schema or lifecycle producer without an independently usable
 measurement consumer and would duplicate the same process and identity failure domain.
+
+## 6. Recorded decision
+
+The complete isolated decision ran at clean align-llm head
+`ee3ca3d691a91bac06f2e41e4b8fa4fc05f3e00f` with Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4` on Darwin arm64 25.5.0. It bound every model,
+pack, geometry, server, task, prompt, validator, compiler, C toolchain, linker-search, and ggml
+identity named above. The newly built helper was
+`5ddb391724a2edbb2a76330d112f307db2952073a421777e584574db3d719ebe`; its dynamic shim was
+`9ec6fa6116d3f5241f230d14e829e86b9a004c6a168a6619c8ceec91658faddc`. The run completed in
+724.144 seconds, below the precommitted 25-minute ceiling.
+
+Both arms passed all four portfolios at candidate 5, seed 5, with the same passing patch SHA-256
+`5d6b107e706a5a55c945bc0b41296e255013a1516e0a6211ccc9da65001252dc`. Each local portfolio
+recorded `INVALID_PATCH`, `FAILING_PATCH`, `FAILING_PATCH`, `INVALID_PATCH`, then `PASS`; each
+runtime portfolio recorded four `FAILING_PATCH` candidates, then `PASS`. Thus output rendering
+differed before the common successful candidate, but candidate count did not explain the timing
+difference.
+
+Local pair times were 13.421, 13.294, 13.100, and 13.045 seconds, for a 13.197-second median.
+Runtime pair times were 152.302, 150.714, 147.029, and 147.832 seconds, for a 149.273-second
+median. Runtime was slower in every pair and gain was -10,310,731 ppm, so the decision is
+**`NOT_MET`**. Across the twenty candidates per arm, provider-time medians were 1.814 seconds local
+and 29.300 seconds runtime; validator medians were 0.434 and 0.501 seconds. The R8 performance gate
+remains open.
+
+Every pair proved one ready, solely owned local server that remained alive for the portfolio, was
+then terminated and reaped, and left zero matching processes. Every runtime boundary also observed
+zero matching processes before and after its portfolio. Compared with item 53's 189.005-second
+co-resident-runtime median, isolation recovered 39.732 seconds, or 210,218 ppm of that old median,
+but left runtime 11.31 times the new local median. This comparison is diagnostic because only the
+new isolated pairs own this capability's decision.
+
+Item 55's isolated full-request median assigned only 0.237 seconds to construction and measured
+24.803 seconds in remaining decode. Within that remaining-decode interval, its recorded claim-read
+and compute medians account for about 8.46 seconds, leaving the largest absolute observed interval
+without a decision-grade subdivision. Persistent provider state cannot plausibly close the present
+gap from the 0.272-second construction upper bound. The next capability is therefore a focused
+remaining-decode overhead diagnosis that separates graph/context lifecycle, data transfer and
+readback, and routing/sampling/accounting before selecting an optimization seam. It must precommit
+each candidate seam's opportunity ceiling and shipping floor; this result alone authorizes no
+runtime behavior change.
+
+This remains one fixed task, model, host, and bounded sampled portfolio. It establishes neither a
+general model-speed ratio nor a throughput result.

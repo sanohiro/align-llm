@@ -15,17 +15,25 @@ and measured runtime at a 189.005-second median versus local at 12.710 seconds. 
 repeated pre-prefill construction at 0.272 seconds and measured a 3.052-second co-resident penalty
 for one full request, selecting isolation before any persistent lifetime change.
 
-Item 56's authoritative ledger and closure matrix are
+Item 56's authoritative ledger, closure matrix, and recorded decision are
 `docs/specs/r8-olmoe-isolated-sampled-runtime-decision.md`. It repeats the exact item-53 workload,
 four balanced pairs, metric, and 50,000-ppm gate. Each local leg owns one fresh server and excludes
 startup/teardown from its unchanged portfolio metric; the server must be alive during the local
 portfolio, then terminated and reaped. Every runtime leg begins and ends with zero matching model
-processes. Product provider, sampling, cache, and lifetime behavior remain unchanged. The
-precommitted complete-run ceiling is 25 minutes.
+processes. Product provider, sampling, cache, and lifetime behavior remain unchanged.
 
-**Next actions.** Finish the author ledger-to-prose pass, implement the focused isolation runner and
-model-free owner, run predecessor plus focused verification, then execute one complete real
-decision and record its result before review.
+The complete run at head `ee3ca3d691a91bac06f2e41e4b8fa4fc05f3e00f` finished in 724.144 seconds
+and recorded `NOT_MET`. Both arms passed all four pairs at candidate 5 with the same patch. Local
+median time to a passing patch was 13.197 seconds; runtime median was 149.273 seconds, for a
+-10,310,731-ppm gain with runtime slower in every pair. All four server lifetimes and every
+before/after absence check passed. Isolation recovered 39.732 seconds, 21.0% of item 53's runtime
+median, but left runtime 11.31 times slower than local. R8 remains open; item 57 is selected to
+partition remaining-decode graph/context lifecycle, transfer/readback, claim, compute, and
+routing/sampling/accounting overhead before any implementation seam is authorized.
+
+**Next actions.** Commit the recorded result, perform the one comprehensive review, consolidate any
+accepted findings, rerun affected owner evidence and exact-head preflight, publish and merge the
+capability, then start item 57's authoritative measurement contract.
 
 **Blocker.** None.
 
