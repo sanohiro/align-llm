@@ -46,8 +46,17 @@ is `MET`. Phase A fell to a 1,453,377,306-ns median and total compute to 2,747,1
 fixed outputs, lifetimes, and twelve isolation boundaries remained exact. Claim I/O is now the
 largest measured unresolved bucket at 3,778,790,474 ns and selects item 64.
 
-**Next actions.** Commit the recorded result and directly affected specification, run one fresh
-comprehensive review, consolidate valid findings, rerun affected evidence and exact-head preflight,
+The comprehensive Codex CLI review covered head
+`f580dca93f1490c46218e06f3d1869d03edef85a` against base tip and merge base
+`4b69eaa5e7b99e4206b7a4c90e3257e19c8dca07`, using gpt-5.6-sol at high effort over the full diff.
+It found one accepted P2: the item-63 runner pinned only its immediate imported runner even though
+that runner executes nine further Python qualification owners transitively. The consolidated repair
+pins every runner in that chain and adds a mutation self-test at the deepest imported owner. This
+changes evidence identity only, not production or measurement behavior, so another comprehensive
+review is not required.
+
+**Next actions.** Commit the consolidated review repair, rerun its model-free owner and complete
+real qualification at the repaired clean head, record that result, run exact-head preflight,
 publish, merge, then start item 64.
 
 **Blocker.** None.
@@ -58,8 +67,9 @@ golden diff is limited to issued-node and phase-A activation sizes. `make runtim
 passes its self-test and 61 CLI assertions. The item-63 model-free self-test, Python compilation,
 `make fmt`, and `git diff --check` pass.
 
-**Intentional uncommitted files.** Item 63's result, roadmap, R6 amendment, and this handoff update
-until committed. Machine-local model/evidence and generated build products remain outside Git.
+**Intentional uncommitted files.** The consolidated qualification-runner identity repair and this
+handoff update until committed. Machine-local model/evidence and generated build products remain
+outside Git.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-COMPUTE-DIAGNOSIS (PR #184, 2026-09-05)
 

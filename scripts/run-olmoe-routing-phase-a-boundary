@@ -50,8 +50,20 @@ FLOOR_PPM = 50_000
 MINIMUM_GAIN_NS = 963_327_962
 CANDIDATE_CEILING_NS = 18_303_231_267
 
-SOURCE_PATHS = (
+QUALIFICATION_RUNNER_PATHS = (
     PREDECESSOR_PATH,
+    ROOT / "scripts/run-olmoe-plane-roundtrip-boundary",
+    ROOT / "scripts/run-olmoe-decode-pass-other-diagnosis",
+    ROOT / "scripts/run-olmoe-decode-pass-residual-diagnosis",
+    ROOT / "scripts/run-olmoe-kv-plane-staging-transfer",
+    ROOT / "scripts/run-olmoe-remaining-decode-overhead-diagnosis",
+    ROOT / "scripts/run-olmoe-first-token-phase-diagnosis",
+    ROOT / "scripts/run-olmoe-runtime-phase-diagnosis",
+    ROOT / "scripts/run-olmoe-sampled-runtime-decision",
+    ROOT / "scripts/run-olmoe-coding-decision",
+)
+SOURCE_PATHS = (
+    *QUALIFICATION_RUNNER_PATHS,
     ROOT / "src/olmoe_remaining_decode_overhead_gate.align",
     ROOT / "src/olmoe_decode_pass_residual_gate.align",
     ROOT / "src/olmoe_decode_pass_other_gate.align",
@@ -67,6 +79,15 @@ SOURCE_PATHS = (
 )
 EXPECTED_SOURCE_IDENTITIES = (
     "433d848e6a926108cacb0651e08a24df65537225cada07d35bc6a85a295d884f",
+    "69c2a44572029e36c349de5feb061e1ecb597e3fa4de7c7a58341da2bcb05ef9",
+    "b66815c4debfec0f749ac88b39ec8ba9f06e25d1f85b4aba3c760d112748f868",
+    "26887655013f0f68e94705a6addd87dac72ada5d37d08e1421a2daef2e78de5a",
+    "922b29baf0489fd1cec53ce1395849ba69df69d0e69dea44a3f07ec95b42cf65",
+    "de717064f4d2ea89d63a6529d38d37157f7d34f9946db7e6dc350076185157ce",
+    "15fb41454a01e5be87776fedd2081b70b4bd155bd6208de1adb0f26c7ddf9dbc",
+    "1f95cefc30d4e5d772b35d6f739994440ce195facf12d5b359f206428301e9b8",
+    "03ee9abc87d1d167f1bac4878004abb64a0ef8bf50a3dfd96ee66eeba106ad9f",
+    "e3a86592357af4c1c8888689cfc026867842ac05a6f4b5a8b88fcc2f026f0260",
     "07cc85b80b44b538fb4e01f0838db396f08fa4a55e1b87eaf3f29ae4c00451cf",
     "91e2dedf7eac8f66f11c817797e8541881bfd2c7f71ee4e298b37305c6123a63",
     "505efca65a7637b65b26997de200234f44cd8b7cee9db681b9f9161524ecaaaf",
@@ -364,6 +385,16 @@ def self_test() -> int:
     expect_error(lambda: validate_result(malformed_result), "drifted intervention was accepted")
     with mock.patch.object(compute, "SEED", 6):
         expect_error(validate_imported_contract, "drifted imported workload was accepted")
+    actual_file_sha256 = base.file_sha256
+    transitive_runner = QUALIFICATION_RUNNER_PATHS[-1]
+
+    def transitive_runner_drift(path: Path) -> str:
+        if path == transitive_runner:
+            return "0" * 64
+        return actual_file_sha256(path)
+
+    with mock.patch.object(base, "file_sha256", side_effect=transitive_runner_drift):
+        expect_error(validate_imported_contract, "drifted transitive runner was accepted")
     incomplete = dict(result)
     incomplete["elapsed_ns"] = 0
     with mock.patch.object(time, "monotonic_ns", return_value=2_000):
