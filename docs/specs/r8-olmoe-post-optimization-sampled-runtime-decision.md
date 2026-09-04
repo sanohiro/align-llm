@@ -1,6 +1,6 @@
 # R8 OLMoE post-optimization sampled runtime decision
 
-Status: design complete, 2026-09-05
+Status: decision recorded, 2026-09-05
 
 Roadmap owner: item 69, `R8-OLMOE-POST-OPTIMIZATION-SAMPLED-RUNTIME-DECISION`
 
@@ -83,3 +83,39 @@ already-shipped provider behavior.
 
 No product source, Make target, aggregate membership, platform profile, stress suite, corpus, broad
 `make ci`, or unrelated benchmark is selected.
+
+## 5. Recorded decision
+
+Design checkpoint `a2b73d6` fixed the contract before the focused owner. Implementation checkpoint
+`81992f0ac333fb5418c1ded947c099d3af3d179e` added only the qualification wrapper. The complete
+run evaluated that clean head on Darwin arm64 25.5.0 with Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4` and every item 56 model, pack, geometry, server,
+validator, compiler, C toolchain, linker-search, ggml, task, and prompt identity. The delegated
+decision completed in 506.356 seconds and the wrapper completed in 506.52 seconds, below the
+25-minute ceiling.
+
+Both arms passed all four portfolios at candidate 5, seed 5, and selected the same passing patch
+SHA-256 `5d6b107e706a5a55c945bc0b41296e255013a1516e0a6211ccc9da65001252dc`.
+Local portfolio times were `[14017794083,14438206625,13967618667,13916119042]` ns, with a
+13,992,706,375-ns median. Runtime portfolio times were
+`[89506001833,90883117000,91948687375,93119518084]` ns, with a 91,415,902,187-ns median.
+Runtime was slower in every pair and the paired gain was -5,533,111 ppm, so the decision is
+**`NOT_MET`** and R8 remains open.
+
+The result nevertheless confirms that the shipped decode work materially improved the primary
+metric. Against item 56's rounded 149.273-second historical runtime median, the new runtime median
+is 57.857 seconds or 387,592 ppm lower. That comparison is diagnostic: only the four new paired
+samples decide this capability. Runtime remains 6.53 times the newly measured local median, and
+each runtime portfolio still spends roughly five complete provider calls reaching candidate 5.
+
+All four fresh local servers were ready, solely owned, alive through their portfolio, terminated,
+reaped, and absent afterward. Every runtime leg began and ended with zero matching processes. The
+ordered candidate statuses, selected seed, output hashes, patch hashes, candidate counts, and
+within-arm determinism passed the inherited validator. Final head and all independently pinned
+source identities remained unchanged.
+
+Persistent provider construction is not selected: item 55 bounded repeated pre-prefill
+construction at 0.272 seconds per request, far below the remaining approximately 77.4-second
+portfolio gap. Item 70 will instead reaggregate the current fixed request's already-instrumented
+remaining-decode buckets after items 58 and 68 and select one directly measured next seam or a
+narrower diagnosis. This result authorizes no product change by itself.

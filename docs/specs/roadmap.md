@@ -1668,14 +1668,28 @@ The current forward delivery order is:
     exact-safe interventions ship.
 
 69. **R8-OLMOE-POST-OPTIMIZATION-SAMPLED-RUNTIME-DECISION — remeasure the primary metric after
-    the shipped decode reductions. Active.**
+    the shipped decode reductions. Decision recorded: `NOT_MET`.**
     [`r8-olmoe-post-optimization-sampled-runtime-decision.md`](r8-olmoe-post-optimization-sampled-runtime-decision.md)
     is the authoritative measurement contract and closure matrix. Repeat item 56's exact sampled
     coding portfolio, four balanced isolated pairs, fresh local-server lifetimes, and 50,000-ppm
     gate against current `main` after items 58 and 68. Item 56's 13.197-second local and
     149.273-second runtime medians are historical context only; the new four pairs decide whether
     accumulated shipped work closes R8 for this fixed consumer. This capability changes no product
-    behavior and authorizes no further optimization when its result is negative.
+    behavior and authorizes no further optimization when its result is negative. The clean-head
+    run completed in 506.52 seconds. Both arms passed all four portfolios at candidate 5 with the
+    same patch. Local times `[14017794083,14438206625,13967618667,13916119042]` ns had a
+    13,992,706,375-ns median; runtime times
+    `[89506001833,90883117000,91948687375,93119518084]` ns had a 91,415,902,187-ns median.
+    Runtime was slower in every pair and gain was -5,533,111 ppm. The runtime median is
+    diagnostically 57.857 seconds / 387,592 ppm below item 56's rounded historical median, but it
+    remains 6.53 times local. R8 stays open and item 70 owns the updated remaining-decode diagnosis.
+
+70. **R8-OLMOE-POST-OPTIMIZATION-REMAINING-DECODE-DIAGNOSIS — reselect the largest current
+    fixed-request bucket. Selected next; not started.** Reaggregate the shipped detailed clocks
+    after items 58 and 68 under the same fixed seed-5 request, exact output, isolation, cache, and
+    lifetime boundaries. Precommit a materiality floor from the current complete-request evidence,
+    select a directly measured bucket only when it clears that floor, and otherwise select one
+    narrower diagnosis. This is attribution, not an optimization or performance claim.
 
 ### Status (2026-08-28)
 

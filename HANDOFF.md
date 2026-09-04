@@ -19,18 +19,31 @@ remeasured rather than inferred from single-request evidence.
 Item 69's authoritative ledger and closure matrix are
 `docs/specs/r8-olmoe-post-optimization-sampled-runtime-decision.md`. It repeats item 56's exact
 four balanced isolated pairs, fresh local-server ownership, portfolio, primary metric, and
-50,000-ppm gate. A thin qualification owner will delegate item 56's complete runner, project only
-the artifact identity, and independently pin item 56 plus item 68's full shipped source chain.
+50,000-ppm gate. A thin qualification owner delegates item 56's complete runner, projects only the
+artifact identity, and independently pins item 56 plus item 68's full shipped source chain.
 Product behavior does not change.
 
-**Next actions.** Finish the author ledger-to-prose consistency pass, commit the design checkpoint,
-implement the focused qualification owner, run predecessor and focused tests, then execute one
-clean-head real decision and record its result before review.
+Design checkpoint `a2b73d6` fixed the contract. Implementation checkpoint
+`81992f0ac333fb5418c1ded947c099d3af3d179e` added only the thin qualification owner. Its clean-head
+run completed in 506.52 seconds and recorded `NOT_MET`: local times
+`[14017794083,14438206625,13967618667,13916119042]` ns had a 13,992,706,375-ns median; runtime
+times `[89506001833,90883117000,91948687375,93119518084]` ns had a 91,415,902,187-ns median.
+Both arms passed all four portfolios at candidate 5 with the same patch, but runtime was slower in
+every pair and gain was -5,533,111 ppm. Relative to item 56's rounded historical runtime median,
+the new runtime median is 57.857 seconds / 387,592 ppm lower, but remains 6.53 times local.
+
+Every local server lifetime and runtime absence boundary passed, and the evaluated head plus full
+source chain remained unchanged. Item 70 is selected to reaggregate the current fixed request's
+remaining-decode clocks after items 58 and 68; item 69 authorizes no product change.
+
+**Next actions.** Commit the recorded result, perform one comprehensive review, repair accepted
+findings, run exact-head preflight, publish, merge, and continue to item 70.
 
 **Blocker.** None.
 
-**Latest durable verification.** Item 68 exact-head preflight passed at `5d482c5`; all three PR
-checks passed, and PR #190 merged as `917565d`. Item 69 has not yet run.
+**Latest durable verification.** Item 56, item 68, and item 69 self-tests plus Python compilation
+and `git diff --check` passed. The clean-head real decision above passed its complete inherited
+schema, determinism, identity, validator, isolation, cleanup, and ceiling checks.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.
