@@ -29,7 +29,7 @@ fixed-task result, not a quality-rate, cross-host, throughput, token-parity, or 
 | Subject model | `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, 4,213,512,192 bytes, SHA-256 `4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f` |
 | Baseline | llama.cpp build 10566 commit `bb4caa754`, loopback `LocalOpenAI`, CPU-only, four threads, context 512, no warmup, one server resident across all pairs |
 | Candidate | exact reviewed align-llm source and `.align-revision`, in-process `AlignRuntime`, real ggml shim/libraries, exact pack and geometry, 975,175,680-byte invocation-local expert-cache budget |
-| Opt-in inputs | model, pack, geometry, ggml include, ggml library, and server use item 50's six named `ALIGN_LLM_*` variables; Darwin additionally requires an explicit ordered `LIBRARY_PATH`, validated directory by directory and bound by digest without publishing machine paths |
+| Opt-in inputs | model, pack, geometry, ggml include, ggml library, and server use item 50's six named `ALIGN_LLM_*` variables; optional `ALIGN_LLM_RUNTIME_GATE_IMAGE` selects the validator image and defaults to `c4-repair-measure:latest`, with the resolved immutable image ID bound in the result; Darwin additionally requires an explicit ordered `LIBRARY_PATH`, canonicalized and validated directory by directory and bound by digest without publishing machine paths |
 | Portfolio | temperature 300,000 micros, seeds `[1,2,3,4,5,6,7,8]` in order, maximum 128 completion tokens, stop immediately after the first passing patch |
 | Pair schedule | `(local,runtime)`, `(runtime,local)`, `(runtime,local)`, `(local,runtime)`; one synchronous leg at a time |
 | Primary metric | nanoseconds from each portfolio leg's first provider-helper launch through successful validation of its first passing patch |
@@ -103,12 +103,13 @@ promise of byte identity between provider arms.
 ## 4. Validation order
 
 The runner validates configured paths in model, pack, geometry, ggml include, ggml library, then
-server order; a configured invalid path is never hidden by a later missing value. It then requires
-a clean worktree, validates every explicit Darwin linker-search directory, resolves the validator
-to a native boundary or immutable Docker image, validates the known-good control under the same
-scrubbed validator environment used by every candidate, checks model and server identity, resolves
-the managed compiler, builds the exact-source dynamic shim and helper, starts the server, and
-executes the fixed schedule.
+server order; a configured invalid path is never hidden by a later missing value, and every accepted
+path is canonicalized before a child process consumes it. It then removes ambient Git routing,
+requires a clean worktree, canonicalizes and validates every explicit Darwin linker-search
+directory, resolves the declared validator selector to a native boundary or immutable Docker image,
+validates the known-good control under the same scrubbed validator environment used by every
+candidate, checks model and server identity, resolves the managed compiler, builds the exact-source
+dynamic shim and helper, starts the server, and executes the fixed schedule.
 
 Each candidate accepts only a successful, well-formed schema-2 provider record. Provider errors and
 seed refusal fail the decision. A syntactically invalid completion is an ordinary `INVALID_PATCH`;
@@ -120,7 +121,7 @@ build artifacts, clean source state, and source head are rechecked after all pai
 
 | Cell | Measurement runner | Helper/providers | Exact evidence |
 | --- | --- | --- | --- |
-| Construction | validate ordered prerequisites, explicit linker search, immutable validator, clean source, identities, dynamic shim/helper, then resident server | existing `local-sampled` and `runtime-olmoe-sampled` modes receive the same seed policy and maximum | self-test command grammar, precedence, linker/environment isolation; real identity fields |
+| Construction | validate and canonicalize ordered prerequisites and explicit linker search, isolate Git routing, resolve the declared validator selector to an immutable identity, require clean source and identities, build the dynamic shim/helper, then start the resident server | existing `local-sampled` and `runtime-olmoe-sampled` modes receive the same seed policy and maximum | self-test command grammar, precedence, path/linker/environment isolation; real identity fields |
 | Validator control | known-good patch passes before model/server work in the candidate validation environment | N/A | self-test environment routing; real control |
 | Baseline success | run ordered candidates against one resident pinned server | one seeded loopback request per candidate | four complete deterministic local portfolios |
 | Candidate success | run ordered candidates with exact model/pack/geometry/budget | one seeded in-process request and invocation-local cache per candidate | four complete deterministic runtime portfolios |

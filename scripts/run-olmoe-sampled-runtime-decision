@@ -56,6 +56,7 @@ EXTRA_SCRUBBED_ENV_NAMES = {
     "DYLD_LIBRARY_PATH",
     "LD_LIBRARY_PATH",
 }
+EXTRA_SCRUBBED_ENV_PREFIXES = ("GIT_",)
 active_process: subprocess.Popen[bytes] | None = None
 server_process: subprocess.Popen[bytes] | None = None
 
@@ -90,9 +91,12 @@ def interrupted(signal_number: int, _frame: object) -> None:
 
 def decision_environment() -> dict[str, str]:
     environment = base.sanitized_environment()
-    for name in EXTRA_SCRUBBED_ENV_NAMES:
-        environment.pop(name, None)
-    return environment
+    return {
+        name: value
+        for name, value in environment.items()
+        if name not in EXTRA_SCRUBBED_ENV_NAMES
+        and not any(name.startswith(prefix) for prefix in EXTRA_SCRUBBED_ENV_PREFIXES)
+    }
 
 
 def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
@@ -111,7 +115,7 @@ def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
     if missing is not None:
         print(f"R8-OLMOE-SAMPLED-RUNTIME-DECISION: N/A ({missing} unset)")
         return None
-    return tuple(path for _, path in rows)  # type: ignore[return-value]
+    return tuple(path.resolve() for _, path in rows)  # type: ignore[return-value]
 
 
 def validate_linker_search(environment: dict[str, str]) -> str:
@@ -123,7 +127,7 @@ def validate_linker_search(environment: dict[str, str]) -> str:
     paths = value.split(":")
     if any(not path or not Path(path).is_dir() for path in paths):
         raise DecisionError("LIBRARY_PATH contains an empty or non-directory entry")
-    return value
+    return ":".join(str(Path(path).resolve()) for path in paths)
 
 
 def remaining_timeout(deadline: float, maximum: int) -> int:
@@ -783,27 +787,75 @@ def self_test() -> int:
                 pass
             else:
                 raise DecisionError("invalid configured model was hidden by later N/A")
+        relative_inputs = work / "relative-inputs"
+        relative_inputs.mkdir()
+        relative_files = {
+            "ALIGN_LLM_OLMOE_MODEL": relative_inputs / "model",
+            "ALIGN_LLM_MOE_ALIGNPACK": relative_inputs / "pack",
+            "ALIGN_LLM_MOE_GEOMETRY": relative_inputs / "geometry",
+            "ALIGN_LLM_LLAMA_SERVER": relative_inputs / "server",
+        }
+        for path in relative_files.values():
+            path.write_bytes(b"fixture")
+        relative_files["ALIGN_LLM_LLAMA_SERVER"].chmod(0o755)
+        relative_directories = {
+            "ALIGN_LLM_GGML_INCLUDE": relative_inputs / "include",
+            "ALIGN_LLM_GGML_LIB": relative_inputs / "lib",
+        }
+        for path in relative_directories.values():
+            path.mkdir()
+        configured = {
+            name: os.path.relpath(path)
+            for name, path in {**relative_files, **relative_directories}.items()
+        }
+        with mock.patch.dict(os.environ, configured, clear=True):
+            resolved = prerequisites()
+        expected_resolved = tuple(
+            Path(configured[name]).resolve()
+            for name in (
+                "ALIGN_LLM_OLMOE_MODEL",
+                "ALIGN_LLM_MOE_ALIGNPACK",
+                "ALIGN_LLM_MOE_GEOMETRY",
+                "ALIGN_LLM_GGML_INCLUDE",
+                "ALIGN_LLM_GGML_LIB",
+                "ALIGN_LLM_LLAMA_SERVER",
+            )
+        )
+        if resolved != expected_resolved:
+            raise DecisionError("configured paths were not canonicalized")
         with mock.patch.dict(
             os.environ,
             {
                 "ALIGNC": "ambient",
                 "ALIGN_LLM_BWRAP": "ambient",
                 "DYLD_LIBRARY_PATH": "ambient",
+                "GIT_DIR": "/unrelated/repository",
+                "GIT_INDEX_FILE": "/unrelated/index",
                 "OMP_NUM_THREADS": "99",
                 "LIBRARY_PATH": "/links",
+                "ALIGN_LLM_RUNTIME_GATE_IMAGE": "sha256:" + "a" * 64,
                 "SAFE_VALUE": "kept",
             },
             clear=True,
         ):
             clean_env = decision_environment()
-        if clean_env != {"LIBRARY_PATH": "/links", "SAFE_VALUE": "kept"}:
+        if clean_env != {
+            "LIBRARY_PATH": "/links",
+            "ALIGN_LLM_RUNTIME_GATE_IMAGE": "sha256:" + "a" * 64,
+            "SAFE_VALUE": "kept",
+        }:
             raise DecisionError("decision environment isolation drifted")
 
         link_a = work / "link-a"
         link_b = work / "link-b"
         link_a.mkdir()
         link_b.mkdir()
-        if validate_linker_search({"LIBRARY_PATH": f"{link_a}:{link_b}"}) != f"{link_a}:{link_b}":
+        relative_link_a = os.path.relpath(link_a)
+        expected_linker_search = f"{link_a.resolve()}:{link_b.resolve()}"
+        if (
+            validate_linker_search({"LIBRARY_PATH": f"{relative_link_a}:{link_b}"})
+            != expected_linker_search
+        ):
             raise DecisionError("explicit linker search changed")
         try:
             validate_linker_search({"LIBRARY_PATH": f"{link_a}:{work / 'missing'}"})
@@ -995,6 +1047,8 @@ def main() -> int:
         if source_status.stdout:
             raise DecisionError("real decision requires a clean worktree")
         linker_search = validate_linker_search(clean_env)
+        if linker_search:
+            clean_env["LIBRARY_PATH"] = linker_search
         align_llm_head = run_process(
             ["git", "rev-parse", "HEAD"],
             deadline=deadline,

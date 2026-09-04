@@ -16,15 +16,6 @@ Its authoritative measurement ledger, 50,000-ppm floor, pre-implementation 800,0
 attempt-count opportunity ceiling, approximately-25-minute execution ceiling, schema, validation
 order, and closure matrix are `docs/specs/r8-olmoe-sampled-runtime-decision.md`.
 
-**Next actions.** Commit the design checkpoint, implement the focused decision runner and
-self-test without changing product behavior, run the owner, then execute and record the one real
-decision. The first complete four-pair execution reached final aggregation in about twelve minutes
-but correctly emitted no result because exact local output bytes differed. A bounded two-pair
-diagnostic isolated the drift to candidate 1: both rows were 52-token `INVALID_PATCH` results,
-while the following failing patches and the seed-5 passing patch were byte-identical. The contract
-now keys repeatability on task workload — ordered status, token count, admitted patch digest, and
-selection — while retaining invalid output digests as evidence.
-
 **Latest durable verification.** The focused self-test passes. The one complete real decision ran
 on clean head `d8a3da0` in 801.574 seconds and recorded `NOT_MET`: both arms passed 4/4 at seed 5
 with the same known-good patch, but local median time to passing patch was 12.710 seconds and runtime
@@ -32,11 +23,15 @@ median was 189.005 seconds, a -13,871,021-ppm gain with runtime slower in every 
 five candidates, so the 800,000-ppm attempt-count opportunity was not realized. Runtime provider
 intervals rose from 27.928 to 40.243 seconds; a 16-GiB host showed about 4.29 GiB swap used after the
 run, but that non-precommitted observation does not distinguish repeated provider construction from
-co-resident memory pressure.
+co-resident memory pressure. The comprehensive Codex CLI review covered head
+`cf58d064fd84522833fd59721e2d9f33ef5bde1f` against base tip and merge base
+`728a186fbd7d21d43c3f1d8993adf124444652bc`, using gpt-5.6-sol at high effort over the full diff.
+Its three accepted P2 findings require isolating Git routing, canonicalizing configured paths, and
+declaring the validator-image selector while retaining the immutable resolved identity.
 
-**Next actions.** Commit the measurement record, run the focused owner and one comprehensive
-review, repair accepted findings, run exact-head preflight, publish, and merge. Then start a bounded
-phase/lifetime diagnosis before proposing persistent provider state or another runtime-cache change.
+**Next actions.** Complete the consolidated review repair, rerun the focused owner, run exact-head
+preflight, publish, and merge. Then start a bounded phase/lifetime diagnosis before proposing
+persistent provider state or another runtime-cache change.
 
 **Blocker.** None.
 
