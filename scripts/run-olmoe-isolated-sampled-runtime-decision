@@ -1,0 +1,1011 @@
+#!/usr/bin/env python3
+"""R8 sampled-portfolio decision with the runtime arm isolated from llama-server."""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import io
+import json
+import os
+import platform
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Callable
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PREVIOUS_PATH = ROOT / "scripts/run-olmoe-sampled-runtime-decision"
+PREVIOUS_LOADER = SourceFileLoader("olmoe_sampled_runtime_for_isolated_decision", str(PREVIOUS_PATH))
+PREVIOUS_SPEC = importlib.util.spec_from_loader(PREVIOUS_LOADER.name, PREVIOUS_LOADER)
+if PREVIOUS_SPEC is None or PREVIOUS_SPEC.loader is None:
+    raise RuntimeError("cannot load the sampled runtime decision owner")
+previous = importlib.util.module_from_spec(PREVIOUS_SPEC)
+PREVIOUS_SPEC.loader.exec_module(previous)
+base = previous.base
+
+MODEL_BYTES = previous.MODEL_BYTES
+MODEL_SHA256 = previous.MODEL_SHA256
+SERVER_BUILD = previous.SERVER_BUILD
+SERVER_COMMIT = previous.SERVER_COMMIT
+BUDGET = previous.BUDGET
+ALIAS = previous.ALIAS
+TASK = previous.TASK
+PROMPT_TEXT = previous.PROMPT_TEXT
+KNOWN_GOOD_PATCH = previous.KNOWN_GOOD_PATCH
+ORDERS = previous.ORDERS
+TEMPERATURE_MICROS = previous.TEMPERATURE_MICROS
+SEEDS = previous.SEEDS
+MAX_TOKENS = previous.MAX_TOKENS
+FLOOR_PPM = previous.FLOOR_PPM
+CEILING_SECONDS = 25 * 60
+
+EXPECTED_WORKLOAD = (
+    4_213_512_192,
+    "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f",
+    "build 10566, commit bb4caa754",
+    "bb4caa754",
+    975_175_680,
+    "olmoe",
+    ROOT / "eval/tasks/coding-v1/python-inclusive-range/task.json",
+    "0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b",
+    "5d6b107e706a5a55c945bc0b41296e255013a1516e0a6211ccc9da65001252dc",
+    (("local", "runtime"), ("runtime", "local"), ("runtime", "local"), ("local", "runtime")),
+    300_000,
+    (1, 2, 3, 4, 5, 6, 7, 8),
+    128,
+    50_000,
+)
+
+EXPECTED_ALIGN_REVISION = "8cefc803d5c7f883a8db5b67250ed4ed069b43a4"
+EXPECTED_COMPILER_SHA256 = "f972b4a196ed5608a0c52cc02dbf8267cfc236065359315a572d601aa04ea541"
+EXPECTED_PACK_SHA256 = "20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae"
+EXPECTED_GEOMETRY_SHA256 = "1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada"
+EXPECTED_SERVER_SHA256 = "98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c"
+EXPECTED_TASK_SHA256 = "1884f01a329752c1383081342c65d062241aefaefff2f206f6604008bde74940"
+EXPECTED_PROMPT_SHA256 = "0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b"
+EXPECTED_C_COMPILER_SHA256 = "179301dcb41ea78accc3fa0048a7e6f6710d891945a751a34addd622020c1818"
+EXPECTED_C_COMPILER_VERSION_SHA256 = (
+    "ea3037e0630fa16798079372fdc24f6542d021dadda4915cc979799682d78295"
+)
+EXPECTED_LINKER_SEARCH_SHA256 = "5cb52d849e4b5dd2e0380c9fd272279c8b3e572dc563691f60fc8ecbf72d92cf"
+EXPECTED_VALIDATOR_IMAGE = "sha256:33fa9e4446ab1a5ca849c57ea49e2e2e4585488aa1cd4d7b2940801bad84cb54"
+EXPECTED_GGML_LIBRARIES = [
+    {
+        "name": "libggml-base.0.21.0.dylib",
+        "bytes": 506_160,
+        "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574",
+    },
+    {
+        "name": "libggml-base.0.dylib",
+        "bytes": 506_160,
+        "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574",
+    },
+    {
+        "name": "libggml-base.dylib",
+        "bytes": 506_160,
+        "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574",
+    },
+    {
+        "name": "libggml.0.21.0.dylib",
+        "bytes": 60_272,
+        "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734",
+    },
+    {
+        "name": "libggml.0.dylib",
+        "bytes": 60_272,
+        "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734",
+    },
+    {
+        "name": "libggml.dylib",
+        "bytes": 60_272,
+        "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734",
+    },
+]
+
+TOP_KEYS = {
+    "schema_version", "artifact_kind", "status", "model", "baseline", "candidate", "task",
+    "sampling", "validator", "environment", "samples", "aggregate", "elapsed_ns",
+}
+BASELINE_KEYS = {
+    "provider", "runtime_identity", "server_sha256", "threads", "context", "warmup",
+    "server_scope", "server_instances", "startup_in_primary_metric", "teardown_in_primary_metric",
+}
+CANDIDATE_KEYS = {
+    "provider", "align_llm_head", "align_revision", "compiler_sha256", "helper_sha256",
+    "shim_sha256", "ggml_libraries", "pack_sha256", "geometry_sha256", "cache_budget_bytes",
+}
+TASK_KEYS = {"task_id", "task_sha256", "prompt_sha256", "maximum_completion_tokens"}
+SAMPLING_KEYS = {
+    "temperature_micros", "ordered_seeds", "maximum_candidates", "stop_on_first_pass",
+}
+ENVIRONMENT_KEYS = {
+    "os", "release", "architecture", "cpu_count", "c_compiler_sha256",
+    "c_compiler_version_sha256", "linker_search_sha256",
+}
+SAMPLE_KEYS = {"pair_index", "order", "local", "runtime", "isolation"}
+ISOLATION_KEYS = {
+    "local_server_instances", "local_ready", "local_sole_owned_match",
+    "local_alive_after_portfolio", "local_terminated", "local_reaped",
+    "matching_before_local", "matching_after_local", "matching_before_runtime",
+    "matching_after_runtime",
+}
+PORTFOLIO_KEYS = {
+    "status", "attempted_count", "admitted_patch_count", "passing_count",
+    "selected_candidate_index", "selected_seed", "selected_patch_sha256",
+    "time_to_passing_patch_ns", "candidates",
+}
+CANDIDATE_RESULT_KEYS = {
+    "index", "seed", "status", "provider_elapsed_ns", "command_wall_ns",
+    "validation_elapsed_ns", "completion_tokens", "output_sha256", "patch_sha256",
+}
+AGGREGATE_KEYS = {
+    "local_pass_count", "runtime_pass_count", "local_median_time_to_passing_patch_ns",
+    "runtime_median_time_to_passing_patch_ns", "gain_ppm", "runtime_faster_in_every_pair",
+    "verdict",
+}
+
+server_process: subprocess.Popen[bytes] | None = None
+
+
+class DecisionError(RuntimeError):
+    pass
+
+
+def is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def valid_digest(value: object, length: int = 64) -> bool:
+    return isinstance(value, str) and re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is not None
+
+
+def require_exact_keys(value: dict[str, Any], expected: set[str], label: str) -> None:
+    if set(value) != expected:
+        raise DecisionError(f"{label} keys drifted")
+
+
+def validate_imported_workload() -> None:
+    actual = (
+        previous.MODEL_BYTES,
+        previous.MODEL_SHA256,
+        previous.SERVER_BUILD,
+        previous.SERVER_COMMIT,
+        previous.BUDGET,
+        previous.ALIAS,
+        previous.TASK.resolve(),
+        base.bytes_sha256(previous.PROMPT_TEXT.encode("utf-8")),
+        base.bytes_sha256(previous.KNOWN_GOOD_PATCH.encode("utf-8")),
+        previous.ORDERS,
+        previous.TEMPERATURE_MICROS,
+        previous.SEEDS,
+        previous.MAX_TOKENS,
+        previous.FLOOR_PPM,
+    )
+    if actual != EXPECTED_WORKLOAD:
+        raise DecisionError("imported sampled workload drifted")
+
+
+def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
+    rows = (
+        ("ALIGN_LLM_OLMOE_MODEL", base.configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", base.configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", base.configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", base.configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", base.configured_directory("ALIGN_LLM_GGML_LIB")),
+        (
+            "ALIGN_LLM_LLAMA_SERVER",
+            base.configured_file("ALIGN_LLM_LLAMA_SERVER", executable=True),
+        ),
+    )
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION: N/A ({missing} unset)")
+        return None
+    return tuple(path.resolve() for _, path in rows)  # type: ignore[return-value]
+
+
+def parse_matching_processes(output: bytes, server: Path, model: Path) -> list[int]:
+    matches = []
+    server_text = str(server)
+    model_text = str(model)
+    for raw_line in output.decode("utf-8", "replace").splitlines():
+        pieces = raw_line.strip().split(maxsplit=1)
+        if len(pieces) != 2 or not pieces[0].isdigit():
+            continue
+        if server_text in pieces[1] and model_text in pieces[1]:
+            matches.append(int(pieces[0]))
+    return matches
+
+
+def matching_processes(
+    server: Path, model: Path, deadline: float, clean_env: dict[str, str]
+) -> list[int]:
+    result = previous.run_process(
+        ["ps", "-ww", "-axo", "pid=,command="],
+        deadline=deadline,
+        maximum=30,
+        env=clean_env,
+    )
+    return parse_matching_processes(result.stdout, server, model)
+
+
+def require_no_matching_process(
+    server: Path, model: Path, deadline: float, clean_env: dict[str, str]
+) -> int:
+    matches = matching_processes(server, model, deadline, clean_env)
+    if matches:
+        raise DecisionError("isolated arm found a matching llama.cpp model process")
+    return 0
+
+
+def terminate_and_reap(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        raise DecisionError("owned llama-server exited before teardown")
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+    if process.poll() is None:
+        raise DecisionError("owned llama-server was not reaped")
+
+
+def measure_local_isolated(
+    server: Path,
+    model: Path,
+    work: Path,
+    clean_env: dict[str, str],
+    deadline: float,
+    measure: Callable[[str], dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    global server_process
+    before = require_no_matching_process(server, model, deadline, clean_env)
+    port = base.free_port()
+    server_log = (work / f"llama-server-{port}.log").open("wb")
+    process = subprocess.Popen(
+        [
+            str(server), "-m", str(model), "--alias", ALIAS, "--host", "127.0.0.1",
+            "--port", str(port), "--device", "none", "-ngl", "0", "-t", "4", "-c", "512",
+            "-np", "1", "--jinja", "--no-warmup",
+        ],
+        cwd=work,
+        stdin=subprocess.DEVNULL,
+        stdout=server_log,
+        stderr=subprocess.STDOUT,
+        env=clean_env,
+    )
+    server_process = process
+    ready = False
+    sole_owned_match = False
+    alive_after = False
+    terminated = False
+    reaped = False
+    after = -1
+    try:
+        base.wait_ready(process, port, deadline)
+        ready = True
+        matches = matching_processes(server, model, deadline, clean_env)
+        if matches != [process.pid]:
+            raise DecisionError("local server was not the sole owned matching process")
+        sole_owned_match = True
+        endpoint = f"http://127.0.0.1:{port}/v1/chat/completions"
+        portfolio = measure(endpoint)
+        if process.poll() is not None:
+            raise DecisionError("owned llama-server exited during the local portfolio")
+        alive_after = True
+        terminate_and_reap(process)
+        terminated = True
+        reaped = True
+    finally:
+        try:
+            if process.poll() is None:
+                previous.stop_process(process)
+        finally:
+            server_process = None
+            server_log.close()
+            after = require_no_matching_process(server, model, deadline, clean_env)
+    return portfolio, {
+        "local_server_instances": 1,
+        "local_ready": ready,
+        "local_sole_owned_match": sole_owned_match,
+        "local_alive_after_portfolio": alive_after,
+        "local_terminated": terminated,
+        "local_reaped": reaped,
+        "matching_before_local": before,
+        "matching_after_local": after,
+    }
+
+
+def measure_runtime_isolated(
+    server: Path,
+    model: Path,
+    clean_env: dict[str, str],
+    deadline: float,
+    measure: Callable[[], dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    before = require_no_matching_process(server, model, deadline, clean_env)
+    after = -1
+    try:
+        portfolio = measure()
+    finally:
+        after = require_no_matching_process(server, model, deadline, clean_env)
+    return portfolio, {
+        "matching_before_runtime": before,
+        "matching_after_runtime": after,
+    }
+
+
+def validate_portfolio_shape(portfolio: dict[str, Any]) -> None:
+    require_exact_keys(portfolio, PORTFOLIO_KEYS, "portfolio")
+    candidates = portfolio.get("candidates")
+    if not isinstance(candidates, list):
+        raise DecisionError("portfolio candidates were malformed")
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            raise DecisionError("portfolio candidate was malformed")
+        require_exact_keys(candidate, CANDIDATE_RESULT_KEYS, "candidate result")
+    previous.validate_portfolio(portfolio)
+
+
+def validate_isolation(isolation: dict[str, Any]) -> None:
+    require_exact_keys(isolation, ISOLATION_KEYS, "isolation")
+    if (
+        not is_int(isolation["local_server_instances"])
+        or isolation["local_server_instances"] != 1
+    ):
+        raise DecisionError("local server instance count drifted")
+    for name in (
+        "matching_before_local", "matching_after_local", "matching_before_runtime",
+        "matching_after_runtime",
+    ):
+        if not is_int(isolation[name]) or isolation[name] != 0:
+            raise DecisionError("matching process isolation failed")
+    for name in ISOLATION_KEYS - {
+        "local_server_instances", "matching_before_local", "matching_after_local",
+        "matching_before_runtime", "matching_after_runtime",
+    }:
+        if isolation[name] is not True:
+            raise DecisionError("local server lifecycle proof failed")
+
+
+def validate_sample(sample: dict[str, Any], pair_index: int) -> None:
+    require_exact_keys(sample, SAMPLE_KEYS, "sample")
+    if sample["pair_index"] != pair_index or sample["order"] != list(ORDERS[pair_index - 1]):
+        raise DecisionError("isolated pair schedule drifted")
+    for arm in ("local", "runtime"):
+        if not isinstance(sample[arm], dict):
+            raise DecisionError("sample portfolio was malformed")
+        validate_portfolio_shape(sample[arm])
+    if not isinstance(sample["isolation"], dict):
+        raise DecisionError("sample isolation was malformed")
+    validate_isolation(sample["isolation"])
+
+
+def validate_inherited_identity(
+    *,
+    align_revision: str,
+    pack_sha256: str,
+    geometry_sha256: str,
+    server_sha256: str,
+    task_sha256: str,
+    prompt_sha256: str,
+    ggml_libraries: list[dict[str, Any]],
+    linker_search_sha256: str | None,
+    validator: dict[str, Any],
+) -> None:
+    actual = (
+        align_revision, pack_sha256, geometry_sha256, server_sha256, task_sha256, prompt_sha256,
+        ggml_libraries, linker_search_sha256, validator,
+    )
+    expected = (
+        EXPECTED_ALIGN_REVISION, EXPECTED_PACK_SHA256, EXPECTED_GEOMETRY_SHA256,
+        EXPECTED_SERVER_SHA256, EXPECTED_TASK_SHA256, EXPECTED_PROMPT_SHA256,
+        EXPECTED_GGML_LIBRARIES, EXPECTED_LINKER_SEARCH_SHA256,
+        {"kind": "docker", "image_id": EXPECTED_VALIDATOR_IMAGE, "docker": validator.get("docker")},
+    )
+    if actual != expected:
+        raise DecisionError("inherited sampled-decision identity drifted")
+
+
+def validate_toolchain_identity(built: dict[str, Any]) -> None:
+    if (
+        built["compiler_sha256"] != EXPECTED_COMPILER_SHA256
+        or built["c_compiler_sha256"] != EXPECTED_C_COMPILER_SHA256
+        or built["c_compiler_version_sha256"] != EXPECTED_C_COMPILER_VERSION_SHA256
+    ):
+        raise DecisionError("inherited sampled-decision toolchain drifted")
+
+
+def baseline_metadata() -> dict[str, Any]:
+    return {
+        "provider": "local-openai",
+        "runtime_identity": f"llama.cpp build 10566 commit {SERVER_COMMIT}",
+        "server_sha256": EXPECTED_SERVER_SHA256,
+        "threads": 4,
+        "context": 512,
+        "warmup": False,
+        "server_scope": "one-local-portfolio",
+        "server_instances": 4,
+        "startup_in_primary_metric": False,
+        "teardown_in_primary_metric": False,
+    }
+
+
+def validate_result(result: dict[str, Any]) -> None:
+    require_exact_keys(result, TOP_KEYS, "result")
+    if (
+        result["schema_version"] != 1
+        or result["artifact_kind"] != "R8_OLMOE_ISOLATED_SAMPLED_RUNTIME_DECISION"
+        or result["status"] != "COMPLETE"
+        or not is_int(result["elapsed_ns"])
+        or result["elapsed_ns"] <= 0
+    ):
+        raise DecisionError("result scalars drifted")
+    if result["model"] != {
+        "bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe",
+    }:
+        raise DecisionError("result model identity drifted")
+    if result["baseline"] != baseline_metadata():
+        raise DecisionError("result baseline metadata drifted")
+    candidate = result["candidate"]
+    if not isinstance(candidate, dict):
+        raise DecisionError("result candidate was malformed")
+    require_exact_keys(candidate, CANDIDATE_KEYS, "result candidate")
+    if (
+        candidate["provider"] != "align-runtime"
+        or not valid_digest(candidate["align_llm_head"], 40)
+        or candidate["align_revision"] != EXPECTED_ALIGN_REVISION
+        or candidate["compiler_sha256"] != EXPECTED_COMPILER_SHA256
+        or not valid_digest(candidate["helper_sha256"])
+        or not valid_digest(candidate["shim_sha256"])
+        or candidate["ggml_libraries"] != EXPECTED_GGML_LIBRARIES
+        or candidate["pack_sha256"] != EXPECTED_PACK_SHA256
+        or candidate["geometry_sha256"] != EXPECTED_GEOMETRY_SHA256
+        or candidate["cache_budget_bytes"] != BUDGET
+    ):
+        raise DecisionError("result candidate identity drifted")
+    task = result["task"]
+    sampling = result["sampling"]
+    validator = result["validator"]
+    environment = result["environment"]
+    if not all(isinstance(value, dict) for value in (task, sampling, validator, environment)):
+        raise DecisionError("result metadata was malformed")
+    require_exact_keys(task, TASK_KEYS, "task")
+    require_exact_keys(sampling, SAMPLING_KEYS, "sampling")
+    require_exact_keys(validator, {"kind", "image_id"}, "validator")
+    require_exact_keys(environment, ENVIRONMENT_KEYS, "environment")
+    if task != {
+        "task_id": "python-inclusive-range",
+        "task_sha256": EXPECTED_TASK_SHA256,
+        "prompt_sha256": EXPECTED_PROMPT_SHA256,
+        "maximum_completion_tokens": MAX_TOKENS,
+    }:
+        raise DecisionError("result task identity drifted")
+    if sampling != {
+        "temperature_micros": TEMPERATURE_MICROS,
+        "ordered_seeds": list(SEEDS),
+        "maximum_candidates": len(SEEDS),
+        "stop_on_first_pass": True,
+    }:
+        raise DecisionError("result sampling policy drifted")
+    if validator != {"kind": "docker", "image_id": EXPECTED_VALIDATOR_IMAGE}:
+        raise DecisionError("result validator identity drifted")
+    if (
+        not all(isinstance(environment[name], str) and environment[name] for name in (
+            "os", "release", "architecture",
+        ))
+        or not is_int(environment["cpu_count"])
+        or environment["cpu_count"] <= 0
+        or environment["c_compiler_sha256"] != EXPECTED_C_COMPILER_SHA256
+        or environment["c_compiler_version_sha256"] != EXPECTED_C_COMPILER_VERSION_SHA256
+        or environment["linker_search_sha256"] != EXPECTED_LINKER_SEARCH_SHA256
+    ):
+        raise DecisionError("result environment identity drifted")
+    samples = result["samples"]
+    if not isinstance(samples, list) or len(samples) != 4:
+        raise DecisionError("result samples were malformed")
+    for pair_index, sample in enumerate(samples, start=1):
+        if not isinstance(sample, dict):
+            raise DecisionError("result sample was malformed")
+        validate_sample(sample, pair_index)
+    aggregate = result["aggregate"]
+    if not isinstance(aggregate, dict):
+        raise DecisionError("result aggregate was malformed")
+    require_exact_keys(aggregate, AGGREGATE_KEYS, "aggregate")
+    if aggregate != previous.aggregate(samples):
+        raise DecisionError("result aggregate drifted")
+
+
+def synthetic_samples() -> list[dict[str, Any]]:
+    local = previous.synthetic_portfolio(time_ns=200, salt="a")
+    runtime = previous.synthetic_portfolio(time_ns=100, salt="c")
+    isolation = {
+        "local_server_instances": 1,
+        "local_ready": True,
+        "local_sole_owned_match": True,
+        "local_alive_after_portfolio": True,
+        "local_terminated": True,
+        "local_reaped": True,
+        "matching_before_local": 0,
+        "matching_after_local": 0,
+        "matching_before_runtime": 0,
+        "matching_after_runtime": 0,
+    }
+    return [
+        {
+            "pair_index": index,
+            "order": list(order),
+            "local": {**local, "time_to_passing_patch_ns": 200 + index},
+            "runtime": {**runtime, "time_to_passing_patch_ns": 100 + index},
+            "isolation": dict(isolation),
+        }
+        for index, order in enumerate(ORDERS, start=1)
+    ]
+
+
+def self_test() -> int:
+    validate_imported_workload()
+    with mock.patch.object(previous, "BUDGET", BUDGET + 1):
+        try:
+            validate_imported_workload()
+        except DecisionError:
+            pass
+        else:
+            raise DecisionError("drifted imported workload was accepted")
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        if previous.self_test() != 0:
+            raise DecisionError("predecessor owner failed")
+    with mock.patch.object(sys, "argv", [sys.argv[0], "unexpected"]):
+        try:
+            main()
+        except DecisionError:
+            pass
+        else:
+            raise DecisionError("unexpected command argument was accepted")
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as printed:
+        if prerequisites() is not None:
+            raise DecisionError("missing prerequisites did not produce N/A")
+    printed.assert_called_once_with(
+        "R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION: N/A (ALIGN_LLM_OLMOE_MODEL unset)"
+    )
+
+    server = Path("/opt/llama server")
+    model = Path("/models/model.gguf")
+    output = b" 20 /opt/llama server -m /models/model.gguf --port 1\n"
+    if parse_matching_processes(output, server, model) != [20]:
+        raise DecisionError("matching process classification drifted")
+
+    samples = synthetic_samples()
+    for index, sample in enumerate(samples, start=1):
+        validate_sample(sample, index)
+    if previous.aggregate(samples)["verdict"] != "MET":
+        raise DecisionError("inherited aggregate drifted")
+    malformed_isolation = dict(samples[0]["isolation"])
+    malformed_isolation["matching_before_runtime"] = 1
+    try:
+        validate_isolation(malformed_isolation)
+    except DecisionError:
+        pass
+    else:
+        raise DecisionError("runtime process pressure was accepted")
+    boolean_isolation = dict(samples[0]["isolation"])
+    boolean_isolation["local_server_instances"] = True
+    try:
+        validate_isolation(boolean_isolation)
+    except DecisionError:
+        pass
+    else:
+        raise DecisionError("boolean local server instance count was accepted")
+
+    fixed_identity = {
+        "align_revision": EXPECTED_ALIGN_REVISION,
+        "pack_sha256": EXPECTED_PACK_SHA256,
+        "geometry_sha256": EXPECTED_GEOMETRY_SHA256,
+        "server_sha256": EXPECTED_SERVER_SHA256,
+        "task_sha256": EXPECTED_TASK_SHA256,
+        "prompt_sha256": EXPECTED_PROMPT_SHA256,
+        "ggml_libraries": EXPECTED_GGML_LIBRARIES,
+        "linker_search_sha256": EXPECTED_LINKER_SEARCH_SHA256,
+        "validator": {"kind": "docker", "image_id": EXPECTED_VALIDATOR_IMAGE, "docker": "docker"},
+    }
+    validate_inherited_identity(**fixed_identity)
+    drifted = dict(fixed_identity)
+    drifted["server_sha256"] = "0" * 64
+    try:
+        validate_inherited_identity(**drifted)
+    except DecisionError:
+        pass
+    else:
+        raise DecisionError("uniform inherited identity drift was accepted")
+    validate_toolchain_identity(
+        {
+            "compiler_sha256": EXPECTED_COMPILER_SHA256,
+            "c_compiler_sha256": EXPECTED_C_COMPILER_SHA256,
+            "c_compiler_version_sha256": EXPECTED_C_COMPILER_VERSION_SHA256,
+        }
+    )
+    try:
+        validate_toolchain_identity(
+            {
+                "compiler_sha256": "0" * 64,
+                "c_compiler_sha256": EXPECTED_C_COMPILER_SHA256,
+                "c_compiler_version_sha256": EXPECTED_C_COMPILER_VERSION_SHA256,
+            }
+        )
+    except DecisionError:
+        pass
+    else:
+        raise DecisionError("uniform toolchain drift was accepted")
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-isolated-runtime-self-test-") as raw:
+        work = Path(raw)
+        fake_process = mock.Mock()
+        fake_process.pid = 42
+        fake_process.poll.side_effect = [None, None, 0, 0]
+        fake_process.wait.return_value = 0
+        portfolio = previous.synthetic_portfolio(time_ns=100)
+        with (
+            mock.patch("subprocess.Popen", return_value=fake_process),
+            mock.patch.object(base, "free_port", return_value=32100),
+            mock.patch.object(base, "wait_ready"),
+            mock.patch(
+                f"{__name__}.matching_processes", side_effect=[[], [42], []]
+            ),
+        ):
+            measured, evidence = measure_local_isolated(
+                server, model, work, {}, time.monotonic() + 10, lambda _endpoint: portfolio
+            )
+        if measured != portfolio:
+            raise DecisionError("local isolated portfolio changed")
+        validate_isolation({
+            **evidence,
+            "matching_before_runtime": 0,
+            "matching_after_runtime": 0,
+        })
+        if fake_process.terminate.call_count != 1 or fake_process.wait.call_count != 1:
+            raise DecisionError("local server was not terminated and reaped once")
+
+    runtime_calls = []
+    with mock.patch(
+        f"{__name__}.require_no_matching_process", side_effect=lambda *_args: runtime_calls.append(0) or 0
+    ):
+        measured, evidence = measure_runtime_isolated(
+            server, model, {}, time.monotonic() + 10,
+            lambda: previous.synthetic_portfolio(time_ns=100),
+        )
+    if measured["status"] != "PASS" or evidence != {
+        "matching_before_runtime": 0, "matching_after_runtime": 0,
+    } or len(runtime_calls) != 2:
+        raise DecisionError("runtime isolation boundary drifted")
+    runtime_failure_calls = []
+    with mock.patch(
+        f"{__name__}.require_no_matching_process",
+        side_effect=lambda *_args: runtime_failure_calls.append(0) or 0,
+    ):
+        try:
+            measure_runtime_isolated(
+                server, model, {}, time.monotonic() + 10,
+                lambda: (_ for _ in ()).throw(DecisionError("injected runtime failure")),
+            )
+        except DecisionError:
+            pass
+        else:
+            raise DecisionError("injected runtime failure was accepted")
+    if len(runtime_failure_calls) != 2:
+        raise DecisionError("runtime failure skipped its after-isolation check")
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-isolated-local-failure-") as raw:
+        work = Path(raw)
+        failed_process = mock.Mock()
+        failed_process.pid = 43
+        failed_process.poll.return_value = None
+        with (
+            mock.patch("subprocess.Popen", return_value=failed_process),
+            mock.patch.object(base, "free_port", return_value=32101),
+            mock.patch.object(base, "wait_ready"),
+            mock.patch.object(previous, "stop_process") as stopped,
+            mock.patch(f"{__name__}.matching_processes", side_effect=[[], [43], []]),
+        ):
+            try:
+                measure_local_isolated(
+                    server, model, work, {}, time.monotonic() + 10,
+                    lambda _endpoint: (_ for _ in ()).throw(
+                        DecisionError("injected local failure")
+                    ),
+                )
+            except DecisionError:
+                pass
+            else:
+                raise DecisionError("injected local failure was accepted")
+        if stopped.call_args.args != (failed_process,) or server_process is not None:
+            raise DecisionError("local failure did not clean up its exact server")
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-isolated-local-exit-") as raw:
+        work = Path(raw)
+        exited_process = mock.Mock()
+        exited_process.pid = 44
+        exited_process.poll.return_value = 1
+        with (
+            mock.patch("subprocess.Popen", return_value=exited_process),
+            mock.patch.object(base, "free_port", return_value=32102),
+            mock.patch.object(base, "wait_ready"),
+            mock.patch(f"{__name__}.matching_processes", side_effect=[[], [44], []]),
+        ):
+            try:
+                measure_local_isolated(
+                    server, model, work, {}, time.monotonic() + 10,
+                    lambda _endpoint: previous.synthetic_portfolio(time_ns=100),
+                )
+            except DecisionError:
+                pass
+            else:
+                raise DecisionError("premature local server exit was accepted")
+
+    forced_timeout = subprocess.TimeoutExpired(["server"], 10)
+    forced = mock.Mock()
+    forced.poll.side_effect = [None, 0]
+    forced.wait.side_effect = [forced_timeout, 0]
+    terminate_and_reap(forced)
+    if forced.terminate.call_count != 1 or forced.kill.call_count != 1:
+        raise DecisionError("server cleanup did not escalate")
+
+    aggregate = previous.aggregate(samples)
+    result = {
+        "schema_version": 1,
+        "artifact_kind": "R8_OLMOE_ISOLATED_SAMPLED_RUNTIME_DECISION",
+        "status": "COMPLETE",
+        "model": {"bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe"},
+        "baseline": baseline_metadata(),
+        "candidate": {
+            "provider": "align-runtime", "align_llm_head": "a" * 40,
+            "align_revision": EXPECTED_ALIGN_REVISION,
+            "compiler_sha256": EXPECTED_COMPILER_SHA256, "helper_sha256": "b" * 64,
+            "shim_sha256": "c" * 64, "ggml_libraries": EXPECTED_GGML_LIBRARIES,
+            "pack_sha256": EXPECTED_PACK_SHA256,
+            "geometry_sha256": EXPECTED_GEOMETRY_SHA256, "cache_budget_bytes": BUDGET,
+        },
+        "task": {
+            "task_id": "python-inclusive-range", "task_sha256": EXPECTED_TASK_SHA256,
+            "prompt_sha256": EXPECTED_PROMPT_SHA256,
+            "maximum_completion_tokens": MAX_TOKENS,
+        },
+        "sampling": {
+            "temperature_micros": TEMPERATURE_MICROS, "ordered_seeds": list(SEEDS),
+            "maximum_candidates": len(SEEDS), "stop_on_first_pass": True,
+        },
+        "validator": {"kind": "docker", "image_id": EXPECTED_VALIDATOR_IMAGE},
+        "environment": {
+            "os": "Darwin", "release": "test", "architecture": "arm64", "cpu_count": 8,
+            "c_compiler_sha256": EXPECTED_C_COMPILER_SHA256,
+            "c_compiler_version_sha256": EXPECTED_C_COMPILER_VERSION_SHA256,
+            "linker_search_sha256": EXPECTED_LINKER_SEARCH_SHA256,
+        },
+        "samples": samples,
+        "aggregate": aggregate,
+        "elapsed_ns": 1,
+    }
+    validate_result(result)
+    malformed_result = dict(result)
+    malformed_result["unexpected"] = True
+    try:
+        validate_result(malformed_result)
+    except DecisionError:
+        pass
+    else:
+        raise DecisionError("noncanonical result keys were accepted")
+
+    print("R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION self-test: PASS")
+    return 0
+
+
+def verify_identities(rows: tuple[tuple[str, Path, str], ...]) -> None:
+    for label, path, expected_sha256 in rows:
+        if base.file_sha256(path) != expected_sha256:
+            raise DecisionError(f"{label} identity changed during the decision")
+
+
+def stop_owned_processes() -> None:
+    global server_process
+    previous.stop_owned_processes()
+    previous.stop_process(server_process)
+    server_process = None
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise DecisionError("OLMoE isolated sampled runtime decision accepts no arguments")
+    required = prerequisites()
+    if required is None:
+        return 0
+    validate_imported_workload()
+    model, pack, geometry, include, library, server = required
+    started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-isolated-runtime-") as raw:
+        work = Path(raw)
+        clean_env = previous.decision_environment()
+        source_status = previous.run_process(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline, maximum=30, env=clean_env,
+        )
+        if source_status.stdout:
+            raise DecisionError("real decision requires a clean worktree")
+        linker_search = previous.validate_linker_search(clean_env)
+        if linker_search:
+            clean_env["LIBRARY_PATH"] = linker_search
+        linker_search_sha256 = (
+            None if not linker_search else base.bytes_sha256(linker_search.encode("utf-8"))
+        )
+        align_llm_head = previous.run_process(
+            ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+        ).stdout.decode("ascii").strip()
+        align_revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        validator = base.resolve_validator(deadline)
+        control = work / "known-good.patch"
+        control.write_text(KNOWN_GOOD_PATCH, encoding="utf-8")
+        passed, _ = previous.validate_patch(control, work, deadline, validator, clean_env)
+        if not passed:
+            raise DecisionError("known-good validator control did not pass")
+        require_no_matching_process(server, model, deadline, clean_env)
+        if model.stat().st_size != MODEL_BYTES or base.file_sha256(model) != MODEL_SHA256:
+            raise DecisionError("configured OLMoE GGUF does not have the pinned identity")
+        pack_sha256 = base.file_sha256(pack)
+        geometry_sha256 = base.file_sha256(geometry)
+        server_sha256 = base.file_sha256(server)
+        task_sha256 = base.file_sha256(TASK)
+        prompt_sha256 = base.bytes_sha256(PROMPT_TEXT.encode("utf-8"))
+        ggml_libraries = base.library_identities(library)
+        validate_inherited_identity(
+            align_revision=align_revision, pack_sha256=pack_sha256,
+            geometry_sha256=geometry_sha256, server_sha256=server_sha256,
+            task_sha256=task_sha256, prompt_sha256=prompt_sha256,
+            ggml_libraries=ggml_libraries, linker_search_sha256=linker_search_sha256,
+            validator=validator,
+        )
+        version = previous.run_process(
+            [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env,
+        )
+        if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
+            raise DecisionError("llama-server is not pinned build 10566 commit bb4caa754")
+        prompt = work / "prompt.txt"
+        prompt.write_text(PROMPT_TEXT, encoding="utf-8")
+
+        with previous.built_helper(work, include, library, clean_env, deadline) as built:
+            validate_toolchain_identity(built)
+            samples = []
+            for pair_index, order in enumerate(ORDERS, start=1):
+                pair: dict[str, Any] = {"pair_index": pair_index, "order": list(order)}
+                isolation: dict[str, Any] = {}
+                for arm in order:
+                    if arm == "local":
+                        portfolio, evidence = measure_local_isolated(
+                            server, model, work, clean_env, deadline,
+                            lambda endpoint: previous.measure_portfolio(
+                                "local", pair_index, built["helper"], endpoint, model, pack,
+                                geometry, prompt, work, built["runtime_env"], deadline,
+                                validator, clean_env,
+                            ),
+                        )
+                    else:
+                        portfolio, evidence = measure_runtime_isolated(
+                            server, model, clean_env, deadline,
+                            lambda: previous.measure_portfolio(
+                                "runtime", pair_index, built["helper"], "in-process", model,
+                                pack, geometry, prompt, work, built["runtime_env"], deadline,
+                                validator, clean_env,
+                            ),
+                        )
+                    pair[arm] = portfolio
+                    isolation.update(evidence)
+                pair["isolation"] = isolation
+                validate_sample(pair, pair_index)
+                samples.append(pair)
+                previous.validate_repeatability(samples)
+            require_no_matching_process(server, model, deadline, clean_env)
+
+            final_status = previous.run_process(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                deadline=deadline, maximum=30, env=clean_env,
+            )
+            final_head = previous.run_process(
+                ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+            ).stdout.decode("ascii").strip()
+            if final_status.stdout or final_head != align_llm_head:
+                raise DecisionError("align-llm source changed during the decision")
+            verify_identities(
+                (
+                    ("model", model, MODEL_SHA256), ("pack", pack, EXPECTED_PACK_SHA256),
+                    ("geometry", geometry, EXPECTED_GEOMETRY_SHA256),
+                    ("server", server, EXPECTED_SERVER_SHA256),
+                    ("task", TASK, EXPECTED_TASK_SHA256),
+                    ("compiler", built["compiler"], EXPECTED_COMPILER_SHA256),
+                    ("C compiler", built["c_compiler"], EXPECTED_C_COMPILER_SHA256),
+                    ("shim", built["shim"], built["shim_sha256"]),
+                    ("helper", built["helper"], built["helper_sha256"]),
+                )
+            )
+            if base.library_identities(library) != EXPECTED_GGML_LIBRARIES:
+                raise DecisionError("ggml library identities changed during the decision")
+
+            aggregate = previous.aggregate(samples)
+            elapsed_ns = time.monotonic_ns() - started_ns
+            if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+                raise DecisionError(
+                    f"complete decision exceeded its 25-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+                )
+            result = {
+                "schema_version": 1,
+                "artifact_kind": "R8_OLMOE_ISOLATED_SAMPLED_RUNTIME_DECISION",
+                "status": "COMPLETE",
+                "model": {"bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe"},
+                "baseline": baseline_metadata(),
+                "candidate": {
+                    "provider": "align-runtime", "align_llm_head": align_llm_head,
+                    "align_revision": align_revision, "compiler_sha256": built["compiler_sha256"],
+                    "helper_sha256": built["helper_sha256"], "shim_sha256": built["shim_sha256"],
+                    "ggml_libraries": ggml_libraries, "pack_sha256": pack_sha256,
+                    "geometry_sha256": geometry_sha256, "cache_budget_bytes": BUDGET,
+                },
+                "task": {
+                    "task_id": "python-inclusive-range", "task_sha256": task_sha256,
+                    "prompt_sha256": prompt_sha256,
+                    "maximum_completion_tokens": MAX_TOKENS,
+                },
+                "sampling": {
+                    "temperature_micros": TEMPERATURE_MICROS, "ordered_seeds": list(SEEDS),
+                    "maximum_candidates": len(SEEDS), "stop_on_first_pass": True,
+                },
+                "validator": {"kind": validator["kind"], "image_id": validator["image_id"]},
+                "environment": {
+                    "os": platform.system(), "release": platform.release(),
+                    "architecture": platform.machine(), "cpu_count": os.cpu_count(),
+                    "c_compiler_sha256": built["c_compiler_sha256"],
+                    "c_compiler_version_sha256": built["c_compiler_version_sha256"],
+                    "linker_search_sha256": linker_search_sha256,
+                },
+                "samples": samples,
+                "aggregate": aggregate,
+                "elapsed_ns": elapsed_ns,
+            }
+            validate_result(result)
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+            print(
+                "R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION: COMPLETE "
+                f"verdict={aggregate['verdict']} gain_ppm={aggregate['gain_ppm']} "
+                f"elapsed={elapsed_ns / 1e9:.2f}s",
+                file=sys.stderr,
+            )
+    return 0
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    stop_owned_processes()
+    raise SystemExit(128 + signal_number)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (
+        DecisionError, previous.DecisionError, base.DecisionError, OSError, ValueError, KeyError,
+        TypeError, json.JSONDecodeError, subprocess.TimeoutExpired,
+    ) as error:
+        stop_owned_processes()
+        print(f"R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)
