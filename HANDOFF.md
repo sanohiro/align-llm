@@ -3,49 +3,56 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-DECODE-COMPUTE-DIAGNOSIS (2026-09-05)
+## Active: R8-OLMOE-ROUTING-PHASE-A-BOUNDARY (2026-09-05)
 
-Branch `agent/r8-olmoe-decode-compute-diagnosis`, based on pulled merged `main`
-`9ebcd49e835cd2819e47a4c3b73ec51cfb8b261d` (item 61 PR #183). The sibling Align checkout and
+Branch `agent/r8-olmoe-routing-phase-a-boundary`, based on pulled merged `main`
+`4b69eaa5e7b99e4206b7a4c90e3257e19c8dca07` (item 62 PR #184). The sibling Align checkout and
 `.align-revision` remain at merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align
 surface is currently required.
 
-Item 61's complete-boundary optimization measured `NOT_MET` after review repair and shipped no
-production change. Item 59's same fixed request therefore still leaves compute as the next-largest
-unresolved decode bucket at a 4,104,846,715-ns median, ahead of 3,609,378,007 ns of claim I/O and
-above item 58's 921,450,866-ns materiality floor. Item 62's authoritative ledger and closure matrix
-are `docs/specs/r8-olmoe-decode-compute-diagnosis.md`.
-
-The completed clean-head diagnosis selected `ROUTING_PHASE_A`. Full-helper walls were
+Item 62's completed clean-head diagnosis selected `ROUTING_PHASE_A`. Full-helper walls were
 `[18059864416,18927732709,20639199375,19605385750]` ns, median 19,266,559,229 ns. Compute totals
 were `[4032538022,4200052735,4232013000,4234889692]` ns, median 4,216,032,867 ns. Phase-A median
 was 2,939,392,017 ns / 697,193 ppm of compute, ahead of expert phase B at 1,114,674,041 ns, output
 head at 151,386,183 ns, and embedding at 997,788 ns. All four partitions were exact.
 
-The shared outcome now classifies the existing decode graph walls into four scalar counters and
-commits their deltas beside `remaining_decode_compute_ns` only after a successful remaining step.
-`olmoe_decode_compute_gate` exposes the exact partition without changing predecessor schemas. The
-bounded runner inherits the complete item 57→61 validators, pins the consumed ggml headers and full
-source chain, and owns exact-key, arithmetic, tie, floor, identity, and cleanup tests.
+Item 63's authoritative ledger and closure matrix are
+`docs/specs/r8-olmoe-routing-phase-a-boundary.md`. They precommit item 62's walls and median as the
+immutable baseline, a 963,327,962-ns floor, and an 18,303,231,267-ns candidate ceiling. The exact
+intervention builds each decode phase-A graph at live width `n_past + 1`, takes the identical prefix
+of the existing fixed-width mask row, and skips the K and V PAD nodes when concat already has that
+width. The canonical plane allocation, stride, writeback, verification, transcript coverage,
+prefill, selected-expert phase B, routing arithmetic, output head, cache, and ownership remain
+unchanged.
 
-Every full request reproduced the fixed output and balanced 2,958 buffers, 6,090 contexts, one
-backend, 2,958 allocators, and one resident wrap, with twelve clean isolation boundaries. The run
-completed in 121.268 seconds at clean head `4de73d64765fc31f35f2c08ca00367d327b00705`.
-Item 63, `R8-OLMOE-ROUTING-PHASE-A-BOUNDARY`, is selected with item 62's full-helper samples as its
-immutable baseline, a 963,327,962-ns floor, and an 18,303,231,267-ns candidate ceiling.
+A bounded stack sample of the unchanged full request observed PAD most frequently on the main
+thread; it is directional evidence rather than an operation timing. Global ggml thread counts 1,
+2, 4, and 8 were probed and rejected: the default four-thread run was clearly best. Two temporary
+live-width probes produced 17,937,155,959-ns and 18,391,417,042-ns full walls with exact output and
+native lifetime balances. Those probes select the candidate but are not shipping evidence; all
+temporary source and generated artifacts were removed.
 
-**Next actions.** Run the affected owner and exact-head preflight, publish, merge, then start item
-63.
+**Next actions.** Commit the authoritative design, implement the live-width graph and exact topology
+owner, add the item-63 helper/runner, run narrow verification and four conditioned repetitions,
+record the gate result, review, publish, merge, and continue.
 
 **Blocker.** None.
 
-**Latest durable verification.** The item 57→62 model-free self-test chain and Python compilation
-pass. The pinned compiler builds the new helper through the static hosted shim. `make
-layer-forward-smoke` passed in 61.819 seconds, `make runtime-provider-smoke` passed its self-test and
-61 CLI assertions, `make fmt`, and `git diff --check` pass.
+**Latest durable verification.** Item 62's exact-head preflight and all three required hosted checks
+passed before PR #184 merged. Its fixed request reproduced the exact output and balanced 2,958
+buffers, 6,090 contexts, one backend, 2,958 allocators, and one resident wrap in every full run,
+with twelve clean isolation boundaries.
 
-**Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
-remain outside Git.
+**Intentional uncommitted files.** Item 63's design, roadmap, and handoff updates until the design
+checkpoint is committed. Machine-local model/evidence and generated build products remain outside
+Git.
+
+## Merged checkpoint: R8-OLMOE-DECODE-COMPUTE-DIAGNOSIS (PR #184, 2026-09-05)
+
+PR #184 merged as `4b69eaa5e7b99e4206b7a4c90e3257e19c8dca07`. The clean-head diagnosis
+selected `ROUTING_PHASE_A` at a 2.939-second median and 697,193 ppm of total decode compute. Review
+found and repaired a ledger field-name mismatch and stale handoff state. Exact-head preflight and
+all three required CI jobs passed; item 63 above owns the selected implementation boundary.
 
 ## Merged checkpoint: R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY (PR #183, 2026-09-05)
 

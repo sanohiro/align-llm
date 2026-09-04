@@ -1574,13 +1574,16 @@ The current forward delivery order is:
     selects item 63; this diagnosis changes no graph and makes no performance claim.
 
 63. **R8-OLMOE-ROUTING-PHASE-A-BOUNDARY — reduce the measured attention/routing graph boundary.
-    Selected; not started.** Preserve item 62's fixed request, output, cache, isolation, and native
-    lifetimes. Its four full-helper walls and 19,266,559,229-ns median are the immutable baseline.
-    The implementation ledger must precommit the 50,000-ppm floor of 963,327,962 ns and candidate
-    ceiling of 18,303,231,267 ns before production code changes; a miss removes the intervention.
-    Phase A includes attention, normalization, router scoring, and argsort, so the ledger must name
-    the exact intervention and may not claim an individual operation from item 62's graph-level
-    timing.
+    Active.** [`r8-olmoe-routing-phase-a-boundary.md`](r8-olmoe-routing-phase-a-boundary.md) is the
+    authoritative ledger and closure matrix. Preserve item 62's fixed request, output, cache,
+    isolation, and native lifetimes. Its four full-helper walls and 19,266,559,229-ns median are
+    the immutable baseline; the precommitted 50,000-ppm floor is 963,327,962 ns and the candidate
+    ceiling is 18,303,231,267 ns. The selected intervention constructs each decode phase-A graph at
+    its exact `n_past + 1` attention width and avoids two fixed-width K/V PAD nodes per routed layer
+    while retaining the full-width canonical plane, mask-prefix values, transcript coverage, and
+    every other graph boundary. Directional stack samples and two exact exploratory probes select
+    the candidate but do not attribute item 62's graph-level timing or satisfy the shipping gate. A
+    four-repeat miss removes the production intervention before publication.
 
 ### Status (2026-08-28)
 
