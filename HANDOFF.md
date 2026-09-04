@@ -51,8 +51,7 @@ clean isolation. The 210,165,021-ns / 10,908-ppm gain did not meet item 62's 963
 changes are removed before publication; only the ledger, thin helper, and bounded self-test owner
 remain.
 
-**Next actions.** Commit the negative-decision cleanup, complete one comprehensive review, repair
-valid findings, run the exact-head preflight, publish and merge item 66, then select item 67 from
+**Next actions.** Run the exact-head preflight, publish and merge item 66, then select item 67 from
 the remaining measured evidence.
 
 **Blocker.** None.
@@ -63,8 +62,8 @@ probe, and the item-66 self-test passed. The clean-head fixed qualification resu
 above. After removal, production sources compare byte-for-byte with merged `main`; `make fmt`, the
 item-66 self-test, explicit no-argument refusal, and `git diff --check` pass.
 
-**Intentional uncommitted files.** None after the negative-decision cleanup is committed.
-Machine-local model/evidence and generated build products remain outside Git.
+**Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
+remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-FILE-PREAD-BOUNDARY (PR #187, 2026-09-05)
 
