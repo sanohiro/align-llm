@@ -36,21 +36,27 @@ Align Request 38 already owns the missing bounded positional destination-read su
 this client evidence without changing its status and consumes no hypothetical API; application-only
 instrumentation may proceed safely.
 
-**Next actions.** Finish the author consistency/static checks and commit the design checkpoint; add
-the five disjoint clocks and exact successful-step aggregation; implement the helper and fully
-source-pinned runner; run narrow owners and one clean-head four-repeat diagnosis; review, repair,
-preflight, publish, merge, and continue to the selected successor.
+Design checkpoint `d200821` and implementation checkpoint `2552b67` are complete. The five clocks
+surround only the four named operation classes, compute the layer remainder from the unchanged
+outer clock, and snapshot/commit their deltas beside the existing successful remaining-step
+counter. The thin helper adds one exact `claim_io` object; the runner pins the full ten-runner
+transitive chain plus every compiled source, shim, library, and header owner.
+
+**Next actions.** Run one clean-head four-repeat diagnosis; record its selected successor in the
+specification, roadmap, and handoff; complete the comprehensive review, repair, exact-head preflight,
+publication, merge, and continue to that successor.
 
 **Blocker.** None.
 
-**Latest durable verification.** The exploratory four-repeat unchanged-request run completed in
-105.94 seconds with exact output, cache, isolation, and native lifetime behavior. The stack sample
-and pack inspection are directional design evidence only. Item 63's exact-head preflight and all
-three required CI jobs passed before PR #185 merged.
+**Latest durable verification.** `make fmt`, item 64's Python compilation and model-free self-test,
+`make layer-forward-smoke` (100.182 seconds), and `make runtime-provider-smoke` (self-test plus 61
+CLI assertions) pass. The new helper builds with the pinned compiler and real ggml shim; one
+maximum-2 execution returned the exact six-key all-zero `claim_io` object and zero parent clock.
+The exploratory four-repeat unchanged-request run completed in 105.94 seconds with exact output,
+cache, isolation, and native lifetime behavior; its stack sample remains directional evidence only.
 
-**Intentional uncommitted files.** Item-64 specification, roadmap, Align-request evidence, and this
-handoff update remain uncommitted until the design checkpoint passes. Machine-local model/evidence
-and generated build products remain outside Git.
+**Intentional uncommitted files.** This handoff checkpoint only, until committed. Machine-local
+model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-ROUTING-PHASE-A-BOUNDARY (PR #185, 2026-09-05)
 
