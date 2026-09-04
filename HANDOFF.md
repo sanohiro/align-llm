@@ -3,50 +3,46 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-EXACT-SAFE-DECODE-BOUNDARIES publication (2026-09-05)
+## Active: R8-OLMOE-POST-OPTIMIZATION-SAMPLED-RUNTIME-DECISION (2026-09-05)
 
-Branch `agent/r8-olmoe-exact-safe-boundaries`, based on pulled merged `main` `3b890c3` (item 67
-PR #189).
+Branch `agent/r8-olmoe-post-optimization-sampled-decision`, based on pulled merged `main`
+`917565deae247f4d75841ad98ca9c5553cd29568` (item 68 PR #190).
 The sibling Align checkout and `.align-revision` remain at merged Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
-Item 67 proved that its combined live-width phase A changes five deterministic cache decisions; the
-plane and cache interventions run only after routing and were individually exact. Item 68 therefore
-restores only item 61's final reviewed unaligned-safe direct K/V comparison and item 66's final
-reviewed fixed-stride cache-backed phase B, while retaining shipped full-width phase A byte-for-byte.
-The authoritative ledger and closure matrix are
-`docs/specs/r8-olmoe-exact-safe-decode-boundaries.md`. Item 62's immutable walls
-`[18059864416,18927732709,20639199375,19605385750]` ns, 19,266,559,229-ns median,
-963,327,962-ns floor, and 18,303,231,267-ns ceiling decide shipment.
+Item 56's isolated provider-level decision measured a 13.197-second local median and a
+149.273-second AlignRuntime median on the fixed sampled coding portfolio. Items 58 and 68 then
+shipped complete-request reductions on the same model and host, most recently lowering item 62's
+fixed request from a 19.267-second baseline to 17.423 seconds. The primary metric must now be
+remeasured rather than inferred from single-request evidence.
 
-Design checkpoint `07516a5` fixed the contract before code. Implementation checkpoint `e7e94e3`
-restored only the item-61 plane and item-66 cache forms; qualification owner `80e87d5` added the
-thin helper and bounded runner. Its clean-head four-repeat run produced full walls
-`[17714825083,16684315166,17132135334,21189618042]` ns and a 17,423,480,208-ns median, improving
-the immutable baseline by 1,843,079,021 ns / 95,662 ppm. The decision is `MET`.
+Item 69's authoritative ledger and closure matrix are
+`docs/specs/r8-olmoe-post-optimization-sampled-runtime-decision.md`. It repeats item 56's exact
+four balanced isolated pairs, fresh local-server ownership, portfolio, primary metric, and
+50,000-ppm gate. A thin qualification owner will delegate item 56's complete runner, project only
+the artifact identity, and independently pin item 56 plus item 68's full shipped source chain.
+Product behavior does not change.
 
-All requests retained the exact 87-id chain, output hash, 11,940 requests, 7,325 hits, 4,615
-misses, 4,376 evictions, and 17,656,872,960 fetched bytes. Cache-to-claim clocks were all zero;
-plane comparison median was 766,726,392 ns. Every native lifetime and twelve isolation boundaries
-passed. The full-width `src/layer_olmoe.align` and decode golden remain byte-identical to item 67.
-
-The comprehensive Codex review covered `e6b54eb` against base tip and merge base `3b890c3`, using
-gpt-5.6-sol at high effort over the complete diff. It found one valid P2 and no implementation or
-measurement defect: the next-action list still named the already-completed result commit. Repair
-`1f8439b` removes that stale action; it is handoff-only and does not trigger another review.
-
-**Next actions.** Rerun the focused owner; run exact-head preflight; publish, merge, and continue to
-item 69.
+**Next actions.** Finish the author ledger-to-prose consistency pass, commit the design checkpoint,
+implement the focused qualification owner, run predecessor and focused tests, then execute one
+clean-head real decision and record its result before review.
 
 **Blocker.** None.
 
-**Latest durable verification.** `make check` passed 45 units; `make layer-forward-smoke` passed in
-95.639 seconds; `make runtime-provider-smoke` passed its self-test and 61 CLI assertions; the thin
-helper check, Python compilation, runner self-test, `make fmt`, and `git diff --check` passed. The
-clean-head real qualification above completed in 109.426 seconds with decision `MET`.
+**Latest durable verification.** Item 68 exact-head preflight passed at `5d482c5`; all three PR
+checks passed, and PR #190 merged as `917565d`. Item 69 has not yet run.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-EXACT-SAFE-DECODE-BOUNDARIES (PR #190, 2026-09-05)
+
+PR #190 merged as `917565deae247f4d75841ad98ca9c5553cd29568`. Its clean-head four-repeat
+qualification measured a 17,423,480,208-ns median against item 62's 19,266,559,229-ns baseline,
+a 95,662-ppm gain, and recorded `MET`. Exact output, cache accounting, fetched bytes, native
+lifetimes, and isolation all passed. Comprehensive review found only one stale handoff action;
+repair `1f8439b`, exact-head preflight, and all three required CI jobs passed. Item 69 owns the
+provider-level primary-metric remeasurement after this shipped improvement.
 
 ## Merged checkpoint: R8-OLMOE-COMBINED-DECODE-BOUNDARIES (PR #189, 2026-09-05)
 

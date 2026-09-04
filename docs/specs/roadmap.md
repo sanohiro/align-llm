@@ -1667,6 +1667,16 @@ The current forward delivery order is:
     1,843,079,021-ns / 95,662-ppm gain. Every semantic and ownership invariant passed, so both
     exact-safe interventions ship.
 
+69. **R8-OLMOE-POST-OPTIMIZATION-SAMPLED-RUNTIME-DECISION — remeasure the primary metric after
+    the shipped decode reductions. Active.**
+    [`r8-olmoe-post-optimization-sampled-runtime-decision.md`](r8-olmoe-post-optimization-sampled-runtime-decision.md)
+    is the authoritative measurement contract and closure matrix. Repeat item 56's exact sampled
+    coding portfolio, four balanced isolated pairs, fresh local-server lifetimes, and 50,000-ppm
+    gate against current `main` after items 58 and 68. Item 56's 13.197-second local and
+    149.273-second runtime medians are historical context only; the new four pairs decide whether
+    accumulated shipped work closes R8 for this fixed consumer. This capability changes no product
+    behavior and authorizes no further optimization when its result is negative.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
