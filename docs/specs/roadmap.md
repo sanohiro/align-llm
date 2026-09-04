@@ -1373,6 +1373,17 @@ The current forward delivery order is:
     passed in 13.176 seconds from portfolio start. Seeded sampling is therefore the next eligible
     `AlignRuntime` consumer capability; R8's performance gate remains open.
 
+52. **R8-OLMOE-RUNTIME-SAMPLING — execute fixed seeded sampling in the real OLMoE provider
+    consumer. Active.**
+    [`r8-olmoe-runtime-sampling.md`](r8-olmoe-runtime-sampling.md) is the authoritative public
+    contract and closure matrix. Add the fixed policy selected by item 51 to the existing
+    in-process OLMoE generation path: stable top-k 40, top-p 0.95, min-p 0.05, temperature 0.3,
+    and one explicit Align Xoshiro256++ draw per emitted token. Preserve greedy OLMoE, dense Qwen,
+    diagnostic decode documents, cache ownership, and EOG semantics. Acceptance is the focused
+    pure and synthetic provider owner plus one repeated real-model reproducibility qualification;
+    token parity with llama.cpp and performance are not claims. The succeeding capability measures
+    the fixed passing-patch portfolio through this shipped path.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
