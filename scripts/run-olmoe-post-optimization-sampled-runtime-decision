@@ -41,6 +41,8 @@ base = previous.base
 ARTIFACT_KIND = "R8_OLMOE_POST_OPTIMIZATION_SAMPLED_RUNTIME_DECISION"
 PREDECESSOR_ARTIFACT_KIND = "R8_OLMOE_ISOLATED_SAMPLED_RUNTIME_DECISION"
 CEILING_SECONDS = 25 * 60
+INHERITED_CLEANUP_SECONDS = 50
+DELEGATE_TIMEOUT_SECONDS = CEILING_SECONDS + INHERITED_CLEANUP_SECONDS
 
 EXPECTED_WORKLOAD = (
     4_213_512_192,
@@ -220,7 +222,7 @@ def stop_active_process() -> None:
         return
     process.terminate()
     try:
-        process.wait(timeout=10)
+        process.wait(timeout=INHERITED_CLEANUP_SECONDS)
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=5)
@@ -237,10 +239,12 @@ def delegate_decision() -> dict[str, Any]:
     )
     process = active_process
     try:
-        stdout, stderr = process.communicate(timeout=CEILING_SECONDS)
+        stdout, stderr = process.communicate(timeout=DELEGATE_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as error:
         stop_active_process()
-        raise PostOptimizationDecisionError("delegated decision exceeded its 25-minute ceiling") from error
+        raise PostOptimizationDecisionError(
+            "delegated decision exceeded its deadline and inherited cleanup budget"
+        ) from error
     finally:
         if active_process is process and process.poll() is not None:
             active_process = None
@@ -358,11 +362,41 @@ def self_test() -> int:
         expect_error(delegate_decision, "delegated failure was accepted")
 
     global active_process
-    active_process = mock.Mock()
-    active_process.poll.return_value = None
+    owned = mock.Mock()
+    owned.poll.return_value = None
+    active_process = owned
     stop_active_process()
-    if active_process is not None:
+    if (
+        active_process is not None
+        or owned.terminate.call_count != 1
+        or owned.wait.call_args.args != ()
+        or owned.wait.call_args.kwargs != {"timeout": INHERITED_CLEANUP_SECONDS}
+    ):
         raise PostOptimizationDecisionError("active delegated process was not cleared")
+    forced = mock.Mock()
+    forced.poll.return_value = None
+    forced.wait.side_effect = [
+        subprocess.TimeoutExpired(
+            [sys.executable, str(PREDECESSOR_PATH)], INHERITED_CLEANUP_SECONDS
+        ),
+        0,
+    ]
+    active_process = forced
+    stop_active_process()
+    if forced.terminate.call_count != 1 or forced.kill.call_count != 1:
+        raise PostOptimizationDecisionError("delegated cleanup did not escalate after its budget")
+    timed_out = mock.Mock()
+    timed_out.communicate.side_effect = subprocess.TimeoutExpired(
+        [sys.executable, str(PREDECESSOR_PATH)], DELEGATE_TIMEOUT_SECONDS
+    )
+    timed_out.poll.return_value = None
+    timed_out.wait.return_value = 0
+    with mock.patch("subprocess.Popen", return_value=timed_out):
+        expect_error(delegate_decision, "delegated timeout was accepted")
+    if timed_out.terminate.call_count != 1 or timed_out.wait.call_args.kwargs != {
+        "timeout": INHERITED_CLEANUP_SECONDS
+    }:
+        raise PostOptimizationDecisionError("delegated timeout skipped inherited cleanup")
 
     with mock.patch.dict(os.environ, {}, clear=True):
         captured = io.StringIO()

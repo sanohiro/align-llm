@@ -36,8 +36,8 @@ Every local server lifetime and runtime absence boundary passed, and the evaluat
 source chain remained unchanged. Item 70 is selected to reaggregate the current fixed request's
 remaining-decode clocks after items 58 and 68; item 69 authorizes no product change.
 
-**Next actions.** Commit the recorded result, perform one comprehensive review, repair accepted
-findings, run exact-head preflight, publish, merge, and continue to item 70.
+**Next actions.** Rerun affected owners, record the comprehensive review and repair, run exact-head
+preflight, publish, merge, and continue to item 70.
 
 **Blocker.** None.
 
