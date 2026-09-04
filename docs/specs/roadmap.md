@@ -1611,7 +1611,7 @@ The current forward delivery order is:
     `MEASURED_BUCKET_ELIGIBLE`; this is attribution, not a speedup claim.
 
 65. **R8-OLMOE-FILE-PREAD-BOUNDARY — reduce the selected claim-read bucket. Complete; `NOT_MET`;
-    publication pending.**
+    merged as PR #187.**
     [`r8-olmoe-file-pread-boundary.md`](r8-olmoe-file-pread-boundary.md) is the authoritative ledger
     and closure matrix. Preserve item 62's shipped fixed request and immutable walls/median. Use the
     pinned Align `fs.read_bytes_view` surface to map the validated AlignPack once for provider
@@ -1622,14 +1622,16 @@ The current forward delivery order is:
     cost moved into block-to-claim copying, whose median rose to 2,206,615,794 ns. The result is
     `NOT_MET`; remove the production intervention before publication and ship no speedup claim.
 
-66. **R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY — investigate the next measured claim-I/O bucket.
-    Selected; not started.** Preserve item 62's immutable full-request baseline and item 64's
-    1,072,229,252-ns cache-to-claim median. Before production changes, determine whether a shipped
-    Align/ggml surface can reduce copies while preserving the cache's arbitrary eight-key selection,
-    contiguous three-plane claim ABI, fixed memory budget, and exact outputs. If no coherent
-    intervention exists, record that decision and select the next evidence-backed boundary rather
-    than weakening the ABI. Any performance candidate must precommit item 62's unchanged
-    963,327,962-ns floor and 18,303,231,267-ns ceiling.
+66. **R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY — reduce the next measured claim-I/O bucket. Active;
+    design complete, implementation not started.**
+    [`r8-olmoe-cache-to-claim-copy-boundary.md`](r8-olmoe-cache-to-claim-copy-boundary.md) is the
+    authoritative ledger and closure matrix. Preserve item 62's immutable full-request baseline
+    and item 64's 1,072,229,252-ns cache-to-claim median. Pinned ggml's expert dimension is strided
+    and its CPU `mul_mat_id` selects expert `i` through `nb[2]`; expose each cache role at the fixed
+    slot stride and remap compact-union ids to resident cache-slot ids only for eligible provider
+    generation. Keep diagnostic/reference and ineligible layouts on the existing compact copy path,
+    retain the exact cache budget/policy/content/counters and outputs, and add no Align surface. The
+    candidate precommits item 62's unchanged 963,327,962-ns floor and 18,303,231,267-ns ceiling.
 
 ### Status (2026-08-28)
 
