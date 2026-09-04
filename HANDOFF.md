@@ -27,11 +27,13 @@ co-resident memory pressure. The comprehensive Codex CLI review covered head
 `cf58d064fd84522833fd59721e2d9f33ef5bde1f` against base tip and merge base
 `728a186fbd7d21d43c3f1d8993adf124444652bc`, using gpt-5.6-sol at high effort over the full diff.
 Its three accepted P2 findings require isolating Git routing, canonicalizing configured paths, and
-declaring the validator-image selector while retaining the immutable resolved identity.
+declaring the validator-image selector while retaining the immutable resolved identity. Consolidated
+repair `770b0aa` resolves all three without changing the absolute inputs or immutable image identity
+used by the recorded decision; Python compilation, the focused self-test, and `git diff --check`
+pass after repair.
 
-**Next actions.** Complete the consolidated review repair, rerun the focused owner, run exact-head
-preflight, publish, and merge. Then start a bounded phase/lifetime diagnosis before proposing
-persistent provider state or another runtime-cache change.
+**Next actions.** Run exact-head preflight, publish, and merge. Then start a bounded phase/lifetime
+diagnosis before proposing persistent provider state or another runtime-cache change.
 
 **Blocker.** None.
 
