@@ -17,14 +17,19 @@ fixed seed 5 at maximum 2 and 128 tokens in four balanced solo/co-resident pairs
 preparation plus existing runtime phase/lifetime counters, and compare the co-resident penalty with
 the measured repeated-setup lower bound before any persistent-provider or cache change.
 
-**Next actions.** Complete the author ledger-to-prose consistency pass, commit the design
-checkpoint, implement the qualification-only Align helper and focused Python runner, run `make
-fmt` and the model-free owner, then execute and record the one real diagnosis.
+Design checkpoint `b3b70f3` completed the ledger-to-prose pass. The qualification-only Align helper
+now follows the production preparation/generation sequence and exposes existing runtime counters;
+the focused runner owns the balanced conditions, schema, repeatability, attribution, and cleanup.
+`gmake fmt`, pinned-compiler helper build against the static shim, Python compilation, the model-free
+self-test, and `git diff --check` pass for the implementation batch.
+
+**Next actions.** Commit the implementation checkpoint, run the same owner from clean source, then
+execute and record the one complete real diagnosis.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The item-54 design checkpoint above; no generated binary,
-machine-local evidence, model, credential, or profile belongs in Git.
+**Intentional uncommitted files.** The item-54 helper and runner implementation above; no generated
+binary, machine-local evidence, model, credential, or profile belongs in Git.
 
 ## Merged checkpoint: R8-OLMOE-SAMPLED-RUNTIME-DECISION (PR #175, 2026-09-04)
 

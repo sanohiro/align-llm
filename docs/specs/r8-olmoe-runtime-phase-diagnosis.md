@@ -32,7 +32,7 @@ claim, general benchmark, or persistent-provider design.
 | Qualification helper | `olmoe_runtime_phase_gate MODEL PACK GEOMETRY PROMPT MAX_TOKENS SEED`; accepts only maximum 2 or 128 and seed 5, executes the same snapshot, OLMoE frontend, geometry, source-identity, tokenizer, sampled generation, EOG stripping, and decode sequence as `provider_runtime.generate`, and emits one schema-1 JSON record |
 | Conditions | `solo` requires no process whose command contains both the canonical pinned server and model paths; `co_resident` owns one pinned llama.cpp build-10566 CPU server loaded with the same model, context 512, four threads, no warmup request, and no inference during the timed helper |
 | Schedule | four environment pairs `(solo,co_resident)`, `(co_resident,solo)`, `(co_resident,solo)`, `(solo,co_resident)`; length order inside the two legs is respectively `(short,full)`, `(full,short)`, `(full,short)`, `(short,full)` |
-| Short/full | short is maximum 2 and must equal the first two generated ids and decoded-byte prefix of full maximum 128; full must reproduce item 53's admitted known-good patch digest and EOG stop |
+| Short/full | short is maximum 2 and its ids must equal the first two full ids; its decoded-output digest must repeat; full maximum 128 must reproduce item 53's exact output digest `aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52`, whose extracted patch had the recorded known-good digest, and must stop on EOG |
 | Timed interval | each helper wall interval contains one complete process and request; the helper separately reports snapshot, model-IR, geometry, source-identity, tokenizer preparation, sampled engine, output decode, and total intervals |
 | Existing runtime evidence | engine outcome reports elapsed, first-token, dense resident-fill, pack/claim reads, routing decision, total/decode compute, graph counts, cache counters, and balanced native-owner counters; no production counter semantics change |
 | Repeated setup | per sample, helper phases before the engine plus `resident_fill_ns`; these non-overlapping measured intervals recur in every fresh helper request and are a lower bound on all reconstructive work because allocation and native owner creation outside the timed fill remain unassigned |
@@ -101,8 +101,8 @@ identity and RSS, and sends no generation request.
 The helper validates arity, the fixed maximum/seed set, snapshot architecture, model IR, exact
 geometry, pack source identity, prompt/EOG/context bounds, engine success, generated-id bounds and
 EOG stop, output decode identity, and response bound in the production order. The runner then checks
-schema, phase nesting, lifetime balance, exact short/full prefix, cross-condition repeatability, and
-the full known-good patch before computing the aggregate. Persistent inputs and clean source are
+schema, phase nesting, lifetime balance, exact short/full id prefix, cross-condition repeatability,
+and the full output digest already tied to the known-good patch before computing the aggregate. Persistent inputs and clean source are
 rechecked after the final pair.
 
 ## 5. Closure matrix

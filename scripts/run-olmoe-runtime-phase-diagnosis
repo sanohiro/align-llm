@@ -1,0 +1,996 @@
+#!/usr/bin/env python3
+"""Bounded phase/lifetime diagnosis for the sampled OLMoE runtime provider."""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+import platform
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Iterator
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PREVIOUS_PATH = ROOT / "scripts/run-olmoe-sampled-runtime-decision"
+PREVIOUS_LOADER = SourceFileLoader("olmoe_sampled_runtime_for_phase_diagnosis", str(PREVIOUS_PATH))
+PREVIOUS_SPEC = importlib.util.spec_from_loader(PREVIOUS_LOADER.name, PREVIOUS_LOADER)
+if PREVIOUS_SPEC is None or PREVIOUS_SPEC.loader is None:
+    raise RuntimeError("cannot load the sampled runtime decision owner")
+previous = importlib.util.module_from_spec(PREVIOUS_SPEC)
+PREVIOUS_SPEC.loader.exec_module(previous)
+base = previous.base
+
+MODEL_BYTES = previous.MODEL_BYTES
+MODEL_SHA256 = previous.MODEL_SHA256
+SERVER_BUILD = previous.SERVER_BUILD
+SERVER_COMMIT = previous.SERVER_COMMIT
+BUDGET = previous.BUDGET
+ALIAS = previous.ALIAS
+TASK = previous.TASK
+PROMPT_TEXT = previous.PROMPT_TEXT
+FULL_OUTPUT_SHA256 = "aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52"
+SEED = 5
+SHORT_TOKENS = 2
+FULL_TOKENS = 128
+PAIR_ORDERS = (
+    ("solo", "co_resident"),
+    ("co_resident", "solo"),
+    ("co_resident", "solo"),
+    ("solo", "co_resident"),
+)
+LENGTH_ORDERS = (
+    (SHORT_TOKENS, FULL_TOKENS),
+    (FULL_TOKENS, SHORT_TOKENS),
+    (FULL_TOKENS, SHORT_TOKENS),
+    (SHORT_TOKENS, FULL_TOKENS),
+)
+DEADBAND_PPM = 50_000
+CEILING_SECONDS = 20 * 60
+active_process: subprocess.Popen[bytes] | None = None
+server_process: subprocess.Popen[bytes] | None = None
+
+
+class DiagnosisError(RuntimeError):
+    pass
+
+
+def stop_process(process: subprocess.Popen[bytes] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def stop_owned_processes() -> None:
+    global active_process, server_process
+    stop_process(active_process)
+    active_process = None
+    stop_process(server_process)
+    server_process = None
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    stop_owned_processes()
+    raise SystemExit(128 + signal_number)
+
+
+def remaining_timeout(deadline: float, maximum: int) -> int:
+    remaining = int(deadline - time.monotonic())
+    if remaining <= 0:
+        raise DiagnosisError("complete diagnosis exceeded its 20-minute ceiling")
+    return max(1, min(maximum, remaining))
+
+
+def run_process(
+    argv: list[str],
+    *,
+    deadline: float,
+    maximum: int,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[bytes]:
+    global active_process
+    process = subprocess.Popen(
+        argv,
+        cwd=ROOT,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    active_process = process
+    try:
+        stdout, stderr = process.communicate(timeout=remaining_timeout(deadline, maximum))
+    except subprocess.TimeoutExpired:
+        stop_process(process)
+        raise
+    finally:
+        if active_process is process:
+            active_process = None
+    result = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+    if check and result.returncode != 0:
+        raise DiagnosisError(
+            "command failed (%d): %s\n%s"
+            % (
+                result.returncode,
+                " ".join(argv),
+                result.stderr.decode("utf-8", "replace")[-4096:],
+            )
+        )
+    return result
+
+
+def restore_generated(generated: Path, saved: Path) -> None:
+    if generated.exists():
+        generated.unlink()
+    if saved.exists():
+        shutil.copy2(saved, generated)
+
+
+@contextlib.contextmanager
+def built_helper(
+    work: Path,
+    include: Path,
+    library: Path,
+    clean_env: dict[str, str],
+    deadline: float,
+) -> Iterator[dict[str, Any]]:
+    compiler_output = run_process(
+        [str(ROOT / "scripts/align-toolchain"), "ensure", "compiler"],
+        deadline=deadline,
+        maximum=300,
+        env=clean_env,
+    )
+    compiler = Path(compiler_output.stdout.decode("utf-8").strip())
+    if not compiler.is_file() or not os.access(compiler, os.X_OK):
+        raise DiagnosisError("managed pinned compiler is unusable")
+    c_compiler_name = shutil.which("cc", path=clean_env.get("PATH"))
+    if c_compiler_name is None:
+        raise DiagnosisError("the default C compiler is unavailable")
+    c_compiler = Path(c_compiler_name).resolve()
+    c_compiler_version = run_process(
+        [str(c_compiler), "--version"], deadline=deadline, maximum=30, env=clean_env
+    )
+
+    shim_dir = work / "lib"
+    generated = ROOT / "olmoe_runtime_phase_gate"
+    saved = work / "saved-olmoe-runtime-phase-gate"
+    if generated.exists():
+        shutil.copy2(generated, saved)
+    build_env = dict(clean_env)
+    build_env.update(
+        {
+            "ALIGN_LLM_GGML_INCLUDE": str(include),
+            "ALIGN_LLM_GGML_LIB": str(library),
+            "ALIGN_LLM_GGML_SHIM_DIR": str(shim_dir),
+        }
+    )
+    try:
+        run_process(
+            [str(ROOT / "scripts/build-ggml-shim")],
+            deadline=deadline,
+            maximum=180,
+            env=build_env,
+        )
+        build_env["LIBRARY_PATH"] = ":".join(
+            value
+            for value in (str(shim_dir), str(library), clean_env.get("LIBRARY_PATH", ""))
+            if value
+        )
+        run_process(
+            [str(compiler), "build", "src/olmoe_runtime_phase_gate.align"],
+            deadline=deadline,
+            maximum=300,
+            env=build_env,
+        )
+        helper = work / "olmoe-runtime-phase-gate"
+        shutil.move(generated, helper)
+        shim = shim_dir / (
+            "libalign_ggml_shim.dylib" if platform.system() == "Darwin" else "libalign_ggml_shim.so"
+        )
+        if not shim.is_file():
+            raise DiagnosisError("dynamic ggml shim was not produced")
+        runtime_env = dict(clean_env)
+        runtime_env["DYLD_LIBRARY_PATH"] = ":".join((str(shim_dir), str(library)))
+        runtime_env["LD_LIBRARY_PATH"] = ":".join((str(shim_dir), str(library)))
+        yield {
+            "compiler": compiler,
+            "compiler_sha256": base.file_sha256(compiler),
+            "c_compiler": c_compiler,
+            "c_compiler_sha256": base.file_sha256(c_compiler),
+            "c_compiler_version_sha256": base.command_output_sha256(c_compiler_version),
+            "helper": helper,
+            "helper_sha256": base.file_sha256(helper),
+            "shim": shim,
+            "shim_sha256": base.file_sha256(shim),
+            "runtime_env": runtime_env,
+        }
+    finally:
+        restore_generated(generated, saved)
+
+
+def parse_matching_processes(output: bytes, server: Path, model: Path) -> list[int]:
+    matches = []
+    server_text = str(server)
+    model_text = str(model)
+    for raw_line in output.decode("utf-8", "replace").splitlines():
+        pieces = raw_line.strip().split(maxsplit=1)
+        if len(pieces) != 2 or not pieces[0].isdigit():
+            continue
+        if server_text in pieces[1] and model_text in pieces[1]:
+            matches.append(int(pieces[0]))
+    return matches
+
+
+def matching_processes(
+    server: Path, model: Path, deadline: float, clean_env: dict[str, str]
+) -> list[int]:
+    result = run_process(
+        ["ps", "-ww", "-axo", "pid=,command="],
+        deadline=deadline,
+        maximum=30,
+        env=clean_env,
+    )
+    return parse_matching_processes(result.stdout, server, model)
+
+
+def require_no_matching_process(
+    server: Path, model: Path, deadline: float, clean_env: dict[str, str]
+) -> None:
+    matches = matching_processes(server, model, deadline, clean_env)
+    if matches:
+        raise DiagnosisError("solo condition found a matching llama.cpp model process")
+
+
+def server_rss_bytes(pid: int, deadline: float, clean_env: dict[str, str]) -> int:
+    result = run_process(
+        ["ps", "-o", "rss=", "-p", str(pid)],
+        deadline=deadline,
+        maximum=30,
+        env=clean_env,
+    )
+    value = result.stdout.decode("ascii").strip()
+    if not re.fullmatch(r"[0-9]+", value) or int(value) <= 0:
+        raise DiagnosisError("owned llama.cpp RSS was unavailable")
+    return int(value) * 1024
+
+
+def is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def require_exact_keys(value: dict[str, Any], expected: set[str], label: str) -> None:
+    if set(value) != expected:
+        raise DiagnosisError(f"{label} keys drifted")
+
+
+PHASE_KEYS = {
+    "snapshot_ns",
+    "model_ir_ns",
+    "geometry_ns",
+    "source_identity_ns",
+    "tokenizer_ns",
+    "engine_wall_ns",
+    "output_decode_ns",
+    "elapsed_ns",
+}
+ENGINE_KEYS = {
+    "elapsed_ns",
+    "first_token_ns",
+    "resident_fill_ns",
+    "pread_ns",
+    "claim_pread_ns",
+    "decide_ns",
+    "compute_ns",
+    "decode_compute_ns",
+    "graph_count",
+    "decode_steps_completed",
+    "resident_fill_bytes",
+    "expert_cache_requests",
+    "expert_cache_hits",
+    "expert_cache_misses",
+    "expert_cache_evictions",
+    "expert_cache_bytes_fetched",
+}
+LIFETIME_PAIRS = (
+    ("ggml_buffers_created", "ggml_buffers_freed"),
+    ("contexts_created", "contexts_freed"),
+    ("backends_created", "backends_freed"),
+    ("gallocrs_created", "gallocrs_freed"),
+    ("resident_wraps_created", "resident_wraps_freed"),
+)
+LIFETIME_KEYS = {name for pair in LIFETIME_PAIRS for name in pair} | {
+    "released_before_owner_scope_end"
+}
+HELPER_KEYS = {
+    "schema_version",
+    "status",
+    "maximum_tokens",
+    "seed",
+    "prompt_tokens",
+    "completion_tokens",
+    "stopped_eog",
+    "token_ids",
+    "output_sha256",
+    "phases",
+    "engine",
+    "lifetime",
+}
+
+
+def validate_helper_record(record: dict[str, Any], maximum_tokens: int) -> None:
+    require_exact_keys(record, HELPER_KEYS, "helper record")
+    if (
+        record["schema_version"] != 1
+        or record["status"] != "ok"
+        or record["maximum_tokens"] != maximum_tokens
+        or record["seed"] != SEED
+        or not is_int(record["prompt_tokens"])
+        or record["prompt_tokens"] <= 0
+        or not is_int(record["completion_tokens"])
+        or record["completion_tokens"] <= 0
+        or not isinstance(record["stopped_eog"], bool)
+        or not isinstance(record["token_ids"], list)
+        or not record["token_ids"]
+        or any(not is_int(value) or value < 0 for value in record["token_ids"])
+        or not isinstance(record["output_sha256"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", record["output_sha256"]) is None
+    ):
+        raise DiagnosisError("helper scalar record was malformed")
+    expected_ids = record["completion_tokens"] + (1 if record["stopped_eog"] else 0)
+    if len(record["token_ids"]) != expected_ids or len(record["token_ids"]) > maximum_tokens:
+        raise DiagnosisError("helper completion/EOG accounting drifted")
+    if not record["stopped_eog"] and len(record["token_ids"]) != maximum_tokens:
+        raise DiagnosisError("helper stopped before its maximum without EOG")
+
+    phases = record["phases"]
+    engine = record["engine"]
+    lifetime = record["lifetime"]
+    if not isinstance(phases, dict) or not isinstance(engine, dict) or not isinstance(lifetime, dict):
+        raise DiagnosisError("helper nested record was malformed")
+    require_exact_keys(phases, PHASE_KEYS, "phase")
+    require_exact_keys(engine, ENGINE_KEYS, "engine")
+    require_exact_keys(lifetime, LIFETIME_KEYS, "lifetime")
+    if any(not is_int(phases[name]) or phases[name] <= 0 for name in PHASE_KEYS):
+        raise DiagnosisError("helper phase timing was not positive")
+    sequential = sum(phases[name] for name in PHASE_KEYS if name != "elapsed_ns")
+    if phases["elapsed_ns"] < sequential or phases["engine_wall_ns"] < engine["elapsed_ns"]:
+        raise DiagnosisError("helper phase timing was not nested")
+    positive_engine = {
+        "elapsed_ns",
+        "first_token_ns",
+        "resident_fill_ns",
+        "pread_ns",
+        "claim_pread_ns",
+        "decide_ns",
+        "compute_ns",
+        "decode_compute_ns",
+        "graph_count",
+        "decode_steps_completed",
+        "resident_fill_bytes",
+        "expert_cache_requests",
+        "expert_cache_misses",
+        "expert_cache_bytes_fetched",
+    }
+    if any(not is_int(engine[name]) or engine[name] <= 0 for name in positive_engine):
+        raise DiagnosisError("helper engine evidence was not positive")
+    if any(
+        not is_int(engine[name]) or engine[name] < 0 for name in ENGINE_KEYS - positive_engine
+    ):
+        raise DiagnosisError("helper engine counter was invalid")
+    if engine["first_token_ns"] > engine["elapsed_ns"]:
+        raise DiagnosisError("first-token interval exceeded engine elapsed")
+    for created, freed in LIFETIME_PAIRS:
+        if not is_int(lifetime[created]) or lifetime[created] <= 0 or lifetime[created] != lifetime[freed]:
+            raise DiagnosisError("helper native lifetime was unbalanced")
+    if lifetime["released_before_owner_scope_end"] is not True:
+        raise DiagnosisError("helper did not release native owners")
+
+
+def measure_request(
+    helper: Path,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    prompt: Path,
+    maximum_tokens: int,
+    runtime_env: dict[str, str],
+    deadline: float,
+) -> dict[str, Any]:
+    started_ns = time.monotonic_ns()
+    result = run_process(
+        [
+            str(helper),
+            str(model),
+            str(pack),
+            str(geometry),
+            prompt.read_text(encoding="utf-8"),
+            str(maximum_tokens),
+            str(SEED),
+        ],
+        deadline=deadline,
+        maximum=240,
+        env=runtime_env,
+    )
+    helper_wall_ns = time.monotonic_ns() - started_ns
+    try:
+        record = json.loads(result.stdout.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise DiagnosisError("helper did not emit one JSON record") from error
+    if not isinstance(record, dict):
+        raise DiagnosisError("helper record was not an object")
+    validate_helper_record(record, maximum_tokens)
+    if helper_wall_ns < record["phases"]["elapsed_ns"]:
+        raise DiagnosisError("helper wall interval did not contain helper elapsed")
+    return {**record, "helper_wall_ns": helper_wall_ns}
+
+
+def measure_leg(
+    condition: str,
+    pair_index: int,
+    length_order: tuple[int, int],
+    built: dict[str, Any],
+    server: Path,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    prompt: Path,
+    work: Path,
+    clean_env: dict[str, str],
+    deadline: float,
+) -> dict[str, Any]:
+    global server_process
+    require_no_matching_process(server, model, deadline, clean_env)
+    server_rss: int | None = None
+    server_log = None
+    if condition == "co_resident":
+        port = base.free_port()
+        server_log = (work / f"llama-server-{pair_index}.log").open("wb")
+        server_process = subprocess.Popen(
+            [
+                str(server),
+                "-m",
+                str(model),
+                "--alias",
+                ALIAS,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--device",
+                "none",
+                "-ngl",
+                "0",
+                "-t",
+                "4",
+                "-c",
+                "512",
+                "-np",
+                "1",
+                "--jinja",
+                "--no-warmup",
+            ],
+            cwd=work,
+            env=clean_env,
+            stdin=subprocess.DEVNULL,
+            stdout=server_log,
+            stderr=subprocess.STDOUT,
+        )
+        base.wait_ready(server_process, port, deadline)
+        matches = matching_processes(server, model, deadline, clean_env)
+        if matches != [server_process.pid]:
+            raise DiagnosisError("co-resident condition did not own the sole matching process")
+        server_rss = server_rss_bytes(server_process.pid, deadline, clean_env)
+    elif condition != "solo":
+        raise DiagnosisError("unknown diagnosis condition")
+
+    records: dict[int, dict[str, Any]] = {}
+    try:
+        for maximum_tokens in length_order:
+            records[maximum_tokens] = measure_request(
+                built["helper"],
+                model,
+                pack,
+                geometry,
+                prompt,
+                maximum_tokens,
+                built["runtime_env"],
+                deadline,
+            )
+    finally:
+        stop_process(server_process)
+        server_process = None
+        if server_log is not None:
+            server_log.close()
+    require_no_matching_process(server, model, deadline, clean_env)
+    return {
+        "length_order": ["short" if value == SHORT_TOKENS else "full" for value in length_order],
+        "server_rss_bytes": server_rss,
+        "short": records[SHORT_TOKENS],
+        "full": records[FULL_TOKENS],
+    }
+
+
+def median(values: list[int]) -> int:
+    if len(values) != 4 or any(not is_int(value) for value in values):
+        raise DiagnosisError("diagnosis median requires four integers")
+    ordered = sorted(values)
+    return (ordered[1] + ordered[2]) // 2
+
+
+def repeated_setup(record: dict[str, Any]) -> int:
+    phases = record["phases"]
+    return sum(
+        phases[name]
+        for name in (
+            "snapshot_ns",
+            "model_ir_ns",
+            "geometry_ns",
+            "source_identity_ns",
+            "tokenizer_ns",
+        )
+    ) + record["engine"]["resident_fill_ns"]
+
+
+def greater_by_deadband(left: int, right: int) -> bool:
+    if left <= right:
+        return False
+    if right <= 0:
+        return left > 0
+    return (left - right) * 1_000_000 > DEADBAND_PPM * right
+
+
+def validate_repeatability(samples: list[dict[str, Any]]) -> None:
+    records = [
+        pair[condition][length]
+        for pair in samples
+        for condition in ("solo", "co_resident")
+        for length in ("short", "full")
+        if condition in pair
+    ]
+    by_length = {
+        length: [record for record in records if record["maximum_tokens"] == maximum]
+        for length, maximum in (("short", SHORT_TOKENS), ("full", FULL_TOKENS))
+    }
+    for length, selected in by_length.items():
+        if not selected:
+            continue
+        identity = (
+            selected[0]["prompt_tokens"],
+            selected[0]["completion_tokens"],
+            selected[0]["stopped_eog"],
+            selected[0]["token_ids"],
+            selected[0]["output_sha256"],
+            {name: selected[0]["engine"][name] for name in ENGINE_KEYS if not name.endswith("_ns")},
+            selected[0]["lifetime"],
+        )
+        for record in selected[1:]:
+            candidate = (
+                record["prompt_tokens"],
+                record["completion_tokens"],
+                record["stopped_eog"],
+                record["token_ids"],
+                record["output_sha256"],
+                {name: record["engine"][name] for name in ENGINE_KEYS if not name.endswith("_ns")},
+                record["lifetime"],
+            )
+            if candidate != identity:
+                raise DiagnosisError(f"{length} runtime evidence was not repeatable")
+    if by_length["short"] and by_length["full"]:
+        short = by_length["short"][0]
+        full = by_length["full"][0]
+        if full["token_ids"][: len(short["token_ids"])] != short["token_ids"]:
+            raise DiagnosisError("short generated ids were not a full-generation prefix")
+        if short["stopped_eog"] or short["completion_tokens"] != SHORT_TOKENS:
+            raise DiagnosisError("short request did not reach its exact maximum")
+        if (
+            not full["stopped_eog"]
+            or full["completion_tokens"] != 86
+            or full["output_sha256"] != FULL_OUTPUT_SHA256
+        ):
+            raise DiagnosisError("full request no longer matches item 53")
+
+
+def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(samples) != 4:
+        raise DiagnosisError("diagnosis requires four complete pairs")
+    for index, pair in enumerate(samples):
+        if pair.get("pair_index") != index + 1 or pair.get("order") != list(PAIR_ORDERS[index]):
+            raise DiagnosisError("diagnosis pair schedule drifted")
+        expected_lengths = ["short" if value == SHORT_TOKENS else "full" for value in LENGTH_ORDERS[index]]
+        for condition in ("solo", "co_resident"):
+            leg = pair.get(condition)
+            if not isinstance(leg, dict) or leg.get("length_order") != expected_lengths:
+                raise DiagnosisError("diagnosis length schedule drifted")
+    validate_repeatability(samples)
+    solo_short = [pair["solo"]["short"]["helper_wall_ns"] for pair in samples]
+    solo_full = [pair["solo"]["full"]["helper_wall_ns"] for pair in samples]
+    co_short = [pair["co_resident"]["short"]["helper_wall_ns"] for pair in samples]
+    co_full = [pair["co_resident"]["full"]["helper_wall_ns"] for pair in samples]
+    setups = [repeated_setup(pair["solo"]["full"]) for pair in samples]
+    penalties = [co_full[index] - solo_full[index] for index in range(4)]
+    solo_full_median = median(solo_full)
+    setup_median = median(setups)
+    penalty_median = median(penalties)
+    positive_penalty = max(0, penalty_median)
+    if all(value > 0 for value in penalties) and greater_by_deadband(penalty_median, setup_median):
+        decision = "CO_RESIDENT_PRESSURE_EXCEEDS_SETUP"
+    elif greater_by_deadband(setup_median, positive_penalty):
+        decision = "REPEATED_SETUP_EXCEEDS_PRESSURE"
+    else:
+        decision = "MIXED_OR_UNRESOLVED"
+    return {
+        "solo_short_median_ns": median(solo_short),
+        "co_resident_short_median_ns": median(co_short),
+        "solo_full_median_ns": solo_full_median,
+        "co_resident_full_median_ns": median(co_full),
+        "solo_repeated_setup_median_ns": setup_median,
+        "solo_repeated_setup_share_ppm": setup_median * 1_000_000 // solo_full_median,
+        "co_resident_full_penalties_ns": penalties,
+        "co_resident_full_penalty_median_ns": penalty_median,
+        "co_resident_full_penalty_ppm": penalty_median * 1_000_000 // solo_full_median,
+        "deadband_ppm": DEADBAND_PPM,
+        "decision": decision,
+    }
+
+
+def synthetic_record(maximum_tokens: int, *, salt: int = 0) -> dict[str, Any]:
+    full = maximum_tokens == FULL_TOKENS
+    ids = list(range(10, 97)) if full else [10, 11]
+    phases = {
+        "snapshot_ns": 10 + salt,
+        "model_ir_ns": 11,
+        "geometry_ns": 12,
+        "source_identity_ns": 13,
+        "tokenizer_ns": 14,
+        "engine_wall_ns": 100,
+        "output_decode_ns": 15,
+        "elapsed_ns": 200 + salt,
+    }
+    engine = {
+        "elapsed_ns": 90,
+        "first_token_ns": 50,
+        "resident_fill_ns": 20,
+        "pread_ns": 30,
+        "claim_pread_ns": 10,
+        "decide_ns": 5,
+        "compute_ns": 40,
+        "decode_compute_ns": 20,
+        "graph_count": 2 if full else 1,
+        "decode_steps_completed": 2 if full else 1,
+        "resident_fill_bytes": 10,
+        "expert_cache_requests": 2,
+        "expert_cache_hits": 1,
+        "expert_cache_misses": 1,
+        "expert_cache_evictions": 0,
+        "expert_cache_bytes_fetched": 10,
+    }
+    lifetime = {
+        "ggml_buffers_created": 1,
+        "ggml_buffers_freed": 1,
+        "contexts_created": 1,
+        "contexts_freed": 1,
+        "backends_created": 1,
+        "backends_freed": 1,
+        "gallocrs_created": 1,
+        "gallocrs_freed": 1,
+        "resident_wraps_created": 1,
+        "resident_wraps_freed": 1,
+        "released_before_owner_scope_end": True,
+    }
+    return {
+        "schema_version": 1,
+        "status": "ok",
+        "maximum_tokens": maximum_tokens,
+        "seed": SEED,
+        "prompt_tokens": 47,
+        "completion_tokens": 86 if full else 2,
+        "stopped_eog": full,
+        "token_ids": ids,
+        "output_sha256": FULL_OUTPUT_SHA256 if full else "b" * 64,
+        "phases": phases,
+        "engine": engine,
+        "lifetime": lifetime,
+        "helper_wall_ns": 1000,
+    }
+
+
+def synthetic_samples(co_full: int, solo_full: int = 1000) -> list[dict[str, Any]]:
+    samples = []
+    for index, order in enumerate(PAIR_ORDERS):
+        lengths = ["short" if value == SHORT_TOKENS else "full" for value in LENGTH_ORDERS[index]]
+        pair: dict[str, Any] = {"pair_index": index + 1, "order": list(order)}
+        for condition in ("solo", "co_resident"):
+            short = synthetic_record(SHORT_TOKENS)
+            full = synthetic_record(FULL_TOKENS)
+            short["helper_wall_ns"] = 200 if condition == "solo" else 250
+            full["helper_wall_ns"] = solo_full if condition == "solo" else co_full
+            pair[condition] = {
+                "length_order": lengths,
+                "server_rss_bytes": None if condition == "solo" else 100,
+                "short": short,
+                "full": full,
+            }
+        samples.append(pair)
+    return samples
+
+
+def self_test() -> int:
+    for maximum in (SHORT_TOKENS, FULL_TOKENS):
+        record = synthetic_record(maximum)
+        helper = dict(record)
+        helper.pop("helper_wall_ns")
+        validate_helper_record(helper, maximum)
+    malformed = synthetic_record(SHORT_TOKENS)
+    malformed["phases"] = dict(malformed["phases"])
+    malformed["phases"]["elapsed_ns"] = 1
+    malformed.pop("helper_wall_ns")
+    try:
+        validate_helper_record(malformed, SHORT_TOKENS)
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("non-nested helper phases were accepted")
+    unbalanced = synthetic_record(SHORT_TOKENS)
+    unbalanced["lifetime"] = dict(unbalanced["lifetime"])
+    unbalanced["lifetime"]["contexts_freed"] = 0
+    unbalanced.pop("helper_wall_ns")
+    try:
+        validate_helper_record(unbalanced, SHORT_TOKENS)
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("unbalanced helper lifetime was accepted")
+
+    if aggregate(synthetic_samples(1700))["decision"] != "CO_RESIDENT_PRESSURE_EXCEEDS_SETUP":
+        raise DiagnosisError("co-resident pressure decision drifted")
+    if aggregate(synthetic_samples(1020))["decision"] != "REPEATED_SETUP_EXCEEDS_PRESSURE":
+        raise DiagnosisError("repeated setup decision drifted")
+    setup = repeated_setup(synthetic_record(FULL_TOKENS))
+    if aggregate(synthetic_samples(1000 + setup))["decision"] != "MIXED_OR_UNRESOLVED":
+        raise DiagnosisError("diagnosis deadband boundary drifted")
+
+    server = Path("/opt/llama server")
+    model = Path("/models/model.gguf")
+    process_output = (
+        b"  10 /unrelated --model /models/model.gguf\n"
+        b"  20 /opt/llama server -m /models/model.gguf --port 1\n"
+        b"bad line\n"
+    )
+    if parse_matching_processes(process_output, server, model) != [20]:
+        raise DiagnosisError("matching process classification drifted")
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-phase-self-test-") as raw:
+        work = Path(raw)
+        generated = work / "generated"
+        saved = work / "saved"
+        generated.write_text("new", encoding="utf-8")
+        saved.write_text("old", encoding="utf-8")
+        restore_generated(generated, saved)
+        if generated.read_text(encoding="utf-8") != "old":
+            raise DiagnosisError("existing generated helper was not restored")
+
+    with mock.patch("time.monotonic", return_value=100.0):
+        try:
+            remaining_timeout(99.0, 1)
+        except DiagnosisError:
+            pass
+        else:
+            raise DiagnosisError("expired diagnosis deadline was accepted")
+    forced_timeout = subprocess.TimeoutExpired(["child"], 10)
+    fake_process = mock.Mock()
+    fake_process.poll.return_value = None
+    fake_process.wait.side_effect = [forced_timeout, 0]
+    stop_process(fake_process)
+    if fake_process.terminate.call_count != 1 or fake_process.kill.call_count != 1:
+        raise DiagnosisError("process cleanup did not escalate from terminate to kill")
+    print("R8-OLMOE-RUNTIME-PHASE-DIAGNOSIS self-test: PASS")
+    return 0
+
+
+def verify_identities(rows: tuple[tuple[str, Path, str], ...]) -> None:
+    for label, path, expected_sha256 in rows:
+        if base.file_sha256(path) != expected_sha256:
+            raise DiagnosisError(f"{label} identity changed during the diagnosis")
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise DiagnosisError("OLMoE runtime phase diagnosis accepts no arguments")
+    required = previous.prerequisites()
+    if required is None:
+        return 0
+    model, pack, geometry, include, library, server = required
+    started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-runtime-phase-") as raw:
+        work = Path(raw)
+        clean_env = previous.decision_environment()
+        linker_search = previous.validate_linker_search(clean_env)
+        if linker_search:
+            clean_env["LIBRARY_PATH"] = linker_search
+        source_status = run_process(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline,
+            maximum=30,
+            env=clean_env,
+        )
+        if source_status.stdout:
+            raise DiagnosisError("real diagnosis requires a clean worktree")
+        align_llm_head = run_process(
+            ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env
+        ).stdout.decode("ascii").strip()
+        align_revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        require_no_matching_process(server, model, deadline, clean_env)
+        if model.stat().st_size != MODEL_BYTES or base.file_sha256(model) != MODEL_SHA256:
+            raise DiagnosisError("configured OLMoE GGUF does not have the pinned identity")
+        pack_sha256 = base.file_sha256(pack)
+        geometry_sha256 = base.file_sha256(geometry)
+        server_sha256 = base.file_sha256(server)
+        task_sha256 = base.file_sha256(TASK)
+        prompt_sha256 = base.bytes_sha256(PROMPT_TEXT.encode("utf-8"))
+        ggml_libraries = base.library_identities(library)
+        version = run_process(
+            [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env
+        )
+        if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
+            raise DiagnosisError("llama-server is not pinned build 10566 commit bb4caa754")
+        prompt = work / "prompt.txt"
+        prompt.write_text(PROMPT_TEXT, encoding="utf-8")
+
+        with built_helper(work, include, library, clean_env, deadline) as built:
+            samples = []
+            for pair_index, order in enumerate(PAIR_ORDERS, start=1):
+                pair: dict[str, Any] = {"pair_index": pair_index, "order": list(order)}
+                for condition in order:
+                    pair[condition] = measure_leg(
+                        condition,
+                        pair_index,
+                        LENGTH_ORDERS[pair_index - 1],
+                        built,
+                        server,
+                        model,
+                        pack,
+                        geometry,
+                        prompt,
+                        work,
+                        clean_env,
+                        deadline,
+                    )
+                samples.append(pair)
+                validate_repeatability(samples)
+
+            final_status = run_process(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                deadline=deadline,
+                maximum=30,
+                env=clean_env,
+            )
+            final_head = run_process(
+                ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env
+            ).stdout.decode("ascii").strip()
+            if final_status.stdout or final_head != align_llm_head:
+                raise DiagnosisError("align-llm source changed during the diagnosis")
+            verify_identities(
+                (
+                    ("model", model, MODEL_SHA256),
+                    ("pack", pack, pack_sha256),
+                    ("geometry", geometry, geometry_sha256),
+                    ("server", server, server_sha256),
+                    ("task", TASK, task_sha256),
+                    ("compiler", built["compiler"], built["compiler_sha256"]),
+                    ("C compiler", built["c_compiler"], built["c_compiler_sha256"]),
+                    ("shim", built["shim"], built["shim_sha256"]),
+                    ("helper", built["helper"], built["helper_sha256"]),
+                )
+            )
+            if base.library_identities(library) != ggml_libraries:
+                raise DiagnosisError("ggml library identities changed during the diagnosis")
+
+            aggregate_result = aggregate(samples)
+            elapsed_ns = time.monotonic_ns() - started_ns
+            if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+                raise DiagnosisError(
+                    f"complete diagnosis exceeded its 20-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+                )
+            task_document = json.loads(TASK.read_text(encoding="utf-8"))
+            result = {
+                "schema_version": 1,
+                "artifact_kind": "R8_OLMOE_RUNTIME_PHASE_DIAGNOSIS",
+                "status": "COMPLETE",
+                "model": {"bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe"},
+                "candidate": {
+                    "provider": "align-runtime",
+                    "align_llm_head": align_llm_head,
+                    "align_revision": align_revision,
+                    "compiler_sha256": built["compiler_sha256"],
+                    "helper_sha256": built["helper_sha256"],
+                    "shim_sha256": built["shim_sha256"],
+                    "ggml_libraries": ggml_libraries,
+                    "pack_sha256": pack_sha256,
+                    "geometry_sha256": geometry_sha256,
+                    "cache_budget_bytes": BUDGET,
+                },
+                "co_resident": {
+                    "runtime_identity": f"llama.cpp build 10566 commit {SERVER_COMMIT}",
+                    "server_sha256": server_sha256,
+                    "threads": 4,
+                    "context": 512,
+                    "warmup": False,
+                    "inference_requests": 0,
+                },
+                "task": {
+                    "task_id": task_document["id"],
+                    "task_sha256": task_sha256,
+                    "prompt_sha256": prompt_sha256,
+                    "seed": SEED,
+                    "short_maximum_tokens": SHORT_TOKENS,
+                    "full_maximum_tokens": FULL_TOKENS,
+                    "full_output_sha256": FULL_OUTPUT_SHA256,
+                },
+                "environment": {
+                    "os": platform.system(),
+                    "release": platform.release(),
+                    "architecture": platform.machine(),
+                    "cpu_count": os.cpu_count(),
+                    "c_compiler_sha256": built["c_compiler_sha256"],
+                    "c_compiler_version_sha256": built["c_compiler_version_sha256"],
+                    "linker_search_sha256": (
+                        None
+                        if not linker_search
+                        else base.bytes_sha256(linker_search.encode("utf-8"))
+                    ),
+                },
+                "samples": samples,
+                "aggregate": aggregate_result,
+                "elapsed_ns": elapsed_ns,
+            }
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+            print(
+                "R8-OLMOE-RUNTIME-PHASE-DIAGNOSIS: COMPLETE "
+                f"decision={aggregate_result['decision']} "
+                f"setup={aggregate_result['solo_repeated_setup_median_ns'] / 1e9:.3f}s "
+                f"penalty={aggregate_result['co_resident_full_penalty_median_ns'] / 1e9:.3f}s "
+                f"elapsed={elapsed_ns / 1e9:.2f}s",
+                file=sys.stderr,
+            )
+    return 0
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (
+        DiagnosisError,
+        previous.DecisionError,
+        base.DecisionError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        json.JSONDecodeError,
+        subprocess.TimeoutExpired,
+    ) as error:
+        stop_owned_processes()
+        print(f"R8-OLMOE-RUNTIME-PHASE-DIAGNOSIS: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)
