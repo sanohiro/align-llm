@@ -176,16 +176,28 @@ def is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def validate_helper_record(record: dict[str, Any]) -> None:
+def validate_helper_record(record: dict[str, Any], maximum_tokens: int) -> None:
     previous.require_exact_keys(record, HELPER_KEYS, "helper record")
     inherited = dict(record)
     engine_phases = inherited.pop("engine_phases")
-    previous.validate_helper_record(inherited, FULL_TOKENS)
+    previous.validate_helper_record(inherited, maximum_tokens)
     if not isinstance(engine_phases, dict):
         raise DiagnosisError("engine phase record was not an object")
     previous.require_exact_keys(engine_phases, ENGINE_PHASE_KEYS, "engine phase")
-    if any(not is_int(engine_phases[name]) or engine_phases[name] <= 0 for name in ENGINE_PHASE_KEYS):
+    if any(not is_int(engine_phases[name]) or engine_phases[name] < 0 for name in ENGINE_PHASE_KEYS):
+        raise DiagnosisError("engine phase timing was invalid")
+    required_positive = ENGINE_PHASE_KEYS - {
+        "remaining_decode_ns",
+        "remaining_decode_claim_pread_ns",
+        "remaining_decode_compute_ns",
+    }
+    if any(engine_phases[name] <= 0 for name in required_positive):
         raise DiagnosisError("engine phase timing was not positive")
+    remaining = tuple(engine_phases[name] for name in ENGINE_PHASE_KEYS - required_positive)
+    if maximum_tokens == 2 and any(remaining):
+        raise DiagnosisError("two-token conditioning unexpectedly entered remaining decode")
+    if maximum_tokens == FULL_TOKENS and any(value <= 0 for value in remaining):
+        raise DiagnosisError("full helper did not enter remaining decode")
     engine = record["engine"]
     if sum(engine_phases[name] for name in WALL_PHASES) > engine["elapsed_ns"]:
         raise DiagnosisError("engine phase walls exceeded engine elapsed")
@@ -215,6 +227,7 @@ def measure_request(
     model: Path,
     pack: Path,
     geometry: Path,
+    maximum_tokens: int,
     runtime_env: dict[str, str],
     deadline: float,
 ) -> dict[str, Any]:
@@ -226,7 +239,7 @@ def measure_request(
             str(pack),
             str(geometry),
             PROMPT_TEXT,
-            str(FULL_TOKENS),
+            str(maximum_tokens),
             str(SEED),
         ],
         deadline=deadline,
@@ -240,7 +253,7 @@ def measure_request(
         raise DiagnosisError("helper did not emit one JSON record") from error
     if not isinstance(record, dict):
         raise DiagnosisError("helper record was not an object")
-    validate_helper_record(record)
+    validate_helper_record(record, maximum_tokens)
     if helper_wall_ns < record["phases"]["elapsed_ns"]:
         raise DiagnosisError("helper wall interval did not contain helper elapsed")
     return {**record, "helper_wall_ns": helper_wall_ns}
@@ -299,6 +312,21 @@ def measure_leg(
         raise DiagnosisError("unknown diagnosis condition")
 
     try:
+        if condition == "co_resident":
+            if previous.server_process is None or port is None:
+                raise DiagnosisError("co-resident server ownership was lost")
+            matches = previous.matching_processes(server, model, deadline, clean_env)
+            if matches != [previous.server_process.pid]:
+                raise DiagnosisError("co-resident condition did not own the sole matching process")
+            previous.warm_server(port, deadline)
+        else:
+            previous.require_no_matching_process(server, model, deadline, clean_env)
+        conditioned = measure_request(
+            built["helper"], model, pack, geometry, 2, built["runtime_env"], deadline
+        )
+        if conditioned["stopped_eog"] or conditioned["completion_tokens"] != 2:
+            raise DiagnosisError("candidate conditioning did not reach its exact maximum")
+
         server_rss_before: int | None = None
         if condition == "co_resident":
             if previous.server_process is None or port is None:
@@ -315,8 +343,10 @@ def measure_leg(
         else:
             previous.require_no_matching_process(server, model, deadline, clean_env)
         record = measure_request(
-            built["helper"], model, pack, geometry, built["runtime_env"], deadline
+            built["helper"], model, pack, geometry, FULL_TOKENS, built["runtime_env"], deadline
         )
+        if record["token_ids"][: len(conditioned["token_ids"])] != conditioned["token_ids"]:
+            raise DiagnosisError("candidate conditioning was not the full output prefix")
         server_rss_after = (
             previous.server_rss_bytes(previous.server_process.pid, deadline, clean_env)
             if previous.server_process is not None
@@ -490,9 +520,21 @@ def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
 
 def co_resident_metadata(server_sha256: str) -> dict[str, Any]:
     metadata = previous.co_resident_metadata(server_sha256)
-    metadata["warmup_inference_requests_per_co_resident_leg"] = 1
-    metadata["warmup_inference_requests_total"] = 4
+    metadata["warmup_inference_requests_per_timed_helper"] = 2
+    metadata["warmup_inference_requests_per_co_resident_leg"] = 2
+    metadata["warmup_inference_requests_total"] = 8
     return metadata
+
+
+def candidate_conditioning_metadata() -> dict[str, Any]:
+    return {
+        "warmup": True,
+        "maximum_tokens": 2,
+        "seed": SEED,
+        "inference_requests_per_timed_helper": 1,
+        "inference_requests_total": 8,
+        "retained_processes": 0,
+    }
 
 
 def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
@@ -514,22 +556,22 @@ def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
     return tuple(path.resolve() for _, path in rows)  # type: ignore[return-value]
 
 
-def synthetic_record(*, salt: int = 0) -> dict[str, Any]:
-    record = previous.synthetic_record(FULL_TOKENS, salt=salt)
+def synthetic_record(maximum_tokens: int = FULL_TOKENS, *, salt: int = 0) -> dict[str, Any]:
+    record = previous.synthetic_record(maximum_tokens, salt=salt)
     record["phases"]["engine_wall_ns"] = 120
     record["engine"]["elapsed_ns"] = 110
     record["engine_phases"] = {
         "construction_ns": 20,
         "prefill_ns": 50,
-        "first_decode_ns": 10,
-        "remaining_decode_ns": 20,
+        "first_decode_ns": 30 if maximum_tokens == 2 else 10,
+        "remaining_decode_ns": 0 if maximum_tokens == 2 else 20,
         "teardown_ns": 5,
         "prefill_claim_pread_ns": 4,
-        "first_decode_claim_pread_ns": 2,
-        "remaining_decode_claim_pread_ns": 4,
+        "first_decode_claim_pread_ns": 6 if maximum_tokens == 2 else 2,
+        "remaining_decode_claim_pread_ns": 0 if maximum_tokens == 2 else 4,
         "prefill_compute_ns": 40,
-        "first_decode_compute_ns": 5,
-        "remaining_decode_compute_ns": 15,
+        "first_decode_compute_ns": 20 if maximum_tokens == 2 else 5,
+        "remaining_decode_compute_ns": 0 if maximum_tokens == 2 else 15,
     }
     return record
 
@@ -553,15 +595,18 @@ def synthetic_samples(co_wall: int, solo_wall: int = 1000) -> list[dict[str, Any
 
 
 def self_test() -> int:
-    record = synthetic_record()
-    helper = dict(record)
+    for maximum_tokens in (2, FULL_TOKENS):
+        record = synthetic_record(maximum_tokens)
+        helper = dict(record)
+        helper.pop("helper_wall_ns")
+        validate_helper_record(helper, maximum_tokens)
+    helper = dict(synthetic_record())
     helper.pop("helper_wall_ns")
-    validate_helper_record(helper)
     malformed = dict(helper)
     malformed["engine_phases"] = dict(helper["engine_phases"])
     malformed["engine_phases"]["prefill_compute_ns"] += 1
     try:
-        validate_helper_record(malformed)
+        validate_helper_record(malformed, FULL_TOKENS)
     except DiagnosisError:
         pass
     else:
@@ -570,7 +615,7 @@ def self_test() -> int:
     malformed["engine_phases"] = dict(helper["engine_phases"])
     malformed["engine_phases"]["remaining_decode_ns"] = 100
     try:
-        validate_helper_record(malformed)
+        validate_helper_record(malformed, FULL_TOKENS)
     except DiagnosisError:
         pass
     else:
@@ -613,12 +658,21 @@ def self_test() -> int:
     protocol = co_resident_metadata("a" * 64)
     if (
         protocol["warmup"] is not True
-        or protocol["warmup_inference_requests_per_timed_helper"] != 1
-        or protocol["warmup_inference_requests_per_co_resident_leg"] != 1
-        or protocol["warmup_inference_requests_total"] != 4
+        or protocol["warmup_inference_requests_per_timed_helper"] != 2
+        or protocol["warmup_inference_requests_per_co_resident_leg"] != 2
+        or protocol["warmup_inference_requests_total"] != 8
         or protocol["timed_inference_requests"] != 0
     ):
         raise DiagnosisError("co-resident warmup metadata drifted")
+    conditioning = candidate_conditioning_metadata()
+    if (
+        conditioning["warmup"] is not True
+        or conditioning["maximum_tokens"] != 2
+        or conditioning["inference_requests_per_timed_helper"] != 1
+        or conditioning["inference_requests_total"] != 8
+        or conditioning["retained_processes"] != 0
+    ):
+        raise DiagnosisError("candidate conditioning metadata drifted")
 
     server = Path("/opt/llama server")
     model = Path("/models/model.gguf")
@@ -765,6 +819,7 @@ def main() -> int:
                     "cache_budget_bytes": BUDGET,
                 },
                 "co_resident": co_resident_metadata(server_sha256),
+                "candidate_conditioning": candidate_conditioning_metadata(),
                 "task": {
                     "task_id": task_document["id"],
                     "task_sha256": task_sha256,

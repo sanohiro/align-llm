@@ -154,7 +154,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   prompt := args[4]
   maximum_tokens: i64 := json.decode(args[5])?
   seed: i64 := json.decode(args[6])?
-  if maximum_tokens != 128 || seed != 5 {
+  if (maximum_tokens != 2 && maximum_tokens != 128) || seed != 5 {
     return Err(Error.Invalid)
   }
 

@@ -18,9 +18,16 @@ replaces the full-request upper bound with provider preparation plus completed p
 construction. It also separates prefill, first decode, remaining decode, claim I/O, and compute;
 it introduces no persistent model, cache, backend, or buffer.
 
-**Next actions.** Complete the author ledger-to-prose pass, implement the engine counters and
-qualification consumer, run the narrow source owners and one complete diagnosis, then review and
-publish the stable candidate.
+Implementation checkpoint `70267de` compiled and passed the model-free owner plus the existing
+layer-forward and 61-assertion runtime-provider owners. Its first complete discovery run narrowed
+the median upper bound to 0.481 seconds, but the first solo request alone paid an 11.020-second cold
+construction interval versus 0.231–0.815 seconds elsewhere, producing a -9.400-second first paired
+penalty while the other three were positive. That artifact is not the result. The protocol now
+conditions every timed leg with one untimed two-token candidate invocation and rewarms the server
+after conditioning in co-resident legs, preserving the required immediately-before RSS boundary.
+
+**Next actions.** Finish the conditioning repair and self-test, rerun one complete diagnosis, record
+the valid result, then review and publish the stable candidate.
 
 **Blocker.** None.
 
