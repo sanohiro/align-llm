@@ -42,9 +42,19 @@ outer clock, and snapshot/commit their deltas beside the existing successful rem
 counter. The thin helper adds one exact `claim_io` object; the runner pins the full ten-runner
 transitive chain plus every compiled source, shim, library, and header owner.
 
-**Next actions.** Run one clean-head four-repeat diagnosis; record its selected successor in the
-specification, roadmap, and handoff; complete the comprehensive review, repair, exact-head preflight,
-publication, merge, and continue to that successor.
+The clean-head diagnosis ran at `ed8769fcc8fc7a7a54cce4be9d6b95148099ceb9` and completed in
+112.302 seconds. Full walls were `[18914495125,18398295375,20472942875,20646407208]` ns; claim-I/O
+totals were `[3637491036,3692883589,3855587369,3820390875]` ns, median 3,756,637,232 ns. The bucket
+medians were 1,945,780,694 ns for `FILE_PREAD`, 1,072,229,252 ns for cache-to-claim copy,
+457,860,874 ns for claim-to-cache copy, 256,535,752 ns for block-to-claim copy, and 23,737,461 ns
+for exact remainder. `FILE_PREAD` is 517,958 ppm of the parent and clears the inherited
+963,327,962-ns floor, so the decision is `MEASURED_BUCKET_ELIGIBLE` and item 65 owns the selected
+file-read boundary. All four records retained exact output, cache/read counts, twelve isolation
+checks, and native lifetime balances.
+
+**Next actions.** Commit the measured decision, complete one comprehensive review, repair valid
+findings, rerun affected evidence and exact-head preflight, publish and merge, then start item 65's
+shipped-surface intervention investigation and ledger.
 
 **Blocker.** None.
 
@@ -52,11 +62,12 @@ publication, merge, and continue to that successor.
 `make layer-forward-smoke` (100.182 seconds), and `make runtime-provider-smoke` (self-test plus 61
 CLI assertions) pass. The new helper builds with the pinned compiler and real ggml shim; one
 maximum-2 execution returned the exact six-key all-zero `claim_io` object and zero parent clock.
-The exploratory four-repeat unchanged-request run completed in 105.94 seconds with exact output,
-cache, isolation, and native lifetime behavior; its stack sample remains directional evidence only.
+The exact clean-head diagnosis and result are recorded above. The earlier exploratory unchanged
+request and stack sample remain directional evidence only.
 
-**Intentional uncommitted files.** This handoff checkpoint only, until committed. Machine-local
-model/evidence and generated build products remain outside Git.
+**Intentional uncommitted files.** The measured specification, roadmap, and handoff decision remain
+uncommitted until their consistency check passes. Machine-local model/evidence and generated build
+products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-ROUTING-PHASE-A-BOUNDARY (PR #185, 2026-09-05)
 

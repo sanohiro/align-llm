@@ -1593,7 +1593,8 @@ The current forward delivery order is:
     the complete-request gate is authoritative. The production intervention and its production
     owner changes are removed before publication; no performance claim ships.
 
-64. **R8-OLMOE-CLAIM-IO-DIAGNOSIS — partition the next-largest remaining decode bucket. Active.**
+64. **R8-OLMOE-CLAIM-IO-DIAGNOSIS — partition the next-largest remaining decode bucket. Complete;
+    publication pending.**
     [`r8-olmoe-claim-io-diagnosis.md`](r8-olmoe-claim-io-diagnosis.md) is the authoritative ledger
     and closure matrix. Preserve item 62's shipped fixed request and exact output, cache, isolation,
     graph, reads, and native lifetimes. Its walls `[18059864416,18927732709,20639199375,19605385750]`
@@ -1603,7 +1604,19 @@ The current forward delivery order is:
     cache-to-claim copy, and exact remainder; select the largest four-sample median only when it
     reaches the inherited floor. A five-second directional sample observed 526 `pread` and 374
     `window_copy` main-thread samples, so neither operation is assumed dominant before measurement.
-    The selected successor must precommit its own unchanged item-62 full-request 50,000-ppm gate.
+    The clean-head four-repeat diagnosis selected `FILE_PREAD`: values
+    `[1851147994,1890495528,2036013152,2001065861]` ns, median 1,945,780,694 ns, or 517,958 ppm
+    of the 3,756,637,232-ns instrumented parent median. Every exact parent equation, fixed output,
+    cache/read counter, isolation check, and native lifetime balance passed. The result is
+    `MEASURED_BUCKET_ELIGIBLE`; this is attribution, not a speedup claim.
+
+65. **R8-OLMOE-FILE-PREAD-BOUNDARY — reduce the selected claim-read bucket. Selected; not
+    started.** Preserve item 62's shipped fixed request and immutable walls/median. Before production
+    changes, name an exact intervention using only shipped Align surfaces, or record Request 38 as
+    blocking if no consumer-complete intervention exists. Precommit the unchanged item-62
+    963,327,962-ns floor and 18,303,231,267-ns candidate ceiling; only a complete four-repeat
+    full-request gate can ship a performance claim. Item 64's operation clock selects the boundary
+    but is not a replacement baseline.
 
 ### Status (2026-08-28)
 

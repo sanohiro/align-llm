@@ -1,6 +1,6 @@
 # R8 OLMoE claim-I/O diagnosis
 
-Status: active, 2026-09-05
+Status: measured; publication pending, 2026-09-05
 
 Roadmap owner: item 64, `R8-OLMOE-CLAIM-IO-DIAGNOSIS`
 
@@ -104,3 +104,28 @@ that only successfully completed remaining steps reach the selected result, and 
 baseline and floor remain immutable. No text relabels a stack sample as timing, changes cache/read
 behavior, or authorizes a production optimization. Every construction, success, failure, early
 exit, cleanup, identity, and publication boundary has a named owner and exact evidence.
+
+## 6. Fixed-host result
+
+The clean-head run at `ed8769fcc8fc7a7a54cce4be9d6b95148099ceb9` completed in
+112,301,503,917 ns. Full-helper walls were
+`[18914495125,18398295375,20472942875,20646407208]` ns. The instrumented claim-I/O totals were
+`[3637491036,3692883589,3855587369,3820390875]` ns, median 3,756,637,232 ns. Every sample retained
+11,940 requests, 7,325 hits, 4,615 misses, 4,376 evictions, 17,656,872,960 fetched bytes, the fixed
+token/output identity, zero matching processes at all twelve isolation checks, and exact native
+lifetime balances.
+
+The exact bucket values and medians were:
+
+| Bucket | Four values (ns) | Median (ns) |
+| --- | --- | ---: |
+| `FILE_PREAD` | `[1851147994,1890495528,2036013152,2001065861]` | 1,945,780,694 |
+| `BLOCK_TO_CLAIM_COPY` | `[247548656,251089973,262929072,261981532]` | 256,535,752 |
+| `CLAIM_TO_CACHE_COPY` | `[443546555,460224076,457029997,458691751]` | 457,860,874 |
+| `CACHE_TO_CLAIM_COPY` | `[1071700650,1067447140,1075767097,1072757855]` | 1,072,229,252 |
+| `OTHER_CLAIM_IO` | `[23547181,23626872,23848051,25893876]` | 23,737,461 |
+
+`FILE_PREAD` is largest at 517,958 ppm of the instrumented parent median and exceeds the inherited
+963,327,962-ns floor. The decision is `MEASURED_BUCKET_ELIGIBLE`; item 65 owns the selected file-read
+boundary. This attribution does not change item 62's immutable full-request baseline and does not
+claim that instrumentation changed performance.
