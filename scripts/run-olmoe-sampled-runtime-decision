@@ -1,0 +1,1143 @@
+#!/usr/bin/env python3
+"""Paired sampled-portfolio performance decision for the OLMoE runtime provider."""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+import platform
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Iterator
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+BASE_PATH = ROOT / "scripts/run-olmoe-coding-decision"
+BASE_LOADER = SourceFileLoader("olmoe_coding_decision_for_sampled_runtime", str(BASE_PATH))
+BASE_SPEC = importlib.util.spec_from_loader(BASE_LOADER.name, BASE_LOADER)
+if BASE_SPEC is None or BASE_SPEC.loader is None:
+    raise RuntimeError("cannot load the OLMoE coding decision owner")
+base = importlib.util.module_from_spec(BASE_SPEC)
+BASE_SPEC.loader.exec_module(base)
+
+MODEL_BYTES = base.MODEL_BYTES
+MODEL_SHA256 = base.MODEL_SHA256
+SERVER_BUILD = base.SERVER_BUILD
+SERVER_COMMIT = base.SERVER_COMMIT
+BUDGET = base.BUDGET
+ALIAS = base.ALIAS
+TASK = base.TASK
+PROMPT_TEXT = base.PROMPT_TEXT
+KNOWN_GOOD_PATCH = base.KNOWN_GOOD_PATCH
+ORDERS = base.ORDERS
+TEMPERATURE_MICROS = 300_000
+SEEDS = tuple(range(1, 9))
+MAX_TOKENS = 128
+FLOOR_PPM = 50_000
+CEILING_SECONDS = 25 * 60
+EXTRA_SCRUBBED_ENV_NAMES = {
+    "ALIGN_LLM_BWRAP",
+    "ALIGN_LLM_FRESH_COMPILER",
+    "ALIGN_LLM_PRLIMIT",
+    "ALIGN_LLM_PYTHON",
+    "ALIGN_LLM_TEMP_ROOT",
+    "ALIGN_LLM_TOOL_ROOT",
+    "ALIGN_LLM_VALIDATION_USERNS_PATH",
+    "DYLD_LIBRARY_PATH",
+    "LD_LIBRARY_PATH",
+    "LIBRARY_PATH",
+}
+active_process: subprocess.Popen[bytes] | None = None
+server_process: subprocess.Popen[bytes] | None = None
+
+
+class DecisionError(RuntimeError):
+    pass
+
+
+def stop_process(process: subprocess.Popen[bytes] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def stop_owned_processes() -> None:
+    global active_process, server_process
+    stop_process(active_process)
+    active_process = None
+    stop_process(server_process)
+    server_process = None
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    stop_owned_processes()
+    raise SystemExit(128 + signal_number)
+
+
+def decision_environment() -> dict[str, str]:
+    environment = base.sanitized_environment()
+    for name in EXTRA_SCRUBBED_ENV_NAMES:
+        environment.pop(name, None)
+    return environment
+
+
+def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
+    rows = (
+        ("ALIGN_LLM_OLMOE_MODEL", base.configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", base.configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", base.configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", base.configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", base.configured_directory("ALIGN_LLM_GGML_LIB")),
+        (
+            "ALIGN_LLM_LLAMA_SERVER",
+            base.configured_file("ALIGN_LLM_LLAMA_SERVER", executable=True),
+        ),
+    )
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-SAMPLED-RUNTIME-DECISION: N/A ({missing} unset)")
+        return None
+    return tuple(path for _, path in rows)  # type: ignore[return-value]
+
+
+def remaining_timeout(deadline: float, maximum: int) -> int:
+    remaining = int(deadline - time.monotonic())
+    if remaining <= 0:
+        raise DecisionError("complete decision exceeded its 25-minute ceiling")
+    return max(1, min(maximum, remaining))
+
+
+def run_process(
+    argv: list[str],
+    *,
+    deadline: float,
+    maximum: int,
+    env: dict[str, str] | None = None,
+    check: bool = True,
+) -> subprocess.CompletedProcess[bytes]:
+    global active_process
+    process = subprocess.Popen(
+        argv,
+        cwd=ROOT,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    active_process = process
+    try:
+        stdout, stderr = process.communicate(timeout=remaining_timeout(deadline, maximum))
+    except subprocess.TimeoutExpired:
+        stop_process(process)
+        raise
+    finally:
+        if active_process is process:
+            active_process = None
+    result = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+    if check and result.returncode != 0:
+        raise DecisionError(
+            "command failed (%d): %s\n%s"
+            % (
+                result.returncode,
+                " ".join(argv),
+                result.stderr.decode("utf-8", "replace")[-4096:],
+            )
+        )
+    return result
+
+
+def validate_patch(
+    patch: Path,
+    work: Path,
+    deadline: float,
+    validator: dict[str, Any],
+    clean_env: dict[str, str],
+) -> tuple[bool, int]:
+    started_ns = time.monotonic_ns()
+    argv, cid_file = base.validation_command(patch, work, validator)
+    try:
+        result = run_process(
+            argv,
+            deadline=deadline,
+            maximum=120,
+            env=clean_env,
+            check=False,
+        )
+    finally:
+        if cid_file is not None:
+            base.cleanup_container(validator["docker"], cid_file)
+    elapsed_ns = time.monotonic_ns() - started_ns
+    if result.returncode == 0:
+        return True, elapsed_ns
+    if result.returncode == 4:
+        return False, elapsed_ns
+    raise DecisionError(
+        "validator infrastructure failed (%d): %s"
+        % (result.returncode, result.stderr.decode("utf-8", "replace")[-4096:])
+    )
+
+
+def restore_generated(generated: Path, saved: Path) -> None:
+    if generated.exists():
+        generated.unlink()
+    if saved.exists():
+        shutil.copy2(saved, generated)
+
+
+@contextlib.contextmanager
+def built_helper(
+    work: Path,
+    include: Path,
+    library: Path,
+    clean_env: dict[str, str],
+    deadline: float,
+) -> Iterator[dict[str, Any]]:
+    compiler_output = run_process(
+        [str(ROOT / "scripts/align-toolchain"), "ensure", "compiler"],
+        deadline=deadline,
+        maximum=300,
+        env=clean_env,
+    )
+    compiler = Path(compiler_output.stdout.decode("utf-8").strip())
+    if not compiler.is_file() or not os.access(compiler, os.X_OK):
+        raise DecisionError("managed pinned compiler is unusable")
+    c_compiler_name = shutil.which("cc", path=clean_env.get("PATH"))
+    if c_compiler_name is None:
+        raise DecisionError("the default C compiler is unavailable")
+    c_compiler = Path(c_compiler_name).resolve()
+    c_compiler_version = run_process(
+        [str(c_compiler), "--version"],
+        deadline=deadline,
+        maximum=30,
+        env=clean_env,
+    )
+
+    shim_dir = work / "lib"
+    generated = ROOT / "runtime_provider_gate"
+    saved = work / "saved-runtime-provider-gate"
+    if generated.exists():
+        shutil.copy2(generated, saved)
+    build_env = dict(clean_env)
+    build_env.update(
+        {
+            "ALIGN_LLM_GGML_INCLUDE": str(include),
+            "ALIGN_LLM_GGML_LIB": str(library),
+            "ALIGN_LLM_GGML_SHIM_DIR": str(shim_dir),
+        }
+    )
+    try:
+        run_process(
+            [str(ROOT / "scripts/build-ggml-shim")],
+            deadline=deadline,
+            maximum=180,
+            env=build_env,
+        )
+        build_env["LIBRARY_PATH"] = ":".join((str(shim_dir), str(library)))
+        run_process(
+            [str(compiler), "build", "src/runtime_provider_gate.align"],
+            deadline=deadline,
+            maximum=300,
+            env=build_env,
+        )
+        helper = work / "runtime-provider-gate"
+        shutil.move(generated, helper)
+        shim = shim_dir / (
+            "libalign_ggml_shim.dylib"
+            if platform.system() == "Darwin"
+            else "libalign_ggml_shim.so"
+        )
+        if not shim.is_file():
+            raise DecisionError("dynamic ggml shim was not produced")
+        runtime_env = dict(clean_env)
+        runtime_env["DYLD_LIBRARY_PATH"] = ":".join((str(shim_dir), str(library)))
+        runtime_env["LD_LIBRARY_PATH"] = ":".join((str(shim_dir), str(library)))
+        yield {
+            "compiler": compiler,
+            "compiler_sha256": base.file_sha256(compiler),
+            "c_compiler": c_compiler,
+            "c_compiler_sha256": base.file_sha256(c_compiler),
+            "c_compiler_version_sha256": base.command_output_sha256(c_compiler_version),
+            "helper": helper,
+            "helper_sha256": base.file_sha256(helper),
+            "shim": shim,
+            "shim_sha256": base.file_sha256(shim),
+            "runtime_env": runtime_env,
+        }
+    finally:
+        restore_generated(generated, saved)
+
+
+def candidate_command(
+    arm: str,
+    helper: Path,
+    endpoint: str,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    seed: int,
+    prompt: Path,
+    record: Path,
+) -> list[str]:
+    if arm == "local":
+        return [
+            str(helper),
+            "local-sampled",
+            endpoint,
+            ALIAS,
+            str(TEMPERATURE_MICROS),
+            str(seed),
+            str(prompt),
+            str(record),
+        ]
+    if arm == "runtime":
+        return [
+            str(helper),
+            "runtime-olmoe-sampled",
+            str(model),
+            str(pack),
+            str(geometry),
+            str(BUDGET),
+            str(MAX_TOKENS),
+            str(TEMPERATURE_MICROS),
+            str(seed),
+            str(prompt),
+            str(record),
+        ]
+    raise DecisionError(f"unknown provider arm: {arm}")
+
+
+def valid_digest(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def validate_candidate(candidate: dict[str, Any], index: int, seed: int) -> None:
+    if candidate.get("index") != index or candidate.get("seed") != seed:
+        raise DecisionError("candidate index or seed is out of order")
+    status = candidate.get("status")
+    if status not in ("PASS", "INVALID_PATCH", "FAILING_PATCH"):
+        raise DecisionError("candidate status is invalid")
+    for name in ("provider_elapsed_ns", "command_wall_ns", "completion_tokens"):
+        value = candidate.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise DecisionError(f"candidate {name} is invalid")
+    if (
+        candidate["provider_elapsed_ns"] <= 0
+        or candidate["command_wall_ns"] <= 0
+        or candidate["provider_elapsed_ns"] > candidate["command_wall_ns"]
+    ):
+        raise DecisionError("candidate timing is not nested")
+    validation_elapsed_ns = candidate.get("validation_elapsed_ns")
+    if (
+        isinstance(validation_elapsed_ns, bool)
+        or not isinstance(validation_elapsed_ns, int)
+        or validation_elapsed_ns < 0
+    ):
+        raise DecisionError("candidate validation timing is invalid")
+    if not valid_digest(candidate.get("output_sha256")):
+        raise DecisionError("candidate output digest is invalid")
+    patch_sha256 = candidate.get("patch_sha256")
+    if status == "INVALID_PATCH":
+        valid = validation_elapsed_ns == 0 and patch_sha256 is None
+    else:
+        valid = validation_elapsed_ns > 0 and valid_digest(patch_sha256)
+    if not valid:
+        raise DecisionError("candidate status fields are inconsistent")
+
+
+def validate_portfolio(portfolio: dict[str, Any]) -> None:
+    candidates = portfolio.get("candidates")
+    if not isinstance(candidates, list) or not 1 <= len(candidates) <= len(SEEDS):
+        raise DecisionError("portfolio candidate count is invalid")
+    for index, candidate in enumerate(candidates, start=1):
+        if not isinstance(candidate, dict):
+            raise DecisionError("portfolio candidate is not an object")
+        validate_candidate(candidate, index, SEEDS[index - 1])
+        if candidate["status"] == "PASS" and index != len(candidates):
+            raise DecisionError("portfolio continued after a passing candidate")
+    passing = [candidate for candidate in candidates if candidate["status"] == "PASS"]
+    admitted = sum(candidate["status"] != "INVALID_PATCH" for candidate in candidates)
+    if portfolio.get("attempted_count") != len(candidates):
+        raise DecisionError("portfolio attempted count is inconsistent")
+    if portfolio.get("admitted_patch_count") != admitted:
+        raise DecisionError("portfolio admitted count is inconsistent")
+    if portfolio.get("passing_count") != len(passing) or len(passing) > 1:
+        raise DecisionError("portfolio passing count is inconsistent")
+    if passing:
+        selected = passing[0]
+        measured_lower_bound = sum(
+            candidate["command_wall_ns"] + candidate["validation_elapsed_ns"]
+            for candidate in candidates
+        )
+        valid = (
+            portfolio.get("status") == "PASS"
+            and portfolio.get("selected_candidate_index") == selected["index"]
+            and portfolio.get("selected_seed") == selected["seed"]
+            and portfolio.get("selected_patch_sha256") == selected["patch_sha256"]
+            and isinstance(portfolio.get("time_to_passing_patch_ns"), int)
+            and not isinstance(portfolio.get("time_to_passing_patch_ns"), bool)
+            and portfolio["time_to_passing_patch_ns"] > 0
+            and portfolio["time_to_passing_patch_ns"] >= measured_lower_bound
+        )
+    else:
+        valid = (
+            len(candidates) == len(SEEDS)
+            and portfolio.get("status") == "NO_PASSING_PATCH"
+            and portfolio.get("selected_candidate_index") is None
+            and portfolio.get("selected_seed") is None
+            and portfolio.get("selected_patch_sha256") is None
+            and portfolio.get("time_to_passing_patch_ns") is None
+        )
+    if not valid:
+        raise DecisionError("portfolio selection fields are inconsistent")
+
+
+def measure_candidate(
+    arm: str,
+    pair_index: int,
+    index: int,
+    seed: int,
+    helper: Path,
+    endpoint: str,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    prompt: Path,
+    work: Path,
+    runtime_env: dict[str, str],
+    deadline: float,
+    validator: dict[str, Any],
+    clean_env: dict[str, str],
+) -> dict[str, Any]:
+    record_path = work / f"pair-{pair_index}-{arm}-candidate-{index}.json"
+    argv = candidate_command(
+        arm, helper, endpoint, model, pack, geometry, seed, prompt, record_path
+    )
+    started_ns = time.monotonic_ns()
+    process = run_process(
+        argv,
+        deadline=deadline,
+        maximum=360,
+        env=runtime_env,
+        check=False,
+    )
+    command_wall_ns = time.monotonic_ns() - started_ns
+    if not record_path.is_file():
+        raise DecisionError(
+            f"{arm} candidate {index} returned {process.returncode} without a provider record: "
+            + process.stderr.decode("utf-8", "replace")[-4096:]
+        )
+    try:
+        record = base.parse_record(record_path, command_wall_ns, arm)
+    except base.DecisionError as error:
+        raise DecisionError(str(error)) from error
+    if record["status"] != "ok" or process.returncode != 0:
+        raise DecisionError(f"{arm} candidate {index} provider or seed request failed")
+    expected_endpoint = endpoint if arm == "local" else "in-process"
+    expected_model = ALIAS if arm == "local" else str(model)
+    if record["endpoint"] != expected_endpoint or record["model"] != expected_model:
+        raise DecisionError(f"{arm} candidate {index} provider identity drifted")
+
+    output = record["output"]
+    patch_sha256: str | None = None
+    validation_elapsed_ns = 0
+    status = "INVALID_PATCH"
+    try:
+        patch_text = base.extract_patch(output)
+    except base.DecisionError:
+        patch_text = None
+    if patch_text is not None:
+        patch = work / f"pair-{pair_index}-{arm}-candidate-{index}.patch"
+        patch.write_text(patch_text, encoding="utf-8")
+        patch_sha256 = base.file_sha256(patch)
+        passed, validation_elapsed_ns = validate_patch(
+            patch, work, deadline, validator, clean_env
+        )
+        status = "PASS" if passed else "FAILING_PATCH"
+    candidate = {
+        "index": index,
+        "seed": seed,
+        "status": status,
+        "provider_elapsed_ns": record["elapsed_ns"],
+        "command_wall_ns": command_wall_ns,
+        "validation_elapsed_ns": validation_elapsed_ns,
+        "completion_tokens": record["completion_tokens"],
+        "output_sha256": base.bytes_sha256(output.encode("utf-8")),
+        "patch_sha256": patch_sha256,
+    }
+    validate_candidate(candidate, index, seed)
+    return candidate
+
+
+def measure_portfolio(
+    arm: str,
+    pair_index: int,
+    helper: Path,
+    endpoint: str,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    prompt: Path,
+    work: Path,
+    runtime_env: dict[str, str],
+    deadline: float,
+    validator: dict[str, Any],
+    clean_env: dict[str, str],
+) -> dict[str, Any]:
+    started_ns = time.monotonic_ns()
+    candidates = []
+    for index, seed in enumerate(SEEDS, start=1):
+        candidate = measure_candidate(
+            arm,
+            pair_index,
+            index,
+            seed,
+            helper,
+            endpoint,
+            model,
+            pack,
+            geometry,
+            prompt,
+            work,
+            runtime_env,
+            deadline,
+            validator,
+            clean_env,
+        )
+        candidates.append(candidate)
+        if candidate["status"] == "PASS":
+            break
+    passing = [candidate for candidate in candidates if candidate["status"] == "PASS"]
+    selected = passing[0] if passing else None
+    portfolio = {
+        "status": "PASS" if selected is not None else "NO_PASSING_PATCH",
+        "attempted_count": len(candidates),
+        "admitted_patch_count": sum(
+            candidate["status"] != "INVALID_PATCH" for candidate in candidates
+        ),
+        "passing_count": len(passing),
+        "selected_candidate_index": None if selected is None else selected["index"],
+        "selected_seed": None if selected is None else selected["seed"],
+        "selected_patch_sha256": None if selected is None else selected["patch_sha256"],
+        "time_to_passing_patch_ns": (
+            None if selected is None else time.monotonic_ns() - started_ns
+        ),
+        "candidates": candidates,
+    }
+    validate_portfolio(portfolio)
+    return portfolio
+
+
+def portfolio_signature(portfolio: dict[str, Any]) -> tuple[Any, ...]:
+    validate_portfolio(portfolio)
+    candidate_signature = tuple(
+        (
+            candidate["index"],
+            candidate["seed"],
+            candidate["status"],
+            candidate["completion_tokens"],
+            candidate["output_sha256"],
+            candidate["patch_sha256"],
+        )
+        for candidate in portfolio["candidates"]
+    )
+    return (
+        portfolio["status"],
+        portfolio["attempted_count"],
+        portfolio["admitted_patch_count"],
+        portfolio["passing_count"],
+        portfolio["selected_candidate_index"],
+        portfolio["selected_seed"],
+        portfolio["selected_patch_sha256"],
+        candidate_signature,
+    )
+
+
+def integer_median(values: list[int]) -> int:
+    if len(values) != 4 or any(
+        isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        for value in values
+    ):
+        raise DecisionError("median requires exactly four positive integer durations")
+    ordered = sorted(values)
+    return (ordered[1] + ordered[2]) // 2
+
+
+def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(samples) != len(ORDERS):
+        raise DecisionError("decision requires exactly four complete pairs")
+    by_arm: dict[str, list[dict[str, Any]]] = {"local": [], "runtime": []}
+    for pair_index, (sample, expected_order) in enumerate(zip(samples, ORDERS), start=1):
+        if (
+            sample.get("pair_index") != pair_index
+            or sample.get("order") != list(expected_order)
+            or not isinstance(sample.get("local"), dict)
+            or not isinstance(sample.get("runtime"), dict)
+        ):
+            raise DecisionError("balanced pair schedule is malformed")
+        for arm in ("local", "runtime"):
+            validate_portfolio(sample[arm])
+            by_arm[arm].append(sample[arm])
+    for arm, portfolios in by_arm.items():
+        if len({portfolio_signature(portfolio) for portfolio in portfolios}) != 1:
+            raise DecisionError(f"{arm} sampled portfolio is nondeterministic")
+
+    pass_counts = {
+        arm: sum(portfolio["status"] == "PASS" for portfolio in portfolios)
+        for arm, portfolios in by_arm.items()
+    }
+    result: dict[str, Any] = {
+        "local_pass_count": pass_counts["local"],
+        "runtime_pass_count": pass_counts["runtime"],
+        "local_median_time_to_passing_patch_ns": None,
+        "runtime_median_time_to_passing_patch_ns": None,
+        "gain_ppm": None,
+        "runtime_faster_in_every_pair": False,
+        "verdict": "NOT_ELIGIBLE",
+    }
+    if pass_counts != {"local": 4, "runtime": 4}:
+        return result
+    local_values = [portfolio["time_to_passing_patch_ns"] for portfolio in by_arm["local"]]
+    runtime_values = [
+        portfolio["time_to_passing_patch_ns"] for portfolio in by_arm["runtime"]
+    ]
+    local_median = integer_median(local_values)
+    runtime_median = integer_median(runtime_values)
+    faster = all(
+        sample["runtime"]["time_to_passing_patch_ns"]
+        < sample["local"]["time_to_passing_patch_ns"]
+        for sample in samples
+    )
+    gain_ppm = (local_median - runtime_median) * 1_000_000 // local_median
+    result.update(
+        {
+            "local_median_time_to_passing_patch_ns": local_median,
+            "runtime_median_time_to_passing_patch_ns": runtime_median,
+            "gain_ppm": gain_ppm,
+            "runtime_faster_in_every_pair": faster,
+            "verdict": "MET" if faster and gain_ppm >= FLOOR_PPM else "NOT_MET",
+        }
+    )
+    return result
+
+
+def synthetic_candidate(index: int, status: str, *, salt: str = "a") -> dict[str, Any]:
+    admitted = status != "INVALID_PATCH"
+    return {
+        "index": index,
+        "seed": SEEDS[index - 1],
+        "status": status,
+        "provider_elapsed_ns": 10,
+        "command_wall_ns": 20,
+        "validation_elapsed_ns": 5 if admitted else 0,
+        "completion_tokens": 4,
+        "output_sha256": salt * 64,
+        "patch_sha256": ("b" * 64) if admitted else None,
+    }
+
+
+def synthetic_portfolio(
+    *, time_ns: int | None, selected_index: int = 3, salt: str = "a"
+) -> dict[str, Any]:
+    if time_ns is None:
+        candidates = [
+            synthetic_candidate(
+                index,
+                "INVALID_PATCH" if index % 2 == 0 else "FAILING_PATCH",
+                salt=salt,
+            )
+            for index in range(1, len(SEEDS) + 1)
+        ]
+        selected = None
+    else:
+        candidates = [
+            synthetic_candidate(index, "FAILING_PATCH", salt=salt)
+            for index in range(1, selected_index)
+        ]
+        selected = synthetic_candidate(selected_index, "PASS", salt=salt)
+        candidates.append(selected)
+    return {
+        "status": "NO_PASSING_PATCH" if selected is None else "PASS",
+        "attempted_count": len(candidates),
+        "admitted_patch_count": sum(
+            candidate["status"] != "INVALID_PATCH" for candidate in candidates
+        ),
+        "passing_count": 0 if selected is None else 1,
+        "selected_candidate_index": None if selected is None else selected["index"],
+        "selected_seed": None if selected is None else selected["seed"],
+        "selected_patch_sha256": None if selected is None else selected["patch_sha256"],
+        "time_to_passing_patch_ns": time_ns,
+        "candidates": candidates,
+    }
+
+
+def self_test() -> int:
+    if ORDERS != (
+        ("local", "runtime"),
+        ("runtime", "local"),
+        ("runtime", "local"),
+        ("local", "runtime"),
+    ):
+        raise DecisionError("balanced pair schedule drifted")
+    if base.extract_patch(KNOWN_GOOD_PATCH) != KNOWN_GOOD_PATCH:
+        raise DecisionError("fixed patch extractor drifted")
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-sampled-runtime-self-test-") as raw:
+        work = Path(raw)
+        local = candidate_command(
+            "local",
+            work / "helper",
+            "http://127.0.0.1:1/v1/chat/completions",
+            work / "model",
+            work / "pack",
+            work / "geometry",
+            5,
+            work / "prompt",
+            work / "record",
+        )
+        runtime = candidate_command(
+            "runtime",
+            work / "helper",
+            "unused",
+            work / "model",
+            work / "pack",
+            work / "geometry",
+            5,
+            work / "prompt",
+            work / "record",
+        )
+        if local[1] != "local-sampled" or local[4:6] != ["300000", "5"]:
+            raise DecisionError("local sampled helper command drifted")
+        if runtime[1] != "runtime-olmoe-sampled" or runtime[5:9] != [
+            "975175680",
+            "128",
+            "300000",
+            "5",
+        ]:
+            raise DecisionError("runtime sampled helper command drifted")
+        missing = str(work / "missing")
+        with mock.patch.dict(os.environ, {"ALIGN_LLM_OLMOE_MODEL": missing}, clear=True):
+            try:
+                prerequisites()
+            except base.DecisionError:
+                pass
+            else:
+                raise DecisionError("invalid configured model was hidden by later N/A")
+        with mock.patch.dict(
+            os.environ,
+            {
+                "ALIGNC": "ambient",
+                "ALIGN_LLM_BWRAP": "ambient",
+                "DYLD_LIBRARY_PATH": "ambient",
+                "OMP_NUM_THREADS": "99",
+                "SAFE_VALUE": "kept",
+            },
+            clear=True,
+        ):
+            clean_env = decision_environment()
+        if clean_env != {"SAFE_VALUE": "kept"}:
+            raise DecisionError("decision environment isolation drifted")
+
+        generated = work / "generated"
+        saved = work / "saved"
+        generated.write_text("new", encoding="utf-8")
+        saved.write_text("old", encoding="utf-8")
+        restore_generated(generated, saved)
+        if generated.read_text(encoding="utf-8") != "old":
+            raise DecisionError("existing generated helper was not restored")
+        saved.unlink()
+        restore_generated(generated, saved)
+        if generated.exists():
+            raise DecisionError("new generated helper survived cleanup")
+
+        identity = work / "identity"
+        identity.write_text("before", encoding="utf-8")
+        digest = base.file_sha256(identity)
+        identity.write_text("after", encoding="utf-8")
+        try:
+            verify_identities((("fixture", identity, digest),))
+        except DecisionError:
+            pass
+        else:
+            raise DecisionError("identity mutation was accepted")
+
+        malformed_record = work / "malformed-record.json"
+        malformed_record.write_text('{"schema_version":1}', encoding="utf-8")
+        try:
+            base.parse_record(malformed_record, 100, "runtime")
+        except base.DecisionError:
+            pass
+        else:
+            raise DecisionError("malformed provider record was accepted")
+
+        cid_file = work / "validator.cid"
+        cid_file.write_text("a" * 64, encoding="ascii")
+        cleanup_result = mock.Mock(returncode=0, stdout=b"", stderr=b"")
+        with mock.patch("subprocess.run", return_value=cleanup_result) as remove:
+            base.cleanup_container("docker", cid_file)
+        if remove.call_args.args[0] != ["docker", "rm", "-f", "a" * 64]:
+            raise DecisionError("validator cleanup targeted the wrong container")
+
+    local_portfolio = synthetic_portfolio(time_ns=200, salt="a")
+    runtime_portfolio = synthetic_portfolio(time_ns=100, salt="c")
+    samples = [
+        {
+            "pair_index": index,
+            "order": list(order),
+            "local": {**local_portfolio, "time_to_passing_patch_ns": 200 + index},
+            "runtime": {**runtime_portfolio, "time_to_passing_patch_ns": 100 + index},
+        }
+        for index, order in enumerate(ORDERS, start=1)
+    ]
+    if aggregate(samples)["verdict"] != "MET":
+        raise DecisionError("MET aggregate drifted")
+    slower = [{**sample, "runtime": dict(sample["runtime"])} for sample in samples]
+    slower[0]["runtime"]["time_to_passing_patch_ns"] = 300
+    if aggregate(slower)["verdict"] != "NOT_MET":
+        raise DecisionError("pairwise NOT_MET aggregate drifted")
+    ineligible = [{**sample, "runtime": synthetic_portfolio(time_ns=None, salt="c")} for sample in samples]
+    if aggregate(ineligible)["verdict"] != "NOT_ELIGIBLE":
+        raise DecisionError("NOT_ELIGIBLE aggregate drifted")
+
+    nondeterministic = [{**sample, "runtime": dict(sample["runtime"])} for sample in samples]
+    nondeterministic[0]["runtime"] = synthetic_portfolio(
+        time_ns=100, selected_index=2, salt="c"
+    )
+    try:
+        aggregate(nondeterministic)
+    except DecisionError:
+        pass
+    else:
+        raise DecisionError("nondeterministic runtime portfolio was accepted")
+    for label, mutation in (
+        (
+            "continued",
+            {
+                **synthetic_portfolio(time_ns=100),
+                "candidates": synthetic_portfolio(time_ns=100)["candidates"]
+                + [synthetic_candidate(4, "INVALID_PATCH")],
+                "attempted_count": 4,
+            },
+        ),
+        (
+            "incomplete",
+            {
+                **synthetic_portfolio(time_ns=None),
+                "candidates": synthetic_portfolio(time_ns=None)["candidates"][:7],
+                "attempted_count": 7,
+            },
+        ),
+        (
+            "duplicate-seed",
+            {
+                **synthetic_portfolio(time_ns=100),
+                "candidates": [
+                    synthetic_candidate(1, "FAILING_PATCH"),
+                    {**synthetic_candidate(2, "FAILING_PATCH"), "seed": 1},
+                    synthetic_candidate(3, "PASS"),
+                ],
+            },
+        ),
+    ):
+        try:
+            validate_portfolio(mutation)
+        except DecisionError:
+            continue
+        raise DecisionError(f"{label} portfolio mutation was accepted")
+    malformed = synthetic_candidate(1, "FAILING_PATCH")
+    malformed["provider_elapsed_ns"] = 21
+    try:
+        validate_candidate(malformed, 1, 1)
+    except DecisionError:
+        pass
+    else:
+        raise DecisionError("non-nested candidate timing was accepted")
+    undercounted = synthetic_portfolio(time_ns=1)
+    try:
+        validate_portfolio(undercounted)
+    except DecisionError:
+        pass
+    else:
+        raise DecisionError("portfolio timing below candidate work was accepted")
+    with mock.patch("time.monotonic", return_value=100.0):
+        try:
+            remaining_timeout(99.0, 1)
+        except DecisionError:
+            pass
+        else:
+            raise DecisionError("expired decision deadline was accepted")
+
+    forced_timeout = subprocess.TimeoutExpired(["child"], 10)
+    fake_process = mock.Mock()
+    fake_process.poll.return_value = None
+    fake_process.wait.side_effect = [forced_timeout, 0]
+    stop_process(fake_process)
+    if fake_process.terminate.call_count != 1 or fake_process.kill.call_count != 1:
+        raise DecisionError("process cleanup did not escalate from terminate to kill")
+    print("R8-OLMOE-SAMPLED-RUNTIME-DECISION self-test: PASS")
+    return 0
+
+
+def verify_identities(rows: tuple[tuple[str, Path, str], ...]) -> None:
+    for label, path, expected_sha256 in rows:
+        if base.file_sha256(path) != expected_sha256:
+            raise DecisionError(f"{label} identity changed during the decision")
+
+
+def main() -> int:
+    global server_process
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise DecisionError("OLMoE sampled runtime decision accepts no arguments")
+    required = prerequisites()
+    if required is None:
+        return 0
+    model, pack, geometry, include, library, server = required
+    started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-sampled-runtime-") as raw:
+        work = Path(raw)
+        clean_env = decision_environment()
+        source_status = run_process(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline,
+            maximum=30,
+            env=clean_env,
+        )
+        if source_status.stdout:
+            raise DecisionError("real decision requires a clean worktree")
+        align_llm_head = run_process(
+            ["git", "rev-parse", "HEAD"],
+            deadline=deadline,
+            maximum=30,
+            env=clean_env,
+        ).stdout.decode("ascii").strip()
+        align_revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        validator = base.resolve_validator(deadline)
+        control = work / "known-good.patch"
+        control.write_text(KNOWN_GOOD_PATCH, encoding="utf-8")
+        passed, _ = validate_patch(control, work, deadline, validator, clean_env)
+        if not passed:
+            raise DecisionError("known-good validator control did not pass")
+        if model.stat().st_size != MODEL_BYTES or base.file_sha256(model) != MODEL_SHA256:
+            raise DecisionError("configured OLMoE GGUF does not have the pinned size and SHA-256")
+        pack_sha256 = base.file_sha256(pack)
+        geometry_sha256 = base.file_sha256(geometry)
+        server_sha256 = base.file_sha256(server)
+        task_sha256 = base.file_sha256(TASK)
+        prompt_sha256 = base.bytes_sha256(PROMPT_TEXT.encode("utf-8"))
+        ggml_libraries = base.library_identities(library)
+        version = run_process(
+            [str(server), "--version"],
+            deadline=deadline,
+            maximum=30,
+            env=clean_env,
+        )
+        if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
+            raise DecisionError("llama-server is not pinned build 10566 commit bb4caa754")
+        prompt = work / "prompt.txt"
+        prompt.write_text(PROMPT_TEXT, encoding="utf-8")
+
+        with built_helper(work, include, library, clean_env, deadline) as built:
+            port = base.free_port()
+            server_log = (work / "llama-server.log").open("wb")
+            server_process = subprocess.Popen(
+                [
+                    str(server),
+                    "-m",
+                    str(model),
+                    "--alias",
+                    ALIAS,
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(port),
+                    "--device",
+                    "none",
+                    "-ngl",
+                    "0",
+                    "-t",
+                    "4",
+                    "-c",
+                    "512",
+                    "-np",
+                    "1",
+                    "--jinja",
+                    "--no-warmup",
+                ],
+                cwd=work,
+                stdin=subprocess.DEVNULL,
+                stdout=server_log,
+                stderr=subprocess.STDOUT,
+                env=clean_env,
+            )
+            try:
+                base.wait_ready(server_process, port, deadline)
+                endpoint = f"http://127.0.0.1:{port}/v1/chat/completions"
+                samples = []
+                for pair_index, order in enumerate(ORDERS, start=1):
+                    pair: dict[str, Any] = {
+                        "pair_index": pair_index,
+                        "order": list(order),
+                    }
+                    for arm in order:
+                        pair[arm] = measure_portfolio(
+                            arm,
+                            pair_index,
+                            built["helper"],
+                            endpoint,
+                            model,
+                            pack,
+                            geometry,
+                            prompt,
+                            work,
+                            built["runtime_env"],
+                            deadline,
+                            validator,
+                            clean_env,
+                        )
+                    samples.append(pair)
+            finally:
+                stop_process(server_process)
+                server_process = None
+                server_log.close()
+
+            final_status = run_process(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                deadline=deadline,
+                maximum=30,
+                env=clean_env,
+            )
+            final_head = run_process(
+                ["git", "rev-parse", "HEAD"],
+                deadline=deadline,
+                maximum=30,
+                env=clean_env,
+            ).stdout.decode("ascii").strip()
+            if final_status.stdout or final_head != align_llm_head:
+                raise DecisionError("align-llm source changed during the decision")
+            verify_identities(
+                (
+                    ("model", model, MODEL_SHA256),
+                    ("pack", pack, pack_sha256),
+                    ("geometry", geometry, geometry_sha256),
+                    ("server", server, server_sha256),
+                    ("task", TASK, task_sha256),
+                    ("compiler", built["compiler"], built["compiler_sha256"]),
+                    ("C compiler", built["c_compiler"], built["c_compiler_sha256"]),
+                    ("shim", built["shim"], built["shim_sha256"]),
+                    ("helper", built["helper"], built["helper_sha256"]),
+                )
+            )
+            if base.library_identities(library) != ggml_libraries:
+                raise DecisionError("ggml library identities changed during the decision")
+
+            aggregate_result = aggregate(samples)
+            elapsed_ns = time.monotonic_ns() - started_ns
+            if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+                raise DecisionError(
+                    f"complete decision exceeded its 25-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+                )
+            task_document = json.loads(TASK.read_text(encoding="utf-8"))
+            result = {
+                "schema_version": 1,
+                "artifact_kind": "R8_OLMOE_SAMPLED_RUNTIME_DECISION",
+                "status": "COMPLETE",
+                "model": {
+                    "bytes": MODEL_BYTES,
+                    "sha256": MODEL_SHA256,
+                    "architecture": "olmoe",
+                },
+                "baseline": {
+                    "provider": "local-openai",
+                    "runtime_identity": f"llama.cpp build 10566 commit {SERVER_COMMIT}",
+                    "server_sha256": server_sha256,
+                    "threads": 4,
+                    "context": 512,
+                    "warmup": False,
+                },
+                "candidate": {
+                    "provider": "align-runtime",
+                    "align_llm_head": align_llm_head,
+                    "align_revision": align_revision,
+                    "compiler_sha256": built["compiler_sha256"],
+                    "helper_sha256": built["helper_sha256"],
+                    "shim_sha256": built["shim_sha256"],
+                    "ggml_libraries": ggml_libraries,
+                    "pack_sha256": pack_sha256,
+                    "geometry_sha256": geometry_sha256,
+                    "cache_budget_bytes": BUDGET,
+                },
+                "task": {
+                    "task_id": task_document["id"],
+                    "task_sha256": task_sha256,
+                    "prompt_sha256": prompt_sha256,
+                    "maximum_completion_tokens": MAX_TOKENS,
+                },
+                "sampling": {
+                    "temperature_micros": TEMPERATURE_MICROS,
+                    "ordered_seeds": list(SEEDS),
+                    "maximum_candidates": len(SEEDS),
+                    "stop_on_first_pass": True,
+                },
+                "validator": {
+                    "kind": validator["kind"],
+                    "image_id": validator["image_id"],
+                },
+                "environment": {
+                    "os": platform.system(),
+                    "release": platform.release(),
+                    "architecture": platform.machine(),
+                    "cpu_count": os.cpu_count(),
+                    "c_compiler_sha256": built["c_compiler_sha256"],
+                    "c_compiler_version_sha256": built["c_compiler_version_sha256"],
+                },
+                "samples": samples,
+                "aggregate": aggregate_result,
+                "elapsed_ns": elapsed_ns,
+            }
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+            print(
+                "R8-OLMOE-SAMPLED-RUNTIME-DECISION: COMPLETE "
+                f"verdict={aggregate_result['verdict']} "
+                f"gain_ppm={aggregate_result['gain_ppm']} "
+                f"elapsed={elapsed_ns / 1e9:.2f}s",
+                file=sys.stderr,
+            )
+    return 0
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (
+        DecisionError,
+        base.DecisionError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        json.JSONDecodeError,
+        subprocess.TimeoutExpired,
+    ) as error:
+        stop_owned_processes()
+        print(f"R8-OLMOE-SAMPLED-RUNTIME-DECISION: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)
