@@ -3,12 +3,38 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION (2026-09-04)
+## Active: R8-OLMOE-REMAINING-DECODE-OVERHEAD-DIAGNOSIS (2026-09-04)
 
-Branch `agent/r8-olmoe-isolated-sampled-runtime-decision`, based on pulled merged `main`
-`6da234fb6ef3c96d10aec3b07c2cf1b5bd9ab640` (R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS PR #177). The
-sibling Align checkout and `.align-revision` remain at merged Align
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align surface is currently required.
+Branch `agent/r8-olmoe-remaining-decode-overhead-diagnosis`, based on pulled merged `main`
+`6d05d1fbbf79644806edecded24755ae701a6d0a` (item 56 PR #178). The sibling Align checkout and
+`.align-revision` remain at merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align
+surface is currently required.
+
+Item 57's authoritative measurement ledger and closure matrix are
+`docs/specs/r8-olmoe-remaining-decode-overhead-diagnosis.md`. Four fresh-process, conditioned,
+isolated seed-5 full requests will divide every successful remaining decode step into pre-pass,
+decode-pass, and post-pass and project existing staging, claim, compute, routing, and KV-plane
+clocks onto pass. Unassigned graph/context, generic-transfer, digest, allocation, and bookkeeping
+work remains an explicit residual. The fixed item-56 seed-5 runtime median is 29.333 seconds, so the
+precommitted 50,000-ppm materiality floor is 1.467 seconds per request. A residual winner can select
+only another diagnosis, not implementation.
+
+**Next actions.** Complete the author ledger-to-prose pass; implement the seven shared counters,
+qualification helper, focused runner, and model-free closure owner; run narrow source owners and one
+real diagnosis; record the decision, review, publish, merge, and continue.
+
+**Blocker.** None.
+
+**Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
+remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION (PR #178, 2026-09-04)
+
+PR #178 merged as `6d05d1fbbf79644806edecded24755ae701a6d0a`. The comprehensive review's
+two accepted reproducibility/schema findings were consolidated by independently pinning every
+imported workload value and rejecting boolean server-instance counts. Exact-head preflight and all
+three required CI jobs passed; the active item 57 above owns the selected remaining-decode
+diagnosis.
 
 Item 53's provider-level sampled decision kept one llama.cpp model resident across all four pairs
 and measured runtime at a 189.005-second median versus local at 12.710 seconds. Item 55 then bounded
@@ -30,15 +56,6 @@ before/after absence check passed. Isolation recovered 39.732 seconds, 21.0% of 
 median, but left runtime 11.31 times slower than local. R8 remains open; item 57 is selected to
 partition remaining-decode graph/context lifecycle, transfer/readback, claim, compute, and
 routing/sampling/accounting overhead before any implementation seam is authorized.
-
-**Next actions.** Commit the recorded result, perform the one comprehensive review, consolidate any
-accepted findings, rerun affected owner evidence and exact-head preflight, publish and merge the
-capability, then start item 57's authoritative measurement contract.
-
-**Blocker.** None.
-
-**Intentional uncommitted files.** None. Machine-local JSON evidence remains outside Git, and no
-generated binary, model, credential, or profile belongs in Git.
 
 ## Merged checkpoint: R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS (PR #177, 2026-09-04)
 

@@ -1464,13 +1464,16 @@ The current forward delivery order is:
     50,000-ppm gate. R8 remains open.
 
 57. **R8-OLMOE-REMAINING-DECODE-OVERHEAD-DIAGNOSIS — assign the isolated decode tail before
-    choosing graph, transfer, or orchestration work. Next.**
-    Reuse the fixed isolated seed-5 full request and item 55's phase boundary, then partition the
-    remaining-decode wall into non-overlapping graph/context lifecycle, data transfer/readback,
-    claim I/O, compute, and routing/sampling/accounting intervals with an explicit residual. Record
-    a precommitted opportunity ceiling and shipping floor for every selectable implementation seam.
-    Select work only when one measured seam can materially reduce the item-56 gap; otherwise retain
-    diagnosis. This capability changes no provider lifetime, cache policy, or generation behavior.
+    choosing graph, transfer, or orchestration work. Active.**
+    [`r8-olmoe-remaining-decode-overhead-diagnosis.md`](r8-olmoe-remaining-decode-overhead-diagnosis.md)
+    is the authoritative measurement contract and closure matrix. Reuse the fixed isolated seed-5
+    full request and split remaining decode exactly into pre-pass, decode-pass, and post-pass. Within
+    pass, project the existing pack/resident staging, claim I/O, compute, routing, and KV-plane
+    upload/readback clocks and retain every other graph/context, generic-transfer, digest, and
+    allocation cost in an explicit residual rather than mislabelling it. Four conditioned repeats
+    compare each bucket's removable-work ceiling with the precommitted 1,466,649,650-nanosecond
+    floor. A dominant residual selects only a narrower diagnosis; this capability changes no
+    provider lifetime, cache policy, or generation behavior.
 
 ### Status (2026-08-28)
 
