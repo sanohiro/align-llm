@@ -1,6 +1,6 @@
 # R8 OLMoE decode-pass residual diagnosis
 
-Status: active, 2026-09-04
+Status: complete, 2026-09-04
 
 Roadmap owner: item 59, `R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS`
 
@@ -97,3 +97,33 @@ The ledger and matrix agree on four direct non-overlapping clocks, one explicit 
 existing successful-step commit, item 58's immutable fixed-host baseline, four conditioned repeats,
 and the 921,450,866-ns floor. Every counter has one owner and one helper/result field; no prose
 renames residual work or authorizes an optimization before measurement.
+
+## 6. Recorded result
+
+The complete run at clean head `9639c05f819b96ffc7d66604fa890a61255b5bff` finished in
+108.478 seconds and recorded `OTHER_PASS_NEEDS_DIAGNOSIS`. It used baseline-host fingerprint
+`0a46a7d41c5f9aa35b62891b272f6bf6c79ec4b97acf0b918685ba82ddee15f1`.
+All four maximum-2 records were exact prefixes of their maximum-128 records. Every full request
+reproduced the fixed 87-token chain and output digest, balanced 2,958 ggml buffers, 6,090 contexts,
+one backend, 2,958 allocators, and one resident wrap, and recorded zero matching llama.cpp model
+processes at all twelve required boundaries.
+
+Full-helper walls were `[17911496916,18801448542,19746240041,19788850166]` ns, for a
+19,273,844,291-ns median. Decode-pass residual samples were
+`[4045209180,4262615734,4431228242,4482958665]` ns, for a 4,346,921,988-ns median. Sub-bucket
+medians were:
+
+| Bucket | Median (ns) |
+| --- | ---: |
+| `CONTEXT_BUFFER_SETUP` | 25,836,777 |
+| `GRAPH_BUILD_ALLOC` | 104,144,270 |
+| `GENERIC_TRANSFER_DIGEST` | 888,471,033 |
+| `GRAPH_TEARDOWN` | 273,385,802 |
+| `OTHER_PASS_RESIDUAL` | 3,053,836,112 |
+
+The direct generic-transfer/digest seam is 32,979,833 ns below the precommitted 921,450,866-ns
+materiality floor. `OTHER_PASS_RESIDUAL` is the deterministic winner at 702,528 ppm of the total
+residual and clears the floor by 2,132,385,246 ns. Item 60 therefore owns a still narrower
+diagnosis of plane round-trip comparison outside its existing readback clock, graph-member/spec
+construction, per-layer/step accounting, and remaining unassigned work. This item authorizes no
+optimization and does not infer that any one of those candidate boundaries dominates.

@@ -23,25 +23,36 @@ immutable baseline. A sub-bucket must reach the precommitted 921,450,866-ns mate
 50,000 ppm of that baseline, to select implementation work. Four fresh conditioned repetitions
 will determine the largest eligible sub-bucket.
 
-The implementation checkpoint is complete. Four broad counters cover disjoint context/buffer
+The implementation is complete. Four broad counters cover disjoint context/buffer
 setup, graph build/allocation, generic transfer/digest, and ordered teardown operations. The decode
 loop snapshots them around the existing pass and commits only successful post-first-step deltas.
 The new qualification helper extends the old record without changing the item 57 helper's emitted
 schema, and the new runner owns exact detail equations, medians, decisions, fixed-host identity,
 source pinning, and cleanup.
 
-**Next actions.** Commit the owner-tested implementation checkpoint, run one clean-head real
-four-repeat diagnosis, record the selected next capability, then review, repair, preflight,
-publish, and merge.
+The clean-head run at `9639c05f819b96ffc7d66604fa890a61255b5bff` completed in 108.478 seconds
+and recorded `OTHER_PASS_NEEDS_DIAGNOSIS`. Full-helper walls were
+`[17911496916,18801448542,19746240041,19788850166]` ns (19,273,844,291-ns median), and the
+decode-pass residual median was 4,346,921,988 ns. `OTHER_PASS_RESIDUAL` won at 3,053,836,112 ns
+and 702,528 ppm. Generic transfer/digest measured 888,471,033 ns, below the 921,450,866-ns floor;
+teardown measured 273,385,802 ns, build/allocation 104,144,270 ns, and setup 25,836,777 ns. Every
+fixed output, token, lifetime, host, and isolation boundary passed. Roadmap item 60 is selected for
+a narrower attribution of plane comparison, graph-member/spec construction, step accounting, and
+other work; item 59 authorizes no implementation.
+
+**Next actions.** Commit the recorded result, complete one comprehensive review, consolidate valid
+findings, run affected owners and exact-head preflight, publish, and merge. Then pull merged `main`
+and start item 60.
 
 **Blocker.** None.
 
 **Latest durable verification.** `make fmt`, the pinned new-helper build, `make
 layer-forward-smoke` (62.935 seconds), `make runtime-provider-smoke` (self-test plus 61 CLI
 assertions), Python compilation, the inherited item 58 self-test, the new focused self-test, and
-`git diff --check` pass. The real item 59 diagnosis is not run yet.
+`git diff --check` pass. The complete real four-repeat diagnosis and exact result are recorded
+above; machine-local evidence remains outside Git.
 
-**Intentional uncommitted files.** Item 59 implementation and handoff checkpoint before commit.
+**Intentional uncommitted files.** Item 59 result, roadmap, and handoff updates before commit.
 Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-KV-PLANE-STAGING-TRANSFER (PR #180, 2026-09-04)
