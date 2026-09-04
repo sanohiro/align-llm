@@ -28,6 +28,10 @@
 #include <string.h>
 
 /* --- BEGIN R4.5 SHARED SHIM CONTRACT --- */
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
 /* Everything between these two markers is byte-identical in `scripts/ggml_shim.c` and
  * `scripts/ggml_shim_stub.c`, and `scripts/run-ggml-spike-smoke` asserts that byte-identity on
  * every run. The two files are one contract compiled twice: the real one against the host's ggml
@@ -617,6 +621,90 @@ int64_t align_ggml_compare_kv_plane(const void *consumed, int64_t consumed_bytes
         return 0;
     }
 
+#if defined(__aarch64__)
+    /* Consumed V is [head][lane][column], while the plane is [column][head][lane]. Four
+     * contiguous row loads, an in-register transpose, and four contiguous column loads cover
+     * sixteen exact lanes. A difference falls through to the original scalar traversal so its
+     * observable head/lane/column priority remains authoritative.
+     */
+    for (head = 0; head < n_head_kv; head++) {
+        int64_t tiled_lanes = head_dim - head_dim % 4;
+        int64_t tiled_columns = columns - columns % 4;
+        for (lane = 0; lane < tiled_lanes; lane += 4) {
+            for (column = 0; column < tiled_columns; column += 4) {
+                int64_t consumed_at =
+                    (head * head_dim * columns + lane * columns + column) * 4;
+                int64_t plane_at =
+                    plane_base + ((column * n_head_kv + head) * head_dim + lane) * 4;
+                uint32x4_t r0 = vld1q_u32((const uint32_t *) (const void *)
+                    (consumed_data + (size_t) consumed_at));
+                uint32x4_t r1 = vld1q_u32((const uint32_t *) (const void *)
+                    (consumed_data + (size_t) (consumed_at + columns * 4)));
+                uint32x4_t r2 = vld1q_u32((const uint32_t *) (const void *)
+                    (consumed_data + (size_t) (consumed_at + columns * 8)));
+                uint32x4_t r3 = vld1q_u32((const uint32_t *) (const void *)
+                    (consumed_data + (size_t) (consumed_at + columns * 12)));
+                uint32x4x2_t pairs01 = vtrnq_u32(r0, r1);
+                uint32x4x2_t pairs23 = vtrnq_u32(r2, r3);
+                uint64x2_t pairs02_lo = vreinterpretq_u64_u32(pairs01.val[0]);
+                uint64x2_t pairs02_hi = vreinterpretq_u64_u32(pairs23.val[0]);
+                uint64x2_t pairs13_lo = vreinterpretq_u64_u32(pairs01.val[1]);
+                uint64x2_t pairs13_hi = vreinterpretq_u64_u32(pairs23.val[1]);
+                uint32x4_t column0 = vreinterpretq_u32_u64(vtrn1q_u64(pairs02_lo, pairs02_hi));
+                uint32x4_t column2 = vreinterpretq_u32_u64(vtrn2q_u64(pairs02_lo, pairs02_hi));
+                uint32x4_t column1 = vreinterpretq_u32_u64(vtrn1q_u64(pairs13_lo, pairs13_hi));
+                uint32x4_t column3 = vreinterpretq_u32_u64(vtrn2q_u64(pairs13_lo, pairs13_hi));
+                uint32x4_t equal = vceqq_u32(
+                    column0,
+                    vld1q_u32((const uint32_t *) (const void *)
+                        (plane_data + (size_t) plane_at)));
+                equal = vandq_u32(equal, vceqq_u32(
+                    column1,
+                    vld1q_u32((const uint32_t *) (const void *)
+                        (plane_data + (size_t) (plane_at + n_head_kv * head_dim * 4)))));
+                equal = vandq_u32(equal, vceqq_u32(
+                    column2,
+                    vld1q_u32((const uint32_t *) (const void *)
+                        (plane_data + (size_t) (plane_at + n_head_kv * head_dim * 8)))));
+                equal = vandq_u32(equal, vceqq_u32(
+                    column3,
+                    vld1q_u32((const uint32_t *) (const void *)
+                        (plane_data + (size_t) (plane_at + n_head_kv * head_dim * 12)))));
+                if (vminvq_u32(equal) != UINT32_MAX) {
+                    goto align_ggml_v_scalar_mismatch;
+                }
+            }
+            for (column = tiled_columns; column < columns; column++) {
+                int64_t tile_lane = 0;
+                for (tile_lane = lane; tile_lane < lane + 4; tile_lane++) {
+                    int64_t source_at =
+                        plane_base + ((column * n_head_kv + head) * head_dim + tile_lane) * 4;
+                    int64_t consumed_at =
+                        (column + columns * (tile_lane + head_dim * head)) * 4;
+                    if (memcmp(plane_data + (size_t) source_at,
+                               consumed_data + (size_t) consumed_at, 4) != 0) {
+                        goto align_ggml_v_scalar_mismatch;
+                    }
+                }
+            }
+        }
+        for (lane = tiled_lanes; lane < head_dim; lane++) {
+            for (column = 0; column < columns; column++) {
+                int64_t source_at =
+                    plane_base + ((column * n_head_kv + head) * head_dim + lane) * 4;
+                int64_t consumed_at =
+                    (column + columns * (lane + head_dim * head)) * 4;
+                if (memcmp(plane_data + (size_t) source_at,
+                           consumed_data + (size_t) consumed_at, 4) != 0) {
+                    goto align_ggml_v_scalar_mismatch;
+                }
+            }
+        }
+    }
+    return 0;
+
+align_ggml_v_scalar_mismatch:
+#endif
     for (head = 0; head < n_head_kv; head++) {
         for (lane = 0; lane < head_dim; lane++) {
             for (column = 0; column < columns; column++) {

@@ -32,7 +32,8 @@ fixed-request gate can establish the performance claim.
 
 Intervention A is committed at `9b940fd94acaeea839725f79f7092882e722b057`. Intervention B is
 implemented and qualified `NOT_MET` at `c7f5eadf9229422190b056fa507bf3be8ce91994`. Intervention C is
-specified and not started. The byte-identical real/stub shared region validates nulls, dimensions,
+implemented and owner-tested, pending its clean-head qualification. The byte-identical real/stub
+shared region validates nulls, dimensions,
 layout, overflow, byte bounds, and pointer
 extents before reading; returns exact or column-plus-one without writing; and preserves K and V
 traversal order. Both safe wrappers reject an unrepresentable layout before narrowing. Oracle B
@@ -41,18 +42,19 @@ comparison, and maps native validation failure to the existing tensor/-1 mismatc
 runner independently pins item 60's evidence, the full changed source chain, fixed host, helper
 schema, output, lifetimes, isolation, gate arithmetic, and cleanup-before-publication.
 
-**Next actions.** Commit the intervention C ledger; implement and owner-test the exact-success V
-tiles; run a new clean-head four-repeat qualification against item 60; record `MET` or `NOT_MET`;
-then review, repair, preflight, publish, merge, and continue.
+**Next actions.** Commit the intervention C implementation; run a new clean-head four-repeat
+qualification against item 60; record `MET` or `NOT_MET`; then review, repair, preflight, publish,
+merge, and continue.
 
 **Blocker.** None.
 
 **Latest durable verification.** The revised author consistency pass, shared-region byte comparison,
-`make fmt`, `make layer-forward-smoke` with direct slot ABI vectors (62.652 seconds), real-shim
-build/export inspection, `make runtime-provider-smoke` (self-test plus 61 CLI assertions), Python
-compilation, the full item 57→61 self-test chain, and `git diff --check` pass.
+`make fmt`, `make layer-forward-smoke` with direct slot ABI and 5-by-5 tiled/remainder/fallback
+vectors (66.198 seconds), real-shim build and AArch64 instruction inspection,
+`make runtime-provider-smoke` (self-test plus 61 CLI assertions), Python compilation, the full item
+57→61 self-test chain, and `git diff --check` pass.
 
-**Intentional uncommitted files.** Intervention C ledger/result/handoff update before commit.
+**Intentional uncommitted files.** None.
 Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS (PR #182, 2026-09-04)

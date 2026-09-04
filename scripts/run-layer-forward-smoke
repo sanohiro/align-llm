@@ -284,6 +284,26 @@ if compare(shared, 12, 0, 0, hd=1, heads=1, columns=3,
            plane_arg=shared, plane_bytes=12) != 0:
     raise SystemExit("layer forward smoke: FAIL read-only overlap was refused")
 
+# A 5-by-5 V matrix reaches one complete AArch64 4-by-4 tile plus both remainder axes. The two
+# mismatches occupy the same tile but scalar traversal sees lane zero / column three before lane
+# one / column zero, proving that the fast detector falls back before it reports a column.
+tiled_plane_values = list(range(25))
+tiled_consumed_values = [
+    tiled_plane_values[column * 5 + lane]
+    for lane in range(5)
+    for column in range(5)
+]
+tiled_plane = ctypes.create_string_buffer(struct.pack("<25I", *tiled_plane_values))
+tiled_consumed = ctypes.create_string_buffer(struct.pack("<25I", *tiled_consumed_values))
+if compare(tiled_consumed, 100, 0, 1, hd=5, heads=1, columns=5,
+           plane_arg=tiled_plane, plane_bytes=100) != 0:
+    raise SystemExit("layer forward smoke: FAIL tiled V exact/remainder comparison")
+tiled_consumed[3 * 4] = bytes([tiled_consumed[3 * 4][0] ^ 1])
+tiled_consumed[5 * 4] = bytes([tiled_consumed[5 * 4][0] ^ 1])
+if compare(tiled_consumed, 100, 0, 1, hd=5, heads=1, columns=5,
+           plane_arg=tiled_plane, plane_bytes=100) != 4:
+    raise SystemExit("layer forward smoke: FAIL tiled V mismatch fallback priority")
+
 # Intervention B's slot entry owns resolution, exact extent, and host-data validation before it
 # reaches the byte primitive. Construct one deterministic-engine tensor so this tests more than the
 # extern symbol: the ordinary result, a content mismatch, a whole-extent mismatch, and validation
