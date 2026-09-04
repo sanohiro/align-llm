@@ -56,8 +56,12 @@ production intervention and its production-owner changes are removed before publ
 62's fixed-width decode and 19,266,559,229-ns baseline remain shipped; its 3,609,378,007-ns
 claim-I/O bucket selects item 64.
 
-**Next actions.** Commit the `NOT_MET` result and production removal, run the affected model-free
-owner and exact-head preflight, publish, merge, then start item 64.
+The `NOT_MET` result and exact production removal are committed at `197aabd`. The final branch diff
+retains only the authoritative decision/specification, roadmap/handoff state, qualification helper,
+and source-pinned qualification owner.
+
+**Next actions.** Run the affected model-free owner and exact-head preflight, publish, merge, then
+start item 64.
 
 **Blocker.** None.
 
@@ -68,9 +72,8 @@ seconds; all evaluated production and production-owner files now compare byte-fo
 item 62. The item-63 repaired model-free self-test and Python compilation passed before removal;
 rerun against the final source identities remains next.
 
-**Intentional uncommitted files.** The `NOT_MET` result, production removal, final qualification
-source identities, roadmap/specification, and this handoff update until committed. Machine-local
-model/evidence and generated build products remain outside Git.
+**Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
+remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-COMPUTE-DIAGNOSIS (PR #184, 2026-09-05)
 
