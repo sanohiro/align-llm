@@ -792,72 +792,19 @@ fn plane_v_offset(stride: i64, layer: i64) -> i64 = stride * (2 * layer + 1)
 fn plane_column_bytes(borrow g: layer_olmoe.Geometry) -> i64 = g.n_head_kv * g.head_dim * 4
 
 // ---------------------------------------------------------------------------------------------
-// The two staging transposes (section 3.4, and section 4.5's oracle B)
+// The staging transpose (section 3.4, section 4.5's oracle B, and R8 item 58)
 //
 // The plane is `{head_dim, n_head_kv, column}` because that is the shape the prefill produces and a
 // contiguous readback is the only crossing that cannot reorder anything. The decode graph wants a
 // different order on each tensor: K's past operand is `{head_dim, n_past, n_head_kv}` and V's is
 // `{n_past, head_dim, n_head_kv}`, because rows 16 and 22 of the decode table materialize different
-// permutations. The two loops below are that difference, written out once each.
+// permutations. R8 item 58 moves that difference into the already-shipped bounded C shim; the
+// layouts and the oracle stay exactly the same.
 //
 // They are the reason oracle B exists. A transposed plane, an off-by-one stride, or a K/V swap is
 // numerically plausible and would survive oracle T's four printed decimals; it does not survive a
 // byte comparison of what the graph actually consumed against what the prefill actually wrote.
 // ---------------------------------------------------------------------------------------------
-
-fn stage_past_k(
-  borrow mut stage: buffer,
-  borrow plane: slice<u8>,
-  base: i64,
-  head_dim: i64,
-  n_head_kv: i64,
-  n_past: i64,
-) {
-  mut head := 0
-  loop {
-    if head >= n_head_kv { break }
-    mut column := 0
-    loop {
-      if column >= n_past { break }
-      mut lane := 0
-      loop {
-        if lane >= head_dim { break }
-        at := base + (lane + head_dim * (head + n_head_kv * column)) * 4
-        stage.put_u32_le(plane.u32_le(at))
-        lane = lane + 1
-      }
-      column = column + 1
-    }
-    head = head + 1
-  }
-}
-
-fn stage_past_v(
-  borrow mut stage: buffer,
-  borrow plane: slice<u8>,
-  base: i64,
-  head_dim: i64,
-  n_head_kv: i64,
-  n_past: i64,
-) {
-  mut head := 0
-  loop {
-    if head >= n_head_kv { break }
-    mut lane := 0
-    loop {
-      if lane >= head_dim { break }
-      mut column := 0
-      loop {
-        if column >= n_past { break }
-        at := base + (lane + head_dim * (head + n_head_kv * column)) * 4
-        stage.put_u32_le(plane.u32_le(at))
-        column = column + 1
-      }
-      lane = lane + 1
-    }
-    head = head + 1
-  }
-}
 
 fn compare_past_k(
   borrow consumed: slice<u8>,
@@ -2681,16 +2628,20 @@ fn decode_pass(
     // `weights.step_dense_pack_bytes`.
     res.dense_bytes = res.dense_bytes + plan.layer_member_bytes[layer]
     if o.code.len() > 0 { break }
-    mut stage_k: buffer := buffer(past_bytes)
-    mut stage_v: buffer := buffer(past_bytes)
+    mut stage: buffer := buffer(past_bytes * 2)
     upload_started := time.instant()
-    stage_past_k(
-      stage_k, plane_view, plane_k_offset(stride, layer), g.head_dim, g.n_head_kv, n_past)
-    stage_past_v(
-      stage_v, plane_view, plane_v_offset(stride, layer), g.head_dim, g.n_head_kv, n_past)
+    moe_model_forward.prime_window(stage, past_bytes * 2)
+    stage_view := stage.bytes()
+    match ggml_ffi.stage_kv(
+      plane_view, plane_k_offset(stride, layer), plane_v_offset(stride, layer), stage_view,
+      g.head_dim, g.n_head_kv, n_past, "kv_plane_stage") {
+      Ok(_) => {},
+      Err(_) => { fail(o, CODE_PLANE_UNAVAILABLE, plane_detail(layer, "stage")) },
+    }
     state.upload_ns = state.upload_ns + (time.instant() - upload_started)
-    past_k_view := stage_k.bytes()
-    past_v_view := stage_v.bytes()
+    if o.code.len() > 0 { break }
+    past_k_view := stage_view[0..past_bytes]
+    past_v_view := stage_view[past_bytes..past_bytes * 2]
     if past_k_view.len() != past_bytes || past_v_view.len() != past_bytes {
       fail(o, CODE_PLANE_UNAVAILABLE, plane_detail(layer, "stage"))
       break

@@ -440,6 +440,113 @@ int32_t align_ggml_window_copy(void *window, int64_t window_bytes, int64_t offse
 }
 
 
+/* R8-OLMOE-KV-PLANE-STAGING-TRANSFER
+ * (`docs/specs/r8-olmoe-kv-plane-staging-transfer.md` section 2). Transpose the two contiguous
+ * prefixes of one layer's canonical K/V plane into the distinct layouts consumed by the decode
+ * graph. Every size, source range, and overlap is refused before the first destination byte is
+ * written. The caller owns both ranges; this function allocates and retains nothing.
+ */
+int32_t align_ggml_stage_kv(const void *plane, int64_t plane_bytes,
+                            int64_t k_base, int64_t v_base,
+                            void *stage, int64_t stage_bytes,
+                            int64_t head_dim, int64_t n_head_kv, int64_t n_past) {
+    int64_t elements = 0;
+    int64_t past_bytes = 0;
+    int64_t expected_stage_bytes = 0;
+    uintptr_t plane_address = 0;
+    uintptr_t stage_address = 0;
+    uintptr_t k_address = 0;
+    uintptr_t v_address = 0;
+    uintptr_t stage_end = 0;
+    uintptr_t k_end = 0;
+    uintptr_t v_end = 0;
+    const unsigned char *source = NULL;
+    unsigned char *destination = NULL;
+    int64_t head = 0;
+    int64_t column = 0;
+    int64_t lane = 0;
+
+    if (plane == NULL || stage == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    if (plane_bytes < 0 || k_base < 0 || v_base < 0 || stage_bytes < 0 ||
+        head_dim <= 0 || n_head_kv <= 0 || n_past <= 0) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (head_dim > INT64_MAX / n_head_kv) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    elements = head_dim * n_head_kv;
+    if (elements > INT64_MAX / n_past) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    elements *= n_past;
+    if (elements > INT64_MAX / 4) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    past_bytes = elements * 4;
+    if (past_bytes > INT64_MAX / 2) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    expected_stage_bytes = past_bytes * 2;
+    if (stage_bytes != expected_stage_bytes) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if (k_base > plane_bytes || past_bytes > plane_bytes - k_base ||
+        v_base > plane_bytes || past_bytes > plane_bytes - v_base) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if ((uint64_t) plane_bytes > (uint64_t) SIZE_MAX ||
+        (uint64_t) stage_bytes > (uint64_t) SIZE_MAX) {
+        return ALIGN_GGML_BOUNDS;
+    }
+
+    plane_address = (uintptr_t) plane;
+    stage_address = (uintptr_t) stage;
+    if ((uint64_t) plane_bytes > (uint64_t) (UINTPTR_MAX - plane_address) ||
+        (uint64_t) stage_bytes > (uint64_t) (UINTPTR_MAX - stage_address)) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    if ((uint64_t) k_base > (uint64_t) (UINTPTR_MAX - plane_address) ||
+        (uint64_t) v_base > (uint64_t) (UINTPTR_MAX - plane_address)) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    k_address = plane_address + (uintptr_t) k_base;
+    v_address = plane_address + (uintptr_t) v_base;
+    stage_end = stage_address + (uintptr_t) stage_bytes;
+    k_end = k_address + (uintptr_t) past_bytes;
+    v_end = v_address + (uintptr_t) past_bytes;
+    if ((k_address < stage_end && stage_address < k_end) ||
+        (v_address < stage_end && stage_address < v_end)) {
+        return ALIGN_GGML_BOUNDS;
+    }
+
+    source = (const unsigned char *) plane;
+    destination = (unsigned char *) stage;
+    for (head = 0; head < n_head_kv; head++) {
+        for (column = 0; column < n_past; column++) {
+            int64_t source_at = k_base + (column * n_head_kv + head) * head_dim * 4;
+            int64_t destination_at = (head * n_past + column) * head_dim * 4;
+            memcpy(destination + (size_t) destination_at,
+                   source + (size_t) source_at, (size_t) (head_dim * 4));
+        }
+    }
+    for (head = 0; head < n_head_kv; head++) {
+        for (lane = 0; lane < head_dim; lane++) {
+            for (column = 0; column < n_past; column++) {
+                int64_t source_at =
+                    v_base + ((column * n_head_kv + head) * head_dim + lane) * 4;
+                int64_t destination_at =
+                    past_bytes + ((head * head_dim + lane) * n_past + column) * 4;
+                memcpy(destination + (size_t) destination_at,
+                       source + (size_t) source_at, 4);
+            }
+        }
+    }
+    return ALIGN_GGML_OK;
+}
+
+
 /* R5C-METAL-PREFILL-ARM (`docs/specs/r5c-metal-prefill.md` sections 3.4, 3.8, and 3.9). The device
  * selector, the property selector, and the one clamp, shared byte-for-byte by both files so that a
  * stub GPU and a real Metal device answer the same questions with the same field ids.

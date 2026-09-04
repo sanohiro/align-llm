@@ -259,6 +259,10 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_window_copy(
     window: slice<u8>, window_bytes: i64, offset: i64,
     source: slice<u8>, source_bytes: i64, n: i64) -> i32
+  fn align_ggml_stage_kv(
+    plane: slice<u8>, plane_bytes: i64, k_base: i64, v_base: i64,
+    stage: slice<u8>, stage_bytes: i64,
+    head_dim: i64, n_head_kv: i64, n_past: i64) -> i32
   fn align_ggml_graph_context_bytes(node_capacity: i64) -> i64
   fn align_ggml_graph_new(ctx: raw) -> raw
   fn align_ggml_graph_expand(graph: raw, slots: slice<u8>, index: i64) -> i32
@@ -932,6 +936,26 @@ pub fn window_copy(
   unsafe {
     return r5_result(
       align_ggml_window_copy(window, window.len(), offset, source, source.len(), n) as i64, label)
+  }
+}
+
+// R8-OLMOE-KV-PLANE-STAGING-TRANSFER section 2. One bounded native transpose replaces the
+// per-scalar Align loops. Both lengths come from the borrowed views, and C validates the complete
+// K/V source ranges, exact combined destination, and non-overlap before writing any byte.
+pub fn stage_kv(
+  borrow plane: slice<u8>,
+  k_base: i64,
+  v_base: i64,
+  borrow stage: slice<u8>,
+  head_dim: i64,
+  n_head_kv: i64,
+  n_past: i64,
+  label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_stage_kv(
+        plane, plane.len(), k_base, v_base, stage, stage.len(),
+        head_dim, n_head_kv, n_past) as i64, label)
   }
 }
 
