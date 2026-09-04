@@ -1685,11 +1685,15 @@ The current forward delivery order is:
     remains 6.53 times local. R8 stays open and item 70 owns the updated remaining-decode diagnosis.
 
 70. **R8-OLMOE-POST-OPTIMIZATION-REMAINING-DECODE-DIAGNOSIS — reselect the largest current
-    fixed-request bucket. Selected next; not started.** Reaggregate the shipped detailed clocks
-    after items 58 and 68 under the same fixed seed-5 request, exact output, isolation, cache, and
-    lifetime boundaries. Precommit a materiality floor from the current complete-request evidence,
-    select a directly measured bucket only when it clears that floor, and otherwise select one
-    narrower diagnosis. This is attribution, not an optimization or performance claim.
+    fixed-request bucket. Active; design fixed.**
+    [`r8-olmoe-post-optimization-remaining-decode-diagnosis.md`](r8-olmoe-post-optimization-remaining-decode-diagnosis.md)
+    is the authoritative ledger and closure matrix. Re-run item 68's exact conditioned four-repeat
+    owner after items 58 and 68, preserve its request, output, isolation, cache, source, host, and
+    lifetime evidence, and flatten its nested current clocks into 23 mutually exclusive deepest
+    leaves. Item 68's shipped 17,423,480,208-ns median fixes the 50,000-ppm materiality floor at
+    871,174,011 ns. A directly measured leaf at or above that floor may select a successor ledger;
+    an explicit remainder selects a narrower diagnosis, and a smaller winner records no material
+    bucket. This is attribution, not an optimization or performance claim.
 
 ### Status (2026-08-28)
 
