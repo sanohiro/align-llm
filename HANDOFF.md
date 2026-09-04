@@ -3,52 +3,44 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS (2026-09-04)
+## Active: R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION (2026-09-04)
 
-Branch `agent/r8-olmoe-first-token-phase-diagnosis`, based on pulled merged `main`
-`fdf358ef269f7a016d6925d531a0947bfaeaba22` (R8-OLMOE-RUNTIME-PHASE-DIAGNOSIS PR #176). The
+Branch `agent/r8-olmoe-isolated-sampled-runtime-decision`, based on pulled merged `main`
+`6da234fb6ef3c96d10aec3b07c2cf1b5bd9ab640` (R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS PR #177). The
 sibling Align checkout and `.align-revision` remain at merged Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align surface is currently required.
 
-Item 54 measured a 2.025-second co-resident penalty inside a 0.132-to-30.617-second repeated-setup
-interval and therefore recorded `MIXED_OR_UNRESOLVED`. Item 55's authoritative ledger and closure
-matrix are `docs/specs/r8-olmoe-first-token-phase-diagnosis.md`. It instruments the existing
-invocation-local generation path, measures the fixed full request in four balanced pairs after
-fixed two-token conditioning, and replaces the full-request upper bound with provider preparation
-plus completed pre-prefill engine construction. It also separates prefill, first decode, remaining
-decode, claim I/O, and compute; it introduces no persistent model, cache, backend, or buffer.
+Item 53's provider-level sampled decision kept one llama.cpp model resident across all four pairs
+and measured runtime at a 189.005-second median versus local at 12.710 seconds. Item 55 then bounded
+repeated pre-prefill construction at 0.272 seconds and measured a 3.052-second co-resident penalty
+for one full request, selecting isolation before any persistent lifetime change.
 
-Implementation checkpoint `70267de` compiled and passed the model-free owner plus the existing
-layer-forward and 61-assertion runtime-provider owners. Its first complete discovery run narrowed
-the median upper bound to 0.481 seconds, but the first solo request alone paid an 11.020-second cold
-construction interval versus 0.231–0.815 seconds elsewhere, producing a -9.400-second first paired
-penalty while the other three were positive. That artifact is not the result. The protocol now
-conditions every timed leg with one untimed two-token candidate invocation and rewarms the server
-after conditioning in co-resident legs, preserving the required immediately-before RSS boundary.
+Item 56's authoritative ledger and closure matrix are
+`docs/specs/r8-olmoe-isolated-sampled-runtime-decision.md`. It repeats the exact item-53 workload,
+four balanced pairs, metric, and 50,000-ppm gate. Each local leg owns one fresh server and excludes
+startup/teardown from its unchanged portfolio metric; the server must be alive during the local
+portfolio, then terminated and reaped. Every runtime leg begins and ends with zero matching model
+processes. Product provider, sampling, cache, and lifetime behavior remain unchanged. The
+precommitted complete-run ceiling is 25 minutes.
 
-The clean conditioned run at `6d63a62` completed in 363.859 seconds and reproduced the fixed output
-and balanced lifetimes in all eight timed requests. It narrowed setup to 0.068–0.272 seconds. All
-four co-resident penalties were positive; their 3.052-second median was 102,268 ppm of the
-29.843-second solo median and cleared the upper bound. Prefill/remaining-decode wall penalties were
-1.011/1.854 seconds, dominated by 0.958/1.555-second claim-I/O penalties rather than compute.
-The decision is `CO_RESIDENT_PRESSURE_EXCEEDS_CONSTRUCTION`, selecting roadmap item 56's isolated
-sampled runtime decision. Persistent provider lifetime and retained cache remain unauthorized.
-
-The comprehensive Codex CLI review covered head `d9d110f` against base tip and merge base
-`fdf358e`, using gpt-5.6-sol at high effort over the complete diff. Its two accepted P2 findings
-were one reproducibility class: inherited artifact identities were recorded but not pinned, and the
-eight mutually equal token chains were not compared with item 53's exact chain. The consolidated
-repair pins every inherited input identity, requires the exact 87 token ids, and adds both drift
-regressions. The formal result already matched those identities and ids, so its measurement and
-decision remain valid.
-
-**Next actions.** Run repaired owner verification and exact-head preflight, publish and merge, then
-start item 56.
+**Next actions.** Finish the author ledger-to-prose pass, implement the focused isolation runner and
+model-free owner, run predecessor plus focused verification, then execute one complete real
+decision and record its result before review.
 
 **Blocker.** None.
 
 **Intentional uncommitted files.** None. Machine-local JSON evidence remains outside Git, and no
 generated binary, model, credential, or profile belongs in Git.
+
+## Merged checkpoint: R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS (PR #177, 2026-09-04)
+
+PR #177 merged as `6da234fb6ef3c96d10aec3b07c2cf1b5bd9ab640`. The conditioned diagnosis
+narrowed repeated setup to 0.068–0.272 seconds and measured a positive 3.052-second co-resident
+penalty median. Claim I/O dominated its prefill and remaining-decode movement, so the decision was
+`CO_RESIDENT_PRESSURE_EXCEEDS_CONSTRUCTION`. The comprehensive review's two reproducibility
+findings were consolidated by pinning inherited identities and item 53's exact token chain. The
+exact-head preflight and all three required CI jobs passed. The active item 56 above owns the
+selected isolated provider-level decision.
 
 ## Merged checkpoint: R8-OLMOE-RUNTIME-PHASE-DIAGNOSIS (PR #176, 2026-09-04)
 

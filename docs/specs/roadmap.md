@@ -1447,7 +1447,10 @@ The current forward delivery order is:
     therefore clears the construction upper bound and selects an isolated provider-level decision.
 
 56. **R8-OLMOE-ISOLATED-SAMPLED-RUNTIME-DECISION — remeasure time to a passing patch without
-    co-resident model pressure. Next.** Repeat item 53's exact sampled coding portfolio and
+    co-resident model pressure. Active.**
+    [`r8-olmoe-isolated-sampled-runtime-decision.md`](r8-olmoe-isolated-sampled-runtime-decision.md)
+    is the authoritative measurement contract and closure matrix. Repeat item 53's exact sampled
+    coding portfolio and
     50,000-ppm gate in four balanced local/runtime pairs, but give each local leg its own pinned
     llama.cpp server lifetime and prove that server terminated and was reaped before any runtime
     leg. The runtime leg must begin and end without a matching model process. This decision changes
