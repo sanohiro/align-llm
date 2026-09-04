@@ -158,38 +158,38 @@ changes their source rather than merely consuming their public records.
 ## 7. Recorded diagnosis
 
 The valid complete diagnosis ran at repaired align-llm head
-`d064d1fac8bc0feafd5fdec6aafd0293e9067768` with Align
+`bf50e358cbb305cf36df6c6548616c1e888af1d7` with Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4` on Darwin arm64 25.5.0. It bound the
 4,213,512,192-byte model `4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f`,
 pack `20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae`, geometry
 `1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada`, task
 `1884f01a329752c1383081342c65d062241aefaefff2f206f6604008bde74940`, and prompt
 `0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b`. The generated helper
-was `c20ca3bf9a5a9be5dc411d7c6a49ef4aa415c3786a2c0ca68ea49b49a66b5e77`, its dynamic shim
-was `e29506da8382d385383872bdf795c880d5407f431dc2adf227500d8a4a2f52c7`, and the llama.cpp
+was `2a02897635fd60fd665bb88a70c8d71ee06c0d5c5e69b5ce52d5dd50f0a692f9`, its dynamic shim
+was `9a4270d8510fdbf063688390bedb5ac520c13a93342499a797e802a0870c1ec5`, and the llama.cpp
 build 10566 server was `98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c`.
 The fixed full output reproduced
 `aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52` in every
 condition. All native lifetime counters balanced.
 
-The complete run took 347.551 seconds. Solo short/full medians were 4.692 and 29.025 seconds;
-co-resident short/full medians were 5.889 and 31.435 seconds. The four paired full penalties were
-4.683, 2.258, 2.334, and 3.150 seconds: all were positive, with a 2.742-second median equal to
-94,468 ppm of solo full time. The measured solo repeated-setup lower-bound median was 0.141 seconds
-or 4,860 ppm; the conservative upper-bound median was the complete 29.025-second solo full helper
-wall. The lower bound was dominated by a 105.158-ms median resident fill and 23.917-ms tokenizer
-preparation. Existing engine evidence placed median first token at 4.993 seconds and full-request
-claim reads at 4.397 seconds, but did not partition those intervals into reconstructive and
+The complete run took 360.313 seconds. Solo short/full medians were 4.941 and 30.617 seconds;
+co-resident short/full medians were 6.412 and 32.242 seconds. The four paired full penalties were
+5.505, 1.775, 2.274, and 1.325 seconds: all were positive, with a 2.025-second median equal to
+66,127 ppm of solo full time. The measured solo repeated-setup lower-bound median was 0.132 seconds
+or 4,320 ppm; the conservative upper-bound median was the complete 30.617-second solo full helper
+wall. The lower bound was dominated by a 94.838-ms median resident fill and 24.489-ms tokenizer
+preparation. Existing engine evidence placed median first token at 5.262 seconds and full-request
+claim reads at 4.800 seconds, but did not partition those intervals into reconstructive and
 request-dependent work.
 
 Every co-resident timed helper began with the required server pressure: immediately-before RSS
-ranged from 3,887,661,056 to 7,928,037,376 bytes. Immediately-after RSS ranged from 6,684,672 to
-1,510,326,272 bytes, below 2 GiB in all eight records. Thus the candidate itself evicted much of the
+ranged from 3,887,923,200 to 7,857,094,656 bytes. Immediately-after RSS ranged from 5,275,648 to
+1,191,821,312 bytes, below 2 GiB in all eight records. Thus the candidate itself evicted much of the
 idle server's resident state, but the per-helper warmup restored the declared condition before the
 next interval instead of silently weakening it.
 
-The decision is **`MIXED_OR_UNRESOLVED`**. The 2.742-second penalty lies inside the conservative
-0.141-to-29.025-second setup interval, so neither directional rule clears its required bound. No
+The decision is **`MIXED_OR_UNRESOLVED`**. The 2.025-second penalty lies inside the conservative
+0.132-to-30.617-second setup interval, so neither directional rule clears its required bound. No
 isolated-baseline or persistent-lifetime/cache change is authorized. The next capability is one
 narrower first-token phase instrument that separates construction, prefill, first decode, remaining
 decode, claim I/O, and compute sufficiently to tighten the reconstructive bound before another R8

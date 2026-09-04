@@ -1418,18 +1418,18 @@ The current forward delivery order is:
     measured lower bound clears pressure, and otherwise one narrower phase instrument. It does not
     itself change provider lifetime, cache behavior, or the open R8 performance gate.
 
-    The repaired 347.551-second diagnosis reproduced the fixed output in all sixteen requests and
-    balanced every native lifetime counter. Solo short/full medians were 4.692/29.025 seconds and
-    co-resident medians were 5.889/31.435 seconds. All four paired full penalties were positive;
-    their 2.742-second median was 94,468 ppm of solo full time. The measured setup lower bound was
-    0.141 seconds or 4,860 ppm, while the conservative full-request upper bound was 29.025 seconds.
+    The repaired 360.313-second diagnosis reproduced the fixed output in all sixteen requests and
+    balanced every native lifetime counter. Solo short/full medians were 4.941/30.617 seconds and
+    co-resident medians were 6.412/32.242 seconds. All four paired full penalties were positive;
+    their 2.025-second median was 66,127 ppm of solo full time. The measured setup lower bound was
+    0.132 seconds or 4,320 ppm, while the conservative full-request upper bound was 30.617 seconds.
     The penalty lies between them, so neither directional rule clears its bound. Every co-resident
     helper began above the 2-GiB RSS floor and ended below it, confirming pressure without proving
     it dominates unassigned reconstruction. R8 remains open.
 
 55. **R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS — tighten the unresolved reconstructive-work
     interval. Next.** Partition construction, prefill, first decode, remaining decode, claim I/O,
-    and compute around the fixed sampled request. The capability must narrow the 0.141-to-29.025
+    and compute around the fixed sampled request. The capability must narrow the 0.132-to-30.617
     second setup interval before another isolated-baseline, lifetime, or cache investment decision;
     it introduces no persistent state itself.
 

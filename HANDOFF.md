@@ -41,29 +41,28 @@ directional result is withdrawn.
 The repair brackets setup with the measured lower bound and the complete solo full helper wall as
 a conservative upper bound; pressure must clear the upper bound, setup must clear pressure with its
 lower bound, and overlap remains unresolved. It also owns the prerequisite wrapper and N/A label.
-The clean repaired-head run at `d064d1f` completed in 347.551 seconds with stable outputs and
-balanced lifetimes. Solo short/full medians were 4.692/29.025 seconds; co-resident medians were
-5.889/31.435 seconds. The positive paired penalty median was 2.742 seconds (94,468 ppm), between the
-0.141-second measured lower bound and 29.025-second conservative upper bound. The valid decision is
-therefore `MIXED_OR_UNRESOLVED`. All eight co-resident helpers began above 2 GiB RSS and ended below
-it. Item 55, a narrower first-token phase instrument, is the selected next work; no isolated
-baseline, persistent lifetime, or retained cache is yet authorized.
+The final clean repaired-head run at `bf50e35` completed in 360.313 seconds with stable outputs,
+balanced lifetimes, and canonical `warmup: true` metadata. Solo short/full medians were
+4.941/30.617 seconds; co-resident medians were 6.412/32.242 seconds. The positive paired penalty
+median was 2.025 seconds (66,127 ppm), between the 0.132-second measured lower bound and
+30.617-second conservative upper bound. The valid decision is therefore `MIXED_OR_UNRESOLVED`.
+All eight co-resident helpers began above 2 GiB RSS and ended below it. Item 55, a narrower
+first-token phase instrument, is the selected next work; no isolated baseline, persistent lifetime,
+or retained cache is yet authorized.
 
 The required final comprehensive review covered head `f2366f4` against the same base tip and merge
 base `f2c83c96`, again using gpt-5.6-sol at high effort over the full diff. It found one P2 canonical
 metadata mismatch (`warmup: false` despite eight explicit warmups) and one P3 stale handoff state.
 The narrow repair emits the protocol from one helper with `warmup: true`, fixes it in the self-test,
 and refreshes this handoff. It does not change the measurement or attribution design, so no further
-full review is selected; the canonical-output change does require one exact-head real rerun.
+full review is selected. The exact-head real rerun above closes the canonical-output change.
 
-**Next actions.** Commit the final-review repair, run the clean owner and one complete real
-diagnosis, refresh its recorded identities/results, then run exact-head publication preflight.
+**Next actions.** Run the clean owner, then run exact-head publication preflight.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The final-review warmup-metadata and handoff repairs above;
-machine-local JSON evidence remains outside Git, and no generated binary, model, credential, or
-profile belongs in Git.
+**Intentional uncommitted files.** None. Machine-local JSON evidence remains outside Git, and no
+generated binary, model, credential, or profile belongs in Git.
 
 ## Merged checkpoint: R8-OLMOE-SAMPLED-RUNTIME-DECISION (PR #175, 2026-09-04)
 
