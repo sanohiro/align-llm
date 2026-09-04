@@ -1653,6 +1653,17 @@ The current forward delivery order is:
     key/cache invariant, so no latency aggregate or performance decision is claimed. Remove all
     production changes before publication and retain only the negative decision owner.
 
+68. **R8-OLMOE-EXACT-SAFE-DECODE-BOUNDARIES — combine the two reductions that retained exact
+    routing/cache behavior. Active.**
+    [`r8-olmoe-exact-safe-decode-boundaries.md`](r8-olmoe-exact-safe-decode-boundaries.md) is the
+    authoritative ledger and closure matrix. Item 67 attributes its five changed cache decisions to
+    live-width phase A, which executes before the plane and cache interventions. Restore only item
+    61's final unaligned-safe direct K/V comparison and item 66's fixed-stride cache-backed phase B;
+    retain the shipped full-width phase A exactly. Use item 62's unchanged 19,266,559,229-ns
+    baseline, 963,327,962-ns floor, and 18,303,231,267-ns ceiling. Four conditioned fresh-process
+    requests must preserve the exact output, 7,325/4,615/4,376 cache accounting, fetched bytes,
+    isolation, and native lifetimes. Ship both interventions only on `MET`; otherwise remove them.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:

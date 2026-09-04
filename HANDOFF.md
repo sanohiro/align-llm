@@ -3,59 +3,40 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-COMBINED-DECODE-BOUNDARIES publication (2026-09-05)
+## Active: R8-OLMOE-EXACT-SAFE-DECODE-BOUNDARIES (2026-09-05)
 
-Branch `agent/r8-olmoe-next-boundary`, based on pulled merged `main` `7ef2124` (item 66 PR #188).
+Branch `agent/r8-olmoe-exact-safe-boundaries`, based on pulled merged `main` `3b890c3` (item 67
+PR #189).
 The sibling Align checkout and `.align-revision` remain at merged Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
-Item 67 evaluated the final reviewed forms of three candidates that each
-missed the complete-request gate alone: item 61's unaligned-safe direct K/V plane comparison, item
-63's live-width decode phase A, and item 66's fixed-stride cache-backed phase B. Their separate
-full-wall gains were 139,023,395 ns, 817,443,563 ns, and 210,165,021 ns. These values are only
-directional evidence and are not added into a claim.
-
+Item 67 proved that its combined live-width phase A changes five deterministic cache decisions; the
+plane and cache interventions run only after routing and were individually exact. Item 68 therefore
+restores only item 61's final reviewed unaligned-safe direct K/V comparison and item 66's final
+reviewed fixed-stride cache-backed phase B, while retaining shipped full-width phase A byte-for-byte.
 The authoritative ledger and closure matrix are
-`docs/specs/r8-olmoe-combined-decode-boundaries.md`. The interventions act in order at phase-A graph
-construction, post-phase-A plane verification, and phase-B expert staging. The candidate added no
-fourth optimization. Item 62's immutable walls
+`docs/specs/r8-olmoe-exact-safe-decode-boundaries.md`. Item 62's immutable walls
 `[18059864416,18927732709,20639199375,19605385750]` ns, 19,266,559,229-ns median,
-963,327,962-ns floor, and 18,303,231,267-ns ceiling decide publication.
+963,327,962-ns floor, and 18,303,231,267-ns ceiling decide shipment.
 
-Design checkpoint `71a8e4d` fixed the contract before production code. Implementation checkpoint
-`e653aab` restored the item-61, item-63, and item-66 production forms and their direct owners.
-Candidate head `1407d3a` passed build, identity, isolation, and conditioning, but its first full
-request changed exact cache accounting from 7,325 hits / 4,615 misses / 4,376 evictions /
-17,656,872,960 fetched bytes to 7,320 / 4,620 / 4,381 / 17,676,730,368. This deterministic
-routed-key/cache drift violates the precommitted interaction invariant, so qualification stopped
-before a four-sample latency aggregate or performance decision.
-
-All production and production-owner changes from `e653aab` are now removed and compare exactly to
-that commit's parent; the golden was regenerated from restored source. The thin helper and bounded
-runner remain as the negative decision owner, with real mode refused on publication. Negative
-decision/removal checkpoint `356a1a5` is the stable publication candidate.
-
-Comprehensive Codex review of `b120856` against base/merge-base `7ef2124` used gpt-5.6-sol at high
-effort and found one valid P2: `EVALUATED_HEAD` was only displayed, not verified as reachable, so a
-squash or rebase could invalidate reproduction. Repair `86567a2` now resolves the Git common
-directory, refuses grafts/replacement refs, disables replacements for the ancestry query, requires
-`1407d3a` to be an ancestor of current `HEAD`, and covers valid and invalid ancestry states. It does
-not change production, measurement, or the decision; no second comprehensive review is required.
-
-**Next actions.** Run exact-head preflight; publish, merge, verify post-merge ancestry, and continue.
+**Next actions.** Commit the design checkpoint; restore the two exact-safe production forms and
+their direct owners; run narrow owners; build the bounded qualification; execute the clean-head
+four-repeat decision; review, repair, preflight, publish, merge, and continue.
 
 **Blocker.** None.
 
-**Latest durable verification.** For the evaluated item-67 candidate, `make check`, golden
-regeneration, normal `make layer-forward-smoke` (66.288 seconds), `make runtime-provider-smoke`,
-real shim build, `make fmt`, combined runner self-test, shared-region identity, and
-`git diff --check` passed. After removal, official golden regeneration passed in 58.822 seconds and
-the ten production/owner files compare exactly to `e653aab^`. Focused publication verification is
-passing: Python compilation, combined runner self-test including ancestry cases, explicit
-no-argument refusal, and `git diff --check`.
+**Latest durable verification.** Item 67 PR #189 passed exact-head preflight and all three required
+CI jobs, merged as `3b890c3`, and its evaluated commit remains an ancestor of merged `main`.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-COMBINED-DECODE-BOUNDARIES (PR #189, 2026-09-05)
+
+PR #189 merged as `3b890c3`. Evaluated candidate `1407d3a` changed exact cache accounting on its
+first full request, so no latency aggregate was formed and all production changes were removed.
+Review found and repaired missing evaluated-head ancestry enforcement. Exact-head preflight and all
+three required CI jobs passed; post-merge ancestry and the focused owner self-test also passed.
 
 ## Merged checkpoint: R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY (PR #188, 2026-09-05)
 
