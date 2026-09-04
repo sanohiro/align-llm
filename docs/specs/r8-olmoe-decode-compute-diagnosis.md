@@ -28,7 +28,7 @@ ownership, token, or output behavior and makes no performance-win claim.
 | Consumer | the next R8 investment decision after item 61, selecting one directly measured decode-compute sub-bucket |
 | Fixed request | item 58's byte-identical task/system/user prompt, OLMoE model, AlignPack, geometry, partial-LRU budget 975,175,680 bytes, temperature 300,000 micros, seed 5, maximum 128, EOG rule, exact 87-id chain, 86 completion tokens, and output SHA-256 `aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52` |
 | Conditioning/isolation | four sequential fresh-process repetitions; each maximum-2 result is the exact prefix of the following maximum-128 result; zero processes matching both pinned llama-server and model paths before, between, and after each pair |
-| Shared counters | add signed 64-bit totals `embed_compute_ns`, `routing_compute_ns`, `expert_compute_ns`, and `head_compute_ns`, plus four corresponding `remaining_decode_*` totals; `empty_outcome` initializes all eight to zero |
+| Shared counters | add signed 64-bit totals `embed_compute_ns`, `routing_compute_ns`, `expert_compute_ns`, and `decode_head_compute_ns`, plus four corresponding `remaining_decode_*` totals; `empty_outcome` initializes all eight to zero |
 | Embedding compute | exact `graph_compute` wall for the one decoded-token embedding graph in each admitted decode pass |
 | Routing compute | sum of exact phase-A `graph_compute` walls over all routed layers; this graph contains attention, normalization, router scoring, and argsort and is not attributed more narrowly |
 | Expert compute | sum of exact phase-B `graph_compute` walls over all routed layers after selected claims and carry values are staged; it is not a kernel-level attribution |

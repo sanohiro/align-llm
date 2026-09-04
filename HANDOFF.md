@@ -34,8 +34,8 @@ completed in 121.268 seconds at clean head `4de73d64765fc31f35f2c08ca00367d327b0
 Item 63, `R8-OLMOE-ROUTING-PHASE-A-BOUNDARY`, is selected with item 62's full-helper samples as its
 immutable baseline, a 963,327,962-ns floor, and an 18,303,231,267-ns candidate ceiling.
 
-**Next actions.** Commit the result; perform one comprehensive review, repair valid findings, run
-affected owners and exact-head preflight, publish, merge, then start item 63.
+**Next actions.** Run the affected owner and exact-head preflight, publish, merge, then start item
+63.
 
 **Blocker.** None.
 
@@ -44,8 +44,8 @@ pass. The pinned compiler builds the new helper through the static hosted shim. 
 layer-forward-smoke` passed in 61.819 seconds, `make runtime-provider-smoke` passed its self-test and
 61 CLI assertions, `make fmt`, and `git diff --check` pass.
 
-**Intentional uncommitted files.** The item 62 result documentation until committed; machine-local
-model/evidence and generated build products remain outside Git.
+**Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
+remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY (PR #183, 2026-09-05)
 
