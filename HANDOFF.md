@@ -31,17 +31,16 @@ The comprehensive Codex CLI review covered head
 It found three accepted P2 qualification defects: deterministic empty or wrong output could pass,
 undeclared forced-shim selectors crossed into the build, and directed termination could orphan the
 model helper. The consolidated repair pins exact `To fix` and counted length 2, removes both shim
-selectors, and adds signal-aware terminate/kill cleanup plus self-tests. It does not change the
-public sampling behavior or expand scope, so another comprehensive review is not required.
+selectors, and adds signal-aware terminate/kill cleanup plus self-tests in commit `a4ebdad`. It does
+not change the public sampling behavior or expand scope, so another comprehensive review is not
+required.
 
-**Next actions.** Commit the review repair, run the exact-head publication preflight, publish the
-pull request with its review envelope, merge after required checks, then start the next roadmap
-capability.
+**Next actions.** Run the exact-head publication preflight, publish the pull request with its review
+envelope, merge after required checks, then start the next roadmap capability.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The active implementation and verification changes are
-intentional. Local configuration remains outside the change.
+**Intentional uncommitted files.** None. Local configuration remains outside the change.
 
 ## Merged checkpoint: R8-OLMOE-SAMPLED-CODING (PR #173, 2026-09-04)
 
