@@ -60,8 +60,15 @@ an 838,509,258-ns median. Every fixed output/hash, lifetime, isolation, cache, h
 check passed in 108.080 seconds. Per the ledger, all three production interventions and their
 owner-test additions are removed before publication; item 60's behavior remains shipped.
 
-**Next actions.** Perform the required final comprehensive review of the materially changed
-candidate, run exact-head preflight, publish, merge, and continue.
+The final comprehensive Codex CLI review covered head
+`fd6208900f91fe224332e719f475733cae7f669d` against base tip and merge base
+`8e7be2a77f69d7afb0da34507e90e84f89301871`, using gpt-5.6-sol at high effort over the complete
+post-removal diff. It found one accepted P2: the retained runner pinned the ggml libraries but not
+the three headers compiled into its shim. The consolidated repair records exact name/size/hash rows
+for `ggml.h`, `ggml-alloc.h`, and `ggml-backend.h`, validates them before build and after
+measurement, adds them to the exact candidate schema, and owns a mutation self-test.
+
+**Next actions.** Run exact-head preflight, publish, merge, and continue.
 
 **Blocker.** None.
 
@@ -73,7 +80,9 @@ passed. The repaired real qualification recorded the `NOT_MET` result above. Fin
 compare byte-for-byte with `origin/main`; `make fmt`, item 60's self-test, item 61's complete inherited
 self-test, and `git diff --check` pass after removal. The final diff is limited to the authoritative
 decision/specification, roadmap/handoff state, immutable item 60 evidence, and item 61 qualification
-owner.
+owner. After final-review repair, deterministic header identity, mutation, missing-header, exact
+candidate-schema, Python compilation, focused inherited self-test, `make fmt`, and
+`git diff --check` all pass.
 
 **Intentional uncommitted files.** None.
 Machine-local model/evidence and generated build products remain outside Git.

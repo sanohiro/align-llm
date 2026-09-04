@@ -92,6 +92,15 @@ EXPECTED_GGML_LIBRARIES = [
     {"name": "libggml.dylib", "bytes": 60_272,
      "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734"},
 ]
+GGML_HEADER_NAMES = ("ggml.h", "ggml-alloc.h", "ggml-backend.h")
+EXPECTED_GGML_HEADERS = [
+    {"name": "ggml.h", "bytes": 112_592,
+     "sha256": "6fe9b62d3ea48c2de82cce6e9e06d3ae4f0de34f4b5831399c49c099badefb09"},
+    {"name": "ggml-alloc.h", "bytes": 3_753,
+     "sha256": "94e4cd069b9313b2ceb35dacec901981e0bb478d8bb31035b7126be091998c23"},
+    {"name": "ggml-backend.h", "bytes": 25_374,
+     "sha256": "46d84cb998105f871240864fd0f55446939a2fe86c5c281afa63a010fb1f65a2"},
+]
 EXPECTED_BASELINE_HOST = {
     "os": "Darwin",
     "release": "25.5.0",
@@ -109,6 +118,11 @@ TOP_KEYS = {
     "schema_version", "artifact_kind", "status", "model", "baseline", "candidate",
     "task", "environment", "samples", "aggregate", "elapsed_ns",
 }
+CANDIDATE_KEYS = {
+    "provider", "align_llm_head", "align_revision", "compiler_sha256", "helper_sha256",
+    "shim_sha256", "ggml_libraries", "ggml_headers", "pack_sha256", "geometry_sha256",
+    "cache_budget_bytes",
+}
 BASELINE_KEYS = {
     "full_helper_wall_values_ns", "full_helper_wall_median_ns",
     "plane_boundary_values_ns", "plane_boundary_median_ns", "floor_ppm",
@@ -124,6 +138,18 @@ AGGREGATE_KEYS = {
 
 class BoundaryError(RuntimeError):
     pass
+
+
+def ggml_header_identities(directory: Path) -> list[dict[str, Any]]:
+    rows = []
+    for name in GGML_HEADER_NAMES:
+        path = directory / name
+        if not path.is_file():
+            raise BoundaryError(f"configured ggml include directory lacks {name}")
+        rows.append({
+            "name": name, "bytes": path.stat().st_size, "sha256": base.file_sha256(path),
+        })
+    return rows
 
 
 def source_identities() -> tuple[str, ...]:
@@ -241,6 +267,8 @@ def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
 
 def predecessor_result(result: dict[str, Any]) -> dict[str, Any]:
     samples = result["samples"]
+    candidate = dict(result["candidate"])
+    candidate.pop("ggml_headers")
     return {
         "schema_version": 1,
         "artifact_kind": "R8_OLMOE_DECODE_PASS_OTHER_DIAGNOSIS",
@@ -253,7 +281,7 @@ def predecessor_result(result: dict[str, Any]) -> dict[str, Any]:
             "full_helper_wall_median_ns": PREDECESSOR_FULL_MEDIAN_NS,
             "floor_ns": PREDECESSOR_FLOOR_NS,
         },
-        "candidate": result["candidate"],
+        "candidate": candidate,
         "task": result["task"],
         "environment": result["environment"],
         "samples": samples,
@@ -270,6 +298,11 @@ def validate_result(result: dict[str, Any]) -> None:
         or result["status"] != "COMPLETE"
     ):
         raise BoundaryError("result identity drifted")
+    if not isinstance(result["candidate"], dict):
+        raise BoundaryError("result candidate was not an object")
+    diagnosis.require_exact_keys(result["candidate"], CANDIDATE_KEYS, "result candidate")
+    if result["candidate"]["ggml_headers"] != EXPECTED_GGML_HEADERS:
+        raise BoundaryError("result ggml header identity drifted")
     predecessor.validate_result(predecessor_result(result))
     expected_baseline = {
         "full_helper_wall_values_ns": BASELINE_VALUES_NS,
@@ -321,6 +354,8 @@ def synthetic_samples(wall: int, boundary: int = 100) -> list[dict[str, Any]]:
 
 def synthetic_result(samples: list[dict[str, Any]]) -> dict[str, Any]:
     inherited = predecessor.synthetic_result(samples)
+    candidate = dict(inherited["candidate"])
+    candidate["ggml_headers"] = [dict(row) for row in EXPECTED_GGML_HEADERS]
     return {
         "schema_version": 1,
         "artifact_kind": "R8_OLMOE_PLANE_ROUNDTRIP_BOUNDARY",
@@ -335,7 +370,7 @@ def synthetic_result(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "minimum_gain_ns": MINIMUM_GAIN_NS,
             "candidate_ceiling_ns": CANDIDATE_CEILING_NS,
         },
-        "candidate": inherited["candidate"],
+        "candidate": candidate,
         "task": inherited["task"],
         "environment": inherited["environment"],
         "samples": samples,
@@ -391,6 +426,26 @@ def self_test() -> int:
     with mock.patch.object(predecessor, "SEED", 6):
         expect_error(validate_imported_contract, "drifted imported workload was accepted")
 
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-header-self-test-") as raw:
+        include = Path(raw)
+        expected_headers = []
+        for index, name in enumerate(GGML_HEADER_NAMES, 1):
+            content = bytes([index]) * index
+            (include / name).write_bytes(content)
+            expected_headers.append({
+                "name": name, "bytes": len(content), "sha256": base.bytes_sha256(content),
+            })
+        if ggml_header_identities(include) != expected_headers:
+            raise BoundaryError("ggml header identities were not deterministic")
+        (include / GGML_HEADER_NAMES[0]).write_bytes(b"mutated")
+        if ggml_header_identities(include) == expected_headers:
+            raise BoundaryError("mutated ggml header identity was accepted")
+        (include / GGML_HEADER_NAMES[0]).unlink()
+        expect_error(
+            lambda: ggml_header_identities(include),
+            "missing consumed ggml header was accepted",
+        )
+
     result = synthetic_result(synthetic_samples(CANDIDATE_CEILING_NS))
     validate_result(result)
     malformed_result = dict(result)
@@ -399,6 +454,7 @@ def self_test() -> int:
     for section, field, value in (
         ("baseline", "minimum_gain_ns", False),
         ("candidate", "provider", "bogus-runtime"),
+        ("candidate", "ggml_headers", []),
         ("environment", "host_fingerprint_sha256", "0" * 64),
         ("aggregate", "decision", "NOT_MET"),
     ):
@@ -471,6 +527,9 @@ def main() -> int:
         task_sha256 = base.file_sha256(diagnosis.TASK)
         prompt_sha256 = base.bytes_sha256(diagnosis.PROMPT_TEXT.encode("utf-8"))
         ggml_libraries = base.library_identities(library)
+        ggml_headers = ggml_header_identities(include)
+        if ggml_headers != EXPECTED_GGML_HEADERS:
+            raise BoundaryError("configured ggml header identity drifted")
         linker_search_sha256 = (
             None if not linker_search else base.bytes_sha256(linker_search.encode("utf-8"))
         )
@@ -531,6 +590,8 @@ def main() -> int:
             ))
             if base.library_identities(library) != ggml_libraries:
                 raise BoundaryError("ggml library identities changed during qualification")
+            if ggml_header_identities(include) != ggml_headers:
+                raise BoundaryError("ggml headers changed during qualification")
             owner.require_no_matching_process(server, model, deadline, clean_env)
 
             task_document = json.loads(diagnosis.TASK.read_text(encoding="utf-8"))
@@ -555,6 +616,7 @@ def main() -> int:
                     "compiler_sha256": built["compiler_sha256"],
                     "helper_sha256": built["helper_sha256"],
                     "shim_sha256": built["shim_sha256"], "ggml_libraries": ggml_libraries,
+                    "ggml_headers": ggml_headers,
                     "pack_sha256": pack_sha256, "geometry_sha256": geometry_sha256,
                     "cache_budget_bytes": BUDGET,
                 },

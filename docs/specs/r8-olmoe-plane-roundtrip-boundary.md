@@ -63,13 +63,13 @@ production surface below; it does not add a public ABI or change the shipped dec
 | Fixed baseline | item 60 full-helper samples `[17704139042,18412456541,19080317000,19520549709]`, integer median 18,746,386,770 ns, on its exact Apple M1 host and fixed request |
 | Performance gate | floor 50,000 ppm, rounded-up minimum gain 937,319,339 ns; candidate four-sample median must be at most 17,809,067,431 ns; equality is `MET`, anything slower is `NOT_MET` |
 | Qualification | four sequential fresh-process maximum-2/maximum-128 pairs through the unchanged item 60 helper; exact prefix, 86-token output/hash, native lifetimes, twelve isolation boundaries, cache, host, and cleanup all remain mandatory; record candidate full-helper wall and complete plane-boundary medians |
-| Result | one exact-key schema-1 `R8_OLMOE_PLANE_ROUNDTRIP_BOUNDARY` JSON document on stdout and one concise stderr summary; no complete document on failure |
-| Inputs/identity | independently pin item 60 workload/evidence, predecessor runner and helper chain, decode/outcome/FFI sources, both C shims and their shared region, build script, model, pack, geometry, server, Align revision/compiler, ggml libraries, C compiler/version, task, prompt, exact token chain, built helper/shim, clean head, and baseline-host fingerprint |
-| Validation order | argument/prerequisite precedence; scrubbed environment/linker search; fixed host, clean head, process absence, imported and external identities; exact-source build; four conditioned records; schema/output/lifetime/repeatability; performance aggregate; final identities/head; exit helper and temporary contexts; cleanup-inclusive ceiling; validation; publication |
+| Result | one exact-key schema-1 `R8_OLMOE_PLANE_ROUNDTRIP_BOUNDARY` JSON document on stdout and one concise stderr summary; candidate identity includes the exact three ggml headers consumed by the shim build; no complete document on failure |
+| Inputs/identity | independently pin item 60 workload/evidence, predecessor runner and helper chain, decode/outcome/FFI sources, both C shims and their shared region, build script, model, pack, geometry, server, Align revision/compiler, ggml libraries, the exact `ggml.h`, `ggml-alloc.h`, and `ggml-backend.h` byte identities, C compiler/version, task, prompt, exact token chain, built helper/shim, clean head, and baseline-host fingerprint |
+| Validation order | argument/prerequisite precedence; scrubbed environment/linker search; fixed host, clean head, process absence, imported and external identities including the three consumed ggml headers; exact-source build; four conditioned records; schema/output/lifetime/repeatability; performance aggregate; final source/header/library identities and head; exit helper and temporary contexts; cleanup-inclusive ceiling; validation; publication |
 | Failure/cleanup | nonzero and no complete document for invalid ABI input, identity/host/source/process drift, malformed result, output/lifetime drift, child failure, source mutation, cleanup failure, or gate-run ceiling excess; missing prerequisites retain the one declared N/A path; signal and timeout cleanup stop owned children, restore any prior root helper, and remove the temp tree |
 | Persisted/cache identity | N/A: no persisted format, cache policy, model, pack, geometry, or provider schema changes; qualification stdout is not persisted by the runner |
 | Cost ceiling | one monotonic 8-minute ceiling covers shim/helper build, four conditioning and four full requests, aggregation, identity rechecks, and cleanup; each child retains its narrower bound |
-| Acceptance evidence | author consistency pass; direct shared-shim exact/mismatch/refusal vectors, including unaligned V tile ranges during review repair; `make fmt`; pinned helper build; `make layer-forward-smoke`; `make runtime-provider-smoke`; Python compilation and item 57→61 self-test chain; complete real qualifications before and after review repair; production-diff removal check against item 60; `git diff --check`; one comprehensive review; exact-head `scripts/pre-pr --owner-test R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY -- scripts/run-olmoe-plane-roundtrip-boundary --self-test` |
+| Acceptance evidence | author consistency pass; direct shared-shim exact/mismatch/refusal vectors, including unaligned V tile ranges during review repair; `make fmt`; pinned helper build; `make layer-forward-smoke`; `make runtime-provider-smoke`; Python compilation and item 57→61 self-test chain including header-identity mutation; complete real qualifications before and after review repair; production-diff removal check against item 60; `git diff --check`; comprehensive reviews before and after the materially changed final candidate; exact-head `scripts/pre-pr --owner-test R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY -- scripts/run-olmoe-plane-roundtrip-boundary --self-test` |
 
 The capability claims only fixed-request latency on one pinned host when the gate is met. Cross-host,
 GPU, throughput, arbitrary-task, cache-policy, numerical, and public-provider improvements are N/A.
@@ -176,6 +176,14 @@ clean-head qualification at `4e1f53d208191d274c4ef9733059afd290bb9c4f` recorded:
 - the candidate was 798,295,944 ns above the precommitted 17,809,067,431-ns ceiling;
 - all four pairs still reproduced the fixed output/hash, exact native lifetimes, twelve clean
   isolation boundaries, fixed cache state, and cleanup in 108,080,301,708 ns.
+
+The qualification used `ggml.h` (112,592 bytes,
+`6fe9b62d3ea48c2de82cce6e9e06d3ae4f0de34f4b5831399c49c099badefb09`), `ggml-alloc.h`
+(3,753 bytes, `94e4cd069b9313b2ceb35dacec901981e0bb478d8bb31035b7126be091998c23`), and
+`ggml-backend.h` (25,374 bytes,
+`46d84cb998105f871240864fd0f55446939a2fe86c5c281afa63a010fb1f65a2`). Final review required
+these direct build inputs to become exact candidate fields and to be checked both before the shim
+build and after measurement.
 
 The final decision is `NOT_MET`. All three production interventions and their owner-test additions
 are removed; no fixed-request performance claim or non-AArch64 claim ships from item 61.
