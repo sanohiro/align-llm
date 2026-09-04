@@ -55,7 +55,6 @@ EXTRA_SCRUBBED_ENV_NAMES = {
     "ALIGN_LLM_VALIDATION_USERNS_PATH",
     "DYLD_LIBRARY_PATH",
     "LD_LIBRARY_PATH",
-    "LIBRARY_PATH",
 }
 active_process: subprocess.Popen[bytes] | None = None
 server_process: subprocess.Popen[bytes] | None = None
@@ -113,6 +112,18 @@ def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
         print(f"R8-OLMOE-SAMPLED-RUNTIME-DECISION: N/A ({missing} unset)")
         return None
     return tuple(path for _, path in rows)  # type: ignore[return-value]
+
+
+def validate_linker_search(environment: dict[str, str]) -> str:
+    value = environment.get("LIBRARY_PATH", "")
+    if platform.system() == "Darwin" and not value:
+        raise DecisionError("Darwin decision requires an explicit LIBRARY_PATH")
+    if not value:
+        return ""
+    paths = value.split(":")
+    if any(not path or not Path(path).is_dir() for path in paths):
+        raise DecisionError("LIBRARY_PATH contains an empty or non-directory entry")
+    return value
 
 
 def remaining_timeout(deadline: float, maximum: int) -> int:
@@ -247,7 +258,11 @@ def built_helper(
             maximum=180,
             env=build_env,
         )
-        build_env["LIBRARY_PATH"] = ":".join((str(shim_dir), str(library)))
+        build_env["LIBRARY_PATH"] = ":".join(
+            value
+            for value in (str(shim_dir), str(library), clean_env.get("LIBRARY_PATH", ""))
+            if value
+        )
         run_process(
             [str(compiler), "build", "src/runtime_provider_gate.align"],
             deadline=deadline,
@@ -744,13 +759,27 @@ def self_test() -> int:
                 "ALIGN_LLM_BWRAP": "ambient",
                 "DYLD_LIBRARY_PATH": "ambient",
                 "OMP_NUM_THREADS": "99",
+                "LIBRARY_PATH": "/links",
                 "SAFE_VALUE": "kept",
             },
             clear=True,
         ):
             clean_env = decision_environment()
-        if clean_env != {"SAFE_VALUE": "kept"}:
+        if clean_env != {"LIBRARY_PATH": "/links", "SAFE_VALUE": "kept"}:
             raise DecisionError("decision environment isolation drifted")
+
+        link_a = work / "link-a"
+        link_b = work / "link-b"
+        link_a.mkdir()
+        link_b.mkdir()
+        if validate_linker_search({"LIBRARY_PATH": f"{link_a}:{link_b}"}) != f"{link_a}:{link_b}":
+            raise DecisionError("explicit linker search changed")
+        try:
+            validate_linker_search({"LIBRARY_PATH": f"{link_a}:{work / 'missing'}"})
+        except DecisionError:
+            pass
+        else:
+            raise DecisionError("invalid linker search was accepted")
 
         generated = work / "generated"
         saved = work / "saved"
@@ -922,6 +951,7 @@ def main() -> int:
         )
         if source_status.stdout:
             raise DecisionError("real decision requires a clean worktree")
+        linker_search = validate_linker_search(clean_env)
         align_llm_head = run_process(
             ["git", "rev-parse", "HEAD"],
             deadline=deadline,
@@ -1107,6 +1137,11 @@ def main() -> int:
                     "cpu_count": os.cpu_count(),
                     "c_compiler_sha256": built["c_compiler_sha256"],
                     "c_compiler_version_sha256": built["c_compiler_version_sha256"],
+                    "linker_search_sha256": (
+                        None
+                        if not linker_search
+                        else base.bytes_sha256(linker_search.encode("utf-8"))
+                    ),
                 },
                 "samples": samples,
                 "aggregate": aggregate_result,

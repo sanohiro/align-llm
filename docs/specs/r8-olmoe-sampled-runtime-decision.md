@@ -29,6 +29,7 @@ fixed-task result, not a quality-rate, cross-host, throughput, token-parity, or 
 | Subject model | `OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf`, 4,213,512,192 bytes, SHA-256 `4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f` |
 | Baseline | llama.cpp build 10566 commit `bb4caa754`, loopback `LocalOpenAI`, CPU-only, four threads, context 512, no warmup, one server resident across all pairs |
 | Candidate | exact reviewed align-llm source and `.align-revision`, in-process `AlignRuntime`, real ggml shim/libraries, exact pack and geometry, 975,175,680-byte invocation-local expert-cache budget |
+| Opt-in inputs | model, pack, geometry, ggml include, ggml library, and server use item 50's six named `ALIGN_LLM_*` variables; Darwin additionally requires an explicit ordered `LIBRARY_PATH`, validated directory by directory and bound by digest without publishing machine paths |
 | Portfolio | temperature 300,000 micros, seeds `[1,2,3,4,5,6,7,8]` in order, maximum 128 completion tokens, stop immediately after the first passing patch |
 | Pair schedule | `(local,runtime)`, `(runtime,local)`, `(runtime,local)`, `(local,runtime)`; one synchronous leg at a time |
 | Primary metric | nanoseconds from each portfolio leg's first provider-helper launch through successful validation of its first passing patch |
@@ -38,7 +39,7 @@ fixed-task result, not a quality-rate, cross-host, throughput, token-parity, or 
 | Result | canonical `R8_OLMOE_SAMPLED_RUNTIME_DECISION` schema 1 JSON on stdout plus one concise stderr summary; no machine-local result is committed |
 | Ownership | the runner owns the server, exact-source helper, dynamic shim, candidate records and patches, validator workspaces, any Docker containers, and all temporary files |
 | Persisted/cache identity | no inference or expert cache survives a request; the result binds source, compiler, helper, shim, ggml libraries, model, pack, geometry, server, task, prompt, and immutable validator identities |
-| Owner | `scripts/run-olmoe-sampled-runtime-decision --self-test`; the opt-in real decision uses the same command without arguments and the six documented model/runtime environment inputs |
+| Owner | `scripts/run-olmoe-sampled-runtime-decision --self-test`; the opt-in real decision uses the same command without arguments and the documented model/runtime/linker environment inputs |
 | Performance floor | item 50's unchanged 50,000 ppm end-to-end floor plus the every-pair direction rule |
 | Pre-implementation opportunity ceiling | item 51's fixed baseline required five candidates while a candidate portfolio can succeed no earlier than candidate one, so portfolio attempt count can remove at most four of five attempts, 800,000 ppm; differing provider cost makes the realized time ceiling lower and is measured rather than assumed |
 | Execution cost ceiling | approximately 25 minutes for one build, one server load, four balanced pairs, at most 64 provider attempts, validation, and identity rechecks; stop and diagnose material excess |
@@ -70,7 +71,7 @@ task: {task_id, task_sha256, prompt_sha256, maximum_completion_tokens}
 sampling: {temperature_micros, ordered_seeds, maximum_candidates, stop_on_first_pass}
 validator: {kind, image_id}
 environment: {os, release, architecture, cpu_count, c_compiler_sha256,
-              c_compiler_version_sha256}
+              c_compiler_version_sha256, linker_search_sha256}
 samples: [{pair_index, order, local, runtime}]
 aggregate: {local_pass_count, runtime_pass_count,
             local_median_time_to_passing_patch_ns,
@@ -95,10 +96,11 @@ promise of byte identity between provider arms.
 
 The runner validates configured paths in model, pack, geometry, ggml include, ggml library, then
 server order; a configured invalid path is never hidden by a later missing value. It then requires
-a clean worktree, resolves the validator to a native boundary or immutable Docker image, validates
-the known-good control under the same scrubbed validator environment used by every candidate,
-checks model and server identity, resolves the managed compiler, builds the exact-source dynamic
-shim and helper, starts the server, and executes the fixed schedule.
+a clean worktree, validates every explicit Darwin linker-search directory, resolves the validator
+to a native boundary or immutable Docker image, validates the known-good control under the same
+scrubbed validator environment used by every candidate, checks model and server identity, resolves
+the managed compiler, builds the exact-source dynamic shim and helper, starts the server, and
+executes the fixed schedule.
 
 Each candidate accepts only a successful, well-formed schema-2 provider record. Provider errors and
 seed refusal fail the decision. A syntactically invalid completion is an ordinary `INVALID_PATCH`;
@@ -110,7 +112,7 @@ build artifacts, clean source state, and source head are rechecked after all pai
 
 | Cell | Measurement runner | Helper/providers | Exact evidence |
 | --- | --- | --- | --- |
-| Construction | validate ordered prerequisites, immutable validator, clean source, identities, dynamic shim/helper, then resident server | existing `local-sampled` and `runtime-olmoe-sampled` modes receive the same seed policy and maximum | self-test command grammar, precedence, environment isolation; real identity fields |
+| Construction | validate ordered prerequisites, explicit linker search, immutable validator, clean source, identities, dynamic shim/helper, then resident server | existing `local-sampled` and `runtime-olmoe-sampled` modes receive the same seed policy and maximum | self-test command grammar, precedence, linker/environment isolation; real identity fields |
 | Validator control | known-good patch passes before model/server work in the candidate validation environment | N/A | self-test environment routing; real control |
 | Baseline success | run ordered candidates against one resident pinned server | one seeded loopback request per candidate | four complete deterministic local portfolios |
 | Candidate success | run ordered candidates with exact model/pack/geometry/budget | one seeded in-process request and invocation-local cache per candidate | four complete deterministic runtime portfolios |
