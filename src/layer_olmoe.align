@@ -2065,10 +2065,10 @@ fn mm_head_row(borrow g: Geometry, index: i64) -> MmRow {
 // `docs/specs/r6-olmoe-decode.md` section 3.7. Thirty-seven rows: the prefill layer's thirty-five
 // at `tokens = 1`, plus one `CONCAT` on K and one on V.
 //
-// The two concats are the whole topology change. A prefill layer widens K and V from `T` columns to
-// `KV_WIDTH` with zeros; a decode layer joins the plane's `n_past` real columns to the step's one
-// new column and pads the remainder, so the new column lands at index `n_past` — exactly where the
-// offset mask unmasks it.
+// The two concats are the whole mandatory topology change. A decode layer joins the plane's
+// `n_past` real columns to the step's one new column, so the new column lands at index `n_past`.
+// Item 63 constructs production decode graphs at that exact live width; the two PAD rows remain for
+// a general wider table but are not issued when concat already has the requested width.
 //
 // K and V concatenate on **different** axes and the table says so per row. After row 16's `CONT_3D`
 // K is `{head_dim, columns, n_head_kv}`, so its column axis is **1**; after row 22's `CONT_3D` V is
@@ -2080,9 +2080,9 @@ fn mm_head_row(borrow g: Geometry, index: i64) -> MmRow {
 // one pair of write-back rows (`MM_K_ROW`, `MM_V_ROW`) serve the prefill and every step.
 // ---------------------------------------------------------------------------------------------
 
-// Rows 14 to 27: the attention, with the two concatenations and the two pads. Row 16's `CONT_3D` is
-// `WHEN_ALWAYS` here where the prefill makes it `WHEN_WIDE`, because a concatenation needs a
-// contiguous operand whether or not the plane is wider than `n_past + 1`.
+// Rows 14 to 27: the attention, with two concatenations and conditional pads. Row 16's `CONT_3D`
+// is `WHEN_ALWAYS` here where the prefill makes it `WHEN_WIDE`, because a concatenation needs a
+// contiguous operand even when the requested width is already `n_past + 1`.
 fn mm_decode_a_row_attention(borrow g: Geometry, n_past: i64, width: i64, row: i64) -> MmRow {
   m := MM_A_NODE_BASE
   if row == 14 {
@@ -2113,13 +2113,17 @@ fn mm_decode_a_row_attention(borrow g: Geometry, n_past: i64, width: i64, row: i
     return r
   }
   if row == 18 {
-    mut r := mm_row(OP_PAD, m + 16, -1)
+    mut r := mm_row(OP_PAD, m + 17, -1)
     r.p1 = width - (n_past + 1)
-    r.alt_when = WHEN_DECODE
-    r.alt_a = m + 17
+    r.when = WHEN_WIDE
     return r
   }
-  if row == 19 { return mm_row(OP_MUL_MAT, m + 18, m + 15) }
+  if row == 19 {
+    mut r := mm_row(OP_MUL_MAT, m + 17, m + 15)
+    r.alt_when = WHEN_WIDE
+    r.alt_a = m + 18
+    return r
+  }
   if row == 20 {
     mut r := mm_row(OP_SOFT_MAX, m + 19, MM_SLOT_MASK)
     r.p0 = g.attn_scale_bits
@@ -2148,13 +2152,17 @@ fn mm_decode_a_row_attention(borrow g: Geometry, n_past: i64, width: i64, row: i
     return r
   }
   if row == 24 {
-    mut r := mm_row(OP_PAD, m + 22, -1)
+    mut r := mm_row(OP_PAD, m + 23, -1)
     r.p0 = width - (n_past + 1)
-    r.alt_when = WHEN_DECODE
-    r.alt_a = m + 23
+    r.when = WHEN_WIDE
     return r
   }
-  if row == 25 { return mm_row(OP_MUL_MAT, m + 24, m + 20) }
+  if row == 25 {
+    mut r := mm_row(OP_MUL_MAT, m + 23, m + 20)
+    r.alt_when = WHEN_WIDE
+    r.alt_a = m + 24
+    return r
+  }
   if row == 26 {
     mut r := mm_row(OP_PERMUTE, m + 25, -1)
     r.p1 = 2
