@@ -29,7 +29,7 @@ before publication.
 
 | Surface | Exact contract |
 | --- | --- |
-| Capability/owner | `R8-OLMOE-FILE-PREAD-BOUNDARY`; production owners are `src/moe_decode_step.align` and the existing provider-generation call chain; qualification owners are `src/olmoe_file_pread_gate.align` and `scripts/run-olmoe-file-pread-boundary` |
+| Capability/owner | `R8-OLMOE-FILE-PREAD-BOUNDARY`; evaluated production owners were `src/moe_decode_step.align` and the existing provider-generation call chain; qualification owners were `src/olmoe_file_pread_gate.align` and `scripts/run-olmoe-file-pread-boundary`. The production diff does not ship after `NOT_MET`; the published runner retains only `--self-test`. |
 | Consumer | OLMoE `provider_runtime.generate`, through `moe_decode_step.generate_resident` or `generate_resident_sampled`; the CLI diagnostic `execute` remains on `pread` |
 | Fixed request | inherit item 62 exactly: model, AlignPack, geometry, 975,175,680-byte cache budget, fixed task/prompt, temperature 300,000 micros, seed 5, maximum 128, EOG behavior, exact 87-token id chain, 86 completion tokens, and output SHA-256 `aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52` |
 | Immutable baseline | item 62's four walls and 19,266,559,229-ns median above; candidate samples never replace it |
@@ -46,6 +46,7 @@ before publication.
 | Allocation/resource | remove the per-prefill and per-decode maximum-ExpertBlock temporary on provider generation. The read-only virtual mapping adds no Align buffer and the OS may retain mapped pages in its normal file cache; the existing explicit 975,175,680-byte expert-cache budget is unchanged and does not claim to bound OS file cache |
 | Persisted/cache identity | N/A: no pack, geometry, provider response, persisted cache, or migration format changes; cache keys and contents remain the same copied claim bytes |
 | Schema version | production HTTP and diagnostic CLI schemas unchanged; qualification result is exact schema 1 |
+| Archived execution point | the real qualification executes only from evaluated commit `b82ff83daef4d0637ecec22f44c9c56bbcfdd08a`, whose runner pins the mapped production source. The publication-head runner refuses no-argument real mode because the mapped source was removed, and retains `--self-test` for the result/gate contract. |
 | Validation order | existing ordered refusals; map and exact length; schedule; semantic/cache/lifetime checks; four-repeat aggregate and immutable gate; final identity/head checks; cleanup; publication |
 | Failure | nonzero with no complete qualification document for malformed input, map/length failure, range failure, output/cache/lifetime drift, identity mutation, process contamination, timeout, cleanup failure, or ceiling excess |
 | Prerequisites | item 64's selection; pinned Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4` with shipped `fs.read_bytes_view`; fixed capable host and model assets; no Align request or hypothetical surface |
@@ -63,7 +64,7 @@ shipped provider and diagnostic paths both keep item 64's `pread` behavior.
 
 | Path | Construction | Success | Failure/malformed | Early exit | Cleanup | Exact regression/evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| Provider map | one arena and one `read_bytes_view` after existing validation | exact `total_bytes` view reaches schedule | missing/unreadable maps to `R4_PACK_UNREADABLE`; wrong length to `R4_PACK_LEN` | no schedule/cache mutation | arena unmaps once | synthetic missing/short mapping plus real fixed pack |
+| Provider map | one arena and one `read_bytes_view` after existing validation | exact `total_bytes` view reaches schedule | missing/unreadable maps to `R4_PACK_UNREADABLE`; wrong length to `R4_PACK_TRUNCATED` | no schedule/cache mutation | arena unmaps once | synthetic missing/short mapping plus real fixed pack |
 | Expert range | checked plan offset/span selects one block view | same three relative member slices | negative, overflow, or beyond-view range returns existing pack fault before copy | current layer fails through existing `take_pack` | view has no independent owner | small-pack mapped/pread equality and explicit bad span |
 | Cache miss | mapped scatter precedes admission | same claim bytes copied into one slot | source/copy failure cannot evict or admit | failed demand is not a hit later | existing cache buffer | forced miss contents/accounting plus real counts |
 | Cache hit | mapping unused | existing slot-to-claim copy | existing window failure | no new mutation | unchanged | inherited cache owner and exact real counts |
@@ -127,5 +128,8 @@ the destination copy consumed source pages. The block-to-claim values
 3,790,142,245-ns median.
 
 Per the precommitted rule, the mapping, threaded view/selection parameters, mapped accounting, and
-production-owner changes are removed before review. The item-65 ledger, thin helper, and bounded
-qualification owner remain as reproducible negative evidence. No provider speedup claim ships.
+production-owner changes are removed before review. The item-65 ledger and thin helper remain as
+negative evidence; the publication runner preserves its model-free schema/gate self-test and
+explicitly refuses real mode. Reproducing the measured candidate requires the complete source and
+runner at evaluated commit `b82ff83daef4d0637ecec22f44c9c56bbcfdd08a`. No provider speedup
+claim ships.

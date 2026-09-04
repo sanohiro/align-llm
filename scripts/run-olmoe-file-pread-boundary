@@ -43,6 +43,7 @@ FULL_OUTPUT_SHA256 = "aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89
 FULL_CACHE_BYTES_FETCHED = 17_656_872_960
 REPETITIONS = 4
 CEILING_SECONDS = 8 * 60
+EVALUATED_HEAD = "b82ff83daef4d0637ecec22f44c9c56bbcfdd08a"
 
 BASELINE_VALUES_NS = [18_059_864_416, 18_927_732_709, 20_639_199_375, 19_605_385_750]
 BASELINE_MEDIAN_NS = 19_266_559_229
@@ -448,6 +449,10 @@ def self_test() -> int:
     printed.assert_called_once_with(
         "R8-OLMOE-FILE-PREAD-BOUNDARY: N/A (ALIGN_LLM_OLMOE_MODEL unset)"
     )
+    with mock.patch.object(sys, "argv", [sys.argv[0]]):
+        expect_error(main, "publication head accepted a real qualification")
+    with mock.patch.object(sys, "argv", [sys.argv[0], "--real"]):
+        expect_error(main, "publication head accepted an unsupported mode")
     print("R8-OLMOE-FILE-PREAD-BOUNDARY self-test: PASS")
     return 0
 
@@ -455,8 +460,14 @@ def self_test() -> int:
 def main() -> int:
     if sys.argv[1:] == ["--self-test"]:
         return self_test()
-    if len(sys.argv) != 1:
-        raise FilePreadBoundaryError("OLMoE file-pread qualification accepts no arguments")
+    if len(sys.argv) == 1:
+        raise FilePreadBoundaryError(
+            "mapped candidate was removed after NOT_MET; reproduce the real qualification "
+            f"from evaluated commit {EVALUATED_HEAD}"
+        )
+    raise FilePreadBoundaryError(
+        "published OLMoE file-pread qualification accepts only --self-test"
+    )
     required = prerequisites()
     if required is None:
         return 0
