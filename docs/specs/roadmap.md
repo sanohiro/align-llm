@@ -1495,15 +1495,16 @@ The current forward delivery order is:
     the precommitted 50,000-ppm gate, a candidate median no greater than 28,928,313,753 ns.
 
     One combined caller-owned staging range and one validate-before-write shared-shim call preserve
-    the canonical plane and exact K/V graph-input layouts. The 108.362-second qualification
-    reproduced the fixed output and balanced lifetimes in all four repetitions. Full helper wall
-    fell from the immutable 30.451-second baseline to a 16.981-second median, a 442,332-ppm gain;
-    staging upload fell from 11.548 seconds to 1.914 seconds. The intervention ships.
+    the canonical plane and exact K/V graph-input layouts. The post-review 105.628-second
+    qualification bound baseline and candidate to the same Apple M1 host and reproduced the fixed
+    output and balanced lifetimes in all four repetitions. Full helper wall fell from the immutable
+    30.451-second baseline to an 18.429-second median, a 394,794-ppm gain; staging upload fell from
+    11.548 seconds to 2.045 seconds. The intervention ships.
 
 59. **R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS — partition the post-staging decode-pass residual.
-    Selected; not started.** Item 58's four exact sample records leave `PASS_RESIDUAL` as the
-    largest remaining bucket at a 3,805,899,547-ns median, ahead of compute at 3,615,480,386 ns and
-    claim I/O at 3,426,040,742 ns. Define a narrower diagnosis of graph/context construction,
+    Active.** Item 58's post-review four exact sample records leave `PASS_RESIDUAL` as the largest
+    remaining bucket at a 4,172,949,292-ns median, ahead of compute at 4,104,846,715 ns and claim
+    I/O at 3,609,378,007 ns. Define a narrower diagnosis of graph/context construction,
     graph build/allocation/teardown, generic tensor transfer/digest, and other unassigned pass work
     before authorizing another implementation seam. Preserve item 58's fixed workload, output,
     isolation, cache, and lifetime boundaries.
