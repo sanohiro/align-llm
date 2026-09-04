@@ -1,6 +1,6 @@
 # R8 OLMoE exact-safe decode boundaries
 
-Status: designed, 2026-09-05
+Status: implemented; decision `MET`, 2026-09-05
 
 Roadmap owner: item 68, `R8-OLMOE-EXACT-SAFE-DECODE-BOUNDARIES`
 
@@ -75,3 +75,28 @@ The ledger and matrix agree that no routing-width change, new cache policy, life
 new optimization is present. The two interventions are ordered, allocation-free views over existing
 owned storage and retain their individually reviewed fallbacks. The immutable complete-request gate
 alone authorizes shipment.
+
+## 5. Recorded result
+
+Design checkpoint `07516a5` fixed this contract before production changes. Implementation
+checkpoint `e7e94e3` restored only the reviewed item-61 and item-66 production forms; qualification
+owner checkpoint `80e87d516e21d080f31e13e006c0607e59447a99` added no third intervention. The shipped
+`src/layer_olmoe.align` and decode golden remain byte-identical to merged item 67, proving the
+live-width phase-A topology and oracle changes are absent.
+
+The clean-head qualification ran on Darwin arm64 25.5.0 with Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`, the pinned Homebrew ggml 0.21.0 libraries and
+headers, and the fixed OLMoE model, pack, geometry, task, prompt, server, compiler, and C toolchain.
+It completed in 109.426 seconds. The four candidate full-helper walls were
+`[17714825083,16684315166,17132135334,21189618042]` ns, with a 17,423,480,208-ns median.
+Against the immutable 19,266,559,229-ns baseline, the gain is 1,843,079,021 ns or 95,662 ppm,
+exceeding the 963,327,962-ns / 50,000-ppm floor by 879,751,059 ns. The decision is **`MET`**.
+
+Every request reproduced the fixed 87-id chain, 86-token output and SHA-256; every conditioning
+request was its full request's exact two-token prefix. All four full requests retained exactly
+11,940 cache requests, 7,325 hits, 4,615 misses, 4,376 evictions, and 17,656,872,960 fetched bytes.
+Cache-to-claim copy time was `[0,0,0,0]` ns. Plane-roundtrip comparison was
+`[796731156,736721629,736683061,991718491]` ns, with a 766,726,392-ns median. Every native owner
+balanced, all twelve process-isolation boundaries were clean, and final source/external identities
+were unchanged. The two exact-safe interventions therefore ship together; this result makes only
+the fixed-request, fixed-host latency claim defined above.

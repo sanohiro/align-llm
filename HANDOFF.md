@@ -3,7 +3,7 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-EXACT-SAFE-DECODE-BOUNDARIES (2026-09-05)
+## Active: R8-OLMOE-EXACT-SAFE-DECODE-BOUNDARIES publication (2026-09-05)
 
 Branch `agent/r8-olmoe-exact-safe-boundaries`, based on pulled merged `main` `3b890c3` (item 67
 PR #189).
@@ -19,14 +19,27 @@ The authoritative ledger and closure matrix are
 `[18059864416,18927732709,20639199375,19605385750]` ns, 19,266,559,229-ns median,
 963,327,962-ns floor, and 18,303,231,267-ns ceiling decide shipment.
 
-**Next actions.** Commit the design checkpoint; restore the two exact-safe production forms and
-their direct owners; run narrow owners; build the bounded qualification; execute the clean-head
-four-repeat decision; review, repair, preflight, publish, merge, and continue.
+Design checkpoint `07516a5` fixed the contract before code. Implementation checkpoint `e7e94e3`
+restored only the item-61 plane and item-66 cache forms; qualification owner `80e87d5` added the
+thin helper and bounded runner. Its clean-head four-repeat run produced full walls
+`[17714825083,16684315166,17132135334,21189618042]` ns and a 17,423,480,208-ns median, improving
+the immutable baseline by 1,843,079,021 ns / 95,662 ppm. The decision is `MET`.
+
+All requests retained the exact 87-id chain, output hash, 11,940 requests, 7,325 hits, 4,615
+misses, 4,376 evictions, and 17,656,872,960 fetched bytes. Cache-to-claim clocks were all zero;
+plane comparison median was 766,726,392 ns. Every native lifetime and twelve isolation boundaries
+passed. The full-width `src/layer_olmoe.align` and decode golden remain byte-identical to item 67.
+
+**Next actions.** Commit the measured result; perform one comprehensive high-effort review against
+merged `main`; validate and consolidate findings; rerun affected owners; run exact-head preflight;
+publish, merge, and continue to item 69.
 
 **Blocker.** None.
 
-**Latest durable verification.** Item 67 PR #189 passed exact-head preflight and all three required
-CI jobs, merged as `3b890c3`, and its evaluated commit remains an ancestor of merged `main`.
+**Latest durable verification.** `make check` passed 45 units; `make layer-forward-smoke` passed in
+95.639 seconds; `make runtime-provider-smoke` passed its self-test and 61 CLI assertions; the thin
+helper check, Python compilation, runner self-test, `make fmt`, and `git diff --check` passed. The
+clean-head real qualification above completed in 109.426 seconds with decision `MET`.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.

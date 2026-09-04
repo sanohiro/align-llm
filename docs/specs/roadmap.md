@@ -1654,7 +1654,7 @@ The current forward delivery order is:
     production changes before publication and retain only the negative decision owner.
 
 68. **R8-OLMOE-EXACT-SAFE-DECODE-BOUNDARIES — combine the two reductions that retained exact
-    routing/cache behavior. Active.**
+    routing/cache behavior. Complete; decision `MET`.**
     [`r8-olmoe-exact-safe-decode-boundaries.md`](r8-olmoe-exact-safe-decode-boundaries.md) is the
     authoritative ledger and closure matrix. Item 67 attributes its five changed cache decisions to
     live-width phase A, which executes before the plane and cache interventions. Restore only item
@@ -1662,7 +1662,10 @@ The current forward delivery order is:
     retain the shipped full-width phase A exactly. Use item 62's unchanged 19,266,559,229-ns
     baseline, 963,327,962-ns floor, and 18,303,231,267-ns ceiling. Four conditioned fresh-process
     requests must preserve the exact output, 7,325/4,615/4,376 cache accounting, fetched bytes,
-    isolation, and native lifetimes. Ship both interventions only on `MET`; otherwise remove them.
+    isolation, and native lifetimes. The clean-head run produced walls
+    `[17714825083,16684315166,17132135334,21189618042]` ns and a 17,423,480,208-ns median, a
+    1,843,079,021-ns / 95,662-ppm gain. Every semantic and ownership invariant passed, so both
+    exact-safe interventions ship.
 
 ### Status (2026-08-28)
 
