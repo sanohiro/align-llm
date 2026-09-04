@@ -1,6 +1,6 @@
 # R8 OLMoE sampled runtime decision
 
-Status: measured implementation candidate, 2026-09-04
+Status: merged as PR #175 (`f2c83c9`) on 2026-09-04
 
 ## 1. Decision and boundary
 

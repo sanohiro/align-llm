@@ -3,12 +3,34 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-SAMPLED-RUNTIME-DECISION (2026-09-04)
+## Active: R8-OLMOE-RUNTIME-PHASE-DIAGNOSIS (2026-09-04)
 
-Branch `agent/r8-olmoe-sampled-runtime-decision`, based on pulled merged `main`
-`728a186fbd7d21d43c3f1d8993adf124444652bc` (R8-OLMOE-RUNTIME-SAMPLING PR #174). The sibling
-Align checkout and `.align-revision` remain at merged Align
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align surface is required.
+Branch `agent/r8-olmoe-runtime-phase-diagnosis`, based on pulled merged `main`
+`f2c83c96ed31aac322ecfbd30efaff75d7917ef9` (R8-OLMOE-SAMPLED-RUNTIME-DECISION PR #175). The
+sibling Align checkout and `.align-revision` remain at merged Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align surface is currently required.
+
+Item 53 showed a 189.005-second runtime portfolio median and rising 27.928-to-40.243-second
+candidate intervals while llama.cpp held the same 4.2-GB model resident. Item 54's authoritative
+contract and closure matrix are `docs/specs/r8-olmoe-runtime-phase-diagnosis.md`. It will compare
+fixed seed 5 at maximum 2 and 128 tokens in four balanced solo/co-resident pairs, record production
+preparation plus existing runtime phase/lifetime counters, and compare the co-resident penalty with
+the measured repeated-setup lower bound before any persistent-provider or cache change.
+
+**Next actions.** Complete the author ledger-to-prose consistency pass, commit the design
+checkpoint, implement the qualification-only Align helper and focused Python runner, run `make
+fmt` and the model-free owner, then execute and record the one real diagnosis.
+
+**Blocker.** None.
+
+**Intentional uncommitted files.** The item-54 design checkpoint above; no generated binary,
+machine-local evidence, model, credential, or profile belongs in Git.
+
+## Merged checkpoint: R8-OLMOE-SAMPLED-RUNTIME-DECISION (PR #175, 2026-09-04)
+
+PR #175 merged as `f2c83c96ed31aac322ecfbd30efaff75d7917ef9`. The capability ran the fixed
+sampled coding portfolio through the resident llama.cpp baseline and invocation-local AlignRuntime
+provider in four balanced pairs and recorded `NOT_MET`.
 
 This capability runs the fixed seeds 1 through 8 sampled coding portfolio through both the pinned
 resident llama.cpp baseline and shipped partial-LRU `AlignRuntime` provider in four balanced pairs.
@@ -32,12 +54,9 @@ repair `770b0aa` resolves all three without changing the absolute inputs or immu
 used by the recorded decision; Python compilation, the focused self-test, and `git diff --check`
 pass after repair.
 
-**Next actions.** Run exact-head preflight, publish, and merge. Then start a bounded phase/lifetime
-diagnosis before proposing persistent provider state or another runtime-cache change.
-
-**Blocker.** None.
-
-**Intentional uncommitted files.** None. Local configuration remains outside the change.
+Consolidated review repair `770b0aa` resolved all three accepted reproducibility findings. Exact-head
+preflight passed at `1ca3b95`, all required PR checks passed, and merge-head push CI reused that
+evidence successfully. The active item 54 above owns the selected diagnosis.
 
 ## Merged checkpoint: R8-OLMOE-RUNTIME-SAMPLING (PR #174, 2026-09-04)
 
