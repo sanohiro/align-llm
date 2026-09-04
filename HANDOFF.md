@@ -37,13 +37,12 @@ decision/removal checkpoint `356a1a5` is the stable publication candidate.
 
 Comprehensive Codex review of `b120856` against base/merge-base `7ef2124` used gpt-5.6-sol at high
 effort and found one valid P2: `EVALUATED_HEAD` was only displayed, not verified as reachable, so a
-squash or rebase could invalidate reproduction. The narrow repair now resolves the Git common
+squash or rebase could invalidate reproduction. Repair `86567a2` now resolves the Git common
 directory, refuses grafts/replacement refs, disables replacements for the ancestry query, requires
 `1407d3a` to be an ancestor of current `HEAD`, and covers valid and invalid ancestry states. It does
 not change production, measurement, or the decision; no second comprehensive review is required.
 
-**Next actions.** Commit the consolidated review repair; run exact-head preflight; publish, merge,
-verify post-merge ancestry, and continue.
+**Next actions.** Run exact-head preflight; publish, merge, verify post-merge ancestry, and continue.
 
 **Blocker.** None.
 

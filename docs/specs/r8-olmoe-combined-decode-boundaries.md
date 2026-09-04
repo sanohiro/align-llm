@@ -152,8 +152,8 @@ The comprehensive Codex CLI review covered head
 `7ef21249306b037c2618feb26e624d0809382585`, using gpt-5.6-sol at high effort over the complete
 diff. It found one accepted P2: the publication runner displayed the evaluated commit but did not
 verify that it remained reachable, so a squash or rebase could silently invalidate reproduction.
-The consolidated evidence-integrity repair resolves the Git common directory, refuses nonempty
-grafts and replacement refs, disables replacements for the query, requires the evaluated commit to
-be an ancestor of the current head, and exercises success plus wrong-head/graft/replacement
-refusals. It does not change production, the measured candidate, or the decision, so another
-comprehensive review is not required.
+Consolidated evidence-integrity repair `86567a2` resolves the Git common directory, refuses
+nonempty grafts and replacement refs, disables replacements for the query, requires the evaluated
+commit to be an ancestor of the current head, and exercises success plus
+wrong-head/graft/replacement refusals. It does not change production, the measured candidate, or
+the decision, so another comprehensive review is not required.
