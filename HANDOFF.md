@@ -3,51 +3,47 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-POST-OPTIMIZATION-REMAINING-DECODE-DIAGNOSIS (2026-09-05)
+## Active: R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS (2026-09-05)
 
-Branch `agent/r8-olmoe-post-optimization-decode-diagnosis`, based on pulled merged `main`
-`cc2b080` (item 69 PR #191).
+Branch `agent/r8-olmoe-phase-a-operation-diagnosis`, based on pulled merged `main`
+`11d98f7` (item 70 PR #192).
 The sibling Align checkout and `.align-revision` remain at merged Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
-Item 70's authoritative ledger, closure matrix, and measured result are
-`docs/specs/r8-olmoe-post-optimization-remaining-decode-diagnosis.md`. Item 68's current shipped
-fixed-request walls `[17714825083,16684315166,17132135334,21189618042]` ns and
-17,423,480,208-ns median precommit a 50,000-ppm materiality floor of 871,174,011 ns. The thin
-diagnostic owner delegates item 68's complete current qualification and flattens its nested
-remaining-decode, claim-I/O, compute, pass-residual, and pass-other clocks into 23 mutually
-exclusive deepest leaves. Parent and child totals are never added together.
+Item 71's authoritative ledger and closure matrix are
+`docs/specs/r8-olmoe-phase-a-operation-diagnosis.md`. Item 70 selected the shipped fixed request's
+complete 37-row phase-A graph at a 4,620,020,794-ns median. Item 68's immutable
+17,423,480,208-ns full-request median keeps the 50,000-ppm materiality floor fixed at 871,174,011
+ns. Item 63's live-width phase-A intervention remains rejected.
 
-Design checkpoint `3317e31` fixed the contract. Implementation checkpoint
-`7704d9f18ea4d41681c984420ea7e591450f4a79` added only the thin owner. Its clean-head run completed
-in 125.969 seconds. Current full-helper walls
-`[20098090084,22297438083,23257008916,22355763250]` ns had a 22,326,600,666-ns median; remaining
-decode values `[14740449453,16733289713,16776725004,15902827210]` ns had a
-16,318,058,461-ns median. `ROUTING_PHASE_A` won at 4,620,020,794 ns, 283,123 ppm of remaining
-decode and 3,748,846,783 ns above the floor. Plane upload, file pread, and expert phase B followed
-at 2.711, 2.583, and 1.756 seconds.
+The planned opt-in qualification path will reuse the original allocated graph and tensor buffers,
+executing a prefix through row 31's residual `ffn_inp` and a suffix containing rows 32-36's FFN
+normalization, router score, softmax, and argsort. The two direct graph-compute walls are operation-
+class boundaries, not per-node timing. Every existing provider entry keeps the shipped single
+phase-A graph call. A material router result may select that five-row implementation seam; a
+material attention result selects a narrower diagnosis rather than another broad rewrite.
 
-The decision is `MEASURED_BUCKET_ELIGIBLE`. All 23 leaves closed exactly in every sample, and every
-output, cache, isolation, lifetime, source, host, and cleanup boundary passed. Item 63 already
-rejected the live-width phase-A candidate, so item 71 is selected to diagnose phase-A operation
-classes before choosing a different exact-safe implementation seam. Product code and the open R8
-gate remain unchanged.
-
-The comprehensive high-effort Codex review covered `b2c97f8` against base tip and merge base
-`cc2b080`. It found one valid P2: the next-action list still named the already-completed result
-commit. Consolidated repair `828b173` removes that stale action. Measurement and implementation
-behavior are unchanged, so no real rerun or second comprehensive review is required.
-
-**Next actions.** Rerun affected owners and exact-head preflight; publish, merge, and continue to
-item 71.
+**Next actions.** Commit the design checkpoint; implement the bounded graph partition and opt-in
+counter/helper path; run narrow owners and the clean-head four-repeat diagnosis; record the result;
+review, repair, preflight, publish, merge, and continue.
 
 **Blocker.** None.
 
-**Latest durable verification.** Python compilation, item 68's inherited self-test, item 70's
-focused self-test, `git diff --check`, and the clean-head real diagnosis above passed.
+**Latest durable verification.** Item 70's exact-head preflight and all three hosted checks passed
+before PR #192 merged. Item 71 has completed its author ledger-to-prose consistency pass; no
+implementation evidence exists yet.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-POST-OPTIMIZATION-REMAINING-DECODE-DIAGNOSIS (PR #192, 2026-09-05)
+
+PR #192 merged as `11d98f7`. Its clean-head run measured a 22,326,600,666-ns current full-helper
+median and 16,318,058,461-ns remaining-decode median. `ROUTING_PHASE_A` won the exact 23-leaf
+partition at 4,620,020,794 ns, above the fixed 871,174,011-ns floor. Every output, cache,
+isolation, lifetime, and accounting boundary passed. Comprehensive review found and repaired only
+a stale handoff action; exact-head preflight and all three required CI jobs passed. Item 71 owns
+the selected phase-A operation diagnosis.
 
 ## Merged checkpoint: R8-OLMOE-POST-OPTIMIZATION-SAMPLED-RUNTIME-DECISION (PR #191, 2026-09-05)
 

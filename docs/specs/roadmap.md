@@ -1700,11 +1700,14 @@ The current forward delivery order is:
     ship, item 71 owns a narrower operation diagnosis rather than repeating that candidate.
 
 71. **R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS — distinguish the remaining attention and router
-    work without repeating item 63. Selected next; not started.** Preserve item 70's fixed request
-    and 871,174,011-ns floor. Use a bounded diagnostic that does not relabel whole-graph wall time
-    or sampling counts as individual-operation timing, and select a new exact-safe implementation
-    seam only when measured evidence clears the floor. The item-63 live-width intervention remains
-    rejected.
+    work without repeating item 63. Active; design complete.**
+    [`r8-olmoe-phase-a-operation-diagnosis.md`](r8-olmoe-phase-a-operation-diagnosis.md) is the
+    authoritative ledger and closure matrix. Preserve item 70's fixed request and 871,174,011-ns
+    floor. An opt-in helper partitions the already-built and allocated 37-row graph at its exact
+    residual-output tensor, directly timing an attention/residual prefix and five-row router suffix
+    while every normal provider call retains the shipped single graph compute. A material router
+    result may select that exact seam; a material attention result requires a narrower diagnosis.
+    The item-63 live-width intervention remains rejected.
 
 ### Status (2026-08-28)
 
