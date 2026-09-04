@@ -1,6 +1,6 @@
 # R8 OLMoE plane round-trip boundary
 
-Status: complete, `MET`, 2026-09-05
+Status: complete, `NOT_MET`, 2026-09-05
 
 Roadmap owner: item 61, `R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY`
 
@@ -23,19 +23,26 @@ full-helper median was 19,122,598,458 ns: `NOT_MET`, so it cannot ship on its ow
 
 Disassembly of that exact real shim shows the V path still executes the original scalar
 `head -> lane -> column` loop, approximately 30 million four-byte comparisons for the fixed
-request. The third intervention adds an AArch64 exact-success fast path over 4-by-4 transpose tiles.
+request. The third intervention added an AArch64 exact-success fast path over 4-by-4 transpose tiles.
 It compares every byte but batches sixteen lanes per tile; if any tile differs it reruns the
 existing scalar traversal to recover the same first mismatch column. Non-AArch64 and tile remainders
 use scalar comparison. This is still an intervention over item 60's complete measured boundary,
 not an attribution claim. It ships only if the same complete fixed request preserves correctness
 and improves full-helper wall time by at least 50,000 ppm against the immutable item 60 baseline.
-A miss records `NOT_MET` and requires removal of all three production interventions.
+A pre-review qualification measured `MET`, but comprehensive review found that its typed NEON loads
+added an undeclared alignment precondition to the byte-range ABI. The repaired candidate uses
+byte-aligned vector loads and preserves the emitted instructions, but its required clean-head
+qualification measured only a 7,416-ppm full-helper gain: `NOT_MET`. Per the precommitted decision
+rule, all three production interventions were removed before publication.
 
 ## 2. Public-contract ledger
 
+This ledger records the evaluated candidate contract. The final `NOT_MET` decision removes every
+production surface below; it does not add a public ABI or change the shipped decode consumer.
+
 | Surface | Exact contract |
 | --- | --- |
-| Capability/owner | `R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY`; production owners are `scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`, `src/ggml_ffi.align`, and `src/moe_decode_step.align`; qualification owner is `scripts/run-olmoe-plane-roundtrip-boundary` |
+| Capability/owner | `R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY`; evaluated production owners were `scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`, `src/ggml_ffi.align`, and `src/moe_decode_step.align`; qualification owner is `scripts/run-olmoe-plane-roundtrip-boundary`. The evaluated production diff does not ship after `NOT_MET`. |
 | Consumer | OLMoE sampled decode oracle B after each routed-layer graph; it must still compare the graph-consumed K/V concat against the canonical plane through the just-written column |
 | Native ABI | The byte primitive remains `int64_t align_ggml_compare_kv_plane(const void *consumed, int64_t consumed_bytes, const void *plane, int64_t plane_bytes, int64_t plane_base, int64_t head_dim, int64_t n_head_kv, int64_t columns, int32_t layout)`. Production calls `int64_t align_ggml_slot_compare_kv_plane(const void *slots, int64_t index, const void *plane, int64_t plane_bytes, int64_t plane_base, int64_t head_dim, int64_t n_head_kv, int64_t columns, int32_t layout)`. No ggml type crosses either ABI. |
 | Layout tags | `0` is K and `1` is V; every other `int32_t` value is invalid |
@@ -62,7 +69,7 @@ A miss records `NOT_MET` and requires removal of all three production interventi
 | Failure/cleanup | nonzero and no complete document for invalid ABI input, identity/host/source/process drift, malformed result, output/lifetime drift, child failure, source mutation, cleanup failure, or gate-run ceiling excess; missing prerequisites retain the one declared N/A path; signal and timeout cleanup stop owned children, restore any prior root helper, and remove the temp tree |
 | Persisted/cache identity | N/A: no persisted format, cache policy, model, pack, geometry, or provider schema changes; qualification stdout is not persisted by the runner |
 | Cost ceiling | one monotonic 8-minute ceiling covers shim/helper build, four conditioning and four full requests, aggregation, identity rechecks, and cleanup; each child retains its narrower bound |
-| Acceptance evidence | author consistency pass; direct shared-shim exact/mismatch/refusal vectors, including unaligned V tile ranges; `make fmt`; pinned helper build; `make layer-forward-smoke`; `make runtime-provider-smoke`; Python compilation and item 57→61 self-test chain; one complete real qualification; `git diff --check`; one comprehensive review; exact-head `scripts/pre-pr --owner-test R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY -- scripts/run-olmoe-plane-roundtrip-boundary --self-test` |
+| Acceptance evidence | author consistency pass; direct shared-shim exact/mismatch/refusal vectors, including unaligned V tile ranges during review repair; `make fmt`; pinned helper build; `make layer-forward-smoke`; `make runtime-provider-smoke`; Python compilation and item 57→61 self-test chain; complete real qualifications before and after review repair; production-diff removal check against item 60; `git diff --check`; one comprehensive review; exact-head `scripts/pre-pr --owner-test R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY -- scripts/run-olmoe-plane-roundtrip-boundary --self-test` |
 
 The capability claims only fixed-request latency on one pinned host when the gate is met. Cross-host,
 GPU, throughput, arbitrary-task, cache-policy, numerical, and public-provider improvements are N/A.
@@ -101,7 +108,9 @@ compilation is N/A because Align modules are built through their importing execu
 4. Retain the source-pinned item 61 performance runner over the unchanged item 60 helper and validate
    exact gate arithmetic and cleanup-before-publication.
 5. Run focused owners and one clean-head four-repeat qualification. Record `MET` or `NOT_MET` here,
-   in the roadmap, and in `HANDOFF.md`; ship the intervention only on `MET`.
+   in the roadmap, and in `HANDOFF.md`; ship the intervention only on `MET`. The review repair
+   changed a qualification-owned source, so its clean-head run is the final decision and overrides
+   the earlier pre-review result.
 6. Complete one comprehensive review, consolidate valid findings, rerun affected owners and
    exact-head preflight, publish, merge, and continue to the next eligible roadmap capability.
 
@@ -114,12 +123,12 @@ qualification, and performance decision are one consumer-complete capability.
 The ledger and matrix agree that item 60 measured the complete `verify_plane` boundary and did not
 attribute its sub-operations. Intervention A retained shape reads and both copies and missed the
 full-helper gate despite reducing the boundary. Intervention B retained shape reads, removed only
-the two host-to-host readback copies, and also missed. Intervention C retains that safe direct
-boundary and changes only the exact-success V traversal on the measured AArch64 host; a mismatch
-always falls back to the original traversal before returning. Every return state maps to one wrapper
-and decode result, all validation precedes reads, both shims call one byte-identical primitive,
-forced readback regressions remain observable, non-AArch64 remains scalar, and no new owner or schema
-is introduced.
+the two host-to-host readback copies, and also missed. Intervention C retained that safe direct
+boundary and changed only the exact-success V traversal on the measured AArch64 host; a mismatch
+always fell back to the original traversal before returning. Review exposed an alignment promise
+absent from that implementation. The repaired byte-load form closed the defect, but its clean-head
+full-helper result missed the gate. The ledger's removal rule therefore restores item 60's
+production behavior; only the decision document and source-pinned qualification owner remain.
 
 ## 6. Recorded result
 
@@ -141,7 +150,8 @@ Intervention B was qualified on clean head `c7f5eadf9229422190b056fa507bf3be8ce9
 - all four pairs reproduced the fixed 86-token output/hash, exact native lifetimes, twelve clean
   isolation boundaries, fixed cache state, and cleanup in 109,940,548,500 ns.
 
-Intervention C was qualified on clean head `1e121c41c58f39c584bdc43c864aeccae6b16c04`:
+Intervention C was qualified before review on clean head
+`1e121c41c58f39c584bdc43c864aeccae6b16c04`:
 
 - full-helper samples `[16554919250,17140798625,16882099208,17146960833]`, median
   17,011,448,916 ns, gain 1,734,937,854 ns / 92,547 ppm: `MET`;
@@ -154,5 +164,18 @@ Intervention C was qualified on clean head `1e121c41c58f39c584bdc43c864aeccae6b1
   released), twelve clean isolation boundaries, fixed cache state, and cleanup in 100,934,477,959
   ns.
 
-The combined intervention is authorized to ship. The measured claim is only this fixed request on
-the pinned Apple M1 host; the scalar non-AArch64 path makes no performance claim.
+Comprehensive review of head `fd9835ffa691e8b5d6d06e777ada6d20cf3327a7` found one valid P2:
+typed `uint32_t *` NEON loads violated the byte-range ABI for unaligned inputs. Consolidated repair
+`549179f` switched to byte-aligned vector loads and added an unaligned tile regression. Its required
+clean-head qualification at `4e1f53d208191d274c4ef9733059afd290bb9c4f` recorded:
+
+- full-helper samples `[16670214417,19040051292,19655093584,18174675459]`, median
+  18,607,363,375 ns, gain 139,023,395 ns / 7,416 ppm: `NOT_MET`;
+- complete plane-boundary samples `[767843454,888905756,857257604,819760912]`, median
+  838,509,258 ns;
+- the candidate was 798,295,944 ns above the precommitted 17,809,067,431-ns ceiling;
+- all four pairs still reproduced the fixed output/hash, exact native lifetimes, twelve clean
+  isolation boundaries, fixed cache state, and cleanup in 108,080,301,708 ns.
+
+The final decision is `NOT_MET`. All three production interventions and their owner-test additions
+are removed; no fixed-request performance claim or non-AArch64 claim ships from item 61.

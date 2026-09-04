@@ -23,24 +23,18 @@ comparing each concat slot in place only after the real shim proves its backend 
 visible; the unchanged capture readback preserves the routed-offset and forced-inf regressions.
 Its clean-head full-helper median was 19,122,598,458 ns / -20,069 ppm, also `NOT_MET`. Disassembly
 shows that V still executes approximately 30 million scalar four-byte comparisons. Intervention C
-adds an AArch64 4-by-4 exact-success transpose scan and reruns the original scalar traversal on any
+added an AArch64 4-by-4 exact-success transpose scan and reran the original scalar traversal on any
 difference, preserving exact K/V traversal and first-mismatch tensor/column semantics. The
 immutable baseline is item 60's full-helper samples
 `[17704139042,18412456541,19080317000,19520549709]` and 18,746,386,770-ns median. The precommitted
 50,000-ppm floor is 937,319,339 ns and candidate ceiling is 17,809,067,431 ns. Only the complete
 fixed-request gate can establish the performance claim.
 
-Intervention A is committed at `9b940fd94acaeea839725f79f7092882e722b057`. Intervention B is
-implemented and qualified `NOT_MET` at `c7f5eadf9229422190b056fa507bf3be8ce91994`. Intervention C is
-implemented and qualified `MET` at `1e121c41c58f39c584bdc43c864aeccae6b16c04`. The byte-identical real/stub
-shared region validates nulls, dimensions,
-layout, overflow, byte bounds, and pointer
-extents before reading; returns exact or column-plus-one without writing; and preserves K and V
-traversal order. Both safe wrappers reject an unrepresentable layout before narrowing. Oracle B
-retains shape reads, replaces its two `slot_get`/compare pairs with direct host-visible slot
-comparison, and maps native validation failure to the existing tensor/-1 mismatch. The item 61
-runner independently pins item 60's evidence, the full changed source chain, fixed host, helper
-schema, output, lifetimes, isolation, gate arithmetic, and cleanup-before-publication.
+Intervention A is committed at `9b940fd94acaeea839725f79f7092882e722b057`. Intervention B was
+qualified `NOT_MET` at `c7f5eadf9229422190b056fa507bf3be8ce91994`. Intervention C was initially
+qualified `MET` at `1e121c41c58f39c584bdc43c864aeccae6b16c04`. The item 61 runner independently
+pins item 60's evidence, the full evaluated source chain, fixed host, helper schema, output,
+lifetimes, isolation, gate arithmetic, and cleanup-before-publication.
 
 The pre-review four-repeat full-helper samples were
 `[16554919250,17140798625,16882099208,17146960833]`, median 17,011,448,916 ns, for a
@@ -58,20 +52,28 @@ unaligned-consumed/nonaligned-plane-base tile regression. Consolidated repair `5
 the ABI and does not change the capability boundary, so another comprehensive review is not
 required.
 
-**Next actions.** Run one clean-head real qualification; record its exact result; run exact-head
-preflight, publish, merge, and continue.
+The repair-owned clean-head qualification at `4e1f53d208191d274c4ef9733059afd290bb9c4f`
+produced full-helper samples `[16670214417,19040051292,19655093584,18174675459]`, median
+18,607,363,375 ns, for only a 139,023,395-ns / 7,416-ppm gain. It was 798,295,944 ns above the
+precommitted ceiling, so the final decision is `NOT_MET` even though the plane boundary remained at
+an 838,509,258-ns median. Every fixed output/hash, lifetime, isolation, cache, host, and cleanup
+check passed in 108.080 seconds. Per the ledger, all three production interventions and their
+owner-test additions are removed before publication; item 60's behavior remains shipped.
+
+**Next actions.** Perform the required final comprehensive review of the materially changed
+candidate, run exact-head preflight, publish, merge, and continue.
 
 **Blocker.** None.
 
-**Latest durable verification.** The revised author consistency pass, shared-region byte comparison,
-`make fmt`, `make layer-forward-smoke` with direct slot ABI and 5-by-5 tiled/remainder/fallback
-vectors (66.198 seconds), real-shim build and AArch64 instruction inspection,
-`make runtime-provider-smoke` (self-test plus 61 CLI assertions), Python compilation, the full item
-57→61 self-test chain, and `git diff --check` pass. After review repair, byte-identical shared-shim
-compilation, the new unaligned tile regression through `make layer-forward-smoke` (66.455 seconds),
-an explicit UBSan unaligned V-tile call, emitted IR loads with alignment 1, item 61's focused
-self-test, Python compilation, `make runtime-provider-smoke` (self-test plus 61 CLI assertions), the
-full item 57→61 self-test chain, `make fmt`, and `git diff --check` pass.
+**Latest durable verification.** Before the final decision, `make layer-forward-smoke` passed after
+review repair in 66.455 seconds with the unaligned tile regression, explicit UBSan unaligned V-tile
+execution passed, emitted IR used alignment 1, `make runtime-provider-smoke` passed its self-test and
+61 CLI assertions, and the full item 57→61 self-test chain, `make fmt`, and `git diff --check`
+passed. The repaired real qualification recorded the `NOT_MET` result above. Final production files
+compare byte-for-byte with `origin/main`; `make fmt`, item 60's self-test, item 61's complete inherited
+self-test, and `git diff --check` pass after removal. The final diff is limited to the authoritative
+decision/specification, roadmap/handoff state, immutable item 60 evidence, and item 61 qualification
+owner.
 
 **Intentional uncommitted files.** None.
 Machine-local model/evidence and generated build products remain outside Git.
