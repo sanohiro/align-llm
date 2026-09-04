@@ -16,6 +16,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Iterator
 from unittest import mock
@@ -57,6 +59,7 @@ LENGTH_ORDERS = (
 )
 DEADBAND_PPM = 50_000
 CEILING_SECONDS = 20 * 60
+MIN_SERVER_RSS_BYTES = 2 * 1024 * 1024 * 1024
 active_process: subprocess.Popen[bytes] | None = None
 server_process: subprocess.Popen[bytes] | None = None
 
@@ -268,6 +271,60 @@ def server_rss_bytes(pid: int, deadline: float, clean_env: dict[str, str]) -> in
     if not re.fullmatch(r"[0-9]+", value) or int(value) <= 0:
         raise DiagnosisError("owned llama.cpp RSS was unavailable")
     return int(value) * 1024
+
+
+def validate_warmup_response(value: object) -> None:
+    if not isinstance(value, dict):
+        raise DiagnosisError("llama.cpp warmup response was not an object")
+    choices = value.get("choices")
+    usage = value.get("usage")
+    if (
+        not isinstance(choices, list)
+        or len(choices) != 1
+        or not isinstance(choices[0], dict)
+        or not isinstance(choices[0].get("message"), dict)
+        or not isinstance(choices[0]["message"].get("content"), str)
+        or not isinstance(usage, dict)
+        or usage.get("completion_tokens") != 1
+    ):
+        raise DiagnosisError("llama.cpp warmup response was malformed")
+
+
+def warm_server(port: int, deadline: float) -> None:
+    payload = json.dumps(
+        {
+            "model": ALIAS,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "You are a coding assistant. Return a concise patch-oriented answer.",
+                },
+                {"role": "user", "content": PROMPT_TEXT},
+            ],
+            "max_tokens": 1,
+            "temperature": 0.3,
+            "seed": SEED,
+            "top_k": 40,
+            "top_p": 0.95,
+            "min_p": 0.05,
+            "cache_prompt": False,
+            "stream": False,
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/chat/completions",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(
+            request, timeout=remaining_timeout(deadline, 180)
+        ) as response:
+            value = json.load(response)
+    except (urllib.error.URLError, UnicodeError, json.JSONDecodeError) as error:
+        raise DiagnosisError(f"llama.cpp warmup failed: {error}") from error
+    validate_warmup_response(value)
 
 
 def is_int(value: object) -> bool:
@@ -492,10 +549,13 @@ def measure_leg(
             stderr=subprocess.STDOUT,
         )
         base.wait_ready(server_process, port, deadline)
+        warm_server(port, deadline)
         matches = matching_processes(server, model, deadline, clean_env)
         if matches != [server_process.pid]:
             raise DiagnosisError("co-resident condition did not own the sole matching process")
         server_rss = server_rss_bytes(server_process.pid, deadline, clean_env)
+        if server_rss < MIN_SERVER_RSS_BYTES:
+            raise DiagnosisError("co-resident server did not establish the 2-GiB RSS floor")
     elif condition != "solo":
         raise DiagnosisError("unknown diagnosis condition")
 
@@ -774,6 +834,18 @@ def self_test() -> int:
     )
     if parse_matching_processes(process_output, server, model) != [20]:
         raise DiagnosisError("matching process classification drifted")
+    validate_warmup_response(
+        {
+            "choices": [{"message": {"content": "x"}}],
+            "usage": {"completion_tokens": 1},
+        }
+    )
+    try:
+        validate_warmup_response({"choices": [], "usage": {"completion_tokens": 1}})
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("malformed warmup response was accepted")
 
     with tempfile.TemporaryDirectory(prefix="align-r8-phase-self-test-") as raw:
         work = Path(raw)
@@ -935,7 +1007,10 @@ def main() -> int:
                     "threads": 4,
                     "context": 512,
                     "warmup": False,
-                    "inference_requests": 0,
+                    "warmup_inference_requests": 1,
+                    "warmup_maximum_tokens": 1,
+                    "minimum_server_rss_bytes": MIN_SERVER_RSS_BYTES,
+                    "timed_inference_requests": 0,
                 },
                 "task": {
                     "task_id": task_document["id"],

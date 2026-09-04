@@ -23,6 +23,11 @@ the focused runner owns the balanced conditions, schema, repeatability, attribut
 `gmake fmt`, pinned-compiler helper build against the static shim, Python compilation, the model-free
 self-test, and `git diff --check` pass for the implementation batch.
 
+The first pre-result launch was stopped before one pair completed because process inspection showed
+that health plus `--no-warmup` left llama.cpp at roughly 17 MiB RSS, so it did not construct the
+contract's co-resident pressure. The corrected contract requires one explicit untimed one-token
+warmup and a 2-GiB RSS floor before either timed helper; no result or partial evidence was emitted.
+
 **Next actions.** Commit the implementation checkpoint, run the same owner from clean source, then
 execute and record the one complete real diagnosis.
 

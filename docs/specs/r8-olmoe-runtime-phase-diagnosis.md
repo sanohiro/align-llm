@@ -30,7 +30,7 @@ claim, general benchmark, or persistent-provider design.
 | Consumer | the next R8 implementation choice between reducing request-local setup, removing co-resident memory pressure from the benchmark, or investigating the decode tail |
 | Fixed task | item 53's exact system text, user prompt, OLMoE model, AlignPack, geometry, partial-LRU budget 975,175,680 bytes, temperature 0.3, and seed 5 |
 | Qualification helper | `olmoe_runtime_phase_gate MODEL PACK GEOMETRY PROMPT MAX_TOKENS SEED`; accepts only maximum 2 or 128 and seed 5, executes the same snapshot, OLMoE frontend, geometry, source-identity, tokenizer, sampled generation, EOG stripping, and decode sequence as `provider_runtime.generate`, and emits one schema-1 JSON record |
-| Conditions | `solo` requires no process whose command contains both the canonical pinned server and model paths; `co_resident` owns one pinned llama.cpp build-10566 CPU server loaded with the same model, context 512, four threads, no warmup request, and no inference during the timed helper |
+| Conditions | `solo` requires no process whose command contains both the canonical pinned server and model paths; `co_resident` owns one pinned llama.cpp build-10566 CPU server loaded with the same model, context 512, and four threads; after health it sends exactly one untimed fixed-prompt, seed-5, temperature-0.3, one-token warmup, requires server RSS of at least 2,147,483,648 bytes, then sends no inference during either timed helper |
 | Schedule | four environment pairs `(solo,co_resident)`, `(co_resident,solo)`, `(co_resident,solo)`, `(solo,co_resident)`; length order inside the two legs is respectively `(short,full)`, `(full,short)`, `(full,short)`, `(short,full)` |
 | Short/full | short is maximum 2 and its ids must equal the first two full ids; its decoded-output digest must repeat; full maximum 128 must reproduce item 53's exact output digest `aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52`, whose extracted patch had the recorded known-good digest, and must stop on EOG |
 | Timed interval | each helper wall interval contains one complete process and request; the helper separately reports snapshot, model-IR, geometry, source-identity, tokenizer preparation, sampled engine, output decode, and total intervals |
@@ -95,15 +95,15 @@ The runner reuses item 53's environment isolation, canonical path/linker validat
 build, immutable input identities, deadline, and process cleanup. It requires a clean worktree,
 checks that no matching server/model process exists, builds the helper, validates one synthetic
 schema record, and then executes the fixed schedule. Before `solo` it stops any owned server and
-rechecks absence. Before `co_resident` it starts one owned server, waits for health, verifies its
-identity and RSS, and sends no generation request.
+rechecks absence. Before `co_resident` it starts one owned server, waits for health, sends the one
+declared warmup, verifies its identity and RSS floor, and sends no request during the timed helpers.
 
 The helper validates arity, the fixed maximum/seed set, snapshot architecture, model IR, exact
 geometry, pack source identity, prompt/EOG/context bounds, engine success, generated-id bounds and
 EOG stop, output decode identity, and response bound in the production order. The runner then checks
 schema, phase nesting, lifetime balance, exact short/full id prefix, cross-condition repeatability,
-and the full output digest already tied to the known-good patch before computing the aggregate. Persistent inputs and clean source are
-rechecked after the final pair.
+and the full output digest already tied to the known-good patch before computing the aggregate.
+Persistent inputs and clean source are rechecked after the final pair.
 
 ## 5. Closure matrix
 
@@ -111,7 +111,7 @@ rechecked after the final pair.
 | --- | --- | --- | --- | --- |
 | Construction | canonical inputs, clean source, exact helper/shim, no matching process | validate fixed operands and prepare the production inputs | invocation-local owners only | self-test precedence/environment/path/process cases; real identities |
 | Solo success | require matching server/model absence around both lengths | fresh process per request | unchanged sampled generation | four short/full solo legs |
-| Co-resident success | own one idle pinned server and record RSS | same helper bytes and request | unchanged sampled generation | four short/full co-resident legs |
+| Co-resident success | own one pinned server, issue the fixed untimed warmup, require at least 2 GiB RSS, then keep it idle and record RSS | same helper bytes and request | unchanged sampled generation | four short/full co-resident legs |
 | Phase accounting | validate positive sequential/nested clocks and derive repeated setup | time seven production-order phases | publish existing engine counters unchanged | synthetic boundaries and real records |
 | Output identity | compare short prefix and full known-good digest across conditions | publish ids, counts, EOG state, and output digest | fixed seed stream and EOG handling | all sixteen records agree |
 | Lifetime | fresh process and record per request | expose existing balanced counters | current teardown remains owner | synthetic imbalance refusal and all real records |
