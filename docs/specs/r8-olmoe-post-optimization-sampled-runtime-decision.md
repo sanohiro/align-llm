@@ -119,3 +119,17 @@ construction at 0.272 seconds per request, far below the remaining approximately
 portfolio gap. Item 70 will instead reaggregate the current fixed request's already-instrumented
 remaining-decode buckets after items 58 and 68 and select one directly measured next seam or a
 narrower diagnosis. This result authorizes no product change by itself.
+
+The comprehensive Codex review covered head `a43d81f2fc791971928ead90e78ddb608ead51bc`
+against base tip and merge base `917565deae247f4d75841ad98ca9c5553cd29568`, using
+gpt-5.6-sol at high effort over the complete diff. It found two valid P2 findings. First, the
+wrapper allowed only ten seconds for a terminated delegated owner to finish up to three sequential
+15-second descendant cleanup bounds, so it could kill the owner before helper/server cleanup
+completed. Second, `HANDOFF.md` still named the already-completed result commit as pending work.
+
+Consolidated repair `b7e48d4585ec6f969946843c06d623211bb920c0` gives the delegated owner a
+50-second non-publishing cleanup grace after its unchanged result deadline, retains kill/reap
+escalation, and adds direct cleanup-budget, forced-timeout, and escalation regressions. It also
+removes the stale handoff action. The repair changes only failure cleanup and durable next-action
+state; it does not change successful measurement, schema, identity, samples, aggregate, or result,
+so neither another complete real run nor another comprehensive review is required.

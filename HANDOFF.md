@@ -36,8 +36,15 @@ Every local server lifetime and runtime absence boundary passed, and the evaluat
 source chain remained unchanged. Item 70 is selected to reaggregate the current fixed request's
 remaining-decode clocks after items 58 and 68; item 69 authorizes no product change.
 
-**Next actions.** Rerun affected owners, record the comprehensive review and repair, run exact-head
-preflight, publish, merge, and continue to item 70.
+The comprehensive high-effort Codex review covered `a43d81f` against base tip and merge base
+`917565d`. It found two valid P2 findings: the outer ten-second wait could kill the delegated owner
+before its sequential descendant cleanup completed, and the handoff retained a completed action.
+Consolidated repair `b7e48d4` grants the full 50-second inherited cleanup budget with timeout and
+escalation regressions and removes the stale action. Successful measurement behavior is unchanged,
+so no real rerun or second comprehensive review is required.
+
+**Next actions.** Rerun affected owners, run exact-head preflight, publish, merge, and continue to
+item 70.
 
 **Blocker.** None.
 
