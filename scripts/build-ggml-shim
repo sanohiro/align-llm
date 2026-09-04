@@ -289,11 +289,6 @@ else
     engine+resident-wrap)
                        include_flags+=("${engine}" "-DALIGN_GGML_FORCE_HOST_WRAP_FAILURE=1")
                        flavour="stub+engine+force-resident-wrap" ;;
-    # Item 66. Refuse only the first host wrap. Provider generation first tries the combined
-    # dense-plus-cache range, then must retry the original dense-only range and compact-copy path.
-    engine+cache-wrap)
-                       include_flags+=("${engine}" "-DALIGN_GGML_FORCE_CACHE_WRAP_FAILURE=1")
-                       flavour="stub+engine+force-cache-wrap" ;;
     *)
       printf '%s\n' "build-ggml-shim: unknown stub ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
       exit 1

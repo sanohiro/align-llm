@@ -1622,8 +1622,8 @@ The current forward delivery order is:
     cost moved into block-to-claim copying, whose median rose to 2,206,615,794 ns. The result is
     `NOT_MET`; remove the production intervention before publication and ship no speedup claim.
 
-66. **R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY — reduce the next measured claim-I/O bucket. Active;
-    implementation complete, fixed qualification pending.**
+66. **R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY — reduce the next measured claim-I/O bucket. Complete;
+    `NOT_MET`, publication pending.**
     [`r8-olmoe-cache-to-claim-copy-boundary.md`](r8-olmoe-cache-to-claim-copy-boundary.md) is the
     authoritative ledger and closure matrix. Preserve item 62's immutable full-request baseline
     and item 64's 1,072,229,252-ns cache-to-claim median. Pinned ggml's expert dimension is strided
@@ -1632,6 +1632,10 @@ The current forward delivery order is:
     generation. Keep diagnostic/reference and ineligible layouts on the existing compact copy path,
     retain the exact cache budget/policy/content/counters and outputs, and add no Align surface. The
     candidate precommits item 62's unchanged 963,327,962-ns floor and 18,303,231,267-ns ceiling.
+    The clean-head candidate removed every cache-to-claim copy but produced walls
+    `[17898558916,18767768208,19345020208,19586488125]` ns and a 19,056,394,208-ns median, only
+    10,908 ppm faster than item 62. The result is `NOT_MET`; remove all production changes before
+    publication and ship no speedup claim.
 
 ### Status (2026-08-28)
 

@@ -43,6 +43,7 @@ FULL_OUTPUT_SHA256 = previous.FULL_OUTPUT_SHA256
 FULL_CACHE_BYTES_FETCHED = previous.FULL_CACHE_BYTES_FETCHED
 REPETITIONS = previous.REPETITIONS
 CEILING_SECONDS = previous.CEILING_SECONDS
+EVALUATED_HEAD = "3bb713576d2ac8a8096a8fa79866aa0742c36a2a"
 
 BASELINE_VALUES_NS = previous.BASELINE_VALUES_NS
 BASELINE_MEDIAN_NS = previous.BASELINE_MEDIAN_NS
@@ -77,13 +78,13 @@ EXPECTED_SOURCE_IDENTITIES = (
     "505efca65a7637b65b26997de200234f44cd8b7cee9db681b9f9161524ecaaaf",
     "9141bee34a3579482c6c5852eb136810ea909f73575229b411f905ef96635581",
     "c7e82a8a8374e1c25f1e3b61ce0b89ed8639eaeae6b4e4ae8bee2a88a09b8e8b",
-    "4edde7c6b071e16a7df6ecba3c63a3f07802648706da6822e0b3fd555acc5f47",
-    "ab392dd608d488891f50f5f17330c9c0bb10dadd0fb784b60309892b5c8dbc6e",
+    "86815bffb5115d92a6d9e7e341b7a73c91c8fe514209fc8b965daf4ae3df34b8",
+    "e8f38cc06b2bf68094a5654ed2f36e917fa86e5d20f7d1f35d1d0a5971705ef2",
     "b5f1b7f7798239982446f56d9d17eeeca9b87a8a47bd685e6bd9e634a686198e",
-    "b3d492bd3ae8ba35b050dd7daa969607a77e9c236b01fc2637967e5addfe4f56",
-    "2958aacfd6b63581c6a5f3c300e0d9fb9ece78225d0eb2b659edb701893e2931",
-    "f6b892c700dd070058378e815f79b3fed543f055708ebf05a284d67621067e3c",
-    "133d3ec5f5f08e8e6e128cd76ed1e4c467c5424bb535a9de8ce8e38f61a7e481",
+    "080bb5084eaa3687a8237cde9218529e33862d5f2c4a09d0473772dccc42a046",
+    "4c7bc66a3c6d3645db050ef8e3a45bc32b09c34e47238ff1e165190052b21f89",
+    "1620950e2b54e8a37c5e448f6ab464621d7ae091a2e8f074c5f7aef95f1eb0e0",
+    "acf4e97b46d1bbb22b6e043f9d7e8a9c43bce1bb427913c3b17c8b91bf2a72d5",
     "ff2a3d96ef2bdfdaf3acbc966734b9d813c5b7e105444f122e17fa3cd1561a34",
     "6a9d948bf265c39570dee1ceca9f76ce361fea88f00f624ee0669d48c53e4824",
 )
@@ -467,6 +468,10 @@ def self_test() -> int:
     printed.assert_called_once_with(
         "R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY: N/A (ALIGN_LLM_OLMOE_MODEL unset)"
     )
+    with mock.patch.object(sys, "argv", [sys.argv[0]]):
+        expect_error(main, "publication head accepted a real qualification")
+    with mock.patch.object(sys, "argv", [sys.argv[0], "--real"]):
+        expect_error(main, "publication head accepted an unsupported mode")
     print("R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY self-test: PASS")
     return 0
 
@@ -474,8 +479,14 @@ def self_test() -> int:
 def main() -> int:
     if sys.argv[1:] == ["--self-test"]:
         return self_test()
-    if len(sys.argv) != 1:
-        raise CacheToClaimBoundaryError("qualification accepts no arguments")
+    if len(sys.argv) == 1:
+        raise CacheToClaimBoundaryError(
+            "fixed-stride candidate was removed after NOT_MET; reproduce the real qualification "
+            f"from evaluated commit {EVALUATED_HEAD}"
+        )
+    raise CacheToClaimBoundaryError(
+        "published OLMoE cache-to-claim qualification accepts only --self-test"
+    )
     required = prerequisites()
     if required is None:
         return 0

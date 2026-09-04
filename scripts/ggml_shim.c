@@ -18,9 +18,9 @@
  *  3. **Fail closed before ggml can abort.** `ggml_backend_cpu_buffer_from_ptr` calls `abort()`
  *     through `GGML_ASSERT` on a pointer that is not `TENSOR_ALIGNMENT`-aligned (section 2.4), so
  *     every pointer and every size is validated here, in C, before the call that would assert.
- *  4. **No `struct ggml_tensor` field is read directly except the public stride array.** Its data,
- *     byte extent, and type use accessors. Item 66 writes `nb[2]`/`nb[3]` after checked construction
- *     because ggml exposes no constructor for a standalone fixed-slot expert stack.
+ *  4. **No `struct ggml_tensor` field is read directly.** Its layout is private; `ggml_get_data`,
+ *     `ggml_nbytes`, and `ggml_blck_size` are the accessors, which is the third of section 5.6's
+ *     ABI-drift mitigations.
  *
  * Built by the `Makefile`'s `build/lib/libalign_ggml_shim.$(SHIM_SUFFIX)` rule when
  * `ALIGN_LLM_GGML_INCLUDE` is set; `scripts/ggml_shim_stub.c` is built instead when it is not.
@@ -1746,67 +1746,6 @@ int32_t align_ggml_slot_new_tensor_3d(
     if (tensor == NULL) {
         return ALIGN_GGML_INIT;
     }
-    return align_ggml_slot_store(slots, out, (void *) tensor);
-}
-
-/* Item 66. A standalone stacked expert operand over fixed-size cache slots. `ggml_new_tensor_3d`
- * establishes the linked type's ordinary row and matrix strides; only the expert stride changes.
- * All arithmetic is checked before construction so neither ggml's shape asserts nor a later
- * placement can observe a wrapped extent.
- */
-int32_t align_ggml_slot_new_strided_tensor_3d(
-    void *ctx, void *slots, int64_t out, int32_t type,
-    int64_t ne0, int64_t ne1, int64_t ne2, int64_t slice_stride) {
-    struct ggml_tensor *tensor = NULL;
-    int row_index = -1;
-    size_t row_bytes = 0;
-    size_t plane_bytes = 0;
-    size_t stride = 0;
-    size_t reachable = 0;
-    if (ctx == NULL) {
-        return ALIGN_GGML_INIT;
-    }
-    if (ne0 <= 0 || ne1 <= 0 || ne2 <= 0 || slice_stride <= 0) {
-        return ALIGN_GGML_SHAPE;
-    }
-    row_index = align_ggml_table_row(type);
-    if (row_index < 0) {
-        return ALIGN_GGML_TYPE;
-    }
-    if (ne0 % (int64_t) align_ggml_type_table[row_index][1] != 0) {
-        return ALIGN_GGML_SHAPE;
-    }
-    if ((uint64_t) (ne0 / (int64_t) align_ggml_type_table[row_index][1])
-        > (uint64_t) SIZE_MAX / (uint64_t) align_ggml_type_table[row_index][2]) {
-        return ALIGN_GGML_SHAPE;
-    }
-    row_bytes = (size_t) (ne0 / (int64_t) align_ggml_type_table[row_index][1])
-        * (size_t) align_ggml_type_table[row_index][2];
-    if ((uint64_t) ne1 > (uint64_t) SIZE_MAX / row_bytes) {
-        return ALIGN_GGML_SHAPE;
-    }
-    plane_bytes = row_bytes * (size_t) ne1;
-    if ((uint64_t) slice_stride > (uint64_t) SIZE_MAX) {
-        return ALIGN_GGML_SHAPE;
-    }
-    stride = (size_t) slice_stride;
-    if (stride < plane_bytes) {
-        return ALIGN_GGML_SHAPE;
-    }
-    if ((uint64_t) (ne2 - 1) > (uint64_t) (SIZE_MAX - plane_bytes) / stride
-        || (uint64_t) ne2 > (uint64_t) SIZE_MAX / stride) {
-        return ALIGN_GGML_SHAPE;
-    }
-    reachable = (size_t) (ne2 - 1) * stride + plane_bytes;
-    if (reachable < plane_bytes) {
-        return ALIGN_GGML_SHAPE;
-    }
-    tensor = ggml_new_tensor_3d((struct ggml_context *) ctx, (enum ggml_type) type, ne0, ne1, ne2);
-    if (tensor == NULL) {
-        return ALIGN_GGML_INIT;
-    }
-    tensor->nb[2] = stride;
-    tensor->nb[3] = (size_t) ne2 * stride;
     return align_ggml_slot_store(slots, out, (void *) tensor);
 }
 

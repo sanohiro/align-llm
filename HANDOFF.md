@@ -38,30 +38,32 @@ claim window remains allocated for misses and fallback, but eligible phase B doe
 it. The candidate must report zero cache-to-claim time on all full fixed requests and meet the
 immutable full-request ceiling; otherwise its production changes are removed before publication.
 
-Implementation after design checkpoint `afaf5fc` is complete. The real/stub shim constructor
-checks type block shape, row/plane arithmetic, slot stride, reachable span, and slot storage before
-use. Provider generation selects one combined wrap only for an aligned cache layout, skips hit
-copies, re-resolves each routed key after staging, encodes cache-slot ids, and places three
-fixed-stride tensors over the cache. The hosted engine consumes the stored expert stride. An
-injected first combined-wrap refusal proves the original dense-only wrap and compact-copy fallback.
-A real ggml fixed-model conditioning request completed successfully with balanced native resource
-counters.
+Evaluated implementation `3bb7135` added the checked real/stub shim constructor, selected one
+combined wrap for aligned provider generation, skipped hit copies, re-resolved routed keys to
+cache-slot ids, and placed three fixed-stride tensors over the cache. Hosted direct/fallback owners
+and a real fixed-model conditioning probe passed with balanced native resources.
 
-The item-66 thin helper and bounded runner pin the complete transitive source chain and pass their
-model-free gate-boundary, schema, malformed-clock, source-drift, cleanup, and N/A self-tests.
+The clean-head four-repeat qualification completed in 110.506 seconds with walls
+`[17898558916,18767768208,19345020208,19586488125]` ns and a 19,056,394,208-ns median. All four
+full requests reported zero cache-to-claim copy time, exact output/cache/lifetime evidence, and
+clean isolation. The 210,165,021-ns / 10,908-ppm gain did not meet item 62's 963,327,962-ns /
+50,000-ppm floor, so the decision is `NOT_MET`. The production intervention and production-owner
+changes are removed before publication; only the ledger, thin helper, and bounded self-test owner
+remain.
 
-**Next actions.** Commit the qualification owner; execute the clean-head four-repeat gate; record
-`MET` or `NOT_MET`; then review, repair, publish, merge, and continue.
+**Next actions.** Commit the negative-decision cleanup, complete one comprehensive review, repair
+valid findings, run the exact-head preflight, publish and merge item 66, then select item 67 from
+the remaining measured evidence.
 
 **Blocker.** None.
 
-**Latest durable verification.** `make check` passes. `make layer-forward-smoke` passed in 62.076
-seconds. `make runtime-provider-smoke` passes its sampler vectors, 61 CLI assertions, new strided
-constructor vectors, direct hosted OLMoE generation, and combined-wrap fallback. Both real and stub
-shims compile with `-Werror`; the real fixed-model conditioning probe completed successfully.
-`PYTHONDONTWRITEBYTECODE=1 ./scripts/run-olmoe-cache-to-claim-copy-boundary --self-test` passes.
+**Latest durable verification.** Before the decision, `make check`, `make layer-forward-smoke`
+(62.076 seconds), `make runtime-provider-smoke`, both `-Werror` shim builds, the real conditioning
+probe, and the item-66 self-test passed. The clean-head fixed qualification result is recorded
+above. After removal, production sources compare byte-for-byte with merged `main`; `make fmt`, the
+item-66 self-test, explicit no-argument refusal, and `git diff --check` pass.
 
-**Intentional uncommitted files.** None after the item-66 implementation checkpoint is committed.
+**Intentional uncommitted files.** None after the negative-decision cleanup is committed.
 Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-FILE-PREAD-BOUNDARY (PR #187, 2026-09-05)

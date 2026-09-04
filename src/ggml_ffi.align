@@ -251,9 +251,6 @@ extern "C" link("align_ggml_shim") {
     nb1_dim: i32, offset_dim: i32, offset_index: i64) -> i32
   fn align_ggml_slot_new_tensor_3d(
     ctx: raw, slots: slice<u8>, out: i64, kind: i32, ne0: i64, ne1: i64, ne2: i64) -> i32
-  fn align_ggml_slot_new_strided_tensor_3d(
-    ctx: raw, slots: slice<u8>, out: i64, kind: i32,
-    ne0: i64, ne1: i64, ne2: i64, slice_stride: i64) -> i32
   fn align_ggml_slot_new_i32_2d(ctx: raw, slots: slice<u8>, out: i64, ne0: i64, ne1: i64) -> i32
 
   // The second new symbol, and section 6 correction C5's whole subject: a bounded `memcpy` between
@@ -1047,28 +1044,6 @@ pub fn slot_new_tensor_3d(
   unsafe {
     return r5_result(
       align_ggml_slot_new_tensor_3d(ctx, slots, out, kind as i32, ne0, ne1, ne2) as i64, label)
-  }
-}
-
-// A stacked expert operand whose planes live in fixed-size cache slots. The shim owns every byte
-// calculation and installs the expert stride only after proving the final reachable byte fits.
-pub fn slot_new_strided_tensor_3d(
-  ctx: raw,
-  borrow slots: slice<u8>,
-  out: i64,
-  kind: i64,
-  ne0: i64,
-  ne1: i64,
-  ne2: i64,
-  slice_stride: i64,
-  label: str,
-) -> Result<(), Fault> {
-  if !type_representable(kind) { return Err(r5_fault(STATUS_TYPE, label)) }
-  unsafe {
-    return r5_result(
-      align_ggml_slot_new_strided_tensor_3d(
-        ctx, slots, out, kind as i32, ne0, ne1, ne2, slice_stride) as i64,
-      label)
   }
 }
 

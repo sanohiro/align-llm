@@ -1,6 +1,6 @@
 # R8 OLMoE cache-to-claim copy boundary
 
-Status: active; implementation complete, fixed qualification pending, 2026-09-05
+Status: complete; `NOT_MET`, production intervention removed, 2026-09-05
 
 Roadmap owner: item 66, `R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY`
 
@@ -105,19 +105,21 @@ owns byte-stride arithmetic and returns existing fault classes before a ggml ass
 budget and every allocation remain unchanged. The immutable baseline, 963,327,962-nanosecond floor,
 and 18,303,231,267-nanosecond ceiling are fixed before production code changes.
 
-## 6. Implementation checkpoint
+## 6. Evaluation and decision
 
-The implementation adds the checked real/stub constructor, makes the stub kernel consume the
-stored expert stride, validates static cache layout before selecting direct mode, wraps the
-existing dense-plus-cache allocation once, skips hit copies, re-resolves every selected key to a
-cache slot after complete staging, and places the three role tensors over the cache. A refused
-combined wrap retries the original dense-only wrap and compact-copy graph.
+Evaluated implementation `3bb713576d2ac8a8096a8fa79866aa0742c36a2a` added the checked real/stub
+constructor, made the stub kernel consume the stored expert stride, validated static cache layout,
+wrapped dense plus cache once, skipped hit copies, re-resolved every routed key after staging, and
+placed the three role tensors over the cache. Hosted direct and fallback owners passed, as did a
+real ggml fixed-model conditioning request.
 
-`make check`, `make runtime-provider-smoke`, and `make layer-forward-smoke` pass with the pinned
-toolchain environment. The runtime owner now covers constructor success, reachable span, null
-context, zero shape, unsupported type, short stride, row overflow, slot range, direct hosted OLMoE
-generation, and injected combined-wrap fallback. A real ggml fixed-model conditioning request also
-completed with balanced native resources. The thin item-66 helper and bounded qualification runner
-pin the complete transitive source/toolchain/workload identity, require zero cache-to-claim time on
-every full request, and pass their model-free self-test. The four-repeat shipping run remains
-pending.
+The clean-head four-repeat qualification produced full-helper walls
+`[17898558916,18767768208,19345020208,19586488125]` ns and a 19,056,394,208-ns median. Every full
+request preserved the fixed output, cache accounting, isolation, and lifetime evidence and
+reported exactly zero cache-to-claim copy nanoseconds. The median gain was only 210,165,021 ns /
+10,908 ppm, below the precommitted 963,327,962-ns / 50,000-ppm floor. The decision is `NOT_MET`.
+
+The production intervention and its production-owner changes are removed before publication. The
+published capability retains this authoritative negative result, the thin helper, and a bounded
+self-test-only qualification owner. Reproducing the real measurement requires evaluated commit
+`3bb713576d2ac8a8096a8fa79866aa0742c36a2a`.
