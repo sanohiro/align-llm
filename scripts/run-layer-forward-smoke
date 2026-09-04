@@ -138,6 +138,94 @@ SCAN
 shim_dir=$(ALIGN_LLM_GGML_SHIM_DIR="${work_dir}/lib" "${root_dir}/scripts/build-ggml-shim")
 export ALIGN_LLM_GGML_SHIM_DIR="${work_dir}/lib"
 shim_built=1
+
+# R8-OLMOE-KV-PLANE-STAGING-TRANSFER section 4. Exercise the shared native symbol directly against
+# the hosted stub: one non-square exact-layout vector and every validation class that promises no
+# partial destination write. The normal executable build below separately proves the Align extern
+# declaration and safe wrapper agree with this ABI.
+python3 - "${shim_dir}" <<'PY'
+import ctypes
+import struct
+import sys
+from pathlib import Path
+
+shim_dir = Path(sys.argv[1])
+candidates = list(shim_dir.glob("libalign_ggml_shim.*"))
+if len(candidates) != 1:
+    raise SystemExit("layer forward smoke: FAIL cannot identify the built staging shim")
+library = ctypes.CDLL(str(candidates[0]))
+stage_kv = library.align_ggml_stage_kv
+stage_kv.argtypes = [
+    ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
+    ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
+]
+stage_kv.restype = ctypes.c_int32
+
+head_dim = 2
+n_head_kv = 2
+n_past = 3
+past_bytes = head_dim * n_head_kv * n_past * 4
+k_base = 8
+v_base = 80
+plane_data = bytearray([0x3C] * 160)
+for index, value in enumerate(range(100, 112)):
+    struct.pack_into("<I", plane_data, k_base + index * 4, value)
+for index, value in enumerate(range(200, 212)):
+    struct.pack_into("<I", plane_data, v_base + index * 4, value)
+plane = ctypes.create_string_buffer(bytes(plane_data))
+stage = ctypes.create_string_buffer(past_bytes * 2)
+status = stage_kv(
+    plane, len(plane_data), k_base, v_base, stage, past_bytes * 2,
+    head_dim, n_head_kv, n_past,
+)
+if status != 0:
+    raise SystemExit("layer forward smoke: FAIL exact staging vector returned %d" % status)
+actual = list(struct.unpack("<24I", stage.raw[:past_bytes * 2]))
+expected = [
+    100, 101, 104, 105, 108, 109,
+    102, 103, 106, 107, 110, 111,
+    200, 204, 208, 201, 205, 209,
+    202, 206, 210, 203, 207, 211,
+]
+if actual != expected:
+    raise SystemExit("layer forward smoke: FAIL staging layout %r, not %r" % (actual, expected))
+if plane.raw[:len(plane_data)] != bytes(plane_data):
+    raise SystemExit("layer forward smoke: FAIL staging modified its source plane")
+
+def refuse(label, expected_status, plane_arg=plane, plane_bytes=len(plane_data),
+           k_at=k_base, v_at=v_base, stage_bytes=past_bytes * 2,
+           hd=head_dim, heads=n_head_kv, past=n_past):
+    destination = ctypes.create_string_buffer(bytes([0xA5]) * (past_bytes * 2))
+    result = stage_kv(
+        plane_arg, plane_bytes, k_at, v_at, destination, stage_bytes, hd, heads, past,
+    )
+    if result != expected_status:
+        raise SystemExit("layer forward smoke: FAIL %s status %d, not %d"
+                         % (label, result, expected_status))
+    if destination.raw[:past_bytes * 2] != bytes([0xA5]) * (past_bytes * 2):
+        raise SystemExit("layer forward smoke: FAIL %s partially wrote its destination" % label)
+
+refuse("null-plane", -6, plane_arg=None)
+refuse("negative-base", -7, k_at=-1)
+refuse("zero-dimension", -7, hd=0)
+refuse("dimension-overflow", -7, hd=2**63 - 1, heads=2)
+refuse("wrong-output-size", -7, stage_bytes=past_bytes * 2 - 4)
+refuse("source-out-of-bounds", -7, v_at=len(plane_data) - past_bytes + 1)
+
+overlap = ctypes.create_string_buffer(bytes(plane_data))
+before = overlap.raw[:len(plane_data)]
+result = stage_kv(
+    overlap, len(plane_data), k_base, v_base, ctypes.byref(overlap, k_base), past_bytes * 2,
+    head_dim, n_head_kv, n_past,
+)
+if result != -7:
+    raise SystemExit("layer forward smoke: FAIL overlap status %d, not -7" % result)
+if overlap.raw[:len(plane_data)] != before:
+    raise SystemExit("layer forward smoke: FAIL overlap refusal modified its shared range")
+
+print("layer forward smoke: KV-plane native staging layout and refusals PASS")
+PY
+
 # The compiler's warnings are captured rather than streamed **under the fresh worker**, exactly as
 # `Makefile`'s own `check` and `build` targets do. `src/ggml_spike.align` imports every arm, so one
 # build of it writes **179,363 bytes** of `huge struct copy` and `lossy conversion` warnings —

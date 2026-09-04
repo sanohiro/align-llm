@@ -1,0 +1,564 @@
+#!/usr/bin/env python3
+"""Qualify the bounded native OLMoE KV-plane staging transfer."""
+
+from __future__ import annotations
+
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+import platform
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DIAGNOSIS_PATH = ROOT / "scripts/run-olmoe-remaining-decode-overhead-diagnosis"
+DIAGNOSIS_LOADER = SourceFileLoader("olmoe_remaining_decode_for_kv_stage", str(DIAGNOSIS_PATH))
+DIAGNOSIS_SPEC = importlib.util.spec_from_loader(DIAGNOSIS_LOADER.name, DIAGNOSIS_LOADER)
+if DIAGNOSIS_SPEC is None or DIAGNOSIS_SPEC.loader is None:
+    raise RuntimeError("cannot load the remaining-decode owner")
+diagnosis = importlib.util.module_from_spec(DIAGNOSIS_SPEC)
+sys.modules[DIAGNOSIS_LOADER.name] = diagnosis
+DIAGNOSIS_SPEC.loader.exec_module(diagnosis)
+phase = diagnosis.phase
+owner = diagnosis.parent
+base = diagnosis.base
+
+MODEL_BYTES = 4_213_512_192
+MODEL_SHA256 = "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f"
+SERVER_BUILD = "build 10566, commit bb4caa754"
+BUDGET = 975_175_680
+SEED = 5
+FULL_TOKENS = 128
+TEMPERATURE_MICROS = 300_000
+FULL_OUTPUT_SHA256 = "aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52"
+REPETITIONS = 4
+CEILING_SECONDS = 8 * 60
+
+BASELINE_VALUES_NS = [28_322_991_875, 30_172_193_417, 30_729_519_750, 30_967_544_875]
+BASELINE_MEDIAN_NS = 30_450_856_583
+FLOOR_PPM = 50_000
+CANDIDATE_CEILING_NS = 28_928_313_753
+
+EXPECTED_DIAGNOSIS_SHA256 = "de717064f4d2ea89d63a6529d38d37157f7d34f9946db7e6dc350076185157ce"
+EXPECTED_HELPER_SOURCE_SHA256 = "24f2063ebda8b4792886d0d926ef389d1f251037af7d98a31132d0f023733917"
+EXPECTED_ALIGN_REVISION = "8cefc803d5c7f883a8db5b67250ed4ed069b43a4"
+EXPECTED_COMPILER_SHA256 = "f972b4a196ed5608a0c52cc02dbf8267cfc236065359315a572d601aa04ea541"
+EXPECTED_PACK_SHA256 = "20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae"
+EXPECTED_GEOMETRY_SHA256 = "1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada"
+EXPECTED_SERVER_SHA256 = "98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c"
+EXPECTED_TASK_SHA256 = "1884f01a329752c1383081342c65d062241aefaefff2f206f6604008bde74940"
+EXPECTED_PROMPT_SHA256 = "0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b"
+EXPECTED_C_COMPILER_SHA256 = "179301dcb41ea78accc3fa0048a7e6f6710d891945a751a34addd622020c1818"
+EXPECTED_C_COMPILER_VERSION_SHA256 = (
+    "ea3037e0630fa16798079372fdc24f6542d021dadda4915cc979799682d78295"
+)
+EXPECTED_LINKER_SEARCH_SHA256 = "5cb52d849e4b5dd2e0380c9fd272279c8b3e572dc563691f60fc8ecbf72d92cf"
+EXPECTED_BASELINE_HOST = {
+    "os": "Darwin",
+    "release": "25.5.0",
+    "architecture": "arm64",
+    "cpu_count": 8,
+    "host_model": "MacBookAir10,1",
+    "cpu_brand": "Apple M1",
+    "memory_bytes": 17_179_869_184,
+}
+EXPECTED_BASELINE_HOST_SHA256 = (
+    "0a46a7d41c5f9aa35b62891b272f6bf6c79ec4b97acf0b918685ba82ddee15f1"
+)
+EXPECTED_GGML_LIBRARIES = [
+    {"name": "libggml-base.0.21.0.dylib", "bytes": 506_160, "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574"},
+    {"name": "libggml-base.0.dylib", "bytes": 506_160, "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574"},
+    {"name": "libggml-base.dylib", "bytes": 506_160, "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574"},
+    {"name": "libggml.0.21.0.dylib", "bytes": 60_272, "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734"},
+    {"name": "libggml.0.dylib", "bytes": 60_272, "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734"},
+    {"name": "libggml.dylib", "bytes": 60_272, "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734"},
+]
+
+TOP_KEYS = {
+    "schema_version", "artifact_kind", "status", "model", "baseline", "candidate",
+    "task", "environment", "samples", "aggregate", "elapsed_ns",
+}
+AGGREGATE_KEYS = {
+    "candidate_full_helper_wall_values_ns", "candidate_full_helper_wall_median_ns",
+    "candidate_plane_upload_values_ns", "candidate_plane_upload_median_ns",
+    "baseline_median_ns", "gain_ns", "gain_ppm", "floor_ppm",
+    "candidate_ceiling_ns", "decision",
+}
+
+
+class TransferError(RuntimeError):
+    pass
+
+
+def is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def is_lower_hex(value: object, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def host_fingerprint(identity: dict[str, Any]) -> str:
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base.bytes_sha256(canonical)
+
+
+def qualification_host(clean_env: dict[str, str], deadline: float) -> dict[str, Any]:
+    def sysctl(name: str) -> str:
+        return owner.run_process(
+            ["/usr/sbin/sysctl", "-n", name], deadline=deadline, maximum=30, env=clean_env,
+        ).stdout.decode("utf-8").strip()
+
+    cpu_count = os.cpu_count()
+    if not is_int(cpu_count) or cpu_count <= 0:
+        raise TransferError("qualification host CPU count was unavailable")
+    identity = {
+        "os": platform.system(),
+        "release": platform.release(),
+        "architecture": platform.machine(),
+        "cpu_count": cpu_count,
+        "host_model": sysctl("hw.model"),
+        "cpu_brand": sysctl("machdep.cpu.brand_string"),
+        "memory_bytes": int(sysctl("hw.memsize")),
+    }
+    fingerprint = host_fingerprint(identity)
+    if identity != EXPECTED_BASELINE_HOST or fingerprint != EXPECTED_BASELINE_HOST_SHA256:
+        raise TransferError("qualification host does not match the fixed baseline host")
+    return {**identity, "host_fingerprint_sha256": fingerprint}
+
+
+def validate_imported_contract() -> None:
+    diagnosis.validate_imported_workload()
+    actual = (
+        diagnosis.MODEL_BYTES, diagnosis.MODEL_SHA256, diagnosis.SERVER_BUILD,
+        diagnosis.BUDGET, diagnosis.SEED, diagnosis.FULL_TOKENS,
+        diagnosis.TEMPERATURE_MICROS, diagnosis.FULL_OUTPUT_SHA256,
+        base.file_sha256(DIAGNOSIS_PATH),
+        base.file_sha256(ROOT / "src/olmoe_remaining_decode_overhead_gate.align"),
+        diagnosis.EXPECTED_ALIGN_REVISION, diagnosis.EXPECTED_COMPILER_SHA256,
+        diagnosis.EXPECTED_PACK_SHA256, diagnosis.EXPECTED_GEOMETRY_SHA256,
+        diagnosis.EXPECTED_SERVER_SHA256, diagnosis.EXPECTED_TASK_SHA256,
+        diagnosis.EXPECTED_PROMPT_SHA256, diagnosis.EXPECTED_C_COMPILER_SHA256,
+        diagnosis.EXPECTED_C_COMPILER_VERSION_SHA256,
+        diagnosis.EXPECTED_LINKER_SEARCH_SHA256, diagnosis.EXPECTED_GGML_LIBRARIES,
+    )
+    expected = (
+        MODEL_BYTES, MODEL_SHA256, SERVER_BUILD, BUDGET, SEED, FULL_TOKENS,
+        TEMPERATURE_MICROS, FULL_OUTPUT_SHA256, EXPECTED_DIAGNOSIS_SHA256,
+        EXPECTED_HELPER_SOURCE_SHA256, EXPECTED_ALIGN_REVISION, EXPECTED_COMPILER_SHA256,
+        EXPECTED_PACK_SHA256, EXPECTED_GEOMETRY_SHA256, EXPECTED_SERVER_SHA256,
+        EXPECTED_TASK_SHA256, EXPECTED_PROMPT_SHA256, EXPECTED_C_COMPILER_SHA256,
+        EXPECTED_C_COMPILER_VERSION_SHA256, EXPECTED_LINKER_SEARCH_SHA256,
+        EXPECTED_GGML_LIBRARIES,
+    )
+    if actual != expected:
+        raise TransferError("imported item 57 contract drifted")
+    if diagnosis.integer_median(BASELINE_VALUES_NS) != BASELINE_MEDIAN_NS:
+        raise TransferError("item 57 baseline median drifted")
+    if host_fingerprint(EXPECTED_BASELINE_HOST) != EXPECTED_BASELINE_HOST_SHA256:
+        raise TransferError("fixed baseline host fingerprint drifted")
+    floor_ns = (BASELINE_MEDIAN_NS * FLOOR_PPM + 999_999) // 1_000_000
+    if BASELINE_MEDIAN_NS - floor_ns != CANDIDATE_CEILING_NS:
+        raise TransferError("candidate ceiling drifted")
+
+
+def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    # The predecessor owns the complete helper/output/lifetime/isolation validation. Its bucket
+    # decision is intentionally ignored; this capability owns only the wall improvement below.
+    diagnosis.aggregate(samples)
+    walls = [sample["full_helper_wall_ns"] for sample in samples]
+    uploads = [sample["full"]["remaining_decode"]["plane_upload_ns"] for sample in samples]
+    candidate_median = diagnosis.integer_median(walls)
+    upload_median = diagnosis.integer_median(uploads)
+    gain_ns = BASELINE_MEDIAN_NS - candidate_median
+    gain_ppm = gain_ns * 1_000_000 // BASELINE_MEDIAN_NS
+    decision = (
+        "MET"
+        if gain_ns >= 0 and gain_ppm >= FLOOR_PPM and candidate_median <= CANDIDATE_CEILING_NS
+        else "NOT_MET"
+    )
+    return {
+        "candidate_full_helper_wall_values_ns": walls,
+        "candidate_full_helper_wall_median_ns": candidate_median,
+        "candidate_plane_upload_values_ns": uploads,
+        "candidate_plane_upload_median_ns": upload_median,
+        "baseline_median_ns": BASELINE_MEDIAN_NS,
+        "gain_ns": gain_ns,
+        "gain_ppm": gain_ppm,
+        "floor_ppm": FLOOR_PPM,
+        "candidate_ceiling_ns": CANDIDATE_CEILING_NS,
+        "decision": decision,
+    }
+
+
+def validate_result(result: dict[str, Any]) -> None:
+    diagnosis.require_exact_keys(result, TOP_KEYS, "result")
+    if (
+        result["schema_version"] != 1
+        or result["artifact_kind"] != "R8_OLMOE_KV_PLANE_STAGING_TRANSFER"
+        or result["status"] != "COMPLETE"
+    ):
+        raise TransferError("result scalar identity drifted")
+    expected_nested = {
+        "model": {"bytes", "sha256", "architecture"},
+        "baseline": {
+            "full_helper_wall_values_ns", "full_helper_wall_median_ns", "floor_ppm",
+            "candidate_ceiling_ns",
+        },
+        "candidate": {
+            "provider", "align_llm_head", "align_revision", "compiler_sha256",
+            "helper_sha256", "shim_sha256", "ggml_libraries", "pack_sha256",
+            "geometry_sha256", "cache_budget_bytes",
+        },
+        "task": {
+            "task_id", "task_sha256", "prompt_sha256", "maximum_tokens",
+            "temperature_micros", "seed", "full_output_sha256",
+        },
+        "environment": {
+            "os", "release", "architecture", "cpu_count", "host_model", "cpu_brand",
+            "memory_bytes", "host_fingerprint_sha256", "c_compiler_sha256",
+            "c_compiler_version_sha256", "linker_search_sha256",
+        },
+    }
+    for name, keys in expected_nested.items():
+        if not isinstance(result[name], dict):
+            raise TransferError(f"result {name} was not an object")
+        diagnosis.require_exact_keys(result[name], keys, f"result {name}")
+    if result["baseline"] != {
+        "full_helper_wall_values_ns": BASELINE_VALUES_NS,
+        "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+        "floor_ppm": FLOOR_PPM,
+        "candidate_ceiling_ns": CANDIDATE_CEILING_NS,
+    }:
+        raise TransferError("result baseline drifted")
+    if result["model"] != {
+        "bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe",
+    }:
+        raise TransferError("result model identity drifted")
+    candidate = result["candidate"]
+    if (
+        candidate["provider"] != "align-runtime"
+        or not is_lower_hex(candidate["align_llm_head"], 40)
+        or candidate["align_revision"] != EXPECTED_ALIGN_REVISION
+        or candidate["compiler_sha256"] != EXPECTED_COMPILER_SHA256
+        or not is_lower_hex(candidate["helper_sha256"], 64)
+        or not is_lower_hex(candidate["shim_sha256"], 64)
+        or candidate["ggml_libraries"] != EXPECTED_GGML_LIBRARIES
+        or candidate["pack_sha256"] != EXPECTED_PACK_SHA256
+        or candidate["geometry_sha256"] != EXPECTED_GEOMETRY_SHA256
+        or candidate["cache_budget_bytes"] != BUDGET
+    ):
+        raise TransferError("result candidate identity drifted")
+    if result["task"] != {
+        "task_id": "python-inclusive-range", "task_sha256": EXPECTED_TASK_SHA256,
+        "prompt_sha256": EXPECTED_PROMPT_SHA256, "maximum_tokens": FULL_TOKENS,
+        "temperature_micros": TEMPERATURE_MICROS, "seed": SEED,
+        "full_output_sha256": FULL_OUTPUT_SHA256,
+    }:
+        raise TransferError("result task identity drifted")
+    expected_environment = {
+        **EXPECTED_BASELINE_HOST,
+        "host_fingerprint_sha256": EXPECTED_BASELINE_HOST_SHA256,
+        "c_compiler_sha256": EXPECTED_C_COMPILER_SHA256,
+        "c_compiler_version_sha256": EXPECTED_C_COMPILER_VERSION_SHA256,
+        "linker_search_sha256": EXPECTED_LINKER_SEARCH_SHA256,
+    }
+    if result["environment"] != expected_environment:
+        raise TransferError("result environment identity drifted")
+    if not isinstance(result["samples"], list):
+        raise TransferError("result samples were not an array")
+    expected_aggregate = aggregate(result["samples"])
+    if result["aggregate"] != expected_aggregate:
+        raise TransferError("result aggregate drifted")
+    diagnosis.require_exact_keys(result["aggregate"], AGGREGATE_KEYS, "result aggregate")
+    if not is_int(result["elapsed_ns"]) or result["elapsed_ns"] <= 0:
+        raise TransferError("result elapsed interval was invalid")
+
+
+def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
+    rows = (
+        ("ALIGN_LLM_OLMOE_MODEL", base.configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", base.configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", base.configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", base.configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", base.configured_directory("ALIGN_LLM_GGML_LIB")),
+        ("ALIGN_LLM_LLAMA_SERVER", base.configured_file("ALIGN_LLM_LLAMA_SERVER", executable=True)),
+    )
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-KV-PLANE-STAGING-TRANSFER: N/A ({missing} unset)")
+        return None
+    return tuple(path.resolve() for _, path in rows)  # type: ignore[return-value]
+
+
+def synthetic_samples(wall: int) -> list[dict[str, Any]]:
+    samples = diagnosis.synthetic_samples()
+    for sample in samples:
+        sample["full_helper_wall_ns"] = wall
+    return samples
+
+
+def synthetic_result(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    predecessor = diagnosis.synthetic_result(samples)
+    return {
+        "schema_version": 1,
+        "artifact_kind": "R8_OLMOE_KV_PLANE_STAGING_TRANSFER",
+        "status": "COMPLETE",
+        "model": predecessor["model"],
+        "baseline": {
+            "full_helper_wall_values_ns": BASELINE_VALUES_NS,
+            "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+            "floor_ppm": FLOOR_PPM,
+            "candidate_ceiling_ns": CANDIDATE_CEILING_NS,
+        },
+        "candidate": predecessor["candidate"],
+        "task": predecessor["task"],
+        "environment": {
+            **EXPECTED_BASELINE_HOST,
+            "host_fingerprint_sha256": EXPECTED_BASELINE_HOST_SHA256,
+            "c_compiler_sha256": EXPECTED_C_COMPILER_SHA256,
+            "c_compiler_version_sha256": EXPECTED_C_COMPILER_VERSION_SHA256,
+            "linker_search_sha256": EXPECTED_LINKER_SEARCH_SHA256,
+        },
+        "samples": samples,
+        "aggregate": aggregate(samples),
+        "elapsed_ns": 1,
+    }
+
+
+def self_test() -> int:
+    if diagnosis.self_test() != 0:
+        raise TransferError("item 57 inherited self-test failed")
+    validate_imported_contract()
+    at_gate = aggregate(synthetic_samples(CANDIDATE_CEILING_NS))
+    if at_gate["gain_ppm"] != FLOOR_PPM or at_gate["decision"] != "MET":
+        raise TransferError("candidate at the exact gate did not ship")
+    above_gate = aggregate(synthetic_samples(CANDIDATE_CEILING_NS + 1))
+    if above_gate["gain_ppm"] != FLOOR_PPM - 1 or above_gate["decision"] != "NOT_MET":
+        raise TransferError("candidate above the exact gate shipped")
+    slower = aggregate(synthetic_samples(BASELINE_MEDIAN_NS + 1))
+    if slower["gain_ns"] >= 0 or slower["decision"] != "NOT_MET":
+        raise TransferError("negative gain shipped")
+
+    malformed = synthetic_samples(CANDIDATE_CEILING_NS)
+    malformed[0]["full_helper_wall_ns"] = True
+    try:
+        aggregate(malformed)
+    except diagnosis.DiagnosisError:
+        pass
+    else:
+        raise TransferError("boolean candidate wall was accepted")
+    with mock.patch.object(diagnosis, "SEED", 6):
+        try:
+            validate_imported_contract()
+        except (TransferError, diagnosis.DiagnosisError):
+            pass
+        else:
+            raise TransferError("drifted imported workload was accepted")
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as printed:
+        if prerequisites() is not None:
+            raise TransferError("missing prerequisites did not produce N/A")
+    printed.assert_called_once_with(
+        "R8-OLMOE-KV-PLANE-STAGING-TRANSFER: N/A (ALIGN_LLM_OLMOE_MODEL unset)"
+    )
+    result = synthetic_result(synthetic_samples(CANDIDATE_CEILING_NS))
+    validate_result(result)
+    malformed_result = dict(result)
+    malformed_result["extra"] = 1
+    try:
+        validate_result(malformed_result)
+    except diagnosis.DiagnosisError:
+        pass
+    else:
+        raise TransferError("non-exact result was accepted")
+    for section, field, value in (
+        ("model", "bytes", False),
+        ("candidate", "provider", "bogus-runtime"),
+        ("environment", "cpu_count", None),
+        ("environment", "host_fingerprint_sha256", "0" * 64),
+    ):
+        malformed_result = dict(result)
+        malformed_result[section] = dict(result[section])
+        malformed_result[section][field] = value
+        try:
+            validate_result(malformed_result)
+        except TransferError:
+            pass
+        else:
+            raise TransferError(f"malformed result {section}.{field} was accepted")
+    print("R8-OLMOE-KV-PLANE-STAGING-TRANSFER self-test: PASS")
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise TransferError("OLMoE KV-plane staging qualification accepts no arguments")
+    required = prerequisites()
+    if required is None:
+        return 0
+    model, pack, geometry, include, library, server = required
+    started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-kv-stage-") as raw:
+        work = Path(raw)
+        clean_env = phase.decision.decision_environment()
+        linker_search = phase.decision.validate_linker_search(clean_env)
+        if linker_search:
+            clean_env["LIBRARY_PATH"] = linker_search
+        host_environment = qualification_host(clean_env, deadline)
+        source_status = owner.run_process(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline, maximum=30, env=clean_env,
+        )
+        if source_status.stdout:
+            raise TransferError("real qualification requires a clean worktree")
+        align_llm_head = owner.run_process(
+            ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+        ).stdout.decode("ascii").strip()
+        validate_imported_contract()
+        align_revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        owner.require_no_matching_process(server, model, deadline, clean_env)
+        if model.stat().st_size != MODEL_BYTES or base.file_sha256(model) != MODEL_SHA256:
+            raise TransferError("configured OLMoE GGUF does not have the pinned identity")
+        pack_sha256 = base.file_sha256(pack)
+        geometry_sha256 = base.file_sha256(geometry)
+        server_sha256 = base.file_sha256(server)
+        task_sha256 = base.file_sha256(diagnosis.TASK)
+        prompt_sha256 = base.bytes_sha256(diagnosis.PROMPT_TEXT.encode("utf-8"))
+        ggml_libraries = base.library_identities(library)
+        linker_search_sha256 = (
+            None if not linker_search else base.bytes_sha256(linker_search.encode("utf-8"))
+        )
+        diagnosis.validate_external_identity(
+            align_revision=align_revision, pack_sha256=pack_sha256,
+            geometry_sha256=geometry_sha256, server_sha256=server_sha256,
+            task_sha256=task_sha256, prompt_sha256=prompt_sha256,
+            ggml_libraries=ggml_libraries, linker_search_sha256=linker_search_sha256,
+        )
+        version = owner.run_process(
+            [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env,
+        )
+        if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
+            raise TransferError("llama-server build identity drifted")
+
+        with diagnosis.built_helper(work, include, library, clean_env, deadline) as built:
+            diagnosis.validate_toolchain_identity(built)
+            samples = []
+            for index in range(1, REPETITIONS + 1):
+                samples.append(
+                    diagnosis.measure_sample(
+                        index, built, server, model, pack, geometry, clean_env, deadline,
+                    )
+                )
+                diagnosis.validate_repeatability(samples)
+
+            final_status = owner.run_process(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                deadline=deadline, maximum=30, env=clean_env,
+            )
+            final_head = owner.run_process(
+                ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+            ).stdout.decode("ascii").strip()
+            if final_status.stdout or final_head != align_llm_head:
+                raise TransferError("align-llm source changed during qualification")
+            owner.verify_identities((
+                ("model", model, MODEL_SHA256), ("pack", pack, pack_sha256),
+                ("geometry", geometry, geometry_sha256), ("server", server, server_sha256),
+                ("task", diagnosis.TASK, task_sha256),
+                ("compiler", built["compiler"], built["compiler_sha256"]),
+                ("C compiler", built["c_compiler"], built["c_compiler_sha256"]),
+                ("shim", built["shim"], built["shim_sha256"]),
+                ("helper", built["helper"], built["helper_sha256"]),
+            ))
+            if base.library_identities(library) != ggml_libraries:
+                raise TransferError("ggml library identities changed during qualification")
+            owner.require_no_matching_process(server, model, deadline, clean_env)
+
+            elapsed_ns = time.monotonic_ns() - started_ns
+            if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+                raise TransferError(
+                    f"complete qualification exceeded its 8-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+                )
+            task_document = json.loads(diagnosis.TASK.read_text(encoding="utf-8"))
+            aggregate_result = aggregate(samples)
+            result = {
+                "schema_version": 1,
+                "artifact_kind": "R8_OLMOE_KV_PLANE_STAGING_TRANSFER",
+                "status": "COMPLETE",
+                "model": {"bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe"},
+                "baseline": {
+                    "full_helper_wall_values_ns": BASELINE_VALUES_NS,
+                    "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+                    "floor_ppm": FLOOR_PPM,
+                    "candidate_ceiling_ns": CANDIDATE_CEILING_NS,
+                },
+                "candidate": {
+                    "provider": "align-runtime", "align_llm_head": align_llm_head,
+                    "align_revision": align_revision,
+                    "compiler_sha256": built["compiler_sha256"],
+                    "helper_sha256": built["helper_sha256"],
+                    "shim_sha256": built["shim_sha256"], "ggml_libraries": ggml_libraries,
+                    "pack_sha256": pack_sha256, "geometry_sha256": geometry_sha256,
+                    "cache_budget_bytes": BUDGET,
+                },
+                "task": {
+                    "task_id": task_document["id"], "task_sha256": task_sha256,
+                    "prompt_sha256": prompt_sha256, "maximum_tokens": FULL_TOKENS,
+                    "temperature_micros": TEMPERATURE_MICROS, "seed": SEED,
+                    "full_output_sha256": FULL_OUTPUT_SHA256,
+                },
+                "environment": {
+                    **host_environment,
+                    "c_compiler_sha256": built["c_compiler_sha256"],
+                    "c_compiler_version_sha256": built["c_compiler_version_sha256"],
+                    "linker_search_sha256": linker_search_sha256,
+                },
+                "samples": samples, "aggregate": aggregate_result, "elapsed_ns": elapsed_ns,
+            }
+            validate_result(result)
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+            print(
+                "R8-OLMOE-KV-PLANE-STAGING-TRANSFER: COMPLETE "
+                f"decision={aggregate_result['decision']} "
+                f"candidate={aggregate_result['candidate_full_helper_wall_median_ns'] / 1e9:.3f}s "
+                f"gain_ppm={aggregate_result['gain_ppm']} "
+                f"upload={aggregate_result['candidate_plane_upload_median_ns'] / 1e9:.3f}s "
+                f"elapsed={elapsed_ns / 1e9:.2f}s",
+                file=sys.stderr,
+            )
+    return 0
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    owner.stop_owned_processes()
+    raise SystemExit(128 + signal_number)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (
+        TransferError, diagnosis.DiagnosisError, phase.DiagnosisError, owner.DiagnosisError,
+        phase.decision.DecisionError, base.DecisionError, OSError, ValueError, KeyError,
+        TypeError, json.JSONDecodeError, subprocess.TimeoutExpired,
+    ) as error:
+        owner.stop_owned_processes()
+        print(f"R8-OLMOE-KV-PLANE-STAGING-TRANSFER: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)

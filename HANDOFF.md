@@ -3,36 +3,46 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-REMAINING-DECODE-OVERHEAD-DIAGNOSIS (2026-09-04)
+## Active: R8-OLMOE-KV-PLANE-STAGING-TRANSFER (2026-09-04)
 
-Branch `agent/r8-olmoe-remaining-decode-overhead-diagnosis`, based on pulled merged `main`
-`6d05d1fbbf79644806edecded24755ae701a6d0a` (item 56 PR #178). The sibling Align checkout and
+Branch `agent/r8-olmoe-kv-plane-staging-transfer`, based on pulled merged `main`
+`c3b87869a424f14eb4d6376a7915eb3e7d3405c8` (item 57 PR #179). The sibling Align checkout and
 `.align-revision` remain at merged Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align
 surface is currently required.
 
-Item 57's authoritative measurement ledger and closure matrix are
-`docs/specs/r8-olmoe-remaining-decode-overhead-diagnosis.md`. Four fresh-process, conditioned,
-isolated seed-5 full requests divided every successful remaining decode step into pre-pass,
-decode-pass, and post-pass and projected existing staging, claim, compute, routing, and KV-plane
-clocks onto pass. The clean-head run at `ffbe449452f8cbbba378932d2ca8e2eeee6fd683` completed in
-154.183 seconds with the fixed output and balanced lifetimes in all four repetitions.
+Item 58's authoritative implementation ledger and closure matrix are
+`docs/specs/r8-olmoe-kv-plane-staging-transfer.md`. It fixes one validated, allocation-free shared
+shim call that writes byte-identical K and V graph inputs into one caller-owned combined staging
+range. The plane, graph shapes, cache, provider lifetime, output, and native owners remain
+unchanged. Item 57's 30,450,856,583-ns full-helper wall median is immutable; the intervention may
+ship only if four fresh conditioned repetitions have exact output and balanced lifetimes and a
+candidate median no greater than 28,928,313,753 ns (50,000 ppm improvement).
 
-`KV_PLANE_TRANSFER` won at an 11.555-second median, 457,325 ppm of the 25.267-second remaining-decode
-median and well above the precommitted 1.467-second floor. Its CPU staging/upload component was
-11.548 seconds while readback was only 0.008 seconds. The decision is
-`MEASURED_BUCKET_ELIGIBLE`; item 58, `R8-OLMOE-KV-PLANE-STAGING-TRANSFER`, is selected to define and
-qualify the narrow staging implementation against item 57's fixed 30.451-second full-helper wall
-baseline and a new 50,000-ppm shipping gate.
+The post-review clean-head run at `a1097db35943933f1536e093ed40ac9b4c2d3a71` completed in 105.628 seconds
+and recorded `MET`. Candidate full helper walls were
+`[17827657250,17850131083,19007903542,19211017875]` ns, with an 18,429,017,312-ns median and
+394,794-ppm gain. Upload fell from an 11,547,535,094-ns median to 2,044,745,789 ns. Every fixed
+output, token, lifetime, isolation, and baseline-host identity gate passed. The remaining
+`PASS_RESIDUAL` now leads at 4,172,949,292 ns and selects roadmap item 59 for a narrower diagnosis
+after item 58 merges.
 
-**Next actions.** Complete item 57's comprehensive review, exact-head preflight, publication, and
-merge. Then pull merged `main`, start item 58, write its implementation ledger and closure matrix,
-and implement the smallest staging-transfer seam that can clear its precommitted gate.
+The comprehensive review covered head `0c4fb4f` against base tip/merge base `c3b8786` with Codex
+`gpt-5.6-sol` at high reasoning effort. It found two valid P2 symptoms in one evidence-identity
+class: the fixed baseline was not bound to a hardware host, and exact-key result validation did not
+validate nested values. Repair `a1097db` pins the baseline host's OS, architecture, CPU, model, and
+memory through a canonical fingerprint and rejects drifted model, candidate, task, environment,
+toolchain, and dynamic-digest values. The focused self-test and complete real run pass after repair;
+the repair does not change production staging behavior or expand the reviewed implementation scope.
+
+**Next actions.** Record the repaired result, run exact-head preflight, publish, and merge. Then pull
+merged `main` and start item 59's decode-pass residual diagnosis ledger and closure matrix.
 
 **Blocker.** None.
 
-**Latest durable verification.** `gmake fmt`, the pinned helper build, focused Python self-test,
-`gmake layer-forward-smoke`, `gmake runtime-provider-smoke`, and `git diff --check` pass. The real
-diagnosis and exact result are recorded above; machine-local evidence remains outside Git.
+**Latest durable verification.** `gmake fmt`, `gmake layer-forward-smoke`, `gmake
+runtime-provider-smoke`, Python compilation, the item 57 and repaired item 58 focused self-tests,
+and `git diff --check` pass. The post-review complete real qualification and exact result are
+recorded above; machine-local evidence remains outside Git.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.

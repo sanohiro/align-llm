@@ -1485,12 +1485,28 @@ The current forward delivery order is:
     item 58; it does not itself establish a performance win.
 
 58. **R8-OLMOE-KV-PLANE-STAGING-TRANSFER — reduce the measured scalar K/V staging boundary.
-    Selected; not started.** Define a consumer-complete implementation contract that preserves the
-    current plane, graph-input, token/output, cache, and native-lifetime semantics while replacing
-    the per-scalar host staging path at the narrowest shipped seam. Use item 57's four fixed full
-    helper walls and 30,450,856,583-ns median as the immutable baseline, precommit a 50,000-ppm
-    shipping gate, and retain the exact conditioned four-repeat protocol. Ship only if the fixed
-    output and lifetime gates pass and the candidate median clears that performance floor.
+    Decision recorded: `MET`.**
+    [`r8-olmoe-kv-plane-staging-transfer.md`](r8-olmoe-kv-plane-staging-transfer.md) is
+    the authoritative implementation ledger and closure matrix. Preserve the current plane,
+    graph-input, token/output, cache, and native-lifetime semantics while replacing the per-scalar
+    host staging loops with one validated, allocation-free call at the existing shared C shim.
+    Item 57's four fixed full helper walls and 30,450,856,583-ns median are the immutable baseline;
+    the exact conditioned four-repeat qualification must preserve output and lifetimes and clear
+    the precommitted 50,000-ppm gate, a candidate median no greater than 28,928,313,753 ns.
+
+    One combined caller-owned staging range and one validate-before-write shared-shim call preserve
+    the canonical plane and exact K/V graph-input layouts. The 108.362-second qualification
+    reproduced the fixed output and balanced lifetimes in all four repetitions. Full helper wall
+    fell from the immutable 30.451-second baseline to a 16.981-second median, a 442,332-ppm gain;
+    staging upload fell from 11.548 seconds to 1.914 seconds. The intervention ships.
+
+59. **R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS — partition the post-staging decode-pass residual.
+    Selected; not started.** Item 58's four exact sample records leave `PASS_RESIDUAL` as the
+    largest remaining bucket at a 3,805,899,547-ns median, ahead of compute at 3,615,480,386 ns and
+    claim I/O at 3,426,040,742 ns. Define a narrower diagnosis of graph/context construction,
+    graph build/allocation/teardown, generic tensor transfer/digest, and other unassigned pass work
+    before authorizing another implementation seam. Preserve item 58's fixed workload, output,
+    isolation, cache, and lifetime boundaries.
 
 ### Status (2026-08-28)
 
