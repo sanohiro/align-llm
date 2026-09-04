@@ -624,6 +624,15 @@ pub Outcome {
   oracle_ns: i64,
   elapsed_ns: i64,
 
+  // R8-OLMOE-DECODE-PASS-RESIDUAL-DIAGNOSIS. These broad counters time only direct graph-owner
+  // work outside the existing pack, claim, compute, routing, and KV-plane clocks. The schedule
+  // snapshots them around each pass so failed and first-decode work never reaches the corresponding
+  // remaining-decode totals.
+  graph_setup_ns: i64,
+  graph_build_alloc_ns: i64,
+  generic_transfer_digest_ns: i64,
+  graph_teardown_ns: i64,
+
   // R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS. These qualification-only counters partition the
   // invocation-local generation schedule without changing any existing renderer. Prefill includes
   // first-output selection; first decode consumes that token and selects the second.
@@ -638,6 +647,10 @@ pub Outcome {
   remaining_decode_decide_ns: i64,
   remaining_decode_plane_upload_ns: i64,
   remaining_decode_plane_readback_ns: i64,
+  remaining_decode_graph_setup_ns: i64,
+  remaining_decode_graph_build_alloc_ns: i64,
+  remaining_decode_generic_transfer_digest_ns: i64,
+  remaining_decode_graph_teardown_ns: i64,
   teardown_ns: i64,
   prefill_claim_pread_ns: i64,
   first_decode_claim_pread_ns: i64,
@@ -907,6 +920,10 @@ pub fn empty_outcome() -> Outcome = Outcome {
   reference_compute_ns: 0,
   oracle_ns: 0,
   elapsed_ns: 0,
+  graph_setup_ns: 0,
+  graph_build_alloc_ns: 0,
+  generic_transfer_digest_ns: 0,
+  graph_teardown_ns: 0,
   construction_ns: 0,
   prefill_ns: 0,
   first_decode_ns: 0,
@@ -918,6 +935,10 @@ pub fn empty_outcome() -> Outcome = Outcome {
   remaining_decode_decide_ns: 0,
   remaining_decode_plane_upload_ns: 0,
   remaining_decode_plane_readback_ns: 0,
+  remaining_decode_graph_setup_ns: 0,
+  remaining_decode_graph_build_alloc_ns: 0,
+  remaining_decode_generic_transfer_digest_ns: 0,
+  remaining_decode_graph_teardown_ns: 0,
   teardown_ns: 0,
   prefill_claim_pread_ns: 0,
   first_decode_claim_pread_ns: 0,

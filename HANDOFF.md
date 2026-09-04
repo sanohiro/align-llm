@@ -23,17 +23,26 @@ immutable baseline. A sub-bucket must reach the precommitted 921,450,866-ns mate
 50,000 ppm of that baseline, to select implementation work. Four fresh conditioned repetitions
 will determine the largest eligible sub-bucket.
 
-**Next actions.** Complete the item 59 ledger consistency pass, implement the shared counters and
-qualification-only helper/runner, run narrow owners and one real four-repeat diagnosis, record the
-selected next capability, then review, repair, preflight, publish, and merge.
+The implementation checkpoint is complete. Four broad counters cover disjoint context/buffer
+setup, graph build/allocation, generic transfer/digest, and ordered teardown operations. The decode
+loop snapshots them around the existing pass and commits only successful post-first-step deltas.
+The new qualification helper extends the old record without changing the item 57 helper's emitted
+schema, and the new runner owns exact detail equations, medians, decisions, fixed-host identity,
+source pinning, and cleanup.
+
+**Next actions.** Commit the owner-tested implementation checkpoint, run one clean-head real
+four-repeat diagnosis, record the selected next capability, then review, repair, preflight,
+publish, and merge.
 
 **Blocker.** None.
 
-**Latest durable verification.** Item 59 has no implementation evidence yet. Item 58's exact-head
-preflight and all three PR checks passed at `f8148a7`; PR #180 merged as `ef113f8`.
+**Latest durable verification.** `make fmt`, the pinned new-helper build, `make
+layer-forward-smoke` (62.935 seconds), `make runtime-provider-smoke` (self-test plus 61 CLI
+assertions), Python compilation, the inherited item 58 self-test, the new focused self-test, and
+`git diff --check` pass. The real item 59 diagnosis is not run yet.
 
-**Intentional uncommitted files.** Item 59's plan edits. Machine-local model/evidence and generated
-build products remain outside Git.
+**Intentional uncommitted files.** Item 59 implementation and handoff checkpoint before commit.
+Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-KV-PLANE-STAGING-TRANSFER (PR #180, 2026-09-04)
 

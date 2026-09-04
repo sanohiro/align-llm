@@ -105,6 +105,15 @@ PhaseRecord {
   lifetime: Lifetime,
 }
 
+PassResidual {
+  total_ns: i64,
+  context_buffer_setup_ns: i64,
+  graph_build_alloc_ns: i64,
+  generic_transfer_digest_ns: i64,
+  graph_teardown_ns: i64,
+  other_ns: i64,
+}
+
 fn ir_ok(value: model_ir.IrStatus) -> bool = match value {
   Ok => true,
   Error => false,
@@ -160,7 +169,7 @@ fn digest_text(value: str) -> string {
 
 // Qualification-only access to the provider preparation and remaining-decode partition counters.
 // The public provider remains the owner of user-facing generation and exposes no timing record.
-pub fn main(args: array<str>) -> Result<(), Error> {
+fn run(args: array<str>, detailed: bool) -> Result<(), Error> {
   if args.len() != 7 { return Err(Error.Invalid) }
   model_path := args[1]
   pack_path := args[2]
@@ -337,6 +346,37 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       released_before_owner_scope_end: generated.outcome.released_before_owner_scope_end,
     },
   }
-  print(json.encode(record))
+  encoded := json.encode(record)
+  if !detailed {
+    print(encoded)
+    return Ok(())
+  }
+  direct_subtotal := generated.outcome.remaining_decode_graph_setup_ns
+    + generated.outcome.remaining_decode_graph_build_alloc_ns
+    + generated.outcome.remaining_decode_generic_transfer_digest_ns
+    + generated.outcome.remaining_decode_graph_teardown_ns
+  if direct_subtotal > pass_residual { return Err(Error.Invalid) }
+  detail := PassResidual {
+    total_ns: pass_residual,
+    context_buffer_setup_ns: generated.outcome.remaining_decode_graph_setup_ns,
+    graph_build_alloc_ns: generated.outcome.remaining_decode_graph_build_alloc_ns,
+    generic_transfer_digest_ns:
+    generated.outcome.remaining_decode_generic_transfer_digest_ns,
+    graph_teardown_ns: generated.outcome.remaining_decode_graph_teardown_ns,
+    other_ns: pass_residual - direct_subtotal,
+  }
+  encoded_view: str := encoded
+  detail_json := json.encode(detail)
+  detail_view: str := detail_json
+  document := builder()
+  document.write(encoded_view[0..encoded_view.len() - 1])
+  document.write(",\"pass_residual\":")
+  document.write(detail_view)
+  document.write("}")
+  print(document.to_string())
   return Ok(())
 }
+
+pub fn detailed_main(args: array<str>) -> Result<(), Error> = run(args, true)
+
+pub fn main(args: array<str>) -> Result<(), Error> = run(args, false)
