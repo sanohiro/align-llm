@@ -1,6 +1,6 @@
 # R8 OLMoE sampled runtime decision
 
-Status: implementation contract, 2026-09-04
+Status: measured implementation candidate, 2026-09-04
 
 ## 1. Decision and boundary
 
@@ -165,5 +165,42 @@ records the negative performance decision and redirects the next investment from
 
 ## 7. Recorded decision
 
-Pending the one complete real measurement. This section will record the exact source and input
-identities, environment, arm outcomes, medians, gain, ceiling comparison, verdict, and next action.
+The one complete real decision ran on clean align-llm head
+`d8a3da04b65d594fc2744b0c784002e8b53b9903` and finished in 801.574 seconds on Darwin 25.5.0,
+arm64, with 8 logical CPUs. Both arms passed all four portfolios and selected seed 5 with the same
+known-good patch SHA-256
+`5d6b107e706a5a55c945bc0b41296e255013a1516e0a6211ccc9da65001252dc`.
+
+The decision is **`NOT_MET`**. Local times to passing patch were 12.813, 13.068, 12.607, and
+12.118 seconds, for a 12.710-second median. Runtime times were 149.977, 179.570, 198.440, and
+202.138 seconds, for a 189.005-second median. Runtime was slower in every pair; gain was
+**-13,871,021 ppm**, or about 14.87 times the local median. The 50,000-ppm floor and every-pair
+direction rule therefore both fail.
+
+The 800,000-ppm attempt-count opportunity ceiling did not materialize: both arms required five
+candidates. This is a ceiling-estimation miss, not a near-threshold result. Local candidate states
+were `INVALID_PATCH`, `FAILING_PATCH`, `FAILING_PATCH`, `INVALID_PATCH`, `PASS`; runtime states
+were four `FAILING_PATCH` rows followed by `PASS`. Runtime emitted item 50's wrong patch for seeds
+1 through 4 and the known-good patch at seed 5. Its per-candidate provider intervals rose from
+27.928 seconds in the first pair to a maximum 40.243 seconds in the fourth, versus 1.607 to 3.424
+seconds locally; validation remained below 0.73 seconds on every candidate.
+
+The bound identities were Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`, compiler SHA-256
+`f972b4a196ed5608a0c52cc02dbf8267cfc236065359315a572d601aa04ea541`, helper SHA-256
+`777c6fe44092f6c730007e2a8af78ef7f3e5e8982ae0ec379599d4b9da098fb8`, dynamic-shim SHA-256
+`b984491e78f6029a224850b926e0667128a5943f5333ab78c557f7bd98cb74fe`, AlignPack SHA-256
+`20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae`, geometry SHA-256
+`1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada`, and llama-server
+SHA-256 `98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c`.
+The immutable validator image was
+`sha256:33fa9e4446ab1a5ca849c57ea49e2e2e4585488aa1cd4d7b2940801bad84cb54` and the explicit
+linker-search digest was `067e37440dfbf5c1a19e58f23ee914a1e9934c18ae24c4d61abcf426b8b2a3af`.
+
+The increasing runtime intervals were observed on a 16-GiB host whose encrypted swap showed about
+4.29 GiB used after the run, while the resident baseline and candidate model were intentionally
+co-located by the paired contract. That observation does not attribute cause: swap state was not a
+precommitted metric and the provider also reconstructs model, pack, geometry, and invocation-local
+cache state for every candidate. The next investment is a bounded phase/lifetime diagnosis that
+distinguishes repeated runtime construction from co-resident memory pressure before proposing a
+public persistent-provider boundary or another cache optimization.

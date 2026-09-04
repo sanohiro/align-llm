@@ -1385,7 +1385,7 @@ The current forward delivery order is:
     the fixed passing-patch portfolio through this shipped path.
 
 53. **R8-OLMOE-SAMPLED-RUNTIME-DECISION — compare provider-level time to a passing patch through
-    the fixed sampled portfolio. Active.**
+    the fixed sampled portfolio. Decision recorded: `NOT_MET`.**
     [`r8-olmoe-sampled-runtime-decision.md`](r8-olmoe-sampled-runtime-decision.md) is the
     authoritative measurement contract and closure matrix. Run four balanced pairs of the same
     ordered seeds 1 through 8 at temperature 0.3, stopping each local llama.cpp or in-process
@@ -1395,6 +1395,15 @@ The current forward delivery order is:
     stopped at candidate five and a portfolio can stop no earlier than candidate one; differing
     provider costs remain inside the measurement. The one complete decision is bounded at
     approximately 25 minutes and may validly record `MET`, `NOT_MET`, or `NOT_ELIGIBLE`.
+
+    Both arms passed 4/4 portfolios and selected seed 5 with the same known-good patch. Local times
+    were 12.813, 13.068, 12.607, and 12.118 seconds (median 12.710); runtime times were 149.977,
+    179.570, 198.440, and 202.138 seconds (median 189.005). Runtime was slower in every pair and
+    gain was -13,871,021 ppm, about 14.87 times the local median. Both arms needed five candidates,
+    so the 800,000-ppm attempt-count opportunity did not materialize and is recorded as a
+    ceiling-estimation miss. The R8 gate remains open. The next investment must distinguish
+    repeated provider construction from co-resident memory pressure before changing runtime
+    lifetime or cache behavior.
 
 ### Status (2026-08-28)
 

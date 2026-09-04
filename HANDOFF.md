@@ -23,9 +23,20 @@ but correctly emitted no result because exact local output bytes differed. A bou
 diagnostic isolated the drift to candidate 1: both rows were 52-token `INVALID_PATCH` results,
 while the following failing patches and the seed-5 passing patch were byte-identical. The contract
 now keys repeatability on task workload — ordered status, token count, admitted patch digest, and
-selection — while retaining invalid output digests as evidence. Rerun the owner and the one complete
-decision, then complete one comprehensive review, repair accepted findings, run exact-head
-preflight, publish, and merge before starting the next eligible capability.
+selection — while retaining invalid output digests as evidence.
+
+**Latest durable verification.** The focused self-test passes. The one complete real decision ran
+on clean head `d8a3da0` in 801.574 seconds and recorded `NOT_MET`: both arms passed 4/4 at seed 5
+with the same known-good patch, but local median time to passing patch was 12.710 seconds and runtime
+median was 189.005 seconds, a -13,871,021-ppm gain with runtime slower in every pair. Both required
+five candidates, so the 800,000-ppm attempt-count opportunity was not realized. Runtime provider
+intervals rose from 27.928 to 40.243 seconds; a 16-GiB host showed about 4.29 GiB swap used after the
+run, but that non-precommitted observation does not distinguish repeated provider construction from
+co-resident memory pressure.
+
+**Next actions.** Commit the measurement record, run the focused owner and one comprehensive
+review, repair accepted findings, run exact-head preflight, publish, and merge. Then start a bounded
+phase/lifetime diagnosis before proposing persistent provider state or another runtime-cache change.
 
 **Blocker.** None.
 
