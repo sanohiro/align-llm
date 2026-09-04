@@ -3,67 +3,47 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY (2026-09-05)
+## Active: R8-OLMOE-COMBINED-DECODE-BOUNDARIES (2026-09-05)
 
-Branch `agent/r8-olmoe-cache-to-claim-boundary`, based on pulled merged `main` `8107627` (item 65 PR
-#187). The sibling Align checkout and `.align-revision` remain at merged Align
+Branch `agent/r8-olmoe-next-boundary`, based on pulled merged `main` `7ef2124` (item 66 PR #188).
+The sibling Align checkout and `.align-revision` remain at merged Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
-Item 64 measured remaining-decode `CACHE_TO_CLAIM_COPY` at a 1,072,229,252-ns median, above item
-62's immutable 963,327,962-ns / 50,000-ppm floor. Item 62's fixed walls
-`[18059864416,18927732709,20639199375,19605385750]` ns, 19,266,559,229-ns median, and
-18,303,231,267-ns candidate ceiling remain authoritative.
+Item 67 combines the final reviewed forms of three semantically independent candidates that each
+missed the complete-request gate alone: item 61's unaligned-safe direct K/V plane comparison, item
+63's live-width decode phase A, and item 66's fixed-stride cache-backed phase B. Their separate
+full-wall gains were 139,023,395 ns, 817,443,563 ns, and 210,165,021 ns. These values are only
+directional evidence and are not added into a claim.
 
-The item-66 ledger and closure matrix are
-`docs/specs/r8-olmoe-cache-to-claim-copy-boundary.md`. The existing cache uses 4,079,616-byte fixed
-slots; each slot holds gate, up, and down consecutively. Pinned ggml 0.9.5 already represents the
-expert dimension with `nb[2]`, and its CPU `mul_mat_id` reads selected expert `i` from
-`src0->data + i * nb[2]`. The selected candidate adds one checked local shim constructor for a 3-D
-tensor with a caller-specified expert stride, exposes each role over all cache slots, and remaps
-phase-B compact-union ids to the corresponding resident cache-slot ids. No Align request or
-hypothetical language surface is needed.
+The authoritative ledger and closure matrix are
+`docs/specs/r8-olmoe-combined-decode-boundaries.md`. The interventions act in order at phase-A graph
+construction, post-phase-A plane verification, and phase-B expert staging. The candidate adds no
+fourth optimization and preserves every reviewed validation, fallback, numerical, cache, and
+ownership contract. Item 62's immutable walls
+`[18059864416,18927732709,20639199375,19605385750]` ns, 19,266,559,229-ns median,
+963,327,962-ns floor, and 18,303,231,267-ns ceiling decide publication.
 
-Direct tensors are provider-generation-only. Diagnostic/reference modes, non-cache execution,
-misaligned layouts, a routed union wider than cache capacity, and a failed combined resident wrap
-retain the existing compact claim copies. Misses still read/scatter into the claim window and copy
-into the chosen cache slot; eligible hits only update cache state. After complete staging, every
-selected key is re-resolved and range-checked before its slot id is encoded. The graph then reads
-the stable cache until converged layer teardown. Cache key/content/policy/budget/counters, global
-routing, output, schemas, and allocations remain unchanged.
-
-The existing one run-scope resident host wrap covers the contiguous dense-plus-cache allocation in
-direct mode, so the candidate adds no native handle or allocation. Each role tensor has depth 239
-on the fixed request, its ordinary contiguous row stride, and 4,079,616-byte expert stride. The
-claim window remains allocated for misses and fallback, but eligible phase B does not wrap or read
-it. The candidate must report zero cache-to-claim time on all full fixed requests and meet the
-immutable full-request ceiling; otherwise its production changes are removed before publication.
-
-Evaluated implementation `3bb7135` added the checked real/stub shim constructor, selected one
-combined wrap for aligned provider generation, skipped hit copies, re-resolved routed keys to
-cache-slot ids, and placed three fixed-stride tensors over the cache. Hosted direct/fallback owners
-and a real fixed-model conditioning probe passed with balanced native resources.
-
-The clean-head four-repeat qualification completed in 110.506 seconds with walls
-`[17898558916,18767768208,19345020208,19586488125]` ns and a 19,056,394,208-ns median. All four
-full requests reported zero cache-to-claim copy time, exact output/cache/lifetime evidence, and
-clean isolation. The 210,165,021-ns / 10,908-ppm gain did not meet item 62's 963,327,962-ns /
-50,000-ppm floor, so the decision is `NOT_MET`. The production intervention and production-owner
-changes are removed before publication; only the ledger, thin helper, and bounded self-test owner
-remain.
-
-**Next actions.** Run the exact-head preflight, publish and merge item 66, then select item 67 from
-the remaining measured evidence.
+**Next actions.** Commit the design checkpoint; restore the three reviewed production changes and
+their directly required owners; add the combined helper/runner; run narrow owners and one clean-head
+four-repeat qualification; record `MET` or `NOT_MET`; then review, repair, publish, merge, and
+continue.
 
 **Blocker.** None.
 
-**Latest durable verification.** Before the decision, `make check`, `make layer-forward-smoke`
-(62.076 seconds), `make runtime-provider-smoke`, both `-Werror` shim builds, the real conditioning
-probe, and the item-66 self-test passed. The clean-head fixed qualification result is recorded
-above. After removal, production sources compare byte-for-byte with merged `main`; `make fmt`, the
-item-66 self-test, explicit no-argument refusal, and `git diff --check` pass.
+**Latest durable verification.** Item 66 exact-head preflight passed at `2e12911`; all three PR #188
+checks passed, and merge commit `7ef2124` preserves evaluated commit `3bb7135` as an ancestor. Item
+67 has no implementation evidence yet.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-CACHE-TO-CLAIM-COPY-BOUNDARY (PR #188, 2026-09-05)
+
+PR #188 merged as `7ef2124`. Evaluated implementation `3bb7135` removed every cache-to-claim copy
+but produced a 19,056,394,208-ns median, only 10,908 ppm faster than item 62, so the result was
+`NOT_MET` and all production changes were removed. Comprehensive review found one stale handoff
+action; repair `2e12911`, exact-head preflight, and all three required CI jobs passed. Item 67 above
+owns the combined successor.
 
 ## Merged checkpoint: R8-OLMOE-FILE-PREAD-BOUNDARY (PR #187, 2026-09-05)
 
