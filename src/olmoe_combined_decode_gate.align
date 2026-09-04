@@ -1,0 +1,8 @@
+module olmoe_combined_decode_gate
+
+import olmoe_remaining_decode_overhead_gate
+
+// Item 67 uses one record containing the phase-A, plane-roundtrip, and claim-I/O clocks so the
+// complete-request gate observes all three restored interventions under the same fixed request.
+pub fn main(args: array<str>) -> Result<(), Error> =
+olmoe_remaining_decode_overhead_gate.claim_detailed_main(args)
