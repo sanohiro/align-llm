@@ -10,11 +10,18 @@ Item 60 measured the complete decode-only `verify_plane` call at a 2,972,324,939
 991,445 ppm of its diagnosed parent. That clock includes concat shape reads, two `slot_get`
 operations, scalar K/V comparison, and result accounting; it does not attribute cost among them.
 
-This capability replaces only the scalar comparison implementation with one bounded shared-shim
-call per K/V tensor while retaining every other operation in the measured boundary. The choice is
-an intervention, not a claim about which sub-operation owns the measured time. It ships only if the
-same complete fixed request preserves correctness and improves full-helper wall time by at least
-50,000 ppm. A miss records `NOT_MET` and does not authorize the intervention.
+The first intervention replaced only the scalar comparison implementation with one bounded
+shared-shim call per K/V tensor. Its clean-head qualification reduced the measured boundary from
+2,972,324,939 ns to 1,878,132,280 ns, but full-helper wall improved by only 23,162 ppm, so that
+candidate is `NOT_MET` and cannot ship on its own. The remaining boundary still performs two full
+`ggml_backend_tensor_get` copies for every routed layer and decode step.
+
+The second intervention retains both concat shape reads but compares each host-visible concat
+tensor in place through its slot. It removes the two copies into `node_window` without weakening
+validation or oracle semantics. This is still an intervention over item 60's complete measured
+boundary, not an attribution claim. It ships only if the same complete fixed request preserves
+correctness and improves full-helper wall time by at least 50,000 ppm against the immutable item 60
+baseline. A miss records `NOT_MET` and does not authorize either intervention.
 
 ## 2. Public-contract ledger
 
@@ -22,20 +29,20 @@ same complete fixed request preserves correctness and improves full-helper wall 
 | --- | --- |
 | Capability/owner | `R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY`; production owners are `scripts/ggml_shim.c`, `scripts/ggml_shim_stub.c`, `src/ggml_ffi.align`, and `src/moe_decode_step.align`; qualification owner is `scripts/run-olmoe-plane-roundtrip-boundary` |
 | Consumer | OLMoE sampled decode oracle B after each routed-layer graph; it must still compare the graph-consumed K/V concat against the canonical plane through the just-written column |
-| Native ABI | `int64_t align_ggml_compare_kv_plane(const void *consumed, int64_t consumed_bytes, const void *plane, int64_t plane_bytes, int64_t plane_base, int64_t head_dim, int64_t n_head_kv, int64_t columns, int32_t layout)`; no ggml type crosses the ABI |
+| Native ABI | The byte primitive remains `int64_t align_ggml_compare_kv_plane(const void *consumed, int64_t consumed_bytes, const void *plane, int64_t plane_bytes, int64_t plane_base, int64_t head_dim, int64_t n_head_kv, int64_t columns, int32_t layout)`. Production calls `int64_t align_ggml_slot_compare_kv_plane(const void *slots, int64_t index, const void *plane, int64_t plane_bytes, int64_t plane_base, int64_t head_dim, int64_t n_head_kv, int64_t columns, int32_t layout)`. No ggml type crosses either ABI. |
 | Layout tags | `0` is K and `1` is V; every other `int32_t` value is invalid |
-| Return encoding | `0` means byte-identical; positive `column + 1` means mismatch at the first column reached by the exact traversal below; negative values are existing shim status codes and this function emits only `ALIGN_GGML_INIT` or `ALIGN_GGML_BOUNDS` |
+| Return encoding | `0` means byte-identical; positive `column + 1` means mismatch at the first column reached by the exact traversal below; negative values are existing shim status codes; the byte primitive emits only `ALIGN_GGML_INIT` or `ALIGN_GGML_BOUNDS`, while the slot entry may additionally emit `ALIGN_GGML_SLOT` |
 | Canonical source | `plane_base + (lane + head_dim * (head + n_head_kv * column)) * 4`, for `head = 0 .. n_head_kv`, `column = 0 .. columns`, and `lane = 0 .. head_dim` |
 | K consumed layout/order | consumed offset `(lane + head_dim * (column + columns * head)) * 4`; observable first mismatch follows `head`, then `column`, then `lane`; an implementation may compare one contiguous lane row at a time because only its column is returned |
 | V consumed layout/order | consumed offset `(column + columns * (lane + head_dim * head)) * 4`; observable first mismatch follows `head`, then `lane`, then `column` |
 | Byte semantics | compare the four stored bytes of every F32 lane exactly; no float conversion, tolerance, endianness reinterpretation, or NaN normalization |
-| Native validation order | reject a null range with `ALIGN_GGML_INIT`; then reject negative lengths/base, nonpositive dimensions, or an unknown layout with `ALIGN_GGML_BOUNDS`; then checked-multiply `head_dim * n_head_kv * columns * 4`; then require that span within `consumed_bytes` and `[plane_base, plane_base + span)` within `plane_bytes` and representable as `size_t`; read no byte before all checks pass |
-| Ownership/allocation | both byte ranges remain borrowed and caller-owned; overlap is allowed because both are read-only; the function writes, allocates, frees, retains, and opens nothing and has no process-global state |
-| Align wrapper | `ggml_ffi.compare_kv_plane(...) -> Result<i64, Fault>` passes both slice lengths, maps raw `0` to `Ok(-1)`, raw positive `n` to `Ok(n - 1)`, and a negative status through the existing R5 fault mapping; one `unsafe` block contains the one foreign call |
-| Decode integration | retain the existing span and concat-shape checks and both exact `slot_get` calls into the existing `node_window`; replace `compare_past_k` and `compare_past_v` with the wrapper using layout tags K and V; no new allocation or native owner |
+| Native validation order | The slot entry resolves the slot or returns `ALIGN_GGML_SLOT`; rejects a null plane with `ALIGN_GGML_INIT`; requires exact tensor bytes `head_dim * n_head_kv * columns * 4`; in the real shim requires a nonnull tensor buffer for which `ggml_backend_buffer_is_host` is true and nonnull data, otherwise `ALIGN_GGML_BOUNDS`; then calls the byte primitive. The primitive rejects a null range with `ALIGN_GGML_INIT`; rejects negative lengths/base, nonpositive dimensions, or an unknown layout with `ALIGN_GGML_BOUNDS`; checked-multiplies the span; requires it within consumed bytes and `[plane_base, plane_base + span)` within plane bytes and representable as `size_t`; and reads no byte before all checks pass. |
+| Ownership/allocation | the byte primitive borrows two caller-owned ranges; the slot entry borrows one ggml-owned tensor range and one caller-owned plane range. Overlap is allowed because both are read-only; neither function writes, allocates, frees, retains, or opens anything or has process-global state. |
+| Align wrapper | `ggml_ffi.slot_compare_kv_plane(...) -> Result<i64, Fault>` passes the slot slice, index, plane slice/length, and fixed layout; maps raw `0` to `Ok(-1)`, raw positive `n` to `Ok(n - 1)`, and a negative status through the existing R5 fault mapping; one `unsafe` block contains the one foreign call. The byte wrapper remains owner-testable but is no longer a production callsite. |
+| Decode integration | retain the existing span and both concat-shape checks; replace each `slot_get` plus byte-wrapper pair with one slot-wrapper call using layout K or V; `node_window` remains owned for the later transcript oracle and no allocation or native owner is added |
 | Success | both calls return `-1`; add the unchanged `2 * columns * plane_column_bytes(g)` to `roundtrip_bytes_compared` exactly once |
-| Mismatch/failure | preserve the current first K-before-V priority and exact tensor/column detail; a native validation fault is the owning tensor at column `-1` and the existing `R6M_PLANE_MISMATCH`; prior shape and `slot_get` failures keep their current code, detail, and early return |
-| Forced regressions | retain `slot_get`, so the checked-in routed writeback-offset perturbation still changes the readback before comparison and must produce the existing layer/tensor/column/step record |
+| Mismatch/failure | preserve the current first K-before-V priority and exact tensor/column detail; slot, host-visibility, or native validation faults are the owning tensor at column `-1` and the existing `R6M_PLANE_MISMATCH`; prior shape failures keep their current detail and early return |
+| Forced regressions | the stub slot wrapper applies the routed writeback-offset perturbation to comparison semantics without mutating the tensor and preserves the general forced-inf readback behavior for this oracle; both must retain their existing observable failure records |
 | Existing records | provider output and item 57, item 59, and item 60 helper schemas are byte-shape unchanged; item 60's `plane_roundtrip_compare_ns` continues to time the complete `verify_plane` call, not the native comparison alone |
 | Fixed baseline | item 60 full-helper samples `[17704139042,18412456541,19080317000,19520549709]`, integer median 18,746,386,770 ns, on its exact Apple M1 host and fixed request |
 | Performance gate | floor 50,000 ppm, rounded-up minimum gain 937,319,339 ns; candidate four-sample median must be at most 17,809,067,431 ns; equality is `MET`, anything slower is `NOT_MET` |
@@ -60,9 +67,10 @@ because both arguments are borrowed slices and the native function creates no ow
 | --- | --- | --- | --- | --- | --- |
 | Shared native K | validate all scalar and byte bounds before reading | contiguous lane-row comparisons preserve head/column priority | first mismatching row returns `column + 1`; malformed input returns before reads | read-only, allocation-free, no state | non-square exact vector, multiple-column mismatch, null/bounds/overflow/layout cases |
 | Shared native V | same complete pre-read validation | four-byte comparisons preserve head/lane/column priority | first mismatch follows traversal, not minimum numeric column | read-only, allocation-free, no state | non-square exact vector with competing mismatch columns |
-| Real/stub parity | function and tags live inside the byte-identical shared region | both compiled forms expose the same ABI | shared-region drift fails the existing smoke | no owner | shared-region identity owner plus direct stub call |
+| Real slot entry | resolve slot, exact size, host-visible buffer, and data before the shared primitive | compares ggml-owned host bytes without a copy | missing slot or non-host/null data returns before reads | borrowed tensor/plane; no owner | CPU routed success plus native refusal vectors |
+| Stub slot entry | resolve slot, exact size, and data before the shared primitive | ordinary engine matches real semantics | routed offset and forced-inf builds perturb the compared view/result without mutating storage | borrowed tensor/plane; no owner or lasting state | routed success, writeback-offset, and forced-inf owners |
 | Safe wrapper | compiler supplies both slice lengths and one fixed layout tag | `0 -> -1`, positive result subtracts one | negative result maps through existing fault table | borrows only; one unsafe call | pinned executable build and direct wrapper callsite compilation |
-| Verify K | existing shape check and `slot_get` precede native compare | equality continues to V | mismatch records K and exact column; fault records K/-1; V is skipped | existing window and graph owners unchanged | current routed success and forced writeback-offset failure |
+| Verify K | existing shape check precedes native slot compare | equality continues to V | mismatch records K and exact column; fault records K/-1; V is skipped | existing window and graph owners unchanged | current routed success and forced writeback-offset failure |
 | Verify V | reached only after successful K | equality commits unchanged byte total | mismatch records V and exact column; fault records V/-1 | existing window and graph owners unchanged | native V vector plus routed success |
 | Historical helpers | same shared helper and three fixed entrypoints | item 57/59/60 exact key sets remain | malformed additions still reject | invocation-owned | self-test chain and real maximum-2/full item 60 records |
 | Performance repetition | fixed host, clean head, exact item 60 baseline, fresh short/full child pair | four valid samples produce median/gain and `MET` only at/below ceiling | drift or one invalid sample prevents result | twelve absence checks; child reaped | exact/one-ns gate cases, boolean/malformed mutants, real four-repeat run |
@@ -74,10 +82,10 @@ compilation is N/A because Align modules are built through their importing execu
 
 ## 4. Implementation and verification map
 
-1. Add the return/tag/validation contract once inside the byte-identical shared shim region and add
-   direct native vectors to the existing layer-forward owner.
-2. Add the safe FFI declaration/wrapper and replace only the two scalar compare functions at the
-   existing post-`slot_get` callsites.
+1. Retain the return/tag/validation contract inside the byte-identical shared shim region and its
+   direct native vectors.
+2. Add real/stub slot entries that validate actual host visibility and exact extent before calling
+   the byte primitive; add the safe FFI wrapper and replace both `slot_get`/compare pairs.
 3. Add the source-pinned item 61 performance runner over the unchanged item 60 helper and validate
    exact gate arithmetic and cleanup-before-publication.
 4. Run focused owners and one clean-head four-repeat qualification. Record `MET` or `NOT_MET` here,
@@ -92,11 +100,23 @@ qualification, and performance decision are one consumer-complete capability.
 ## 5. Author consistency pass
 
 The ledger and matrix agree that item 60 measured the complete `verify_plane` boundary and did not
-attribute its sub-operations. The intervention retains shape reads and both `slot_get` calls,
-changes only caller-owned byte comparison, and can claim success only through the full-helper gate.
-Every return state maps to one wrapper and decode result, all validation precedes reads, both shims
-share one byte-identical implementation, and no new owner or schema is introduced.
+attribute its sub-operations. Intervention A retained shape reads and both copies and missed the
+full-helper gate despite reducing the boundary. Intervention B retains shape reads, removes only the
+two host-to-host readback copies, and compares the same bytes only after the tensor proves host
+visible. Every return state maps to one wrapper and decode result, all validation precedes reads,
+both shims call one byte-identical primitive, forced readback regressions remain observable, and no
+new owner or schema is introduced.
 
 ## 6. Recorded result
 
-Pending implementation, focused verification, and one clean-head four-repeat qualification.
+Intervention A was qualified on clean head `9b940fd94acaeea839725f79f7092882e722b057`:
+
+- full-helper samples `[17459817958,18555159375,18069202584,19776245125]`, median
+  18,312,180,979 ns, gain 434,205,791 ns / 23,162 ppm: `NOT_MET`;
+- complete plane-boundary samples `[1842072817,1789703512,1914191744,1987025254]`, median
+  1,878,132,280 ns;
+- all four pairs reproduced the fixed 86-token output/hash, exact native lifetimes, twelve clean
+  isolation boundaries, fixed cache state, and cleanup.
+
+Intervention B is pending implementation, focused verification, and a new clean-head four-repeat
+qualification against the original item 60 baseline.

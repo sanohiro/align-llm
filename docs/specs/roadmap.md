@@ -1534,7 +1534,7 @@ The current forward delivery order is:
     diagnosis does not itself establish a performance win.
 
 61. **R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY — reduce the measured K/V verification boundary.
-    Active.** [`r8-olmoe-plane-roundtrip-boundary.md`](r8-olmoe-plane-roundtrip-boundary.md) is the
+    Active; first intervention measured `NOT_MET`.** [`r8-olmoe-plane-roundtrip-boundary.md`](r8-olmoe-plane-roundtrip-boundary.md) is the
     authoritative implementation ledger and closure matrix. Item 60 measured the complete
     `verify_plane` call, including concat
     shape reads, two `slot_get` operations, scalar K/V comparison, and result accounting; it did not
@@ -1543,7 +1543,11 @@ The current forward delivery order is:
     complete boundary. Item 60's four full-helper samples and 18,746,386,770-ns median are the
     immutable fixed-host baseline. Precommit a 50,000-ppm floor of 937,319,339 ns in the
     implementation ledger; the conditioned candidate must have a median no greater than
-    17,809,067,431 ns before the intervention can ship.
+    17,809,067,431 ns before the intervention can ship. Replacing only scalar comparison reduced
+    the boundary median to 1,878,132,280 ns but produced only a 23,162-ppm full-helper gain, so it
+    cannot ship alone. The next bounded intervention removes the remaining two host-to-host
+    `slot_get` copies by comparing host-visible concat tensors in place under an explicit native
+    buffer-visibility check; it retains the original baseline and gate.
 
 ### Status (2026-08-28)
 

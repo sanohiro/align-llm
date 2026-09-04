@@ -15,35 +15,39 @@ Item 61's authoritative ledger and closure matrix are
 call—shape reads, two `slot_get` operations, scalar K/V comparison, and result accounting—at a
 2,972,324,939-ns median, without attributing cost among those operations.
 
-The intervention retains the shape reads and both `slot_get` calls and replaces the scalar K/V
-comparison with one validated, allocation-free shared-shim call per tensor over the same borrowed
-byte ranges. It preserves exact K/V traversal and first-mismatch tensor/column semantics. Its
-immutable baseline is item 60's full-helper samples
+Intervention A retained the shape reads and both `slot_get` calls and replaced scalar K/V comparison
+with one validated shared-shim call per tensor. Its clean-head run reduced the boundary median from
+2,972,324,939 ns to 1,878,132,280 ns but improved the full helper by only 23,162 ppm, so it is
+`NOT_MET` and cannot ship alone. Intervention B removes the remaining two host-to-host copies by
+comparing each concat slot in place only after the real shim proves its backend buffer is host
+visible; the stub preserves the routed-offset and forced-inf readback regressions. Exact K/V
+traversal and first-mismatch tensor/column semantics remain unchanged. The immutable baseline is
+item 60's full-helper samples
 `[17704139042,18412456541,19080317000,19520549709]` and 18,746,386,770-ns median. The precommitted
 50,000-ppm floor is 937,319,339 ns and candidate ceiling is 17,809,067,431 ns. Only the complete
 fixed-request gate can establish the performance claim.
 
-The implementation is complete. The byte-identical real/stub shared region validates nulls,
-dimensions, layout, overflow, byte bounds, and pointer extents before reading; returns exact or
-column-plus-one without writing; and preserves K and V traversal order. The safe wrapper rejects an
-unrepresentable layout before narrowing. Oracle B retains shape reads and both `slot_get` calls and
-maps native validation failure to the existing tensor/-1 mismatch. The item 61 runner independently
-pins item 60's evidence, the full changed source chain, fixed host, helper schema, output, lifetimes,
-isolation, gate arithmetic, and cleanup-before-publication.
+Intervention A is committed at `9b940fd94acaeea839725f79f7092882e722b057`. The byte-identical
+real/stub shared region validates nulls, dimensions, layout, overflow, byte bounds, and pointer
+extents before reading; returns exact or column-plus-one without writing; and preserves K and V
+traversal order. The safe wrapper rejects an unrepresentable layout before narrowing. Oracle B
+retains shape reads and both `slot_get` calls and maps native validation failure to the existing
+tensor/-1 mismatch. The item 61 runner independently pins item 60's evidence, the full changed
+source chain, fixed host, helper schema, output, lifetimes, isolation, gate arithmetic, and
+cleanup-before-publication.
 
-**Next actions.** Commit the coherent implementation checkpoint; build the pinned real helper and
-run one clean-head four-repeat qualification; record `MET` or `NOT_MET`; then review, repair,
-preflight, publish, merge, and continue.
+**Next actions.** Commit the revised intervention ledger; implement and owner-test the host-visible
+slot comparison; run a new clean-head four-repeat qualification against item 60; record `MET` or
+`NOT_MET`; then review, repair, preflight, publish, merge, and continue.
 
 **Blocker.** None.
 
-**Latest durable verification.** The author consistency pass, shared-region byte comparison,
+**Latest durable verification.** Intervention A's author consistency pass, shared-region byte comparison,
 `make fmt`, `make layer-forward-smoke` (144.368 seconds), `make runtime-provider-smoke` (self-test
 plus 61 CLI assertions), Python compilation, the full item 57→61 self-test chain, and `git diff
 --check` pass.
 
-**Intentional uncommitted files.** Item 61 implementation, runner, source-identity chain, and
-handoff update before commit.
+**Intentional uncommitted files.** Revised intervention ledger, roadmap, and handoff before commit.
 Machine-local model/evidence and generated build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-DECODE-PASS-OTHER-DIAGNOSIS (PR #182, 2026-09-04)
