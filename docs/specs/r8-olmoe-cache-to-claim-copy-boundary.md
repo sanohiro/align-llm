@@ -117,4 +117,7 @@ combined wrap retries the original dense-only wrap and compact-copy graph.
 toolchain environment. The runtime owner now covers constructor success, reachable span, null
 context, zero shape, unsupported type, short stride, row overflow, slot range, direct hosted OLMoE
 generation, and injected combined-wrap fallback. A real ggml fixed-model conditioning request also
-completed with balanced native resources. The four-repeat shipping qualification remains pending.
+completed with balanced native resources. The thin item-66 helper and bounded qualification runner
+pin the complete transitive source/toolchain/workload identity, require zero cache-to-claim time on
+every full request, and pass their model-free self-test. The four-repeat shipping run remains
+pending.

@@ -47,8 +47,10 @@ injected first combined-wrap refusal proves the original dense-only wrap and com
 A real ggml fixed-model conditioning request completed successfully with balanced native resource
 counters.
 
-**Next actions.** Commit the implementation checkpoint; build and self-test the item-66
-qualification owner with exact source identities; execute the clean-head four-repeat gate; record
+The item-66 thin helper and bounded runner pin the complete transitive source chain and pass their
+model-free gate-boundary, schema, malformed-clock, source-drift, cleanup, and N/A self-tests.
+
+**Next actions.** Commit the qualification owner; execute the clean-head four-repeat gate; record
 `MET` or `NOT_MET`; then review, repair, publish, merge, and continue.
 
 **Blocker.** None.
@@ -57,6 +59,7 @@ qualification owner with exact source identities; execute the clean-head four-re
 seconds. `make runtime-provider-smoke` passes its sampler vectors, 61 CLI assertions, new strided
 constructor vectors, direct hosted OLMoE generation, and combined-wrap fallback. Both real and stub
 shims compile with `-Werror`; the real fixed-model conditioning probe completed successfully.
+`PYTHONDONTWRITEBYTECODE=1 ./scripts/run-olmoe-cache-to-claim-copy-boundary --self-test` passes.
 
 **Intentional uncommitted files.** None after the item-66 implementation checkpoint is committed.
 Machine-local model/evidence and generated build products remain outside Git.
