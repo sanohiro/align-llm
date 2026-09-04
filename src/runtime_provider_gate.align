@@ -100,6 +100,33 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     }
     return run_one(config, request, result_path)
   }
+  if mode == "local-sampled" && args.len() == 8 {
+    temperature_micros: i64 := json.decode(args[4])?
+    seed: i64 := json.decode(args[5])?
+    if temperature_micros < 1 || temperature_micros > 1_000_000 {
+      return Err(Error.Invalid)
+    }
+    sampled_request := model.GenerationRequest {
+      system: "You are a coding assistant. Return a concise patch-oriented answer.",
+      user: user,
+      max_tokens: 128,
+      temperature: (temperature_micros as f64) / 1_000_000.0,
+      seed: Some(seed),
+    }
+    config := model.ProviderConfig {
+      kind: model.ProviderKind.LocalOpenAI,
+      endpoint: args[2],
+      model: args[3],
+      api_key: "",
+      timeout_ns: 300000000000,
+      tokenize_endpoint: "",
+      max_response_bytes: 262144,
+      runtime_pack_path: "",
+      runtime_geometry_path: "",
+      runtime_cache_budget_bytes: 0,
+    }
+    return run_one(config, sampled_request, result_path)
+  }
   if mode == "runtime" && args.len() == 7 {
     config := model.ProviderConfig {
       kind: model.ProviderKind.AlignRuntime,
