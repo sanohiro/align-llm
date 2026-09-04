@@ -33,10 +33,17 @@ before a four-sample latency aggregate or performance decision.
 All production and production-owner changes from `e653aab` are now removed and compare exactly to
 that commit's parent; the golden was regenerated from restored source. The thin helper and bounded
 runner remain as the negative decision owner, with real mode refused on publication. Negative
-decision/removal checkpoint `356a1a5` is the stable candidate for comprehensive review.
+decision/removal checkpoint `356a1a5` is the stable publication candidate.
 
-**Next actions.** Perform one comprehensive review; repair valid findings; run exact-head preflight;
-publish, merge, and continue.
+Comprehensive Codex review of `b120856` against base/merge-base `7ef2124` used gpt-5.6-sol at high
+effort and found one valid P2: `EVALUATED_HEAD` was only displayed, not verified as reachable, so a
+squash or rebase could invalidate reproduction. The narrow repair now resolves the Git common
+directory, refuses grafts/replacement refs, disables replacements for the ancestry query, requires
+`1407d3a` to be an ancestor of current `HEAD`, and covers valid and invalid ancestry states. It does
+not change production, measurement, or the decision; no second comprehensive review is required.
+
+**Next actions.** Commit the consolidated review repair; run exact-head preflight; publish, merge,
+verify post-merge ancestry, and continue.
 
 **Blocker.** None.
 
@@ -45,7 +52,8 @@ regeneration, normal `make layer-forward-smoke` (66.288 seconds), `make runtime-
 real shim build, `make fmt`, combined runner self-test, shared-region identity, and
 `git diff --check` passed. After removal, official golden regeneration passed in 58.822 seconds and
 the ten production/owner files compare exactly to `e653aab^`. Focused publication verification is
-passing: Python compilation, combined runner self-test, and `git diff --check`.
+passing: Python compilation, combined runner self-test including ancestry cases, explicit
+no-argument refusal, and `git diff --check`.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.

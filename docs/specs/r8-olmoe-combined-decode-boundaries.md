@@ -60,7 +60,7 @@ before a latency aggregate or `MET`/`NOT_MET` performance decision could be form
 | Failure/early exit | native validation and existing first-fault order remain fail-closed; no partial layer, cache admission, graph, or qualification document survives an error; identity drift, contamination, timeout, cleanup failure, or ceiling excess exits nonzero |
 | Persisted/cache identity | N/A: no persisted format, model, pack, geometry, provider response, or cache schema change |
 | Cost ceiling | one monotonic 8-minute ceiling covers exact builds, four conditioning/full pairs, aggregation, final identity checks, and cleanup |
-| Integration | the evaluated candidate commit must remain an ancestor of merged `main`; publication uses a merge commit, never squash or rebase, so a retained negative result can identify the exact executable source |
+| Integration | the evaluated candidate commit must remain an ancestor of the current and merged heads; the owner resolves the Git common directory, refuses grafts and replacement refs, and checks ancestry with replacements disabled. Publication uses a merge commit, never squash or rebase, so the retained negative result identifies exact executable source. |
 | Acceptance evidence | author consistency pass; shared real/stub ABI contract checks; restored malformed/success/fallback/topology/plane/cache owners; `make check`; `make runtime-provider-smoke`; `make layer-forward-smoke`; `make fmt`; Python compilation and complete runner self-test; one clean-head four-repeat qualification; production removal comparison on `NOT_MET`; `git diff --check`; one comprehensive review; exact-head preflight with the focused owner |
 
 The capability makes one fixed-request latency claim on one pinned host only if the gate is met.
@@ -146,3 +146,14 @@ byte-identical to its parent after removal, including a golden regenerated from 
 The publication retains the ledger, thin helper, and self-test-only runner; reproducing the failed
 real candidate requires evaluated commit `1407d3a0820ff73ae41094a4452630fcd758db53`. No combined
 provider speedup or routing-equivalence claim ships.
+
+The comprehensive Codex CLI review covered head
+`b120856c52d4a6ebc9c5140cb90c78144993655e` against base tip and merge base
+`7ef21249306b037c2618feb26e624d0809382585`, using gpt-5.6-sol at high effort over the complete
+diff. It found one accepted P2: the publication runner displayed the evaluated commit but did not
+verify that it remained reachable, so a squash or rebase could silently invalidate reproduction.
+The consolidated evidence-integrity repair resolves the Git common directory, refuses nonempty
+grafts and replacement refs, disables replacements for the query, requires the evaluated commit to
+be an ancestor of the current head, and exercises success plus wrong-head/graft/replacement
+refusals. It does not change production, the measured candidate, or the decision, so another
+comprehensive review is not required.

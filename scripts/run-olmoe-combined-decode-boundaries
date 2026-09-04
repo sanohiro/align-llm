@@ -145,6 +145,46 @@ def source_identities() -> tuple[str, ...]:
     return tuple(base.file_sha256(path) for path in SOURCE_PATHS)
 
 
+def validate_ancestry_state(
+    replace_refs: bytes, graft_contents: bytes, ancestry_status: int,
+) -> None:
+    if replace_refs.strip():
+        raise CombinedBoundaryError("evaluated ancestry refuses Git replacement refs")
+    if graft_contents.strip():
+        raise CombinedBoundaryError("evaluated ancestry refuses Git grafts")
+    if ancestry_status != 0:
+        raise CombinedBoundaryError("evaluated commit is not an ancestor of the current head")
+
+
+def require_evaluated_ancestry(descendant: str = "HEAD") -> None:
+    clean_env = transfer.phase.decision.decision_environment()
+    clean_env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    deadline = time.monotonic() + 30
+    common_result = owner.run_process(
+        ["git", "rev-parse", "--git-common-dir"], deadline=deadline, maximum=30,
+        env=clean_env,
+    )
+    common_text = common_result.stdout.decode("utf-8", "strict").strip()
+    if not common_text:
+        raise CombinedBoundaryError("Git common directory was empty")
+    common = Path(common_text)
+    if not common.is_absolute():
+        common = ROOT / common
+    graft_path = common.resolve() / "info/grafts"
+    graft_contents = graft_path.read_bytes() if graft_path.exists() else b""
+    replace_result = owner.run_process(
+        ["git", "for-each-ref", "--format=%(refname)", "refs/replace"],
+        deadline=deadline, maximum=30, env=clean_env,
+    )
+    ancestry_result = owner.run_process(
+        ["git", "merge-base", "--is-ancestor", EVALUATED_HEAD, descendant],
+        deadline=deadline, maximum=30, env=clean_env, check=False,
+    )
+    validate_ancestry_state(
+        replace_result.stdout, graft_contents, ancestry_result.returncode,
+    )
+
+
 def validate_imported_contract() -> None:
     actual = (
         claim.MODEL_BYTES, claim.MODEL_SHA256, claim.SERVER_BUILD, claim.BUDGET,
@@ -470,7 +510,20 @@ def complete_result_after_cleanup(result: dict[str, Any], started_ns: int) -> di
 
 
 def self_test() -> int:
+    require_evaluated_ancestry()
     validate_imported_contract()
+    expect_error(
+        lambda: require_evaluated_ancestry(f"{EVALUATED_HEAD}^"),
+        "a head before the evaluated commit passed ancestry",
+    )
+    expect_error(
+        lambda: validate_ancestry_state(b"refs/replace/a\n", b"", 0),
+        "a Git replacement ref passed ancestry",
+    )
+    expect_error(
+        lambda: validate_ancestry_state(b"", b"a b\n", 0),
+        "a Git graft passed ancestry",
+    )
     at_ceiling = synthetic_samples([CANDIDATE_CEILING_NS] * REPETITIONS)
     if aggregate(at_ceiling)["decision"] != "MET":
         raise CombinedBoundaryError("candidate at ceiling did not meet gate")
@@ -520,6 +573,7 @@ def main() -> int:
     if sys.argv[1:] == ["--self-test"]:
         return self_test()
     if len(sys.argv) == 1:
+        require_evaluated_ancestry()
         raise CombinedBoundaryError(
             "combined candidate was removed after cache-accounting drift; reproduce the real "
             f"qualification from evaluated commit {EVALUATED_HEAD}"
