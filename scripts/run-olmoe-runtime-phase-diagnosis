@@ -513,8 +513,8 @@ def measure_leg(
 ) -> dict[str, Any]:
     global server_process
     require_no_matching_process(server, model, deadline, clean_env)
-    server_rss: int | None = None
     server_log = None
+    port: int | None = None
     if condition == "co_resident":
         port = base.free_port()
         server_log = (work / f"llama-server-{pair_index}.log").open("wb")
@@ -549,20 +549,26 @@ def measure_leg(
             stderr=subprocess.STDOUT,
         )
         base.wait_ready(server_process, port, deadline)
-        warm_server(port, deadline)
-        matches = matching_processes(server, model, deadline, clean_env)
-        if matches != [server_process.pid]:
-            raise DiagnosisError("co-resident condition did not own the sole matching process")
-        server_rss = server_rss_bytes(server_process.pid, deadline, clean_env)
-        if server_rss < MIN_SERVER_RSS_BYTES:
-            raise DiagnosisError("co-resident server did not establish the 2-GiB RSS floor")
     elif condition != "solo":
         raise DiagnosisError("unknown diagnosis condition")
 
     records: dict[int, dict[str, Any]] = {}
     try:
         for maximum_tokens in length_order:
-            records[maximum_tokens] = measure_request(
+            server_rss_before: int | None = None
+            if condition == "co_resident":
+                if server_process is None or port is None:
+                    raise DiagnosisError("co-resident server ownership was lost")
+                matches = matching_processes(server, model, deadline, clean_env)
+                if matches != [server_process.pid]:
+                    raise DiagnosisError("co-resident condition did not own the sole matching process")
+                warm_server(port, deadline)
+                server_rss_before = server_rss_bytes(server_process.pid, deadline, clean_env)
+                if server_rss_before < MIN_SERVER_RSS_BYTES:
+                    raise DiagnosisError("co-resident server did not establish the 2-GiB RSS floor")
+            else:
+                require_no_matching_process(server, model, deadline, clean_env)
+            record = measure_request(
                 built["helper"],
                 model,
                 pack,
@@ -572,6 +578,16 @@ def measure_leg(
                 built["runtime_env"],
                 deadline,
             )
+            server_rss_after = (
+                server_rss_bytes(server_process.pid, deadline, clean_env)
+                if server_process is not None
+                else None
+            )
+            records[maximum_tokens] = {
+                **record,
+                "server_rss_before_bytes": server_rss_before,
+                "server_rss_after_bytes": server_rss_after,
+            }
     finally:
         stop_process(server_process)
         server_process = None
@@ -580,7 +596,6 @@ def measure_leg(
     require_no_matching_process(server, model, deadline, clean_env)
     return {
         "length_order": ["short" if value == SHORT_TOKENS else "full" for value in length_order],
-        "server_rss_bytes": server_rss,
         "short": records[SHORT_TOKENS],
         "full": records[FULL_TOKENS],
     }
@@ -677,6 +692,22 @@ def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
             leg = pair.get(condition)
             if not isinstance(leg, dict) or leg.get("length_order") != expected_lengths:
                 raise DiagnosisError("diagnosis length schedule drifted")
+            for length in ("short", "full"):
+                record = leg.get(length)
+                if not isinstance(record, dict):
+                    raise DiagnosisError("diagnosis helper record was missing")
+                before = record.get("server_rss_before_bytes")
+                after = record.get("server_rss_after_bytes")
+                if condition == "solo":
+                    if before is not None or after is not None:
+                        raise DiagnosisError("solo helper unexpectedly recorded server RSS")
+                elif (
+                    not is_int(before)
+                    or before < MIN_SERVER_RSS_BYTES
+                    or not is_int(after)
+                    or after <= 0
+                ):
+                    raise DiagnosisError("co-resident helper lacked valid before/after RSS")
     validate_repeatability(samples)
     solo_short = [pair["solo"]["short"]["helper_wall_ns"] for pair in samples]
     solo_full = [pair["solo"]["full"]["helper_wall_ns"] for pair in samples]
@@ -780,9 +811,13 @@ def synthetic_samples(co_full: int, solo_full: int = 1000) -> list[dict[str, Any
             full = synthetic_record(FULL_TOKENS)
             short["helper_wall_ns"] = 200 if condition == "solo" else 250
             full["helper_wall_ns"] = solo_full if condition == "solo" else co_full
+            for record in (short, full):
+                record["server_rss_before_bytes"] = (
+                    None if condition == "solo" else MIN_SERVER_RSS_BYTES
+                )
+                record["server_rss_after_bytes"] = None if condition == "solo" else 10 * 1024 * 1024
             pair[condition] = {
                 "length_order": lengths,
-                "server_rss_bytes": None if condition == "solo" else 100,
                 "short": short,
                 "full": full,
             }
@@ -824,6 +859,14 @@ def self_test() -> int:
     setup = repeated_setup(synthetic_record(FULL_TOKENS))
     if aggregate(synthetic_samples(1000 + setup))["decision"] != "MIXED_OR_UNRESOLVED":
         raise DiagnosisError("diagnosis deadband boundary drifted")
+    invalid_residency = synthetic_samples(1700)
+    invalid_residency[0]["co_resident"]["short"]["server_rss_before_bytes"] = 1
+    try:
+        aggregate(invalid_residency)
+    except DiagnosisError:
+        pass
+    else:
+        raise DiagnosisError("co-resident helper without resident model pressure was accepted")
 
     server = Path("/opt/llama server")
     model = Path("/models/model.gguf")
@@ -1007,7 +1050,9 @@ def main() -> int:
                     "threads": 4,
                     "context": 512,
                     "warmup": False,
-                    "warmup_inference_requests": 1,
+                    "warmup_inference_requests_per_timed_helper": 1,
+                    "warmup_inference_requests_per_co_resident_leg": 2,
+                    "warmup_inference_requests_total": 8,
                     "warmup_maximum_tokens": 1,
                     "minimum_server_rss_bytes": MIN_SERVER_RSS_BYTES,
                     "timed_inference_requests": 0,

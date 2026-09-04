@@ -24,17 +24,19 @@ the focused runner owns the balanced conditions, schema, repeatability, attribut
 self-test, and `git diff --check` pass for the implementation batch.
 
 The first pre-result launch was stopped before one pair completed because process inspection showed
-that health plus `--no-warmup` left llama.cpp at roughly 17 MiB RSS, so it did not construct the
-contract's co-resident pressure. The corrected contract requires one explicit untimed one-token
-warmup and a 2-GiB RSS floor before either timed helper; no result or partial evidence was emitted.
+that health plus `--no-warmup` left llama.cpp at roughly 17 MiB RSS. A second pre-result launch was
+also stopped without output after its first co-resident helper evicted the warmed server from over
+2 GiB to roughly 10 MiB RSS. The corrected contract therefore requires the fixed untimed one-token
+warmup and 2-GiB RSS floor immediately before every timed helper and records RSS immediately after;
+no result or partial evidence was emitted by either discovery run.
 
-**Next actions.** Commit the implementation checkpoint, run the same owner from clean source, then
+**Next actions.** Commit the per-helper pressure correction, run the owner from clean source, then
 execute and record the one complete real diagnosis.
 
 **Blocker.** None.
 
-**Intentional uncommitted files.** The item-54 helper and runner implementation above; no generated
-binary, machine-local evidence, model, credential, or profile belongs in Git.
+**Intentional uncommitted files.** The per-helper pressure correction above; no generated binary,
+machine-local evidence, model, credential, or profile belongs in Git.
 
 ## Merged checkpoint: R8-OLMOE-SAMPLED-RUNTIME-DECISION (PR #175, 2026-09-04)
 
