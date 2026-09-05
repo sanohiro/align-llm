@@ -162,3 +162,26 @@ artifact kind. The full result and evaluated source identity are recorded before
 
 The author ledger-to-prose consistency pass confirms the V axis/strides, row23/24 table changes,
 scalar FFI, worker dispatch, exact source inventory and paired gate agree. No K source is adopted.
+
+## Implementation checkpoint
+
+The five production owners implement only the V concat/pad operations and scalar FFI. The final
+source-diff inspection confirms rows 23/24 change only their operation identifiers; every operand,
+condition, source, width, K/prefill operation and row21/22 remains intact.
+
+The pinned helper per-unit check passed 17 units. Real, engine-stub and unavailable-stub C builds
+passed with warnings as errors; the shared contract region is byte-identical. `gmake fmt`,
+`scripts/test-olmoe-attention-core` (exact source order/output, all existing modes, six compute
+failures, late failure, selection refusal and lifetime balance), `gmake layer-forward-smoke`
+(193.931 seconds), and `gmake runtime-provider-smoke` (sampler vectors and 61 CLI assertions) passed.
+The native owner passed stub, `--real`, and `--real --ubsan`, including actual PERMUTE/CONT input
+construction, exact generic-op parity, special-value bits, width/element caps, refusal precedence,
+four-worker dispatch, 26 callback invariant faults and lifetime/sentinel checks. Raw row21's
+noncanonical singleton strides are tested with real ggml; the stub's materializing permutation is
+not represented as identical metadata behavior. Separate native graph materialization chains avoid
+assuming that the stub deduplicates shared computed nodes across separate graph expansions.
+
+Python compilation, the paired runner self-test and exact control snapshot inventory checks passed.
+The full fixed-host qualification and terminal source disposition remain pending. No performance
+improvement is claimed before that result. Preserve the complete raw result in retrievable PR
+evidence and verify its decoded bytes/hash before publication completes.

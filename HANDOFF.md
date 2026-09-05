@@ -15,20 +15,21 @@ operations and normal unsplit execution remain fixed. Four contemporary AB/BA pa
 all-positive requirement, median saving at least max(871,174,011 ns, 5% of control), historical
 16,552,306,197-ns candidate ceiling, and eight-minute complete qualification ceiling.
 
-**Next actions.** Implement the two V operations and focused real/stub owner; adapt the paired
-qualifier to the new exact control/source boundary; run narrow owners and clean-head qualification.
-Retain production only for `MET`; bind terminal evidence, review, repair, preflight, publish and
-merge; then continue to the result-selected successor.
+**Next actions.** Run the clean-head paired qualification. Retain production only for `MET`; bind
+terminal evidence, review, repair, preflight, publish and merge; then continue to the result-selected
+successor. Preserve complete raw evidence with the pull request.
 
-**Blocker.** None. Design is fixed; implementation and qualification are not started. Existing
-Align scalar C FFI suffices; no new Align capability is required.
+**Blocker.** None. Implementation and narrow owners are complete; fixed-host qualification is
+pending. Existing Align scalar C FFI suffices; no new Align capability is required.
 
-**Latest durable verification.** Item 74's comprehensive review had no findings; exact-head
-preflight and all three required CI checks passed. Its post-merge self-test verified exact restored
-production and control/evaluated ancestry. Item 75 has the author ledger-to-prose consistency pass;
-executable owners remain pending.
+**Latest durable verification.** Pinned helper type-check passed 17 units; three strict C builds,
+shared-region identity, `gmake fmt`, native stub/real four-worker/real UBSan owners, existing
+attention-core mode/order/failure owner, `gmake layer-forward-smoke` (193.931 seconds),
+`gmake runtime-provider-smoke` (sampler vectors plus 61 CLI assertions), Python compilation and
+paired-runner self-test all passed. Real comparison is next. Item 74's merged-head self-test also
+passed after PR #196 merged.
 
-**Intentional uncommitted files.** None after the design checkpoint; models, raw evidence and
+**Intentional uncommitted files.** None after the implementation checkpoint; models, raw evidence and
 build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-K-PREPARATION-BOUNDARY (PR #196, 2026-09-05)

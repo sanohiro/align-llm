@@ -813,8 +813,8 @@ fn plane_column_bytes(borrow g: layer_olmoe.Geometry) -> i64 = g.n_head_kv * g.h
 // ---------------------------------------------------------------------------------------------
 
 // `src/moe_model_forward.align`'s walk with two differences: it consults the decode condition, and
-// it dispatches `OP_CONCAT`. Everything else — `when` selecting rows and `alt_when` selecting
-// operands, both as data — is that module's, unchanged.
+// it dispatches concat and the V-copy operations. Everything else — `when` selecting rows and
+// `alt_when` selecting operands, both as data — is that module's, unchanged.
 fn build_decode_nodes(
   ctx: raw,
   borrow slots: slice<u8>,
@@ -891,6 +891,12 @@ fn build_decode_nodes(
       // axes and one shared constant would be a silent transpose.
       if op == layer_olmoe.OP_CONCAT {
         ggml_ffi.op_concat(ctx, slots, out, a, b, nodes.p0[row], label)?
+      }
+      if op == layer_olmoe.OP_V_CONCAT_F32 {
+        ggml_ffi.op_v_concat_f32(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_olmoe.OP_V_PAD_F32 {
+        ggml_ffi.op_v_pad_f32(ctx, slots, out, a, nodes.p0[row], label)?
       }
       row = row + 1
     } else {

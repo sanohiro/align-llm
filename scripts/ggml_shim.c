@@ -9,7 +9,7 @@
  *
  * Four rules govern every line below.
  *
- *  1. **No ggml type appears in any signature.** Handles cross as `void *`, results as `int32_t`
+ *  1. **No ggml type appears in any exported signature.** Handles cross as `void *`, results as `int32_t`
  *     or `int64_t`. ABI drift therefore cannot silently change an Align declaration.
  *  2. **Nothing here allocates memory the document describes.** It reserves no heap, opens no
  *     path, and reads no byte the caller did not hand over. Every byte ggml computes over came from
@@ -18,9 +18,11 @@
  *  3. **Fail closed before ggml can abort.** `ggml_backend_cpu_buffer_from_ptr` calls `abort()`
  *     through `GGML_ASSERT` on a pointer that is not `TENSOR_ALIGNMENT`-aligned (section 2.4), so
  *     every pointer and every size is validated here, in C, before the call that would assert.
- *  4. **No `struct ggml_tensor` field is read directly except the public stride array.** Its data,
- *     byte extent, and type use accessors. Item 66 writes `nb[2]`/`nb[3]` after checked construction
- *     because ggml exposes no constructor for a standalone fixed-slot expert stack.
+ *  4. **Direct tensor metadata access is narrowly owned.** Strides are public; item 75's static
+ *     V-copy callbacks and constructors additionally read `type`, `ne`, `nb`, `src` and host-buffer
+ *     metadata to validate their exact CPU layouts. Data and byte extents use accessors. Item 66
+ *     writes `nb[2]`/`nb[3]` after checked construction because ggml exposes no constructor for a
+ *     standalone fixed-slot expert stack.
  *
  * Built by the `Makefile`'s `build/lib/libalign_ggml_shim.$(SHIM_SUFFIX)` rule when
  * `ALIGN_LLM_GGML_INCLUDE` is set; `scripts/ggml_shim_stub.c` is built instead when it is not.
@@ -384,6 +386,98 @@ static int32_t align_ggml_eps_ok(int32_t bits) {
  */
 #define ALIGN_GGML_MAX_PAD 4096
 #define ALIGN_GGML_MAX_PAD_ELEMENTS ((int64_t) 16777216)
+
+/* R8 item 75. V-copy geometry is validated before any library size accessor can multiply
+ * attacker-supplied dimensions/strides. The byte helpers never interpret an F32 bit pattern. */
+static int32_t align_ggml_v_extents(const int64_t ne[4], size_t bytes[3]) {
+    int64_t row_bytes = 0;
+    int64_t head_bytes = 0;
+    int64_t total_bytes = 0;
+    if (ne == NULL || bytes == NULL || ne[0] <= 0 || ne[1] <= 0 || ne[2] <= 0
+        || ne[3] != 1 || ne[0] > ALIGN_GGML_MAX_PAD) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (ne[0] > INT64_MAX / 4 || (uint64_t) ne[0] > SIZE_MAX / 4) {
+        return ALIGN_GGML_SHAPE;
+    }
+    row_bytes = ne[0] * 4;
+    if (ne[1] > INT64_MAX / row_bytes
+        || (uint64_t) ne[1] > SIZE_MAX / (size_t) row_bytes) {
+        return ALIGN_GGML_SHAPE;
+    }
+    head_bytes = row_bytes * ne[1];
+    if (ne[2] > INT64_MAX / head_bytes
+        || (uint64_t) ne[2] > SIZE_MAX / (size_t) head_bytes) {
+        return ALIGN_GGML_SHAPE;
+    }
+    total_bytes = head_bytes * ne[2];
+    if (total_bytes / 4 > ALIGN_GGML_MAX_PAD_ELEMENTS) {
+        return ALIGN_GGML_SHAPE;
+    }
+    bytes[0] = (size_t) row_bytes;
+    bytes[1] = (size_t) head_bytes;
+    bytes[2] = (size_t) total_bytes;
+    return ALIGN_GGML_OK;
+}
+
+static int32_t align_ggml_v_layout(const int64_t ne[4], const size_t nb[4]) {
+    size_t bytes[3];
+    if (nb == NULL || align_ggml_v_extents(ne, bytes) != ALIGN_GGML_OK
+        || nb[0] != 4 || nb[1] != bytes[0] || nb[2] != bytes[1] || nb[3] != bytes[2]) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return ALIGN_GGML_OK;
+}
+
+static int32_t align_ggml_v_slots(
+    const void *ctx, const void *slots, int64_t out, int64_t a, int64_t b, int32_t binary) {
+    int64_t capacity = 0;
+    if (ctx == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    capacity = align_ggml_slot_capacity(slots);
+    if (capacity < 0 || out < 0 || out >= capacity || a < 0 || a >= capacity || out == a
+        || align_ggml_slot_load(slots, a) == NULL
+        || (binary && (b < 0 || b >= capacity || out == b
+            || align_ggml_slot_load(slots, b) == NULL))) {
+        return ALIGN_GGML_SLOT;
+    }
+    return ALIGN_GGML_OK;
+}
+
+static int32_t align_ggml_v_distinct(
+    const void *dst, size_t dst_bytes, const void *src, size_t src_bytes) {
+    uintptr_t d = (uintptr_t) dst;
+    uintptr_t s = (uintptr_t) src;
+    if (dst == NULL || src == NULL || dst_bytes > UINTPTR_MAX - d || src_bytes > UINTPTR_MAX - s) {
+        return 0;
+    }
+    return d + dst_bytes <= s || s + src_bytes <= d;
+}
+
+/* Sizes and distinct allocation spans are proved by the constructors/callback guards. V has
+ * columns on axis 0: each (head, lane) row receives one four-byte value, not a whole K column. */
+static void align_ggml_v_concat_bytes(
+    unsigned char *dst, const unsigned char *past, const unsigned char *current,
+    size_t past_row_bytes, size_t rows) {
+    size_t r = 0;
+    size_t result_row_bytes = past_row_bytes + 4;
+    for (r = 0; r < rows; r++) {
+        memcpy(dst + r * result_row_bytes, past + r * past_row_bytes, past_row_bytes);
+        memcpy(dst + r * result_row_bytes + past_row_bytes, current + r * 4, 4);
+    }
+}
+
+static void align_ggml_v_pad_bytes(
+    unsigned char *dst, const unsigned char *source,
+    size_t source_row_bytes, size_t result_row_bytes, size_t rows) {
+    size_t r = 0;
+    for (r = 0; r < rows; r++) {
+        memcpy(dst + r * result_row_bytes, source + r * source_row_bytes, source_row_bytes);
+        memset(dst + r * result_row_bytes + source_row_bytes, 0,
+               result_row_bytes - source_row_bytes);
+    }
+}
 
 /* R5D-MOE-LAYER-FORWARD (`docs/specs/r5d-moe-layer-forward.md` section 3.5). `ggml_argsort`'s two
  * orders, shared so both files refuse the same third value. `ggml_top_k` is deliberately **not**
@@ -1854,6 +1948,181 @@ int32_t align_ggml_op_concat(
         return ALIGN_GGML_SHAPE;
     }
     return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+/* R8 item 75. Each constructor retains one V node, source order and allocation domain. The
+ * custom callbacks are static, use one active copy worker and retain no userdata or local array. */
+static int32_t align_ggml_v_tensor_layout(const struct ggml_tensor *t, size_t bytes[3]) {
+    if (t == NULL || t->type != GGML_TYPE_F32
+        || align_ggml_v_layout(t->ne, t->nb) != ALIGN_GGML_OK
+        || align_ggml_v_extents(t->ne, bytes) != ALIGN_GGML_OK
+        || ggml_nbytes(t) != bytes[2]) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return ALIGN_GGML_OK;
+}
+
+static unsigned char *align_ggml_v_host_data(const struct ggml_tensor *t) {
+    void *data = NULL;
+    if (t == NULL || t->buffer == NULL || !ggml_backend_buffer_is_host(t->buffer)) {
+        abort();
+    }
+    data = ggml_get_data(t);
+    if (data == NULL) {
+        abort();
+    }
+    return (unsigned char *) data;
+}
+
+static void align_ggml_v_concat_f32(struct ggml_tensor *dst, int ith, int nth, void *userdata) {
+    const struct ggml_tensor *past = NULL;
+    const struct ggml_tensor *current = NULL;
+    size_t db[3], pb[3], cb[3];
+    unsigned char *d = NULL;
+    const unsigned char *p = NULL;
+    const unsigned char *c = NULL;
+    if (nth < 1 || ith < 0 || ith >= nth || userdata != NULL) {
+        abort();
+    }
+    // ggml 0.21 dispatches every graph worker even when this node requests one task.
+    if (ith > 0) {
+        return;
+    }
+    if (dst == NULL) {
+        abort();
+    }
+    past = dst->src[0];
+    current = dst->src[1];
+    if (align_ggml_v_tensor_layout(dst, db) != ALIGN_GGML_OK
+        || align_ggml_v_tensor_layout(past, pb) != ALIGN_GGML_OK
+        || align_ggml_v_tensor_layout(current, cb) != ALIGN_GGML_OK
+        || current->ne[0] != 1 || past->ne[1] != current->ne[1]
+        || past->ne[2] != current->ne[2] || dst->ne[1] != past->ne[1]
+        || dst->ne[2] != past->ne[2] || dst->ne[0] != past->ne[0] + 1) {
+        abort();
+    }
+    d = align_ggml_v_host_data(dst);
+    p = align_ggml_v_host_data(past);
+    c = align_ggml_v_host_data(current);
+    if (!align_ggml_v_distinct(d, db[2], p, pb[2])
+        || !align_ggml_v_distinct(d, db[2], c, cb[2])) {
+        abort();
+    }
+    align_ggml_v_concat_bytes(d, p, c, pb[0], pb[2] / pb[0]);
+}
+
+static void align_ggml_v_pad_f32(struct ggml_tensor *dst, int ith, int nth, void *userdata) {
+    const struct ggml_tensor *source = NULL;
+    size_t db[3], sb[3];
+    unsigned char *d = NULL;
+    const unsigned char *s = NULL;
+    if (nth < 1 || ith < 0 || ith >= nth || userdata != NULL) {
+        abort();
+    }
+    // ggml 0.21 dispatches every graph worker even when this node requests one task.
+    if (ith > 0) {
+        return;
+    }
+    if (dst == NULL) {
+        abort();
+    }
+    source = dst->src[0];
+    if (align_ggml_v_tensor_layout(dst, db) != ALIGN_GGML_OK
+        || align_ggml_v_tensor_layout(source, sb) != ALIGN_GGML_OK
+        || dst->ne[1] != source->ne[1] || dst->ne[2] != source->ne[2]
+        || dst->ne[0] < source->ne[0]) {
+        abort();
+    }
+    d = align_ggml_v_host_data(dst);
+    s = align_ggml_v_host_data(source);
+    if (!align_ggml_v_distinct(d, db[2], s, sb[2])) {
+        abort();
+    }
+    align_ggml_v_pad_bytes(d, s, sb[0], db[0], sb[2] / sb[0]);
+}
+
+int32_t align_ggml_op_v_concat_f32(
+    void *ctx, void *slots, int64_t out, int64_t past, int64_t current) {
+    struct ggml_tensor *pa = NULL;
+    struct ggml_tensor *cu = NULL;
+    struct ggml_tensor *result = NULL;
+    struct ggml_tensor *args[2];
+    int64_t ne[4];
+    size_t pb[3], cb[3], rb[3];
+    int32_t status = align_ggml_v_slots(ctx, slots, out, past, current, 1);
+    if (status != ALIGN_GGML_OK) {
+        return status;
+    }
+    pa = align_ggml_slot_tensor(slots, past);
+    cu = align_ggml_slot_tensor(slots, current);
+    if (pa->type != GGML_TYPE_F32 || cu->type != GGML_TYPE_F32) {
+        return ALIGN_GGML_TYPE;
+    }
+    if (pa->ne[1] != cu->ne[1] || pa->ne[2] != cu->ne[2] || cu->ne[0] != 1
+        || align_ggml_v_tensor_layout(pa, pb) != ALIGN_GGML_OK
+        || align_ggml_v_tensor_layout(cu, cb) != ALIGN_GGML_OK) {
+        return ALIGN_GGML_SHAPE;
+    }
+    ne[0] = pa->ne[0] + 1;
+    ne[1] = pa->ne[1];
+    ne[2] = pa->ne[2];
+    ne[3] = 1;
+    if (align_ggml_v_extents(ne, rb) != ALIGN_GGML_OK) {
+        return ALIGN_GGML_SHAPE;
+    }
+    args[0] = pa;
+    args[1] = cu;
+    result = ggml_custom_4d((struct ggml_context *) ctx, GGML_TYPE_F32,
+                           ne[0], ne[1], ne[2], ne[3], args, 2,
+                           align_ggml_v_concat_f32, 1, NULL);
+    if (result == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    if (result->ne[0] != ne[0] || result->ne[1] != ne[1] || result->ne[2] != ne[2]
+        || align_ggml_v_tensor_layout(result, rb) != ALIGN_GGML_OK) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return align_ggml_slot_store(slots, out, result);
+}
+
+int32_t align_ggml_op_v_pad_f32(
+    void *ctx, void *slots, int64_t out, int64_t source, int64_t padding_columns) {
+    struct ggml_tensor *sa = NULL;
+    struct ggml_tensor *result = NULL;
+    struct ggml_tensor *args[1];
+    int64_t ne[4];
+    size_t sb[3], rb[3];
+    int32_t status = align_ggml_v_slots(ctx, slots, out, source, 0, 0);
+    if (status != ALIGN_GGML_OK) {
+        return status;
+    }
+    sa = align_ggml_slot_tensor(slots, source);
+    if (sa->type != GGML_TYPE_F32) {
+        return ALIGN_GGML_TYPE;
+    }
+    if (padding_columns < 0 || padding_columns > ALIGN_GGML_MAX_PAD
+        || align_ggml_v_tensor_layout(sa, sb) != ALIGN_GGML_OK) {
+        return ALIGN_GGML_SHAPE;
+    }
+    ne[0] = sa->ne[0] + padding_columns;
+    ne[1] = sa->ne[1];
+    ne[2] = sa->ne[2];
+    ne[3] = 1;
+    if (align_ggml_v_extents(ne, rb) != ALIGN_GGML_OK) {
+        return ALIGN_GGML_SHAPE;
+    }
+    args[0] = sa;
+    result = ggml_custom_4d((struct ggml_context *) ctx, GGML_TYPE_F32,
+                           ne[0], ne[1], ne[2], ne[3], args, 1,
+                           align_ggml_v_pad_f32, 1, NULL);
+    if (result == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    if (result->ne[0] != ne[0] || result->ne[1] != ne[1] || result->ne[2] != ne[2]
+        || align_ggml_v_tensor_layout(result, rb) != ALIGN_GGML_OK) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return align_ggml_slot_store(slots, out, result);
 }
 
 /* ---------------------------------------------------------------------------------------------

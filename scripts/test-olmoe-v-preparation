@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Check the V-copy constructors and byte kernels without a model or generated repository files."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+FIXTURE = ROOT / "scripts/fixtures/olmoe-v-preparation-native.c"
+
+
+def main() -> None:
+    arguments = sys.argv[1:]
+    if arguments not in ([], ["--real"], ["--real", "--ubsan"]):
+        raise SystemExit("usage: test-olmoe-v-preparation [--real [--ubsan]]")
+    real = "--real" in arguments
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("ALIGN_LLM_GGML_FORCE")
+           and key not in ("DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH", "LD_LIBRARY_PATH")}
+    command = [env.get("CC", "cc"), "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+               "-ffp-contract=off", "-DALIGN_GGML_FP_CONTRACT_OFF=1",
+               "-I", str(ROOT / "scripts")]
+    if real:
+        for name in ("ALIGN_LLM_GGML_INCLUDE", "ALIGN_LLM_GGML_LIB"):
+            if not env.get(name) or not Path(env[name]).is_dir():
+                raise SystemExit(f"V preparation native owner: {name} must name a directory")
+        command += ["-DVPREP_REAL=1", "-I", env["ALIGN_LLM_GGML_INCLUDE"],
+                    "-L", env["ALIGN_LLM_GGML_LIB"],
+                    "-Wl,-rpath," + env["ALIGN_LLM_GGML_LIB"]]
+        env["DYLD_LIBRARY_PATH"] = env["ALIGN_LLM_GGML_LIB"]
+        env["LD_LIBRARY_PATH"] = env["ALIGN_LLM_GGML_LIB"]
+    else:
+        command += ["-DALIGN_GGML_STUB_ENGINE=1"]
+    if "--ubsan" in arguments:
+        command += ["-fsanitize=undefined", "-fno-sanitize-recover=all"]
+        env["UBSAN_OPTIONS"] = "halt_on_error=1:print_stacktrace=1"
+    with tempfile.TemporaryDirectory(prefix="align-v-preparation-") as temporary:
+        binary = Path(temporary) / "native"
+        command += [str(FIXTURE), "-o", str(binary)]
+        command += ["-lggml", "-lggml-base"] if real else ["-lm"]
+        built = subprocess.run(command, cwd=temporary, env=env, capture_output=True,
+                               text=True, timeout=120)
+        if built.returncode:
+            raise RuntimeError("V preparation fixture build failed:\n" + built.stderr)
+        completed = subprocess.run([str(binary)], cwd=temporary, env=env,
+                                   capture_output=True, text=True, timeout=120)
+        if completed.returncode:
+            raise RuntimeError(f"V preparation native owner failed ({completed.returncode}):\n"
+                               + completed.stderr)
+        if completed.stdout.strip() != "V preparation native cases: PASS":
+            raise RuntimeError("unexpected native owner output: " + completed.stdout)
+        if real:
+            faults = [f"{operation}-{kind}" for operation in ("concat", "pad")
+                      for kind in ("task", "negative-task", "nth", "userdata", "data", "alias",
+                                   "buffer", "source", "stride", "null", "type", "source-type",
+                                   "range")]
+            for fault in faults:
+                refused = subprocess.run([str(binary), fault], cwd=temporary, env=env,
+                                         capture_output=True, text=True, timeout=30)
+                if refused.returncode != -signal.SIGABRT:
+                    raise RuntimeError(f"callback invariant {fault} did not abort before access: "
+                                       f"{refused.returncode}\n{refused.stderr}")
+                if "runtime error:" in refused.stderr:
+                    raise RuntimeError(f"UBSan fired before callback refusal {fault}: "
+                                       + refused.stderr)
+    mode = "real+ubsan" if "--ubsan" in arguments else "real" if real else "stub"
+    print(f"OLMoE V preparation: PASS ({mode})")
+    print("PASS vprep-concat-bits vprep-concat-row-layout vprep-pad-bits "
+          "vprep-pad-zero-width-delta vprep-pad-row-layout")
+    for operation in ("concat", "pad"):
+        cases = ("null-context", "slot-precedence", "out-alias", "type", "shape", "stride",
+                 "overflow", "cap")
+        if operation == "pad":
+            cases += ("negative", "width")
+        else:
+            cases += ("current-columns",)
+        print("PASS " + " ".join(f"vprep-{operation}-{case}" for case in cases))
+    print("PASS vprep-special-bits vprep-unaligned-byte-kernel vprep-sentinels "
+          "vprep-current-contiguous vprep-callback-lifetime vprep-marked-concat "
+          "vprep-original-graph-parity vprep-init-failure")
+    if real:
+        print("PASS vprep-task-count (four graph workers, one active copy worker) "
+              "vprep-idle-worker vprep-callback-invariant (26 abort-before-access cases)")
+
+
+if __name__ == "__main__":
+    main()
