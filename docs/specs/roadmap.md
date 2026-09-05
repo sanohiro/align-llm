@@ -1878,7 +1878,8 @@ implemented or qualified by the design change. Implementation follows this revie
 
 84. **G5-GPU-OVERLAP — bounded transfer/preparation and compute overlap. Planned after G2.**
     Add safe device completion and double buffering to hybrid generation, per backend capability;
-    qualify actual overlap and a contemporary full-request gain before default enablement.
+    qualify actual overlap and a contemporary full-request gain before recommending it for a
+    profile. Schema 1 always requires callers to select overlap explicitly.
     Background Align buffer prefetch consumes Request 41 only after it ships; synchronous generation
     and same-thread asynchronous-device overlap do not depend on that proposed language feature.
 

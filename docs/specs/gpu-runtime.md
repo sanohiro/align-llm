@@ -98,7 +98,7 @@ This ledger owns their meaning; capability sections refine internal implementati
 | Memory ownership | `runtime_memory` owns the byte admission plan; `runtime_device` owns native device allocations through a local package resource wrapper using Align's shipped opaque Move resources; `runtime_execution` holds graph references only within the request. Bound all application-managed host/device storage, with UMA de-duplication (§4). Raw FFI stays inside the package's privileged internal boundary. Explicit fallible completion precedes success; exactly-once Drop is the safety fallback, not an error-reporting channel. |
 | Fallback | `resident` is strict GPU tensor execution; unsupported graph ops or insufficient capacity fail before compute. `hybrid` permits only the declared CPU placement units and explicit transfers (§4). Never restart partly executed generation on CPU after GPU error. Small host token/sampler/control work is always allowed and identified. |
 | Concurrency and state | Initially one generation per process, invocation-local resources, no persistent model/session/KV cache. A second in-process runtime invocation is rejected before native side effects through an atomic native admission guard. Independent processes have separate owners; available-memory probes are advisory and allocation races can fail. The first successfully initialized backend bundle pins its manifest digest for the process. Later sequential GPU invocations must name that same digest or fail `BUNDLE_IDENTITY/device` before registry or allocation side effects. Validation failure before native initialization pins nothing; partial initialization poisons GPU admission for the process. CPU invocations do not initialize or replace the GPU registry. The registry is never unloaded while a request can reference it. |
-| Qualification consumer | Proposed `scripts/gpu-runtime-qualify --profile PROFILE.json --suite SUITE --output NEW_DIRECTORY`; suites `generation`, `offload`, `overlap`, `coding`. It builds/executes reviewed sources in isolation and packages §6 evidence for user-run PC validation. Explicit requested backend absent is failure, never passing N/A. Ordinary non-GPU CI stays model-free. |
+| Qualification consumer | Proposed `scripts/gpu-runtime-qualify --profile PROFILE.json --suite SUITE --output NEW_DIRECTORY`; suites `generation`, `offload`, `overlap`, `coding`. It builds/executes reviewed sources in isolation and packages §3.8 evidence for user-run PC validation. Explicit requested backend absent is failure, never passing N/A. Ordinary non-GPU CI stays model-free. |
 | Build identity | Each backend recipe pins a ggml source commit, headers, shared libraries/plugins, shader/device binaries, target architectures, C/C++ compiler, SDK/toolkit and relevant flags. Record Align revision and compiler/runtime digests separately. `runtime_device` rejects incompatible ABI/build manifests; no ambient plugin search in qualification. Recipe/build tooling ships with its first working backend consumer. |
 | Cache identity | Request-local weights: model+pack+geometry identities, member/plane id, quant layout, backend/device, placement and slot generation. KV additionally binds exact prompt/position/rope/mask/context, precision and request generation. No device bytes in existing persisted CPU KV files. Backend build caches additionally bind target/driver/compiler/kernel flags. No persistent application GPU cache format in this program. |
 | Validation order | Common provider/request syntax; bounded option parse and conflicting legacy fields; model architecture/identity, pack/geometry, prompt/EOG/context; bundle identity and exact device; op/buffer capabilities; checked admission plan; allocation/transfers; prefill/decode; output validation; synchronize/teardown; successful result publication. Each failure prevents all later steps. |
@@ -128,7 +128,7 @@ Do not add a second sampling/configuration grammar to qualification helpers.
 
 ### 3.2 Internal failure vocabulary
 
-Categories: `CONFIG`, `BACKEND_UNAVAILABLE`, `DEVICE_UNAVAILABLE`, `BUNDLE_IDENTITY`,
+Categories: `CONFIG`, `SOURCE_IDENTITY`, `BACKEND_UNAVAILABLE`, `DEVICE_UNAVAILABLE`, `BUNDLE_IDENTITY`,
 `UNSUPPORTED_CAPABILITY`, `MEMORY_BUDGET`, `ALLOCATION`, `TRANSFER`, `COMPUTE`, `NONFINITE`,
 `DEVICE_LOST`, `BUSY`, `CLEANUP`. Stages: `options`, `model`, `device`, `plan`, `allocate`,
 `upload`, `prefill`, `decode`, `readback`, `synchronize`, `release`.
@@ -162,7 +162,8 @@ between first and final identity checks fail.
 | Record | Maximum canonical bytes | Array bounds |
 | --- | ---: | --- |
 | runtime options | 16,384 | no arrays |
-| `GPU_RUNTIME_PROFILE` | 262,144 | 2 models, 1–16 option rows, 1–256 cases |
+| `GPU_SOURCE_MANIFEST` | 16,777,216 | 1–100,000 tracked path rows |
+| `GPU_RUNTIME_PROFILE` | 262,144 | 2 models, 1–16 option rows, 1–16 resource rows, 1–256 cases |
 | `GPU_BACKEND_BUNDLE` | 262,144 | 1–32 GPU targets, 0–128 flags, 1–128 artifacts |
 | `GPU_NUMERIC_CALIBRATION` | 1,048,576 | 2–64 cases; at most 4,096 prompt ids and 128 teacher/expected ids per case |
 | `GPU_RUNTIME_EVIDENCE` result | 8,388,608 | 0–256 cases, 0–1,024 retained files |
@@ -177,10 +178,40 @@ array bounds and uniqueness, tagged presence rules, cross-references, digests/id
 record-specific semantic invariants, in that order. Replay follows the same order before checking
 aggregate arithmetic and directory closure.
 
-### 3.4 Qualification profile schema 1
+### 3.4 Source manifest and snapshot schema 1
+
+Cross-host qualification retains the complete tracked repository tree, not a hand-selected source
+closure. `GPU_SOURCE_MANIFEST` has order
+`schema_version,artifact_kind,repository,object_format,commit,commit_object_sha256,tree,files`.
+The constants are 1 and `GPU_SOURCE_MANIFEST`; `repository` is exactly
+`https://github.com/sanohiro/align-llm.git` for this program, with no credential, query or fragment;
+`object_format` is `sha1|sha256`; commit and tree widths match it. `commit_object_sha256` binds the
+raw decompressed Git commit body retained as `source/commit`.
+
+Each file row is ordered `path,mode,bytes,git_oid,sha256`, sorted by raw UTF-8 path bytes. Paths are
+normalized repository-relative names with the §3.3 exclusions. Mode is exactly
+`100644|100755|120000`. Bytes are the Git blob bytes: for mode 120000 they are the link-target text,
+which replay never follows. `git_oid` is recomputed over the Git `blob <length>\0<bytes>` object and
+`sha256` over the bytes alone. Distinct paths may share one content blob. The evidence directory
+stores each distinct blob once as `source/blobs/<sha256>` and contains no materialized symlink.
+
+Replay hashes `source/commit` as a Git commit object and requires the declared commit id, parses its
+first `tree` header, reconstructs every nested Git tree object from the sorted paths, modes and
+recomputed blob ids, and requires the declared tree id. It then requires that every manifest row
+has its content-addressed regular file and that neither side has an extra entry. The source snapshot
+identity is SHA-256 over ASCII `GPU_SOURCE_SNAPSHOT`, one NUL byte, the canonical manifest bytes,
+then each row's raw 32-byte SHA-256 in row order. This maps the reviewed commit to the exact retained
+tree without trusting repository ancestry on the replay host. Submodules and unsupported Git modes
+are rejected before preparation; generated build products are separately retained as evidence
+artifacts, never inserted into this tracked snapshot.
+The profile's source commit and manifest digest must equal this record and its canonical SHA-256;
+evidence repeats both and the derived snapshot identity. A mismatch is `SOURCE_IDENTITY/options`
+before preparation.
+
+### 3.5 Qualification profile schema 1
 
 `GPU_RUNTIME_PROFILE` has top-level order
-`schema_version,artifact_kind,profile_id,platform,source,bundle_manifest,references,models,runtime_options,cases,deadlines_ns`.
+`schema_version,artifact_kind,profile_id,platform,source,bundle_manifest,references,models,runtime_options,resource_profiles,cases,deadlines_ns`.
 `schema_version` is 1; `artifact_kind` is `GPU_RUNTIME_PROFILE`; `platform` is
 `macos|linux|wsl2`. `source` is `commit,manifest_sha256`. `bundle_manifest` is a `FileRef`.
 `references` is ordered `cpu,llama`; each row is `kind,path,sha256,version`. CPU uses
@@ -201,17 +232,42 @@ The last eight fields have exactly §3.1 semantics; `backend_bundle` resolves to
 directory as `bundle_manifest.path`. Option identifiers are unique. G1 profiles contain only
 `resident/off`; G2–G4 may add `hybrid/off`; G5 may add `hybrid/overlap`.
 
+Each `resource_profiles` row is ordered
+`resource_profile_id,threads,context_tokens,host_budget_bytes,device_budget_bytes,lifecycle`.
+Threads are 1–256, context is 1–4096, budgets are positive i64, and schema 1 fixes
+`lifecycle="reload-per-case"`. Rows are unique. A GPU case's resource budgets equal its runtime
+option. CPU and llama controls use the same row as their paired candidate; the qualifier maps the
+row to reviewed fixed commands and must refuse a backend that cannot enforce the requested limits.
+
 Each `cases` row is ordered
-`case_id,suite,model_id,option_id,input_kind,prompt_utf8,task_path,input_sha256,maximum_tokens,temperature_micros,seed`.
-`suite` is `generation|offload|overlap|coding`; `model_id` and `option_id` resolve earlier rows.
+`case_id,comparison_id,arm,pair_index,pair_slot,execution,cache_state,suite,model_id,option_id,resource_profile_id,input_kind,prompt_utf8,task_path,input_sha256,maximum_tokens,temperature_micros,seed`.
+`suite` is `generation|offload|overlap|coding`; `model_id` resolves an earlier row. `execution` is
+`cpu|llama|gpu_resident|gpu_sync|gpu_overlap`. A GPU execution resolves `option_id`; CPU/llama use
+the empty option sentinel. Resident/off, hybrid/off and hybrid/overlap options must respectively
+match the three GPU execution tags. Llama execution requires the file reference from `references`.
+`resource_profile_id` resolves a declared row. `cache_state` is
+`not_applicable|warm|cold|uncontrolled`; functional suites use `not_applicable`. Performance
+comparisons use separate warm and cold comparison ids when OS-cache control is proven, otherwise
+the latter is explicitly `uncontrolled` and cannot support a cold-start claim.
 For `input_kind=prompt`, `prompt_utf8` is 0–65,536 UTF-8 bytes, `task_path` is empty and
 `input_sha256` binds the prompt bytes. For `input_kind=task`, `prompt_utf8` is empty, `task_path` is
 a path and the digest binds its bytes. `maximum_tokens` is 1–128. Qwen requires
 `temperature_micros=0,seed=0`; OLMoE accepts that greedy pair or
-`temperature_micros=300000,seed=1..2^63-1`. Cases are in execution order and their exact canonical
+`temperature_micros=300000` with any signed-i64 seed. Cases are in execution order and their exact canonical
 array is the corpus identity. The selected CLI suite executes every and only matching row and
 requires at least one. `generation`, `offload` and `overlap` each require both models; `coding`
 requires every task in the named fixed coding corpus and rejects an unrecognized corpus digest.
+
+An unpaired functional or diagnostic row uses empty `comparison_id`, `arm="single"`,
+`pair_index=-1` and `pair_slot="single"`. A measured comparison uses a nonempty identifier,
+`arm="control|candidate"`, `pair_index=0..3` and `pair_slot="first|second"`. For each comparison id,
+all workload/sampling/resource/cache-state fields are equal and exactly eight contiguous rows appear chronologically: pair 0
+control/candidate, pair 1 candidate/control, pair 2 control/candidate, pair 3 candidate/control.
+This is AB/BA/AB/BA. Control and candidate each use one execution tag across the group and the tags
+must differ. Overlap compares `gpu_sync` with `gpu_overlap`. Coding compares `llama` with one
+qualified GPU execution; required `cpu` and any other synchronous GPU controls are additional
+unpaired rows and cannot enter the primary aggregate. Generation/offload contain no measured
+comparison and use only single GPU rows.
 
 `deadlines_ns` is ordered `preparation,generation,offload,overlap,coding`. Every field is positive
 and at most §6.3's corresponding ceiling; preparation is at most 3,600,000,000,000 ns,
@@ -223,7 +279,7 @@ identity; ordered model files and calibrations; option cross-references and mode
 ordered case grammar/corpus identity; deadlines; canonical input recheck. No device or output
 directory side effect precedes these checks.
 
-### 3.5 Backend bundle manifest schema 1
+### 3.6 Backend bundle manifest schema 1
 
 The selected directory contains `manifest.json`, a canonical `GPU_BACKEND_BUNDLE` with order
 `schema_version,artifact_kind,bundle_id,backend,ggml,target,toolchain,build_flags,artifacts`.
@@ -254,7 +310,7 @@ after a registry/plugin side effect marks the state poisoned, retains the loaded
 process exit and refuses later GPU requests. `gpu-bundle-reuse`, `gpu-bundle-switch` and
 `gpu-second-after-failure` own these three paths.
 
-### 3.6 Numeric calibration schema 1
+### 3.7 Numeric calibration schema 1
 
 Each model/backend/bundle has one canonical `GPU_NUMERIC_CALIBRATION` ordered
 `schema_version,artifact_kind,calibration_id,backend,bundle_id,model,precision,comparison,cases`.
@@ -277,25 +333,26 @@ Each case is ordered
 `role` is `calibration|holdout`, with at least one of each. The prompt is at most 65,536 UTF-8 bytes
 and its digest is exact; prompt ids are nonnegative i32 values and reproduce tokenization exactly.
 Teacher-forced ids are nonempty. `sampler_mode=greedy` requires zero temperature/seed;
-`sampler_mode=seeded` requires 300000 micros and a positive seed. Expected ids are the CPU
+`sampler_mode=seeded` requires 300000 micros and accepts every signed-i64 seed. Expected ids are the CPU
 same-build sampler result for the supplied prefix, have length at most 128 and may be empty only for
 immediate EOG. Case ids and prompt digests cannot cross the calibration/holdout partitions.
 
-### 3.7 Evidence schema 1 and directory
+### 3.8 Evidence schema 1 and directory
 
 The qualifier exclusively creates the named output directory through a sibling staging directory.
 Malformed profile or an occupied destination creates no output. Once input validation succeeds,
 functional failure, child crash/signal/timeout, missing result or proven cleanup failure publishes a
 bounded failed bundle when the parent can still do so. The final directory contains `result.json`,
 canonical copies `profile.json`, `bundle-manifest.json`, `calibration/qwen2.json` and
-`calibration/olmoe.json`, content-addressed `artifacts/<sha256>`, and
+`calibration/olmoe.json`, `source-manifest.json`, `source/commit`, content-addressed
+`source/blobs/<sha256>` and `artifacts/<sha256>`, and
 `logs/<three-digit-ordinal>.stdout|stderr`. No other file is permitted. Model, pack and geometry
 bytes are identified but never copied. Every retained helper, shim, source snapshot, loaded
 plugin/kernel and nonempty log is copied before its temporary owner is removed.
 
 `result.json` is `GPU_RUNTIME_EVIDENCE`, ordered
 `schema_version,artifact_kind,status,suite,profile_id,source,host,bundle,inputs,files,cases,aggregate,cleanup,failure,elapsed_ns`.
-The constants are 1 and `GPU_RUNTIME_EVIDENCE`; `status` is `PASS|FAIL`; `suite` is one of §3.4.
+The constants are 1 and `GPU_RUNTIME_EVIDENCE`; `status` is `PASS|FAIL`; `suite` is one of §3.5.
 
 - `source` is ordered
   `commit,source_manifest_sha256,source_snapshot_sha256,align_revision,compiler_sha256,runtime_sha256,runner_sha256,shim_sha256,cpu_reference_sha256,cpu_reference_version,llama_reference_sha256,llama_reference_version`.
@@ -310,21 +367,27 @@ The constants are 1 and `GPU_RUNTIME_EVIDENCE`; `status` is `PASS|FAIL`; `suite`
   order. No machine-local input path is retained here.
 - `files` contains every retained regular file except `result.json`, sorted by path. Rows are
   `role,path,bytes,sha256,original_bytes,original_sha256,truncated`; roles are
-  `profile|bundle_manifest|calibration|source_snapshot|helper|shim|backend_artifact|stdout|stderr`.
+  `profile|bundle_manifest|calibration|source_manifest|source_commit|source_blob|helper|shim|backend_artifact|stdout|stderr`.
   Non-log rows repeat bytes/digest as original and set `truncated=false`. A log exceeding 4 MiB is
   streamed through its original count/digest, retains the first 4 MiB and sets `truncated=true`;
   truncation makes its case fail. No extra file, hard link or symlink is accepted by replay.
 
 Each `cases` row is ordered
-`ordinal,case_id,model_id,option_id,terminal,category,stage,exit_code,signal,output_sha256,token_ids,nonfinite_count,numeric,placement,transfers,memory,timing,stdout_path,stderr_path`.
+`ordinal,case_id,comparison_id,arm,pair_index,pair_slot,execution,cache_state,model_id,option_id,resource_profile_id,terminal,category,stage,exit_code,signal,command_sha256,output_sha256,token_ids,nonfinite_count,numeric,placement,transfers,memory,timing,stdout_path,stderr_path`.
 Ordinals are contiguous from zero and match profile order. `terminal` is
 `PASS|FAIL|TIMEOUT|CRASH|SIGNAL|MISSING`; category/stage use §3.2 or are empty on pass;
 `exit_code` and `signal` are integer or null. Output digest is empty only when no complete output
-exists; token ids are bounded as in calibration.
+exists; token ids are bounded as in calibration. Comparison, arm, pair, execution, model and option
+fields equal their profile row exactly. Cache state and resource profile also match. `command_sha256`
+binds domain `GPU_CASE_COMMAND`, one NUL, then each exact argv and scrubbed `NAME=value` environment
+entry as length-prefixed UTF-8 in execution order; secrets and machine-local model paths are replaced
+by their declared logical id plus digest before hashing. It is empty only when no command could be
+constructed; that case cannot pass.
 
 - `numeric` is ordered
   `compared,max_absolute_f64_bits,max_relative_f64_bits,near_tie_count,mismatch_count`; bit strings
-  are 16-character lowercase binary64 patterns, or all zero only when `compared=false`.
+  are 16-character lowercase finite nonnegative binary64 patterns. When `compared=false`, both must
+  be all zero and both counts zero. When true, zero is a valid exact comparison result.
 - `placement` is ordered
   `gpu_operations,cpu_operations,gpu_layers,cpu_layers,gpu_experts,cpu_experts`; counts are
   nonnegative and suite acceptance rejects hidden all-CPU execution.
@@ -338,11 +401,28 @@ exists; token ids are bounded as in calibration.
   durations are not summed to wall.
 
 `aggregate` is ordered
-`case_count,passed_count,failed_count,wall_values_ns,managed_host_peak_bytes,managed_device_peak_bytes,primary_metric,control_values_ns,candidate_values_ns,paired_savings_ns,median_saving_ns,median_saving_ppm,decision`.
-Counts and peaks are nonnegative. `primary_metric` is `none|time-to-passing-patch|decode-latency`.
-Timing arrays contain positive integers or are empty when not applicable; medians are signed i64 or
-null. `decision` is `unmeasured|met|not_met`; generation/offload correctness uses `unmeasured`.
-Overlap/coding uses §6.3 and records `met` or `not_met` after four complete pairs.
+`case_count,passed_count,failed_count,managed_host_peak_bytes,managed_device_peak_bytes,comparisons,decision`.
+Counts and peaks are derived, never independent claims: case count is array length, pass/fail counts
+partition it by terminal, and each peak is the maximum corresponding case value or zero for no
+case. `comparisons` has exactly one row for each nonempty comparison id, sorted by id. A row is
+ordered
+`comparison_id,cache_state,resource_profile_id,primary_metric,control_execution,candidate_execution,control_values_ns,candidate_values_ns,paired_savings_ns,control_median_ns,candidate_median_ns,median_saving_ns,median_saving_ppm,all_candidate_faster,decision`.
+`primary_metric` is `full-request-wall|time-to-passing-patch|decode-latency`. Executions equal the
+profile group. Values are extracted in pair-index order from the named case timing field: wall,
+complete coding-portfolio wall, or decode respectively. Each arm has exactly four positive values.
+Paired saving `i` is `control[i]-candidate[i]`. For four values, median sorts ascending and uses
+`(second+third)//2`; every addition/subtraction/multiplication is checked and `//` is mathematical
+floor division. Median saving is control median minus candidate median and ppm is
+`median_saving*1000000//control_median`. `all_candidate_faster` is true iff every paired saving is
+positive.
+
+A comparison is `met` iff all eight rows pass correctness/budget checks,
+`all_candidate_faster=true` and ppm is at least 50,000. It is `not_met` when all eight rows pass but
+the speed rule fails, and `not_eligible` otherwise; invalid arithmetic rejects the document rather
+than producing a decision. Generation/offload have no comparisons and top decision `unmeasured`.
+For overlap/coding, top decision is `met` iff every comparison is met, `not_met` iff all are eligible
+and at least one is not met, otherwise `not_eligible`. `status=PASS` requires no failed case and a
+top decision other than `not_eligible`; a valid slower run is therefore PASS/`not_met`.
 
 `cleanup` is ordered
 `descendants_before,descendants_after,owned_paths_removed,invocation_state_safe,source_unchanged,inputs_unchanged`.
@@ -353,7 +433,7 @@ bytes. `elapsed_ns` is positive and includes validation, cases, cleanup and publ
 PASS requires every selected case PASS, exact input/source rechecks, safe cleanup and a suite-valid
 aggregate. The CLI returns zero only for PASS.
 
-### 3.8 Codec round-trip vectors
+### 3.9 Codec round-trip vectors
 
 These exact one-line documents, including one final LF, are codec/shape goldens. Their empty arrays
 exercise an envelope without pretending to be runnable qualification input; semantic validation
@@ -362,10 +442,11 @@ bytes exactly. Reordered input decodes to the same values and canonicalizes to t
 key, uppercase digest, BOM, missing final document boundary or a second document is rejected.
 
 ```json
-{"schema_version":1,"artifact_kind":"GPU_RUNTIME_PROFILE","profile_id":"golden","platform":"linux","source":{"commit":"0000000000000000000000000000000000000000","manifest_sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"bundle_manifest":{"path":"bundle.json","sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"references":{"cpu":{"kind":"same-build","path":"","sha256":"","version":""},"llama":{"kind":"none","path":"","sha256":"","version":""}},"models":[],"runtime_options":[],"cases":[],"deadlines_ns":{"preparation":1,"generation":1,"offload":1,"overlap":1,"coding":1}}
+{"schema_version":1,"artifact_kind":"GPU_RUNTIME_PROFILE","profile_id":"golden","platform":"linux","source":{"commit":"0000000000000000000000000000000000000000","manifest_sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"bundle_manifest":{"path":"bundle.json","sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"references":{"cpu":{"kind":"same-build","path":"","sha256":"","version":""},"llama":{"kind":"none","path":"","sha256":"","version":""}},"models":[],"runtime_options":[],"resource_profiles":[],"cases":[],"deadlines_ns":{"preparation":1,"generation":1,"offload":1,"overlap":1,"coding":1}}
+{"schema_version":1,"artifact_kind":"GPU_SOURCE_MANIFEST","repository":"https://github.com/sanohiro/align-llm.git","object_format":"sha1","commit":"0000000000000000000000000000000000000000","commit_object_sha256":"0000000000000000000000000000000000000000000000000000000000000000","tree":"0000000000000000000000000000000000000000","files":[]}
 {"schema_version":1,"artifact_kind":"GPU_BACKEND_BUNDLE","bundle_id":"0000000000000000000000000000000000000000000000000000000000000000","backend":"metal","ggml":{"commit":"0000000000000000000000000000000000000000","source_manifest_sha256":"0000000000000000000000000000000000000000000000000000000000000000","version":"golden"},"target":{"os":"macos","arch":"aarch64","gpu_architectures":[]},"toolchain":{"c_compiler":{"name":"golden","version":"golden","sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"cxx_compiler":{"name":"golden","version":"golden","sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"sdk":{"name":"none","version":"none","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},"toolkit":{"name":"none","version":"none","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}},"build_flags":[],"artifacts":[]}
 {"schema_version":1,"artifact_kind":"GPU_NUMERIC_CALIBRATION","calibration_id":"0000000000000000000000000000000000000000000000000000000000000000","backend":"metal","bundle_id":"0000000000000000000000000000000000000000000000000000000000000000","model":{"model_id":"qwen2","model_sha256":"0000000000000000000000000000000000000000000000000000000000000000","pack_sha256":"0000000000000000000000000000000000000000000000000000000000000000","geometry_sha256":"0000000000000000000000000000000000000000000000000000000000000000","quantization":"Q4_K_M"},"precision":"f32","comparison":{"absolute_tolerance_f32_bits":"00000000","relative_tolerance_f32_bits":"00000000","near_tie_tolerance_f32_bits":"00000000","nonfinite":"reject","reference":"cpu-same-build","layer_scope":"all","topk_rule":"same-ordered-ids-or-declared-near-tie"},"cases":[]}
-{"schema_version":1,"artifact_kind":"GPU_RUNTIME_EVIDENCE","status":"FAIL","suite":"generation","profile_id":"golden","source":{"commit":"0000000000000000000000000000000000000000","source_manifest_sha256":"0000000000000000000000000000000000000000000000000000000000000000","source_snapshot_sha256":"0000000000000000000000000000000000000000000000000000000000000000","align_revision":"0000000000000000000000000000000000000000","compiler_sha256":"0000000000000000000000000000000000000000000000000000000000000000","runtime_sha256":"0000000000000000000000000000000000000000000000000000000000000000","runner_sha256":"0000000000000000000000000000000000000000000000000000000000000000","shim_sha256":"0000000000000000000000000000000000000000000000000000000000000000","cpu_reference_sha256":"0000000000000000000000000000000000000000000000000000000000000000","cpu_reference_version":"golden","llama_reference_sha256":"","llama_reference_version":""},"host":{"platform":"linux","os_version":"golden","kernel":"golden","arch":"x86_64","wsl":false,"cpu":"golden","logical_cpus":1,"host_total_bytes":1,"host_free_bytes":1,"backend":"cuda","registry_device":"CUDA0","device_description":"golden","driver":"golden","gpu_architecture":"sm_89","device_total_bytes":1,"device_free_bytes":1},"bundle":{"manifest_sha256":"0000000000000000000000000000000000000000000000000000000000000000","bundle_id":"0000000000000000000000000000000000000000000000000000000000000000","loaded_artifact_sha256s":[]},"inputs":{"profile_sha256":"0000000000000000000000000000000000000000000000000000000000000000","models":[],"calibration_ids":[],"case_order_sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"files":[],"cases":[],"aggregate":{"case_count":0,"passed_count":0,"failed_count":0,"wall_values_ns":[],"managed_host_peak_bytes":0,"managed_device_peak_bytes":0,"primary_metric":"none","control_values_ns":[],"candidate_values_ns":[],"paired_savings_ns":[],"median_saving_ns":null,"median_saving_ppm":null,"decision":"unmeasured"},"cleanup":{"descendants_before":0,"descendants_after":0,"owned_paths_removed":true,"invocation_state_safe":true,"source_unchanged":true,"inputs_unchanged":true},"failure":{"category":"CONFIG","stage":"options","case_ordinal":-1,"detail":"golden"},"elapsed_ns":1}
+{"schema_version":1,"artifact_kind":"GPU_RUNTIME_EVIDENCE","status":"FAIL","suite":"generation","profile_id":"golden","source":{"commit":"0000000000000000000000000000000000000000","source_manifest_sha256":"0000000000000000000000000000000000000000000000000000000000000000","source_snapshot_sha256":"0000000000000000000000000000000000000000000000000000000000000000","align_revision":"0000000000000000000000000000000000000000","compiler_sha256":"0000000000000000000000000000000000000000000000000000000000000000","runtime_sha256":"0000000000000000000000000000000000000000000000000000000000000000","runner_sha256":"0000000000000000000000000000000000000000000000000000000000000000","shim_sha256":"0000000000000000000000000000000000000000000000000000000000000000","cpu_reference_sha256":"0000000000000000000000000000000000000000000000000000000000000000","cpu_reference_version":"golden","llama_reference_sha256":"","llama_reference_version":""},"host":{"platform":"linux","os_version":"golden","kernel":"golden","arch":"x86_64","wsl":false,"cpu":"golden","logical_cpus":1,"host_total_bytes":1,"host_free_bytes":1,"backend":"cuda","registry_device":"CUDA0","device_description":"golden","driver":"golden","gpu_architecture":"sm_89","device_total_bytes":1,"device_free_bytes":1},"bundle":{"manifest_sha256":"0000000000000000000000000000000000000000000000000000000000000000","bundle_id":"0000000000000000000000000000000000000000000000000000000000000000","loaded_artifact_sha256s":[]},"inputs":{"profile_sha256":"0000000000000000000000000000000000000000000000000000000000000000","models":[],"calibration_ids":[],"case_order_sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"files":[],"cases":[],"aggregate":{"case_count":0,"passed_count":0,"failed_count":0,"managed_host_peak_bytes":0,"managed_device_peak_bytes":0,"comparisons":[],"decision":"unmeasured"},"cleanup":{"descendants_before":0,"descendants_after":0,"owned_paths_removed":true,"invocation_state_safe":true,"source_unchanged":true,"inputs_unchanged":true},"failure":{"category":"CONFIG","stage":"options","case_ordinal":-1,"detail":"golden"},"elapsed_ns":1}
 ```
 
 ## 4. Execution and memory design
@@ -484,7 +565,8 @@ before review; later-capability rows remain explicitly deferred.
 | overlap (G5) | bounded two-slot pipeline, dependency events, CPU read while GPU runs | delayed completion, cancellation, transfer/compute failure, unsupported async, generation exhaustion | drain before reuse/free; `gpu-overlap-order`, `gpu-overlap-refusal`, `gpu-drain-failure` |
 | invocation admission | repeated sequential requests; correct initialized-registry reuse | concurrent CPU/GPU and GPU/GPU attempts; failed second request; poisoned owner | atomic admission and exactly-once release; `gpu-invocation-busy`, `gpu-second-after-failure` |
 | result and sampler | same input logits preserve exact RNG/filter behavior; complete owned UTF-8 output | malformed/nonfinite logits, decode errors, no partial success | no device handle escapes; `gpu-sampler-fixed`, `gpu-output-refusal` |
-| qualifier and publication | schema codec goldens, snapshot build, strict artifacts, deadline, actual backend execution | malformed/duplicate/oversized records, missing device, crash, late source/input drift, timeout and descendant leak | post-cleanup revalidation and exclusive output publication; `gpu-schema-codec`, `gpu-evidence-mutation`, `gpu-process-cleanup`, `gpu-result-replay` |
+| paired measurement and aggregate | exact single/control/candidate arms and AB/BA/AB/BA groups; recomputed values/medians/ppm | wrong arm, order, resource/cache state, count or arithmetic; failed pair is not eligible | no timing category is added into wall; `gpu-pair-schedule`, `gpu-aggregate-replay` |
+| qualifier and publication | schema codec goldens, complete Git-object snapshot, strict artifacts, deadline, actual backend execution | malformed/duplicate/oversized records, source/tree mismatch, missing device, crash, late source/input drift, timeout and descendant leak | post-cleanup revalidation and exclusive output publication; `gpu-schema-codec`, `gpu-source-replay`, `gpu-evidence-mutation`, `gpu-process-cleanup`, `gpu-result-replay` |
 
 Move-in/out, replacement and source-nulling reuse Align's shipped Move rules and provider owners.
 Use a local package-defined opaque resource for request-native state, with its internal destructor
@@ -535,8 +617,8 @@ performance claim; do not silently treat divergent output as reproducible.
 
 ### 6.2 User-run qualification package
 
-The future runner accepts the strict profile in §3.4, validates the bundle and calibrations from
-§§3.5–3.6, and publishes only the evidence directory from §3.7. The profile carries explicit
+The future runner accepts the strict profile in §3.5, validates the source, bundle and calibrations
+from §§3.4, 3.6 and 3.7, and publishes only the evidence directory from §3.8. The profile carries explicit
 model/pack/geometry paths and digests, exact runtime-option contents, native bundle identity,
 ordered task/prompt corpus identity and suite deadlines. G1 must add concrete immutable Metal/CUDA
 bundle recipes and populated calibration/profile fixtures; it does not revise these schemas merely
@@ -586,12 +668,14 @@ metric is time to a passing patch, including load, retries, validation and clean
 request lifecycle; a GPU-resident session baseline and a reload-every-request candidate are different
 lifecycles and must not be mixed without an explicit product comparison.
 
-G5 overlap is enabled by default on a qualified tuple only if all four paired full-request gains
-are positive and the median paired saving is at least 5% of the contemporary control median,
-without correctness or budget regression. G6 uses the same 5% rule for a named primary or secondary
-performance claim against GPU-enabled llama.cpp. The old CPU 871,174,011-ns attribution floor has
-no authority here. `not_met` preserves the working explicit mode and records the limitation; it
-does not invent a smaller profitable slice or stop unrelated backend support.
+G5 overlap may be marked recommended for a qualified profile only if all four paired full-request
+gains are positive and the median paired saving is at least 5% of the contemporary control median,
+without correctness or budget regression. It always remains an explicit `prefetch="overlap"`
+selection in schema 1; neither an absent options file nor `off` changes meaning. G6 uses the same 5%
+rule for a named primary or secondary performance claim against GPU-enabled llama.cpp. The old CPU
+871,174,011-ns attribution floor has no authority here. `not_met` preserves the working explicit
+mode and records the limitation; it does not invent a smaller profitable slice or stop unrelated
+backend support.
 
 Per-invocation qualification ceilings: G1–G4 `generation`/`offload` 15 minutes per backend/profile;
 G5 `overlap` 15 minutes; G6 `coding` 30 minutes. Model-free owners target 5 minutes. Preparation
@@ -627,8 +711,8 @@ Classify requirements as follows:
 Before implementation, probe the pinned native backend for each architecture's graph operations,
 Q4_K/Q6_K layouts, `mul_mat_id`, alignment/alloc sizes, KV updates, scheduler allocation accounting,
 host-pointer visibility, status/abort behavior and events. These are checkpoints within the first
-consumer, not standalone infrastructure PRs. Commit the selected immutable backend recipe, profile
-schema and calibration contract before implementing their consuming public promise. If a required
+consumer, not standalone infrastructure PRs. Commit the selected immutable backend recipe and
+populate the fixed profile/calibration schemas before the first acceptance run. If a required
 operation cannot be supported, update this ledger and its exact fallback/acceptance cells first.
 
 ## 8. Delivery sequence and completion
@@ -639,7 +723,7 @@ operation cannot be supported, update this ledger and its exact fallback/accepta
 | 81 / G2 Bounded GPU offload | same callers generate under device/host budgets that force expert/layer misses, with explicit whole-unit CPU fallback and bounded AlignPack reads | G1; `offload` on Metal/CUDA. Includes transfer/accounting and placement policy; no separate dormant cache/scheduler PR. |
 | 82 / G3 Vulkan generation and offload | same provider/options/qualifier on a Vulkan device, same resident/hybrid modes and strict op checks | G2 shared contract; NVIDIA Vulkan is a useful first device, AMD/Intel qualification is recorded separately. Include backend build and consumer in one capability. No claim of WSL Vulkan until exposed and tested. |
 | 83 / G4 HIP/ROCm generation and offload | same caller and budgets on ROCm-compatible AMD, including build/loader and reproducible AMD validation instructions | G2; can proceed independently of G3's hardware result. Build/owner work may proceed without AMD hardware; real `generation`/`offload` stay explicitly pending until an AMD contributor/user runs them. |
-| 84 / G5 Transfer/compute overlap | bounded same-thread preparation and device pipeline for hybrid requests, with safe slot/event lifetime and measured overlap | G2 per backend; G3/G4 for those backend claims. Synchronous mode remains available on backends without async capability. Request 41 only if scoped background buffer work is selected. `overlap` plus 5% default-enablement gate. |
+| 84 / G5 Transfer/compute overlap | bounded same-thread preparation and device pipeline for hybrid requests, with safe slot/event lifetime and measured overlap | G2 per backend; G3/G4 for those backend claims. Synchronous mode remains available on backends without async capability. Request 41 only if scoped background buffer work is selected. `overlap` remains explicit; the 5% gate controls only a profile's recommendation. |
 | 85 / G6 GPU coding decision | fixed coding tasks through the public GPU provider compared with GPU-enabled llama.cpp and CPU/synchronous controls; reproducible results on each available backend/host | relevant qualified G1–G5 modes; seed/quality/parity checks and primary result, including honest `not_met`. No CPU-only historical baseline substitution. |
 
 Start with G1. Do not wait for unavailable AMD hardware to implement Metal/CUDA or Vulkan. Do not
@@ -654,7 +738,7 @@ The ledger, matrix and sequence share one explicit device/options contract, two 
 one invocation lifetime, the same four GPU backends, and one family of device qualification suites.
 Hardware names select evidence profiles, not supported-device branches. Strict resident execution,
 hybrid fallback and asynchronous overlap are separately observable. Qualification formats are fixed
-in §§3.3–3.8; populated numeric calibration/profile fixtures and immutable backend recipes are G1
+in §§3.3–3.9; populated numeric calibration/profile fixtures and immutable backend recipes are G1
 pre-acceptance checkpoints. No proposed command, numerical tolerance, API or performance outcome is
 represented as shipped.
 
