@@ -10,8 +10,9 @@ Branch `agent/r8-olmoe-expert-phase-b-operation-diagnosis`, based on merged main
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger:
 `docs/specs/r8-olmoe-expert-phase-b-operation-diagnosis.md`.
 
-Implementation heads are `3cedd1c` plus direct-cache validation repair `a0ccf9f`. The clean-head
-four-repeat qualification completed in 110.820 seconds with `NO_MATERIAL_EXPERT_OPERATION`.
+Implementation heads are `3cedd1c` plus direct-cache validation repair `a0ccf9f`; qualification
+results were recorded in `d779a6a`. The clean-head four-repeat qualification completed in 110.820
+seconds with `NO_MATERIAL_EXPERT_OPERATION`.
 Gate projection won at 574,962,948 ns median / 325,164 ppm of the 1,768,220,206-ns expert parent,
 below the unchanged 871,174,011-ns floor. Up projection was 444,561,299 ns and down projection
 531,428,285 ns; every other class was below 86 ms. Exact output, cache accounting including zero
@@ -19,9 +20,9 @@ cache-to-claim copies, isolation, lifetime, source identity and operation accoun
 No operation is eligible for implementation or narrower diagnosis, and item 79 makes no
 optimization claim.
 
-**Next actions.** Commit the qualification record, perform one comprehensive review, repair valid
-findings, run the exact-head preflight, publish and merge the English pull request. After merge,
-refresh `main`; the roadmap currently contains no later eligible capability.
+**Next actions.** Rerun the clean-head qualification with the post-cleanup identity repair, then run
+exact-head preflight and publish and merge the English pull request. After merge, refresh `main`;
+the roadmap currently contains no later eligible capability.
 
 **Blocker.** None.
 
@@ -32,8 +33,7 @@ short/full pairs and produced the decision above. The first real-run attempt cor
 obsolete item-62 claim-I/O positivity assumption; `a0ccf9f` delegates to the current direct-cache
 owner and its self-test covers that inherited zero-copy boundary.
 
-**Intentional uncommitted files.** Qualification result updates to the item-79 ledger, roadmap and
-this handoff only. Models, raw evidence and build products remain outside Git.
+**Intentional uncommitted files.** None. Models, raw evidence and build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-NATIVE-STAGING-BOUNDARY (PR #199, 2026-09-05)
 

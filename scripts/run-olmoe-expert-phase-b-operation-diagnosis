@@ -493,6 +493,24 @@ def complete_result_after_cleanup(result: dict[str, Any], started_ns: int) -> di
     return completed
 
 
+def validate_terminal_repository(
+    align_llm_head: str,
+    clean_env: dict[str, str],
+    deadline: float,
+) -> None:
+    status = owner.run_process(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        deadline=deadline, maximum=30, env=clean_env,
+    )
+    head = owner.run_process(
+        ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+    ).stdout.decode("ascii").strip()
+    if status.stdout or head != align_llm_head:
+        raise ExpertOperationError("align-llm source changed after cleanup")
+    if source_manifest_sha256() != EXPECTED_SOURCE_MANIFEST_SHA256:
+        raise ExpertOperationError("diagnosis sources changed after cleanup")
+
+
 def self_test() -> int:
     validate_imported_contract()
     samples = synthetic_samples()
@@ -648,6 +666,28 @@ def self_test() -> int:
             lambda: complete_result_after_cleanup(result, 0),
             "final validation overrun was accepted",
         )
+    git_result = subprocess.CompletedProcess(["git"], 0, b"", b"")
+    head_result = subprocess.CompletedProcess(["git"], 0, b"reviewed-head\n", b"")
+    with mock.patch.object(owner, "run_process", side_effect=(git_result, head_result)), \
+            mock.patch.object(
+                module, "source_manifest_sha256", return_value=EXPECTED_SOURCE_MANIFEST_SHA256
+            ):
+        validate_terminal_repository("reviewed-head", {}, float("inf"))
+    changed_head = subprocess.CompletedProcess(["git"], 0, b"changed-head\n", b"")
+    with mock.patch.object(owner, "run_process", side_effect=(git_result, changed_head)), \
+            mock.patch.object(
+                module, "source_manifest_sha256", return_value=EXPECTED_SOURCE_MANIFEST_SHA256
+            ):
+        expect_error(
+            lambda: validate_terminal_repository("reviewed-head", {}, float("inf")),
+            "post-cleanup head mutation was accepted",
+        )
+    with mock.patch.object(owner, "run_process", side_effect=(git_result, head_result)), \
+            mock.patch.object(module, "source_manifest_sha256", return_value="0" * 64):
+        expect_error(
+            lambda: validate_terminal_repository("reviewed-head", {}, float("inf")),
+            "post-cleanup source mutation was accepted",
+        )
     with mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as printed:
         if prerequisites() is not None:
             raise ExpertOperationError("missing prerequisites did not produce N/A")
@@ -787,6 +827,25 @@ def main() -> int:
                 },
                 "samples": samples, "aggregate": aggregate(samples),
             }
+    validate_terminal_repository(align_llm_head, clean_env, deadline)
+    if (ROOT / ".align-revision").read_text(encoding="utf-8").strip() != align_revision:
+        raise ExpertOperationError("Align revision changed after cleanup")
+    if model.stat().st_size != MODEL_BYTES:
+        raise ExpertOperationError("configured OLMoE GGUF changed after cleanup")
+    owner.verify_identities((
+        ("model", model, MODEL_SHA256), ("pack", pack, pack_sha256),
+        ("geometry", geometry, geometry_sha256), ("server", server, server_sha256),
+        ("task", diagnosis.TASK, task_sha256),
+        ("compiler", built["compiler"], built["compiler_sha256"]),
+        ("C compiler", built["c_compiler"], built["c_compiler_sha256"]),
+    ))
+    if base.bytes_sha256(diagnosis.PROMPT_TEXT.encode("utf-8")) != prompt_sha256:
+        raise ExpertOperationError("fixed prompt changed after cleanup")
+    if base.library_identities(library) != ggml_libraries:
+        raise ExpertOperationError("ggml libraries changed after cleanup")
+    if compute.predecessor.ggml_header_identities(include) != ggml_headers:
+        raise ExpertOperationError("ggml headers changed after cleanup")
+    owner.require_no_matching_process(server, model, deadline, clean_env)
     result = complete_result_after_cleanup(result, started_ns)
     detail = result["aggregate"]
     print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
