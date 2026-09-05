@@ -1,0 +1,7 @@
+module olmoe_attention_operation_gate
+
+import olmoe_remaining_decode_overhead_gate
+
+// Item 72's only opt-in consumer of the nested attention execution path.
+pub fn main(args: array<str>) -> Result<(), Error> =
+olmoe_remaining_decode_overhead_gate.attention_operation_main(args)

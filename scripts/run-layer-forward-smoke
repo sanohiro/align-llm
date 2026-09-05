@@ -393,8 +393,8 @@ finally:
         context_close(ctx)
 
 # Item 71's graph partition borrows a contiguous prefix or suffix of the already-built node order.
-# Build two dependent adds so the anchor is a unique interior node, then exercise both partitions
-# and every public refusal class without needing a model or a real ggml installation.
+# Build four dependent adds so item 71's two-way split and item 72's recursive ranges use unique
+# interior anchors, then exercise the public refusal classes without a model or real ggml.
 slot_new_1d = library.align_ggml_slot_new_tensor_1d
 slot_new_1d.argtypes = [
     ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int32, ctypes.c_int64,
@@ -420,7 +420,7 @@ graph_node_count = library.align_ggml_graph_node_count
 graph_node_count.argtypes = [ctypes.c_void_p]
 graph_node_count.restype = ctypes.c_int32
 
-partition_slots = ctypes.create_string_buffer(48)
+partition_slots = ctypes.create_string_buffer(64)
 source_ctx = context_open(8192)
 partition_ctx = context_open(8192)
 try:
@@ -429,19 +429,29 @@ try:
             or slot_new_1d(source_ctx, partition_slots, 0, 0, 1) != 0
             or slot_new_1d(source_ctx, partition_slots, 1, 0, 1) != 0
             or op_add(source_ctx, partition_slots, 2, 0, 1) != 0
-            or op_add(source_ctx, partition_slots, 3, 2, 1) != 0):
+            or op_add(source_ctx, partition_slots, 3, 2, 1) != 0
+            or op_add(source_ctx, partition_slots, 4, 3, 1) != 0
+            or op_add(source_ctx, partition_slots, 5, 4, 1) != 0):
         raise SystemExit("layer forward smoke: FAIL graph-partition fixture construction")
     source_graph = graph_new(source_ctx)
-    if not source_graph or graph_expand(source_graph, partition_slots, 3) != 0:
+    if not source_graph or graph_expand(source_graph, partition_slots, 5) != 0:
         raise SystemExit("layer forward smoke: FAIL graph-partition source graph")
     prefix_graph = graph_partition(partition_ctx, source_graph, partition_slots, 2, 0)
-    suffix_graph = graph_partition(partition_ctx, source_graph, partition_slots, 2, 1)
-    if (not prefix_graph or not suffix_graph or graph_node_count(source_graph) != 2
-            or graph_node_count(prefix_graph) != 1 or graph_node_count(suffix_graph) != 1):
-        raise SystemExit("layer forward smoke: FAIL graph-partition node ranges")
+    after_prefix_graph = graph_partition(partition_ctx, source_graph, partition_slots, 2, 1)
+    core_graph = graph_partition(partition_ctx, after_prefix_graph, partition_slots, 3, 0)
+    after_core_graph = graph_partition(partition_ctx, after_prefix_graph, partition_slots, 3, 1)
+    output_graph = graph_partition(partition_ctx, after_core_graph, partition_slots, 4, 0)
+    suffix_graph = graph_partition(partition_ctx, after_core_graph, partition_slots, 4, 1)
+    if (not prefix_graph or not after_prefix_graph or not core_graph or not after_core_graph
+            or not output_graph or not suffix_graph or graph_node_count(source_graph) != 4
+            or graph_node_count(prefix_graph) != 1
+            or graph_node_count(after_prefix_graph) != 3
+            or graph_node_count(core_graph) != 1 or graph_node_count(after_core_graph) != 2
+            or graph_node_count(output_graph) != 1 or graph_node_count(suffix_graph) != 1):
+        raise SystemExit("layer forward smoke: FAIL nested graph-partition node ranges")
     if graph_partition(partition_ctx, source_graph, partition_slots, 0, 0):
         raise SystemExit("layer forward smoke: FAIL graph-partition accepted a leaf anchor")
-    if graph_partition(partition_ctx, source_graph, partition_slots, 3, 1):
+    if graph_partition(partition_ctx, source_graph, partition_slots, 5, 1):
         raise SystemExit("layer forward smoke: FAIL graph-partition accepted an end anchor")
     if graph_partition(partition_ctx, source_graph, partition_slots, 2, 2):
         raise SystemExit("layer forward smoke: FAIL graph-partition accepted a bad selector")

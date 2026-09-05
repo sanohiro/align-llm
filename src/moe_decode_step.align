@@ -1869,6 +1869,10 @@ if decode { layer_olmoe.MM_A_NODE_BASE + 33 } else { layer_olmoe.MM_A_NODE_BASE 
 fn ffn_inp_node_of(decode: bool) -> i64 =
 if decode { layer_olmoe.MM_A_NODE_BASE + 31 } else { layer_olmoe.MM_A_NODE_BASE + 29 }
 
+fn projection_node() -> i64 = layer_olmoe.MM_A_NODE_BASE + 13
+
+fn attention_core_node() -> i64 = layer_olmoe.MM_A_NODE_BASE + 27
+
 fn probs_node_of(decode: bool) -> i64 =
 if decode { layer_olmoe.MM_A_NODE_BASE + 35 } else { layer_olmoe.MM_A_NODE_BASE + 33 }
 
@@ -1896,6 +1900,7 @@ fn run_moe_layer(
   borrow spec: moe_model_forward.LayerSpec,
   decode: bool,
   phase_a_operation_diagnosis: bool,
+  attention_operation_diagnosis: bool,
   n_past: i64,
   stride: i64,
   step: i64,
@@ -1947,6 +1952,11 @@ fn run_moe_layer(
   mut graph_a := ggml_ffi.null_handle()
   mut graph_b := ggml_ffi.null_handle()
   mut attention_graph := ggml_ffi.null_handle()
+  mut projection_graph := ggml_ffi.null_handle()
+  mut after_projection_graph := ggml_ffi.null_handle()
+  mut attention_core_graph := ggml_ffi.null_handle()
+  mut after_core_graph := ggml_ffi.null_handle()
+  mut output_residual_graph := ggml_ffi.null_handle()
   mut router_graph := ggml_ffi.null_handle()
   mut galloc_a := ggml_ffi.null_handle()
   mut galloc_b := ggml_ffi.null_handle()
@@ -2087,28 +2097,96 @@ fn run_moe_layer(
           spec.layer, "stage", "phase_a_operation_context"))
     } else {
       o.contexts_created = o.contexts_created + 1
-      attention_graph = ggml_ffi.graph_partition(
-        diagnostic_ctx, graph_a, slot_view, ffn_inp_node_of(true), false)
-      router_graph = ggml_ffi.graph_partition(
-        diagnostic_ctx, graph_a, slot_view, ffn_inp_node_of(true), true)
-      if ggml_ffi.handle_absent(attention_graph) || ggml_ffi.handle_absent(router_graph)
-        || ggml_ffi.graph_node_count(attention_graph) + ggml_ffi.graph_node_count(router_graph)
-        != result.node_count_a {
-        fail(o, "R5_GGML_INIT", moe_model_forward.layer_named(
-            spec.layer, "stage", "phase_a_operation_partition"))
+      if attention_operation_diagnosis {
+        projection_graph = ggml_ffi.graph_partition(
+          diagnostic_ctx, graph_a, slot_view, projection_node(), false)
+        after_projection_graph = ggml_ffi.graph_partition(
+          diagnostic_ctx, graph_a, slot_view, projection_node(), true)
+        attention_core_graph = ggml_ffi.graph_partition(
+          diagnostic_ctx, after_projection_graph, slot_view, attention_core_node(), false)
+        after_core_graph = ggml_ffi.graph_partition(
+          diagnostic_ctx, after_projection_graph, slot_view, attention_core_node(), true)
+        output_residual_graph = ggml_ffi.graph_partition(
+          diagnostic_ctx, after_core_graph, slot_view, ffn_inp_node_of(true), false)
+        router_graph = ggml_ffi.graph_partition(
+          diagnostic_ctx, after_core_graph, slot_view, ffn_inp_node_of(true), true)
+        if ggml_ffi.handle_absent(projection_graph)
+          || ggml_ffi.handle_absent(after_projection_graph)
+          || ggml_ffi.handle_absent(attention_core_graph)
+          || ggml_ffi.handle_absent(after_core_graph)
+          || ggml_ffi.handle_absent(output_residual_graph)
+          || ggml_ffi.handle_absent(router_graph)
+          || ggml_ffi.graph_node_count(projection_graph)
+          + ggml_ffi.graph_node_count(after_projection_graph) != result.node_count_a
+          || ggml_ffi.graph_node_count(attention_core_graph)
+          + ggml_ffi.graph_node_count(after_core_graph)
+          != ggml_ffi.graph_node_count(after_projection_graph)
+          || ggml_ffi.graph_node_count(output_residual_graph)
+          + ggml_ffi.graph_node_count(router_graph)
+          != ggml_ffi.graph_node_count(after_core_graph)
+          || ggml_ffi.graph_node_count(projection_graph)
+          + ggml_ffi.graph_node_count(attention_core_graph)
+          + ggml_ffi.graph_node_count(output_residual_graph)
+          + ggml_ffi.graph_node_count(router_graph) != result.node_count_a {
+          fail(o, "R5_GGML_INIT", moe_model_forward.layer_named(
+              spec.layer, "stage", "attention_operation_partition"))
+        } else {
+          o.graphs_created = o.graphs_created + 6
+        }
       } else {
-        o.graphs_created = o.graphs_created + 2
+        attention_graph = ggml_ffi.graph_partition(
+          diagnostic_ctx, graph_a, slot_view, ffn_inp_node_of(true), false)
+        router_graph = ggml_ffi.graph_partition(
+          diagnostic_ctx, graph_a, slot_view, ffn_inp_node_of(true), true)
+        if ggml_ffi.handle_absent(attention_graph) || ggml_ffi.handle_absent(router_graph)
+          || ggml_ffi.graph_node_count(attention_graph) + ggml_ffi.graph_node_count(router_graph)
+          != result.node_count_a {
+          fail(o, "R5_GGML_INIT", moe_model_forward.layer_named(
+              spec.layer, "stage", "phase_a_operation_partition"))
+        } else {
+          o.graphs_created = o.graphs_created + 2
+        }
       }
     }
   }
   o.graph_build_alloc_ns = o.graph_build_alloc_ns + (time.instant() - graph_started)
   if o.code.len() == 0 && decode && phase_a_operation_diagnosis {
-    started := time.instant()
-    status := ggml_ffi.graph_compute(backend, attention_graph)
-    result.compute_a_attention_ns = time.instant() - started
-    if status != 0 {
-      fail(o, "R5_COMPUTE", moe_model_forward.layer_named(
-          spec.layer, "status_attention", moe_model_forward.int_text(status)))
+    if attention_operation_diagnosis {
+      projection_started := time.instant()
+      projection_status := ggml_ffi.graph_compute(backend, projection_graph)
+      result.compute_a_projection_ns = time.instant() - projection_started
+      if projection_status != 0 {
+        fail(o, "R5_COMPUTE", moe_model_forward.layer_named(
+            spec.layer, "status_projection", moe_model_forward.int_text(projection_status)))
+      }
+      if o.code.len() == 0 {
+        core_started := time.instant()
+        core_status := ggml_ffi.graph_compute(backend, attention_core_graph)
+        result.compute_a_attention_core_ns = time.instant() - core_started
+        if core_status != 0 {
+          fail(o, "R5_COMPUTE", moe_model_forward.layer_named(
+              spec.layer, "status_attention_core", moe_model_forward.int_text(core_status)))
+        }
+      }
+      if o.code.len() == 0 {
+        output_started := time.instant()
+        output_status := ggml_ffi.graph_compute(backend, output_residual_graph)
+        result.compute_a_output_residual_ns = time.instant() - output_started
+        if output_status != 0 {
+          fail(o, "R5_COMPUTE", moe_model_forward.layer_named(
+              spec.layer, "status_output_residual", moe_model_forward.int_text(output_status)))
+        }
+      }
+      result.compute_a_attention_ns = result.compute_a_projection_ns
+        + result.compute_a_attention_core_ns + result.compute_a_output_residual_ns
+    } else {
+      started := time.instant()
+      status := ggml_ffi.graph_compute(backend, attention_graph)
+      result.compute_a_attention_ns = time.instant() - started
+      if status != 0 {
+        fail(o, "R5_COMPUTE", moe_model_forward.layer_named(
+            spec.layer, "status_attention", moe_model_forward.int_text(status)))
+      }
     }
     if o.code.len() == 0 {
       router_started := time.instant()
@@ -2722,6 +2800,7 @@ fn decode_pass(
   borrow layout: model_forward.ResidentLayout,
   resident: bool,
   phase_a_operation_diagnosis: bool,
+  attention_operation_diagnosis: bool,
   borrow slot_view: slice<u8>,
   borrow ids_view: slice<u8>,
   borrow pos_view: slice<u8>,
@@ -2857,7 +2936,7 @@ fn decode_pass(
     mut result := moe_model_forward.empty_layer_result()
     run_moe_layer(
       device, backend, resident_buffer, direct_cache, context_bytes, spec, true,
-      phase_a_operation_diagnosis, n_past, stride, step, g, plan,
+      phase_a_operation_diagnosis, attention_operation_diagnosis, n_past, stride, step, g, plan,
       win, members,
       a_nodes, b_nodes, oracle, layer_view, claim_window, cache_window, cache_metadata, slot_view,
       pos_view, mask_view,
@@ -2867,6 +2946,10 @@ fn decode_pass(
     o.routing_compute_ns = o.routing_compute_ns + result.compute_a_ns
     o.phase_a_attention_ns = o.phase_a_attention_ns + result.compute_a_attention_ns
     o.phase_a_router_ns = o.phase_a_router_ns + result.compute_a_router_ns
+    o.attention_projection_ns = o.attention_projection_ns + result.compute_a_projection_ns
+    o.attention_core_ns = o.attention_core_ns + result.compute_a_attention_core_ns
+    o.attention_output_residual_ns = o.attention_output_residual_ns
+      + result.compute_a_output_residual_ns
     o.expert_compute_ns = o.expert_compute_ns + result.compute_b_ns
     accounting_started = time.instant()
     account(result.activation_a, result.slot_high_water, 0, activation, o)
@@ -3124,7 +3207,7 @@ fn prefill_pass(
     mut routing := layer_olmoe.empty_routing()
     mut result := moe_model_forward.empty_layer_result()
     run_moe_layer(
-      device, backend, resident_buffer, direct_cache, context_bytes, spec, false, false,
+      device, backend, resident_buffer, direct_cache, context_bytes, spec, false, false, false,
       tokens.count, stride, 0, g, plan, win, members,
       a_nodes, b_nodes, oracle, layer_view, claim_window, cache_window, cache_metadata, slot_view,
       index_view, mask_view,
@@ -3514,6 +3597,7 @@ fn decode_loop(
   borrow layout: model_forward.ResidentLayout,
   resident: bool,
   phase_a_operation_diagnosis: bool,
+  attention_operation_diagnosis: bool,
   borrow slot_view: slice<u8>,
   borrow ids_view: slice<u8>,
   borrow pos_all: slice<u8>,
@@ -3644,6 +3728,9 @@ fn decode_loop(
     before_head_compute := o.decode_head_compute_ns
     before_phase_a_attention := o.phase_a_attention_ns
     before_phase_a_router := o.phase_a_router_ns
+    before_attention_projection := o.attention_projection_ns
+    before_attention_core := o.attention_core_ns
+    before_attention_output_residual := o.attention_output_residual_ns
     decoded.token_id = token
     mut res := empty_step_residency()
     pass_started := time.instant()
@@ -3652,7 +3739,7 @@ fn decode_loop(
       win, tokens,
       head_members, window,
       claim_window, cache_window, cache_metadata, layout, resident, phase_a_operation_diagnosis,
-      slot_view, ids_view, pos_view,
+      attention_operation_diagnosis, slot_view, ids_view, pos_view,
       mask_view, out_ids_view,
       residual_view,
       logits_view, node_view, plane_view, oracle, embed_nodes, a_nodes, b_nodes, head_nodes, scan,
@@ -3860,6 +3947,13 @@ fn decode_loop(
         + (o.phase_a_attention_ns - before_phase_a_attention)
       o.remaining_decode_phase_a_router_ns = o.remaining_decode_phase_a_router_ns
         + (o.phase_a_router_ns - before_phase_a_router)
+      o.remaining_decode_attention_projection_ns = o.remaining_decode_attention_projection_ns
+        + (o.attention_projection_ns - before_attention_projection)
+      o.remaining_decode_attention_core_ns = o.remaining_decode_attention_core_ns
+        + (o.attention_core_ns - before_attention_core)
+      o.remaining_decode_attention_output_residual_ns =
+      o.remaining_decode_attention_output_residual_ns
+        + (o.attention_output_residual_ns - before_attention_output_residual)
       o.remaining_decode_claim_pread_ns =
       o.remaining_decode_claim_pread_ns + phase_claim_pread_ns
       o.remaining_decode_claim_file_pread_ns = o.remaining_decode_claim_file_pread_ns
@@ -4179,6 +4273,7 @@ fn schedule_decode(
   borrow layout: model_forward.ResidentLayout,
   resident: bool,
   phase_a_operation_diagnosis: bool,
+  attention_operation_diagnosis: bool,
   device: raw,
   context_bytes: i64,
   width: i64,
@@ -4436,7 +4531,7 @@ fn schedule_decode(
       tokens,
       head_members,
       window, claim_window, cache_window, cache_metadata_view, layout, resident,
-      phase_a_operation_diagnosis, slot_view,
+      phase_a_operation_diagnosis, attention_operation_diagnosis, slot_view,
       decode_ids_view, decode_pos_view,
       mask_decode_view,
       decode_out_ids_view, decode_residual_view, decode_logits_view, node_view, plane_view,
@@ -4580,6 +4675,7 @@ fn execute_mode(
   generation: bool,
   sampled: bool,
   phase_a_operation_diagnosis: bool,
+  attention_operation_diagnosis: bool,
   sampling_seed: i64,
   borrow eog_ids: array<i64>,
   generation_max: i64,
@@ -4910,7 +5006,7 @@ fn execute_mode(
   schedule_decode(
     pak, g, table, staged.plan, staged.ends, staged.win, tokens, embed_members, head_members,
     window_view, resident_view, claim_view, cache_view, layout, resident,
-    phase_a_operation_diagnosis, device, context_bytes, width,
+    phase_a_operation_diagnosis, attention_operation_diagnosis, device, context_bytes, width,
     residual_bytes,
     logits_bytes, readback_bytes, staged.block_align, reference_path, transcript_path, logits_path,
     steps, generation, sampled, sampling_seed, eog_ids, generation_max, started, graphs, top,
@@ -4978,6 +5074,7 @@ fn generate_resident_mode(
   sampled: bool,
   sampling_seed: i64,
   phase_a_operation_diagnosis: bool,
+  attention_operation_diagnosis: bool,
 ) -> GenerationParts {
   if prompt_token_ids.len() < 1 || prompt_token_ids.len() > layer_olmoe.MAX_PREFILL_TOKENS
     || eog_token_ids.len() < 1 || eog_token_ids.len() > 256
@@ -5008,7 +5105,8 @@ fn generate_resident_mode(
   outcome := execute_mode(
     pack_path, geometry_path, expected_geometry, source_identity, token_view, "", "", width_view,
     "", steps_view, "-", "-", resident_view, true, sampled, phase_a_operation_diagnosis,
-    sampling_seed, eog_token_ids, max_tokens, tokens, graphs, top, stepped)
+    attention_operation_diagnosis, sampling_seed, eog_token_ids, max_tokens, tokens, graphs, top,
+    stepped)
   token_ids_json := render_generation_ids(outcome, stepped)
   return GenerationParts { outcome: outcome, token_ids_json: token_ids_json }
 }
@@ -5025,7 +5123,7 @@ pub fn generate_resident(
 ) -> GenerationParts {
   return generate_resident_mode(
     pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids,
-    max_tokens, cache_budget_bytes, false, 0, false)
+    max_tokens, cache_budget_bytes, false, 0, false, false)
 }
 
 pub fn generate_resident_sampled(
@@ -5041,7 +5139,7 @@ pub fn generate_resident_sampled(
 ) -> GenerationParts {
   return generate_resident_mode(
     pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids,
-    max_tokens, cache_budget_bytes, true, seed, false)
+    max_tokens, cache_budget_bytes, true, seed, false, false)
 }
 
 // Qualification-only item-71 entry. Existing providers and diagnostic APIs above keep the shipped
@@ -5059,7 +5157,25 @@ pub fn generate_resident_sampled_phase_a_operation_diagnosis(
 ) -> GenerationParts {
   return generate_resident_mode(
     pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids,
-    max_tokens, cache_budget_bytes, true, seed, true)
+    max_tokens, cache_budget_bytes, true, seed, true, false)
+}
+
+// Qualification-only item-72 entry. It keeps item 71's parent clocks but computes the attention
+// prefix as projection, core, and output/residual graph slices.
+pub fn generate_resident_sampled_attention_operation_diagnosis(
+  pack_path: str,
+  geometry_path: str,
+  expected_geometry: str,
+  source_identity: alignpack.SourceIdentity,
+  borrow prompt_token_ids: array<i64>,
+  borrow eog_token_ids: array<i64>,
+  max_tokens: i64,
+  cache_budget_bytes: i64,
+  seed: i64,
+) -> GenerationParts {
+  return generate_resident_mode(
+    pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids,
+    max_tokens, cache_budget_bytes, true, seed, true, true)
 }
 
 // The public diagnostic API retains its existing grammar and exact requested-step semantics.
@@ -5085,7 +5201,7 @@ pub fn execute(
   return execute_mode(
     pack_path, geometry_path, "", identity, tokens_text, reference_path, transcript_path,
     width_text, logits_path, steps_text, kv_save_text, kv_load_text, resident_text, false, false,
-    false, 0, eog_ids, 0, tokens, graphs, top, stepped)
+    false, false, 0, eog_ids, 0, tokens, graphs, top, stepped)
 }
 
 // ---------------------------------------------------------------------------------------------
