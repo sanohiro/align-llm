@@ -3,38 +3,45 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS publication (2026-09-05)
+## Active: R8-OLMOE-NATIVE-STAGING-BOUNDARY (2026-09-05)
 
-Branch `agent/r8-olmoe-plane-upload-diagnosis`, based on merged main `d9fd56c` (PR #197).
-Evaluated source `ae77649ee1019238f8db8b1d1e3695012ecfd2a2`; Align remains pinned to
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger and evidence:
-`docs/specs/r8-olmoe-plane-upload-diagnosis.md`.
+Branch `agent/r8-olmoe-native-staging-boundary`, based on merged main `d32d3cb` (PR #198).
+Align remains pinned to `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger:
+`docs/specs/r8-olmoe-native-staging-boundary.md`.
 
-The clean-head four-repeat diagnosis completed in 93.883 seconds with every output, cache,
-isolation, source/runtime identity, accounting and native lifetime boundary passing.
-`NATIVE_STAGING` won at 1,533,218,558 ns median / 745,249 ppm of the 2,057,323,354-ns upload
-parent, above the unchanged 871,174,011-ns floor: `MEASURED_UPLOAD_SEAM_ELIGIBLE`.
-Priming measured 524,104,795 ns, below floor. Instrumented full wall is not a speedup claim.
+Item 76 selected native staging at 1,533,218,558 ns median above the fixed 871,174,011-ns floor.
+Only the V scalar transfer in the real/stub shared C region may change: unaligned-safe AArch64
+4-by-4 byte-lane tiles with scalar tails. Preserve validation, K copy, fallback, existing comparison,
+all Align/helper/build bytes and priming. The whole native parent is not measured V-only cost.
 
-**Next actions.** Complete one fresh comprehensive review, repair any valid findings, run exact-head
-preflight, publish/retrieve/hash-verify full raw evidence and merge. Refresh main and implement item
-77's native-staging candidate from a precommitted ledger and contemporary paired shipping gate.
-Do not carry rejected K/V attention copies or below-floor zero-priming reuse into the successor.
+**Next actions.** Implement the committed native ledger, direct byte/layout/refusal owner and paired
+qualification runner. Run narrow owners, commit the complete candidate, then run four balanced
+AB/BA pairs (sixteen requests) against exact merged control. Require all four gains positive,
+median saving at least max(871,174,011 ns, 50,000 ppm of control), and candidate median at most
+16,552,306,197 ns. Remove production and candidate native owners unless the gate passes. Complete
+one comprehensive review, exact-head preflight, publish raw evidence, merge and continue.
 
-**Blocker.** None. Item 76 implementation and qualification are complete; review/publication is
-active. Item 77 is selected but not started. Other material R8 leaves remain eligible.
+**Blocker.** None. Implementation is active; the paired result owns shipping and the next decision.
+Priming is below floor; rejected attention K/V copies remain removed.
 
-**Latest durable verification.** `gmake fmt`, pinned
-`./scripts/alignc check-per-unit src/olmoe_plane_upload_gate.align` (17 units),
-`scripts/test-olmoe-plane-upload` (all API/failure/schema/accounting/cleanup cases),
-`gmake runtime-provider-smoke` (sampler vectors plus 61 CLI assertions), Python compilation,
-full runner `--self-test` and `git diff --check` passed. The runner pins 133 source dependencies
-plus its own tracked bytes and the managed runtime archive. The clean-head real run recorded
-four exact short/full pairs and 12 zero process-isolation checks; its full raw JSON hash and all
-clock values are in the plan. The evaluated ancestor is now required for publication/replay.
+**Latest durable verification.** Item 76 merged as `d32d3cb` with tree
+`aa14ec68e9360b362d3fe7860e9e569885f26726`, matching tested integration. Its merged-head
+qualification-owner self-test passed, including current source/runtime identities and both required
+ancestors. Item 77's native implementation/owner checks have not started.
 
-**Intentional uncommitted files.** None after the evidence checkpoint. Models, evidence and builds
-stay outside Git.
+**Intentional uncommitted files.** None at the ledger checkpoint. Models, raw records and build
+products remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS (PR #198, 2026-09-05)
+
+PR #198 merged as `d32d3cb` with tested tree `aa14ec68e9360b362d3fe7860e9e569885f26726`.
+Evaluated ancestor `ae77649ee1019238f8db8b1d1e3695012ecfd2a2` completed four exact short/full
+pairs in 93.883 seconds. Native staging won at 1,533,218,558 ns median / 745,249 ppm of the
+2,057,323,354-ns upload parent: `MEASURED_UPLOAD_SEAM_ELIGIBLE`. Priming was below floor at
+524,104,795 ns. Every output/cache/isolation/lifetime/accounting/identity boundary passed.
+Comprehensive review had no findings, exact-head preflight and all three required checks passed,
+full raw JSON was hash-verified after GitHub retrieval, and merged-head self-test passed.
+Item 77 owns the selected checked-native-call candidate; attribution alone does not claim speedup.
 
 ## Merged checkpoint: R8-OLMOE-V-PREPARATION-BOUNDARY (PR #197, 2026-09-05)
 

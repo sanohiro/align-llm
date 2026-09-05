@@ -1796,10 +1796,12 @@ The current forward delivery order is:
     above the fixed floor: `MEASURED_UPLOAD_SEAM_ELIGIBLE / NATIVE_STAGING`. Priming measured
     524,104,795 ns and is below floor. Full-helper wall is descriptive, not a speedup claim.
 
-77. **R8-OLMOE-NATIVE-STAGING-BOUNDARY — evaluate exact checked KV transfer. Next.**
-    Item 76 selects the existing checked native staging call. Define the smallest supported
-    byte-exact implementation and its owner/closure ledger before coding; inspect K block copies
-    and the strided V transfer without attributing the whole parent wall to either one. Preserve
+77. **R8-OLMOE-NATIVE-STAGING-BOUNDARY — evaluate exact checked KV transfer. Active.**
+    [`r8-olmoe-native-staging-boundary.md`](r8-olmoe-native-staging-boundary.md) owns the committed ledger.
+    Item 76 merged as `d32d3cb`, the contemporary control. Replace only the existing AArch64 V
+    scalar transfer with unaligned-safe 4-by-4 byte-lane tiles and scalar tails; keep validation,
+    K block copies, fallback, comparison and all Align/helper sources unchanged. The native
+    parent measurement does not attribute the whole wall to V. Preserve
     refusal precedence, source/destination layouts, unsplit execution, cache accounting and native
     lifetimes. Use a contemporary control and a precommitted complete-request paired shipping
     gate; remove production unless it passes. Below-floor priming reuse is not selected.
