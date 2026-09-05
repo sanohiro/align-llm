@@ -3,39 +3,51 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-K-PREPARATION-BOUNDARY publication (2026-09-05)
+## Active: R8-OLMOE-V-PREPARATION-BOUNDARY publication (2026-09-05)
 
-Branch `agent/r8-olmoe-k-preparation-boundary`, based on merged main `e221df3` (PR #195).
-Evaluated candidate `7c2471575967eb258212ce96a7acfaa240b02611`; Align remains pinned to
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. The authoritative ledger and terminal result are
-`docs/specs/r8-olmoe-k-preparation-boundary.md`.
+Branch `agent/r8-olmoe-v-preparation-boundary`, based on merged main `36183a3` (PR #196).
+Evaluated candidate `248e2314ebbb429e4027c5cb249e680a15cec310`; Align remains pinned to
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger and terminal evidence:
+`docs/specs/r8-olmoe-v-preparation-boundary.md`.
 
-The exact K-copy candidate completed the four-pair real comparison in 225.360 seconds with all
-semantic, identity, cache, isolation and lifetime checks passing, but its decision is `NOT_MET`.
-Only two pairs improved, median paired gain was 3,851,438 ns against required 1,008,080,808 ns,
-and candidate median 19,489,429,604 ns exceeded the historical ceiling. All production changes,
-candidate-only native owners and three specification clarifications are restored/removed.
-The retained runner is publication-only and requires control/evaluated ancestry; merge commits only.
+The V-only candidate completed sixteen exact requests in 192.761 seconds with all semantic,
+identity, cache, isolation and native lifetime checks passing. Its result is `NOT_MET`: only two
+paired gains were positive, median paired saving was -15,955,313 ns against required 871,174,011 ns,
+and candidate median 16,977,564,124 ns exceeded the historical ceiling. All production and three
+candidate specification clarifications are restored; both native owner files are removed. The
+retained publication-only runner checks exact restoration/removal and control/evaluated ancestry.
 
-**Next actions.** Complete one fresh comprehensive review, repair findings, run exact-head
-preflight, publish and merge. Then refresh
-main and implement item 75's V-only preparation boundary from a precommitted ledger. Do not carry
-K into it: the paired result did not establish a directional K benefit.
+**Next actions.** Complete one fresh comprehensive review, repair, exact-head preflight, publish
+full raw evidence and merge. Then
+refresh main and implement item 76's plane-upload subdiagnosis from a precommitted ledger. Reuse
+item 75 control records for the current leaf projection; do not repeat an unchanged model run or
+carry either rejected copy candidate into the next implementation.
 
-**Blocker.** None. Item 74 implementation/evaluation is complete; review/publication is active.
-Item 75 is selected but not started. No Align gap was encountered.
+**Blocker.** None. Implementation/evaluation is complete; review/publication is active. Item 76 is
+selected but not started. Other material R8 buckets remain; attention failures do not close R8.
 
-**Latest durable verification.** At the evaluated checkpoint: pinned helper type-check (17 units),
-three strict C builds, shared-shim identity, `gmake fmt`, `scripts/test-olmoe-attention-core`,
-`gmake layer-forward-smoke` (82.153 seconds), `gmake runtime-provider-smoke` (sampler vectors and
-61 CLI assertions), native stub/real four-worker/real UBSan owners, Python compilation and paired
-runner self-test all passed. The clean-head real comparison passed every semantic boundary and
-recorded the terminal negative gate result above. Terminal self-tests passed in the ordinary
-checkout and a detached linked worktree, including exact source restoration and both ancestry
-checks. The final runner validates the raw result and refuses real replay with the evaluated SHA.
+**Latest durable verification.** Evaluated helper type-check passed 17 units; three strict C builds,
+shared-region identity, `gmake fmt`, native stub/real four-worker/real UBSan owners, existing
+attention-core mode/order/failure owner, `gmake layer-forward-smoke` (193.931 seconds),
+`gmake runtime-provider-smoke` (sampler vectors plus 61 CLI assertions), Python compilation and
+paired-runner self-test passed. The clean-head real comparison passed every semantic boundary
+and recorded the negative gate above. Final self-tests passed in the ordinary checkout and a
+detached linked worktree, including source/specification restoration, removed-owner absence and
+both ancestry checks. Final raw-result validation and real replay refusal also passed.
 
 **Intentional uncommitted files.** None after the terminal checkpoint. Models, raw evidence and
 build products remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-K-PREPARATION-BOUNDARY (PR #196, 2026-09-05)
+
+PR #196 merged as `36183a3` with tested tree `7fdbe644881a8a09a2aa8b8c996e42cefc9f469b`.
+Evaluated ancestor `7c2471575967eb258212ce96a7acfaa240b02611` passed all semantics but recorded
+`NOT_MET`: only two paired gains were positive, median paired saving was 3,851,438 ns against
+required 1,008,080,808 ns, and candidate median 19,489,429,604 ns exceeded the historical ceiling.
+All production/native-owner/specification changes were removed. The retained publication-only
+runner verifies exact restoration and both required ancestors; the complete raw result is preserved
+in PR #196 and hash-verified after retrieval. Review had no findings, all publication checks passed,
+and the merged-head self-test passed. Mixed K results do not justify carrying K into item 75.
 
 ## Merged checkpoint: R8-OLMOE-ATTENTION-CORE-DIAGNOSIS (PR #195, 2026-09-05)
 
