@@ -1397,11 +1397,10 @@ def validate_result(result: Any, *, identity: dict[str, Any] | None = None) -> N
     same(result["environment"], environment_record(), "environment")
     same(result["aggregate"], sampled.aggregate(result["samples"]), "recomputed aggregate")
     sampled.validate_repeatability(result["samples"])
-    owned_work_ns = sum(candidate["command_wall_ns"] + candidate["validation_elapsed_ns"]
-                        for pair in result["samples"] for arm in ("local", "runtime")
-                        for candidate in pair[arm]["candidates"])
-    require(result["elapsed_ns"] >= owned_work_ns,
-            "complete elapsed does not cover provider and validator work")
+    sequential_portfolio_ns = sum(portfolio_elapsed_lower_bound(pair[arm])
+                                  for pair in result["samples"] for arm in ("local", "runtime"))
+    require(result["elapsed_ns"] >= sequential_portfolio_ns,
+            "complete elapsed does not cover sequential portfolio work")
     if identity is None:
         verify_evidence_identity(result)
     else:
@@ -1413,6 +1412,15 @@ def environment_record() -> dict[str, Any]:
         "c_compiler_sha256": isolated.EXPECTED_C_COMPILER_SHA256,
         "c_compiler_version_sha256": isolated.EXPECTED_C_COMPILER_VERSION_SHA256,
         "linker_search_sha256": isolated.EXPECTED_LINKER_SEARCH_SHA256}
+
+
+def portfolio_elapsed_lower_bound(portfolio: dict[str, Any]) -> int:
+    """Use the enclosing primary timer when present, or known nested work otherwise."""
+    elapsed = portfolio["time_to_passing_patch_ns"]
+    if elapsed is not None:
+        return elapsed
+    return sum(candidate["command_wall_ns"] + candidate["validation_elapsed_ns"]
+               for candidate in portfolio["candidates"])
 
 
 def result_record(samples: list[dict[str, Any]], built: dict[str, Any], identity: dict[str, Any],
@@ -1533,6 +1541,34 @@ def complete_after_cleanup(result: dict[str, Any], identity: dict[str, Any], sta
     return document
 
 
+def cleanup_complete(owners: RunOwners) -> bool:
+    return (owners.active is None and owners.server is None and owners.cleanup_process is None
+            and not owners.containers)
+
+
+def qualification_in_owned_directory(paths: tuple[Path, ...], started_ns: int, deadline: float,
+                                     environment: dict[str, str]
+                                     ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Remove temporary inputs only after every OS and daemon owner is discharged."""
+    raw = Path(tempfile.mkdtemp(prefix="align-item78-decision-"))
+    owners = RunOwners(deadline, env=environment, cwd=ROOT)
+    try:
+        with owners.scope():
+            result, identity = run_qualification(owners, paths, raw, started_ns)
+    except BaseException:
+        if cleanup_complete(owners):
+            shutil.rmtree(raw)
+        else:
+            # The directory contains the only durable CID files and mounted inputs that permit
+            # bounded operator recovery after Docker itself refused cleanup.
+            print(f"{LABEL}: RECOVERY REQUIRED; retained unresolved ownership at {raw}",
+                  file=sys.stderr)
+        raise
+    require(cleanup_complete(owners), "successful qualification retained owned resources")
+    shutil.rmtree(raw)
+    return result, identity
+
+
 def expect_error(action: Any, kind: type[BaseException] = Exception) -> BaseException:
     try:
         action()
@@ -1550,9 +1586,8 @@ def synthetic_result() -> tuple[dict[str, Any], dict[str, Any]]:
     source_files.append({"path": RUNNER_RELATIVE, "bytes": len(runner),
                          "sha256": identity["runner_sha256"]})
     samples = isolated.synthetic_samples()
-    elapsed = 1 + sum(candidate["command_wall_ns"] + candidate["validation_elapsed_ns"]
-                      for pair in samples for arm in ("local", "runtime")
-                      for candidate in pair[arm]["candidates"])
+    elapsed = 1 + sum(portfolio_elapsed_lower_bound(pair[arm])
+                      for pair in samples for arm in ("local", "runtime"))
     return result_record(samples, {"helper_sha256": "c" * 64, "shim_sha256": "d" * 64},
                          identity, sorted(source_files, key=lambda row: row["path"]), elapsed), identity
 
@@ -1573,6 +1608,17 @@ def self_test_records() -> None:
         changed = deepcopy(result)
         mutation(changed)
         expect_error(lambda changed=changed: validate_result(changed, identity=identity), Exception)
+    too_short = deepcopy(result)
+    lower_bound = sum(portfolio_elapsed_lower_bound(pair[arm])
+                      for pair in too_short["samples"] for arm in ("local", "runtime"))
+    too_short["elapsed_ns"] = lower_bound - 1
+    expect_error(lambda: validate_result(too_short, identity=identity), DecisionError)
+    impossible = deepcopy(result)
+    for pair in impossible["samples"]:
+        for arm in ("local", "runtime"):
+            pair[arm]["time_to_passing_patch_ns"] += 1_500_000_000_000
+    impossible["aggregate"] = sampled.aggregate(impossible["samples"])
+    expect_error(lambda: validate_result(impossible, identity=identity), DecisionError)
     uniform = deepcopy(result["provenance"]["source_files"])
     for row in uniform:
         row["sha256"] = "2" * 64
@@ -1591,10 +1637,21 @@ def self_test_records() -> None:
 
 
 def self_test_cli_and_scope() -> None:
+    with mock.patch.object(sys, "argv", [str(RUNNER_PATH), "unexpected"]):
+        expect_error(main, DecisionError)
     with mock.patch.dict(os.environ, {PREREQUISITES[1]: "/definitely/unusable"}, clear=True), \
          mock.patch("sys.stdout", new_callable=io.StringIO) as output:
         require(prerequisites() is None, "unset prerequisite did not produce N/A")
         same(output.getvalue(), f"{LABEL}: N/A ({PREREQUISITES[0]} unset)\n", "first N/A")
+    with mock.patch.dict(os.environ, {name: "/definitely/unusable" for name in PREREQUISITES},
+                         clear=True):
+        expect_error(prerequisites, Exception)
+    bad_environment = sampled.decision_environment()
+    bad_environment["LIBRARY_PATH"] = "/wrong/linker/search"
+    expect_error(lambda: sampled.validate_linker_search(bad_environment), Exception)
+    owners = RunOwners(time.monotonic() + 5, env=sampled.decision_environment(), cwd=ROOT)
+    with mock.patch.object(platform, "system", return_value="unsupported"):
+        expect_error(lambda: qualification_host(owners), DecisionError)
 
     original = {"root": coding.ROOT, "task": coding.TASK, "validator": coding.VALIDATOR,
                 "parse": coding.parse_record, "run": sampled.run_process,
@@ -1630,6 +1687,105 @@ def self_test_cli_and_scope() -> None:
                 and sampled.run_process == original["run"],
                 "delegated snapshot scope was not restored")
 
+        def restored() -> bool:
+            return (coding.ROOT == original["root"] and coding.TASK == original["task"]
+                    and coding.VALIDATOR == original["validator"]
+                    and coding.parse_record == original["parse"]
+                    and sampled.run_process == original["run"])
+
+        for exit_kind in ("exception", "signal"):
+            owners = RunOwners(time.monotonic() + 20, env=sampled.decision_environment(), cwd=ROOT,
+                               cleanup_grace_seconds=4.5, owner_cleanup_seconds=1.5)
+            def delegated_exit() -> None:
+                with owners.scope():
+                    with delegated_scope(owners, tree, owners.env):
+                        if exit_kind == "signal":
+                            owners.interrupted(signal.SIGTERM, None)
+                        raise DecisionError("injected delegated failure")
+            error_kind = SystemExit if exit_kind == "signal" else DecisionError
+            expect_error(delegated_exit, error_kind)
+            require(restored(), f"delegated snapshot scope was not restored after {exit_kind}")
+
+
+def self_test_source_contract() -> None:
+    with tempfile.TemporaryDirectory(prefix="align-item78-source-") as raw:
+        tree = Path(raw) / "source"
+        for path in SOURCE_PATHS:
+            source = ROOT / path
+            destination = tree / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+        current_source_pins(tree)
+        target = tree / TASK_RELATIVE
+        original = target.read_bytes()
+        target.write_bytes(original + b"\n")
+        expect_error(lambda: current_source_pins(tree), DecisionError)
+        target.write_bytes(original)
+        target.unlink()
+        target.symlink_to(tree / VALIDATOR_RELATIVE)
+        expect_error(lambda: current_source_pins(tree), DecisionError)
+
+
+def self_test_runtime_archive_identity() -> None:
+    with tempfile.TemporaryDirectory(prefix="align-item78-runtime-") as raw:
+        directory = Path(raw)
+        compiler = directory / "alignc"
+        runtime = directory / "libalign_runtime.a"
+        compiler.write_bytes(b"compiler")
+        runtime.write_bytes(b"runtime")
+        expected = coding.file_sha256(runtime)
+        with mock.patch.dict(runtime_identity.__globals__, {"EXPECTED_RUNTIME_SHA256": expected}):
+            same(runtime_identity(compiler), expected, "test runtime archive")
+            runtime.write_bytes(b"changed")
+            expect_error(lambda: runtime_identity(compiler), DecisionError)
+            runtime.unlink()
+            expect_error(lambda: runtime_identity(compiler), DecisionError)
+            target = directory / "runtime-target"
+            target.write_bytes(b"runtime")
+            runtime.symlink_to(target)
+            expect_error(lambda: runtime_identity(compiler), DecisionError)
+
+
+def self_test_git_boundaries() -> None:
+    environment = sampled.decision_environment()
+    with tempfile.TemporaryDirectory(prefix="align-item78-git-boundaries-") as raw:
+        root = Path(raw)
+        repo = root / "repository"
+        linked = root / "linked"
+        repo.mkdir()
+        owners = RunOwners(time.monotonic() + 30, env=environment, cwd=repo,
+                           cleanup_grace_seconds=4.5, owner_cleanup_seconds=1.5)
+        with owners.scope():
+            owners.run(["git", "init", "-q"], cwd=repo)
+            source = repo / "source"
+            source.write_text("one\n", encoding="utf-8")
+            owners.run(["git", "add", "source"], cwd=repo)
+            owners.run(["git", "-c", "user.name=owner", "-c", "user.email=owner@example.invalid",
+                        "commit", "-qm", "one"], cwd=repo)
+            first = git(owners, ["rev-parse", "HEAD"], cwd=repo).stdout.decode().strip()
+            source.write_text("two\n", encoding="utf-8")
+            owners.run(["git", "add", "source"], cwd=repo)
+            owners.run(["git", "-c", "user.name=owner", "-c", "user.email=owner@example.invalid",
+                        "commit", "-qm", "two"], cwd=repo)
+            head = git(owners, ["rev-parse", "HEAD"], cwd=repo).stdout.decode().strip()
+            common = common_directory(owners, cwd=repo)
+            ancestry(owners, head, common, cwd=repo, ancestors=(first,))
+            owners.run(["git", "worktree", "add", "-q", "--detach", str(linked), head], cwd=repo)
+            same(common_directory(owners, cwd=linked), common, "linked worktree common directory")
+            ancestry(owners, head, common, cwd=linked, ancestors=(first,))
+            expect_error(lambda: ancestry(owners, head, common, cwd=repo,
+                                          ancestors=("f" * 40,)), DecisionError)
+            owners.run(["git", "replace", head, first], cwd=repo)
+            expect_error(lambda: ancestry(owners, head, common, cwd=repo,
+                                          ancestors=(first,)), DecisionError)
+            owners.run(["git", "replace", "-d", head], cwd=repo)
+            graft = common / "info" / "grafts"
+            graft.write_text(f"{head} {first}\n", encoding="ascii")
+            expect_error(lambda: ancestry(owners, head, common, cwd=repo,
+                                          ancestors=(first,)), DecisionError)
+            graft.unlink()
+            owners.run(["git", "worktree", "remove", "--force", str(linked)], cwd=repo)
+
 
 def self_test_failure_isolation() -> None:
     owners = RunOwners(time.monotonic() + 10, env=sampled.decision_environment(), cwd=ROOT,
@@ -1645,6 +1801,33 @@ def self_test_failure_isolation() -> None:
         require("injected provider failure" in str(error), "provider failure was replaced")
     require(owners.cleanup_process is None and owners.failure_deadline is not None,
             "failure isolation did not execute and reap its cleanup probe")
+
+
+def self_test_retained_cleanup_artifacts() -> None:
+    with tempfile.TemporaryDirectory(prefix="align-item78-retention-parent-") as parent:
+        raw = Path(parent) / "decision"
+        raw.mkdir()
+        cid = raw / "validator.cid"
+
+        def fail_with_owned_container(owners: RunOwners, _paths: tuple[Path, ...], work: Path,
+                                      _started_ns: int) -> tuple[dict[str, Any], dict[str, Any]]:
+            same(work, raw, "injected owned directory")
+            owners.register_container("/usr/bin/false", cid)
+            cid.write_text("f" * 64, encoding="ascii")
+            raise DecisionError("injected qualification failure")
+
+        error_output = io.StringIO()
+        with mock.patch.object(tempfile, "mkdtemp", return_value=str(raw)), \
+             mock.patch.dict(qualification_in_owned_directory.__globals__,
+                             {"run_qualification": fail_with_owned_container}), \
+             mock.patch("sys.stderr", error_output):
+            expect_error(lambda: qualification_in_owned_directory(
+                (), time.monotonic_ns(), time.monotonic() + 10,
+                sampled.decision_environment()), RunOwnerError)
+        require(raw.is_dir() and cid.read_text(encoding="ascii") == "f" * 64,
+                "incomplete outer cleanup destroyed retained CID evidence")
+        require("RECOVERY REQUIRED" in error_output.getvalue() and str(raw) in error_output.getvalue(),
+                "incomplete cleanup omitted its recovery diagnostic")
 
 
 def self_test_git_identity() -> None:
@@ -1670,7 +1853,11 @@ def self_test() -> int:
     lifecycle_self_test()
     self_test_records()
     self_test_cli_and_scope()
+    self_test_source_contract()
+    self_test_runtime_archive_identity()
+    self_test_git_boundaries()
     self_test_failure_isolation()
+    self_test_retained_cleanup_artifacts()
     self_test_git_identity()
     print(f"{LABEL} self-test: PASS")
     print("PASS inherited_portfolio_gate strict_actual_json exact_provenance scalar_domains")
@@ -1689,10 +1876,7 @@ def main() -> int:
     started_ns = time.monotonic_ns()
     deadline = time.monotonic() + CEILING_SECONDS
     environment = sampled.decision_environment()
-    with tempfile.TemporaryDirectory(prefix="align-item78-decision-") as raw:
-        # Scope teardown restores both handlers before this outer directory disappears.
-        with RunOwners(deadline, env=environment, cwd=ROOT).scope() as owners:
-            result, identity = run_qualification(owners, paths, Path(raw), started_ns)
+    result, identity = qualification_in_owned_directory(paths, started_ns, deadline, environment)
     document = complete_after_cleanup(result, identity, started_ns, deadline)
     print(document)
     print(f"{LABEL}: COMPLETE verdict={result['aggregate']['verdict']} "

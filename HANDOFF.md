@@ -17,22 +17,24 @@ was 84,061,674,562 ns, a -4,930,583-ppm gain with runtime slower in every pair. 
 JSON is 35,360 bytes, SHA-256 `772d9b08a0222744b32c63618bd9d01d5a7ff8df29e50b1f063fc59122131796`.
 Item 77's independently qualified native change remains shipped.
 
-**Next actions.** Commit the terminal result metadata, rerun the publication self-test and strict
-raw replay, perform one comprehensive review, run exact-head preflight, publish and merge. Then
-start item 79's expert-phase-B operation diagnosis ledger and implementation.
+**Next actions.** Commit the consolidated review repair, rerun the complete publication self-test
+and strict raw replay, then run exact-head preflight, publish and merge. Start item 79's
+expert-phase-B operation diagnosis ledger and implementation immediately after merge.
 
 **Blocker.** None. The pinned Docker validator image is available by its immutable SHA; use the
 existing allowed image override to resolve it directly. No image rebuild or task relaxation is
 needed. Historical source-pin validators remain intact; this owner freezes the current closure.
 
-**Latest durable verification.** Item 78's Python compilation, inherited item-56 self-test (including
-item 53), complete new `--self-test`, fixed host identity and candidate Git-object reconstruction
-passed. Strict replay accepted the real raw result's schema, current closure, evaluated identity,
-ancestry and aggregate. All eight portfolios passed, every local/runtime absence boundary passed,
-and no owned process survived. Publication-mode self-test and comprehensive review remain pending.
+**Latest durable verification.** The complete candidate `--self-test`, fixed host identity,
+candidate Git-object reconstruction and strict raw replay passed before review. Comprehensive review
+at `31fec05` found three P2 publication-safety defects: incomplete primary-timer enclosure, deletion
+of CID/work files after terminal cleanup refusal, and matrix claims without discriminating tests.
+The consolidated repair adds the stronger elapsed invariant, retains unresolved ownership files,
+and covers source/runtime/Git/delegation/outer-cleanup failures with actual model-free regressions.
+Repair-focused tests pass; exact committed-head publication verification remains.
 
-**Intentional uncommitted files.** Terminal item-78 result metadata only. Models, raw evidence and
-build products remain outside Git.
+**Intentional uncommitted files.** Consolidated review repair only. Models, raw evidence and build
+products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-NATIVE-STAGING-BOUNDARY (PR #199, 2026-09-05)
 
