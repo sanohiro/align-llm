@@ -1,6 +1,6 @@
 # R8 OLMoE attention operation diagnosis
 
-Status: review repair measured; final review pending, 2026-09-05
+Status: implemented, measured, and reviewed; publication pending, 2026-09-05
 
 Roadmap owner: item 72, `R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS`
 
@@ -145,3 +145,11 @@ cache-to-claim copies. All twelve process-absence checks passed, every native li
 conditioning clocks remained zero, full clocks were positive, and the three attention children
 closed exactly to item 71's attention parent on every sample. This is attribution only and makes no
 performance-win claim.
+
+Because the repair materially changed the attribution method, the required final comprehensive
+review covered repaired result-record head `f0fb3036b6765cd81bb0cdbeeba9d617591b04aa` against base
+tip and merge base `ce7493832f7ca8d8ddbb44d89dfc17402b4adcb3` using Codex `gpt-6-astra` at
+high effort. It inspected graph selection, timing accounting, cleanup, qualification behavior, and
+the ggml allocation/in-place-reuse assumptions. Its verdict was clean, with findings `none`; the
+focused self-test and diff checks passed during review, while the already-recorded full-model
+qualification was not redundantly rerun by the reviewer.

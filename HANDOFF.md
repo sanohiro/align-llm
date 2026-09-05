@@ -26,9 +26,13 @@ floor, so the repaired decision is `ATTENTION_CORE_SUBDIAGNOSIS_REQUIRED`. Every
 cache, isolation, lifetime, and corrected accounting boundary passed. Normal provider and item-71
 execution remain unchanged; item 63's live-width candidate remains rejected.
 
-**Next actions.** Commit the replacement result; perform the required final comprehensive review,
-rerun exact-head preflight, publish, and merge. Per the current user instruction, stop after this PR
-instead of starting its attention-core successor.
+The required final comprehensive review covered repaired result-record head `f0fb303` against base
+tip and merge base `ce74938` using Codex `gpt-6-astra` at high effort. It found no actionable
+defects in graph selection, timing accounting, cleanup, qualification behavior, or the ggml
+allocation assumptions.
+
+**Next actions.** Run exact-head preflight, publish, and merge. Per the current user instruction,
+stop after this PR instead of starting its attention-core successor.
 
 **Blocker.** None.
 
@@ -36,7 +40,8 @@ instead of starting its attention-core successor.
 seconds, including the branched membership and range-refusal regression), `make
 runtime-provider-smoke` (self-test plus 61 CLI assertions), Python compilation, the focused item-72
 self-test, helper type-check, and `git diff --check` pass. The repaired clean-head four-repeat run
-above passed in 95.407 seconds. Final review and publication preflight remain pending.
+above passed in 95.407 seconds, and the required final comprehensive review was clean. Publication
+preflight remains pending.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.
