@@ -1700,14 +1700,28 @@ The current forward delivery order is:
     ship, item 71 owns a narrower operation diagnosis rather than repeating that candidate.
 
 71. **R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS — distinguish the remaining attention and router
-    work without repeating item 63. Active; design complete.**
+    work without repeating item 63. Complete; decision `ATTENTION_SUBDIAGNOSIS_REQUIRED`.**
     [`r8-olmoe-phase-a-operation-diagnosis.md`](r8-olmoe-phase-a-operation-diagnosis.md) is the
     authoritative ledger and closure matrix. Preserve item 70's fixed request and 871,174,011-ns
     floor. An opt-in helper partitions the already-built and allocated 37-row graph at its exact
     residual-output tensor, directly timing an attention/residual prefix and five-row router suffix
     while every normal provider call retains the shipped single graph compute. A material router
     result may select that exact seam; a material attention result requires a narrower diagnosis.
-    The item-63 live-width intervention remains rejected.
+    The clean-head run directly measured attention/residual values
+    `[2713928597,2556360587,2623167077,2631327698]` ns and router values
+    `[64548390,50832788,51515909,53844497]` ns. Their medians were 2,627,247,387 ns and
+    52,680,203 ns respectively; attention/residual represented 980,342 ppm of the split phase-A
+    median and cleared the floor. Every exact output, cache, isolation, lifetime, and accounting
+    boundary passed. The item-63 live-width intervention remains rejected, so item 72 owns a
+    narrower direct diagnosis of the attention prefix.
+
+72. **R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS — distinguish projection, attention-core, and
+    output/residual work. Not started.** Preserve item 71's fixed request, exact execution and
+    immutable floor. Partition the already-built attention prefix at table-owned tensor anchors so
+    that rows 0-13 (normalization and Q/K/V projections), rows 14-27 (KV concatenation and attention
+    core), and rows 28-31 (output projection and residual) are direct ordered graph-compute walls.
+    Keep normal provider execution unchanged, forbid the rejected live-width candidate, and select
+    only a class whose median reaches the existing 871,174,011-ns floor.
 
 ### Status (2026-08-28)
 

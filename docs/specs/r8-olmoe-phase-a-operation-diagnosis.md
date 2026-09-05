@@ -1,6 +1,6 @@
 # R8 OLMoE phase-A operation diagnosis
 
-Status: designed; implementation pending, 2026-09-05
+Status: implemented and measured; review pending, 2026-09-05
 
 Roadmap owner: item 71, `R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS`
 
@@ -110,3 +110,32 @@ classes are directly timed graph boundaries, and their sum—not a historical su
 diagnostic phase-A total. A material attention class explicitly requires further diagnosis, while
 only a material router class identifies a sufficiently narrow implementation seam. Neither result
 reopens item 63 or claims a speedup.
+
+## 6. Measured result
+
+Design checkpoint `853ec68` fixed the contract. Implementation checkpoint
+`710c09b87acc63b44afb3e4dd6b8bf96edc920e7` added the bounded borrowed-graph partition, the
+qualification-only execution path and counters, and the exact helper/runner. The clean-head fixed-
+host run completed in 102.291 seconds. Full-helper walls were
+`[15079864875,14624168667,14793956416,15010593041]` ns, with a 14,902,274,728-ns median.
+
+The directly timed phase-A totals were
+`[2778476987,2607193375,2674682986,2685172195]` ns, with a 2,679,927,590-ns median. The operation-
+class results were:
+
+| Class | Four direct values (ns) | Median (ns) |
+| --- | --- | ---: |
+| `ATTENTION_AND_RESIDUAL` | `[2713928597,2556360587,2623167077,2631327698]` | 2,627,247,387 |
+| `ROUTER` | `[64548390,50832788,51515909,53844497]` | 52,680,203 |
+
+`ATTENTION_AND_RESIDUAL` was 980,342 ppm of the split phase-A median and exceeded the immutable
+871,174,011-ns floor. `ROUTER` was well below the floor. The decision is therefore
+`ATTENTION_SUBDIAGNOSIS_REQUIRED`: the five-row router suffix is not selected for implementation,
+and item 72 must split the attention prefix more narrowly without reopening the rejected live-width
+candidate.
+
+All four full requests reproduced the exact 87-id chain and output hash, exact
+11,940/7,325/4,615/4,376 cache accounting, 17,656,872,960 fetched bytes, zero cache-to-claim copies,
+balanced native lifetimes, and twelve process-isolation boundaries. All four maximum-2 records
+reported zero operation clocks; every full record closed
+`attention_and_residual_ns + router_ns == routing_ns` exactly.

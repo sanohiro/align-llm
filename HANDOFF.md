@@ -10,28 +10,33 @@ Branch `agent/r8-olmoe-phase-a-operation-diagnosis`, based on pulled merged `mai
 The sibling Align checkout and `.align-revision` remain at merged Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
-Item 71's authoritative ledger and closure matrix are
-`docs/specs/r8-olmoe-phase-a-operation-diagnosis.md`. Item 70 selected the shipped fixed request's
-complete 37-row phase-A graph at a 4,620,020,794-ns median. Item 68's immutable
-17,423,480,208-ns full-request median keeps the 50,000-ppm materiality floor fixed at 871,174,011
-ns. Item 63's live-width phase-A intervention remains rejected.
+Item 71's authoritative ledger, closure matrix, and measured result are
+`docs/specs/r8-olmoe-phase-a-operation-diagnosis.md`. Design checkpoint `853ec68` fixed the
+contract; implementation checkpoint `710c09b87acc63b44afb3e4dd6b8bf96edc920e7` added the bounded
+borrowed-graph partition and opt-in diagnostic path while every normal provider entry retained its
+single phase-A graph compute.
 
-The planned opt-in qualification path will reuse the original allocated graph and tensor buffers,
-executing a prefix through row 31's residual `ffn_inp` and a suffix containing rows 32-36's FFN
-normalization, router score, softmax, and argsort. The two direct graph-compute walls are operation-
-class boundaries, not per-node timing. Every existing provider entry keeps the shipped single
-phase-A graph call. A material router result may select that five-row implementation seam; a
-material attention result selects a narrower diagnosis rather than another broad rewrite.
+The clean-head fixed-host run completed in 102.291 seconds. Attention/residual values
+`[2713928597,2556360587,2623167077,2631327698]` ns had a 2,627,247,387-ns median. Router values
+`[64548390,50832788,51515909,53844497]` ns had a 52,680,203-ns median. Attention/residual was
+980,342 ppm of the 2,679,927,590-ns split phase-A median and exceeded item 68's immutable
+871,174,011-ns floor. The decision is `ATTENTION_SUBDIAGNOSIS_REQUIRED`; item 72 will directly
+distinguish projection, attention-core, and output/residual slices. Item 63's live-width candidate
+remains rejected.
 
-**Next actions.** Commit the design checkpoint; implement the bounded graph partition and opt-in
-counter/helper path; run narrow owners and the clean-head four-repeat diagnosis; record the result;
-review, repair, preflight, publish, merge, and continue.
+Every fixed output/hash, 11,940/7,325/4,615/4,376 cache count, 17,656,872,960 fetched-byte total,
+zero cache-to-claim copy, lifetime, isolation, and operation-accounting boundary passed.
+
+**Next actions.** Commit the measured result; complete one comprehensive review, consolidate any
+valid repairs, rerun affected owners and exact-head preflight, publish, merge, and continue to item
+72.
 
 **Blocker.** None.
 
-**Latest durable verification.** Item 70's exact-head preflight and all three hosted checks passed
-before PR #192 merged. Item 71 has completed its author ledger-to-prose consistency pass; no
-implementation evidence exists yet.
+**Latest durable verification.** `make fmt`, `make layer-forward-smoke`, `make
+runtime-provider-smoke`, Python compilation, the focused self-test, `git diff --check`, and the
+clean-head four-repeat diagnosis above passed. The direct layer smoke covered prefix/suffix
+construction and malformed anchors; the runtime smoke passed its self-test and 61 CLI assertions.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.
