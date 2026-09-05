@@ -42,7 +42,7 @@ LABEL = "R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS"
 ARTIFACT_KIND = "R8_OLMOE_PLANE_UPLOAD_DIAGNOSIS"
 MERGED_SOURCE_BASE = "d9fd56cd5170a69a6a8a3ac2fc8f6fed76e7bdc3"
 # Set to the measured clean revision when preserving the completed result for publication.
-EVALUATED_HEAD: str | None = None
+EVALUATED_HEAD: str | None = "ae77649ee1019238f8db8b1d1e3695012ecfd2a2"
 HELPER_SOURCE = "src/olmoe_plane_upload_gate.align"
 HELPER_NAME = "olmoe_plane_upload_gate"
 REPETITIONS = 4

@@ -3,38 +3,38 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS (2026-09-05)
+## Active: R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS publication (2026-09-05)
 
 Branch `agent/r8-olmoe-plane-upload-diagnosis`, based on merged main `d9fd56c` (PR #197).
-Align remains pinned to `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger:
+Evaluated source `ae77649ee1019238f8db8b1d1e3695012ecfd2a2`; Align remains pinned to
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger and evidence:
 `docs/specs/r8-olmoe-plane-upload-diagnosis.md`.
 
-Item 75 control records select plane upload as the largest unexamined material parent at
-2,313,750,636 ns median. Add one opt-in midpoint around existing priming and checked native
-staging; exclude stage capacity construction, preserve unsplit execution and all bytes, and commit
-child clocks only with successful remaining steps. The immutable eligibility floor is 871,174,011 ns.
-Rejected K/V copy candidates remain removed; this diagnosis makes no speedup claim.
+The clean-head four-repeat diagnosis completed in 93.883 seconds with every output, cache,
+isolation, source/runtime identity, accounting and native lifetime boundary passing.
+`NATIVE_STAGING` won at 1,533,218,558 ns median / 745,249 ppm of the 2,057,323,354-ns upload
+parent, above the unchanged 871,174,011-ns floor: `MEASURED_UPLOAD_SEAM_ELIGIBLE`.
+Priming measured 524,104,795 ns, below floor. Instrumented full wall is not a speedup claim.
 
-**Next actions.** Run the exact clean-head fixed-host diagnosis from the complete owner-tested
-implementation checkpoint. Record its measured successor, complete one comprehensive review and exact-head
-preflight, publish raw evidence, merge, refresh main and continue the next eligible capability.
+**Next actions.** Complete one fresh comprehensive review, repair any valid findings, run exact-head
+preflight, publish/retrieve/hash-verify full raw evidence and merge. Refresh main and implement item
+77's native-staging candidate from a precommitted ledger and contemporary paired shipping gate.
+Do not carry rejected K/V attention copies or below-floor zero-priming reuse into the successor.
 
-**Blocker.** None. Item 76 is active; later implementation depends on its measured child selection.
-Other material remaining-decode leaves remain eligible if neither upload child clears the floor.
-The implementation and model-free verification are complete; fixed-host qualification is next.
+**Blocker.** None. Item 76 implementation and qualification are complete; review/publication is
+active. Item 77 is selected but not started. Other material R8 leaves remain eligible.
 
-**Latest durable verification.** Item 75's final owner self-test passed on merged `d9fd56c`, whose
-`4439d41bb4cb97b6f20a9add675312714fc41809` tree matches tested integration. The existing 23-leaf
-validator accepted the four item-75 control records and exact remaining-decode sums; no new model
-run was needed for current selection. Item 76 passed `gmake fmt`, pinned
+**Latest durable verification.** `gmake fmt`, pinned
 `./scripts/alignc check-per-unit src/olmoe_plane_upload_gate.align` (17 units),
 `scripts/test-olmoe-plane-upload` (all API/failure/schema/accounting/cleanup cases),
 `gmake runtime-provider-smoke` (sampler vectors plus 61 CLI assertions), Python compilation,
-full `scripts/run-olmoe-plane-upload-diagnosis --self-test` and `git diff --check`. The runner pins
-133 source dependencies plus its own tracked bytes and the managed runtime archive.
+full runner `--self-test` and `git diff --check` passed. The runner pins 133 source dependencies
+plus its own tracked bytes and the managed runtime archive. The clean-head real run recorded
+four exact short/full pairs and 12 zero process-isolation checks; its full raw JSON hash and all
+clock values are in the plan. The evaluated ancestor is now required for publication/replay.
 
-**Intentional uncommitted files.** None at the implementation checkpoint. Models, evidence and builds stay
-outside Git.
+**Intentional uncommitted files.** None after the evidence checkpoint. Models, evidence and builds
+stay outside Git.
 
 ## Merged checkpoint: R8-OLMOE-V-PREPARATION-BOUNDARY (PR #197, 2026-09-05)
 

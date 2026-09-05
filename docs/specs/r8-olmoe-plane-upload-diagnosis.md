@@ -1,6 +1,6 @@
 # R8 OLMoE plane-upload diagnosis
 
-Status: active; ledger committed before implementation, 2026-09-05.
+Status: complete; `MEASURED_UPLOAD_SEAM_ELIGIBLE / NATIVE_STAGING`, 2026-09-05.
 Roadmap owner: item 76, `R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS`.
 Prerequisite: item 75 merged as `d9fd56cd5170a69a6a8a3ac2fc8f6fed76e7bdc3` (PR #197).
 
@@ -133,7 +133,8 @@ The source/helper implementation and both focused owners are complete. `gmake fm
 `./scripts/alignc check-per-unit src/olmoe_plane_upload_gate.align` (17 units),
 `scripts/test-olmoe-plane-upload`, `gmake runtime-provider-smoke` (sampler vectors and 61 CLI
 assertions), Python compilation, full runner `--self-test` and `git diff --check` passed.
-The real fixed-host diagnosis is still pending; no measured child or speedup is claimed yet.
+The subsequent fixed-host evidence below closes the remaining measurement cells. This capability
+records attribution and makes no speedup claim.
 
 The matrix's API cases exercise actual staging across six failure positions and two late-compute
 failures, matching normal token/cache/graph/staged-byte evidence and balanced lifetimes. All eight
@@ -147,6 +148,42 @@ partition, short/full rules, inherited semantics, both floor decisions and ties,
 133 current source identities, the separate tracked runner/runtime identities, ordinary and linked
 Git ancestry, replacement/graft refusal, child groups and launch races, forced termination,
 cleanup failure suppression and the cleanup-inclusive ceiling. Every matrix cell has its declared
-implementation and named owner; real output/cache/identity/repetition evidence remains the single
-pending fixed-host qualification. Request 35's evidence now distinguishes the existing internal
+implementation and named owner; the following clean-head fixed-host qualification closes the
+real output/cache/identity/repetition cells. Request 35's evidence now distinguishes the existing internal
 runtime capacity symbol from the still-unavailable supported public API; no status or blocker changed.
+
+## Clean-head fixed-host evidence and successor
+
+Evaluated source: `ae77649ee1019238f8db8b1d1e3695012ecfd2a2`, descended from merged item 75
+`d9fd56cd5170a69a6a8a3ac2fc8f6fed76e7bdc3`. The no-argument runner completed four fresh short/full
+pairs in **93,883,481,250 ns**, including build, all requests, identity rechecks and cleanup.
+Every exact output/token chain, cache count/byte, short-prefix, remaining-step partition, native
+lifetime, release order and process-isolation boundary passed; all 12 pair isolation records were zero.
+The full raw JSON is 25,975 bytes with SHA-256
+`12ad135fd526d0bf8ffa0251c83d1a2c417c1ea3d24a8cd891829e29361eed1e`; publication must preserve
+and retrieve/hash-verify that exact record. The retained owner now requires the evaluated ancestor.
+
+| Clock | Four values (ns) | Median (ns) |
+| --- | --- | ---: |
+| Complete helper wall | `[14555812625,15005039583,15825230209,15883507375]` | 15,415,134,896 |
+| Plane upload parent | `[1964756337,1998354876,2116291832,2139612627]` | 2,057,323,354 |
+| `STAGING_PRIMING` | `[504327041,507249507,540960084,543719044]` | 524,104,795 |
+| `NATIVE_STAGING` | `[1460429296,1491105369,1575331748,1595893583]` | 1,533,218,558 |
+
+`NATIVE_STAGING` is largest at **745,249 ppm** of the upload parent median and exceeds the
+unchanged **871,174,011-ns** floor: **`MEASURED_UPLOAD_SEAM_ELIGIBLE`**. Priming is below floor,
+so its plausible zero-chunk reuse is not an eligible unchanged successor. Each sample partitions
+exactly; independently floored medians need not add exactly. The full-helper median is descriptive
+of this instrumented run and is not credited as an optimization against a historical run.
+
+Item 77 will own a separately precommitted exact native staging candidate with a contemporary
+paired complete-request gate. The existing call includes K block copying, strided V transfer,
+checks and Result dispatch; this parent result does not attribute all time to V or make the whole
+1,533,218,558 ns removable. Preserve uploaded bits/layouts, refusal precedence, graph execution,
+cache/lifetime behavior and full-request cost accounting. Remove any candidate unless its own
+complete-request gate passes. Other material leaves remain available; this diagnosis does not close R8.
+
+Bounded retrospective: the small helper fixture needed valid sampled UTF-8 output at fixed seed 5;
+a dedicated ASCII-output head owns that test concern without relaxing production decoding. The
+new runner independently freezes the actual runtime archive and owns its launched process groups,
+closing its own identity/cleanup promises without changing historical owners or adding a global gate.
