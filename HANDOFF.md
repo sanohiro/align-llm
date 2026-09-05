@@ -17,8 +17,8 @@ and candidate median 16,977,564,124 ns exceeded the historical ceiling. All prod
 candidate specification clarifications are restored; both native owner files are removed. The
 retained publication-only runner checks exact restoration/removal and control/evaluated ancestry.
 
-**Next actions.** Verify final terminal self-tests, including a linked worktree; complete one fresh
-comprehensive review, repair, exact-head preflight, publish full raw evidence and merge. Then
+**Next actions.** Complete one fresh comprehensive review, repair, exact-head preflight, publish
+full raw evidence and merge. Then
 refresh main and implement item 76's plane-upload subdiagnosis from a precommitted ledger. Reuse
 item 75 control records for the current leaf projection; do not repeat an unchanged model run or
 carry either rejected copy candidate into the next implementation.
@@ -31,7 +31,9 @@ shared-region identity, `gmake fmt`, native stub/real four-worker/real UBSan own
 attention-core mode/order/failure owner, `gmake layer-forward-smoke` (193.931 seconds),
 `gmake runtime-provider-smoke` (sampler vectors plus 61 CLI assertions), Python compilation and
 paired-runner self-test passed. The clean-head real comparison passed every semantic boundary
-and recorded the negative gate above. Final restoration/replay verification remains next.
+and recorded the negative gate above. Final self-tests passed in the ordinary checkout and a
+detached linked worktree, including source/specification restoration, removed-owner absence and
+both ancestry checks. Final raw-result validation and real replay refusal also passed.
 
 **Intentional uncommitted files.** None after the terminal checkpoint. Models, raw evidence and
 build products remain outside Git.

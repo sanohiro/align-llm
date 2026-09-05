@@ -225,8 +225,11 @@ merge integration must preserve its ancestry.
 The closure matrix has no deferred production promise. The evaluated implementation checkpoint
 owns native/Align, topology, modes and failure tests. The full comparison owns exact model output,
 cache/lifetime/accounting, source/external identity, isolation and cleanup evidence. The runner
-self-test owns record/source mutations, gate boundaries and terminal restoration/replay; final
-ordinary and linked-worktree verification and the review/preflight remain publication work.
+self-test owns record/source mutations, gate boundaries and terminal restoration/replay. It passed
+in both the ordinary checkout and a detached linked worktree, including production/specification
+restoration, removed-owner absence and both required ancestors. Final raw-result validation and
+real replay refusal passed. Comprehensive review and classifier-selected preflight remain the
+publication gates, recorded separately on the pull request.
 
 **Next selected boundary.** K and V copy candidates both failed their paired gates; neither is
 carried into a combined candidate. Item 70 still identified material plane-upload, expert-phase-B
