@@ -1,0 +1,810 @@
+#!/usr/bin/env python3
+"""Diagnose eight exact OLMoE expert phase-B operation sequences."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+import hashlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PREDECESSOR_PATH = ROOT / "scripts/run-olmoe-claim-io-diagnosis"
+PREDECESSOR_LOADER = SourceFileLoader(
+    "olmoe_claim_io_for_expert_phase_b_operation_diagnosis", str(PREDECESSOR_PATH)
+)
+PREDECESSOR_SPEC = importlib.util.spec_from_loader(
+    PREDECESSOR_LOADER.name, PREDECESSOR_LOADER
+)
+if PREDECESSOR_SPEC is None or PREDECESSOR_SPEC.loader is None:
+    raise RuntimeError("cannot load the claim-I/O owner")
+previous = importlib.util.module_from_spec(PREDECESSOR_SPEC)
+sys.modules[PREDECESSOR_LOADER.name] = previous
+PREDECESSOR_SPEC.loader.exec_module(previous)
+
+base = previous.base
+diagnosis = previous.diagnosis
+owner = previous.owner
+transfer = previous.transfer
+compute = previous.compute
+
+ARTIFACT_KIND = "R8_OLMOE_EXPERT_PHASE_B_OPERATION_DIAGNOSIS"
+MODEL_BYTES = 4_213_512_192
+MODEL_SHA256 = "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f"
+SERVER_BUILD = "build 10566, commit bb4caa754"
+BUDGET = 975_175_680
+SEED = 5
+FULL_TOKENS = 128
+TEMPERATURE_MICROS = 300_000
+FULL_OUTPUT_SHA256 = "aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52"
+REPETITIONS = 4
+CEILING_SECONDS = 8 * 60
+BASELINE_VALUES_NS = [
+    17_714_825_083, 16_684_315_166, 17_132_135_334, 21_189_618_042,
+]
+BASELINE_MEDIAN_NS = 17_423_480_208
+FLOOR_PPM = 50_000
+FLOOR_NS = 871_174_011
+
+EXPECTED_ALIGN_REVISION = previous.EXPECTED_ALIGN_REVISION
+EXPECTED_COMPILER_SHA256 = previous.EXPECTED_COMPILER_SHA256
+EXPECTED_PACK_SHA256 = previous.EXPECTED_PACK_SHA256
+EXPECTED_GEOMETRY_SHA256 = previous.EXPECTED_GEOMETRY_SHA256
+EXPECTED_SERVER_SHA256 = previous.EXPECTED_SERVER_SHA256
+EXPECTED_TASK_SHA256 = previous.EXPECTED_TASK_SHA256
+EXPECTED_PROMPT_SHA256 = previous.EXPECTED_PROMPT_SHA256
+EXPECTED_C_COMPILER_SHA256 = previous.EXPECTED_C_COMPILER_SHA256
+EXPECTED_C_COMPILER_VERSION_SHA256 = previous.EXPECTED_C_COMPILER_VERSION_SHA256
+EXPECTED_LINKER_SEARCH_SHA256 = previous.EXPECTED_LINKER_SEARCH_SHA256
+EXPECTED_GGML_LIBRARIES = previous.EXPECTED_GGML_LIBRARIES
+EXPECTED_GGML_HEADERS = previous.EXPECTED_GGML_HEADERS
+EXPECTED_BASELINE_HOST = previous.EXPECTED_BASELINE_HOST
+EXPECTED_BASELINE_HOST_SHA256 = previous.EXPECTED_BASELINE_HOST_SHA256
+
+
+def unique_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    result: list[Path] = []
+    for path in paths:
+        if path not in result:
+            result.append(path)
+    return tuple(result)
+
+
+SOURCE_PATHS = unique_paths((
+    PREDECESSOR_PATH,
+    *previous.SOURCE_PATHS,
+    ROOT / "scripts/run-olmoe-native-staging-boundary",
+    ROOT / "scripts/run-olmoe-post-staging-sampled-runtime-decision",
+    ROOT / "scripts/run-layer-forward-smoke",
+    ROOT / "scripts/test-olmoe-expert-phase-b-operations",
+    ROOT / "src/olmoe_expert_phase_b_operation_gate.align",
+    ROOT / "src/olmoe_remaining_decode_overhead_gate.align",
+    ROOT / "src/moe_decode_step.align",
+    ROOT / "src/moe_model_forward.align",
+    ROOT / "src/layer_olmoe.align",
+    ROOT / "src/ggml_ffi.align",
+    ROOT / "scripts/ggml_shim.c",
+    ROOT / "scripts/ggml_shim_stub.c",
+    ROOT / "scripts/build-ggml-shim",
+))
+EXPECTED_SOURCE_MANIFEST_SHA256 = "31b06d949e9cf74d45fad7a6788b341074700d675aab2cf2eae7e9301f53f877"
+
+HELPER_KEYS = previous.HELPER_KEYS | {"expert_phase_b_operations"}
+CLASS_ORDER = (
+    "INPUT_PREPARATION", "GATE_PROJECTION", "UP_PROJECTION", "SWIGLU",
+    "DOWN_PROJECTION", "EXPERT_WEIGHTING", "EXPERT_REDUCTION", "RESIDUAL",
+)
+CLASS_FIELDS = {
+    "INPUT_PREPARATION": "input_preparation_ns",
+    "GATE_PROJECTION": "gate_projection_ns",
+    "UP_PROJECTION": "up_projection_ns",
+    "SWIGLU": "swiglu_ns",
+    "DOWN_PROJECTION": "down_projection_ns",
+    "EXPERT_WEIGHTING": "expert_weighting_ns",
+    "EXPERT_REDUCTION": "expert_reduction_ns",
+    "RESIDUAL": "residual_ns",
+}
+OPERATION_KEYS = {"total_ns", *CLASS_FIELDS.values()}
+MAX_CLOCK_NS = (1 << 63) - 1
+TOP_KEYS = previous.TOP_KEYS | {"boundary"}
+BASELINE_KEYS = {
+    "full_helper_wall_values_ns", "full_helper_wall_median_ns", "floor_ppm", "floor_ns",
+}
+BOUNDARY_KEYS = {
+    "source_node_count", "n_expert_used", "selection", "normal_execution",
+    "input_preparation_first_row", "input_preparation_last_row",
+    "gate_projection_first_row", "gate_projection_last_row",
+    "up_projection_first_row", "up_projection_last_row",
+    "swiglu_first_row", "swiglu_last_row",
+    "down_projection_first_row", "down_projection_last_row",
+    "expert_weighting_first_row", "expert_weighting_last_row",
+    "expert_reduction_first_row", "expert_reduction_last_row",
+    "residual_first_row", "residual_last_row", "compute_order",
+}
+AGGREGATE_KEYS = {
+    "full_helper_wall_values_ns", "full_helper_wall_median_ns", "expert_values_ns",
+    "expert_median_ns", "class_values_ns", "class_medians_ns", "selected_class",
+    "selected_class_median_ns", "selected_class_share_ppm", "floor_ppm", "floor_ns",
+    "decision",
+}
+
+
+class ExpertOperationError(RuntimeError):
+    pass
+
+
+def source_manifest_sha256() -> str:
+    digest = hashlib.sha256()
+    for path in SOURCE_PATHS:
+        digest.update(path.relative_to(ROOT).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(base.file_sha256(path).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def validate_imported_contract() -> None:
+    actual = (
+        previous.MODEL_BYTES, previous.MODEL_SHA256, previous.SERVER_BUILD, previous.BUDGET,
+        previous.SEED, previous.FULL_TOKENS, previous.TEMPERATURE_MICROS,
+        previous.FULL_OUTPUT_SHA256, previous.REPETITIONS, previous.CEILING_SECONDS,
+        previous.EXPECTED_ALIGN_REVISION, previous.EXPECTED_COMPILER_SHA256,
+        previous.EXPECTED_PACK_SHA256, previous.EXPECTED_GEOMETRY_SHA256,
+        previous.EXPECTED_SERVER_SHA256, previous.EXPECTED_TASK_SHA256,
+        previous.EXPECTED_PROMPT_SHA256, previous.EXPECTED_C_COMPILER_SHA256,
+        previous.EXPECTED_C_COMPILER_VERSION_SHA256, previous.EXPECTED_LINKER_SEARCH_SHA256,
+        previous.EXPECTED_GGML_LIBRARIES, previous.EXPECTED_GGML_HEADERS,
+        previous.EXPECTED_BASELINE_HOST, previous.EXPECTED_BASELINE_HOST_SHA256,
+    )
+    expected = (
+        MODEL_BYTES, MODEL_SHA256, SERVER_BUILD, BUDGET, SEED, FULL_TOKENS,
+        TEMPERATURE_MICROS, FULL_OUTPUT_SHA256, REPETITIONS, CEILING_SECONDS,
+        EXPECTED_ALIGN_REVISION, EXPECTED_COMPILER_SHA256, EXPECTED_PACK_SHA256,
+        EXPECTED_GEOMETRY_SHA256, EXPECTED_SERVER_SHA256, EXPECTED_TASK_SHA256,
+        EXPECTED_PROMPT_SHA256, EXPECTED_C_COMPILER_SHA256,
+        EXPECTED_C_COMPILER_VERSION_SHA256, EXPECTED_LINKER_SEARCH_SHA256,
+        EXPECTED_GGML_LIBRARIES, EXPECTED_GGML_HEADERS, EXPECTED_BASELINE_HOST,
+        EXPECTED_BASELINE_HOST_SHA256,
+    )
+    if actual != expected:
+        raise ExpertOperationError("imported workload or environment drifted")
+    if source_manifest_sha256() != EXPECTED_SOURCE_MANIFEST_SHA256:
+        raise ExpertOperationError("item 79 source manifest drifted")
+    if diagnosis.integer_median(BASELINE_VALUES_NS) != BASELINE_MEDIAN_NS:
+        raise ExpertOperationError("item 68 baseline median drifted")
+    expected_floor = (BASELINE_MEDIAN_NS * FLOOR_PPM + 999_999) // 1_000_000
+    if expected_floor != FLOOR_NS:
+        raise ExpertOperationError("item 79 materiality floor drifted")
+
+
+def inherited_record(record: dict[str, Any]) -> dict[str, Any]:
+    inherited = dict(record)
+    inherited.pop("expert_phase_b_operations")
+    return inherited
+
+
+def inherited_sample(sample: dict[str, Any]) -> dict[str, Any]:
+    inherited = dict(sample)
+    inherited["conditioning"] = inherited_record(sample["conditioning"])
+    inherited["full"] = inherited_record(sample["full"])
+    return inherited
+
+
+def validate_operation_detail(detail: Any, parent_ns: int, maximum_tokens: int) -> None:
+    if not isinstance(detail, dict):
+        raise ExpertOperationError("expert phase-B operation detail was not an object")
+    diagnosis.require_exact_keys(detail, OPERATION_KEYS, "expert phase-B operations")
+    if any(not diagnosis.is_int(detail[name]) or not 0 <= detail[name] <= MAX_CLOCK_NS
+           for name in OPERATION_KEYS):
+        raise ExpertOperationError("expert phase-B operation timing was invalid")
+    children = sum(detail[CLASS_FIELDS[name]] for name in CLASS_ORDER)
+    if children != detail["total_ns"]:
+        raise ExpertOperationError("expert phase-B slices did not partition their total")
+    if detail["total_ns"] != parent_ns:
+        raise ExpertOperationError("expert phase-B total did not match its compute parent")
+    if maximum_tokens == 2:
+        if any(detail.values()):
+            raise ExpertOperationError("conditioning entered expert phase-B operation detail")
+    elif any(detail[name] <= 0 for name in OPERATION_KEYS):
+        raise ExpertOperationError("full expert phase-B operation clock was not positive")
+
+
+def validate_helper_record(record: dict[str, Any], maximum_tokens: int) -> None:
+    diagnosis.require_exact_keys(record, HELPER_KEYS, "helper record")
+    previous.validate_helper_record(inherited_record(record), maximum_tokens)
+    validate_operation_detail(
+        record["expert_phase_b_operations"], record["decode_compute"]["expert_ns"],
+        maximum_tokens,
+    )
+
+
+def validate_sample(sample: dict[str, Any], expected_index: int) -> None:
+    previous.validate_sample(inherited_sample(sample), expected_index)
+    validate_helper_record(sample["conditioning"], 2)
+    validate_helper_record(sample["full"], FULL_TOKENS)
+
+
+def validate_repeatability(samples: list[dict[str, Any]]) -> None:
+    previous.validate_repeatability([inherited_sample(sample) for sample in samples])
+
+
+def measure_request(
+    helper: Path, model: Path, pack: Path, geometry: Path, maximum_tokens: int,
+    runtime_env: dict[str, str], deadline: float,
+) -> tuple[dict[str, Any], int]:
+    started_ns = time.monotonic_ns()
+    completed = owner.run_process(
+        [str(helper), str(model), str(pack), str(geometry), diagnosis.PROMPT_TEXT,
+         str(maximum_tokens), str(SEED)],
+        deadline=deadline, maximum=240, env=runtime_env,
+    )
+    helper_wall_ns = time.monotonic_ns() - started_ns
+    try:
+        record = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ExpertOperationError("helper did not emit one JSON record") from error
+    if not isinstance(record, dict):
+        raise ExpertOperationError("helper record was not an object")
+    validate_helper_record(record, maximum_tokens)
+    if helper_wall_ns < record["phases"]["elapsed_ns"]:
+        raise ExpertOperationError("helper wall interval did not contain helper elapsed")
+    return record, helper_wall_ns
+
+
+def measure_sample(
+    index: int, built: dict[str, Any], server: Path, model: Path, pack: Path,
+    geometry: Path, clean_env: dict[str, str], deadline: float,
+) -> dict[str, Any]:
+    owner.require_no_matching_process(server, model, deadline, clean_env)
+    conditioning, _ = measure_request(
+        built["helper"], model, pack, geometry, 2, built["runtime_env"], deadline,
+    )
+    owner.require_no_matching_process(server, model, deadline, clean_env)
+    try:
+        full, full_wall = measure_request(
+            built["helper"], model, pack, geometry, FULL_TOKENS,
+            built["runtime_env"], deadline,
+        )
+    finally:
+        owner.require_no_matching_process(server, model, deadline, clean_env)
+    sample = {
+        "index": index, "conditioning": conditioning, "full": full,
+        "full_helper_wall_ns": full_wall,
+        "isolation": {"matching_before": 0, "matching_between": 0, "matching_after": 0},
+    }
+    validate_sample(sample, index)
+    return sample
+
+
+def select_class(class_medians: dict[str, int]) -> tuple[str, str]:
+    selected = CLASS_ORDER[0]
+    for name in CLASS_ORDER[1:]:
+        if class_medians[name] > class_medians[selected]:
+            selected = name
+    if class_medians[selected] < FLOOR_NS:
+        decision = "NO_MATERIAL_EXPERT_OPERATION"
+    elif selected == "INPUT_PREPARATION":
+        decision = "EXPERT_INPUT_SUBDIAGNOSIS_REQUIRED"
+    elif selected == "EXPERT_REDUCTION":
+        decision = "EXPERT_REDUCTION_SUBDIAGNOSIS_REQUIRED"
+    else:
+        decision = "MEASURED_EXPERT_OPERATION_ELIGIBLE"
+    return selected, decision
+
+
+def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(samples) != REPETITIONS:
+        raise ExpertOperationError("aggregate requires four samples")
+    for index, sample in enumerate(samples, 1):
+        validate_sample(sample, index)
+    validate_repeatability(samples)
+    walls = [sample["full_helper_wall_ns"] for sample in samples]
+    expert = [sample["full"]["expert_phase_b_operations"]["total_ns"] for sample in samples]
+    class_values = {
+        name: [sample["full"]["expert_phase_b_operations"][field] for sample in samples]
+        for name, field in CLASS_FIELDS.items()
+    }
+    class_medians = {
+        name: diagnosis.integer_median(class_values[name]) for name in CLASS_ORDER
+    }
+    selected, decision = select_class(class_medians)
+    expert_median = diagnosis.integer_median(expert)
+    if expert_median <= 0 or class_medians[selected] > expert_median:
+        raise ExpertOperationError("aggregate expert phase-B bounds drifted")
+    return {
+        "full_helper_wall_values_ns": walls,
+        "full_helper_wall_median_ns": diagnosis.integer_median(walls),
+        "expert_values_ns": expert, "expert_median_ns": expert_median,
+        "class_values_ns": class_values, "class_medians_ns": class_medians,
+        "selected_class": selected, "selected_class_median_ns": class_medians[selected],
+        "selected_class_share_ppm": class_medians[selected] * 1_000_000 // expert_median,
+        "floor_ppm": FLOOR_PPM, "floor_ns": FLOOR_NS, "decision": decision,
+    }
+
+
+def inherited_result(result: dict[str, Any]) -> dict[str, Any]:
+    samples = [inherited_sample(sample) for sample in result["samples"]]
+    return {
+        "schema_version": 1, "artifact_kind": "R8_OLMOE_CLAIM_IO_DIAGNOSIS",
+        "status": "COMPLETE", "model": result["model"],
+        "baseline": {
+            "full_helper_wall_values_ns": previous.BASELINE_FULL_VALUES_NS,
+            "full_helper_wall_median_ns": previous.BASELINE_FULL_MEDIAN_NS,
+            "claim_io_median_ns": previous.BASELINE_CLAIM_IO_MEDIAN_NS,
+            "floor_ppm": previous.FLOOR_PPM, "floor_ns": previous.FLOOR_NS,
+        },
+        "candidate": result["candidate"], "task": result["task"],
+        "environment": result["environment"], "samples": samples,
+        "aggregate": previous.aggregate(samples), "elapsed_ns": result["elapsed_ns"],
+    }
+
+
+def boundary_record() -> dict[str, Any]:
+    return {
+        "source_node_count": 24, "n_expert_used": 8,
+        "selection": "exact_checked_node_table_membership", "normal_execution": "UNSPLIT",
+        "input_preparation_first_row": 0, "input_preparation_last_row": 2,
+        "gate_projection_first_row": 3, "gate_projection_last_row": 3,
+        "up_projection_first_row": 4, "up_projection_last_row": 4,
+        "swiglu_first_row": 5, "swiglu_last_row": 5,
+        "down_projection_first_row": 6, "down_projection_last_row": 6,
+        "expert_weighting_first_row": 7, "expert_weighting_last_row": 7,
+        "expert_reduction_first_row": 8, "expert_reduction_last_row": 22,
+        "residual_first_row": 23, "residual_last_row": 23,
+        "compute_order": list(CLASS_ORDER),
+    }
+
+
+def same_typed_json(actual: Any, expected: Any) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            same_typed_json(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            same_typed_json(left, right) for left, right in zip(actual, expected, strict=True)
+        )
+    return actual == expected
+
+
+def validate_result(result: dict[str, Any]) -> None:
+    diagnosis.require_exact_keys(result, TOP_KEYS, "result")
+    if (not diagnosis.is_int(result["schema_version"]) or result["schema_version"] != 1
+            or result["artifact_kind"] != ARTIFACT_KIND or result["status"] != "COMPLETE"):
+        raise ExpertOperationError("result identity drifted")
+    previous.validate_result(inherited_result(result))
+    expected_baseline = {
+        "full_helper_wall_values_ns": BASELINE_VALUES_NS,
+        "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+        "floor_ppm": FLOOR_PPM, "floor_ns": FLOOR_NS,
+    }
+    diagnosis.require_exact_keys(result["baseline"], BASELINE_KEYS, "result baseline")
+    if not same_typed_json(result["baseline"], expected_baseline):
+        raise ExpertOperationError("result baseline drifted")
+    diagnosis.require_exact_keys(result["boundary"], BOUNDARY_KEYS, "result boundary")
+    if not same_typed_json(result["boundary"], boundary_record()):
+        raise ExpertOperationError("expert phase-B boundary drifted")
+    diagnosis.require_exact_keys(result["aggregate"], AGGREGATE_KEYS, "result aggregate")
+    if not same_typed_json(result["aggregate"], aggregate(result["samples"])):
+        raise ExpertOperationError("result aggregate drifted")
+    if not diagnosis.is_int(result["elapsed_ns"]) or result["elapsed_ns"] <= 0:
+        raise ExpertOperationError("result elapsed interval was invalid")
+
+
+def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
+    rows = (
+        ("ALIGN_LLM_OLMOE_MODEL", base.configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", base.configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", base.configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", base.configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", base.configured_directory("ALIGN_LLM_GGML_LIB")),
+        ("ALIGN_LLM_LLAMA_SERVER", base.configured_file(
+            "ALIGN_LLM_LLAMA_SERVER", executable=True)),
+    )
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS: N/A ({missing} unset)")
+        return None
+    return tuple(path.resolve() for _, path in rows)  # type: ignore[return-value]
+
+
+def synthetic_samples() -> list[dict[str, Any]]:
+    samples = previous.synthetic_samples({
+        "FILE_PREAD": 20, "BLOCK_TO_CLAIM_COPY": 20, "CLAIM_TO_CACHE_COPY": 20,
+        "CACHE_TO_CLAIM_COPY": 20, "OTHER_CLAIM_IO": 20,
+    })
+    for sample in samples:
+        sample["conditioning"]["expert_phase_b_operations"] = dict.fromkeys(OPERATION_KEYS, 0)
+        total = sample["full"]["decode_compute"]["expert_ns"]
+        sample["full"]["expert_phase_b_operations"] = {
+            "total_ns": total, "input_preparation_ns": total - 7,
+            "gate_projection_ns": 1, "up_projection_ns": 1, "swiglu_ns": 1,
+            "down_projection_ns": 1, "expert_weighting_ns": 1,
+            "expert_reduction_ns": 1, "residual_ns": 1,
+        }
+    return samples
+
+
+def synthetic_result(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    inherited = previous.synthetic_result([inherited_sample(sample) for sample in samples])
+    return {
+        "schema_version": 1, "artifact_kind": ARTIFACT_KIND, "status": "COMPLETE",
+        "model": inherited["model"],
+        "baseline": {
+            "full_helper_wall_values_ns": BASELINE_VALUES_NS,
+            "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+            "floor_ppm": FLOOR_PPM, "floor_ns": FLOOR_NS,
+        },
+        "candidate": inherited["candidate"], "boundary": boundary_record(),
+        "task": inherited["task"], "environment": inherited["environment"],
+        "samples": samples, "aggregate": aggregate(samples), "elapsed_ns": 1,
+    }
+
+
+def expect_error(action: Any, message: str) -> None:
+    try:
+        action()
+    except Exception:
+        return
+    raise ExpertOperationError(message)
+
+
+def complete_result_after_cleanup(result: dict[str, Any], started_ns: int) -> dict[str, Any]:
+    completed = dict(result)
+    completed["elapsed_ns"] = 1
+    validate_result(completed)
+    elapsed_ns = time.monotonic_ns() - started_ns
+    if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+        raise ExpertOperationError(
+            f"complete diagnosis exceeded its 8-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+        )
+    if elapsed_ns <= 0:
+        raise ExpertOperationError("complete diagnosis elapsed interval was invalid")
+    completed["elapsed_ns"] = elapsed_ns
+    return completed
+
+
+def self_test() -> int:
+    validate_imported_contract()
+    samples = synthetic_samples()
+    result = synthetic_result(samples)
+    validate_result(result)
+    decisions = {
+        "INPUT_PREPARATION": "EXPERT_INPUT_SUBDIAGNOSIS_REQUIRED",
+        "EXPERT_REDUCTION": "EXPERT_REDUCTION_SUBDIAGNOSIS_REQUIRED",
+    }
+    for name in CLASS_ORDER:
+        medians = {candidate: 1 for candidate in CLASS_ORDER}
+        medians[name] = FLOOR_NS
+        expected = decisions.get(name, "MEASURED_EXPERT_OPERATION_ELIGIBLE")
+        if select_class(medians) != (name, expected):
+            raise ExpertOperationError(f"at-floor class did not select {name}")
+    tied = dict.fromkeys(CLASS_ORDER, FLOOR_NS)
+    if select_class(tied) != (
+        "INPUT_PREPARATION", "EXPERT_INPUT_SUBDIAGNOSIS_REQUIRED"
+    ):
+        raise ExpertOperationError("declared-order tie break drifted")
+    below = dict.fromkeys(CLASS_ORDER, FLOOR_NS - 1)
+    if select_class(below) != (
+        "INPUT_PREPARATION", "NO_MATERIAL_EXPERT_OPERATION"
+    ):
+        raise ExpertOperationError("below-floor class selected a successor")
+    for first, second in zip(CLASS_ORDER, CLASS_ORDER[1:]):
+        adjacent = dict.fromkeys(CLASS_ORDER, 1)
+        adjacent[first] = adjacent[second] = FLOOR_NS
+        if select_class(adjacent)[0] != first:
+            raise ExpertOperationError("adjacent class tie break drifted")
+    varied = deepcopy(samples)
+    for sample, value in zip(varied, (6, 3, 5, 4), strict=True):
+        detail = sample["full"]["expert_phase_b_operations"]
+        detail["input_preparation_ns"] = value
+        detail["gate_projection_ns"] = detail["total_ns"] - value - 6
+    if aggregate(varied)["class_medians_ns"]["INPUT_PREPARATION"] != 4:
+        raise ExpertOperationError("four-sample integer median drifted")
+    expect_error(lambda: aggregate(samples[:3]), "incomplete repetition set was accepted")
+
+    bounded = {field: 1 for field in OPERATION_KEYS}
+    bounded["total_ns"] = MAX_CLOCK_NS
+    bounded["input_preparation_ns"] = MAX_CLOCK_NS - 7
+    validate_operation_detail(bounded, MAX_CLOCK_NS, FULL_TOKENS)
+    validate_operation_detail(dict.fromkeys(OPERATION_KEYS, 0), 0, 2)
+    for field in OPERATION_KEYS:
+        for invalid in (True, -1, MAX_CLOCK_NS + 1, 1.0, "1"):
+            malformed = deepcopy(samples)
+            malformed[0]["full"]["expert_phase_b_operations"][field] = invalid
+            expect_error(lambda: aggregate(malformed), f"invalid {field} clock was accepted")
+    for change in (-1, 1):
+        malformed = deepcopy(samples)
+        malformed[0]["full"]["expert_phase_b_operations"]["input_preparation_ns"] += change
+        expect_error(lambda: aggregate(malformed), "operation gap or overlap was accepted")
+    malformed = deepcopy(samples)
+    detail = malformed[0]["full"]["expert_phase_b_operations"]
+    detail["input_preparation_ns"] += 1
+    detail["total_ns"] += 1
+    expect_error(lambda: aggregate(malformed), "coherent detail with wrong parent was accepted")
+    malformed = deepcopy(samples)
+    detail = malformed[0]["full"]["expert_phase_b_operations"]
+    detail["residual_ns"] = 0
+    detail["input_preparation_ns"] += 1
+    expect_error(lambda: aggregate(malformed), "zero full operation clock was accepted")
+    malformed = deepcopy(samples)
+    detail = malformed[0]["conditioning"]["expert_phase_b_operations"]
+    detail["total_ns"] = detail["input_preparation_ns"] = 1
+    expect_error(lambda: aggregate(malformed), "conditioning operation clock was accepted")
+    for field in OPERATION_KEYS:
+        malformed = deepcopy(samples)
+        del malformed[0]["full"]["expert_phase_b_operations"][field]
+        expect_error(lambda: aggregate(malformed), "missing operation key was accepted")
+    malformed = deepcopy(samples)
+    malformed[0]["full"]["expert_phase_b_operations"]["extra_ns"] = 1
+    expect_error(lambda: aggregate(malformed), "extra operation key was accepted")
+    malformed = deepcopy(samples)
+    malformed[0]["full"]["expert_phase_b_operations"] = []
+    expect_error(lambda: aggregate(malformed), "non-object operation detail was accepted")
+
+    for field, value in (("schema_version", True), ("schema_version", 2),
+                         ("artifact_kind", "BAD"), ("status", "PARTIAL")):
+        malformed_result = deepcopy(result)
+        malformed_result[field] = value
+        expect_error(lambda: validate_result(malformed_result), "wrong result identity was accepted")
+    for section in (None, "baseline", "boundary", "aggregate"):
+        for extra in (False, True):
+            malformed_result = deepcopy(result)
+            target = malformed_result if section is None else malformed_result[section]
+            if extra:
+                target["unexpected"] = 0
+            else:
+                del target[next(iter(target))]
+            expect_error(lambda: validate_result(malformed_result), "wrong result keys were accepted")
+    for field in BOUNDARY_KEYS:
+        malformed_result = deepcopy(result)
+        value = malformed_result["boundary"][field]
+        malformed_result["boundary"][field] = value + 1 if isinstance(value, int) else None
+        expect_error(lambda: validate_result(malformed_result), "drifted boundary was accepted")
+    malformed_result = deepcopy(result)
+    malformed_result["aggregate"]["expert_median_ns"] += 1
+    expect_error(lambda: validate_result(malformed_result), "drifted aggregate was accepted")
+    malformed_result = deepcopy(result)
+    malformed_result["aggregate"]["class_medians_ns"]["SWIGLU"] = True
+    expect_error(lambda: validate_result(malformed_result), "boolean aggregate was accepted")
+
+    inherited_mutations = (
+        ("full", "token_ids", [0]), ("full", "output_sha256", "0" * 64),
+        ("engine", "expert_cache_requests", 0), ("lifetime", "contexts_freed", 0),
+        ("decode_compute", "routing_ns", 0), ("claim_io", "file_pread_ns", 0),
+        ("isolation", "matching_between", 1),
+    )
+    for section, field, value in inherited_mutations:
+        malformed = deepcopy(samples)
+        if section == "full":
+            target = malformed[0]["full"]
+        elif section == "isolation":
+            target = malformed[0]["isolation"]
+        else:
+            target = malformed[0]["full"][section]
+        target[field] = value
+        expect_error(lambda: aggregate(malformed), f"inherited {section} drift was accepted")
+    malformed_result = deepcopy(result)
+    malformed_result["candidate"]["align_revision"] = "0" * 40
+    expect_error(lambda: validate_result(malformed_result), "candidate drift was accepted")
+
+    actual_file_sha256 = base.file_sha256
+    for changed_source in SOURCE_PATHS:
+        def changed_hash(path: Path) -> str:
+            return "0" * 64 if path == changed_source else actual_file_sha256(path)
+
+        with mock.patch.object(base, "file_sha256", side_effect=changed_hash):
+            expect_error(validate_imported_contract, "changed source was accepted")
+    with mock.patch.object(previous, "FULL_TOKENS", FULL_TOKENS + 1):
+        expect_error(validate_imported_contract, "changed imported workload was accepted")
+
+    module = sys.modules[__name__]
+    ceiling_ns = CEILING_SECONDS * 1_000_000_000
+    with mock.patch.object(time, "monotonic_ns", return_value=ceiling_ns):
+        completed = complete_result_after_cleanup(result, 0)
+        if completed["elapsed_ns"] != ceiling_ns:
+            raise ExpertOperationError("exact ceiling was not included")
+    with mock.patch.object(time, "monotonic_ns", return_value=ceiling_ns + 1):
+        expect_error(lambda: complete_result_after_cleanup(result, 0), "late cleanup was accepted")
+    final_clock = {"now": ceiling_ns - 1}
+    actual_validate_result = validate_result
+
+    def delayed_validation(document: dict[str, Any]) -> None:
+        actual_validate_result(document)
+        final_clock["now"] = ceiling_ns + 1
+
+    with mock.patch.object(time, "monotonic_ns", side_effect=lambda: final_clock["now"]), \
+            mock.patch.object(module, "validate_result", side_effect=delayed_validation):
+        expect_error(
+            lambda: complete_result_after_cleanup(result, 0),
+            "final validation overrun was accepted",
+        )
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as printed:
+        if prerequisites() is not None:
+            raise ExpertOperationError("missing prerequisites did not produce N/A")
+    printed.assert_called_once_with(
+        "R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS: N/A "
+        "(ALIGN_LLM_OLMOE_MODEL unset)"
+    )
+    print("R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS self-test: PASS")
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise ExpertOperationError("expert phase-B operation diagnosis accepts no arguments")
+    required = prerequisites()
+    if required is None:
+        return 0
+    model, pack, geometry, include, library, server = required
+    started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+    validate_imported_contract()
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-expert-phase-b-operation-") as raw:
+        work = Path(raw)
+        clean_env = transfer.phase.decision.decision_environment()
+        linker_search = transfer.phase.decision.validate_linker_search(clean_env)
+        if linker_search:
+            clean_env["LIBRARY_PATH"] = linker_search
+        host_environment = transfer.qualification_host(clean_env, deadline)
+        status = owner.run_process(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline, maximum=30, env=clean_env,
+        )
+        if status.stdout:
+            raise ExpertOperationError("real diagnosis requires a clean worktree")
+        align_llm_head = owner.run_process(
+            ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+        ).stdout.decode("ascii").strip()
+        align_revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        owner.require_no_matching_process(server, model, deadline, clean_env)
+        if model.stat().st_size != MODEL_BYTES or base.file_sha256(model) != MODEL_SHA256:
+            raise ExpertOperationError("configured OLMoE GGUF does not have pinned identity")
+        pack_sha256 = base.file_sha256(pack)
+        geometry_sha256 = base.file_sha256(geometry)
+        server_sha256 = base.file_sha256(server)
+        task_sha256 = base.file_sha256(diagnosis.TASK)
+        prompt_sha256 = base.bytes_sha256(diagnosis.PROMPT_TEXT.encode("utf-8"))
+        ggml_libraries = base.library_identities(library)
+        ggml_headers = compute.predecessor.ggml_header_identities(include)
+        if ggml_headers != EXPECTED_GGML_HEADERS:
+            raise ExpertOperationError("configured ggml header identity drifted")
+        linker_search_sha256 = (
+            None if not linker_search else base.bytes_sha256(linker_search.encode("utf-8"))
+        )
+        diagnosis.validate_external_identity(
+            align_revision=align_revision, pack_sha256=pack_sha256,
+            geometry_sha256=geometry_sha256, server_sha256=server_sha256,
+            task_sha256=task_sha256, prompt_sha256=prompt_sha256,
+            ggml_libraries=ggml_libraries, linker_search_sha256=linker_search_sha256,
+        )
+        version = owner.run_process(
+            [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env,
+        )
+        if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
+            raise ExpertOperationError("llama-server build identity drifted")
+
+        with compute.other.predecessor.built_helper_for(
+            work, include, library, clean_env, deadline,
+            "src/olmoe_expert_phase_b_operation_gate.align",
+            "olmoe_expert_phase_b_operation_gate", "olmoe-expert-phase-b-operation-gate",
+        ) as built:
+            diagnosis.validate_toolchain_identity(built)
+            samples = []
+            for index in range(1, REPETITIONS + 1):
+                samples.append(
+                    measure_sample(index, built, server, model, pack, geometry, clean_env, deadline)
+                )
+                validate_repeatability(samples)
+
+            final_status = owner.run_process(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                deadline=deadline, maximum=30, env=clean_env,
+            )
+            final_head = owner.run_process(
+                ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+            ).stdout.decode("ascii").strip()
+            if final_status.stdout or final_head != align_llm_head:
+                raise ExpertOperationError("align-llm source changed during diagnosis")
+            if source_manifest_sha256() != EXPECTED_SOURCE_MANIFEST_SHA256:
+                raise ExpertOperationError("diagnosis sources changed during measurement")
+            owner.verify_identities((
+                ("model", model, MODEL_SHA256), ("pack", pack, pack_sha256),
+                ("geometry", geometry, geometry_sha256), ("server", server, server_sha256),
+                ("task", diagnosis.TASK, task_sha256),
+                ("compiler", built["compiler"], built["compiler_sha256"]),
+                ("C compiler", built["c_compiler"], built["c_compiler_sha256"]),
+                ("shim", built["shim"], built["shim_sha256"]),
+                ("helper", built["helper"], built["helper_sha256"]),
+            ))
+            if base.library_identities(library) != ggml_libraries:
+                raise ExpertOperationError("ggml libraries changed during diagnosis")
+            if compute.predecessor.ggml_header_identities(include) != ggml_headers:
+                raise ExpertOperationError("ggml headers changed during diagnosis")
+            owner.require_no_matching_process(server, model, deadline, clean_env)
+
+            task_document = json.loads(diagnosis.TASK.read_text(encoding="utf-8"))
+            result = {
+                "schema_version": 1, "artifact_kind": ARTIFACT_KIND, "status": "COMPLETE",
+                "model": {"bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe"},
+                "baseline": {
+                    "full_helper_wall_values_ns": BASELINE_VALUES_NS,
+                    "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+                    "floor_ppm": FLOOR_PPM, "floor_ns": FLOOR_NS,
+                },
+                "candidate": {
+                    "provider": "align-runtime", "align_llm_head": align_llm_head,
+                    "align_revision": align_revision, "compiler_sha256": built["compiler_sha256"],
+                    "helper_sha256": built["helper_sha256"], "shim_sha256": built["shim_sha256"],
+                    "ggml_libraries": ggml_libraries, "ggml_headers": ggml_headers,
+                    "pack_sha256": pack_sha256, "geometry_sha256": geometry_sha256,
+                    "cache_budget_bytes": BUDGET,
+                },
+                "boundary": boundary_record(),
+                "task": {
+                    "task_id": task_document["id"], "task_sha256": task_sha256,
+                    "prompt_sha256": prompt_sha256, "maximum_tokens": FULL_TOKENS,
+                    "temperature_micros": TEMPERATURE_MICROS, "seed": SEED,
+                    "full_output_sha256": FULL_OUTPUT_SHA256,
+                },
+                "environment": {
+                    **host_environment, "c_compiler_sha256": built["c_compiler_sha256"],
+                    "c_compiler_version_sha256": built["c_compiler_version_sha256"],
+                    "linker_search_sha256": linker_search_sha256,
+                },
+                "samples": samples, "aggregate": aggregate(samples),
+            }
+    result = complete_result_after_cleanup(result, started_ns)
+    detail = result["aggregate"]
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    print(
+        "R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS: COMPLETE "
+        f"decision={detail['decision']} selected={detail['selected_class']} "
+        f"median={detail['selected_class_median_ns'] / 1e9:.3f}s "
+        f"expert={detail['expert_median_ns'] / 1e9:.3f}s "
+        f"elapsed={result['elapsed_ns'] / 1e9:.2f}s",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    owner.stop_owned_processes()
+    raise SystemExit(128 + signal_number)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (
+        ExpertOperationError, previous.ClaimIoError, compute.ComputeError,
+        compute.predecessor.BoundaryError, compute.other.OtherError,
+        compute.other.predecessor.ResidualError, transfer.TransferError,
+        diagnosis.DiagnosisError, transfer.phase.DiagnosisError, owner.DiagnosisError,
+        transfer.phase.decision.DecisionError, base.DecisionError, OSError, ValueError,
+        KeyError, TypeError, json.JSONDecodeError, subprocess.TimeoutExpired,
+    ) as error:
+        owner.stop_owned_processes()
+        print(
+            f"R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS: FAIL {error}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)

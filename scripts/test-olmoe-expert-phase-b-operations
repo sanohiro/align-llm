@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""Exercise item 79's real entry with a tiny model and an instrumented stub."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import subprocess
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+FIELDS = (
+    "input_preparation", "gate_projection", "up_projection", "swiglu",
+    "down_projection", "weighting", "reduction", "residual",
+)
+# The tiny fixture uses top-2, so its reduction is rows 8-10 and residual is row 11. The production
+# qualification's top-8 graph uses the same dynamic formula and ends at row 23.
+ROWS = (0, 3, 4, 5, 6, 7, 8, 11)
+
+ENTRY = '''module expert_phase_b_smoke
+import alignpack
+import gguf
+import moe_decode_step
+import std.fs
+import core.json
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  snapshot := gguf.open_snapshot(args[1])?
+  identity := alignpack.verify_source_identity_snapshot(snapshot, args[2])?
+  geometry := fs.read_file(args[3])?
+  eog: i64 := json.decode(args[4])?
+  maximum: i64 := json.decode(args[5])?
+  mut prompt_builder: array_builder<i64> := array_builder()
+  prompt_builder.push(3)
+  prompt_builder.push(17)
+  prompt_builder.push(16)
+  prompt := prompt_builder.build()
+  mut eog_builder: array_builder<i64> := array_builder()
+  eog_builder.push(eog)
+  eogs := eog_builder.build()
+  generated := if args[6] == "expert" {
+    moe_decode_step.generate_resident_sampled_expert_phase_b_operation_diagnosis(
+      args[2], args[3], geometry, identity, prompt, eogs, maximum, 65536, 5)
+  } else {
+    moe_decode_step.generate_resident_sampled(
+      args[2], args[3], geometry, identity, prompt, eogs, maximum, 65536, 5)
+  }
+  print(generated.outcome.code)
+  print(generated.outcome.detail)
+  print(generated.token_ids_json)
+  print(generated.outcome.decode_steps_completed)
+  print(generated.outcome.contexts_created - generated.outcome.contexts_freed)
+  print(generated.outcome.ggml_buffers_created - generated.outcome.ggml_buffers_freed)
+  print(generated.outcome.backends_created - generated.outcome.backends_freed)
+  print(generated.outcome.gallocrs_created - generated.outcome.gallocrs_freed)
+  print(generated.outcome.graph_balance_failures)
+  print(generated.outcome.remaining_decode_expert_compute_ns)
+__CLOCKS__
+  return Ok(())
+}
+'''.replace("__CLOCKS__", "\n".join(
+    f"  print(generated.outcome.remaining_decode_expert_{name}_ns)" for name in FIELDS
+))
+
+# Compile checked-in Align unchanged. This test-only wrapper observes selection and injects failure;
+# no production test flag or environment input enters the product shim.
+WRAPPER = r'''
+#define align_ggml_graph_new expert_graph_new
+#define align_ggml_graph_select_slot_range expert_select
+#define align_ggml_graph_compute expert_compute
+#include "ggml_shim_stub.c"
+#undef align_ggml_graph_new
+#undef align_ggml_graph_select_slot_range
+#undef align_ggml_graph_compute
+#include <stdio.h>
+#include <stdlib.h>
+
+static int first_rows[ALIGN_STUB_MAX_GRAPHS];
+static int occurrences[24];
+static int failed;
+
+void *align_ggml_graph_new(void *ctx) {
+    align_stub_graph *g = expert_graph_new(ctx);
+    if (g) first_rows[g - align_stub_graphs] = -1;
+    return g;
+}
+
+void *align_ggml_graph_select_slot_range(void *ctx, void *graph, void *slots,
+                                         int64_t first, int64_t last) {
+    const char *refuse = getenv("EXPERT_TEST_REFUSE_ROW");
+    align_stub_graph *source = graph;
+    int row = (int) first - 58;
+    if (refuse && row == atoi(refuse)) return NULL;
+    align_stub_graph *result = expert_select(ctx, graph, slots, first, last);
+    if (result) {
+        int expected = 0;
+        int actual = 0;
+        first_rows[result - align_stub_graphs] = row;
+        for (int i = 0; i < source->count; i++) {
+            for (int slot = (int) first; slot <= (int) last; slot++) {
+                if (source->nodes[i] == align_stub_slot(slots, slot)) {
+                    if (actual >= result->count || result->nodes[actual] != source->nodes[i]) {
+                        fprintf(stderr, "EXPERT_TEST_ORDER_FAILURE\n");
+                        return NULL;
+                    }
+                    actual++;
+                    expected++;
+                }
+            }
+        }
+        if (actual != result->count || expected != (int) (last - first + 1)) {
+            fprintf(stderr, "EXPERT_TEST_MEMBERSHIP_FAILURE\n");
+            return NULL;
+        }
+    }
+    return result;
+}
+
+int32_t align_ggml_graph_compute(void *backend, void *graph) {
+    align_stub_graph *g = graph;
+    int row = first_rows[g - align_stub_graphs];
+    const char *refuse = getenv("EXPERT_TEST_FAIL_ROW");
+    const char *which = getenv("EXPERT_TEST_FAIL_OCCURRENCE");
+    if (failed) { fprintf(stderr, "EXPERT_TEST_AFTER_FAILURE\n"); return 97; }
+    if (row >= 0 && row < 24) {
+        fprintf(stderr, "EXPERT_TEST_ROW %d\n", row);
+        occurrences[row]++;
+        if (refuse && row == atoi(refuse) &&
+            occurrences[row] == (which ? atoi(which) : 1)) {
+            failed = 1;
+            return 91;
+        }
+    }
+    return expert_compute(backend, graph);
+}
+'''
+
+
+def run(argv: list[str], work: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(argv, cwd=work, env=env, text=True, capture_output=True, timeout=180)
+    if result.returncode:
+        raise RuntimeError(f"{argv[0]} failed ({result.returncode}): {result.stderr[-8000:]}")
+    return result
+
+
+def main() -> None:
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("EXPERT_TEST_") and not key.startswith("ALIGN_LLM_GGML_")}
+    with tempfile.TemporaryDirectory(prefix="align-expert-phase-b-smoke-") as raw:
+        work = Path(raw)
+        source = work / "src"
+        source.mkdir()
+        for path in (ROOT / "src").glob("*.align"):
+            shutil.copy2(path, source / path.name)
+        (source / "expert_phase_b_smoke.align").write_text(ENTRY)
+        (work / "wrapper.c").write_text(WRAPPER)
+        library = work / ("libalign_ggml_shim.dylib" if platform.system() == "Darwin"
+                          else "libalign_ggml_shim.so")
+        run([env.get("CC", "cc"), "-O2", "-ffp-contract=off", "-fPIC", "-shared",
+             "-DALIGN_GGML_FP_CONTRACT_OFF=1", "-DALIGN_GGML_STUB_ENGINE=1",
+             "-I", str(ROOT / "scripts"), str(work / "wrapper.c"), "-o", str(library)], work, env)
+        env["LIBRARY_PATH"] = str(work) + (":" + env["LIBRARY_PATH"]
+                                              if env.get("LIBRARY_PATH") else "")
+        env["DYLD_LIBRARY_PATH"] = str(work)
+        env["LD_LIBRARY_PATH"] = str(work)
+        compiler = str(ROOT / "scripts/alignc")
+        run([compiler, "build", "src/main.align"], work, env)
+        run([compiler, "build", "src/expert_phase_b_smoke.align"], work, env)
+        run(["python3", str(ROOT / "scripts/olmoe_provider_fixture.py"), str(work)], work, env)
+        manifest = json.loads((work / "olmoe-runtime-manifest.json").read_text())
+        model = work / manifest["model"]
+        geometry, pack = work / "geometry.json", work / "model.alignpack"
+        run([str(work / "main"), "--model-ir", str(model), str(geometry)], work, env)
+        run([str(work / "main"), "--pack", str(model), str(pack), str(work / "pack.json")], work, env)
+
+        def invoke(mode: str, maximum: int = 4, **injected: str) -> tuple[list[str], str]:
+            result = run([str(work / "expert_phase_b_smoke"), str(model), str(pack), str(geometry),
+                          str(manifest["ordinary_eog_id"]), str(maximum), mode],
+                         work, {**env, **injected})
+            lines = result.stdout.splitlines()
+            assert len(lines) == 18, lines
+            assert all(int(value) == 0 for value in lines[4:9]), lines
+            assert "EXPERT_TEST_AFTER_FAILURE" not in result.stderr, result.stderr
+            assert "EXPERT_TEST_ORDER_FAILURE" not in result.stderr, result.stderr
+            assert "EXPERT_TEST_MEMBERSHIP_FAILURE" not in result.stderr, result.stderr
+            return lines, result.stderr
+
+        normal, _ = invoke("normal")
+        expert, trace = invoke("expert")
+        assert normal[0] == expert[0] == "", (normal, expert)
+        assert normal[2:4] == expert[2:4] and int(expert[3]) == 3, (normal, expert)
+        assert int(normal[9]) > 0 and all(int(value) == 0 for value in normal[10:]), normal
+        assert sum(map(int, expert[10:])) == int(expert[9]) > 0, expert
+        assert all(int(value) > 0 for value in expert[10:]), expert
+        observed = [int(line.split()[-1]) for line in trace.splitlines()
+                    if line.startswith("EXPERT_TEST_ROW ")]
+        assert observed == list(ROWS) * 6, observed
+        short, _ = invoke("expert", 2)
+        assert short[0] == "" and all(int(value) == 0 for value in short[9:]), short
+        assert json.loads(short[2]) == json.loads(expert[2])[:2], (short, expert)
+        for row, field in zip(ROWS, FIELDS):
+            lines, _ = invoke("expert", EXPERT_TEST_FAIL_ROW=str(row))
+            assert lines[0] == "R5_COMPUTE" and f"status_expert_{field}[91]" in lines[1], lines
+            assert lines[2] == "[]" and int(lines[3]) == 0, lines
+            assert all(int(value) == 0 for value in lines[9:]), lines
+        lines, _ = invoke(
+            "expert", EXPERT_TEST_FAIL_ROW="3", EXPERT_TEST_FAIL_OCCURRENCE="3"
+        )
+        assert lines[0] == "R5_COMPUTE" and int(lines[3]) == 1, lines
+        assert all(int(value) == 0 for value in lines[9:]), lines
+        lines, trace = invoke("expert", EXPERT_TEST_REFUSE_ROW="3")
+        assert lines[0] == "R5_GGML_INIT" and "expert_phase_b_operation_partition" in lines[1], lines
+        assert int(lines[3]) == 0 and "EXPERT_TEST_ROW" not in trace, (lines, trace)
+        assert all(int(value) == 0 for value in lines[9:]), lines
+    print("OLMoE expert phase-B operation smoke: PASS (exact membership/order/output, zero conditioning, eight failures, late failure, selection refusal, lifetime balance)")
+
+
+if __name__ == "__main__":
+    main()

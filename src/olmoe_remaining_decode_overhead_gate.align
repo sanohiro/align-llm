@@ -153,6 +153,18 @@ AttentionCoreOperations {
   output_packing_ns: i64,
 }
 
+ExpertPhaseBOperations {
+  total_ns: i64,
+  input_preparation_ns: i64,
+  gate_projection_ns: i64,
+  up_projection_ns: i64,
+  swiglu_ns: i64,
+  down_projection_ns: i64,
+  expert_weighting_ns: i64,
+  expert_reduction_ns: i64,
+  residual_ns: i64,
+}
+
 ClaimIo {
   total_ns: i64,
   file_pread_ns: i64,
@@ -226,7 +238,8 @@ fn digest_text(value: str) -> string {
 fn run(
   args: array<str>, detailed: bool, other_detailed: bool, compute_detailed: bool,
   claim_detailed: bool, phase_a_operation_detailed: bool, attention_operation_detailed: bool,
-  attention_core_detailed: bool, plane_upload_detailed: bool,
+  attention_core_detailed: bool, expert_phase_b_operation_detailed: bool,
+  plane_upload_detailed: bool,
 ) -> Result<(), Error> {
   if args.len() != 7 { return Err(Error.Invalid) }
   model_path := args[1]
@@ -276,7 +289,11 @@ fn run(
   }
 
   phase_started = time.instant()
-  generated := if plane_upload_detailed {
+  generated := if expert_phase_b_operation_detailed {
+    moe_decode_step.generate_resident_sampled_expert_phase_b_operation_diagnosis(
+      pack_path, geometry_path, geometry_view, source_identity, prepared.token_ids,
+      prepared.eog_token_ids, maximum_tokens, CACHE_BUDGET_BYTES, seed)
+  } else if plane_upload_detailed {
     moe_decode_step.generate_resident_sampled_plane_upload_diagnosis(
       pack_path, geometry_path, geometry_view, source_identity, prepared.token_ids,
       prepared.eog_token_ids, maximum_tokens, CACHE_BUDGET_BYTES, seed)
@@ -588,34 +605,65 @@ fn run(
     document.write(",\"attention_core_operations\":")
     document.write(core_operation_view)
   }
+  if expert_phase_b_operation_detailed {
+    expert_subtotal := generated.outcome.remaining_decode_expert_input_preparation_ns
+      + generated.outcome.remaining_decode_expert_gate_projection_ns
+      + generated.outcome.remaining_decode_expert_up_projection_ns
+      + generated.outcome.remaining_decode_expert_swiglu_ns
+      + generated.outcome.remaining_decode_expert_down_projection_ns
+      + generated.outcome.remaining_decode_expert_weighting_ns
+      + generated.outcome.remaining_decode_expert_reduction_ns
+      + generated.outcome.remaining_decode_expert_residual_ns
+    if expert_subtotal != generated.outcome.remaining_decode_expert_compute_ns {
+      return Err(Error.Invalid)
+    }
+    expert_operations := ExpertPhaseBOperations {
+      total_ns: generated.outcome.remaining_decode_expert_compute_ns,
+      input_preparation_ns: generated.outcome.remaining_decode_expert_input_preparation_ns,
+      gate_projection_ns: generated.outcome.remaining_decode_expert_gate_projection_ns,
+      up_projection_ns: generated.outcome.remaining_decode_expert_up_projection_ns,
+      swiglu_ns: generated.outcome.remaining_decode_expert_swiglu_ns,
+      down_projection_ns: generated.outcome.remaining_decode_expert_down_projection_ns,
+      expert_weighting_ns: generated.outcome.remaining_decode_expert_weighting_ns,
+      expert_reduction_ns: generated.outcome.remaining_decode_expert_reduction_ns,
+      residual_ns: generated.outcome.remaining_decode_expert_residual_ns,
+    }
+    expert_operation_json := json.encode(expert_operations)
+    expert_operation_view: str := expert_operation_json
+    document.write(",\"expert_phase_b_operations\":")
+    document.write(expert_operation_view)
+  }
   document.write("}")
   print(document.to_string())
   return Ok(())
 }
 
 pub fn phase_a_operation_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, true, true, false, false, false)
+run(args, true, true, true, true, true, false, false, false, false)
 
 pub fn attention_operation_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, true, true, true, false, false)
+run(args, true, true, true, true, true, true, false, false, false)
 
 pub fn attention_core_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, true, true, true, true, false)
+run(args, true, true, true, true, true, true, true, false, false)
+
+pub fn expert_phase_b_operation_main(args: array<str>) -> Result<(), Error> =
+run(args, true, true, true, true, false, false, false, true, false)
 
 pub fn plane_upload_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, true, false, false, false, true)
+run(args, true, true, true, true, false, false, false, false, true)
 
 pub fn claim_detailed_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, true, false, false, false, false)
+run(args, true, true, true, true, false, false, false, false, false)
 
 pub fn compute_detailed_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, false, false, false, false, false)
+run(args, true, true, true, false, false, false, false, false, false)
 
 pub fn other_detailed_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, false, false, false, false, false, false)
+run(args, true, true, false, false, false, false, false, false, false)
 
 pub fn detailed_main(args: array<str>) -> Result<(), Error> =
-run(args, true, false, false, false, false, false, false, false)
+run(args, true, false, false, false, false, false, false, false, false)
 
 pub fn main(args: array<str>) -> Result<(), Error> =
-run(args, false, false, false, false, false, false, false, false)
+run(args, false, false, false, false, false, false, false, false, false)
