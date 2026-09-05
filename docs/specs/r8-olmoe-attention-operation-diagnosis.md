@@ -1,6 +1,6 @@
 # R8 OLMoE attention operation diagnosis
 
-Status: implemented and measured; review pending, 2026-09-05
+Status: review repair implemented; requalification pending, 2026-09-05
 
 Roadmap owner: item 72, `R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS`
 
@@ -36,10 +36,10 @@ intervention remains forbidden. This capability makes no speedup claim and does 
 | Conditioning/isolation | four sequential fresh-process pairs; maximum 2 is the exact prefix of maximum 128; zero processes matching both pinned llama-server and model paths before, between, and after each pair |
 | Source graph | preserve all 37 decode phase-A rows, fixed request width, operands, output marks, allocation, and table/topological order |
 | Exact attention boundaries | `PROJECTIONS` is rows 0-13 inclusive and ends at the row-13 V reshape; `ATTENTION_CORE` is rows 14-27 inclusive and ends at the row-27 contiguous attention value; `OUTPUT_RESIDUAL` is rows 28-31 inclusive and ends at `ffn_inp`; `ROUTER` remains rows 32-36 and ends at `ffn_moe_argsort` |
-| Slice construction | reuse item 71's bounded partition ABI. Split the source at row 13 into projection and after-projection graphs; split after-projection at row 27 into attention-core and after-core graphs; split after-core at row 31 into output/residual and router graphs. All anchors are table-owned slots found exactly once. The two intermediate suffix graphs are construction-only and never computed or timed |
-| Slice lifetime | one diagnostic context owns all six borrowed graph structures. The source graph, source tensor contexts, slot store, allocator, and backend buffers outlive all four computes. The diagnostic context is freed first and adds no allocator or tensor ownership |
+| Slice construction | add one bounded slot-range selection ABI beside item 71's positional partition ABI. For each class, require every populated output slot in its inclusive row range to occur exactly once in the source graph, then copy those node pointers in the source graph's actual topological order. Construct exactly four class graphs. This is necessary because dependency traversal interleaves table row ranges in the source graph |
+| Slice lifetime | one diagnostic context owns all four borrowed graph structures. The source graph, source tensor contexts, slot store, allocator, and backend buffers outlive all four computes. The diagnostic context is freed first and adds no allocator or tensor ownership |
 | Execution modes | normal mode executes the original one phase-A graph; item-71 mode executes its original attention/residual then router pair; only item-72 mode executes projection, attention-core, output/residual, then router. No mode computes the source graph as an additional control |
-| Failure labels | partition failure uses `R5_GGML_INIT` with `attention_operation_partition`; compute failures retain `R5_COMPUTE` with `status_projection`, `status_attention_core`, `status_output_residual`, or item 71's `status_router`. Later computes are skipped after the first failure and no successful step is committed |
+| Failure labels | selection failure uses `R5_GGML_INIT` with `attention_operation_partition`; compute failures retain `R5_COMPUTE` with `status_projection`, `status_attention_core`, `status_output_residual`, or item 71's `status_router`. Later computes are skipped after the first failure and no successful step is committed |
 | Direct clocks | add `attention_projection_ns`, `attention_core_ns`, and `attention_output_residual_ns`; their sum is `phase_a_attention_ns`. Add the unchanged direct router wall to form `compute_a_ns`. These are graph-slice operation-class walls, not kernel or individual-node attribution |
 | Remaining-decode commit | add matching remaining-decode counters at the existing successful-step-after-first commit. Maximum 2 reports zero for every item-72 clock; maximum 128 reports positive values and exact parent equations |
 | Qualification helper | new `olmoe_attention_operation_gate MODEL PACK GEOMETRY PROMPT MAX_TOKENS 5`; preserve the complete item-71 record and add exact object `attention_operations` with `total_ns`, `projections_ns`, `attention_core_ns`, and `output_residual_ns` |
@@ -52,11 +52,11 @@ intervention remains forbidden. This capability makes no speedup claim and does 
 | Result | one exact-key schema-1 `R8_OLMOE_ATTENTION_OPERATION_DIAGNOSIS` JSON document on stdout and one concise stderr summary; no complete document on failure |
 | Inputs/identity | independently pin the complete item-71 runner/helper/source chain plus the item-72 helper and every changed Align source, shim/stub/build script, model, pack, geometry, server, Align revision/compiler, ggml libraries and consumed headers, C compiler/version, task, prompt, exact token chain, built helper/shim, clean align-llm head, and inherited host fingerprint |
 | Validation order | arguments/prerequisites; imported constants and source identities; scrubbed environment/linker search; fixed host, clean head, process absence, external identities; exact-source build; four conditioned records; helper schema/equations/output/cache/lifetime/repeatability; aggregate/decision; final identities/head; cleanup-inclusive ceiling; publication |
-| Failure | nonzero and no complete document for invalid arguments, missing/duplicate/end anchor, slice construction or compute failure, malformed/overlapping clocks, equation/output/cache/lifetime/source/host/process drift, child failure, mutation, cleanup failure, or ceiling excess; missing prerequisites retain one declared N/A line |
-| Ownership/allocation | production adds only zero-initialized scalar counters. Item-72 calls add one context and six context-owned graph structures per routed layer; every path converges on existing teardown. Runner/helper/temp state is invocation-local |
+| Failure | nonzero and no complete document for invalid arguments, empty/duplicate/missing/non-source range member, reversed range, slice construction or compute failure, malformed/overlapping clocks, equation/output/cache/lifetime/source/host/process drift, child failure, mutation, cleanup failure, or ceiling excess; missing prerequisites retain one declared N/A line |
+| Ownership/allocation | production adds only zero-initialized scalar counters. Item-72 calls add one context and four context-owned graph structures per routed layer; every path converges on existing teardown. Runner/helper/temp state is invocation-local |
 | Persisted/cache identity | N/A: no provider, cache, model, pack, task, or persisted-result schema changes; qualification stdout is not persisted by the runner |
 | Cost ceiling | one monotonic 8-minute ceiling covers helper/shim build, four conditioning and four full requests, aggregation, identity rechecks, and cleanup; each child retains a narrower bound |
-| Acceptance evidence | author ledger-to-prose consistency pass; nested partition counts and malformed-anchor owner coverage; `make fmt`; pinned helper build; `make layer-forward-smoke`; `make runtime-provider-smoke`; Python compilation; inherited validators and focused self-test; one clean-head fixed-host four-repeat diagnosis; `git diff --check`; one comprehensive review; exact-head `python3 scripts/pre-pr --owner-test R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS -- scripts/run-olmoe-attention-operation-diagnosis --self-test` |
+| Acceptance evidence | author ledger-to-prose consistency pass; a branched dependency graph proving noncontiguous slot-class selection plus malformed-range owner coverage; `make fmt`; pinned helper build; `make layer-forward-smoke`; `make runtime-provider-smoke`; Python compilation; inherited validators and focused self-test; one clean-head fixed-host four-repeat diagnosis; `git diff --check`; the comprehensive review and its final-review repair check; exact-head `python3 scripts/pre-pr --owner-test R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS -- scripts/run-olmoe-attention-operation-diagnosis --self-test` |
 
 Cross-host, GPU, throughput, arbitrary-task, cache-policy, persistent-state, public-provider,
 per-kernel, per-node, and performance-win claims are N/A. Four computed slices add three backend
@@ -68,7 +68,7 @@ full-request shipping gate.
 
 | Path | Construction | Success | Failure/malformed | Early exit | Cleanup | Exact regression/evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| Nested slices | validate source and three unique interior anchors while deriving six graphs | exact ranges 0-13, 14-27, 28-31, and 32-36 retain source order | any null graph, wrong combined counts, or anchor refusal maps to one init failure | no compute until all slices exist | one diagnostic context owns all six graph tables | nested count equations plus existing ABI refusal vectors |
+| Operation-class slices | validate every slot member against the source while deriving four graphs | exact ranges 0-13, 14-27, 28-31, and 32-36 retain source topology even when row ranges interleave | null graph, missing/duplicate/non-source member, reversed range, wrong class count, or wrong combined count maps to one init failure | no compute until all slices exist | one diagnostic context owns all four graph tables | branched source-order fixture, exact counts, and range refusal vectors |
 | Normal layer | both diagnostic flags false | original source graph computed once; all item-71/72 clocks zero | existing status/detail unchanged | failed graph does not commit a step | existing owners | runtime provider smoke and normal helper validators |
 | Item-71 layer | phase-A flag true; attention flag false | original two slices and two clocks remain unchanged | existing item-71 failures/labels unchanged | router skipped after attention failure | existing diagnostic context first | item-71 self-test chain and source-compatible path inspection |
 | Item-72 layer | both diagnostic flags true | compute projection, core, output/residual, router exactly once each | first failed compute labels its class and skips successors | failed layer never publishes a successful step | diagnostic context freed before source graph/tensor contexts | forced construction/compute failure plus real exact output/lifetime |
@@ -85,9 +85,9 @@ the synchronous routed-layer frame and cannot escape its diagnostic context.
 
 ## 4. Implementation and verification map
 
-1. Extend the item-71 diagnostic branch with an independent item-72 mode. Construct all nested
-   graph ranges from the existing partition ABI before computing any class, then execute only the
-   four final ranges in source order.
+1. Extend the item-71 diagnostic branch with an independent item-72 mode. Construct four graphs by
+   exact output-slot membership while preserving each class's source-topological order, then execute
+   the classes in declared table order. Keep item 71's positional partition ABI unchanged.
 2. Add three direct layer/outcome clocks and remaining-decode deltas at the existing successful-
    step commit. Preserve item-71's parent clocks and every existing entry point.
 3. Add the thin helper and runner, pin the complete consumed chain, and own exact schema,
@@ -104,35 +104,10 @@ qualification consumer form one consumer-complete diagnostic capability.
 
 ## 5. Author consistency pass
 
-The ledger and matrix agree that item 72 reuses item 71's bounded ABI, constructs every slice
-before computation, directly times three mutually exclusive attention ranges, excludes the already-
-nonmaterial router from selection, and preserves both older execution modes. The child clocks close
-to item 71's attention parent, while the parent plus router closes the existing routing total. Only
-an output/residual win is narrow enough to authorize implementation directly; broader wins select
-another diagnosis and never reopen live width.
-
-## 6. Result
-
-The clean-head run at `593556bb2e3601e7d4913f0a7d68d8487d5444d6` completed in
-111,156,692,750 ns. Full-helper walls were
-`[16487972917,16421608208,17108487291,16917830667]` ns, with a 16,702,901,792-ns median.
-The direct attention-class values and medians were:
-
-| Class | Four values (ns) | Median (ns) |
-| --- | --- | ---: |
-| `PROJECTIONS` | `[175029708,153489824,156566947,152604597]` | 155,028,385 |
-| `ATTENTION_CORE` | `[2979714930,2967745159,3089791093,3048693115]` | 3,014,204,022 |
-| `OUTPUT_RESIDUAL` | `[115433879,111763963,113293425,112153239]` | 112,723,332 |
-
-The attention-parent values were `[3270178517,3232998946,3359651465,3313450951]` ns and their
-median was 3,291,814,734 ns. `ATTENTION_CORE` therefore won at 915,666 ppm of its parent and far
-above the immutable 871,174,011-ns floor. The decision is
-`ATTENTION_CORE_SUBDIAGNOSIS_REQUIRED`; neither projection nor output/residual is an eligible
-implementation seam from this evidence.
-
-All four full requests reproduced the exact 86-token output and fixed cache accounting: 11,940
-requests, 7,325 hits, 4,615 misses, 4,376 evictions, 17,656,872,960 fetched bytes, and zero
-cache-to-claim copies. All twelve process-absence checks passed, every native lifetime balanced,
-conditioning clocks remained zero, full clocks were positive, and the three attention children
-closed exactly to item 71's attention parent on every sample. This is attribution only and makes no
-performance-win claim.
+The ledger and matrix agree that item 72 selects exact table-owned operation membership while
+retaining the source graph's dependency order, constructs every slice before computation, directly
+times three mutually exclusive attention ranges, excludes the already-nonmaterial router from
+selection, and preserves both older execution modes. The child clocks close to item 71's attention
+parent, while the parent plus router closes the existing routing total. Only an output/residual win
+is narrow enough to authorize implementation directly; broader wins select another diagnosis and
+never reopen live width.

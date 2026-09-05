@@ -276,6 +276,8 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_graph_new(ctx: raw) -> raw
   fn align_ggml_graph_partition(
     ctx: raw, graph: raw, slots: slice<u8>, boundary_slot: i64, suffix: i32) -> raw
+  fn align_ggml_graph_select_slot_range(
+    ctx: raw, graph: raw, slots: slice<u8>, first_slot: i64, last_slot: i64) -> raw
   fn align_ggml_graph_expand(graph: raw, slots: slice<u8>, index: i64) -> i32
   fn align_ggml_graph_node_count(graph: raw) -> i32
   fn align_ggml_gallocr_new(backend: raw) -> raw
@@ -1168,6 +1170,17 @@ pub fn graph_partition(
   unsafe {
     return align_ggml_graph_partition(
       ctx, graph, slots, boundary_slot, if suffix { 1 } else { 0 })
+  }
+}
+
+// A qualification-only operation-class view over an already-built graph. Every populated slot in
+// the inclusive range must occur exactly once in the source graph. The selected nodes retain the
+// source graph's topological order even when dependency traversal interleaves their slot numbers.
+pub fn graph_select_slot_range(
+  ctx: raw, graph: raw, borrow slots: slice<u8>, first_slot: i64, last_slot: i64,
+) -> raw {
+  unsafe {
+    return align_ggml_graph_select_slot_range(ctx, graph, slots, first_slot, last_slot)
   }
 }
 

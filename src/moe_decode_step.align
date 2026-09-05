@@ -1869,10 +1869,6 @@ if decode { layer_olmoe.MM_A_NODE_BASE + 33 } else { layer_olmoe.MM_A_NODE_BASE 
 fn ffn_inp_node_of(decode: bool) -> i64 =
 if decode { layer_olmoe.MM_A_NODE_BASE + 31 } else { layer_olmoe.MM_A_NODE_BASE + 29 }
 
-fn projection_node() -> i64 = layer_olmoe.MM_A_NODE_BASE + 13
-
-fn attention_core_node() -> i64 = layer_olmoe.MM_A_NODE_BASE + 27
-
 fn probs_node_of(decode: bool) -> i64 =
 if decode { layer_olmoe.MM_A_NODE_BASE + 35 } else { layer_olmoe.MM_A_NODE_BASE + 33 }
 
@@ -1953,9 +1949,7 @@ fn run_moe_layer(
   mut graph_b := ggml_ffi.null_handle()
   mut attention_graph := ggml_ffi.null_handle()
   mut projection_graph := ggml_ffi.null_handle()
-  mut after_projection_graph := ggml_ffi.null_handle()
   mut attention_core_graph := ggml_ffi.null_handle()
-  mut after_core_graph := ggml_ffi.null_handle()
   mut output_residual_graph := ggml_ffi.null_handle()
   mut router_graph := ggml_ffi.null_handle()
   mut galloc_a := ggml_ffi.null_handle()
@@ -2098,32 +2092,27 @@ fn run_moe_layer(
     } else {
       o.contexts_created = o.contexts_created + 1
       if attention_operation_diagnosis {
-        projection_graph = ggml_ffi.graph_partition(
-          diagnostic_ctx, graph_a, slot_view, projection_node(), false)
-        after_projection_graph = ggml_ffi.graph_partition(
-          diagnostic_ctx, graph_a, slot_view, projection_node(), true)
-        attention_core_graph = ggml_ffi.graph_partition(
-          diagnostic_ctx, after_projection_graph, slot_view, attention_core_node(), false)
-        after_core_graph = ggml_ffi.graph_partition(
-          diagnostic_ctx, after_projection_graph, slot_view, attention_core_node(), true)
-        output_residual_graph = ggml_ffi.graph_partition(
-          diagnostic_ctx, after_core_graph, slot_view, ffn_inp_node_of(true), false)
-        router_graph = ggml_ffi.graph_partition(
-          diagnostic_ctx, after_core_graph, slot_view, ffn_inp_node_of(true), true)
+        expected_output_nodes := if spec.last { 4 } else { 2 }
+        projection_graph = ggml_ffi.graph_select_slot_range(
+          diagnostic_ctx, graph_a, slot_view,
+          layer_olmoe.MM_A_NODE_BASE, layer_olmoe.MM_A_NODE_BASE + 13)
+        attention_core_graph = ggml_ffi.graph_select_slot_range(
+          diagnostic_ctx, graph_a, slot_view,
+          layer_olmoe.MM_A_NODE_BASE + 14, layer_olmoe.MM_A_NODE_BASE + 27)
+        output_residual_graph = ggml_ffi.graph_select_slot_range(
+          diagnostic_ctx, graph_a, slot_view,
+          layer_olmoe.MM_A_NODE_BASE + 28, layer_olmoe.MM_A_NODE_BASE + 31)
+        router_graph = ggml_ffi.graph_select_slot_range(
+          diagnostic_ctx, graph_a, slot_view,
+          layer_olmoe.MM_A_NODE_BASE + 32, layer_olmoe.MM_A_NODE_BASE + 36)
         if ggml_ffi.handle_absent(projection_graph)
-          || ggml_ffi.handle_absent(after_projection_graph)
           || ggml_ffi.handle_absent(attention_core_graph)
-          || ggml_ffi.handle_absent(after_core_graph)
           || ggml_ffi.handle_absent(output_residual_graph)
           || ggml_ffi.handle_absent(router_graph)
-          || ggml_ffi.graph_node_count(projection_graph)
-          + ggml_ffi.graph_node_count(after_projection_graph) != result.node_count_a
-          || ggml_ffi.graph_node_count(attention_core_graph)
-          + ggml_ffi.graph_node_count(after_core_graph)
-          != ggml_ffi.graph_node_count(after_projection_graph)
-          || ggml_ffi.graph_node_count(output_residual_graph)
-          + ggml_ffi.graph_node_count(router_graph)
-          != ggml_ffi.graph_node_count(after_core_graph)
+          || ggml_ffi.graph_node_count(projection_graph) != 14
+          || ggml_ffi.graph_node_count(attention_core_graph) != 14
+          || ggml_ffi.graph_node_count(output_residual_graph) != expected_output_nodes
+          || ggml_ffi.graph_node_count(router_graph) != 5
           || ggml_ffi.graph_node_count(projection_graph)
           + ggml_ffi.graph_node_count(attention_core_graph)
           + ggml_ffi.graph_node_count(output_residual_graph)
@@ -2131,7 +2120,7 @@ fn run_moe_layer(
           fail(o, "R5_GGML_INIT", moe_model_forward.layer_named(
               spec.layer, "stage", "attention_operation_partition"))
         } else {
-          o.graphs_created = o.graphs_created + 6
+          o.graphs_created = o.graphs_created + 4
         }
       } else {
         attention_graph = ggml_ffi.graph_partition(

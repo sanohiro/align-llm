@@ -2834,6 +2834,70 @@ void *align_ggml_graph_partition(void *ctx, void *graph, void *slots,
     return (void *) result;
 }
 
+/* R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS. Match the real shim's exact slot-membership selection
+ * while retaining the source graph's dependency order.
+ */
+void *align_ggml_graph_select_slot_range(void *ctx, void *graph, void *slots,
+                                         int64_t first_slot, int64_t last_slot) {
+    align_stub_graph *source = (align_stub_graph *) graph;
+    align_stub_graph *result = NULL;
+    int64_t capacity = 0;
+    int64_t requested = 0;
+    int64_t slot = 0;
+    int32_t selected = 0;
+    int32_t i = 0;
+
+    capacity = align_ggml_slot_capacity(slots);
+    if (align_stub_context_index(ctx) < 0 || source == NULL || capacity < 0 || first_slot < 0 ||
+        last_slot < first_slot || last_slot >= capacity) {
+        return NULL;
+    }
+    for (slot = first_slot; slot <= last_slot; slot++) {
+        align_stub_tensor *target = align_stub_slot(slots, slot);
+        int32_t matches = 0;
+        if (target == NULL) {
+            continue;
+        }
+        for (i = 0; i < source->count; i++) {
+            if (source->nodes[i] == target) {
+                matches++;
+            }
+        }
+        if (matches != 1) {
+            return NULL;
+        }
+        requested++;
+    }
+    if (requested <= 0 || requested > source->count) {
+        return NULL;
+    }
+    result = (align_stub_graph *) align_ggml_graph_new(ctx);
+    if (result == NULL) {
+        return NULL;
+    }
+    for (i = 0; i < source->count; i++) {
+        for (slot = first_slot; slot <= last_slot; slot++) {
+            if (source->nodes[i] == align_stub_slot(slots, slot)) {
+                if (result->count >= ALIGN_STUB_MAX_TENSORS) {
+                    result->used = 0;
+                    result->count = 0;
+                    return NULL;
+                }
+                result->nodes[result->count] = source->nodes[i];
+                result->count++;
+                selected++;
+                break;
+            }
+        }
+    }
+    if (selected != requested) {
+        result->used = 0;
+        result->count = 0;
+        return NULL;
+    }
+    return (void *) result;
+}
+
 /* `ggml_build_forward_expand`'s shape: a post-order walk that visits each source once and appends
  * every op tensor in dependency order. Leaves — the weights and the three inputs — are not nodes.
  */

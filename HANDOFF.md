@@ -10,30 +10,31 @@ Branch `agent/r8-olmoe-attention-operation-diagnosis`, based on pulled merged `m
 The sibling Align checkout and `.align-revision` remain at merged Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
-Item 72's authoritative ledger, closure matrix, and result are
+Item 72's authoritative ledger and closure matrix are
 `docs/specs/r8-olmoe-attention-operation-diagnosis.md`. Design commit `e7d2eef` and implementation
-commit `593556b` preserve item 71's fixed request and 871,174,011-ns floor. The opt-in path
-recursively partitions the already-built graph at exact row-13, row-27, and row-31 tensor anchors
-and directly executes `PROJECTIONS`, `ATTENTION_CORE`, `OUTPUT_RESIDUAL`, then the existing router
-suffix. Intermediate suffix graphs are structure only and are never timed as operation classes.
+commit `593556b` preserve item 71's fixed request and 871,174,011-ns floor. Comprehensive review of
+result-record head `d5b87d5` found one P1: ggml dependency traversal interleaves table rows, so
+positional graph splits put Q/K projection work into the attention-core clock and invalidated the
+first attribution. That measurement and its successor decision are withdrawn.
 
-The clean-head run at `593556bb2e3601e7d4913f0a7d68d8487d5444d6` completed in 111.157 seconds.
-Projection, attention-core, and output/residual medians were 155,028,385 ns, 3,014,204,022 ns, and
-112,723,332 ns. Attention core won at 915,666 ppm of the 3,291,814,734-ns attention median and
-cleared the immutable floor, so the decision is `ATTENTION_CORE_SUBDIAGNOSIS_REQUIRED`. Every
-fixed output, cache, isolation, lifetime, and nested accounting boundary passed. Normal provider
-and item-71 execution remain unchanged; item 63's live-width candidate remains rejected.
+The repair adds a bounded graph selector that requires every table-owned output slot in a class to
+occur exactly once in the source graph and retains their actual topological order. Item 72 now
+constructs exactly four graphs by slot membership and directly executes `PROJECTIONS`,
+`ATTENTION_CORE`, `OUTPUT_RESIDUAL`, then the existing router suffix. Normal provider and item-71
+execution remain unchanged; item 63's live-width candidate remains rejected.
 
-**Next actions.** Commit the result; perform one comprehensive review; consolidate any valid
-repair, rerun affected evidence and exact-head preflight, publish, and merge. Per the current user
-instruction, stop after this PR instead of starting the attention-core successor.
+**Next actions.** Finish the branched-graph owner regression, update source identities, commit the
+consolidated review repair, rerun narrow owners and the clean-head four-repeat diagnosis, record the
+replacement result, perform the required final comprehensive review, preflight, publish, and merge.
+Per the current user instruction, stop after this PR instead of starting its successor.
 
 **Blocker.** None.
 
-**Latest durable verification.** `make fmt`, `make layer-forward-smoke` (117.966 seconds),
-`make runtime-provider-smoke` (self-test plus 61 CLI assertions), Python compilation, the focused
-item-72 self-test, helper type-check, and `git diff --check` pass. The clean-head four-repeat run
-above passed in 111.157 seconds. Review and publication preflight remain pending.
+**Latest durable verification.** Before review, `make fmt`, `make layer-forward-smoke` (117.966
+seconds), `make runtime-provider-smoke` (self-test plus 61 CLI assertions), Python compilation, the
+focused item-72 self-test, helper type-check, and `git diff --check` passed. The first 111.157-second
+four-repeat run preserved correctness and accounting but its attribution is withdrawn. Review-repair
+helper type-check passes; repaired owner and real qualification remain pending.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.
