@@ -197,8 +197,9 @@ The closure matrix is complete for the evaluated candidate: the implementation c
 the native/Align and mode/failure cells; the fixed-host result owns the full-model semantic,
 identity, isolation, accounting and cleanup cells; the runner self-test owns malformed records,
 source mutations, gate boundaries and terminal replay/restoration. There is no deferred production
-promise. The final publication owner additionally runs in a linked worktree to exercise common-dir
-ancestry resolution. Comprehensive review and classifier-selected publication checks remain the
+promise. The final publication owner passed in both the ordinary checkout and a detached linked worktree,
+including common-dir ancestry resolution and exact production restoration. Its final result validator
+accepted the raw record, and real invocation refused with the evaluated replay SHA. Comprehensive review and classifier-selected publication checks remain the
 final merge gates, recorded on the pull request.
 
 **Next selected boundary.** Item 73 also measured V preparation rows 21–24 at 988,706,344 ns,

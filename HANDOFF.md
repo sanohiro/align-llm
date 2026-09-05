@@ -17,8 +17,8 @@ and candidate median 19,489,429,604 ns exceeded the historical ceiling. All prod
 candidate-only native owners and three specification clarifications are restored/removed.
 The retained runner is publication-only and requires control/evaluated ancestry; merge commits only.
 
-**Next actions.** Verify terminal restoration and linked-worktree self-test; complete one fresh
-comprehensive review, repair findings, run exact-head preflight, publish and merge. Then refresh
+**Next actions.** Complete one fresh comprehensive review, repair findings, run exact-head
+preflight, publish and merge. Then refresh
 main and implement item 75's V-only preparation boundary from a precommitted ledger. Do not carry
 K into it: the paired result did not establish a directional K benefit.
 
@@ -30,8 +30,9 @@ three strict C builds, shared-shim identity, `gmake fmt`, `scripts/test-olmoe-at
 `gmake layer-forward-smoke` (82.153 seconds), `gmake runtime-provider-smoke` (sampler vectors and
 61 CLI assertions), native stub/real four-worker/real UBSan owners, Python compilation and paired
 runner self-test all passed. The clean-head real comparison passed every semantic boundary and
-recorded the terminal negative gate result above. Final restoration/self-test evidence follows in
-the publication checkpoint.
+recorded the terminal negative gate result above. Terminal self-tests passed in the ordinary
+checkout and a detached linked worktree, including exact source restoration and both ancestry
+checks. The final runner validates the raw result and refuses real replay with the evaluated SHA.
 
 **Intentional uncommitted files.** None after the terminal checkpoint. Models, raw evidence and
 build products remain outside Git.
