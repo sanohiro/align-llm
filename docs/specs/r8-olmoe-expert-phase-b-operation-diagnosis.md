@@ -1,6 +1,6 @@
 # R8 OLMoE expert phase-B operation diagnosis
 
-Status: active
+Status: complete — decision `NO_MATERIAL_EXPERT_OPERATION`
 
 Roadmap owner: item 79, `R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS`
 
@@ -69,3 +69,24 @@ The ledger and matrix define the same eight exhaustive, nonoverlapping table ran
 dependency-valid compute order, the same failure labels and successful-step commit boundary. Only
 the qualification helper enables split execution. The direct child sum owns the parent clock, the
 unchanged materiality floor governs selection, and no diagnosis result alone claims an optimization.
+
+## Result
+
+Clean head `a0ccf9faf2a3b6a46b4ef85d9fdee4a59da34b8a` completed four sequential short/full
+pairs in 110.820 seconds. Every record preserved the exact token chain and output digest, direct
+cache request/hit/miss/eviction/fetched-byte evidence, zero cache-to-claim copies, process isolation,
+balanced native lifetimes, and the declared parent/child equations. The full-helper walls were
+`[18028510875,19398845334,19489354333,19095181334]` ns (median 19,247,013,334 ns), and
+the expert parents were `[1730445593,1809969951,1784429671,1752010741]` ns (median
+1,768,220,206 ns).
+
+The operation medians were input preparation 27,067,208 ns, gate projection 574,962,948 ns,
+up projection 444,561,299 ns, SwiGLU 54,744,079 ns, down projection 531,428,285 ns, expert
+weighting 85,859,347 ns, expert reduction 32,087,287 ns, and residual 24,735,486 ns. Gate
+projection was largest at 325,164 ppm of the expert parent but remained below the immutable
+871,174,011-ns floor. The result is `NO_MATERIAL_EXPERT_OPERATION`; no child is eligible for an
+implementation or narrower diagnosis, and this measurement makes no optimization claim.
+
+The final diff maps every ledger and closure-matrix row to `moe_decode_step`'s opt-in construction,
+ordered compute and successful-step counters; the qualification helper and runner; or the focused
+allocated-stub refusal/failure/lifetime owner. No declared cell is deferred.

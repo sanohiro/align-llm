@@ -1827,13 +1827,18 @@ The current forward delivery order is:
     child, without another unchanged model run.
 
 79. **R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS — identify the material expert output operation.
-    In progress.**
+    Complete; decision `NO_MATERIAL_EXPERT_OPERATION`.**
     [`r8-olmoe-expert-phase-b-operation-diagnosis.md`](r8-olmoe-expert-phase-b-operation-diagnosis.md)
-    owns the active ledger. Item 77's exact leaf projection measures `EXPERT_PHASE_B` at a 1,175,633,134-ns median,
+    owns the committed ledger. Item 77's exact leaf projection measures `EXPERT_PHASE_B` at a 1,175,633,134-ns median,
     above the unchanged 871,174,011-ns attribution floor. Partition the existing phase-B graph by
     exact checked node-table membership while preserving normal unsplit execution, cache tensors,
     arithmetic and reduction order. Use the fixed request and select only a measured material child;
-    this diagnosis makes no optimization or primary-metric claim.
+    this diagnosis makes no optimization or primary-metric claim. The clean-head run completed four
+    short/full pairs in 110.820 seconds. Gate projection was largest at 574,962,948 ns median /
+    325,164 ppm of the 1,768,220,206-ns expert parent, but remained below the fixed
+    871,174,011-ns floor. Up and down projections measured 444,561,299 ns and 531,428,285 ns;
+    every other class was below 86 ms. All fixed evidence passed. No phase-B operation is eligible
+    for implementation or narrower diagnosis, so R8 has no remaining measured material child.
 
 ### Status (2026-08-28)
 

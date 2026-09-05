@@ -3,29 +3,37 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (2026-09-06)
+## Active publication: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (2026-09-06)
 
 Branch `agent/r8-olmoe-expert-phase-b-operation-diagnosis`, based on merged main
 `df2e05122a9d0f6593207b3f90c6d87c3d259ffa` (PR #200). Align remains pinned to
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger:
 `docs/specs/r8-olmoe-expert-phase-b-operation-diagnosis.md`.
 
-Item 78 merged as PR #200 with decision `NOT_MET`; item 77's independently qualified native
-staging remains shipped. Item 77's exact leaf records select `EXPERT_PHASE_B` at a
-1,175,633,134-ns median, above the unchanged 871,174,011-ns attribution floor. Item 79 partitions
-that existing 24-node top-8 graph into exact checked operation ranges without changing normal
-execution.
+Implementation heads are `3cedd1c` plus direct-cache validation repair `a0ccf9f`. The clean-head
+four-repeat qualification completed in 110.820 seconds with `NO_MATERIAL_EXPERT_OPERATION`.
+Gate projection won at 574,962,948 ns median / 325,164 ppm of the 1,768,220,206-ns expert parent,
+below the unchanged 871,174,011-ns floor. Up projection was 444,561,299 ns and down projection
+531,428,285 ns; every other class was below 86 ms. Exact output, cache accounting including zero
+cache-to-claim copies, isolation, lifetime, source identity and operation accounting all passed.
+No operation is eligible for implementation or narrower diagnosis, and item 79 makes no
+optimization claim.
 
-**Next actions.** Commit the item-79 ledger checkpoint, implement the opt-in graph slices, counters,
-helper, runner and focused regressions, then run the named qualification and publication workflow.
+**Next actions.** Commit the qualification record, perform one comprehensive review, repair valid
+findings, run the exact-head preflight, publish and merge the English pull request. After merge,
+refresh `main`; the roadmap currently contains no later eligible capability.
 
 **Blocker.** None.
 
-**Latest durable verification.** PR #200 merged item 78 after its consolidated review repair,
-exact-head preflight and required hosted checks. No item-79 owner has run yet.
+**Latest durable verification.** `gmake fmt`, the focused allocated-stub owner with the canonical
+Homebrew linker search, `gmake layer-forward-smoke`, `gmake runtime-provider-smoke`, Python
+compilation and the runner self-test passed. The real qualification at `a0ccf9f` passed all four
+short/full pairs and produced the decision above. The first real-run attempt correctly exposed an
+obsolete item-62 claim-I/O positivity assumption; `a0ccf9f` delegates to the current direct-cache
+owner and its self-test covers that inherited zero-copy boundary.
 
-**Intentional uncommitted files.** Item-79 design ledger and continuity update only. Models, raw
-evidence and build products remain outside Git.
+**Intentional uncommitted files.** Qualification result updates to the item-79 ledger, roadmap and
+this handoff only. Models, raw evidence and build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-NATIVE-STAGING-BOUNDARY (PR #199, 2026-09-05)
 
