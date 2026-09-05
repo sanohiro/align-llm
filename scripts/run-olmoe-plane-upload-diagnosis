@@ -1,0 +1,1198 @@
+#!/usr/bin/env python3
+"""Attribute the existing OLMoE plane-upload interval to priming and native staging."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from copy import deepcopy
+import hashlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import io
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import signal
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from typing import Any, Iterator
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+RUNNER_PATH = Path(__file__).resolve()
+PREDECESSOR_PATH = ROOT / "scripts/run-olmoe-exact-safe-decode-boundaries"
+LOADER = SourceFileLoader("olmoe_exact_safe_for_plane_upload", str(PREDECESSOR_PATH))
+SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError("cannot load the exact-safe decode owner")
+previous = importlib.util.module_from_spec(SPEC)
+sys.modules[LOADER.name] = previous
+SPEC.loader.exec_module(previous)
+base = previous.base
+diagnosis = previous.diagnosis
+owner = previous.owner
+transfer = previous.transfer
+
+LABEL = "R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS"
+ARTIFACT_KIND = "R8_OLMOE_PLANE_UPLOAD_DIAGNOSIS"
+MERGED_SOURCE_BASE = "d9fd56cd5170a69a6a8a3ac2fc8f6fed76e7bdc3"
+# Set to the measured clean revision when preserving the completed result for publication.
+EVALUATED_HEAD: str | None = None
+HELPER_SOURCE = "src/olmoe_plane_upload_gate.align"
+HELPER_NAME = "olmoe_plane_upload_gate"
+REPETITIONS = 4
+CEILING_SECONDS = 480
+MAX_I64 = (1 << 63) - 1
+BASELINE_VALUES_NS = [17_714_825_083, 16_684_315_166, 17_132_135_334, 21_189_618_042]
+BASELINE_MEDIAN_NS = 17_423_480_208
+FLOOR_PPM = 50_000
+FLOOR_NS = 871_174_011
+EXPECTED_RUNTIME_SHA256 = "7a36c1eb075b74b7c61a5d7ed229d684e5759fce2f35d32455e07bbad5aba38f"
+CLASS_ORDER = ("STAGING_PRIMING", "NATIVE_STAGING")
+CLASS_FIELDS = {"STAGING_PRIMING": "priming_ns", "NATIVE_STAGING": "native_staging_ns"}
+DETAIL_KEYS = {"total_ns", *CLASS_FIELDS.values()}
+HELPER_KEYS = previous.HELPER_KEYS | {"plane_upload"}
+TOP_KEYS = {
+    "schema_version", "artifact_kind", "status", "model", "baseline", "candidate",
+    "intervention", "boundary", "task", "environment", "samples", "aggregate", "elapsed_ns",
+}
+BASELINE_KEYS = {"full_helper_wall_values_ns", "full_helper_wall_median_ns", "floor_ppm", "floor_ns"}
+AGGREGATE_KEYS = {
+    "full_helper_wall_values_ns", "full_helper_wall_median_ns", "upload_values_ns",
+    "upload_median_ns", "class_values_ns", "class_medians_ns", "selected_class",
+    "selected_class_median_ns", "selected_class_share_ppm", "floor_ppm", "floor_ns", "decision",
+}
+BUILD_FILES = {"scripts/ggml_shim.c", "scripts/ggml_shim_stub.c", "scripts/build-ggml-shim", ".align-revision"}
+SOURCE_PATHS = tuple(dict.fromkeys((
+    PREDECESSOR_PATH, *previous.SOURCE_PATHS, *sorted((ROOT / "src").glob("*.align")),
+    ROOT / HELPER_SOURCE, ROOT / "scripts/test-olmoe-plane-upload",
+    ROOT / "scripts/olmoe_provider_fixture.py", ROOT / "scripts/run-layer-forward-smoke",
+    ROOT / "scripts/gguf_fixture.py", ROOT / "scripts/layer_forward_fixture.py",
+    ROOT / "scripts/olmoe_text_fixture.py", ROOT / "scripts/tokenizer_fixture.py",
+    ROOT / "scripts/alignc", ROOT / "scripts/align-toolchain", ROOT / "scripts/fresh-align-compiler",
+    *(ROOT / path for path in sorted(BUILD_FILES)),
+)))
+# Independently pinned current dependencies; the runner binds its own bytes to clean HEAD.
+EXPECTED_SOURCE_IDENTITIES: tuple[str, ...] = (
+    '30d523f59dca536336004043cbc5b757b19fa7d305bb00a36ab894c5d196e492',
+    'cbe398505f95257c37d57ba4e19fd0b4aca65725f8e3f0f69e865c3f23782728',
+    'ecb3e41b8f874125abc9018066a002cca9faca43d68db05b2fc6e07c31230dc5',
+    '679554fd291a67c447d74ddee721799c2dca1b02af856ca44c8977368ac463c1',
+    '76ccc33af94db50bafdd6db1fd627385c0f7be2fecd087e285d2f3ea02d75cf2',
+    '433d848e6a926108cacb0651e08a24df65537225cada07d35bc6a85a295d884f',
+    '69c2a44572029e36c349de5feb061e1ecb597e3fa4de7c7a58341da2bcb05ef9',
+    'b66815c4debfec0f749ac88b39ec8ba9f06e25d1f85b4aba3c760d112748f868',
+    '26887655013f0f68e94705a6addd87dac72ada5d37d08e1421a2daef2e78de5a',
+    '922b29baf0489fd1cec53ce1395849ba69df69d0e69dea44a3f07ec95b42cf65',
+    'de717064f4d2ea89d63a6529d38d37157f7d34f9946db7e6dc350076185157ce',
+    '15fb41454a01e5be87776fedd2081b70b4bd155bd6208de1adb0f26c7ddf9dbc',
+    '1f95cefc30d4e5d772b35d6f739994440ce195facf12d5b359f206428301e9b8',
+    '03ee9abc87d1d167f1bac4878004abb64a0ef8bf50a3dfd96ee66eeba106ad9f',
+    'e3a86592357af4c1c8888689cfc026867842ac05a6f4b5a8b88fcc2f026f0260',
+    '068017b4a921485743dbbc6f8e07b7bcd8fc5ad32b4e7368b8cea4cfc289e500',
+    '91e2dedf7eac8f66f11c817797e8541881bfd2c7f71ee4e298b37305c6123a63',
+    '505efca65a7637b65b26997de200234f44cd8b7cee9db681b9f9161524ecaaaf',
+    '9141bee34a3579482c6c5852eb136810ea909f73575229b411f905ef96635581',
+    'c7e82a8a8374e1c25f1e3b61ce0b89ed8639eaeae6b4e4ae8bee2a88a09b8e8b',
+    '16d9c63e4bf51e95ec88c6fca546a27de7aa9fab47bdd8379cb9091c399896a6',
+    '3289939ddfd2364397e01930d1d0812dba965fa563365ad6a20c849e6961ac9e',
+    'b5f1b7f7798239982446f56d9d17eeeca9b87a8a47bd685e6bd9e634a686198e',
+    '3f813978dc0547ffbbb1a71760da4b107a58c2daa846addda272de6aae384a4e',
+    'e71f776650bd53a4e304d276818e76d7b082a7f10ea537ce91f258d9eee5ccc6',
+    '19f801c9d9b0834af02f793a4ed2f03659fe5689f7a99bb5b45609a2f5267f94',
+    '133d3ec5f5f08e8e6e128cd76ed1e4c467c5424bb535a9de8ce8e38f61a7e481',
+    'ff2a3d96ef2bdfdaf3acbc966734b9d813c5b7e105444f122e17fa3cd1561a34',
+    '6a9d948bf265c39570dee1ceca9f76ce361fea88f00f624ee0669d48c53e4824',
+    'fb203c83018da6a10074d72165524444a6cdcc2bd2734732ea3090443512606f',
+    'b01611151baace6cb59a140eec1dc336c47cd50a8e43dc746337e58e6eb10b50',
+    'cca81cbc741f6fc39f31b8cbda65bc3eed4cbfa2447db8f9cae0ccc4d961e8f9',
+    'edbd49939d82d99ce427ef90d24289765d6db0f0a7d0cb9fe16d0cf940bad977',
+    'd58bfb3b6f9f0714514d74829f72aab117e1f8fe79eacb952108d20fc7231302',
+    '280048bc877c1b60f3a8ca4ac97c4f8940604c40ed0f3ee2ad5b8582a22ef9e0',
+    'bff9ae8beea0597de834378ae8967100cb12fef182c1cc9d1e516c28ecb140bc',
+    '8a8a204447318c9279ba82b2282d4734aa602599c40f95b7b912a14aae703dba',
+    '2bcb1bb86a59462a8b9961a6bc2a52a56e31a0929a103b70567861b84f2f473f',
+    '8901ecc5de8fd37d10d66ce19fe8aa8cb0c874314096c8a0a50ac28cc8f24155',
+    'dd73992e85de269461764b0c32be8fa722f980761537f39dc6312ef7ffb700b4',
+    '9078d1ded048ef06fbd43b5a6222ce15809ef63ea257b072a83315176f0e84cf',
+    '72070c3a8bdbec873fcd2cc19336c340f093417e751f79f533b33e4bf7d18566',
+    '63737cb8ea12a37ff9cc448a8cdb55fe384deb1b8e13a97eafab664e1c153475',
+    '6e4212431d8fd6083b04c3cc4886e8def3f69ef3d1995baef4daaad4f2a73417',
+    'bc527b6f5a206a4a911c4529f6df11a88abdcf30e9cde6bbbc7566cb48e41115',
+    '52f386249161b7f7b162c8e8153c4ee3e35d192a5ad083d9b923b7178c18a7ad',
+    '84a2183c367c8758b291ad464466aaa849627de4c2165a53b40f13c8d7e0df42',
+    'bfa7209ba443bd407e00f91f973238123117efae97a1b25332f507d48cbe47ca',
+    '3ecb0b421997ae9c909f0ba968601a80ae7abfbaf22cc1611a39da9262cbdd27',
+    'b330c7dfede1ffd0988e0bb1f5a2cf203955d28bc3e5a12c485f000cf8aa2aa0',
+    '6af3bd9a2c4d18ed53c17f55ef237d57b476035574dbe04a7f16ca7411578d1d',
+    '528569dee907d7a0cfbb5302d6fa38b83b738a85489434ae1dc54e4b91dc7df4',
+    '8dc65bc222f2e13a40697f92e37bf2a322be2be0378d0136e13e9fda17ea5f1c',
+    '04305b17900cc586b8f3df36660e04988f4bc8898b2acd4ca876a101252594d8',
+    'bf4aae7407a2a1d7b4e5b01c43fb648bd2a3a85ffd5cab755ab8497311486f89',
+    'c43332ed882a95241541a3c55f25dc3d61e8a2658b915140e12be8a1ada9f5e8',
+    'd2476f9f41bfd94e78fcadba9716ca67c92439f0ff3d6361b53e5c37b40c8042',
+    '27f76b406fa65c0a261d5e57f54316cae2b55a1564ae4b33cb49f4dc2847af6f',
+    'f2ae2acc78d0441b2b23e74a1a976cc4dadb59ee3462832538591564d509429b',
+    '6aa34c70e6660eef3f9285ea1b79f0b3f30c0bc844aa8dd9da2a67f22994c731',
+    '73aa61d2ea916f830e8f89273a4e1f1d385896b1e14151c5ab7a6649a6fca375',
+    'b0515437083ad1e5480ae07f19ec18db2dfde9312556d350b9914281d2437c36',
+    'a297ec348f86fc436d9d907165cd69b8a199a1003400ece40df910d3ca821b89',
+    'b46bd240608f6125abc38e1733e51b688c0f86ff579840aff247ce877d8368cd',
+    'ff91bdc8d96768254eddaef0019c48933f7207c27634e02c7db6d778e3ef8c9d',
+    '4d6ef0fc2233651e765a31891ae0d18fc9fd4747b5ab9244520345e0eb62b3ad',
+    'cf9dc7886057397b81d7b91c0210a48e6f1b601397b27754e33c97ab55d49b3d',
+    'c9cc90c3960d14551dce0605c36f261d1bbc588bbeb1856996cf1849a2d4235c',
+    '83bf3aa9a8444f8fe3375444367d69a2db105a447282c6b77b436e1c827e0885',
+    'cb8175cea8a8502bba8fff747e4183ceb62d9c94a8f8cce3c9ec05d6757e0da0',
+    '230e32345a1afa2a4b01d3b444b503bb1b381525014a093f3984dfea739aaece',
+    'fa249a89e0fdfcf7200ece58b6dcbf4758c9c84ba25b4b1e939c8ffdf0871abd',
+    '78f68190751d8101313ba6d50e038292fc6c55a977d1281aa8707fcdbe4633fd',
+    '752a6f8faf18aeea6a5caccefccab9802d4a0875baa1689938f2358a1253c274',
+    'a720b6de1895ad072580c23c7feb22a2518324c6cdfb707bf94c36b25aa3a486',
+    '621c0990c8c5d5abb42bb5cf683a34e580bb494949ba544d284bfaebb1d19ee5',
+    '7a8b5321c57c4f46a974b976d62a9ea2f12dce6d0f000a52cf4eb9e19b092528',
+    'de2a22a5e5663a0c53981947df57041b5df735c669d83ebb5956f783546e5d81',
+    '3824f8a69ed5c08930b471bd6b1ceb4017f00628ab1bbc0b2467afb983fc8175',
+    'fd78aac8ea7063ff948afab1a84c3d99474482169315dfc226d021570e2eff53',
+    '8e35ed167b189f79a852b0c82d7bd308541a2573b402f3835b3cf4d54287fd21',
+    'ea6fd8f8a7a733a942ab9960f2c830544b9fc5794a52d95d0ade1876e060055d',
+    '97c7295cfa765aadebf849702b5812bbe7b351773ead580f5e294aa05057a5e3',
+    'e5c0506bebf875abd9c57b5e504294c78d7d0d39b5c9c2c6f75003f00403052a',
+    '8eeeefa20d71b76adc4d5492285f7c0df3f72259708e85ca0d358532dc487007',
+    '4902bc0c11a3e8d88777fd319f335f5c40ee11b0068bc72a0a6dfdd08ca5bc5a',
+    'e9b2645067c7f503fc1e78d5642565f2cf26c69dae85eb87c9c3bf9fb3d2bda0',
+    '472dfd54ebd14f71c02229e8551fc5cea82bf28241ff149d836670582fc81c80',
+    '0631cb4ce4ad1e6ca2f3a5cd8a1c5e6c4e1ec614c1967df1f5a144f7d7e0e21b',
+    'b846d2c4ad2d113fa27067a0aa9de7d409aca1a7121fd2e6821c8d742e35d48e',
+    'ba6fcd60b3bfe129fa031df604d2a277d89adb321cebcd4d7679159bd9619e61',
+    '9b7a1de101b59d7f72f39f8b34d520cb8f30194c95a45ae0f7a8e5b741213425',
+    'a9f5785b7ff30c32e97cd2a3bfdb60293a44b5445b0f7f36c5eae0261ecc9ea5',
+    '9215896bfc8d471ab622ab4029888c7ee8bcf7c8f3f25fe5a93cf9b1725c8f64',
+    'be7b87933f3d6c71f58c29775082bfd3741c3805bbca44577b9fd15ca3cb713f',
+    'eff80168db85d69068e76080a44ba9af0649e3b20ae6eb3de1398e5aa9fcaa19',
+    '2843ce7b2241b40707e36b871b246ee336c9967cbd28243c0c175dc79aca6d80',
+    '2c572e39a3ebbaa5e7846dbd2f33ec4f0793868c9bc132757f9c8b2434e316ec',
+    '223d134177e3fde78829a8ff841a1c93ea3fb481d227719fb85bee4e65cbd268',
+    'dac571f4fc9c75fbf14247c79af7af6a294ab68721525ec1960b77a6c2cfbc18',
+    'c67bb1b5b910773b5c9fd056d130794070a92dd87f376236349bc271afbdf2af',
+    '524c3c88e5cc750db2948824df9d236cdcd8aa58def7f103578d28d6f73703c7',
+    '8614b05d217e84f54568084278fd982cfd7cb8d2304ad1b68d345c1de23ace93',
+    '4cb5fde1c4cdf87a21a915d221c34463564a24ae8fb65a7b1c6b8291ea0fe9ef',
+    '6b7d1b62d794f305aa0f4c76d03c4afb0c33d4ec9bb66a50c674b3c285655cf5',
+    'b4e534f8f4d598580d34b5e1d19addc11a51899770b5b26a17a49a9302fdf6bc',
+    '5c51386ad976df0db007f1749cf9364a37d0b19227d49efd22b6189ea8797fad',
+    '3b7294016b9801d5622c454e23e07194f9908e82b02e9468bb248e8029928cd0',
+    '7817d7eaffaa5508dcbadaebba12009609f1cd4dda72dcb7582b7a2a07976896',
+    'c5effb5b34199665e7996955109d2dc37ff7b8d6cb0e8c63c93079966a5fbf26',
+    'd843611b989ee47155889fd2a3af2ffe40c83324b6ee0bbfd8afa35c852ac98c',
+    '2905e3e84ac8a44f721d33bc25012038b1ed8e5318c65d5b439b687977eeabd3',
+    '49ac9d974b40b6caac760bc5b128857c9af9e544f2b4123715d0c4ff9b213a15',
+    '89552ad9631bb552ebc49e13d871afb89c29bd3d9208d77cee80c2bdce3c30c5',
+    '30072810c7a5671286947e37b5de78f924b12f54354abb6904bef420f5eedb56',
+    'dbfd8fa709df929940ec70b496ac0163ddbc5e58f2a952146172c586e18bd011',
+    'bab8fbaed6db8a90096daf53ba4d98f7b61dec57bd9894583ef0125d790b1573',
+    '9264d64c5698d89fbdc1d362901f328275e817e4e176e3224f9c099e8ebb73b7',
+    '748142e555d7b2b5a80a2a830aa3799e73fedb16c87da7fd3c4ef40d32ad83c4',
+    'a16b2f52ff9ec431c5198789969f48dab0b79793acd9867da09120ae1c8a3454',
+    '18a8e10686ca98d0a839ee16a0c56158fd27372e5b38f21da0890fb173c7f546',
+    '2da8db811b30183cb1b579f1bc607dcce011faf1d9238bdf39ce1a41627a952b',
+    '6e9af29f143c09f600cced88c5a195ea0a5eaa531ff4efcee1723a70fe23380d',
+    'd535715f63d3155f88a8dbbe5efa83e9ac5f19610d28a9655a4b4cbb838bc0e6',
+    '8a91f0466e653d95001fca02e3226fa85e3ca00d1f02a39ad10a47ca71f46b5e',
+    '8d4df2f84a668ae81dda3fa511525a0192f5e5692549611c8196db4e1d099cd2',
+    '929c09435c94c540bbda57e25de39a4307ff7d1dd097af067d3fd80d021ab7c4',
+    '2e0012497f6a26db62c2d4b7b0495f67e6baa9c6d4007595a0c58e3ce8de5207',
+    '376df372bc8bf3c6d11c93490071d1ced2d163525f74492db97dc84c77ac394b',
+    'c4d29990843c071f1ab9494a71a7cb65a3b7b6a9d23621832c78d24ae89500d5',
+    'accec2827aceefa59f42a050c849c07f68e830b1148fcf60d3e41d9248c707e7',
+    '40cc30945fbcd558c5a22c89aab351aa879ed596b45802059a74c7aa11b10de8',
+    '857f64e792680714d707c05f10430d59e233703251ead68d7ff8f1c0d7ca69cb',
+)
+
+
+class PlaneUploadError(RuntimeError):
+    pass
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise PlaneUploadError(message)
+
+
+def keys(value: Any, expected: set[str], label: str) -> None:
+    require(isinstance(value, dict) and set(value) == expected, f"{label} keys drifted")
+
+
+def integer(value: Any, *, positive: bool = False) -> bool:
+    return type(value) is int and (1 if positive else 0) <= value <= MAX_I64
+
+
+def same(actual: Any, expected: Any, label: str) -> None:
+    if type(actual) is not type(expected):
+        raise PlaneUploadError(f"{label} type drifted")
+    if isinstance(expected, dict):
+        keys(actual, set(expected), label)
+        for key, value in expected.items():
+            same(actual[key], value, f"{label}.{key}")
+    elif isinstance(expected, (tuple, list)):
+        require(len(actual) == len(expected), f"{label} length drifted")
+        for left, right in zip(actual, expected, strict=True):
+            same(left, right, label)
+    else:
+        require(actual == expected, f"{label} drifted")
+
+
+def scalar_domains(value: Any, field: str = "") -> None:
+    if isinstance(value, dict):
+        for name, item in value.items():
+            scalar_domains(item, name)
+    elif isinstance(value, list):
+        for item in value:
+            scalar_domains(item, field)
+    elif isinstance(value, bool):
+        require(field in {"stopped_eog", "released_before_owner_scope_end"}, f"boolean integer at {field}")
+    elif isinstance(value, int):
+        require(integer(value), f"integer outside nonnegative i64 at {field}")
+    elif isinstance(value, float):
+        raise PlaneUploadError(f"non-integer scalar at {field}")
+
+
+def strict_json(data: bytes | str, label: str) -> Any:
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in items:
+            require(key not in result, f"duplicate JSON key in {label}: {key}")
+            result[key] = value
+        return result
+
+    def constant(value: str) -> None:
+        raise PlaneUploadError(f"invalid JSON constant in {label}: {value}")
+
+    try:
+        text = data.decode("utf-8", "strict") if isinstance(data, bytes) else data
+        return json.loads(text, object_pairs_hook=pairs, parse_constant=constant)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise PlaneUploadError(f"{label} did not contain one valid JSON document") from error
+
+
+def source_identities() -> tuple[str, ...]:
+    return tuple(base.file_sha256(path) for path in SOURCE_PATHS)
+
+
+def validate_imported_contract() -> None:
+    require(bool(EXPECTED_SOURCE_IDENTITIES), "current source identities are pending; qualification is disabled")
+    same(source_identities(), EXPECTED_SOURCE_IDENTITIES, "current consumed source closure")
+    same((previous.MODEL_BYTES, previous.MODEL_SHA256, previous.SERVER_BUILD, previous.BUDGET,
+          previous.SEED, previous.FULL_TOKENS, previous.TEMPERATURE_MICROS,
+          previous.FULL_OUTPUT_SHA256, previous.FULL_CACHE_BYTES_FETCHED,
+          previous.REPETITIONS, previous.CEILING_SECONDS, previous.EXPECTED_ALIGN_REVISION),
+         (4_213_512_192, "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f",
+          "build 10566, commit bb4caa754", 975_175_680, 5, 128, 300_000,
+          "aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52",
+          17_656_872_960, REPETITIONS, CEILING_SECONDS,
+          "8cefc803d5c7f883a8db5b67250ed4ed069b43a4"), "fixed workload")
+    require(diagnosis.integer_median(BASELINE_VALUES_NS) == BASELINE_MEDIAN_NS, "baseline median drifted")
+    require((BASELINE_MEDIAN_NS * FLOOR_PPM + 999_999) // 1_000_000 == FLOOR_NS,
+            "immutable floor arithmetic drifted")
+
+
+class ProcessGroups:
+    """Own one synchronous process group, including descendants and signal-launch races."""
+
+    def __init__(self, cleanup_seconds: float = 5.0) -> None:
+        self.active: subprocess.Popen[bytes] | None = None
+        self.pending_signal: int | None = None
+        self.launching = False
+        self.cleaning = False
+        self.cleanup_seconds = cleanup_seconds
+
+    @staticmethod
+    def exists(group: int) -> bool:
+        try:
+            os.killpg(group, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # A dying group can transiently refuse signal 0 on Darwin. It is still
+            # present until its leader is reaped; never mistake refusal for absence.
+            return True
+
+    @staticmethod
+    def send(group: int, number: int) -> None:
+        try:
+            os.killpg(group, number)
+        except ProcessLookupError:
+            pass
+
+    def stop(self, process: subprocess.Popen[bytes]) -> None:
+        self.cleaning = True
+        try:
+            self.send(process.pid, signal.SIGTERM)
+            until = time.monotonic() + self.cleanup_seconds
+            while self.exists(process.pid) and time.monotonic() < until:
+                process.poll()
+                time.sleep(0.01)
+            if self.exists(process.pid):
+                self.send(process.pid, signal.SIGKILL)
+            process.wait(timeout=self.cleanup_seconds)
+            until = time.monotonic() + self.cleanup_seconds
+            while self.exists(process.pid) and time.monotonic() < until:
+                time.sleep(0.01)
+            require(not self.exists(process.pid), "owned process group survived cleanup")
+        finally:
+            self.cleaning = False
+
+    def interrupted(self, number: int, _frame: object) -> None:
+        # Record first; Popen may still be creating its session when the signal arrives.
+        if self.pending_signal is None:
+            self.pending_signal = number
+        if self.active is not None:
+            self.send(self.active.pid, number)
+        if not self.launching and not self.cleaning:
+            raise SystemExit(128 + number)
+
+    def run(self, argv: list[str], *, deadline: float, maximum: float = 240,
+            env: dict[str, str] | None = None, cwd: Path = ROOT,
+            check: bool = True) -> subprocess.CompletedProcess[bytes]:
+        require(self.active is None, "nested child process ownership is unsupported")
+        require(self.pending_signal is None, "refusing a child after interruption")
+        timeout = min(float(maximum), deadline - time.monotonic())
+        require(timeout > 0, "complete diagnosis exceeded its 8-minute ceiling")
+        self.launching = True
+        try:
+            process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            self.active = process
+        finally:
+            self.launching = False
+        try:
+            if self.pending_signal is not None:
+                raise SystemExit(128 + self.pending_signal)
+            stdout, stderr = process.communicate(timeout=timeout)
+            require(not self.exists(process.pid), "child exited with surviving group descendants")
+            completed = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+            require(not check or completed.returncode == 0,
+                    f"command failed ({completed.returncode}): {' '.join(argv)}\n"
+                    + stderr.decode("utf-8", "replace")[-4096:])
+            return completed
+        finally:
+            try:
+                if process.poll() is None or self.exists(process.pid):
+                    self.stop(process)
+            finally:
+                self.active = None
+
+
+@contextmanager
+def process_scope() -> Iterator[ProcessGroups]:
+    processes = ProcessGroups()
+    old_handlers = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+    old_run = owner.run_process
+    try:
+        for number in old_handlers:
+            signal.signal(number, processes.interrupted)
+        # The inherited host and process-absence helpers call this module's run_process.
+        # Scope this one delegation; do not change historical runners on disk or retain it.
+        owner.run_process = processes.run
+        yield processes
+    finally:
+        try:
+            if processes.active is not None:
+                processes.stop(processes.active)
+        finally:
+            owner.run_process = old_run
+            for number, handler in old_handlers.items():
+                signal.signal(number, handler)
+
+
+def git(processes: ProcessGroups, arguments: list[str], deadline: float,
+        env: dict[str, str], *, cwd: Path = ROOT, check: bool = True) -> subprocess.CompletedProcess[bytes]:
+    return processes.run(["git", "--no-replace-objects", *arguments], deadline=deadline,
+                         env=env, cwd=cwd, maximum=30, check=check)
+
+
+def clean_head(processes: ProcessGroups, deadline: float, env: dict[str, str], *, cwd: Path = ROOT) -> str:
+    require(not git(processes, ["status", "--porcelain", "--untracked-files=all"], deadline, env,
+                    cwd=cwd).stdout, "real diagnosis requires a clean worktree")
+    return git(processes, ["rev-parse", "HEAD"], deadline, env, cwd=cwd).stdout.decode("ascii").strip()
+
+
+def git_common_dir(processes: ProcessGroups, deadline: float, env: dict[str, str], *, cwd: Path = ROOT) -> Path:
+    value = git(processes, ["rev-parse", "--git-common-dir"], deadline, env, cwd=cwd).stdout.decode("utf-8").strip()
+    require(bool(value), "Git common directory was empty")
+    return (cwd / value).resolve()
+
+
+def require_ancestry(processes: ProcessGroups, head: str, common: Path, deadline: float,
+                     env: dict[str, str], *, cwd: Path = ROOT,
+                     ancestors: tuple[str, ...] | None = None) -> None:
+    require(git_common_dir(processes, deadline, env, cwd=cwd) == common, "Git common directory changed")
+    require(not git(processes, ["for-each-ref", "--format=%(refname)", "refs/replace"],
+                    deadline, env, cwd=cwd).stdout.strip(), "ancestry refuses Git replacement refs")
+    require(not (common / "info/grafts").exists(), "ancestry refuses Git grafts")
+    required = ancestors if ancestors is not None else (MERGED_SOURCE_BASE,) + (
+        (EVALUATED_HEAD,) if EVALUATED_HEAD is not None else ())
+    for ancestor in required:
+        require(git(processes, ["merge-base", "--is-ancestor", ancestor, head], deadline, env,
+                    cwd=cwd, check=False).returncode == 0, "required revision is not an ancestor")
+
+
+def source_inventory(processes: ProcessGroups, head: str, deadline: float,
+                     env: dict[str, str]) -> dict[str, tuple[str, str]]:
+    rows = git(processes, ["ls-tree", "-r", "-z", head, "--", "src", *sorted(BUILD_FILES)],
+               deadline, env).stdout
+    result = {}
+    for raw in rows.split(b"\0"):
+        if not raw:
+            continue
+        metadata, raw_path = raw.split(b"\t", 1)
+        mode, kind, blob = metadata.decode("ascii").split()
+        path = raw_path.decode("utf-8", "strict")
+        if path not in BUILD_FILES and not (path.startswith("src/") and path.endswith(".align")):
+            continue
+        require(kind == "blob" and mode in {"100644", "100755"}, "source is not a regular tracked file")
+        require(not Path(path).is_absolute() and ".." not in Path(path).parts, "unsafe source path")
+        result[path] = (mode, blob)
+    require(BUILD_FILES | {HELPER_SOURCE} <= set(result), "tracked source inventory incomplete")
+    return result
+
+
+def snapshot_identity(tree: Path, inventory: dict[str, tuple[str, str]]) -> None:
+    require({path.relative_to(tree).as_posix() for path in (tree / "src").rglob("*.align")}
+            == {path for path in inventory if path.endswith(".align")}, "snapshot inventory changed")
+    for path, (mode, blob) in inventory.items():
+        source = tree / path
+        require(source.is_file() and not source.is_symlink(), "snapshot source missing or symlinked")
+        data = source.read_bytes()
+        actual = hashlib.sha1(b"blob " + str(len(data)).encode("ascii") + b"\0" + data).hexdigest()
+        require(actual == blob and source.stat().st_mode & 0o777 == int(mode, 8) & 0o777,
+                f"snapshot differs from tracked source: {path}")
+
+
+def materialize(processes: ProcessGroups, head: str, tree: Path, deadline: float,
+                env: dict[str, str]) -> dict[str, tuple[str, str]]:
+    inventory = source_inventory(processes, head, deadline, env)
+    archive = git(processes, ["archive", "--format=tar", head, "--", *sorted(inventory)], deadline, env).stdout
+    tree.mkdir()
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
+        for member in bundle:
+            if member.isdir():
+                continue
+            require(member.name in inventory and member.isfile(), "unexpected source archive member")
+            source = bundle.extractfile(member)
+            require(source is not None, "snapshot archive member unreadable")
+            destination = tree / member.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source.read())
+            destination.chmod(int(inventory[member.name][0], 8) & 0o777)
+    snapshot_identity(tree, inventory)
+    return inventory
+
+
+def inherited_record(record: dict[str, Any]) -> dict[str, Any]:
+    inherited = dict(record)
+    inherited.pop("plane_upload")
+    return inherited
+
+
+def inherited_sample(sample: dict[str, Any]) -> dict[str, Any]:
+    return {**sample, "conditioning": inherited_record(sample["conditioning"]),
+            "full": inherited_record(sample["full"])}
+
+
+def validate_upload_detail(detail: Any, parent_ns: int, maximum: int) -> None:
+    keys(detail, DETAIL_KEYS, "plane upload")
+    require(integer(parent_ns) and all(integer(detail[name]) for name in DETAIL_KEYS),
+            "plane-upload timing outside nonnegative i64")
+    require(detail["priming_ns"] + detail["native_staging_ns"] == detail["total_ns"] == parent_ns,
+            "plane-upload children do not partition their parent")
+    require(maximum in (2, previous.FULL_TOKENS), "unsupported helper maximum")
+    require(not any(detail.values()) if maximum == 2 else all(detail[name] > 0 for name in DETAIL_KEYS),
+            "short plane-upload clocks must be zero; full clocks must be positive")
+
+
+def validate_helper_record(record: Any, maximum: int) -> None:
+    keys(record, HELPER_KEYS, "helper record")
+    scalar_domains(record)
+    require(integer(record["schema_version"]) and record["schema_version"] == 1, "helper schema version drifted")
+    previous.validate_helper_record(inherited_record(record), maximum)
+    validate_upload_detail(record["plane_upload"], record["remaining_decode"]["plane_upload_ns"], maximum)
+
+
+def validate_sample(sample: Any, index: int) -> None:
+    keys(sample, {"index", "conditioning", "full", "full_helper_wall_ns", "isolation"}, "sample")
+    scalar_domains(sample)
+    require(integer(sample["index"], positive=True) and sample["index"] == index, "sample index drifted")
+    validate_helper_record(sample["conditioning"], 2)
+    validate_helper_record(sample["full"], previous.FULL_TOKENS)
+    previous.validate_sample(inherited_sample(sample), index)
+    require(integer(sample["full_helper_wall_ns"], positive=True)
+            and sample["full_helper_wall_ns"] >= sample["full"]["phases"]["elapsed_ns"],
+            "full helper wall did not contain helper elapsed")
+
+
+def measure_request(processes: ProcessGroups, built: dict[str, Any], paths: tuple[Path, ...],
+                    maximum: int, deadline: float) -> tuple[dict[str, Any], int]:
+    owner.verify_identities((("helper", built["helper"], built["helper_sha256"]),
+                             ("shim", built["shim"], built["shim_sha256"])))
+    model, pack, geometry, _, _, _ = paths
+    started = time.monotonic_ns()
+    completed = processes.run([str(built["helper"]), str(model), str(pack), str(geometry),
+        diagnosis.PROMPT_TEXT, str(maximum), str(previous.SEED)], deadline=deadline,
+        env=built["runtime_env"], cwd=built["root"])
+    wall = time.monotonic_ns() - started
+    record = strict_json(completed.stdout, "helper stdout")
+    validate_helper_record(record, maximum)
+    require(integer(wall, positive=True) and wall >= record["phases"]["elapsed_ns"],
+            "helper wall did not contain helper elapsed")
+    return record, wall
+
+
+def measure_sample(processes: ProcessGroups, index: int, built: dict[str, Any],
+                   paths: tuple[Path, ...], env: dict[str, str], deadline: float) -> dict[str, Any]:
+    model, _, _, _, _, server = paths
+    owner.require_no_matching_process(server, model, deadline, env)
+    short, _ = measure_request(processes, built, paths, 2, deadline)
+    owner.require_no_matching_process(server, model, deadline, env)
+    try:
+        full, wall = measure_request(processes, built, paths, previous.FULL_TOKENS, deadline)
+    finally:
+        owner.require_no_matching_process(server, model, deadline, env)
+    sample = {"index": index, "conditioning": short, "full": full, "full_helper_wall_ns": wall,
+              "isolation": {"matching_before": 0, "matching_between": 0, "matching_after": 0}}
+    validate_sample(sample, index)
+    return sample
+
+
+def select_class(medians: dict[str, int]) -> tuple[str, str]:
+    keys(medians, set(CLASS_ORDER), "class medians")
+    require(all(integer(value) for value in medians.values()), "class median domain invalid")
+    winner = CLASS_ORDER[0]
+    for name in CLASS_ORDER[1:]:
+        if medians[name] > medians[winner]:
+            winner = name
+    return winner, "MEASURED_UPLOAD_SEAM_ELIGIBLE" if medians[winner] >= FLOOR_NS else "NO_MATERIAL_UPLOAD_CLASS"
+
+
+def aggregate(samples: Any) -> dict[str, Any]:
+    require(isinstance(samples, list) and len(samples) == REPETITIONS, "aggregate requires four samples")
+    for index, sample in enumerate(samples, 1):
+        validate_sample(sample, index)
+    previous.validate_repeatability([inherited_sample(sample) for sample in samples])
+    walls = [sample["full_helper_wall_ns"] for sample in samples]
+    uploads = [sample["full"]["plane_upload"]["total_ns"] for sample in samples]
+    values = {name: [sample["full"]["plane_upload"][field] for sample in samples]
+              for name, field in CLASS_FIELDS.items()}
+    medians = {name: diagnosis.integer_median(values[name]) for name in CLASS_ORDER}
+    selected, decision = select_class(medians)
+    upload_median = diagnosis.integer_median(uploads)
+    return {"full_helper_wall_values_ns": walls, "full_helper_wall_median_ns": diagnosis.integer_median(walls),
+        "upload_values_ns": uploads, "upload_median_ns": upload_median,
+        "class_values_ns": values, "class_medians_ns": medians, "selected_class": selected,
+        "selected_class_median_ns": medians[selected],
+        "selected_class_share_ppm": medians[selected] * 1_000_000 // upload_median,
+        "floor_ppm": FLOOR_PPM, "floor_ns": FLOOR_NS, "decision": decision}
+
+
+def baseline_record() -> dict[str, Any]:
+    return {"full_helper_wall_values_ns": BASELINE_VALUES_NS, "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+            "floor_ppm": FLOOR_PPM, "floor_ns": FLOOR_NS}
+
+
+def boundary_record() -> dict[str, Any]:
+    return {"merged_source_base": MERGED_SOURCE_BASE, "parent": "remaining_decode.plane_upload_ns",
+        "priming": "prime_window_and_stage_view", "native_staging": "stage_kv_and_result_dispatch",
+        "stage_capacity_allocation": "EXCLUDED_BEFORE_PARENT_START", "execution": "NORMAL_UNSPLIT_PHASE_A",
+        "additional_instants_per_layer": 1}
+
+
+def intervention_record() -> dict[str, Any]:
+    return {"plane_source": "HOST_VISIBLE_CONCAT_SLOT", "plane_compare": "EXACT_BYTES",
+        "plane_v_fast_path": "UNALIGNED_SAFE_AARCH64_4X4", "expert_source": "FIXED_STRIDE_CACHE",
+        "direct_scope": "PROVIDER_GENERATION", "fallback": "COMPACT_CLAIM",
+        "cache_key_bytes": previous.CACHE_KEY_BYTES, "cache_slot_count": previous.CACHE_SLOT_COUNT,
+        "cache_capacity_bytes": previous.CACHE_CAPACITY_BYTES,
+        "full_cache_bytes_fetched": previous.FULL_CACHE_BYTES_FETCHED, "full_cache_to_claim_copy_ns": 0}
+
+
+def inherited_result(result: dict[str, Any]) -> dict[str, Any]:
+    samples = [inherited_sample(sample) for sample in result["samples"]]
+    return {"schema_version": 1, "artifact_kind": "R8_OLMOE_EXACT_SAFE_DECODE_BOUNDARIES", "status": "COMPLETE",
+        "model": result["model"], "baseline": {
+            "full_helper_wall_values_ns": previous.BASELINE_VALUES_NS,
+            "full_helper_wall_median_ns": previous.BASELINE_MEDIAN_NS, "floor_ppm": previous.FLOOR_PPM,
+            "minimum_gain_ns": previous.MINIMUM_GAIN_NS, "candidate_ceiling_ns": previous.CANDIDATE_CEILING_NS},
+        "candidate": result["candidate"], "intervention": result["intervention"], "task": result["task"],
+        "environment": result["environment"], "samples": samples,
+        "aggregate": previous.aggregate(samples), "elapsed_ns": result["elapsed_ns"]}
+
+
+def validate_elapsed(result: dict[str, Any]) -> None:
+    elapsed = result["elapsed_ns"]
+    require(integer(elapsed, positive=True)
+            and sum(sample["full_helper_wall_ns"] for sample in result["samples"]) <= elapsed
+            <= CEILING_SECONDS * 1_000_000_000, "cleanup-inclusive elapsed outside walls/ceiling")
+
+
+def validate_result(result: Any) -> None:
+    keys(result, TOP_KEYS, "result")
+    scalar_domains(result)
+    require(result["schema_version"] == 1 and result["artifact_kind"] == ARTIFACT_KIND
+            and result["status"] == "COMPLETE", "result identity drifted")
+    recomputed = aggregate(result["samples"])
+    previous.validate_result(inherited_result(result))
+    same(result["baseline"], baseline_record(), "immutable baseline")
+    same(result["boundary"], boundary_record(), "upload boundary")
+    same(result["intervention"], intervention_record(), "shipped intervention")
+    same(result["aggregate"], recomputed, "recomputed aggregate")
+    validate_elapsed(result)
+
+
+def complete_result_after_cleanup(result: dict[str, Any], started: int) -> dict[str, Any]:
+    result = {**result, "elapsed_ns": time.monotonic_ns() - started}
+    validate_result(result)
+    result["elapsed_ns"] = time.monotonic_ns() - started
+    validate_elapsed(result)
+    return result
+
+
+def prerequisites() -> tuple[Path, ...] | None:
+    rows = [("ALIGN_LLM_OLMOE_MODEL", base.configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", base.configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", base.configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", base.configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", base.configured_directory("ALIGN_LLM_GGML_LIB")),
+        ("ALIGN_LLM_LLAMA_SERVER", base.configured_file("ALIGN_LLM_LLAMA_SERVER", executable=True))]
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"{LABEL}: N/A ({missing} unset)")
+        return None
+    return tuple(path.resolve() for _, path in rows)
+
+
+def runtime_identity(compiler: Path) -> str:
+    # The managed compiler links this adjacent archive; compiler bytes alone do not
+    # identify it. Its fixed digest lives in the evaluated runner, preserving the
+    # inherited public candidate schema while binding both native toolchain outputs.
+    runtime = compiler.parent / "libalign_runtime.a"
+    require(runtime.is_file() and not runtime.is_symlink(), "managed runtime archive unavailable")
+    digest = base.file_sha256(runtime)
+    require(digest == EXPECTED_RUNTIME_SHA256, "managed runtime archive identity drifted")
+    return digest
+
+
+def external_identity(processes: ProcessGroups, paths: tuple[Path, ...], compiler: Path,
+                      c_compiler: Path, env: dict[str, str], linker_search: str,
+                      deadline: float) -> dict[str, Any]:
+    model, pack, geometry, include, library, server = paths
+    task = strict_json(diagnosis.TASK.read_bytes(), "task")
+    require(isinstance(task, dict) and task.get("id") == "python-inclusive-range", "task identity drifted")
+    require(model.stat().st_size == previous.MODEL_BYTES and base.file_sha256(model) == previous.MODEL_SHA256,
+            "model identity drifted")
+    version = processes.run([str(server), "--version"], deadline=deadline, env=env, maximum=30)
+    require(previous.SERVER_BUILD in (version.stdout + version.stderr).decode("utf-8", "replace"),
+            "server build identity drifted")
+    c_version = processes.run([str(c_compiler), "--version"], deadline=deadline, env=env, maximum=30)
+    toolchain = {"compiler_sha256": base.file_sha256(compiler), "c_compiler_sha256": base.file_sha256(c_compiler),
+                 "c_compiler_version_sha256": base.command_output_sha256(c_version)}
+    diagnosis.validate_toolchain_identity(toolchain)
+    runtime_digest = runtime_identity(compiler)
+    linker_digest = None if not linker_search else base.bytes_sha256(linker_search.encode("utf-8"))
+    candidate = {"provider": "align-runtime", "align_revision": (ROOT / ".align-revision").read_text().strip(),
+        "compiler_sha256": toolchain["compiler_sha256"], "ggml_libraries": base.library_identities(library),
+        "ggml_headers": previous.compute.predecessor.ggml_header_identities(include),
+        "pack_sha256": base.file_sha256(pack), "geometry_sha256": base.file_sha256(geometry),
+        "cache_budget_bytes": previous.BUDGET}
+    task_record = {"task_id": task["id"], "task_sha256": base.file_sha256(diagnosis.TASK),
+        "prompt_sha256": base.bytes_sha256(diagnosis.PROMPT_TEXT.encode("utf-8")),
+        "maximum_tokens": previous.FULL_TOKENS, "temperature_micros": previous.TEMPERATURE_MICROS,
+        "seed": previous.SEED, "full_output_sha256": previous.FULL_OUTPUT_SHA256}
+    diagnosis.validate_external_identity(align_revision=candidate["align_revision"],
+        pack_sha256=candidate["pack_sha256"], geometry_sha256=candidate["geometry_sha256"],
+        server_sha256=base.file_sha256(server), task_sha256=task_record["task_sha256"],
+        prompt_sha256=task_record["prompt_sha256"], ggml_libraries=candidate["ggml_libraries"],
+        linker_search_sha256=linker_digest)
+    same(candidate["ggml_headers"], previous.EXPECTED_GGML_HEADERS, "ggml headers")
+    environment = {**transfer.qualification_host(env, deadline),
+        "c_compiler_sha256": toolchain["c_compiler_sha256"],
+        "c_compiler_version_sha256": toolchain["c_compiler_version_sha256"],
+        "linker_search_sha256": linker_digest}
+    same(environment, {**previous.EXPECTED_BASELINE_HOST,
+        "host_fingerprint_sha256": previous.EXPECTED_BASELINE_HOST_SHA256,
+        "c_compiler_sha256": previous.EXPECTED_C_COMPILER_SHA256,
+        "c_compiler_version_sha256": previous.EXPECTED_C_COMPILER_VERSION_SHA256,
+        "linker_search_sha256": previous.EXPECTED_LINKER_SEARCH_SHA256}, "host/toolchain")
+    return {"candidate": candidate, "task": task_record, "environment": environment,
+            "runtime_sha256": runtime_digest}
+
+
+def build_snapshot(processes: ProcessGroups, tree: Path, compiler: Path, include: Path,
+                   library: Path, env: dict[str, str], deadline: float) -> dict[str, Any]:
+    shim_dir = tree / "lib"
+    build_env = {**env, "ALIGN_LLM_GGML_INCLUDE": str(include), "ALIGN_LLM_GGML_LIB": str(library),
+                 "ALIGN_LLM_GGML_SHIM_DIR": str(shim_dir)}
+    processes.run([str(tree / "scripts/build-ggml-shim")], cwd=tree, env=build_env,
+                  deadline=deadline, maximum=180)
+    build_env["LIBRARY_PATH"] = ":".join(value for value in (str(shim_dir), str(library), env.get("LIBRARY_PATH", "")) if value)
+    processes.run([str(compiler), "build", HELPER_SOURCE], cwd=tree, env=build_env, deadline=deadline, maximum=300)
+    helper = tree / HELPER_NAME
+    shim = shim_dir / ("libalign_ggml_shim.dylib" if platform.system() == "Darwin" else "libalign_ggml_shim.so")
+    require(helper.is_file() and os.access(helper, os.X_OK) and shim.is_file(), "isolated build incomplete")
+    runtime_env = {**env, "DYLD_LIBRARY_PATH": ":".join((str(shim_dir), str(library))),
+                   "LD_LIBRARY_PATH": ":".join((str(shim_dir), str(library)))}
+    return {"root": tree, "helper": helper, "shim": shim, "helper_sha256": base.file_sha256(helper),
+            "shim_sha256": base.file_sha256(shim), "runtime_env": runtime_env}
+
+
+def run_qualification(processes: ProcessGroups, paths: tuple[Path, ...], started: int,
+                      deadline: float) -> dict[str, Any]:
+    validate_imported_contract()
+    env = transfer.phase.decision.decision_environment()
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    linker_search = transfer.phase.decision.validate_linker_search(env)
+    if linker_search:
+        env["LIBRARY_PATH"] = linker_search
+    transfer.qualification_host(env, deadline)
+    head = clean_head(processes, deadline, env)
+    common = git_common_dir(processes, deadline, env)
+    require_ancestry(processes, head, common, deadline, env)
+    runner_digest = base.file_sha256(RUNNER_PATH)
+    tracked = git(processes, ["show", f"{head}:scripts/run-olmoe-plane-upload-diagnosis"], deadline, env).stdout
+    require(base.bytes_sha256(tracked) == runner_digest, "runner differs from clean tracked head")
+    model, _, _, include, library, server = paths
+    owner.require_no_matching_process(server, model, deadline, env)
+    compiler_output = processes.run([str(ROOT / "scripts/align-toolchain"), "ensure", "compiler"],
+                                   deadline=deadline, env=env, maximum=300)
+    compiler = Path(compiler_output.stdout.decode("utf-8").strip()).resolve()
+    require(compiler.is_file() and os.access(compiler, os.X_OK), "managed pinned compiler unusable")
+    c_name = shutil.which("cc", path=env.get("PATH"))
+    require(c_name is not None, "default C compiler unavailable")
+    c_compiler = Path(c_name).resolve()
+    external = external_identity(processes, paths, compiler, c_compiler, env, linker_search, deadline)
+    with tempfile.TemporaryDirectory(prefix="align-r8-plane-upload-") as raw:
+        tree = Path(raw) / "source"
+        inventory = materialize(processes, head, tree, deadline, env)
+        built = build_snapshot(processes, tree, compiler, include, library, env, deadline)
+        samples = [measure_sample(processes, index, built, paths, env, deadline)
+                   for index in range(1, REPETITIONS + 1)]
+        measured = aggregate(samples)
+        require(clean_head(processes, deadline, env) == head, "evaluated head changed")
+        require_ancestry(processes, head, common, deadline, env)
+        validate_imported_contract()
+        require(base.file_sha256(RUNNER_PATH) == runner_digest, "runner changed during diagnosis")
+        snapshot_identity(tree, inventory)
+        owner.verify_identities((("helper", built["helper"], built["helper_sha256"]),
+                                 ("shim", built["shim"], built["shim_sha256"])))
+        same(external_identity(processes, paths, compiler, c_compiler, env, linker_search, deadline),
+             external, "external final recheck")
+        owner.require_no_matching_process(server, model, deadline, env)
+        result = {"schema_version": 1, "artifact_kind": ARTIFACT_KIND, "status": "COMPLETE",
+            "model": {"bytes": previous.MODEL_BYTES, "sha256": previous.MODEL_SHA256, "architecture": "olmoe"},
+            "baseline": baseline_record(), "candidate": {**external["candidate"], "align_llm_head": head,
+                "helper_sha256": built["helper_sha256"], "shim_sha256": built["shim_sha256"]},
+            "intervention": intervention_record(), "boundary": boundary_record(),
+            "task": external["task"], "environment": external["environment"],
+            "samples": samples, "aggregate": measured, "elapsed_ns": time.monotonic_ns() - started}
+        validate_result(result)
+    return result
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    require(len(sys.argv) == 1, "qualification accepts no arguments or --self-test")
+    paths = prerequisites()
+    if paths is None:
+        return 0
+    started = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+    with process_scope() as processes:
+        result = run_qualification(processes, paths, started, deadline)
+    result = complete_result_after_cleanup(result, started)
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    detail = result["aggregate"]
+    print(f"{LABEL}: COMPLETE decision={detail['decision']} selected={detail['selected_class']} "
+          f"median={detail['selected_class_median_ns'] / 1e9:.3f}s "
+          f"upload={detail['upload_median_ns'] / 1e9:.3f}s "
+          f"elapsed={result['elapsed_ns'] / 1e9:.2f}s", file=sys.stderr)
+    return 0
+
+
+def synthetic_samples() -> list[dict[str, Any]]:
+    samples = previous.synthetic_samples([20_000_000_000] * REPETITIONS)
+    for sample in samples:
+        sample["conditioning"]["plane_upload"] = dict.fromkeys(DETAIL_KEYS, 0)
+        total = sample["full"]["remaining_decode"]["plane_upload_ns"]
+        sample["full"]["plane_upload"] = {"total_ns": total, "priming_ns": total - 1, "native_staging_ns": 1}
+    return samples
+
+
+def synthetic_result() -> dict[str, Any]:
+    samples = synthetic_samples()
+    inherited = previous.synthetic_result([inherited_sample(sample) for sample in samples])
+    return {"schema_version": 1, "artifact_kind": ARTIFACT_KIND, "status": "COMPLETE",
+        "model": inherited["model"], "baseline": baseline_record(), "candidate": inherited["candidate"],
+        "intervention": intervention_record(), "boundary": boundary_record(),
+        "task": inherited["task"], "environment": inherited["environment"], "samples": samples,
+        "aggregate": aggregate(samples), "elapsed_ns": 80_000_000_001}
+
+
+def expect_error(action: Any, label: str, error_type: type[BaseException] = Exception) -> BaseException:
+    try:
+        action()
+    except error_type as error:
+        return error
+    raise PlaneUploadError(f"{label}: invalid operation was accepted")
+
+
+def self_test_records() -> None:
+    result = synthetic_result()
+    validate_result(result)
+    same(strict_json(json.dumps(result).encode(), "roundtrip"), result, "JSON roundtrip")
+    for malformed in (b'{"x":1,"x":1}', b'{"x":{"y":0,"y":1}}', b'[{"x":0,"x":1}]',
+                      b'{"x":NaN}', b'{"x":Infinity}', b'{"x":-Infinity}', b'{} {}', b'\xff'):
+        expect_error(lambda: strict_json(malformed, "fixture"), "duplicate/nonstandard JSON")
+    module = sys.modules[__name__]
+    fake_processes = mock.Mock()
+    fake_processes.run.return_value = subprocess.CompletedProcess([], 0, b'{"schema_version":1,"schema_version":1}', b'')
+    fake_built = {"root": ROOT, "helper": ROOT / "fake-helper", "shim": ROOT / "fake-shim",
+                  "helper_sha256": "a" * 64, "shim_sha256": "b" * 64, "runtime_env": {}}
+    with mock.patch.object(owner, "verify_identities"):
+        error = expect_error(lambda: measure_request(fake_processes, fake_built, (ROOT,) * 6, 2, 1),
+                             "actual helper duplicate parsing")
+        require("duplicate JSON key" in str(error), "actual helper did not use strict JSON")
+    with mock.patch.object(Path, "read_bytes", return_value=b'{"id":"a","id":"b"}'):
+        error = expect_error(lambda: external_identity(fake_processes, (ROOT,) * 6, ROOT, ROOT, {}, "", 1),
+                             "actual task duplicate parsing")
+        require("duplicate JSON key" in str(error), "actual task did not use strict JSON")
+
+    bounded = {"total_ns": MAX_I64, "priming_ns": MAX_I64 - 1, "native_staging_ns": 1}
+    validate_upload_detail(bounded, MAX_I64, 128)
+    validate_upload_detail(dict.fromkeys(DETAIL_KEYS, 0), 0, 2)
+    for field in DETAIL_KEYS:
+        for invalid in (True, -1, MAX_I64 + 1, 1.0, "1", None):
+            malformed = deepcopy(result)
+            malformed["samples"][0]["full"]["plane_upload"][field] = invalid
+            expect_error(lambda: validate_result(malformed), "record_schema_and_integer_edges")
+        malformed = deepcopy(result)
+        del malformed["samples"][0]["full"]["plane_upload"][field]
+        expect_error(lambda: validate_result(malformed), "missing upload field")
+    for field, value in (("extra", 0), ("total_ns", 49), ("priming_ns", 48), ("native_staging_ns", 2)):
+        malformed = deepcopy(result)
+        malformed["samples"][0]["full"]["plane_upload"][field] = value
+        expect_error(lambda: validate_result(malformed), "child_parent_partition")
+    for detail, parent, maximum in (({"total_ns": 51, "priming_ns": 50, "native_staging_ns": 1}, 50, 128),
+        ({"total_ns": 50, "priming_ns": 50, "native_staging_ns": 0}, 50, 128),
+        ({"total_ns": 1, "priming_ns": 1, "native_staging_ns": 0}, 1, 2),
+        ({"total_ns": MAX_I64 + 1, "priming_ns": MAX_I64, "native_staging_ns": 1}, MAX_I64 + 1, 128)):
+        expect_error(lambda: validate_upload_detail(detail, parent, maximum), "short_full_rules")
+    for path, value in (
+        (("schema_version",), True), (("status",), "PARTIAL"), (("artifact_kind",), "other"),
+        (("samples", 0, "index"), True), (("samples", 0, "full_helper_wall_ns"), 1),
+        (("samples", 0, "isolation", "matching_between"), 1),
+        (("samples", 0, "full", "token_ids"), [0]),
+        (("samples", 0, "full", "output_sha256"), "0" * 64),
+        (("samples", 0, "full", "engine", "expert_cache_requests"), 0),
+        (("samples", 0, "full", "engine", "expert_cache_bytes_fetched"), 0),
+        (("samples", 0, "full", "claim_io", "cache_to_claim_copy_ns"), 1),
+        (("samples", 0, "full", "lifetime", "contexts_freed"), 0),
+        (("samples", 0, "full", "phases", "elapsed_ns"), MAX_I64 + 1),
+        (("samples", 0, "full", "schema_version"), True),
+        (("candidate", "align_revision"), "0" * 40),
+        (("candidate", "ggml_headers"), []), (("environment", "cpu_count"), True),
+        (("elapsed_ns",), 79_999_999_999), (("elapsed_ns",), 480_000_000_001),
+    ):
+        malformed = deepcopy(result)
+        target = malformed
+        for component in path[:-1]:
+            target = target[component]
+        target[path[-1]] = value
+        expect_error(lambda: validate_result(malformed), "inherited_semantics")
+    for path in ((), ("baseline",), ("candidate",), ("boundary",), ("aggregate",),
+                 ("samples", 0), ("samples", 0, "full"), ("samples", 0, "isolation")):
+        for extra in (False, True):
+            malformed = deepcopy(result)
+            target = malformed
+            for component in path:
+                target = target[component]
+            if extra:
+                target["unexpected"] = 0
+            else:
+                del target[next(iter(target))]
+            expect_error(lambda: validate_result(malformed), "exact result keys")
+    for name in CLASS_ORDER:
+        medians = dict.fromkeys(CLASS_ORDER, 1)
+        medians[name] = FLOOR_NS
+        same(select_class(medians), (name, "MEASURED_UPLOAD_SEAM_ELIGIBLE"), "both_at_floor_decisions")
+    same(select_class(dict.fromkeys(CLASS_ORDER, FLOOR_NS - 1)),
+         ("STAGING_PRIMING", "NO_MATERIAL_UPLOAD_CLASS"), "below_floor_no_class")
+    same(select_class(dict.fromkeys(CLASS_ORDER, FLOOR_NS)),
+         ("STAGING_PRIMING", "MEASURED_UPLOAD_SEAM_ELIGIBLE"), "tie_prefers_priming")
+    varied = deepcopy(result["samples"])
+    for sample, priming in zip(varied, (6, 3, 5, 4), strict=True):
+        sample["full"]["plane_upload"]["priming_ns"] = priming
+        sample["full"]["plane_upload"]["native_staging_ns"] = 50 - priming
+    require(aggregate(varied)["class_medians_ns"]["STAGING_PRIMING"] == 4, "floor integer median")
+    expect_error(lambda: aggregate(varied[:3]), "aggregate sample count")
+    for section in ("baseline", "boundary", "aggregate"):
+        for field in result[section]:
+            malformed = deepcopy(result)
+            old = malformed[section][field]
+            malformed[section][field] = old + 1 if type(old) is int else None
+            expect_error(lambda: validate_result(malformed), "aggregate_recomputation/boundary_identity")
+    for field in ("class_values_ns", "class_medians_ns"):
+        malformed = deepcopy(result)
+        malformed["aggregate"][field]["STAGING_PRIMING"] = True
+        expect_error(lambda: validate_result(malformed), "typed class aggregate")
+
+    calls = []
+    def measured(_processes: Any, _built: Any, _paths: Any, maximum: int, _deadline: Any) -> tuple[Any, int]:
+        calls.append(("request", maximum))
+        return deepcopy(result["samples"][0]["conditioning" if maximum == 2 else "full"]), 20_000_000_000
+    def absent(*_args: Any) -> None:
+        calls.append(("isolation", 0))
+    with mock.patch.object(module, "measure_request", side_effect=measured), \
+            mock.patch.object(owner, "require_no_matching_process", side_effect=absent):
+        measured_samples = [measure_sample(fake_processes, index, {}, (ROOT,) * 6, {}, 1) for index in range(1, 5)]
+    aggregate(measured_samples)
+    same(calls, [("isolation", 0), ("request", 2), ("isolation", 0), ("request", 128), ("isolation", 0)] * 4,
+         "repetition_and_isolation")
+    with mock.patch.object(owner, "require_no_matching_process", side_effect=PlaneUploadError("contamination")), \
+            mock.patch.object(module, "measure_request") as request:
+        expect_error(lambda: measure_sample(fake_processes, 1, {}, (ROOT,) * 6, {}, 1), "process contamination")
+        request.assert_not_called()
+
+    ceiling = CEILING_SECONDS * 1_000_000_000
+    with mock.patch.object(time, "monotonic_ns", return_value=ceiling):
+        require(complete_result_after_cleanup(result, 0)["elapsed_ns"] == ceiling, "cleanup exact ceiling")
+    with mock.patch.object(time, "monotonic_ns", side_effect=[ceiling, ceiling + 1]):
+        expect_error(lambda: complete_result_after_cleanup(result, 0), "cleanup_inclusive_ceiling")
+    with mock.patch.object(module, "prerequisites", return_value=(ROOT,) * 6), \
+            mock.patch.object(module, "run_qualification", return_value=result), \
+            mock.patch.object(sys, "argv", [str(RUNNER_PATH)]), \
+            mock.patch("builtins.print") as printed:
+        @contextmanager
+        def failed_cleanup() -> Iterator[Any]:
+            yield fake_processes
+            raise PlaneUploadError("cleanup failure")
+        with mock.patch.object(module, "process_scope", failed_cleanup):
+            expect_error(main, "cleanup_failure_no_document")
+        printed.assert_not_called()
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as printed:
+        require(prerequisites() is None, "missing prerequisite did not return N/A")
+    printed.assert_called_once_with(f"{LABEL}: N/A (ALIGN_LLM_OLMOE_MODEL unset)")
+    with mock.patch.object(sys, "argv", [str(RUNNER_PATH), "--unknown"]):
+        expect_error(main, "unknown argument")
+
+
+def self_test_sources() -> None:
+    actual_hash = base.file_sha256
+    for changed in SOURCE_PATHS:
+        with mock.patch.object(base, "file_sha256", side_effect=lambda path: "0" * 64 if path == changed else actual_hash(path)):
+            expect_error(validate_imported_contract, "source_mutation")
+    with tempfile.TemporaryDirectory(prefix="align-upload-source-owner-") as raw:
+        compiler = Path(raw) / "alignc"
+        runtime = compiler.parent / "libalign_runtime.a"
+        runtime.write_bytes(b"pinned runtime")
+        with mock.patch.object(sys.modules[__name__], "EXPECTED_RUNTIME_SHA256", base.file_sha256(runtime)):
+            runtime_identity(compiler)
+            runtime.write_bytes(b"changed runtime")
+            expect_error(lambda: runtime_identity(compiler), "mutable runtime refusal")
+            runtime.unlink()
+            expect_error(lambda: runtime_identity(compiler), "missing runtime refusal")
+        tree = Path(raw) / "source"
+        (tree / "src").mkdir(parents=True)
+        source = tree / "src/check.align"
+        source.write_bytes(b"tracked\n")
+        source.chmod(0o644)
+        inventory = {"src/check.align": ("100644", hashlib.sha1(b"blob 8\0tracked\n").hexdigest())}
+        snapshot_identity(tree, inventory)
+        source.write_bytes(b"changed\n")
+        expect_error(lambda: snapshot_identity(tree, inventory), "snapshot byte mutation")
+        source.write_bytes(b"tracked\n")
+        source.chmod(0o755)
+        expect_error(lambda: snapshot_identity(tree, inventory), "snapshot mode mutation")
+        source.chmod(0o644)
+        (tree / "src/extra.align").write_text("extra")
+        expect_error(lambda: snapshot_identity(tree, inventory), "snapshot inventory mutation")
+
+
+def self_test_ancestry() -> None:
+    env = transfer.phase.decision.decision_environment()
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    with tempfile.TemporaryDirectory(prefix="align-upload-git-owner-") as raw, process_scope() as processes:
+        root = Path(raw) / "repo"
+        root.mkdir()
+        deadline = time.monotonic() + 30
+        def local(arguments: list[str], *, cwd: Path = root) -> subprocess.CompletedProcess[bytes]:
+            return git(processes, arguments, deadline, env, cwd=cwd)
+        local(["init", "-q"])
+        config = ["-c", "user.name=Upload owner", "-c", "user.email=upload-owner@example.invalid"]
+        local([*config, "commit", "--allow-empty", "-qm", "base"])
+        first = clean_head(processes, deadline, env, cwd=root)
+        local([*config, "commit", "--allow-empty", "-qm", "candidate"])
+        head = clean_head(processes, deadline, env, cwd=root)
+        common = git_common_dir(processes, deadline, env, cwd=root)
+        require_ancestry(processes, head, common, deadline, env, cwd=root, ancestors=(first, head))
+        expect_error(lambda: require_ancestry(processes, first, common, deadline, env, cwd=root, ancestors=(head,)),
+                     "nonancestor refusal")
+        expect_error(lambda: require_ancestry(processes, head, common / "wrong", deadline, env, cwd=root, ancestors=(first,)),
+                     "changed common directory")
+        linked = Path(raw) / "linked"
+        local(["worktree", "add", "--quiet", "--detach", str(linked), head])
+        try:
+            require(git_common_dir(processes, deadline, env, cwd=linked) == common, "linked common directory")
+            require_ancestry(processes, head, common, deadline, env, cwd=linked, ancestors=(first, head))
+            (linked / "dirty").write_text("dirty")
+            expect_error(lambda: clean_head(processes, deadline, env, cwd=linked), "dirty linked worktree")
+            (linked / "dirty").unlink()
+            local(["update-ref", f"refs/replace/{first}", head])
+            try:
+                expect_error(lambda: require_ancestry(processes, head, common, deadline, env, cwd=linked, ancestors=(first,)),
+                             "linked replacement refusal")
+            finally:
+                local(["update-ref", "-d", f"refs/replace/{first}"])
+            graft = common / "info/grafts"
+            graft.parent.mkdir(exist_ok=True)
+            graft.write_text("")
+            try:
+                expect_error(lambda: require_ancestry(processes, head, common, deadline, env, cwd=linked, ancestors=(first,)),
+                             "linked graft refusal")
+            finally:
+                graft.unlink()
+        finally:
+            local(["worktree", "remove", "--force", str(linked)])
+
+
+def self_test_process_groups() -> None:
+    env = transfer.phase.decision.decision_environment()
+    python = sys.executable
+    old_run = owner.run_process
+    old_handlers = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+    with process_scope() as processes:
+        result = processes.run([python, "-c", "print('complete')"], deadline=time.monotonic() + 10, env=env)
+        require(result.stdout == b"complete\n" and processes.active is None, "process success cleanup")
+        failed = processes.run([python, "-c", "raise SystemExit(7)"], deadline=time.monotonic() + 10, env=env, check=False)
+        require(failed.returncode == 7, "child failure status")
+        expect_error(lambda: processes.run([python, "-c", "raise SystemExit(7)"],
+                     deadline=time.monotonic() + 10, env=env), "child failure")
+        expect_error(lambda: processes.run([python, "-c", "pass"], deadline=time.monotonic() - 1, env=env),
+                     "expired invocation")
+    require(owner.run_process is old_run and all(signal.getsignal(number) == handler for number, handler in old_handlers.items()),
+            "process scope did not restore delegation/handlers")
+
+    with tempfile.TemporaryDirectory(prefix="align-upload-process-owner-") as raw:
+        pid_file = Path(raw) / "pids"
+        child_program = "import time; time.sleep(60)"
+        # The direct child reaps its descendant after a group signal. The same descendant
+        # must be killed on timeout and interruption; checking only the direct PID cannot pass.
+        program = (
+            "import os,signal,subprocess,sys,time\n"
+            f"child=subprocess.Popen([sys.executable,'-c',{child_program!r}])\n"
+            "def stop(number,frame):\n child.wait(timeout=3); raise SystemExit(0)\n"
+            "signal.signal(signal.SIGTERM,stop)\n"
+            f"open({str(pid_file)!r},'w').write(str(os.getpid())+' '+str(child.pid))\n"
+            "time.sleep(60)\n"
+        )
+        with process_scope() as processes:
+            expect_error(lambda: processes.run([python, "-c", program], deadline=time.monotonic() + 10,
+                         maximum=0.3, env=env), "group timeout", subprocess.TimeoutExpired)
+            require(processes.active is None, "timeout retained child")
+        require(pid_file.is_file(), "timeout did not exercise a descendant")
+        for value in pid_file.read_text().split():
+            try:
+                os.kill(int(value), 0)
+            except ProcessLookupError:
+                continue
+            raise PlaneUploadError("timeout left an owned process alive")
+        pid_file.unlink()
+        signal_program = program.replace("time.sleep(60)\n", "os.kill(os.getppid(),signal.SIGTERM)\ntime.sleep(60)\n")
+        error = None
+        try:
+            with process_scope() as processes:
+                processes.run([python, "-c", signal_program], deadline=time.monotonic() + 10, env=env)
+        except SystemExit as caught:
+            error = caught
+        require(error is not None and error.code == 128 + signal.SIGTERM, "signal exit code drifted")
+        for value in pid_file.read_text().split():
+            try:
+                os.kill(int(value), 0)
+            except ProcessLookupError:
+                continue
+            raise PlaneUploadError("signal left an owned process alive")
+        require(owner.run_process is old_run, "signal did not restore delegated process owner")
+
+        # Even a successful direct child must not leave a background descendant. Give
+        # that descendant independent pipes so communicate cannot accidentally own it.
+        orphan = (
+            "import os,subprocess,sys\n"
+            f"child=subprocess.Popen([sys.executable,'-c',{child_program!r}],"
+            "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+            f"open({str(pid_file)!r},'w').write(str(child.pid))\n"
+        )
+        with process_scope() as processes:
+            error = expect_error(lambda: processes.run([python, "-c", orphan],
+                         deadline=time.monotonic() + 10, env=env), "normal-exit descendant")
+            require("surviving group descendants" in str(error), "normal-exit descendant was not detected")
+        try:
+            os.kill(int(pid_file.read_text()), 0)
+        except ProcessLookupError:
+            pass
+        else:
+            raise PlaneUploadError("normal-exit cleanup left its descendant alive")
+
+        # A direct child that ignores graceful termination must be killed and reaped.
+        stubborn = ProcessGroups(cleanup_seconds=0.05)
+        expect_error(lambda: stubborn.run([python, "-c",
+            "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(60)"],
+            deadline=time.monotonic() + 10, maximum=0.2, env=env), "forced group kill", subprocess.TimeoutExpired)
+        require(stubborn.active is None, "forced kill retained the child")
+
+    # Simulate the signal landing during Popen, before its returned PID is attached.
+    processes = ProcessGroups()
+    actual_popen = subprocess.Popen
+    launched = []
+    def interrupted_launch(*args: Any, **kwargs: Any) -> Any:
+        child = actual_popen(*args, **kwargs)
+        launched.append(child)
+        processes.interrupted(signal.SIGTERM, None)
+        return child
+    with mock.patch.object(subprocess, "Popen", side_effect=interrupted_launch):
+        error = expect_error(lambda: processes.run([python, "-c", "import time; time.sleep(60)"],
+                             deadline=time.monotonic() + 10, env=env), "signal launch race", SystemExit)
+    require(error.code == 128 + signal.SIGTERM and processes.active is None and launched[0].poll() is not None,
+            "signal launch race leaked a process")
+
+
+def self_test() -> int:
+    validate_imported_contract()
+    self_test_records()
+    self_test_sources()
+    self_test_ancestry()
+    self_test_process_groups()
+    with process_scope() as processes:
+        env = transfer.phase.decision.decision_environment()
+        env["GIT_NO_REPLACE_OBJECTS"] = "1"
+        deadline = time.monotonic() + 30
+        head = git(processes, ["rev-parse", "HEAD"], deadline, env).stdout.decode("ascii").strip()
+        require_ancestry(processes, head, git_common_dir(processes, deadline, env), deadline, env)
+    print(f"{LABEL} self-test: PASS")
+    print("PASS record_schema_and_integer_edges child_parent_partition short_full_rules inherited_semantics")
+    print("PASS both_at_floor_decisions below_floor_no_class tie_prefers_priming aggregate_recomputation boundary_identity")
+    print("PASS source_mutation ancestry_and_linked_worktree repetition_and_isolation process_group_timeout process_group_signal")
+    print("PASS cleanup_failure_no_document cleanup_inclusive_ceiling")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        print(f"{LABEL}: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)

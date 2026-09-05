@@ -152,6 +152,8 @@ pub Plane {
   columns_written: i64,
   readback_ns: i64,
   upload_ns: i64,
+  priming_ns: i64,
+  native_staging_ns: i64,
   roundtrip_verdict: i64,
   roundtrip_bytes_compared: i64,
   first_mismatch_layer: i64,
@@ -167,6 +169,8 @@ pub fn empty_plane() -> Plane = Plane {
   columns_written: 0,
   readback_ns: 0,
   upload_ns: 0,
+  priming_ns: 0,
+  native_staging_ns: 0,
   roundtrip_verdict: ROUNDTRIP_ABSENT,
   roundtrip_bytes_compared: 0,
   first_mismatch_layer: -1,
@@ -2932,6 +2936,7 @@ fn decode_pass(
   phase_a_operation_diagnosis: bool,
   attention_operation_diagnosis: bool,
   attention_core_diagnosis: bool,
+  plane_upload_diagnosis: bool,
   borrow slot_view: slice<u8>,
   borrow ids_view: slice<u8>,
   borrow pos_view: slice<u8>,
@@ -3041,16 +3046,24 @@ fn decode_pass(
       + (time.instant() - accounting_started)
     if o.code.len() > 0 { break }
     mut stage: buffer := buffer(past_bytes * 2)
+    // Item 76 partitions the existing upload interval; the stage capacity hint stays outside it.
     upload_started := time.instant()
     moe_model_forward.prime_window(stage, past_bytes * 2)
     stage_view := stage.bytes()
+    native_staging_started := if plane_upload_diagnosis { time.instant() } else { 0 }
     match ggml_ffi.stage_kv(
       plane_view, plane_k_offset(stride, layer), plane_v_offset(stride, layer), stage_view,
       g.head_dim, g.n_head_kv, n_past, "kv_plane_stage") {
       Ok(_) => {},
       Err(_) => { fail(o, CODE_PLANE_UNAVAILABLE, plane_detail(layer, "stage")) },
     }
-    state.upload_ns = state.upload_ns + (time.instant() - upload_started)
+    upload_finished := time.instant()
+    state.upload_ns = state.upload_ns + (upload_finished - upload_started)
+    if plane_upload_diagnosis {
+      state.priming_ns = state.priming_ns + (native_staging_started - upload_started)
+      state.native_staging_ns = state.native_staging_ns
+        + (upload_finished - native_staging_started)
+    }
     if o.code.len() > 0 { break }
     past_k_view := stage_view[0..past_bytes]
     past_v_view := stage_view[past_bytes..past_bytes * 2]
@@ -3743,6 +3756,7 @@ fn decode_loop(
   phase_a_operation_diagnosis: bool,
   attention_operation_diagnosis: bool,
   attention_core_diagnosis: bool,
+  plane_upload_diagnosis: bool,
   borrow slot_view: slice<u8>,
   borrow ids_view: slice<u8>,
   borrow pos_all: slice<u8>,
@@ -3859,6 +3873,8 @@ fn decode_loop(
     before_claim_other_io := o.claim_other_io_ns
     before_decide := o.decide_ns
     before_plane_upload := state.upload_ns
+    before_plane_priming := state.priming_ns
+    before_plane_native_staging := state.native_staging_ns
     before_plane_readback := state.readback_ns
     before_graph_setup := o.graph_setup_ns
     before_graph_build_alloc := o.graph_build_alloc_ns
@@ -3890,7 +3906,8 @@ fn decode_loop(
       win, tokens,
       head_members, window,
       claim_window, cache_window, cache_metadata, layout, resident, phase_a_operation_diagnosis,
-      attention_operation_diagnosis, attention_core_diagnosis, slot_view, ids_view, pos_view,
+      attention_operation_diagnosis, attention_core_diagnosis, plane_upload_diagnosis,
+      slot_view, ids_view, pos_view,
       mask_view, out_ids_view,
       residual_view,
       logits_view, node_view, plane_view, oracle, embed_nodes, a_nodes, b_nodes, head_nodes, scan,
@@ -4068,6 +4085,10 @@ fn decode_loop(
       o.remaining_decode_decide_ns = o.remaining_decode_decide_ns + (o.decide_ns - before_decide)
       o.remaining_decode_plane_upload_ns = o.remaining_decode_plane_upload_ns
         + (state.upload_ns - before_plane_upload)
+      o.remaining_decode_plane_priming_ns = o.remaining_decode_plane_priming_ns
+        + (state.priming_ns - before_plane_priming)
+      o.remaining_decode_plane_native_staging_ns = o.remaining_decode_plane_native_staging_ns
+        + (state.native_staging_ns - before_plane_native_staging)
       o.remaining_decode_plane_readback_ns = o.remaining_decode_plane_readback_ns
         + (state.readback_ns - before_plane_readback)
       o.remaining_decode_graph_setup_ns = o.remaining_decode_graph_setup_ns
@@ -4444,6 +4465,7 @@ fn schedule_decode(
   phase_a_operation_diagnosis: bool,
   attention_operation_diagnosis: bool,
   attention_core_diagnosis: bool,
+  plane_upload_diagnosis: bool,
   device: raw,
   context_bytes: i64,
   width: i64,
@@ -4701,7 +4723,8 @@ fn schedule_decode(
       tokens,
       head_members,
       window, claim_window, cache_window, cache_metadata_view, layout, resident,
-      phase_a_operation_diagnosis, attention_operation_diagnosis, attention_core_diagnosis, slot_view,
+      phase_a_operation_diagnosis, attention_operation_diagnosis, attention_core_diagnosis,
+      plane_upload_diagnosis, slot_view,
       decode_ids_view, decode_pos_view,
       mask_decode_view,
       decode_out_ids_view, decode_residual_view, decode_logits_view, node_view, plane_view,
@@ -4847,6 +4870,7 @@ fn execute_mode(
   phase_a_operation_diagnosis: bool,
   attention_operation_diagnosis: bool,
   attention_core_diagnosis: bool,
+  plane_upload_diagnosis: bool,
   sampling_seed: i64,
   borrow eog_ids: array<i64>,
   generation_max: i64,
@@ -5178,6 +5202,7 @@ fn execute_mode(
     pak, g, table, staged.plan, staged.ends, staged.win, tokens, embed_members, head_members,
     window_view, resident_view, claim_view, cache_view, layout, resident,
     phase_a_operation_diagnosis, attention_operation_diagnosis, attention_core_diagnosis,
+    plane_upload_diagnosis,
     device, context_bytes, width,
     residual_bytes,
     logits_bytes, readback_bytes, staged.block_align, reference_path, transcript_path, logits_path,
@@ -5248,6 +5273,7 @@ fn generate_resident_mode(
   phase_a_operation_diagnosis: bool,
   attention_operation_diagnosis: bool,
   attention_core_diagnosis: bool,
+  plane_upload_diagnosis: bool,
 ) -> GenerationParts {
   if prompt_token_ids.len() < 1 || prompt_token_ids.len() > layer_olmoe.MAX_PREFILL_TOKENS
     || eog_token_ids.len() < 1 || eog_token_ids.len() > 256
@@ -5278,7 +5304,8 @@ fn generate_resident_mode(
   outcome := execute_mode(
     pack_path, geometry_path, expected_geometry, source_identity, token_view, "", "", width_view,
     "", steps_view, "-", "-", resident_view, true, sampled, phase_a_operation_diagnosis,
-    attention_operation_diagnosis, attention_core_diagnosis, sampling_seed, eog_token_ids,
+    attention_operation_diagnosis, attention_core_diagnosis, plane_upload_diagnosis,
+    sampling_seed, eog_token_ids,
     max_tokens, tokens, graphs, top,
     stepped)
   token_ids_json := render_generation_ids(outcome, stepped)
@@ -5297,7 +5324,7 @@ pub fn generate_resident(
 ) -> GenerationParts {
   return generate_resident_mode(
     pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids,
-    max_tokens, cache_budget_bytes, false, 0, false, false, false)
+    max_tokens, cache_budget_bytes, false, 0, false, false, false, false)
 }
 
 pub fn generate_resident_sampled(
@@ -5313,7 +5340,7 @@ pub fn generate_resident_sampled(
 ) -> GenerationParts {
   return generate_resident_mode(
     pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids,
-    max_tokens, cache_budget_bytes, true, seed, false, false, false)
+    max_tokens, cache_budget_bytes, true, seed, false, false, false, false)
 }
 
 // Qualification-only item-71 entry. Existing providers and diagnostic APIs above keep the shipped
@@ -5331,7 +5358,7 @@ pub fn generate_resident_sampled_phase_a_operation_diagnosis(
 ) -> GenerationParts {
   return generate_resident_mode(
     pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids,
-    max_tokens, cache_budget_bytes, true, seed, true, false, false)
+    max_tokens, cache_budget_bytes, true, seed, true, false, false, false)
 }
 
 // Qualification-only item-72 entry. It keeps item 71's parent clocks but computes the attention
@@ -5349,7 +5376,7 @@ pub fn generate_resident_sampled_attention_operation_diagnosis(
 ) -> GenerationParts {
   return generate_resident_mode(
     pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids,
-    max_tokens, cache_budget_bytes, true, seed, true, true, false)
+    max_tokens, cache_budget_bytes, true, seed, true, true, false, false)
 }
 
 // Qualification-only item-73 entry. Six core operation sequences retain the source graph's
@@ -5367,7 +5394,25 @@ pub fn generate_resident_sampled_attention_core_diagnosis(
 ) -> GenerationParts {
   return generate_resident_mode(
     pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids,
-    max_tokens, cache_budget_bytes, true, seed, true, true, true)
+    max_tokens, cache_budget_bytes, true, seed, true, true, true, false)
+}
+
+// Qualification-only item-76 entry. It retains normal unsplit phase A and partitions only the
+// existing plane-upload wall into staging priming and the checked native transfer call.
+pub fn generate_resident_sampled_plane_upload_diagnosis(
+  pack_path: str,
+  geometry_path: str,
+  expected_geometry: str,
+  source_identity: alignpack.SourceIdentity,
+  borrow prompt_token_ids: array<i64>,
+  borrow eog_token_ids: array<i64>,
+  max_tokens: i64,
+  cache_budget_bytes: i64,
+  seed: i64,
+) -> GenerationParts {
+  return generate_resident_mode(
+    pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids,
+    max_tokens, cache_budget_bytes, true, seed, false, false, false, true)
 }
 
 // The public diagnostic API retains its existing grammar and exact requested-step semantics.
@@ -5393,7 +5438,7 @@ pub fn execute(
   return execute_mode(
     pack_path, geometry_path, "", identity, tokens_text, reference_path, transcript_path,
     width_text, logits_path, steps_text, kv_save_text, kv_load_text, resident_text, false, false,
-    false, false, false, 0, eog_ids, 0, tokens, graphs, top, stepped)
+    false, false, false, false, 0, eog_ids, 0, tokens, graphs, top, stepped)
 }
 
 // ---------------------------------------------------------------------------------------------

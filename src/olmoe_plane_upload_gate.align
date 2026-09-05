@@ -1,0 +1,6 @@
+module olmoe_plane_upload_gate
+
+import olmoe_remaining_decode_overhead_gate
+
+pub fn main(args: array<str>) -> Result<(), Error> =
+olmoe_remaining_decode_overhead_gate.plane_upload_main(args)

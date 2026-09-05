@@ -15,20 +15,25 @@ staging; exclude stage capacity construction, preserve unsplit execution and all
 child clocks only with successful remaining steps. The immutable eligibility floor is 871,174,011 ns.
 Rejected K/V copy candidates remain removed; this diagnosis makes no speedup claim.
 
-**Next actions.** Implement the committed ledger's source counters, helper JSON and focused owners.
-Run the narrow owner checks, commit the complete implementation, then run the exact clean-head
-fixed-host diagnosis. Record its measured successor, complete one comprehensive review and exact-head
+**Next actions.** Run the exact clean-head fixed-host diagnosis from the complete owner-tested
+implementation checkpoint. Record its measured successor, complete one comprehensive review and exact-head
 preflight, publish raw evidence, merge, refresh main and continue the next eligible capability.
 
 **Blocker.** None. Item 76 is active; later implementation depends on its measured child selection.
 Other material remaining-decode leaves remain eligible if neither upload child clears the floor.
+The implementation and model-free verification are complete; fixed-host qualification is next.
 
 **Latest durable verification.** Item 75's final owner self-test passed on merged `d9fd56c`, whose
 `4439d41bb4cb97b6f20a9add675312714fc41809` tree matches tested integration. The existing 23-leaf
 validator accepted the four item-75 control records and exact remaining-decode sums; no new model
-run was needed for current selection. Item 76's implementation checks have not started.
+run was needed for current selection. Item 76 passed `gmake fmt`, pinned
+`./scripts/alignc check-per-unit src/olmoe_plane_upload_gate.align` (17 units),
+`scripts/test-olmoe-plane-upload` (all API/failure/schema/accounting/cleanup cases),
+`gmake runtime-provider-smoke` (sampler vectors plus 61 CLI assertions), Python compilation,
+full `scripts/run-olmoe-plane-upload-diagnosis --self-test` and `git diff --check`. The runner pins
+133 source dependencies plus its own tracked bytes and the managed runtime archive.
 
-**Intentional uncommitted files.** None at the ledger checkpoint. Models, evidence and builds stay
+**Intentional uncommitted files.** None at the implementation checkpoint. Models, evidence and builds stay
 outside Git.
 
 ## Merged checkpoint: R8-OLMOE-V-PREPARATION-BOUNDARY (PR #197, 2026-09-05)

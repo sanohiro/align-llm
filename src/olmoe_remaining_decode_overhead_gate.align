@@ -162,6 +162,12 @@ ClaimIo {
   other_ns: i64,
 }
 
+PlaneUpload {
+  total_ns: i64,
+  priming_ns: i64,
+  native_staging_ns: i64,
+}
+
 fn ir_ok(value: model_ir.IrStatus) -> bool = match value {
   Ok => true,
   Error => false,
@@ -220,7 +226,7 @@ fn digest_text(value: str) -> string {
 fn run(
   args: array<str>, detailed: bool, other_detailed: bool, compute_detailed: bool,
   claim_detailed: bool, phase_a_operation_detailed: bool, attention_operation_detailed: bool,
-  attention_core_detailed: bool,
+  attention_core_detailed: bool, plane_upload_detailed: bool,
 ) -> Result<(), Error> {
   if args.len() != 7 { return Err(Error.Invalid) }
   model_path := args[1]
@@ -270,7 +276,11 @@ fn run(
   }
 
   phase_started = time.instant()
-  generated := if attention_core_detailed {
+  generated := if plane_upload_detailed {
+    moe_decode_step.generate_resident_sampled_plane_upload_diagnosis(
+      pack_path, geometry_path, geometry_view, source_identity, prepared.token_ids,
+      prepared.eog_token_ids, maximum_tokens, CACHE_BUDGET_BYTES, seed)
+  } else if attention_core_detailed {
     moe_decode_step.generate_resident_sampled_attention_core_diagnosis(
       pack_path, geometry_path, geometry_view, source_identity, prepared.token_ids,
       prepared.eog_token_ids, maximum_tokens, CACHE_BUDGET_BYTES, seed)
@@ -497,6 +507,29 @@ fn run(
     document.write(",\"claim_io\":")
     document.write(claim_view)
   }
+  if plane_upload_detailed {
+    upload_total := generated.outcome.remaining_decode_plane_upload_ns
+    priming := generated.outcome.remaining_decode_plane_priming_ns
+    native_staging := generated.outcome.remaining_decode_plane_native_staging_ns
+    // Bound each child before subtraction so malformed accounting cannot overflow the sum.
+    if upload_total < 0 || priming < 0 || native_staging < 0 || priming > upload_total
+      || native_staging != upload_total - priming {
+      return Err(Error.Invalid)
+    }
+    if (maximum_tokens == 2 && upload_total != 0)
+      || (maximum_tokens == 128 && (priming == 0 || native_staging == 0)) {
+      return Err(Error.Invalid)
+    }
+    upload := PlaneUpload {
+      total_ns: upload_total,
+      priming_ns: priming,
+      native_staging_ns: native_staging,
+    }
+    upload_json := json.encode(upload)
+    upload_view: str := upload_json
+    document.write(",\"plane_upload\":")
+    document.write(upload_view)
+  }
   if phase_a_operation_detailed {
     operation_subtotal := generated.outcome.remaining_decode_phase_a_attention_ns
       + generated.outcome.remaining_decode_phase_a_router_ns
@@ -561,25 +594,28 @@ fn run(
 }
 
 pub fn phase_a_operation_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, true, true, false, false)
+run(args, true, true, true, true, true, false, false, false)
 
 pub fn attention_operation_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, true, true, true, false)
+run(args, true, true, true, true, true, true, false, false)
 
 pub fn attention_core_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, true, true, true, true)
+run(args, true, true, true, true, true, true, true, false)
+
+pub fn plane_upload_main(args: array<str>) -> Result<(), Error> =
+run(args, true, true, true, true, false, false, false, true)
 
 pub fn claim_detailed_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, true, false, false, false)
+run(args, true, true, true, true, false, false, false, false)
 
 pub fn compute_detailed_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, false, false, false, false)
+run(args, true, true, true, false, false, false, false, false)
 
 pub fn other_detailed_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, false, false, false, false, false)
+run(args, true, true, false, false, false, false, false, false)
 
 pub fn detailed_main(args: array<str>) -> Result<(), Error> =
-run(args, true, false, false, false, false, false, false)
+run(args, true, false, false, false, false, false, false, false)
 
 pub fn main(args: array<str>) -> Result<(), Error> =
-run(args, false, false, false, false, false, false, false)
+run(args, false, false, false, false, false, false, false, false)
