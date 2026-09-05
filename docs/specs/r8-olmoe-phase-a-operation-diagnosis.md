@@ -1,6 +1,6 @@
 # R8 OLMoE phase-A operation diagnosis
 
-Status: implemented, measured, and reviewed; publication pending, 2026-09-05
+Status: complete; merged as PR #193, 2026-09-05
 
 Roadmap owner: item 71, `R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS`
 
@@ -148,3 +148,5 @@ The one comprehensive high-effort Codex review covered head
 verdict was clean and the complete finding set was `none`. The review's own sandbox could execute
 the native graph-partition assertions but could not acquire the managed-toolchain cache lock; the
 same complete `make layer-forward-smoke` owner had already passed outside that review sandbox.
+Exact-head preflight and all three required hosted checks passed at `49184b2`; PR #193 merged as
+`ce7493832f7ca8d8ddbb44d89dfc17402b4adcb3`.

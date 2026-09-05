@@ -1716,12 +1716,15 @@ The current forward delivery order is:
     narrower direct diagnosis of the attention prefix.
 
 72. **R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS — distinguish projection, attention-core, and
-    output/residual work. Not started.** Preserve item 71's fixed request, exact execution and
+    output/residual work. Active; design complete.**
+    [`r8-olmoe-attention-operation-diagnosis.md`](r8-olmoe-attention-operation-diagnosis.md) is the
+    authoritative ledger and closure matrix. Preserve item 71's fixed request, exact execution and
     immutable floor. Partition the already-built attention prefix at table-owned tensor anchors so
     that rows 0-13 (normalization and Q/K/V projections), rows 14-27 (KV concatenation and attention
     core), and rows 28-31 (output projection and residual) are direct ordered graph-compute walls.
-    Keep normal provider execution unchanged, forbid the rejected live-width candidate, and select
-    only a class whose median reaches the existing 871,174,011-ns floor.
+    Execute the already-measured router suffix only to preserve the full graph result, keep normal
+    provider and item-71 execution unchanged, forbid the rejected live-width candidate, and select
+    only an attention class whose median reaches the existing 871,174,011-ns floor.
 
 ### Status (2026-08-28)
 
