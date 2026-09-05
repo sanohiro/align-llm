@@ -20,15 +20,15 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PREDECESSOR_PATH = ROOT / "scripts/run-olmoe-claim-io-diagnosis"
+PREDECESSOR_PATH = ROOT / "scripts/run-olmoe-exact-safe-decode-boundaries"
 PREDECESSOR_LOADER = SourceFileLoader(
-    "olmoe_claim_io_for_expert_phase_b_operation_diagnosis", str(PREDECESSOR_PATH)
+    "olmoe_exact_safe_for_expert_phase_b_operation_diagnosis", str(PREDECESSOR_PATH)
 )
 PREDECESSOR_SPEC = importlib.util.spec_from_loader(
     PREDECESSOR_LOADER.name, PREDECESSOR_LOADER
 )
 if PREDECESSOR_SPEC is None or PREDECESSOR_SPEC.loader is None:
-    raise RuntimeError("cannot load the claim-I/O owner")
+    raise RuntimeError("cannot load the exact-safe decode owner")
 previous = importlib.util.module_from_spec(PREDECESSOR_SPEC)
 sys.modules[PREDECESSOR_LOADER.name] = previous
 PREDECESSOR_SPEC.loader.exec_module(previous)
@@ -98,7 +98,7 @@ SOURCE_PATHS = unique_paths((
     ROOT / "scripts/ggml_shim_stub.c",
     ROOT / "scripts/build-ggml-shim",
 ))
-EXPECTED_SOURCE_MANIFEST_SHA256 = "31b06d949e9cf74d45fad7a6788b341074700d675aab2cf2eae7e9301f53f877"
+EXPECTED_SOURCE_MANIFEST_SHA256 = "4155d9c1339f9ca6ab4cbea25e1ea706657cd38ffe8e5cebeb39193997de1b80"
 
 HELPER_KEYS = previous.HELPER_KEYS | {"expert_phase_b_operations"}
 CLASS_ORDER = (
@@ -336,17 +336,35 @@ def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
 def inherited_result(result: dict[str, Any]) -> dict[str, Any]:
     samples = [inherited_sample(sample) for sample in result["samples"]]
     return {
-        "schema_version": 1, "artifact_kind": "R8_OLMOE_CLAIM_IO_DIAGNOSIS",
+        "schema_version": 1, "artifact_kind": "R8_OLMOE_EXACT_SAFE_DECODE_BOUNDARIES",
         "status": "COMPLETE", "model": result["model"],
         "baseline": {
-            "full_helper_wall_values_ns": previous.BASELINE_FULL_VALUES_NS,
-            "full_helper_wall_median_ns": previous.BASELINE_FULL_MEDIAN_NS,
-            "claim_io_median_ns": previous.BASELINE_CLAIM_IO_MEDIAN_NS,
-            "floor_ppm": previous.FLOOR_PPM, "floor_ns": previous.FLOOR_NS,
+            "full_helper_wall_values_ns": previous.BASELINE_VALUES_NS,
+            "full_helper_wall_median_ns": previous.BASELINE_MEDIAN_NS,
+            "floor_ppm": previous.FLOOR_PPM,
+            "minimum_gain_ns": previous.MINIMUM_GAIN_NS,
+            "candidate_ceiling_ns": previous.CANDIDATE_CEILING_NS,
         },
-        "candidate": result["candidate"], "task": result["task"],
+        "candidate": result["candidate"], "intervention": result["intervention"],
+        "task": result["task"],
         "environment": result["environment"], "samples": samples,
         "aggregate": previous.aggregate(samples), "elapsed_ns": result["elapsed_ns"],
+    }
+
+
+def intervention_record() -> dict[str, Any]:
+    return {
+        "plane_source": "HOST_VISIBLE_CONCAT_SLOT",
+        "plane_compare": "EXACT_BYTES",
+        "plane_v_fast_path": "UNALIGNED_SAFE_AARCH64_4X4",
+        "expert_source": "FIXED_STRIDE_CACHE",
+        "direct_scope": "PROVIDER_GENERATION",
+        "fallback": "COMPACT_CLAIM",
+        "cache_key_bytes": previous.CACHE_KEY_BYTES,
+        "cache_slot_count": previous.CACHE_SLOT_COUNT,
+        "cache_capacity_bytes": previous.CACHE_CAPACITY_BYTES,
+        "full_cache_bytes_fetched": previous.FULL_CACHE_BYTES_FETCHED,
+        "full_cache_to_claim_copy_ns": 0,
     }
 
 
@@ -422,10 +440,7 @@ def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
 
 
 def synthetic_samples() -> list[dict[str, Any]]:
-    samples = previous.synthetic_samples({
-        "FILE_PREAD": 20, "BLOCK_TO_CLAIM_COPY": 20, "CLAIM_TO_CACHE_COPY": 20,
-        "CACHE_TO_CLAIM_COPY": 20, "OTHER_CLAIM_IO": 20,
-    })
+    samples = previous.synthetic_samples(BASELINE_VALUES_NS)
     for sample in samples:
         sample["conditioning"]["expert_phase_b_operations"] = dict.fromkeys(OPERATION_KEYS, 0)
         total = sample["full"]["decode_compute"]["expert_ns"]
@@ -448,7 +463,8 @@ def synthetic_result(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
             "floor_ppm": FLOOR_PPM, "floor_ns": FLOOR_NS,
         },
-        "candidate": inherited["candidate"], "boundary": boundary_record(),
+        "candidate": inherited["candidate"], "intervention": intervention_record(),
+        "boundary": boundary_record(),
         "task": inherited["task"], "environment": inherited["environment"],
         "samples": samples, "aggregate": aggregate(samples), "elapsed_ns": 1,
     }
@@ -756,6 +772,7 @@ def main() -> int:
                     "pack_sha256": pack_sha256, "geometry_sha256": geometry_sha256,
                     "cache_budget_bytes": BUDGET,
                 },
+                "intervention": intervention_record(),
                 "boundary": boundary_record(),
                 "task": {
                     "task_id": task_document["id"], "task_sha256": task_sha256,
@@ -795,7 +812,7 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (
-        ExpertOperationError, previous.ClaimIoError, compute.ComputeError,
+        ExpertOperationError, previous.ExactSafeBoundaryError, compute.ComputeError,
         compute.predecessor.BoundaryError, compute.other.OtherError,
         compute.other.predecessor.ResidualError, transfer.TransferError,
         diagnosis.DiagnosisError, transfer.phase.DiagnosisError, owner.DiagnosisError,
