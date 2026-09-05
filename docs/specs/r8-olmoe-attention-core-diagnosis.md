@@ -17,7 +17,8 @@ It makes no speedup claim. Item 63's rejected live-width intervention remains fo
 | Consumer | the next R8 implementation ledger for the selected material operation sequence; R8 remains open |
 | Fixed inputs | inherit item 72's exact model, pack, geometry, task/prompt, seed 5, temperature 300,000 micros, maximum 128, EOG rule, 975,175,680-byte cache budget, 87-id chain, 86 completion tokens and output SHA-256 `aac1d1158144da0b3afd4f4cdff7c10df240adaa85529b8a21839a0c89777e52` |
 | Execution | new qualification-only mode constructs nine borrowed graph slices over the already-built and allocated full-width phase-A source graph: projection 0–13; six core slices below; output/residual 28–31; router 32–36. All slices exist before any compute. Source tensor operations, operands, marks and allocator remain unchanged |
-| Core order/membership | `QK_PREPARATION` rows 14–18 (Q/K permutations, K contiguous conversion, concatenation, padding); `SCORE_MATMUL` row 19; `MASKED_SOFTMAX` row 20; `VALUE_PREPARATION` rows 21–24 (V permutation, contiguous conversion, concatenation, padding); `VALUE_MATMUL` row 25; `OUTPUT_PACKING` rows 26–27 (permutation and contiguous conversion) |
+| Core selection order/membership | `QK_PREPARATION` rows 14–18 (Q/K permutations, K contiguous conversion, concatenation, padding); `SCORE_MATMUL` row 19; `MASKED_SOFTMAX` row 20; `VALUE_PREPARATION` rows 21–24 (V permutation, contiguous conversion, concatenation, padding); `VALUE_MATMUL` row 25; `OUTPUT_PACKING` rows 26–27 (permutation and contiguous conversion) |
+| Compute order | projection, VALUE_PREPARATION, QK_PREPARATION, SCORE_MATMUL, MASKED_SOFTMAX, VALUE_MATMUL, OUTPUT_PACKING, output/residual, router. V preparation precedes the score branch to retain the source core traversal and allocator lifetimes; selection tie order remains table order |
 | Selection ABI | reuse `ggml_ffi.graph_select_slot_range`; exact populated table-owned slots occur once in the source graph and retain its internal topological order. Core node counts are exactly 5, 1, 1, 4, 1, 2; all nine slices total the source count. Output/residual has 4 nodes only on the last layer, otherwise 2 |
 | Ownership/allocation | one diagnostic context owns all nine graph structures and is freed before source graph/tensor contexts, allocator and buffers. No slice owns tensors or allocators. Allocate sufficient diagnostic context bytes for nine graph structures; normal/item-71/item-72 allocation and execution remain unchanged. Added outcome counters are zero-initialized scalars |
 | Compute failure | `R5_GGML_INIT` / `attention_core_partition` for malformed/missing selections or wrong counts; `R5_COMPUTE` with `status_qk_preparation`, `status_score_matmul`, `status_masked_softmax`, `status_value_preparation`, `status_value_matmul`, or `status_output_packing` for the first failing core compute; skip later computes and never commit a failed step |
@@ -49,7 +50,7 @@ capability is needed.
 | Owner/path | Construction and success | Failure/malformed and early exit | Cleanup | Exact regression/evidence |
 | --- | --- | --- | --- | --- |
 | `moe_decode_step` graph selection | nine ranges selected by slot membership; exact counts and dependencies | absent slice or wrong count fails before computing | diagnostic context freed first | layer smoke's branched range fixture extended to singleton/multiple core slices; real fixed output |
-| `moe_decode_step` compute | declared class order; six direct clocks close to parent | first failing class labels status and skips all later work | existing common teardown | class-order/failure fixture and real output/lifetime qualification |
+| `moe_decode_step` compute | declared compute order; six direct clocks close to parent | first failing class labels status and skips all later work | existing common teardown | class-order/failure fixture and real output/lifetime qualification |
 | Existing modes | normal source graph; item 71 two slices; item 72 four slices | retain existing errors and requested-step behavior | unchanged owners | runtime-provider smoke; existing layer smoke; source-path inspection |
 | `moe_model_forward` / step counters | zero initialization; successful-step-after-first commit | failed steps contribute no remaining-decode counters | scalars only | helper zero short/full positive equations, failed-step inspection |
 | Shared helper and new entry | only new helper enables core mode; inherited schemas unchanged | bad arguments/accounting reject before printing | invocation-owned state | helper type-check/build; runtime-provider smoke; full real records |
@@ -59,13 +60,13 @@ capability is needed.
 
 Generic monomorphization, asynchronous escape, move/source-nulling, shared connection state and
 concurrent production calls are N/A: synchronous graph slices borrow only existing tensors within
-one layer frame. The same source graph remains the allocator's ownership domain; selected slice
-execution must preserve all live inputs even when its order differs from the original traversal.
+one layer frame. The same source graph remains the allocator's ownership domain; core execution preserves its
+original V-before-score traversal so unmarked score/softmax temporaries retain valid lifetimes.
 
 ## Author consistency pass
 
 The six nonoverlapping ranges cover every core row exactly once and each dependency comes from
-an earlier class or the projection prefix. Singleton score, softmax and value classes expose the
+an earlier compute class or the projection prefix. Singleton score, softmax and value classes expose the
 individual matrix/normalization operations; preparation and packing expose only their stated short
 sequences. Every class shares the inherited floor and no result authorizes the rejected width
 change. The ledger, closure matrix and helper account for the same six clocks and retain all parent
