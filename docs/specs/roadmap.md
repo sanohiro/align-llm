@@ -1827,7 +1827,9 @@ The current forward delivery order is:
     child, without another unchanged model run.
 
 79. **R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS — identify the material expert output operation.
-    Next.** Item 77's exact leaf projection measures `EXPERT_PHASE_B` at a 1,175,633,134-ns median,
+    In progress.**
+    [`r8-olmoe-expert-phase-b-operation-diagnosis.md`](r8-olmoe-expert-phase-b-operation-diagnosis.md)
+    owns the active ledger. Item 77's exact leaf projection measures `EXPERT_PHASE_B` at a 1,175,633,134-ns median,
     above the unchanged 871,174,011-ns attribution floor. Partition the existing phase-B graph by
     exact checked node-table membership while preserving normal unsplit execution, cache tensors,
     arithmetic and reduction order. Use the fixed request and select only a measured material child;

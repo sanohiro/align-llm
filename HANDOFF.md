@@ -3,38 +3,29 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-POST-STAGING-SAMPLED-RUNTIME-DECISION (2026-09-06)
+## Active: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (2026-09-06)
 
-Branch `agent/r8-olmoe-post-staging-sampled-runtime-decision`, based on merged main
-`62f6f96747947078a048cbf32a3dd8c948db6743` (PR #199). Align remains pinned to
+Branch `agent/r8-olmoe-expert-phase-b-operation-diagnosis`, based on merged main
+`df2e05122a9d0f6593207b3f90c6d87c3d259ffa` (PR #200). Align remains pinned to
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger:
-`docs/specs/r8-olmoe-post-staging-sampled-runtime-decision.md`.
+`docs/specs/r8-olmoe-expert-phase-b-operation-diagnosis.md`.
 
-Item 78's clean-head qualification evaluated `294e8254a5a5c8d1968bb6c349a6a651a5eeceec`
-in 456.170 seconds and recorded `NOT_MET`. Both arms passed all four portfolios at candidate 5
-with the same patch. Local median time to a passing patch was 14,174,269,291 ns and runtime median
-was 84,061,674,562 ns, a -4,930,583-ppm gain with runtime slower in every pair. The complete raw
-JSON is 35,360 bytes, SHA-256 `772d9b08a0222744b32c63618bd9d01d5a7ff8df29e50b1f063fc59122131796`.
-Item 77's independently qualified native change remains shipped.
+Item 78 merged as PR #200 with decision `NOT_MET`; item 77's independently qualified native
+staging remains shipped. Item 77's exact leaf records select `EXPERT_PHASE_B` at a
+1,175,633,134-ns median, above the unchanged 871,174,011-ns attribution floor. Item 79 partitions
+that existing 24-node top-8 graph into exact checked operation ranges without changing normal
+execution.
 
-**Next actions.** Commit the consolidated review repair, rerun the complete publication self-test
-and strict raw replay, then run exact-head preflight, publish and merge. Start item 79's
-expert-phase-B operation diagnosis ledger and implementation immediately after merge.
+**Next actions.** Commit the item-79 ledger checkpoint, implement the opt-in graph slices, counters,
+helper, runner and focused regressions, then run the named qualification and publication workflow.
 
-**Blocker.** None. The pinned Docker validator image is available by its immutable SHA; use the
-existing allowed image override to resolve it directly. No image rebuild or task relaxation is
-needed. Historical source-pin validators remain intact; this owner freezes the current closure.
+**Blocker.** None.
 
-**Latest durable verification.** The complete candidate `--self-test`, fixed host identity,
-candidate Git-object reconstruction and strict raw replay passed before review. Comprehensive review
-at `31fec05` found three P2 publication-safety defects: incomplete primary-timer enclosure, deletion
-of CID/work files after terminal cleanup refusal, and matrix claims without discriminating tests.
-The consolidated repair adds the stronger elapsed invariant, retains unresolved ownership files,
-and covers source/runtime/Git/delegation/outer-cleanup failures with actual model-free regressions.
-Repair-focused tests pass; exact committed-head publication verification remains.
+**Latest durable verification.** PR #200 merged item 78 after its consolidated review repair,
+exact-head preflight and required hosted checks. No item-79 owner has run yet.
 
-**Intentional uncommitted files.** Consolidated review repair only. Models, raw evidence and build
-products remain outside Git.
+**Intentional uncommitted files.** Item-79 design ledger and continuity update only. Models, raw
+evidence and build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-NATIVE-STAGING-BOUNDARY (PR #199, 2026-09-05)
 
