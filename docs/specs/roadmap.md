@@ -1796,13 +1796,28 @@ The current forward delivery order is:
     above the fixed floor: `MEASURED_UPLOAD_SEAM_ELIGIBLE / NATIVE_STAGING`. Priming measured
     524,104,795 ns and is below floor. Full-helper wall is descriptive, not a speedup claim.
 
-77. **R8-OLMOE-NATIVE-STAGING-BOUNDARY — evaluate exact checked KV transfer. Next.**
-    Item 76 selects the existing checked native staging call. Define the smallest supported
-    byte-exact implementation and its owner/closure ledger before coding; inspect K block copies
-    and the strided V transfer without attributing the whole parent wall to either one. Preserve
+77. **R8-OLMOE-NATIVE-STAGING-BOUNDARY — evaluate exact checked KV transfer. Complete.**
+    [`r8-olmoe-native-staging-boundary.md`](r8-olmoe-native-staging-boundary.md) owns the committed ledger.
+    Item 76 merged as `d32d3cb`, the contemporary control. Replace only the existing AArch64 V
+    scalar transfer with unaligned-safe 4-by-4 byte-lane tiles and scalar tails; keep validation,
+    K block copies, fallback, comparison and all Align/helper sources unchanged. The native
+    parent measurement does not attribute the whole wall to V. Preserve
     refusal precedence, source/destination layouts, unsplit execution, cache accounting and native
     lifetimes. Use a contemporary control and a precommitted complete-request paired shipping
     gate; remove production unless it passes. Below-floor priming reuse is not selected.
+    Evaluated `3fb3f11` completed in 183.452 seconds with all exact boundaries passing and
+    recorded `MET`: all four paired gains were positive; median paired saving was
+    1,047,849,541 ns / 66,571 ppm against required 871,174,011 ns. Candidate median
+    14,626,648,395 ns cleared the historical 16,552,306,197-ns ceiling. Keep the exact native
+    V tiles and direct byte/range owner; the next consumer remeasures the primary metric.
+
+78. **R8-OLMOE-POST-STAGING-SAMPLED-RUNTIME-DECISION — remeasure time to a passing patch. Next.**
+    After item 77 merges, run item 69's sampled provider portfolio against the fresh isolated
+    local server on the current source/runtime closure. Keep seeds, task, sampling, first-pass
+    stop, balanced arm order, Docker validator and primary gate; do not transplant item 77's
+    secondary-metric floor or ceiling. Independently own the simultaneous server/helper process
+    groups, daemon-side validator cleanup, strict records, current identities and complete-result
+    deadline. A passing fixed request alone does not establish a primary-metric improvement.
 
 ### Status (2026-08-28)
 

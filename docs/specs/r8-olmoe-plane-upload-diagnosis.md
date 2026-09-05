@@ -1,6 +1,6 @@
 # R8 OLMoE plane-upload diagnosis
 
-Status: complete; `MEASURED_UPLOAD_SEAM_ELIGIBLE / NATIVE_STAGING`, 2026-09-05.
+Status: complete; `MEASURED_UPLOAD_SEAM_ELIGIBLE / NATIVE_STAGING`; merged in PR #198 as `d32d3cb`, 2026-09-05.
 Roadmap owner: item 76, `R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS`.
 Prerequisite: item 75 merged as `d9fd56cd5170a69a6a8a3ac2fc8f6fed76e7bdc3` (PR #197).
 
@@ -187,3 +187,8 @@ Bounded retrospective: the small helper fixture needed valid sampled UTF-8 outpu
 a dedicated ASCII-output head owns that test concern without relaxing production decoding. The
 new runner independently freezes the actual runtime archive and owns its launched process groups,
 closing its own identity/cleanup promises without changing historical owners or adding a global gate.
+
+PR #198 merged as `d32d3cbc2939e1525f452056e8e720946930d4df`, preserving tested integration
+tree `aa14ec68e9360b362d3fe7860e9e569885f26726`. Comprehensive review had no findings; exact-head
+preflight and all three required checks passed. The [complete original raw JSON](https://github.com/sanohiro/align-llm/pull/198#issuecomment-5549220833)
+was retrieved and hash-verified. The merged-head self-test passed with both source/evaluated ancestors.
