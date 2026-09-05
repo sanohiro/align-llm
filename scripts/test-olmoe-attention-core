@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Exercise the real core-diagnosis entry with a tiny model and an instrumented stub."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import subprocess
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+FIELDS = (
+    "qk_preparation", "score_matmul", "masked_softmax", "value_preparation",
+    "value_matmul", "output_packing",
+)
+ROWS = (14, 19, 20, 21, 25, 26)
+
+# Compile the checked-in source unchanged. Only the test's C wrapper injects failures and observes
+# actual graph membership/order; no production test option or environment input is added.
+ENTRY = '''module core_smoke
+import alignpack
+import gguf
+import moe_decode_step
+import std.fs
+import core.json
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  snapshot := gguf.open_snapshot(args[1])?
+  identity := alignpack.verify_source_identity_snapshot(snapshot, args[2])?
+  geometry := fs.read_file(args[3])?
+  eog: i64 := json.decode(args[4])?
+  maximum: i64 := json.decode(args[5])?
+  mut prompt_builder: array_builder<i64> := array_builder()
+  prompt_builder.push(3)
+  prompt_builder.push(17)
+  prompt_builder.push(16)
+  prompt := prompt_builder.build()
+  mut eog_builder: array_builder<i64> := array_builder()
+  eog_builder.push(eog)
+  eogs := eog_builder.build()
+  generated := if args[6] == "core" {
+    moe_decode_step.generate_resident_sampled_attention_core_diagnosis(
+      args[2], args[3], geometry, identity, prompt, eogs, maximum, 65536, 5)
+  } else if args[6] == "attention" {
+    moe_decode_step.generate_resident_sampled_attention_operation_diagnosis(
+      args[2], args[3], geometry, identity, prompt, eogs, maximum, 65536, 5)
+  } else {
+    moe_decode_step.generate_resident_sampled(
+      args[2], args[3], geometry, identity, prompt, eogs, maximum, 65536, 5)
+  }
+  print(generated.outcome.code)
+  print(generated.outcome.detail)
+  print(generated.token_ids_json)
+  print(generated.outcome.decode_steps_completed)
+  print(generated.outcome.contexts_created - generated.outcome.contexts_freed)
+  print(generated.outcome.ggml_buffers_created - generated.outcome.ggml_buffers_freed)
+  print(generated.outcome.backends_created - generated.outcome.backends_freed)
+  print(generated.outcome.gallocrs_created - generated.outcome.gallocrs_freed)
+  print(generated.outcome.graph_balance_failures)
+  print(generated.outcome.remaining_decode_attention_core_ns)
+__CLOCKS__
+  return Ok(())
+}
+'''.replace("__CLOCKS__", "\n".join(
+    f"  print(generated.outcome.remaining_decode_attention_{name}_ns)" for name in FIELDS
+))
+
+WRAPPER = r'''
+#define align_ggml_graph_new core_graph_new
+#define align_ggml_graph_select_slot_range core_select
+#define align_ggml_graph_compute core_compute
+#include "ggml_shim_stub.c"
+#undef align_ggml_graph_new
+#undef align_ggml_graph_select_slot_range
+#undef align_ggml_graph_compute
+#include <stdio.h>
+#include <stdlib.h>
+
+static int first_rows[ALIGN_STUB_MAX_GRAPHS];
+static int occurrences[37];
+static align_stub_tensor *core_order[14];
+static int core_at;
+static int failed;
+
+void *align_ggml_graph_new(void *ctx) {
+    align_stub_graph *g = core_graph_new(ctx);
+    if (g) first_rows[g - align_stub_graphs] = -1;
+    return g;
+}
+
+void *align_ggml_graph_select_slot_range(void *ctx, void *graph, void *slots,
+                                        int64_t first, int64_t last) {
+    const char *refuse = getenv("CORE_TEST_REFUSE_ROW");
+    align_stub_graph *source = graph;
+    int row = (int) first - 21;
+    if (refuse && row == atoi(refuse)) return NULL;
+    align_stub_graph *g = core_select(ctx, graph, slots, first, last);
+    if (g) first_rows[g - align_stub_graphs] = row;
+    if (row == 0) {
+        int count = 0;
+        core_at = 0;
+        for (int i = 0; i < source->count; i++) {
+            for (int slot = 21 + 14; slot <= 21 + 27; slot++) {
+                if (source->nodes[i] == align_stub_slot(slots, slot)) {
+                    if (count >= 14) abort();
+                    core_order[count++] = source->nodes[i];
+                }
+            }
+        }
+        if (count != 14) abort();
+    }
+    return g;
+}
+
+int32_t align_ggml_graph_compute(void *backend, void *graph) {
+    align_stub_graph *g = graph;
+    int row = first_rows[g - align_stub_graphs];
+    const char *refuse = getenv("CORE_TEST_FAIL_ROW");
+    const char *which = getenv("CORE_TEST_FAIL_OCCURRENCE");
+    if (failed) { fprintf(stderr, "CORE_TEST_AFTER_FAILURE\n"); return 97; }
+    if (row >= 14 && row <= 26) {
+        fprintf(stderr, "CORE_TEST_ROW %d\n", row);
+        occurrences[row]++;
+        if (refuse && row == atoi(refuse) &&
+            occurrences[row] == (which ? atoi(which) : 1)) {
+            failed = 1;
+            return 91;
+        }
+        for (int i = 0; i < g->count; i++) {
+            if (core_at >= 14 || g->nodes[i] != core_order[core_at++]) {
+                fprintf(stderr, "CORE_TEST_ORDER_FAILURE\n");
+                return 98;
+            }
+        }
+    }
+    if (row == 28 && core_at != 14) return 99;
+    return core_compute(backend, graph);
+}
+'''
+
+
+def run(argv: list[str], work: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(argv, cwd=work, env=env, text=True, capture_output=True, timeout=180)
+    if result.returncode:
+        raise RuntimeError(f"{argv[0]} failed ({result.returncode}): {result.stderr[-8000:]}")
+    return result
+
+
+def main() -> None:
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("CORE_TEST_") and not key.startswith("ALIGN_LLM_GGML_")}
+    with tempfile.TemporaryDirectory(prefix="align-core-smoke-") as raw:
+        work = Path(raw)
+        source = work / "src"
+        source.mkdir()
+        for path in (ROOT / "src").glob("*.align"):
+            shutil.copy2(path, source / path.name)
+        (source / "core_smoke.align").write_text(ENTRY)
+        (work / "wrapper.c").write_text(WRAPPER)
+        library = work / ("libalign_ggml_shim.dylib" if platform.system() == "Darwin"
+                          else "libalign_ggml_shim.so")
+        run([env.get("CC", "cc"), "-O2", "-ffp-contract=off", "-fPIC", "-shared",
+             "-DALIGN_GGML_FP_CONTRACT_OFF=1", "-DALIGN_GGML_STUB_ENGINE=1",
+             "-I", str(ROOT / "scripts"), str(work / "wrapper.c"), "-o", str(library)], work, env)
+        env["LIBRARY_PATH"] = str(work) + (":" + env["LIBRARY_PATH"] if env.get("LIBRARY_PATH") else "")
+        env["DYLD_LIBRARY_PATH"] = str(work)
+        env["LD_LIBRARY_PATH"] = str(work)
+        compiler = str(ROOT / "scripts/alignc")
+        run([compiler, "build", "src/main.align"], work, env)
+        run([compiler, "build", "src/core_smoke.align"], work, env)
+        run(["python3", str(ROOT / "scripts/olmoe_provider_fixture.py"), str(work)], work, env)
+        manifest = json.loads((work / "olmoe-runtime-manifest.json").read_text())
+        model = work / manifest["model"]
+        geometry, pack = work / "geometry.json", work / "model.alignpack"
+        run([str(work / "main"), "--model-ir", str(model), str(geometry)], work, env)
+        run([str(work / "main"), "--pack", str(model), str(pack), str(work / "pack.json")], work, env)
+
+        def invoke(mode: str, maximum: int = 4, **injected: str) -> tuple[list[str], str]:
+            result = run([str(work / "core_smoke"), str(model), str(pack), str(geometry),
+                          str(manifest["ordinary_eog_id"]), str(maximum), mode],
+                         work, {**env, **injected})
+            lines = result.stdout.splitlines()
+            assert len(lines) == 16, lines
+            assert all(int(value) == 0 for value in lines[4:9]), lines
+            assert "CORE_TEST_AFTER_FAILURE" not in result.stderr, result.stderr
+            assert "CORE_TEST_ORDER_FAILURE" not in result.stderr, result.stderr
+            return lines, result.stderr
+
+        normal, _ = invoke("normal")
+        attention, _ = invoke("attention")
+        assert attention[0] == "" and attention[2:4] == normal[2:4], (normal, attention)
+        assert all(int(value) == 0 for value in normal[9:]), normal
+        assert int(attention[9]) > 0 and all(int(value) == 0 for value in attention[10:]), attention
+        core, trace = invoke("core")
+        assert normal[0] == core[0] == "", (normal, core)
+        assert normal[2:4] == core[2:4] and int(core[3]) == 3, (normal, core)
+        assert sum(map(int, core[10:])) == int(core[9]) > 0, core
+        assert all(int(value) > 0 for value in core[10:]), core
+        assert [int(line.split()[-1]) for line in trace.splitlines()
+                if line.startswith("CORE_TEST_ROW ")] == [21, 14, 19, 20, 25, 26] * 6, trace
+        short, _ = invoke("core", 2)
+        assert short[0] == "" and all(int(value) == 0 for value in short[9:]), short
+        assert json.loads(short[2]) == json.loads(core[2])[:2], (short, core)
+        for row, field in zip(ROWS, FIELDS):
+            lines, _ = invoke("core", CORE_TEST_FAIL_ROW=str(row))
+            assert lines[0] == "R5_COMPUTE" and f"status_{field}[91]" in lines[1], lines
+            assert lines[2] == "[]" and int(lines[3]) == 0, lines
+            assert all(int(value) == 0 for value in lines[9:]), lines
+        lines, _ = invoke("core", CORE_TEST_FAIL_ROW="19", CORE_TEST_FAIL_OCCURRENCE="3")
+        assert lines[0] == "R5_COMPUTE" and int(lines[3]) == 1, lines
+        assert all(int(value) == 0 for value in lines[9:]), lines
+        lines, trace = invoke("core", CORE_TEST_REFUSE_ROW="19")
+        assert lines[0] == "R5_GGML_INIT" and "attention_core_partition" in lines[1], lines
+        assert int(lines[3]) == 0 and "CORE_TEST_ROW" not in trace, (lines, trace)
+        assert all(int(value) == 0 for value in lines[9:]), lines
+    print("OLMoE attention core smoke: PASS (exact source order/output, zero conditioning, six failures, late failure, selection refusal, lifetime balance)")
+
+
+if __name__ == "__main__":
+    main()

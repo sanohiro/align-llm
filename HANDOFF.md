@@ -11,16 +11,20 @@ Item 73's authoritative ledger and closure matrix are
 `docs/specs/r8-olmoe-attention-core-diagnosis.md`. It separates item 72's selected core into six
 exact operation sequences while preserving the fixed request, output and 871,174,011-ns floor.
 
-**Next actions.** Implement the six clocks and their exact helper/qualification consumer; run owner
-checks and the clean-head real diagnosis; review, repair, preflight, publish and merge; continue to
-the selected next eligible capability under the current user instruction.
+**Next actions.** Finish the existing layer/provider smoke checks, then run the clean-head real
+diagnosis; record its decision; review, repair, preflight, publish and merge; continue to the selected
+next eligible capability under the current user instruction.
 
-**Blocker.** None. Implementation and qualification are not yet complete.
+**Blocker.** None. Implementation is complete; full-model qualification remains pending.
 
 **Latest durable verification.** PR #194's exact-head preflight and all three required CI jobs
-passed before merge. Item 73 has its author ledger-to-prose consistency pass; owner checks pending.
+passed before merge. Item 73's author consistency pass, helper type-check (17 units), `gmake fmt`, focused
+runner self-test, Python compilation, and `scripts/test-olmoe-attention-core` pass. The native owner
+proves exact source traversal/output, normal/item-72 preservation, zero conditioning, all six
+compute failures, late failure, selection refusal, and native lifetime balance.
 
-**Intentional uncommitted files.** Item 73's in-progress plan, implementation and continuity updates.
+**Intentional uncommitted files.** None after the implementation checkpoint. Model/evidence and
+generated products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS (PR #194, 2026-09-05)
 
