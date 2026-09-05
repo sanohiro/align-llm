@@ -3,40 +3,36 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-POST-STAGING-SAMPLED-RUNTIME-DECISION (2026-09-05)
+## Active: R8-OLMOE-POST-STAGING-SAMPLED-RUNTIME-DECISION (2026-09-06)
 
 Branch `agent/r8-olmoe-post-staging-sampled-runtime-decision`, based on merged main
 `62f6f96747947078a048cbf32a3dd8c948db6743` (PR #199). Align remains pinned to
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger:
 `docs/specs/r8-olmoe-post-staging-sampled-runtime-decision.md`.
 
-Item 77 shipped exact AArch64 V staging tiles after its fixed-request paired gate passed.
-Item 78 remeasures time to a passing patch using item 69's unchanged sampled portfolio and primary
-gate. Add only the current-source measurement owner: independent source/runtime provenance,
-isolated helper/evaluator snapshot, strict actual JSON and coordinated server/child/container
-cleanup. Preserve task, seeds 1..8, sampling, first-pass stop and LR/RL/RL/LR order. No product
-source or historical runner changes. The secondary nanosecond floor/ceiling do not apply here.
+Item 78's clean-head qualification evaluated `294e8254a5a5c8d1968bb6c349a6a651a5eeceec`
+in 456.170 seconds and recorded `NOT_MET`. Both arms passed all four portfolios at candidate 5
+with the same patch. Local median time to a passing patch was 14,174,269,291 ns and runtime median
+was 84,061,674,562 ns, a -4,930,583-ppm gain with runtime slower in every pair. The complete raw
+JSON is 35,360 bytes, SHA-256 `772d9b08a0222744b32c63618bd9d01d5a7ff8df29e50b1f063fc59122131796`.
+Item 77's independently qualified native change remains shipped.
 
-**Next actions.** Commit the coherent owner-tested candidate, validate exact Git-object source
-reconstruction, then run the exact clean-head
-four-pair primary decision with the fixed model/toolchain and validator image. Record the terminal
-result and evidence-based successor, review once, run exact-head preflight, publish and merge.
+**Next actions.** Commit the terminal result metadata, rerun the publication self-test and strict
+raw replay, perform one comprehensive review, run exact-head preflight, publish and merge. Then
+start item 79's expert-phase-B operation diagnosis ledger and implementation.
 
 **Blocker.** None. The pinned Docker validator image is available by its immutable SHA; use the
 existing allowed image override to resolve it directly. No image rebuild or task relaxation is
 needed. Historical source-pin validators remain intact; this owner freezes the current closure.
 
 **Latest durable verification.** Item 78's Python compilation, inherited item-56 self-test (including
-item 53), and complete new `--self-test` passed. The current closure is exactly 116 frozen files
-plus separately HEAD-bound runner bytes. Strict provider/result JSON, provenance/scalar domains,
-snapshot path restoration, exact endpoint/CID registration, process-group coexistence, descendants,
-signals, server teardown, failure-only absence probes, Docker cleanup and shared cleanup deadlines
-passed with actual model-free subprocesses. Fixed host identity passed. Git-object reconstruction
-awaits the candidate commit; real qualification and comprehensive review remain pending.
+item 53), complete new `--self-test`, fixed host identity and candidate Git-object reconstruction
+passed. Strict replay accepted the real raw result's schema, current closure, evaluated identity,
+ancestry and aggregate. All eight portfolios passed, every local/runtime absence boundary passed,
+and no owned process survived. Publication-mode self-test and comprehensive review remain pending.
 
-**Intentional uncommitted files.** The single new measurement runner and candidate verification
-documentation form the candidate being committed. Models, raw evidence and build products remain
-outside Git.
+**Intentional uncommitted files.** Terminal item-78 result metadata only. Models, raw evidence and
+build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-NATIVE-STAGING-BOUNDARY (PR #199, 2026-09-05)
 

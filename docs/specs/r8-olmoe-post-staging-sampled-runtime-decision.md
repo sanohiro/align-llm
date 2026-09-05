@@ -1,6 +1,6 @@
 # R8 OLMoE post-staging sampled runtime decision
 
-Status: active; ledger committed before implementation, 2026-09-05.
+Status: complete; measured decision `NOT_MET`, publication pending, 2026-09-06.
 
 Roadmap owner: item 78, `R8-OLMOE-POST-STAGING-SAMPLED-RUNTIME-DECISION`.
 
@@ -191,7 +191,7 @@ The author consistency pass binds the inherited portfolio/gate to current-source
 separate child/server/CID ownership. Every changed validation, scoped state, failure and cleanup
 path has a named focused owner above; no production or historical qualification contract changes.
 
-## Candidate verification checkpoint
+## Measured result and publication checkpoint
 
 The implementation adds only `scripts/run-olmoe-post-staging-sampled-runtime-decision`. Its
 independent closure contains 116 files (102 Align and 14 tool/task/fixture inputs), with the runner
@@ -205,5 +205,24 @@ tests passed for simultaneous server/child groups, descendants, premature/stubbo
 SIGINT/SIGTERM launch races, timeout, refusal of new measured work after interruption, the bounded
 failure-only process-absence probe, exact Docker CID removal, missing/malformed/refused cleanup,
 one shared cleanup deadline and continuation after one owner cleanup error. No model, compiler or
-real container was used by these self-tests. Git-object reconstruction remains pending until the
-candidate is committed; the real qualification and comprehensive review remain pending.
+real container was used by these self-tests. Git-object reconstruction passed after the candidate
+was committed.
+
+The one clean-head qualification evaluated
+`294e8254a5a5c8d1968bb6c349a6a651a5eeceec`, tree
+`8a4b225e1dd2dde808052c1db5fa714f134a4704`, in 456,170,209,459 ns. Both arms passed all four
+portfolios at candidate 5 with the same patch, SHA-256
+`5d6b107e706a5a55c945bc0b41296e255013a1516e0a6211ccc9da65001252dc`. Local times were
+16,301,823,917, 13,324,962,292, 13,964,580,416 and 14,383,958,166 ns; runtime times were
+79,553,417,000, 84,000,483,292, 84,122,865,833 and 85,184,556,125 ns. The resulting local median
+was 14,174,269,291 ns, runtime median was 84,061,674,562 ns, and gain was -4,930,583 ppm. Runtime
+was slower in every pair, so the precommitted primary gate records `NOT_MET`.
+
+The complete raw JSON is 35,360 bytes with SHA-256
+`772d9b08a0222744b32c63618bd9d01d5a7ff8df29e50b1f063fc59122131796`. Strict replay validated
+its schema, current closure, evaluated Git identity, ancestry and recomputed aggregate. No matching
+local-server, runtime-provider, gate or validator process survived. This result leaves item 77's
+independent fixed-request improvement shipped. From item 77's already captured exact 23-leaf
+records, `EXPERT_PHASE_B` is the largest material child not yet examined: 1,175,633,134 ns median,
+above the unchanged 871,174,011-ns attribution floor. Item 79 owns its operation diagnosis before
+any new optimization is proposed. Comprehensive review and exact-head publication checks remain.

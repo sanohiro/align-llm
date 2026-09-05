@@ -1811,14 +1811,27 @@ The current forward delivery order is:
     14,626,648,395 ns cleared the historical 16,552,306,197-ns ceiling. Keep the exact native
     V tiles and direct byte/range owner; the next consumer remeasures the primary metric.
 
-78. **R8-OLMOE-POST-STAGING-SAMPLED-RUNTIME-DECISION — remeasure time to a passing patch. Active.**
+78. **R8-OLMOE-POST-STAGING-SAMPLED-RUNTIME-DECISION — remeasure time to a passing patch.
+    Complete; decision `NOT_MET`.**
     [`r8-olmoe-post-staging-sampled-runtime-decision.md`](r8-olmoe-post-staging-sampled-runtime-decision.md)
     owns the committed ledger. Item 77 merged as `62f6f96`; run item 69's sampled provider portfolio against the fresh isolated
     local server on the current source/runtime closure. Keep seeds, task, sampling, first-pass
     stop, balanced arm order, Docker validator and primary gate; do not transplant item 77's
     secondary-metric floor or ceiling. Independently own the simultaneous server/helper process
     groups, daemon-side validator cleanup, strict records, current identities and complete-result
-    deadline. A passing fixed request alone does not establish a primary-metric improvement.
+    deadline. Evaluated `294e825` completed in 456.170 seconds. Both arms passed all four
+    portfolios at candidate 5 with the same patch, but local median time to a passing patch was
+    14,174,269,291 ns and runtime median was 84,061,674,562 ns, a -4,930,583-ppm gain with runtime
+    slower in every pair. The result is `NOT_MET`; item 77's independently qualified native change
+    remains shipped. Existing item-77 records select expert phase B as the next unexamined material
+    child, without another unchanged model run.
+
+79. **R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS — identify the material expert output operation.
+    Next.** Item 77's exact leaf projection measures `EXPERT_PHASE_B` at a 1,175,633,134-ns median,
+    above the unchanged 871,174,011-ns attribution floor. Partition the existing phase-B graph by
+    exact checked node-table membership while preserving normal unsplit execution, cache tensors,
+    arithmetic and reduction order. Use the fixed request and select only a measured material child;
+    this diagnosis makes no optimization or primary-metric claim.
 
 ### Status (2026-08-28)
 
