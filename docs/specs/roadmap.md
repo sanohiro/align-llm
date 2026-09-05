@@ -1811,8 +1811,9 @@ The current forward delivery order is:
     14,626,648,395 ns cleared the historical 16,552,306,197-ns ceiling. Keep the exact native
     V tiles and direct byte/range owner; the next consumer remeasures the primary metric.
 
-78. **R8-OLMOE-POST-STAGING-SAMPLED-RUNTIME-DECISION — remeasure time to a passing patch. Next.**
-    After item 77 merges, run item 69's sampled provider portfolio against the fresh isolated
+78. **R8-OLMOE-POST-STAGING-SAMPLED-RUNTIME-DECISION — remeasure time to a passing patch. Active.**
+    [`r8-olmoe-post-staging-sampled-runtime-decision.md`](r8-olmoe-post-staging-sampled-runtime-decision.md)
+    owns the committed ledger. Item 77 merged as `62f6f96`; run item 69's sampled provider portfolio against the fresh isolated
     local server on the current source/runtime closure. Keep seeds, task, sampling, first-pass
     stop, balanced arm order, Docker validator and primary gate; do not transplant item 77's
     secondary-metric floor or ceiling. Independently own the simultaneous server/helper process

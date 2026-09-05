@@ -3,40 +3,48 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-NATIVE-STAGING-BOUNDARY (2026-09-05)
+## Active: R8-OLMOE-POST-STAGING-SAMPLED-RUNTIME-DECISION (2026-09-05)
 
-Branch `agent/r8-olmoe-native-staging-boundary`, based on merged main `d32d3cb` (PR #198).
-Align remains pinned to `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger:
-`docs/specs/r8-olmoe-native-staging-boundary.md`.
+Branch `agent/r8-olmoe-post-staging-sampled-runtime-decision`, based on merged main
+`62f6f96747947078a048cbf32a3dd8c948db6743` (PR #199). Align remains pinned to
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger:
+`docs/specs/r8-olmoe-post-staging-sampled-runtime-decision.md`.
 
-Evaluated candidate `3fb3f11f677d07e02693801a6eff3e405a670858` completed the exact 16-request
-comparison in 183.452 seconds and recorded `MET`. All four paired gains were positive; median
-paired saving was 1,047,849,541 ns / 66,571 ppm against required 871,174,011 ns. Candidate median
-14,626,648,395 ns cleared the historical 16,552,306,197-ns ceiling. Every output/token, cache,
-isolation, source/toolchain identity and lifetime condition passed. The declared AArch64 V tiles
-and their direct owner ship; validation, K copy, scalar fallback, comparison and Align bytes remain
-unchanged. The whole native parent was not attributed to V.
+Item 77 shipped exact AArch64 V staging tiles after its fixed-request paired gate passed.
+Item 78 remeasures time to a passing patch using item 69's unchanged sampled portfolio and primary
+gate. Add only the current-source measurement owner: independent source/runtime provenance,
+isolated helper/evaluator snapshot, strict actual JSON and coordinated server/child/container
+cleanup. Preserve task, seeds 1..8, sampling, first-pass stop and LR/RL/RL/LR order. No product
+source or historical runner changes. The secondary nanosecond floor/ceiling do not apply here.
 
-**Next actions.** Complete one fresh comprehensive review, exact-head preflight, publish the full
-raw evidence and merge with both source/evaluated ancestors retained. Then refresh main and start
-item 78's current-source sampled runtime decision: remeasure time to a passing patch after this
-shipped fixed-request improvement. Use item 69's primary gate, not this secondary-metric floor.
+**Next actions.** Implement the committed ledger and its focused self-tests; run the inherited
+item-56 owner plus the new owner. Commit the coherent candidate, then run the exact clean-head
+four-pair primary decision with the fixed model/toolchain and validator image. Record the terminal
+result and evidence-based successor, review once, run exact-head preflight, publish and merge.
 
-**Blocker.** None. Priming is below floor; rejected attention K/V copies remain removed.
+**Blocker.** None. The pinned Docker validator image is available by its immutable SHA; use the
+existing allowed image override to resolve it directly. No image rebuild or task relaxation is
+needed. Historical source-pin validators remain intact; this owner freezes the current closure.
 
-**Latest durable verification.** All three `scripts/test-olmoe-native-staging` modes (default,
-`--real`, `--real --ubsan`), existing plane-upload/core owners, `gmake layer-forward-smoke`,
-`gmake runtime-provider-smoke` (sampler vectors plus 61 CLI assertions), strict C builds, Python
-compilation and paired-runner self-test passed. Native evidence covers AArch64 SIMD/tails and an
-immutable scalar control, 72 edge vectors, 256 byte-offset combinations, guard pages and alias/
-refusal cases; non-AArch64 dispatch execution is N/A locally. The 129 source pins plus exact
-tracked runner, two isolated builds, 16 requests and 24 isolation records passed real qualification.
-Raw JSON is 73,695 bytes, SHA-256
-`0ec1732dd6f13ce81ac95925e08062cfdc2ac7c9431d47dd23fb4098ed439c65`;
-publication evidence will preserve the complete original bytes. Review/preflight remain pending.
+**Latest durable verification.** Item 77 merged as `62f6f96` with tested tree
+`bb94e44f93172441db26cf45c8b57e2bcee04172`. Its merged-head focused self-test passed, including
+129 source identities and source/evaluated ancestry. Item 78 implementation/self-tests have not
+started. The authoritative ledger maps exact inherited semantics, snapshot paths and all changed
+process/parser/provenance boundaries to focused tests.
 
-**Intentional uncommitted files.** None at the result checkpoint. Models, raw records and build
+**Intentional uncommitted files.** None at the ledger checkpoint. Models, raw evidence and build
 products remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-NATIVE-STAGING-BOUNDARY (PR #199, 2026-09-05)
+
+PR #199 merged as `62f6f96` with tested tree `bb94e44f93172441db26cf45c8b57e2bcee04172`.
+Evaluated ancestor `3fb3f11f677d07e02693801a6eff3e405a670858` completed sixteen requests and
+24 isolation records in 183.452 seconds, with every exact boundary passing. All four paired gains
+were positive; median saving was 1,047,849,541 ns / 66,571 ppm against required 871,174,011 ns.
+Candidate median 14,626,648,395 ns cleared the historical ceiling: `MET`. Keep the declared V tiles
+and native owner. Review had no findings, exact-head preflight and all three required checks passed,
+raw JSON was retrieved/hash-verified, and merged-head self-test passed. Item 78 owns the primary
+metric; no primary or cross-host performance claim follows from this fixed-request result.
 
 ## Merged checkpoint: R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS (PR #198, 2026-09-05)
 

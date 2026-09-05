@@ -1,6 +1,6 @@
 # R8 OLMoE native staging boundary
 
-Status: complete; fixed-host shipping gate MET, 2026-09-05; publication pending.
+Status: complete; fixed-host shipping gate MET, merged as `62f6f96747947078a048cbf32a3dd8c948db6743` (PR #199), 2026-09-05.
 Roadmap owner: item 77, `R8-OLMOE-NATIVE-STAGING-BOUNDARY`.
 Prerequisite: item 76 merged as `d32d3cbc2939e1525f452056e8e720946930d4df` (PR #198).
 
@@ -167,7 +167,8 @@ for unavailable, engine and real flavors. Python compilation and `git diff --che
 `scripts/run-olmoe-native-staging-boundary --self-test` passed with 129 current source pins
 (102 Align and 27 other inputs), including actual dispatch/strict JSON, paired gate boundaries,
 equal helper hashes, mutation refusal, linked-worktree ancestry, process groups and terminal cleanup.
-The clean-head paired qualification passed below; stable-candidate comprehensive review remains pending.
+The clean-head paired qualification passed below. Comprehensive review was clean and publication
+checks passed; PR #199 records the complete review, check and retrievable raw-evidence envelopes.
 
 
 ## Measured result and next consumer
