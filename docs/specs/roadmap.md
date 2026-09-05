@@ -1751,6 +1751,15 @@ The current forward delivery order is:
     cache, isolation, lifetime and accounting gates passed in 91.512 seconds. QK preparation
     rows 14–18 are the next eligible implementation boundary, retaining a full-request shipping gate.
 
+74. **R8-OLMOE-K-PREPARATION-BOUNDARY — bulk-copy K concatenation and padding. Active.**
+    [`r8-olmoe-k-preparation-boundary.md`](r8-olmoe-k-preparation-boundary.md) owns the ledger,
+    exact ABI and closure matrix. Replace only decode rows 17/18 with two explicit CPU custom
+    graph nodes using per-head byte copies and one callback task, preserving all shapes, full
+    width, marked concat and V behavior. Compare four contemporaneous normal-control/candidate
+    pairs in AB/BA/AB/BA order with separate short conditioning. Require all four savings positive,
+    median saving at least max(871,174,011 ns, 50,000 ppm of control), and candidate median at most
+    16,552,306,197 ns. Remove production changes unless this complete-request gate is `MET`.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
