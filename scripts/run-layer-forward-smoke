@@ -392,7 +392,68 @@ finally:
     if ctx:
         context_close(ctx)
 
-print("layer forward smoke: KV-plane native staging/comparison layouts and refusals PASS")
+# Item 71's graph partition borrows a contiguous prefix or suffix of the already-built node order.
+# Build two dependent adds so the anchor is a unique interior node, then exercise both partitions
+# and every public refusal class without needing a model or a real ggml installation.
+slot_new_1d = library.align_ggml_slot_new_tensor_1d
+slot_new_1d.argtypes = [
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int32, ctypes.c_int64,
+]
+slot_new_1d.restype = ctypes.c_int32
+op_add = library.align_ggml_op_add
+op_add.argtypes = [
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
+]
+op_add.restype = ctypes.c_int32
+graph_new = library.align_ggml_graph_new
+graph_new.argtypes = [ctypes.c_void_p]
+graph_new.restype = ctypes.c_void_p
+graph_expand = library.align_ggml_graph_expand
+graph_expand.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64]
+graph_expand.restype = ctypes.c_int32
+graph_partition = library.align_ggml_graph_partition
+graph_partition.argtypes = [
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int32,
+]
+graph_partition.restype = ctypes.c_void_p
+graph_node_count = library.align_ggml_graph_node_count
+graph_node_count.argtypes = [ctypes.c_void_p]
+graph_node_count.restype = ctypes.c_int32
+
+partition_slots = ctypes.create_string_buffer(48)
+source_ctx = context_open(8192)
+partition_ctx = context_open(8192)
+try:
+    if (not source_ctx or not partition_ctx
+            or slots_init(partition_slots, len(partition_slots)) != 0
+            or slot_new_1d(source_ctx, partition_slots, 0, 0, 1) != 0
+            or slot_new_1d(source_ctx, partition_slots, 1, 0, 1) != 0
+            or op_add(source_ctx, partition_slots, 2, 0, 1) != 0
+            or op_add(source_ctx, partition_slots, 3, 2, 1) != 0):
+        raise SystemExit("layer forward smoke: FAIL graph-partition fixture construction")
+    source_graph = graph_new(source_ctx)
+    if not source_graph or graph_expand(source_graph, partition_slots, 3) != 0:
+        raise SystemExit("layer forward smoke: FAIL graph-partition source graph")
+    prefix_graph = graph_partition(partition_ctx, source_graph, partition_slots, 2, 0)
+    suffix_graph = graph_partition(partition_ctx, source_graph, partition_slots, 2, 1)
+    if (not prefix_graph or not suffix_graph or graph_node_count(source_graph) != 2
+            or graph_node_count(prefix_graph) != 1 or graph_node_count(suffix_graph) != 1):
+        raise SystemExit("layer forward smoke: FAIL graph-partition node ranges")
+    if graph_partition(partition_ctx, source_graph, partition_slots, 0, 0):
+        raise SystemExit("layer forward smoke: FAIL graph-partition accepted a leaf anchor")
+    if graph_partition(partition_ctx, source_graph, partition_slots, 3, 1):
+        raise SystemExit("layer forward smoke: FAIL graph-partition accepted an end anchor")
+    if graph_partition(partition_ctx, source_graph, partition_slots, 2, 2):
+        raise SystemExit("layer forward smoke: FAIL graph-partition accepted a bad selector")
+    if graph_partition(None, source_graph, partition_slots, 2, 0):
+        raise SystemExit("layer forward smoke: FAIL graph-partition accepted a null context")
+finally:
+    if partition_ctx:
+        context_close(partition_ctx)
+    if source_ctx:
+        context_close(source_ctx)
+
+print("layer forward smoke: native KV and graph-partition layouts/refusals PASS")
 PY
 
 # The compiler's warnings are captured rather than streamed **under the fresh worker**, exactly as

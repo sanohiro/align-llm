@@ -2084,6 +2084,51 @@ void *align_ggml_graph_new(void *ctx) {
     return (void *) ggml_new_graph((struct ggml_context *) ctx);
 }
 
+/* R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS. Build one of the two contiguous views of an existing
+ * topologically ordered graph. The returned graph owns only its pointer table through `ctx`; every
+ * tensor and buffer remains owned by the source graph's contexts and allocator. The boundary must
+ * be one unique interior compute node so prefix and suffix are both non-empty.
+ */
+void *align_ggml_graph_partition(void *ctx, void *graph, void *slots,
+                                 int64_t boundary_slot, int32_t suffix) {
+    struct ggml_cgraph *source = (struct ggml_cgraph *) graph;
+    struct ggml_tensor *boundary = align_ggml_slot_tensor(slots, boundary_slot);
+    struct ggml_cgraph *result = NULL;
+    int count = 0;
+    int boundary_at = -1;
+    int matches = 0;
+    int start = 0;
+    int end = 0;
+    int i = 0;
+
+    if (ctx == NULL || source == NULL || boundary == NULL || (suffix != 0 && suffix != 1)) {
+        return NULL;
+    }
+    count = ggml_graph_n_nodes(source);
+    if (count < 2) {
+        return NULL;
+    }
+    for (i = 0; i < count; i++) {
+        if (ggml_graph_node(source, i) == boundary) {
+            boundary_at = i;
+            matches++;
+        }
+    }
+    if (matches != 1 || boundary_at < 0 || boundary_at >= count - 1) {
+        return NULL;
+    }
+    result = ggml_new_graph_custom((struct ggml_context *) ctx, (size_t) count, false);
+    if (result == NULL) {
+        return NULL;
+    }
+    start = suffix ? boundary_at + 1 : 0;
+    end = suffix ? count : boundary_at + 1;
+    for (i = start; i < end; i++) {
+        ggml_graph_add_node(result, ggml_graph_node(source, i));
+    }
+    return (void *) result;
+}
+
 int32_t align_ggml_graph_expand(void *graph, void *slots, int64_t index) {
     struct ggml_tensor *tensor = align_ggml_slot_tensor(slots, index);
     if (graph == NULL) {

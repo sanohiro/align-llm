@@ -130,6 +130,12 @@ DecodeCompute {
   head_ns: i64,
 }
 
+PhaseAOperations {
+  total_ns: i64,
+  attention_and_residual_ns: i64,
+  router_ns: i64,
+}
+
 ClaimIo {
   total_ns: i64,
   file_pread_ns: i64,
@@ -196,7 +202,7 @@ fn digest_text(value: str) -> string {
 // The public provider remains the owner of user-facing generation and exposes no timing record.
 fn run(
   args: array<str>, detailed: bool, other_detailed: bool, compute_detailed: bool,
-  claim_detailed: bool,
+  claim_detailed: bool, phase_a_operation_detailed: bool,
 ) -> Result<(), Error> {
   if args.len() != 7 { return Err(Error.Invalid) }
   model_path := args[1]
@@ -246,9 +252,15 @@ fn run(
   }
 
   phase_started = time.instant()
-  generated := moe_decode_step.generate_resident_sampled(
-    pack_path, geometry_path, geometry_view, source_identity, prepared.token_ids,
-    prepared.eog_token_ids, maximum_tokens, CACHE_BUDGET_BYTES, seed)
+  generated := if phase_a_operation_detailed {
+    moe_decode_step.generate_resident_sampled_phase_a_operation_diagnosis(
+      pack_path, geometry_path, geometry_view, source_identity, prepared.token_ids,
+      prepared.eog_token_ids, maximum_tokens, CACHE_BUDGET_BYTES, seed)
+  } else {
+    moe_decode_step.generate_resident_sampled(
+      pack_path, geometry_path, geometry_view, source_identity, prepared.token_ids,
+      prepared.eog_token_ids, maximum_tokens, CACHE_BUDGET_BYTES, seed)
+  }
   engine_wall_ns := time.instant() - phase_started
   if generated.outcome.code.len() > 0 { return Err(Error.Invalid) }
 
@@ -459,17 +471,41 @@ fn run(
     document.write(",\"claim_io\":")
     document.write(claim_view)
   }
+  if phase_a_operation_detailed {
+    operation_subtotal := generated.outcome.remaining_decode_phase_a_attention_ns
+      + generated.outcome.remaining_decode_phase_a_router_ns
+    if operation_subtotal != generated.outcome.remaining_decode_routing_compute_ns {
+      return Err(Error.Invalid)
+    }
+    operations := PhaseAOperations {
+      total_ns: generated.outcome.remaining_decode_routing_compute_ns,
+      attention_and_residual_ns: generated.outcome.remaining_decode_phase_a_attention_ns,
+      router_ns: generated.outcome.remaining_decode_phase_a_router_ns,
+    }
+    operation_json := json.encode(operations)
+    operation_view: str := operation_json
+    document.write(",\"phase_a_operations\":")
+    document.write(operation_view)
+  }
   document.write("}")
   print(document.to_string())
   return Ok(())
 }
 
-pub fn claim_detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, true, true, true)
+pub fn phase_a_operation_main(args: array<str>) -> Result<(), Error> =
+run(args, true, true, true, true, true)
 
-pub fn compute_detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, true, true, false)
+pub fn claim_detailed_main(args: array<str>) -> Result<(), Error> =
+run(args, true, true, true, true, false)
 
-pub fn other_detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, true, false, false)
+pub fn compute_detailed_main(args: array<str>) -> Result<(), Error> =
+run(args, true, true, true, false, false)
 
-pub fn detailed_main(args: array<str>) -> Result<(), Error> = run(args, true, false, false, false)
+pub fn other_detailed_main(args: array<str>) -> Result<(), Error> =
+run(args, true, true, false, false, false)
 
-pub fn main(args: array<str>) -> Result<(), Error> = run(args, false, false, false, false)
+pub fn detailed_main(args: array<str>) -> Result<(), Error> =
+run(args, true, false, false, false, false)
+
+pub fn main(args: array<str>) -> Result<(), Error> =
+run(args, false, false, false, false, false)

@@ -2789,6 +2789,51 @@ void *align_ggml_graph_new(void *ctx) {
     return NULL;
 }
 
+/* R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS. Match the real shim's borrowed contiguous graph views;
+ * the deterministic engine's graph pool stands in for the context-owned ggml graph metadata.
+ */
+void *align_ggml_graph_partition(void *ctx, void *graph, void *slots,
+                                 int64_t boundary_slot, int32_t suffix) {
+    align_stub_graph *source = (align_stub_graph *) graph;
+    align_stub_graph *result = NULL;
+    align_stub_tensor *boundary = align_stub_slot(slots, boundary_slot);
+    int32_t boundary_at = -1;
+    int32_t matches = 0;
+    int32_t start = 0;
+    int32_t end = 0;
+    int32_t i = 0;
+
+    if (align_stub_context_index(ctx) < 0 || source == NULL || boundary == NULL ||
+        (suffix != 0 && suffix != 1) || source->count < 2) {
+        return NULL;
+    }
+    for (i = 0; i < source->count; i++) {
+        if (source->nodes[i] == boundary) {
+            boundary_at = i;
+            matches++;
+        }
+    }
+    if (matches != 1 || boundary_at < 0 || boundary_at >= source->count - 1) {
+        return NULL;
+    }
+    result = (align_stub_graph *) align_ggml_graph_new(ctx);
+    if (result == NULL) {
+        return NULL;
+    }
+    start = suffix ? boundary_at + 1 : 0;
+    end = suffix ? source->count : boundary_at + 1;
+    for (i = start; i < end; i++) {
+        if (result->count >= ALIGN_STUB_MAX_TENSORS) {
+            result->used = 0;
+            result->count = 0;
+            return NULL;
+        }
+        result->nodes[result->count] = source->nodes[i];
+        result->count++;
+    }
+    return (void *) result;
+}
+
 /* `ggml_build_forward_expand`'s shape: a post-order walk that visits each source once and appends
  * every op tensor in dependency order. Leaves — the weights and the three inputs — are not nodes.
  */

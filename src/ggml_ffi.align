@@ -274,6 +274,8 @@ extern "C" link("align_ggml_shim") {
     plane_base: i64, head_dim: i64, n_head_kv: i64, columns: i64, layout: i32) -> i64
   fn align_ggml_graph_context_bytes(node_capacity: i64) -> i64
   fn align_ggml_graph_new(ctx: raw) -> raw
+  fn align_ggml_graph_partition(
+    ctx: raw, graph: raw, slots: slice<u8>, boundary_slot: i64, suffix: i32) -> raw
   fn align_ggml_graph_expand(graph: raw, slots: slice<u8>, index: i64) -> i32
   fn align_ggml_graph_node_count(graph: raw) -> i32
   fn align_ggml_gallocr_new(backend: raw) -> raw
@@ -1154,6 +1156,18 @@ pub fn graph_context_bytes(node_capacity: i64) -> i64 {
 pub fn graph_new(ctx: raw) -> raw {
   unsafe {
     return align_ggml_graph_new(ctx)
+  }
+}
+
+// A qualification-only contiguous view over an already-built graph. `suffix = false` includes the
+// unique boundary node; `suffix = true` starts immediately after it. The returned graph borrows all
+// tensor pointers and must die before their source contexts and allocator.
+pub fn graph_partition(
+  ctx: raw, graph: raw, borrow slots: slice<u8>, boundary_slot: i64, suffix: bool,
+) -> raw {
+  unsafe {
+    return align_ggml_graph_partition(
+      ctx, graph, slots, boundary_slot, if suffix { 1 } else { 0 })
   }
 }
 

@@ -1,0 +1,7 @@
+module olmoe_phase_a_operation_gate
+
+import olmoe_remaining_decode_overhead_gate
+
+// Item 71's only opt-in consumer of the split phase-A execution path.
+pub fn main(args: array<str>) -> Result<(), Error> =
+olmoe_remaining_decode_overhead_gate.phase_a_operation_main(args)
