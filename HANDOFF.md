@@ -11,20 +11,26 @@ Item 73's authoritative ledger and closure matrix are
 `docs/specs/r8-olmoe-attention-core-diagnosis.md`. It separates item 72's selected core into six
 exact operation sequences while preserving the fixed request, output and 871,174,011-ns floor.
 
-**Next actions.** Finish the existing layer/provider smoke checks, then run the clean-head real
-diagnosis; record its decision; review, repair, preflight, publish and merge; continue to the selected
-next eligible capability under the current user instruction.
+The clean-head run at `e18ac5d` completed in 91.512 seconds. QK preparation won at a
+1,000,260,743-ns median / 435,353 ppm of the 2,297,584,394-ns core parent, above the unchanged
+871,174,011-ns floor: `MEASURED_CORE_SEAM_ELIGIBLE / QK_PREPARATION`. Every fixed output, cache,
+isolation, lifetime and parent-accounting boundary passed. This is attribution, not a speedup claim.
 
-**Blocker.** None. Implementation is complete; full-model qualification remains pending.
+**Next actions.** Complete the comprehensive review, repair accepted findings, run exact-head
+preflight, publish and merge. Then refresh main and implement the selected rows 14–18 QK
+preparation boundary with its own immutable full-request shipping gate. Continue under the current
+user instruction; a merge is a checkpoint, not a stopping condition.
 
-**Latest durable verification.** PR #194's exact-head preflight and all three required CI jobs
-passed before merge. Item 73's author consistency pass, helper type-check (17 units), `gmake fmt`, focused
-runner self-test, Python compilation, and `scripts/test-olmoe-attention-core` pass. The native owner
-proves exact source traversal/output, normal/item-72 preservation, zero conditioning, all six
-compute failures, late failure, selection refusal, and native lifetime balance.
+**Blocker.** None. Review and publication remain pending.
 
-**Intentional uncommitted files.** None after the implementation checkpoint. Model/evidence and
-generated products remain outside Git.
+**Latest durable verification.** `gmake fmt`, helper type-check (17 units), Python compilation,
+`gmake layer-forward-smoke` (75.238 seconds), `gmake runtime-provider-smoke` (sampler vectors and
+61 CLI assertions), the item-73 self-test and `git diff --check` pass. The focused
+`scripts/test-olmoe-attention-core` proves exact source traversal/output, normal/item-72 preservation,
+zero conditioning, all six compute failures, late failure, selection refusal and native lifetime
+balance. The clean-head four-repeat qualification above passes.
+
+**Intentional uncommitted files.** None. Model/evidence and generated products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS (PR #194, 2026-09-05)
 

@@ -1736,14 +1736,20 @@ The current forward delivery order is:
     isolation, lifetime, and corrected accounting boundary passed. A narrower attention-core
     diagnosis is the next eligible R8 capability.
 
-73. **R8-OLMOE-ATTENTION-CORE-DIAGNOSIS — identify the material core operation sequence. Active.**
+73. **R8-OLMOE-ATTENTION-CORE-DIAGNOSIS — identify the material core operation sequence.
+    Complete; decision `MEASURED_CORE_SEAM_ELIGIBLE / QK_PREPARATION`.**
     [`r8-olmoe-attention-core-diagnosis.md`](r8-olmoe-attention-core-diagnosis.md) owns the contract
     and closure matrix. Preserve item 72's request and immutable floor; split its selected rows
     14–27 by exact slot membership into QK preparation (14–18), score matmul (19), masked softmax
     (20), V preparation (21–24), value matmul (25), and output packing (26–27). Keep the parent
     clocks exact, validate fixed output/cache/lifetimes/isolation, and select only the largest
     class whose median reaches 871,174,011 ns. Each decision names only its measured row sequence;
-    no speedup is claimed and the rejected live-width intervention remains forbidden.
+    no speedup is claimed and the rejected live-width intervention remains forbidden. The clean-head
+    run measured QK preparation at 1,000,260,743 ns median, 435,353 ppm of the 2,297,584,394-ns
+    core parent. Other medians were score matmul 123,514,742 ns, softmax 26,535,106 ns, V preparation
+    988,706,344 ns, value matmul 145,335,829 ns and output packing 11,965,026 ns. All fixed output,
+    cache, isolation, lifetime and accounting gates passed in 91.512 seconds. QK preparation
+    rows 14–18 are the next eligible implementation boundary, retaining a full-request shipping gate.
 
 ### Status (2026-08-28)
 

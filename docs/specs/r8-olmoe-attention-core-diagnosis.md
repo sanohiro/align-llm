@@ -1,6 +1,6 @@
 # R8 OLMoE attention core diagnosis
 
-Status: implementation active, 2026-09-05
+Status: implemented and measured; review/publication pending, 2026-09-05
 
 Roadmap owner: item 73, `R8-OLMOE-ATTENTION-CORE-DIAGNOSIS`
 
@@ -77,3 +77,41 @@ individual matrix/normalization operations; preparation and packing expose only 
 sequences. Every class shares the inherited floor and no result authorizes the rejected width
 change. The ledger, closure matrix and helper account for the same six clocks and retain all parent
 equations. Final evidence will map these cells to the settled diff before review.
+
+## Recorded qualification and closure
+
+Clean implementation head `e18ac5dab88b06b02e38d1504800eb5e50068e0d` completed the fixed-host
+four-repeat owner in 91,512,119,125 ns. Full-helper walls were
+`[14408481583,15168348459,15659437208,15173171666]` ns, median 15,170,760,062 ns.
+Core-parent walls were `[2119821592,2273103164,2374015742,2322065625]` ns, median
+2,297,584,394 ns. These diagnostic walls are not a new shipping baseline.
+
+| Class | Four values (ns) | Median (ns) |
+| --- | --- | ---: |
+| `QK_PREPARATION` | `[926368426,992095052,1038372156,1008426435]` | 1,000,260,743 |
+| `SCORE_MATMUL` | `[111255065,120691127,126338358,127724062]` | 123,514,742 |
+| `MASKED_SOFTMAX` | `[24557247,25723707,27843173,27346505]` | 26,535,106 |
+| `VALUE_PREPARATION` | `[914435133,980679032,1020577467,996733657]` | 988,706,344 |
+| `VALUE_MATMUL` | `[132092364,142088932,148582726,149730227]` | 145,335,829 |
+| `OUTPUT_PACKING` | `[11113357,11825314,12301862,12104739]` | 11,965,026 |
+
+`QK_PREPARATION` wins at 1,000,260,743 ns, 435,353 ppm of the core-parent median and
+129,086,732 ns above the inherited 871,174,011-ns floor. Decision:
+`MEASURED_CORE_SEAM_ELIGIBLE / QK_PREPARATION`. The selected successor owns only rows 14–18's
+Q/K permutations, K contiguous conversion, K concatenation and K padding. Value preparation also
+exceeds the floor but is not the selected winner. No result reopens item 63's live-width candidate.
+
+Every full request reproduced the fixed token chain/output hash and exact cache counts; all twelve
+process-absence checks passed, native lifetimes balanced, conditioning detail was zero, full detail
+was positive, and every child/parent equation closed. The six-class compute schedule preserved the
+source core traversal. The exact source mutation, schema, integer-boundary, inherited evidence,
+selection and cleanup-ceiling self-tests passed.
+
+The closure matrix maps to `scripts/test-olmoe-attention-core` for allocated tiny-model execution,
+exact core node-pointer order, unchanged normal/item-72 output, six compute failures, a failure
+after one successful decode step, selection refusal, no later compute, zero conditioning and
+lifetime balance. The public helper type-check passed 17 units; `gmake fmt`, Python compilation,
+`gmake layer-forward-smoke` (75.238 seconds), `gmake runtime-provider-smoke` (sampler vectors and
+61 CLI assertions), the focused runner self-test and `git diff --check` passed. GNU Make is used
+on this macOS host because the system Make cannot parse the repository Makefile. No matrix cell
+is deferred. Review and exact-head publication preflight remain pending.
