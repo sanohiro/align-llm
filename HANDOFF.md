@@ -3,33 +3,37 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-V-PREPARATION-BOUNDARY (2026-09-05)
+## Active: R8-OLMOE-V-PREPARATION-BOUNDARY publication (2026-09-05)
 
 Branch `agent/r8-olmoe-v-preparation-boundary`, based on merged main `36183a3` (PR #196).
-Align remains pinned to `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Item 75's authoritative
-ledger and closure matrix are `docs/specs/r8-olmoe-v-preparation-boundary.md`.
+Evaluated candidate `248e2314ebbb429e4027c5cb249e680a15cec310`; Align remains pinned to
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger and terminal evidence:
+`docs/specs/r8-olmoe-v-preparation-boundary.md`.
 
-The candidate replaces only V concatenation/padding rows 23/24 with separate CPU byte-copy
-custom nodes (op IDs 19/20). Exact axis-0 layouts, rows 21/22, marked concat, full width, all K
-operations and normal unsplit execution remain fixed. Four contemporary AB/BA pairs retain the
-all-positive requirement, median saving at least max(871,174,011 ns, 5% of control), historical
-16,552,306,197-ns candidate ceiling, and eight-minute complete qualification ceiling.
+The V-only candidate completed sixteen exact requests in 192.761 seconds with all semantic,
+identity, cache, isolation and native lifetime checks passing. Its result is `NOT_MET`: only two
+paired gains were positive, median paired saving was -15,955,313 ns against required 871,174,011 ns,
+and candidate median 16,977,564,124 ns exceeded the historical ceiling. All production and three
+candidate specification clarifications are restored; both native owner files are removed. The
+retained publication-only runner checks exact restoration/removal and control/evaluated ancestry.
 
-**Next actions.** Run the clean-head paired qualification. Retain production only for `MET`; bind
-terminal evidence, review, repair, preflight, publish and merge; then continue to the result-selected
-successor. Preserve complete raw evidence with the pull request.
+**Next actions.** Verify final terminal self-tests, including a linked worktree; complete one fresh
+comprehensive review, repair, exact-head preflight, publish full raw evidence and merge. Then
+refresh main and implement item 76's plane-upload subdiagnosis from a precommitted ledger. Reuse
+item 75 control records for the current leaf projection; do not repeat an unchanged model run or
+carry either rejected copy candidate into the next implementation.
 
-**Blocker.** None. Implementation and narrow owners are complete; fixed-host qualification is
-pending. Existing Align scalar C FFI suffices; no new Align capability is required.
+**Blocker.** None. Implementation/evaluation is complete; review/publication is active. Item 76 is
+selected but not started. Other material R8 buckets remain; attention failures do not close R8.
 
-**Latest durable verification.** Pinned helper type-check passed 17 units; three strict C builds,
+**Latest durable verification.** Evaluated helper type-check passed 17 units; three strict C builds,
 shared-region identity, `gmake fmt`, native stub/real four-worker/real UBSan owners, existing
 attention-core mode/order/failure owner, `gmake layer-forward-smoke` (193.931 seconds),
 `gmake runtime-provider-smoke` (sampler vectors plus 61 CLI assertions), Python compilation and
-paired-runner self-test all passed. Real comparison is next. Item 74's merged-head self-test also
-passed after PR #196 merged.
+paired-runner self-test passed. The clean-head real comparison passed every semantic boundary
+and recorded the negative gate above. Final restoration/replay verification remains next.
 
-**Intentional uncommitted files.** None after the implementation checkpoint; models, raw evidence and
+**Intentional uncommitted files.** None after the terminal checkpoint. Models, raw evidence and
 build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-K-PREPARATION-BOUNDARY (PR #196, 2026-09-05)

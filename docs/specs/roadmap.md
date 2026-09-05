@@ -1767,7 +1767,8 @@ The current forward delivery order is:
     preserve replay and ancestry evidence. A V-only preparation capability is next; mixed K
     results do not justify carrying K into it.
 
-75. **R8-OLMOE-V-PREPARATION-BOUNDARY — evaluate exact V concatenation and padding. Active.**
+75. **R8-OLMOE-V-PREPARATION-BOUNDARY — evaluate exact V concatenation and padding.
+    Complete; decision `NOT_MET`.**
     [`r8-olmoe-v-preparation-boundary.md`](r8-olmoe-v-preparation-boundary.md) owns the ledger,
     exact ABI and closure matrix. Item 73 measured V preparation rows 21–24 at 988,706,344 ns, above the unchanged eligibility
     floor. Item 74 merged as `36183a3`, the immutable contemporary control. Replace only rows 23/24 with separate exact CPU byte-copy nodes if supported by the
@@ -1775,6 +1776,20 @@ The current forward delivery order is:
     attention. Require exact native/model parity and the complete-request paired shipping floor;
     remove production unless the precommitted gate passes. Do not assume the full measured
     four-row duration is removable copy cost or reuse K plane offsets for V.
+    The exact clean-head comparison completed in 192.761 seconds. Only two pairs improved;
+    median paired saving was -15,955,313 ns (-929 ppm), and candidate median 16,977,564,124 ns
+    exceeded the historical ceiling. All candidate production/native-owner/specification changes
+    were removed. The publication-only owner retains exact replay and ancestry. Neither K nor V
+    has a directional benefit that licenses carrying it into a combined candidate.
+
+76. **R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS — distinguish staging priming from native transfer. Next.**
+    Reuse item 75's captured control records to refresh item 70's exact remaining-decode leaf
+    projection without an unchanged model rerun. Plane upload was previously material at
+    2,710,801,676 ns; define a focused contract for its existing priming and native-staging call
+    boundaries before implementation. Preserve uploaded bytes/layouts, graph inputs, all normal
+    execution, the fixed request and the inherited 871,174,011-ns eligibility floor. Select only
+    a measured material child; a parent clock is not an estimate of removable cost. Other material
+    remaining-decode leaves stay eligible; failed attention copies do not close R8.
 
 ### Status (2026-08-28)
 

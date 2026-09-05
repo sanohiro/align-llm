@@ -1,6 +1,6 @@
 # R8 OLMoE V preparation boundary
 
-Status: implementation active, 2026-09-05.
+Status: complete; `NOT_MET`, production removed before publication, 2026-09-05.
 Roadmap owner: `R8-OLMOE-V-PREPARATION-BOUNDARY` (item 75).
 Control revision: `36183a342d2f87bcf153dfd1d347d38efc08b9a1`.
 
@@ -12,6 +12,11 @@ Rows 21/22, every K operation, full width, source order and marked outputs remai
 four-row diagnostic duration is not an estimate of removable copy cost. The evaluated intervention
 combines bulk row copies and one active copy worker; its result cannot attribute savings to either
 part separately. No K operation is restored and no live-width intervention is reopened.
+
+The following ledger records the evaluated candidate at
+`248e2314ebbb429e4027c5cb249e680a15cec310`. Its V operations, native ABI and native fixture
+are removed from the publication tree. The retained runner is self-test-only here and names that
+evaluated ancestor for real replay. The terminal evidence below owns the final decision.
 
 ## Public-contract ledger
 
@@ -86,7 +91,7 @@ results with explicit byte copies. The shipped
 array into the result. The [graph-worker dispatch](https://github.com/ggml-org/ggml/blob/v0.21.0/src/ggml-cpu/ggml-cpu.c#L3093)
 requires the explicit idle-worker return even with `n_tasks=1`; native qualification covers it.
 
-## Required specification clarification
+## Evaluated specification clarification (removed with the candidate)
 
 Update `docs/specs/r5a-dense-layer-forward.md` section 1.3 to scope “No dequantization, no kernel”
 to original R5A dense prefill and state that R8 item 75 separately authorizes two CPU byte-copy
@@ -163,9 +168,10 @@ artifact kind. The full result and evaluated source identity are recorded before
 The author ledger-to-prose consistency pass confirms the V axis/strides, row23/24 table changes,
 scalar FFI, worker dispatch, exact source inventory and paired gate agree. No K source is adopted.
 
-## Implementation checkpoint
+## Evaluated implementation checkpoint
 
-The five production owners implement only the V concat/pad operations and scalar FFI. The final
+At the evaluated ancestor, the five production owners implement only the V concat/pad operations
+and scalar FFI. The native/Align evidence in this section belongs to that checkpoint. The final
 source-diff inspection confirms rows 23/24 change only their operation identifiers; every operand,
 condition, source, width, K/prefill operation and row21/22 remains intact.
 
@@ -182,6 +188,56 @@ not represented as identical metadata behavior. Separate native graph materializ
 assuming that the stub deduplicates shared computed nodes across separate graph expansions.
 
 Python compilation, the paired runner self-test and exact control snapshot inventory checks passed.
-The full fixed-host qualification and terminal source disposition remain pending. No performance
-improvement is claimed before that result. Preserve the complete raw result in retrievable PR
+The terminal fixed-host result follows. These owner checks establish exact semantics; they do
+not establish a performance improvement. Preserve the complete raw result in retrievable PR
 evidence and verify its decoded bytes/hash before publication completes.
+
+## Terminal paired evidence and disposition
+
+The clean-head qualification at `248e2314ebbb429e4027c5cb249e680a15cec310` completed sixteen
+requests and twenty-four isolation records in 192,761,384,792 ns. Control is the immutable item-74
+merge `36183a342d2f87bcf153dfd1d347d38efc08b9a1`. Both isolated normal-mode builds used the
+same exact toolchain, ggml headers/libraries, C compiler, model/pack/geometry, prompt and host
+fingerprint. Every exact output/token/hash, cache accounting, native lifetime, source/external
+identity, isolation and cleanup boundary passed. Raw schema-1 record SHA-256:
+`90ec26172c3ce7205fef855fadcacb02fa11aaab435698d21d2eaea87eba5057` (73,240 bytes).
+
+| Pair | Order | Control full wall (ns) | Candidate full wall (ns) | Paired saving (ns) |
+| --- | --- | ---: | ---: | ---: |
+| 1 | AB | 15458388000 | 16168868125 | -710480125 |
+| 2 | BA | 17107525625 | 16613487958 | 494037667 |
+| 3 | AB | 17248785542 | 17554601042 | -305815500 |
+| 4 | BA | 17615545166 | 17341640291 | 273904875 |
+
+Control and candidate medians were 17,178,155,583 ns and 16,977,564,124 ns. Median paired saving
+was **-15,955,313 ns / -929 ppm**, below the unchanged 871,174,011-ns required saving. Only two
+pairs improved, and candidate median exceeded the immutable 16,552,306,197-ns ceiling. The result
+is **`NOT_MET`**. The lower candidate arm median is not the paired statistic, and no directional V
+benefit or speedup is established.
+
+All five production files and the three candidate-only specification clarifications are restored
+byte-for-byte to control; both native-owner files are removed. The retained runner sets
+`PUBLICATION_ONLY=True` and `EVALUATED_HEAD=248e2314ebbb429e4027c5cb249e680a15cec310`.
+Its self-test checks exact production/specification restoration, removed-owner absence and both
+required ancestors from the current head. Real mode refuses with the evaluated replay commit;
+merge integration must preserve its ancestry.
+
+The closure matrix has no deferred production promise. The evaluated implementation checkpoint
+owns native/Align, topology, modes and failure tests. The full comparison owns exact model output,
+cache/lifetime/accounting, source/external identity, isolation and cleanup evidence. The runner
+self-test owns record/source mutations, gate boundaries and terminal restoration/replay; final
+ordinary and linked-worktree verification and the review/preflight remain publication work.
+
+**Next selected boundary.** K and V copy candidates both failed their paired gates; neither is
+carried into a combined candidate. Item 70 still identified material plane-upload, expert-phase-B
+and transfer/digest buckets, so attention-copy failures do not imply that R8 has no material work.
+Project these newly captured control records onto item 70's exact leaf map before another model
+run, then select the existing plane-upload priming and native-staging boundaries for a focused
+subdiagnosis. A new ledger must define those clocks, exact behavior and materiality decision before
+implementation. No speedup is inferred from a parent clock or from either rejected copy candidate.
+
+**Bounded retrospective.** Real PERMUTE/CONT construction and independent native reference graphs
+caught a fixture assumption about stub graph expansion without changing production semantics.
+The balanced paired statistic again prevented a lower arm median from being called a speedup.
+Existing exactness, publication and shipping rules determined removal; no permanent policy gate
+is added for this result.
