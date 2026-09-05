@@ -1,6 +1,6 @@
 # R8 OLMoE V preparation boundary
 
-Status: complete; `NOT_MET`, production removed before publication, 2026-09-05.
+Status: complete; `NOT_MET`, production removed; merged in PR #197 as `d9fd56c`, 2026-09-05.
 Roadmap owner: `R8-OLMOE-V-PREPARATION-BOUNDARY` (item 75).
 Control revision: `36183a342d2f87bcf153dfd1d347d38efc08b9a1`.
 
@@ -244,3 +244,8 @@ caught a fixture assumption about stub graph expansion without changing producti
 The balanced paired statistic again prevented a lower arm median from being called a speedup.
 Existing exactness, publication and shipping rules determined removal; no permanent policy gate
 is added for this result.
+
+PR #197 preserves the complete raw record in its hash-verified evidence comment. Comprehensive
+review found no issues; exact-head preflight and all three required checks passed. Merged head
+`d9fd56cd5170a69a6a8a3ac2fc8f6fed76e7bdc3` retained both required ancestors, matched the tested
+integration tree and passed the publication-owner self-test.

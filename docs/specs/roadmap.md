@@ -1782,14 +1782,27 @@ The current forward delivery order is:
     were removed. The publication-only owner retains exact replay and ancestry. Neither K nor V
     has a directional benefit that licenses carrying it into a combined candidate.
 
-76. **R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS — distinguish staging priming from native transfer. Next.**
-    Reuse item 75's captured control records to refresh item 70's exact remaining-decode leaf
-    projection without an unchanged model rerun. Plane upload was previously material at
-    2,710,801,676 ns; define a focused contract for its existing priming and native-staging call
-    boundaries before implementation. Preserve uploaded bytes/layouts, graph inputs, all normal
+76. **R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS — distinguish staging priming from native transfer. Complete.**
+    [`r8-olmoe-plane-upload-diagnosis.md`](r8-olmoe-plane-upload-diagnosis.md) owns the committed ledger.
+    Item 75 merged as `d9fd56c`; its captured control records refresh the exact 23-leaf projection
+    without an unchanged model rerun. Plane upload is material at 2,313,750,636 ns median.
+    Measure its existing priming and checked native-staging call boundaries with one opt-in midpoint;
+    stage capacity construction remains outside the measured parent. Preserve uploaded bytes/layouts, graph inputs, all normal
     execution, the fixed request and the inherited 871,174,011-ns eligibility floor. Select only
     a measured material child; a parent clock is not an estimate of removable cost. Other material
     remaining-decode leaves stay eligible; failed attention copies do not close R8.
+    The clean-head diagnosis completed in 93.883 seconds with all exact boundaries passing.
+    Native staging measured 1,533,218,558 ns median, 745,249 ppm of its 2,057,323,354-ns parent,
+    above the fixed floor: `MEASURED_UPLOAD_SEAM_ELIGIBLE / NATIVE_STAGING`. Priming measured
+    524,104,795 ns and is below floor. Full-helper wall is descriptive, not a speedup claim.
+
+77. **R8-OLMOE-NATIVE-STAGING-BOUNDARY — evaluate exact checked KV transfer. Next.**
+    Item 76 selects the existing checked native staging call. Define the smallest supported
+    byte-exact implementation and its owner/closure ledger before coding; inspect K block copies
+    and the strided V transfer without attributing the whole parent wall to either one. Preserve
+    refusal precedence, source/destination layouts, unsplit execution, cache accounting and native
+    lifetimes. Use a contemporary control and a precommitted complete-request paired shipping
+    gate; remove production unless it passes. Below-floor priming reuse is not selected.
 
 ### Status (2026-08-28)
 

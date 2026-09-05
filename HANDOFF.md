@@ -3,40 +3,49 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-V-PREPARATION-BOUNDARY publication (2026-09-05)
+## Active: R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS publication (2026-09-05)
 
-Branch `agent/r8-olmoe-v-preparation-boundary`, based on merged main `36183a3` (PR #196).
-Evaluated candidate `248e2314ebbb429e4027c5cb249e680a15cec310`; Align remains pinned to
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger and terminal evidence:
-`docs/specs/r8-olmoe-v-preparation-boundary.md`.
+Branch `agent/r8-olmoe-plane-upload-diagnosis`, based on merged main `d9fd56c` (PR #197).
+Evaluated source `ae77649ee1019238f8db8b1d1e3695012ecfd2a2`; Align remains pinned to
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger and evidence:
+`docs/specs/r8-olmoe-plane-upload-diagnosis.md`.
 
-The V-only candidate completed sixteen exact requests in 192.761 seconds with all semantic,
-identity, cache, isolation and native lifetime checks passing. Its result is `NOT_MET`: only two
-paired gains were positive, median paired saving was -15,955,313 ns against required 871,174,011 ns,
-and candidate median 16,977,564,124 ns exceeded the historical ceiling. All production and three
-candidate specification clarifications are restored; both native owner files are removed. The
-retained publication-only runner checks exact restoration/removal and control/evaluated ancestry.
+The clean-head four-repeat diagnosis completed in 93.883 seconds with every output, cache,
+isolation, source/runtime identity, accounting and native lifetime boundary passing.
+`NATIVE_STAGING` won at 1,533,218,558 ns median / 745,249 ppm of the 2,057,323,354-ns upload
+parent, above the unchanged 871,174,011-ns floor: `MEASURED_UPLOAD_SEAM_ELIGIBLE`.
+Priming measured 524,104,795 ns, below floor. Instrumented full wall is not a speedup claim.
 
-**Next actions.** Complete one fresh comprehensive review, repair, exact-head preflight, publish
-full raw evidence and merge. Then
-refresh main and implement item 76's plane-upload subdiagnosis from a precommitted ledger. Reuse
-item 75 control records for the current leaf projection; do not repeat an unchanged model run or
-carry either rejected copy candidate into the next implementation.
+**Next actions.** Complete one fresh comprehensive review, repair any valid findings, run exact-head
+preflight, publish/retrieve/hash-verify full raw evidence and merge. Refresh main and implement item
+77's native-staging candidate from a precommitted ledger and contemporary paired shipping gate.
+Do not carry rejected K/V attention copies or below-floor zero-priming reuse into the successor.
 
-**Blocker.** None. Implementation/evaluation is complete; review/publication is active. Item 76 is
-selected but not started. Other material R8 buckets remain; attention failures do not close R8.
+**Blocker.** None. Item 76 implementation and qualification are complete; review/publication is
+active. Item 77 is selected but not started. Other material R8 leaves remain eligible.
 
-**Latest durable verification.** Evaluated helper type-check passed 17 units; three strict C builds,
-shared-region identity, `gmake fmt`, native stub/real four-worker/real UBSan owners, existing
-attention-core mode/order/failure owner, `gmake layer-forward-smoke` (193.931 seconds),
-`gmake runtime-provider-smoke` (sampler vectors plus 61 CLI assertions), Python compilation and
-paired-runner self-test passed. The clean-head real comparison passed every semantic boundary
-and recorded the negative gate above. Final self-tests passed in the ordinary checkout and a
-detached linked worktree, including source/specification restoration, removed-owner absence and
-both ancestry checks. Final raw-result validation and real replay refusal also passed.
+**Latest durable verification.** `gmake fmt`, pinned
+`./scripts/alignc check-per-unit src/olmoe_plane_upload_gate.align` (17 units),
+`scripts/test-olmoe-plane-upload` (all API/failure/schema/accounting/cleanup cases),
+`gmake runtime-provider-smoke` (sampler vectors plus 61 CLI assertions), Python compilation,
+full runner `--self-test` and `git diff --check` passed. The runner pins 133 source dependencies
+plus its own tracked bytes and the managed runtime archive. The clean-head real run recorded
+four exact short/full pairs and 12 zero process-isolation checks; its full raw JSON hash and all
+clock values are in the plan. The evaluated ancestor is now required for publication/replay.
 
-**Intentional uncommitted files.** None after the terminal checkpoint. Models, raw evidence and
-build products remain outside Git.
+**Intentional uncommitted files.** None after the evidence checkpoint. Models, evidence and builds
+stay outside Git.
+
+## Merged checkpoint: R8-OLMOE-V-PREPARATION-BOUNDARY (PR #197, 2026-09-05)
+
+PR #197 merged as `d9fd56c` with tested tree `4439d41bb4cb97b6f20a9add675312714fc41809`.
+Evaluated ancestor `248e2314ebbb429e4027c5cb249e680a15cec310` passed all semantic boundaries in
+192.761 seconds but recorded `NOT_MET`: two positive pairs, -15,955,313-ns median paired saving
+against required 871,174,011 ns, and candidate median 16,977,564,124 ns above the historical ceiling.
+All production/native-owner/specification changes were removed. The publication owner retains exact
+replay and both ancestors; complete raw JSON is hash-verified after GitHub retrieval. Comprehensive
+review had no findings, exact-head preflight and all three required checks passed, and merged-head
+self-test passed. The next capability measures plane-upload children; neither rejected copy ships.
 
 ## Merged checkpoint: R8-OLMOE-K-PREPARATION-BOUNDARY (PR #196, 2026-09-05)
 

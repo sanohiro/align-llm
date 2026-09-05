@@ -1,0 +1,483 @@
+#!/usr/bin/env python3
+"""Execute plane-upload diagnosis and helper contracts with an isolated tiny-model stub."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+COUNTERS = (
+    "remaining_decode_plane_upload_ns", "remaining_decode_plane_priming_ns",
+    "remaining_decode_plane_native_staging_ns", "plane_upload_ns", "graph_count",
+    "decode_graph_count", "decode_node_count", "expert_cache_requests", "expert_cache_hits",
+    "expert_cache_misses", "expert_cache_evictions", "expert_cache_bytes_fetched",
+    "remaining_decode_phase_a_attention_ns", "remaining_decode_phase_a_router_ns",
+    "remaining_decode_attention_projection_ns", "remaining_decode_attention_core_ns",
+    "remaining_decode_attention_output_residual_ns", "remaining_decode_attention_qk_preparation_ns",
+    "remaining_decode_attention_score_matmul_ns", "remaining_decode_attention_masked_softmax_ns",
+    "remaining_decode_attention_value_preparation_ns", "remaining_decode_attention_value_matmul_ns",
+    "remaining_decode_attention_output_packing_ns",
+)
+PARENT, PRIMING, NATIVE = COUNTERS[:3]
+OWNERS = ("contexts", "ggml_buffers", "backends", "gallocrs", "resident_wraps")
+
+ENTRY = '''module upload_smoke
+import alignpack
+import gguf
+import moe_decode_step
+import std.fs
+import core.json
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  snapshot := gguf.open_snapshot(args[1])?
+  identity := alignpack.verify_source_identity_snapshot(snapshot, args[2])?
+  geometry := fs.read_file(args[3])?
+  eog: i64 := json.decode(args[4])?
+  maximum: i64 := json.decode(args[5])?
+  mut prompt_builder: array_builder<i64> := array_builder()
+  prompt_builder.push(3)
+  prompt_builder.push(17)
+  prompt_builder.push(16)
+  prompt := prompt_builder.build()
+  mut eog_builder: array_builder<i64> := array_builder()
+  eog_builder.push(eog)
+  eogs := eog_builder.build()
+  generated := if args[6] == "upload" {
+    moe_decode_step.generate_resident_sampled_plane_upload_diagnosis(
+      args[2], args[3], geometry, identity, prompt, eogs, maximum, 65536, 5)
+  } else {
+    moe_decode_step.generate_resident_sampled(
+      args[2], args[3], geometry, identity, prompt, eogs, maximum, 65536, 5)
+  }
+  print(generated.outcome.code)
+  print(generated.outcome.detail)
+  print(generated.token_ids_json)
+  print(generated.outcome.decode_steps_completed)
+__OWNERS__
+  print(generated.outcome.graph_balance_failures)
+  print(generated.outcome.phase_balance_failures)
+  print(generated.outcome.released_before_owner_scope_end)
+__COUNTERS__
+  return Ok(())
+}
+'''.replace("__OWNERS__", "\n".join(
+    f"  print(generated.outcome.{owner}_created - generated.outcome.{owner}_freed)"
+    for owner in OWNERS
+)).replace("__COUNTERS__", "\n".join(
+    f"  print(generated.outcome.{field})" for field in COUNTERS
+))
+
+# Failure injection and observations exist only in this temporary native library. Successful calls
+# delegate to the unchanged checked-in implementation, including the original checked byte staging.
+WRAPPER = r'''
+#define align_ggml_stage_kv upload_stage
+#define align_ggml_graph_compute upload_compute
+#define align_ggml_graph_select_slot_range upload_select
+#include "ggml_shim_stub.c"
+#undef align_ggml_stage_kv
+#undef align_ggml_graph_compute
+#undef align_ggml_graph_select_slot_range
+#include <stdio.h>
+#include <stdlib.h>
+
+static int stages;
+static int failed;
+
+static uint64_t bytes_hash(uint64_t hash, const void *bytes, size_t count) {
+    const unsigned char *at = bytes;
+    for (size_t i = 0; i < count; i++) hash = (hash ^ at[i]) * UINT64_C(1099511628211);
+    return hash;
+}
+
+int64_t upload_test_accounting_fault(void) {
+    const char *value = getenv("UPLOAD_TEST_BAD_ACCOUNTING");
+    return value ? atoi(value) : 0;
+}
+
+int64_t upload_test_helper_mode(void) {
+    const char *value = getenv("UPLOAD_TEST_HELPER_MODE");
+    return value ? atoi(value) : 8;
+}
+
+int32_t align_ggml_stage_kv(const void *plane, int64_t plane_bytes,
+                          int64_t k_base, int64_t v_base, void *stage, int64_t stage_bytes,
+                          int64_t head_dim, int64_t n_head_kv, int64_t n_past) {
+    const char *refuse = getenv("UPLOAD_TEST_FAIL_STAGE");
+    if (failed) { fprintf(stderr, "UPLOAD_TEST_AFTER_FAILURE\n"); return 97; }
+    stages++;
+    if (refuse && stages == atoi(refuse)) {
+        failed = 1;
+        fprintf(stderr, "UPLOAD_TEST_STAGE_FAILURE %d\n", stages);
+        return ALIGN_GGML_BOUNDS;
+    }
+    int32_t status = upload_stage(plane, plane_bytes, k_base, v_base, stage, stage_bytes,
+                                 head_dim, n_head_kv, n_past);
+    if (status == ALIGN_GGML_OK) {
+        fprintf(stderr, "UPLOAD_TEST_STAGE %d %lld %lld %llu\n", stages,
+                (long long) n_past, (long long) stage_bytes,
+                (unsigned long long) bytes_hash(0, stage, (size_t) stage_bytes));
+    }
+    return status;
+}
+
+void *align_ggml_graph_select_slot_range(void *ctx, void *graph, void *slots,
+                                        int64_t first, int64_t last) {
+    fprintf(stderr, "UPLOAD_TEST_SPLIT\n");
+    return upload_select(ctx, graph, slots, first, last);
+}
+
+int32_t align_ggml_graph_compute(void *backend, void *graph) {
+    const char *refuse = getenv("UPLOAD_TEST_FAIL_COMPUTE_AFTER_STAGE");
+    align_stub_graph *g = graph;
+    if (failed) { fprintf(stderr, "UPLOAD_TEST_AFTER_FAILURE\n"); return 97; }
+    if (refuse && stages == atoi(refuse)) {
+        failed = 1;
+        fprintf(stderr, "UPLOAD_TEST_COMPUTE_FAILURE %d\n", stages);
+        return 91;
+    }
+    int32_t status = upload_compute(backend, graph);
+    uint64_t hash = 0;
+    for (int i = 0; i < g->count; i++) {
+        const align_stub_tensor *t = g->nodes[i];
+        hash = bytes_hash(hash, &t->op, sizeof(t->op));
+        hash = bytes_hash(hash, t->ne, sizeof(t->ne));
+        hash = bytes_hash(hash, &t->is_output, sizeof(t->is_output));
+    }
+    if (status == 0 && g->count) {
+        const align_stub_tensor *last = g->nodes[g->count - 1];
+        hash = bytes_hash(hash, last->data, (size_t) align_stub_nbytes(last));
+    }
+    fprintf(stderr, "UPLOAD_TEST_COMPUTE %d %d %llu\n", stages, g->count,
+            (unsigned long long) hash);
+    return status;
+}
+'''
+
+# The helper's validation/rendering code remains unchanged. Only its new API call is redirected in
+# the isolated copy through this test adapter, which normally returns the actual Outcome intact.
+# This makes malformed child accounting reach the real helper guards without a production flag.
+OUTCOME_ADAPTER = '''module upload_outcome_fixture
+import alignpack
+import moe_decode_step
+
+extern "C" fn upload_test_accounting_fault() -> i64
+
+pub fn generate(
+  pack_path: str, geometry_path: str, expected_geometry: str,
+  source_identity: alignpack.SourceIdentity,
+  borrow prompt_token_ids: array<i64>, borrow eog_token_ids: array<i64>,
+  max_tokens: i64, cache_budget_bytes: i64, seed: i64,
+) -> moe_decode_step.GenerationParts {
+  mut generated := moe_decode_step.generate_resident_sampled_plane_upload_diagnosis(
+    pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids,
+    max_tokens, cache_budget_bytes, seed)
+  fault := unsafe { upload_test_accounting_fault() }
+  if fault == 1 { generated.outcome.remaining_decode_plane_priming_ns = -1 }
+  if fault == 2 {
+    generated.outcome.remaining_decode_plane_native_staging_ns =
+      generated.outcome.remaining_decode_plane_native_staging_ns + 1
+  }
+  if fault == 3 {
+    generated.outcome.remaining_decode_plane_priming_ns = 0
+    generated.outcome.remaining_decode_plane_native_staging_ns =
+      generated.outcome.remaining_decode_plane_upload_ns
+  }
+  return generated
+}
+'''
+
+HELPER_MODES = {
+    "base": "main", "residual": "detailed_main", "other": "other_detailed_main",
+    "compute": "compute_detailed_main", "claim": "claim_detailed_main",
+    "phase_a": "phase_a_operation_main", "attention": "attention_operation_main",
+    "core": "attention_core_main",
+}
+DISPATCH = '''module upload_helpers
+import olmoe_remaining_decode_overhead_gate
+import olmoe_plane_upload_gate
+
+extern "C" fn upload_test_helper_mode() -> i64
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  mode := unsafe { upload_test_helper_mode() }
+__MODES__
+  if mode == 8 { return olmoe_plane_upload_gate.main(args) }
+  return Err(Error.Invalid)
+}
+'''.replace("__MODES__", "\n".join(
+    f'  if mode == {index} {{ return olmoe_remaining_decode_overhead_gate.{entry}(args) }}'
+    for index, entry in enumerate(HELPER_MODES.values())
+))
+
+BASE_KEYS = set("schema_version status maximum_tokens seed prompt_tokens completion_tokens "
+                "stopped_eog token_ids output_sha256 phases engine engine_phases "
+                "remaining_decode lifetime".split())
+BASE_FIELDS = {
+    "phases": "snapshot_ns model_ir_ns geometry_ns source_identity_ns tokenizer_ns "
+              "engine_wall_ns output_decode_ns elapsed_ns",
+    "engine": "elapsed_ns first_token_ns resident_fill_ns pread_ns claim_pread_ns decide_ns "
+              "compute_ns decode_compute_ns graph_count decode_steps_completed resident_fill_bytes "
+              "expert_cache_requests expert_cache_hits expert_cache_misses expert_cache_evictions "
+              "expert_cache_bytes_fetched",
+    "engine_phases": "construction_ns prefill_ns first_decode_ns remaining_decode_ns teardown_ns "
+                     "prefill_claim_pread_ns first_decode_claim_pread_ns remaining_decode_claim_pread_ns "
+                     "prefill_compute_ns first_decode_compute_ns remaining_decode_compute_ns",
+    "remaining_decode": "pre_pass_ns pass_ns post_pass_ns pack_or_resident_stage_ns claim_pread_ns "
+                        "compute_ns routing_ns plane_upload_ns plane_readback_ns pass_residual_ns",
+    "lifetime": "ggml_buffers_created ggml_buffers_freed contexts_created contexts_freed "
+                "backends_created backends_freed gallocrs_created gallocrs_freed "
+                "resident_wraps_created resident_wraps_freed released_before_owner_scope_end",
+}
+DETAIL_FIELDS = {
+    "pass_residual": "total_ns context_buffer_setup_ns graph_build_alloc_ns "
+                     "generic_transfer_digest_ns graph_teardown_ns other_ns",
+    "pass_other": "total_ns plane_roundtrip_compare_ns graph_member_spec_ns "
+                  "layer_step_accounting_ns other_ns",
+    "decode_compute": "total_ns embedding_ns routing_ns expert_ns head_ns",
+    "claim_io": "total_ns file_pread_ns block_to_claim_copy_ns claim_to_cache_copy_ns "
+                "cache_to_claim_copy_ns other_ns",
+    "phase_a_operations": "total_ns attention_and_residual_ns router_ns",
+    "attention_operations": "total_ns projections_ns attention_core_ns output_residual_ns",
+    "attention_core_operations": "total_ns qk_preparation_ns score_matmul_ns masked_softmax_ns "
+                                 "value_preparation_ns value_matmul_ns output_packing_ns",
+    "plane_upload": "total_ns priming_ns native_staging_ns",
+}
+
+
+def run(argv: list[str], work: Path, env: dict[str, str], *, refuse: bool = False
+        ) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(argv, cwd=work, env=env, text=True, capture_output=True, timeout=180)
+    if refuse:
+        assert result.returncode != 0 and not result.stdout.strip(), (argv, result)
+    elif result.returncode:
+        raise RuntimeError(f"{argv[0]} failed ({result.returncode}): {result.stderr[-8000:]}")
+    return result
+
+
+def checked_json(text: str) -> dict:
+    def unique(pairs: list[tuple[str, object]]) -> dict:
+        result = {}
+        for key, value in pairs:
+            assert key not in result, key
+            result[key] = value
+        return result
+    return json.loads(text, object_pairs_hook=unique)
+
+
+def partition(record: dict[str, int], *, zero: bool) -> None:
+    assert record[PRIMING] + record[NATIVE] == record[PARENT], record
+    assert all(record[field] == 0 if zero else record[field] > 0
+               for field in (PARENT, PRIMING, NATIVE)), record
+
+
+def helper_check(record: dict, extras: list[str], maximum: int) -> None:
+    assert set(record) == BASE_KEYS | set(extras), set(record)
+    assert record["status"] == "ok" and record["maximum_tokens"] == maximum
+    for field, names in BASE_FIELDS.items():
+        assert set(record[field]) == set(names.split()), (field, record[field])
+    for name in extras:
+        detail = record[name]
+        assert set(detail) == set(DETAIL_FIELDS[name].split()), detail
+        assert all(type(value) is int and 0 <= value <= 2**63 - 1
+                   for value in detail.values()), detail
+        assert detail["total_ns"] == sum(value for key, value in detail.items()
+                                         if key != "total_ns"), detail
+        if maximum == 2:
+            assert all(value == 0 for value in detail.values()), detail
+    lifetime = record["lifetime"]
+    for owner in OWNERS:
+        assert lifetime[owner + "_created"] == lifetime[owner + "_freed"] > 0, lifetime
+    assert lifetime["released_before_owner_scope_end"] is True, lifetime
+    if "plane_upload" in extras:
+        detail = record["plane_upload"]
+        assert detail["total_ns"] == record["remaining_decode"]["plane_upload_ns"], record
+        if maximum == 128:
+            assert detail["priming_ns"] > 0 and detail["native_staging_ns"] > 0, record
+
+
+def ascii_helper_model(model: Path, geometry: Path, target: Path) -> None:
+    """Give only the helper fixture a finite head whose sampled rows all decode as ASCII.
+
+    The API parity/failure cases retain the original fixture. For every hidden lane, two ASCII
+    output rows use opposite large finite weights; one sign receives a dominant positive logit.
+    This avoids invalid standalone UTF-8 bytes under the helper's immutable seed 5.
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from olmoe_text_fixture import olmo_data
+
+    def tensors(value: object) -> list[dict]:
+        if isinstance(value, dict):
+            found = [value] if value.get("name") == "output.weight" and "absolute_offset" in value else []
+            return found + [row for child in value.values() for row in tensors(child)]
+        if isinstance(value, list):
+            return [row for child in value for row in tensors(child)]
+        return []
+
+    rows = tensors(json.loads(geometry.read_text()))
+    assert rows and all(row == rows[0] for row in rows), rows
+    output = rows[0]
+    lanes, vocab = output["dims"]
+    assert output["type"] == 0 and output["nbytes"] == lanes * vocab * 4, output
+    tokens, _, _, _ = olmo_data()
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    assert 2 * lanes <= len(letters)
+    weights = [0.0] * (lanes * vocab)
+    for lane in range(lanes):
+        weights[tokens.index(letters[2 * lane]) * lanes + lane] = 1000.0
+        weights[tokens.index(letters[2 * lane + 1]) * lanes + lane] = -1000.0
+    payload = struct.pack(f"<{len(weights)}f", *weights)
+    raw = bytearray(model.read_bytes())
+    start = output["absolute_offset"]
+    raw[start:start + len(payload)] = payload
+    target.write_bytes(raw)
+
+
+def main() -> None:
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("UPLOAD_TEST_") and not key.startswith("ALIGN_LLM_GGML_")
+           and key not in ("DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH", "LD_LIBRARY_PATH")}
+    with tempfile.TemporaryDirectory(prefix="align-plane-upload-") as raw:
+        work = Path(raw)
+        source = work / "src"
+        source.mkdir()
+        for path in (ROOT / "src").glob("*.align"):
+            shutil.copy2(path, source / path.name)
+        (source / "upload_smoke.align").write_text(ENTRY)
+        (source / "upload_helpers.align").write_text(DISPATCH)
+        (work / "wrapper.c").write_text(WRAPPER)
+        library = work / ("libalign_ggml_shim.dylib" if platform.system() == "Darwin"
+                          else "libalign_ggml_shim.so")
+        run([env.get("CC", "cc"), "-O2", "-ffp-contract=off", "-fPIC", "-shared",
+             "-DALIGN_GGML_FP_CONTRACT_OFF=1", "-DALIGN_GGML_STUB_ENGINE=1",
+             "-I", str(ROOT / "scripts"), str(work / "wrapper.c"), "-o", str(library)], work, env)
+        env["LIBRARY_PATH"] = str(work) + (":" + env["LIBRARY_PATH"] if env.get("LIBRARY_PATH") else "")
+        env["DYLD_LIBRARY_PATH"] = str(work)
+        env["LD_LIBRARY_PATH"] = str(work)
+        compiler = str(ROOT / "scripts/alignc")
+        for entry in ("main", "upload_smoke", "upload_helpers"):
+            print(f"Building isolated {entry}", file=sys.stderr, flush=True)
+            run([compiler, "build", f"src/{entry}.align"], work, env)
+        run(["python3", str(ROOT / "scripts/olmoe_provider_fixture.py"), str(work)], work, env)
+        manifest = json.loads((work / "olmoe-runtime-manifest.json").read_text())
+        model = work / manifest["model"]
+        geometry, pack = work / "geometry.json", work / "model.alignpack"
+        run([str(work / "main"), "--model-ir", str(model), str(geometry)], work, env)
+        run([str(work / "main"), "--pack", str(model), str(pack), str(work / "pack.json")], work, env)
+
+        def invoke(mode: str, maximum: int = 4, *, unstarted: bool = False,
+                   **injected: str) -> tuple[dict, list[str]]:
+            result = run([str(work / "upload_smoke"), str(model), str(pack), str(geometry),
+                          str(manifest["ordinary_eog_id"]), str(maximum), mode],
+                         work, {**env, **injected})
+            lines = result.stdout.splitlines()
+            assert len(lines) == 12 + len(COUNTERS), lines
+            assert all(int(value) == 0 for value in lines[4:11]), lines
+            assert lines[11] == ("false" if unstarted else "true"), lines
+            trace = [line for line in result.stderr.splitlines() if line.startswith("UPLOAD_TEST_")]
+            assert "UPLOAD_TEST_AFTER_FAILURE" not in trace and "UPLOAD_TEST_SPLIT" not in trace, trace
+            record = dict(zip(COUNTERS, map(int, lines[12:])))
+            record.update(code=lines[0], detail=lines[1], tokens=json.loads(lines[2]), steps=int(lines[3]))
+            assert all(record[field] == 0 for field in COUNTERS[12:]), record
+            return record, trace
+
+        normal, normal_trace = invoke("normal")
+        upload, upload_trace = invoke("upload")
+        assert normal["code"] == upload["code"] == "", (normal, upload)
+        assert normal[PRIMING] == normal[NATIVE] == 0 and normal[PARENT] > 0, normal
+        partition(upload, zero=False)
+        for field in ("tokens", "steps", *COUNTERS[4:12]):
+            assert normal[field] == upload[field], (field, normal, upload)
+        assert upload["steps"] == 3 and upload_trace == normal_trace, (normal_trace, upload_trace)
+        short, _ = invoke("upload", 2)
+        partition(short, zero=True)
+        assert short["code"] == "" and short["steps"] == 1
+        assert short["plane_upload_ns"] > 0, short
+        assert short["tokens"] == upload["tokens"][:2], (short, upload)
+        for maximum in (0, 129):
+            old_refusal, old_trace = invoke("normal", maximum, unstarted=True)
+            new_refusal, new_trace = invoke("upload", maximum, unstarted=True)
+            assert old_refusal == new_refusal and old_refusal["code"], (old_refusal, new_refusal)
+            assert not old_trace and not new_trace, (old_trace, new_trace)
+            assert all(new_refusal[field] == 0 for field in COUNTERS), new_refusal
+        for occurrence, completed in ((1, 0), (2, 0), (3, 1), (4, 1), (5, 2), (6, 2)):
+            record, trace = invoke("upload", UPLOAD_TEST_FAIL_STAGE=str(occurrence))
+            assert record["code"] == "R6M_PLANE_UNAVAILABLE" and "stage" in record["detail"], record
+            assert record["steps"] == completed and record["tokens"] == [], record
+            partition(record, zero=completed < 2)
+            assert trace[-1] == f"UPLOAD_TEST_STAGE_FAILURE {occurrence}", trace
+            assert sum(line.startswith("UPLOAD_TEST_STAGE ") for line in trace) == occurrence - 1, trace
+        for occurrence, completed in ((3, 1), (5, 2)):
+            record, trace = invoke("upload", UPLOAD_TEST_FAIL_COMPUTE_AFTER_STAGE=str(occurrence))
+            assert record["code"] == "R5_COMPUTE" and "[91]" in record["detail"], record
+            assert record["steps"] == completed and record["tokens"] == [], record
+            partition(record, zero=completed < 2)
+            assert trace[-1] == f"UPLOAD_TEST_COMPUTE_FAILURE {occurrence}", trace
+
+        print("PASS API normal/upload parity, partition, six staging failures and two compute failures",
+              file=sys.stderr, flush=True)
+        helper_model = work / "helper-ascii.gguf"
+        ascii_helper_model(model, geometry, helper_model)
+        model = helper_model
+        geometry, pack = work / "helper-geometry.json", work / "helper.alignpack"
+        run([str(work / "main"), "--model-ir", str(model), str(geometry)], work, env)
+        run([str(work / "main"), "--pack", str(model), str(pack), str(work / "helper-pack.json")], work, env)
+
+        def helper_run(mode: str, maximum: int = 2, **injected: str) -> dict:
+            selector = list(HELPER_MODES).index(mode) if mode in HELPER_MODES else 8
+            result = run([str(work / "upload_helpers"), str(model), str(pack), str(geometry),
+                          "x", str(maximum), "5"], work,
+                         {**env, "UPLOAD_TEST_HELPER_MODE": str(selector), **injected})
+            assert "UPLOAD_TEST_AFTER_FAILURE" not in result.stderr, result.stderr
+            return checked_json(result.stdout)
+
+        extras: list[str] = []
+        detail_order = list(DETAIL_FIELDS)
+        for index, mode in enumerate(HELPER_MODES):
+            if index:
+                extras.append(detail_order[index - 1])
+            helper_check(helper_run(mode), extras, 2)
+            print(f"PASS unchanged helper schema: {mode}", file=sys.stderr, flush=True)
+        upload_extras = list(DETAIL_FIELDS)[:4] + ["plane_upload"]
+        helper_short = helper_run("upload")
+        helper_full = helper_run("upload", 128)
+        helper_check(helper_short, upload_extras, 2)
+        helper_check(helper_full, upload_extras, 128)
+        assert helper_short["token_ids"] == helper_full["token_ids"][:2]
+        argv = [str(work / "upload_helpers"), str(model), str(pack), str(geometry), "x"]
+        for tail in ([], ["2"], ["2", "5", "extra"], ["3", "5"], ["2", "6"],
+                     ["true", "5"], [str(2**63), "5"]):
+            run(argv + tail, work, env, refuse=True)
+        # All normal and schema cases above compiled the unchanged helper. Compile its isolated
+        # adapter only for the three malformed-accounting cases, after those integrations pass.
+        (source / "upload_outcome_fixture.align").write_text(OUTCOME_ADAPTER)
+        helper = source / "olmoe_remaining_decode_overhead_gate.align"
+        text = helper.read_text()
+        call = "moe_decode_step.generate_resident_sampled_plane_upload_diagnosis("
+        assert text.count(call) == 1, "new helper API call boundary changed"
+        helper.write_text(text.replace("import alignpack\n", "import alignpack\nimport upload_outcome_fixture\n", 1)
+                          .replace(call, "upload_outcome_fixture.generate(", 1))
+        print("Building isolated accounting adapter", file=sys.stderr, flush=True)
+        run([compiler, "build", "src/upload_helpers.align"], work, env)
+        for fault, maximum in ((1, 2), (2, 2), (3, 128)):
+            refused = run(argv + [str(maximum), "5"], work,
+                          {**env, "UPLOAD_TEST_BAD_ACCOUNTING": str(fault)}, refuse=True)
+            assert refused.returncode == 2 and refused.stderr.splitlines()[-1] == "error: code 2", refused
+    print("OLMoE plane upload: PASS")
+    print("PASS normal_mode_zero upload_mode_partition normal_unsplit_parity short_prefix_zero")
+    print("PASS successful_remaining_commit stage_failure_before_compute "
+          "stage_failure_after_first_decode late_compute_failure_no_upload_commit")
+    print("PASS helper_mode_schema helper_invalid_arguments lifetime_cleanup")
+    print("PASS helper_accounting_refusal (isolated Outcome adapter; unchanged helper guards)")
+
+
+if __name__ == "__main__":
+    main()

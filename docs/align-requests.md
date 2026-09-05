@@ -8211,11 +8211,18 @@ in the sibling checkout at the pinned commit `4b515f8d37de2e9a9ba06170c5842fd12d
   section 6.1 correction C8 measured `buffer(4611686018427387904)` (2^62) followed by one `put_u8`
   publishing length `1` with **no failure anywhere**: the oversized reservation degrades to `cap = 0`
   invisibly, and the unrelated one-byte append succeeds on its own, independent growth path.
-- There is no `.cap()`/`.capacity()` accessor anywhere in `crates/align_runtime/src/lib.rs`'s buffer
-  method set (`bytes`, `len`, `put_<scalar>`, `append` — the same set `docs/language-spec.md:651-660`
-  documents for `buffer`), and `grep -n 'cap()' docs/language-spec.md` returns nothing: the only way
-  to learn what a read produced is `b.len()`, which reports the **last read's** byte count, not what
-  was reserved.
+- Current evidence distinguishes the internal runtime ABI from the supported public language API.
+  Consumer pin `8cefc803d5c7f883a8db5b67250ed4ed069b43a4` exports
+  `align_rt_buffer_capacity` at `crates/align_runtime/src/lib.rs:10856`; sibling
+  `46664a01352f7a669339c2eae2661d55659b96c2` exports it at the same path's line 10878.
+  This checked/native ABI helper does not expose a public `b.cap()` or `b.capacity()` method:
+  buffer method checking still provides `bytes`, `len`, `put_<scalar>`, and `append`
+  (`crates/align_sema/src/lib.rs:56198,60418,60490,60539` at the pin;
+  `:57724,62135,62207,62256` at the sibling). Construction still returns a bare `buffer`
+  (`crates/align_sema/src/lib.rs:54333` / `:55859`) and silently degrades a failed reservation
+  to capacity zero (`crates/align_runtime/src/lib.rs:10805` / `:10824`). Neither revision supplies
+  the supported public capacity accessor or fallible reservation API requested here. `b.len()`
+  reports the current logical byte count, including the **last read's** result, not reserved capacity.
 - `docs/specs/r0-gguf-inspection.md:1073` (item 17) reaches the identical conclusion from GGUF
   inspection: "Capacity is not observable at this pin (`b.len()` is the last read's count; there is
   no `b.cap()`), so the observable consequence is tested instead: a zero-length read at a position
