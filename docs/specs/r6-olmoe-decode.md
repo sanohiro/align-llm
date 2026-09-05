@@ -576,6 +576,13 @@ column `n_past`. **A decode topology is a new condition and two `CONCAT` rows, n
 | `mm_decode_a_node_table(g, n_past, width)` (new) | **37**, to be verified and published as `graph.table_rows_a_decode` | the prefill table at `T = 1`, with the post-RoPE K and the reshaped V each concatenated against the uploaded past along their own axis, and the existing `PAD` then widening `n_past + 1` to `KV_WIDTH` under a `wide` that now means `width > n_past + 1` |
 | `mm_b_node_table` (both) | `2·n_expert_used + 8` | **unchanged.** Phase B never saw `T` except through three `p` parameters, and it already runs at `t_out = 1` today, at layer 15 of every prefill |
 
+[R8 item 75](r8-olmoe-v-preparation-boundary.md) owns the later V-copy implementation: decode
+row 23 uses explicit `OP_V_CONCAT_F32=19` and row 24 uses `OP_V_PAD_F32=20`, creating separate
+CPU custom nodes with the same V concatenation and full-width padding semantics. Row 23 remains
+marked and independently readable; all dimensions, slots, sources, conditions, counts, and K/prefill
+operations remain as above. Generic `OP_CONCAT` / `OP_PAD` are unchanged. The item-75 gate alone
+authorizes retaining this candidate; a negative decision restores the original operation IDs.
+
 **The slot budget, re-derived rather than inherited.** `layer_qwen2` puts past-K and past-V at 64/65
 so the prefill arm's `slot_high_water` stays 52 and no golden moves. OLMoE's map is different:
 `MM_A_NODE_BASE := 21` with 35 rows occupies 21–55, `MM_B_NODE_BASE := 56` with `2u + 8` rows occupies

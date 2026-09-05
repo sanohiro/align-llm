@@ -1767,10 +1767,10 @@ The current forward delivery order is:
     preserve replay and ancestry evidence. A V-only preparation capability is next; mixed K
     results do not justify carrying K into it.
 
-75. **R8-OLMOE-V-PREPARATION-BOUNDARY — evaluate exact V concatenation and padding. Next.**
-    Item 73 measured V preparation rows 21–24 at 988,706,344 ns, above the unchanged eligibility
-    floor. After item 74 merges, define the V-only contract and contemporaneous normal-control gate,
-    then replace only rows 23/24 with separate exact CPU byte-copy nodes if supported by the
+75. **R8-OLMOE-V-PREPARATION-BOUNDARY — evaluate exact V concatenation and padding. Active.**
+    [`r8-olmoe-v-preparation-boundary.md`](r8-olmoe-v-preparation-boundary.md) owns the ledger,
+    exact ABI and closure matrix. Item 73 measured V preparation rows 21–24 at 988,706,344 ns, above the unchanged eligibility
+    floor. Item 74 merged as `36183a3`, the immutable contemporary control. Replace only rows 23/24 with separate exact CPU byte-copy nodes if supported by the
     shipped ggml surface. Preserve rows 21/22, all V shapes/strides, marked concat and full-width
     attention. Require exact native/model parity and the complete-request paired shipping floor;
     remove production unless the precommitted gate passes. Do not assume the full measured

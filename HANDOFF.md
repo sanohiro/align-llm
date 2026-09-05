@@ -3,39 +3,44 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-K-PREPARATION-BOUNDARY publication (2026-09-05)
+## Active: R8-OLMOE-V-PREPARATION-BOUNDARY (2026-09-05)
 
-Branch `agent/r8-olmoe-k-preparation-boundary`, based on merged main `e221df3` (PR #195).
-Evaluated candidate `7c2471575967eb258212ce96a7acfaa240b02611`; Align remains pinned to
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. The authoritative ledger and terminal result are
-`docs/specs/r8-olmoe-k-preparation-boundary.md`.
+Branch `agent/r8-olmoe-v-preparation-boundary`, based on merged main `36183a3` (PR #196).
+Align remains pinned to `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Item 75's authoritative
+ledger and closure matrix are `docs/specs/r8-olmoe-v-preparation-boundary.md`.
 
-The exact K-copy candidate completed the four-pair real comparison in 225.360 seconds with all
-semantic, identity, cache, isolation and lifetime checks passing, but its decision is `NOT_MET`.
-Only two pairs improved, median paired gain was 3,851,438 ns against required 1,008,080,808 ns,
-and candidate median 19,489,429,604 ns exceeded the historical ceiling. All production changes,
-candidate-only native owners and three specification clarifications are restored/removed.
-The retained runner is publication-only and requires control/evaluated ancestry; merge commits only.
+The candidate replaces only V concatenation/padding rows 23/24 with separate CPU byte-copy
+custom nodes (op IDs 19/20). Exact axis-0 layouts, rows 21/22, marked concat, full width, all K
+operations and normal unsplit execution remain fixed. Four contemporary AB/BA pairs retain the
+all-positive requirement, median saving at least max(871,174,011 ns, 5% of control), historical
+16,552,306,197-ns candidate ceiling, and eight-minute complete qualification ceiling.
 
-**Next actions.** Complete one fresh comprehensive review, repair findings, run exact-head
-preflight, publish and merge. Then refresh
-main and implement item 75's V-only preparation boundary from a precommitted ledger. Do not carry
-K into it: the paired result did not establish a directional K benefit.
+**Next actions.** Implement the two V operations and focused real/stub owner; adapt the paired
+qualifier to the new exact control/source boundary; run narrow owners and clean-head qualification.
+Retain production only for `MET`; bind terminal evidence, review, repair, preflight, publish and
+merge; then continue to the result-selected successor.
 
-**Blocker.** None. Item 74 implementation/evaluation is complete; review/publication is active.
-Item 75 is selected but not started. No Align gap was encountered.
+**Blocker.** None. Design is fixed; implementation and qualification are not started. Existing
+Align scalar C FFI suffices; no new Align capability is required.
 
-**Latest durable verification.** At the evaluated checkpoint: pinned helper type-check (17 units),
-three strict C builds, shared-shim identity, `gmake fmt`, `scripts/test-olmoe-attention-core`,
-`gmake layer-forward-smoke` (82.153 seconds), `gmake runtime-provider-smoke` (sampler vectors and
-61 CLI assertions), native stub/real four-worker/real UBSan owners, Python compilation and paired
-runner self-test all passed. The clean-head real comparison passed every semantic boundary and
-recorded the terminal negative gate result above. Terminal self-tests passed in the ordinary
-checkout and a detached linked worktree, including exact source restoration and both ancestry
-checks. The final runner validates the raw result and refuses real replay with the evaluated SHA.
+**Latest durable verification.** Item 74's comprehensive review had no findings; exact-head
+preflight and all three required CI checks passed. Its post-merge self-test verified exact restored
+production and control/evaluated ancestry. Item 75 has the author ledger-to-prose consistency pass;
+executable owners remain pending.
 
-**Intentional uncommitted files.** None after the terminal checkpoint. Models, raw evidence and
+**Intentional uncommitted files.** None after the design checkpoint; models, raw evidence and
 build products remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-K-PREPARATION-BOUNDARY (PR #196, 2026-09-05)
+
+PR #196 merged as `36183a3` with tested tree `7fdbe644881a8a09a2aa8b8c996e42cefc9f469b`.
+Evaluated ancestor `7c2471575967eb258212ce96a7acfaa240b02611` passed all semantics but recorded
+`NOT_MET`: only two paired gains were positive, median paired saving was 3,851,438 ns against
+required 1,008,080,808 ns, and candidate median 19,489,429,604 ns exceeded the historical ceiling.
+All production/native-owner/specification changes were removed. The retained publication-only
+runner verifies exact restoration and both required ancestors; the complete raw result is preserved
+in PR #196 and hash-verified after retrieval. Review had no findings, all publication checks passed,
+and the merged-head self-test passed. Mixed K results do not justify carrying K into item 75.
 
 ## Merged checkpoint: R8-OLMOE-ATTENTION-CORE-DIAGNOSIS (PR #195, 2026-09-05)
 

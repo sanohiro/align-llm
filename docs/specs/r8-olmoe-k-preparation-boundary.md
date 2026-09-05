@@ -1,6 +1,6 @@
 # R8 OLMoE K preparation boundary
 
-Status: complete; `NOT_MET`, production removed before publication, 2026-09-05.
+Status: merged in PR #196; `NOT_MET`, production removed before publication, 2026-09-05.
 Roadmap owner: `R8-OLMOE-K-PREPARATION-BOUNDARY`.
 Control revision: `e221df396258d2b36c5a7355da721b198e0a9809`.
 
@@ -212,3 +212,8 @@ ledger must set the contemporaneous control and complete-request shipping gate b
 lesson at the evaluated ancestor. The paired owner prevented ambient timing changes or the
 lower candidate arm median from being reported as a qualified speedup. No new permanent gate
 is needed; the existing exact-semantics and complete-request rules determined the disposition.
+
+PR #196 merged as `36183a342d2f87bcf153dfd1d347d38efc08b9a1`, preserving the tested tree
+`7fdbe644881a8a09a2aa8b8c996e42cefc9f469b`. The [complete raw record](https://github.com/sanohiro/align-llm/pull/196#issuecomment-5548884976)
+is durably preserved and was retrieved/decoded/hash-verified before merge. The post-merge owner
+self-test passed, including exact restoration and both required ancestors. Item 75 owns the selected V successor.
