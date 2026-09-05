@@ -1,6 +1,6 @@
 # R8 OLMoE attention operation diagnosis
 
-Status: implemented, measured, and reviewed; publication pending, 2026-09-05
+Status: complete; merged as PR #194, 2026-09-05
 
 Roadmap owner: item 72, `R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS`
 

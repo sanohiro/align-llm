@@ -3,48 +3,33 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS (2026-09-05)
+## Active: R8-OLMOE-ATTENTION-CORE-DIAGNOSIS (2026-09-05)
 
-Branch `agent/r8-olmoe-attention-operation-diagnosis`, based on pulled merged `main`
-`ce74938` (item 71 PR #193).
-The sibling Align checkout and `.align-revision` remain at merged Align
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
+Branch `agent/r8-olmoe-attention-core-diagnosis`, based on merged `main` `e1f3aee` (PR #194).
+The Align pin remains `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new language surface is needed.
+Item 73's authoritative ledger and closure matrix are
+`docs/specs/r8-olmoe-attention-core-diagnosis.md`. It separates item 72's selected core into six
+exact operation sequences while preserving the fixed request, output and 871,174,011-ns floor.
 
-Item 72's authoritative ledger and closure matrix are
-`docs/specs/r8-olmoe-attention-operation-diagnosis.md`. Design commit `e7d2eef` and implementation
-commit `593556b` preserve item 71's fixed request and 871,174,011-ns floor. Comprehensive review of
-result-record head `d5b87d5` found one P1: ggml dependency traversal interleaves table rows, so
-positional graph splits put Q/K projection work into the attention-core clock and invalidated the
-first attribution. That measurement and its successor decision are withdrawn.
+**Next actions.** Implement the six clocks and their exact helper/qualification consumer; run owner
+checks and the clean-head real diagnosis; review, repair, preflight, publish and merge; continue to
+the selected next eligible capability under the current user instruction.
 
-Consolidated repair `9353f2e` adds a bounded graph selector that requires every populated table-
-owned output slot in a class to occur exactly once in the source graph and retains actual
-topological order. The repaired clean-head run completed in 95.407 seconds. Projection,
-attention-core, and output/residual medians were 332,900,623 ns, 2,525,763,020 ns, and 111,561,949
-ns. Attention core won at 846,606 ppm of the 2,983,396,783-ns attention median and cleared the
-floor, so the repaired decision is `ATTENTION_CORE_SUBDIAGNOSIS_REQUIRED`. Every fixed output,
-cache, isolation, lifetime, and corrected accounting boundary passed. Normal provider and item-71
-execution remain unchanged; item 63's live-width candidate remains rejected.
+**Blocker.** None. Implementation and qualification are not yet complete.
 
-The required final comprehensive review covered repaired result-record head `f0fb303` against base
-tip and merge base `ce74938` using Codex `gpt-6-astra` at high effort. It found no actionable
-defects in graph selection, timing accounting, cleanup, qualification behavior, or the ggml
-allocation assumptions.
+**Latest durable verification.** PR #194's exact-head preflight and all three required CI jobs
+passed before merge. Item 73 has its author ledger-to-prose consistency pass; owner checks pending.
 
-**Next actions.** Run exact-head preflight, publish, and merge. Per the current user instruction,
-stop after this PR instead of starting its attention-core successor.
+**Intentional uncommitted files.** Item 73's in-progress plan, implementation and continuity updates.
 
-**Blocker.** None.
+## Merged checkpoint: R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS (PR #194, 2026-09-05)
 
-**Latest durable verification.** After repair, `make fmt`, `make layer-forward-smoke` (69.963
-seconds, including the branched membership and range-refusal regression), `make
-runtime-provider-smoke` (self-test plus 61 CLI assertions), Python compilation, the focused item-72
-self-test, helper type-check, and `git diff --check` pass. The repaired clean-head four-repeat run
-above passed in 95.407 seconds, and the required final comprehensive review was clean. Publication
-preflight remains pending.
-
-**Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
-remain outside Git.
+PR #194 merged as `e1f3aee`. The repaired slot-membership diagnosis measured projection, attention
+core and output/residual medians of 332,900,623 ns, 2,525,763,020 ns and 111,561,949 ns. Core won
+at 846,606 ppm and cleared the immutable floor: `ATTENTION_CORE_SUBDIAGNOSIS_REQUIRED`. All exact
+output/cache/isolation/lifetime/accounting boundaries passed. Review found and repaired positional
+misattribution; the required final comprehensive review was clean. Exact-head preflight and all
+three required checks passed. Item 73 owns the narrower successor.
 
 ## Merged checkpoint: R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS (PR #193, 2026-09-05)
 

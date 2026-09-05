@@ -1736,6 +1736,15 @@ The current forward delivery order is:
     isolation, lifetime, and corrected accounting boundary passed. A narrower attention-core
     diagnosis is the next eligible R8 capability.
 
+73. **R8-OLMOE-ATTENTION-CORE-DIAGNOSIS — identify the material core operation sequence. Active.**
+    [`r8-olmoe-attention-core-diagnosis.md`](r8-olmoe-attention-core-diagnosis.md) owns the contract
+    and closure matrix. Preserve item 72's request and immutable floor; split its selected rows
+    14–27 by exact slot membership into QK preparation (14–18), score matmul (19), masked softmax
+    (20), V preparation (21–24), value matmul (25), and output packing (26–27). Keep the parent
+    clocks exact, validate fixed output/cache/lifetimes/isolation, and select only the largest
+    class whose median reaches 871,174,011 ns. Each decision names only its measured row sequence;
+    no speedup is claimed and the rejected live-width intervention remains forbidden.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:
