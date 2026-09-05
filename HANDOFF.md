@@ -10,27 +10,30 @@ Branch `agent/r8-olmoe-attention-operation-diagnosis`, based on pulled merged `m
 The sibling Align checkout and `.align-revision` remain at merged Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
-Item 72's authoritative ledger and closure matrix are
-`docs/specs/r8-olmoe-attention-operation-diagnosis.md`. It preserves item 71's fixed request and
-871,174,011-ns floor. The opt-in path will recursively partition the already-built graph at exact
-row-13, row-27, and row-31 tensor anchors. It will directly execute rows 0-13 as
-`PROJECTIONS`, rows 14-27 as `ATTENTION_CORE`, rows 28-31 as `OUTPUT_RESIDUAL`, and the existing
-rows 32-36 router suffix to preserve the full result. Intermediate suffix graphs are structure
-only and are never timed as operation classes.
+Item 72's authoritative ledger, closure matrix, and result are
+`docs/specs/r8-olmoe-attention-operation-diagnosis.md`. Design commit `e7d2eef` and implementation
+commit `593556b` preserve item 71's fixed request and 871,174,011-ns floor. The opt-in path
+recursively partitions the already-built graph at exact row-13, row-27, and row-31 tensor anchors
+and directly executes `PROJECTIONS`, `ATTENTION_CORE`, `OUTPUT_RESIDUAL`, then the existing router
+suffix. Intermediate suffix graphs are structure only and are never timed as operation classes.
 
-Every normal provider entry retains its single phase-A compute. Item 71's two-slice diagnostic
-also remains unchanged. Item 63's live-width candidate remains rejected. The selected attention
-class must clear the immutable floor before it can authorize a narrower successor.
+The clean-head run at `593556bb2e3601e7d4913f0a7d68d8487d5444d6` completed in 111.157 seconds.
+Projection, attention-core, and output/residual medians were 155,028,385 ns, 3,014,204,022 ns, and
+112,723,332 ns. Attention core won at 915,666 ppm of the 3,291,814,734-ns attention median and
+cleared the immutable floor, so the decision is `ATTENTION_CORE_SUBDIAGNOSIS_REQUIRED`. Every
+fixed output, cache, isolation, lifetime, and nested accounting boundary passed. Normal provider
+and item-71 execution remain unchanged; item 63's live-width candidate remains rejected.
 
-**Next actions.** Commit the item-72 design checkpoint; implement the nested slices, counters,
-helper, and exact runner; run narrow owners and the clean-head four-repeat diagnosis; record the
-result; review, repair, preflight, publish, merge, and continue.
+**Next actions.** Commit the result; perform one comprehensive review; consolidate any valid
+repair, rerun affected evidence and exact-head preflight, publish, and merge. Per the current user
+instruction, stop after this PR instead of starting the attention-core successor.
 
 **Blocker.** None.
 
-**Latest durable verification.** Item 71's exact-head preflight and all three hosted checks passed
-before PR #193 merged. Item 72 has completed its author ledger-to-prose consistency pass; no
-implementation evidence exists yet.
+**Latest durable verification.** `make fmt`, `make layer-forward-smoke` (117.966 seconds),
+`make runtime-provider-smoke` (self-test plus 61 CLI assertions), Python compilation, the focused
+item-72 self-test, helper type-check, and `git diff --check` pass. The clean-head four-repeat run
+above passed in 111.157 seconds. Review and publication preflight remain pending.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.

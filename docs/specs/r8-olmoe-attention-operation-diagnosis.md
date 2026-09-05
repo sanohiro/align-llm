@@ -1,6 +1,6 @@
 # R8 OLMoE attention operation diagnosis
 
-Status: designed; implementation pending, 2026-09-05
+Status: implemented and measured; review pending, 2026-09-05
 
 Roadmap owner: item 72, `R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS`
 
@@ -110,3 +110,29 @@ nonmaterial router from selection, and preserves both older execution modes. The
 to item 71's attention parent, while the parent plus router closes the existing routing total. Only
 an output/residual win is narrow enough to authorize implementation directly; broader wins select
 another diagnosis and never reopen live width.
+
+## 6. Result
+
+The clean-head run at `593556bb2e3601e7d4913f0a7d68d8487d5444d6` completed in
+111,156,692,750 ns. Full-helper walls were
+`[16487972917,16421608208,17108487291,16917830667]` ns, with a 16,702,901,792-ns median.
+The direct attention-class values and medians were:
+
+| Class | Four values (ns) | Median (ns) |
+| --- | --- | ---: |
+| `PROJECTIONS` | `[175029708,153489824,156566947,152604597]` | 155,028,385 |
+| `ATTENTION_CORE` | `[2979714930,2967745159,3089791093,3048693115]` | 3,014,204,022 |
+| `OUTPUT_RESIDUAL` | `[115433879,111763963,113293425,112153239]` | 112,723,332 |
+
+The attention-parent values were `[3270178517,3232998946,3359651465,3313450951]` ns and their
+median was 3,291,814,734 ns. `ATTENTION_CORE` therefore won at 915,666 ppm of its parent and far
+above the immutable 871,174,011-ns floor. The decision is
+`ATTENTION_CORE_SUBDIAGNOSIS_REQUIRED`; neither projection nor output/residual is an eligible
+implementation seam from this evidence.
+
+All four full requests reproduced the exact 86-token output and fixed cache accounting: 11,940
+requests, 7,325 hits, 4,615 misses, 4,376 evictions, 17,656,872,960 fetched bytes, and zero
+cache-to-claim copies. All twelve process-absence checks passed, every native lifetime balanced,
+conditioning clocks remained zero, full clocks were positive, and the three attention children
+closed exactly to item 71's attention parent on every sample. This is attribution only and makes no
+performance-win claim.

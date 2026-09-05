@@ -1716,7 +1716,7 @@ The current forward delivery order is:
     narrower direct diagnosis of the attention prefix.
 
 72. **R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS — distinguish projection, attention-core, and
-    output/residual work. Active; design complete.**
+    output/residual work. Complete; decision `ATTENTION_CORE_SUBDIAGNOSIS_REQUIRED`.**
     [`r8-olmoe-attention-operation-diagnosis.md`](r8-olmoe-attention-operation-diagnosis.md) is the
     authoritative ledger and closure matrix. Preserve item 71's fixed request, exact execution and
     immutable floor. Partition the already-built attention prefix at table-owned tensor anchors so
@@ -1724,7 +1724,14 @@ The current forward delivery order is:
     core), and rows 28-31 (output projection and residual) are direct ordered graph-compute walls.
     Execute the already-measured router suffix only to preserve the full graph result, keep normal
     provider and item-71 execution unchanged, forbid the rejected live-width candidate, and select
-    only an attention class whose median reaches the existing 871,174,011-ns floor.
+    only an attention class whose median reaches the existing 871,174,011-ns floor. The clean-head
+    run measured projection values `[175029708,153489824,156566947,152604597]` ns, attention-core
+    values `[2979714930,2967745159,3089791093,3048693115]` ns, and output/residual values
+    `[115433879,111763963,113293425,112153239]` ns. Their medians were 155,028,385 ns,
+    3,014,204,022 ns, and 112,723,332 ns respectively. Attention core represented 915,666 ppm of
+    the 3,291,814,734-ns attention median and cleared the floor. Every exact output, cache,
+    isolation, lifetime, and nested accounting boundary passed. A narrower attention-core
+    diagnosis is the next eligible R8 capability.
 
 ### Status (2026-08-28)
 
