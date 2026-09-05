@@ -1782,11 +1782,12 @@ The current forward delivery order is:
     were removed. The publication-only owner retains exact replay and ancestry. Neither K nor V
     has a directional benefit that licenses carrying it into a combined candidate.
 
-76. **R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS — distinguish staging priming from native transfer. Next.**
-    Reuse item 75's captured control records to refresh item 70's exact remaining-decode leaf
-    projection without an unchanged model rerun. Plane upload was previously material at
-    2,710,801,676 ns; define a focused contract for its existing priming and native-staging call
-    boundaries before implementation. Preserve uploaded bytes/layouts, graph inputs, all normal
+76. **R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS — distinguish staging priming from native transfer. Active.**
+    [`r8-olmoe-plane-upload-diagnosis.md`](r8-olmoe-plane-upload-diagnosis.md) owns the committed ledger.
+    Item 75 merged as `d9fd56c`; its captured control records refresh the exact 23-leaf projection
+    without an unchanged model rerun. Plane upload is material at 2,313,750,636 ns median.
+    Measure its existing priming and checked native-staging call boundaries with one opt-in midpoint;
+    stage capacity construction remains outside the measured parent. Preserve uploaded bytes/layouts, graph inputs, all normal
     execution, the fixed request and the inherited 871,174,011-ns eligibility floor. Select only
     a measured material child; a parent clock is not an estimate of removable cost. Other material
     remaining-decode leaves stay eligible; failed attention copies do not close R8.
