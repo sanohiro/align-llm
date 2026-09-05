@@ -1751,6 +1751,31 @@ The current forward delivery order is:
     cache, isolation, lifetime and accounting gates passed in 91.512 seconds. QK preparation
     rows 14–18 are the next eligible implementation boundary, retaining a full-request shipping gate.
 
+74. **R8-OLMOE-K-PREPARATION-BOUNDARY — bulk-copy K concatenation and padding.
+    Complete; decision `NOT_MET`.**
+    [`r8-olmoe-k-preparation-boundary.md`](r8-olmoe-k-preparation-boundary.md) owns the ledger,
+    exact ABI and closure matrix. Replace only decode rows 17/18 with two explicit CPU custom
+    graph nodes using per-head byte copies and one active copy worker, preserving all shapes, full
+    width, marked concat and V behavior. Compare four contemporaneous normal-control/candidate
+    pairs in AB/BA/AB/BA order with separate short conditioning. Require all four savings positive,
+    median saving at least max(871,174,011 ns, 50,000 ppm of control), and candidate median at most
+    16,552,306,197 ns. Remove production changes unless this complete-request gate is `MET`.
+    The clean-head comparison completed in 225.360 seconds with exact semantics. Only two pairs
+    improved; median paired saving was 3,851,438 ns (191 ppm) against a required 1,008,080,808 ns.
+    Candidate median 19,489,429,604 ns also exceeded the historical ceiling. All production and
+    candidate-only native owner changes were removed; the evaluated ancestor and paired owner
+    preserve replay and ancestry evidence. A V-only preparation capability is next; mixed K
+    results do not justify carrying K into it.
+
+75. **R8-OLMOE-V-PREPARATION-BOUNDARY — evaluate exact V concatenation and padding. Next.**
+    Item 73 measured V preparation rows 21–24 at 988,706,344 ns, above the unchanged eligibility
+    floor. After item 74 merges, define the V-only contract and contemporaneous normal-control gate,
+    then replace only rows 23/24 with separate exact CPU byte-copy nodes if supported by the
+    shipped ggml surface. Preserve rows 21/22, all V shapes/strides, marked concat and full-width
+    attention. Require exact native/model parity and the complete-request paired shipping floor;
+    remove production unless the precommitted gate passes. Do not assume the full measured
+    four-row duration is removable copy cost or reuse K plane offsets for V.
+
 ### Status (2026-08-28)
 
 Track B is complete on the dense local model from R0 through R5C (item 17). Decision (a) is taken:

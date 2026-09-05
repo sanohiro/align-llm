@@ -1,6 +1,6 @@
 # R8 OLMoE attention core diagnosis
 
-Status: implemented and measured; review/publication pending, 2026-09-05
+Status: complete; merged as PR #195, 2026-09-05
 
 Roadmap owner: item 73, `R8-OLMOE-ATTENTION-CORE-DIAGNOSIS`
 
@@ -114,4 +114,5 @@ lifetime balance. The public helper type-check passed 17 units; `gmake fmt`, Pyt
 `gmake layer-forward-smoke` (75.238 seconds), `gmake runtime-provider-smoke` (sampler vectors and
 61 CLI assertions), the focused runner self-test and `git diff --check` passed. GNU Make is used
 on this macOS host because the system Make cannot parse the repository Makefile. No matrix cell
-is deferred. Review and exact-head publication preflight remain pending.
+is deferred. Comprehensive review approved with findings none; exact-head preflight and all three
+required CI jobs passed before PR #195 merged.

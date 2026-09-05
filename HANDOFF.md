@@ -3,34 +3,49 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-ATTENTION-CORE-DIAGNOSIS (2026-09-05)
+## Active: R8-OLMOE-K-PREPARATION-BOUNDARY publication (2026-09-05)
 
-Branch `agent/r8-olmoe-attention-core-diagnosis`, based on merged `main` `e1f3aee` (PR #194).
-The Align pin remains `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new language surface is needed.
-Item 73's authoritative ledger and closure matrix are
-`docs/specs/r8-olmoe-attention-core-diagnosis.md`. It separates item 72's selected core into six
-exact operation sequences while preserving the fixed request, output and 871,174,011-ns floor.
+Branch `agent/r8-olmoe-k-preparation-boundary`, based on merged main `e221df3` (PR #195).
+Evaluated candidate `7c2471575967eb258212ce96a7acfaa240b02611`; Align remains pinned to
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. The authoritative ledger and terminal result are
+`docs/specs/r8-olmoe-k-preparation-boundary.md`.
 
-The clean-head run at `e18ac5d` completed in 91.512 seconds. QK preparation won at a
-1,000,260,743-ns median / 435,353 ppm of the 2,297,584,394-ns core parent, above the unchanged
-871,174,011-ns floor: `MEASURED_CORE_SEAM_ELIGIBLE / QK_PREPARATION`. Every fixed output, cache,
-isolation, lifetime and parent-accounting boundary passed. This is attribution, not a speedup claim.
+The exact K-copy candidate completed the four-pair real comparison in 225.360 seconds with all
+semantic, identity, cache, isolation and lifetime checks passing, but its decision is `NOT_MET`.
+Only two pairs improved, median paired gain was 3,851,438 ns against required 1,008,080,808 ns,
+and candidate median 19,489,429,604 ns exceeded the historical ceiling. All production changes,
+candidate-only native owners and three specification clarifications are restored/removed.
+The retained runner is publication-only and requires control/evaluated ancestry; merge commits only.
 
-**Next actions.** Complete the comprehensive review, repair accepted findings, run exact-head
-preflight, publish and merge. Then refresh main and implement the selected rows 14–18 QK
-preparation boundary with its own immutable full-request shipping gate. Continue under the current
-user instruction; a merge is a checkpoint, not a stopping condition.
+**Next actions.** Complete one fresh comprehensive review, repair findings, run exact-head
+preflight, publish and merge. Then refresh
+main and implement item 75's V-only preparation boundary from a precommitted ledger. Do not carry
+K into it: the paired result did not establish a directional K benefit.
 
-**Blocker.** None. Review and publication remain pending.
+**Blocker.** None. Item 74 implementation/evaluation is complete; review/publication is active.
+Item 75 is selected but not started. No Align gap was encountered.
 
-**Latest durable verification.** `gmake fmt`, helper type-check (17 units), Python compilation,
-`gmake layer-forward-smoke` (75.238 seconds), `gmake runtime-provider-smoke` (sampler vectors and
-61 CLI assertions), the item-73 self-test and `git diff --check` pass. The focused
-`scripts/test-olmoe-attention-core` proves exact source traversal/output, normal/item-72 preservation,
-zero conditioning, all six compute failures, late failure, selection refusal and native lifetime
-balance. The clean-head four-repeat qualification above passes.
+**Latest durable verification.** At the evaluated checkpoint: pinned helper type-check (17 units),
+three strict C builds, shared-shim identity, `gmake fmt`, `scripts/test-olmoe-attention-core`,
+`gmake layer-forward-smoke` (82.153 seconds), `gmake runtime-provider-smoke` (sampler vectors and
+61 CLI assertions), native stub/real four-worker/real UBSan owners, Python compilation and paired
+runner self-test all passed. The clean-head real comparison passed every semantic boundary and
+recorded the terminal negative gate result above. Terminal self-tests passed in the ordinary
+checkout and a detached linked worktree, including exact source restoration and both ancestry
+checks. The final runner validates the raw result and refuses real replay with the evaluated SHA.
 
-**Intentional uncommitted files.** None. Model/evidence and generated products remain outside Git.
+**Intentional uncommitted files.** None after the terminal checkpoint. Models, raw evidence and
+build products remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-ATTENTION-CORE-DIAGNOSIS (PR #195, 2026-09-05)
+
+PR #195 merged as `e221df3`, preserving the tested tree `8fa087bc4f22839480845dfccd29475a1ecab1c4`.
+The clean-head four-repeat run completed in 91.512 seconds. QK preparation won at 1,000,260,743 ns
+median / 435,353 ppm of the 2,297,584,394-ns core parent, above the unchanged 871,174,011-ns floor:
+`MEASURED_CORE_SEAM_ELIGIBLE / QK_PREPARATION`. Every fixed output/cache/isolation/lifetime and
+accounting boundary passed. Comprehensive review approved with no findings; exact-head preflight
+and all three required checks passed. Item 74 owns the selected copy boundary and requires a
+contemporary control because historical timing alone can credit ambient variation.
 
 ## Merged checkpoint: R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS (PR #194, 2026-09-05)
 
