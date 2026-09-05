@@ -25,7 +25,6 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 /* --- BEGIN R4.5 SHARED SHIM CONTRACT --- */
@@ -377,98 +376,6 @@ static int32_t align_ggml_eps_ok(int32_t bits) {
  */
 #define ALIGN_GGML_MAX_PAD 4096
 #define ALIGN_GGML_MAX_PAD_ELEMENTS ((int64_t) 16777216)
-
-/* R8 item 74. K-copy geometry is validated before any library size accessor can multiply
- * attacker-supplied dimensions/strides. The byte helpers never interpret an F32 bit pattern. */
-static int32_t align_ggml_k_extents(const int64_t ne[4], size_t bytes[3]) {
-    int64_t column_bytes = 0;
-    int64_t head_bytes = 0;
-    int64_t total_bytes = 0;
-    if (ne == NULL || bytes == NULL || ne[0] <= 0 || ne[1] <= 0 || ne[2] <= 0
-        || ne[3] != 1 || ne[1] > ALIGN_GGML_MAX_PAD) {
-        return ALIGN_GGML_SHAPE;
-    }
-    if (ne[0] > INT64_MAX / 4 || (uint64_t) ne[0] > SIZE_MAX / 4) {
-        return ALIGN_GGML_SHAPE;
-    }
-    column_bytes = ne[0] * 4;
-    if (ne[1] > INT64_MAX / column_bytes
-        || (uint64_t) ne[1] > SIZE_MAX / (size_t) column_bytes) {
-        return ALIGN_GGML_SHAPE;
-    }
-    head_bytes = column_bytes * ne[1];
-    if (ne[2] > INT64_MAX / head_bytes
-        || (uint64_t) ne[2] > SIZE_MAX / (size_t) head_bytes) {
-        return ALIGN_GGML_SHAPE;
-    }
-    total_bytes = head_bytes * ne[2];
-    if (total_bytes / 4 > ALIGN_GGML_MAX_PAD_ELEMENTS) {
-        return ALIGN_GGML_SHAPE;
-    }
-    bytes[0] = (size_t) column_bytes;
-    bytes[1] = (size_t) head_bytes;
-    bytes[2] = (size_t) total_bytes;
-    return ALIGN_GGML_OK;
-}
-
-static int32_t align_ggml_k_layout(const int64_t ne[4], const size_t nb[4]) {
-    size_t bytes[3];
-    if (nb == NULL || align_ggml_k_extents(ne, bytes) != ALIGN_GGML_OK
-        || nb[0] != 4 || nb[1] != bytes[0] || nb[2] != bytes[1] || nb[3] != bytes[2]) {
-        return ALIGN_GGML_SHAPE;
-    }
-    return ALIGN_GGML_OK;
-}
-
-static int32_t align_ggml_k_slots(
-    const void *ctx, const void *slots, int64_t out, int64_t a, int64_t b, int32_t binary) {
-    int64_t capacity = 0;
-    if (ctx == NULL) {
-        return ALIGN_GGML_INIT;
-    }
-    capacity = align_ggml_slot_capacity(slots);
-    if (capacity < 0 || out < 0 || out >= capacity || a < 0 || a >= capacity || out == a
-        || align_ggml_slot_load(slots, a) == NULL
-        || (binary && (b < 0 || b >= capacity || out == b
-            || align_ggml_slot_load(slots, b) == NULL))) {
-        return ALIGN_GGML_SLOT;
-    }
-    return ALIGN_GGML_OK;
-}
-
-static int32_t align_ggml_k_distinct(
-    const void *dst, size_t dst_bytes, const void *src, size_t src_bytes) {
-    uintptr_t d = (uintptr_t) dst;
-    uintptr_t s = (uintptr_t) src;
-    if (dst == NULL || src == NULL || dst_bytes > UINTPTR_MAX - d || src_bytes > UINTPTR_MAX - s) {
-        return 0;
-    }
-    return d + dst_bytes <= s || s + src_bytes <= d;
-}
-
-/* Sizes and distinct allocation spans are proved by the constructors/callback guards. */
-static void align_ggml_k_concat_bytes(
-    unsigned char *dst, const unsigned char *past, const unsigned char *current,
-    size_t column_bytes, size_t past_head_bytes, size_t heads) {
-    size_t h = 0;
-    size_t result_head_bytes = past_head_bytes + column_bytes;
-    for (h = 0; h < heads; h++) {
-        memcpy(dst + h * result_head_bytes, past + h * past_head_bytes, past_head_bytes);
-        memcpy(dst + h * result_head_bytes + past_head_bytes,
-               current + h * column_bytes, column_bytes);
-    }
-}
-
-static void align_ggml_k_pad_bytes(
-    unsigned char *dst, const unsigned char *source,
-    size_t source_head_bytes, size_t result_head_bytes, size_t heads) {
-    size_t h = 0;
-    for (h = 0; h < heads; h++) {
-        memcpy(dst + h * result_head_bytes, source + h * source_head_bytes, source_head_bytes);
-        memset(dst + h * result_head_bytes + source_head_bytes, 0,
-               result_head_bytes - source_head_bytes);
-    }
-}
 
 /* R5D-MOE-LAYER-FORWARD (`docs/specs/r5d-moe-layer-forward.md` section 3.5). `ggml_argsort`'s two
  * orders, shared so both files refuse the same third value. `ggml_top_k` is deliberately **not**
@@ -1059,8 +966,6 @@ int64_t align_ptr_offset(const void *a, const void *b) {
  * what gives the whole decode arm — the KV plane's readback, its upload, both concat axes, the
  * offset mask, and both acceptance oracles — a path with no ggml and no model. */
 #define ALIGN_STUB_OP_CONCAT    16
-#define ALIGN_STUB_OP_K_CONCAT_F32 17
-#define ALIGN_STUB_OP_K_PAD_F32 18
 
 typedef struct align_stub_tensor {
     int32_t type;
@@ -1193,75 +1098,16 @@ static align_stub_tensor *align_stub_slot(const void *slots, int64_t index) {
  * The eleven kernels
  * ------------------------------------------------------------------------------------------- */
 
-/* Engine tensors materialize views; only an uncomputed fixed-slot input can carry a wider
- * physical head stride in lp[0]. Validate that real stride before treating it as contiguous K. */
-static int32_t align_stub_k_tensor_layout(const align_stub_tensor *t, size_t bytes[3]) {
-    size_t nb[4];
-    if (t == NULL || t->type != ALIGN_STUB_TYPE_F32
-        || align_ggml_k_extents(t->ne, bytes) != ALIGN_GGML_OK) {
-        return ALIGN_GGML_SHAPE;
-    }
-    nb[0] = 4;
-    nb[1] = bytes[0];
-    nb[2] = bytes[1];
-    nb[3] = bytes[2];
-    if (t->op == ALIGN_STUB_OP_NONE && t->lp[0] != 0) {
-        if (t->lp[0] < 0 || (uint64_t) t->lp[0] > SIZE_MAX
-            || (size_t) t->lp[0] != bytes[1]) {
-            return ALIGN_GGML_SHAPE;
-        }
-        nb[2] = (size_t) t->lp[0];
-    }
-    if (align_ggml_k_layout(t->ne, nb) != ALIGN_GGML_OK
-        || align_stub_nbytes(t) != (int64_t) bytes[2]) {
-        return ALIGN_GGML_SHAPE;
-    }
-    return ALIGN_GGML_OK;
-}
-
-static void align_stub_k_run(align_stub_tensor *t) {
-    const align_stub_tensor *a = t->src[0];
-    const align_stub_tensor *b = t->src[1];
-    size_t tb[3], ab[3], bb[3];
-    if (align_stub_k_tensor_layout(t, tb) != ALIGN_GGML_OK
-        || align_stub_k_tensor_layout(a, ab) != ALIGN_GGML_OK
-        || t->ne[0] != a->ne[0] || t->ne[2] != a->ne[2]
-        || !align_ggml_k_distinct(t->data, tb[2], a->data, ab[2])) {
-        abort();
-    }
-    if (t->op == ALIGN_STUB_OP_K_CONCAT_F32) {
-        if (align_stub_k_tensor_layout(b, bb) != ALIGN_GGML_OK
-            || b->ne[1] != 1 || b->ne[0] != a->ne[0] || b->ne[2] != a->ne[2]
-            || t->ne[1] != a->ne[1] + 1
-            || !align_ggml_k_distinct(t->data, tb[2], b->data, bb[2])) {
-            abort();
-        }
-        align_ggml_k_concat_bytes(t->data, a->data, b->data, ab[0], ab[1], (size_t) a->ne[2]);
-    } else {
-        if (t->ne[1] < a->ne[1]) {
-            abort();
-        }
-        align_ggml_k_pad_bytes(t->data, a->data, ab[1], tb[1], (size_t) a->ne[2]);
-    }
-}
-
 static void align_stub_run(align_stub_tensor *t) {
-    float *d = NULL;
+    float *d = (float *) t->data;
     const align_stub_tensor *a = t->src[0];
     const align_stub_tensor *b = t->src[1];
-    const float *x = NULL;
-    const float *y = NULL;
+    const float *x = (a != NULL) ? (const float *) a->data : NULL;
+    const float *y = (b != NULL) ? (const float *) b->data : NULL;
     int64_t i0 = 0;
     int64_t i1 = 0;
     int64_t i2 = 0;
     int64_t i3 = 0;
-    if (t->op == ALIGN_STUB_OP_K_CONCAT_F32 || t->op == ALIGN_STUB_OP_K_PAD_F32) {
-        align_stub_k_run(t);
-        return;
-    }
-    d = (float *) t->data;
-    x = (a != NULL) ? (const float *) a->data : NULL;
-    y = (b != NULL) ? (const float *) b->data : NULL;
     switch (t->op) {
     /* R5D: the general form. `ffn_moe_weights-0` is `get_rows` over a `{1, n_expert, T}` reshape
      * of the router probabilities indexed by a `{n_expert_used, T}` id tensor, so the index tensor
@@ -2737,90 +2583,6 @@ int32_t align_ggml_op_concat(
     }
     t->ip[0] = (int32_t) dim;
     return align_stub_bind(slots, out, t, sa, sb, ALIGN_STUB_OP_CONCAT);
-}
-
-/* R8 item 74. Preserve the real constructors' validation precedence and source graph shape;
- * engine execution uses the same exact byte helpers as the real CPU callbacks. */
-int32_t align_ggml_op_k_concat_f32(
-    void *ctx, void *slots, int64_t out, int64_t past, int64_t current) {
-    align_stub_tensor *pa = NULL;
-    align_stub_tensor *cu = NULL;
-    align_stub_tensor *result = NULL;
-    int64_t ne[4];
-    size_t pb[3], cb[3], rb[3];
-    int32_t status = align_ggml_k_slots(ctx, slots, out, past, current, 1);
-    if (status != ALIGN_GGML_OK) {
-        return status;
-    }
-    pa = align_stub_slot(slots, past);
-    cu = align_stub_slot(slots, current);
-    if (pa->type != ALIGN_STUB_TYPE_F32 || cu->type != ALIGN_STUB_TYPE_F32) {
-        return ALIGN_GGML_TYPE;
-    }
-#ifdef ALIGN_GGML_FORCE_CONCAT_AXIS
-    return ALIGN_GGML_SHAPE;
-#endif
-    if (pa->ne[0] != cu->ne[0] || pa->ne[2] != cu->ne[2] || cu->ne[1] != 1
-        || align_stub_k_tensor_layout(pa, pb) != ALIGN_GGML_OK
-        || align_stub_k_tensor_layout(cu, cb) != ALIGN_GGML_OK) {
-        return ALIGN_GGML_SHAPE;
-    }
-    ne[0] = pa->ne[0];
-    ne[1] = pa->ne[1] + 1;
-    ne[2] = pa->ne[2];
-    ne[3] = 1;
-    if (align_ggml_k_extents(ne, rb) != ALIGN_GGML_OK) {
-        return ALIGN_GGML_SHAPE;
-    }
-    result = align_stub_new(ctx, ALIGN_STUB_TYPE_F32, ne[0], ne[1], ne[2], ne[3]);
-    if (result == NULL) {
-        return ALIGN_GGML_INIT;
-    }
-    if (align_stub_k_tensor_layout(result, rb) != ALIGN_GGML_OK) {
-        return ALIGN_GGML_SHAPE;
-    }
-    return align_stub_bind(slots, out, result, pa, cu, ALIGN_STUB_OP_K_CONCAT_F32);
-}
-
-int32_t align_ggml_op_k_pad_f32(
-    void *ctx, void *slots, int64_t out, int64_t source, int64_t padding_columns) {
-    align_stub_tensor *sa = NULL;
-    align_stub_tensor *result = NULL;
-    int64_t ne[4];
-    size_t sb[3], rb[3];
-    int32_t status = align_ggml_k_slots(ctx, slots, out, source, 0, 0);
-    if (status != ALIGN_GGML_OK) {
-        return status;
-    }
-    sa = align_stub_slot(slots, source);
-    if (sa->type != ALIGN_STUB_TYPE_F32) {
-        return ALIGN_GGML_TYPE;
-    }
-#ifdef ALIGN_GGML_FORCE_PAD_NEGATIVE
-    padding_columns = -1;
-#endif
-#ifdef ALIGN_GGML_FORCE_PAD_OVERSIZE
-    padding_columns = ALIGN_GGML_MAX_PAD;
-#endif
-    if (padding_columns < 0 || padding_columns > ALIGN_GGML_MAX_PAD
-        || align_stub_k_tensor_layout(sa, sb) != ALIGN_GGML_OK) {
-        return ALIGN_GGML_SHAPE;
-    }
-    ne[0] = sa->ne[0];
-    ne[1] = sa->ne[1] + padding_columns;
-    ne[2] = sa->ne[2];
-    ne[3] = 1;
-    if (align_ggml_k_extents(ne, rb) != ALIGN_GGML_OK) {
-        return ALIGN_GGML_SHAPE;
-    }
-    result = align_stub_new(ctx, ALIGN_STUB_TYPE_F32, ne[0], ne[1], ne[2], ne[3]);
-    if (result == NULL) {
-        return ALIGN_GGML_INIT;
-    }
-    if (align_stub_k_tensor_layout(result, rb) != ALIGN_GGML_OK) {
-        return ALIGN_GGML_SHAPE;
-    }
-    return align_stub_bind(slots, out, result, sa, NULL, ALIGN_STUB_OP_K_PAD_F32);
 }
 
 /* ---------------------------------------------------------------------------------------------

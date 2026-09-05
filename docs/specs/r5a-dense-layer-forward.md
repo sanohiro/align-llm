@@ -86,11 +86,7 @@ thirty-two-node graph from an Align-owned node table, computes it on a real back
   claims about a loader and a GPU that R5A deliberately does not have. Section 5.3 says so as a
   number, not as prose.
 - **No dequantization, no kernel, and no new container version.** R5A reads alignpack v1 as
-  `r4-alignpack-layer-major.md` section 2.4 defines it and writes nothing to it. This restriction
-  owns the original R5A dense-prefill capability. [R8 item 74](r8-olmoe-k-preparation-boundary.md)
-  separately authorizes two CPU byte-copy custom nodes for OLMoE decode K concatenation and
-  padding, with no dequantization or floating-point arithmetic kernel. Each wrapper still creates
-  one graph node; R5A's graph and qualification remain unchanged.
+  `r4-alignpack-layer-major.md` section 2.4 defines it and writes nothing to it.
 - **No MoE.** A Qwen2 dense layer has no router and no expert. `r4-alignpack-layer-major.md` section
   4.5's **MOE-PREREQ** is inherited unchanged.
 - **No architecture dispatch.** `src/layer_qwen2.align` is the *qwen2* dense layer. A second

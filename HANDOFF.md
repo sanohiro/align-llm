@@ -3,35 +3,38 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-K-PREPARATION-BOUNDARY (2026-09-05)
+## Active: R8-OLMOE-K-PREPARATION-BOUNDARY publication (2026-09-05)
 
 Branch `agent/r8-olmoe-k-preparation-boundary`, based on merged main `e221df3` (PR #195).
-Align remains pinned to `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`; no new Align capability is
-required. Item 74's authoritative ledger and closure matrix are
+Evaluated candidate `7c2471575967eb258212ce96a7acfaa240b02611`; Align remains pinned to
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. The authoritative ledger and terminal result are
 `docs/specs/r8-olmoe-k-preparation-boundary.md`.
 
-The candidate replaces only K concatenation and padding (rows 17/18) with two explicit CPU custom
-nodes using bulk byte copies and one active copy worker. Full width, shapes, marked concat and all V
-operations stay exact. The gate compares four contemporary normal-control/candidate pairs, requires
-all four positive, median saving at least max(871,174,011 ns, 5% of control), and the existing
-16,552,306,197-ns historical candidate ceiling. The complete owner has an eight-minute ceiling.
+The exact K-copy candidate completed the four-pair real comparison in 225.360 seconds with all
+semantic, identity, cache, isolation and lifetime checks passing, but its decision is `NOT_MET`.
+Only two pairs improved, median paired gain was 3,851,438 ns against required 1,008,080,808 ns,
+and candidate median 19,489,429,604 ns exceeded the historical ceiling. All production changes,
+candidate-only native owners and three specification clarifications are restored/removed.
+The retained runner is publication-only and requires control/evaluated ancestry; merge commits only.
 
-**Next actions.** Run the clean-head paired qualification; retain
-production only for `MET`; bind the evaluated head and result; review, repair, preflight, publish
-and merge; continue to the result-selected successor.
+**Next actions.** Verify terminal restoration and linked-worktree self-test; complete one fresh
+comprehensive review, repair findings, run exact-head preflight, publish and merge. Then refresh
+main and implement item 75's V-only preparation boundary from a precommitted ledger. Do not carry
+K into it: the paired result did not establish a directional K benefit.
 
-**Blocker.** None. Implementation is complete; fixed-host qualification remains pending.
+**Blocker.** None. Item 74 implementation/evaluation is complete; review/publication is active.
+Item 75 is selected but not started. No Align gap was encountered.
 
-**Latest durable verification.** Item 73's focused owners, real diagnosis, comprehensive review
-(findings none), exact-head preflight and all three required CI jobs passed. Item 74 passed the
-pinned helper type-check (17 units), three strict C builds, `gmake fmt`,
-`scripts/test-olmoe-attention-core`, `gmake layer-forward-smoke` (82.153 seconds), and
-`gmake runtime-provider-smoke` (sampler vectors and 61 CLI assertions). The native
-owner passed stub, real four-worker graph, and real UBSan modes. Python compilation and the
-paired runner self-test passed; the real comparison is next.
+**Latest durable verification.** At the evaluated checkpoint: pinned helper type-check (17 units),
+three strict C builds, shared-shim identity, `gmake fmt`, `scripts/test-olmoe-attention-core`,
+`gmake layer-forward-smoke` (82.153 seconds), `gmake runtime-provider-smoke` (sampler vectors and
+61 CLI assertions), native stub/real four-worker/real UBSan owners, Python compilation and paired
+runner self-test all passed. The clean-head real comparison passed every semantic boundary and
+recorded the terminal negative gate result above. Final restoration/self-test evidence follows in
+the publication checkpoint.
 
-**Intentional uncommitted files.** None after the implementation checkpoint; local models/evidence
-and build products remain outside Git.
+**Intentional uncommitted files.** None after the terminal checkpoint. Models, raw evidence and
+build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-ATTENTION-CORE-DIAGNOSIS (PR #195, 2026-09-05)
 

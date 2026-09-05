@@ -1,6 +1,6 @@
 # R8 OLMoE K preparation boundary
 
-Status: implementation active, 2026-09-05.
+Status: complete; `NOT_MET`, production removed before publication, 2026-09-05.
 Roadmap owner: `R8-OLMOE-K-PREPARATION-BOUNDARY`.
 Control revision: `e221df396258d2b36c5a7355da721b198e0a9809`.
 
@@ -10,6 +10,11 @@ nodes with per-head bulk byte copies and one active copy worker per node. Rows 1
 full attention width, source dependencies and marked concat identity remain unchanged. The
 candidate measures this combined copy/dispatch intervention; it cannot attribute a gain to either
 part alone. Item 73's split-graph latency is diagnostic evidence, not the control measurement.
+
+The ledger below records the evaluated candidate, retained for exact replay at
+`7c2471575967eb258212ce96a7acfaa240b02611`. Its production ABI, operations and native fixture
+are removed from the publication tree. The retained runner permits only `--self-test` here; real
+qualification requires that evaluated ancestor. The terminal evidence below owns the final decision.
 
 ## Public-contract ledger
 
@@ -76,7 +81,7 @@ pointers and parameter storage, while CPU dispatch calls the stored callback syn
 The task hint controls graph planning, not callback invocation count; the mixed-graph native
 regression requires four graph workers and exactly one active copy worker per custom node.
 
-## Required specification clarification
+## Evaluated specification clarification (removed with the candidate)
 
 Update `docs/specs/r5a-dense-layer-forward.md` section 1.3's “No dequantization, no kernel”
 statement to explicitly scope it to the original R5A dense-prefill capability. Add: “R8 item 74
@@ -143,9 +148,10 @@ The live runner binds each leg to its built helper/shim/library identities. Call
 not a cryptographic execution attestation; identical valid payloads cannot authenticate their
 origin independently of the runner. No helper arm tag or measurement-path change is introduced.
 
-## Implementation checkpoint
+## Evaluated implementation checkpoint
 
-The two production operations, scalar-only FFI, and isolated paired owner are implemented.
+The evaluated ancestor implemented the two production operations, scalar-only FFI, and isolated
+paired owner. The native/source verification in this section belongs to that evaluated checkpoint.
 The final row/dispatch inspection confirms that only decode rows 17/18 change operation identity;
 all operands, conditions, widths, V/prefill paths and source graph membership remain intact.
 The pinned helper per-unit check passed 17 units. Real, unavailable-stub and engine-stub C builds
@@ -155,5 +161,53 @@ passed with warnings as errors; the shared contract blocks remain byte-identical
 `scripts/test-olmoe-k-preparation` passed in stub, `--real`, and `--real --ubsan` modes,
 with both real modes using four graph workers. The test explicitly covers the scheduling-hint
 correction discovered during implementation: extra workers return without touching tensor storage.
-Python compilation and the paired owner's `--self-test` passed. The fixed-host paired result,
-terminal production disposition and remaining qualification cells are pending; no speedup is claimed.
+Python compilation and the paired owner's `--self-test` passed. These checks established exact
+semantics, not a performance improvement; the terminal result follows.
+
+## Terminal paired evidence and disposition
+
+The clean-head run at `7c2471575967eb258212ce96a7acfaa240b02611` completed all sixteen requests
+and twenty-four isolation records in 225,360,473,750 ns. Control was the immutable item-73 merge
+`e221df396258d2b36c5a7355da721b198e0a9809`. Both isolated normal-mode builds used the same
+pinned toolchain, C compiler, ggml libraries/headers, model/pack/geometry, prompt and host fingerprint.
+Every exact output/token/hash, cache accounting, native lifetime, source/external identity and
+cleanup boundary passed. The raw schema-1 record is identified by SHA-256
+`85cc8aa1b5b702e9dff5fea2e71ce1bc44a24017d7aacbb691aa81db1190b502`.
+
+| Pair | Order | Control full wall (ns) | Candidate full wall (ns) | Paired saving (ns) |
+| --- | --- | ---: | ---: | ---: |
+| 1 | AB | 18815506125 | 18774986541 | 40519584 |
+| 2 | BA | 19940756542 | 19973573250 | -32816708 |
+| 3 | AB | 20382475750 | 19005285959 | 1377189791 |
+| 4 | BA | 20432217791 | 23379259208 | -2947041417 |
+
+Control and candidate medians were 20,161,616,146 ns and 19,489,429,604 ns. The median of the
+paired savings was only 3,851,438 ns (191 ppm), below the contemporary required 1,008,080,808 ns.
+Only two pairs improved, and the candidate median also exceeded the immutable 16,552,306,197-ns
+historical ceiling. The decision is **`NOT_MET`**; neither a speedup nor a directional K benefit is
+established. A difference between the two arm medians is not the paired gain statistic.
+
+All five production files and the three candidate-only specification clarifications were restored
+byte-for-byte to control; the two candidate-only native owner files were removed. The retained
+runner sets `PUBLICATION_ONLY=True` and binds `EVALUATED_HEAD` to the evaluated commit. Its
+self-test checks exact production restoration and control/evaluated ancestry from the current head;
+real mode refuses with the replay commit. Merge integration must preserve that ancestry.
+
+The closure matrix is complete for the evaluated candidate: the implementation checkpoint owns
+the native/Align and mode/failure cells; the fixed-host result owns the full-model semantic,
+identity, isolation, accounting and cleanup cells; the runner self-test owns malformed records,
+source mutations, gate boundaries and terminal replay/restoration. There is no deferred production
+promise. The final publication owner additionally runs in a linked worktree to exercise common-dir
+ancestry resolution. Comprehensive review and classifier-selected publication checks remain the
+final merge gates, recorded on the pull request.
+
+**Next selected boundary.** Item 73 also measured V preparation rows 21–24 at 988,706,344 ns,
+above the unchanged 871,174,011-ns eligibility floor. Select a V-only exact copy capability for
+rows 23/24 after this result merges; keep rows 21/22, marked concat, full width and normal graph
+execution unchanged. The mixed K results do not justify including K in that candidate. Its new
+ledger must set the contemporaneous control and complete-request shipping gate before coding.
+
+**Bounded retrospective.** The native four-worker regression preserves the concrete dispatch
+lesson at the evaluated ancestor. The paired owner prevented ambient timing changes or the
+lower candidate arm median from being reported as a qualified speedup. No new permanent gate
+is needed; the existing exact-semantics and complete-request rules determined the disposition.

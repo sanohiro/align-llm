@@ -1286,16 +1286,10 @@ an internal constant, and `enum ggml_type`'s numbering is data in every GGUF eve
 mitigations, in order of strength: no ggml type appears in any Align declaration, so drift cannot
 silently change an Align signature; `align_ggml_abi_probe` records `TENSOR_ALIGNMENT`,
 `ggml_blck_size(Q4_K)`, and `ggml_type_size(Q4_K)` in **every** document and the qualification
-asserts them; and the original spike reads no `struct ggml_tensor` field directly, using `ggml_get_data`,
+asserts them; and the shim reads no `struct ggml_tensor` field directly, using `ggml_get_data`,
 `ggml_nbytes`, and `ggml_blck_size` instead of offsets. The version measured here is ggml `0.21.0`
 from llama.cpp `0.2.0 (build 10566, commit bb4caa754)`; a different one is expected to work and is
 not promised to.
-
-[R8 item 74](r8-olmoe-k-preparation-boundary.md) explicitly adds native CPU byte-copy callbacks
-for OLMoE decode K preparation. Their constructors/callbacks may read the installed header's public
-`type`, `ne`, `nb`, `src` and backend-buffer metadata under that ledger's exact layout validation.
-Data and extents use `ggml_get_data` / `ggml_nbytes`; ggml retains all graph/tensor/storage ownership.
-These accesses do not expose a ggml struct or callback in the Align ABI.
 
 **A ggml kernel change moves `output.sha256`.** Section 5.2 states the assertion's narrow scope and
 its failure message points here.
