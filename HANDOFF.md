@@ -17,8 +17,8 @@ isolated helper/evaluator snapshot, strict actual JSON and coordinated server/ch
 cleanup. Preserve task, seeds 1..8, sampling, first-pass stop and LR/RL/RL/LR order. No product
 source or historical runner changes. The secondary nanosecond floor/ceiling do not apply here.
 
-**Next actions.** Implement the committed ledger and its focused self-tests; run the inherited
-item-56 owner plus the new owner. Commit the coherent candidate, then run the exact clean-head
+**Next actions.** Commit the coherent owner-tested candidate, validate exact Git-object source
+reconstruction, then run the exact clean-head
 four-pair primary decision with the fixed model/toolchain and validator image. Record the terminal
 result and evidence-based successor, review once, run exact-head preflight, publish and merge.
 
@@ -26,14 +26,17 @@ result and evidence-based successor, review once, run exact-head preflight, publ
 existing allowed image override to resolve it directly. No image rebuild or task relaxation is
 needed. Historical source-pin validators remain intact; this owner freezes the current closure.
 
-**Latest durable verification.** Item 77 merged as `62f6f96` with tested tree
-`bb94e44f93172441db26cf45c8b57e2bcee04172`. Its merged-head focused self-test passed, including
-129 source identities and source/evaluated ancestry. Item 78 implementation/self-tests have not
-started. The authoritative ledger maps exact inherited semantics, snapshot paths and all changed
-process/parser/provenance boundaries to focused tests.
+**Latest durable verification.** Item 78's Python compilation, inherited item-56 self-test (including
+item 53), and complete new `--self-test` passed. The current closure is exactly 116 frozen files
+plus separately HEAD-bound runner bytes. Strict provider/result JSON, provenance/scalar domains,
+snapshot path restoration, exact endpoint/CID registration, process-group coexistence, descendants,
+signals, server teardown, failure-only absence probes, Docker cleanup and shared cleanup deadlines
+passed with actual model-free subprocesses. Fixed host identity passed. Git-object reconstruction
+awaits the candidate commit; real qualification and comprehensive review remain pending.
 
-**Intentional uncommitted files.** None at the ledger checkpoint. Models, raw evidence and build
-products remain outside Git.
+**Intentional uncommitted files.** The single new measurement runner and candidate verification
+documentation form the candidate being committed. Models, raw evidence and build products remain
+outside Git.
 
 ## Merged checkpoint: R8-OLMOE-NATIVE-STAGING-BOUNDARY (PR #199, 2026-09-05)
 
