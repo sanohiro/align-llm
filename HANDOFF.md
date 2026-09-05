@@ -14,22 +14,27 @@ Only the V scalar transfer in the real/stub shared C region may change: unaligne
 4-by-4 byte-lane tiles with scalar tails. Preserve validation, K copy, fallback, existing comparison,
 all Align/helper/build bytes and priming. The whole native parent is not measured V-only cost.
 
-**Next actions.** Implement the committed native ledger, direct byte/layout/refusal owner and paired
-qualification runner. Run narrow owners, commit the complete candidate, then run four balanced
+**Next actions.** Freeze the complete owner-tested candidate, then run four balanced
 AB/BA pairs (sixteen requests) against exact merged control. Require all four gains positive,
 median saving at least max(871,174,011 ns, 50,000 ppm of control), and candidate median at most
 16,552,306,197 ns. Remove production and candidate native owners unless the gate passes. Complete
 one comprehensive review, exact-head preflight, publish raw evidence, merge and continue.
 
-**Blocker.** None. Implementation is active; the paired result owns shipping and the next decision.
+**Blocker.** None. The candidate is implemented; the paired result owns shipping and the next decision.
 Priming is below floor; rejected attention K/V copies remain removed.
 
-**Latest durable verification.** Item 76 merged as `d32d3cb` with tree
-`aa14ec68e9360b362d3fe7860e9e569885f26726`, matching tested integration. Its merged-head
-qualification-owner self-test passed, including current source/runtime identities and both required
-ancestors. Item 77's native implementation/owner checks have not started.
+**Latest durable verification.** Item 77's `scripts/test-olmoe-native-staging`, `--real`, and
+`--real --ubsan` all passed with configured Homebrew ggml inputs. Direct evidence covers actual
+AArch64 SIMD/tails, independent byte oracle and immutable scalar control, 72 edge vectors, all 256
+source/stage byte offsets, guard pages, admitted aliases and refusal precedence. Non-AArch64
+dispatch execution is N/A on this host. `scripts/test-olmoe-plane-upload`,
+`scripts/test-olmoe-attention-core`, `gmake layer-forward-smoke` and
+`gmake runtime-provider-smoke` all passed; the last covers sampler vectors and 61 CLI assertions.
+Strict C builds, Python compilation, paired-runner `--self-test` and `git diff --check` passed.
+The runner binds 129 current source inputs plus its own exact tracked bytes. Full paired qualification and
+comprehensive review remain pending.
 
-**Intentional uncommitted files.** None at the ledger checkpoint. Models, raw records and build
+**Intentional uncommitted files.** None at the candidate checkpoint. Models, raw records and build
 products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS (PR #198, 2026-09-05)

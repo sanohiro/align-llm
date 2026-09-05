@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Direct native staging byte/range owner; no model, Align build, or product dispatch override."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CONTROL = "d32d3cbc2939e1525f452056e8e720946930d4df"
+BEGIN = "/* --- BEGIN R4.5 SHARED SHIM CONTRACT --- */"
+END = "/* --- END R4.5 SHARED SHIM CONTRACT --- */"
+FUNCTION = "int32_t align_ggml_stage_kv("
+FOLLOWING = "\n\n\n/* R8-OLMOE-PLANE-ROUNDTRIP-BOUNDARY"
+V_LOOP = "    for (head = 0; head < n_head_kv; head++) {\n        for (lane = 0; lane < head_dim; lane++) {"
+SUFFIX = "    return ALIGN_GGML_OK;\n}"
+
+
+def shared(source: str) -> str:
+    assert source.count(BEGIN) == source.count(END) == 1
+    return source.split(BEGIN, 1)[1].split(END, 1)[0]
+
+
+def stage(source: str) -> str:
+    assert source.count(FUNCTION) == 1
+    return FUNCTION + source.split(FUNCTION, 1)[1].split(FOLLOWING, 1)[0]
+
+
+def source_contract() -> str:
+    current = [(ROOT / path).read_text() for path in ("scripts/ggml_shim.c", "scripts/ggml_shim_stub.c")]
+    assert shared(current[0]) == shared(current[1]), "shared_region_identity"
+    original_function = ""
+    for path, candidate in zip(("scripts/ggml_shim.c", "scripts/ggml_shim_stub.c"), current):
+        control = subprocess.check_output(
+            ["git", "--no-replace-objects", "show", f"{CONTROL}:{path}"], cwd=ROOT, text=True)
+        old = stage(control)
+        new = stage(candidate)
+        prefix, separator, rest = old.partition(V_LOOP)
+        assert separator and rest.endswith(SUFFIX), "control stage structure changed"
+        scalar = separator + rest[:-len(SUFFIX)]
+        assert new.startswith(prefix) and new.endswith(SUFFIX), "unchanged_validation_k_and_compare"
+        replacement = new[len(prefix):-len(SUFFIX)]
+        assert replacement.startswith("#if defined(__aarch64__)\n")
+        assert replacement.count("#else\n") == 1 and replacement.endswith("#endif\n")
+        fallback = replacement.split("#else\n", 1)[1][:-len("#endif\n")]
+        assert fallback == scalar, "scalar fallback differs from control"
+        assert candidate.replace(new, old, 1) == control, "undeclared native source change"
+        assert not original_function or old == original_function, "control real/stub stage drift"
+        original_function = old
+    print("PASS shared_region_identity unchanged_validation_k_and_compare", flush=True)
+    return original_function
+
+
+def run(command: list[str], directory: Path, env: dict[str, str]) -> str:
+    result = subprocess.run(command, cwd=directory, env=env, text=True,
+                            capture_output=True, timeout=120)
+    if result.returncode:
+        raise RuntimeError(f"native staging command failed ({result.returncode}): {command}\n"
+                           f"{result.stdout}\n{result.stderr}")
+    return result.stdout
+
+
+def main() -> None:
+    arguments = sys.argv[1:]
+    if arguments not in ([], ["--real"], ["--real", "--ubsan"]):
+        raise SystemExit("usage: test-olmoe-native-staging [--real [--ubsan]]")
+    original = source_contract()
+    real = "--real" in arguments
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("ALIGN_LLM_GGML_FORCE")
+           and key not in ("DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH", "LD_LIBRARY_PATH")}
+    flags = ["-std=c11", "-O2", "-Wall", "-Wextra", "-Werror", "-ffp-contract=off",
+             "-DALIGN_GGML_FP_CONTRACT_OFF=1"]
+    if "--ubsan" in arguments:
+        flags += ["-fsanitize=undefined", "-fno-sanitize-recover=all"]
+        env["UBSAN_OPTIONS"] = "halt_on_error=1:print_stacktrace=1"
+    if real:
+        for name in ("ALIGN_LLM_GGML_INCLUDE", "ALIGN_LLM_GGML_LIB"):
+            if not env.get(name) or not Path(env[name]).is_dir():
+                raise SystemExit(f"native staging owner: {name} must name a directory")
+        flags += ["-I", env["ALIGN_LLM_GGML_INCLUDE"], "-L", env["ALIGN_LLM_GGML_LIB"],
+                  "-Wl,-rpath," + env["ALIGN_LLM_GGML_LIB"]]
+        env["DYLD_LIBRARY_PATH"] = env["ALIGN_LLM_GGML_LIB"]
+        env["LD_LIBRARY_PATH"] = env["ALIGN_LLM_GGML_LIB"]
+    with tempfile.TemporaryDirectory(prefix="align-native-staging-") as temporary:
+        work = Path(temporary)
+        control = work / "control-stage.c"
+        control.write_text("#include <stdint.h>\n#include <stddef.h>\n#include <string.h>\n"
+                           "#define ALIGN_GGML_OK 0\n#define ALIGN_GGML_INIT -6\n"
+                           "#define ALIGN_GGML_BOUNDS -7\n"
+                           + original.replace("align_ggml_stage_kv", "control_stage_kv", 1) + "\n")
+        for flavor in (("real",) if real else ("unavailable", "engine")):
+            binary = work / flavor
+            source = ROOT / "scripts" / ("ggml_shim.c" if real else "ggml_shim_stub.c")
+            selected = ["-DNATIVE_REAL=1"] if real else ["-DNATIVE_UNAVAILABLE=1"] if flavor == "unavailable" else ["-DALIGN_GGML_STUB_ENGINE=1"]
+            command = [env.get("CC", "cc"), *flags, *selected, str(source), str(control),
+                       str(ROOT / "scripts/fixtures/olmoe-native-staging-native.c"),
+                       "-o", str(binary), *(["-lggml", "-lggml-base"] if real else ["-lm"])]
+            run(command, work, env)
+            output = run([str(binary)], work, env)
+            assert output.endswith("Native staging cases: PASS\n"), output
+            print(f"Native staging flavor: {flavor}" + ("+ubsan" if "--ubsan" in arguments else ""))
+            print(output, end="", flush=True)
+
+
+if __name__ == "__main__":
+    main()

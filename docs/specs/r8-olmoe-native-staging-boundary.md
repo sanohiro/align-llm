@@ -115,7 +115,7 @@ The owner asserts exact equality of the real/stub shared-marker region. No new a
 | --- | --- | --- | --- | --- |
 | Shared source/unchanged region | Only V block changes; real/stub edit identical; comparison, validation and K copy unchanged | Undeclared source, helper/build change or shared-region drift rejected | No product resources added | Native owner `shared_region_identity`, `unchanged_validation_k_and_compare`; qualifier `declared_source_delta` |
 | K bytes and V tile | Unequal D/H/N; D=N=4; multiple complete tiles; H=1 and H>1; K reference unchanged | Any byte mismatch fails the owner | Owned native test allocations released | `legacy_d2_h2_n3`, `tile4_exact`, `multihead_multitile`, `k_block_copy_unchanged` |
-| Tail/edge partition | D/N in 1,3,4,5,8,9; cover no full tile, lane tail, column tail and both tails; every destination byte matches independent reference | Skipped/duplicated/out-of-range tail writes detected by exact image and guards | Same | `no_tile_edges`, `lane_tail`, `column_tail`, `both_tails`, `tile_boundary_shapes` |
+| Tail/edge partition | D/N in 1,3,4,5,8,9; cover no full tile, lane tail, column tail and both tails; every destination byte matches independent reference | Missing or out-of-range writes are detected by exact byte images and guards; exactly-once coverage follows from source inspection of the three nonoverlapping loop regions | Same | `no_tile_edges`, `lane_tail`, `column_tail`, `both_tails`, `tile_boundary_shapes` |
 | Bit/unaligned ABI | Distinct patterns include +0/-0, min/max subnormal, normal extrema, +/-infinity, quiet/signaling NaN payloads and arbitrary uint32 bits | Any normalization or alignment UB rejects | No borrowed owner escapes | `special_bits_exact`, `unaligned_source_and_stage` (all source/stage byte offsets 0..15 on a multihead 5x5 vector); real ARM UBSan |
 | Exact range ownership | Guard bytes around both source windows/stage; source unchanged; exact tile/tail endpoints at protected-page boundaries | Overread, overwrite and cross-head/row access fail, including SIMD paths | Test mmap/allocation owners always released | `guarded_tile_bounds`, `guarded_tail_bounds`, `source_unchanged`, `stage_sentinels` |
 | Admission and refusal | Positive geometry and exact stage length; used source ranges may overlap each other; touching destination endpoints and unused-plane destination admitted | Null plane/stage dominates bad scalars; negative lengths/bases, nonpositive D/H/N, every multiplication stage overflow, exact-length mismatch, K/V OOB, SIZE_MAX/pointer overflow and used-span overlap → original code before any write | No allocation/work on rejected native call | `null_precedence`, `scalar_bounds`, `product_overflow`, `stage_exact_size`, `source_bounds`, `pointer_extent`, `source_overlap_allowed`, `touching_endpoints_allowed`, `stage_in_unused_plane_allowed`, `destination_overlap_refused`; sentinel unchanged after every refusal; SIZE_MAX-only cases N/A on 64-bit when unreachable from signed i64 |
@@ -144,3 +144,27 @@ this byte-transfer implementation neither consumes a proposed Align API nor requ
 This capability keeps the native transfer change, direct bit/layout owner, paired consumer gate and
 terminal restoration together. Splitting them would expose a dormant or unqualified native change
 and duplicate exact-source/byte-ownership proof without an independently useful consumer.
+
+## Candidate verification checkpoint
+
+The only production delta is the declared 67-line AArch64 V branch in each shim. The direct owner
+reconstructs both complete control files by replacing the new conditional block with its retained
+scalar branch, proving the validation, K copy, comparison and other native bytes unchanged.
+The tile, column-tail and lane-tail index ranges are disjoint and cover the scalar domain; this
+source inspection owns exactly-once coverage, while runtime images and guards own byte/range parity.
+
+All three native owner commands passed on the pinned Apple M1 host: default strict unavailable and
+engine flavors, `--real`, and `--real --ubsan`. These exercised actual AArch64 SIMD/tails and the
+separately compiled immutable scalar control. Non-AArch64 dispatch execution is N/A locally;
+this focused owner is not reached by ordinary hosted CI. The original fallback is byte-identical.
+The 72 dimension vectors, 256 source/stage offset combinations, special and position-dependent
+bit patterns, protected pages, source immutability, alias admission and refusal cases all passed.
+
+Unchanged `scripts/test-olmoe-plane-upload`, `scripts/test-olmoe-attention-core`,
+`gmake layer-forward-smoke` (77.317 seconds) and `gmake runtime-provider-smoke`
+(sampler vectors plus 61 CLI assertions) passed. Strict C11 warning-as-error compilation passed
+for unavailable, engine and real flavors. Python compilation and `git diff --check` passed.
+`scripts/run-olmoe-native-staging-boundary --self-test` passed with 129 current source pins
+(102 Align and 27 other inputs), including actual dispatch/strict JSON, paired gate boundaries,
+equal helper hashes, mutation refusal, linked-worktree ancestry, process groups and terminal cleanup.
+The paired qualification and stable-candidate comprehensive review remain pending.

@@ -535,6 +535,72 @@ int32_t align_ggml_stage_kv(const void *plane, int64_t plane_bytes,
                    source + (size_t) source_at, (size_t) (head_dim * 4));
         }
     }
+#if defined(__aarch64__)
+    /* Item 77: transpose canonical V [column][head][lane] into stage [head][lane][column].
+     * Byte-pointer vector loads/stores retain the unaligned byte-range ABI. Full tiles and the
+     * two scalar tails cover every four-byte value once, after the unchanged checks and K copy.
+     */
+    int64_t tiled_lanes = head_dim - head_dim % 4;
+    int64_t tiled_columns = n_past - n_past % 4;
+    int64_t source_stride = n_head_kv * head_dim * 4;
+    int64_t destination_stride = n_past * 4;
+    for (head = 0; head < n_head_kv; head++) {
+        for (lane = 0; lane < tiled_lanes; lane += 4) {
+            for (column = 0; column < tiled_columns; column += 4) {
+                int64_t source_at =
+                    v_base + ((column * n_head_kv + head) * head_dim + lane) * 4;
+                int64_t destination_at =
+                    past_bytes + ((head * head_dim + lane) * n_past + column) * 4;
+                uint32x4_t r0 = vreinterpretq_u32_u8(vld1q_u8(
+                    source + (size_t) source_at));
+                uint32x4_t r1 = vreinterpretq_u32_u8(vld1q_u8(
+                    source + (size_t) (source_at + source_stride)));
+                uint32x4_t r2 = vreinterpretq_u32_u8(vld1q_u8(
+                    source + (size_t) (source_at + source_stride * 2)));
+                uint32x4_t r3 = vreinterpretq_u32_u8(vld1q_u8(
+                    source + (size_t) (source_at + source_stride * 3)));
+                uint32x4x2_t pairs01 = vtrnq_u32(r0, r1);
+                uint32x4x2_t pairs23 = vtrnq_u32(r2, r3);
+                uint64x2_t pairs02_lo = vreinterpretq_u64_u32(pairs01.val[0]);
+                uint64x2_t pairs02_hi = vreinterpretq_u64_u32(pairs23.val[0]);
+                uint64x2_t pairs13_lo = vreinterpretq_u64_u32(pairs01.val[1]);
+                uint64x2_t pairs13_hi = vreinterpretq_u64_u32(pairs23.val[1]);
+                uint32x4_t column0 = vreinterpretq_u32_u64(vtrn1q_u64(pairs02_lo, pairs02_hi));
+                uint32x4_t column2 = vreinterpretq_u32_u64(vtrn2q_u64(pairs02_lo, pairs02_hi));
+                uint32x4_t column1 = vreinterpretq_u32_u64(vtrn1q_u64(pairs13_lo, pairs13_hi));
+                uint32x4_t column3 = vreinterpretq_u32_u64(vtrn2q_u64(pairs13_lo, pairs13_hi));
+                vst1q_u8(destination + (size_t) destination_at, vreinterpretq_u8_u32(column0));
+                vst1q_u8(destination + (size_t) (destination_at + destination_stride),
+                         vreinterpretq_u8_u32(column1));
+                vst1q_u8(destination + (size_t) (destination_at + destination_stride * 2),
+                         vreinterpretq_u8_u32(column2));
+                vst1q_u8(destination + (size_t) (destination_at + destination_stride * 3),
+                         vreinterpretq_u8_u32(column3));
+            }
+            for (column = tiled_columns; column < n_past; column++) {
+                int64_t tile_lane = 0;
+                for (tile_lane = lane; tile_lane < lane + 4; tile_lane++) {
+                    int64_t source_at =
+                        v_base + ((column * n_head_kv + head) * head_dim + tile_lane) * 4;
+                    int64_t destination_at =
+                        past_bytes + ((head * head_dim + tile_lane) * n_past + column) * 4;
+                    memcpy(destination + (size_t) destination_at,
+                           source + (size_t) source_at, 4);
+                }
+            }
+        }
+        for (lane = tiled_lanes; lane < head_dim; lane++) {
+            for (column = 0; column < n_past; column++) {
+                int64_t source_at =
+                    v_base + ((column * n_head_kv + head) * head_dim + lane) * 4;
+                int64_t destination_at =
+                    past_bytes + ((head * head_dim + lane) * n_past + column) * 4;
+                memcpy(destination + (size_t) destination_at,
+                       source + (size_t) source_at, 4);
+            }
+        }
+    }
+#else
     for (head = 0; head < n_head_kv; head++) {
         for (lane = 0; lane < head_dim; lane++) {
             for (column = 0; column < n_past; column++) {
@@ -547,6 +613,7 @@ int32_t align_ggml_stage_kv(const void *plane, int64_t plane_bytes,
             }
         }
     }
+#endif
     return ALIGN_GGML_OK;
 }
 
