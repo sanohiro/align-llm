@@ -3,47 +3,56 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active: R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS (2026-09-05)
+## Active: R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS (2026-09-05)
 
-Branch `agent/r8-olmoe-phase-a-operation-diagnosis`, based on pulled merged `main`
-`11d98f7` (item 70 PR #192).
+Branch `agent/r8-olmoe-attention-operation-diagnosis`, based on pulled merged `main`
+`ce74938` (item 71 PR #193).
 The sibling Align checkout and `.align-revision` remain at merged Align
 `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
-Item 71's authoritative ledger, closure matrix, and measured result are
-`docs/specs/r8-olmoe-phase-a-operation-diagnosis.md`. Design checkpoint `853ec68` fixed the
-contract; implementation checkpoint `710c09b87acc63b44afb3e4dd6b8bf96edc920e7` added the bounded
-borrowed-graph partition and opt-in diagnostic path while every normal provider entry retained its
-single phase-A graph compute.
+Item 72's authoritative ledger and closure matrix are
+`docs/specs/r8-olmoe-attention-operation-diagnosis.md`. Design commit `e7d2eef` and implementation
+commit `593556b` preserve item 71's fixed request and 871,174,011-ns floor. Comprehensive review of
+result-record head `d5b87d5` found one P1: ggml dependency traversal interleaves table rows, so
+positional graph splits put Q/K projection work into the attention-core clock and invalidated the
+first attribution. That measurement and its successor decision are withdrawn.
 
-The clean-head fixed-host run completed in 102.291 seconds. Attention/residual values
-`[2713928597,2556360587,2623167077,2631327698]` ns had a 2,627,247,387-ns median. Router values
-`[64548390,50832788,51515909,53844497]` ns had a 52,680,203-ns median. Attention/residual was
-980,342 ppm of the 2,679,927,590-ns split phase-A median and exceeded item 68's immutable
-871,174,011-ns floor. The decision is `ATTENTION_SUBDIAGNOSIS_REQUIRED`; item 72 will directly
-distinguish projection, attention-core, and output/residual slices. Item 63's live-width candidate
-remains rejected.
+Consolidated repair `9353f2e` adds a bounded graph selector that requires every populated table-
+owned output slot in a class to occur exactly once in the source graph and retains actual
+topological order. The repaired clean-head run completed in 95.407 seconds. Projection,
+attention-core, and output/residual medians were 332,900,623 ns, 2,525,763,020 ns, and 111,561,949
+ns. Attention core won at 846,606 ppm of the 2,983,396,783-ns attention median and cleared the
+floor, so the repaired decision is `ATTENTION_CORE_SUBDIAGNOSIS_REQUIRED`. Every fixed output,
+cache, isolation, lifetime, and corrected accounting boundary passed. Normal provider and item-71
+execution remain unchanged; item 63's live-width candidate remains rejected.
 
-Every fixed output/hash, 11,940/7,325/4,615/4,376 cache count, 17,656,872,960 fetched-byte total,
-zero cache-to-claim copy, lifetime, isolation, and operation-accounting boundary passed.
+The required final comprehensive review covered repaired result-record head `f0fb303` against base
+tip and merge base `ce74938` using Codex `gpt-6-astra` at high effort. It found no actionable
+defects in graph selection, timing accounting, cleanup, qualification behavior, or the ggml
+allocation assumptions.
 
-The comprehensive high-effort Codex review covered `70f9913` against base tip and merge base
-`11d98f7` using `gpt-6-astra`. It found no substantive defects. Its sandbox could not acquire the
-managed-toolchain cache lock, but the same complete layer owner had already passed in the working
-environment.
-
-**Next actions.** Rerun affected owners and exact-head preflight; publish, merge, and continue to
-item 72.
+**Next actions.** Run exact-head preflight, publish, and merge. Per the current user instruction,
+stop after this PR instead of starting its attention-core successor.
 
 **Blocker.** None.
 
-**Latest durable verification.** `make fmt`, `make layer-forward-smoke`, `make
-runtime-provider-smoke`, Python compilation, the focused self-test, `git diff --check`, and the
-clean-head four-repeat diagnosis above passed. The direct layer smoke covered prefix/suffix
-construction and malformed anchors; the runtime smoke passed its self-test and 61 CLI assertions.
+**Latest durable verification.** After repair, `make fmt`, `make layer-forward-smoke` (69.963
+seconds, including the branched membership and range-refusal regression), `make
+runtime-provider-smoke` (self-test plus 61 CLI assertions), Python compilation, the focused item-72
+self-test, helper type-check, and `git diff --check` pass. The repaired clean-head four-repeat run
+above passed in 95.407 seconds, and the required final comprehensive review was clean. Publication
+preflight remains pending.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS (PR #193, 2026-09-05)
+
+PR #193 merged as `ce74938`. Its clean-head run selected `ATTENTION_AND_RESIDUAL` at a
+2,627,247,387-ns median and 980,342 ppm of split phase A; router measured only 52,680,203 ns.
+Every output, cache, isolation, lifetime, and operation-accounting boundary passed. Comprehensive
+review found no substantive defects; exact-head preflight and all three required CI jobs passed.
+Item 72 owns the selected narrower attention diagnosis.
 
 ## Merged checkpoint: R8-OLMOE-POST-OPTIMIZATION-REMAINING-DECODE-DIAGNOSIS (PR #192, 2026-09-05)
 

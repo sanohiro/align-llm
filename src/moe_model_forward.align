@@ -658,6 +658,12 @@ pub Outcome {
   phase_a_attention_ns: i64,
   phase_a_router_ns: i64,
 
+  // R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS. The item-72 opt-in entry partitions item 71's
+  // attention parent into three directly timed graph ranges. Older modes leave these zero.
+  attention_projection_ns: i64,
+  attention_core_ns: i64,
+  attention_output_residual_ns: i64,
+
   // R8-OLMOE-FIRST-TOKEN-PHASE-DIAGNOSIS. These qualification-only counters partition the
   // invocation-local generation schedule without changing any existing renderer. Prefill includes
   // first-output selection; first decode consumes that token and selects the second.
@@ -685,6 +691,9 @@ pub Outcome {
   remaining_decode_head_compute_ns: i64,
   remaining_decode_phase_a_attention_ns: i64,
   remaining_decode_phase_a_router_ns: i64,
+  remaining_decode_attention_projection_ns: i64,
+  remaining_decode_attention_core_ns: i64,
+  remaining_decode_attention_output_residual_ns: i64,
   teardown_ns: i64,
   prefill_claim_pread_ns: i64,
   first_decode_claim_pread_ns: i64,
@@ -977,6 +986,9 @@ pub fn empty_outcome() -> Outcome = Outcome {
   decode_head_compute_ns: 0,
   phase_a_attention_ns: 0,
   phase_a_router_ns: 0,
+  attention_projection_ns: 0,
+  attention_core_ns: 0,
+  attention_output_residual_ns: 0,
   construction_ns: 0,
   prefill_ns: 0,
   first_decode_ns: 0,
@@ -1001,6 +1013,9 @@ pub fn empty_outcome() -> Outcome = Outcome {
   remaining_decode_head_compute_ns: 0,
   remaining_decode_phase_a_attention_ns: 0,
   remaining_decode_phase_a_router_ns: 0,
+  remaining_decode_attention_projection_ns: 0,
+  remaining_decode_attention_core_ns: 0,
+  remaining_decode_attention_output_residual_ns: 0,
   teardown_ns: 0,
   prefill_claim_pread_ns: 0,
   first_decode_claim_pread_ns: 0,
@@ -3637,6 +3652,9 @@ pub LayerResult {
   compute_a_ns: i64,
   compute_a_attention_ns: i64,
   compute_a_router_ns: i64,
+  compute_a_projection_ns: i64,
+  compute_a_attention_core_ns: i64,
+  compute_a_output_residual_ns: i64,
   compute_b_ns: i64,
   reference_compute_ns: i64,
   node_count_a: i64,
@@ -3666,6 +3684,9 @@ pub fn empty_layer_result() -> LayerResult = LayerResult {
   compute_a_ns: 0,
   compute_a_attention_ns: 0,
   compute_a_router_ns: 0,
+  compute_a_projection_ns: 0,
+  compute_a_attention_core_ns: 0,
+  compute_a_output_residual_ns: 0,
   compute_b_ns: 0,
   reference_compute_ns: 0,
   node_count_a: 0,

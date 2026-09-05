@@ -2129,6 +2129,67 @@ void *align_ggml_graph_partition(void *ctx, void *graph, void *slots,
     return (void *) result;
 }
 
+/* R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS. Select the tensors stored in one inclusive slot range
+ * while retaining the source graph's actual topological order. Table rows are operation classes,
+ * but a branched graph's dependency walk does not preserve row order. Requiring every requested
+ * slot exactly once prevents a partial or aliased class from becoming a plausible timing result.
+ */
+void *align_ggml_graph_select_slot_range(void *ctx, void *graph, void *slots,
+                                         int64_t first_slot, int64_t last_slot) {
+    struct ggml_cgraph *source = (struct ggml_cgraph *) graph;
+    struct ggml_cgraph *result = NULL;
+    int64_t capacity = 0;
+    int64_t requested = 0;
+    int64_t slot = 0;
+    int count = 0;
+    int selected = 0;
+    int i = 0;
+
+    capacity = align_ggml_slot_capacity(slots);
+    if (ctx == NULL || source == NULL || capacity < 0 || first_slot < 0 ||
+        last_slot < first_slot || last_slot >= capacity) {
+        return NULL;
+    }
+    count = ggml_graph_n_nodes(source);
+    for (slot = first_slot; slot <= last_slot; slot++) {
+        struct ggml_tensor *target = align_ggml_slot_tensor(slots, slot);
+        int matches = 0;
+        if (target == NULL) {
+            continue;
+        }
+        for (i = 0; i < count; i++) {
+            if (ggml_graph_node(source, i) == target) {
+                matches++;
+            }
+        }
+        if (matches != 1) {
+            return NULL;
+        }
+        requested++;
+    }
+    if (requested <= 0 || requested > count) {
+        return NULL;
+    }
+    result = ggml_new_graph_custom((struct ggml_context *) ctx, (size_t) count, false);
+    if (result == NULL) {
+        return NULL;
+    }
+    for (i = 0; i < count; i++) {
+        struct ggml_tensor *node = ggml_graph_node(source, i);
+        for (slot = first_slot; slot <= last_slot; slot++) {
+            if (node == align_ggml_slot_tensor(slots, slot)) {
+                ggml_graph_add_node(result, node);
+                selected++;
+                break;
+            }
+        }
+    }
+    if (selected != requested) {
+        return NULL;
+    }
+    return (void *) result;
+}
+
 int32_t align_ggml_graph_expand(void *graph, void *slots, int64_t index) {
     struct ggml_tensor *tensor = align_ggml_slot_tensor(slots, index);
     if (graph == NULL) {

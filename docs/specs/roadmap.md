@@ -1716,12 +1716,25 @@ The current forward delivery order is:
     narrower direct diagnosis of the attention prefix.
 
 72. **R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS — distinguish projection, attention-core, and
-    output/residual work. Not started.** Preserve item 71's fixed request, exact execution and
+    output/residual work. Complete; decision `ATTENTION_CORE_SUBDIAGNOSIS_REQUIRED`.**
+    [`r8-olmoe-attention-operation-diagnosis.md`](r8-olmoe-attention-operation-diagnosis.md) is the
+    authoritative ledger and closure matrix. Preserve item 71's fixed request, exact execution and
     immutable floor. Partition the already-built attention prefix at table-owned tensor anchors so
     that rows 0-13 (normalization and Q/K/V projections), rows 14-27 (KV concatenation and attention
     core), and rows 28-31 (output projection and residual) are direct ordered graph-compute walls.
-    Keep normal provider execution unchanged, forbid the rejected live-width candidate, and select
-    only a class whose median reaches the existing 871,174,011-ns floor.
+    Execute the already-measured router suffix only to preserve the full graph result, keep normal
+    provider and item-71 execution unchanged, forbid the rejected live-width candidate, and select
+    only an attention class whose median reaches the existing 871,174,011-ns floor. Review found
+    that positional splits followed dependency order rather than table order and invalidated the
+    first attribution. The repair selects every exact populated table-row output slot while
+    preserving source topology. Its clean-head replacement run measured projection values
+    `[320151872,349815360,334002561,331798686]` ns, attention-core values
+    `[2285581142,2511530006,2539996034,2571609454]` ns, and output/residual values
+    `[106581544,119611215,111838391,111285508]` ns. Their medians were 332,900,623 ns,
+    2,525,763,020 ns, and 111,561,949 ns respectively. Attention core represented 846,606 ppm of
+    the 2,983,396,783-ns attention median and cleared the floor. Every exact output, cache,
+    isolation, lifetime, and corrected accounting boundary passed. A narrower attention-core
+    diagnosis is the next eligible R8 capability.
 
 ### Status (2026-08-28)
 
