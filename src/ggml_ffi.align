@@ -230,6 +230,12 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_op_concat(
     ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64, dim: i32) -> i32
 
+  // R8 item 74: one explicit CPU custom node per K-copy operation, with scalar-only FFI.
+  fn align_ggml_op_k_concat_f32(
+    ctx: raw, slots: slice<u8>, out: i64, past: i64, current: i64) -> i32
+  fn align_ggml_op_k_pad_f32(
+    ctx: raw, slots: slice<u8>, out: i64, source: i64, padding_columns: i64) -> i32
+
   // R5D-MOE-LAYER-FORWARD (`docs/specs/r5d-moe-layer-forward.md` section 3.5). The **five** new
   // symbols the routed half of an OLMoE layer needs, and nothing else. Section 2.8 verified each
   // against the two C files at the pin: `align_ggml_slot_new_tensor_2d` gates on the `mul_mat`
@@ -1023,6 +1029,25 @@ pub fn slot_compare_kv_plane(
       head_dim, n_head_kv, columns, layout as i32)
     if result < 0 { return Err(r5_fault(result, label)) }
     return Ok(result - 1)
+  }
+}
+
+// R8 item 74. Native constructors validate slots, F32 K layout and all sizes before constructing
+// a single graph node. Padding crosses as i64 without narrowing; zero padding still creates a node.
+pub fn op_k_concat_f32(
+  ctx: raw, borrow slots: slice<u8>, out: i64, past: i64, current: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_k_concat_f32(ctx, slots, out, past, current) as i64, label)
+  }
+}
+
+pub fn op_k_pad_f32(
+  ctx: raw, borrow slots: slice<u8>, out: i64, source: i64, padding_columns: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(
+      align_ggml_op_k_pad_f32(ctx, slots, out, source, padding_columns) as i64, label)
   }
 }
 

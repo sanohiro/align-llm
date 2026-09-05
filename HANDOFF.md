@@ -11,23 +11,27 @@ required. Item 74's authoritative ledger and closure matrix are
 `docs/specs/r8-olmoe-k-preparation-boundary.md`.
 
 The candidate replaces only K concatenation and padding (rows 17/18) with two explicit CPU custom
-nodes using bulk byte copies and one callback task. Full width, shapes, marked concat and all V
+nodes using bulk byte copies and one active copy worker. Full width, shapes, marked concat and all V
 operations stay exact. The gate compares four contemporary normal-control/candidate pairs, requires
 all four positive, median saving at least max(871,174,011 ns, 5% of control), and the existing
 16,552,306,197-ns historical candidate ceiling. The complete owner has an eight-minute ceiling.
 
-**Next actions.** Implement the two explicit operations and focused real/stub owner; implement the
-isolated two-build paired qualifier; run owner checks and clean-head qualification; retain production
-only for `MET`; review, repair, preflight, publish and merge; continue to the selected successor.
+**Next actions.** Run the clean-head paired qualification; retain
+production only for `MET`; bind the evaluated head and result; review, repair, preflight, publish
+and merge; continue to the result-selected successor.
 
-**Blocker.** None. Design is fixed; implementation and qualification remain pending.
+**Blocker.** None. Implementation is complete; fixed-host qualification remains pending.
 
 **Latest durable verification.** Item 73's focused owners, real diagnosis, comprehensive review
-(findings none), exact-head preflight and all three required CI jobs passed. Item 74 has the author
-ledger-to-prose consistency pass; executable owners remain pending.
+(findings none), exact-head preflight and all three required CI jobs passed. Item 74 passed the
+pinned helper type-check (17 units), three strict C builds, `gmake fmt`,
+`scripts/test-olmoe-attention-core`, `gmake layer-forward-smoke` (82.153 seconds), and
+`gmake runtime-provider-smoke` (sampler vectors and 61 CLI assertions). The native
+owner passed stub, real four-worker graph, and real UBSan modes. Python compilation and the
+paired runner self-test passed; the real comparison is next.
 
-**Intentional uncommitted files.** None after the design checkpoint; local models/evidence and
-build products remain outside Git.
+**Intentional uncommitted files.** None after the implementation checkpoint; local models/evidence
+and build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-ATTENTION-CORE-DIAGNOSIS (PR #195, 2026-09-05)
 

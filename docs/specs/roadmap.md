@@ -1754,7 +1754,7 @@ The current forward delivery order is:
 74. **R8-OLMOE-K-PREPARATION-BOUNDARY — bulk-copy K concatenation and padding. Active.**
     [`r8-olmoe-k-preparation-boundary.md`](r8-olmoe-k-preparation-boundary.md) owns the ledger,
     exact ABI and closure matrix. Replace only decode rows 17/18 with two explicit CPU custom
-    graph nodes using per-head byte copies and one callback task, preserving all shapes, full
+    graph nodes using per-head byte copies and one active copy worker, preserving all shapes, full
     width, marked concat and V behavior. Compare four contemporaneous normal-control/candidate
     pairs in AB/BA/AB/BA order with separate short conditioning. Require all four savings positive,
     median saving at least max(871,174,011 ns, 50,000 ppm of control), and candidate median at most

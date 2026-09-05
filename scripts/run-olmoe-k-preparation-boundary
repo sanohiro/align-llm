@@ -1,0 +1,982 @@
+#!/usr/bin/env python3
+"""Compare exact isolated normal-decode builds for the two K preparation operations."""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from copy import deepcopy
+import hashlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import io
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import signal
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from typing import Any, Iterator
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+RUNNER_PATH = Path(__file__).resolve()
+PREDECESSOR_PATH = ROOT / "scripts/run-olmoe-attention-core-diagnosis"
+LOADER = SourceFileLoader("olmoe_core_for_k_preparation", str(PREDECESSOR_PATH))
+SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError("cannot load the attention-core owner")
+previous = importlib.util.module_from_spec(SPEC)
+sys.modules[LOADER.name] = previous
+SPEC.loader.exec_module(previous)
+exact = previous.previous.previous.previous
+base = previous.base
+owner = previous.owner
+diagnosis = previous.diagnosis
+transfer = previous.transfer
+
+KIND = "R8_OLMOE_K_PREPARATION_BOUNDARY"
+LABEL = "R8-OLMOE-K-PREPARATION-BOUNDARY"
+CONTROL_HEAD = "e221df396258d2b36c5a7355da721b198e0a9809"
+# A terminal removal sets both values before publication; replay remains at the evaluated ancestor.
+PUBLICATION_ONLY = False
+EVALUATED_HEAD: str | None = None
+PAIR_ORDER = ["AB", "BA", "AB", "BA"]
+ARM_NAMES = {"A": "control", "B": "candidate"}
+CEILING_SECONDS = 480
+MAX_I64 = (1 << 63) - 1
+MIN_I64 = -(1 << 63)
+FLOOR_NS = 871_174_011
+FLOOR_PPM = 50_000
+HISTORICAL_CEILING_NS = 16_552_306_197
+HELPER_SOURCE = "src/olmoe_exact_safe_decode_gate.align"
+HELPER_NAME = "olmoe_exact_safe_decode_gate"
+ALLOWED_DELTA = {
+    "src/layer_olmoe.align", "src/moe_decode_step.align", "src/ggml_ffi.align",
+    "scripts/ggml_shim.c", "scripts/ggml_shim_stub.c",
+}
+BUILD_FILES = {
+    "scripts/ggml_shim.c", "scripts/ggml_shim_stub.c", "scripts/build-ggml-shim",
+    ".align-revision",
+}
+MANIFEST_PATHS = tuple(sorted(BUILD_FILES | {
+    path.relative_to(ROOT).as_posix() for path in (ROOT / "src").glob("*.align")
+}))
+SOURCE_PATHS = previous.unique_paths((
+    PREDECESSOR_PATH, *previous.SOURCE_PATHS, *sorted((ROOT / "src").glob("*.align")),
+    *((ROOT / "scripts/test-olmoe-k-preparation", ROOT / "scripts/fixtures/olmoe-k-preparation-native.c")
+      if not PUBLICATION_ONLY else ()),
+    ROOT / "scripts/align-toolchain",
+    ROOT / "scripts/fresh-align-compiler", ROOT / ".align-revision",
+))
+EXPECTED_SOURCE_IDENTITIES = (
+    "eb6c73a842c30bdb5d9aaad7fb32e7acd87189399ac7e54a7289e6677a652e94",
+    "568d1b2ecc71e140c8ae86df6c0ccbe5c936275300827a0361858d31f99ea5fa",
+    "5cc7f7bbbb92d0186f5ec4973609fc962d94afb1451887e8c9b6fbb5831f625f",
+    "30d523f59dca536336004043cbc5b757b19fa7d305bb00a36ab894c5d196e492",
+    "cbe398505f95257c37d57ba4e19fd0b4aca65725f8e3f0f69e865c3f23782728",
+    "ecb3e41b8f874125abc9018066a002cca9faca43d68db05b2fc6e07c31230dc5",
+    "679554fd291a67c447d74ddee721799c2dca1b02af856ca44c8977368ac463c1",
+    "76ccc33af94db50bafdd6db1fd627385c0f7be2fecd087e285d2f3ea02d75cf2",
+    "433d848e6a926108cacb0651e08a24df65537225cada07d35bc6a85a295d884f",
+    "69c2a44572029e36c349de5feb061e1ecb597e3fa4de7c7a58341da2bcb05ef9",
+    "b66815c4debfec0f749ac88b39ec8ba9f06e25d1f85b4aba3c760d112748f868",
+    "26887655013f0f68e94705a6addd87dac72ada5d37d08e1421a2daef2e78de5a",
+    "922b29baf0489fd1cec53ce1395849ba69df69d0e69dea44a3f07ec95b42cf65",
+    "de717064f4d2ea89d63a6529d38d37157f7d34f9946db7e6dc350076185157ce",
+    "15fb41454a01e5be87776fedd2081b70b4bd155bd6208de1adb0f26c7ddf9dbc",
+    "1f95cefc30d4e5d772b35d6f739994440ce195facf12d5b359f206428301e9b8",
+    "03ee9abc87d1d167f1bac4878004abb64a0ef8bf50a3dfd96ee66eeba106ad9f",
+    "e3a86592357af4c1c8888689cfc026867842ac05a6f4b5a8b88fcc2f026f0260",
+    "36a8ff4296109600377fcc9eff7cddb43b689895bfcc54dbbd7d14721f55b9c3",
+    "91e2dedf7eac8f66f11c817797e8541881bfd2c7f71ee4e298b37305c6123a63",
+    "505efca65a7637b65b26997de200234f44cd8b7cee9db681b9f9161524ecaaaf",
+    "9141bee34a3579482c6c5852eb136810ea909f73575229b411f905ef96635581",
+    "c7e82a8a8374e1c25f1e3b61ce0b89ed8639eaeae6b4e4ae8bee2a88a09b8e8b",
+    "6334e3c9641b6990770e0cb30bbca807ea7ca65dc80ad7906740887fea73f8fe",
+    "7651efee03c2467745daa36ae3c19ad77d65459036510aa82f6cdbd0d1c47f07",
+    "80d9c6edbd5647b4ad08edb854827688f4debfe66379022181812c11b5dbc2ab",
+    "4765439bd19d4db37a49de9cbebf8180ccf38b834fcaf0687c3977d1e2f8d7d9",
+    "62dc883bb3b66175382a98870c36170b0fc1e0cc8a41c226d96c18bc50bfbb45",
+    "ebb5db96cc597e4db230f5705de62e3070d6b70a50234b288b9a6683f714b7c7",
+    "133d3ec5f5f08e8e6e128cd76ed1e4c467c5424bb535a9de8ce8e38f61a7e481",
+    "ff2a3d96ef2bdfdaf3acbc966734b9d813c5b7e105444f122e17fa3cd1561a34",
+    "6a9d948bf265c39570dee1ceca9f76ce361fea88f00f624ee0669d48c53e4824",
+    "fb203c83018da6a10074d72165524444a6cdcc2bd2734732ea3090443512606f",
+    "b01611151baace6cb59a140eec1dc336c47cd50a8e43dc746337e58e6eb10b50",
+    "cca81cbc741f6fc39f31b8cbda65bc3eed4cbfa2447db8f9cae0ccc4d961e8f9",
+    "edbd49939d82d99ce427ef90d24289765d6db0f0a7d0cb9fe16d0cf940bad977",
+    "d58bfb3b6f9f0714514d74829f72aab117e1f8fe79eacb952108d20fc7231302",
+    "7a8b5321c57c4f46a974b976d62a9ea2f12dce6d0f000a52cf4eb9e19b092528",
+    "a720b6de1895ad072580c23c7feb22a2518324c6cdfb707bf94c36b25aa3a486",
+    "94eec30139994e8445d4f7691f1aa1c39dd26ae01856ae25253e3b1450f9601c",
+    "752a6f8faf18aeea6a5caccefccab9802d4a0875baa1689938f2358a1253c274",
+    "280048bc877c1b60f3a8ca4ac97c4f8940604c40ed0f3ee2ad5b8582a22ef9e0",
+    "bff9ae8beea0597de834378ae8967100cb12fef182c1cc9d1e516c28ecb140bc",
+    "8a8a204447318c9279ba82b2282d4734aa602599c40f95b7b912a14aae703dba",
+    "2bcb1bb86a59462a8b9961a6bc2a52a56e31a0929a103b70567861b84f2f473f",
+    "8901ecc5de8fd37d10d66ce19fe8aa8cb0c874314096c8a0a50ac28cc8f24155",
+    "dd73992e85de269461764b0c32be8fa722f980761537f39dc6312ef7ffb700b4",
+    "9078d1ded048ef06fbd43b5a6222ce15809ef63ea257b072a83315176f0e84cf",
+    "72070c3a8bdbec873fcd2cc19336c340f093417e751f79f533b33e4bf7d18566",
+    "63737cb8ea12a37ff9cc448a8cdb55fe384deb1b8e13a97eafab664e1c153475",
+    "6e4212431d8fd6083b04c3cc4886e8def3f69ef3d1995baef4daaad4f2a73417",
+    "bc527b6f5a206a4a911c4529f6df11a88abdcf30e9cde6bbbc7566cb48e41115",
+    "52f386249161b7f7b162c8e8153c4ee3e35d192a5ad083d9b923b7178c18a7ad",
+    "84a2183c367c8758b291ad464466aaa849627de4c2165a53b40f13c8d7e0df42",
+    "bfa7209ba443bd407e00f91f973238123117efae97a1b25332f507d48cbe47ca",
+    "3ecb0b421997ae9c909f0ba968601a80ae7abfbaf22cc1611a39da9262cbdd27",
+    "b330c7dfede1ffd0988e0bb1f5a2cf203955d28bc3e5a12c485f000cf8aa2aa0",
+    "6af3bd9a2c4d18ed53c17f55ef237d57b476035574dbe04a7f16ca7411578d1d",
+    "528569dee907d7a0cfbb5302d6fa38b83b738a85489434ae1dc54e4b91dc7df4",
+    "8dc65bc222f2e13a40697f92e37bf2a322be2be0378d0136e13e9fda17ea5f1c",
+    "04305b17900cc586b8f3df36660e04988f4bc8898b2acd4ca876a101252594d8",
+    "bf4aae7407a2a1d7b4e5b01c43fb648bd2a3a85ffd5cab755ab8497311486f89",
+    "c43332ed882a95241541a3c55f25dc3d61e8a2658b915140e12be8a1ada9f5e8",
+    "d2476f9f41bfd94e78fcadba9716ca67c92439f0ff3d6361b53e5c37b40c8042",
+    "27f76b406fa65c0a261d5e57f54316cae2b55a1564ae4b33cb49f4dc2847af6f",
+    "f2ae2acc78d0441b2b23e74a1a976cc4dadb59ee3462832538591564d509429b",
+    "6aa34c70e6660eef3f9285ea1b79f0b3f30c0bc844aa8dd9da2a67f22994c731",
+    "73aa61d2ea916f830e8f89273a4e1f1d385896b1e14151c5ab7a6649a6fca375",
+    "b0515437083ad1e5480ae07f19ec18db2dfde9312556d350b9914281d2437c36",
+    "a297ec348f86fc436d9d907165cd69b8a199a1003400ece40df910d3ca821b89",
+    "b46bd240608f6125abc38e1733e51b688c0f86ff579840aff247ce877d8368cd",
+    "ff91bdc8d96768254eddaef0019c48933f7207c27634e02c7db6d778e3ef8c9d",
+    "4d6ef0fc2233651e765a31891ae0d18fc9fd4747b5ab9244520345e0eb62b3ad",
+    "cf9dc7886057397b81d7b91c0210a48e6f1b601397b27754e33c97ab55d49b3d",
+    "c9cc90c3960d14551dce0605c36f261d1bbc588bbeb1856996cf1849a2d4235c",
+    "83bf3aa9a8444f8fe3375444367d69a2db105a447282c6b77b436e1c827e0885",
+    "cb8175cea8a8502bba8fff747e4183ceb62d9c94a8f8cce3c9ec05d6757e0da0",
+    "230e32345a1afa2a4b01d3b444b503bb1b381525014a093f3984dfea739aaece",
+    "fa249a89e0fdfcf7200ece58b6dcbf4758c9c84ba25b4b1e939c8ffdf0871abd",
+    "78f68190751d8101313ba6d50e038292fc6c55a977d1281aa8707fcdbe4633fd",
+    "621c0990c8c5d5abb42bb5cf683a34e580bb494949ba544d284bfaebb1d19ee5",
+    "3824f8a69ed5c08930b471bd6b1ceb4017f00628ab1bbc0b2467afb983fc8175",
+    "fd78aac8ea7063ff948afab1a84c3d99474482169315dfc226d021570e2eff53",
+    "8e35ed167b189f79a852b0c82d7bd308541a2573b402f3835b3cf4d54287fd21",
+    "ea6fd8f8a7a733a942ab9960f2c830544b9fc5794a52d95d0ade1876e060055d",
+    "97c7295cfa765aadebf849702b5812bbe7b351773ead580f5e294aa05057a5e3",
+    "e5c0506bebf875abd9c57b5e504294c78d7d0d39b5c9c2c6f75003f00403052a",
+    "8eeeefa20d71b76adc4d5492285f7c0df3f72259708e85ca0d358532dc487007",
+    "4902bc0c11a3e8d88777fd319f335f5c40ee11b0068bc72a0a6dfdd08ca5bc5a",
+    "e9b2645067c7f503fc1e78d5642565f2cf26c69dae85eb87c9c3bf9fb3d2bda0",
+    "472dfd54ebd14f71c02229e8551fc5cea82bf28241ff149d836670582fc81c80",
+    "0631cb4ce4ad1e6ca2f3a5cd8a1c5e6c4e1ec614c1967df1f5a144f7d7e0e21b",
+    "b846d2c4ad2d113fa27067a0aa9de7d409aca1a7121fd2e6821c8d742e35d48e",
+    "ba6fcd60b3bfe129fa031df604d2a277d89adb321cebcd4d7679159bd9619e61",
+    "9b7a1de101b59d7f72f39f8b34d520cb8f30194c95a45ae0f7a8e5b741213425",
+    "a9f5785b7ff30c32e97cd2a3bfdb60293a44b5445b0f7f36c5eae0261ecc9ea5",
+    "9215896bfc8d471ab622ab4029888c7ee8bcf7c8f3f25fe5a93cf9b1725c8f64",
+    "be7b87933f3d6c71f58c29775082bfd3741c3805bbca44577b9fd15ca3cb713f",
+    "eff80168db85d69068e76080a44ba9af0649e3b20ae6eb3de1398e5aa9fcaa19",
+    "2843ce7b2241b40707e36b871b246ee336c9967cbd28243c0c175dc79aca6d80",
+    "2c572e39a3ebbaa5e7846dbd2f33ec4f0793868c9bc132757f9c8b2434e316ec",
+    "223d134177e3fde78829a8ff841a1c93ea3fb481d227719fb85bee4e65cbd268",
+    "dac571f4fc9c75fbf14247c79af7af6a294ab68721525ec1960b77a6c2cfbc18",
+    "c67bb1b5b910773b5c9fd056d130794070a92dd87f376236349bc271afbdf2af",
+    "524c3c88e5cc750db2948824df9d236cdcd8aa58def7f103578d28d6f73703c7",
+    "8614b05d217e84f54568084278fd982cfd7cb8d2304ad1b68d345c1de23ace93",
+    "4cb5fde1c4cdf87a21a915d221c34463564a24ae8fb65a7b1c6b8291ea0fe9ef",
+    "6b7d1b62d794f305aa0f4c76d03c4afb0c33d4ec9bb66a50c674b3c285655cf5",
+    "b4e534f8f4d598580d34b5e1d19addc11a51899770b5b26a17a49a9302fdf6bc",
+    "5c51386ad976df0db007f1749cf9364a37d0b19227d49efd22b6189ea8797fad",
+    "3b7294016b9801d5622c454e23e07194f9908e82b02e9468bb248e8029928cd0",
+    "7817d7eaffaa5508dcbadaebba12009609f1cd4dda72dcb7582b7a2a07976896",
+    "c5effb5b34199665e7996955109d2dc37ff7b8d6cb0e8c63c93079966a5fbf26",
+    "d843611b989ee47155889fd2a3af2ffe40c83324b6ee0bbfd8afa35c852ac98c",
+    "2905e3e84ac8a44f721d33bc25012038b1ed8e5318c65d5b439b687977eeabd3",
+    "49ac9d974b40b6caac760bc5b128857c9af9e544f2b4123715d0c4ff9b213a15",
+    "89552ad9631bb552ebc49e13d871afb89c29bd3d9208d77cee80c2bdce3c30c5",
+    "30072810c7a5671286947e37b5de78f924b12f54354abb6904bef420f5eedb56",
+    "dbfd8fa709df929940ec70b496ac0163ddbc5e58f2a952146172c586e18bd011",
+    "bab8fbaed6db8a90096daf53ba4d98f7b61dec57bd9894583ef0125d790b1573",
+    "9264d64c5698d89fbdc1d362901f328275e817e4e176e3224f9c099e8ebb73b7",
+    "748142e555d7b2b5a80a2a830aa3799e73fedb16c87da7fd3c4ef40d32ad83c4",
+    "a16b2f52ff9ec431c5198789969f48dab0b79793acd9867da09120ae1c8a3454",
+    "18a8e10686ca98d0a839ee16a0c56158fd27372e5b38f21da0890fb173c7f546",
+    "2da8db811b30183cb1b579f1bc607dcce011faf1d9238bdf39ce1a41627a952b",
+    "6e9af29f143c09f600cced88c5a195ea0a5eaa531ff4efcee1723a70fe23380d",
+    "d3636deb1b76abbad17c137429b6bec1ed6069e4689145b49b08c5938dd1f9b0",
+    "e4440ae17e004750db94de3f7f58e394fa0500b5bbf6d668152149a5669e8d51",
+    "accec2827aceefa59f42a050c849c07f68e830b1148fcf60d3e41d9248c707e7",
+    "40cc30945fbcd558c5a22c89aab351aa879ed596b45802059a74c7aa11b10de8",
+    "857f64e792680714d707c05f10430d59e233703251ead68d7ff8f1c0d7ca69cb",
+)
+TOP_KEYS = {
+    "schema_version", "kind", "control", "candidate", "boundary", "fixed_request",
+    "environment", "pair_order", "pairs", "aggregate", "decision", "elapsed_ns",
+}
+ARM_KEYS = {"align_llm_head", "source_tree", "source_files", "helper_sha256", "shim_sha256"}
+LEG_KEYS = {"short", "full", "full_helper_wall_ns", "isolation"}
+PAIR_KEYS = {"index", "order", "control", "candidate", "gain_ns"}
+AGGREGATE_KEYS = {
+    "control_values_ns", "candidate_values_ns", "paired_gains_ns", "control_median_ns",
+    "candidate_median_ns", "median_gain_ns", "positive_pairs", "required_gain_ns",
+    "historical_ceiling_ns", "gain_ppm",
+}
+
+
+class KPreparationError(RuntimeError):
+    pass
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise KPreparationError(message)
+
+
+def keys(value: Any, expected: set[str], label: str) -> None:
+    require(isinstance(value, dict) and set(value) == expected, f"{label} keys drifted")
+
+
+def integer(value: Any, *, signed: bool = False, positive: bool = False) -> bool:
+    lower = MIN_I64 if signed else (1 if positive else 0)
+    return type(value) is int and lower <= value <= MAX_I64
+
+
+def same(actual: Any, expected: Any, label: str) -> None:
+    require(previous.same_typed_json(actual, expected), f"{label} drifted")
+
+
+def scalar_domains(value: Any, field: str = "") -> None:
+    if isinstance(value, dict):
+        for name, item in value.items():
+            scalar_domains(item, name)
+    elif isinstance(value, list):
+        for item in value:
+            scalar_domains(item, field)
+    elif isinstance(value, bool):
+        require(field in {"stopped_eog", "released_before_owner_scope_end"},
+                f"boolean integer at {field}")
+    elif isinstance(value, int):
+        require(integer(value, signed=field in {"gain_ns", "paired_gains_ns", "median_gain_ns", "gain_ppm"}),
+                f"integer outside signed-i64 domain at {field}")
+    elif isinstance(value, float):
+        raise KPreparationError(f"non-integer scalar at {field}")
+
+
+def source_identities() -> tuple[str, ...]:
+    return tuple(base.file_sha256(path) for path in SOURCE_PATHS)
+
+
+def validate_imported_contract() -> None:
+    require(source_identities() == EXPECTED_SOURCE_IDENTITIES, "pinned source chain drifted")
+    same((previous.CEILING_SECONDS, previous.FLOOR_NS, previous.FLOOR_PPM),
+         (CEILING_SECONDS, FLOOR_NS, FLOOR_PPM), "inherited measurement constants")
+    require(previous.BASELINE_MEDIAN_NS - FLOOR_NS == HISTORICAL_CEILING_NS,
+            "historical ceiling arithmetic drifted")
+
+
+def run(argv: list[str], *, deadline: float, env: dict[str, str], cwd: Path = ROOT,
+        maximum: int = 240, check: bool = True) -> subprocess.CompletedProcess[bytes]:
+    """Keep inherited signal/child ownership while explicitly isolating the build cwd."""
+    remaining = min(float(maximum), deadline - time.monotonic())
+    require(remaining > 0, "complete comparison exceeded its 8-minute ceiling")
+    process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    owner.active_process = process
+    try:
+        stdout, stderr = process.communicate(timeout=remaining)
+    except BaseException:
+        owner.stop_process(process)
+        raise
+    finally:
+        if owner.active_process is process:
+            owner.active_process = None
+    completed = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+    require(not check or completed.returncode == 0,
+            f"command failed ({completed.returncode}): {' '.join(argv)}\n"
+            + stderr.decode("utf-8", "replace")[-4096:])
+    return completed
+
+
+def git(arguments: list[str], deadline: float, env: dict[str, str], *, check: bool = True
+        ) -> subprocess.CompletedProcess[bytes]:
+    return run(["git", "--no-replace-objects", *arguments], deadline=deadline, env=env,
+               maximum=30, check=check)
+
+
+def clean_head(deadline: float, env: dict[str, str]) -> str:
+    require(not git(["status", "--porcelain", "--untracked-files=all"], deadline, env).stdout,
+            "real comparison requires a clean worktree")
+    return git(["rev-parse", "HEAD"], deadline, env).stdout.decode("ascii").strip()
+
+
+def git_common_dir(deadline: float, env: dict[str, str]) -> Path:
+    value = git(["rev-parse", "--git-common-dir"], deadline, env).stdout.decode("utf-8").strip()
+    require(bool(value), "Git common directory was empty")
+    return (ROOT / value).resolve()
+
+
+def validate_ancestry_state(replace_refs: bytes, graft_exists: bool, statuses: list[int]) -> None:
+    require(not replace_refs.strip(), "ancestry refuses Git replacement refs")
+    require(not graft_exists, "ancestry refuses Git grafts")
+    require(all(status == 0 for status in statuses), "required revision is not an ancestor")
+
+
+def require_ancestry(head: str, deadline: float, env: dict[str, str], common: Path,
+                     evaluated: str | None = None) -> None:
+    require(git_common_dir(deadline, env) == common, "Git common directory changed")
+    refs = git(["for-each-ref", "--format=%(refname)", "refs/replace"], deadline, env).stdout
+    graft_exists = (common / "info/grafts").exists()
+    validate_ancestry_state(refs, graft_exists, [])
+    ancestors = [CONTROL_HEAD] + ([evaluated] if evaluated is not None else [])
+    statuses = [git(["merge-base", "--is-ancestor", ancestor, head], deadline, env,
+                    check=False).returncode for ancestor in ancestors]
+    validate_ancestry_state(refs, graft_exists, statuses)
+
+
+def tracked_sources(revision: str, deadline: float, env: dict[str, str]) -> dict[str, tuple[str, str]]:
+    rows = git(["ls-tree", "-r", "-z", revision, "--", "src", *sorted(BUILD_FILES)],
+               deadline, env).stdout
+    result = {}
+    for raw in rows.split(b"\0"):
+        if not raw:
+            continue
+        metadata, raw_path = raw.split(b"\t", 1)
+        mode, kind, blob = metadata.decode("ascii").split()
+        path = raw_path.decode("utf-8", "strict")
+        if path not in BUILD_FILES and not (path.startswith("src/") and path.endswith(".align")):
+            continue
+        require(kind == "blob" and mode in {"100644", "100755"}, "source is not a regular tracked file")
+        require(not Path(path).is_absolute() and ".." not in Path(path).parts, "unsafe source path")
+        result[path] = (mode, blob)
+    require(BUILD_FILES | ALLOWED_DELTA | {HELPER_SOURCE} <= set(result), "tracked source inventory incomplete")
+    return result
+
+
+def manifest(tree: Path, inventory: dict[str, tuple[str, str]]) -> list[dict[str, Any]]:
+    actual_align = {path.relative_to(tree).as_posix() for path in (tree / "src").rglob("*.align")}
+    require(actual_align == {path for path in inventory if path.endswith(".align")},
+            "snapshot Align source inventory changed")
+    rows = []
+    for path in sorted(inventory):
+        source = tree / path
+        require(source.is_file() and not source.is_symlink(), "snapshot source missing or symlinked")
+        data = source.read_bytes()
+        blob = hashlib.sha1(b"blob " + str(len(data)).encode("ascii") + b"\0" + data).hexdigest()
+        require(blob == inventory[path][1], f"snapshot bytes differ from tracked blob: {path}")
+        rows.append({"path": path, "bytes": len(data), "sha256": base.bytes_sha256(data)})
+    return rows
+
+
+def materialize(revision: str, tree: Path, deadline: float, env: dict[str, str]) -> dict[str, Any]:
+    inventory = tracked_sources(revision, deadline, env)
+    archive = git(["archive", "--format=tar", revision, "--", *sorted(inventory)], deadline, env).stdout
+    tree.mkdir()
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as bundle:
+        for member in bundle:
+            if member.isdir():
+                continue
+            require(member.name in inventory and member.isfile(), "unexpected snapshot archive member")
+            destination = tree / member.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source = bundle.extractfile(member)
+            require(source is not None, "snapshot archive member was unreadable")
+            destination.write_bytes(source.read())
+            destination.chmod(int(inventory[member.name][0], 8) & 0o777)
+    return {"root": tree, "inventory": inventory, "identity": {
+        "align_llm_head": revision,
+        "source_tree": git(["rev-parse", f"{revision}^{{tree}}"], deadline, env).stdout.decode("ascii").strip(),
+        "source_files": manifest(tree, inventory),
+    }}
+
+
+def validate_manifests(control: Any, candidate: Any, *, restored: bool = False) -> None:
+    for rows in (control, candidate):
+        require(isinstance(rows, list) and rows, "source manifest was not a nonempty array")
+        paths = []
+        for row in rows:
+            keys(row, {"path", "bytes", "sha256"}, "source manifest row")
+            require(isinstance(row["path"], str) and not Path(row["path"]).is_absolute()
+                    and ".." not in Path(row["path"]).parts, "manifest source path was invalid")
+            require(integer(row["bytes"], positive=True) and transfer.is_lower_hex(row["sha256"], 64),
+                    "manifest file identity was invalid")
+            paths.append(row["path"])
+        require(paths == list(MANIFEST_PATHS), "source manifest is not complete, unique and path-sorted")
+        require(BUILD_FILES | ALLOWED_DELTA | {HELPER_SOURCE} <= set(paths), "manifest source inventory incomplete")
+        require(all(path in BUILD_FILES or (path.startswith("src/") and path.endswith(".align"))
+                    for path in paths), "manifest source path outside declared inventory")
+    require([row["path"] for row in control] == [row["path"] for row in candidate],
+            "compiled source inventory differs between arms")
+    differences = {left["path"] for left, right in zip(control, candidate, strict=True) if left != right}
+    if restored:
+        require(not differences, "removed production does not match control bytes")
+    else:
+        require(bool(differences) and differences <= ALLOWED_DELTA,
+                "compiled source delta is empty or outside the five allowed paths")
+
+
+def build_snapshot(snapshot: dict[str, Any], compiler: Path, include: Path, library: Path,
+                   clean_env: dict[str, str], deadline: float) -> dict[str, Any]:
+    tree = snapshot["root"]
+    shim_dir = tree / "lib"
+    build_env = dict(clean_env)
+    build_env.update({"ALIGN_LLM_GGML_INCLUDE": str(include), "ALIGN_LLM_GGML_LIB": str(library),
+                      "ALIGN_LLM_GGML_SHIM_DIR": str(shim_dir)})
+    run([str(tree / "scripts/build-ggml-shim")], cwd=tree, env=build_env, deadline=deadline, maximum=180)
+    build_env["LIBRARY_PATH"] = ":".join(value for value in
+        (str(shim_dir), str(library), clean_env.get("LIBRARY_PATH", "")) if value)
+    run([str(compiler), "build", HELPER_SOURCE], cwd=tree, env=build_env, deadline=deadline, maximum=300)
+    helper = tree / HELPER_NAME
+    shim = shim_dir / ("libalign_ggml_shim.dylib" if platform.system() == "Darwin" else "libalign_ggml_shim.so")
+    require(helper.is_file() and os.access(helper, os.X_OK) and shim.is_file(), "isolated build incomplete")
+    runtime_env = dict(clean_env)
+    runtime_env["DYLD_LIBRARY_PATH"] = runtime_env["LD_LIBRARY_PATH"] = ":".join((str(shim_dir), str(library)))
+    identity = {**snapshot["identity"], "helper_sha256": base.file_sha256(helper),
+                "shim_sha256": base.file_sha256(shim)}
+    return {**snapshot, "identity": identity, "helper": helper, "shim": shim, "runtime_env": runtime_env}
+
+
+@contextmanager
+def protect_root_artifacts(work: Path) -> Iterator[None]:
+    paths = [ROOT / HELPER_NAME, ROOT / "main", *[ROOT / "build/lib" / f"libalign_ggml_shim.{suffix}"
+             for suffix in ("so", "dylib")]]
+    before = {}
+    for index, path in enumerate(paths):
+        require(not path.is_symlink(), "root generated artifact is a symlink")
+        saved = work / f"root-artifact-{index}"
+        if path.exists():
+            require(path.is_file(), "root generated artifact is not a file")
+            shutil.copy2(path, saved)
+        before[path] = saved
+    try:
+        yield
+    finally:
+        changed = []
+        for path, saved in before.items():
+            expected = (base.file_sha256(saved), saved.stat().st_mode) if saved.exists() else None
+            actual = (base.file_sha256(path), path.stat().st_mode) if path.is_file() else None
+            if expected != actual or path.is_symlink() or (path.exists() and not path.is_file()):
+                changed.append(path.name)
+                if path.exists() or path.is_symlink():
+                    if path.is_dir() and not path.is_symlink():
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink()
+                if saved.exists():
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(saved, path)
+        require(not changed, "isolated builds touched root artifacts: " + ", ".join(changed))
+
+
+def inherited_sample(leg: dict[str, Any], index: int) -> dict[str, Any]:
+    return {"index": index, "conditioning": leg["short"], "full": leg["full"],
+            "full_helper_wall_ns": leg["full_helper_wall_ns"], "isolation": leg["isolation"]}
+
+
+def validate_leg(leg: Any, index: int) -> None:
+    keys(leg, LEG_KEYS, "arm leg")
+    scalar_domains(leg)
+    for record in (leg["short"], leg["full"]):
+        require(integer(record["schema_version"]) and record["schema_version"] == 1,
+                "helper schema version drifted")
+    exact.validate_sample(inherited_sample(leg, index), index)
+    require(integer(leg["full_helper_wall_ns"], positive=True)
+            and leg["full_helper_wall_ns"] >= leg["full"]["phases"]["elapsed_ns"],
+            "full helper wall did not contain helper elapsed")
+
+
+def measure_request(built: dict[str, Any], model: Path, pack: Path, geometry: Path,
+                    maximum: int, deadline: float) -> tuple[dict[str, Any], int]:
+    owner.verify_identities((("arm helper", built["helper"], built["identity"]["helper_sha256"]),
+                             ("arm shim", built["shim"], built["identity"]["shim_sha256"])))
+    started = time.monotonic_ns()
+    completed = run([str(built["helper"]), str(model), str(pack), str(geometry), diagnosis.PROMPT_TEXT,
+                     str(maximum), str(exact.SEED)], cwd=built["root"], env=built["runtime_env"], deadline=deadline)
+    wall = time.monotonic_ns() - started
+    try:
+        record = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise KPreparationError("helper did not emit one JSON record") from error
+    scalar_domains(record)
+    exact.validate_helper_record(record, maximum)
+    require(integer(wall, positive=True) and wall >= record["phases"]["elapsed_ns"],
+            "helper wall did not contain helper elapsed")
+    return record, wall
+
+
+def measure_leg(built: dict[str, Any], paths: tuple[Path, ...], env: dict[str, str],
+                deadline: float, index: int) -> dict[str, Any]:
+    model, pack, geometry, _, _, server = paths
+    owner.require_no_matching_process(server, model, deadline, env)
+    short, _ = measure_request(built, model, pack, geometry, 2, deadline)
+    owner.require_no_matching_process(server, model, deadline, env)
+    try:
+        full, wall = measure_request(built, model, pack, geometry, exact.FULL_TOKENS, deadline)
+    finally:
+        owner.require_no_matching_process(server, model, deadline, env)
+    leg = {"short": short, "full": full, "full_helper_wall_ns": wall,
+           "isolation": {"matching_before": 0, "matching_between": 0, "matching_after": 0}}
+    validate_leg(leg, index)
+    return leg
+
+
+def measure_pairs(builds: dict[str, Any], paths: tuple[Path, ...], env: dict[str, str],
+                  deadline: float) -> list[dict[str, Any]]:
+    pairs = []
+    for index, order in enumerate(PAIR_ORDER, 1):
+        pair: dict[str, Any] = {"index": index, "order": order}
+        for symbol in order:
+            arm = ARM_NAMES[symbol]
+            pair[arm] = measure_leg(builds[arm], paths, env, deadline, index)
+        pair["gain_ns"] = pair["control"]["full_helper_wall_ns"] - pair["candidate"]["full_helper_wall_ns"]
+        pairs.append(pair)
+    validate_pairs(pairs)
+    return pairs
+
+
+def validate_pairs(pairs: Any) -> None:
+    require(isinstance(pairs, list) and len(pairs) == 4, "comparison requires four complete pairs")
+    for index, (pair, order) in enumerate(zip(pairs, PAIR_ORDER, strict=True), 1):
+        keys(pair, PAIR_KEYS, "pair")
+        require(integer(pair["index"], positive=True) and pair["index"] == index and pair["order"] == order,
+                "chronological pair order or index drifted")
+        for arm in ("control", "candidate"):
+            validate_leg(pair[arm], index)
+        expected = pair["control"]["full_helper_wall_ns"] - pair["candidate"]["full_helper_wall_ns"]
+        require(integer(pair["gain_ns"], signed=True) and pair["gain_ns"] == expected, "paired gain drifted")
+    # Timings may differ; both arms and all legs must preserve every non-timing result.
+    exact.validate_repeatability([inherited_sample(pair[arm], index)
+        for index, pair in enumerate(pairs, 1) for arm in ("control", "candidate")])
+
+
+def signed_median(values: list[int]) -> int:
+    require(len(values) == 4 and all(integer(value, signed=True) for value in values),
+            "signed median requires four i64 values")
+    ordered = sorted(values)
+    return (ordered[1] + ordered[2]) // 2
+
+
+def gate(control: list[int], candidate: list[int]) -> tuple[dict[str, Any], str]:
+    require(len(control) == len(candidate) == 4
+            and all(integer(value, positive=True) for value in control + candidate), "gate walls invalid")
+    gains = [a - b for a, b in zip(control, candidate, strict=True)]
+    control_median = signed_median(control)
+    candidate_median = signed_median(candidate)
+    gain_median = signed_median(gains)
+    required = max(FLOOR_NS, (control_median * FLOOR_PPM + 999_999) // 1_000_000)
+    positive = sum(gain > 0 for gain in gains)
+    aggregate = {"control_values_ns": control, "candidate_values_ns": candidate,
+        "paired_gains_ns": gains, "control_median_ns": control_median,
+        "candidate_median_ns": candidate_median, "median_gain_ns": gain_median,
+        "positive_pairs": positive, "required_gain_ns": required,
+        "historical_ceiling_ns": HISTORICAL_CEILING_NS,
+        "gain_ppm": gain_median * 1_000_000 // control_median}
+    scalar_domains(aggregate)
+    decision = "MET" if positive == 4 and gain_median >= required and candidate_median <= HISTORICAL_CEILING_NS else "NOT_MET"
+    return aggregate, decision
+
+
+def aggregate_pairs(pairs: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+    validate_pairs(pairs)
+    return gate([pair["control"]["full_helper_wall_ns"] for pair in pairs],
+                [pair["candidate"]["full_helper_wall_ns"] for pair in pairs])
+
+
+def boundary_record() -> dict[str, Any]:
+    return {"concat_row": 17, "pad_row": 18, "concat_op": "K_CONCAT_F32", "pad_op": "K_PAD_F32",
+            "callback_tasks": 1, "execution": "NORMAL_UNSPLIT_PHASE_A"}
+
+
+def fixed_request_record() -> dict[str, Any]:
+    return {"model_bytes": exact.MODEL_BYTES, "model_sha256": exact.MODEL_SHA256,
+        "pack_sha256": exact.EXPECTED_PACK_SHA256, "geometry_sha256": exact.EXPECTED_GEOMETRY_SHA256,
+        "server_sha256": exact.EXPECTED_SERVER_SHA256, "align_revision": exact.EXPECTED_ALIGN_REVISION,
+        "compiler_sha256": exact.EXPECTED_COMPILER_SHA256, "ggml_libraries": exact.EXPECTED_GGML_LIBRARIES,
+        "ggml_headers": exact.EXPECTED_GGML_HEADERS, "task_id": "python-inclusive-range",
+        "task_sha256": exact.EXPECTED_TASK_SHA256, "prompt_sha256": exact.EXPECTED_PROMPT_SHA256,
+        "maximum_tokens": exact.FULL_TOKENS, "temperature_micros": exact.TEMPERATURE_MICROS,
+        "seed": exact.SEED, "cache_budget_bytes": exact.BUDGET, "full_output_sha256": exact.FULL_OUTPUT_SHA256}
+
+
+def environment_record() -> dict[str, Any]:
+    return {**exact.EXPECTED_BASELINE_HOST, "host_fingerprint_sha256": exact.EXPECTED_BASELINE_HOST_SHA256,
+        "c_compiler_sha256": exact.EXPECTED_C_COMPILER_SHA256,
+        "c_compiler_version_sha256": exact.EXPECTED_C_COMPILER_VERSION_SHA256,
+        "linker_search_sha256": exact.EXPECTED_LINKER_SEARCH_SHA256}
+
+
+def validate_arms(control: Any, candidate: Any) -> None:
+    for arm in (control, candidate):
+        keys(arm, ARM_KEYS, "arm identity")
+        for field, length in (("align_llm_head", 40), ("source_tree", 40), ("helper_sha256", 64), ("shim_sha256", 64)):
+            require(transfer.is_lower_hex(arm[field], length), f"arm {field} invalid")
+    require(control["align_llm_head"] == CONTROL_HEAD, "control revision drifted")
+    require(candidate["align_llm_head"] != CONTROL_HEAD, "candidate revision equals control")
+    require(all(control[field] != candidate[field] for field in ("source_tree", "helper_sha256", "shim_sha256")),
+            "compiled arms were not distinct")
+    if PUBLICATION_ONLY and EVALUATED_HEAD is not None:
+        require(candidate["align_llm_head"] == EVALUATED_HEAD, "evaluated candidate revision drifted")
+    validate_manifests(control["source_files"], candidate["source_files"])
+
+
+def validate_elapsed(result: dict[str, Any]) -> None:
+    elapsed = result["elapsed_ns"]
+    total = sum(pair[arm]["full_helper_wall_ns"] for pair in result["pairs"] for arm in ("control", "candidate"))
+    require(integer(elapsed, positive=True) and total <= elapsed <= CEILING_SECONDS * 1_000_000_000,
+            "complete elapsed did not contain full walls within the 8-minute ceiling")
+
+
+def validate_result(result: Any) -> None:
+    keys(result, TOP_KEYS, "result")
+    scalar_domains(result)
+    require(result["schema_version"] == 1 and result["kind"] == KIND, "result schema identity drifted")
+    validate_arms(result["control"], result["candidate"])
+    same(result["boundary"], boundary_record(), "operation boundary")
+    same(result["fixed_request"], fixed_request_record(), "fixed request")
+    same(result["environment"], environment_record(), "host/toolchain environment")
+    same(result["pair_order"], PAIR_ORDER, "pair schedule")
+    aggregate, decision = aggregate_pairs(result["pairs"])
+    keys(result["aggregate"], AGGREGATE_KEYS, "aggregate")
+    same(result["aggregate"], aggregate, "paired aggregate")
+    same(result["decision"], decision, "shipping decision")
+    validate_elapsed(result)
+
+
+def complete_result_after_cleanup(result: dict[str, Any], started: int) -> dict[str, Any]:
+    result = {**result, "elapsed_ns": time.monotonic_ns() - started}
+    validate_result(result)
+    result["elapsed_ns"] = time.monotonic_ns() - started
+    validate_elapsed(result)
+    return result
+
+
+def prerequisites() -> tuple[Path, ...] | None:
+    rows = [("ALIGN_LLM_OLMOE_MODEL", base.configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", base.configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", base.configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", base.configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", base.configured_directory("ALIGN_LLM_GGML_LIB")),
+        ("ALIGN_LLM_LLAMA_SERVER", base.configured_file("ALIGN_LLM_LLAMA_SERVER", executable=True))]
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"{LABEL}: N/A ({missing} unset)")
+        return None
+    return tuple(path.resolve() for _, path in rows)
+
+
+def external_request(paths: tuple[Path, ...], compiler: Path, env: dict[str, str],
+                     deadline: float) -> dict[str, Any]:
+    model, pack, geometry, include, library, server = paths
+    version = run([str(server), "--version"], deadline=deadline, env=env, maximum=30)
+    require(exact.SERVER_BUILD in (version.stdout + version.stderr).decode("utf-8", "replace"),
+            "server build identity drifted")
+    task = json.loads(diagnosis.TASK.read_text(encoding="utf-8"))
+    result = {**fixed_request_record(), "model_bytes": model.stat().st_size,
+        "model_sha256": base.file_sha256(model), "pack_sha256": base.file_sha256(pack),
+        "geometry_sha256": base.file_sha256(geometry), "server_sha256": base.file_sha256(server),
+        "align_revision": (ROOT / ".align-revision").read_text(encoding="utf-8").strip(),
+        "compiler_sha256": base.file_sha256(compiler), "ggml_libraries": base.library_identities(library),
+        "ggml_headers": previous.compute.predecessor.ggml_header_identities(include),
+        "task_id": task["id"], "task_sha256": base.file_sha256(diagnosis.TASK),
+        "prompt_sha256": base.bytes_sha256(diagnosis.PROMPT_TEXT.encode("utf-8"))}
+    same(result, fixed_request_record(), "external fixed request")
+    return result
+
+
+def toolchain_environment(compiler: Path, c_compiler: Path, env: dict[str, str],
+                          linker_search: str, deadline: float) -> dict[str, Any]:
+    version = run([str(c_compiler), "--version"], deadline=deadline, env=env, maximum=30)
+    identities = {"compiler_sha256": base.file_sha256(compiler),
+        "c_compiler_sha256": base.file_sha256(c_compiler),
+        "c_compiler_version_sha256": base.command_output_sha256(version)}
+    diagnosis.validate_toolchain_identity(identities)
+    result = {**transfer.qualification_host(env, deadline),
+        "c_compiler_sha256": identities["c_compiler_sha256"],
+        "c_compiler_version_sha256": identities["c_compiler_version_sha256"],
+        "linker_search_sha256": None if not linker_search else base.bytes_sha256(linker_search.encode("utf-8"))}
+    same(result, environment_record(), "host/toolchain environment")
+    return result
+
+
+def require_snapshot_identity(built: dict[str, Any]) -> None:
+    same(manifest(built["root"], built["inventory"]), built["identity"]["source_files"], "built source manifest")
+    owner.verify_identities((("arm helper", built["helper"], built["identity"]["helper_sha256"]),
+                             ("arm shim", built["shim"], built["identity"]["shim_sha256"])))
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    require(len(sys.argv) == 1, "qualification accepts no arguments or --self-test")
+    require(not PUBLICATION_ONLY,
+            f"candidate was removed after NOT_MET; replay real qualification at evaluated commit {EVALUATED_HEAD}")
+    paths = prerequisites()
+    if paths is None:
+        return 0
+    started = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+    validate_imported_contract()
+    env = transfer.phase.decision.decision_environment()
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    linker_search = transfer.phase.decision.validate_linker_search(env)
+    if linker_search:
+        env["LIBRARY_PATH"] = linker_search
+    transfer.qualification_host(env, deadline)
+    head = clean_head(deadline, env)
+    common = git_common_dir(deadline, env)
+    require_ancestry(head, deadline, env, common, EVALUATED_HEAD)
+    # The runner cannot contain its own literal digest. Bind its bytes to this clean
+    # tracked head, then independently recheck its hash after all measurements.
+    runner_digest = base.file_sha256(RUNNER_PATH)
+    tracked_runner = git(["show", f"{head}:scripts/run-olmoe-k-preparation-boundary"], deadline, env).stdout
+    require(base.bytes_sha256(tracked_runner) == runner_digest, "driver differs from evaluated tracked head")
+    model, _, _, include, library, server = paths
+    owner.require_no_matching_process(server, model, deadline, env)
+    compiler_output = run([str(ROOT / "scripts/align-toolchain"), "ensure", "compiler"],
+                          deadline=deadline, env=env, maximum=300)
+    compiler = Path(compiler_output.stdout.decode("utf-8").strip()).resolve()
+    require(compiler.is_file() and os.access(compiler, os.X_OK), "managed pinned compiler is unusable")
+    c_name = shutil.which("cc", path=env.get("PATH"))
+    require(c_name is not None, "default C compiler is unavailable")
+    c_compiler = Path(c_name).resolve()
+    environment = toolchain_environment(compiler, c_compiler, env, linker_search, deadline)
+    request = external_request(paths, compiler, env, deadline)
+    with tempfile.TemporaryDirectory(prefix="align-r8-k-preparation-") as raw:
+        work = Path(raw)
+        with protect_root_artifacts(work):
+            snapshots = {"control": materialize(CONTROL_HEAD, work / "control", deadline, env),
+                         "candidate": materialize(head, work / "candidate", deadline, env)}
+            validate_manifests(snapshots["control"]["identity"]["source_files"],
+                               snapshots["candidate"]["identity"]["source_files"])
+            builds = {arm: build_snapshot(snapshots[arm], compiler, include, library, env, deadline)
+                      for arm in ("control", "candidate")}
+            validate_arms(builds["control"]["identity"], builds["candidate"]["identity"])
+            pairs = measure_pairs(builds, paths, env, deadline)
+            aggregate, decision = aggregate_pairs(pairs)
+            require(clean_head(deadline, env) == head, "evaluated head changed during comparison")
+            require_ancestry(head, deadline, env, common, EVALUATED_HEAD)
+            validate_imported_contract()
+            require(base.file_sha256(RUNNER_PATH) == runner_digest, "qualification driver changed")
+            for arm in ("control", "candidate"):
+                require_snapshot_identity(builds[arm])
+                same(tracked_sources(builds[arm]["identity"]["align_llm_head"], deadline, env),
+                     builds[arm]["inventory"], "tracked arm sources")
+            same(external_request(paths, compiler, env, deadline), request, "external recheck")
+            same(toolchain_environment(compiler, c_compiler, env, linker_search, deadline),
+                 environment, "toolchain recheck")
+            owner.require_no_matching_process(server, model, deadline, env)
+            result = {"schema_version": 1, "kind": KIND, "control": builds["control"]["identity"],
+                "candidate": builds["candidate"]["identity"], "boundary": boundary_record(),
+                "fixed_request": request, "environment": environment, "pair_order": list(PAIR_ORDER),
+                "pairs": pairs, "aggregate": aggregate, "decision": decision,
+                "elapsed_ns": time.monotonic_ns() - started}
+            validate_result(result)
+    result = complete_result_after_cleanup(result, started)
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    print(f"{LABEL}: COMPLETE decision={result['decision']} "
+          f"control={aggregate['control_median_ns'] / 1e9:.3f}s "
+          f"candidate={aggregate['candidate_median_ns'] / 1e9:.3f}s "
+          f"median_gain={aggregate['median_gain_ns'] / 1e9:.3f}s "
+          f"elapsed={result['elapsed_ns'] / 1e9:.2f}s", file=sys.stderr)
+    return 0
+
+
+def synthetic_result() -> dict[str, Any]:
+    samples = exact.synthetic_samples([20_000_000_000] * 4)
+    pairs = []
+    for index, sample in enumerate(samples, 1):
+        control = {"short": sample["conditioning"], "full": sample["full"],
+                   "full_helper_wall_ns": 20_000_000_000, "isolation": sample["isolation"]}
+        candidate = deepcopy(control)
+        candidate["full_helper_wall_ns"] = 16_000_000_000
+        pairs.append({"index": index, "order": PAIR_ORDER[index - 1], "control": control,
+                      "candidate": candidate, "gain_ns": 4_000_000_000})
+    source_files = [{"path": path, "bytes": 1, "sha256": "a" * 64} for path in MANIFEST_PATHS]
+    changed = deepcopy(source_files)
+    for row in changed:
+        if row["path"] in ALLOWED_DELTA:
+            row["sha256"] = "b" * 64
+    control = {"align_llm_head": CONTROL_HEAD, "source_tree": "a" * 40, "source_files": source_files,
+               "helper_sha256": "a" * 64, "shim_sha256": "c" * 64}
+    candidate = {"align_llm_head": EVALUATED_HEAD or "b" * 40, "source_tree": "b" * 40,
+                 "source_files": changed, "helper_sha256": "b" * 64, "shim_sha256": "d" * 64}
+    aggregate, decision = aggregate_pairs(pairs)
+    return {"schema_version": 1, "kind": KIND, "control": control, "candidate": candidate,
+        "boundary": boundary_record(), "fixed_request": fixed_request_record(),
+        "environment": environment_record(), "pair_order": list(PAIR_ORDER), "pairs": pairs,
+        "aggregate": aggregate, "decision": decision, "elapsed_ns": 144_000_000_001}
+
+
+def expect_error(action: Any, message: str) -> None:
+    try:
+        action()
+    except Exception:
+        return
+    raise KPreparationError(message)
+
+
+def verify_publication_state(deadline: float, env: dict[str, str]) -> None:
+    head = git(["rev-parse", "HEAD"], deadline, env).stdout.decode("ascii").strip()
+    common = git_common_dir(deadline, env)
+    require(not PUBLICATION_ONLY or EVALUATED_HEAD is not None, "publication lacks evaluated revision")
+    require_ancestry(head, deadline, env, common, EVALUATED_HEAD)
+    if PUBLICATION_ONLY:
+        with tempfile.TemporaryDirectory(prefix="align-kprep-removal-") as raw:
+            control = materialize(CONTROL_HEAD, Path(raw) / "control", deadline, env)
+            current = materialize(head, Path(raw) / "current", deadline, env)
+            validate_manifests(control["identity"]["source_files"], current["identity"]["source_files"], restored=True)
+
+
+def self_test() -> int:
+    validate_imported_contract()
+    result = synthetic_result()
+    validate_result(result)
+    require(signed_median([-5, -4, -3, 100]) == -4, "signed median rounded toward zero")
+    require(signed_median([MIN_I64, MIN_I64, MAX_I64, MAX_I64]) == -1,
+            "signed median endpoint arithmetic drifted")
+    ceiling = HISTORICAL_CEILING_NS
+    # Absolute floor and historical equality both pass; a one-ns loss on either fails.
+    require(gate([ceiling + FLOOR_NS] * 4, [ceiling] * 4)[1] == "MET", "gate equality failed")
+    require(gate([ceiling + FLOOR_NS - 1] * 4, [ceiling] * 4)[1] == "NOT_MET", "below absolute floor passed")
+    require(gate([ceiling + FLOOR_NS + 2] * 4, [ceiling + 1] * 4)[1] == "NOT_MET", "above historical ceiling passed")
+    # Large alternating walls retain the historical candidate median but expose the
+    # contemporary relative floor independently of the absolute floor.
+    control = [10_000_000_000, 10_000_000_000, 40_000_000_000, 40_000_000_000]
+    candidate = [9_000_000_000, 9_000_000_000, 9_000_000_000, 40_000_000_000 - 1]
+    require(gate(control, candidate)[1] == "NOT_MET", "relative floor was not independently required")
+    require(gate([20_000_000_000] * 4, [16_000_000_000] * 3 + [20_000_000_000])[1] == "NOT_MET",
+            "zero paired saving passed")
+    require(gate([20_000_000_000] * 4, [16_000_000_000] * 3 + [20_000_000_001])[1] == "NOT_MET",
+            "negative paired saving passed")
+    for invalid in (True, -1, 0, MAX_I64 + 1, 1.0):
+        expect_error(lambda: gate([invalid] * 4, [1] * 4), "invalid gate wall accepted")
+    require(integer(MAX_I64) and integer(MIN_I64, signed=True), "i64 endpoints rejected")
+    require(not integer(MIN_I64 - 1, signed=True) and not integer(MAX_I64 + 1, signed=True),
+            "i64 overflow accepted")
+    for path, value in (
+        (("schema_version",), True), (("kind",), "other"), (("pair_order",), ["BA"] * 4),
+        (("pairs", 0, "index"), True), (("pairs", 0, "order"), "BA"),
+        (("pairs", 0, "gain_ns"), 0), (("pairs", 0, "gain_ns"), MAX_I64 + 1),
+        (("pairs", 0, "control", "full_helper_wall_ns"), 1),
+        (("pairs", 0, "control", "isolation", "matching_between"), 1),
+        (("pairs", 0, "candidate", "full", "lifetime", "contexts_freed"), 0),
+        (("pairs", 0, "candidate", "full", "engine", "expert_cache_requests"), 1),
+        (("pairs", 0, "candidate", "full", "output_sha256"), "0" * 64),
+        (("pairs", 0, "candidate", "short", "token_ids"), [0]),
+        (("pairs", 0, "candidate", "full", "phases", "elapsed_ns"), True),
+        (("pairs", 0, "candidate", "full", "phases", "elapsed_ns"), -1),
+        (("pairs", 0, "candidate", "full", "phases", "elapsed_ns"), MAX_I64 + 1),
+        (("pairs", 0, "candidate", "full", "schema_version"), True),
+        (("control", "align_llm_head"), "b" * 40),
+        (("candidate", "shim_sha256"), "c" * 64),
+        (("candidate", "helper_sha256"), "a" * 64),
+        (("candidate", "source_tree"), "a" * 40),
+        (("fixed_request", "compiler_sha256"), "0" * 64),
+        (("environment", "host_fingerprint_sha256"), "0" * 64),
+        (("aggregate", "positive_pairs"), True), (("decision",), "NOT_MET"),
+        (("elapsed_ns",), 144_000_000_000 - 1), (("elapsed_ns",), CEILING_SECONDS * 1_000_000_000 + 1),
+    ):
+        malformed = deepcopy(result)
+        target = malformed
+        for component in path[:-1]:
+            target = target[component]
+        target[path[-1]] = value
+        expect_error(lambda: validate_result(malformed), f"malformed field accepted: {path}")
+    for path in ((), ("control",), ("pairs", 0), ("pairs", 0, "candidate"), ("aggregate",)):
+        for extra in (False, True):
+            malformed = deepcopy(result)
+            target = malformed
+            for component in path:
+                target = target[component]
+            if extra:
+                target["unexpected"] = 0
+            else:
+                del target[next(iter(target))]
+            expect_error(lambda: validate_result(malformed), "incorrect exact keys accepted")
+    malformed = deepcopy(result)
+    malformed["pairs"].pop()
+    expect_error(lambda: validate_result(malformed), "incomplete pair count accepted")
+    for mutation in ("missing", "reverse", "outside", "empty"):
+        malformed = deepcopy(result)
+        rows = malformed["candidate"]["source_files"]
+        if mutation == "missing":
+            rows.pop()
+        elif mutation == "reverse":
+            rows.reverse()
+        elif mutation == "outside":
+            next(row for row in rows if row["path"] == HELPER_SOURCE)["sha256"] = "0" * 64
+        else:
+            malformed["candidate"]["source_files"] = deepcopy(malformed["control"]["source_files"])
+        expect_error(lambda: validate_result(malformed), "incorrect source delta accepted")
+    validate_manifests(result["control"]["source_files"], result["control"]["source_files"], restored=True)
+    expect_error(lambda: validate_manifests(result["control"]["source_files"], result["candidate"]["source_files"], restored=True),
+                 "unremoved production accepted")
+    validate_ancestry_state(b"", False, [0, 0])
+    for refs, grafts, statuses in ((b"refs/replace/test", False, [0]), (b"", True, [0]), (b"", False, [0, 1])):
+        expect_error(lambda: validate_ancestry_state(refs, grafts, statuses), "invalid ancestry accepted")
+
+    # Exercise the real orchestration dispatcher: the chronological helper, shim and
+    # loader-path identities must follow AB BA AB BA while arm arrays retain labels.
+    calls = []
+    builds = {arm: {"arm": arm} for arm in ("control", "candidate")}
+    module = sys.modules[__name__]
+    def measured_leg(built: dict[str, Any], _paths: Any, _env: Any, _deadline: Any, index: int) -> dict[str, Any]:
+        calls.append(built["arm"])
+        return deepcopy(result["pairs"][index - 1][built["arm"]])
+    with mock.patch.object(module, "measure_leg", side_effect=measured_leg):
+        measured = measure_pairs(builds, (), {}, 1)
+    same(calls, [ARM_NAMES[symbol] for order in PAIR_ORDER for symbol in order], "build arm binding")
+    same(measured, result["pairs"], "measured arm labels")
+
+    actual_hash = base.file_sha256
+    for changed in SOURCE_PATHS:
+        with mock.patch.object(base, "file_sha256", side_effect=lambda path: "0" * 64 if path == changed else actual_hash(path)):
+            expect_error(validate_imported_contract, "transitive source mutation accepted")
+    with tempfile.TemporaryDirectory(prefix="align-kprep-owner-") as raw:
+        tree = Path(raw) / "tree"
+        (tree / "src").mkdir(parents=True)
+        data = b"tracked\n"
+        (tree / "src/test.align").write_bytes(data)
+        blob = hashlib.sha1(b"blob 8\0" + data).hexdigest()
+        inventory = {"src/test.align": ("100644", blob)}
+        manifest(tree, inventory)
+        (tree / "src/test.align").write_bytes(b"changed\n")
+        expect_error(lambda: manifest(tree, inventory), "snapshot source mutation accepted")
+        fake_root = Path(raw) / "root"
+        fake_root.mkdir()
+        root_binary = fake_root / HELPER_NAME
+        root_binary.write_bytes(b"original")
+        def changed_root() -> None:
+            with mock.patch.object(module, "ROOT", fake_root), protect_root_artifacts(Path(raw)):
+                root_binary.write_bytes(b"changed")
+        expect_error(changed_root, "root artifact mutation accepted")
+        require(root_binary.read_bytes() == b"original", "root artifact was not restored")
+    with mock.patch.object(time, "monotonic_ns", return_value=CEILING_SECONDS * 1_000_000_000):
+        require(complete_result_after_cleanup(result, 0)["elapsed_ns"] == CEILING_SECONDS * 1_000_000_000,
+                "exact ceiling rejected")
+    with mock.patch.object(time, "monotonic_ns", side_effect=[CEILING_SECONDS * 1_000_000_000, CEILING_SECONDS * 1_000_000_000 + 1]):
+        expect_error(lambda: complete_result_after_cleanup(result, 0), "final validation overrun accepted")
+    with mock.patch.object(time, "monotonic_ns", return_value=CEILING_SECONDS * 1_000_000_000 + 1):
+        expect_error(lambda: complete_result_after_cleanup(result, 0), "cleanup overrun accepted")
+    with mock.patch.object(module, "PUBLICATION_ONLY", True), mock.patch.object(sys, "argv", [str(RUNNER_PATH)]):
+        expect_error(main, "removed candidate accepted real replay")
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as printed:
+        require(prerequisites() is None, "missing prerequisite did not return N/A")
+    printed.assert_called_once_with(f"{LABEL}: N/A (ALIGN_LLM_OLMOE_MODEL unset)")
+    env = transfer.phase.decision.decision_environment()
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    verify_publication_state(time.monotonic() + 30, env)
+    print(f"{LABEL} self-test: PASS")
+    return 0
+
+
+def interrupted(number: int, _frame: object) -> None:
+    owner.stop_owned_processes()
+    raise SystemExit(128 + number)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        owner.stop_owned_processes()
+        print(f"{LABEL}: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)

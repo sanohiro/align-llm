@@ -1467,6 +1467,10 @@ pub WHEN_DECODE := 4
 // ships for the dense decode arm, so this is a table vocabulary entry and not a new FFI symbol.
 pub OP_CONCAT := 16
 
+// R8 item 74: explicit CPU K copy nodes; generic CONCAT/PAD retain their V/prefill roles.
+pub OP_K_CONCAT_F32 := 17
+pub OP_K_PAD_F32 := 18
+
 // Section 3.2's step ceiling, R6-STEP-N section 2.3's reason unchanged: a loop whose bound is an
 // operand needs a bound the document can publish, and 64 is large enough that no qualification has
 // wanted more and small enough that every accumulator's saturation argument is trivial.
@@ -2107,13 +2111,13 @@ fn mm_decode_a_row_attention(borrow g: Geometry, n_past: i64, width: i64, row: i
     return r
   }
   if row == 17 {
-    mut r := mm_row(OP_CONCAT, MM_SLOT_KPAST, m + 16)
+    mut r := mm_row(OP_K_CONCAT_F32, MM_SLOT_KPAST, m + 16)
     r.p0 = 1
     r.when = WHEN_DECODE
     return r
   }
   if row == 18 {
-    mut r := mm_row(OP_PAD, m + 16, -1)
+    mut r := mm_row(OP_K_PAD_F32, m + 16, -1)
     r.p1 = width - (n_past + 1)
     r.alt_when = WHEN_DECODE
     r.alt_a = m + 17
