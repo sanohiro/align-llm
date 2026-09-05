@@ -17,24 +17,26 @@ result-record head `d5b87d5` found one P1: ggml dependency traversal interleaves
 positional graph splits put Q/K projection work into the attention-core clock and invalidated the
 first attribution. That measurement and its successor decision are withdrawn.
 
-The repair adds a bounded graph selector that requires every table-owned output slot in a class to
-occur exactly once in the source graph and retains their actual topological order. Item 72 now
-constructs exactly four graphs by slot membership and directly executes `PROJECTIONS`,
-`ATTENTION_CORE`, `OUTPUT_RESIDUAL`, then the existing router suffix. Normal provider and item-71
+Consolidated repair `9353f2e` adds a bounded graph selector that requires every populated table-
+owned output slot in a class to occur exactly once in the source graph and retains actual
+topological order. The repaired clean-head run completed in 95.407 seconds. Projection,
+attention-core, and output/residual medians were 332,900,623 ns, 2,525,763,020 ns, and 111,561,949
+ns. Attention core won at 846,606 ppm of the 2,983,396,783-ns attention median and cleared the
+floor, so the repaired decision is `ATTENTION_CORE_SUBDIAGNOSIS_REQUIRED`. Every fixed output,
+cache, isolation, lifetime, and corrected accounting boundary passed. Normal provider and item-71
 execution remain unchanged; item 63's live-width candidate remains rejected.
 
-**Next actions.** Finish the branched-graph owner regression, update source identities, commit the
-consolidated review repair, rerun narrow owners and the clean-head four-repeat diagnosis, record the
-replacement result, perform the required final comprehensive review, preflight, publish, and merge.
-Per the current user instruction, stop after this PR instead of starting its successor.
+**Next actions.** Commit the replacement result; perform the required final comprehensive review,
+rerun exact-head preflight, publish, and merge. Per the current user instruction, stop after this PR
+instead of starting its attention-core successor.
 
 **Blocker.** None.
 
-**Latest durable verification.** Before review, `make fmt`, `make layer-forward-smoke` (117.966
-seconds), `make runtime-provider-smoke` (self-test plus 61 CLI assertions), Python compilation, the
-focused item-72 self-test, helper type-check, and `git diff --check` passed. The first 111.157-second
-four-repeat run preserved correctness and accounting but its attribution is withdrawn. Review-repair
-helper type-check passes; repaired owner and real qualification remain pending.
+**Latest durable verification.** After repair, `make fmt`, `make layer-forward-smoke` (69.963
+seconds, including the branched membership and range-refusal regression), `make
+runtime-provider-smoke` (self-test plus 61 CLI assertions), Python compilation, the focused item-72
+self-test, helper type-check, and `git diff --check` pass. The repaired clean-head four-repeat run
+above passed in 95.407 seconds. Final review and publication preflight remain pending.
 
 **Intentional uncommitted files.** None. Machine-local model/evidence and generated build products
 remain outside Git.

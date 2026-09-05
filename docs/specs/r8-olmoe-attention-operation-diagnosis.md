@@ -1,6 +1,6 @@
 # R8 OLMoE attention operation diagnosis
 
-Status: review repair implemented; requalification pending, 2026-09-05
+Status: review repair measured; final review pending, 2026-09-05
 
 Roadmap owner: item 72, `R8-OLMOE-ATTENTION-OPERATION-DIAGNOSIS`
 
@@ -111,3 +111,37 @@ selection, and preserves both older execution modes. The child clocks close to i
 parent, while the parent plus router closes the existing routing total. Only an output/residual win
 is narrow enough to authorize implementation directly; broader wins select another diagnosis and
 never reopen live width.
+
+## 6. Review correction and result
+
+The first comprehensive review covered result-record head `d5b87d5` against base tip and merge
+base `ce7493832f7ca8d8ddbb44d89dfc17402b4adcb3` using Codex `gpt-6-astra` at high effort. It
+found one P1: the positional partitions followed ggml dependency traversal rather than table-row
+order, placing the independent Q/K projection branch inside the alleged attention-core slice. The
+first attribution and decision were withdrawn. Consolidated repair `9353f2e` adds exact populated-
+slot membership selection, preserves source-topological order within each class, accounts for the
+two last-layer-only narrowing rows, and adds a branched dependency regression plus refusal vectors.
+
+The repaired clean-head run at `9353f2e44e7ea1baad4fd71f50987d68becfc330` completed in
+95,406,610,208 ns. Full-helper walls were
+`[14702982750,15834709417,16180880083,16213551166]` ns, with a 16,007,794,750-ns median.
+The corrected direct attention-class values and medians were:
+
+| Class | Four values (ns) | Median (ns) |
+| --- | --- | ---: |
+| `PROJECTIONS` | `[320151872,349815360,334002561,331798686]` | 332,900,623 |
+| `ATTENTION_CORE` | `[2285581142,2511530006,2539996034,2571609454]` | 2,525,763,020 |
+| `OUTPUT_RESIDUAL` | `[106581544,119611215,111838391,111285508]` | 111,561,949 |
+
+The attention-parent values were `[2712314558,2980956581,2985836986,3014693648]` ns and their
+median was 2,983,396,783 ns. `ATTENTION_CORE` therefore won at 846,606 ppm of its parent and far
+above the immutable 871,174,011-ns floor. The repaired decision is
+`ATTENTION_CORE_SUBDIAGNOSIS_REQUIRED`; neither projection nor output/residual is an eligible
+implementation seam from this evidence.
+
+All four full requests reproduced the exact 86-token output and fixed cache accounting: 11,940
+requests, 7,325 hits, 4,615 misses, 4,376 evictions, 17,656,872,960 fetched bytes, and zero
+cache-to-claim copies. All twelve process-absence checks passed, every native lifetime balanced,
+conditioning clocks remained zero, full clocks were positive, and the three attention children
+closed exactly to item 71's attention parent on every sample. This is attribution only and makes no
+performance-win claim.
