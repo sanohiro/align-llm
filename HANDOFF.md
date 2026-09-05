@@ -3,18 +3,28 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## No active capability (2026-09-06)
+## Active design: GPU runtime program (2026-09-06)
 
 Main `f23f5d88cc2fd5aa1d5d9ef2cc9310a3d84a353a` merged
 R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS as PR #201. Align remains pinned to
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. R8 is complete through roadmap item 79, and the
-roadmap contains no later eligible capability. Item 79 found no material expert phase-B operation,
-so its result does not select another implementation or narrower diagnosis.
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. The fixed CPU measurement sequence is complete
+through item 79; the architectural GPU/hybrid/prefetch goals remain open. Item 79 found no material
+expert phase-B operation within that CPU experiment.
 
-**Next action.** Define the next consumer-complete roadmap capability in the authoritative plan
-before implementation, or resume when new qualifying evidence selects a material child.
+Branch `agent/gpu-runtime-design`, based on main `2c84e2fe014887a6363f5eed83e61b2c0284c968`,
+contains the design-only program in `docs/specs/gpu-runtime.md` and roadmap items 80–85. Metal,
+CUDA, Vulkan and HIP/ROCm share the planned contract. The user's RTX 4070 Ti on native Linux or
+WSL2 and the available Mac are initial validation hosts, not supported-device restrictions. AMD
+hardware is unavailable; its implementation and pending qualification remain explicit.
 
-**Blocker.** None. The current stop condition is roadmap exhaustion, not an external blocker.
+**Next action.** Finish the comprehensive design review and documentation publication cycle.
+Then start G1's native feasibility/build identity, qualification schema and calibration
+checkpoints, and deliver resident GPU generation and its real caller together.
+
+**Constraints.** This branch remains design-only. Requests 34/35/41 track existing language-owned
+limitations; Align's opaque Move resource already ships at the consumer pin and will own native
+request state. No new resource language request is needed. Actual AMD qualification waits for
+hardware; NVIDIA host inventory is collected when the user runs the future qualifier.
 
 **Latest durable verification.** PR #201 passed its focused allocated-stub owner, formatting,
 layer-forward and runtime-provider smokes, Python compilation, runner self-test, exact-head
@@ -25,7 +35,8 @@ below the unchanged 871,174,011-ns floor. Comprehensive review found two P2 publ
 issues, both repaired in `4446bd3`; no valid finding remained. Merged-head self-test passed at
 `f23f5d8`.
 
-**Intentional uncommitted files.** None. Models, raw evidence and build products remain outside Git.
+**Intentional uncommitted files.** GPU design, architecture/roadmap links, request-register updates
+and this handoff during authoring. Models, raw evidence and build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 
