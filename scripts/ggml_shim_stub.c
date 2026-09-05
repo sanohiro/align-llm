@@ -930,7 +930,7 @@ int64_t align_ptr_offset(const void *a, const void *b) {
 
 #define ALIGN_STUB_MAX_TENSORS   512
 #define ALIGN_STUB_MAX_CONTEXTS   16
-#define ALIGN_STUB_MAX_GRAPHS      8
+#define ALIGN_STUB_MAX_GRAPHS     16
 #define ALIGN_STUB_MAX_BUFFERS    16
 #define ALIGN_STUB_MAX_GALLOCRS    8
 /* R6-PREFIX-TTFT raises the hosted legal-boundary fixture from 32 to 2048 tokens. The prefill mask

@@ -1,0 +1,815 @@
+#!/usr/bin/env python3
+"""Diagnose six exact OLMoE attention-core operation sequences."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+import signal
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PREDECESSOR_PATH = ROOT / "scripts/run-olmoe-attention-operation-diagnosis"
+PREDECESSOR_LOADER = SourceFileLoader(
+    "olmoe_attention_operation_for_attention_core_diagnosis", str(PREDECESSOR_PATH)
+)
+PREDECESSOR_SPEC = importlib.util.spec_from_loader(
+    PREDECESSOR_LOADER.name, PREDECESSOR_LOADER
+)
+if PREDECESSOR_SPEC is None or PREDECESSOR_SPEC.loader is None:
+    raise RuntimeError("cannot load the attention operation owner")
+previous = importlib.util.module_from_spec(PREDECESSOR_SPEC)
+sys.modules[PREDECESSOR_LOADER.name] = previous
+PREDECESSOR_SPEC.loader.exec_module(previous)
+
+base = previous.base
+diagnosis = previous.diagnosis
+owner = previous.owner
+transfer = previous.transfer
+# Item 72 -> item 71 -> item 68 -> shared decode-compute owner.
+compute = previous.previous.previous.compute
+intervention_record = previous.previous.intervention_record
+BASELINE_KEYS = previous.previous.BASELINE_KEYS
+
+ARTIFACT_KIND = "R8_OLMOE_ATTENTION_CORE_DIAGNOSIS"
+MODEL_BYTES = previous.MODEL_BYTES
+MODEL_SHA256 = previous.MODEL_SHA256
+SERVER_BUILD = previous.SERVER_BUILD
+BUDGET = previous.BUDGET
+SEED = previous.SEED
+FULL_TOKENS = previous.FULL_TOKENS
+TEMPERATURE_MICROS = previous.TEMPERATURE_MICROS
+FULL_OUTPUT_SHA256 = previous.FULL_OUTPUT_SHA256
+FULL_CACHE_BYTES_FETCHED = previous.FULL_CACHE_BYTES_FETCHED
+REPETITIONS = previous.REPETITIONS
+CEILING_SECONDS = previous.CEILING_SECONDS
+BASELINE_VALUES_NS = previous.BASELINE_VALUES_NS
+BASELINE_MEDIAN_NS = previous.BASELINE_MEDIAN_NS
+FLOOR_PPM = previous.FLOOR_PPM
+FLOOR_NS = previous.FLOOR_NS
+
+
+def unique_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    result: list[Path] = []
+    for path in paths:
+        if path not in result:
+            result.append(path)
+    return tuple(result)
+
+
+SOURCE_PATHS = unique_paths((
+    PREDECESSOR_PATH,
+    *previous.SOURCE_PATHS,
+    ROOT / "scripts/run-layer-forward-smoke",
+    ROOT / "scripts/test-olmoe-attention-core",
+    ROOT / "src/olmoe_attention_core_gate.align",
+    ROOT / "src/olmoe_remaining_decode_overhead_gate.align",
+    ROOT / "src/moe_decode_step.align",
+    ROOT / "src/moe_model_forward.align",
+))
+EXPECTED_SOURCE_IDENTITIES = (
+    "568d1b2ecc71e140c8ae86df6c0ccbe5c936275300827a0361858d31f99ea5fa",
+    "5cc7f7bbbb92d0186f5ec4973609fc962d94afb1451887e8c9b6fbb5831f625f",
+    "30d523f59dca536336004043cbc5b757b19fa7d305bb00a36ab894c5d196e492",
+    "cbe398505f95257c37d57ba4e19fd0b4aca65725f8e3f0f69e865c3f23782728",
+    "ecb3e41b8f874125abc9018066a002cca9faca43d68db05b2fc6e07c31230dc5",
+    "679554fd291a67c447d74ddee721799c2dca1b02af856ca44c8977368ac463c1",
+    "76ccc33af94db50bafdd6db1fd627385c0f7be2fecd087e285d2f3ea02d75cf2",
+    "433d848e6a926108cacb0651e08a24df65537225cada07d35bc6a85a295d884f",
+    "69c2a44572029e36c349de5feb061e1ecb597e3fa4de7c7a58341da2bcb05ef9",
+    "b66815c4debfec0f749ac88b39ec8ba9f06e25d1f85b4aba3c760d112748f868",
+    "26887655013f0f68e94705a6addd87dac72ada5d37d08e1421a2daef2e78de5a",
+    "922b29baf0489fd1cec53ce1395849ba69df69d0e69dea44a3f07ec95b42cf65",
+    "de717064f4d2ea89d63a6529d38d37157f7d34f9946db7e6dc350076185157ce",
+    "15fb41454a01e5be87776fedd2081b70b4bd155bd6208de1adb0f26c7ddf9dbc",
+    "1f95cefc30d4e5d772b35d6f739994440ce195facf12d5b359f206428301e9b8",
+    "03ee9abc87d1d167f1bac4878004abb64a0ef8bf50a3dfd96ee66eeba106ad9f",
+    "e3a86592357af4c1c8888689cfc026867842ac05a6f4b5a8b88fcc2f026f0260",
+    "36a8ff4296109600377fcc9eff7cddb43b689895bfcc54dbbd7d14721f55b9c3",
+    "91e2dedf7eac8f66f11c817797e8541881bfd2c7f71ee4e298b37305c6123a63",
+    "505efca65a7637b65b26997de200234f44cd8b7cee9db681b9f9161524ecaaaf",
+    "9141bee34a3579482c6c5852eb136810ea909f73575229b411f905ef96635581",
+    "c7e82a8a8374e1c25f1e3b61ce0b89ed8639eaeae6b4e4ae8bee2a88a09b8e8b",
+    "d6571a7aa01d90a066890c0a3c9ee0ee01d3df3bd4f8ad04c6b8a42268d9415e",
+    "7651efee03c2467745daa36ae3c19ad77d65459036510aa82f6cdbd0d1c47f07",
+    "b5f1b7f7798239982446f56d9d17eeeca9b87a8a47bd685e6bd9e634a686198e",
+    "3f813978dc0547ffbbb1a71760da4b107a58c2daa846addda272de6aae384a4e",
+    "e71f776650bd53a4e304d276818e76d7b082a7f10ea537ce91f258d9eee5ccc6",
+    "19f801c9d9b0834af02f793a4ed2f03659fe5689f7a99bb5b45609a2f5267f94",
+    "133d3ec5f5f08e8e6e128cd76ed1e4c467c5424bb535a9de8ce8e38f61a7e481",
+    "ff2a3d96ef2bdfdaf3acbc966734b9d813c5b7e105444f122e17fa3cd1561a34",
+    "6a9d948bf265c39570dee1ceca9f76ce361fea88f00f624ee0669d48c53e4824",
+    "fb203c83018da6a10074d72165524444a6cdcc2bd2734732ea3090443512606f",
+    "b01611151baace6cb59a140eec1dc336c47cd50a8e43dc746337e58e6eb10b50",
+    "cca81cbc741f6fc39f31b8cbda65bc3eed4cbfa2447db8f9cae0ccc4d961e8f9",
+    "edbd49939d82d99ce427ef90d24289765d6db0f0a7d0cb9fe16d0cf940bad977",
+    "d58bfb3b6f9f0714514d74829f72aab117e1f8fe79eacb952108d20fc7231302",
+    "7a8b5321c57c4f46a974b976d62a9ea2f12dce6d0f000a52cf4eb9e19b092528",
+    "a720b6de1895ad072580c23c7feb22a2518324c6cdfb707bf94c36b25aa3a486",
+    "94eec30139994e8445d4f7691f1aa1c39dd26ae01856ae25253e3b1450f9601c",
+    "752a6f8faf18aeea6a5caccefccab9802d4a0875baa1689938f2358a1253c274",
+)
+
+HELPER_KEYS = previous.HELPER_KEYS | {"attention_core_operations"}
+CLASS_ORDER = (
+    "QK_PREPARATION", "SCORE_MATMUL", "MASKED_SOFTMAX", "VALUE_PREPARATION",
+    "VALUE_MATMUL", "OUTPUT_PACKING",
+)
+CLASS_FIELDS = {
+    "QK_PREPARATION": "qk_preparation_ns",
+    "SCORE_MATMUL": "score_matmul_ns",
+    "MASKED_SOFTMAX": "masked_softmax_ns",
+    "VALUE_PREPARATION": "value_preparation_ns",
+    "VALUE_MATMUL": "value_matmul_ns",
+    "OUTPUT_PACKING": "output_packing_ns",
+}
+OPERATION_KEYS = {"total_ns", *CLASS_FIELDS.values()}
+MAX_CLOCK_NS = (1 << 63) - 1
+TOP_KEYS = previous.TOP_KEYS
+BOUNDARY_KEYS = previous.BOUNDARY_KEYS | {
+    "qk_preparation_first_row", "qk_preparation_last_row", "score_matmul_first_row",
+    "score_matmul_last_row", "masked_softmax_first_row", "masked_softmax_last_row",
+    "value_preparation_first_row", "value_preparation_last_row", "value_matmul_first_row",
+    "value_matmul_last_row", "output_packing_first_row", "output_packing_last_row",
+    "compute_order",
+}
+AGGREGATE_KEYS = {
+    "full_helper_wall_values_ns", "full_helper_wall_median_ns", "core_values_ns",
+    "core_median_ns", "class_values_ns", "class_medians_ns", "selected_class",
+    "selected_class_median_ns", "selected_class_share_ppm", "floor_ppm", "floor_ns",
+    "decision",
+}
+
+
+class AttentionCoreError(RuntimeError):
+    pass
+
+
+def source_identities() -> tuple[str, ...]:
+    return tuple(base.file_sha256(path) for path in SOURCE_PATHS)
+
+
+def validate_imported_contract() -> None:
+    actual = (
+        previous.MODEL_BYTES, previous.MODEL_SHA256, previous.SERVER_BUILD, previous.BUDGET,
+        previous.SEED, previous.FULL_TOKENS, previous.TEMPERATURE_MICROS,
+        previous.FULL_OUTPUT_SHA256, previous.FULL_CACHE_BYTES_FETCHED, previous.REPETITIONS,
+        previous.CEILING_SECONDS, previous.BASELINE_VALUES_NS, previous.BASELINE_MEDIAN_NS,
+        previous.FLOOR_PPM, previous.FLOOR_NS,
+    )
+    expected = (
+        MODEL_BYTES, MODEL_SHA256, SERVER_BUILD, BUDGET, SEED, FULL_TOKENS,
+        TEMPERATURE_MICROS, FULL_OUTPUT_SHA256, FULL_CACHE_BYTES_FETCHED, REPETITIONS,
+        CEILING_SECONDS, BASELINE_VALUES_NS, BASELINE_MEDIAN_NS, FLOOR_PPM, FLOOR_NS,
+    )
+    if actual != expected:
+        raise AttentionCoreError("imported item 72 workload or baseline drifted")
+    if source_identities() != EXPECTED_SOURCE_IDENTITIES:
+        raise AttentionCoreError("item 73 source chain drifted")
+    if diagnosis.integer_median(BASELINE_VALUES_NS) != BASELINE_MEDIAN_NS:
+        raise AttentionCoreError("item 68 baseline median drifted")
+    expected_floor = (BASELINE_MEDIAN_NS * FLOOR_PPM + 999_999) // 1_000_000
+    if expected_floor != FLOOR_NS:
+        raise AttentionCoreError("item 73 materiality floor drifted")
+
+
+def inherited_record(record: dict[str, Any]) -> dict[str, Any]:
+    inherited = dict(record)
+    inherited.pop("attention_core_operations")
+    return inherited
+
+
+def inherited_sample(sample: dict[str, Any]) -> dict[str, Any]:
+    inherited = dict(sample)
+    inherited["conditioning"] = inherited_record(sample["conditioning"])
+    inherited["full"] = inherited_record(sample["full"])
+    return inherited
+
+
+def validate_helper_record(record: dict[str, Any], maximum_tokens: int) -> None:
+    diagnosis.require_exact_keys(record, HELPER_KEYS, "helper record")
+    if not diagnosis.is_int(record["schema_version"]) or record["schema_version"] != 1:
+        raise AttentionCoreError("helper schema version drifted")
+    previous.validate_helper_record(inherited_record(record), maximum_tokens)
+    validate_core_detail(
+        record["attention_core_operations"], record["attention_operations"]["attention_core_ns"],
+        maximum_tokens,
+    )
+
+
+def validate_core_detail(detail: Any, parent_ns: int, maximum_tokens: int) -> None:
+    if not isinstance(detail, dict):
+        raise AttentionCoreError("attention core operation detail was not an object")
+    diagnosis.require_exact_keys(detail, OPERATION_KEYS, "attention core operations")
+    if any(not diagnosis.is_int(detail[name]) or not 0 <= detail[name] <= MAX_CLOCK_NS
+           for name in OPERATION_KEYS):
+        raise AttentionCoreError("attention core operation timing was invalid")
+    children = sum(detail[CLASS_FIELDS[name]] for name in CLASS_ORDER)
+    if children != detail["total_ns"]:
+        raise AttentionCoreError("attention core operation slices did not partition their total")
+    if detail["total_ns"] != parent_ns:
+        raise AttentionCoreError("attention core operation total did not match its attention parent")
+    if maximum_tokens == 2:
+        if any(detail.values()):
+            raise AttentionCoreError("conditioning entered remaining attention core operations")
+    elif any(detail[name] <= 0 for name in OPERATION_KEYS):
+        raise AttentionCoreError("full attention core operation clock was not positive")
+
+
+def validate_sample(sample: dict[str, Any], expected_index: int) -> None:
+    previous.validate_sample(inherited_sample(sample), expected_index)
+    validate_helper_record(sample["conditioning"], 2)
+    validate_helper_record(sample["full"], FULL_TOKENS)
+
+
+def validate_repeatability(samples: list[dict[str, Any]]) -> None:
+    previous.validate_repeatability([inherited_sample(sample) for sample in samples])
+
+
+def measure_request(
+    helper: Path, model: Path, pack: Path, geometry: Path, maximum_tokens: int,
+    runtime_env: dict[str, str], deadline: float,
+) -> tuple[dict[str, Any], int]:
+    started_ns = time.monotonic_ns()
+    completed = owner.run_process(
+        [str(helper), str(model), str(pack), str(geometry), diagnosis.PROMPT_TEXT,
+         str(maximum_tokens), str(SEED)],
+        deadline=deadline, maximum=240, env=runtime_env,
+    )
+    helper_wall_ns = time.monotonic_ns() - started_ns
+    try:
+        record = json.loads(completed.stdout.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise AttentionCoreError("helper did not emit one JSON record") from error
+    if not isinstance(record, dict):
+        raise AttentionCoreError("helper record was not an object")
+    validate_helper_record(record, maximum_tokens)
+    if helper_wall_ns < record["phases"]["elapsed_ns"]:
+        raise AttentionCoreError("helper wall interval did not contain helper elapsed")
+    return record, helper_wall_ns
+
+
+def measure_sample(
+    index: int, built: dict[str, Any], server: Path, model: Path, pack: Path,
+    geometry: Path, clean_env: dict[str, str], deadline: float,
+) -> dict[str, Any]:
+    owner.require_no_matching_process(server, model, deadline, clean_env)
+    conditioning, _ = measure_request(
+        built["helper"], model, pack, geometry, 2, built["runtime_env"], deadline,
+    )
+    owner.require_no_matching_process(server, model, deadline, clean_env)
+    try:
+        full, full_wall = measure_request(
+            built["helper"], model, pack, geometry, FULL_TOKENS,
+            built["runtime_env"], deadline,
+        )
+    finally:
+        owner.require_no_matching_process(server, model, deadline, clean_env)
+    sample = {
+        "index": index, "conditioning": conditioning, "full": full,
+        "full_helper_wall_ns": full_wall,
+        "isolation": {"matching_before": 0, "matching_between": 0, "matching_after": 0},
+    }
+    validate_sample(sample, index)
+    return sample
+
+
+def select_class(class_medians: dict[str, int]) -> tuple[str, str]:
+    selected = CLASS_ORDER[0]
+    for name in CLASS_ORDER[1:]:
+        if class_medians[name] > class_medians[selected]:
+            selected = name
+    selected_median = class_medians[selected]
+    if selected_median < FLOOR_NS:
+        decision = "NO_MATERIAL_CORE_CLASS"
+    else:
+        decision = "MEASURED_CORE_SEAM_ELIGIBLE"
+    return selected, decision
+
+
+def aggregate(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    if len(samples) != REPETITIONS:
+        raise AttentionCoreError("aggregate requires four samples")
+    for index, sample in enumerate(samples, 1):
+        validate_sample(sample, index)
+    validate_repeatability(samples)
+    walls = [sample["full_helper_wall_ns"] for sample in samples]
+    core = [sample["full"]["attention_core_operations"]["total_ns"] for sample in samples]
+    class_values = {
+        name: [sample["full"]["attention_core_operations"][field] for sample in samples]
+        for name, field in CLASS_FIELDS.items()
+    }
+    class_medians = {
+        name: diagnosis.integer_median(class_values[name]) for name in CLASS_ORDER
+    }
+    selected, decision = select_class(class_medians)
+    core_median = diagnosis.integer_median(core)
+    if core_median <= 0:
+        raise AttentionCoreError("attention core median was not positive")
+    return {
+        "full_helper_wall_values_ns": walls,
+        "full_helper_wall_median_ns": diagnosis.integer_median(walls),
+        "core_values_ns": core,
+        "core_median_ns": core_median,
+        "class_values_ns": class_values,
+        "class_medians_ns": class_medians,
+        "selected_class": selected,
+        "selected_class_median_ns": class_medians[selected],
+        "selected_class_share_ppm": class_medians[selected] * 1_000_000 // core_median,
+        "floor_ppm": FLOOR_PPM,
+        "floor_ns": FLOOR_NS,
+        "decision": decision,
+    }
+
+
+def inherited_result(result: dict[str, Any]) -> dict[str, Any]:
+    samples = [inherited_sample(sample) for sample in result["samples"]]
+    return {
+        "schema_version": 1,
+        "artifact_kind": previous.ARTIFACT_KIND,
+        "status": "COMPLETE",
+        "model": result["model"],
+        "baseline": result["baseline"],
+        "candidate": result["candidate"],
+        "intervention": result["intervention"],
+        "boundary": previous.boundary_record(),
+        "task": result["task"],
+        "environment": result["environment"],
+        "samples": samples,
+        "aggregate": previous.aggregate(samples),
+        "elapsed_ns": result["elapsed_ns"],
+    }
+
+
+def boundary_record() -> dict[str, Any]:
+    return {
+        **previous.boundary_record(),
+        "qk_preparation_first_row": 14, "qk_preparation_last_row": 18,
+        "score_matmul_first_row": 19, "score_matmul_last_row": 19,
+        "masked_softmax_first_row": 20, "masked_softmax_last_row": 20,
+        "value_preparation_first_row": 21, "value_preparation_last_row": 24,
+        "value_matmul_first_row": 25, "value_matmul_last_row": 25,
+        "output_packing_first_row": 26, "output_packing_last_row": 27,
+        "compute_order": [
+            "PROJECTIONS", "VALUE_PREPARATION", "QK_PREPARATION", "SCORE_MATMUL",
+            "MASKED_SOFTMAX", "VALUE_MATMUL", "OUTPUT_PACKING", "OUTPUT_RESIDUAL", "ROUTER",
+        ],
+    }
+
+
+def same_typed_json(actual: Any, expected: Any) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            same_typed_json(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            same_typed_json(left, right) for left, right in zip(actual, expected, strict=True)
+        )
+    return actual == expected
+
+
+def validate_result(result: dict[str, Any]) -> None:
+    diagnosis.require_exact_keys(result, TOP_KEYS, "result")
+    if (not diagnosis.is_int(result["schema_version"]) or result["schema_version"] != 1
+            or result["artifact_kind"] != ARTIFACT_KIND
+            or result["status"] != "COMPLETE"):
+        raise AttentionCoreError("result identity drifted")
+    previous.validate_result(inherited_result(result))
+    expected_baseline = {
+        "full_helper_wall_values_ns": BASELINE_VALUES_NS,
+        "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+        "floor_ppm": FLOOR_PPM, "floor_ns": FLOOR_NS,
+    }
+    diagnosis.require_exact_keys(result["baseline"], BASELINE_KEYS, "result baseline")
+    if result["baseline"] != expected_baseline:
+        raise AttentionCoreError("result baseline drifted")
+    diagnosis.require_exact_keys(result["boundary"], BOUNDARY_KEYS, "result boundary")
+    if not same_typed_json(result["boundary"], boundary_record()):
+        raise AttentionCoreError("attention core boundary drifted")
+    diagnosis.require_exact_keys(result["aggregate"], AGGREGATE_KEYS, "result aggregate")
+    if not same_typed_json(result["aggregate"], aggregate(result["samples"])):
+        raise AttentionCoreError("result aggregate drifted")
+    if not diagnosis.is_int(result["elapsed_ns"]) or result["elapsed_ns"] <= 0:
+        raise AttentionCoreError("result elapsed interval was invalid")
+
+
+def prerequisites() -> tuple[Path, Path, Path, Path, Path, Path] | None:
+    rows = (
+        ("ALIGN_LLM_OLMOE_MODEL", base.configured_file("ALIGN_LLM_OLMOE_MODEL")),
+        ("ALIGN_LLM_MOE_ALIGNPACK", base.configured_file("ALIGN_LLM_MOE_ALIGNPACK")),
+        ("ALIGN_LLM_MOE_GEOMETRY", base.configured_file("ALIGN_LLM_MOE_GEOMETRY")),
+        ("ALIGN_LLM_GGML_INCLUDE", base.configured_directory("ALIGN_LLM_GGML_INCLUDE")),
+        ("ALIGN_LLM_GGML_LIB", base.configured_directory("ALIGN_LLM_GGML_LIB")),
+        ("ALIGN_LLM_LLAMA_SERVER", base.configured_file(
+            "ALIGN_LLM_LLAMA_SERVER", executable=True)),
+    )
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"R8-OLMOE-ATTENTION-CORE-DIAGNOSIS: N/A ({missing} unset)")
+        return None
+    return tuple(path.resolve() for _, path in rows)  # type: ignore[return-value]
+
+
+def synthetic_samples() -> list[dict[str, Any]]:
+    samples = previous.synthetic_samples()
+    for sample in samples:
+        sample["conditioning"]["attention_core_operations"] = dict.fromkeys(OPERATION_KEYS, 0)
+        attention = sample["full"]["attention_operations"]
+        attention["projections_ns"] = 1
+        total = attention["total_ns"] - attention["output_residual_ns"] - 1
+        attention["attention_core_ns"] = total
+        sample["full"]["attention_core_operations"] = {
+            "total_ns": total, "qk_preparation_ns": total - 5, "score_matmul_ns": 1,
+            "masked_softmax_ns": 1, "value_preparation_ns": 1, "value_matmul_ns": 1,
+            "output_packing_ns": 1,
+        }
+    return samples
+
+
+def synthetic_result(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    inherited = previous.synthetic_result([inherited_sample(sample) for sample in samples])
+    return {
+        "schema_version": 1, "artifact_kind": ARTIFACT_KIND, "status": "COMPLETE",
+        "model": inherited["model"],
+        "baseline": {
+            "full_helper_wall_values_ns": BASELINE_VALUES_NS,
+            "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+            "floor_ppm": FLOOR_PPM, "floor_ns": FLOOR_NS,
+        },
+        "candidate": inherited["candidate"],
+        "intervention": intervention_record(),
+        "boundary": boundary_record(),
+        "task": inherited["task"], "environment": inherited["environment"],
+        "samples": samples, "aggregate": aggregate(samples), "elapsed_ns": 1,
+    }
+
+
+def expect_error(action: Any, message: str) -> None:
+    try:
+        action()
+    except Exception:
+        return
+    raise AttentionCoreError(message)
+
+
+def complete_result_after_cleanup(result: dict[str, Any], started_ns: int) -> dict[str, Any]:
+    completed = dict(result)
+    completed["elapsed_ns"] = 1
+    validate_result(completed)
+    elapsed_ns = time.monotonic_ns() - started_ns
+    if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+        raise AttentionCoreError(
+            f"complete diagnosis exceeded its 8-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+        )
+    if elapsed_ns <= 0:
+        raise AttentionCoreError("complete diagnosis elapsed interval was invalid")
+    completed["elapsed_ns"] = elapsed_ns
+    return completed
+
+
+def self_test() -> int:
+    validate_imported_contract()
+    samples = synthetic_samples()
+    result = synthetic_result(samples)
+    validate_result(result)
+    for name in CLASS_ORDER:
+        medians = {candidate: 1 for candidate in CLASS_ORDER}
+        medians[name] = FLOOR_NS
+        if select_class(medians) != (name, "MEASURED_CORE_SEAM_ELIGIBLE"):
+            raise AttentionCoreError(f"at-floor class did not select {name}")
+    tied = dict.fromkeys(CLASS_ORDER, FLOOR_NS)
+    if select_class(tied) != ("QK_PREPARATION", "MEASURED_CORE_SEAM_ELIGIBLE"):
+        raise AttentionCoreError("declared-order tie break drifted")
+    below = dict.fromkeys(CLASS_ORDER, FLOOR_NS - 1)
+    if select_class(below) != ("QK_PREPARATION", "NO_MATERIAL_CORE_CLASS"):
+        raise AttentionCoreError("below-floor class selected a successor")
+    # Adjacent ties discriminate every declared selection position, including V's later
+    # selection position despite its earlier place in the source graph's compute order.
+    for first, second in zip(CLASS_ORDER, CLASS_ORDER[1:]):
+        tied = dict.fromkeys(CLASS_ORDER, 1)
+        tied[first] = tied[second] = FLOOR_NS
+        if select_class(tied)[0] != first:
+            raise AttentionCoreError("adjacent class tie break drifted")
+    varied = deepcopy(samples)
+    for sample, qk_ns in zip(varied, (6, 3, 5, 4), strict=True):
+        detail = sample["full"]["attention_core_operations"]
+        detail["qk_preparation_ns"] = qk_ns
+        detail["value_preparation_ns"] = detail["total_ns"] - qk_ns - 4
+    if aggregate(varied)["class_medians_ns"]["QK_PREPARATION"] != 4:
+        raise AttentionCoreError("four-sample integer median drifted")
+    expect_error(lambda: aggregate(samples[:3]), "incomplete repetition set was accepted")
+
+    # The entire signed-i64 domain belongs to the new detail schema, independently of
+    # this fixed request's much smaller parent walls.
+    bounded = {field: 1 for field in OPERATION_KEYS}
+    bounded["total_ns"] = MAX_CLOCK_NS
+    bounded["qk_preparation_ns"] = MAX_CLOCK_NS - 5
+    validate_core_detail(bounded, MAX_CLOCK_NS, FULL_TOKENS)
+    validate_core_detail(dict.fromkeys(OPERATION_KEYS, 0), 0, 2)
+    for field in OPERATION_KEYS:
+        for invalid in (True, -1, MAX_CLOCK_NS + 1, 1.0, "1"):
+            malformed = deepcopy(samples)
+            malformed[0]["full"]["attention_core_operations"][field] = invalid
+            expect_error(lambda: aggregate(malformed), f"invalid {field} clock was accepted")
+    malformed = deepcopy(bounded)
+    malformed["total_ns"] = MAX_CLOCK_NS + 1
+    malformed["qk_preparation_ns"] += 1
+    expect_error(
+        lambda: validate_core_detail(malformed, MAX_CLOCK_NS + 1, FULL_TOKENS),
+        "coherently overflowing operation total was accepted",
+    )
+    for change in (-1, 1):
+        malformed = deepcopy(samples)
+        malformed[0]["full"]["attention_core_operations"]["qk_preparation_ns"] += change
+        expect_error(lambda: aggregate(malformed), "operation gap or overlap was accepted")
+    malformed = deepcopy(samples)
+    malformed[0]["full"]["attention_core_operations"]["qk_preparation_ns"] += 1
+    malformed[0]["full"]["attention_core_operations"]["total_ns"] += 1
+    expect_error(lambda: aggregate(malformed), "coherent detail with wrong parent was accepted")
+    malformed = deepcopy(samples)
+    malformed[0]["full"]["attention_core_operations"]["score_matmul_ns"] = 0
+    malformed[0]["full"]["attention_core_operations"]["qk_preparation_ns"] += 1
+    expect_error(lambda: aggregate(malformed), "zero full core clock was accepted")
+    malformed = deepcopy(samples)
+    malformed[0]["conditioning"]["attention_core_operations"]["total_ns"] = 1
+    malformed[0]["conditioning"]["attention_core_operations"]["qk_preparation_ns"] = 1
+    expect_error(lambda: aggregate(malformed), "conditioning core clock was accepted")
+    for field in OPERATION_KEYS:
+        malformed = deepcopy(samples)
+        del malformed[0]["full"]["attention_core_operations"][field]
+        expect_error(lambda: aggregate(malformed), "missing operation key was accepted")
+    malformed = deepcopy(samples)
+    malformed[0]["full"]["attention_core_operations"]["extra_ns"] = 1
+    expect_error(lambda: aggregate(malformed), "extra operation key was accepted")
+    malformed = deepcopy(samples)
+    malformed[0]["full"]["attention_core_operations"] = []
+    expect_error(lambda: aggregate(malformed), "non-object core detail was accepted")
+
+    for field, value in (("schema_version", True), ("schema_version", 2),
+                         ("artifact_kind", previous.ARTIFACT_KIND), ("status", "PARTIAL")):
+        malformed_result = deepcopy(result)
+        malformed_result[field] = value
+        expect_error(lambda: validate_result(malformed_result), "wrong result schema was accepted")
+    for section in (None, "boundary", "aggregate"):
+        for extra in (False, True):
+            malformed_result = deepcopy(result)
+            target = malformed_result if section is None else malformed_result[section]
+            if extra:
+                target["unexpected"] = 0
+            else:
+                del target[next(iter(target))]
+            expect_error(lambda: validate_result(malformed_result), "wrong result keys were accepted")
+    for field in BOUNDARY_KEYS:
+        malformed_result = deepcopy(result)
+        value = malformed_result["boundary"][field]
+        malformed_result["boundary"][field] = value + 1 if isinstance(value, int) else None
+        expect_error(lambda: validate_result(malformed_result), "drifted graph boundary was accepted")
+    malformed_result = deepcopy(result)
+    malformed_result["aggregate"]["core_median_ns"] += 1
+    expect_error(lambda: validate_result(malformed_result), "drifted aggregate was accepted")
+    for section in ("class_values_ns", "class_medians_ns"):
+        malformed_result = deepcopy(result)
+        if section == "class_values_ns":
+            malformed_result["aggregate"][section]["SCORE_MATMUL"][0] = True
+        else:
+            malformed_result["aggregate"][section]["SCORE_MATMUL"] = True
+        expect_error(lambda: validate_result(malformed_result), "boolean aggregate clock was accepted")
+    malformed = deepcopy(samples)
+    malformed[0]["full"]["schema_version"] = True
+    expect_error(lambda: aggregate(malformed), "boolean helper schema version was accepted")
+
+    # Delegation must retain every inherited evidence boundary while removing only
+    # this runner's newly added record detail.
+    inherited_mutations = (
+        ("full", "token_ids", [0]),
+        ("full", "output_sha256", "0" * 64),
+        ("engine", "expert_cache_requests", 0),
+        ("lifetime", "contexts_freed", 0),
+        ("attention_operations", "attention_core_ns", 1),
+        ("phase_a_operations", "router_ns", 0),
+        ("isolation", "matching_between", 1),
+    )
+    for section, field, value in inherited_mutations:
+        malformed = deepcopy(samples)
+        if section == "full":
+            target = malformed[0]["full"]
+        elif section == "isolation":
+            target = malformed[0]["isolation"]
+        else:
+            target = malformed[0]["full"][section]
+        target[field] = value
+        expect_error(lambda: aggregate(malformed), f"inherited {section} drift was accepted")
+    malformed_result = deepcopy(result)
+    malformed_result["candidate"]["align_revision"] = "0" * 40
+    expect_error(lambda: validate_result(malformed_result), "inherited candidate drift was accepted")
+    actual_file_sha256 = base.file_sha256
+    for changed_source in SOURCE_PATHS:
+        def changed_hash(path: Path) -> str:
+            return "0" * 64 if path == changed_source else actual_file_sha256(path)
+
+        with mock.patch.object(base, "file_sha256", side_effect=changed_hash):
+            expect_error(validate_imported_contract, "changed transitive source was accepted")
+    with mock.patch.object(previous, "FLOOR_NS", FLOOR_NS + 1):
+        expect_error(validate_imported_contract, "changed imported floor was accepted")
+
+    # Finalization runs after both owning contexts have cleaned up; the clock includes
+    # the final record validation too, so an overrun there cannot publish a result.
+    module = sys.modules[__name__]
+    ceiling_ns = CEILING_SECONDS * 1_000_000_000
+    with mock.patch.object(time, "monotonic_ns", return_value=ceiling_ns):
+        completed = complete_result_after_cleanup(result, 0)
+        if completed["elapsed_ns"] != ceiling_ns:
+            raise AttentionCoreError("exact ceiling was not included")
+    with mock.patch.object(time, "monotonic_ns", return_value=ceiling_ns + 1):
+        expect_error(lambda: complete_result_after_cleanup(result, 0), "late cleanup was accepted")
+    final_clock = {"now": ceiling_ns - 1}
+    actual_validate_result = validate_result
+
+    def delayed_validation(document: dict[str, Any]) -> None:
+        actual_validate_result(document)
+        final_clock["now"] = ceiling_ns + 1
+
+    with mock.patch.object(time, "monotonic_ns", side_effect=lambda: final_clock["now"]), \
+            mock.patch.object(module, "validate_result", side_effect=delayed_validation):
+        expect_error(
+            lambda: complete_result_after_cleanup(result, 0),
+            "final validation overrun was accepted",
+        )
+    with mock.patch.dict(os.environ, {}, clear=True), mock.patch("builtins.print") as printed:
+        if prerequisites() is not None:
+            raise AttentionCoreError("missing prerequisites did not produce N/A")
+    printed.assert_called_once_with(
+        "R8-OLMOE-ATTENTION-CORE-DIAGNOSIS: N/A (ALIGN_LLM_OLMOE_MODEL unset)"
+    )
+    print("R8-OLMOE-ATTENTION-CORE-DIAGNOSIS self-test: PASS")
+    return 0
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    if len(sys.argv) != 1:
+        raise AttentionCoreError("attention core diagnosis accepts no arguments")
+    required = prerequisites()
+    if required is None:
+        return 0
+    model, pack, geometry, include, library, server = required
+    started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+    validate_imported_contract()
+
+    with tempfile.TemporaryDirectory(prefix="align-r8-olmoe-attention-core-") as raw:
+        work = Path(raw)
+        clean_env = transfer.phase.decision.decision_environment()
+        linker_search = transfer.phase.decision.validate_linker_search(clean_env)
+        if linker_search:
+            clean_env["LIBRARY_PATH"] = linker_search
+        host_environment = transfer.qualification_host(clean_env, deadline)
+        status = owner.run_process(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline, maximum=30, env=clean_env,
+        )
+        if status.stdout:
+            raise AttentionCoreError("real diagnosis requires a clean worktree")
+        align_llm_head = owner.run_process(
+            ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+        ).stdout.decode("ascii").strip()
+        align_revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        owner.require_no_matching_process(server, model, deadline, clean_env)
+        if model.stat().st_size != MODEL_BYTES or base.file_sha256(model) != MODEL_SHA256:
+            raise AttentionCoreError("configured OLMoE GGUF does not have pinned identity")
+        pack_sha256 = base.file_sha256(pack)
+        geometry_sha256 = base.file_sha256(geometry)
+        server_sha256 = base.file_sha256(server)
+        task_sha256 = base.file_sha256(diagnosis.TASK)
+        prompt_sha256 = base.bytes_sha256(diagnosis.PROMPT_TEXT.encode("utf-8"))
+        ggml_libraries = base.library_identities(library)
+        ggml_headers = compute.predecessor.ggml_header_identities(include)
+        if ggml_headers != previous.previous.EXPECTED_GGML_HEADERS:
+            raise AttentionCoreError("configured ggml header identity drifted")
+        linker_search_sha256 = (
+            None if not linker_search else base.bytes_sha256(linker_search.encode("utf-8"))
+        )
+        diagnosis.validate_external_identity(
+            align_revision=align_revision, pack_sha256=pack_sha256,
+            geometry_sha256=geometry_sha256, server_sha256=server_sha256,
+            task_sha256=task_sha256, prompt_sha256=prompt_sha256,
+            ggml_libraries=ggml_libraries, linker_search_sha256=linker_search_sha256,
+        )
+        version = owner.run_process(
+            [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env,
+        )
+        if SERVER_BUILD not in (version.stdout + version.stderr).decode("utf-8", "replace"):
+            raise AttentionCoreError("llama-server build identity drifted")
+
+        with compute.other.predecessor.built_helper_for(
+            work, include, library, clean_env, deadline,
+            "src/olmoe_attention_core_gate.align", "olmoe_attention_core_gate",
+            "olmoe-attention-core-gate",
+        ) as built:
+            diagnosis.validate_toolchain_identity(built)
+            samples = []
+            for index in range(1, REPETITIONS + 1):
+                samples.append(
+                    measure_sample(index, built, server, model, pack, geometry, clean_env, deadline)
+                )
+                validate_repeatability(samples)
+
+            final_status = owner.run_process(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                deadline=deadline, maximum=30, env=clean_env,
+            )
+            final_head = owner.run_process(
+                ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+            ).stdout.decode("ascii").strip()
+            if final_status.stdout or final_head != align_llm_head:
+                raise AttentionCoreError("align-llm source changed during diagnosis")
+            if source_identities() != EXPECTED_SOURCE_IDENTITIES:
+                raise AttentionCoreError("diagnosis sources changed during measurement")
+            owner.verify_identities((
+                ("model", model, MODEL_SHA256), ("pack", pack, pack_sha256),
+                ("geometry", geometry, geometry_sha256), ("server", server, server_sha256),
+                ("task", diagnosis.TASK, task_sha256),
+                ("compiler", built["compiler"], built["compiler_sha256"]),
+                ("C compiler", built["c_compiler"], built["c_compiler_sha256"]),
+                ("shim", built["shim"], built["shim_sha256"]),
+                ("helper", built["helper"], built["helper_sha256"]),
+            ))
+            if base.library_identities(library) != ggml_libraries:
+                raise AttentionCoreError("ggml libraries changed during diagnosis")
+            if compute.predecessor.ggml_header_identities(include) != ggml_headers:
+                raise AttentionCoreError("ggml headers changed during diagnosis")
+            owner.require_no_matching_process(server, model, deadline, clean_env)
+
+            task_document = json.loads(diagnosis.TASK.read_text(encoding="utf-8"))
+            result = {
+                "schema_version": 1, "artifact_kind": ARTIFACT_KIND, "status": "COMPLETE",
+                "model": {"bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe"},
+                "baseline": {
+                    "full_helper_wall_values_ns": BASELINE_VALUES_NS,
+                    "full_helper_wall_median_ns": BASELINE_MEDIAN_NS,
+                    "floor_ppm": FLOOR_PPM, "floor_ns": FLOOR_NS,
+                },
+                "candidate": {
+                    "provider": "align-runtime", "align_llm_head": align_llm_head,
+                    "align_revision": align_revision, "compiler_sha256": built["compiler_sha256"],
+                    "helper_sha256": built["helper_sha256"], "shim_sha256": built["shim_sha256"],
+                    "ggml_libraries": ggml_libraries, "ggml_headers": ggml_headers,
+                    "pack_sha256": pack_sha256, "geometry_sha256": geometry_sha256,
+                    "cache_budget_bytes": BUDGET,
+                },
+                "intervention": intervention_record(),
+                "boundary": boundary_record(),
+                "task": {
+                    "task_id": task_document["id"], "task_sha256": task_sha256,
+                    "prompt_sha256": prompt_sha256, "maximum_tokens": FULL_TOKENS,
+                    "temperature_micros": TEMPERATURE_MICROS, "seed": SEED,
+                    "full_output_sha256": FULL_OUTPUT_SHA256,
+                },
+                "environment": {
+                    **host_environment, "c_compiler_sha256": built["c_compiler_sha256"],
+                    "c_compiler_version_sha256": built["c_compiler_version_sha256"],
+                    "linker_search_sha256": linker_search_sha256,
+                },
+                "samples": samples, "aggregate": aggregate(samples),
+            }
+    result = complete_result_after_cleanup(result, started_ns)
+    detail = result["aggregate"]
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    print(
+        "R8-OLMOE-ATTENTION-CORE-DIAGNOSIS: COMPLETE "
+        f"decision={detail['decision']} selected={detail['selected_class']} "
+        f"median={detail['selected_class_median_ns'] / 1e9:.3f}s "
+        f"core={detail['core_median_ns'] / 1e9:.3f}s "
+        f"elapsed={result['elapsed_ns'] / 1e9:.2f}s",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    owner.stop_owned_processes()
+    raise SystemExit(128 + signal_number)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        owner.stop_owned_processes()
+        print(f"R8-OLMOE-ATTENTION-CORE-DIAGNOSIS: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)

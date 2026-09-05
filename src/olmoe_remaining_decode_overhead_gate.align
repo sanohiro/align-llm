@@ -143,6 +143,16 @@ AttentionOperations {
   output_residual_ns: i64,
 }
 
+AttentionCoreOperations {
+  total_ns: i64,
+  qk_preparation_ns: i64,
+  score_matmul_ns: i64,
+  masked_softmax_ns: i64,
+  value_preparation_ns: i64,
+  value_matmul_ns: i64,
+  output_packing_ns: i64,
+}
+
 ClaimIo {
   total_ns: i64,
   file_pread_ns: i64,
@@ -210,6 +220,7 @@ fn digest_text(value: str) -> string {
 fn run(
   args: array<str>, detailed: bool, other_detailed: bool, compute_detailed: bool,
   claim_detailed: bool, phase_a_operation_detailed: bool, attention_operation_detailed: bool,
+  attention_core_detailed: bool,
 ) -> Result<(), Error> {
   if args.len() != 7 { return Err(Error.Invalid) }
   model_path := args[1]
@@ -259,7 +270,11 @@ fn run(
   }
 
   phase_started = time.instant()
-  generated := if attention_operation_detailed {
+  generated := if attention_core_detailed {
+    moe_decode_step.generate_resident_sampled_attention_core_diagnosis(
+      pack_path, geometry_path, geometry_view, source_identity, prepared.token_ids,
+      prepared.eog_token_ids, maximum_tokens, CACHE_BUDGET_BYTES, seed)
+  } else if attention_operation_detailed {
     moe_decode_step.generate_resident_sampled_attention_operation_diagnosis(
       pack_path, geometry_path, geometry_view, source_identity, prepared.token_ids,
       prepared.eog_token_ids, maximum_tokens, CACHE_BUDGET_BYTES, seed)
@@ -516,28 +531,55 @@ fn run(
     document.write(",\"attention_operations\":")
     document.write(attention_view)
   }
+  if attention_core_detailed {
+    core_subtotal := generated.outcome.remaining_decode_attention_qk_preparation_ns
+      + generated.outcome.remaining_decode_attention_score_matmul_ns
+      + generated.outcome.remaining_decode_attention_masked_softmax_ns
+      + generated.outcome.remaining_decode_attention_value_preparation_ns
+      + generated.outcome.remaining_decode_attention_value_matmul_ns
+      + generated.outcome.remaining_decode_attention_output_packing_ns
+    if core_subtotal != generated.outcome.remaining_decode_attention_core_ns {
+      return Err(Error.Invalid)
+    }
+    core_operations := AttentionCoreOperations {
+      total_ns: generated.outcome.remaining_decode_attention_core_ns,
+      qk_preparation_ns: generated.outcome.remaining_decode_attention_qk_preparation_ns,
+      score_matmul_ns: generated.outcome.remaining_decode_attention_score_matmul_ns,
+      masked_softmax_ns: generated.outcome.remaining_decode_attention_masked_softmax_ns,
+      value_preparation_ns: generated.outcome.remaining_decode_attention_value_preparation_ns,
+      value_matmul_ns: generated.outcome.remaining_decode_attention_value_matmul_ns,
+      output_packing_ns: generated.outcome.remaining_decode_attention_output_packing_ns,
+    }
+    core_operation_json := json.encode(core_operations)
+    core_operation_view: str := core_operation_json
+    document.write(",\"attention_core_operations\":")
+    document.write(core_operation_view)
+  }
   document.write("}")
   print(document.to_string())
   return Ok(())
 }
 
 pub fn phase_a_operation_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, true, true, false)
+run(args, true, true, true, true, true, false, false)
 
 pub fn attention_operation_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, true, true, true)
+run(args, true, true, true, true, true, true, false)
+
+pub fn attention_core_main(args: array<str>) -> Result<(), Error> =
+run(args, true, true, true, true, true, true, true)
 
 pub fn claim_detailed_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, true, false, false)
+run(args, true, true, true, true, false, false, false)
 
 pub fn compute_detailed_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, true, false, false, false)
+run(args, true, true, true, false, false, false, false)
 
 pub fn other_detailed_main(args: array<str>) -> Result<(), Error> =
-run(args, true, true, false, false, false, false)
+run(args, true, true, false, false, false, false, false)
 
 pub fn detailed_main(args: array<str>) -> Result<(), Error> =
-run(args, true, false, false, false, false, false)
+run(args, true, false, false, false, false, false, false)
 
 pub fn main(args: array<str>) -> Result<(), Error> =
-run(args, false, false, false, false, false, false)
+run(args, false, false, false, false, false, false, false)
