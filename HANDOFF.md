@@ -35,8 +35,8 @@ below the unchanged 871,174,011-ns floor. Comprehensive review found two P2 publ
 issues, both repaired in `4446bd3`; no valid finding remained. Merged-head self-test passed at
 `f23f5d8`.
 
-**Intentional uncommitted files.** GPU design, architecture/roadmap links, request-register updates
-and this handoff during authoring. Models, raw evidence and build products remain outside Git.
+**Intentional uncommitted files.** None after the design review repair. Models, raw evidence and
+build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

@@ -1856,8 +1856,8 @@ implemented or qualified by the design change. Implementation follows this revie
     backend/device options, GPU weights/KV, bounded allocation, native build identity and a user-run
     qualification package. Shared graph/device work and its real generation consumer belong
     together. Require generation qualification on both representative backends; Metal-only evidence
-    does not close CUDA. G1 first records immutable backend recipes, complete qualification formats
-    and numerical calibration profiles as specified by the owning ledger.
+    does not close CUDA. The shared qualification formats are fixed by the owning ledger; G1 first
+    records immutable backend recipes and populated numerical calibration/profile fixtures.
 
 81. **G2-GPU-OFFLOAD — bounded GPU/CPU/DRAM/AlignPack generation. Planned after G1.**
     Execute under restricted host/device budgets with explicit dense-layer or expert-phase CPU
