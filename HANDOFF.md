@@ -3,36 +3,34 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active publication: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (2026-09-06)
+## No active capability (2026-09-06)
 
-Branch `agent/r8-olmoe-expert-phase-b-operation-diagnosis`, based on merged main
-`df2e05122a9d0f6593207b3f90c6d87c3d259ffa` (PR #200). Align remains pinned to
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger:
-`docs/specs/r8-olmoe-expert-phase-b-operation-diagnosis.md`.
+Main `f23f5d88cc2fd5aa1d5d9ef2cc9310a3d84a353a` merged
+R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS as PR #201. Align remains pinned to
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. R8 is complete through roadmap item 79, and the
+roadmap contains no later eligible capability. Item 79 found no material expert phase-B operation,
+so its result does not select another implementation or narrower diagnosis.
 
-Implementation heads are `3cedd1c` plus direct-cache validation repair `a0ccf9f`; initial results
-were recorded in `d779a6a`, and review repair `4446bd3` added post-cleanup terminal identity checks.
-The repaired clean-head four-repeat qualification completed in 125.119 seconds with
-`NO_MATERIAL_EXPERT_OPERATION`. Down projection won at 578,823,960 ns median / 305,612 ppm
-of the 1,893,979,295-ns expert parent, below the unchanged 871,174,011-ns floor. Gate projection
-was 553,583,127 ns and up projection 484,681,995 ns; every class was below the floor. Exact output,
-cache accounting including zero cache-to-claim copies, isolation, lifetime, source identity,
-post-cleanup terminal identity and operation accounting all passed. No operation is eligible for
-implementation or narrower diagnosis, and item 79 makes no optimization claim.
+**Next action.** Define the next consumer-complete roadmap capability in the authoritative plan
+before implementation, or resume when new qualifying evidence selects a material child.
 
-**Next actions.** Run exact-head preflight, then publish and merge the English pull request. After
-merge, refresh `main`; the roadmap currently contains no later eligible capability.
+**Blocker.** None. The current stop condition is roadmap exhaustion, not an external blocker.
 
-**Blocker.** None.
-
-**Latest durable verification.** `gmake fmt`, the focused allocated-stub owner with the canonical
-Homebrew linker search, `gmake layer-forward-smoke`, `gmake runtime-provider-smoke`, Python
-compilation and the runner self-test passed. The repaired real qualification at `4446bd3` passed all
-four short/full pairs and produced the decision above. The first real-run attempt correctly exposed
-an obsolete item-62 claim-I/O positivity assumption; `a0ccf9f` delegates to the current direct-cache
-owner and its self-test covers that inherited zero-copy boundary.
+**Latest durable verification.** PR #201 passed its focused allocated-stub owner, formatting,
+layer-forward and runtime-provider smokes, Python compilation, runner self-test, exact-head
+publication preflight, pinned Align supported checks and both installed Ubuntu fresh-image profiles.
+The repaired clean-head qualification at `4446bd3` completed four short/full pairs in 125.119
+seconds with `NO_MATERIAL_EXPERT_OPERATION`; down projection was largest at 578,823,960 ns,
+below the unchanged 871,174,011-ns floor. Comprehensive review found two P2 publication-state
+issues, both repaired in `4446bd3`; no valid finding remained. Merged-head self-test passed at
+`f23f5d8`.
 
 **Intentional uncommitted files.** None. Models, raw evidence and build products remain outside Git.
+
+## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
+
+PR #201 merged as `f23f5d8`. The exact item-79 result and evidence are summarized above and in
+`docs/specs/r8-olmoe-expert-phase-b-operation-diagnosis.md`.
 
 ## Merged checkpoint: R8-OLMOE-NATIVE-STAGING-BOUNDARY (PR #199, 2026-09-05)
 
