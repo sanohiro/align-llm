@@ -9,32 +9,33 @@ Branch `agent/r8-olmoe-native-staging-boundary`, based on merged main `d32d3cb` 
 Align remains pinned to `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Authoritative ledger:
 `docs/specs/r8-olmoe-native-staging-boundary.md`.
 
-Item 76 selected native staging at 1,533,218,558 ns median above the fixed 871,174,011-ns floor.
-Only the V scalar transfer in the real/stub shared C region may change: unaligned-safe AArch64
-4-by-4 byte-lane tiles with scalar tails. Preserve validation, K copy, fallback, existing comparison,
-all Align/helper/build bytes and priming. The whole native parent is not measured V-only cost.
+Evaluated candidate `3fb3f11f677d07e02693801a6eff3e405a670858` completed the exact 16-request
+comparison in 183.452 seconds and recorded `MET`. All four paired gains were positive; median
+paired saving was 1,047,849,541 ns / 66,571 ppm against required 871,174,011 ns. Candidate median
+14,626,648,395 ns cleared the historical 16,552,306,197-ns ceiling. Every output/token, cache,
+isolation, source/toolchain identity and lifetime condition passed. The declared AArch64 V tiles
+and their direct owner ship; validation, K copy, scalar fallback, comparison and Align bytes remain
+unchanged. The whole native parent was not attributed to V.
 
-**Next actions.** Freeze the complete owner-tested candidate, then run four balanced
-AB/BA pairs (sixteen requests) against exact merged control. Require all four gains positive,
-median saving at least max(871,174,011 ns, 50,000 ppm of control), and candidate median at most
-16,552,306,197 ns. Remove production and candidate native owners unless the gate passes. Complete
-one comprehensive review, exact-head preflight, publish raw evidence, merge and continue.
+**Next actions.** Complete one fresh comprehensive review, exact-head preflight, publish the full
+raw evidence and merge with both source/evaluated ancestors retained. Then refresh main and start
+item 78's current-source sampled runtime decision: remeasure time to a passing patch after this
+shipped fixed-request improvement. Use item 69's primary gate, not this secondary-metric floor.
 
-**Blocker.** None. The candidate is implemented; the paired result owns shipping and the next decision.
-Priming is below floor; rejected attention K/V copies remain removed.
+**Blocker.** None. Priming is below floor; rejected attention K/V copies remain removed.
 
-**Latest durable verification.** Item 77's `scripts/test-olmoe-native-staging`, `--real`, and
-`--real --ubsan` all passed with configured Homebrew ggml inputs. Direct evidence covers actual
-AArch64 SIMD/tails, independent byte oracle and immutable scalar control, 72 edge vectors, all 256
-source/stage byte offsets, guard pages, admitted aliases and refusal precedence. Non-AArch64
-dispatch execution is N/A on this host. `scripts/test-olmoe-plane-upload`,
-`scripts/test-olmoe-attention-core`, `gmake layer-forward-smoke` and
-`gmake runtime-provider-smoke` all passed; the last covers sampler vectors and 61 CLI assertions.
-Strict C builds, Python compilation, paired-runner `--self-test` and `git diff --check` passed.
-The runner binds 129 current source inputs plus its own exact tracked bytes. Full paired qualification and
-comprehensive review remain pending.
+**Latest durable verification.** All three `scripts/test-olmoe-native-staging` modes (default,
+`--real`, `--real --ubsan`), existing plane-upload/core owners, `gmake layer-forward-smoke`,
+`gmake runtime-provider-smoke` (sampler vectors plus 61 CLI assertions), strict C builds, Python
+compilation and paired-runner self-test passed. Native evidence covers AArch64 SIMD/tails and an
+immutable scalar control, 72 edge vectors, 256 byte-offset combinations, guard pages and alias/
+refusal cases; non-AArch64 dispatch execution is N/A locally. The 129 source pins plus exact
+tracked runner, two isolated builds, 16 requests and 24 isolation records passed real qualification.
+Raw JSON is 73,695 bytes, SHA-256
+`0ec1732dd6f13ce81ac95925e08062cfdc2ac7c9431d47dd23fb4098ed439c65`;
+publication evidence will preserve the complete original bytes. Review/preflight remain pending.
 
-**Intentional uncommitted files.** None at the candidate checkpoint. Models, raw records and build
+**Intentional uncommitted files.** None at the result checkpoint. Models, raw records and build
 products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-PLANE-UPLOAD-DIAGNOSIS (PR #198, 2026-09-05)

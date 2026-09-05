@@ -1,6 +1,6 @@
 # R8 OLMoE native staging boundary
 
-Status: active; ledger committed before implementation, 2026-09-05.
+Status: complete; fixed-host shipping gate MET, 2026-09-05; publication pending.
 Roadmap owner: item 77, `R8-OLMOE-NATIVE-STAGING-BOUNDARY`.
 Prerequisite: item 76 merged as `d32d3cbc2939e1525f452056e8e720946930d4df` (PR #198).
 
@@ -167,4 +167,44 @@ for unavailable, engine and real flavors. Python compilation and `git diff --che
 `scripts/run-olmoe-native-staging-boundary --self-test` passed with 129 current source pins
 (102 Align and 27 other inputs), including actual dispatch/strict JSON, paired gate boundaries,
 equal helper hashes, mutation refusal, linked-worktree ancestry, process groups and terminal cleanup.
-The paired qualification and stable-candidate comprehensive review remain pending.
+The clean-head paired qualification passed below; stable-candidate comprehensive review remains pending.
+
+
+## Measured result and next consumer
+
+Clean evaluated head `3fb3f11f677d07e02693801a6eff3e405a670858` completed in
+183,452,238,333 ns. Control was exact merged head
+`d32d3cbc2939e1525f452056e8e720946930d4df`; both independently built helpers and shims were
+hashed, all declared source/toolchain/host identities passed before and after execution, and all
+sixteen fresh requests and 24 pair isolation checks passed. Every full output and 87-id chain,
+86 completion tokens, exact cache counts/fetched bytes, zero cache-to-claim copies and native
+lifetime equations matched. No result was omitted or retried.
+
+| Pair/order | Control full wall (ns) | Candidate full wall (ns) | Paired saving (ns) |
+| --- | ---: | ---: | ---: |
+| 1 / AB | 14,113,690,708 | 13,977,930,667 | 135,760,041 |
+| 2 / BA | 15,609,164,208 | 14,152,154,541 | 1,457,009,667 |
+| 3 / AB | 15,871,141,083 | 15,101,142,250 | 769,998,833 |
+| 4 / BA | 16,562,474,500 | 15,236,774,250 | 1,325,700,250 |
+
+Control median is **15,740,152,645 ns** and candidate median **14,626,648,395 ns**. Median
+paired saving is **1,047,849,541 ns / 66,571 ppm**, with **four positive pairs**, exceeding
+required **871,174,011 ns**. Candidate median is below the immutable **16,552,306,197-ns**
+ceiling. The exact precommitted decision is **MET**. This is a fixed-host, fixed-request secondary
+metric result; no primary-metric, cross-host or V-only cost claim follows from it.
+
+Keep the two declared native changes and direct owner/fixture. All Align/helper/build/pin bytes
+remain unchanged. Complete original raw JSON is **73,695 bytes**, SHA-256
+`0ec1732dd6f13ce81ac95925e08062cfdc2ac7c9431d47dd23fb4098ed439c65`, to be preserved and
+retrieved/hash-verified in the pull request. The runner records the evaluated ancestor and retains
+current-source self-tests; merge integration must preserve both named ancestors.
+
+Item 78 now owns a current-source remeasurement of item 69's sampled provider portfolio and
+**time to a passing patch** against the isolated local server. It refreshes the actual source/runtime
+closure and server/validator cleanup while keeping that primary protocol and shipping gate.
+This item's nanosecond floor and absolute helper ceiling do not transfer to the primary decision.
+
+The bounded retrospective is that keeping the existing byte ABI while changing only the exact
+transpose produced a passing complete-request improvement after the two graph-copy candidates
+failed. Balanced contemporary controls remain necessary: pair gains range from 135.760 to
+1,457.010 milliseconds. Preserve this evidence and existing gate; no new routine aggregate is added.

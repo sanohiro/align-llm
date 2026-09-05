@@ -4,6 +4,10 @@ Status: complete, 2026-09-04
 
 Roadmap owner: item 58, `R8-OLMOE-KV-PLANE-STAGING-TRANSFER`
 
+Item 77's [native staging ledger](r8-olmoe-native-staging-boundary.md) supersedes only the
+AArch64 V implementation with exact byte-lane tiles after its paired shipping gate passed. The
+original scalar V loop remains the non-AArch64 fallback; this capability's ABI and ownership persist.
+
 ## 1. Capability owned
 
 Item 57 measured the fixed isolated OLMoE request's remaining decode at a 25.267-second median.
