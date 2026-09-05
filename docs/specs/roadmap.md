@@ -1833,12 +1833,13 @@ The current forward delivery order is:
     above the unchanged 871,174,011-ns attribution floor. Partition the existing phase-B graph by
     exact checked node-table membership while preserving normal unsplit execution, cache tensors,
     arithmetic and reduction order. Use the fixed request and select only a measured material child;
-    this diagnosis makes no optimization or primary-metric claim. The clean-head run completed four
-    short/full pairs in 110.820 seconds. Gate projection was largest at 574,962,948 ns median /
-    325,164 ppm of the 1,768,220,206-ns expert parent, but remained below the fixed
-    871,174,011-ns floor. Up and down projections measured 444,561,299 ns and 531,428,285 ns;
-    every other class was below 86 ms. All fixed evidence passed. No phase-B operation is eligible
-    for implementation or narrower diagnosis, so R8 has no remaining measured material child.
+    this diagnosis makes no optimization or primary-metric claim. The repaired clean-head run
+    completed four short/full pairs in 125.119 seconds. Down projection was largest at 578,823,960
+    ns median / 305,612 ppm of the 1,893,979,295-ns expert parent, but remained below the fixed
+    871,174,011-ns floor. Gate and up projections measured 553,583,127 ns and 484,681,995 ns;
+    every class was below the floor. All fixed evidence and post-cleanup terminal identities passed.
+    No phase-B operation is eligible for implementation or narrower diagnosis, so R8 has no
+    remaining measured material child.
 
 ### Status (2026-08-28)
 

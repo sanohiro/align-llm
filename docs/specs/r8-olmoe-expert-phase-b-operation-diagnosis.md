@@ -72,18 +72,18 @@ unchanged materiality floor governs selection, and no diagnosis result alone cla
 
 ## Result
 
-Clean head `a0ccf9faf2a3b6a46b4ef85d9fdee4a59da34b8a` completed four sequential short/full
-pairs in 110.820 seconds. Every record preserved the exact token chain and output digest, direct
+Clean head `4446bd3bd6de71dc901846e86307ce6ed534a541` completed four sequential short/full
+pairs in 125.119 seconds. Every record preserved the exact token chain and output digest, direct
 cache request/hit/miss/eviction/fetched-byte evidence, zero cache-to-claim copies, process isolation,
 balanced native lifetimes, and the declared parent/child equations. The full-helper walls were
-`[18028510875,19398845334,19489354333,19095181334]` ns (median 19,247,013,334 ns), and
-the expert parents were `[1730445593,1809969951,1784429671,1752010741]` ns (median
-1,768,220,206 ns).
+`[19533051041,20459499541,21698011084,20286266250]` ns (median 20,372,882,895 ns), and
+the expert parents were `[1831566950,1992784841,1956391640,1598582545]` ns (median
+1,893,979,295 ns).
 
-The operation medians were input preparation 27,067,208 ns, gate projection 574,962,948 ns,
-up projection 444,561,299 ns, SwiGLU 54,744,079 ns, down projection 531,428,285 ns, expert
-weighting 85,859,347 ns, expert reduction 32,087,287 ns, and residual 24,735,486 ns. Gate
-projection was largest at 325,164 ppm of the expert parent but remained below the immutable
+The operation medians were input preparation 29,687,713 ns, gate projection 553,583,127 ns,
+up projection 484,681,995 ns, SwiGLU 62,586,576 ns, down projection 578,823,960 ns, expert
+weighting 92,223,782 ns, expert reduction 36,932,735 ns, and residual 27,461,126 ns. Down
+projection was largest at 305,612 ppm of the expert parent but remained below the immutable
 871,174,011-ns floor. The result is `NO_MATERIAL_EXPERT_OPERATION`; no child is eligible for an
 implementation or narrower diagnosis, and this measurement makes no optimization claim.
 
