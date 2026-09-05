@@ -1,6 +1,6 @@
 # R8 OLMoE phase-A operation diagnosis
 
-Status: implemented and measured; review pending, 2026-09-05
+Status: implemented, measured, and reviewed; publication pending, 2026-09-05
 
 Roadmap owner: item 71, `R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS`
 
@@ -56,7 +56,7 @@ diagnosis. This capability makes no speedup claim and does not close R8.
 | Ownership/allocation | production adds only scalar counters initialized to zero. Diagnostic calls add one context per routed layer and two context-owned graph structures; every path converges on the existing layer teardown. Runner/helper/temp state is invocation-local |
 | Persisted/cache identity | N/A: no provider, cache, model, pack, task, or persisted-result schema changes; qualification stdout is not persisted by the runner |
 | Cost ceiling | one monotonic 8-minute ceiling covers helper/shim build, four conditioning and four full requests, aggregation, identity rechecks, and cleanup; each child retains a narrower bound |
-| Acceptance evidence | author ledger-to-prose consistency pass; shim slice unit coverage including malformed anchors; `make fmt`; pinned helper build; `make layer-forward-smoke`; `make runtime-provider-smoke`; Python compilation; inherited and focused self-tests; one clean-head fixed-host four-repeat diagnosis; `git diff --check`; one comprehensive review; exact-head `python3 scripts/pre-pr --owner-test R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS -- scripts/run-olmoe-phase-a-operation-diagnosis --self-test` |
+| Acceptance evidence | author ledger-to-prose consistency pass; shim slice unit coverage including malformed anchors; `make fmt`; pinned helper build; `make layer-forward-smoke`; `make runtime-provider-smoke`; Python compilation; inherited validators and focused self-test; one clean-head fixed-host four-repeat diagnosis; `git diff --check`; one comprehensive review; exact-head `python3 scripts/pre-pr --owner-test R8-OLMOE-PHASE-A-OPERATION-DIAGNOSIS -- scripts/run-olmoe-phase-a-operation-diagnosis --self-test` |
 
 Cross-host, GPU, throughput, arbitrary-task, cache-policy, persistent-state, public-provider,
 per-kernel, per-node, and performance-win claims are N/A. Splitting a graph adds one backend
@@ -139,3 +139,12 @@ All four full requests reproduced the exact 87-id chain and output hash, exact
 balanced native lifetimes, and twelve process-isolation boundaries. All four maximum-2 records
 reported zero operation clocks; every full record closed
 `attention_and_residual_ns + router_ns == routing_ns` exactly.
+
+## 7. Comprehensive review
+
+The one comprehensive high-effort Codex review covered head
+`70f99136a34989e74cd64a4cd68da504b399084b` against base tip and merge base
+`11d98f781907965bd4959bf5f387ad937c46aae4`, using `gpt-6-astra` over the complete diff. The
+verdict was clean and the complete finding set was `none`. The review's own sandbox could execute
+the native graph-partition assertions but could not acquire the managed-toolchain cache lock; the
+same complete `make layer-forward-smoke` owner had already passed outside that review sandbox.

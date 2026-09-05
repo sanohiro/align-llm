@@ -27,9 +27,13 @@ remains rejected.
 Every fixed output/hash, 11,940/7,325/4,615/4,376 cache count, 17,656,872,960 fetched-byte total,
 zero cache-to-claim copy, lifetime, isolation, and operation-accounting boundary passed.
 
-**Next actions.** Commit the measured result; complete one comprehensive review, consolidate any
-valid repairs, rerun affected owners and exact-head preflight, publish, merge, and continue to item
-72.
+The comprehensive high-effort Codex review covered `70f9913` against base tip and merge base
+`11d98f7` using `gpt-6-astra`. It found no substantive defects. Its sandbox could not acquire the
+managed-toolchain cache lock, but the same complete layer owner had already passed in the working
+environment.
+
+**Next actions.** Rerun affected owners and exact-head preflight; publish, merge, and continue to
+item 72.
 
 **Blocker.** None.
 
