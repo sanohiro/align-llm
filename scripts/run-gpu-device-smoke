@@ -122,9 +122,12 @@ fi
 
 export DYLD_LIBRARY_PATH="${gpu_shim}"
 export LD_LIBRARY_PATH="${gpu_shim}"
-gpu_output=$("${executable}" available metal stub-gpu \
+if ! gpu_output=$("${executable}" available metal stub-gpu \
   "${work_dir}/bundle" "${work_dir}/invalid-bundle" "${work_dir}/other-bundle" \
-  "${backend_path}" "${bundle_id}")
+  "${backend_path}" "${bundle_id}"); then
+  printf '%s\n' "gpu device smoke: FAIL available execution: ${gpu_output}" >&2
+  exit 1
+fi
 if [ "${gpu_output}" != "runtime device smoke: AVAILABLE PASS" ]; then
   printf '%s\n' "gpu device smoke: FAIL available output: ${gpu_output}" >&2
   exit 1

@@ -227,6 +227,9 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_weight_upload(owner: raw, index: i64, data: slice<u8>, length: i64) -> i32
   fn align_gpu_weights_finish(owner: raw) -> i32
   fn align_gpu_weight_state(owner: raw, field: i32) -> i64
+  fn align_gpu_metadata_handle(owner: raw) -> raw
+  fn align_gpu_weight_slot(owner: raw, index: i64, slots: slice<u8>, out: i64) -> i32
+  fn align_gpu_workspace_prepare(owner: raw, graph: raw) -> i32
   fn align_gpu_device_close(owner: raw) -> ()
   // R5C section 3.4. The registry's own device selection for either kind, its numeric properties,
   // its buffer type's maximum length, and its two names.
@@ -547,6 +550,35 @@ pub fn gpu_weight_state(borrow owner: GpuDevice, field: i64) -> i64 {
   if field < GPU_WEIGHT_EXPECTED || field > GPU_WEIGHT_FINISHED { return -1 }
   unsafe {
     return align_gpu_weight_state(resource.raw(resource.borrow(owner)), field as i32)
+  }
+}
+
+pub fn gpu_metadata_handle(borrow owner: GpuDevice) -> raw {
+  unsafe {
+    return align_gpu_metadata_handle(resource.raw(resource.borrow(owner)))
+  }
+}
+
+pub fn gpu_weight_slot(
+  borrow owner: GpuDevice,
+  index: i64,
+  borrow slots: slice<u8>,
+  out: i64,
+) -> Result<(), Fault> {
+  unsafe {
+    status := align_gpu_weight_slot(
+      resource.raw(resource.borrow(owner)), index, slots, out,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_workspace_prepare(borrow owner: GpuDevice, graph: raw) -> Result<(), Fault> {
+  unsafe {
+    status := align_gpu_workspace_prepare(resource.raw(resource.borrow(owner)), graph) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
   }
 }
 

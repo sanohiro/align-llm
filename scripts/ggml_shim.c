@@ -945,6 +945,7 @@ struct align_gpu_device_state {
     ggml_backend_buffer_t workspace_buffer;
     struct ggml_tallocr weight_allocator;
     struct ggml_tensor *pending_weight;
+    ggml_gallocr_t workspace_allocator;
     int64_t host_budget_bytes;
     int64_t device_budget_bytes;
     int64_t host_planned_bytes;
@@ -963,6 +964,8 @@ struct align_gpu_device_state {
     int64_t weights_uploaded_bytes;
     int weights_finished;
     int weights_failed;
+    int workspace_prepared;
+    int workspace_failed;
 };
 
 static atomic_int align_gpu_busy = 0;
@@ -1190,6 +1193,10 @@ static void align_gpu_memory_release(struct align_gpu_device_state *state) {
     if (state == NULL) {
         return;
     }
+    if (state->workspace_allocator != NULL) {
+        ggml_gallocr_free(state->workspace_allocator);
+        state->workspace_allocator = NULL;
+    }
     if (state->workspace_buffer != NULL) {
         ggml_backend_buffer_free(state->workspace_buffer);
         state->workspace_buffer = NULL;
@@ -1325,7 +1332,13 @@ int64_t align_gpu_memory_allocated_bytes(void *owner, int32_t field) {
     }
     weights = (int64_t) ggml_backend_buffer_get_size(state->weights_buffer);
     kv = (int64_t) ggml_backend_buffer_get_size(state->kv_buffer);
-    workspace = (int64_t) ggml_backend_buffer_get_size(state->workspace_buffer);
+    if (state->workspace_allocator != NULL) {
+        workspace = (int64_t) ggml_gallocr_get_buffer_size(state->workspace_allocator, 0);
+    } else if (state->workspace_buffer != NULL) {
+        workspace = (int64_t) ggml_backend_buffer_get_size(state->workspace_buffer);
+    } else {
+        return -1;
+    }
     switch (field) {
     case 0: return state->metadata_bytes + state->staging_bytes;
     case 1: return weights + kv + workspace;
@@ -1501,6 +1514,77 @@ int64_t align_gpu_weight_state(void *owner, int32_t field) {
     case 4: return state->weights_finished;
     default: return -1;
     }
+}
+
+void *align_gpu_metadata_handle(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    return state == NULL || !state->memory_allocated ? NULL : (void *) state->metadata_ctx;
+}
+
+static struct ggml_tensor *align_gpu_weight_at(
+        struct align_gpu_device_state *state, int64_t index) {
+    struct ggml_tensor *tensor = NULL;
+    int64_t at = 0;
+    if (state == NULL || !state->weights_finished || index < 0
+        || index >= state->weights_expected) {
+        return NULL;
+    }
+    tensor = ggml_get_first_tensor(state->metadata_ctx);
+    while (tensor != NULL && at < index) {
+        tensor = ggml_get_next_tensor(state->metadata_ctx, tensor);
+        at += 1;
+    }
+    return tensor;
+}
+
+int32_t align_gpu_weight_slot(void *owner, int64_t index, void *slots, int64_t out) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *tensor = align_gpu_weight_at(state, index);
+    if (tensor == NULL) {
+        return ALIGN_GPU_CONFIG;
+    }
+    return align_ggml_slot_store(slots, out, (void *) tensor) == ALIGN_GGML_OK
+        ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
+}
+
+int32_t align_gpu_workspace_prepare(void *owner, void *graph) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    size_t required = 0;
+    ggml_backend_buffer_type_t buft = NULL;
+    if (state == NULL || graph == NULL || !state->weights_finished || state->workspace_prepared
+        || state->workspace_failed || state->workspace_buffer == NULL) {
+        return ALIGN_GPU_CONFIG;
+    }
+    ggml_backend_synchronize(state->backend);
+    ggml_backend_buffer_free(state->workspace_buffer);
+    state->workspace_buffer = NULL;
+    buft = ggml_backend_get_default_buffer_type(state->backend);
+    if (buft == NULL) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_ALLOCATION;
+    }
+    state->workspace_allocator = ggml_gallocr_new(buft);
+    if (state->workspace_allocator == NULL) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_ALLOCATION;
+    }
+    ggml_gallocr_reserve_n_size(
+        state->workspace_allocator, (struct ggml_cgraph *) graph, NULL, NULL, &required);
+    if (required == 0 || required > (size_t) state->workspace_bytes) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_MEMORY_BUDGET;
+    }
+    if (!ggml_gallocr_reserve(state->workspace_allocator, (struct ggml_cgraph *) graph)) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_ALLOCATION;
+    }
+    if (!ggml_gallocr_alloc_graph(
+            state->workspace_allocator, (struct ggml_cgraph *) graph)) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_ALLOCATION;
+    }
+    state->workspace_prepared = 1;
+    return ALIGN_GPU_OK;
 }
 
 void align_gpu_device_close(void *owner) {
