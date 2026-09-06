@@ -1,0 +1,267 @@
+module runtime_qwen
+
+import ggml_ffi
+import layer_qwen2
+import qwen_nodes
+import runtime_inputs
+import runtime_kv
+
+pub INPUT_PREFILL_TOKENS := 0
+pub INPUT_PREFILL_POSITIONS := 1
+pub INPUT_PREFILL_MASK := 2
+pub INPUT_DECODE_TOKEN := 3
+pub INPUT_DECODE_POSITION := 4
+pub INPUT_DECODE_MASK := 5
+pub INPUT_OUTPUT_ID := 6
+pub INPUT_COUNT := 7
+
+LAYER_WEIGHT_COUNT := 12
+// `MF_SLOT_NODE_BASE` is 16. Align constant initializers cannot reference an imported constant, so
+// these literals name the K/V rows in the checked-in Qwen tables directly.
+PREFILL_K_SOURCE := 30
+PREFILL_V_SOURCE := 36
+DECODE_K_SOURCE := 31
+DECODE_V_SOURCE := 37
+
+pub fn weight_count(n_layer: i64) -> i64 {
+  if n_layer < 1 || n_layer > 4096 { return -1 }
+  return 3 + LAYER_WEIGHT_COUNT * n_layer
+}
+
+pub fn kv_count(n_layer: i64) -> i64 {
+  if n_layer < 1 || n_layer > 4096 { return -1 }
+  return 2 * n_layer
+}
+
+pub fn output_slot() -> i64 = layer_qwen2.mf_head_output_slot()
+
+fn valid_geometry(borrow g: layer_qwen2.Geometry) -> bool {
+  arch: str := g.arch
+  return g.code.len() == 0 && arch == "qwen2" && g.n_layer >= 1 && g.n_layer <= 4096
+    && g.n_embd > 0 && g.n_vocab > 0 && g.n_head_kv > 0 && g.head_dim > 0
+    && g.context_length > 0
+}
+
+fn bind_weight(
+  borrow owner: ggml_ffi.GpuDevice,
+  index: i64,
+  borrow slots: slice<u8>,
+  out: i64,
+) -> Result<(), Error> {
+  ggml_ffi.gpu_weight_slot(owner, index, slots, out) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn bind_layer_weights(
+  borrow owner: ggml_ffi.GpuDevice,
+  layer: i64,
+  borrow slots: slice<u8>,
+) -> Result<(), Error> {
+  base := 1 + LAYER_WEIGHT_COUNT * layer
+  mut member := 0
+  loop {
+    if member >= LAYER_WEIGHT_COUNT { break }
+    bind_weight(owner, base + member, slots, member)?
+    member = member + 1
+  }
+  return Ok(())
+}
+
+fn bind_prefill_inputs(
+  borrow owner: ggml_ffi.GpuDevice,
+  tokens: i64,
+  borrow slots: slice<u8>,
+) -> Result<(), Error> {
+  ggml_ffi.gpu_input_slot(owner, INPUT_PREFILL_TOKENS, slots, layer_qwen2.MF_SLOT_TOKENS) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_input_slot(owner, INPUT_PREFILL_POSITIONS, slots, layer_qwen2.MF_SLOT_POS) else {
+    return Err(Error.Invalid)
+  }
+  runtime_inputs.mask_prefix_slot(
+    owner, INPUT_PREFILL_MASK, ggml_ffi.GPU_GRAPH_PREFILL, tokens, tokens,
+    slots, layer_qwen2.MF_SLOT_MASK,
+  )?
+  ggml_ffi.gpu_input_slot(owner, INPUT_OUTPUT_ID, slots, layer_qwen2.MF_SLOT_OUT_IDS) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn bind_decode_inputs(
+  borrow owner: ggml_ffi.GpuDevice,
+  n_past: i64,
+  borrow slots: slice<u8>,
+) -> Result<(), Error> {
+  ggml_ffi.gpu_input_slot(owner, INPUT_DECODE_TOKEN, slots, layer_qwen2.MF_SLOT_TOKENS) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_input_slot(owner, INPUT_DECODE_POSITION, slots, layer_qwen2.MF_SLOT_POS) else {
+    return Err(Error.Invalid)
+  }
+  runtime_inputs.mask_prefix_slot(
+    owner, INPUT_DECODE_MASK, ggml_ffi.GPU_GRAPH_DECODE, n_past + 1, 1,
+    slots, layer_qwen2.MF_SLOT_MASK,
+  )?
+  ggml_ffi.gpu_input_slot(owner, INPUT_OUTPUT_ID, slots, layer_qwen2.MF_SLOT_OUT_IDS) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn expand(
+  graph: raw,
+  borrow slots: slice<u8>,
+  slot: i64,
+  label: str,
+) -> Result<(), Error> {
+  ggml_ffi.graph_expand(graph, slots, slot, label) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn carry(
+  borrow slots: slice<u8>,
+  source: i64,
+) -> Result<(), Error> {
+  ggml_ffi.slot_copy(slots, layer_qwen2.MF_SLOT_CUR, slots, source, "qwen_residual") else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn build_head(
+  borrow owner: ggml_ffi.GpuDevice,
+  ctx: raw,
+  graph: raw,
+  borrow g: layer_qwen2.Geometry,
+  borrow slots: slice<u8>,
+) -> Result<(), Error> {
+  head_base := 1 + LAYER_WEIGHT_COUNT * g.n_layer
+  bind_weight(owner, head_base, slots, 0)?
+  bind_weight(owner, head_base + 1, slots, 1)?
+  nodes := layer_qwen2.mf_head_node_table(g)
+  qwen_nodes.build(ctx, slots, nodes, false, false, false) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.slot_mark_output(slots, output_slot(), "qwen_logits") else {
+    return Err(Error.Invalid)
+  }
+  expand(graph, slots, output_slot(), "qwen_logits")?
+  return Ok(())
+}
+
+pub fn build_prefill(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: layer_qwen2.Geometry,
+  tokens: i64,
+  ctx: raw,
+  graph: raw,
+  borrow slots: slice<u8>,
+) -> Result<(), Error> {
+  if !valid_geometry(g) {
+    return Err(Error.Invalid)
+  }
+  if tokens < 1 || tokens > layer_qwen2.MAX_PREFILL_TOKENS || tokens > g.context_length {
+    return Err(Error.Invalid)
+  }
+  if ggml_ffi.handle_absent(ctx) || ggml_ffi.handle_absent(graph) {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.slots_init(slots, slots.len(), "qwen_prefill_slots") else {
+    return Err(Error.Invalid)
+  }
+  bind_prefill_inputs(owner, tokens, slots)?
+  bind_weight(owner, 0, slots, 0)?
+  embed := layer_qwen2.mf_embed_node_table()
+  qwen_nodes.build(ctx, slots, embed, false, false, false) else {
+    return Err(Error.Invalid)
+  }
+  carry(slots, layer_qwen2.mf_embed_output_slot())?
+
+  nodes := layer_qwen2.mf_layer_node_table(g, tokens, tokens)
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer { break }
+    bind_layer_weights(owner, layer, slots)?
+    last := layer == g.n_layer - 1
+    qwen_nodes.build(ctx, slots, nodes, last, false, false) else {
+      return Err(Error.Invalid)
+    }
+    runtime_kv.write_slot(
+      owner, 2 * layer, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K,
+      0, slots, layer_qwen2.MF_SLOT_KPAST, PREFILL_K_SOURCE,
+    )?
+    runtime_kv.write_slot(
+      owner, 2 * layer + 1, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_V,
+      0, slots, layer_qwen2.MF_SLOT_VPAST, PREFILL_V_SOURCE,
+    )?
+    expand(graph, slots, layer_qwen2.MF_SLOT_KPAST, "qwen_prefill_k")?
+    expand(graph, slots, layer_qwen2.MF_SLOT_VPAST, "qwen_prefill_v")?
+    carry(slots, layer_qwen2.mf_layer_output_slot())?
+    layer = layer + 1
+  }
+  build_head(owner, ctx, graph, g, slots)?
+  return Ok(())
+}
+
+pub fn build_decode(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: layer_qwen2.Geometry,
+  n_past: i64,
+  ctx: raw,
+  graph: raw,
+  borrow slots: slice<u8>,
+) -> Result<(), Error> {
+  if !valid_geometry(g) || n_past < 1 || n_past >= g.context_length
+    || ggml_ffi.handle_absent(ctx) || ggml_ffi.handle_absent(graph) {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.slots_init(slots, slots.len(), "qwen_decode_slots") else {
+    return Err(Error.Invalid)
+  }
+  bind_decode_inputs(owner, n_past, slots)?
+  bind_weight(owner, 0, slots, 0)?
+  embed := layer_qwen2.mf_embed_node_table()
+  qwen_nodes.build(ctx, slots, embed, false, false, false) else {
+    return Err(Error.Invalid)
+  }
+  carry(slots, layer_qwen2.mf_embed_output_slot())?
+
+  width := n_past + 1
+  nodes := layer_qwen2.mf_decode_layer_node_table(g, n_past, 1, width)
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer { break }
+    bind_layer_weights(owner, layer, slots)?
+    runtime_kv.prefix_slot(
+      owner, 2 * layer, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_KV_LAYOUT_K,
+      n_past, slots, layer_qwen2.MF_SLOT_KPAST,
+    )?
+    runtime_kv.prefix_slot(
+      owner, 2 * layer + 1, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_KV_LAYOUT_V,
+      n_past, slots, layer_qwen2.MF_SLOT_VPAST,
+    )?
+    last := layer == g.n_layer - 1
+    qwen_nodes.build(ctx, slots, nodes, last, width > 1, true) else {
+      return Err(Error.Invalid)
+    }
+    runtime_kv.write_slot(
+      owner, 2 * layer, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_KV_LAYOUT_K,
+      n_past, slots, layer_qwen2.MF_SLOT_KPAST, DECODE_K_SOURCE,
+    )?
+    runtime_kv.write_slot(
+      owner, 2 * layer + 1, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_KV_LAYOUT_V,
+      n_past, slots, layer_qwen2.MF_SLOT_VPAST, DECODE_V_SOURCE,
+    )?
+    expand(graph, slots, layer_qwen2.MF_SLOT_KPAST, "qwen_decode_k")?
+    expand(graph, slots, layer_qwen2.MF_SLOT_VPAST, "qwen_decode_v")?
+    carry(slots, layer_qwen2.mf_decode_layer_output_slot())?
+    layer = layer + 1
+  }
+  build_head(owner, ctx, graph, g, slots)?
+  return Ok(())
+}
