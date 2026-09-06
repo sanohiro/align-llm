@@ -76,10 +76,11 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-09-06): Requests 1–20 and 22 are CLOSED. Request 21 and Requests 23–43 and
+> **Status (2026-09-07): Requests 1–20, 22, and 57 are CLOSED. Request 21 and Requests 23–43 and
 > 45–54 are PROPOSED and non-blocking; Request 44 remains ALIGN_LLM_VERIFIED; blocking Request 55
-> is IMPLEMENTING after its Align implementation merged and awaits a published release; blocking
-> Request 56 is PROPOSED for G1's private load-staging directory lifecycle.
+> is ALIGN_MERGED and shipped in Align v0.7.3; blocking Requests 56 and 58 are PROPOSED.
+> Request 56 owns G1's private load-staging directory lifecycle, and Request 58 owns the bounded
+> borrowed-reader MIR validation pipeline.
 > R8-PARTIAL-LRU-CACHE is merged; the active compatibility adoption advances the Align pin without
 > consuming a proposed request.
 > See the end of this narrative for the next consumer named for each remaining pending user/Align
@@ -10490,7 +10491,7 @@ The first is preferable because it has one support group. Mach-O remains unchang
 ## Request 55 — `std.fs`: retained-root single-link regular-file open
 
 ```text
-Status: IMPLEMENTING
+Status: ALIGN_MERGED
 Priority: critical
 Blocking: yes
 Blocked gate or slice: G1 backend-bundle admission and immutable native loading
@@ -10501,8 +10502,9 @@ Resume condition: Align publishes a release containing the merged constructor an
   Request 56 private-directory lifecycle; align-llm updates .align-revision, materializes the
   managed toolchain, adopts both released surfaces, and binds each verified reader byte stream to
   the private artifact copy passed to the native registry
-Align commit or pull request: Align PR #952 merged as 22ac8eb8; fixed release pending publication;
-  authoritative contract in ../align/docs/impl/34-fs-single-link-plan.md
+Align commit or pull request: contract PR #951 and implementation PR #952 merged; implementation
+  commit 22ac8eb8 shipped in Align v0.7.3 from release merge 1517c0e0; authoritative contract in
+  ../align/docs/impl/34-fs-single-link-plan.md
 align-llm verification: update .align-revision to the shipped Align commit; open manifest.json and
   every declared artifact through fs.open_beneath_single_link; decode the manifest from owned read
   bytes and copy each digest-verified artifact into invocation-owned private load staging; run make
@@ -10554,11 +10556,11 @@ by itself the bundle's executable-identity boundary.
    staged path to the native registry, retains it for the complete native lifetime, and proves
    original-path replacement or in-place mutation cannot substitute loaded bytes.
 
-Align's merged implementation preserves the existing sequence through nonblocking clear, then
+Align v0.7.3's implementation preserves the existing sequence through nonblocking clear, then
 checks `st_nlink` from that sequence's existing opened-descriptor `fstat` record immediately before
 reader construction. It adds no second syscall and uses a distinct HIR/MIR operation and runtime
-key with the existing A12 ABI shape. The surface is not yet in a published release; align-llm
-adoption and the separate application-owned load-staging identity boundary have not begun.
+key with the existing A12 ABI shape. Align-side delivery is complete; align-llm adoption and the
+separate application-owned load-staging identity boundary remain pending Request 56.
 
 ---
 
@@ -10570,7 +10572,7 @@ Priority: critical
 Blocking: yes
 Blocked gate or slice: G1 backend-bundle private load staging and immutable native loading
 Independent work that may continue: GPU bundle construction and verifier logic that does not create
-  or remove the private load directory; Request 55 release publication and adoption preparation
+  or remove the private load directory; Request 55 adoption preparation
 Resume condition: an Align release ships both constructors below; align-llm adopts that release and
   `make gpu-bundle-smoke` proves private creation, exclusive child creation, every safe cleanup
   prefix, and process-owned quarantine after an unload-unsafe native side effect
