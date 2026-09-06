@@ -64,6 +64,12 @@ pub GPU_MEMORY_METADATA := 5
 pub GPU_MEMORY_STAGING := 6
 pub GPU_MEMORY_LEGACY_CACHE := 7
 
+pub GPU_WEIGHT_EXPECTED := 0
+pub GPU_WEIGHT_CREATED := 1
+pub GPU_WEIGHT_UPLOADED := 2
+pub GPU_WEIGHT_UPLOADED_BYTES := 3
+pub GPU_WEIGHT_FINISHED := 4
+
 // Outside the `ggml_status` range (`-2 ..= 2`), so a null argument handed to the compute wrapper is
 // never mistaken for a backend verdict.
 pub COMPUTE_NULL := -1000
@@ -207,6 +213,20 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_memory_bytes(owner: raw, field: i32) -> i64
   fn align_gpu_memory_allocate(owner: raw) -> i32
   fn align_gpu_memory_allocated_bytes(owner: raw, field: i32) -> i64
+  fn align_gpu_weight_metadata_bytes(tensor_count: i64) -> i64
+  fn align_gpu_weights_begin(owner: raw, tensor_count: i64) -> i32
+  fn align_gpu_weight_add(
+    owner: raw,
+    kind: i32,
+    n_dims: i32,
+    ne0: i64,
+    ne1: i64,
+    ne2: i64,
+    ne3: i64,
+  ) -> i64
+  fn align_gpu_weight_upload(owner: raw, index: i64, data: slice<u8>, length: i64) -> i32
+  fn align_gpu_weights_finish(owner: raw) -> i32
+  fn align_gpu_weight_state(owner: raw, field: i32) -> i64
   fn align_gpu_device_close(owner: raw) -> ()
   // R5C section 3.4. The registry's own device selection for either kind, its numeric properties,
   // its buffer type's maximum length, and its two names.
@@ -454,6 +474,79 @@ pub fn gpu_memory_allocated_bytes(borrow owner: GpuDevice, field: i64) -> i64 {
   }
   unsafe {
     return align_gpu_memory_allocated_bytes(resource.raw(resource.borrow(owner)), field as i32)
+  }
+}
+
+pub fn gpu_weight_metadata_bytes(tensor_count: i64) -> i64 {
+  unsafe {
+    return align_gpu_weight_metadata_bytes(tensor_count)
+  }
+}
+
+pub fn gpu_weights_begin(
+  borrow owner: GpuDevice,
+  tensor_count: i64,
+) -> Result<(), Fault> {
+  unsafe {
+    status := align_gpu_weights_begin(resource.raw(resource.borrow(owner)), tensor_count) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_weight_add(
+  borrow owner: GpuDevice,
+  kind: i64,
+  n_dims: i64,
+  ne0: i64,
+  ne1: i64,
+  ne2: i64,
+  ne3: i64,
+) -> Result<i64, Fault> {
+  if kind < 0 || kind > 2147483647 || n_dims < 1 || n_dims > 4 {
+    return Err(fault("CONFIG", "weight_shape"))
+  }
+  unsafe {
+    index := align_gpu_weight_add(
+      resource.raw(resource.borrow(owner)),
+      kind as i32,
+      n_dims as i32,
+      ne0,
+      ne1,
+      ne2,
+      ne3,
+    )
+    if index < 0 { return Err(gpu_fault_for(index)) }
+    return Ok(index)
+  }
+}
+
+pub fn gpu_weight_upload(
+  borrow owner: GpuDevice,
+  index: i64,
+  borrow data: slice<u8>,
+) -> Result<(), Fault> {
+  unsafe {
+    status := align_gpu_weight_upload(
+      resource.raw(resource.borrow(owner)), index, data, data.len(),
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_weights_finish(borrow owner: GpuDevice) -> Result<(), Fault> {
+  unsafe {
+    status := align_gpu_weights_finish(resource.raw(resource.borrow(owner))) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_weight_state(borrow owner: GpuDevice, field: i64) -> i64 {
+  if field < GPU_WEIGHT_EXPECTED || field > GPU_WEIGHT_FINISHED { return -1 }
+  unsafe {
+    return align_gpu_weight_state(resource.raw(resource.borrow(owner)), field as i32)
   }
 }
 

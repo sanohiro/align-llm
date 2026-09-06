@@ -4,6 +4,7 @@ import ggml_ffi
 import runtime_device
 import runtime_memory
 import runtime_options
+import runtime_weights
 
 fn options(backend: str, device: str, bundle_root: str) -> runtime_options.RuntimeOptions =
 runtime_options.RuntimeOptions {
@@ -36,8 +37,8 @@ runtime_memory.admit(
     kv_bytes: 262144,
     workspace_bytes: 262144,
     metadata_bytes: 4096,
-    staging_bytes: 1044480,
-    legacy_cache_bytes: 0,
+    staging_bytes: 65536,
+    legacy_cache_bytes: 978944,
   },
 )
 
@@ -75,8 +76,8 @@ fn exercise_live_owner(
     || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_KV) != 262144
     || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_WORKSPACE) != 262144
     || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_METADATA) != 4096
-    || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_STAGING) != 1044480
-    || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_LEGACY_CACHE) != 0 {
+    || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_STAGING) != 65536
+    || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_LEGACY_CACHE) != 978944 {
     return Err(Error.Invalid)
   }
   match ggml_ffi.gpu_memory_admit(owner, 1, 1, 1, 1, 1, 0) {
@@ -86,13 +87,13 @@ fn exercise_live_owner(
     }
   }
   runtime_memory.allocate(owner)?
-  if runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_HOST_TOTAL) != 1048576
+  if runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_HOST_TOTAL) != 69632
     || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_DEVICE_TOTAL) != 1048576
     || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_WEIGHTS) != 524288
     || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_KV) != 262144
     || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_WORKSPACE) != 262144
     || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_METADATA) != 4096
-    || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_STAGING) != 1044480
+    || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_STAGING) != 65536
     || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_LEGACY_CACHE) != 0 {
     return Err(Error.Invalid)
   }
@@ -101,6 +102,81 @@ fn exercise_live_owner(
     Err(fault) => {
       if fault.code != "CONFIG" { return Err(Error.Invalid) }
     }
+  }
+  if runtime_weights.metadata_bytes(1) <= 0
+    || runtime_weights.metadata_bytes(1) > 4096 {
+    return Err(Error.Invalid)
+  }
+  runtime_weights.begin(owner, 1)?
+  match runtime_weights.add(
+    owner,
+    runtime_weights.Shape {
+      ggml_type: 0,
+      n_dims: 1,
+      ne0: 0,
+      ne1: 1,
+      ne2: 1,
+      ne3: 1,
+    },
+  ) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  index := runtime_weights.add(
+    owner,
+    runtime_weights.Shape {
+      ggml_type: 0,
+      n_dims: 1,
+      ne0: 131072,
+      ne1: 1,
+      ne2: 1,
+      ne3: 1,
+    },
+  )?
+  if index != 0 { return Err(Error.Invalid) }
+  match runtime_weights.add(
+    owner,
+    runtime_weights.Shape {
+      ggml_type: 0,
+      n_dims: 1,
+      ne0: 1,
+      ne1: 1,
+      ne2: 1,
+      ne3: 1,
+    },
+  ) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  short := buffer(1)
+  short_view := short.bytes()
+  match runtime_weights.upload(owner, index, short_view) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  mut weight_data := buffer(524288)
+  mut weight_at := 0
+  loop {
+    if weight_at >= 131072 { break }
+    weight_data.put_u32_le(0)
+    weight_at = weight_at + 1
+  }
+  weight_view := weight_data.bytes()
+  runtime_weights.upload(owner, index, weight_view)?
+  if runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_EXPECTED) != 1
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_CREATED) != 1
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED) != 1
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED_BYTES) != 524288
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_FINISHED) != 0 {
+    return Err(Error.Invalid)
+  }
+  runtime_weights.finish(owner)?
+  if runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_FINISHED) != 1 {
+    return Err(Error.Invalid)
+  }
+  match runtime_weights.finish(owner) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
   }
   return Ok(())
 }
@@ -127,6 +203,31 @@ fn expect_reopen_after_failure(
   return match ggml_ffi.gpu_device_synchronize(owner) {
     Ok(_) => Ok(()),
     Err(_) => Err(Error.Invalid),
+  }
+}
+
+fn expect_weight_allocation_failure(
+  backend: str,
+  device: str,
+  bundle_root: str,
+) -> Result<(), Error> {
+  owner := opened(backend, device, bundle_root)?
+  runtime_memory.admit(
+    owner,
+    runtime_memory.MemoryPlan {
+      weights_bytes: 1,
+      kv_bytes: 1,
+      workspace_bytes: 1,
+      metadata_bytes: 4096,
+      staging_bytes: 1,
+      legacy_cache_bytes: 0,
+    },
+  )?
+  runtime_memory.allocate(owner)?
+  runtime_weights.begin(owner, 1)?
+  return match ggml_ffi.gpu_weight_add(owner, 0, 1, 1, 1, 1, 1) {
+    Ok(_) => Err(Error.Invalid),
+    Err(fault) => if fault.code == "ALLOCATION" { Ok(()) } else { Err(Error.Invalid) },
   }
 }
 
@@ -212,6 +313,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   expect_memory_budget_refusal(backend, device, bundle_root, 1, 1, 1, 1, 1048576)?
   expect_memory_budget_refusal(backend, device, bundle_root, 1, 1, 1, 9223372036854775807, 1)?
   expect_memory_budget_refusal(backend, device, bundle_root, 9223372036854775807, 1, 1, 1, 1)?
+  expect_weight_allocation_failure(backend, device, bundle_root)?
   exercise_live_owner(backend, device, bundle_root, backend_path, bundle_id)?
   exercise_live_owner(backend, device, bundle_root, backend_path, bundle_id)?
 

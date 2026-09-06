@@ -1570,6 +1570,15 @@ struct align_gpu_device_state {
     int64_t legacy_cache_bytes;
     int memory_planned;
     int memory_allocated;
+    int64_t weights_expected;
+    int64_t weights_created;
+    int64_t weights_uploaded;
+    int64_t weights_uploaded_bytes;
+    size_t weight_offset;
+    size_t pending_weight_offset;
+    size_t pending_weight_bytes;
+    int weights_finished;
+    int weights_failed;
 };
 
 static atomic_int align_gpu_busy = 0;
@@ -1810,6 +1819,149 @@ int64_t align_gpu_memory_allocated_bytes(void *owner, int32_t field) {
     case 5: return state->metadata_bytes;
     case 6: return state->staging_bytes;
     case 7: return 0;
+    default: return -1;
+    }
+}
+
+#define ALIGN_GPU_STUB_TENSOR_OVERHEAD 512
+
+int64_t align_gpu_weight_metadata_bytes(int64_t tensor_count) {
+    int64_t payload = 0;
+    if (tensor_count <= 0 || tensor_count > INT64_MAX / ALIGN_GPU_STUB_TENSOR_OVERHEAD) {
+        return -1;
+    }
+    payload = tensor_count * ALIGN_GPU_STUB_TENSOR_OVERHEAD;
+    if (payload > INT64_MAX - (ALIGN_GGML_TENSOR_ALIGNMENT - 1)) {
+        return -1;
+    }
+    return payload + (ALIGN_GGML_TENSOR_ALIGNMENT - 1);
+}
+
+int32_t align_gpu_weights_begin(void *owner, int64_t tensor_count) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    int64_t required = align_gpu_weight_metadata_bytes(tensor_count);
+    if (state == NULL || !state->memory_allocated || state->weights_expected != 0
+        || required <= 0 || required > state->metadata_bytes) {
+        return ALIGN_GPU_CONFIG;
+    }
+    state->weights_expected = tensor_count;
+    return ALIGN_GPU_OK;
+}
+
+static int align_gpu_weight_shape(
+        int32_t type, int32_t n_dims, const int64_t ne[4], size_t *nbytes) {
+    int row = align_ggml_table_row(type);
+    uint64_t total = 0;
+    uint64_t first = 0;
+    int dim = 0;
+    if (row < 0 || n_dims < 1 || n_dims > 4 || nbytes == NULL || ne[0] <= 0
+        || ne[0] % align_ggml_type_table[row][1] != 0) {
+        return 0;
+    }
+    first = (uint64_t) (ne[0] / align_ggml_type_table[row][1]);
+    if (first > (uint64_t) SIZE_MAX / (uint64_t) align_ggml_type_table[row][2]) {
+        return 0;
+    }
+    total = first * (uint64_t) align_ggml_type_table[row][2];
+    for (dim = 1; dim < 4; ++dim) {
+        if ((dim < n_dims && ne[dim] <= 0) || (dim >= n_dims && ne[dim] != 1)) {
+            return 0;
+        }
+        if (dim < n_dims) {
+            if ((uint64_t) ne[dim] > (uint64_t) SIZE_MAX / total) {
+                return 0;
+            }
+            total *= (uint64_t) ne[dim];
+        }
+    }
+    if (total == 0 || total > SIZE_MAX || total > INT64_MAX) {
+        return 0;
+    }
+    *nbytes = (size_t) total;
+    return 1;
+}
+
+int64_t align_gpu_weight_add(
+        void *owner, int32_t type, int32_t n_dims,
+        int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    int64_t ne[4] = { ne0, ne1, ne2, ne3 };
+    size_t nbytes = 0;
+    size_t padded = 0;
+    if (state == NULL || state->weights_expected <= 0 || state->weights_finished
+        || state->weights_failed || state->weights_created != state->weights_uploaded
+        || state->weights_created >= state->weights_expected
+        || !align_gpu_weight_shape(type, n_dims, ne, &nbytes)) {
+        return ALIGN_GPU_CONFIG;
+    }
+    if (nbytes > SIZE_MAX - (ALIGN_GGML_TENSOR_ALIGNMENT - 1)) {
+        state->weights_failed = 1;
+        return ALIGN_GPU_ALLOCATION;
+    }
+    padded = (nbytes + ALIGN_GGML_TENSOR_ALIGNMENT - 1)
+        & ~(size_t) (ALIGN_GGML_TENSOR_ALIGNMENT - 1);
+    if (state->weight_offset > (size_t) state->weights_bytes
+        || padded > (size_t) state->weights_bytes - state->weight_offset) {
+        state->weights_failed = 1;
+        return ALIGN_GPU_ALLOCATION;
+    }
+    state->pending_weight_offset = state->weight_offset;
+    state->pending_weight_bytes = nbytes;
+    state->weight_offset += padded;
+    state->weights_created += 1;
+    return state->weights_created - 1;
+}
+
+int32_t align_gpu_weight_upload(void *owner, int64_t index, const void *data, int64_t length) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    const unsigned char *source = (const unsigned char *) data;
+    size_t offset = 0;
+    size_t staging = 0;
+    if (state == NULL || state->pending_weight_bytes == 0 || data == NULL || length <= 0
+        || index != state->weights_uploaded || index + 1 != state->weights_created
+        || (uint64_t) length != (uint64_t) state->pending_weight_bytes) {
+        return ALIGN_GPU_CONFIG;
+    }
+    staging = (size_t) state->staging_bytes;
+    while (offset < (size_t) length) {
+        size_t chunk = (size_t) length - offset;
+        if (chunk > staging) {
+            chunk = staging;
+        }
+        memcpy(state->staging, source + offset, chunk);
+        memcpy((unsigned char *) state->weights_buffer + state->pending_weight_offset + offset,
+            state->staging, chunk);
+        offset += chunk;
+    }
+    state->weights_uploaded += 1;
+    state->weights_uploaded_bytes += length;
+    state->pending_weight_bytes = 0;
+    return ALIGN_GPU_OK;
+}
+
+int32_t align_gpu_weights_finish(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || state->weights_failed || state->weights_finished
+        || state->weights_expected <= 0 || state->weights_created != state->weights_expected
+        || state->weights_uploaded != state->weights_expected || state->pending_weight_bytes != 0
+        || state->weight_offset != (size_t) state->weights_bytes) {
+        return ALIGN_GPU_CONFIG;
+    }
+    state->weights_finished = 1;
+    return ALIGN_GPU_OK;
+}
+
+int64_t align_gpu_weight_state(void *owner, int32_t field) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || state->weights_expected <= 0) {
+        return -1;
+    }
+    switch (field) {
+    case 0: return state->weights_expected;
+    case 1: return state->weights_created;
+    case 2: return state->weights_uploaded;
+    case 3: return state->weights_uploaded_bytes;
+    case 4: return state->weights_finished;
     default: return -1;
     }
 }
