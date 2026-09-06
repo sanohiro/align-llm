@@ -45,8 +45,12 @@ contract gaps; repair commit `1560951` addressed them. Its material final review
 qualification-schema gaps, and redesigned commit `336c7fd` addressed them. The redesigned review
 then found eight remaining symptoms of predeclaring G5/G6 evidence too early; the current G1-only
 rescope removes that root cause and binds holdout coverage, build/device unavailable states,
-command bytes and evidence closure. Its stable comprehensive review and exact-head publication
-preflight remain the final actions before this design PR merges.
+command bytes and evidence closure. The stable G1 review at `a7551b4` found six concrete closure
+issues: ggml source identity, resident CPU-fallback rejection, hermetic command environment,
+deterministic numeric comparison, derived ID length and positive semantic codec vectors. The
+current consolidated repair accepts all six; because it materially specifies qualification
+behavior, one final comprehensive review remains before the exact-head publication preflight and
+merge.
 
 **Intentional uncommitted files.** None after the design candidate is committed. Models, raw
 evidence and build products remain outside Git.

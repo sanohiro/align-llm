@@ -40,6 +40,9 @@ backend registry and exact device; it does not choose a generic first GPU.
 Native Linux and WSL2 are separate evidence environments. WSL2 uses the Linux Align toolchain and
 the Windows-provided NVIDIA driver; no native-Windows support is claimed. Follow NVIDIA's WSL
 toolkit guidance and keep initial model/build inputs in the Linux filesystem.
+G1 declares no vendor-wide minimum driver/SDK range: support attaches only to the exact recorded
+bundle, OS, driver and GPU architecture tuple that passes. Evidence from a newer tuple is a new
+qualification, not proof for an older or untested tuple.
 
 Support status is keyed by
 `(backend, device architecture/name, OS, driver, backend bundle, model, quantization, placement,
@@ -53,7 +56,7 @@ promote an untested tuple.
 
 | Surface | Exact G1 contract |
 | --- | --- |
-| Configuration API | Add `ProviderConfig.runtime_options_path: str`. Empty preserves CPU behavior. Nonempty is a borrowed UTF-8 path, 1–4096 bytes with no NUL, consumed synchronously by `provider_runtime`. Network providers require empty. The caller retains the path through the call. |
+| Configuration API | Add `ProviderConfig.runtime_options_path: str`. Empty preserves CPU behavior. Nonempty is a borrowed UTF-8 path, 1–4096 bytes with no NUL, consumed synchronously only by `provider_runtime.generate`. Network providers require empty. Runtime token-count/info calls carry but never read the path or touch a device; `stream` remains unsupported. Every constructor initializes the field explicitly. The caller retains the path through the call. |
 | Generation CLI | Extend `main --provider align-runtime MODEL PACK GEOMETRY PROMPT RESULT [MAX_TOKENS] [CACHE_BUDGET_BYTES]` with the optional terminal pair `--runtime-options OPTIONS.json`. Strip it before existing positional parsing. Duplicate, misplaced or valueless options fail. The maximum-token default remains 64. |
 | Options | Strict schema-1 JSON in §3.1, read once into owned bounded data. Missing/unknown/duplicate keys, invalid UTF-8, boolean-as-integer, fraction, overflow, invalid enum and trailing document fail before model/device work. |
 | Models and sampling | Exact existing `qwen2` and `olmoe` model, pack, geometry, prompt, context and request checks. Qwen remains greedy. OLMoE retains greedy and temperature 0.3 with every signed-i64 seed. |
@@ -117,7 +120,7 @@ Record limits are:
 | Record | Canonical limit and arrays |
 | --- | --- |
 | `GPU_SOURCE_MANIFEST` | 16 MiB; 1–100,000 tracked rows |
-| `GPU_RUNTIME_PROFILE` | 256 KiB; exactly 2 models, 1–16 options, 16–256 cases |
+| `GPU_RUNTIME_PROFILE` | 256 KiB; exactly 2 models, exactly 1 option, 16–256 cases |
 | `GPU_BACKEND_BUNDLE` | 256 KiB; 1–32 GPU architecture entries, 0–128 flags, 1–128 artifacts |
 | `GPU_NUMERIC_CALIBRATION` | 1 MiB; 2–32 cases per model, at most 64 across a profile |
 | `GPU_RUNTIME_EVIDENCE` | 8 MiB result; 0–256 cases and 0–4,096 retained files |
@@ -134,27 +137,32 @@ digests; semantic invariants; aggregate and directory closure.
 ### 3.4 Source manifest schema 1
 
 `GPU_SOURCE_MANIFEST` key order is
-`schema_version,artifact_kind,repository,object_format,commit,commit_object_sha256,tree,files`.
-Constants are 1 and `GPU_SOURCE_MANIFEST`; repository is exactly
-`https://github.com/sanohiro/align-llm.git`; object format is `sha1|sha256`.
+`schema_version,artifact_kind,source_kind,repository,object_format,commit,commit_object_sha256,tree,files`.
+Constants are 1 and `GPU_SOURCE_MANIFEST`; `source_kind` is `align-llm|ggml`. The first requires
+repository `https://github.com/sanohiro/align-llm.git`; the second requires
+`https://github.com/ggml-org/llama.cpp.git`. Object format is `sha1|sha256`.
 
 File rows are `path,mode,bytes,git_oid,sha256`, sorted by raw UTF-8 path bytes. Modes are
 `100644|100755|120000`; submodules and other modes fail. Distinct paths may share content. Evidence
-stores each distinct blob once as regular `source/blobs/<sha256>`, including symlink target bytes
-without following them, and retains the raw commit body as `source/commit`.
+stores each distinct blob once as regular `source/<source_kind>/blobs/<sha256>`, including symlink
+target bytes without following them, and retains the raw commit body as
+`source/<source_kind>/commit`.
 
 Replay recomputes blob Git objects, every nested tree and the commit OID, and requires exact
-manifest/blob closure. Snapshot identity is SHA-256 of ASCII `GPU_SOURCE_SNAPSHOT`, NUL, canonical
-manifest bytes, then each row's raw 32-byte SHA-256. This permits cross-host replay without trusting
-local ancestry. The evaluated commit must still be reachable from the exact merging head at
-publication.
+manifest/blob closure. Snapshot identity is SHA-256 of ASCII `GPU_SOURCE_SNAPSHOT`, NUL,
+`source_kind`, NUL, canonical manifest bytes, then each row's raw 32-byte SHA-256. This permits
+cross-host replay without trusting local ancestry. The evaluated align-llm commit must still be
+reachable from the exact merging head at publication. The bundle's ggml commit and source-manifest
+digest must equal the `ggml` record, whose commit/tree/blob objects are retained and replayed by the
+same rules; neither repository may borrow the other's manifest.
 
 ### 3.5 Qualification profile schema 1
 
 Top-level key order is
 `schema_version,artifact_kind,profile_id,platform,source,bundle_manifest,models,runtime_options,cases,deadlines_ns`.
 Constants are 1 and `GPU_RUNTIME_PROFILE`; platform is `macos|linux|wsl2`; source is
-`commit,manifest_sha256`; bundle manifest is a `FileRef`.
+`commit,manifest_sha256` and must resolve a `source_kind=align-llm` manifest; bundle manifest is a
+`FileRef`.
 
 Models contain exactly `qwen2` then `olmoe`. A row is
 `model_id,model_path,model_sha256,pack_path,pack_sha256,geometry_path,geometry_sha256,calibration_path,calibration_sha256`.
@@ -163,7 +171,7 @@ Calibration case IDs are unique across both documents and total at most 64.
 
 Runtime-option rows are
 `option_id,schema_version,backend,device,backend_bundle,placement,host_budget_bytes,device_budget_bytes,prefetch`.
-The last eight fields have §3.1 semantics; bundle path resolves to the declared manifest directory.
+There is exactly one row. Its last eight fields have §3.1 semantics; bundle path resolves to the declared manifest directory.
 Every row names the bundle's backend and one exact device from that registry. Metal profiles require
 `platform=macos`; CUDA requires `linux|wsl2`. The empty option sentinel below is the only exception
 to the identifier grammar.
@@ -179,6 +187,8 @@ appear in this order: `(cpu,0),(gpu_resident,0),(cpu,1),(gpu_resident,1)`. Their
 `<calibration_case_id>.<execution>.<repeat_index>`. No subset or extra case is valid. Thus every
 frozen calibration input and unseen holdout executes twice on both same-build CPU and GPU.
 Calibration rows must pass but cannot modify tolerances; every holdout GPU row must pass.
+`case_order_sha256` in evidence is SHA-256 of ASCII `GPU_CASE_ORDER`, NUL, then canonical compact
+JSON bytes of this exact `cases` array without a final LF.
 
 `deadlines_ns` is `preparation,generation`: positive and respectively at most
 3,600,000,000,000 and 900,000,000,000 ns. No extension is allowed after observing results.
@@ -190,7 +200,9 @@ The runner validates every byte and cross-reference before device or output-dire
 `schema_version,artifact_kind,bundle_id,backend,ggml,target,toolchain,build_flags,artifacts`.
 Constants are 1 and `GPU_BACKEND_BUNDLE`; `bundle_id` is SHA-256 of canonical bytes with that
 field replaced by 64 zeroes. Backend is `metal|cuda`. `ggml` is
-`commit,source_manifest_sha256,version` and binds an immutable complete checkout.
+`commit,source_manifest_sha256,version` and binds an immutable complete checkout through the
+`source_kind=ggml` manifest from §3.4. The bundle input includes that manifest, raw commit and every
+distinct content-addressed blob; qualification copies them into evidence before temporary cleanup.
 
 `target` is `os,arch,gpu_architectures`; OS is `macos|linux`, arch is
 `aarch64|x86_64`, and architectures are nonempty compiled targets. `toolchain` is
@@ -221,9 +233,27 @@ Tolerances are finite nonnegative binary32 bit patterns. The remaining constants
 boundary is a near tie only when the kth and first excluded reference scores differ within the
 frozen tie tolerance; outside that group IDs/order and weights follow the declared tolerances.
 
+Comparison treats each finite binary32 value as its exact real number. For CPU reference `r`, GPU
+candidate `c`, absolute tolerance `A`, relative tolerance `R`, and binary32 minimum-normal
+`M=2^-126`, define `d=abs(c-r)`, `s=max(abs(r),abs(c),M)`. The scalar passes iff
+`d <= max(A,R*s)`, with exact-real multiplication/comparison; signed zero therefore passes and
+subnormals use `M` as the scale floor. NaN or infinity on either side fails `NONFINITE` before this
+predicate. Evidence maximum absolute error is the maximum `d`; maximum relative error is the
+maximum `d/s`; each is rounded once to binary64 round-to-nearest-ties-even for its recorded bits.
+`mismatch_count` counts scalar positions failing this predicate.
+
+For OLMoE routing, form the reference boundary group from all expert IDs whose reference score is
+within the exact-real near-tie tolerance of the kth selected reference score. If the kth-to-first-
+excluded gap exceeds that tolerance, selected IDs and order must match exactly. Otherwise both
+selected sets must contain the same exact IDs outside the boundary group, may differ only within
+that group, and every corresponding weight still passes the scalar predicate above.
+`near_tie_count` counts token/layer routing boundaries admitted by this second rule, not individual
+experts. No GPU-derived score may enlarge the boundary group.
+
 Cases are
 `case_id,role,prompt_utf8,prompt_sha256,prompt_token_ids,teacher_forced_token_ids,sampler_mode,temperature_micros,seed,maximum_tokens,expected_token_ids`.
-There is at least one `calibration` and one `holdout`. Prompts are at most 65,536 bytes and at
+Each `case_id` matches `[a-z0-9][a-z0-9._-]{0,48}`, reserving 15 characters for the longest derived
+`.gpu_resident.1` suffix. There is at least one `calibration` and one `holdout`. Prompts are at most 65,536 bytes and at
 most 4,096 nonnegative i32 token IDs. Teacher-forced IDs are nonempty. Greedy uses zero
 temperature/seed; seeded uses 300000 micros and any signed-i64 seed. Maximum tokens is 1–128.
 Expected IDs are the same-build CPU result and may be empty only for immediate EOG.
@@ -240,19 +270,22 @@ Malformed input or occupied destination creates no output. After validation, a f
 build failure, crash, signal, timeout, missing result or cleanup failure publishes a bounded FAIL
 bundle when the parent remains able to do so.
 
-The directory contains only `result.json`, canonical profile/bundle/calibration/source manifests,
-`source/commit`, `source/blobs/<sha256>`, `artifacts/<sha256>`, and
+The directory contains only `result.json`, canonical profile/bundle/calibration manifests,
+`source/align-llm/manifest.json`, `source/align-llm/commit`,
+`source/align-llm/blobs/<sha256>`, `source/ggml/manifest.json`, `source/ggml/commit`,
+`source/ggml/blobs/<sha256>`, `artifacts/<sha256>`, and
 `logs/<three-digit-ordinal>.stdout|stderr`. Models/packs/geometry are identified but not copied.
 Files are single-link regular files. Logs record original count/digest and retain their first 4 MiB;
 truncation fails the case.
 
 `GPU_RUNTIME_EVIDENCE` top-level key order is
-`schema_version,artifact_kind,status,suite,profile_id,source,host,bundle,inputs,files,cases,aggregate,cleanup,failure,elapsed_ns`.
+`schema_version,artifact_kind,status,suite,profile_id,source,host,bundle,inputs,preparation_commands,files,cases,aggregate,cleanup,failure,elapsed_ns`.
 Constants are 1, `GPU_RUNTIME_EVIDENCE`, and `generation`; status is `PASS|FAIL`.
 
 - `source` is
-  `commit,source_manifest_sha256,source_snapshot_sha256,align_revision,compiler,runtime,runner,shim,cpu_reference`.
-  The last five are `ProducedIdentity`. Each records availability only after that preparation/build
+  `commit,source_manifest_sha256,source_snapshot_sha256,align_revision,align_compiler,align_runtime,qualifier,candidate,shim,cpu_reference`.
+  The first three bind the `source_kind=align-llm` record and snapshot. The last six are
+  `ProducedIdentity`. Each records availability only after that preparation/build
   step completed; failure before or during a step uses the unavailable tag. PASS requires all.
 - `host` is
   `platform,os_version,kernel,arch,wsl,cpu,logical_cpus,host_total_bytes,host_free_bytes,backend,device_state,registry_device,device_description,driver,gpu_architecture,device_total_bytes,device_free_bytes`.
@@ -260,17 +293,22 @@ Constants are 1, `GPU_RUNTIME_EVIDENCE`, and `generation`; status is `PASS|FAIL`
   strings nonempty and both byte observations positive. `device_state="unavailable"` requires four
   empty strings and two zeroes, is valid only in FAIL evidence, and truthfully represents discovery
   failure before a device identity exists.
-- `bundle` is `manifest_sha256,bundle_id,loaded_artifact_sha256s`; loaded hashes are a unique
-  manifest subset in actual load order.
+- `bundle` is
+  `manifest_sha256,bundle_id,ggml_source_manifest_sha256,ggml_source_snapshot_sha256,loaded_artifact_sha256s`;
+  its source values match §3.6 and replay §3.4, and loaded hashes are a unique manifest subset in
+  actual load order.
 - `inputs` is `profile_sha256,models,calibration_ids,case_order_sha256`; model rows contain
   `model_id,model_sha256,pack_sha256,geometry_sha256`.
+- `preparation_commands` contains 0–16 `Command` objects in actual order for compiler/runtime
+  materialization and candidate/shim/CPU-reference builds. FAIL permits the constructed/executed
+  prefix; PASS requires the runner-derived complete sequence and all successful identities.
 - `files` rows are
   `role,path,bytes,sha256,original_bytes,original_sha256,truncated`, sorted by path and covering
   every retained file other than `result.json`. Roles are
-  `profile|bundle_manifest|calibration|source_manifest|source_commit|source_blob|helper|shim|backend_artifact|stdout|stderr`.
+  `profile|bundle_manifest|calibration|align_source_manifest|align_source_commit|align_source_blob|ggml_source_manifest|ggml_source_commit|ggml_source_blob|helper|shim|backend_artifact|stdout|stderr`.
 
 Case rows are
-`ordinal,case_id,calibration_case_id,role,execution,repeat_index,model_id,option_id,terminal,category,stage,exit_code,signal,command_sha256,output_sha256,token_ids,nonfinite_count,numeric,placement,transfers,memory,timing,stdout_path,stderr_path`.
+`ordinal,case_id,calibration_case_id,role,execution,repeat_index,model_id,option_id,terminal,category,stage,exit_code,signal,command,output_sha256,token_ids,nonfinite_count,numeric,placement,transfers,memory,timing,stdout_path,stderr_path`.
 Ordinals and identity fields equal the profile. Terminal is
 `PASS|FAIL|TIMEOUT|CRASH|SIGNAL|MISSING`; exit code/signal are integer or null. Missing output uses
 an empty digest. Numeric is
@@ -279,9 +317,14 @@ zero bit patterns/counts and true permits an exact zero result. CPU rows require
 GPU rows compare against the adjacent same-repeat CPU row and require true.
 
 `placement` is
-`gpu_operations,cpu_operations,gpu_layers,cpu_layers,gpu_experts,cpu_experts,weights_device_bytes,kv_device_bytes`;
-all are nonnegative and a passing GPU row requires positive GPU operations, weight bytes and KV
-bytes, including prompt KV for an immediate-EOG case.
+`expected_model_operations,gpu_model_operations,cpu_model_operations,expected_layers,gpu_layers,cpu_layers,expected_experts,gpu_experts,cpu_experts,weights_device_bytes,kv_device_bytes`.
+Counts cover only model graph operations from embedding through output projection; tokenizer,
+prompt construction, sampling, EOG control and text decode are explicitly outside them. The
+reviewed graph trace derives the three expected counts from exact model geometry, prompt width,
+teacher-forced width and generated steps. A passing GPU row requires each expected count equal its
+GPU count, every CPU count zero, expected operations/layers positive, and weight/KV bytes positive
+including prompt KV for an immediate-EOG case. Qwen has zero expected/GPU experts; OLMoE counts
+every selected expert application and must have a positive exact match.
 `transfers` is `host_to_device_bytes,device_to_host_bytes,wait_count`. `memory` is
 `managed_host_peak_bytes,managed_device_peak_bytes,uma_alias_peak_bytes,rss_peak_bytes,driver_peak_bytes`;
 the driver value is integer or null when unavailable. `timing` is
@@ -289,12 +332,27 @@ the driver value is integer or null when unavailable. `timing` is
 started case, and other fields are nonnegative integer or null when unavailable. Overlapping
 observations are not summed into wall.
 
-`command_sha256` hashes ASCII `GPU_CASE_COMMAND`, NUL, little-endian u32 argv count, then each
-argv as little-endian u64 UTF-8 byte length plus bytes, little-endian u32 environment count, then
-each scrubbed `NAME=value` with the same u64 framing sorted by raw ASCII name. Names match
-`[A-Z_][A-Z0-9_]*` and are unique. Secrets and machine-local input paths become
-`<logical-id>:sha256:<digest>` before sorting/hashing. Empty is allowed only when no command could
-be constructed and that case cannot pass.
+`Command` is `kind,argv,environment,sha256`, where kind is
+`compiler_materialize|runtime_materialize|candidate_build|shim_build|cpu_reference_build|case`.
+The runner resolves every executable by its verified
+absolute path, starts from an empty environment, and inserts exactly `HOME=<owned-empty-home>`,
+`LC_ALL=C`, `TMPDIR=<owned-temp>`, and `TZ=UTC`, in that canonical name order. No ambient name
+survives: in particular `PATH`, compiler/linker flags and search paths, cache variables and
+`CUDA_VISIBLE_DEVICES` are unset. Compiler/SDK inputs are absolute verified argv; runtime artifacts
+are opened by verified absolute path, so loader search variables are unnecessary. These fixed
+sources override rather than merge with the parent environment.
+
+Evidence retains the complete logical argv and `NAME=value` environment arrays for every
+preparation and case command. Machine-local input paths become
+`<logical-id>:sha256:<digest>` and invocation-owned directory/output paths become
+`<logical-id>:owned`; secrets are not accepted as qualifier inputs. The hash preimage is ASCII `GPU_QUALIFIER_COMMAND`, NUL, then kind as a
+little-endian u64 UTF-8 byte length plus bytes, little-endian u32 argv count, each argv with the same
+u64 framing, little-endian u32 environment count, then each retained environment entry with the
+same u64 framing. A constructed command has nonempty
+argv, exactly four environment entries and a digest. If construction was never reached all three
+trailing fields are empty arrays/empty string and `kind=""`; that sentinel is valid only on a
+nonpassing case. Replay recomputes the digest and the
+runner rechecks each logical path/digest mapping immediately before spawn.
 
 `aggregate` is
 `case_count,passed_count,failed_count,managed_host_peak_bytes,managed_device_peak_bytes,decision`.
@@ -311,20 +369,29 @@ cleanup. FAIL may contain zero or a profile-order prefix of case rows; missing s
 represented by the top-level failure rather than fabricated timings. The CLI returns zero only for
 PASS.
 
-### 3.9 Canonical codec vectors
+### 3.9 Canonical positive vectors
 
-The following are exact UTF-8 bytes with one final LF per line. Decode plus canonical encode must
-reproduce each line byte-for-byte; reordered input canonicalizes to the same line. Duplicate keys,
-uppercase digests, BOM, missing final document boundary and a second document fail. Empty required
-collections exercise codec shape only and fail the semantic array bounds in §§3.3–3.8.
+The following eight lines are the normative schema-1 positive fixture. Their self-identities, Git
+object IDs, content hashes, cross-references, array minima and derived 16-case expansion are real,
+not placeholders. The final evidence row is a valid pre-case device-discovery failure: it retains
+both source closures and every produced artifact while using the unavailable device/CPU-reference
+tags. The pure record validator accepts every line; the evidence-directory replay owner additionally
+materializes the declared `files` byte map during G1 implementation.
+
+Decode plus canonical encode reproduces each line with one final LF byte-for-byte; reordered input
+canonicalizes to the same line. Duplicate keys, uppercase digests, BOM, missing document boundary
+and a second document fail. `case_order_sha256` is SHA-256 of ASCII `GPU_CASE_ORDER`, NUL, then the
+canonical compact JSON bytes of the profile's `cases` array without a final LF.
 
 ```json
-{"schema_version":1,"backend":"metal","device":"golden","backend_bundle":"bundle","placement":"resident","host_budget_bytes":1,"device_budget_bytes":1,"prefetch":"off"}
-{"schema_version":1,"artifact_kind":"GPU_SOURCE_MANIFEST","repository":"https://github.com/sanohiro/align-llm.git","object_format":"sha1","commit":"0000000000000000000000000000000000000000","commit_object_sha256":"0000000000000000000000000000000000000000000000000000000000000000","tree":"0000000000000000000000000000000000000000","files":[]}
-{"schema_version":1,"artifact_kind":"GPU_RUNTIME_PROFILE","profile_id":"golden","platform":"macos","source":{"commit":"0000000000000000000000000000000000000000","manifest_sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"bundle_manifest":{"path":"bundle.json","sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"models":[],"runtime_options":[],"cases":[],"deadlines_ns":{"preparation":1,"generation":1}}
-{"schema_version":1,"artifact_kind":"GPU_BACKEND_BUNDLE","bundle_id":"0000000000000000000000000000000000000000000000000000000000000000","backend":"metal","ggml":{"commit":"0000000000000000000000000000000000000000","source_manifest_sha256":"0000000000000000000000000000000000000000000000000000000000000000","version":"golden"},"target":{"os":"macos","arch":"aarch64","gpu_architectures":[]},"toolchain":{"c_compiler":{"name":"golden","version":"golden","sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"cxx_compiler":{"name":"golden","version":"golden","sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"sdk":{"name":"golden","version":"golden","sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"toolkit":{"name":"none","version":"none","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}},"build_flags":[],"artifacts":[]}
-{"schema_version":1,"artifact_kind":"GPU_NUMERIC_CALIBRATION","calibration_id":"0000000000000000000000000000000000000000000000000000000000000000","backend":"metal","bundle_id":"0000000000000000000000000000000000000000000000000000000000000000","model":{"model_id":"qwen2","model_sha256":"0000000000000000000000000000000000000000000000000000000000000000","pack_sha256":"0000000000000000000000000000000000000000000000000000000000000000","geometry_sha256":"0000000000000000000000000000000000000000000000000000000000000000","quantization":"Q4_K_M"},"precision":"f32","comparison":{"absolute_tolerance_f32_bits":"00000000","relative_tolerance_f32_bits":"00000000","near_tie_tolerance_f32_bits":"00000000","nonfinite":"reject","reference":"cpu-same-build","layer_scope":"all","topk_rule":"same-ordered-ids-or-declared-near-tie"},"cases":[]}
-{"schema_version":1,"artifact_kind":"GPU_RUNTIME_EVIDENCE","status":"FAIL","suite":"generation","profile_id":"golden","source":{"commit":"0000000000000000000000000000000000000000","source_manifest_sha256":"0000000000000000000000000000000000000000000000000000000000000000","source_snapshot_sha256":"0000000000000000000000000000000000000000000000000000000000000000","align_revision":"0000000000000000000000000000000000000000","compiler":{"state":"unavailable","name":"","version":"","sha256":""},"runtime":{"state":"unavailable","name":"","version":"","sha256":""},"runner":{"state":"available","name":"gpu-runtime-qualify","version":"golden","sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"shim":{"state":"unavailable","name":"","version":"","sha256":""},"cpu_reference":{"state":"unavailable","name":"","version":"","sha256":""}},"host":{"platform":"macos","os_version":"golden","kernel":"golden","arch":"aarch64","wsl":false,"cpu":"golden","logical_cpus":1,"host_total_bytes":1,"host_free_bytes":1,"backend":"metal","device_state":"unavailable","registry_device":"","device_description":"","driver":"","gpu_architecture":"","device_total_bytes":0,"device_free_bytes":0},"bundle":{"manifest_sha256":"0000000000000000000000000000000000000000000000000000000000000000","bundle_id":"0000000000000000000000000000000000000000000000000000000000000000","loaded_artifact_sha256s":[]},"inputs":{"profile_sha256":"0000000000000000000000000000000000000000000000000000000000000000","models":[],"calibration_ids":[],"case_order_sha256":"0000000000000000000000000000000000000000000000000000000000000000"},"files":[],"cases":[],"aggregate":{"case_count":0,"passed_count":0,"failed_count":0,"managed_host_peak_bytes":0,"managed_device_peak_bytes":0,"decision":"unmeasured"},"cleanup":{"descendants_before":0,"descendants_after":0,"owned_paths_removed":true,"invocation_state_safe":true,"source_unchanged":true,"inputs_unchanged":true},"failure":{"category":"CONFIG","stage":"options","case_ordinal":-1,"detail":"golden"},"elapsed_ns":1}
+{"schema_version":1,"backend":"metal","device":"fixture-device","backend_bundle":"bundle","placement":"resident","host_budget_bytes":1,"device_budget_bytes":1,"prefetch":"off"}
+{"schema_version":1,"artifact_kind":"GPU_SOURCE_MANIFEST","source_kind":"align-llm","repository":"https://github.com/sanohiro/align-llm.git","object_format":"sha1","commit":"a23d777430cbc1dfc357d425e29f7715354147d2","commit_object_sha256":"b5d1e58bf66655a5bc612de17cefb55f0cbce22342d8ad52451550a2517b5aeb","tree":"7c7003088534356ae2b7c5eab9f91755214dc776","files":[{"path":"runner.py","mode":"100644","bytes":7,"git_oid":"c33ca062091e8f3ffeed1ee95dd272122529d24c","sha256":"ab49f3eb142e8e18c94fa79d2017f57b6141b1c4cdc042f1a0d0e3de5297090e"}]}
+{"schema_version":1,"artifact_kind":"GPU_SOURCE_MANIFEST","source_kind":"ggml","repository":"https://github.com/ggml-org/llama.cpp.git","object_format":"sha1","commit":"3a34663d19739a78907425252e3685128f9388c4","commit_object_sha256":"fc31069ce39dffe5f276b9fd80621c0947b4634e8e9b0986b7a5f9b932756460","tree":"3098a23e2ae55378d0dfddd09730da71134ac61b","files":[{"path":"ggml.c","mode":"100644","bytes":5,"git_oid":"1af38368de4ebeb7c776e937699ac5d7dfae5cbd","sha256":"e1df5b4f4e7884f07e600b7e61a71fb3171661050b3281cb675bc06ac644f9d2"}]}
+{"schema_version":1,"artifact_kind":"GPU_BACKEND_BUNDLE","bundle_id":"1f6f864bfabb4e0f42155494a56738e0ebb9457b4ee6bb70b28aa395a16021cc","backend":"metal","ggml":{"commit":"3a34663d19739a78907425252e3685128f9388c4","source_manifest_sha256":"a609bc11fe9ff2c7c945f3b45ce9d63148d86d28d3c1a4548d6fdf784d0885da","version":"fixture"},"target":{"os":"macos","arch":"aarch64","gpu_architectures":["apple_m1"]},"toolchain":{"c_compiler":{"name":"cc","version":"fixture","sha256":"a3960f48bb1f93e212cd1ea623b9b58a50d93a1e876f0172b8c07c34824a50f1"},"cxx_compiler":{"name":"cxx","version":"fixture","sha256":"ce83332611f3b5e97402adc3b1ed19ea4768953e4b050070cdbffb1e1cd07c19"},"sdk":{"name":"macos","version":"fixture","sha256":"26e5d2e798113f713318a98981b2df55f52894eddc33fbbaf64deabeeb6706ec"},"toolkit":{"name":"none","version":"none","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}},"build_flags":[],"artifacts":[{"role":"shared_library","path":"libggml.dylib","bytes":7,"sha256":"ef17b7d320f2acc023f2018dab381827ba22f9d01b6c4c97894e1bbfe4928313"}]}
+{"schema_version":1,"artifact_kind":"GPU_NUMERIC_CALIBRATION","calibration_id":"f05b90250ab17c514b43529a319ec1879a6eccf67a19309ca4d4a3c7b70d8e1d","backend":"metal","bundle_id":"1f6f864bfabb4e0f42155494a56738e0ebb9457b4ee6bb70b28aa395a16021cc","model":{"model_id":"qwen2","model_sha256":"66c2cd691eaa072e668e6e08895c3d3ac87850e45a6246acb526c818ffa94ce7","pack_sha256":"df1a391299a7dbf3e69914a05012e5c550f13bf6a91152c612c03871b38add05","geometry_sha256":"2254151e52d7a63d4a515fbe4a7b544b71abcbd26df82e53279dcc61121a09bb","quantization":"Q4_K_M"},"precision":"f32","comparison":{"absolute_tolerance_f32_bits":"00000000","relative_tolerance_f32_bits":"00000000","near_tie_tolerance_f32_bits":"00000000","nonfinite":"reject","reference":"cpu-same-build","layer_scope":"all","topk_rule":"same-ordered-ids-or-declared-near-tie"},"cases":[{"case_id":"qwen2-cal","role":"calibration","prompt_utf8":"q-cal","prompt_sha256":"5e07c2bbc17366d7980ffbc28c96b7846f4bf34f41bfe7e45ede7bc375c867a5","prompt_token_ids":[1],"teacher_forced_token_ids":[2],"sampler_mode":"greedy","temperature_micros":0,"seed":0,"maximum_tokens":1,"expected_token_ids":[3]},{"case_id":"qwen2-hold","role":"holdout","prompt_utf8":"q-hold","prompt_sha256":"c5b7cdb722b3529ec42eaff080f93231436ac76937b237c1f922167df1d28dea","prompt_token_ids":[1],"teacher_forced_token_ids":[2],"sampler_mode":"greedy","temperature_micros":0,"seed":0,"maximum_tokens":1,"expected_token_ids":[4]}]}
+{"schema_version":1,"artifact_kind":"GPU_NUMERIC_CALIBRATION","calibration_id":"0a7bb4740f7d9c774caf371e8ecb949b06eb77de77a3db48118e86301a471c0a","backend":"metal","bundle_id":"1f6f864bfabb4e0f42155494a56738e0ebb9457b4ee6bb70b28aa395a16021cc","model":{"model_id":"olmoe","model_sha256":"6e8fcf187877b71a470da2bfcfdf78483ec486bc84fb2a1b3a24fcd2f16d9c51","pack_sha256":"7de77ae32bf2f41bdbf53f9884a953bf6dc691af305800530f15abf1b4704313","geometry_sha256":"0011b32e89ed81df8b5845741d07753a51ce2b6f522844ab43cfd66b18af36b7","quantization":"Q4_K_M"},"precision":"f32","comparison":{"absolute_tolerance_f32_bits":"00000000","relative_tolerance_f32_bits":"00000000","near_tie_tolerance_f32_bits":"00000000","nonfinite":"reject","reference":"cpu-same-build","layer_scope":"all","topk_rule":"same-ordered-ids-or-declared-near-tie"},"cases":[{"case_id":"olmoe-cal","role":"calibration","prompt_utf8":"o-cal","prompt_sha256":"8a3902d95d85f8cbf4244e9cf4d30e1013e68305baed192320e49ea47478d87c","prompt_token_ids":[1],"teacher_forced_token_ids":[2],"sampler_mode":"greedy","temperature_micros":0,"seed":0,"maximum_tokens":1,"expected_token_ids":[5]},{"case_id":"olmoe-hold","role":"holdout","prompt_utf8":"o-hold","prompt_sha256":"d816cd73b31f913b6b5ee77b12f22da83ad9be55029c67851b77e8361d038ef6","prompt_token_ids":[1],"teacher_forced_token_ids":[2],"sampler_mode":"seeded","temperature_micros":300000,"seed":7,"maximum_tokens":1,"expected_token_ids":[6]}]}
+{"schema_version":1,"artifact_kind":"GPU_RUNTIME_PROFILE","profile_id":"metal-fixture","platform":"macos","source":{"commit":"a23d777430cbc1dfc357d425e29f7715354147d2","manifest_sha256":"380710b45bc9c6a33d452f3378f69bef555447934966f76d30fafdc5cb5b3dec"},"bundle_manifest":{"path":"bundle/manifest.json","sha256":"4b1456b8815e40b6211ef95193e86bfe1b4f2d4311d648674e70c15836104876"},"models":[{"model_id":"qwen2","model_path":"inputs/qwen2.model","model_sha256":"66c2cd691eaa072e668e6e08895c3d3ac87850e45a6246acb526c818ffa94ce7","pack_path":"inputs/qwen2.pack","pack_sha256":"df1a391299a7dbf3e69914a05012e5c550f13bf6a91152c612c03871b38add05","geometry_path":"inputs/qwen2.geometry","geometry_sha256":"2254151e52d7a63d4a515fbe4a7b544b71abcbd26df82e53279dcc61121a09bb","calibration_path":"calibration/qwen2.json","calibration_sha256":"81da51aa3eae45b3ff9d8b5ab5597da0bac3525fa360519b33a82b66f88fae07"},{"model_id":"olmoe","model_path":"inputs/olmoe.model","model_sha256":"6e8fcf187877b71a470da2bfcfdf78483ec486bc84fb2a1b3a24fcd2f16d9c51","pack_path":"inputs/olmoe.pack","pack_sha256":"7de77ae32bf2f41bdbf53f9884a953bf6dc691af305800530f15abf1b4704313","geometry_path":"inputs/olmoe.geometry","geometry_sha256":"0011b32e89ed81df8b5845741d07753a51ce2b6f522844ab43cfd66b18af36b7","calibration_path":"calibration/olmoe.json","calibration_sha256":"225c8e329ebf1bb5af195cdece3c59bcd19a052ba6dbe606978bd483b7756db3"}],"runtime_options":[{"option_id":"resident","schema_version":1,"backend":"metal","device":"fixture-device","backend_bundle":"bundle","placement":"resident","host_budget_bytes":1,"device_budget_bytes":1,"prefetch":"off"}],"cases":[{"case_id":"qwen2-cal.cpu.0","calibration_case_id":"qwen2-cal","role":"calibration","execution":"cpu","repeat_index":0,"model_id":"qwen2","option_id":"","maximum_tokens":1},{"case_id":"qwen2-cal.gpu_resident.0","calibration_case_id":"qwen2-cal","role":"calibration","execution":"gpu_resident","repeat_index":0,"model_id":"qwen2","option_id":"resident","maximum_tokens":1},{"case_id":"qwen2-cal.cpu.1","calibration_case_id":"qwen2-cal","role":"calibration","execution":"cpu","repeat_index":1,"model_id":"qwen2","option_id":"","maximum_tokens":1},{"case_id":"qwen2-cal.gpu_resident.1","calibration_case_id":"qwen2-cal","role":"calibration","execution":"gpu_resident","repeat_index":1,"model_id":"qwen2","option_id":"resident","maximum_tokens":1},{"case_id":"qwen2-hold.cpu.0","calibration_case_id":"qwen2-hold","role":"holdout","execution":"cpu","repeat_index":0,"model_id":"qwen2","option_id":"","maximum_tokens":1},{"case_id":"qwen2-hold.gpu_resident.0","calibration_case_id":"qwen2-hold","role":"holdout","execution":"gpu_resident","repeat_index":0,"model_id":"qwen2","option_id":"resident","maximum_tokens":1},{"case_id":"qwen2-hold.cpu.1","calibration_case_id":"qwen2-hold","role":"holdout","execution":"cpu","repeat_index":1,"model_id":"qwen2","option_id":"","maximum_tokens":1},{"case_id":"qwen2-hold.gpu_resident.1","calibration_case_id":"qwen2-hold","role":"holdout","execution":"gpu_resident","repeat_index":1,"model_id":"qwen2","option_id":"resident","maximum_tokens":1},{"case_id":"olmoe-cal.cpu.0","calibration_case_id":"olmoe-cal","role":"calibration","execution":"cpu","repeat_index":0,"model_id":"olmoe","option_id":"","maximum_tokens":1},{"case_id":"olmoe-cal.gpu_resident.0","calibration_case_id":"olmoe-cal","role":"calibration","execution":"gpu_resident","repeat_index":0,"model_id":"olmoe","option_id":"resident","maximum_tokens":1},{"case_id":"olmoe-cal.cpu.1","calibration_case_id":"olmoe-cal","role":"calibration","execution":"cpu","repeat_index":1,"model_id":"olmoe","option_id":"","maximum_tokens":1},{"case_id":"olmoe-cal.gpu_resident.1","calibration_case_id":"olmoe-cal","role":"calibration","execution":"gpu_resident","repeat_index":1,"model_id":"olmoe","option_id":"resident","maximum_tokens":1},{"case_id":"olmoe-hold.cpu.0","calibration_case_id":"olmoe-hold","role":"holdout","execution":"cpu","repeat_index":0,"model_id":"olmoe","option_id":"","maximum_tokens":1},{"case_id":"olmoe-hold.gpu_resident.0","calibration_case_id":"olmoe-hold","role":"holdout","execution":"gpu_resident","repeat_index":0,"model_id":"olmoe","option_id":"resident","maximum_tokens":1},{"case_id":"olmoe-hold.cpu.1","calibration_case_id":"olmoe-hold","role":"holdout","execution":"cpu","repeat_index":1,"model_id":"olmoe","option_id":"","maximum_tokens":1},{"case_id":"olmoe-hold.gpu_resident.1","calibration_case_id":"olmoe-hold","role":"holdout","execution":"gpu_resident","repeat_index":1,"model_id":"olmoe","option_id":"resident","maximum_tokens":1}],"deadlines_ns":{"preparation":1,"generation":1}}
+{"schema_version":1,"artifact_kind":"GPU_RUNTIME_EVIDENCE","status":"FAIL","suite":"generation","profile_id":"metal-fixture","source":{"commit":"a23d777430cbc1dfc357d425e29f7715354147d2","source_manifest_sha256":"380710b45bc9c6a33d452f3378f69bef555447934966f76d30fafdc5cb5b3dec","source_snapshot_sha256":"d131a621e907b4b038d32e4f9a6fe330ad8e7651cec34c9430f18a9c74172b91","align_revision":"8cefc803d5c7f883a8db5b67250ed4ed069b43a4","align_compiler":{"state":"available","name":"cc","version":"fixture","sha256":"a3960f48bb1f93e212cd1ea623b9b58a50d93a1e876f0172b8c07c34824a50f1"},"align_runtime":{"state":"available","name":"runtime","version":"fixture","sha256":"fae9d8f386d67956867dedef7c89476199a4a25ee9ffe13560a6bfae7ae6c407"},"qualifier":{"state":"available","name":"gpu-runtime-qualify","version":"fixture","sha256":"ab49f3eb142e8e18c94fa79d2017f57b6141b1c4cdc042f1a0d0e3de5297090e"},"candidate":{"state":"available","name":"candidate","version":"fixture","sha256":"1e81270f1a47dce22a2e4985250c74b2e3374443734f1492b03ea2cd2af4ec48"},"shim":{"state":"available","name":"shim","version":"fixture","sha256":"b7c748b4a4d1c37826a11b7bd04068a24094832a969948118b75e48a2dfd23e6"},"cpu_reference":{"state":"unavailable","name":"","version":"","sha256":""}},"host":{"platform":"macos","os_version":"fixture","kernel":"fixture","arch":"aarch64","wsl":false,"cpu":"fixture","logical_cpus":1,"host_total_bytes":1,"host_free_bytes":1,"backend":"metal","device_state":"unavailable","registry_device":"","device_description":"","driver":"","gpu_architecture":"","device_total_bytes":0,"device_free_bytes":0},"bundle":{"manifest_sha256":"4b1456b8815e40b6211ef95193e86bfe1b4f2d4311d648674e70c15836104876","bundle_id":"1f6f864bfabb4e0f42155494a56738e0ebb9457b4ee6bb70b28aa395a16021cc","ggml_source_manifest_sha256":"a609bc11fe9ff2c7c945f3b45ce9d63148d86d28d3c1a4548d6fdf784d0885da","ggml_source_snapshot_sha256":"f3e5d1e376f924d1626485a18138293d4d551ba848c9d008ebeed07a3f703721","loaded_artifact_sha256s":[]},"inputs":{"profile_sha256":"e29d5b67ca1ecfeb3a19b1cd15522ad4704b72ce82e12c0d0bda6a892cb98ceb","models":[{"model_id":"qwen2","model_sha256":"66c2cd691eaa072e668e6e08895c3d3ac87850e45a6246acb526c818ffa94ce7","pack_sha256":"df1a391299a7dbf3e69914a05012e5c550f13bf6a91152c612c03871b38add05","geometry_sha256":"2254151e52d7a63d4a515fbe4a7b544b71abcbd26df82e53279dcc61121a09bb"},{"model_id":"olmoe","model_sha256":"6e8fcf187877b71a470da2bfcfdf78483ec486bc84fb2a1b3a24fcd2f16d9c51","pack_sha256":"7de77ae32bf2f41bdbf53f9884a953bf6dc691af305800530f15abf1b4704313","geometry_sha256":"0011b32e89ed81df8b5845741d07753a51ce2b6f522844ab43cfd66b18af36b7"}],"calibration_ids":["f05b90250ab17c514b43529a319ec1879a6eccf67a19309ca4d4a3c7b70d8e1d","0a7bb4740f7d9c774caf371e8ecb949b06eb77de77a3db48118e86301a471c0a"],"case_order_sha256":"02c1c7a03dbfb99f9cacc1ae481651e210f2e7c6a276f3f002046a8d1eb997cc"},"preparation_commands":[{"kind":"compiler_materialize","argv":["<qualifier>:sha256:ab49f3eb142e8e18c94fa79d2017f57b6141b1c4cdc042f1a0d0e3de5297090e","ensure-compiler"],"environment":["HOME=<home>:owned","LC_ALL=C","TMPDIR=<tmp>:owned","TZ=UTC"],"sha256":"322c13a24484df7ca0dc30ab0ba56bd276bd715d6e1b679380e2a54e598eb715"},{"kind":"runtime_materialize","argv":["<qualifier>:sha256:ab49f3eb142e8e18c94fa79d2017f57b6141b1c4cdc042f1a0d0e3de5297090e","ensure-runtime"],"environment":["HOME=<home>:owned","LC_ALL=C","TMPDIR=<tmp>:owned","TZ=UTC"],"sha256":"605851f712d5a995df46aa8809f6a0927e6605faa1f7312b434990315e845835"},{"kind":"candidate_build","argv":["<align-compiler>:sha256:a3960f48bb1f93e212cd1ea623b9b58a50d93a1e876f0172b8c07c34824a50f1","build-candidate","<align-runtime>:sha256:fae9d8f386d67956867dedef7c89476199a4a25ee9ffe13560a6bfae7ae6c407"],"environment":["HOME=<home>:owned","LC_ALL=C","TMPDIR=<tmp>:owned","TZ=UTC"],"sha256":"9a13126f939591a688e44192dc45848d758438328e8f14086d7e9283fb4f9a21"},{"kind":"shim_build","argv":["<cc>:sha256:a3960f48bb1f93e212cd1ea623b9b58a50d93a1e876f0172b8c07c34824a50f1","build-shim","<shim>:sha256:b7c748b4a4d1c37826a11b7bd04068a24094832a969948118b75e48a2dfd23e6"],"environment":["HOME=<home>:owned","LC_ALL=C","TMPDIR=<tmp>:owned","TZ=UTC"],"sha256":"c12003636ed6ad72675586c17665e2e747912d85151bfb6426d34a21818cdb90"}],"files":[{"role":"helper","path":"artifacts/1e81270f1a47dce22a2e4985250c74b2e3374443734f1492b03ea2cd2af4ec48","bytes":10,"sha256":"1e81270f1a47dce22a2e4985250c74b2e3374443734f1492b03ea2cd2af4ec48","original_bytes":10,"original_sha256":"1e81270f1a47dce22a2e4985250c74b2e3374443734f1492b03ea2cd2af4ec48","truncated":false},{"role":"helper","path":"artifacts/a3960f48bb1f93e212cd1ea623b9b58a50d93a1e876f0172b8c07c34824a50f1","bytes":3,"sha256":"a3960f48bb1f93e212cd1ea623b9b58a50d93a1e876f0172b8c07c34824a50f1","original_bytes":3,"original_sha256":"a3960f48bb1f93e212cd1ea623b9b58a50d93a1e876f0172b8c07c34824a50f1","truncated":false},{"role":"helper","path":"artifacts/ab49f3eb142e8e18c94fa79d2017f57b6141b1c4cdc042f1a0d0e3de5297090e","bytes":7,"sha256":"ab49f3eb142e8e18c94fa79d2017f57b6141b1c4cdc042f1a0d0e3de5297090e","original_bytes":7,"original_sha256":"ab49f3eb142e8e18c94fa79d2017f57b6141b1c4cdc042f1a0d0e3de5297090e","truncated":false},{"role":"shim","path":"artifacts/b7c748b4a4d1c37826a11b7bd04068a24094832a969948118b75e48a2dfd23e6","bytes":5,"sha256":"b7c748b4a4d1c37826a11b7bd04068a24094832a969948118b75e48a2dfd23e6","original_bytes":5,"original_sha256":"b7c748b4a4d1c37826a11b7bd04068a24094832a969948118b75e48a2dfd23e6","truncated":false},{"role":"backend_artifact","path":"artifacts/ef17b7d320f2acc023f2018dab381827ba22f9d01b6c4c97894e1bbfe4928313","bytes":7,"sha256":"ef17b7d320f2acc023f2018dab381827ba22f9d01b6c4c97894e1bbfe4928313","original_bytes":7,"original_sha256":"ef17b7d320f2acc023f2018dab381827ba22f9d01b6c4c97894e1bbfe4928313","truncated":false},{"role":"helper","path":"artifacts/fae9d8f386d67956867dedef7c89476199a4a25ee9ffe13560a6bfae7ae6c407","bytes":8,"sha256":"fae9d8f386d67956867dedef7c89476199a4a25ee9ffe13560a6bfae7ae6c407","original_bytes":8,"original_sha256":"fae9d8f386d67956867dedef7c89476199a4a25ee9ffe13560a6bfae7ae6c407","truncated":false},{"role":"bundle_manifest","path":"bundle-manifest.json","bytes":1069,"sha256":"4b1456b8815e40b6211ef95193e86bfe1b4f2d4311d648674e70c15836104876","original_bytes":1069,"original_sha256":"4b1456b8815e40b6211ef95193e86bfe1b4f2d4311d648674e70c15836104876","truncated":false},{"role":"calibration","path":"calibration/olmoe.json","bytes":1444,"sha256":"225c8e329ebf1bb5af195cdece3c59bcd19a052ba6dbe606978bd483b7756db3","original_bytes":1444,"original_sha256":"225c8e329ebf1bb5af195cdece3c59bcd19a052ba6dbe606978bd483b7756db3","truncated":false},{"role":"calibration","path":"calibration/qwen2.json","bytes":1439,"sha256":"81da51aa3eae45b3ff9d8b5ab5597da0bac3525fa360519b33a82b66f88fae07","original_bytes":1439,"original_sha256":"81da51aa3eae45b3ff9d8b5ab5597da0bac3525fa360519b33a82b66f88fae07","truncated":false},{"role":"profile","path":"profile.json","bytes":4644,"sha256":"e29d5b67ca1ecfeb3a19b1cd15522ad4704b72ce82e12c0d0bda6a892cb98ceb","original_bytes":4644,"original_sha256":"e29d5b67ca1ecfeb3a19b1cd15522ad4704b72ce82e12c0d0bda6a892cb98ceb","truncated":false},{"role":"align_source_blob","path":"source/align-llm/blobs/ab49f3eb142e8e18c94fa79d2017f57b6141b1c4cdc042f1a0d0e3de5297090e","bytes":7,"sha256":"ab49f3eb142e8e18c94fa79d2017f57b6141b1c4cdc042f1a0d0e3de5297090e","original_bytes":7,"original_sha256":"ab49f3eb142e8e18c94fa79d2017f57b6141b1c4cdc042f1a0d0e3de5297090e","truncated":false},{"role":"align_source_commit","path":"source/align-llm/commit","bytes":166,"sha256":"b5d1e58bf66655a5bc612de17cefb55f0cbce22342d8ad52451550a2517b5aeb","original_bytes":166,"original_sha256":"b5d1e58bf66655a5bc612de17cefb55f0cbce22342d8ad52451550a2517b5aeb","truncated":false},{"role":"align_source_manifest","path":"source/align-llm/manifest.json","bytes":543,"sha256":"380710b45bc9c6a33d452f3378f69bef555447934966f76d30fafdc5cb5b3dec","original_bytes":543,"original_sha256":"380710b45bc9c6a33d452f3378f69bef555447934966f76d30fafdc5cb5b3dec","truncated":false},{"role":"ggml_source_blob","path":"source/ggml/blobs/e1df5b4f4e7884f07e600b7e61a71fb3171661050b3281cb675bc06ac644f9d2","bytes":5,"sha256":"e1df5b4f4e7884f07e600b7e61a71fb3171661050b3281cb675bc06ac644f9d2","original_bytes":5,"original_sha256":"e1df5b4f4e7884f07e600b7e61a71fb3171661050b3281cb675bc06ac644f9d2","truncated":false},{"role":"ggml_source_commit","path":"source/ggml/commit","bytes":161,"sha256":"fc31069ce39dffe5f276b9fd80621c0947b4634e8e9b0986b7a5f9b932756460","original_bytes":161,"original_sha256":"fc31069ce39dffe5f276b9fd80621c0947b4634e8e9b0986b7a5f9b932756460","truncated":false},{"role":"ggml_source_manifest","path":"source/ggml/manifest.json","bytes":535,"sha256":"a609bc11fe9ff2c7c945f3b45ce9d63148d86d28d3c1a4548d6fdf784d0885da","original_bytes":535,"original_sha256":"a609bc11fe9ff2c7c945f3b45ce9d63148d86d28d3c1a4548d6fdf784d0885da","truncated":false}],"cases":[],"aggregate":{"case_count":0,"passed_count":0,"failed_count":0,"managed_host_peak_bytes":0,"managed_device_peak_bytes":0,"decision":"unmeasured"},"cleanup":{"descendants_before":0,"descendants_after":0,"owned_paths_removed":true,"invocation_state_safe":true,"source_unchanged":true,"inputs_unchanged":true},"failure":{"category":"DEVICE_UNAVAILABLE","stage":"device","case_ordinal":-1,"detail":"fixture"},"elapsed_ns":1}
 ```
 
 ## 4. Execution and memory design
@@ -369,7 +436,14 @@ order and poison process state if native safety cannot be proven.
 | invocation guard | sequential same-bundle requests and concurrent CPU independence | concurrent GPU request, different bundle, failed prior native init | guard released only from safe state; `gpu-invocation-busy`, `gpu-second-after-failure` |
 | sampler/result | same logits preserve exact greedy/RNG/filter/output behavior | malformed/nonfinite logits, decode error, partial text | no handle escapes; `gpu-sampler-fixed`, `gpu-output-refusal` |
 | profile/calibration | exact four-row expansion executes every calibration/holdout twice | omitted/extra/reordered/cross-model case, changed tolerance/expected output | immutable input recheck; `gpu-profile-coverage`, `gpu-holdout-replay` |
-| evidence/publication | canonical codecs, complete Git snapshot, available/unavailable build identities, command hash | duplicate/oversize records, source/tree mismatch, compile/crash/timeout, >4,096 files or >512 MiB projected closure | kill/reap owned group, retain bounded diagnostics, exclusive rename; `gpu-schema-codec`, `gpu-source-replay`, `gpu-build-failure-evidence`, `gpu-command-hash`, `gpu-process-cleanup`, `gpu-result-replay` |
+| evidence/publication | canonical positive codecs, complete align-llm/ggml Git snapshots, available/unavailable build/device identities, exact argv/environment | duplicate/oversize records, source/tree mismatch, ambient-environment injection, compile/crash/timeout, >4,096 files or >512 MiB projected closure | kill/reap owned group, retain bounded diagnostics, exclusive rename; `gpu-schema-codec`, `gpu-source-replay`, `gpu-build-failure-evidence`, `gpu-command-environment`, `gpu-process-cleanup`, `gpu-result-replay` |
+
+The native resource is an invocation-local root and is never returned, stored globally or placed in
+a collection. Owners cover construction, move with source nulling, borrow, replacement, early
+return and `?`, each construction prefix, explicit completion, ordinary Drop and poisoned cleanup
+in whole-program and per-unit builds. GPU/GPU entrypoint pairs serialize by rejection before native
+side effects; CPU/GPU pairs are independent except for ordinary host resource contention.
+Independent processes have independent registries and admission guards.
 
 Before creating the staging directory, the qualifier computes a conservative closure count/size from
 the source manifest, fixed retained inputs, possible produced artifacts and two logs per profile
