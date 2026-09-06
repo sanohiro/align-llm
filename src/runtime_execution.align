@@ -1,6 +1,119 @@
 module runtime_execution
 
+import core.json
 import ggml_ffi
+import std.crypto
+import std.encoding
+
+MAX_TOPOLOGY_BYTES := 4096
+
+pub TopologyIdentity {
+  backend: string,
+  bundle_id: string,
+  model_id: string,
+  model_layout_sha256: string,
+  tensor_shape_stride_sha256: string,
+  attention_policy: string,
+}
+
+pub TopologyInvocation {
+  graph_kind: i64,
+  buffer_generation: i64,
+  kv_view_width: i64,
+  query_width: i64,
+  mask_layout_sha256: string,
+  position_layout_sha256: string,
+  output_selection_sha256: string,
+}
+
+TopologyRecord {
+  schema_version: i64,
+  artifact_kind: string,
+  backend: string,
+  bundle_id: string,
+  model_id: string,
+  model_layout_sha256: string,
+  tensor_shape_stride_sha256: string,
+  attention_policy: string,
+  graph_kind: i64,
+  buffer_generation: i64,
+  kv_view_width: i64,
+  query_width: i64,
+  mask_layout_sha256: string,
+  position_layout_sha256: string,
+  output_selection_sha256: string,
+}
+
+fn valid_digest(value: str) -> bool {
+  if value.len() != 64 { return false }
+  bytes := value.bytes()
+  mut at := 0
+  loop {
+    if at >= bytes.len() { break }
+    byte := bytes[at]
+    if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return false }
+    at = at + 1
+  }
+  return true
+}
+
+fn valid_identifier(value: str) -> bool {
+  if value.len() < 1 || value.len() > 64 { return false }
+  bytes := value.bytes()
+  mut at := 0
+  loop {
+    if at >= bytes.len() { break }
+    byte := bytes[at]
+    alpha := byte >= 97 && byte <= 122
+    digit := byte >= 48 && byte <= 57
+    if !(alpha || digit || (at > 0 && (byte == 46 || byte == 95 || byte == 45))) {
+      return false
+    }
+    at = at + 1
+  }
+  return true
+}
+
+pub fn topology_key(
+  borrow identity: TopologyIdentity,
+  borrow invocation: TopologyInvocation,
+) -> Result<string, Error> {
+  if (identity.backend != "metal" && identity.backend != "cuda")
+    || (identity.model_id != "qwen2" && identity.model_id != "olmoe")
+    || !valid_digest(identity.bundle_id)
+    || !valid_digest(identity.model_layout_sha256)
+    || !valid_digest(identity.tensor_shape_stride_sha256)
+    || !valid_identifier(identity.attention_policy)
+    || (invocation.graph_kind != ggml_ffi.GPU_GRAPH_PREFILL
+      && invocation.graph_kind != ggml_ffi.GPU_GRAPH_DECODE)
+    || invocation.buffer_generation < 1 || invocation.kv_view_width < 1
+    || invocation.query_width < 1
+    || !valid_digest(invocation.mask_layout_sha256)
+    || !valid_digest(invocation.position_layout_sha256)
+    || !valid_digest(invocation.output_selection_sha256) {
+    return Err(Error.Invalid)
+  }
+  record := TopologyRecord {
+    schema_version: 1,
+    artifact_kind: "GPU_GRAPH_TOPOLOGY".clone(),
+    backend: identity.backend.clone(),
+    bundle_id: identity.bundle_id.clone(),
+    model_id: identity.model_id.clone(),
+    model_layout_sha256: identity.model_layout_sha256.clone(),
+    tensor_shape_stride_sha256: identity.tensor_shape_stride_sha256.clone(),
+    attention_policy: identity.attention_policy.clone(),
+    graph_kind: invocation.graph_kind,
+    buffer_generation: invocation.buffer_generation,
+    kv_view_width: invocation.kv_view_width,
+    query_width: invocation.query_width,
+    mask_layout_sha256: invocation.mask_layout_sha256.clone(),
+    position_layout_sha256: invocation.position_layout_sha256.clone(),
+    output_selection_sha256: invocation.output_selection_sha256.clone(),
+  }
+  canonical := json.encode_bounded(record, MAX_TOPOLOGY_BYTES)?
+  digest := crypto.sha256(canonical)
+  return Ok(encoding.hex_encode(digest[0..digest.len()]).clone())
+}
 
 pub fn context(
   borrow owner: ggml_ffi.GpuDevice,

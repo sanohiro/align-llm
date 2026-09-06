@@ -9,9 +9,90 @@ import runtime_memory
 import runtime_options
 import runtime_weights
 
-PREFILL_TOPOLOGY_KEY := "0000000000000000000000000000000000000000000000000000000000000001"
-DECODE_TOPOLOGY_KEY := "0000000000000000000000000000000000000000000000000000000000000002"
-REBUILT_TOPOLOGY_KEY := "0000000000000000000000000000000000000000000000000000000000000003"
+MODEL_LAYOUT_DIGEST := "1111111111111111111111111111111111111111111111111111111111111111"
+PREFILL_TENSOR_DIGEST := "2222222222222222222222222222222222222222222222222222222222222222"
+DECODE_TENSOR_DIGEST := "3333333333333333333333333333333333333333333333333333333333333333"
+REBUILT_TENSOR_DIGEST := "4444444444444444444444444444444444444444444444444444444444444444"
+MASK_LAYOUT_DIGEST := "5555555555555555555555555555555555555555555555555555555555555555"
+POSITION_LAYOUT_DIGEST := "6666666666666666666666666666666666666666666666666666666666666666"
+PREFILL_OUTPUT_DIGEST := "7777777777777777777777777777777777777777777777777777777777777777"
+DECODE_OUTPUT_DIGEST := "8888888888888888888888888888888888888888888888888888888888888888"
+REBUILT_OUTPUT_DIGEST := "9999999999999999999999999999999999999999999999999999999999999999"
+TOPOLOGY_GOLDEN_BUNDLE := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+TOPOLOGY_GOLDEN_KEY := "32f8b86e8ec64fe172029ef8f7cffae65f13bb68daf9b064b843e0c391d5fbd7"
+
+fn topology_key(
+  backend: str,
+  bundle_id: str,
+  graph_kind: i64,
+  tensor_shape_stride_sha256: str,
+  kv_view_width: i64,
+  output_selection_sha256: str,
+) -> Result<string, Error> {
+  identity := runtime_execution.TopologyIdentity {
+    backend: backend.clone(),
+    bundle_id: bundle_id.clone(),
+    model_id: "qwen2".clone(),
+    model_layout_sha256: MODEL_LAYOUT_DIGEST.clone(),
+    tensor_shape_stride_sha256: tensor_shape_stride_sha256.clone(),
+    attention_policy: "decomposed-f32".clone(),
+  }
+  invocation := runtime_execution.TopologyInvocation {
+    graph_kind: graph_kind,
+    buffer_generation: 1,
+    kv_view_width: kv_view_width,
+    query_width: 1,
+    mask_layout_sha256: MASK_LAYOUT_DIGEST.clone(),
+    position_layout_sha256: POSITION_LAYOUT_DIGEST.clone(),
+    output_selection_sha256: output_selection_sha256.clone(),
+  }
+  return runtime_execution.topology_key(identity, invocation)
+}
+
+fn fixed_identity(bundle_id: str) -> runtime_execution.TopologyIdentity =
+runtime_execution.TopologyIdentity {
+  backend: "metal".clone(),
+  bundle_id: bundle_id.clone(),
+  model_id: "qwen2".clone(),
+  model_layout_sha256: MODEL_LAYOUT_DIGEST.clone(),
+  tensor_shape_stride_sha256: PREFILL_TENSOR_DIGEST.clone(),
+  attention_policy: "decomposed-f32".clone(),
+}
+
+fn fixed_invocation(buffer_generation: i64) -> runtime_execution.TopologyInvocation =
+runtime_execution.TopologyInvocation {
+  graph_kind: ggml_ffi.GPU_GRAPH_PREFILL,
+  buffer_generation: buffer_generation,
+  kv_view_width: 2,
+  query_width: 1,
+  mask_layout_sha256: MASK_LAYOUT_DIGEST.clone(),
+  position_layout_sha256: POSITION_LAYOUT_DIGEST.clone(),
+  output_selection_sha256: PREFILL_OUTPUT_DIGEST.clone(),
+}
+
+fn expect_topology_key() -> Result<(), Error> {
+  fixed := topology_key(
+    "metal", TOPOLOGY_GOLDEN_BUNDLE, ggml_ffi.GPU_GRAPH_PREFILL, PREFILL_TENSOR_DIGEST, 2,
+    PREFILL_OUTPUT_DIGEST,
+  )?
+  if fixed != TOPOLOGY_GOLDEN_KEY {
+    return Err(Error.Invalid)
+  }
+  mut invalid_digest := fixed_identity(TOPOLOGY_GOLDEN_BUNDLE)
+  invalid_digest.bundle_id =
+  "Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".clone()
+  invocation := fixed_invocation(1)
+  match runtime_execution.topology_key(invalid_digest, invocation) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  identity := fixed_identity(TOPOLOGY_GOLDEN_BUNDLE)
+  invalid_generation := fixed_invocation(0)
+  return match runtime_execution.topology_key(identity, invalid_generation) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
 
 fn options(backend: str, device: str, bundle_root: str) -> runtime_options.RuntimeOptions =
 runtime_options.RuntimeOptions {
@@ -325,6 +406,29 @@ fn exercise_live_owner(
   }
   decode_ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_DECODE, 98304)
   if ggml_ffi.handle_absent(decode_ctx) { return Err(Error.Invalid) }
+  prefill_topology_key := topology_key(
+    backend, bundle_id, ggml_ffi.GPU_GRAPH_PREFILL, PREFILL_TENSOR_DIGEST, 2,
+    PREFILL_OUTPUT_DIGEST,
+  )?
+  repeated_prefill_topology_key := topology_key(
+    backend, bundle_id, ggml_ffi.GPU_GRAPH_PREFILL, PREFILL_TENSOR_DIGEST, 2,
+    PREFILL_OUTPUT_DIGEST,
+  )?
+  decode_topology_key := topology_key(
+    backend, bundle_id, ggml_ffi.GPU_GRAPH_DECODE, DECODE_TENSOR_DIGEST, 1,
+    DECODE_OUTPUT_DIGEST,
+  )?
+  rebuilt_topology_key := topology_key(
+    backend, bundle_id, ggml_ffi.GPU_GRAPH_PREFILL, REBUILT_TENSOR_DIGEST, 1,
+    REBUILT_OUTPUT_DIGEST,
+  )?
+  if prefill_topology_key.len() != 64 || prefill_topology_key != repeated_prefill_topology_key
+    || decode_topology_key.len() != 64
+    || rebuilt_topology_key.len() != 64 || prefill_topology_key == decode_topology_key
+    || prefill_topology_key == rebuilt_topology_key
+    || decode_topology_key == rebuilt_topology_key {
+    return Err(Error.Invalid)
+  }
   mut slot_storage := buffer(256)
   mut slot_word := 0
   loop {
@@ -438,13 +542,13 @@ fn exercise_live_owner(
     return Err(Error.Invalid)
   }
   runtime_execution.prepare(
-    owner, ggml_ffi.GPU_GRAPH_PREFILL, PREFILL_TOPOLOGY_KEY, graph,
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_topology_key, graph,
   )?
   runtime_execution.prepare(
-    owner, ggml_ffi.GPU_GRAPH_DECODE, DECODE_TOPOLOGY_KEY, decode_graph,
+    owner, ggml_ffi.GPU_GRAPH_DECODE, decode_topology_key, decode_graph,
   )?
   match runtime_execution.prepare(
-    owner, ggml_ffi.GPU_GRAPH_PREFILL, PREFILL_TOPOLOGY_KEY, graph,
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_topology_key, graph,
   ) {
     Ok(_) => { return Err(Error.Invalid) }
     Err(_) => {}
@@ -492,7 +596,7 @@ fn exercise_live_owner(
     return Err(Error.Invalid)
   }
   runtime_execution.compute(
-    owner, ggml_ffi.GPU_GRAPH_PREFILL, PREFILL_TOPOLOGY_KEY, graph,
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_topology_key, graph,
   )?
   match ggml_ffi.gpu_device_synchronize(owner) {
     Ok(_) => {}
@@ -552,7 +656,7 @@ fn exercise_live_owner(
   kv_twos_view := kv_twos.bytes()
   runtime_kv.update(owner, kv_index, 261120, kv_twos_view)?
   match ggml_ffi.gpu_graph_compute(
-    owner, ggml_ffi.GPU_GRAPH_PREFILL, PREFILL_TOPOLOGY_KEY, decode_graph,
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_topology_key, decode_graph,
   ) {
     Ok(_) => { return Err(Error.Invalid) }
     Err(fault) => {
@@ -560,7 +664,7 @@ fn exercise_live_owner(
     }
   }
   match ggml_ffi.gpu_graph_compute(
-    owner, ggml_ffi.GPU_GRAPH_PREFILL, DECODE_TOPOLOGY_KEY, graph,
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, decode_topology_key, graph,
   ) {
     Ok(_) => { return Err(Error.Invalid) }
     Err(fault) => {
@@ -568,7 +672,7 @@ fn exercise_live_owner(
     }
   }
   runtime_execution.compute(
-    owner, ggml_ffi.GPU_GRAPH_PREFILL, PREFILL_TOPOLOGY_KEY, graph,
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_topology_key, graph,
   )?
   match ggml_ffi.gpu_device_synchronize(owner) {
     Ok(_) => {}
@@ -620,7 +724,7 @@ fn exercise_live_owner(
     return Err(Error.Invalid)
   }
   runtime_execution.compute(
-    owner, ggml_ffi.GPU_GRAPH_DECODE, DECODE_TOPOLOGY_KEY, decode_graph,
+    owner, ggml_ffi.GPU_GRAPH_DECODE, decode_topology_key, decode_graph,
   )?
   match ggml_ffi.gpu_device_synchronize(owner) {
     Ok(_) => {}
@@ -678,7 +782,7 @@ fn exercise_live_owner(
     Err(_) => {}
   }
   runtime_execution.prepare(
-    owner, ggml_ffi.GPU_GRAPH_PREFILL, REBUILT_TOPOLOGY_KEY, rebuilt_graph,
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, rebuilt_topology_key, rebuilt_graph,
   )?
   workspace_after_rebuild := runtime_memory.allocated_bytes(
     owner, ggml_ffi.GPU_MEMORY_WORKSPACE,
@@ -687,7 +791,7 @@ fn exercise_live_owner(
     return Err(Error.Invalid)
   }
   match ggml_ffi.gpu_graph_compute(
-    owner, ggml_ffi.GPU_GRAPH_PREFILL, PREFILL_TOPOLOGY_KEY, rebuilt_graph,
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_topology_key, rebuilt_graph,
   ) {
     Ok(_) => { return Err(Error.Invalid) }
     Err(fault) => {
@@ -695,7 +799,7 @@ fn exercise_live_owner(
     }
   }
   runtime_execution.compute(
-    owner, ggml_ffi.GPU_GRAPH_PREFILL, REBUILT_TOPOLOGY_KEY, rebuilt_graph,
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, rebuilt_topology_key, rebuilt_graph,
   )?
   match ggml_ffi.gpu_device_synchronize(owner) {
     Ok(_) => {}
@@ -715,7 +819,7 @@ fn exercise_live_owner(
     return Err(Error.Invalid)
   }
   runtime_execution.compute(
-    owner, ggml_ffi.GPU_GRAPH_DECODE, DECODE_TOPOLOGY_KEY, decode_graph,
+    owner, ggml_ffi.GPU_GRAPH_DECODE, decode_topology_key, decode_graph,
   )?
   if runtime_execution.state(
     owner, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_GRAPH_PREPARED) != 2
@@ -907,6 +1011,7 @@ fn expect_bundle_switch(
 
 pub fn main(args: array<str>) -> Result<(), Error> {
   if args.len() != 9 { return Err(Error.Invalid) }
+  expect_topology_key()?
   mode := args[1]
   backend := args[2]
   device := args[3]
