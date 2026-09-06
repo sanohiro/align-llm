@@ -12,12 +12,13 @@ implemented. Align remains pinned to `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
 Align Request 55's retained-root single-link reader implementation merged in Align PR #952 as
 `22ac8eb8`, but no release containing it is published. G1 artifact loading and publication remain
-blocked until that release is available, `.align-revision` adopts it, and the GPU bundle verifier
-passes its hard-link, symlink, identity, and cleanup owners. The constructor certifies only the
-opened inode at one observation point, so G1 must additionally copy the digest-verified reader bytes
-into invocation-owned private load staging and pass only that retained copy to the native registry;
-replacement and in-place-mutation races own that boundary. Bundle construction and staging/verifier
-work that does not consume the constructor may continue independently.
+blocked until that release is available and `.align-revision` adopts it. The constructor certifies
+only the opened inode at one observation point, so G1 must additionally copy the digest-verified
+reader bytes into private load staging. Request 56 records the second blocking Align gap: the pin
+cannot create a private temporary directory or remove an empty directory, and align-llm will not
+hide those operations in its native shim. Safe release removes the stage; an unload-unsafe failure
+transfers its handles and complete tree to process-owned poisoned quarantine until exit.
+Bundle construction and verifier work that consumes neither missing surface may continue.
 
 PR #205 records the subsequent discussion in `docs/specs/gpu-runtime-performance.md` §1.1–§1.2 and
 its architecture/roadmap pointers. It separates the goal, historical measured evidence, unresolved
@@ -30,8 +31,9 @@ implementation requirement is introduced.
 
 1. Complete the requested Request 55 register publication with authoritative-doc review and
    exact-head docs preflight. GitHub owns the final review/check record.
-2. When the fixed Align release is published, adopt its exact revision and verify Request 55 at the
-   GPU bundle consumer boundary, including the private staged-byte-to-native-load identity races.
+2. When fixed Align releases containing Requests 55 and 56 are published, adopt their exact revision
+   and verify both at the GPU bundle consumer boundary, including private staged-byte-to-native-load
+   identity races, cleanup prefixes, and poisoned process ownership.
 3. When implementation resumes, start G1's pinned-backend feasibility and immutable Metal/CUDA
    recipes, complete Qwen/OLMoE device graphs and their provider caller, and populate/execute the
    numerical qualification. These checkpoints belong to one consumer capability, not probe-only PRs.
@@ -45,7 +47,8 @@ its historical figures against their owning specifications and language claims a
 Align pin. `git diff --check` passed; static checks passed for Markdown fences, relative/pinned
 source links, evidence-owner values/rounding and the eight unchanged G1 JSON vectors. Source tests,
 GPU builds and new speed measurements are N/A for this documentation-only update. Requests
-34/35/38/41 remain the existing language-owned limitations; no new Align gap is established.
+34/35/38/41 remain language-owned limitations. Request 56 is the newly established blocking Align
+filesystem gap; Request 55 remains separately blocked on release publication.
 Metal and CUDA require their own real-host evidence. AMD hardware is unavailable.
 Models, raw evidence and build products remain outside Git.
 

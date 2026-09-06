@@ -66,10 +66,10 @@ promote an untested tuple.
 | Models and sampling | Exact existing `qwen2` and `olmoe` model, pack, geometry, prompt, context and request checks. Qwen remains greedy. OLMoE retains greedy and temperature 0.3 with every signed-i64 seed. |
 | Legacy cache budget | Preserve Qwen-zero / OLMoE-positive `runtime_cache_budget_bytes`. For G1 resident execution the positive OLMoE value remains an admitted host expert-cache ceiling but may allocate zero bytes. It must not exceed `host_budget_bytes`. |
 | Result and errors | Existing owned `Result<string, Error>` and CLI schema 2 remain. GPU refusal maps to `Error.Invalid` without partial output. Qualification retains the internal category/stage. |
-| Device and bundle | Resolve one exact registry and device from the verified immutable backend bundle. Read the manifest and every artifact through `fs.open_beneath_single_link`; decode the manifest from owned reader bytes. The native staging owner copies each bounded artifact byte stream into a unique unshared `0700` load directory, creates each file exclusively as `0600`, verifies its finalized size/digest, changes it to `0400`, closes its writer, and passes only that private absolute path to the native registry. The directory becomes `0500` before the first load. Its owner and every loaded library survive through native release or process exit; neither the original path nor an ambient search path reaches the loader. Ambiguous, unavailable, incompatible or mismatched identities fail. |
+| Device and bundle | Resolve one exact registry and device from the verified immutable backend bundle. Read the manifest and every artifact through `fs.open_beneath_single_link`; decode the manifest from owned reader bytes. After Request 56 ships, the application staging owner uses `fs.create_private_temp_dir` to create one collision-resistant directory with permissions no broader than `0700`, copies each manifest-bounded artifact into a file created only through `fs.create_exclusive_beneath`, completes and drops its writer, reopens that staged file through `fs.open_beneath_single_link`, and verifies its finalized size/digest before passing only its private absolute path to the native registry. The directory and paths are never exposed to another application branch. Their owner and every loaded library survive through safe native release or transfer together to the process-owned poisoned quarantine until exit; neither the original path nor an ambient search path reaches the loader. Ambiguous, unavailable, incompatible or mismatched identities fail. |
 | Ownership | `runtime_device` owns native state through a package-defined opaque Move resource. `runtime_execution` borrows it only inside one request. Explicit fallible synchronization/release precedes success; exactly-once Drop is the safety fallback. No raw handle or device view escapes. |
 | Memory | Full model weights, KV and reusable compute workspace are device resident. `host_budget_bytes` and `device_budget_bytes` cover application-managed allocations using checked arithmetic. Metal aliases are charged once physically and reported separately. |
-| State | One GPU generation at a time per process. A native atomic guard rejects overlap before device side effects. Invocation resources are not persisted. The first successfully initialized bundle pins its manifest digest; a later different bundle fails before loading. Partial initialization poisons later GPU admission. CPU calls neither initialize nor replace it. |
+| State | One GPU generation at a time per process. A native atomic guard rejects overlap before device side effects. Safe completion persists no invocation resource. The first successfully initialized bundle pins its manifest digest; a later different bundle fails before loading. If failure after native side effects cannot prove safe unload, the native handles and their staging owner transfer atomically to a process-owned poisoned quarantine, reject every later GPU admission, and remain until process exit; this is the only persisted failure state. CPU calls neither initialize nor replace it. |
 | Validation order | Provider/request syntax; bounded options; model/pack/geometry/prompt/context; bundle identity; exact registry/device; op/buffer capability; admission; allocation/upload; prefill/decode; output validation; synchronization/release; success publication. Failure prevents later stages. |
 | Qualifier | `scripts/gpu-runtime-qualify --profile PROFILE.json --suite generation --output NEW_DIRECTORY`. Schema 1 accepts only `generation`. It builds reviewed source in isolation and publishes §3.8 evidence. An absent requested backend is FAIL, never passing N/A. |
 | Cache identity | Request-local weights bind model/pack/geometry, member/plane, quant layout, bundle/device and request generation. KV additionally binds prompt, position, rope/mask/context and precision. No persisted device cache is introduced. |
@@ -131,7 +131,7 @@ Record limits are:
 | --- | --- |
 | `GPU_SOURCE_MANIFEST` | 16 MiB; 1–100,000 tracked rows |
 | `GPU_RUNTIME_PROFILE` | 256 KiB; exactly 2 models, exactly 1 option, 16–256 cases |
-| `GPU_BACKEND_BUNDLE` | 256 KiB; 1–32 GPU architecture entries, 0–128 flags, 1–128 artifacts |
+| `GPU_BACKEND_BUNDLE` | 256 KiB; 1–32 GPU architecture entries, 0–128 flags, 1–128 artifacts; each artifact is 1 byte–512 MiB and their checked aggregate is at most 512 MiB |
 | `GPU_NUMERIC_CALIBRATION` | 1 MiB; 2–32 cases per model, at most 64 across a profile |
 | `GPU_RUNTIME_EVIDENCE` | 8 MiB result; 0–256 cases and 0–4,096 retained files |
 | retained data | 4 MiB per log, 512 MiB total directory |
@@ -234,7 +234,9 @@ the registry and loaded library.
 
 The first successful native initialization pins bundle ID and manifest digest. Same-bundle
 sequential requests reuse it. Different bundles fail before load. Failure after any registry/plugin
-side effect poisons GPU admission and keeps libraries loaded until exit.
+side effect poisons GPU admission. When safe unload cannot be proved, the native process state takes
+ownership of the loaded handles and complete staging tree before the invocation returns failure and
+keeps both until exit; invocation cleanup must neither unload nor remove that transferred tree.
 
 ### 3.7 Numeric calibration schema 1
 
@@ -485,7 +487,7 @@ order and poison process state if native safety cannot be proven.
 | Owner/boundary | Success | Failure/malformed | Cleanup and exact regression |
 | --- | --- | --- | --- |
 | config/provider/CLI | empty path preserves CPU; exact terminal option selects GPU | duplicate/misplaced option, bad JSON/enums/budgets, network option | no device side effect; `gpu-config`, provider/CLI smoke |
-| bundle/device registry | exact Metal/CUDA device and private staged artifact set made from verified reader bytes | wrong backend/device/ABI/hash/arch, hard link, source replacement or in-place mutation, staged identity drift, missing op, bundle switch | original paths never reach registry; remove every pre-load staging prefix; retain staging after native side effects through unload/exit; pin once; poison partial init; `gpu-bundle-identity-race`, `gpu-device-select`, `gpu-bundle-reuse`, `gpu-bundle-switch` |
+| bundle/device registry | exact Metal/CUDA device and private staged artifact set made from verified reader bytes | missing Request 55/56 surface, wrong backend/device/ABI/hash/arch, hard link, source replacement or in-place mutation, staged identity drift, missing op, bundle switch | original paths never reach registry; remove every safely releasable staging prefix and its empty directory; transfer the complete staging tree with unsafe native handles to process-owned poisoned quarantine; pin once; `gpu-bundle-identity-race`, `gpu-device-select`, `gpu-bundle-reuse`, `gpu-bundle-switch` |
 | native owner | construct, move, borrow, explicit completion | failure at each construction prefix and completion stage | exactly-once reverse Drop; `gpu-native-owner` in whole/per-unit builds |
 | admission/allocation | exact weights/KV/workspace within both caps; UMA alias accounted once | overflow, zero/one-byte-too-small cap, driver allocation race | release every prefix; `gpu-budget-boundary`, `gpu-uma-alias`, `gpu-allocation-prefix` |
 | graph and pointers | supported graph on declared GPU; device-safe transfers | unsupported op/buffer, device pointer passed to CPU, stale reference, nonfinite output | complete before reset/free; `gpu-graph-placement`, `gpu-device-pointer`, `gpu-scheduler-reset` |
@@ -495,12 +497,15 @@ order and poison process state if native safety cannot be proven.
 | profile/calibration | exact four-row expansion executes every calibration/holdout twice | omitted/extra/reordered/cross-model case, changed tolerance/expected output | immutable input recheck; `gpu-profile-coverage`, `gpu-holdout-replay` |
 | evidence/publication | canonical positive codecs, complete align-llm/ggml Git snapshots, available/unavailable build/device identities, exact argv/environment | duplicate/oversize records, source/tree mismatch, ambient-environment injection, compile/crash/timeout, >4,096 files or >512 MiB projected closure | kill/reap owned group, retain bounded diagnostics, exclusive rename; `gpu-schema-codec`, `gpu-source-replay`, `gpu-build-failure-evidence`, `gpu-command-environment`, `gpu-process-cleanup`, `gpu-result-replay` |
 
-The native resource is an invocation-local root and is never returned, stored globally or placed in
-a collection. Owners cover construction, move with source nulling, borrow, replacement, early
-return and `?`, each construction prefix, explicit completion, ordinary Drop and poisoned cleanup
-in whole-program and per-unit builds. GPU/GPU entrypoint pairs serialize by rejection before native
-side effects; CPU/GPU pairs are independent except for ordinary host resource contention.
-Independent processes have independent registries and admission guards.
+The native resource starts as an invocation-local root and is never returned or placed in an Align
+collection. Owners cover construction, move with source nulling, borrow, replacement, early return
+and `?`, each construction prefix, explicit completion, ordinary Drop and poisoned cleanup in
+whole-program and per-unit builds. A failure that cannot prove safe native unload performs one
+explicit terminal transfer of the native handles and staging tree into the native process-state
+quarantine before disarming invocation cleanup; no ordinary success or safely released failure can
+enter it. GPU/GPU entrypoint pairs serialize by rejection before native side effects; CPU/GPU pairs
+are independent except for ordinary host resource contention. Independent processes have
+independent registries, quarantine states and admission guards.
 
 Before creating the staging directory, the qualifier computes a conservative closure count/size from
 the source manifest, fixed retained inputs, possible produced artifacts and two logs per profile
