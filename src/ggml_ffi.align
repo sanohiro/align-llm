@@ -235,6 +235,15 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_memory_allocate(owner: raw) -> i32
   fn align_gpu_memory_allocated_bytes(owner: raw, field: i32) -> i64
   fn align_gpu_weight_metadata_bytes(tensor_count: i64) -> i64
+  fn align_gpu_weight_allocation_bytes(
+    owner: raw,
+    kind: i32,
+    n_dims: i32,
+    ne0: i64,
+    ne1: i64,
+    ne2: i64,
+    ne3: i64,
+  ) -> i64
   fn align_gpu_weights_begin(owner: raw, tensor_count: i64) -> i32
   fn align_gpu_weight_add(
     owner: raw,
@@ -245,7 +254,9 @@ extern "C" link("align_ggml_shim") {
     ne2: i64,
     ne3: i64,
   ) -> i64
-  fn align_gpu_weight_upload(owner: raw, index: i64, data: slice<u8>, length: i64) -> i32
+  fn align_gpu_weight_upload(
+    owner: raw, index: i64, offset: i64, data: slice<u8>, length: i64,
+  ) -> i32
   fn align_gpu_weights_finish(owner: raw) -> i32
   fn align_gpu_weight_state(owner: raw, field: i32) -> i64
   fn align_gpu_kv_begin(owner: raw, tensor_count: i64) -> i32
@@ -558,6 +569,27 @@ pub fn gpu_weight_metadata_bytes(tensor_count: i64) -> i64 {
   }
 }
 
+pub fn gpu_weight_allocation_bytes(
+  borrow owner: GpuDevice,
+  kind: i64,
+  n_dims: i64,
+  ne0: i64,
+  ne1: i64,
+  ne2: i64,
+  ne3: i64,
+) -> Result<i64, Fault> {
+  if kind < 0 || kind > 2147483647 || n_dims < 1 || n_dims > 4 {
+    return Err(fault("CONFIG", "weight_shape"))
+  }
+  unsafe {
+    bytes := align_gpu_weight_allocation_bytes(
+      resource.raw(resource.borrow(owner)), kind as i32, n_dims as i32, ne0, ne1, ne2, ne3,
+    )
+    if bytes <= 0 { return Err(gpu_fault_for(bytes)) }
+    return Ok(bytes)
+  }
+}
+
 pub fn gpu_weights_begin(
   borrow owner: GpuDevice,
   tensor_count: i64,
@@ -599,11 +631,12 @@ pub fn gpu_weight_add(
 pub fn gpu_weight_upload(
   borrow owner: GpuDevice,
   index: i64,
+  offset: i64,
   borrow data: slice<u8>,
 ) -> Result<(), Fault> {
   unsafe {
     status := align_gpu_weight_upload(
-      resource.raw(resource.borrow(owner)), index, data, data.len(),
+      resource.raw(resource.borrow(owner)), index, offset, data, data.len(),
     ) as i64
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())

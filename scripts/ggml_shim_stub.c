@@ -1685,6 +1685,7 @@ struct align_gpu_device_state {
     size_t weight_offset;
     size_t pending_weight_offset;
     size_t pending_weight_bytes;
+    size_t pending_weight_uploaded_bytes;
     size_t kv_offset;
     int weights_finished;
     int weights_failed;
@@ -2036,6 +2037,26 @@ static int align_gpu_weight_shape(
     return 1;
 }
 
+int64_t align_gpu_weight_allocation_bytes(
+        void *owner, int32_t type, int32_t n_dims,
+        int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    int64_t ne[4] = { ne0, ne1, ne2, ne3 };
+    size_t nbytes = 0;
+    size_t padded = 0;
+    if (state == NULL || state->backend == NULL || state->memory_planned
+        || !align_gpu_weight_shape(type, n_dims, ne, &nbytes)
+        || nbytes > SIZE_MAX - (ALIGN_GGML_TENSOR_ALIGNMENT - 1)) {
+        return ALIGN_GPU_CONFIG;
+    }
+    padded = (nbytes + ALIGN_GGML_TENSOR_ALIGNMENT - 1)
+        & ~(size_t) (ALIGN_GGML_TENSOR_ALIGNMENT - 1);
+    if (padded == 0 || padded > INT64_MAX) {
+        return ALIGN_GPU_ALLOCATION;
+    }
+    return (int64_t) padded;
+}
+
 int64_t align_gpu_weight_add(
         void *owner, int32_t type, int32_t n_dims,
         int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3) {
@@ -2075,31 +2096,32 @@ int64_t align_gpu_weight_add(
     return state->weights_created - 1;
 }
 
-int32_t align_gpu_weight_upload(void *owner, int64_t index, const void *data, int64_t length) {
+int32_t align_gpu_weight_upload(
+        void *owner, int64_t index, int64_t offset, const void *data, int64_t length) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
-    const unsigned char *source = (const unsigned char *) data;
-    size_t offset = 0;
     size_t staging = 0;
     if (state == NULL || state->pending_weight_bytes == 0 || data == NULL || length <= 0
-        || index != state->weights_uploaded || index + 1 != state->weights_created
-        || (uint64_t) length != (uint64_t) state->pending_weight_bytes) {
+        || offset < 0 || index != state->weights_uploaded || index + 1 != state->weights_created) {
         return ALIGN_GPU_CONFIG;
     }
     staging = (size_t) state->staging_bytes;
-    while (offset < (size_t) length) {
-        size_t chunk = (size_t) length - offset;
-        if (chunk > staging) {
-            chunk = staging;
-        }
-        memcpy(state->staging, source + offset, chunk);
-        memcpy((unsigned char *) state->weights_buffer + state->pending_weight_offset + offset,
-            state->staging, chunk);
-        offset += chunk;
+    if ((size_t) offset != state->pending_weight_uploaded_bytes
+        || (size_t) length > staging
+        || state->pending_weight_uploaded_bytes > state->pending_weight_bytes
+        || (size_t) length > state->pending_weight_bytes - state->pending_weight_uploaded_bytes) {
+        return ALIGN_GPU_CONFIG;
     }
-    state->weights_uploaded += 1;
+    memcpy(state->staging, data, (size_t) length);
+    memcpy((unsigned char *) state->weights_buffer + state->pending_weight_offset + (size_t) offset,
+        state->staging, (size_t) length);
+    state->pending_weight_uploaded_bytes += (size_t) length;
     state->weights_uploaded_bytes += length;
-    state->pending_weight_bytes = 0;
-    state->pending_weight_tensor = NULL;
+    if (state->pending_weight_uploaded_bytes == state->pending_weight_bytes) {
+        state->weights_uploaded += 1;
+        state->pending_weight_uploaded_bytes = 0;
+        state->pending_weight_bytes = 0;
+        state->pending_weight_tensor = NULL;
+    }
     return ALIGN_GPU_OK;
 }
 
@@ -2108,6 +2130,7 @@ int32_t align_gpu_weights_finish(void *owner) {
     if (state == NULL || state->weights_failed || state->weights_finished
         || state->weights_expected <= 0 || state->weights_created != state->weights_expected
         || state->weights_uploaded != state->weights_expected || state->pending_weight_bytes != 0
+        || state->pending_weight_uploaded_bytes != 0
         || state->weight_offset != (size_t) state->weights_bytes) {
         return ALIGN_GPU_CONFIG;
     }

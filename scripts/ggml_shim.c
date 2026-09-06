@@ -974,6 +974,7 @@ struct align_gpu_device_state {
     int64_t weights_created;
     int64_t weights_uploaded;
     int64_t weights_uploaded_bytes;
+    size_t pending_weight_uploaded_bytes;
     int weights_finished;
     int weights_failed;
     int workspace_prepared;
@@ -1474,6 +1475,70 @@ static int align_gpu_weight_shape(
     return 1;
 }
 
+int64_t align_gpu_weight_allocation_bytes(
+        void *owner, int32_t type, int32_t n_dims,
+        int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_init_params params;
+    struct ggml_context *ctx = NULL;
+    struct ggml_tensor *tensor = NULL;
+    ggml_backend_buffer_type_t buft = NULL;
+    int64_t ne[4] = { ne0, ne1, ne2, ne3 };
+    int64_t required = align_gpu_weight_metadata_bytes(1);
+    size_t logical = 0;
+    size_t alignment = 0;
+    size_t alloc_size = 0;
+    size_t padded = 0;
+    void *storage = NULL;
+    uintptr_t address = 0;
+    uintptr_t modulus = 0;
+    size_t padding = 0;
+    int64_t result = ALIGN_GPU_ALLOCATION;
+    if (state == NULL || state->backend == NULL || state->memory_planned || required <= 0
+        || !align_gpu_weight_shape(type, n_dims, ne, &logical)) {
+        return ALIGN_GPU_CONFIG;
+    }
+    storage = malloc((size_t) required);
+    if (storage == NULL) {
+        return ALIGN_GPU_ALLOCATION;
+    }
+    address = (uintptr_t) storage;
+    modulus = address & (uintptr_t) (GGML_MEM_ALIGN - 1);
+    padding = modulus == 0 ? 0 : GGML_MEM_ALIGN - modulus;
+    if (padding >= (size_t) required) {
+        goto done;
+    }
+    params.mem_size = (size_t) required - padding;
+    params.mem_buffer = (unsigned char *) storage + padding;
+    params.no_alloc = true;
+    ctx = ggml_init(params);
+    if (ctx == NULL) {
+        goto done;
+    }
+    tensor = ggml_new_tensor(ctx, (enum ggml_type) type, n_dims, ne);
+    buft = ggml_backend_get_default_buffer_type(state->backend);
+    if (tensor == NULL || ggml_nbytes(tensor) != logical || buft == NULL) {
+        goto done;
+    }
+    alignment = ggml_backend_buft_get_alignment(buft);
+    alloc_size = ggml_backend_buft_get_alloc_size(buft, tensor);
+    if (alignment == 0 || (alignment & (alignment - 1)) != 0
+        || alloc_size > SIZE_MAX - (alignment - 1)) {
+        goto done;
+    }
+    padded = (alloc_size + alignment - 1) & ~(alignment - 1);
+    if (padded == 0 || padded > INT64_MAX) {
+        goto done;
+    }
+    result = (int64_t) padded;
+done:
+    if (ctx != NULL) {
+        ggml_free(ctx);
+    }
+    free(storage);
+    return result;
+}
+
 int64_t align_gpu_weight_add(
         void *owner, int32_t type, int32_t n_dims,
         int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3) {
@@ -1524,32 +1589,34 @@ int64_t align_gpu_weight_add(
     return state->weights_created - 1;
 }
 
-int32_t align_gpu_weight_upload(void *owner, int64_t index, const void *data, int64_t length) {
+int32_t align_gpu_weight_upload(
+        void *owner, int64_t index, int64_t offset, const void *data, int64_t length) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
-    const unsigned char *source = (const unsigned char *) data;
-    size_t offset = 0;
+    size_t logical = 0;
     size_t staging = 0;
     if (state == NULL || state->backend == NULL || state->pending_weight == NULL || data == NULL
-        || length <= 0 || index != state->weights_uploaded
-        || index + 1 != state->weights_created
-        || (uint64_t) length != (uint64_t) ggml_nbytes(state->pending_weight)) {
+        || offset < 0 || length <= 0 || index != state->weights_uploaded
+        || index + 1 != state->weights_created) {
         return ALIGN_GPU_CONFIG;
     }
+    logical = ggml_nbytes(state->pending_weight);
     staging = (size_t) state->staging_bytes;
-    while (offset < (size_t) length) {
-        size_t chunk = (size_t) length - offset;
-        if (chunk > staging) {
-            chunk = staging;
-        }
-        memcpy(state->staging, source + offset, chunk);
-        ggml_backend_tensor_set_async(
-            state->backend, state->pending_weight, state->staging, offset, chunk);
-        ggml_backend_synchronize(state->backend);
-        offset += chunk;
+    if ((size_t) offset != state->pending_weight_uploaded_bytes
+        || (size_t) length > staging || state->pending_weight_uploaded_bytes > logical
+        || (size_t) length > logical - state->pending_weight_uploaded_bytes) {
+        return ALIGN_GPU_CONFIG;
     }
-    state->weights_uploaded += 1;
+    memcpy(state->staging, data, (size_t) length);
+    ggml_backend_tensor_set_async(
+        state->backend, state->pending_weight, state->staging, (size_t) offset, (size_t) length);
+    ggml_backend_synchronize(state->backend);
+    state->pending_weight_uploaded_bytes += (size_t) length;
     state->weights_uploaded_bytes += length;
-    state->pending_weight = NULL;
+    if (state->pending_weight_uploaded_bytes == logical) {
+        state->weights_uploaded += 1;
+        state->pending_weight_uploaded_bytes = 0;
+        state->pending_weight = NULL;
+    }
     return ALIGN_GPU_OK;
 }
 
@@ -1558,6 +1625,7 @@ int32_t align_gpu_weights_finish(void *owner) {
     if (state == NULL || state->weights_failed || state->weights_finished
         || state->weights_expected <= 0 || state->weights_created != state->weights_expected
         || state->weights_uploaded != state->weights_expected || state->pending_weight != NULL
+        || state->pending_weight_uploaded_bytes != 0
         || state->weight_allocator.offset != (size_t) state->weights_bytes) {
         return ALIGN_GPU_CONFIG;
     }

@@ -160,7 +160,36 @@ fn exercise_live_owner(
       if fault.code != "BUSY" { return Err(Error.Invalid) }
     }
   }
+  planned_weight := runtime_weights.Shape {
+    ggml_type: 0,
+    n_dims: 2,
+    ne0: 256,
+    ne1: 256,
+    ne2: 1,
+    ne3: 1,
+  }
+  if runtime_weights.allocation_bytes(owner, planned_weight)? != 262144 {
+    return Err(Error.Invalid)
+  }
+  match runtime_weights.allocation_bytes(
+    owner,
+    runtime_weights.Shape {
+      ggml_type: 0,
+      n_dims: 1,
+      ne0: 0,
+      ne1: 1,
+      ne2: 1,
+      ne3: 1,
+    },
+  ) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
   admitted(owner)?
+  match runtime_weights.allocation_bytes(owner, planned_weight) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
   if runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_HOST_TOTAL) != 1048576
     || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_DEVICE_TOTAL) != 1048576
     || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_WEIGHTS) != 262144
@@ -239,9 +268,9 @@ fn exercise_live_owner(
     Ok(_) => { return Err(Error.Invalid) }
     Err(_) => {}
   }
-  short := buffer(1)
-  short_view := short.bytes()
-  match runtime_weights.upload(owner, index, short_view) {
+  empty := buffer(0)
+  empty_view := empty.bytes()
+  match runtime_weights.upload(owner, index, 0, empty_view) {
     Ok(_) => { return Err(Error.Invalid) }
     Err(_) => {}
   }
@@ -258,7 +287,33 @@ fn exercise_live_owner(
     weight_row = weight_row + 1
   }
   weight_view := weight_data.bytes()
-  runtime_weights.upload(owner, index, weight_view)?
+  first_byte := weight_view[0..1]
+  match runtime_weights.upload(owner, index, 1, first_byte) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  match runtime_weights.upload(owner, index, 0, weight_view) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  mut weight_offset := 0
+  loop {
+    if weight_offset >= weight_view.len() { break }
+    next := weight_offset + 65536
+    chunk := weight_view[weight_offset..next]
+    runtime_weights.upload(owner, index, weight_offset, chunk)?
+    if weight_offset == 0 {
+      match runtime_weights.add(owner, planned_weight) {
+        Ok(_) => { return Err(Error.Invalid) }
+        Err(_) => {}
+      }
+      match runtime_weights.finish(owner) {
+        Ok(_) => { return Err(Error.Invalid) }
+        Err(_) => {}
+      }
+    }
+    weight_offset = next
+  }
   if runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_EXPECTED) != 1
     || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_CREATED) != 1
     || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED) != 1
@@ -1010,7 +1065,7 @@ fn exercise_v_layout(
   mut weight_bytes := buffer(4)
   weight_bytes.put_u32_le(1065353216)
   weight_view := weight_bytes.bytes()
-  runtime_weights.upload(owner, weight, weight_view)?
+  runtime_weights.upload(owner, weight, 0, weight_view)?
   runtime_weights.finish(owner)?
 
   runtime_kv.begin(owner, 1)?
@@ -1150,7 +1205,7 @@ fn add_qwen_weight(
   )?
   bytes := ne0 * ne1 * 4
   image := ones[0..bytes]
-  runtime_weights.upload(owner, index, image)?
+  runtime_weights.upload(owner, index, 0, image)?
   return Ok(index)
 }
 
@@ -1541,7 +1596,7 @@ fn expect_input_allocation_failure(
   mut scalar := buffer(4)
   scalar.put_u32_le(1065353216)
   scalar_view := scalar.bytes()
-  runtime_weights.upload(owner, weight, scalar_view)?
+  runtime_weights.upload(owner, weight, 0, scalar_view)?
   runtime_weights.finish(owner)?
   runtime_kv.begin(owner, 1)?
   runtime_kv.add(
