@@ -10638,6 +10638,57 @@ each known child first; a failed cleanup is observable and cannot erase an unrel
 
 ---
 
+## Request 57 — MIR producer certification for owned `Result` record fields
+
+```text
+Status: CLOSED
+Priority: critical
+Blocking: no
+Blocked gate or slice: N/A — the fixed compiler is pinned and the original consumer passes
+Independent work that may continue: N/A — the request is closed
+Resume condition: N/A — the request is closed
+Align commit or pull request: Align PR #950 merged as 0495fa97; align-llm pins descendant 22ac8eb8
+align-llm verification: at 22ac8eb8, `scripts/alignc check-per-unit
+  src/runtime_bundle_smoke.align` and `gmake gpu-bundle-smoke` pass
+```
+
+### Regression evidence
+
+The unchanged align-llm runtime bundle client passes per-unit checking at Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. After materializing the v0.7.2 release compiler at
+`b19ebb57d4dbdbf7d9a8bed335f55ca2486314f8`, the same command fails before checking the importing
+smoke module:
+
+```text
+src/runtime_bundle_smoke.align:1:1: error: cannot certify MIR producers: lowering failed:
+resource MIR in function 'runtime_bundle$verify' is malformed: producer return leaf String at
+[ResultOk, StructField(3)] is not certified by its body
+```
+
+The selected leaf is `VerifiedBundle.backend_sha256`. `runtime_bundle.verify` initializes its
+local plugin digest with an owned empty-string clone, replaces it only with an owned clone from the
+decoded manifest, requires exactly one matching plugin, verifies that artifact's bytes against the
+digest, and then moves the string into `Ok(VerifiedBundle { ... })`. Replacing that final field with
+a literal clone, a builder-produced string, or a fresh digest producer preserves the same field-3
+diagnostic. Extracting the validation loops behind a borrowed helper instead changes the rejection
+to `XML-capable call argument provenance mismatch`. No application workaround is retained because
+this is a valid owned producer graph and the bundle verifier is a security boundary.
+
+### Required behavior and acceptance
+
+Producer certification should accept this owned string flow through the loop join and final
+`Result` record construction while continuing to reject a borrowed or uncertified string escape.
+The Align regression owner should reduce the client pattern into a compiler fixture and cover both
+whole-program and per-unit checking. Acceptance requires that fixture and the unchanged align-llm
+commands above to pass with the fixed release, while the existing invalid-producer fixtures remain
+rejected.
+
+Align PR #950 shipped the indexed-field loop-join repair in `0495fa97`. The managed align-llm
+toolchain at descendant `22ac8eb8` accepts the unchanged real client through both named owners, so
+the regression is closed without an application-side rewrite.
+
+---
+
 ## Request 58 — MIR resource validation must terminate for a bounded borrowed-reader pipeline
 
 ```text
