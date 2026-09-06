@@ -91,6 +91,11 @@ gpu-bundle-smoke:
 gpu-device-smoke:
 	./scripts/run-gpu-device-smoke
 
+# G1's focused AlignPack-to-resident-weight owner. It keeps the expensive pack-reader compiler
+# graph out of the model-free device lifecycle owner while proving bounded sequential upload.
+gpu-qwen-load-smoke:
+	./scripts/run-gpu-qwen-load-smoke
+
 eval-smoke: build
 	./eval/runners/run-fixed.sh $(EVAL_CORPUS)
 	./scripts/run-eval-invalid-smoke
