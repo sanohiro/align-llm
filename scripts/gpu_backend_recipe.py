@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import errno
 import hashlib
 import json
 import os
 import pathlib
 import platform
+import shutil
 import stat
 import subprocess
 import sys
@@ -20,6 +22,7 @@ GGML_COMMIT = "bb4caa7540188872173c44d161602d9271386413"
 GGML_REPOSITORY = "https://github.com/ggml-org/llama.cpp.git"
 MAX_SOURCE_MANIFEST_BYTES = 16 * 1024 * 1024
 MAX_RETAINED_DATA_BYTES = 512 * 1024 * 1024
+MAX_BUNDLE_ARTIFACT_BYTES = 512 * 1024 * 1024
 ZERO_DIGEST = "0" * 64
 EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()
 
@@ -89,6 +92,113 @@ def canonical(value: object) -> bytes:
 
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def resolve_executable(value: str, label: str) -> str:
+    selected = pathlib.Path(value)
+    if "/" in value:
+        if not selected.is_absolute():
+            raise RecipeError(f"{label} must be an absolute path or a bare command name")
+        try:
+            resolved = selected.resolve()
+        except (OSError, RuntimeError) as exc:
+            raise RecipeError(f"{label} cannot be resolved") from exc
+        if not resolved.is_file() or not os.access(resolved, os.X_OK):
+            raise RecipeError(f"{label} is not executable")
+        return os.fspath(resolved)
+    resolved_name = shutil.which(value)
+    if resolved_name is None:
+        raise RecipeError(f"{label} is not available")
+    try:
+        resolved = pathlib.Path(resolved_name).resolve()
+    except (OSError, RuntimeError) as exc:
+        raise RecipeError(f"{label} cannot be resolved") from exc
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise RecipeError(f"{label} is not executable")
+    return os.fspath(resolved)
+
+
+def selected_tools(backend: str) -> dict[str, str]:
+    values = {
+        "git": resolve_executable("git", "git"),
+        "cmake": resolve_executable("cmake", "cmake"),
+        "ninja": resolve_executable("ninja", "ninja"),
+        "cc": resolve_executable(os.environ.get("CC", "cc"), "CC"),
+        "cxx": resolve_executable(os.environ.get("CXX", "c++"), "CXX"),
+    }
+    if backend == "metal":
+        values["platform"] = resolve_executable("xcrun", "xcrun")
+    else:
+        values["platform"] = resolve_executable(os.environ.get("CUDACXX", "nvcc"), "CUDACXX")
+        values["ldd"] = resolve_executable("ldd", "ldd")
+    return values
+
+
+def isolated_environment(tools: dict[str, str], owned_root: pathlib.Path) -> dict[str, str]:
+    owned_root.mkdir(parents=True, exist_ok=True)
+    home = owned_root / "home"
+    temporary = owned_root / "tmp"
+    home.mkdir()
+    temporary.mkdir()
+    search_directories = []
+    for executable in tools.values():
+        directory = os.fspath(pathlib.Path(executable).parent)
+        if directory not in search_directories:
+            search_directories.append(directory)
+    for directory in ("/usr/bin", "/bin", "/usr/sbin", "/sbin"):
+        if directory not in search_directories:
+            search_directories.append(directory)
+    environment = {
+        "CC": tools["cc"],
+        "CXX": tools["cxx"],
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "HOME": os.fspath(home),
+        "LC_ALL": "C",
+        "PATH": os.pathsep.join(search_directories),
+        "TMPDIR": os.fspath(temporary),
+        "TZ": "UTC",
+    }
+    if "ldd" in tools:
+        environment["CUDACXX"] = tools["platform"]
+    return environment
+
+
+def rename_noreplace(source: pathlib.Path, destination: pathlib.Path) -> None:
+    if source.parent != destination.parent:
+        raise RecipeError("atomic publication requires one parent directory")
+    library = ctypes.CDLL(None, use_errno=True)
+    directory_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) \
+        | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        parent_fd = os.open(source.parent, directory_flags)
+    except OSError as exc:
+        raise RecipeError("output parent cannot be opened") from exc
+    try:
+        source_bytes = os.fsencode(source.name)
+        destination_bytes = os.fsencode(destination.name)
+        if sys.platform == "darwin":
+            function = library.renameatx_np
+            function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+                                 ctypes.c_uint]
+            function.restype = ctypes.c_int
+            result = function(parent_fd, source_bytes, parent_fd, destination_bytes, 0x00000004)
+        elif sys.platform.startswith("linux"):
+            function = library.renameat2
+            function.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+                                 ctypes.c_uint]
+            function.restype = ctypes.c_int
+            result = function(parent_fd, source_bytes, parent_fd, destination_bytes, 1)
+        else:
+            raise RecipeError("atomic no-replace publication is unsupported on this host")
+        if result != 0:
+            error = ctypes.get_errno()
+            if error in {errno.EEXIST, errno.ENOTEMPTY}:
+                raise RecipeError("output became occupied before publication")
+            raise RecipeError(f"cannot publish output: {os.strerror(error)}")
+    finally:
+        os.close(parent_fd)
 
 
 def strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -409,17 +519,24 @@ def replay_source_snapshot(source_dir: pathlib.Path, expected_kind: str) -> dict
         os.close(root_fd)
 
 
-def command(argv: list[str], *, cwd: pathlib.Path | None = None) -> bytes:
+def command(
+    argv: list[str], *, cwd: pathlib.Path | None = None,
+    environment: dict[str, str] | None = None,
+) -> bytes:
     try:
         return subprocess.run(argv, cwd=cwd, check=True, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE).stdout
+                              stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                              env=environment).stdout
     except (OSError, subprocess.CalledProcessError) as exc:
         detail = exc.stderr.decode(errors="replace") if isinstance(exc, subprocess.CalledProcessError) else str(exc)
         raise RecipeError(f"command failed: {argv[0]}: {detail.strip()}") from exc
 
 
-def text_command(argv: list[str], *, cwd: pathlib.Path | None = None) -> str:
-    return command(argv, cwd=cwd).decode("utf-8").strip()
+def text_command(
+    argv: list[str], *, cwd: pathlib.Path | None = None,
+    environment: dict[str, str] | None = None,
+) -> str:
+    return command(argv, cwd=cwd, environment=environment).decode("utf-8").strip()
 
 
 def flags(backend: str) -> list[str]:
@@ -436,27 +553,38 @@ def plan(backend: str) -> dict[str, object]:
     }
 
 
-def require_source(source: pathlib.Path) -> None:
+def require_source(source: pathlib.Path, git: str, environment: dict[str, str]) -> None:
     source = source.resolve()
-    top = pathlib.Path(text_command(["git", "rev-parse", "--show-toplevel"], cwd=source)).resolve()
+    top = pathlib.Path(text_command(
+        [git, "rev-parse", "--show-toplevel"], cwd=source, environment=environment,
+    )).resolve()
     if top != source:
         raise RecipeError("source is not the Git worktree root")
-    if text_command(["git", "rev-parse", "HEAD"], cwd=source) != GGML_COMMIT:
+    if text_command([git, "rev-parse", "HEAD"], cwd=source,
+                    environment=environment) != GGML_COMMIT:
         raise RecipeError("source HEAD is not the pinned ggml commit")
-    if text_command(["git", "remote", "get-url", "origin"], cwd=source) != GGML_REPOSITORY:
+    if text_command([git, "remote", "get-url", "origin"], cwd=source,
+                    environment=environment) != GGML_REPOSITORY:
         raise RecipeError("source origin is not the pinned ggml repository")
     status = command(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--ignored"], cwd=source,
+        [git, "status", "--porcelain=v1", "--untracked-files=all", "--ignored"],
+        cwd=source, environment=environment,
     )
     if status:
         raise RecipeError("source worktree contains modified, untracked, or ignored paths")
 
 
-def source_snapshot(source: pathlib.Path) -> tuple[dict[str, object], bytes, bytes, dict[str, bytes]]:
-    tree = text_command(["git", "rev-parse", "HEAD^{tree}"], cwd=source)
-    object_format = text_command(["git", "rev-parse", "--show-object-format"], cwd=source)
-    raw_commit = command(["git", "cat-file", "commit", "HEAD"], cwd=source)
-    listing = command(["git", "ls-tree", "-rz", "--full-tree", "HEAD"], cwd=source)
+def source_snapshot(
+    source: pathlib.Path, git: str, environment: dict[str, str],
+) -> tuple[dict[str, object], bytes, bytes, dict[str, bytes]]:
+    tree = text_command([git, "rev-parse", "HEAD^{tree}"], cwd=source, environment=environment)
+    object_format = text_command(
+        [git, "rev-parse", "--show-object-format"], cwd=source, environment=environment,
+    )
+    raw_commit = command([git, "cat-file", "commit", "HEAD"], cwd=source,
+                         environment=environment)
+    listing = command([git, "ls-tree", "-rz", "--full-tree", "HEAD"], cwd=source,
+                      environment=environment)
     rows: list[dict[str, object]] = []
     blobs: dict[str, bytes] = {}
     for raw_row in listing.split(b"\0"):
@@ -464,12 +592,26 @@ def source_snapshot(source: pathlib.Path) -> tuple[dict[str, object], bytes, byt
             continue
         header, raw_path = raw_row.split(b"\t", 1)
         mode, kind, oid = header.decode("ascii").split(" ")
-        if kind != "blob" or mode not in {"100644", "100755"}:
+        if kind != "blob" or mode not in {"100644", "100755", "120000"}:
             raise RecipeError("source tree contains an unsupported non-file entry")
-        path = raw_path.decode("utf-8")
-        data = (source / path).read_bytes()
-        framed = b"blob " + str(len(data)).encode("ascii") + b"\0" + data
-        computed_oid = hashlib.new(object_format, framed).hexdigest()
+        try:
+            path = raw_path.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RecipeError("source tree contains a non-UTF-8 path") from exc
+        source_path = source / path
+        try:
+            metadata = source_path.lstat()
+            if mode == "120000":
+                if not stat.S_ISLNK(metadata.st_mode):
+                    raise RecipeError(f"working path differs from its Git mode: {path}")
+                data = os.readlink(os.fsencode(source_path))
+            else:
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise RecipeError(f"working path differs from its Git mode: {path}")
+                data = source_path.read_bytes()
+        except OSError as exc:
+            raise RecipeError(f"working path cannot be read: {path}") from exc
+        computed_oid = object_oid(object_format, b"blob", data)
         if computed_oid != oid:
             raise RecipeError(f"working file differs from its Git blob: {path}")
         sha256 = digest(data)
@@ -498,25 +640,59 @@ def source_snapshot(source: pathlib.Path) -> tuple[dict[str, object], bytes, byt
     return manifest, rendered, raw_commit, blobs
 
 
-def identity(name: str, argv: list[str]) -> dict[str, str]:
-    raw = command(argv)
-    version = raw.decode("utf-8", errors="strict").splitlines()[0].strip()
+def materialize_source(
+    manifest: dict[str, object], blobs: dict[str, bytes], destination: pathlib.Path,
+) -> None:
+    destination.mkdir()
+    rows = manifest["files"]
+    assert isinstance(rows, list)
+    for row in rows:
+        assert isinstance(row, dict)
+        relative = pathlib.Path(str(row["path"]))
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        data = blobs[str(row["sha256"])]
+        if row["mode"] == "120000":
+            try:
+                os.symlink(data, os.fsencode(target))
+            except (OSError, ValueError) as exc:
+                raise RecipeError(f"cannot materialize source symlink: {relative}") from exc
+        else:
+            try:
+                target.write_bytes(data)
+                target.chmod(0o755 if row["mode"] == "100755" else 0o644)
+            except OSError as exc:
+                raise RecipeError(f"cannot materialize source file: {relative}") from exc
+
+
+def identity(
+    name: str, argv: list[str], environment: dict[str, str],
+) -> dict[str, str]:
+    raw = command(argv, environment=environment)
+    try:
+        version = raw.decode("utf-8", errors="strict").splitlines()[0].strip()
+    except (UnicodeDecodeError, IndexError) as exc:
+        raise RecipeError(f"{name} version probe is invalid") from exc
     if not version or len(version.encode()) > 256:
         raise RecipeError(f"{name} version is outside the identity bound")
     return {"name": name, "version": version, "sha256": digest(raw)}
 
 
-def toolchain(backend: str) -> dict[str, dict[str, str]]:
+def toolchain(
+    backend: str, tools: dict[str, str], environment: dict[str, str],
+) -> dict[str, dict[str, str]]:
     result = {
-        "c_compiler": identity("cc", [os.environ.get("CC", "cc"), "--version"]),
-        "cxx_compiler": identity("cxx", [os.environ.get("CXX", "c++"), "--version"]),
+        "c_compiler": identity("cc", [tools["cc"], "--version"], environment),
+        "cxx_compiler": identity("cxx", [tools["cxx"], "--version"], environment),
     }
     if backend == "metal":
-        result["sdk"] = identity("macos", ["xcrun", "--sdk", "macosx", "--show-sdk-version"])
+        result["sdk"] = identity(
+            "macos", [tools["platform"], "--sdk", "macosx", "--show-sdk-version"], environment,
+        )
         result["toolkit"] = {"name": "none", "version": "none", "sha256": EMPTY_DIGEST}
     else:
-        result["sdk"] = identity("glibc", ["ldd", "--version"])
-        result["toolkit"] = identity("cuda", ["nvcc", "--version"])
+        result["sdk"] = identity("glibc", [tools["ldd"], "--version"], environment)
+        result["toolkit"] = identity("cuda", [tools["platform"], "--version"], environment)
     return result
 
 
@@ -552,21 +728,95 @@ def artifact_sources(backend: str, binary_dir: pathlib.Path) -> list[tuple[str, 
     return values
 
 
+def copy_artifacts(
+    sources: list[tuple[str, str, pathlib.Path]], bundle_dir: pathlib.Path,
+) -> list[dict[str, object]]:
+    artifacts = []
+    artifact_bytes = 0
+    for role, name, source_path in sources:
+        resolved_source = source_path.resolve()
+        try:
+            metadata = resolved_source.stat()
+        except OSError as exc:
+            raise RecipeError(f"cannot inspect build artifact: {name}") from exc
+        if not stat.S_ISREG(metadata.st_mode) or not 1 <= metadata.st_size \
+                <= MAX_BUNDLE_ARTIFACT_BYTES:
+            raise RecipeError(f"build artifact size is outside its bound: {name}")
+        artifact_bytes += metadata.st_size
+        if artifact_bytes > MAX_BUNDLE_ARTIFACT_BYTES:
+            raise RecipeError("build artifact aggregate exceeds its bound")
+        try:
+            data = resolved_source.read_bytes()
+        except OSError as exc:
+            raise RecipeError(f"cannot read build artifact: {name}") from exc
+        if len(data) != metadata.st_size:
+            raise RecipeError(f"build artifact changed while it was read: {name}")
+        try:
+            (bundle_dir / name).write_bytes(data)
+        except OSError as exc:
+            raise RecipeError(f"cannot retain build artifact: {name}") from exc
+        artifacts.append({"role": role, "path": name, "bytes": len(data), "sha256": digest(data)})
+    artifacts.sort(key=lambda row: (row["role"], row["path"]))
+    return artifacts
+
+
 def build(backend: str, source: pathlib.Path, output: pathlib.Path) -> None:
+    source = source.resolve()
+    output = pathlib.Path(os.path.abspath(output))
+    try:
+        output.relative_to(source)
+    except ValueError:
+        pass
+    else:
+        raise RecipeError("output must be outside the source checkout")
+    parent = output.parent.resolve()
+    try:
+        parent.relative_to(source)
+    except ValueError:
+        pass
+    else:
+        raise RecipeError("output parent must be outside the source checkout")
+    output = parent / output.name
     require_host(backend)
-    require_source(source)
     if output.exists() or output.is_symlink():
         raise RecipeError("output must be a new path")
-    _, source_bytes, raw_commit, blobs = source_snapshot(source)
-    tools = toolchain(backend)
-    parent = output.parent.resolve()
-    parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="gpu-recipe-build-", dir=parent) as raw_build:
-        build_dir = pathlib.Path(raw_build)
-        command(["cmake", "-S", str(source), "-B", str(build_dir), *flags(backend)])
-        command(["cmake", "--build", str(build_dir), "--target", "ggml", "--parallel", "4"])
+    with tempfile.TemporaryDirectory(prefix="gpu-recipe-work-") as raw_work:
+        work_dir = pathlib.Path(raw_work)
+        executables = selected_tools(backend)
+        environment = isolated_environment(executables, work_dir)
+        require_source(source, executables["git"], environment)
+        manifest, source_bytes, raw_commit, blobs = source_snapshot(
+            source, executables["git"], environment,
+        )
+        identities = toolchain(backend, executables, environment)
+        private_source = work_dir / "source"
+        build_dir = work_dir / "build"
+        materialize_source(manifest, blobs, private_source)
+        build_environment = dict(environment)
+        build_environment["GIT_CEILING_DIRECTORIES"] = os.fspath(work_dir)
+        configure_flags = [
+            *flags(backend),
+            f"-DCMAKE_MAKE_PROGRAM={executables['ninja']}",
+            f"-DCMAKE_C_COMPILER={executables['cc']}",
+            f"-DCMAKE_CXX_COMPILER={executables['cxx']}",
+        ]
+        if backend == "cuda":
+            configure_flags.append(f"-DCMAKE_CUDA_COMPILER={executables['platform']}")
+        command(
+            [executables["cmake"], "-S", os.fspath(private_source), "-B", os.fspath(build_dir),
+             *configure_flags],
+            environment=build_environment,
+        )
+        command(
+            [executables["cmake"], "--build", os.fspath(build_dir),
+             "--target", "ggml", "--parallel", "4"],
+            environment=build_environment,
+        )
         binary_dir = build_dir / "bin"
         sources = artifact_sources(backend, binary_dir)
+        parent.mkdir(parents=True, exist_ok=True)
+        if output.exists() or output.is_symlink():
+            raise RecipeError("output became occupied during the build")
         with tempfile.TemporaryDirectory(prefix="gpu-recipe-output-", dir=parent) as raw_stage:
             stage = pathlib.Path(raw_stage)
             bundle_dir = stage / "bundle"
@@ -578,12 +828,7 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path) -> None:
             (source_dir / "commit").write_bytes(raw_commit)
             for sha256, data in sorted(blobs.items()):
                 (blob_dir / sha256).write_bytes(data)
-            artifacts = []
-            for role, name, source_path in sources:
-                data = source_path.resolve().read_bytes()
-                (bundle_dir / name).write_bytes(data)
-                artifacts.append({"role": role, "path": name, "bytes": len(data), "sha256": digest(data)})
-            artifacts.sort(key=lambda row: (row["role"], row["path"]))
+            artifacts = copy_artifacts(sources, bundle_dir)
             bundle = {
                 "schema_version": 1,
                 "artifact_kind": "GPU_BACKEND_BUNDLE",
@@ -595,14 +840,17 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path) -> None:
                     "version": GGML_COMMIT,
                 },
                 "target": TARGET[backend],
-                "toolchain": tools,
-                "build_flags": flags(backend),
+                "toolchain": identities,
+                "build_flags": configure_flags,
                 "artifacts": artifacts,
             }
             bundle["bundle_id"] = digest(canonical(bundle))
-            (bundle_dir / "manifest.json").write_bytes(canonical(bundle))
+            bundle_bytes = canonical(bundle)
+            if len(bundle_bytes) > 256 * 1024:
+                raise RecipeError("backend bundle manifest exceeds its schema-1 bound")
+            (bundle_dir / "manifest.json").write_bytes(bundle_bytes)
             replay_source_snapshot(source_dir, "ggml")
-            os.rename(stage, output)
+            rename_noreplace(stage, output)
 
 
 def parse_args() -> argparse.Namespace:

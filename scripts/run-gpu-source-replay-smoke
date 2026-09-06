@@ -76,7 +76,7 @@ def make_snapshot(repository, destination):
     (destination / "commit").write_bytes(commit_raw)
     for sha256, data in blobs.items():
         (blob_dir / sha256).write_bytes(data)
-    return manifest, manifest_raw
+    return manifest, manifest_raw, blobs
 
 
 def copied(source, parent, name):
@@ -126,7 +126,7 @@ with tempfile.TemporaryDirectory(prefix="gpu-source-replay-") as raw_temporary:
     git(repository, "commit", "-q", "-m", "fixture", environment=commit_environment)
 
     snapshot = temporary / "snapshot"
-    manifest, manifest_raw = make_snapshot(repository, snapshot)
+    manifest, manifest_raw, blobs = make_snapshot(repository, snapshot)
     result = module.replay_source_snapshot(snapshot, "align-llm")
     expected_snapshot = hashlib.sha256()
     expected_snapshot.update(b"GPU_SOURCE_SNAPSHOT\0align-llm\0")
@@ -143,6 +143,13 @@ with tempfile.TemporaryDirectory(prefix="gpu-source-replay-") as raw_temporary:
     }
     assert {row["mode"] for row in manifest["files"]} == {"100644", "100755", "120000"}
     assert len({row["sha256"] for row in manifest["files"]}) == 4
+
+    private_source = temporary / "private-source"
+    module.materialize_source(manifest, blobs, private_source)
+    assert (private_source / "plain.txt").read_text() == "shared content\n"
+    assert os.access(private_source / "nested" / "run.sh", os.X_OK)
+    assert (private_source / "link").is_symlink()
+    assert os.readlink(private_source / "link") == "plain.txt"
 
     try:
         module.replay_source_snapshot(snapshot, "ggml")

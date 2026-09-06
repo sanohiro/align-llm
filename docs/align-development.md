@@ -216,9 +216,18 @@ scripts/gpu_backend_recipe.py --backend cuda --source LLAMA_CPP --output NEW_DIR
 
 The Metal tuple is macOS/AArch64/Apple M1. The CUDA tuple is Linux/x86_64/SM89. The recipes disable
 the CPU backend and ambient CPU libraries, build dynamic backends, use only relative loader rpaths,
-and fix CUDA graph and Flash Attention compilation on. Before publication, the recipe replays the
-retained canonical manifest, commit, blobs, and reconstructed Git trees without trusting a local
-checkout. `make gpu-backend-recipe-smoke` owns both fixed command plans and `make
+and fix CUDA graph and Flash Attention compilation on. The recipe resolves Git, CMake, Ninja and
+the platform toolchain once from `PATH`; `CC`, `CXX`, and `CUDACXX` are the explicit compiler
+overrides. It then runs every probe and build with their resolved absolute paths, a fresh home/temp
+directory and a closed environment. Each schema-1 toolchain digest covers the raw stdout of the
+named absolute probe command (`--version`, or the fixed macOS SDK query). The actual CMake argv
+suffix, including resolved compiler and Ninja paths, is retained as `build_flags`.
+
+The build reconstructs a private source tree from the captured Git blobs and never compiles the
+caller checkout. Before publication, the recipe replays the retained canonical manifest, commit,
+blobs, and reconstructed Git trees without trusting local ancestry. It enforces the bundle's
+per-artifact and aggregate 512 MiB bounds and atomically refuses an occupied output path. `make
+gpu-backend-recipe-smoke` owns both fixed command plans and `make
 gpu-source-replay` owns retained source identity and closure; actual Metal/CUDA qualification
 owns the compiled artifacts and device load.
 
