@@ -1038,6 +1038,10 @@ int64_t align_ptr_offset(const void *a, const void *b) {
 /* G1 resident execution.  The real backend aliases a bounded prefix; the deterministic engine
  * materializes the same logical elements so hosted execution can prove the full graph result. */
 #define ALIGN_STUB_OP_PREFIX_VIEW 17
+/* G1 resident execution. A range view remembers its starting sequence column so the copy kernel
+ * can update the resident backing plane with the same strided layout as the real ggml view. */
+#define ALIGN_STUB_OP_KV_RANGE   18
+#define ALIGN_STUB_OP_CPY        19
 
 typedef struct align_stub_tensor {
     int32_t type;
@@ -1529,6 +1533,45 @@ static void align_stub_run(align_stub_tensor *t) {
                         int64_t source = i0 + a->ne[0]
                             * (i1 + a->ne[1] * (i2 + a->ne[2] * i3));
                         d[target] = x[source];
+                    }
+                }
+            }
+        }
+    } break;
+    case ALIGN_STUB_OP_KV_RANGE: {
+        int64_t position = t->lp[0];
+        for (i3 = 0; i3 < t->ne[3]; i3++) {
+            for (i2 = 0; i2 < t->ne[2]; i2++) {
+                for (i1 = 0; i1 < t->ne[1]; i1++) {
+                    for (i0 = 0; i0 < t->ne[0]; i0++) {
+                        int64_t target = i0 + t->ne[0]
+                            * (i1 + t->ne[1] * (i2 + t->ne[2] * i3));
+                        int64_t source = i0 + a->ne[0]
+                            * ((position + i1) + a->ne[1] * (i2 + a->ne[2] * i3));
+                        d[target] = x[source];
+                    }
+                }
+            }
+        }
+    } break;
+    case ALIGN_STUB_OP_CPY: {
+        align_stub_tensor *destination = t->src[1];
+        align_stub_tensor *plane = destination->src[0];
+        float *destination_data = (float *) destination->data;
+        float *plane_data = (float *) plane->data;
+        int64_t position = destination->lp[0];
+        for (i3 = 0; i3 < t->ne[3]; i3++) {
+            for (i2 = 0; i2 < t->ne[2]; i2++) {
+                for (i1 = 0; i1 < t->ne[1]; i1++) {
+                    for (i0 = 0; i0 < t->ne[0]; i0++) {
+                        int64_t source = i0 + t->ne[0]
+                            * (i1 + t->ne[1] * (i2 + t->ne[2] * i3));
+                        int64_t plane_at = i0 + plane->ne[0]
+                            * ((position + i1) + plane->ne[1] * (i2 + plane->ne[2] * i3));
+                        float value = x[source];
+                        destination_data[source] = value;
+                        plane_data[plane_at] = value;
+                        d[source] = value;
                     }
                 }
             }
@@ -2257,6 +2300,40 @@ int32_t align_gpu_kv_prefix_slot(
         return ALIGN_GPU_ALLOCATION;
     }
     return align_stub_bind(slots, out, view, tensor, NULL, ALIGN_STUB_OP_PREFIX_VIEW)
+        == ALIGN_GGML_OK ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
+}
+
+int32_t align_gpu_kv_write_slot(
+        void *owner, int64_t index, int32_t kind, int64_t position,
+        void *slots, int64_t out, int64_t source) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    align_stub_tensor *tensor = align_gpu_stub_kv_at(state, index);
+    align_stub_tensor *src = align_stub_slot(slots, source);
+    align_stub_tensor *view = NULL;
+    align_stub_tensor *result = NULL;
+    void *ctx = align_gpu_graph_context_at(state, kind);
+    int32_t status = ALIGN_GGML_OK;
+    if (state == NULL || tensor == NULL || src == NULL || ctx == NULL
+        || state->graph_prepared[kind] || position < 0
+        || tensor->type != ALIGN_STUB_TYPE_F32 || src->type != tensor->type
+        || src->ne[0] != tensor->ne[0] || src->ne[1] <= 0
+        || src->ne[2] != tensor->ne[2] || src->ne[3] != tensor->ne[3]
+        || position > tensor->ne[1] || src->ne[1] > tensor->ne[1] - position) {
+        return ALIGN_GPU_CONFIG;
+    }
+    view = align_stub_new(ctx, ALIGN_STUB_TYPE_F32,
+                          src->ne[0], src->ne[1], src->ne[2], src->ne[3]);
+    result = align_stub_new(ctx, ALIGN_STUB_TYPE_F32,
+                            src->ne[0], src->ne[1], src->ne[2], src->ne[3]);
+    if (view == NULL || result == NULL) {
+        return ALIGN_GPU_ALLOCATION;
+    }
+    view->lp[0] = position;
+    status = align_stub_bind(slots, out, view, tensor, NULL, ALIGN_STUB_OP_KV_RANGE);
+    if (status != ALIGN_GGML_OK) {
+        return ALIGN_GPU_CONFIG;
+    }
+    return align_stub_bind(slots, out, result, src, view, ALIGN_STUB_OP_CPY)
         == ALIGN_GGML_OK ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
 }
 

@@ -58,6 +58,21 @@ pub fn prefix_slot(
   return Ok(())
 }
 
+pub fn write_slot(
+  borrow owner: ggml_ffi.GpuDevice,
+  index: i64,
+  kind: i64,
+  position: i64,
+  borrow slots: slice<u8>,
+  out: i64,
+  source: i64,
+) -> Result<(), Error> {
+  ggml_ffi.gpu_kv_write_slot(owner, index, kind, position, slots, out, source) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
 pub fn finish(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {
   ggml_ffi.gpu_kv_finish(owner) else {
     return Err(Error.Invalid)

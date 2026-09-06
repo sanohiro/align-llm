@@ -1798,6 +1798,46 @@ int32_t align_gpu_kv_prefix_slot(
         ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
 }
 
+/* Store one graph-produced K or V range directly into the request's resident plane.  The caller
+ * supplies a logical starting column, never a byte offset; the plane's native strides define the
+ * destination view.  Returning the `ggml_cpy` node lets the graph register the write before any
+ * later prefix consumer without a host readback or a temporary concatenated plane. */
+int32_t align_gpu_kv_write_slot(
+        void *owner, int64_t index, int32_t kind, int64_t position,
+        void *slots, int64_t out, int64_t source) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *tensor = align_gpu_kv_at(state, index);
+    struct ggml_tensor *src = (struct ggml_tensor *) align_ggml_slot_load(slots, source);
+    struct ggml_tensor *view = NULL;
+    struct ggml_tensor *result = NULL;
+    struct ggml_context *ctx = align_gpu_graph_context_at(state, kind);
+    size_t offset = 0;
+    if (state == NULL || tensor == NULL || src == NULL || ctx == NULL
+        || state->graph_prepared[kind] || position < 0
+        || tensor->type != GGML_TYPE_F32 || src->type != tensor->type
+        || src->ne[0] != tensor->ne[0] || src->ne[1] <= 0
+        || src->ne[2] != tensor->ne[2] || src->ne[3] != tensor->ne[3]
+        || position > tensor->ne[1] || src->ne[1] > tensor->ne[1] - position) {
+        return ALIGN_GPU_CONFIG;
+    }
+    if ((uint64_t) position > (uint64_t) SIZE_MAX / tensor->nb[1]) {
+        return ALIGN_GPU_CONFIG;
+    }
+    offset = (size_t) position * tensor->nb[1];
+    view = ggml_view_4d(ctx, tensor,
+                        src->ne[0], src->ne[1], src->ne[2], src->ne[3],
+                        tensor->nb[1], tensor->nb[2], tensor->nb[3], offset);
+    if (view == NULL) {
+        return ALIGN_GPU_ALLOCATION;
+    }
+    result = ggml_cpy(ctx, src, view);
+    if (result == NULL) {
+        return ALIGN_GPU_ALLOCATION;
+    }
+    return align_ggml_slot_store(slots, out, (void *) result) == ALIGN_GGML_OK
+        ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
+}
+
 int64_t align_gpu_kv_state(void *owner, int32_t field) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL || state->kv_expected <= 0) {
