@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
 import pathlib
 import platform
+import stat
 import subprocess
 import sys
 import tempfile
@@ -17,6 +19,7 @@ import tempfile
 GGML_COMMIT = "bb4caa7540188872173c44d161602d9271386413"
 GGML_REPOSITORY = "https://github.com/ggml-org/llama.cpp.git"
 MAX_SOURCE_MANIFEST_BYTES = 16 * 1024 * 1024
+MAX_RETAINED_DATA_BYTES = 512 * 1024 * 1024
 ZERO_DIGEST = "0" * 64
 EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()
 
@@ -86,6 +89,324 @@ def canonical(value: object) -> bytes:
 
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise RecipeError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def parse_canonical(raw: bytes, maximum: int) -> dict[str, object]:
+    if not raw or len(raw) > maximum or raw.startswith(b"\xef\xbb\xbf") or not raw.endswith(b"\n"):
+        raise RecipeError("record framing is invalid")
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=strict_object,
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                RecipeError(f"invalid JSON constant: {value}"),
+            ),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, UnicodeEncodeError) as exc:
+        raise RecipeError("record is not strict UTF-8 JSON") from exc
+    try:
+        rendered = canonical(value)
+    except UnicodeEncodeError as exc:
+        raise RecipeError("record contains an invalid Unicode scalar") from exc
+    if not isinstance(value, dict) or rendered != raw:
+        raise RecipeError("record is not one canonical object")
+    return value
+
+
+def exact_keys(value: object, expected: tuple[str, ...], label: str) -> dict[str, object]:
+    if not isinstance(value, dict) or tuple(value) != expected:
+        raise RecipeError(f"{label} keys are invalid")
+    return value
+
+
+def bounded_text(value: object, minimum: int, maximum: int, label: str) -> str:
+    if not isinstance(value, str) or not minimum <= len(value.encode("utf-8")) <= maximum:
+        raise RecipeError(f"{label} is outside its UTF-8 bound")
+    return value
+
+
+def bounded_i64(value: object, minimum: int, maximum: int, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise RecipeError(f"{label} is outside its integer bound")
+    return value
+
+
+def lowercase_hex(value: object, width: int, label: str) -> str:
+    text = bounded_text(value, width, width, label)
+    try:
+        encoded = text.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise RecipeError(f"{label} is not lowercase hexadecimal") from exc
+    if any(byte not in b"0123456789abcdef" for byte in encoded):
+        raise RecipeError(f"{label} is not lowercase hexadecimal")
+    try:
+        bytes.fromhex(text)
+    except ValueError as exc:
+        raise RecipeError(f"{label} is not hexadecimal") from exc
+    return text
+
+
+def retained_path(value: object, label: str) -> str:
+    text = bounded_text(value, 1, MAX_SOURCE_MANIFEST_BYTES, label)
+    if "\x00" in text or "\\" in text or text.startswith("/"):
+        raise RecipeError(f"{label} is not a retained relative path")
+    components = text.split("/")
+    if any(component in {"", ".", ".."} for component in components):
+        raise RecipeError(f"{label} has an invalid component")
+    return text
+
+
+def validate_source_manifest(value: object) -> dict[str, object]:
+    manifest = exact_keys(value, (
+        "schema_version", "artifact_kind", "source_kind", "repository", "object_format",
+        "commit", "commit_object_sha256", "tree", "files",
+    ), "source manifest")
+    if bounded_i64(manifest["schema_version"], 1, 1, "schema_version") != 1 \
+            or manifest["artifact_kind"] != "GPU_SOURCE_MANIFEST":
+        raise RecipeError("source manifest version or kind is invalid")
+    source_kind = manifest["source_kind"]
+    repositories = {
+        "align-llm": "https://github.com/sanohiro/align-llm.git",
+        "ggml": GGML_REPOSITORY,
+    }
+    if not isinstance(source_kind, str) or source_kind not in repositories \
+            or manifest["repository"] != repositories[source_kind]:
+        raise RecipeError("source kind and repository do not match")
+    object_format = manifest["object_format"]
+    if not isinstance(object_format, str) or object_format not in {"sha1", "sha256"}:
+        raise RecipeError("source object format is invalid")
+    oid_width = 40 if object_format == "sha1" else 64
+    lowercase_hex(manifest["commit"], oid_width, "commit")
+    lowercase_hex(manifest["commit_object_sha256"], 64, "commit_object_sha256")
+    lowercase_hex(manifest["tree"], oid_width, "tree")
+    rows = manifest["files"]
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 100_000:
+        raise RecipeError("source file count is outside its bound")
+    previous = b""
+    seen: set[str] = set()
+    for ordinal, raw_row in enumerate(rows):
+        row = exact_keys(raw_row, ("path", "mode", "bytes", "git_oid", "sha256"), "source file")
+        path = retained_path(row["path"], f"files[{ordinal}].path")
+        encoded = path.encode("utf-8")
+        if ordinal and encoded <= previous:
+            raise RecipeError("source files are not strictly sorted by raw UTF-8 path")
+        previous = encoded
+        if path in seen:
+            raise RecipeError("source file path is duplicated")
+        seen.add(path)
+        if not isinstance(row["mode"], str) or row["mode"] not in {"100644", "100755", "120000"}:
+            raise RecipeError("source file mode is invalid")
+        bounded_i64(row["bytes"], 0, 2**63 - 1, f"files[{ordinal}].bytes")
+        lowercase_hex(row["git_oid"], oid_width, f"files[{ordinal}].git_oid")
+        lowercase_hex(row["sha256"], 64, f"files[{ordinal}].sha256")
+    return manifest
+
+
+def object_oid(object_format: str, kind: bytes, payload: bytes) -> str:
+    framed = kind + b" " + str(len(payload)).encode("ascii") + b"\0" + payload
+    return hashlib.new(object_format, framed).hexdigest()
+
+
+def build_tree_oid(object_format: str, rows: list[dict[str, object]]) -> str:
+    root: dict[str, object] = {}
+    for row in rows:
+        components = str(row["path"]).split("/")
+        cursor = root
+        for component in components[:-1]:
+            existing = cursor.get(component)
+            if existing is None:
+                existing = {}
+                cursor[component] = existing
+            if not isinstance(existing, dict):
+                raise RecipeError("source path has a file ancestor")
+            cursor = existing
+        leaf = components[-1]
+        if leaf in cursor:
+            raise RecipeError("source path collides with another entry")
+        cursor[leaf] = (row["mode"], row["git_oid"])
+
+    def encode_tree(entries: dict[str, object]) -> str:
+        payload = bytearray()
+        ordered = sorted(
+            entries.items(),
+            key=lambda item: item[0].encode("utf-8") + (b"/" if isinstance(item[1], dict) else b""),
+        )
+        for name, entry in ordered:
+            if isinstance(entry, dict):
+                mode = "40000"
+                oid = encode_tree(entry)
+            else:
+                mode, oid = entry
+            payload.extend(mode.encode("ascii"))
+            payload.extend(b" ")
+            payload.extend(name.encode("utf-8"))
+            payload.extend(b"\0")
+            payload.extend(bytes.fromhex(str(oid)))
+        return object_oid(object_format, b"tree", bytes(payload))
+
+    return encode_tree(root)
+
+
+def single_link_file_at(parent_fd: int, name: str, label: str, maximum: int) -> bytes:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise RecipeError(f"{label} is not a single-link regular file") from exc
+        raise RecipeError(f"{label} is absent") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise RecipeError(f"{label} is not a single-link regular file")
+        if before.st_size > maximum:
+            raise RecipeError(f"{label} exceeds its retained-data bound")
+        chunks = []
+        length = 0
+        while True:
+            chunk = os.read(descriptor, min(1024 * 1024, maximum - length + 1))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            length += len(chunk)
+            if length > maximum:
+                raise RecipeError(f"{label} exceeds its retained-data bound")
+        after = os.fstat(descriptor)
+        stable_fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+            raise RecipeError(f"{label} changed while it was read")
+        return b"".join(chunks)
+    except OSError as exc:
+        raise RecipeError(f"{label} cannot be read") from exc
+    finally:
+        os.close(descriptor)
+
+
+def stable_directory(before: os.stat_result, after: os.stat_result) -> bool:
+    fields = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_mtime_ns", "st_ctime_ns")
+    return all(getattr(before, field) == getattr(after, field) for field in fields)
+
+
+def replay_source_snapshot(source_dir: pathlib.Path, expected_kind: str) -> dict[str, object]:
+    if expected_kind not in {"align-llm", "ggml"}:
+        raise RecipeError("source snapshot owner kind is invalid")
+    source_dir = source_dir.absolute()
+    directory_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) \
+        | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        root_fd = os.open(source_dir, directory_flags)
+    except OSError as exc:
+        raise RecipeError("source snapshot directory is absent") from exc
+    try:
+        root_before = os.fstat(root_fd)
+        if not stat.S_ISDIR(root_before.st_mode):
+            raise RecipeError("source snapshot root is not a directory")
+        try:
+            root_entries = set(os.listdir(root_fd))
+        except OSError as exc:
+            raise RecipeError("source snapshot root cannot be enumerated") from exc
+        if root_entries != {"manifest.json", "commit", "blobs"}:
+            raise RecipeError("source snapshot root closure is invalid")
+        try:
+            blob_fd = os.open("blobs", directory_flags, dir_fd=root_fd)
+        except OSError as exc:
+            raise RecipeError("source blob root is not a directory") from exc
+        try:
+            blob_before = os.fstat(blob_fd)
+            if not stat.S_ISDIR(blob_before.st_mode):
+                raise RecipeError("source blob root is not a directory")
+
+            manifest_raw = single_link_file_at(
+                root_fd, "manifest.json", "source manifest", MAX_SOURCE_MANIFEST_BYTES,
+            )
+            manifest = validate_source_manifest(parse_canonical(
+                manifest_raw, MAX_SOURCE_MANIFEST_BYTES,
+            ))
+            if manifest["source_kind"] != expected_kind:
+                raise RecipeError("source snapshot kind does not match its owner")
+            commit_maximum = MAX_RETAINED_DATA_BYTES - len(manifest_raw)
+            if commit_maximum < 0:
+                raise RecipeError("source snapshot exceeds the retained-data bound")
+            commit_raw = single_link_file_at(root_fd, "commit", "source commit", commit_maximum)
+            if digest(commit_raw) != manifest["commit_object_sha256"]:
+                raise RecipeError("source commit content digest does not match")
+            if object_oid(str(manifest["object_format"]), b"commit", commit_raw) != manifest["commit"]:
+                raise RecipeError("source commit Git object does not match")
+            try:
+                first_line = commit_raw.split(b"\n", 1)[0].decode("ascii")
+            except UnicodeDecodeError as exc:
+                raise RecipeError("source commit tree header is invalid") from exc
+            if first_line != f"tree {manifest['tree']}":
+                raise RecipeError("source commit names a different tree")
+
+            rows = manifest["files"]
+            assert isinstance(rows, list)
+            expected_blobs = {str(row["sha256"]) for row in rows}
+            try:
+                blob_entries = set(os.listdir(blob_fd))
+            except OSError as exc:
+                raise RecipeError("source blob root cannot be enumerated") from exc
+            if blob_entries != expected_blobs:
+                raise RecipeError("source blob closure is invalid")
+            blob_identities: dict[str, tuple[int, str]] = {}
+            retained_bytes = len(manifest_raw) + len(commit_raw)
+            for sha256 in sorted(expected_blobs):
+                remaining = MAX_RETAINED_DATA_BYTES - retained_bytes
+                data = single_link_file_at(blob_fd, sha256, f"source blob {sha256}", remaining)
+                retained_bytes += len(data)
+                if digest(data) != sha256:
+                    raise RecipeError("source blob content digest does not match")
+                blob_identities[sha256] = (
+                    len(data), object_oid(str(manifest["object_format"]), b"blob", data),
+                )
+            for ordinal, row in enumerate(rows):
+                length, git_oid = blob_identities[str(row["sha256"])]
+                if length != row["bytes"]:
+                    raise RecipeError(f"source blob length does not match row {ordinal}")
+                if git_oid != row["git_oid"]:
+                    raise RecipeError(f"source blob Git object does not match row {ordinal}")
+            if build_tree_oid(str(manifest["object_format"]), rows) != manifest["tree"]:
+                raise RecipeError("source tree Git object does not match")
+            try:
+                root_after_entries = set(os.listdir(root_fd))
+                blob_after_entries = set(os.listdir(blob_fd))
+                root_after = os.fstat(root_fd)
+                blob_after = os.fstat(blob_fd)
+            except OSError as exc:
+                raise RecipeError("source snapshot cannot be rechecked") from exc
+            if root_after_entries != root_entries or blob_after_entries != blob_entries \
+                    or not stable_directory(root_before, root_after) \
+                    or not stable_directory(blob_before, blob_after):
+                raise RecipeError("source snapshot closure changed while it was read")
+
+            snapshot = hashlib.sha256()
+            snapshot.update(b"GPU_SOURCE_SNAPSHOT\0")
+            snapshot.update(expected_kind.encode("ascii"))
+            snapshot.update(b"\0")
+            snapshot.update(manifest_raw)
+            for row in rows:
+                snapshot.update(bytes.fromhex(str(row["sha256"])))
+            return {
+                "source_kind": expected_kind,
+                "manifest_sha256": digest(manifest_raw),
+                "snapshot_sha256": snapshot.hexdigest(),
+                "commit": manifest["commit"],
+                "tree": manifest["tree"],
+                "file_count": len(rows),
+            }
+        finally:
+            os.close(blob_fd)
+    finally:
+        os.close(root_fd)
 
 
 def command(argv: list[str], *, cwd: pathlib.Path | None = None) -> bytes:
@@ -280,6 +601,7 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path) -> None:
             }
             bundle["bundle_id"] = digest(canonical(bundle))
             (bundle_dir / "manifest.json").write_bytes(canonical(bundle))
+            replay_source_snapshot(source_dir, "ggml")
             os.rename(stage, output)
 
 

@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+
+python3 - "${root_dir}" <<'PY'
+import hashlib
+import importlib.util
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+
+
+root = pathlib.Path(sys.argv[1])
+path = root / "scripts" / "gpu_backend_recipe.py"
+spec = importlib.util.spec_from_file_location("gpu_backend_recipe", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+
+def git(repository, *arguments, environment=None):
+    return subprocess.run(
+        ["git", *arguments],
+        cwd=repository,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=environment,
+    ).stdout
+
+
+def make_snapshot(repository, destination):
+    commit = git(repository, "rev-parse", "HEAD").decode().strip()
+    tree = git(repository, "rev-parse", "HEAD^{tree}").decode().strip()
+    object_format = git(repository, "rev-parse", "--show-object-format").decode().strip()
+    commit_raw = git(repository, "cat-file", "commit", "HEAD")
+    listing = git(repository, "ls-tree", "-rz", "--full-tree", "HEAD")
+    rows = []
+    blobs = {}
+    for raw_row in listing.split(b"\0"):
+        if not raw_row:
+            continue
+        header, raw_path = raw_row.split(b"\t", 1)
+        mode, kind, oid = header.decode("ascii").split(" ")
+        assert kind == "blob"
+        data = git(repository, "cat-file", "blob", oid)
+        sha256 = hashlib.sha256(data).hexdigest()
+        blobs.setdefault(sha256, data)
+        rows.append({
+            "path": raw_path.decode("utf-8"),
+            "mode": mode,
+            "bytes": len(data),
+            "git_oid": oid,
+            "sha256": sha256,
+        })
+    rows.sort(key=lambda row: row["path"].encode("utf-8"))
+    manifest = {
+        "schema_version": 1,
+        "artifact_kind": "GPU_SOURCE_MANIFEST",
+        "source_kind": "align-llm",
+        "repository": "https://github.com/sanohiro/align-llm.git",
+        "object_format": object_format,
+        "commit": commit,
+        "commit_object_sha256": hashlib.sha256(commit_raw).hexdigest(),
+        "tree": tree,
+        "files": rows,
+    }
+    blob_dir = destination / "blobs"
+    blob_dir.mkdir(parents=True)
+    manifest_raw = module.canonical(manifest)
+    (destination / "manifest.json").write_bytes(manifest_raw)
+    (destination / "commit").write_bytes(commit_raw)
+    for sha256, data in blobs.items():
+        (blob_dir / sha256).write_bytes(data)
+    return manifest, manifest_raw
+
+
+def copied(source, parent, name):
+    destination = parent / name
+    shutil.copytree(source, destination)
+    return destination
+
+
+def rejected(snapshot, message):
+    try:
+        module.replay_source_snapshot(snapshot, "align-llm")
+    except module.RecipeError as error:
+        assert message in str(error), (message, str(error))
+    else:
+        raise AssertionError(f"snapshot unexpectedly passed: {message}")
+
+
+def rewrite_manifest(snapshot, edit):
+    manifest_path = snapshot / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    edit(manifest)
+    manifest_path.write_bytes(module.canonical(manifest))
+
+
+with tempfile.TemporaryDirectory(prefix="gpu-source-replay-") as raw_temporary:
+    temporary = pathlib.Path(raw_temporary)
+    repository = temporary / "repository"
+    repository.mkdir()
+    git(repository, "init", "-q", "--object-format=sha1")
+    git(repository, "config", "user.name", "GPU Source Replay")
+    git(repository, "config", "user.email", "gpu-source-replay@example.invalid")
+    (repository / "plain.txt").write_text("shared content\n")
+    (repository / "copy.txt").write_text("shared content\n")
+    nested = repository / "nested"
+    nested.mkdir()
+    executable = nested / "run.sh"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    (nested / "unicodé.txt").write_text("direct unicode\n")
+    os.symlink("plain.txt", repository / "link")
+    git(repository, "add", "--all")
+    commit_environment = dict(os.environ)
+    commit_environment.update({
+        "GIT_AUTHOR_DATE": "2000-01-01T00:00:00Z",
+        "GIT_COMMITTER_DATE": "2000-01-01T00:00:00Z",
+    })
+    git(repository, "commit", "-q", "-m", "fixture", environment=commit_environment)
+
+    snapshot = temporary / "snapshot"
+    manifest, manifest_raw = make_snapshot(repository, snapshot)
+    result = module.replay_source_snapshot(snapshot, "align-llm")
+    expected_snapshot = hashlib.sha256()
+    expected_snapshot.update(b"GPU_SOURCE_SNAPSHOT\0align-llm\0")
+    expected_snapshot.update(manifest_raw)
+    for row in manifest["files"]:
+        expected_snapshot.update(bytes.fromhex(row["sha256"]))
+    assert result == {
+        "source_kind": "align-llm",
+        "manifest_sha256": hashlib.sha256(manifest_raw).hexdigest(),
+        "snapshot_sha256": expected_snapshot.hexdigest(),
+        "commit": manifest["commit"],
+        "tree": manifest["tree"],
+        "file_count": 5,
+    }
+    assert {row["mode"] for row in manifest["files"]} == {"100644", "100755", "120000"}
+    assert len({row["sha256"] for row in manifest["files"]}) == 4
+
+    try:
+        module.replay_source_snapshot(snapshot, "ggml")
+    except module.RecipeError as error:
+        assert "kind does not match" in str(error)
+    else:
+        raise AssertionError("cross-repository source manifest unexpectedly passed")
+
+    duplicate = copied(snapshot, temporary, "duplicate")
+    raw = duplicate.joinpath("manifest.json").read_bytes()
+    duplicate.joinpath("manifest.json").write_bytes(raw.replace(
+        b'{"schema_version":1,', b'{"schema_version":1,"schema_version":1,', 1,
+    ))
+    rejected(duplicate, "duplicate JSON key")
+
+    noncanonical = copied(snapshot, temporary, "noncanonical")
+    value = json.loads(noncanonical.joinpath("manifest.json").read_bytes())
+    noncanonical.joinpath("manifest.json").write_text(json.dumps(value, indent=2) + "\n")
+    rejected(noncanonical, "not one canonical object")
+
+    invalid_constant = copied(snapshot, temporary, "invalid-constant")
+    raw = invalid_constant.joinpath("manifest.json").read_bytes()
+    invalid_constant.joinpath("manifest.json").write_bytes(raw.replace(
+        b'"schema_version":1', b'"schema_version":NaN', 1,
+    ))
+    rejected(invalid_constant, "invalid JSON constant")
+
+    unsorted = copied(snapshot, temporary, "unsorted")
+    rewrite_manifest(unsorted, lambda value: value["files"].reverse())
+    rejected(unsorted, "not strictly sorted")
+
+    malformed_type = copied(snapshot, temporary, "malformed-type")
+    rewrite_manifest(malformed_type, lambda value: value["files"][0].__setitem__("mode", []))
+    rejected(malformed_type, "file mode is invalid")
+
+    wrong_tree = copied(snapshot, temporary, "wrong-tree")
+    rewrite_manifest(wrong_tree, lambda value: value.__setitem__("tree", "0" * 40))
+    rejected(wrong_tree, "different tree")
+
+    wrong_oid = copied(snapshot, temporary, "wrong-oid")
+    rewrite_manifest(wrong_oid, lambda value: value["files"][0].__setitem__("git_oid", "0" * 40))
+    rejected(wrong_oid, "blob Git object")
+
+    mutated = copied(snapshot, temporary, "mutated")
+    next(mutated.joinpath("blobs").iterdir()).write_bytes(b"mutated")
+    rejected(mutated, "content digest")
+
+    extra = copied(snapshot, temporary, "extra")
+    extra.joinpath("blobs", "extra").write_bytes(b"")
+    rejected(extra, "blob closure")
+
+    hardlinked = copied(snapshot, temporary, "hardlinked")
+    os.link(hardlinked / "commit", temporary / "commit-alias")
+    rejected(hardlinked, "single-link regular file")
+
+    linked_manifest = copied(snapshot, temporary, "linked-manifest")
+    manifest_copy = temporary / "manifest-copy"
+    shutil.copyfile(linked_manifest / "manifest.json", manifest_copy)
+    linked_manifest.joinpath("manifest.json").unlink()
+    os.symlink(manifest_copy, linked_manifest / "manifest.json")
+    rejected(linked_manifest, "single-link regular file")
+
+    linked_blobs = copied(snapshot, temporary, "linked-blobs")
+    shutil.rmtree(linked_blobs / "blobs")
+    os.symlink(snapshot / "blobs", linked_blobs / "blobs")
+    rejected(linked_blobs, "blob root is not a directory")
+
+    bounded = copied(snapshot, temporary, "bounded")
+    retained = sum(path.stat().st_size for path in bounded.rglob("*") if path.is_file())
+    original_bound = module.MAX_RETAINED_DATA_BYTES
+    module.MAX_RETAINED_DATA_BYTES = retained - 1
+    try:
+        rejected(bounded, "retained-data bound")
+    finally:
+        module.MAX_RETAINED_DATA_BYTES = original_bound
+
+print("gpu source replay smoke: PASS")
+PY
