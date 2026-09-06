@@ -170,6 +170,25 @@ alignが所有するのは、主に次。
 - execution scheduling
 ```
 
+### 4.5 Align as the implementation foundation
+
+Align's borrowed views, explicit ownership, fused collection pipelines, standard SoA support,
+bounded positional/buffered I/O and explicit data/task parallelism are useful foundations for
+reducing copies, allocations, unnecessary memory traffic and serial preparation. Reusable I/O
+buffers, mapped views, persistent worker pools and scoped task lifetimes fit the constrained-memory
+runtime design. The application must carry those benefits through its actual storage, cache and
+native-compute boundaries; choosing the language alone does not prove an advantage over llama.cpp.
+Collection pipeline fusion and I/O/compute overlap are different mechanisms, and backend-packed
+quantized tensors do not automatically benefit from a generic SoA transformation. Remaining
+buffer-transfer and scheduling boundaries do not mean Align lacks I/O or parallel execution.
+
+[Runtime foundations and evidence](gpu-runtime-performance.md#11-existing-mechanisms-retain-the-foundation-evaluate-each-policy)
+records which existing ideas have measured support, which policies did not justify adoption, and
+where Align's capabilities still need application integration. Preserve the Model/Block IR,
+AlignPack and explicit memory-policy foundation while evaluating each optimization on its own
+workload; neither a negative policy result nor a language-level microbenchmark decides the whole
+runtime's competitiveness.
+
 ---
 
 ## 5. Runtime内部構造
@@ -623,6 +642,12 @@ large model:
 ## 14. 最重要評価指標
 
 alignの主指標はtokens/secではない。
+
+This distinguishes the coding system's integration metric from runtime diagnostics; it does not
+make inference speed or useful model capacity optional. Section 3's runtime objectives have their
+own decisions under the performance plan. Faster patch completion cannot substitute for faster
+inference, and loading a larger model without meeting useful-speed limits cannot establish the
+capacity goal.
 
 ### Primary Metrics
 

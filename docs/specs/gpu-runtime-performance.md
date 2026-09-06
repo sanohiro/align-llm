@@ -1,6 +1,7 @@
-# GPU runtime performance plan
+# Runtime foundations and GPU performance plan
 
-Status: design, 2026-09-06. No measurements or performance claims are made here.
+Status: design and evidence synthesis, 2026-09-06. No new measurements or GPU speed/capacity
+claims are made here. Historical CPU results below retain their original owners and scopes.
 
 This is the plan of record for materially exceeding llama.cpp's inference speed on affordable local
 hardware and ultimately running larger models at useful speed under the same resource limits.
@@ -48,6 +49,85 @@ Two gaps are especially important before implementation:
 G1 must use a GPU execution graph while sharing the existing model semantics. The later reusable
 session must connect directly to the coding caller. Neither is a mandate to reimplement mature GPU
 kernels or to replace the existing CPU provider.
+
+### 1.1 Existing mechanisms: retain the foundation, evaluate each policy
+
+The architecture's Model/Block IR, AlignPack, explicit ownership, bounded expert working set and
+memory-tier policy remain aligned with the speed/capacity goal. They let the application control
+which bytes are read, retained and supplied to computation. The evidence does not justify
+discarding that foundation, but it also does not establish that every proposed policy is useful
+or that the current provider already realizes the architecture's intended efficiency.
+
+[AlignPack](r4-alignpack-layer-major.md) makes layer/expert units independently addressable and
+contiguous; [routed model prefill](r5e-moe-model-prefill.md) verifies computation from selected
+expert claims rather than a mandatory full-expert allocation. These are useful prerequisites for
+bounded larger-model execution, not proof of faster inference than a tuned mmap/offload baseline.
+Pack preparation, temporary staging and the storage occupied by source plus packed artifacts remain
+real costs. A resident model should not inherit storage-streaming work it no longer needs.
+
+The following records summarize distinct experiments, not one composable speedup:
+
+| Mechanism / evidence owner | Recorded result | What follows, and what does not |
+| --- | --- | --- |
+| [Partial LRU expert cache](r8-partial-lru-cache.md), §3.1 | Fixed 16-step OLMoE task: expert-pack reads fell from 7,801,405,440 to 2,920,955,904 bytes, a 62.56% reduction, with exact semantics. | Reuse removes application read traffic. This was a byte gate, not a latency win; page-cache-served pack reads are not necessarily physical NVMe traffic. |
+| [Reset-lifetime cache decision](r8-reset-cache-decision.md), §5 | On 40 prompts at a 25% expert-cache budget, LRU reduced decode read bytes by 53.6% versus streaming. Weighted LFU was only 0.9% below LRU and did not clear its additional-policy gate. | Cache lifetime must match the real caller. The tested weighted policy was not justified; this does not reject every future score/cost-aware policy. |
+| [Persistent prefix TTFT](r6-prefix-ttft.md), §8.3 | Three fixed suffixes, five pairs per suffix/protocol: mean paired reductions were 30.58% and 32.65% in the two named protocols versus our own single-shot path. | Prefix reuse has consumer-level evidence. It is not a llama.cpp comparison, a GPU result or proof that the current generate/repair caller retains a warm session. |
+| [Exact-safe decode boundaries](r8-olmoe-exact-safe-decode-boundaries.md), §5 | Four fixed-request repetitions: 19.267 s historical baseline median versus 17.423 s candidate median, 9.57% lower. Cache-to-claim copy clocks were zero. | Direct cache-backed tensors plus the plane-comparison improvement shipped together. The result is for the pair of interventions on one CPU host, not zero-copy alone, the Align language alone, or superiority over llama.cpp. |
+| [Post-staging coding decision](r8-olmoe-post-staging-sampled-runtime-decision.md) | Same fixed CPU coding task, four portfolios: runtime median 84.062 s versus llama.cpp 14.174 s; both passed all four at candidate 5. Decision: `NOT_MET`. | The real caller still has a substantial gap. This lifecycle includes request-local runtime setup versus a server retained within each baseline portfolio; it is not a standalone kernel-speed ratio or a GPU forecast. |
+
+Repo-local context, failure memory, prompt improvement and task profiles remain useful application
+ideas. Their direct benefit may be fewer tokens, fewer attempts or better task success rather than
+faster same-model inference. Runtime reuse and placement can consume relevant workload information
+through explicit boundaries, but neither cross-layer benefit nor expert predictability follows
+automatically from having repo metadata. Prefix reuse, speculative decoding and CPU/GPU offload
+already exist in llama.cpp; differentiation is a measured combination of workload knowledge,
+physical layout and execution policy, not a blanket claim that each ingredient is unique.
+
+### 1.2 What Align contributes, and what the application must realize
+
+At consumer pin `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`, Align provides real mechanisms
+for efficient data-oriented implementation. This is a technical foundation, not an automatic
+performance multiplier over hand-optimized C/C++ using the same native kernels.
+
+| Align capability | Relevant benefit | Limit at the application boundary |
+| --- | --- | --- |
+| Borrowed views, explicit ownership and pointer-based FFI | Pass existing bytes without a marshaling copy; retain the owner until the consumer completes. Eligible OLMoE generation already wraps resident cache storage as expert tensors. | Zero-copy names a specific boundary. Miss reads, layout conversion, cache fill, output copies and discrete-memory transfers do not disappear because the source language supports borrowing. |
+| Fused collection pipelines | Compatible transforms/reductions form one loop without intermediate arrays; `map_into` reuses caller storage. Alias information can help native vectorization. | Collection fusion is not asynchronous I/O/compute pipelining or ggml graph fusion. It does not merge arbitrary FFI calls, remove explicit materialization, or make a data dependency concurrent. |
+| Standard `soa<T>` and column operations | Read selected metadata/profile columns contiguously; avoid fetching unused fields and make bulk processing easier to optimize. | SoA is explicit, not an automatic rewrite of every array. Transposition has a cost; whole-row access may prefer AoS. Quantized weight tensors already have backend-defined packing and cannot be relaid out as generic SoA without kernel/format consequences. |
+| Explicit, bounded I/O | Cursor-free `file.pread`/`pwrite` expose offsets; reads refill caller-owned buffers, buffered readers/writers coalesce small operations, `io.copy` uses bounded memory, and arena-owned mapped views avoid a separate full-file copy. These fit independently addressable AlignPack blocks and constrained-memory execution. | Buffer capacity bounds a read, but the pinned `pread` cannot choose a smaller length or an offset within the destination buffer. Mapped storage still incurs page faults and physical memory/storage traffic; mapping alone is not a speed or capacity win. |
+| Explicit data and task parallelism | `par_map` uses a persistent worker pool and range kernels for supported forms; `task_group` runs independent heterogeneous jobs with scoped lifetime and joined error handling. This provides reusable machinery for parallel preparation and independent work without a new application thread runtime. | `par_map` requires Pure work; `task_group` can perform I/O. At this pin, registered tasks are dispatched at `wait`, and owned-buffer capture remains restricted. Useful parallelism depends on independent work, sufficient task size and coordination with ggml's own CPU workers. |
+
+These I/O and parallel facilities are part of the foundation, not absent capabilities awaiting the
+GPU work. The [pack reader](../../src/alignpack_read.align) already uses positional reads and
+accounts for bounded windows; the [pack writer](../../src/alignpack.align) refills retained storage;
+the [expert runner](../../src/moe_decode_step.align) reads selected blocks and reuses eligible
+cache-backed tensors. Parallel preparation is an opportunity, not a claim that this runner already
+overlaps file reads and model computation. Existing [Align requests](../align-requests.md) identify
+the narrower remaining boundaries: Request 38 covers bounded positional destination filling, and
+Request 41 covers transferring an owned/exclusive window to a prefetch task and demonstrating real
+overlap under the shipped scheduler. Neither means Align lacks I/O or task parallelism. G1–G4 and
+G5's same-thread host preparation over queued device work remain independent of Request 41.
+
+Pinned Align sources:
+[pipeline semantics](https://github.com/sanohiro/align/blob/8cefc803d5c7f883a8db5b67250ed4ed069b43a4/docs/guide/06-pipelines.md),
+[columnar layout](https://github.com/sanohiro/align/blob/8cefc803d5c7f883a8db5b67250ed4ed069b43a4/docs/guide/11-data-oriented.md),
+[FFI views](https://github.com/sanohiro/align/blob/8cefc803d5c7f883a8db5b67250ed4ed069b43a4/docs/guide/15-unsafe-and-ffi.md),
+[I/O and mapped-view contracts](https://github.com/sanohiro/align/blob/8cefc803d5c7f883a8db5b67250ed4ed069b43a4/docs/language-spec.md#standard-library),
+[parallel constructs](https://github.com/sanohiro/align/blob/8cefc803d5c7f883a8db5b67250ed4ed069b43a4/docs/guide/10-closures-and-parallelism.md),
+[runtime scheduling](https://github.com/sanohiro/align/blob/8cefc803d5c7f883a8db5b67250ed4ed069b43a4/crates/align_runtime/src/lib.rs)
+(`align_rt_tg_register` / `align_rt_tg_wait`),
+and the [implementation audit](https://github.com/sanohiro/align/blob/8cefc803d5c7f883a8db5b67250ed4ed069b43a4/docs/impl/12-pipeline-closure-memory-io-simd-audit.md).
+The pinned `zip_pipeline.rs` and `deep_pipeline.rs` compiler tests check fused-loop/allocation
+shape. The audit reports flat numeric loops near equivalent native-loop performance and much
+larger gains for favorable column-access comparisons; neither is an LLM throughput benchmark.
+
+Apply these strengths at measured hot boundaries: preserve already-direct cache/weight views,
+avoid reconstituting them into temporary buffers, reuse owned I/O storage, keep metadata work
+bounded, and parallelize sufficiently large independent work. Check the generated loop/allocation
+shape when an Align-owned bulk pass is material; measure actual copy/transfer bytes and full-request
+latency when a native boundary is material.
+Replacing every explicit loop with pipeline syntax or every record array with SoA is not a goal.
+These are implementation considerations within the existing owners, not new universal CI gates.
 
 ## 2. Source-grounded comparison
 

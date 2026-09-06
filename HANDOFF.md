@@ -3,26 +3,25 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active design: competitive GPU execution and useful capacity (2026-09-06)
+## Documentation checkpoint: runtime foundations (2026-09-06)
 
-Main `e743d1e39570835951ea5ea3ac16dfb77dcaa80d` merged G1's resident Metal/CUDA design as
-PR #203. The CPU measurement sequence is complete through item 79; GPU execution is not yet
-implemented. Align remains pinned to `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
+Main `3a59b7d8f5c8589de782903e790c894cf85976e0` merged the competitive GPU design as PR #204,
+following G1's contract in PR #203. The CPU measurement sequence is complete through item 79.
+No implementation is active; GPU execution is not yet implemented. Align remains pinned to
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
-Branch `agent/gpu-runtime-competitive-design`, based on that main, adds the source-grounded
-llama.cpp comparison and implementation priorities in `docs/specs/gpu-runtime-performance.md`.
-The user's goal is materially faster inference on affordable hardware and eventually larger
-models at useful speed under the same physical-memory/storage limits. Runtime speed, useful
-capacity and time to a passing patch are separate outcomes; one negative candidate does not end
-the program. G1 keeps its existing schema-1 correctness contract, with whole-device graphs,
-bounded graph/in-place KV reuse, production-only execution traces and qualified backend fast paths.
-G1R then reaches the coding caller with reusable session/prefix state. G2/G5/R9/R10 own the
-constrained-memory and larger-model hypotheses; extra vendors do not block Metal/CUDA decisions.
+Branch `agent/runtime-foundations-summary`, based on that main, records the subsequent discussion
+in `docs/specs/gpu-runtime-performance.md` §1.1–§1.2 and its architecture/roadmap pointers. It
+separates the goal, historical measured evidence, unresolved hypotheses and Align's actual
+zero-copy/collection-fusion/SoA/bounded-I/O/parallelism contribution. Existing IR/layout/ownership
+foundations remain; neither a failed individual policy nor a language microbenchmark decides
+whole-runtime speed.
+No new benchmark, public runtime contract or implementation requirement is introduced.
 
 **Next actions, in order.**
 
-1. Complete this design candidate's one comprehensive review, exact-head docs preflight and PR
-   merge, then stop before implementation as requested. GitHub owns the final review/check record.
+1. Complete the requested documentation publication with authoritative-doc review and exact-head
+   docs preflight, then stop before implementation. GitHub owns the final review/check record.
 2. When implementation resumes, start G1's pinned-backend feasibility and immutable Metal/CUDA
    recipes, complete Qwen/OLMoE device graphs and their provider caller, and populate/execute the
    numerical qualification. These checkpoints belong to one consumer capability, not probe-only PRs.
@@ -30,14 +29,17 @@ constrained-memory and larger-model hypotheses; extra vendors do not block Metal
    win. Freeze each actual performance campaign's workload, resource/cost limits and decision rule
    before tuning. Do not claim current speed or larger-model support from this design.
 
-**Verification and constraints.** Author source/ledger consistency is complete. `git diff --check`
-passes; all eight canonical G1 JSON vectors are unchanged from main and parse/round-trip to their
-exact bytes. Source tests, GPU builds and speed measurements are N/A for this docs-only candidate.
-The pinned and contemporary upstream observations are named in the performance plan; neither
-toolchain pin changes. Requests 34/35/41 remain the existing language-owned limitations; no new
-Align gap is established. Metal and CUDA require their own real-host evidence. AMD hardware is
-unavailable. Models, raw evidence and build products remain outside Git. No intentional uncommitted
-files remain after the candidate is committed.
+**Verification and constraints.** PR #204 completed its comprehensive review, one recorded repair,
+exact-head docs preflight and all three hosted docs-scope check jobs. This follow-up cross-checks
+its historical figures against their owning specifications and language claims against the exact
+Align pin. `git diff --check` passed; static checks passed for Markdown fences, relative/pinned
+source links, evidence-owner values/rounding and the eight unchanged G1 JSON vectors. Source tests,
+GPU builds and new speed measurements are N/A for this documentation-only update. Requests
+34/35/38/41 remain the existing language-owned limitations; no new Align gap is established.
+Metal and CUDA require their own real-host evidence. AMD hardware is unavailable.
+Models, raw evidence and build products remain outside Git.
+
+**Intentional uncommitted files.** None after this documentation candidate is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 
