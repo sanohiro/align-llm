@@ -1858,6 +1858,10 @@ materially faster inference on affordable hardware and ultimately a larger pract
 under the same physical-memory/storage limits. Runtime speed, useful model/context capacity and
 time to a passing patch are separate outcomes. Resident generation is the starting capability,
 not the final verdict; constrained-memory G2/G5 work does not wait for a resident speed win.
+The same plan's §1.1–§1.2 summarizes the existing Block IR/AlignPack/cache/prefix evidence and
+Align's zero-copy, collection-fusion, SoA, bounded I/O and explicit parallelism contribution.
+Those foundations carry forward; individual failed policies and language microbenchmarks do not
+establish a program-wide verdict.
 
 80. **G1-GPU-GENERATION — complete resident generation on Metal and CUDA. Planned.**
     Enable Qwen greedy and OLMoE greedy/sampled text through the existing provider with explicit
