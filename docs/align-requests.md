@@ -76,8 +76,9 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-09-02): Requests 1–20 and 22 are CLOSED. Request 21 and Requests 23–43 and
-> 45–54 are PROPOSED and non-blocking; Request 44 remains ALIGN_LLM_VERIFIED.
+> **Status (2026-09-06): Requests 1–20 and 22 are CLOSED. Request 21 and Requests 23–43 and
+> 45–54 are PROPOSED and non-blocking; Request 44 remains ALIGN_LLM_VERIFIED; blocking Request 55
+> is IMPLEMENTING after its Align implementation merged and awaits a published release.
 > R8-PARTIAL-LRU-CACHE is merged; the active compatibility adoption advances the Align pin without
 > consuming a proposed request.
 > See the end of this narrative for the next consumer named for each remaining pending user/Align
@@ -10482,6 +10483,64 @@ The first is preferable because it has one support group. Mach-O remains unchang
 3. Existing capability-library order, including the `libpq` closure, remains deterministic and all
    current linker tests pass.
 4. Mach-O emits no new `-lm`, `-ldl`, or `-lpthread` arguments.
+
+---
+
+## Request 55 — `std.fs`: retained-root single-link regular-file open
+
+```text
+Status: IMPLEMENTING
+Priority: critical
+Blocking: yes
+Blocked gate or slice: G1 resident GPU generation publication
+Independent work that may continue: GPU bundle construction and verifier logic that does not load
+  an artifact; publication remains blocked
+Resume condition: Align publishes a release containing the merged constructor; align-llm updates
+  .align-revision, materializes the managed toolchain, and adopts the released surface
+Align commit or pull request: Align PR #952 merged as 22ac8eb8; fixed release pending publication;
+  authoritative contract in ../align/docs/impl/34-fs-single-link-plan.md
+align-llm verification: update .align-revision to the shipped Align commit; open manifest.json and
+  every declared artifact through fs.open_beneath_single_link; run make gpu-bundle-smoke; accept
+  canonical single-link inputs; reject hard-linked manifest and backend plugin; retain root,
+  intermediate, and final symlink refusals before runtime_device invokes the native registry
+```
+
+### Requested surface
+
+```text
+fs.open_beneath_single_link(root: str, relative: str) -> Result<reader, Error>
+```
+
+The constructor must preserve `fs.open_beneath`'s complete grammar, validation order,
+retained-directory traversal, regular-file and descriptor identity requirements, ownership,
+cleanup, and error behavior. Before returning the existing reader, it checks `st_nlink` on the same
+opened final descriptor. Exactly one link succeeds; zero or more than one returns `Error.Invalid`.
+Failure publishes no reader or artifact bytes and closes every descriptor exactly once.
+
+This is a distinct constructor. It does not expose a descriptor, device, inode, mode, size, or link
+count and does not change `fs.open_beneath` for callers that intentionally permit hard links. A
+path-based check, `read_dir`, subprocess, or path reopen is not an equivalent implementation
+because it loses descriptor identity.
+
+### Acceptance criteria
+
+1. Linux and macOS accept ordinary single-link files beneath every root form accepted by
+   `open_beneath`, including absolute, relative, `.`, and `/` roots.
+2. Both names of a two-link regular inode return `Error.Invalid`; removing the extra link makes a
+   later call through the remaining name succeed.
+3. Root/intermediate/final symlinks, directories, FIFOs, sockets, devices, missing/denied paths,
+   malformed paths, and native error mapping remain identical to `open_beneath`.
+4. A barrier-controlled replacement proves the link count and reader refer to the same opened
+   inode, and every failure closes root, intermediate, final, and reader-construction resources
+   exactly once.
+5. Whole-program, per-unit, imported/generic formation, checked-HIR replay, runtime ABI inventory,
+   and Linux/macOS owners cover the constructor without changing reader identity.
+
+Align's merged implementation preserves the existing sequence through nonblocking clear, then
+checks `st_nlink` from that sequence's existing opened-descriptor `fstat` record immediately before
+reader construction. It adds no second syscall and uses a distinct HIR/MIR operation and runtime
+key with the existing A12 ABI shape. The surface is not yet in a published release; align-llm
+adoption remains consumer-owned and has not begun.
 
 ---
 

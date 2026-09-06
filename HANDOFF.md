@@ -5,27 +5,34 @@ file records durable project state.
 
 ## Documentation checkpoint: runtime foundations (2026-09-06)
 
-Main `3a59b7d8f5c8589de782903e790c894cf85976e0` merged the competitive GPU design as PR #204,
-following G1's contract in PR #203. The CPU measurement sequence is complete through item 79.
-No implementation is active; GPU execution is not yet implemented. Align remains pinned to
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
+Main `e964408f770c27d3a2b5ecc2148b22ca09fbd4c4` merged the runtime-foundations summary as PR #205,
+following the competitive GPU design in PR #204 and G1's contract in PR #203. The CPU measurement
+sequence is complete through item 79. No implementation is active; GPU execution is not yet
+implemented. Align remains pinned to `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 
-Branch `agent/runtime-foundations-summary`, based on that main, records the subsequent discussion
-in `docs/specs/gpu-runtime-performance.md` §1.1–§1.2 and its architecture/roadmap pointers. It
-separates the goal, historical measured evidence, unresolved hypotheses and Align's actual
-zero-copy/collection-fusion/SoA/bounded-I/O/parallelism contribution. Existing IR/layout/ownership
-foundations remain; neither a failed individual policy nor a language microbenchmark decides
-whole-runtime speed.
-No new benchmark, public runtime contract or implementation requirement is introduced.
+Align Request 55's retained-root single-link reader implementation merged in Align PR #952 as
+`22ac8eb8`, but no release containing it is published. G1 artifact loading and publication remain
+blocked until that release is available, `.align-revision` adopts it, and the GPU bundle verifier
+passes its hard-link, symlink, identity, and cleanup owners. Bundle construction and verifier work
+that does not load an artifact may continue independently.
+
+PR #205 records the subsequent discussion in `docs/specs/gpu-runtime-performance.md` §1.1–§1.2 and
+its architecture/roadmap pointers. It separates the goal, historical measured evidence, unresolved
+hypotheses and Align's actual zero-copy/collection-fusion/SoA/bounded-I/O/parallelism contribution.
+Existing IR/layout/ownership foundations remain; neither a failed individual policy nor a language
+microbenchmark decides whole-runtime speed. No new benchmark, public runtime contract or
+implementation requirement is introduced.
 
 **Next actions, in order.**
 
-1. Complete the requested documentation publication with authoritative-doc review and exact-head
-   docs preflight, then stop before implementation. GitHub owns the final review/check record.
-2. When implementation resumes, start G1's pinned-backend feasibility and immutable Metal/CUDA
+1. Complete the requested Request 55 register publication with authoritative-doc review and
+   exact-head docs preflight. GitHub owns the final review/check record.
+2. When the fixed Align release is published, adopt its exact revision and verify Request 55 at the
+   GPU bundle consumer boundary.
+3. When implementation resumes, start G1's pinned-backend feasibility and immutable Metal/CUDA
    recipes, complete Qwen/OLMoE device graphs and their provider caller, and populate/execute the
    numerical qualification. These checkpoints belong to one consumer capability, not probe-only PRs.
-3. Deliver G1R next; advance eligible constrained-memory work without waiting for a resident speed
+4. Deliver G1R next; advance eligible constrained-memory work without waiting for a resident speed
    win. Freeze each actual performance campaign's workload, resource/cost limits and decision rule
    before tuning. Do not claim current speed or larger-model support from this design.
 
