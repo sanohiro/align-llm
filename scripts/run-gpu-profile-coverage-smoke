@@ -66,6 +66,16 @@ assert records.canonical(validated["ggml_source"]) == lines[2]
 assert records.canonical(validated["bundle"]) == lines[3]
 assert [records.canonical(item) for item in validated["calibrations"]] == lines[4:6]
 assert records.canonical(validated["profile"]) == lines[6]
+evidence_records = records.validate_evidence_records(
+    runtime_option_raw=lines[0],
+    align_source_raw=lines[1],
+    ggml_source_raw=lines[2],
+    bundle_raw=lines[3],
+    calibration_raws=lines[4:6],
+    profile_raw=lines[6],
+    evidence_raw=lines[7],
+)
+assert records.canonical(evidence_records["evidence"]) == lines[7]
 
 reordered_ok = list(lines)
 reordered_ok[0] = records.canonical(dict(reversed(list(validated["runtime_option"].items()))))
@@ -94,6 +104,24 @@ duplicate = list(lines)
 duplicate[0] = duplicate[0].replace(b'{"schema_version":1,',
                                     b'{"schema_version":1,"schema_version":1,', 1)
 rejected(duplicate, "duplicate JSON key")
+
+bom = list(lines)
+bom[0] = b"\xef\xbb\xbf" + bom[0]
+rejected(bom, "framing")
+
+missing_boundary = list(lines)
+missing_boundary[0] = missing_boundary[0][:-1]
+rejected(missing_boundary, "framing")
+
+second_document = list(lines)
+second_document[0] = second_document[0] + lines[0]
+rejected(second_document, "strict UTF-8 JSON")
+
+uppercase = list(lines)
+calibration = copy.deepcopy(validated["calibrations"][0])
+calibration["model"]["model_sha256"] = calibration["model"]["model_sha256"].upper()
+uppercase[4] = records.canonical(calibration)
+rejected(uppercase, "lowercase hexadecimal")
 
 wrong_bundle = list(lines)
 bundle = copy.deepcopy(validated["bundle"])

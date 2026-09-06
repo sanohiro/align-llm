@@ -237,6 +237,12 @@ self-identities and cross-record digests, model/backend/platform/budget bindings
 contiguous `(cpu,0),(gpu_resident,0),(cpu,1),(gpu_resident,1)` case row from the frozen calibration
 and holdout inputs. It is model-free and does not claim that a GPU case executed.
 
+`make gpu-result-replay` materializes the normative pre-case FAIL vector as its complete evidence
+directory, validates the result/profile/bundle/calibration cross-references, checks exact file roles,
+sizes, digests and directory closure, then replays both retained Git source snapshots. It rejects
+mutated, extra, symlinked, hard-linked, noncanonical and role-mismatched evidence without requiring
+a model or GPU.
+
 ## Repository-index development
 
 The current C2 slice is `src/repo_index.align`. It asks Git for the tracked file list with

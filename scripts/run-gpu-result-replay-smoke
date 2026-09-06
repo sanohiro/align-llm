@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""Materialize and replay the normative G1 FAIL evidence directory."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import os
+import pathlib
+import shutil
+import sys
+import tempfile
+
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import gpu_qualification_records as records  # noqa: E402
+
+
+def fixture_lines() -> list[bytes]:
+    source = (ROOT / "docs" / "specs" / "gpu-runtime.md").read_bytes()
+    heading = source.index(b"### 3.9 Canonical positive vectors")
+    opening = source.index(b"\x60\x60\x60json\n", heading) + len(b"\x60\x60\x60json\n")
+    closing = source.index(b"\x60\x60\x60\n", opening)
+    return source[opening:closing].splitlines(keepends=True)
+
+
+def write_file(root: pathlib.Path, path: str, data: bytes) -> None:
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+
+
+def rejected(root: pathlib.Path, message: str) -> None:
+    try:
+        records.replay_evidence_directory(root)
+    except records.RecipeError as error:
+        if message not in str(error):
+            raise AssertionError((message, str(error))) from error
+    else:
+        raise AssertionError(f"invalid evidence directory passed: {message}")
+
+
+lines = fixture_lines()
+assert len(lines) == 8
+evidence = json.loads(lines[7])
+align_commit = (
+    b"tree 7c7003088534356ae2b7c5eab9f91755214dc776\n"
+    b"author Fixture <fixture@example.invalid> 0 +0000\n"
+    b"committer Fixture <fixture@example.invalid> 0 +0000\n"
+    b"\n"
+    b"align-llm fixture\n"
+)
+ggml_commit = (
+    b"tree 3098a23e2ae55378d0dfddd09730da71134ac61b\n"
+    b"author Fixture <fixture@example.invalid> 0 +0000\n"
+    b"committer Fixture <fixture@example.invalid> 0 +0000\n"
+    b"\n"
+    b"ggml fixture\n"
+)
+content = {
+    "profile.json": lines[6],
+    "bundle-manifest.json": lines[3],
+    "calibration/qwen2.json": lines[4],
+    "calibration/olmoe.json": lines[5],
+    "source/align-llm/manifest.json": lines[1],
+    "source/align-llm/commit": align_commit,
+    "source/align-llm/blobs/ab49f3eb142e8e18c94fa79d2017f57b6141b1c4cdc042f1a0d0e3de5297090e":
+        b"runner\n",
+    "source/ggml/manifest.json": lines[2],
+    "source/ggml/commit": ggml_commit,
+    "source/ggml/blobs/e1df5b4f4e7884f07e600b7e61a71fb3171661050b3281cb675bc06ac644f9d2":
+        b"ggml\n",
+    "artifacts/1e81270f1a47dce22a2e4985250c74b2e3374443734f1492b03ea2cd2af4ec48":
+        b"candidate\n",
+    "artifacts/a3960f48bb1f93e212cd1ea623b9b58a50d93a1e876f0172b8c07c34824a50f1":
+        b"cc\n",
+    "artifacts/ab49f3eb142e8e18c94fa79d2017f57b6141b1c4cdc042f1a0d0e3de5297090e":
+        b"runner\n",
+    "artifacts/b7c748b4a4d1c37826a11b7bd04068a24094832a969948118b75e48a2dfd23e6":
+        b"shim\n",
+    "artifacts/ef17b7d320f2acc023f2018dab381827ba22f9d01b6c4c97894e1bbfe4928313":
+        b"bundle\n",
+    "artifacts/fae9d8f386d67956867dedef7c89476199a4a25ee9ffe13560a6bfae7ae6c407":
+        b"runtime\n",
+}
+rows = {row["path"]: row for row in evidence["files"]}
+assert set(content) == set(rows)
+for path, data in content.items():
+    assert len(data) == rows[path]["bytes"]
+    assert hashlib.sha256(data).hexdigest() == rows[path]["sha256"]
+
+profile = json.loads(lines[6])
+calibrations = [json.loads(lines[4]), json.loads(lines[5])]
+calibration_cases = {
+    case["case_id"]: case
+    for calibration in calibrations
+    for case in calibration["cases"]
+}
+closed_environment = ["HOME=<home>:owned", "LC_ALL=C", "TMPDIR=<tmp>:owned", "TZ=UTC"]
+
+
+def command(kind, argv):
+    return {
+        "kind": kind,
+        "argv": argv,
+        "environment": closed_environment,
+        "sha256": records.command_digest(kind, argv, closed_environment),
+    }
+
+
+passing = copy.deepcopy(evidence)
+passing["status"] = "PASS"
+passing["source"]["cpu_reference"] = {
+    "state": "available",
+    "name": "cpu-reference",
+    "version": "fixture",
+    "sha256": hashlib.sha256(b"cc\n").hexdigest(),
+}
+passing["host"].update({
+    "device_state": "available",
+    "registry_device": "fixture-device",
+    "device_description": "fixture",
+    "driver": "fixture",
+    "gpu_architecture": "apple_m1",
+    "device_total_bytes": 1,
+    "device_free_bytes": 1,
+})
+passing["bundle"]["loaded_artifact_sha256s"] = [hashlib.sha256(b"bundle\n").hexdigest()]
+passing["preparation_commands"].append(command(
+    "cpu_reference_build", ["<cc>:sha256:" + hashlib.sha256(b"cc\n").hexdigest(),
+                            "build-cpu-reference"],
+))
+passing_cases = []
+for ordinal, expected in enumerate(profile["cases"]):
+    calibration_case = calibration_cases[expected["calibration_case_id"]]
+    gpu = expected["execution"] == "gpu_resident"
+    router_count = 1 if expected["model_id"] == "olmoe" and gpu else 0
+    numeric = {
+        "compared": gpu,
+        "expected_scalar_count": 1 if gpu else 0,
+        "actual_scalar_count": 1 if gpu else 0,
+        "expected_layer_count": 1 if gpu else 0,
+        "actual_layer_count": 1 if gpu else 0,
+        "expected_router_boundary_count": router_count,
+        "actual_router_boundary_count": router_count,
+        "expected_final_logit_count": 1 if gpu else 0,
+        "actual_final_logit_count": 1 if gpu else 0,
+        "max_absolute_f64_bits": "0000000000000000",
+        "max_relative_f64_bits": "0000000000000000",
+        "near_tie_count": 0,
+        "mismatch_count": 0,
+    }
+    experts = 1 if expected["model_id"] == "olmoe" and gpu else 0
+    placement = {
+        "expected_model_operations": 1 if gpu else 0,
+        "gpu_model_operations": 1 if gpu else 0,
+        "cpu_model_operations": 0,
+        "expected_layers": 1 if gpu else 0,
+        "gpu_layers": 1 if gpu else 0,
+        "cpu_layers": 0,
+        "expected_experts": experts,
+        "gpu_experts": experts,
+        "cpu_experts": 0,
+        "expected_weights_device_bytes": 1 if gpu else 0,
+        "minimum_weights_device_bytes": 1 if gpu else 0,
+        "expected_kv_device_bytes": 1 if gpu else 0,
+        "minimum_kv_device_bytes": 1 if gpu else 0,
+        "expected_weight_upload_count": 1 if gpu else 0,
+        "weight_upload_count": 1 if gpu else 0,
+        "weight_upload_bytes": 0,
+    }
+    stdout_path = f"logs/{ordinal:03d}.stdout"
+    stderr_path = f"logs/{ordinal:03d}.stderr"
+    passing_cases.append({
+        "ordinal": ordinal,
+        **{key: value for key, value in expected.items() if key != "maximum_tokens"},
+        "terminal": "PASS",
+        "category": "",
+        "stage": "",
+        "exit_code": 0,
+        "signal": None,
+        "command": command("case", [f"<case-{ordinal}>:owned"]),
+        "output_sha256": calibration_case["expected_output_sha256"],
+        "token_ids": calibration_case["expected_token_ids"],
+        "nonfinite_count": 0,
+        "numeric": numeric,
+        "placement": placement,
+        "transfers": {
+            "host_to_device_bytes": 0,
+            "device_to_host_bytes": 0,
+            "unexpected_device_to_host_bytes": 0,
+            "wait_count": 1 if gpu else 0,
+        },
+        "memory": {
+            "managed_host_peak_bytes": 1,
+            "managed_device_peak_bytes": 1 if gpu else 0,
+            "uma_alias_peak_bytes": 0,
+            "rss_peak_bytes": 1,
+            "driver_peak_bytes": None,
+        },
+        "timing": {
+            "wall_ns": 1,
+            "load_ns": 0,
+            "ttft_ns": 0,
+            "prefill_ns": 0,
+            "decode_ns": 0,
+            "device_ns": 0 if gpu else None,
+            "transfer_ns": 0 if gpu else None,
+            "wait_ns": 0 if gpu else None,
+        },
+        "stdout_path": stdout_path,
+        "stderr_path": stderr_path,
+    })
+    for role, path in (("stdout", stdout_path), ("stderr", stderr_path)):
+        passing["files"].append({
+            "role": role,
+            "path": path,
+            "bytes": 0,
+            "sha256": hashlib.sha256(b"").hexdigest(),
+            "original_bytes": 0,
+            "original_sha256": hashlib.sha256(b"").hexdigest(),
+            "truncated": False,
+        })
+passing["files"].sort(key=lambda row: row["path"].encode())
+passing["cases"] = passing_cases
+passing["aggregate"] = {
+    "case_count": 16,
+    "passed_count": 16,
+    "failed_count": 0,
+    "managed_host_peak_bytes": 1,
+    "managed_device_peak_bytes": 1,
+    "decision": "unmeasured",
+}
+passing["failure"] = {"category": "", "stage": "", "case_ordinal": -1, "detail": ""}
+passing_records = records.validate_evidence_records(
+    runtime_option_raw=lines[0],
+    align_source_raw=lines[1],
+    ggml_source_raw=lines[2],
+    bundle_raw=lines[3],
+    calibration_raws=lines[4:6],
+    profile_raw=lines[6],
+    evidence_raw=records.canonical(passing),
+)
+assert len(passing_records["evidence"]["cases"]) == 16
+
+bad_coverage = copy.deepcopy(passing)
+bad_coverage["cases"][1]["numeric"]["actual_scalar_count"] = 0
+try:
+    records.validate_evidence_records(
+        runtime_option_raw=lines[0], align_source_raw=lines[1], ggml_source_raw=lines[2],
+        bundle_raw=lines[3], calibration_raws=lines[4:6], profile_raw=lines[6],
+        evidence_raw=records.canonical(bad_coverage),
+    )
+except records.RecipeError as error:
+    assert "numeric coverage" in str(error)
+else:
+    raise AssertionError("incomplete passing GPU numeric coverage was accepted")
+
+bad_command = copy.deepcopy(passing)
+bad_command["preparation_commands"][0]["sha256"] = "0" * 64
+try:
+    records.validate_evidence_records(
+        runtime_option_raw=lines[0], align_source_raw=lines[1], ggml_source_raw=lines[2],
+        bundle_raw=lines[3], calibration_raws=lines[4:6], profile_raw=lines[6],
+        evidence_raw=records.canonical(bad_command),
+    )
+except records.RecipeError as error:
+    assert "command digest" in str(error)
+else:
+    raise AssertionError("a mismatched command digest was accepted")
+
+machine_path = copy.deepcopy(passing)
+machine_path["preparation_commands"][0] = command("compiler_materialize", ["/tmp/compiler"])
+try:
+    records.validate_evidence_records(
+        runtime_option_raw=lines[0], align_source_raw=lines[1], ggml_source_raw=lines[2],
+        bundle_raw=lines[3], calibration_raws=lines[4:6], profile_raw=lines[6],
+        evidence_raw=records.canonical(machine_path),
+    )
+except records.RecipeError as error:
+    assert "machine-local path" in str(error)
+else:
+    raise AssertionError("a machine-local command path was retained")
+
+with tempfile.TemporaryDirectory(prefix="gpu-result-replay-") as raw_temporary:
+    temporary = pathlib.Path(raw_temporary)
+    valid = temporary / "valid"
+    valid.mkdir()
+    write_file(valid, "result.json", lines[7])
+    for path, data in content.items():
+        write_file(valid, path, data)
+    replayed = records.replay_evidence_directory(valid)
+    assert records.canonical(replayed["evidence"]) == lines[7]
+
+    mutated = temporary / "mutated"
+    shutil.copytree(valid, mutated)
+    next(mutated.joinpath("artifacts").iterdir()).write_bytes(b"changed")
+    rejected(mutated, "retained file identity")
+
+    extra = temporary / "extra"
+    shutil.copytree(valid, extra)
+    (extra / "unexpected").write_bytes(b"")
+    rejected(extra, "file closure")
+
+    linked = temporary / "linked"
+    shutil.copytree(valid, linked)
+    profile_copy = temporary / "profile-copy"
+    shutil.copyfile(linked / "profile.json", profile_copy)
+    (linked / "profile.json").unlink()
+    os.symlink(profile_copy, linked / "profile.json")
+    rejected(linked, "non-regular entry")
+
+    hardlinked = temporary / "hardlinked"
+    shutil.copytree(valid, hardlinked)
+    os.link(hardlinked / "profile.json", temporary / "profile-alias")
+    rejected(hardlinked, "single-link regular file")
+
+    noncanonical = temporary / "noncanonical"
+    shutil.copytree(valid, noncanonical)
+    result = json.loads(lines[7])
+    (noncanonical / "result.json").write_bytes(records.canonical(
+        dict(reversed(list(result.items()))),
+    ))
+    rejected(noncanonical, "not stored canonically")
+
+    bad_role = temporary / "bad-role"
+    shutil.copytree(valid, bad_role)
+    result = copy.deepcopy(evidence)
+    result["files"][0]["role"] = "shim"
+    (bad_role / "result.json").write_bytes(records.canonical(result))
+    rejected(bad_role, "identity or role")
+
+print("gpu result replay smoke: PASS")
