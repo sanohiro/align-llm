@@ -1844,20 +1844,21 @@ The current forward delivery order is:
 ### GPU implementation program (design only, 2026-09-06)
 
 The user requested a substantial GPU roadmap and design before further implementation.
-[`gpu-runtime.md`](gpu-runtime.md) owns the common contract, ownership and memory plan, closure
-matrix, platform support policy and acceptance gates for items 80–85. Metal, CUDA, Vulkan and
-HIP/ROCm are all planned. The available Mac and the user's RTX 4070 Ti running native Linux or
-WSL2 are initial verification hosts, not product/device restrictions. AMD hardware is currently
-unavailable; keep AMD qualification pending and continue independent work. None of these items is
-implemented or qualified by the design change. Implementation follows this reviewed design.
+[`gpu-runtime.md`](gpu-runtime.md) owns G1's resident Metal/CUDA contract, ownership and memory plan,
+closure matrix, platform support policy and acceptance gates. It records the delivery order and
+non-negotiable boundaries for items 81–85, whose exact option/evidence/performance formats are added
+at their own consumer design gates. The available Mac and the user's RTX 4070 Ti running native
+Linux or WSL2 are initial verification hosts, not product/device restrictions. AMD hardware is
+currently unavailable; keep AMD qualification pending and continue independent work. None of these
+items is implemented or qualified by the design change. Implementation follows this reviewed design.
 
 80. **G1-GPU-GENERATION — complete resident generation on Metal and CUDA. Planned.**
     Enable Qwen greedy and OLMoE greedy/sampled text through the existing provider with explicit
     backend/device options, GPU weights/KV, bounded allocation, native build identity and a user-run
     qualification package. Shared graph/device work and its real generation consumer belong
     together. Require generation qualification on both representative backends; Metal-only evidence
-    does not close CUDA. The shared qualification formats are fixed by the owning ledger; G1 first
-    records immutable backend recipes and populated numerical calibration/profile fixtures.
+    does not close CUDA. G1's generation qualification formats are fixed by the owning ledger; G1
+    first records immutable backend recipes and populated numerical calibration/profile fixtures.
 
 81. **G2-GPU-OFFLOAD — bounded GPU/CPU/DRAM/AlignPack generation. Planned after G1.**
     Execute under restricted host/device budgets with explicit dense-layer or expert-phase CPU
@@ -1879,15 +1880,18 @@ implemented or qualified by the design change. Implementation follows this revie
 84. **G5-GPU-OVERLAP — bounded transfer/preparation and compute overlap. Planned after G2.**
     Add safe device completion and double buffering to hybrid generation, per backend capability;
     qualify actual overlap and a contemporary full-request gain before recommending it for a
-    profile. Schema 1 always requires callers to select overlap explicitly.
+    profile. Its design gate precommits the full-request metric, paired schedule, incomplete-leg
+    representation and recommendation rule before measurement; synchronous selection stays explicit.
     Background Align buffer prefetch consumes Request 41 only after it ships; synchronous generation
     and same-thread asynchronous-device overlap do not depend on that proposed language feature.
 
 85. **G6-GPU-CODING-DECISION — qualify the coding caller against a GPU local baseline. Planned.**
     Compare qualified modes from G1–G5 against GPU-enabled llama.cpp on the same hardware/backend,
     resource profile and task lifecycle. Record time to a passing patch, quality, latency, transfers
-    and memory, including a `not_met` result. Native Linux, WSL2 and GPU/vendor combinations retain
-    separate evidence. This is not a claim that R9 speculation or R10 pressure work is complete.
+    and memory, including a `not_met` result. Its design gate precommits the task corpus, retry/stop
+    grammar, failure states, primary metric and aggregation before measurement. Native Linux, WSL2
+    and GPU/vendor combinations retain separate evidence. This is not a claim that R9 speculation
+    or R10 pressure work is complete.
 
 ### Status (2026-08-28)
 

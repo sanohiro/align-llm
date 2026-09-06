@@ -289,12 +289,13 @@ KVCacheKey:
 
 ### 7.3 CPU/GPU hybrid scheduling
 
-The executable GPU program is specified in [GPU runtime](gpu-runtime.md), with delivery order in
-roadmap items 80–85. Metal, CUDA, Vulkan and HIP/ROCm share explicit device selection, bounded
-host/device memory and observable fallback. Initial verification uses an Apple Silicon Mac and an
-NVIDIA RTX 4070 Ti under native Linux or WSL2; these are evidence profiles, not model restrictions.
-The historical CPU-only R8 measurement sequence does not complete this hybrid scheduling goal.
-GPU qualification and performance status are recorded independently for each backend/device/OS.
+Resident Metal/CUDA generation is specified in [GPU runtime](gpu-runtime.md), with later delivery
+order in roadmap items 81–85. Those consumers retain explicit device selection, bounded
+host/device memory and observable fallback, but extend their exact public/evidence contracts at
+their own design gates. Initial verification uses an Apple Silicon Mac and an NVIDIA RTX 4070 Ti
+under native Linux or WSL2; these are evidence profiles, not model restrictions. The historical
+CPU-only R8 measurement sequence does not complete this hybrid scheduling goal. GPU qualification
+and performance status are recorded independently for each backend/device/OS and execution mode.
 
 VRAM miss時に必ずGPUへ転送するとは限らない。
 
