@@ -337,6 +337,12 @@ False requires zero bit patterns/counts and true permits an exact zero error res
 expected counts are independently derived from model geometry and case token widths. PASS requires
 every actual count to equal its expected count, positive scalar/layer/final-logit counts, zero Qwen
 router boundaries and positive OLMoE router boundaries.
+Scalar/final-logit counts include both the diagnostic teacher-forced comparisons and production
+logits already read at every sampling position, including an EOG decision. These are separate
+comparison positions even when their token prefixes coincide. Layer/router counts describe only
+diagnostic replay. Errors, nonfinites and mismatches aggregate both paths; neither may hide the
+other's failure. Production logits compare to the adjacent CPU run at the same actual token prefix;
+divergent generated IDs fail the existing output contract rather than comparing unrelated positions.
 
 `placement` is
 `expected_model_operations,gpu_model_operations,cpu_model_operations,expected_layers,gpu_layers,cpu_layers,expected_experts,gpu_experts,cpu_experts,expected_weights_device_bytes,minimum_weights_device_bytes,expected_kv_device_bytes,minimum_kv_device_bytes,expected_weight_upload_count,weight_upload_count,weight_upload_bytes`.
@@ -512,8 +518,12 @@ no hidden all-CPU execution.
 Each GPU case helper first executes the production path, then an explicitly diagnostic replay with
 the same build, model, prompt, sampler inputs and attention policy. The replay may expose layer and
 router tensors for complete numeric comparison against the adjacent CPU reference. Case output,
-placement, transfer, memory and timing fields describe production execution; `numeric` describes
-replay. The case command owns both passes, the case deadline and overall elapsed time include both,
+placement, transfer, memory and timing fields describe production execution. `numeric` includes
+production-logit and diagnostic internal/logit comparisons as defined in §3.8. Check all production
+logits already read for sampling against the adjacent CPU reference with the same frozen scalar
+tolerances and nonfinite policy. Matching generated IDs alone cannot qualify production fusion;
+diagnostic output markings may disable that fusion. No extra intermediate readback is required.
+The case command owns both passes, the case deadline and overall elapsed time include both,
 and either pass failing makes the case FAIL. Diagnostic output must match the production output.
 Diagnostic tensor marking/readbacks never enter the performance workload or certify its residency;
 production allocation/binding traces own that evidence. Schema-1 timing remains diagnostic only.

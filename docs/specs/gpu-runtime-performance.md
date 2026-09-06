@@ -130,7 +130,7 @@ When adapting upstream code, retain applicable MIT notices and attribution.
 | two reusable graph slots | reserve once, mutate inputs only after completion | shape/buffer mismatch replaces one slot; reset destroys graph views before buffers | `gpu-graph-reuse`, `gpu-scheduler-reset` |
 | KV and microbatches | device append, valid-prefix mask, final-row output | failed chunk invalidates the invocation; never publish partial text | `gpu-kv-in-place`, `gpu-prefill-chunks` |
 | fused/captured execution | preselected supported path with stable buffers | no error-driven algorithm switch; drain/poison before Drop | `gpu-attention-policy`, `gpu-backend-replay`, `gpu-native-owner` |
-| production/diagnostic execution | same identities and algorithm, production-only cost observations | either pass fails the case; separate owner state prevents replay contaminating production | `gpu-production-trace`, `gpu-result-replay` |
+| production/diagnostic execution | same identities/attention policy, production-only cost observations; already-read production logits and replay internals separately meet CPU tolerances | either path fails the case, including production-only fusion drift with unchanged generated IDs; separate owner state prevents replay contaminating production | `gpu-production-trace`, `gpu-result-replay` |
 
 This matrix supplements G1's existing constructor/move/borrow/replacement/`?`/Drop and
 whole-program/per-unit ownership coverage. All named tests are implementation targets, not claims
