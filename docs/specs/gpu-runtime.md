@@ -465,6 +465,18 @@ execution must not inherit the CPU path's per-layer router readback and expert-c
 Never call a CPU pointer primitive on device-only storage. OLMoE keeps gate/up/down identity and
 ordered expert reduction; any compact expert view carries an explicit global/local map.
 
+Before admission, `runtime_weights.allocation_bytes(owner, shape)` asks the selected backend buffer
+type for one tensor's allocation size and rounds it to that buffer's alignment. It creates no device
+allocation and returns a positive `i64` or `Error.Invalid`; the caller checked-adds every returned
+extent to form the exact immutable-weight plan. After allocation and `add`,
+`runtime_weights.upload(owner, index, offset, bytes)` accepts one nonempty, in-order chunk. `offset`
+must equal the pending tensor's accepted byte count and the chunk end must not exceed its logical
+byte extent. Reaching that extent completes the tensor and permits the next `add`; `finish` requires
+every declared tensor complete and the exact planned allocation consumed. Invalid index, offset,
+empty/oversized chunk, add-before-completion, and finish-before-completion fail without advancing
+the upload cursor. A backend transfer failure poisons the owner. The pack reader reuses one bounded
+chunk buffer, so no Align allocation grows with an individual tensor.
+
 Build a complete model graph for each prefill microbatch or decode step, leaving intermediates and
 KV updates on device. Reuse graph metadata, allocator reservations and input buffers when their
 topology identity is unchanged. Update KV in place and attend only to its valid prefix. Completion
@@ -490,6 +502,7 @@ order and poison process state if native safety cannot be proven.
 | bundle/device registry | exact Metal/CUDA device and private staged artifact set made from verified reader bytes | missing Request 55/56 surface, wrong backend/device/ABI/hash/arch, hard link, source replacement or in-place mutation, staged identity drift, missing op, bundle switch | original paths never reach registry; remove every safely releasable staging prefix and its empty directory; transfer the complete staging tree with unsafe native handles to process-owned poisoned quarantine; pin once; `gpu-bundle-identity-race`, `gpu-device-select`, `gpu-bundle-reuse`, `gpu-bundle-switch` |
 | native owner | construct, move, borrow, explicit completion | failure at each construction prefix and completion stage | exactly-once reverse Drop; `gpu-native-owner` in whole/per-unit builds |
 | admission/allocation | exact weights/KV/workspace within both caps; UMA alias accounted once | overflow, zero/one-byte-too-small cap, driver allocation race | release every prefix; `gpu-budget-boundary`, `gpu-uma-alias`, `gpu-allocation-prefix` |
+| weight planning/upload | selected-backend allocation query; exact checked sum; sequential bounded chunks complete each tensor once | invalid type/shape, overflow, empty/out-of-order/oversized chunk, next add or finish before completion, source truncation, transfer failure | invalid input preserves cursor; native failure poisons then reverse-releases; `gpu-weight-chunk` |
 | graph and pointers | supported graph on declared GPU; device-safe transfers | unsupported op/buffer, device pointer passed to CPU, stale reference, nonfinite output | complete before reset/free; `gpu-graph-placement`, `gpu-device-pointer`, `gpu-scheduler-reset` |
 | Qwen/OLMoE decode | prefill, >1 decode, resident KV, correct positions/router/expert map | immediate EOG, maximum 1/128, context edge, routing tie, truncated source | KV outlives steps; `gpu-decode-kv`, `gpu-expert-map`, `gpu-eog`, `gpu-context-boundary` |
 | invocation guard | sequential same-bundle requests and concurrent CPU independence | concurrent GPU request, different bundle, failed prior native init | guard released only from safe state; `gpu-invocation-busy`, `gpu-second-after-failure` |
