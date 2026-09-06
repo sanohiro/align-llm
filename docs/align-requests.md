@@ -10638,6 +10638,85 @@ each known child first; a failed cleanup is observable and cannot erase an unrel
 
 ---
 
+## Request 58 — MIR resource validation must terminate for a bounded borrowed-reader pipeline
+
+```text
+Status: PROPOSED
+Priority: critical
+Blocking: yes
+Blocked gate or slice: G1 resident Qwen AlignPack loading and production-provider integration
+Independent work that may continue: OLMoE resident graph construction, qualifier/evidence work that
+  does not execute the Qwen pack loader, and Request 56 private bundle staging
+Resume condition: an Align release builds the focused owner below within 60 seconds on the named
+  Apple M1 host without weakening resource validation; align-llm adopts it and the owner passes
+Align commit or pull request: pending
+align-llm verification: update .align-revision to the shipped Align commit and run
+  `gmake gpu-qwen-load-smoke`; it must compile, reject the four malformed packs, plan exact padded
+  weight/KV extents, and upload all 27 tensors through one reused 64-byte staging buffer
+```
+
+### Motivation and current sibling evidence
+
+G1's first real pack-to-device consumer is a bounded pipeline: `src/runtime_qwen_load.align` opens
+one AlignPack, reads its already-bounded index, copies only scalar member metadata into owned
+columns, asks the selected backend for each padded tensor extent, and later reuses one fixed staging
+buffer for positional reads and sequential device upload. Its focused executable owner is
+`src/runtime_qwen_load_smoke.align` through `scripts/run-gpu-qwen-load-smoke`. The exact blocked
+client is published in align-llm commit
+[`acfdd3b`](https://github.com/sanohiro/align-llm/commit/acfdd3b) on
+`agent/g1-gpu-generation` so the Align owner can fetch and reduce it before this request merges.
+
+At the managed release compiler for pinned Align `22ac8eb845cfed0577158be940fc50df1e1f08b6`,
+semantic checking completes normally:
+
+```text
+$ ./scripts/alignc check src/runtime_qwen_load_smoke.align
+ok: checked 250 function(s)                         # 0.8 seconds
+```
+
+Code generation does not complete. A warm `alignc build src/runtime_qwen_load_smoke.align` was
+stopped after 10 minutes with no diagnostic while `alignc` continued at approximately 99% CPU. The
+same loader imported into `runtime_device_smoke.align` was stopped after 15 minutes in the same
+state. Both runs had already passed semantic checking and emitted no LLVM or linker output.
+
+This is not Request 37's known long-function or `match`-inside-loop shape. The production loader is
+387 lines split across ten functions; its largest function is 102 lines. Every fallible operation
+inside its reader loops propagates with `?` through a small error-conversion helper. Removing an
+unneeded `runtime_qwen` import reduced the focused graph from 275 to 250 checked functions without
+changing the build failure. The first executable attempt did expose and repair a legitimate
+shorter-lived `PackBlock` borrow: member metadata is now copied into an independent scalar-only
+record before it leaves the helper. After that repair, the compiler reports no ownership error and
+still does not terminate.
+
+The client cannot replace this with a compatibility layer. A semantic-only result cannot ship an
+executable provider, and bypassing MIR resource validation would remove the ownership proof from
+the exact file-reader and device-owner boundary it is meant to protect.
+
+### Required compiler behavior
+
+No new language or standard-library surface is requested. MIR resource validation and code
+generation must finish for this accepted, bounded program with cost that is not explosive in the
+number of small borrowed-reader helpers or transitive checked functions. If the program violates a
+resource rule, the compiler must instead issue a finite source-level diagnostic identifying that
+rule and location.
+
+Acceptance requires:
+
+1. The pinned client files named above, or an Align-owned minimized equivalent preserving the
+   borrowed `file`/`PackIndex`/`PackBlock`/mutable-counter calls and owned scalar projection, pass
+   `alignc build` in under 60 seconds on the same Apple M1 host.
+2. `gmake gpu-qwen-load-smoke` executes successfully and preserves MIR resource validation. It
+   rejects missing-member, wrong-shape, wrong-type, and truncated packs before admission, then
+   uploads the valid 27-tensor pack in bounded sequential chunks.
+3. Whole-program and per-unit owners cover both the accepted pipeline and an invalid case that
+   really retains a shorter-lived view through the mutable reader state; the invalid case remains
+   rejected with a stable diagnostic.
+4. Existing Request 37 long-function and loop-`match` regressions do not regress. This request's
+   fix must address the additional MIR/code-generation scaling class rather than merely restating
+   the source-shaping workaround already applied here.
+
+---
+
 ## Not requested (respecting Align's design)
 
 These were considered and deliberately **not** requested, because they conflict with Align's design
