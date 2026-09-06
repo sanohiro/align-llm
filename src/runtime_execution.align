@@ -1,0 +1,20 @@
+module runtime_execution
+
+import ggml_ffi
+
+pub fn prepare(borrow owner: ggml_ffi.GpuDevice, graph: raw) -> Result<(), Error> {
+  ggml_ffi.gpu_workspace_prepare(owner, graph) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn compute(borrow owner: ggml_ffi.GpuDevice, graph: raw) -> Result<(), Error> {
+  ggml_ffi.gpu_graph_compute(owner, graph) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn state(borrow owner: ggml_ffi.GpuDevice, field: i64) -> i64 =
+ggml_ffi.gpu_graph_state(owner, field)

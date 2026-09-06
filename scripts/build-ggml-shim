@@ -193,6 +193,10 @@ else
                        include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
                                        "-DALIGN_GPU_FORCE_ALLOCATION_PREFIX=5")
                        flavour="stub+engine+gpu+force-alloc-workspace" ;;
+    engine+gpu+alloc-input)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GPU_FORCE_ALLOCATION_PREFIX=6")
+                       flavour="stub+engine+gpu+force-alloc-input" ;;
     engine+gpu+no-host-ptr)
                        include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
                                        "-DALIGN_GGML_FORCE_NO_HOST_PTR=1")

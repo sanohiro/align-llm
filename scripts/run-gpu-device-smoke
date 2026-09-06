@@ -33,6 +33,9 @@ for prefix in metadata staging weights kv workspace; do
     ALIGN_LLM_GGML_SHIM_DIR="${allocation_shims}/${prefix}" \
     "${root_dir}/scripts/build-ggml-shim" >/dev/null
 done
+ALIGN_LLM_GGML_FORCE=engine+gpu+alloc-input \
+  ALIGN_LLM_GGML_SHIM_DIR="${allocation_shims}/input" \
+  "${root_dir}/scripts/build-ggml-shim" >/dev/null
 
 python3 - "${work_dir}" <<'PY'
 import hashlib
@@ -144,5 +147,16 @@ for prefix in metadata staging weights kv workspace; do
     exit 1
   fi
 done
+
+export DYLD_LIBRARY_PATH="${allocation_shims}/input"
+export LD_LIBRARY_PATH="${allocation_shims}/input"
+input_allocation_output=$("${executable}" input-allocation-failure metal stub-gpu \
+  "${work_dir}/bundle" "${work_dir}/invalid-bundle" "${work_dir}/other-bundle" \
+  "${backend_path}" "${bundle_id}")
+if [ "${input_allocation_output}" != "runtime device smoke: INPUT ALLOCATION FAILURE PASS" ]; then
+  printf '%s\n' \
+    "gpu device smoke: FAIL input allocation output: ${input_allocation_output}" >&2
+  exit 1
+fi
 
 printf '%s\n' "gpu device smoke: PASS"
