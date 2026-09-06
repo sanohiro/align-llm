@@ -39,18 +39,17 @@ below the unchanged 871,174,011-ns floor. Comprehensive review found two P2 publ
 issues, both repaired in `4446bd3`; no valid finding remained. Merged-head self-test passed at
 `f23f5d8`.
 
-For the current design candidate, all six canonical JSON codec rows parse and round-trip to their
-exact one-line bytes, and `git diff --check` is clean. The initial comprehensive review found three
-contract gaps; repair commit `1560951` addressed them. Its material final review found five broader
-qualification-schema gaps, and redesigned commit `336c7fd` addressed them. The redesigned review
-then found eight remaining symptoms of predeclaring G5/G6 evidence too early; the current G1-only
-rescope removes that root cause and binds holdout coverage, build/device unavailable states,
-command bytes and evidence closure. The stable G1 review at `a7551b4` found six concrete closure
-issues: ggml source identity, resident CPU-fallback rejection, hermetic command environment,
-deterministic numeric comparison, derived ID length and positive semantic codec vectors. The
-current consolidated repair accepts all six; because it materially specifies qualification
-behavior, one final comprehensive review remains before the exact-head publication preflight and
-merge.
+For the current design candidate, all eight canonical JSON codec rows parse and round-trip to their
+exact one-line bytes, including real self-hashes, Git objects, command hashes and cross-references;
+`git diff --check` is clean. Earlier reviews removed premature G5/G6 contracts and closed G1 source,
+environment, numeric and CPU-fallback gaps. The final comprehensive review at `475a1c3` found seven
+G1 evidence issues. The consolidated repair records the OLMoE cache budget, complete comparison
+coverage, exact output bytes, full weight/KV residency and the minimal terminal/build vocabulary
+needed to encode success and failure. Toolchain identity preimages are recipe-owned observations;
+the request to retain a complete SDK/toolchain closure is rejected because G1 makes no
+bit-reproducible-build claim. The repair is limited to recorded findings and its delta was inspected;
+no further full-review loop is required. Exact-head publication preflight and merge remain, after
+which work stops as requested.
 
 **Intentional uncommitted files.** None after the design candidate is committed. Models, raw
 evidence and build products remain outside Git.
