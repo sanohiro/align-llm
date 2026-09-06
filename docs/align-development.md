@@ -231,6 +231,12 @@ gpu-backend-recipe-smoke` owns both fixed command plans and `make
 gpu-source-replay` owns retained source identity and closure; actual Metal/CUDA qualification
 owns the compiled artifacts and device load.
 
+`make gpu-profile-coverage` validates the normative schema-1 runtime option, source manifests,
+backend bundle, two numeric calibrations and complete two-model qualification profile. It checks
+self-identities and cross-record digests, model/backend/platform/budget bindings, and derives every
+contiguous `(cpu,0),(gpu_resident,0),(cpu,1),(gpu_resident,1)` case row from the frozen calibration
+and holdout inputs. It is model-free and does not claim that a GPU case executed.
+
 ## Repository-index development
 
 The current C2 slice is `src/repo_index.align`. It asks Git for the tracked file list with
