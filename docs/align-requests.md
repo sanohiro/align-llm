@@ -76,8 +76,10 @@ consumer that first uses the shipped surface. A focused adoption or qualificatio
 join routine hosted/capable aggregates merely because it is important; run it when its owning
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
-> **Status (2026-09-02): Requests 1–20 and 22 are CLOSED. Request 21 and Requests 23–43 and
-> 45–54 are PROPOSED and non-blocking; Request 44 remains ALIGN_LLM_VERIFIED.
+> **Status (2026-09-06): Requests 1–20 and 22 are CLOSED. Request 21 and Requests 23–43 and
+> 45–54 are PROPOSED and non-blocking; Request 44 remains ALIGN_LLM_VERIFIED; blocking Request 55
+> is IMPLEMENTING after its Align implementation merged and awaits a published release; blocking
+> Request 56 is PROPOSED for G1's private load-staging directory lifecycle.
 > R8-PARTIAL-LRU-CACHE is merged; the active compatibility adoption advances the Align pin without
 > consuming a proposed request.
 > See the end of this narrative for the next consumer named for each remaining pending user/Align
@@ -10482,6 +10484,157 @@ The first is preferable because it has one support group. Mach-O remains unchang
 3. Existing capability-library order, including the `libpq` closure, remains deterministic and all
    current linker tests pass.
 4. Mach-O emits no new `-lm`, `-ldl`, or `-lpthread` arguments.
+
+---
+
+## Request 55 — `std.fs`: retained-root single-link regular-file open
+
+```text
+Status: IMPLEMENTING
+Priority: critical
+Blocking: yes
+Blocked gate or slice: G1 backend-bundle admission and immutable native loading
+Independent work that may continue: GPU bundle construction and verifier logic that does not
+  consume the requested constructor or Request 56's private-directory lifecycle; publication
+  remains blocked
+Resume condition: Align publishes a release containing the merged constructor and the separate
+  Request 56 private-directory lifecycle; align-llm updates .align-revision, materializes the
+  managed toolchain, adopts both released surfaces, and binds each verified reader byte stream to
+  the private artifact copy passed to the native registry
+Align commit or pull request: Align PR #952 merged as 22ac8eb8; fixed release pending publication;
+  authoritative contract in ../align/docs/impl/34-fs-single-link-plan.md
+align-llm verification: update .align-revision to the shipped Align commit; open manifest.json and
+  every declared artifact through fs.open_beneath_single_link; decode the manifest from owned read
+  bytes and copy each digest-verified artifact into invocation-owned private load staging; run make
+  gpu-bundle-smoke; accept canonical single-link inputs; reject hard-linked manifest and backend
+  plugin; retain root/intermediate/final symlink refusals; race original replacement and in-place
+  mutation before/during/after copying; prove runtime_device gives the native registry only the
+  unchanged private staged artifact whose digest it records
+```
+
+### Requested surface
+
+```text
+fs.open_beneath_single_link(root: str, relative: str) -> Result<reader, Error>
+```
+
+The constructor must preserve `fs.open_beneath`'s complete grammar, validation order,
+retained-directory traversal, regular-file and descriptor identity requirements, ownership,
+cleanup, and error behavior. Before returning the existing reader, it checks `st_nlink` on the same
+opened final descriptor. Exactly one link succeeds; zero or more than one returns `Error.Invalid`.
+Failure publishes no reader or artifact bytes and closes every descriptor exactly once.
+
+This is a distinct constructor. It does not expose a descriptor, device, inode, mode, size, or link
+count and does not change `fs.open_beneath` for callers that intentionally permit hard links. A
+path-based check, `read_dir`, subprocess, or path reopen is not an equivalent implementation
+because it loses descriptor identity.
+
+The result certifies the opened inode's link count only at its descriptor-based observation point.
+It neither prevents later writes or links nor makes a later path-based native load consume the
+reader's bytes. G1 therefore treats this constructor as original-path admission, reads and verifies
+the artifact through the returned reader, and loads only an application-owned private copy made
+from that verified byte stream. Request 55 is necessary for the bundle's no-alias policy but is not
+by itself the bundle's executable-identity boundary.
+
+### Acceptance criteria
+
+1. Linux and macOS accept ordinary single-link files beneath every root form accepted by
+   `open_beneath`, including absolute, relative, `.`, and `/` roots.
+2. Both names of a two-link regular inode return `Error.Invalid`; removing the extra link makes a
+   later call through the remaining name succeed.
+3. Root/intermediate/final symlinks, directories, FIFOs, sockets, devices, missing/denied paths,
+   malformed paths, and native error mapping remain identical to `open_beneath`.
+4. A barrier-controlled replacement proves the link count and reader refer to the same opened
+   inode, and every failure closes root, intermediate, final, and reader-construction resources
+   exactly once.
+5. Whole-program, per-unit, imported/generic formation, checked-HIR replay, runtime ABI inventory,
+   and Linux/macOS owners cover the constructor without changing reader identity.
+6. After Request 56 ships, the align-llm consumer copies only the digest-verified reader bytes into
+   its private load directory, reopens and verifies the completed staged file, passes only that
+   staged path to the native registry, retains it for the complete native lifetime, and proves
+   original-path replacement or in-place mutation cannot substitute loaded bytes.
+
+Align's merged implementation preserves the existing sequence through nonblocking clear, then
+checks `st_nlink` from that sequence's existing opened-descriptor `fstat` record immediately before
+reader construction. It adds no second syscall and uses a distinct HIR/MIR operation and runtime
+key with the existing A12 ABI shape. The surface is not yet in a published release; align-llm
+adoption and the separate application-owned load-staging identity boundary have not begun.
+
+---
+
+## Request 56 — `std.fs`: private temporary-directory lifecycle
+
+```text
+Status: PROPOSED
+Priority: critical
+Blocking: yes
+Blocked gate or slice: G1 backend-bundle private load staging and immutable native loading
+Independent work that may continue: GPU bundle construction and verifier logic that does not create
+  or remove the private load directory; Request 55 release publication and adoption preparation
+Resume condition: an Align release ships both constructors below; align-llm adopts that release and
+  `make gpu-bundle-smoke` proves private creation, exclusive child creation, every safe cleanup
+  prefix, and process-owned quarantine after an unload-unsafe native side effect
+Align commit or pull request: pending
+align-llm verification: update .align-revision to the shipped Align commit; use
+  fs.create_private_temp_dir for the unique load root, fs.create_exclusive_beneath for each staged
+  artifact, and fs.remove_empty_dir after removing known files; run make gpu-bundle-smoke and prove
+  collisions, symlink occupants, permissions, cleanup prefixes, and poisoned transfer behavior
+```
+
+### Motivation and current sibling evidence
+
+Request 55 closes original bundle paths beneath a retained root and rejects a multiply linked final
+inode, but a native plugin loader accepts a path rather than the returned reader. G1 must therefore
+copy verified bytes to a private name before loading them. The current pin can exclusively create
+the child files beneath an existing root, but it cannot securely create that root or remove the
+empty directory afterward: `std.fs` has no directory-creation or directory-removal surface. The
+broader proposed Request 53 names ordinary `create_dir`, listing, and type inspection for the R6
+store; none is shipped at the pin, and its generic creation contract does not establish G1's
+private temporary-root policy.
+
+Creating directories inside `ggml_shim.c`, invoking a subprocess, or accepting a caller-created
+load path would hide the missing standard-library boundary or surrender its ownership. G1 remains
+blocked instead. A hostile process with the same OS identity is outside this boundary, as it can
+also inspect or alter the running process; the guarantee excludes other users and accidental
+application sharing, not an already-compromised account.
+
+### Requested surface
+
+```text
+fs.create_private_temp_dir(prefix: str) -> Result<string, Error>
+fs.remove_empty_dir(path: str) -> Result<(), Error>
+```
+
+`create_private_temp_dir` validates a bounded filename-safe prefix, selects the platform temporary
+root without trusting an application-supplied path, uses OS randomness to claim one absent regular
+directory atomically, and returns its owned absolute path. The created directory grants no group or
+other permissions (`0700` or narrower on Linux and macOS); it never follows or reuses an occupied
+name. Failure returns no path and leaves no directory. No recursive parent creation is performed.
+
+`remove_empty_dir` removes exactly one empty real directory. It never follows a symlink, removes a
+file, or recursively deletes contents. Missing, occupied, non-directory, denied, malformed, and
+native failures use the ordinary `std.fs` error mapping. Callers remain responsible for removing
+each known child first; a failed cleanup is observable and cannot erase an unrelated tree.
+
+### Acceptance criteria
+
+1. Linux and macOS create distinct absolute directories across sequential and concurrent calls,
+   including a forced first-name collision, with no group/other permission bits; malformed or
+   oversized prefixes fail before filesystem side effects.
+2. A pre-existing regular file, directory, or symlink is never reused or modified, and native
+   randomness, creation, and allocation failures publish neither a path nor a leftover directory.
+3. `fs.create_exclusive_beneath(returned_path, relative)` creates every declared staged file without
+   leaving the private root, and `fs.open_beneath_single_link` reopens the completed single-link
+   file whose size and digest the G1 loader records.
+4. `remove_empty_dir` succeeds only after all known children are removed; nonempty, symlink,
+   regular-file, missing, denied, and replacement-race cases leave the target or replacement
+   unchanged and return the documented error.
+5. Whole-program, per-unit, imported/generic formation, checked-HIR replay, runtime ABI inventory,
+   ownership, and Linux/macOS owners cover both operations. The owned result string follows normal
+   move, return, branch, `?`, replacement, and cleanup behavior.
+6. align-llm removes every pre-load and safely unloaded construction prefix, while an unload-unsafe
+   failure atomically transfers the native handles plus complete staging tree to a process-owned
+   poisoned quarantine that rejects later GPU admission and lasts until exit.
 
 ---
 
