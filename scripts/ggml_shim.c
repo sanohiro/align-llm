@@ -1694,6 +1694,28 @@ int32_t align_gpu_kv_slot(void *owner, int64_t index, void *slots, int64_t out) 
         ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
 }
 
+/* A maximum-context KV tensor keeps its allocation and native strides for the whole request.  A
+ * graph receives only the currently valid sequence prefix.  Deriving every stride here prevents
+ * the language caller from manufacturing a byte offset into device storage. */
+int32_t align_gpu_kv_prefix_slot(
+        void *owner, int64_t index, int64_t valid_width, void *slots, int64_t out) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *tensor = align_gpu_kv_at(state, index);
+    struct ggml_tensor *view = NULL;
+    if (state == NULL || tensor == NULL || state->workspace_prepared || valid_width <= 0
+        || valid_width > tensor->ne[1] || tensor->type != GGML_TYPE_F32) {
+        return ALIGN_GPU_CONFIG;
+    }
+    view = ggml_view_4d(state->metadata_ctx, tensor,
+                        tensor->ne[0], valid_width, tensor->ne[2], tensor->ne[3],
+                        tensor->nb[1], tensor->nb[2], tensor->nb[3], 0);
+    if (view == NULL) {
+        return ALIGN_GPU_ALLOCATION;
+    }
+    return align_ggml_slot_store(slots, out, (void *) view) == ALIGN_GGML_OK
+        ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
+}
+
 int64_t align_gpu_kv_state(void *owner, int32_t field) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL || state->kv_expected <= 0) {
@@ -1884,6 +1906,28 @@ int32_t align_gpu_input_slot(void *owner, int64_t index, void *slots, int64_t ou
         return ALIGN_GPU_CONFIG;
     }
     return align_ggml_slot_store(slots, out, (void *) tensor) == ALIGN_GGML_OK
+        ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
+}
+
+/* Attention masks are allocated once at their maximum context and prefill width.  The graph sees
+ * the exact live rectangle, with the source tensor's row stride and a zero offset. */
+int32_t align_gpu_mask_prefix_slot(
+        void *owner, int64_t index, int64_t valid_width, int64_t query_width,
+        void *slots, int64_t out) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *tensor = align_gpu_input_at(state, index);
+    struct ggml_tensor *view = NULL;
+    if (state == NULL || tensor == NULL || state->workspace_prepared || valid_width <= 0
+        || query_width <= 0 || valid_width > tensor->ne[0] || query_width > tensor->ne[1]
+        || tensor->ne[2] != 1 || tensor->ne[3] != 1 || tensor->type != GGML_TYPE_F32) {
+        return ALIGN_GPU_CONFIG;
+    }
+    view = ggml_view_2d(state->metadata_ctx, tensor, valid_width, query_width,
+                        tensor->nb[1], 0);
+    if (view == NULL) {
+        return ALIGN_GPU_ALLOCATION;
+    }
+    return align_ggml_slot_store(slots, out, (void *) view) == ALIGN_GGML_OK
         ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
 }
 

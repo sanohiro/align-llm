@@ -205,10 +205,10 @@ fn exercise_live_owner(
     owner,
     runtime_kv.Shape {
       ggml_type: 0,
-      n_dims: 2,
+      n_dims: 3,
       ne0: 256,
-      ne1: 256,
-      ne2: 1,
+      ne1: 128,
+      ne2: 2,
       ne3: 1,
     },
   )?
@@ -223,6 +223,33 @@ fn exercise_live_owner(
   }
   kv_view := kv_data.bytes()
   runtime_kv.update(owner, kv_index, 0, kv_view)?
+  mut kv_prefix_twos := buffer(1024)
+  mut kv_prefix_two_at := 0
+  loop {
+    if kv_prefix_two_at >= 256 { break }
+    kv_prefix_twos.put_u32_le(1073741824)
+    kv_prefix_two_at = kv_prefix_two_at + 1
+  }
+  kv_prefix_twos_view := kv_prefix_twos.bytes()
+  runtime_kv.update(owner, kv_index, 1024, kv_prefix_twos_view)?
+  mut kv_second_head_threes := buffer(1024)
+  mut kv_second_head_three_at := 0
+  loop {
+    if kv_second_head_three_at >= 256 { break }
+    kv_second_head_threes.put_u32_le(1077936128)
+    kv_second_head_three_at = kv_second_head_three_at + 1
+  }
+  kv_second_head_threes_view := kv_second_head_threes.bytes()
+  runtime_kv.update(owner, kv_index, 131072, kv_second_head_threes_view)?
+  mut kv_second_head_fours := buffer(1024)
+  mut kv_second_head_four_at := 0
+  loop {
+    if kv_second_head_four_at >= 256 { break }
+    kv_second_head_fours.put_u32_le(1082130432)
+    kv_second_head_four_at = kv_second_head_four_at + 1
+  }
+  kv_second_head_fours_view := kv_second_head_fours.bytes()
+  runtime_kv.update(owner, kv_index, 132096, kv_second_head_fours_view)?
   runtime_kv.update(owner, kv_index, 261120, kv_view)?
   match runtime_kv.update(owner, kv_index, 261121, kv_view) {
     Ok(_) => { return Err(Error.Invalid) }
@@ -230,7 +257,7 @@ fn exercise_live_owner(
   }
   if runtime_kv.state(owner, ggml_ffi.GPU_KV_EXPECTED) != 1
     || runtime_kv.state(owner, ggml_ffi.GPU_KV_CREATED) != 1
-    || runtime_kv.state(owner, ggml_ffi.GPU_KV_UPDATED_BYTES) != 2048
+    || runtime_kv.state(owner, ggml_ffi.GPU_KV_UPDATED_BYTES) != 5120
     || runtime_kv.state(owner, ggml_ffi.GPU_KV_FINISHED) != 1 {
     return Err(Error.Invalid)
   }
@@ -238,7 +265,7 @@ fn exercise_live_owner(
     Ok(_) => { return Err(Error.Invalid) }
     Err(_) => {}
   }
-  runtime_inputs.begin(owner, 1)?
+  runtime_inputs.begin(owner, 3)?
   input_index := runtime_inputs.add(
     owner,
     runtime_inputs.Shape {
@@ -251,6 +278,29 @@ fn exercise_live_owner(
     },
   )?
   if input_index != 0 { return Err(Error.Invalid) }
+  query_index := runtime_inputs.add(
+    owner,
+    runtime_inputs.Shape {
+      ggml_type: 0,
+      n_dims: 3,
+      ne0: 256,
+      ne1: 1,
+      ne2: 2,
+      ne3: 1,
+    },
+  )?
+  mask_index := runtime_inputs.add(
+    owner,
+    runtime_inputs.Shape {
+      ggml_type: 0,
+      n_dims: 2,
+      ne0: 256,
+      ne1: 1,
+      ne2: 1,
+      ne3: 1,
+    },
+  )?
+  if query_index != 1 || mask_index != 2 { return Err(Error.Invalid) }
   runtime_inputs.finish(owner)?
   mut early_input := buffer(4)
   early_input.put_u32_le(7)
@@ -261,10 +311,10 @@ fn exercise_live_owner(
   }
   ctx := ggml_ffi.gpu_metadata_handle(owner)
   if ctx.is_null() { return Err(Error.Invalid) }
-  mut slot_storage := buffer(64)
+  mut slot_storage := buffer(256)
   mut slot_word := 0
   loop {
-    if slot_word >= 16 { break }
+    if slot_word >= 64 { break }
     slot_storage.put_u32_le(0)
     slot_word = slot_word + 1
   }
@@ -281,13 +331,66 @@ fn exercise_live_owner(
   ggml_ffi.gpu_input_slot(owner, 0, slots, 2) else {
     return Err(Error.Invalid)
   }
+  match runtime_kv.prefix_slot(owner, 0, 0, slots, 4) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  match runtime_kv.prefix_slot(owner, 0, 129, slots, 4) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  runtime_kv.prefix_slot(owner, 0, 2, slots, 4)?
+  ggml_ffi.gpu_input_slot(owner, query_index, slots, 5) else {
+    return Err(Error.Invalid)
+  }
+  match runtime_inputs.mask_prefix_slot(owner, mask_index, 0, 1, slots, 7) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  match runtime_inputs.mask_prefix_slot(owner, mask_index, 257, 1, slots, 7) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  match runtime_inputs.mask_prefix_slot(owner, mask_index, 2, 2, slots, 7) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  runtime_inputs.mask_prefix_slot(owner, mask_index, 2, 1, slots, 7)?
+  if ggml_ffi.slot_ne(slots, 4, 0) != 256
+    || ggml_ffi.slot_ne(slots, 4, 1) != 2
+    || ggml_ffi.slot_ne(slots, 4, 2) != 2
+    || ggml_ffi.slot_ne(slots, 4, 3) != 1
+    || ggml_ffi.slot_ne(slots, 7, 0) != 2
+    || ggml_ffi.slot_ne(slots, 7, 1) != 1 {
+    return Err(Error.Invalid)
+  }
   ggml_ffi.op_mul_mat(ctx, slots, 3, 0, 1, "gpu_graph_mul_mat") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul_mat(ctx, slots, 6, 4, 5, "gpu_attention_scores") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_soft_max_ext(
+    ctx, slots, 8, 6, 7, 1065353216, 0, "gpu_attention_probabilities",
+  ) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_permute(ctx, slots, 9, 4, 1, 0, 2, 3, "gpu_attention_value_transpose") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_cont_3d(ctx, slots, 10, 9, 2, 256, 2, "gpu_attention_value_contiguous") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul_mat(ctx, slots, 11, 10, 8, "gpu_attention_output") else {
     return Err(Error.Invalid)
   }
   ggml_ffi.slot_mark_output(slots, 2, "gpu_graph_input") else {
     return Err(Error.Invalid)
   }
   ggml_ffi.slot_mark_output(slots, 3, "gpu_graph_output") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.slot_mark_output(slots, 11, "gpu_attention_output") else {
     return Err(Error.Invalid)
   }
   graph := ggml_ffi.graph_new(ctx)
@@ -298,18 +401,45 @@ fn exercise_live_owner(
   ggml_ffi.graph_expand(graph, slots, 3, "gpu_graph_expand") else {
     return Err(Error.Invalid)
   }
+  ggml_ffi.graph_expand(graph, slots, 11, "gpu_attention_expand") else {
+    return Err(Error.Invalid)
+  }
   runtime_execution.prepare(owner, graph)?
-  if runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_WORKSPACE) != 262176
-    || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_DEVICE_TOTAL) != 786464 {
+  match runtime_kv.prefix_slot(owner, 0, 1, slots, 12) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  match runtime_inputs.mask_prefix_slot(owner, mask_index, 1, 1, slots, 12) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  actual_workspace := runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_WORKSPACE)
+  actual_device := runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_DEVICE_TOTAL)
+  if actual_workspace <= 3104 || actual_workspace > 524288
+    || actual_device != 524288 + actual_workspace || actual_device > 1048576 {
     return Err(Error.Invalid)
   }
   mut first_input := buffer(4)
   first_input.put_u32_le(7)
   first_input_view := first_input.bytes()
   runtime_inputs.update(owner, input_index, 0, first_input_view)?
-  if runtime_inputs.state(owner, ggml_ffi.GPU_INPUT_EXPECTED) != 1
-    || runtime_inputs.state(owner, ggml_ffi.GPU_INPUT_CREATED) != 1
-    || runtime_inputs.state(owner, ggml_ffi.GPU_INPUT_UPDATED_BYTES) != 4
+  mut query_data := buffer(2048)
+  mut query_at := 0
+  loop {
+    if query_at >= 512 { break }
+    query_data.put_u32_le(1065353216)
+    query_at = query_at + 1
+  }
+  query_view := query_data.bytes()
+  runtime_inputs.update(owner, query_index, 0, query_view)?
+  mut first_mask := buffer(8)
+  first_mask.put_u32_le(0)
+  first_mask.put_u32_le(4286578688)
+  first_mask_view := first_mask.bytes()
+  runtime_inputs.update(owner, mask_index, 0, first_mask_view)?
+  if runtime_inputs.state(owner, ggml_ffi.GPU_INPUT_EXPECTED) != 3
+    || runtime_inputs.state(owner, ggml_ffi.GPU_INPUT_CREATED) != 3
+    || runtime_inputs.state(owner, ggml_ffi.GPU_INPUT_UPDATED_BYTES) != 2060
     || runtime_inputs.state(owner, ggml_ffi.GPU_INPUT_FINISHED) != 1 {
     return Err(Error.Invalid)
   }
@@ -330,13 +460,38 @@ fn exercise_live_owner(
     return Err(Error.Invalid)
   }
   if output_view.u32_le(0) != 1065353216
+    || output_view.u32_le(131072) != 1077936128
     || output_view.u32_le(261120) != 1065353216 {
+    return Err(Error.Invalid)
+  }
+  mut first_attention := buffer(2048)
+  mut first_attention_at := 0
+  loop {
+    if first_attention_at >= 512 { break }
+    first_attention.put_u32_le(4294967295)
+    first_attention_at = first_attention_at + 1
+  }
+  first_attention_view := first_attention.bytes()
+  ggml_ffi.slot_get(
+    slots, 11, first_attention_view, 0, first_attention_view.len(), "gpu_attention_first",
+  ) else {
+    return Err(Error.Invalid)
+  }
+  if first_attention_view.u32_le(0) != 1065353216
+    || first_attention_view.u32_le(1020) != 1065353216
+    || first_attention_view.u32_le(1024) != 1077936128
+    || first_attention_view.u32_le(2044) != 1077936128 {
     return Err(Error.Invalid)
   }
   mut second_input := buffer(4)
   second_input.put_u32_le(8)
   second_input_view := second_input.bytes()
   runtime_inputs.update(owner, input_index, 0, second_input_view)?
+  mut second_mask := buffer(8)
+  second_mask.put_u32_le(4286578688)
+  second_mask.put_u32_le(0)
+  second_mask_view := second_mask.bytes()
+  runtime_inputs.update(owner, mask_index, 0, second_mask_view)?
   mut kv_twos := buffer(1024)
   mut kv_two_at := 0
   loop {
@@ -365,6 +520,19 @@ fn exercise_live_owner(
   ggml_ffi.slot_get(slots, 3, output_view, 0, output_view.len(), "gpu_graph_reused_output") else {
     return Err(Error.Invalid)
   }
+  mut second_attention := buffer(2048)
+  mut second_attention_at := 0
+  loop {
+    if second_attention_at >= 512 { break }
+    second_attention.put_u32_le(4294967295)
+    second_attention_at = second_attention_at + 1
+  }
+  second_attention_view := second_attention.bytes()
+  ggml_ffi.slot_get(
+    slots, 11, second_attention_view, 0, second_attention_view.len(), "gpu_attention_second",
+  ) else {
+    return Err(Error.Invalid)
+  }
   mut input_readback := buffer(4)
   input_readback.put_u32_le(0)
   input_readback_view := input_readback.bytes()
@@ -373,9 +541,13 @@ fn exercise_live_owner(
   }
   if output_view.u32_le(0) != 1065353216
     || output_view.u32_le(261120) != 1073741824
+    || second_attention_view.u32_le(0) != 1073741824
+    || second_attention_view.u32_le(1020) != 1073741824
+    || second_attention_view.u32_le(1024) != 1082130432
+    || second_attention_view.u32_le(2044) != 1082130432
     || input_readback_view.u32_le(0) != 8
-    || runtime_kv.state(owner, ggml_ffi.GPU_KV_UPDATED_BYTES) != 3072
-    || runtime_inputs.state(owner, ggml_ffi.GPU_INPUT_UPDATED_BYTES) != 8
+    || runtime_kv.state(owner, ggml_ffi.GPU_KV_UPDATED_BYTES) != 6144
+    || runtime_inputs.state(owner, ggml_ffi.GPU_INPUT_UPDATED_BYTES) != 2072
     || runtime_execution.state(owner, ggml_ffi.GPU_GRAPH_PREPARED) != 1
     || runtime_execution.state(owner, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 2
     || runtime_execution.state(owner, ggml_ffi.GPU_GRAPH_REUSES) != 1 {

@@ -258,6 +258,9 @@ extern "C" link("align_ggml_shim") {
     owner: raw, index: i64, offset: i64, data: slice<u8>, length: i64,
   ) -> i32
   fn align_gpu_kv_slot(owner: raw, index: i64, slots: slice<u8>, out: i64) -> i32
+  fn align_gpu_kv_prefix_slot(
+    owner: raw, index: i64, valid_width: i64, slots: slice<u8>, out: i64,
+  ) -> i32
   fn align_gpu_kv_state(owner: raw, field: i32) -> i64
   fn align_gpu_inputs_begin(owner: raw, tensor_count: i64) -> i32
   fn align_gpu_input_add(
@@ -271,6 +274,10 @@ extern "C" link("align_ggml_shim") {
   ) -> i64
   fn align_gpu_inputs_finish(owner: raw) -> i32
   fn align_gpu_input_slot(owner: raw, index: i64, slots: slice<u8>, out: i64) -> i32
+  fn align_gpu_mask_prefix_slot(
+    owner: raw, index: i64, valid_width: i64, query_width: i64,
+    slots: slice<u8>, out: i64,
+  ) -> i32
   fn align_gpu_input_update(
     owner: raw, index: i64, offset: i64, data: slice<u8>, length: i64,
   ) -> i32
@@ -676,6 +683,22 @@ pub fn gpu_kv_slot(
   }
 }
 
+pub fn gpu_kv_prefix_slot(
+  borrow owner: GpuDevice,
+  index: i64,
+  valid_width: i64,
+  borrow slots: slice<u8>,
+  out: i64,
+) -> Result<(), Fault> {
+  unsafe {
+    status := align_gpu_kv_prefix_slot(
+      resource.raw(resource.borrow(owner)), index, valid_width, slots, out,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
 pub fn gpu_kv_state(borrow owner: GpuDevice, field: i64) -> i64 {
   if field < GPU_KV_EXPECTED || field > GPU_KV_FINISHED { return -1 }
   unsafe {
@@ -735,6 +758,23 @@ pub fn gpu_input_slot(
   unsafe {
     status := align_gpu_input_slot(
       resource.raw(resource.borrow(owner)), index, slots, out,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_mask_prefix_slot(
+  borrow owner: GpuDevice,
+  index: i64,
+  valid_width: i64,
+  query_width: i64,
+  borrow slots: slice<u8>,
+  out: i64,
+) -> Result<(), Fault> {
+  unsafe {
+    status := align_gpu_mask_prefix_slot(
+      resource.raw(resource.borrow(owner)), index, valid_width, query_width, slots, out,
     ) as i64
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
