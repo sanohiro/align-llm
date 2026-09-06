@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+
+python3 - "${root_dir}" <<'PY'
+import importlib.util
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+path = root / "scripts" / "gpu_backend_recipe.py"
+spec = importlib.util.spec_from_file_location("gpu_backend_recipe", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+metal = module.plan("metal")
+cuda = module.plan("cuda")
+
+assert metal["ggml_commit"] == "bb4caa7540188872173c44d161602d9271386413"
+assert metal["target"] == {"os": "macos", "arch": "aarch64", "gpu_architectures": ["apple_m1"]}
+assert cuda["target"] == {"os": "linux", "arch": "x86_64", "gpu_architectures": ["sm_89"]}
+assert metal["build_argv_suffix"] == ["--target", "ggml", "--parallel", "4"]
+assert cuda["build_argv_suffix"] == metal["build_argv_suffix"]
+
+metal_flags = metal["configure_flags"]
+cuda_flags = cuda["configure_flags"]
+for required in (
+    "-DBUILD_SHARED_LIBS=ON",
+    "-DGGML_BACKEND_DL=ON",
+    "-DGGML_NATIVE=OFF",
+    "-DGGML_CPU=OFF",
+    "-DGGML_BLAS=OFF",
+    "-DGGML_OPENMP=OFF",
+):
+    assert required in metal_flags and required in cuda_flags
+assert "-DGGML_METAL=ON" in metal_flags
+assert "-DGGML_METAL_EMBED_LIBRARY=ON" in metal_flags
+assert "-DCMAKE_INSTALL_RPATH=@loader_path" in metal_flags
+assert "-DGGML_CUDA=ON" in cuda_flags
+assert "-DGGML_CUDA_GRAPHS=ON" in cuda_flags
+assert "-DGGML_CUDA_FA=ON" in cuda_flags
+assert "-DGGML_CUDA_FORCE_MMQ=OFF" in cuda_flags
+assert "-DGGML_CUDA_FORCE_CUBLAS=OFF" in cuda_flags
+assert "-DGGML_CUDA_NCCL=OFF" in cuda_flags
+assert "-DCMAKE_CUDA_ARCHITECTURES=89" in cuda_flags
+assert "-DCMAKE_INSTALL_RPATH=$ORIGIN" in cuda_flags
+assert len(metal_flags) == len(set(metal_flags))
+assert len(cuda_flags) == len(set(cuda_flags))
+print("gpu backend recipe smoke: PASS")
+PY

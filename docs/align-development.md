@@ -195,6 +195,30 @@ the existing real shared shim. Do not prepopulate `build/lib` as an implicit pre
 default build deliberately ignores it so a clean checkout and a cached developer tree behave the
 same way.
 
+G1's backend build is `scripts/gpu_backend_recipe.py`. It accepts only a clean checkout at the
+pinned llama.cpp commit and origin, independently checks every working file against its Git blob,
+and requires a new output path. The result separates `bundle/`, which is the
+`runtime_options.backend_bundle` directory, from `source/`, which contains the canonical complete
+source manifest, raw commit and deduplicated content-addressed blobs retained by qualification.
+Both backend plans are visible without building:
+
+```sh
+scripts/gpu_backend_recipe.py --backend metal --print-plan
+scripts/gpu_backend_recipe.py --backend cuda --print-plan
+```
+
+Build on the matching host with:
+
+```sh
+scripts/gpu_backend_recipe.py --backend metal --source LLAMA_CPP --output NEW_DIRECTORY
+scripts/gpu_backend_recipe.py --backend cuda --source LLAMA_CPP --output NEW_DIRECTORY
+```
+
+The Metal tuple is macOS/AArch64/Apple M1. The CUDA tuple is Linux/x86_64/SM89. The recipes disable
+the CPU backend and ambient CPU libraries, build dynamic backends, use only relative loader rpaths,
+and fix CUDA graph and Flash Attention compilation on. `make gpu-backend-recipe-smoke` owns both
+fixed command plans; actual Metal/CUDA qualification owns the compiled artifacts and device load.
+
 ## Repository-index development
 
 The current C2 slice is `src/repo_index.align`. It asks Git for the tracked file list with
