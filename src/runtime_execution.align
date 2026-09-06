@@ -2,19 +2,43 @@ module runtime_execution
 
 import ggml_ffi
 
-pub fn prepare(borrow owner: ggml_ffi.GpuDevice, graph: raw) -> Result<(), Error> {
-  ggml_ffi.gpu_workspace_prepare(owner, graph) else {
+pub fn context(
+  borrow owner: ggml_ffi.GpuDevice,
+  kind: i64,
+  metadata_bytes: i64,
+) -> raw =
+ggml_ffi.gpu_graph_context_open(owner, kind, metadata_bytes)
+
+pub fn prepare(
+  borrow owner: ggml_ffi.GpuDevice,
+  kind: i64,
+  topology_key: str,
+  graph: raw,
+) -> Result<(), Error> {
+  ggml_ffi.gpu_graph_prepare(owner, kind, topology_key, graph) else {
     return Err(Error.Invalid)
   }
   return Ok(())
 }
 
-pub fn compute(borrow owner: ggml_ffi.GpuDevice, graph: raw) -> Result<(), Error> {
-  ggml_ffi.gpu_graph_compute(owner, graph) else {
+pub fn invalidate(borrow owner: ggml_ffi.GpuDevice, kind: i64) -> Result<(), Error> {
+  ggml_ffi.gpu_graph_invalidate(owner, kind) else {
     return Err(Error.Invalid)
   }
   return Ok(())
 }
 
-pub fn state(borrow owner: ggml_ffi.GpuDevice, field: i64) -> i64 =
-ggml_ffi.gpu_graph_state(owner, field)
+pub fn compute(
+  borrow owner: ggml_ffi.GpuDevice,
+  kind: i64,
+  topology_key: str,
+  graph: raw,
+) -> Result<(), Error> {
+  ggml_ffi.gpu_graph_compute(owner, kind, topology_key, graph) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn state(borrow owner: ggml_ffi.GpuDevice, kind: i64, field: i64) -> i64 =
+ggml_ffi.gpu_graph_state(owner, kind, field)

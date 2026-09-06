@@ -84,6 +84,9 @@ pub GPU_INPUT_FINISHED := 3
 pub GPU_GRAPH_PREPARED := 0
 pub GPU_GRAPH_EXECUTIONS := 1
 pub GPU_GRAPH_REUSES := 2
+pub GPU_GRAPH_INVALIDATIONS := 3
+pub GPU_GRAPH_PREFILL := 0
+pub GPU_GRAPH_DECODE := 1
 
 // Outside the `ggml_status` range (`-2 ..= 2`), so a null argument handed to the compute wrapper is
 // never mistaken for a backend verdict.
@@ -259,7 +262,7 @@ extern "C" link("align_ggml_shim") {
   ) -> i32
   fn align_gpu_kv_slot(owner: raw, index: i64, slots: slice<u8>, out: i64) -> i32
   fn align_gpu_kv_prefix_slot(
-    owner: raw, index: i64, valid_width: i64, slots: slice<u8>, out: i64,
+    owner: raw, index: i64, kind: i32, valid_width: i64, slots: slice<u8>, out: i64,
   ) -> i32
   fn align_gpu_kv_state(owner: raw, field: i32) -> i64
   fn align_gpu_inputs_begin(owner: raw, tensor_count: i64) -> i32
@@ -275,18 +278,23 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_inputs_finish(owner: raw) -> i32
   fn align_gpu_input_slot(owner: raw, index: i64, slots: slice<u8>, out: i64) -> i32
   fn align_gpu_mask_prefix_slot(
-    owner: raw, index: i64, valid_width: i64, query_width: i64,
+    owner: raw, index: i64, kind: i32, valid_width: i64, query_width: i64,
     slots: slice<u8>, out: i64,
   ) -> i32
   fn align_gpu_input_update(
     owner: raw, index: i64, offset: i64, data: slice<u8>, length: i64,
   ) -> i32
   fn align_gpu_input_state(owner: raw, field: i32) -> i64
-  fn align_gpu_metadata_handle(owner: raw) -> raw
   fn align_gpu_weight_slot(owner: raw, index: i64, slots: slice<u8>, out: i64) -> i32
-  fn align_gpu_workspace_prepare(owner: raw, graph: raw) -> i32
-  fn align_gpu_graph_compute(owner: raw, graph: raw) -> i32
-  fn align_gpu_graph_state(owner: raw, field: i32) -> i64
+  fn align_gpu_graph_context_open(owner: raw, kind: i32, metadata_bytes: i64) -> raw
+  fn align_gpu_graph_prepare(
+    owner: raw, kind: i32, key: str, key_length: i64, graph: raw,
+  ) -> i32
+  fn align_gpu_graph_invalidate(owner: raw, kind: i32) -> i32
+  fn align_gpu_graph_compute(
+    owner: raw, kind: i32, key: str, key_length: i64, graph: raw,
+  ) -> i32
+  fn align_gpu_graph_state(owner: raw, kind: i32, field: i32) -> i64
   fn align_gpu_device_close(owner: raw) -> ()
   // R5C section 3.4. The registry's own device selection for either kind, its numeric properties,
   // its buffer type's maximum length, and its two names.
@@ -686,13 +694,17 @@ pub fn gpu_kv_slot(
 pub fn gpu_kv_prefix_slot(
   borrow owner: GpuDevice,
   index: i64,
+  kind: i64,
   valid_width: i64,
   borrow slots: slice<u8>,
   out: i64,
 ) -> Result<(), Fault> {
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+    return Err(fault("CONFIG", "graph_kind"))
+  }
   unsafe {
     status := align_gpu_kv_prefix_slot(
-      resource.raw(resource.borrow(owner)), index, valid_width, slots, out,
+      resource.raw(resource.borrow(owner)), index, kind as i32, valid_width, slots, out,
     ) as i64
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
@@ -767,14 +779,19 @@ pub fn gpu_input_slot(
 pub fn gpu_mask_prefix_slot(
   borrow owner: GpuDevice,
   index: i64,
+  kind: i64,
   valid_width: i64,
   query_width: i64,
   borrow slots: slice<u8>,
   out: i64,
 ) -> Result<(), Fault> {
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+    return Err(fault("CONFIG", "graph_kind"))
+  }
   unsafe {
     status := align_gpu_mask_prefix_slot(
-      resource.raw(resource.borrow(owner)), index, valid_width, query_width, slots, out,
+      resource.raw(resource.borrow(owner)), index, kind as i32,
+      valid_width, query_width, slots, out,
     ) as i64
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
@@ -803,12 +820,6 @@ pub fn gpu_input_state(borrow owner: GpuDevice, field: i64) -> i64 {
   }
 }
 
-pub fn gpu_metadata_handle(borrow owner: GpuDevice) -> raw {
-  unsafe {
-    return align_gpu_metadata_handle(resource.raw(resource.borrow(owner)))
-  }
-}
-
 pub fn gpu_weight_slot(
   borrow owner: GpuDevice,
   index: i64,
@@ -824,26 +835,71 @@ pub fn gpu_weight_slot(
   }
 }
 
-pub fn gpu_workspace_prepare(borrow owner: GpuDevice, graph: raw) -> Result<(), Fault> {
+pub fn gpu_graph_context_open(
+  borrow owner: GpuDevice, kind: i64, metadata_bytes: i64,
+) -> raw {
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE { return null_handle() }
   unsafe {
-    status := align_gpu_workspace_prepare(resource.raw(resource.borrow(owner)), graph) as i64
+    return align_gpu_graph_context_open(
+      resource.raw(resource.borrow(owner)), kind as i32, metadata_bytes,
+    )
+  }
+}
+
+pub fn gpu_graph_prepare(
+  borrow owner: GpuDevice, kind: i64, topology_key: str, graph: raw,
+) -> Result<(), Fault> {
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+    return Err(fault("CONFIG", "graph_kind"))
+  }
+  unsafe {
+    status := align_gpu_graph_prepare(
+      resource.raw(resource.borrow(owner)), kind as i32,
+      topology_key, topology_key.len(), graph,
+    ) as i64
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
   }
 }
 
-pub fn gpu_graph_compute(borrow owner: GpuDevice, graph: raw) -> Result<(), Fault> {
+pub fn gpu_graph_invalidate(borrow owner: GpuDevice, kind: i64) -> Result<(), Fault> {
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+    return Err(fault("CONFIG", "graph_kind"))
+  }
   unsafe {
-    status := align_gpu_graph_compute(resource.raw(resource.borrow(owner)), graph) as i64
+    status := align_gpu_graph_invalidate(
+      resource.raw(resource.borrow(owner)), kind as i32,
+    ) as i64
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
   }
 }
 
-pub fn gpu_graph_state(borrow owner: GpuDevice, field: i64) -> i64 {
-  if field < GPU_GRAPH_PREPARED || field > GPU_GRAPH_REUSES { return -1 }
+pub fn gpu_graph_compute(
+  borrow owner: GpuDevice, kind: i64, topology_key: str, graph: raw,
+) -> Result<(), Fault> {
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+    return Err(fault("CONFIG", "graph_kind"))
+  }
   unsafe {
-    return align_gpu_graph_state(resource.raw(resource.borrow(owner)), field as i32)
+    status := align_gpu_graph_compute(
+      resource.raw(resource.borrow(owner)), kind as i32,
+      topology_key, topology_key.len(), graph,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_graph_state(borrow owner: GpuDevice, kind: i64, field: i64) -> i64 {
+  if (kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE)
+    || field < GPU_GRAPH_PREPARED || field > GPU_GRAPH_INVALIDATIONS {
+    return -1
+  }
+  unsafe {
+    return align_gpu_graph_state(
+      resource.raw(resource.borrow(owner)), kind as i32, field as i32,
+    )
   }
 }
 

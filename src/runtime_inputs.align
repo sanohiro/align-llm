@@ -47,13 +47,14 @@ pub fn update(
 pub fn mask_prefix_slot(
   borrow owner: ggml_ffi.GpuDevice,
   index: i64,
+  kind: i64,
   valid_width: i64,
   query_width: i64,
   borrow slots: slice<u8>,
   out: i64,
 ) -> Result<(), Error> {
   ggml_ffi.gpu_mask_prefix_slot(
-    owner, index, valid_width, query_width, slots, out,
+    owner, index, kind, valid_width, query_width, slots, out,
   ) else {
     return Err(Error.Invalid)
   }
