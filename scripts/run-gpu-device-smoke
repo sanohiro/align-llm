@@ -10,6 +10,7 @@ unset ALIGN_LLM_GGML_INCLUDE ALIGN_LLM_GGML_LIB ALIGN_LLM_GGML_FORCE
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
 work_dir=$(mktemp -d)
+work_dir=$(CDPATH= cd -- "${work_dir}" && pwd -P)
 ordinary_shim="${work_dir}/ordinary-shim"
 gpu_shim="${work_dir}/gpu-shim"
 executable="${work_dir}/runtime-device-smoke"
@@ -26,6 +27,73 @@ ALIGN_LLM_GGML_SHIM_DIR="${ordinary_shim}" \
 ALIGN_LLM_GGML_FORCE=engine+gpu ALIGN_LLM_GGML_SHIM_DIR="${gpu_shim}" \
   "${root_dir}/scripts/build-ggml-shim" >/dev/null
 
+python3 - "${work_dir}" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+zero = "0" * 64
+empty = hashlib.sha256(b"").hexdigest()
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def canonical(value):
+    return json.dumps(value, separators=(",", ":")).encode() + b"\n"
+
+
+def write_bundle(name, plugin_bytes):
+    directory = root / name
+    directory.mkdir()
+    plugin = directory / "libggml-metal.so"
+    plugin.write_bytes(plugin_bytes)
+    manifest = {
+        "schema_version": 1,
+        "artifact_kind": "GPU_BACKEND_BUNDLE",
+        "bundle_id": zero,
+        "backend": "metal",
+        "ggml": {
+            "commit": "bb4caa7540188872173c44d161602d9271386413",
+            "source_manifest_sha256": digest(b"source-manifest"),
+            "version": "fixture",
+        },
+        "target": {
+            "os": "macos",
+            "arch": "aarch64",
+            "gpu_architectures": ["apple_m1"],
+        },
+        "toolchain": {
+            "c_compiler": {"name": "cc", "version": "fixture", "sha256": digest(b"cc")},
+            "cxx_compiler": {"name": "cxx", "version": "fixture", "sha256": digest(b"cxx")},
+            "sdk": {"name": "macos", "version": "fixture", "sha256": digest(b"sdk")},
+            "toolkit": {"name": "none", "version": "none", "sha256": empty},
+        },
+        "build_flags": [],
+        "artifacts": [{
+            "role": "backend_plugin",
+            "path": plugin.name,
+            "bytes": len(plugin_bytes),
+            "sha256": digest(plugin_bytes),
+        }],
+    }
+    manifest["bundle_id"] = digest(canonical(manifest))
+    (directory / "manifest.json").write_bytes(canonical(manifest))
+    return manifest["bundle_id"]
+
+
+bundle_id = write_bundle("bundle", b"device-owner-fixture")
+write_bundle("other-bundle", b"other-device-owner-fixture")
+invalid = root / "invalid-bundle"
+invalid.mkdir()
+(invalid / "libggml-metal.so").write_bytes(b"mutated-owner-fixture")
+(invalid / "manifest.json").write_bytes((root / "bundle" / "manifest.json").read_bytes())
+(root / "bundle-id").write_text(bundle_id)
+PY
+
 (
   cd "${root_dir}"
   export LIBRARY_PATH="${gpu_shim}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
@@ -33,10 +101,13 @@ ALIGN_LLM_GGML_FORCE=engine+gpu ALIGN_LLM_GGML_SHIM_DIR="${gpu_shim}" \
   mv runtime_device_smoke "${executable}"
 )
 
-bundle_id=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+bundle_id=$(cat "${work_dir}/bundle-id")
+backend_path="${work_dir}/bundle/libggml-metal.so"
 export DYLD_LIBRARY_PATH="${ordinary_shim}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 export LD_LIBRARY_PATH="${ordinary_shim}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-ordinary_output=$("${executable}" unavailable metal stub-gpu "${ordinary_shim}" "${bundle_id}")
+ordinary_output=$("${executable}" unavailable metal stub-gpu \
+  "${work_dir}/bundle" "${work_dir}/invalid-bundle" "${work_dir}/other-bundle" \
+  "${backend_path}" "${bundle_id}")
 if [ "${ordinary_output}" != "runtime device smoke: UNAVAILABLE PASS" ]; then
   printf '%s\n' "gpu device smoke: FAIL unavailable output: ${ordinary_output}" >&2
   exit 1
@@ -44,7 +115,9 @@ fi
 
 export DYLD_LIBRARY_PATH="${gpu_shim}"
 export LD_LIBRARY_PATH="${gpu_shim}"
-gpu_output=$("${executable}" available metal stub-gpu "${gpu_shim}" "${bundle_id}")
+gpu_output=$("${executable}" available metal stub-gpu \
+  "${work_dir}/bundle" "${work_dir}/invalid-bundle" "${work_dir}/other-bundle" \
+  "${backend_path}" "${bundle_id}")
 if [ "${gpu_output}" != "runtime device smoke: AVAILABLE PASS" ]; then
   printf '%s\n' "gpu device smoke: FAIL available output: ${gpu_output}" >&2
   exit 1

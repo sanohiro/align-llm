@@ -8,6 +8,7 @@ import frontend_olmoe
 import gguf
 import model
 import model_ir
+import runtime_device
 import runtime_options
 import tokenizer_qwen2
 import core.json
@@ -147,15 +148,13 @@ fn generate_olmoe(
 
 pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
   validate_generate(config, request)?
-  if config.runtime_options_path.len() > 0 {
-    options := runtime_options.load(config.runtime_options_path)?
-    if config.runtime_cache_budget_bytes > options.host_budget_bytes {
+  gpu_options: Option<runtime_options.RuntimeOptions> := if config.runtime_options_path.len() > 0 {
+    loaded := runtime_options.load(config.runtime_options_path)?
+    if config.runtime_cache_budget_bytes > loaded.host_budget_bytes {
       return Err(Error.Invalid)
     }
-    // The next G1 batch connects this validated owned record to runtime_device and
-    // runtime_execution. Refuse here until that path can produce a complete resident result.
-    return Err(Error.Invalid)
-  }
+    Some(loaded)
+  } else { None }
 
   snapshot := gguf.open_snapshot(config.model)?
   table_ok := match snapshot.table.status { Ok => true, Error => false }
@@ -187,6 +186,18 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
     || prepared.token_ids.len() + allocation_steps > ir.context_length
     || prepared.token_ids.len() + allocation_steps > 4096 {
     return Err(Error.Invalid)
+  }
+
+  match gpu_options {
+    Some(options) => {
+      // Bundle and device side effects occur only after the model, pack, geometry, tokenizer and
+      // context boundary are settled. The owner stays invocation-local and is synchronized before
+      // this pre-execution checkpoint returns; runtime_execution will consume it in the next batch.
+      device := runtime_device.open(options)?
+      runtime_device.synchronize(device)?
+      return Err(Error.Invalid)
+    }
+    None => {}
   }
 
   generated := if olmoe {

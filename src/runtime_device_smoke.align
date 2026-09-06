@@ -1,14 +1,27 @@
 module runtime_device_smoke
 
 import ggml_ffi
+import runtime_device
+import runtime_options
+
+fn options(backend: str, device: str, bundle_root: str) -> runtime_options.RuntimeOptions =
+runtime_options.RuntimeOptions {
+  schema_version: 1,
+  backend: backend.clone(),
+  device: device.clone(),
+  backend_bundle: bundle_root.clone(),
+  placement: "resident".clone(),
+  host_budget_bytes: 1048576,
+  device_budget_bytes: 1048576,
+  prefetch: "off".clone(),
+}
 
 fn opened(
   backend: str,
   device: str,
-  backend_path: str,
-  bundle_id: str,
-) -> Result<ggml_ffi.GpuDevice, Error> = match ggml_ffi.gpu_device_open(
-  backend, device, backend_path, bundle_id, 1048576, 1048576,
+  bundle_root: str,
+) -> Result<ggml_ffi.GpuDevice, Error> = match runtime_device.open(
+  options(backend, device, bundle_root),
 ) {
   Ok(owner) => Ok(owner),
   Err(_) => Err(Error.Invalid),
@@ -17,10 +30,11 @@ fn opened(
 fn exercise_live_owner(
   backend: str,
   device: str,
+  bundle_root: str,
   backend_path: str,
   bundle_id: str,
 ) -> Result<(), Error> {
-  owner := opened(backend, device, backend_path, bundle_id)?
+  owner := opened(backend, device, bundle_root)?
   if ggml_ffi.gpu_device_handle(owner).is_null()
     || ggml_ffi.gpu_backend_handle(owner).is_null() {
     return Err(Error.Invalid)
@@ -46,13 +60,21 @@ fn exercise_live_owner(
 fn expect_unavailable(
   backend: str,
   device: str,
-  backend_path: str,
-  bundle_id: str,
-) -> Result<(), Error> = match ggml_ffi.gpu_device_open(
-  backend, device, backend_path, bundle_id, 1048576, 1048576,
+  bundle_root: str,
+) -> Result<(), Error> = match runtime_device.open(
+  options(backend, device, bundle_root),
 ) {
   Ok(_) => Err(Error.Invalid),
-  Err(fault) => if fault.code == "BACKEND_UNAVAILABLE" { Ok(()) } else { Err(Error.Invalid) },
+  Err(_) => Ok(()),
+}
+
+fn expect_verification_refusal(
+  backend: str,
+  device: str,
+  bundle_root: str,
+) -> Result<(), Error> = match runtime_device.open(options(backend, device, bundle_root)) {
+  Ok(_) => Err(Error.Invalid),
+  Err(_) => Ok(()),
 }
 
 fn expect_bundle_switch(
@@ -68,15 +90,18 @@ fn expect_bundle_switch(
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
-  if args.len() != 6 { return Err(Error.Invalid) }
+  if args.len() != 9 { return Err(Error.Invalid) }
   mode := args[1]
   backend := args[2]
   device := args[3]
-  backend_path := args[4]
-  bundle_id := args[5]
+  bundle_root := args[4]
+  invalid_bundle_root := args[5]
+  other_bundle_root := args[6]
+  backend_path := args[7]
+  bundle_id := args[8]
 
   if mode == "unavailable" {
-    expect_unavailable(backend, device, backend_path, bundle_id)?
+    expect_unavailable(backend, device, bundle_root)?
     print("runtime device smoke: UNAVAILABLE PASS")
     return Ok(())
   }
@@ -84,14 +109,17 @@ pub fn main(args: array<str>) -> Result<(), Error> {
 
   // Returning from the helper drops the first owner. Reopening the same pinned bundle proves the
   // guard was released on that ordinary return path; returning again covers a second lifetime.
-  exercise_live_owner(backend, device, backend_path, bundle_id)?
-  exercise_live_owner(backend, device, backend_path, bundle_id)?
+  expect_verification_refusal(backend, device, invalid_bundle_root)?
+  exercise_live_owner(backend, device, bundle_root, backend_path, bundle_id)?
+  exercise_live_owner(backend, device, bundle_root, backend_path, bundle_id)?
 
-  mut other_bundle := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-  if bundle_id == other_bundle {
-    other_bundle = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-  }
-  expect_bundle_switch(backend, device, backend_path, other_bundle)?
+  expect_verification_refusal(backend, device, other_bundle_root)?
+  expect_bundle_switch(
+    backend,
+    device,
+    backend_path,
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  )?
   print("runtime device smoke: AVAILABLE PASS")
   return Ok(())
 }

@@ -1,0 +1,377 @@
+module runtime_bundle
+
+import core.json
+import std.crypto
+import std.encoding
+import std.fs
+import std.path
+
+MAX_MANIFEST_BYTES := 262144
+MAX_ARTIFACT_BYTES := 536870912
+MAX_ARTIFACTS := 128
+GGML_COMMIT := "bb4caa7540188872173c44d161602d9271386413"
+ZERO_DIGEST := "0000000000000000000000000000000000000000000000000000000000000000"
+EMPTY_DIGEST := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+pub Identity {
+  name: string,
+  version: string,
+  sha256: string,
+}
+
+pub GgmlIdentity {
+  commit: string,
+  source_manifest_sha256: string,
+  version: string,
+}
+
+pub Target {
+  os: string,
+  arch: string,
+  gpu_architectures: array<string>,
+}
+
+pub Toolchain {
+  c_compiler: Identity,
+  cxx_compiler: Identity,
+  sdk: Identity,
+  toolkit: Identity,
+}
+
+pub Artifact {
+  role: string,
+  path: string,
+  bytes: i64,
+  sha256: string,
+}
+
+pub BackendBundle {
+  schema_version: i64,
+  artifact_kind: string,
+  bundle_id: string,
+  backend: string,
+  ggml: GgmlIdentity,
+  target: Target,
+  toolchain: Toolchain,
+  build_flags: array<string>,
+  artifacts: array<Artifact>,
+}
+
+pub VerifiedBundle {
+  bundle_id: string,
+  manifest_sha256: string,
+  backend_path: string,
+  backend_sha256: string,
+  artifact_bytes: i64,
+}
+
+fn digest_bytes(borrow bytes: slice<u8>) -> string {
+  digest := crypto.sha256(bytes)
+  return encoding.hex_encode(digest[0..digest.len()]).clone()
+}
+
+fn digest_text(value: str) -> string {
+  bytes := value.bytes()
+  return digest_bytes(bytes)
+}
+
+fn valid_digest(value: str) -> bool {
+  if value.len() != 64 { return false }
+  bytes := value.bytes()
+  mut at := 0
+  loop {
+    if at >= bytes.len() { break }
+    byte := bytes[at]
+    if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return false }
+    at = at + 1
+  }
+  return true
+}
+
+fn valid_identifier(value: str) -> bool {
+  if value.len() < 1 || value.len() > 64 { return false }
+  bytes := value.bytes()
+  mut at := 0
+  loop {
+    if at >= bytes.len() { break }
+    byte := bytes[at]
+    alpha := byte >= 97 && byte <= 122
+    digit := byte >= 48 && byte <= 57
+    if !(alpha || digit || (at > 0 && (byte == 46 || byte == 95 || byte == 45))) {
+      return false
+    }
+    at = at + 1
+  }
+  return true
+}
+
+fn valid_text(value: str, maximum: i64) -> bool =
+value.len() > 0 && value.len() <= maximum && !value.contains("\0")
+
+fn valid_component(value: str) -> bool {
+  if !valid_text(value, 255) || value == "." || value == ".." { return false }
+  return !value.contains("/")
+}
+
+fn valid_relative_path(value: str) -> bool {
+  if !valid_text(value, 4096) { return false }
+  bytes := value.bytes()
+  if bytes[0] == 47 { return false }
+  mut start := 0
+  mut at := 0
+  loop {
+    if at > bytes.len() { break }
+    if at == bytes.len() || bytes[at] == 47 {
+      if !valid_component(value[start..at]) { return false }
+      start = at + 1
+    }
+    at = at + 1
+  }
+  return true
+}
+
+fn unique_names(value: json.doc) -> bool {
+  return match value.kind() {
+    Object => {
+      mut at := 0
+      loop {
+        if at >= value.len() { break }
+        key := value.key(at) else { return false }
+        mut earlier := 0
+        loop {
+          if earlier >= at { break }
+          previous := value.key(earlier) else { return false }
+          if key == previous { return false }
+          earlier = earlier + 1
+        }
+        if !unique_names(value.at(at)) { return false }
+        at = at + 1
+      }
+      true
+    }
+    Array => {
+      mut at := 0
+      loop {
+        if at >= value.len() { break }
+        if !unique_names(value.at(at)) { return false }
+        at = at + 1
+      }
+      true
+    }
+    _ => true,
+  }
+}
+
+fn read_manifest(root: str) -> Result<string, Error> {
+  source := fs.open_beneath(root, "manifest.json")?
+  mut accumulated := buffer(0)
+  mut chunk := buffer(4096)
+  mut total := 0
+  loop {
+    if total == MAX_MANIFEST_BYTES {
+      mut probe := buffer(1)
+      if source.read(probe)? > 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := MAX_MANIFEST_BYTES - total
+    count := if remaining < 4096 {
+      mut tail := buffer(remaining)
+      read_count := source.read(tail)?
+      accumulated.append(tail.bytes())
+      read_count
+    } else {
+      read_count := source.read(chunk)?
+      accumulated.append(chunk.bytes())
+      read_count
+    }
+    if count == 0 { break }
+    total = total + count
+  }
+  return Ok(accumulated.bytes().as_str()?.clone())
+}
+
+fn verify_artifact(root: str, borrow artifact: Artifact, host_budget_bytes: i64) -> bool {
+  if artifact.bytes < 1 || artifact.bytes > MAX_ARTIFACT_BYTES
+    || artifact.bytes > host_budget_bytes {
+    return false
+  }
+  source := fs.open_beneath(root, artifact.path) else { return false }
+  mut accumulated := buffer(0)
+  mut chunk := buffer(65536)
+  mut total := 0
+  loop {
+    if total == artifact.bytes {
+      mut probe := buffer(1)
+      count := source.read(probe) else { return false }
+      if count != 0 { return false }
+      break
+    }
+    remaining := artifact.bytes - total
+    count := if remaining < 65536 {
+      mut tail := buffer(remaining)
+      read_count := source.read(tail) else { return false }
+      accumulated.append(tail.bytes())
+      read_count
+    } else {
+      read_count := source.read(chunk) else { return false }
+      accumulated.append(chunk.bytes())
+      read_count
+    }
+    if count == 0 { return false }
+    total = total + count
+  }
+  accumulated_bytes := accumulated.bytes()
+  return accumulated.len() == artifact.bytes
+    && digest_bytes(accumulated_bytes) == artifact.sha256
+}
+
+fn valid_identity(borrow identity: Identity) -> bool {
+  return valid_text(identity.name, 256) && valid_text(identity.version, 256)
+    && valid_digest(identity.sha256)
+}
+
+fn valid_none_identity(borrow identity: Identity) -> bool =
+identity.name == "none" && identity.version == "none" && identity.sha256 == EMPTY_DIGEST
+
+fn valid_role(role: str) -> bool =
+role == "shared_library" || role == "backend_plugin" || role == "kernel_binary"
+  || role == "shader_library" || role == "metadata"
+
+fn decode_bundle(document: str) -> Result<BackendBundle, Error> = json.decode(document)
+
+fn plugin_name(backend: str) -> str {
+  if backend == "metal" { return "libggml-metal.so" }
+  return "libggml-cuda.so"
+}
+
+pub fn verify(root: str, expected_backend: str, host_budget_bytes: i64) -> Result<VerifiedBundle, Error> {
+  if !valid_text(root, 4096) || (expected_backend != "metal" && expected_backend != "cuda")
+    || host_budget_bytes < 1 {
+    return Err(Error.Invalid)
+  }
+  document := read_manifest(root)?
+  document_view: str := document
+  arena {
+    dynamic := json.doc(document_view)?
+    if !unique_names(dynamic) { return Err(Error.Invalid) }
+  }
+  mut bundle := decode_bundle(document_view)?
+  if bundle.schema_version != 1 || bundle.artifact_kind != "GPU_BACKEND_BUNDLE"
+    || bundle.backend != expected_backend || !valid_digest(bundle.bundle_id)
+    || bundle.ggml.commit != GGML_COMMIT || !valid_digest(bundle.ggml.source_manifest_sha256)
+    || !valid_text(bundle.ggml.version, 128)
+    || bundle.target.gpu_architectures.len() < 1 || bundle.target.gpu_architectures.len() > 32
+    || bundle.build_flags.len() > 128
+    || bundle.artifacts.len() < 1 || bundle.artifacts.len() > MAX_ARTIFACTS
+    || !valid_identity(bundle.toolchain.c_compiler)
+    || !valid_identity(bundle.toolchain.cxx_compiler)
+    || !valid_identity(bundle.toolchain.sdk)
+    || !valid_identity(bundle.toolchain.toolkit) {
+    return Err(Error.Invalid)
+  }
+  if bundle.backend == "metal" {
+    if bundle.target.os != "macos" || bundle.target.arch != "aarch64"
+      || !valid_none_identity(bundle.toolchain.toolkit) {
+      return Err(Error.Invalid)
+    }
+  } else if bundle.target.os != "linux" || bundle.target.arch != "x86_64"
+    || valid_none_identity(bundle.toolchain.toolkit) {
+    return Err(Error.Invalid)
+  }
+
+  mut architecture_at := 0
+  loop {
+    if architecture_at >= bundle.target.gpu_architectures.len() { break }
+    if !valid_identifier(bundle.target.gpu_architectures[architecture_at]) {
+      return Err(Error.Invalid)
+    }
+    mut earlier := 0
+    loop {
+      if earlier >= architecture_at { break }
+      if bundle.target.gpu_architectures[earlier]
+        == bundle.target.gpu_architectures[architecture_at] {
+        return Err(Error.Invalid)
+      }
+      earlier = earlier + 1
+    }
+    architecture_at = architecture_at + 1
+  }
+  mut flag_at := 0
+  loop {
+    if flag_at >= bundle.build_flags.len() { break }
+    if !valid_text(bundle.build_flags[flag_at], 4096) { return Err(Error.Invalid) }
+    flag_at = flag_at + 1
+  }
+
+  expected_plugin := plugin_name(bundle.backend)
+  mut plugin_relative := "".clone()
+  mut plugin_sha256 := "".clone()
+  mut plugin_count := 0
+  mut total_bytes := 0
+  mut artifact_at := 0
+  loop {
+    if artifact_at >= bundle.artifacts.len() { break }
+    if !valid_role(bundle.artifacts[artifact_at].role)
+      || !valid_relative_path(bundle.artifacts[artifact_at].path)
+      || !valid_digest(bundle.artifacts[artifact_at].sha256)
+      || bundle.artifacts[artifact_at].bytes < 1
+      || bundle.artifacts[artifact_at].bytes > MAX_ARTIFACT_BYTES
+      || total_bytes > MAX_ARTIFACT_BYTES - bundle.artifacts[artifact_at].bytes {
+      return Err(Error.Invalid)
+    }
+    if artifact_at > 0 {
+      if bundle.artifacts[artifact_at - 1].role > bundle.artifacts[artifact_at].role
+        || (bundle.artifacts[artifact_at - 1].role == bundle.artifacts[artifact_at].role
+          && bundle.artifacts[artifact_at - 1].path >= bundle.artifacts[artifact_at].path) {
+        return Err(Error.Invalid)
+      }
+    }
+    mut earlier_path := 0
+    loop {
+      if earlier_path >= artifact_at { break }
+      if bundle.artifacts[earlier_path].path == bundle.artifacts[artifact_at].path {
+        return Err(Error.Invalid)
+      }
+      earlier_path = earlier_path + 1
+    }
+    total_bytes = total_bytes + bundle.artifacts[artifact_at].bytes
+    if bundle.artifacts[artifact_at].role == "backend_plugin"
+      && bundle.artifacts[artifact_at].path == expected_plugin {
+      plugin_relative = bundle.artifacts[artifact_at].path.clone()
+      plugin_sha256 = bundle.artifacts[artifact_at].sha256.clone()
+      plugin_count = plugin_count + 1
+    }
+    if !verify_artifact(root, bundle.artifacts[artifact_at], host_budget_bytes) {
+      return Err(Error.Invalid)
+    }
+    artifact_at = artifact_at + 1
+  }
+  if plugin_count != 1 { return Err(Error.Invalid) }
+
+  claimed_id := bundle.bundle_id.clone()
+  canonical_claimed := json.encode_bounded(bundle, MAX_MANIFEST_BYTES - 1)?
+  claimed_file := builder()
+  claimed_file.write(canonical_claimed)
+  claimed_file.write("\n")
+  canonical_file := claimed_file.to_string()
+  canonical_view: str := canonical_file
+  if canonical_view != document_view { return Err(Error.Invalid) }
+
+  bundle.bundle_id = ZERO_DIGEST.clone()
+  canonical_zero := json.encode_bounded(bundle, MAX_MANIFEST_BYTES - 1)?
+  zero_file := builder()
+  zero_file.write(canonical_zero)
+  zero_file.write("\n")
+  zero_bytes := zero_file.to_string()
+  zero_view: str := zero_bytes
+  if digest_text(zero_view) != claimed_id { return Err(Error.Invalid) }
+
+  backend_path := path.join(root, plugin_relative)
+  return Ok(VerifiedBundle {
+      bundle_id: claimed_id,
+      manifest_sha256: digest_text(document_view),
+      backend_path: backend_path,
+      backend_sha256: plugin_sha256,
+      artifact_bytes: total_bytes,
+    })
+}

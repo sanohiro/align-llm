@@ -1,0 +1,44 @@
+module runtime_bundle_smoke
+
+import runtime_bundle
+
+fn expect_valid(root: str) -> Result<(), Error> {
+  verified := runtime_bundle.verify(root, "metal", 1048576)?
+  if verified.bundle_id.len() != 64 || verified.manifest_sha256.len() != 64
+    || verified.backend_sha256.len() != 64 || verified.artifact_bytes != 20
+    || !verified.backend_path.ends_with("/libggml-metal.so") {
+    print(root)
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn expect_invalid(root: str, backend: str) -> Result<(), Error> =
+match runtime_bundle.verify(root, backend, 1048576) {
+  Ok(_) => {
+    print(root)
+    Err(Error.Invalid)
+  }
+  Err(_) => Ok(()),
+}
+
+fn expect_budget_invalid(root: str) -> Result<(), Error> =
+match runtime_bundle.verify(root, "metal", 19) {
+  Ok(_) => Err(Error.Invalid),
+  Err(_) => Ok(()),
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() < 3 { return Err(Error.Invalid) }
+  expect_valid(args[1])?
+  expect_invalid(args[1], "cuda")?
+  expect_budget_invalid(args[1])?
+  mut at := 2
+  loop {
+    if at >= args.len() { break }
+    expect_invalid(args[at], "metal")?
+    at = at + 1
+  }
+  print("runtime bundle smoke: PASS")
+  return Ok(())
+}
