@@ -163,7 +163,7 @@ fn unique_names(value: json.doc) -> bool {
 }
 
 fn read_manifest(root: str) -> Result<string, Error> {
-  source := fs.open_beneath(root, "manifest.json")?
+  source := fs.open_beneath_single_link(root, "manifest.json")?
   mut accumulated := buffer(0)
   mut chunk := buffer(4096)
   mut total := 0
@@ -195,7 +195,7 @@ fn verify_artifact(root: str, borrow artifact: Artifact, host_budget_bytes: i64)
     || artifact.bytes > host_budget_bytes {
     return false
   }
-  source := fs.open_beneath(root, artifact.path) else { return false }
+  source := fs.open_beneath_single_link(root, artifact.path) else { return false }
   mut accumulated := buffer(0)
   mut chunk := buffer(65536)
   mut total := 0

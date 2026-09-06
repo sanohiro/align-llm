@@ -133,6 +133,12 @@ manifest_link = root / "symlink-manifest"
 manifest_link.mkdir()
 (manifest_link / "libggml-metal.so").write_bytes(plugin_bytes)
 os.symlink(valid / "manifest.json", manifest_link / "manifest.json")
+
+hardlink_artifact = write_bundle("hardlink-artifact", base_manifest(), "libggml-metal.so")
+os.link(hardlink_artifact / "libggml-metal.so", hardlink_artifact / "artifact-alias")
+
+hardlink_manifest = write_bundle("hardlink-manifest", base_manifest(), "libggml-metal.so")
+os.link(hardlink_manifest / "manifest.json", hardlink_manifest / "manifest-alias")
 PY
 
 (
@@ -152,7 +158,9 @@ output=$("${executable}" \
   "${work_dir}/missing-plugin" \
   "${work_dir}/duplicate-path" \
   "${work_dir}/symlink-artifact" \
-  "${work_dir}/symlink-manifest")
+  "${work_dir}/symlink-manifest" \
+  "${work_dir}/hardlink-artifact" \
+  "${work_dir}/hardlink-manifest")
 if [ "${output}" != "runtime bundle smoke: PASS" ]; then
   printf '%s\n' "gpu bundle smoke: FAIL output: ${output}" >&2
   exit 1
