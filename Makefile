@@ -38,6 +38,7 @@ endif
 .PHONY: prefix-corpus-check prefix-ttft-runner-check prefix-ttft-qualification
 .PHONY: gpu-profile-coverage
 .PHONY: gpu-result-replay
+.PHONY: gpu-command-environment gpu-process-cleanup gpu-build-failure-evidence
 check:
 	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
 	  diagnostic="$$(mktemp)"; \
@@ -97,6 +98,18 @@ gpu-profile-coverage:
 # replaying both complete Git source snapshots.
 gpu-result-replay:
 	./scripts/run-gpu-result-replay-smoke
+
+# G1's qualifier spawn owner resolves verified absolute inputs into an otherwise empty environment.
+gpu-command-environment:
+	./scripts/run-gpu-qualifier-process-smoke environment
+
+# G1's process owner bounds logs and time, terminates its process group, and proves no member remains.
+gpu-process-cleanup:
+	./scripts/run-gpu-qualifier-process-smoke cleanup
+
+# G1's preparation owner turns a real nonzero candidate build into canonical bounded FAIL evidence.
+gpu-build-failure-evidence:
+	./scripts/run-gpu-qualifier-process-smoke build-failure
 
 # G1's model-free backend bundle owner. It verifies canonical identity and artifact bytes through
 # no-follow rooted opens before any native library or registry operation is possible.

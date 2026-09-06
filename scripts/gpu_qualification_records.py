@@ -39,6 +39,18 @@ CASE_IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9._-]{0,48}\Z")
 LOGICAL_PATH = re.compile(
     r"<[a-z0-9][a-z0-9._-]{0,63}>:(?:owned|sha256:[0-9a-f]{64})\Z",
 )
+FAILURE_CATEGORIES = {
+    "CONFIG", "SOURCE_IDENTITY", "PREPARATION", "BUILD", "BACKEND_UNAVAILABLE",
+    "DEVICE_UNAVAILABLE", "BUNDLE_IDENTITY", "UNSUPPORTED_CAPABILITY", "MEMORY_BUDGET",
+    "ALLOCATION", "TRANSFER", "COMPUTE", "NONFINITE", "DEVICE_LOST", "BUSY", "PROCESS",
+    "PUBLICATION", "CLEANUP",
+}
+FAILURE_STAGES = {
+    "options", "source", "compiler", "runtime", "candidate_build", "shim_build",
+    "cpu_reference_build", "model", "device", "plan", "allocate", "upload", "prefill",
+    "decode", "readback", "synchronize", "release", "case_spawn", "publication",
+    "qualifier_cleanup",
+}
 
 
 def exact_keys(value: object, expected: tuple[str, ...], label: str) -> dict[str, object]:
@@ -648,8 +660,8 @@ def validate_case(
             raise RecipeError("passing case terminal fields are invalid")
         require_digest(result["output_sha256"], "case output_sha256")
     else:
-        bounded_text(category, 1, 64, "case category")
-        bounded_text(stage, 1, 64, "case stage")
+        require_enum(category, FAILURE_CATEGORIES, "case category")
+        require_enum(stage, FAILURE_STAGES, "case stage")
         if terminal == "FAIL":
             if result["signal"] is not None or (
                 result["exit_code"] is not None
@@ -960,6 +972,28 @@ def validate_evidence(
                                              expected_kind=order[ordinal])
     if status == "PASS" and len(commands) != len(order):
         raise RecipeError("passing evidence has incomplete preparation commands")
+    identity_order = ("align_compiler", "align_runtime", "candidate", "shim", "cpu_reference")
+    for ordinal, identity_key in enumerate(identity_order):
+        state = source[identity_key]["state"]
+        if ordinal < max(0, len(commands) - 1) and state != "available":
+            raise RecipeError("completed preparation identity is unavailable")
+        if ordinal >= len(commands) and state != "unavailable":
+            raise RecipeError("unexecuted preparation identity is available")
+    command_identity_names = {
+        "qualifier": "qualifier",
+        "align-compiler": "align_compiler",
+        "cc": "align_compiler",
+        "align-runtime": "align_runtime",
+        "shim": "shim",
+        "cpu-reference": "cpu_reference",
+    }
+    for command in commands:
+        for argument in command["argv"]:
+            match = re.fullmatch(r"<([^>]+)>:sha256:([0-9a-f]{64})", argument)
+            if match and match.group(1) in command_identity_names:
+                produced = source[command_identity_names[match.group(1)]]
+                if produced["state"] == "available" and produced["sha256"] != match.group(2):
+                    raise RecipeError("preparation command identity does not match produced input")
 
     files = result["files"]
     if not isinstance(files, list) or len(files) > 4096:
@@ -1077,11 +1111,27 @@ def validate_evidence(
         )):
             raise RecipeError("passing evidence cleanup is incomplete")
     else:
-        bounded_text(failure["category"], 1, 64, "failure category")
-        bounded_text(failure["stage"], 1, 64, "failure stage")
+        require_enum(failure["category"], FAILURE_CATEGORIES, "failure category")
+        require_enum(failure["stage"], FAILURE_STAGES, "failure stage")
         bounded_i64(failure["case_ordinal"], -1, len(profile_cases) - 1,
                     "failure case_ordinal")
         bounded_text(failure["detail"], 1, 4096, "failure detail")
+        preparation_failure_stages = {
+            "compiler": 0,
+            "runtime": 1,
+            "candidate_build": 2,
+            "shim_build": 3,
+            "cpu_reference_build": 4,
+        }
+        failed_preparation = preparation_failure_stages.get(str(failure["stage"]))
+        if failed_preparation is not None:
+            if len(commands) != failed_preparation + 1 \
+                    or source[identity_order[failed_preparation]]["state"] != "unavailable":
+                raise RecipeError("preparation failure identity or command prefix is invalid")
+    if status == "PASS" and (
+        cleanup["descendants_after"] != 0 or cleanup["descendants_before"] != 0
+    ):
+        raise RecipeError("passing evidence retained a child process")
     bounded_i64(result["elapsed_ns"], 1, I64_MAX, "evidence elapsed_ns")
     if len(evidence_raw) > 8 * 1024 * 1024:
         raise RecipeError("evidence result exceeds its canonical size bound")

@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""Exercise G1 qualifier command closure, process cleanup, and build-failure evidence."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import hashlib
+import json
+import os
+import pathlib
+import sys
+import tempfile
+
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import gpu_qualification_records as records  # noqa: E402
+from gpu_backend_recipe import RecipeError  # noqa: E402
+from gpu_qualifier_process import retained_file_row, run_owned_command  # noqa: E402
+
+
+def fixture_lines() -> list[bytes]:
+    source = (ROOT / "docs" / "specs" / "gpu-runtime.md").read_bytes()
+    heading = source.index(b"### 3.9 Canonical positive vectors")
+    opening = source.index(b"\x60\x60\x60json\n", heading) + len(b"\x60\x60\x60json\n")
+    closing = source.index(b"\x60\x60\x60\n", opening)
+    return source[opening:closing].splitlines(keepends=True)
+
+
+def rejected(call, expected: str) -> None:
+    try:
+        call()
+    except RecipeError as error:
+        if expected not in str(error):
+            raise AssertionError((expected, str(error))) from error
+    else:
+        raise AssertionError(f"invalid qualifier operation passed: {expected}")
+
+
+FIXTURE = """
+mode="$1"
+shift
+case "$mode" in
+  environment)
+    if [ "${AMBIENT_GPU_SECRET+x}" = x ] || [ "${CUDA_VISIBLE_DEVICES+x}" = x ]; then
+      exit 91
+    fi
+    [ "$HOME" = "$1" ] && [ "$TMPDIR" = "$2" ] && [ "$LC_ALL" = C ] && [ "$TZ" = UTC ] || {
+      printf 'HOME=%s ARG1=%s TMPDIR=%s ARG2=%s LC_ALL=%s TZ=%s\\n' "$HOME" "$1" "$TMPDIR" "$2" "$LC_ALL" "$TZ" >&2
+      exit 92
+    }
+    printf 'closed-environment\\n'
+    ;;
+  failure)
+    printf 'candidate-build-output\\n'
+    printf 'candidate-build-error\\n' >&2
+    exit 7
+    ;;
+  signal)
+    kill -TERM $$
+    ;;
+  timeout)
+    "$1" 30 &
+    wait
+    ;;
+  descendant)
+    "$1" 30 &
+    exit 0
+    ;;
+  large)
+    i=0
+    while [ "$i" -lt 327680 ]; do
+      printf '0123456789abcdef'
+      printf 'fedcba9876543210' >&2
+      i=$((i + 1))
+    done
+    ;;
+  *) exit 93 ;;
+esac
+"""
+
+
+def make_fixture(_root: pathlib.Path) -> pathlib.Path:
+    fixture = pathlib.Path("/bin/sh")
+    if not fixture.is_file():
+        raise AssertionError("the supported host has no /bin/sh")
+    return fixture
+
+
+def command_inputs(
+    fixture: pathlib.Path, mode: str, home: pathlib.Path, scratch: pathlib.Path,
+) -> tuple[list[str], list[str], dict[str, pathlib.Path]]:
+    digest = hashlib.sha256(fixture.read_bytes()).hexdigest()
+    token = f"<align-compiler>:sha256:{digest}"
+    physical = [str(fixture), "-c", FIXTURE, "gpu-process-fixture", mode]
+    logical = [token, "-c", FIXTURE, "gpu-process-fixture", mode]
+    mappings: dict[str, pathlib.Path] = {token: fixture}
+    if mode == "environment":
+        home = home.resolve()
+        scratch = scratch.resolve()
+        physical.extend((str(home), str(scratch)))
+        logical.extend(("<home>:owned", "<tmp>:owned"))
+        mappings["<home>:owned"] = home
+        mappings["<tmp>:owned"] = scratch
+    elif mode in {"timeout", "descendant"}:
+        sleeper = pathlib.Path("/bin/sleep")
+        sleeper_digest = hashlib.sha256(sleeper.read_bytes()).hexdigest()
+        sleeper_token = f"<sleep>:sha256:{sleeper_digest}"
+        physical.append(str(sleeper))
+        logical.append(sleeper_token)
+        mappings[sleeper_token] = sleeper
+    return physical, logical, mappings
+
+
+def invoke(
+    fixture: pathlib.Path, mode: str, home: pathlib.Path, scratch: pathlib.Path,
+    *, timeout: float = 2.0, limit: int = 4 * 1024 * 1024,
+):
+    physical, logical, mappings = command_inputs(fixture, mode, home, scratch)
+    return run_owned_command(
+        kind="candidate_build",
+        physical_argv=physical,
+        logical_argv=logical,
+        mappings=mappings,
+        cwd=scratch,
+        home=home,
+        temporary=scratch,
+        timeout_seconds=timeout,
+        log_limit=limit,
+    )
+
+
+def environment_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path) -> None:
+    os.environ["AMBIENT_GPU_SECRET"] = "must-not-cross"
+    physical, logical, mappings = command_inputs(fixture, "environment", home, scratch)
+    observed: dict[str, object] = {}
+
+    def inspected_spawn(*args, **kwargs):
+        observed.update(kwargs)
+        import subprocess
+        return subprocess.Popen(*args, **kwargs)
+
+    result = run_owned_command(
+        kind="candidate_build", physical_argv=physical, logical_argv=logical,
+        mappings=mappings, cwd=scratch, home=home, temporary=scratch, timeout_seconds=2,
+        spawn=inspected_spawn,
+    )
+    assert result.terminal == "PASS" and result.exit_code == 0, result
+    assert result.stdout.retained == b"closed-environment\n"
+    assert result.stderr.retained == b""
+    assert result.descendants_after == 0
+    assert observed["env"] == {
+        "HOME": str(home.resolve()), "LC_ALL": "C", "TMPDIR": str(scratch.resolve()), "TZ": "UTC",
+    }
+    assert observed["start_new_session"] is True and observed["close_fds"] is True
+
+    original_token = logical[0]
+    wrong_token = "<align-compiler>:sha256:" + "0" * 64
+    logical[0] = wrong_token
+    del mappings[original_token]
+    mappings[wrong_token] = fixture
+    rejected(lambda: run_owned_command(
+        kind="candidate_build", physical_argv=physical, logical_argv=logical,
+        mappings=mappings, cwd=scratch, home=home, temporary=scratch, timeout_seconds=2,
+    ), "digest does not match")
+
+
+def cleanup_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path) -> None:
+    signaled = invoke(fixture, "signal", home, scratch)
+    assert signaled.terminal == "SIGNAL" and signaled.signal == 15
+    assert signaled.exit_code is None and signaled.descendants_after == 0
+
+    timed = invoke(fixture, "timeout", home, scratch, timeout=0.2)
+    assert timed.terminal == "TIMEOUT" and timed.exit_code is None and timed.signal is None
+    assert timed.descendants_before >= 1 and timed.descendants_after == 0
+
+    descendant = invoke(fixture, "descendant", home, scratch)
+    assert descendant.terminal == "PASS" and descendant.exit_code == 0
+    assert descendant.descendants_before >= 1 and descendant.descendants_after == 0
+
+    large = invoke(fixture, "large", home, scratch, timeout=15)
+    assert large.terminal == "PASS"
+    assert large.stdout.retained == b"0123456789abcdef" * 262144
+    assert large.stderr.retained == b"fedcba9876543210" * 262144
+    assert large.stdout.original_bytes == 5 * 1024 * 1024
+    assert large.stderr.original_bytes == 5 * 1024 * 1024
+    assert large.stdout.truncated and large.stderr.truncated
+    assert large.stdout.original_sha256 == hashlib.sha256(
+        b"0123456789abcdef" * 327680
+    ).hexdigest()
+
+
+def build_failure_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path) -> None:
+    result = invoke(fixture, "failure", home, scratch)
+    assert result.terminal == "FAIL" and result.exit_code == 7 and result.signal is None
+    assert result.descendants_after == 0
+    stdout_row = retained_file_row("stdout", "logs/002.stdout", result.stdout)
+    stderr_row = retained_file_row("stderr", "logs/002.stderr", result.stderr)
+
+    lines = fixture_lines()
+    evidence = json.loads(lines[7])
+    old_compiler_digest = evidence["source"]["align_compiler"]["sha256"]
+    compiler_bytes = fixture.read_bytes()
+    compiler_digest = hashlib.sha256(compiler_bytes).hexdigest()
+    evidence["source"]["align_compiler"] = {
+        "state": "available", "name": "sh", "version": "fixture", "sha256": compiler_digest,
+    }
+    evidence["source"]["candidate"] = {
+        "state": "unavailable", "name": "", "version": "", "sha256": "",
+    }
+    evidence["source"]["shim"] = copy.deepcopy(evidence["source"]["candidate"])
+    evidence["source"]["cpu_reference"] = copy.deepcopy(evidence["source"]["candidate"])
+    evidence["preparation_commands"] = [
+        *evidence["preparation_commands"][:2],
+        result.command,
+    ]
+    unavailable_digests = {
+        "1e81270f1a47dce22a2e4985250c74b2e3374443734f1492b03ea2cd2af4ec48",
+        "b7c748b4a4d1c37826a11b7bd04068a24094832a969948118b75e48a2dfd23e6",
+    }
+    evidence["files"] = [
+        row for row in evidence["files"]
+        if row["sha256"] not in unavailable_digests
+    ]
+    compiler_row = next(row for row in evidence["files"] if row["sha256"] == old_compiler_digest)
+    compiler_row.update({
+        "path": f"artifacts/{compiler_digest}",
+        "bytes": len(compiler_bytes),
+        "sha256": compiler_digest,
+        "original_bytes": len(compiler_bytes),
+        "original_sha256": compiler_digest,
+    })
+    evidence["files"].extend((stdout_row, stderr_row))
+    evidence["files"].sort(key=lambda row: row["path"].encode("utf-8"))
+    evidence["cleanup"].update({
+        "descendants_before": result.descendants_before,
+        "descendants_after": result.descendants_after,
+    })
+    evidence["failure"] = {
+        "category": "BUILD",
+        "stage": "candidate_build",
+        "case_ordinal": -1,
+        "detail": "candidate exited 7",
+    }
+    evidence["elapsed_ns"] = result.elapsed_ns
+    raw = records.canonical(evidence)
+    validated = records.validate_evidence_records(
+        runtime_option_raw=lines[0],
+        align_source_raw=lines[1],
+        ggml_source_raw=lines[2],
+        bundle_raw=lines[3],
+        calibration_raws=lines[4:6],
+        profile_raw=lines[6],
+        evidence_raw=raw,
+    )
+    assert validated["evidence"]["failure"]["category"] == "BUILD"
+
+    invalid = copy.deepcopy(evidence)
+    invalid["source"]["candidate"] = {
+        "state": "available", "name": "candidate", "version": "fixture",
+        "sha256": hashlib.sha256(b"candidate\n").hexdigest(),
+    }
+    rejected(lambda: records.validate_evidence_records(
+        runtime_option_raw=lines[0], align_source_raw=lines[1], ggml_source_raw=lines[2],
+        bundle_raw=lines[3], calibration_raws=lines[4:6], profile_raw=lines[6],
+        evidence_raw=records.canonical(invalid),
+    ), "preparation failure identity")
+
+    invalid = copy.deepcopy(evidence)
+    invalid["failure"]["category"] = "BUILD_FAILED"
+    rejected(lambda: records.validate_evidence_records(
+        runtime_option_raw=lines[0], align_source_raw=lines[1], ggml_source_raw=lines[2],
+        bundle_raw=lines[3], calibration_raws=lines[4:6], profile_raw=lines[6],
+        evidence_raw=records.canonical(invalid),
+    ), "failure category")
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("owner", choices=("environment", "cleanup", "build-failure"))
+args = parser.parse_args()
+with tempfile.TemporaryDirectory(prefix="align-llm-gpu-process-") as temporary:
+    root = pathlib.Path(temporary)
+    root.chmod(0o700)
+    home = root / "home"
+    scratch = root / "scratch"
+    home.mkdir(mode=0o700)
+    scratch.mkdir(mode=0o700)
+    fixture = make_fixture(scratch)
+    if args.owner == "environment":
+        environment_owner(fixture, home, scratch)
+    elif args.owner == "cleanup":
+        cleanup_owner(fixture, home, scratch)
+    else:
+        build_failure_owner(fixture, home, scratch)
+print(f"gpu {args.owner} smoke: PASS")

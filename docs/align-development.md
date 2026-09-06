@@ -243,6 +243,15 @@ sizes, digests and directory closure, then replays both retained Git source snap
 mutated, extra, symlinked, hard-linked, noncanonical and role-mismatched evidence without requiring
 a model or GPU.
 
+`make gpu-command-environment` rechecks every logical path identity immediately before spawning an
+absolute executable with only its owned HOME/TMPDIR plus `LC_ALL=C` and `TZ=UTC`. The smoke proves
+ambient variables do not cross the boundary and that a changed executable is refused.
+`make gpu-process-cleanup` covers signal and timeout classification, process-group termination,
+post-cleanup membership inspection, and bounded log retention with complete-stream counts and
+digests. `make gpu-build-failure-evidence` converts a real nonzero candidate build into the strict
+preparation-command prefix, unavailable produced identity, bounded logs and top-level schema-1
+BUILD failure. These fixture owners make no GPU claim.
+
 ## Repository-index development
 
 The current C2 slice is `src/repo_index.align`. It asks Git for the tracked file list with
