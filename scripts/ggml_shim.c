@@ -944,6 +944,7 @@ struct align_gpu_device_state {
     ggml_backend_buffer_t kv_buffer;
     ggml_backend_buffer_t workspace_buffer;
     struct ggml_tallocr weight_allocator;
+    struct ggml_tallocr kv_allocator;
     struct ggml_tensor *pending_weight;
     ggml_gallocr_t workspace_allocator;
     int64_t host_budget_bytes;
@@ -966,6 +967,11 @@ struct align_gpu_device_state {
     int weights_failed;
     int workspace_prepared;
     int workspace_failed;
+    int64_t kv_expected;
+    int64_t kv_created;
+    int64_t kv_updated_bytes;
+    int kv_finished;
+    int kv_failed;
 };
 
 static atomic_int align_gpu_busy = 0;
@@ -1233,8 +1239,11 @@ int32_t align_gpu_memory_allocate(void *owner) {
     uintptr_t metadata_modulus = 0;
     size_t metadata_padding = 0;
     void *weights_base = NULL;
+    void *kv_base = NULL;
     size_t weights_alignment = 0;
+    size_t kv_alignment = 0;
     uintptr_t weights_modulus = 0;
+    uintptr_t kv_modulus = 0;
     if (state == NULL || state->backend == NULL || !state->memory_planned
         || state->memory_allocated) {
         return ALIGN_GPU_CONFIG;
@@ -1304,6 +1313,16 @@ int32_t align_gpu_memory_allocate(void *owner) {
     if (ggml_backend_buffer_get_size(state->kv_buffer) != (size_t) state->kv_bytes) {
         goto fail;
     }
+    kv_base = ggml_backend_buffer_get_base(state->kv_buffer);
+    kv_alignment = ggml_backend_buffer_get_alignment(state->kv_buffer);
+    if (kv_base == NULL || kv_alignment == 0 || (kv_alignment & (kv_alignment - 1)) != 0) {
+        goto fail;
+    }
+    kv_modulus = (uintptr_t) kv_base & (uintptr_t) (kv_alignment - 1);
+    state->kv_allocator.buffer = state->kv_buffer;
+    state->kv_allocator.base = kv_base;
+    state->kv_allocator.alignment = kv_alignment;
+    state->kv_allocator.offset = kv_modulus == 0 ? 0 : kv_alignment - kv_modulus;
     if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 5) {
         state->workspace_buffer =
             ggml_backend_buft_alloc_buffer(buft, (size_t) state->workspace_bytes);
@@ -1516,6 +1535,157 @@ int64_t align_gpu_weight_state(void *owner, int32_t field) {
     }
 }
 
+int32_t align_gpu_kv_begin(void *owner, int64_t tensor_count) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    size_t used = 0;
+    size_t overhead = ggml_tensor_overhead();
+    if (state == NULL || !state->weights_finished || state->kv_expected != 0
+        || tensor_count <= 0 || overhead == 0
+        || (uint64_t) tensor_count > (uint64_t) SIZE_MAX / overhead) {
+        return ALIGN_GPU_CONFIG;
+    }
+    used = ggml_used_mem(state->metadata_ctx);
+    if (used > ggml_get_mem_size(state->metadata_ctx)
+        || (size_t) tensor_count * overhead > ggml_get_mem_size(state->metadata_ctx) - used) {
+        return ALIGN_GPU_MEMORY_BUDGET;
+    }
+    ggml_backend_buffer_clear(state->kv_buffer, 0);
+    ggml_backend_synchronize(state->backend);
+    state->kv_expected = tensor_count;
+    return ALIGN_GPU_OK;
+}
+
+int64_t align_gpu_kv_add(
+        void *owner, int32_t type, int32_t n_dims,
+        int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *tensor = NULL;
+    int64_t ne[4] = { ne0, ne1, ne2, ne3 };
+    size_t nbytes = 0;
+    size_t alloc_size = 0;
+    size_t padded = 0;
+    size_t alignment = 0;
+    size_t used = 0;
+    if (state == NULL || state->kv_expected <= 0 || state->kv_finished || state->kv_failed
+        || state->kv_created >= state->kv_expected
+        || !align_gpu_weight_shape(type, n_dims, ne, &nbytes)) {
+        return ALIGN_GPU_CONFIG;
+    }
+    used = ggml_used_mem(state->metadata_ctx);
+    if (used > ggml_get_mem_size(state->metadata_ctx)
+        || ggml_tensor_overhead() > ggml_get_mem_size(state->metadata_ctx) - used) {
+        state->kv_failed = 1;
+        return ALIGN_GPU_ALLOCATION;
+    }
+    tensor = ggml_new_tensor(state->metadata_ctx, (enum ggml_type) type, n_dims, ne);
+    if (tensor == NULL || ggml_nbytes(tensor) != nbytes) {
+        state->kv_failed = 1;
+        return ALIGN_GPU_ALLOCATION;
+    }
+    alignment = state->kv_allocator.alignment;
+    alloc_size = ggml_backend_buffer_get_alloc_size(state->kv_buffer, tensor);
+    if (alignment == 0 || alloc_size > SIZE_MAX - (alignment - 1)) {
+        state->kv_failed = 1;
+        return ALIGN_GPU_ALLOCATION;
+    }
+    padded = (alloc_size + alignment - 1) & ~(alignment - 1);
+    if (state->kv_allocator.offset > (size_t) state->kv_bytes
+        || padded > (size_t) state->kv_bytes - state->kv_allocator.offset) {
+        state->kv_failed = 1;
+        return ALIGN_GPU_ALLOCATION;
+    }
+    if (ggml_tallocr_alloc(&state->kv_allocator, tensor) != GGML_STATUS_SUCCESS) {
+        state->kv_failed = 1;
+        return ALIGN_GPU_ALLOCATION;
+    }
+    state->kv_created += 1;
+    return state->kv_created - 1;
+}
+
+int32_t align_gpu_kv_finish(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || state->kv_failed || state->kv_finished || state->kv_expected <= 0
+        || state->kv_created != state->kv_expected
+        || state->kv_allocator.offset != (size_t) state->kv_bytes) {
+        return ALIGN_GPU_CONFIG;
+    }
+    state->kv_finished = 1;
+    return ALIGN_GPU_OK;
+}
+
+static struct ggml_tensor *align_gpu_kv_at(struct align_gpu_device_state *state, int64_t index) {
+    struct ggml_tensor *tensor = NULL;
+    int64_t at = 0;
+    int64_t target = 0;
+    if (state == NULL || !state->kv_finished || index < 0 || index >= state->kv_expected) {
+        return NULL;
+    }
+    target = state->weights_expected + index;
+    tensor = ggml_get_first_tensor(state->metadata_ctx);
+    while (tensor != NULL && at < target) {
+        tensor = ggml_get_next_tensor(state->metadata_ctx, tensor);
+        at += 1;
+    }
+    return tensor;
+}
+
+int32_t align_gpu_kv_update(
+        void *owner, int64_t index, int64_t offset, const void *data, int64_t length) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *tensor = align_gpu_kv_at(state, index);
+    const unsigned char *source = (const unsigned char *) data;
+    size_t at = 0;
+    size_t staging = 0;
+    size_t capacity = 0;
+    if (tensor == NULL || data == NULL || offset < 0 || length <= 0) {
+        return ALIGN_GPU_CONFIG;
+    }
+    if (state->kv_updated_bytes > INT64_MAX - length) {
+        return ALIGN_GPU_CONFIG;
+    }
+    capacity = ggml_nbytes(tensor);
+    if ((uint64_t) offset > capacity || (uint64_t) length > capacity - (size_t) offset) {
+        return ALIGN_GPU_CONFIG;
+    }
+    staging = (size_t) state->staging_bytes;
+    while (at < (size_t) length) {
+        size_t chunk = (size_t) length - at;
+        if (chunk > staging) {
+            chunk = staging;
+        }
+        memcpy(state->staging, source + at, chunk);
+        ggml_backend_tensor_set_async(
+            state->backend, tensor, state->staging, (size_t) offset + at, chunk);
+        ggml_backend_synchronize(state->backend);
+        at += chunk;
+    }
+    state->kv_updated_bytes += length;
+    return ALIGN_GPU_OK;
+}
+
+int32_t align_gpu_kv_slot(void *owner, int64_t index, void *slots, int64_t out) {
+    struct ggml_tensor *tensor = align_gpu_kv_at((struct align_gpu_device_state *) owner, index);
+    if (tensor == NULL) {
+        return ALIGN_GPU_CONFIG;
+    }
+    return align_ggml_slot_store(slots, out, (void *) tensor) == ALIGN_GGML_OK
+        ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
+}
+
+int64_t align_gpu_kv_state(void *owner, int32_t field) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || state->kv_expected <= 0) {
+        return -1;
+    }
+    switch (field) {
+    case 0: return state->kv_expected;
+    case 1: return state->kv_created;
+    case 2: return state->kv_updated_bytes;
+    case 3: return state->kv_finished;
+    default: return -1;
+    }
+}
+
 void *align_gpu_metadata_handle(void *owner) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     return state == NULL || !state->memory_allocated ? NULL : (void *) state->metadata_ctx;
@@ -1551,7 +1721,8 @@ int32_t align_gpu_workspace_prepare(void *owner, void *graph) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     size_t required = 0;
     ggml_backend_buffer_type_t buft = NULL;
-    if (state == NULL || graph == NULL || !state->weights_finished || state->workspace_prepared
+    if (state == NULL || graph == NULL || !state->weights_finished || !state->kv_finished
+        || state->workspace_prepared
         || state->workspace_failed || state->workspace_buffer == NULL) {
         return ALIGN_GPU_CONFIG;
     }

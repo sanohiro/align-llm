@@ -2,6 +2,7 @@ module runtime_device_smoke
 
 import ggml_ffi
 import runtime_device
+import runtime_kv
 import runtime_memory
 import runtime_options
 import runtime_weights
@@ -155,11 +156,16 @@ fn exercise_live_owner(
     Err(_) => {}
   }
   mut weight_data := buffer(262144)
-  mut weight_at := 0
+  mut weight_row := 0
   loop {
-    if weight_at >= 65536 { break }
-    weight_data.put_u32_le(0)
-    weight_at = weight_at + 1
+    if weight_row >= 256 { break }
+    mut weight_column := 0
+    loop {
+      if weight_column >= 256 { break }
+      weight_data.put_u32_le(if weight_row == weight_column { 1065353216 } else { 0 })
+      weight_column = weight_column + 1
+    }
+    weight_row = weight_row + 1
   }
   weight_view := weight_data.bytes()
   runtime_weights.upload(owner, index, weight_view)?
@@ -175,6 +181,58 @@ fn exercise_live_owner(
     return Err(Error.Invalid)
   }
   match runtime_weights.finish(owner) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  runtime_kv.begin(owner, 1)?
+  match runtime_kv.add(
+    owner,
+    runtime_kv.Shape {
+      ggml_type: 0,
+      n_dims: 2,
+      ne0: 0,
+      ne1: 256,
+      ne2: 1,
+      ne3: 1,
+    },
+  ) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  kv_index := runtime_kv.add(
+    owner,
+    runtime_kv.Shape {
+      ggml_type: 0,
+      n_dims: 2,
+      ne0: 256,
+      ne1: 256,
+      ne2: 1,
+      ne3: 1,
+    },
+  )?
+  if kv_index != 0 { return Err(Error.Invalid) }
+  runtime_kv.finish(owner)?
+  mut kv_data := buffer(1024)
+  mut kv_at := 0
+  loop {
+    if kv_at >= 256 { break }
+    kv_data.put_u32_le(1065353216)
+    kv_at = kv_at + 1
+  }
+  kv_view := kv_data.bytes()
+  runtime_kv.update(owner, kv_index, 0, kv_view)?
+  runtime_kv.update(owner, kv_index, 261120, kv_view)?
+  match runtime_kv.update(owner, kv_index, 261121, kv_view) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  if runtime_kv.state(owner, ggml_ffi.GPU_KV_EXPECTED) != 1
+    || runtime_kv.state(owner, ggml_ffi.GPU_KV_CREATED) != 1
+    || runtime_kv.state(owner, ggml_ffi.GPU_KV_UPDATED_BYTES) != 2048
+    || runtime_kv.state(owner, ggml_ffi.GPU_KV_FINISHED) != 1 {
+    return Err(Error.Invalid)
+  }
+  match runtime_kv.finish(owner) {
     Ok(_) => { return Err(Error.Invalid) }
     Err(_) => {}
   }
@@ -194,15 +252,18 @@ fn exercise_live_owner(
   ggml_ffi.gpu_weight_slot(owner, 0, slots, 0) else {
     return Err(Error.Invalid)
   }
-  ggml_ffi.op_mul_mat(ctx, slots, 1, 0, 0, "gpu_graph_mul_mat") else {
+  ggml_ffi.gpu_kv_slot(owner, 0, slots, 1) else {
     return Err(Error.Invalid)
   }
-  ggml_ffi.slot_mark_output(slots, 1, "gpu_graph_output") else {
+  ggml_ffi.op_mul_mat(ctx, slots, 2, 0, 1, "gpu_graph_mul_mat") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.slot_mark_output(slots, 2, "gpu_graph_output") else {
     return Err(Error.Invalid)
   }
   graph := ggml_ffi.graph_new(ctx)
   if graph.is_null() { return Err(Error.Invalid) }
-  ggml_ffi.graph_expand(graph, slots, 1, "gpu_graph_expand") else {
+  ggml_ffi.graph_expand(graph, slots, 2, "gpu_graph_expand") else {
     return Err(Error.Invalid)
   }
   ggml_ffi.gpu_workspace_prepare(owner, graph) else {
@@ -223,7 +284,11 @@ fn exercise_live_owner(
     output_at = output_at + 1
   }
   output_view := output_data.bytes()
-  ggml_ffi.slot_get(slots, 1, output_view, 0, output_view.len(), "gpu_graph_output") else {
+  ggml_ffi.slot_get(slots, 2, output_view, 0, output_view.len(), "gpu_graph_output") else {
+    return Err(Error.Invalid)
+  }
+  if output_view.u32_le(0) != 1065353216
+    || output_view.u32_le(261120) != 1065353216 {
     return Err(Error.Invalid)
   }
   return Ok(())
