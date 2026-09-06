@@ -13,8 +13,11 @@ implemented. Align remains pinned to `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
 Align Request 55's retained-root single-link reader implementation merged in Align PR #952 as
 `22ac8eb8`, but no release containing it is published. G1 artifact loading and publication remain
 blocked until that release is available, `.align-revision` adopts it, and the GPU bundle verifier
-passes its hard-link, symlink, identity, and cleanup owners. Bundle construction and verifier work
-that does not load an artifact may continue independently.
+passes its hard-link, symlink, identity, and cleanup owners. The constructor certifies only the
+opened inode at one observation point, so G1 must additionally copy the digest-verified reader bytes
+into invocation-owned private load staging and pass only that retained copy to the native registry;
+replacement and in-place-mutation races own that boundary. Bundle construction and staging/verifier
+work that does not consume the constructor may continue independently.
 
 PR #205 records the subsequent discussion in `docs/specs/gpu-runtime-performance.md` §1.1–§1.2 and
 its architecture/roadmap pointers. It separates the goal, historical measured evidence, unresolved
@@ -28,7 +31,7 @@ implementation requirement is introduced.
 1. Complete the requested Request 55 register publication with authoritative-doc review and
    exact-head docs preflight. GitHub owns the final review/check record.
 2. When the fixed Align release is published, adopt its exact revision and verify Request 55 at the
-   GPU bundle consumer boundary.
+   GPU bundle consumer boundary, including the private staged-byte-to-native-load identity races.
 3. When implementation resumes, start G1's pinned-backend feasibility and immutable Metal/CUDA
    recipes, complete Qwen/OLMoE device graphs and their provider caller, and populate/execute the
    numerical qualification. These checkpoints belong to one consumer capability, not probe-only PRs.

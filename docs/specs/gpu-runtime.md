@@ -66,7 +66,7 @@ promote an untested tuple.
 | Models and sampling | Exact existing `qwen2` and `olmoe` model, pack, geometry, prompt, context and request checks. Qwen remains greedy. OLMoE retains greedy and temperature 0.3 with every signed-i64 seed. |
 | Legacy cache budget | Preserve Qwen-zero / OLMoE-positive `runtime_cache_budget_bytes`. For G1 resident execution the positive OLMoE value remains an admitted host expert-cache ceiling but may allocate zero bytes. It must not exceed `host_budget_bytes`. |
 | Result and errors | Existing owned `Result<string, Error>` and CLI schema 2 remain. GPU refusal maps to `Error.Invalid` without partial output. Qualification retains the internal category/stage. |
-| Device and bundle | Resolve one exact registry and device from the verified immutable backend bundle. Ambiguous, unavailable, incompatible or mismatched identities fail. No ambient plugin search or fallback to another backend. |
+| Device and bundle | Resolve one exact registry and device from the verified immutable backend bundle. Read the manifest and every artifact through `fs.open_beneath_single_link`; decode the manifest from owned reader bytes. The native staging owner copies each bounded artifact byte stream into a unique unshared `0700` load directory, creates each file exclusively as `0600`, verifies its finalized size/digest, changes it to `0400`, closes its writer, and passes only that private absolute path to the native registry. The directory becomes `0500` before the first load. Its owner and every loaded library survive through native release or process exit; neither the original path nor an ambient search path reaches the loader. Ambiguous, unavailable, incompatible or mismatched identities fail. |
 | Ownership | `runtime_device` owns native state through a package-defined opaque Move resource. `runtime_execution` borrows it only inside one request. Explicit fallible synchronization/release precedes success; exactly-once Drop is the safety fallback. No raw handle or device view escapes. |
 | Memory | Full model weights, KV and reusable compute workspace are device resident. `host_budget_bytes` and `device_budget_bytes` cover application-managed allocations using checked arithmetic. Metal aliases are charged once physically and reported separately. |
 | State | One GPU generation at a time per process. A native atomic guard rejects overlap before device side effects. Invocation resources are not persisted. The first successfully initialized bundle pins its manifest digest; a later different bundle fails before loading. Partial initialization poisons later GPU admission. CPU calls neither initialize nor replace it. |
@@ -119,7 +119,11 @@ and exactly one final LF. Replay decodes, validates, canonically re-encodes and 
 An identifier matches `[a-z0-9][a-z0-9._-]{0,63}`; a digest is 64 lowercase hex; a Git OID is 40
 or 64 lowercase hex according to object format. Retained paths use `/`, are relative and contain
 no empty, `.` or `..` component. Inputs are single-link regular files, canonicalized before use
-and rechecked before publication. Symlinks, aliases and mutation fail.
+and rechecked before publication. Symlinks and aliases fail. Mutation before or during the bounded
+reader-to-private-stage copy fails identity validation; mutation or replacement of the original
+after that copy cannot affect the staged bytes used by the native loader. The private directory and
+files are never shared, reopened for writing, or exposed as caller inputs; this ownership boundary,
+not the point-in-time link-count check alone, makes the loaded artifact immutable for G1.
 
 Record limits are:
 
@@ -224,7 +228,9 @@ distinct content-addressed blob; qualification copies them into evidence before 
 Build flags are the exact ordered argv suffix after fixed tool arguments, never a shell string.
 Artifacts are `role,path,bytes,sha256`, sorted by role/path with roles
 `shared_library|backend_plugin|kernel_binary|shader_library|metadata`. The array covers every
-loadable file; runtime loading is restricted to verified paths.
+loadable file. The original manifest path is never a load path. Runtime loading is restricted to
+the private staged paths whose finalized size and digest match the manifest; their owners outlive
+the registry and loaded library.
 
 The first successful native initialization pins bundle ID and manifest digest. Same-bundle
 sequential requests reuse it. Different bundles fail before load. Failure after any registry/plugin
@@ -381,8 +387,8 @@ absolute path, starts from an empty environment, and inserts exactly `HOME=<owne
 `LC_ALL=C`, `TMPDIR=<owned-temp>`, and `TZ=UTC`, in that canonical name order. No ambient name
 survives: in particular `PATH`, compiler/linker flags and search paths, cache variables and
 `CUDA_VISIBLE_DEVICES` are unset. Compiler/SDK inputs are absolute verified argv; runtime artifacts
-are opened by verified absolute path, so loader search variables are unnecessary. These fixed
-sources override rather than merge with the parent environment.
+are loaded only from the invocation-owned private staged absolute paths, so loader search variables
+are unnecessary. These fixed sources override rather than merge with the parent environment.
 
 Evidence retains the complete logical argv and `NAME=value` environment arrays for every
 preparation and case command. Machine-local input paths become
@@ -479,7 +485,7 @@ order and poison process state if native safety cannot be proven.
 | Owner/boundary | Success | Failure/malformed | Cleanup and exact regression |
 | --- | --- | --- | --- |
 | config/provider/CLI | empty path preserves CPU; exact terminal option selects GPU | duplicate/misplaced option, bad JSON/enums/budgets, network option | no device side effect; `gpu-config`, provider/CLI smoke |
-| bundle/device registry | exact Metal/CUDA device and verified artifact set | wrong backend/device/ABI/hash/arch, missing op, bundle switch | pin once; poison partial init; `gpu-device-select`, `gpu-bundle-reuse`, `gpu-bundle-switch` |
+| bundle/device registry | exact Metal/CUDA device and private staged artifact set made from verified reader bytes | wrong backend/device/ABI/hash/arch, hard link, source replacement or in-place mutation, staged identity drift, missing op, bundle switch | original paths never reach registry; remove every pre-load staging prefix; retain staging after native side effects through unload/exit; pin once; poison partial init; `gpu-bundle-identity-race`, `gpu-device-select`, `gpu-bundle-reuse`, `gpu-bundle-switch` |
 | native owner | construct, move, borrow, explicit completion | failure at each construction prefix and completion stage | exactly-once reverse Drop; `gpu-native-owner` in whole/per-unit builds |
 | admission/allocation | exact weights/KV/workspace within both caps; UMA alias accounted once | overflow, zero/one-byte-too-small cap, driver allocation race | release every prefix; `gpu-budget-boundary`, `gpu-uma-alias`, `gpu-allocation-prefix` |
 | graph and pointers | supported graph on declared GPU; device-safe transfers | unsupported op/buffer, device pointer passed to CPU, stale reference, nonfinite output | complete before reset/free; `gpu-graph-placement`, `gpu-device-pointer`, `gpu-scheduler-reset` |

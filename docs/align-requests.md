@@ -10492,17 +10492,21 @@ The first is preferable because it has one support group. Mach-O remains unchang
 Status: IMPLEMENTING
 Priority: critical
 Blocking: yes
-Blocked gate or slice: G1 resident GPU generation publication
-Independent work that may continue: GPU bundle construction and verifier logic that does not load
-  an artifact; publication remains blocked
+Blocked gate or slice: G1 backend-bundle admission and immutable native loading
+Independent work that may continue: GPU bundle construction, private load-staging, and verifier
+  logic that does not consume the requested constructor; publication remains blocked
 Resume condition: Align publishes a release containing the merged constructor; align-llm updates
-  .align-revision, materializes the managed toolchain, and adopts the released surface
+  .align-revision, materializes the managed toolchain, adopts the released surface, and binds each
+  verified reader byte stream to the private artifact copy passed to the native registry
 Align commit or pull request: Align PR #952 merged as 22ac8eb8; fixed release pending publication;
   authoritative contract in ../align/docs/impl/34-fs-single-link-plan.md
 align-llm verification: update .align-revision to the shipped Align commit; open manifest.json and
-  every declared artifact through fs.open_beneath_single_link; run make gpu-bundle-smoke; accept
-  canonical single-link inputs; reject hard-linked manifest and backend plugin; retain root,
-  intermediate, and final symlink refusals before runtime_device invokes the native registry
+  every declared artifact through fs.open_beneath_single_link; decode the manifest from owned read
+  bytes and copy each digest-verified artifact into invocation-owned private load staging; run make
+  gpu-bundle-smoke; accept canonical single-link inputs; reject hard-linked manifest and backend
+  plugin; retain root/intermediate/final symlink refusals; race original replacement and in-place
+  mutation before/during/after copying; prove runtime_device gives the native registry only the
+  unchanged private staged artifact whose digest it records
 ```
 
 ### Requested surface
@@ -10522,6 +10526,13 @@ count and does not change `fs.open_beneath` for callers that intentionally permi
 path-based check, `read_dir`, subprocess, or path reopen is not an equivalent implementation
 because it loses descriptor identity.
 
+The result certifies the opened inode's link count only at its descriptor-based observation point.
+It neither prevents later writes or links nor makes a later path-based native load consume the
+reader's bytes. G1 therefore treats this constructor as original-path admission, reads and verifies
+the artifact through the returned reader, and loads only an application-owned private copy made
+from that verified byte stream. Request 55 is necessary for the bundle's no-alias policy but is not
+by itself the bundle's executable-identity boundary.
+
 ### Acceptance criteria
 
 1. Linux and macOS accept ordinary single-link files beneath every root form accepted by
@@ -10535,12 +10546,15 @@ because it loses descriptor identity.
    exactly once.
 5. Whole-program, per-unit, imported/generic formation, checked-HIR replay, runtime ABI inventory,
    and Linux/macOS owners cover the constructor without changing reader identity.
+6. The align-llm consumer copies only the digest-verified reader bytes into private load staging,
+   passes only that staged path to the native registry, retains it for the complete native lifetime,
+   and proves original-path replacement or in-place mutation cannot substitute loaded bytes.
 
 Align's merged implementation preserves the existing sequence through nonblocking clear, then
 checks `st_nlink` from that sequence's existing opened-descriptor `fstat` record immediately before
 reader construction. It adds no second syscall and uses a distinct HIR/MIR operation and runtime
 key with the existing A12 ABI shape. The surface is not yet in a published release; align-llm
-adoption remains consumer-owned and has not begun.
+adoption and the separate application-owned load-staging identity boundary have not begun.
 
 ---
 
