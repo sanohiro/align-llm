@@ -7,6 +7,10 @@ non-negotiable principles for items 81–85, but those later consumers must exte
 closure matrix and evidence schema at their own triggered design gates. In particular, schema 1
 does not predeclare offload, overlap, performance-comparison or coding-retry formats.
 
+[GPU performance plan](gpu-runtime-performance.md) owns the comparison with llama.cpp, the G1
+execution requirements below, the subsequent reusable coding session, and the improvement sequence.
+G1 correctness is the first checkpoint in that sequence; it is not the final competitiveness verdict.
+
 ## 1. Consumer outcome and scope
 
 The existing `AlignRuntime` caller gains an explicit opt-in path that generates Qwen2.5-Coder-7B
@@ -338,20 +342,26 @@ router boundaries and positive OLMoE router boundaries.
 `expected_model_operations,gpu_model_operations,cpu_model_operations,expected_layers,gpu_layers,cpu_layers,expected_experts,gpu_experts,cpu_experts,expected_weights_device_bytes,minimum_weights_device_bytes,expected_kv_device_bytes,minimum_kv_device_bytes,expected_weight_upload_count,weight_upload_count,weight_upload_bytes`.
 Counts cover only model graph operations from embedding through output projection; tokenizer,
 prompt construction, sampling, EOG control and text decode are explicitly outside them. The
-reviewed graph trace derives the three expected counts from exact model geometry, prompt width,
-teacher-forced width and generated steps. A passing GPU row requires each expected count equal its
+reviewed production graph trace derives the three expected counts from exact model geometry,
+prompt width, output selection and generated steps; diagnostic teacher-forced work is excluded.
+A passing GPU row requires each expected count equal its
 GPU count and every CPU count zero. Expected weights are the exact immutable model footprint;
 expected KV is the maximum-context footprint derived from geometry. The minimum observed live
-allocation at every boundary from completed upload through final decode equals each expectation.
-Weight upload count equals the independently derived tensor count and upload bytes equal the weight
-footprint, proving one upload per tensor rather than streaming. Expected operations/layers and both
+payload at every boundary from completed upload/binding through final decode equals each
+expectation; allocator padding and reservations are charged separately to managed memory.
+Weight upload count counts first device bindings of distinct tensor identities and equals the
+independently derived tensor count. CUDA upload bytes equal the weight footprint. Metal may bind
+verified UMA aliases once with zero copied bytes; `weight_upload_bytes` records actual copies,
+and retained binding identities prove full coverage without counting an alias as a transfer.
+Rebinding, streaming and early release fail. Expected operations/layers and both
 resident byte counts are positive, including prompt KV for an immediate-EOG case. Qwen has zero
 expected/GPU experts; OLMoE counts every selected expert application and must have a positive exact
 match.
 `transfers` is
 `host_to_device_bytes,device_to_host_bytes,unexpected_device_to_host_bytes,wait_count`. The
 unexpected value counts bytes outside declared final-logit and compact-routing readbacks and must
-be zero for PASS. `memory` is
+be zero for PASS. Production resident generation does not read routing decisions back to the host;
+the compact-routing allowance applies only to diagnostic replay below. `memory` is
 `managed_host_peak_bytes,managed_device_peak_bytes,uma_alias_peak_bytes,rss_peak_bytes,driver_peak_bytes`;
 the driver value is integer or null when unavailable. `timing` is
 `wall_ns,load_ns,ttft_ns,prefill_ns,decode_ns,device_ns,transfer_ns,wait_ns`; wall is positive for a
@@ -391,7 +401,7 @@ FAIL detail. Elapsed time is positive and includes validation through cleanup/pu
 
 PASS requires every profile case present and passing, both model holdout sets passing on GPU,
 nonzero GPU operations, exact expected output bytes, complete numeric comparison coverage,
-weights/KV resident within budgets, one upload per weight tensor, no undeclared readback, exact
+weights/KV resident within budgets, one retained device binding per weight tensor, no undeclared readback, exact
 source/input rechecks and safe cleanup. FAIL may contain zero or a profile-order prefix of case rows; missing suffix rows are
 represented by the top-level failure rather than fabricated timings. The CLI returns zero only for
 PASS.
@@ -434,11 +444,19 @@ admission includes immutable weights, maximum-context KV, peak activation/worksp
 copies, metadata and staging. Available-memory probes are advisory. A one-byte-too-small budget
 fails before weight upload. Driver/runtime overhead is reported separately from managed caps.
 
-Upload each weight once per invocation. KV and reusable workspaces stay resident through prefill and
-all decode steps. Host readback is limited to final logits for the existing sampler and declared
-compact routing decisions. Never call a CPU pointer primitive on device-only storage. OLMoE keeps
-gate/up/down identity and ordered expert reduction; any compact expert view carries an explicit
-global/local map.
+Bind each weight once per invocation, copying only when required. KV and reusable workspaces stay resident through prefill and
+all decode steps. Production host readback is limited to logits needed by the existing sampler.
+OLMoE routing, selected-expert `mul_mat_id`, weighting and reduction stay in the GPU graph; resident
+execution must not inherit the CPU path's per-layer router readback and expert-claim boundary.
+Never call a CPU pointer primitive on device-only storage. OLMoE keeps gate/up/down identity and
+ordered expert reduction; any compact expert view carries an explicit global/local map.
+
+Build a complete model graph for each prefill microbatch or decode step, leaving intermediates and
+KV updates on device. Reuse graph metadata, allocator reservations and input buffers when their
+topology identity is unchanged. Update KV in place and attend only to its valid prefix. Completion
+is required before host consumption or mutation/release of referenced memory, not after every
+operation or layer. The performance plan's G1 rows fix bounded graph reuse, prefill batching,
+backend fusion and capture eligibility, and their owner tests before implementation.
 
 Metal may alias host storage only when access/alignment are proven and the host owner outlives
 completion. Alias bytes count against the device working set and once against physical host use.
@@ -491,6 +509,15 @@ precommitted tolerances; generated token/output expectations and repeated execut
 Evidence must show nonzero GPU operations, complete resident weights/KV, bounded managed memory and
 no hidden all-CPU execution.
 
+Each GPU case helper first executes the production path, then an explicitly diagnostic replay with
+the same build, model, prompt, sampler inputs and attention policy. The replay may expose layer and
+router tensors for complete numeric comparison against the adjacent CPU reference. Case output,
+placement, transfer, memory and timing fields describe production execution; `numeric` describes
+replay. The case command owns both passes, the case deadline and overall elapsed time include both,
+and either pass failing makes the case FAIL. Diagnostic output must match the production output.
+Diagnostic tensor marking/readbacks never enter the performance workload or certify its residency;
+production allocation/binding traces own that evidence. Schema-1 timing remains diagnostic only.
+
 G1 ships concrete immutable Metal and CUDA bundle recipes and populated schema-1 profiles and
 calibrations before the first real acceptance run. The Mac can qualify Metal locally. The same
 runner and replay contract are handed to the PC for CUDA without remote login, credentials, driver
@@ -530,11 +557,17 @@ Feasibility probes and bundle tooling stay inside the first consumer capability,
 
 | Item | Consumer boundary and required future gate |
 | --- | --- |
+| G1R reusable coding session | Follow G1 with explicit caller-owned model/graph/KV lifetime and validated prefix reuse through a real coding/repair sequence. Extend the public ledger before that implementation; no process-global cache is implied by G1. |
 | 81 / G2 bounded offload | Add deterministic whole-unit layer/expert placement under host/device budgets, bounded AlignPack reads and synchronous `hybrid/off`. Extend options/profile/evidence for placement and eviction before coding. |
 | 82 / G3 Vulkan | Add the same working generation/offload consumer and immutable Vulkan bundle. Qualify each device/OS independently. |
 | 83 / G4 HIP/ROCm | Add the same consumer for a supported AMD stack. Build work may proceed without hardware; qualification remains pending until real AMD evidence. |
 | 84 / G5 overlap | Add bounded same-thread transfer/compute overlap after G2. Precommit the exact full-request metric, paired schedule, incomplete-leg representation and recommendation gate in its own schema before measurement. `prefetch=off` keeps its meaning. |
 | 85 / G6 coding decision | Compare the public provider with GPU-enabled llama.cpp and controls. Precommit task corpus, attempt/retry order and cap, validation, first-pass stop rule, lifecycle, primary time-to-passing-patch metric, partial failure states and aggregation before measurement. |
+
+The [performance plan](gpu-runtime-performance.md) orders the competitiveness work: G1R is the
+next consumer, constrained-memory G2/G5 need not wait for a resident speed win, and G3/G4 do not
+block a qualified Metal/CUDA comparison. Runtime speed, useful larger-model capacity and coding
+time have separate measured decisions; one unsuccessful candidate does not end the program.
 
 Start implementation with G1. A merged checkpoint is followed by the next eligible consumer. AMD
 hardware absence does not block Metal/CUDA or Vulkan work, and no compile-only result closes a

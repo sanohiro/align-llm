@@ -1852,6 +1852,13 @@ Linux or WSL2 are initial verification hosts, not product/device restrictions. A
 currently unavailable; keep AMD qualification pending and continue independent work. None of these
 items is implemented or qualified by the design change. Implementation follows this reviewed design.
 
+[`gpu-runtime-performance.md`](gpu-runtime-performance.md) owns the source-grounded llama.cpp
+comparison, G1 execution requirements and subsequent optimization order. The runtime objective is
+materially faster inference on affordable hardware and ultimately a larger practically usable model
+under the same physical-memory/storage limits. Runtime speed, useful model/context capacity and
+time to a passing patch are separate outcomes. Resident generation is the starting capability,
+not the final verdict; constrained-memory G2/G5 work does not wait for a resident speed win.
+
 80. **G1-GPU-GENERATION — complete resident generation on Metal and CUDA. Planned.**
     Enable Qwen greedy and OLMoE greedy/sampled text through the existing provider with explicit
     backend/device options, GPU weights/KV, bounded allocation, native build identity and a user-run
@@ -1859,12 +1866,24 @@ items is implemented or qualified by the design change. Implementation follows t
     together. Require generation qualification on both representative backends; Metal-only evidence
     does not close CUDA. G1's generation qualification formats are fixed by the owning ledger; G1
     first records immutable backend recipes and populated numerical calibration/profile fixtures.
+    Include whole-model GPU graphs, device-only resident MoE routing, bounded graph/workspace reuse,
+    in-place KV and batched prefill. Qualify supported Flash Attention and backend graph/fusion
+    paths; do not inherit the CPU runner's per-layer host fences or diagnostic tensor readbacks.
+
+    **G1R-GPU-CODING-SESSION — next consumer after G1. Planned.** Retain model/tokenizer/device
+    weights and bounded graph/KV reservations across real generate/validate/repair calls, with an
+    explicit caller-owned serial session and validated common-prefix reuse. Extend the G1 contract
+    for session ownership, identity and failure recovery within its implementation PR. This must
+    reach the coding caller before the final warm llama-server comparison; it does not turn G1
+    into a hidden process-global cache or require a standalone session-design PR.
 
 81. **G2-GPU-OFFLOAD — bounded GPU/CPU/DRAM/AlignPack generation. Planned after G1.**
     Execute under restricted host/device budgets with explicit dense-layer or expert-phase CPU
     fallback, device and host expert caches, KV placement, exact transfer accounting and safe
     eviction. Real constrained-budget generation owns acceptance; admission/allocator code alone
-    is not the consumer capability.
+    is not the consumer capability. Cover VRAM overflow into RAM and bounded NVMe demand when
+    weights exceed the admitted RAM working set. The G2/R10 lane must eventually qualify a real
+    larger model end to end, not infer capacity from an artificially restricted small model.
 
 82. **G3-VULKAN-RUNTIME — the same resident/offload consumer on Vulkan. Planned after G2.**
     Include native build, exact device selection, operation capability checks and the common
@@ -1875,7 +1894,8 @@ items is implemented or qualified by the design change. Implementation follows t
     Use the shared contract and explicit supported GPU/OS/toolkit matrix. Build/owner work can
     proceed independently of G3; real AMD generation/offload acceptance waits for a contributor or
     user with supported hardware. Lack of hardware is not a reason to omit the implementation plan
-    or mark the backend complete.
+    or mark the backend complete. G3/G4 are portability lanes, not prerequisites for a Metal/CUDA
+    speed or constrained-memory decision.
 
 84. **G5-GPU-OVERLAP — bounded transfer/preparation and compute overlap. Planned after G2.**
     Add safe device completion and double buffering to hybrid generation, per backend capability;
@@ -1884,14 +1904,23 @@ items is implemented or qualified by the design change. Implementation follows t
     representation and recommendation rule before measurement; synchronous selection stays explicit.
     Background Align buffer prefetch consumes Request 41 only after it ships; synchronous generation
     and same-thread asynchronous-device overlap do not depend on that proposed language feature.
+    Measure tier bandwidth, misprediction/wasted bytes and the critical dependency path; overlap
+    cannot rescue a model whose unavoidable transfer demand already exceeds the practical-speed
+    budget. R9's accepted multi-token verification can subsequently amortize streamed weight cost.
 
 85. **G6-GPU-CODING-DECISION — qualify the coding caller against a GPU local baseline. Planned.**
     Compare qualified modes from G1–G5 against GPU-enabled llama.cpp on the same hardware/backend,
     resource profile and task lifecycle. Record time to a passing patch, quality, latency, transfers
-    and memory, including a `not_met` result. Its design gate precommits the task corpus, retry/stop
-    grammar, failure states, primary metric and aggregation before measurement. Native Linux, WSL2
-    and GPU/vendor combinations retain separate evidence. This is not a claim that R9 speculation
-    or R10 pressure work is complete.
+    and memory, including a `not_met` result. Collect early runtime baselines during G1; G6 requires
+    G1R and examination of relevant high-impact mechanisms, not completion of every extra backend
+    or workload-irrelevant option. Its design gate precommits the task corpus, retry/stop grammar,
+    failure states, metrics and aggregation before measurement. The first material-win floor is
+    15% lower paired latency, measured separately for the declared runtime workload and for time to
+    a passing patch without a task-success reduction. This floor is not the ambition; a scoped 2x
+    runtime speedup is a stretch objective, not a prediction. Useful capacity has its own fixed
+    latency/throughput/quality limits. A failed candidate leads to the next material hypothesis,
+    not automatic abandonment after one comparison. Native Linux, WSL2 and GPU/vendor combinations
+    retain separate evidence. This is not a claim that R9 speculation or R10 pressure work is complete.
 
 ### Status (2026-08-28)
 
