@@ -1,0 +1,302 @@
+# GPU runtime performance plan
+
+Status: design, 2026-09-06. No measurements or performance claims are made here.
+
+This is the plan of record for materially exceeding llama.cpp's inference speed on affordable local
+hardware and ultimately running larger models at useful speed under the same resource limits.
+The repository-aware coding workload is the first real consumer, not a substitute for proving
+runtime speed and capacity. [GPU runtime](gpu-runtime.md) remains authoritative for G1's public configuration,
+ownership and schema-1 correctness qualification. This document adds execution decisions and
+delivery priorities; it does not replace that design or reopen its record formats.
+
+## 1. Objective and limits of the current design
+
+The product objective is substantially faster local inference than llama.cpp on modest hardware,
+and eventually a larger practically usable model under the same VRAM, physical RAM and storage
+budget. A marginal lead is not the ambition. The project's primary integration metric remains time
+to a passing patch, but it cannot stand in for the runtime goal. The program has three separately
+reported outcomes:
+
+- **Runtime speed:** prompt processing, time to first token and sustained generation latency at
+  declared context depths, using the same model/quantization, prompt and output workload.
+- **Useful capacity:** the largest supported model/context combination that completes within
+  predeclared latency/throughput and quality limits on the same constrained machine. Merely loading
+  a larger file, or generating arbitrarily slowly by paging, does not meet this goal.
+- **Coding usefulness:** time to a passing patch and task success under the same attempt/validation
+  policy, including preparation, retries and validation. Better prompts or fewer attempts alone
+  cannot establish an inference speedup.
+
+G1 removes the largest architectural handicap: CPU execution and repeated movement of weights/KV.
+Using the same ggml backend gives access to many of llama.cpp's kernels. It does not automatically
+give us llama.cpp's complete graph construction, graph reuse, batching, cache lifetime or server
+scheduling. There is no evidence yet for a numerical speed ratio. Matching kernel execution is a
+plausible engineering target, not a promised large lead. Larger gains need less work or less data
+movement per useful output token, better reuse, or a genuinely better measured kernel/placement
+choice. Resident bandwidth-bound single-token decode may leave little overhead to remove; the
+constrained-memory path is a first-class target rather than a consolation benchmark.
+
+Two gaps are especially important before implementation:
+
+- `provider_runtime.generate` currently opens and validates model inputs, prepares the tokenizer,
+  generates, and decodes within each call. G1 also releases device resources per request. A warm
+  llama-server retains its model and can reuse common prompt KV across requests.
+- `moe_decode_step` computes phase A, reads router IDs into Align, selects expert claims, and builds
+  phase B per layer. `decode_step` also captures/validates host KV planes around layer graphs.
+  Those boundaries were useful for CPU/AlignPack work. Carrying them into resident GPU execution
+  would add synchronization and copies even when all experts and KV already fit on the device.
+
+G1 must use a GPU execution graph while sharing the existing model semantics. The later reusable
+session must connect directly to the coding caller. Neither is a mandate to reimplement mature GPU
+kernels or to replace the existing CPU provider.
+
+## 2. Source-grounded comparison
+
+The implementation reference is the existing `.llama-revision`,
+`bb4caa7540188872173c44d161602d9271386413`. The R2c checkout carries a diagnostic patch;
+unpatched upstream source owns the mechanisms below, and a benchmark uses an uninstrumented build.
+Upstream head was also checked on 2026-09-06 at
+`74a7c897f049c17e7080423aa2111776eff6ebbf`; it is an observation, not an automatic pin update.
+Refresh the competitive baseline before each measurement campaign and freeze it within that
+campaign. Keep the same-revision baseline separately for attribution.
+
+| Mechanism in upstream | Our current position | Design consequence |
+| --- | --- | --- |
+| `llama_context::process_ubatch` reuses compatible graphs and allocator state, otherwise rebuilds; scheduler submission is asynchronous | G1 only said reusable workspace; the current layer runner constructs and computes many separate graphs | G1 gets whole-model graph ownership and bounded topology-aware reuse |
+| `build_moe_ffn` keeps routing and selected-expert matrix multiplication in the graph | CPU claim selection crosses the host boundary per layer | G1 resident routing stays on GPU; G2 alone needs host/device expert placement decisions |
+| `build_attn` uses `ggml_flash_attn_ext` where compatible; KV is updated with `ggml_set_rows` | no Flash Attention call in our shim; host planes belong to the old execution path | evaluate the shipped fused operation and in-place device KV before designing a custom attention path |
+| CUDA backend captures/replays graphs and fuses compatible patterns; Metal has graph optimization and fusion | linking ggml alone does not establish any of these paths are active | pin build switches and preserve graph shapes/lifetimes that permit backend optimizations |
+| llama.cpp sets `GGML_CUDA_GRAPHS_DEFAULT=ON`; standalone ggml defaults it to OFF; `GGML_CUDA_FA` defaults ON | a standalone backend recipe could silently lose graph replay | explicitly set `GGML_CUDA_GRAPHS=ON` and `GGML_CUDA_FA=ON`; verify actual use on eligible CUDA graphs |
+| prompt batches and physical microbatches differ; output rows can be restricted | existing generation shares diagnostic-oriented graph plumbing | bounded batched prefill, single-token decode, and logits only for requested output positions |
+| llama-server supports warm model lifetime, prompt KV reuse, continuous batching and speculative decoding | request-local G1 has no equivalent coding-session lifetime | prioritize a serial reusable coding session after G1; treat batching/speculation as separate workload-dependent investments |
+| `llama-bench` separates prompt processing, generation and combined tests, and excludes tokenization/sampling | a generation-only comparison can miss the primary cost | measure inference phases for diagnosis and the real provider/task lifecycle for the decision |
+
+Primary source locations at the pinned revision:
+
+- [context execution and reuse](https://github.com/ggml-org/llama.cpp/blob/bb4caa7540188872173c44d161602d9271386413/src/llama-context.cpp),
+  [model graph/attention/MoE](https://github.com/ggml-org/llama.cpp/blob/bb4caa7540188872173c44d161602d9271386413/src/llama-graph.cpp),
+  [KV updates](https://github.com/ggml-org/llama.cpp/blob/bb4caa7540188872173c44d161602d9271386413/src/llama-kv-cache.cpp).
+- [CUDA execution](https://github.com/ggml-org/llama.cpp/blob/bb4caa7540188872173c44d161602d9271386413/ggml/src/ggml-cuda/ggml-cuda.cu),
+  [Metal execution](https://github.com/ggml-org/llama.cpp/blob/bb4caa7540188872173c44d161602d9271386413/ggml/src/ggml-metal/ggml-metal-context.m),
+  [llama.cpp build defaults](https://github.com/ggml-org/llama.cpp/blob/bb4caa7540188872173c44d161602d9271386413/CMakeLists.txt),
+  [ggml build defaults](https://github.com/ggml-org/llama.cpp/blob/bb4caa7540188872173c44d161602d9271386413/ggml/CMakeLists.txt).
+- [benchmark semantics](https://github.com/ggml-org/llama.cpp/blob/bb4caa7540188872173c44d161602d9271386413/tools/llama-bench/README.md),
+  [server caching and options](https://github.com/ggml-org/llama.cpp/blob/74a7c897f049c17e7080423aa2111776eff6ebbf/tools/server/README.md),
+  [speculative decoding](https://github.com/ggml-org/llama.cpp/blob/bb4caa7540188872173c44d161602d9271386413/docs/speculative.md),
+  [mapped model storage](https://github.com/ggml-org/llama.cpp/blob/bb4caa7540188872173c44d161602d9271386413/src/llama-mmap.cpp).
+
+## 3. G1 execution ledger
+
+These are internal execution requirements of the existing G1 provider call. They add no CLI
+arguments, persisted cache, wire schema or process lifetime. Source/build identity binds constants
+and strategy selection. All allocation remains within G1's admitted host/device budgets. Exact
+per-device tuning values are chosen on development inputs before qualification and committed with
+the immutable recipe; holdout results cannot change them.
+
+| ID / owner | Decision, inputs and validation | Acceptance and failure behavior |
+| --- | --- | --- |
+| E1 `runtime_execution`, Qwen/OLMoE graph builders | Build the embedding-to-logits graph across all layers for one prefill microbatch or decode step. Keep residuals, attention, MoE top-k/weights, expert `mul_mat_id` and reductions on GPU. Preserve the existing ordered expert semantics. | `gpu-whole-graph` and `gpu-resident-moe` prove no application host fence/readback between layers and no host expert-selection loop. Unsupported required operations refuse admission. Backend-internal kernel launches may remain multiple. |
+| E2 `runtime_execution`, `runtime_memory` | Own at most one prefill graph and one decode graph plus their reserved storage per invocation. Reuse only when backend/bundle, model/layout, attention policy, tensor shapes/strides, buffer generation, mask/position layout and output selection match. Token values and device routing IDs are mutable inputs, not topology keys. | `gpu-graph-reuse` tests repeated compatible steps, changed KV view width/output shape, and rebuild after invalidation. Synchronize before changing input storage still in use. Rebuild after mismatch without keeping stale references or growing a per-token cache. |
+| E3 `runtime_memory`, attention builder | Allocate maximum admitted-context KV once, append K/V by device row updates, and attend only to valid positions with the correct causal mask. Reuse reserved workspaces. Do not round-trip or concatenate the full past KV via host memory each token. | `gpu-kv-in-place` covers prefix preservation, new columns, context end and masked unused capacity. Graph reset never frees weight/KV owners; buffer-generation change invalidates graph/capture state. |
+| E4 model graph builders, `ggml_shim.c` | Keep Q4_K/Q6_K tensors in their native quantized form and use shipped ggml matrix operations. Preserve backend-recognizable norm/multiply, RoPE/KV-write and gated-FFN patterns. Avoid diagnostic output markings on intermediate nodes in production. | `gpu-quantized-graph` checks tensor types and graph patterns; real backend qualification checks results. No permanent full-weight f32 dequantization, invented combined-QKV weight layout, or unconditional `FORCE_MMQ`; backend dispatch owns shape-specific MMQ/cuBLAS/kernel choices. |
+| E5 attention builder, backend recipe | Probe Flash Attention on exact model head sizes, masks, strides, types and quantization. Choose a qualified fused path when available and an explicitly qualified GPU decomposed path otherwise, before execution. Any f16 conversion required by the fused operation is explicit, bounded and numerically qualified; schema-1 `precision=f32` describes compared scalar values, not an implicit promise that every internal tensor is f32. | `gpu-attention-policy` covers both graph constructions, capability refusal and numeric drift. Do not silently retry a failed fused computation with another algorithm. Reduced-precision persistent KV is a later contract change, not an unrecorded G1 cache-format change. |
+| E6 `runtime_execution`, backend recipe | Use a committed maximum prefill microbatch width. Admission may choose a smaller width from the recipe's ordered candidates using workspace requirements; it never searches by timing during a request. Decode width is one. Intermediate prefill chunks update KV without vocabulary projection/readback; only required output rows reach the sampler. | `gpu-prefill-chunks` covers one token, exact/tail chunks, multi-chunk causality, maximum prompt and matching unchunked semantics under the fixed tolerance/output contract. Refuse if even the smallest allowed width cannot fit. |
+| E7 `runtime_device`, `runtime_execution` | Enable CUDA graph support in the recipe and keep pointer/shape lifetimes stable for backend capture/replay. Keep Metal fusion/graph optimization enabled under the controlled environment. Align owns no parallel native CUDA capture engine. | `gpu-backend-replay` checks eligible replay and safe backend uncaptured execution for ineligible shapes. Verify the shipped backend's constraints rather than assuming the CMake label guarantees arbitrary graph compatibility. Record a concrete backend limitation when reuse is unavailable. |
+| E8 `runtime_execution`, sampler, qualifier | Host completion waits occur at needed logits, input-storage reuse and teardown. Asynchronous FFI copies use native-owned staging, never borrowed Align memory surviving a call. Keep CPU sampler/tokenizer semantics. Separate diagnostic replay from production as specified by G1. | `gpu-production-trace` detects per-layer fences, intermediate readbacks and accidentally enabled diagnostic markers. `gpu-native-owner` covers delayed completion, first fault, poison and reverse destruction. A single ordinary synchronous whole-graph call is a valid starting implementation. |
+
+E1–E4, E6 and E8 are architectural work in G1, not optional future micro-optimizations. E5/E7
+require a supported, qualified backend path or a recorded concrete capability limitation; an
+unqualified feature cannot delay all independent work. No speedup is inferred from enabling a flag.
+Actual optimization counters/traces are evidence for these owners, while schema-1 generation
+qualification remains the correctness gate.
+
+Growing KV length must not accidentally make E2 a rebuild-every-token policy. Use recipe-fixed
+bounded KV-view buckets with an explicit valid-position mask where the pinned backend supports
+them; reuse within a bucket, rebuild at its boundary, and never attend to uninitialized capacity.
+`gpu-graph-reuse` includes several successive decode steps within one bucket and a boundary
+crossing. Charge padded attention work to the measurement; using the maximum context for every
+short decode is not assumed to be faster. If a backend requires exact-width views, record that
+limitation and its rebuild cost rather than claiming successful steady-state graph reuse.
+
+The whole-graph construction remains in Align's explicit model/execution modules; C wraps ggml
+operations, resource ownership and bounded native staging. Calling `libllama` to generate on our
+behalf is a useful external reference but would not deliver align-runtime's own execution policy.
+When adapting upstream code, retain applicable MIT notices and attribution.
+
+### Ownership closure
+
+| Boundary | Construction/success | Failure, early exit and cleanup | Exact owner |
+| --- | --- | --- | --- |
+| full graph and GPU routing | bind full tensor set, route and reduce without host intervention | reject missing operation before upload; release a partial graph | `gpu-whole-graph`, `gpu-resident-moe` |
+| two reusable graph slots | reserve once, mutate inputs only after completion | shape/buffer mismatch replaces one slot; reset destroys graph views before buffers | `gpu-graph-reuse`, `gpu-scheduler-reset` |
+| KV and microbatches | device append, valid-prefix mask, final-row output | failed chunk invalidates the invocation; never publish partial text | `gpu-kv-in-place`, `gpu-prefill-chunks` |
+| fused/captured execution | preselected supported path with stable buffers | no error-driven algorithm switch; drain/poison before Drop | `gpu-attention-policy`, `gpu-backend-replay`, `gpu-native-owner` |
+| production/diagnostic execution | same identities/attention policy, production-only cost observations; already-read production logits and replay internals separately meet CPU tolerances | either path fails the case, including production-only fusion drift with unchanged generated IDs; separate owner state prevents replay contaminating production | `gpu-production-trace`, `gpu-result-replay` |
+
+This matrix supplements G1's existing constructor/move/borrow/replacement/`?`/Drop and
+whole-program/per-unit ownership coverage. All named tests are implementation targets, not claims
+that those commands already exist.
+
+## 4. Reusable coding session: G1R, immediately after G1
+
+Request-local G1 remains useful for one-shot generation. Before a final comparison with a warm
+llama-server, G1R must let the coding caller retain a model, tokenizer, device weights, admitted KV
+capacity and graph reservations across its generate/validate/repair sequence. This is an
+independently usable consumer boundary, not a process-global cache hidden in `ProviderConfig`.
+
+G1R has an explicit caller-owned session and serial requests. Its first consumer is the existing
+coding workflow; an internal session constructor alone is not the deliverable. Model/device/bundle
+and memory ceilings are fixed at session construction. Mutable KV, RNG, prompt position and output
+belong to one request; the RNG is reset from that request's declared seed. An owned prefix snapshot
+may be reused only after a successful request boundary.
+
+Reuse compares actual token prefixes and binds model/pack/geometry, tokenizer and template,
+attention/KV layout, position/RoPE/mask policy, bundle/device and prefix contents. Changed suffixes
+invalidate the old continuation; changed identity invalidates the entire prefix. A budget miss
+evicts owned prefix state and recomputes within the same admitted budget. A malformed request leaves
+the session unchanged; failed partial device work invalidates mutable KV, and an unsafe device
+state poisons the session. Explicit release drains work and frees it exactly once. No cross-user
+cache or persisted GPU pointers are introduced.
+
+The first session uses one serial sequence and one reusable prefix, avoiding a general multi-tenant
+server requirement. It keeps repository/system context stable and places changing task, diff and
+test output in the suffix where the existing prompt semantics permit. Cache reuse must preserve
+the intended prompt; it cannot omit relevant source or conceal a changed working tree.
+
+The exact session API/consumer integration, token-prefix key, failure states and any exchanged
+record belong in an extension of the authoritative G1 ledger before G1R code, within that same
+implementation PR. It must include `gpu-session-reuse`, `gpu-prefix-invalidation`,
+`gpu-session-second-after-failure` and a real multi-attempt coding owner. These details do not block
+starting G1 and do not require another standalone design PR.
+
+## 5. Candidate order and the place to win
+
+| Priority | Work and owning capability | Why it is considered; condition for advancing |
+| --- | --- | --- |
+| First | G1 E1–E8 | Establish efficient resident generation using the same class of kernels and launch structure as the reference. Measure the remaining gap as soon as a real caller runs. |
+| Next | G1R reusable coding session | Remove repeated load/upload/tokenizer preparation and repeated prefix evaluation across attempts. Both the candidate and llama-server get equivalent warm/cold opportunities. |
+| Then, by measured cost | GPU KV precision/layout and sampling | Evaluate f16 KV and then q8/q4 only with a separate precision/quality contract; attention bandwidth/capacity must justify it. Consider GPU argmax or supported sampling only if full-logit readback/CPU sampling is material, preserving EOG, filters, RNG and seeded distribution. These are not prerequisites for G1. |
+| First constrained-memory lane | G2 offload followed by G5 overlap | Start once G1 establishes correct device execution; do not wait for a resident speed win or extra vendors. Exploit measured expert/layer locality and bounded DRAM/AlignPack staging. Compare measured CPU execution cost with transfer plus GPU compute; full-resident models cannot benefit from needless offload. |
+| For repetitive coding output | R9 speculative generation | Start with prompt lookup or an independently cheap draft; batch target verification, account for rejected work/KV rollback, and preserve target distribution. llama.cpp already has speculation, so it also gets a qualified configuration. This is an existing R9 goal, not a new requirement to implement every published draft architecture. |
+| When real concurrency exists | multi-sequence batching | Continuous batching helps aggregate throughput but can hurt single-user latency. Add it only for a caller with concurrent requests, with an explicit fairness/memory contract. |
+| Portability lane | G3 Vulkan and G4 HIP | Expand backend support independently; missing AMD hardware or an unimplemented extra vendor does not postpone the Metal/CUDA performance decision. |
+| Last, on a measured kernel gap | specialized layout/kernel work | Reuse upstream improvements first. Add a custom kernel only when a reproducible model/shape bottleneck, an expected material end-to-end gain and a maintenance owner justify it. |
+
+llama.cpp already implements many of these techniques. Our opportunity is not their mere presence,
+but integration with stable repository context, short edit/repair sequences, known model shapes
+and explicit memory/storage policy. Those are hypotheses until the end-to-end workload improves.
+The existing architecture's small number of deeply supported models remains the scope.
+
+### Constrained-memory design hypotheses
+
+G2/G5 must address both weights exceeding VRAM but fitting in physical RAM, and weights exceeding
+the admitted RAM working set and requiring NVMe. The latter needs a real larger-model consumer in
+the G2/R10 pressure lane: select a concrete supported architecture/geometry and complete its loader,
+packer, tokenizer, execution and quality owners together. A simulated smaller budget on today's
+models is useful for correctness, but does not establish support for a larger model. Model-family
+expansion is deliberately bounded; parameter count, quantized bytes and active MoE bytes are
+reported separately.
+
+| Mechanism / owner | Work worth testing | Required counter-evidence and safety |
+| --- | --- | --- |
+| placement and hot working set / G2 | Retain reused dense layers or experts in VRAM; keep a bounded DRAM cache; choose CPU compute versus staging plus GPU compute using measured costs. Include activation/KV transfers, not just weights. | Compare against tuned llama.cpp offload on the same workload; count misses and actual bytes on each tier. G1's no-host-routing rule applies to resident mode; hybrid routing boundaries are explicit and timed. |
+| storage layout and demand reads / G2, R10 | Use AlignPack's independent expert/layer units, coalesced reads and reusable staging to avoid loading inactive experts or repeatedly decoding/repacking weights. | Include load/pack startup and steady-state I/O separately, OS page-cache residency, page faults and physical memory pressure. `mmap` size is not a physical-RAM saving; llama.cpp's demand paging is a real baseline capability. |
+| transfer and read-ahead / G5, R10 | Pipeline known dense-layer demand; prioritize predicted expert reads by saved stall time, with bounded double buffers and cancellation. | Future MoE routes are not known exactly. Count misprediction bytes, cache pollution and waits; demand work has priority. Do not overlap operations that exceed PCIe/NVMe bandwidth or require unfinished routing results. Background owned-buffer tasks still wait for Request 41. |
+| verified tokens per weight movement / R9 with G2/G5 | Verify a cheap draft or prompt-lookup sequence as a target batch, potentially amortizing streamed weights across accepted tokens. | Report acceptance, rejected compute/transfers, rollback and draft memory. Preserve target distribution; speculation can lose when draft cost or rejection dominates. No speed claim from proposed tokens that were not accepted. |
+| KV working set / later precision capability | Evaluate bounded lower-precision KV and layout, especially when long context displaces model weights. | Keep context length and quality explicit. No silent sliding-window truncation, skipped experts, or reduced model precision to manufacture a speed/capacity win. |
+
+Before tuning a streaming candidate, estimate its unavoidable service demand: actual uncached
+bytes per generated token divided by measured sustainable NVMe/host/device bandwidth, alongside
+compute demand. Overlap can hide independent stages, not remove their byte cost or dependency
+chain. If the estimate already violates the useful-speed target, reduce the bytes/round trips or
+change the declared supported model profile; do not expect prefetch alone to overcome that bound.
+This is why expert locality and accepted multi-token verification deserve attention before tiny
+operation-level savings. Dense and sparse models have separate results; a sparse-model advantage
+does not imply that an arbitrary oversized dense model will be fast.
+
+## 6. Measurement and iteration contract
+
+Early measurements are diagnostic checkpoints inside the active implementation capability. They
+do not each become a PR, extend ordinary CI, or demand a new evidence framework. G1's existing
+record remains a correctness result with `decision=unmeasured`; performance measurements use a
+separately precommitted campaign owned by the capability making the claim.
+
+Every performance campaign fixes before implementation: candidate and baseline revisions/build
+options, model/tokenizer/quantization, input prompts or tasks, context/output lengths, sampler and
+seed schedule, memory ceilings, warm/cold and prefix-cache policy, ordered paired repetitions,
+timeouts and attempt caps, quality predicate, metric/aggregation and a total execution-cost ceiling.
+Use the owning capability's ledger for exact values and byte formats; do not reinterpret old
+schema-1 timings or relax the corpus after a poor result.
+
+Use two reference views:
+
+1. A same-ggml-revision, same-model/settings comparison attributes graph/orchestration differences.
+2. A current, pinned, properly configured llama.cpp baseline tests competitiveness. It may use
+   supported Flash Attention, graph reuse, KV precision, prompt caching and speculation within the
+   same hardware/memory/quality envelope. Do not force both to inefficient settings merely to
+   simplify parity, and do not use the diagnostic-patched reference binary as the speed baseline.
+
+Measure cold model-to-output time, warm prompt processing, warm decode at more than one context
+depth, and the actual generate/validate/repair lifecycle. Report startup/load, tokenization,
+prefill, graph preparation, device execution, transfer/wait, sampling and validation where useful;
+overlapping times cannot be added as if disjoint. Host output correctness and GPU placement must
+pass first. Exclude diagnostic tensor readbacks from timed production paths.
+
+For the primary comparison, hold task content, context-selection policy, validator, sampling/attempt
+limits and cache opportunity fixed. A separate declared system experiment may change prompt/context
+selection, but then its quality and end-to-end effect must be evaluated for both systems. Schedule
+the two GPU arms so they do not contend for the same memory/compute during a pair. Include cold
+setup in cold results and amortize warm setup over the declared task sequence for both arms.
+
+The first material-win floor is at least 15% lower paired latency (150,000 ppm); this is a floor,
+not the ambition or a reason to stop improving. A 2x runtime speedup is a stretch objective on a
+named constrained profile, not a forecast. A campaign must separately fix its runtime metric
+(prefill, decode at specified context, or full fixed-output request) and aggregation before tuning.
+Passing only prefill does not claim faster decode, and warm prefix reuse does not claim a faster
+uncached kernel. G6 separately targets at least 15% lower median paired time to a passing patch,
+with no reduction in task success under the same caps. Its implementation ledger must fix the
+multi-task corpus, repeated paired schedule and uncertainty/robustness rule before measurement;
+a noisy or single-task result cannot establish a material win. Failed or timed-out attempts remain
+in the outcome and quality denominator rather than being dropped to improve latency. Runtime and
+coding outcomes cannot compensate for one another or be collapsed into an ambiguous overall PASS.
+
+A capacity campaign precommits its model/quantization/context ladder, RAM/VRAM/storage ceilings,
+minimum accepted-token throughput, maximum first-token/request latency and quality criteria.
+Measure the largest point each system actually meets; compare speed on common feasible points
+separately. Both systems get tuned offload, KV and storage/cache settings within those limits.
+An out-of-memory baseline is a capacity result, never an infinite speedup; a smaller quantization
+or fewer active parameters is not the same-model speed comparison. Report installed physical RAM,
+OS/driver use and page cache in addition to managed caps; shared Metal memory is counted once.
+No universal claim that llama.cpp cannot run a model follows from one failed configuration.
+
+A `not_met` result ends that candidate's experiment, not the program. Keep correctness-enabling
+infrastructure; retain performance-only complexity only with its declared benefit. Use the measured
+cost breakdown to pick the next material mechanism in §5, record one hypothesis and expected
+recoverable cost, and test another coherent candidate. Multiple independent candidates are allowed.
+Do not repeatedly tune on the same holdout; a new hypothesis uses development data and fresh
+precommitted confirmation, while past negative results remain visible.
+
+The program's final competitiveness decision is premature while a relevant known high-impact row
+is merely unexamined. A row is covered when it ships with evidence, has a measured negative result,
+has a concrete backend/quality/resource blocker, or is demonstrably irrelevant to the declared
+workload. This is a bounded list of mechanisms, not a requirement to try every flag combination or
+chase tiny isolated operations. A win is scoped to the tested workload and machine; continuing to
+improve it does not imply superiority on all models, devices or serving workloads.
+
+## 7. Implementation entry and verification
+
+Start G1 now from this settled architecture. Inside that capability: probe pinned operations/build
+settings; implement the owning resource plus complete Qwen graph; add device KV/reuse/prefill and
+the OLMoE resident graph; connect the provider; then complete model-free owners and real Metal/CUDA
+qualification. Local checkpoints may compile/test separately, but publication remains the complete
+consumer. G1R follows before the final warm coding comparison. Extend future public contracts only
+when their consumer is reached, without reopening G1's unrelated design.
+
+The missing graph construction, Flash Attention wrapper, backend configuration and session policy
+are application concerns using shipped ggml and Align FFI/resources. Current evidence does not
+establish a new Align language gap. Request 41 still owns background tasks capturing owned I/O
+buffers; device submission and same-thread work do not require that capability. Request 35 still
+limits universal recoverable host OOM. Record any actual new language gap when a consumer reaches it.
+
+This change runs documentation/source consistency, the unchanged schema-vector check and the docs
+publication preflight, followed by one comprehensive review focused on architecture, ordering and
+honest measurement. Native/GPU tests and speed measurements are N/A for this design-only PR.

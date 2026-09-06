@@ -75,6 +75,13 @@ align-coderは、align-runtimeの完成を待たずに開発できる。
 
 align-runtimeは、open-weightモデルを限られたローカルハードウェアで効率よく実行するための基盤である。
 
+The competitive runtime objective is materially faster inference than llama.cpp on affordable
+local hardware, ultimately with a larger practically usable model under the same VRAM, physical
+RAM and storage limits. Runtime speed and useful model/context capacity are explicit goals;
+time to a passing patch remains the project's primary integration metric but cannot substitute
+for either. [GPU performance plan](gpu-runtime-performance.md) owns the comparison and iteration
+policy. These are goals, not claims of measured superiority.
+
 主な責務は次。
 
 ```text
@@ -296,6 +303,12 @@ their own design gates. Initial verification uses an Apple Silicon Mac and an NV
 under native Linux or WSL2; these are evidence profiles, not model restrictions. The historical
 CPU-only R8 measurement sequence does not complete this hybrid scheduling goal. GPU qualification
 and performance status are recorded independently for each backend/device/OS and execution mode.
+
+The [performance plan](gpu-runtime-performance.md) adds whole-model device graphs, bounded graph
+and in-place KV reuse, qualified backend fusion/Flash Attention, and a reusable coding session
+immediately after G1. Constrained-memory placement, bounded storage reads and transfer/compute
+overlap are first-class speed/capacity work. Established llama.cpp techniques are the starting
+point; any claimed advantage needs a tuned contemporary baseline and measured useful output.
 
 VRAM miss時に必ずGPUへ転送するとは限らない。
 
