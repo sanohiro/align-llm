@@ -3,18 +3,32 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## No active capability (2026-09-06)
+## Active design: G1 resident GPU runtime (2026-09-06)
 
 Main `f23f5d88cc2fd5aa1d5d9ef2cc9310a3d84a353a` merged
 R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS as PR #201. Align remains pinned to
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. R8 is complete through roadmap item 79, and the
-roadmap contains no later eligible capability. Item 79 found no material expert phase-B operation,
-so its result does not select another implementation or narrower diagnosis.
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. The fixed CPU measurement sequence is complete
+through item 79; the architectural GPU/hybrid/prefetch goals remain open. Item 79 found no material
+expert phase-B operation within that CPU experiment.
 
-**Next action.** Define the next consumer-complete roadmap capability in the authoritative plan
-before implementation, or resume when new qualifying evidence selects a material child.
+Branch `agent/gpu-runtime-design`, based on main `2c84e2fe014887a6363f5eed83e61b2c0284c968`,
+contains G1's design-only resident Metal/CUDA contract in `docs/specs/gpu-runtime.md` and the
+delivery order for roadmap items 81–85. A comprehensive review exposed that freezing the later
+overlap/coding evidence formats before their consumers left metrics, retries and failure states
+incomplete, so the candidate was re-scoped: G1 schema 1 owns generation correctness only, while
+G2–G6 extend their exact contracts at their own design gates. The user's RTX 4070 Ti on native
+Linux or WSL2 and the available Mac are initial validation hosts, not supported-device restrictions.
+AMD hardware is unavailable; its implementation and pending qualification remain explicit.
 
-**Blocker.** None. The current stop condition is roadmap exhaustion, not an external blocker.
+**Next action.** Finish this design PR's stable comprehensive review, documentation publication,
+checks and merge, then stop as requested. On the next implementation session, start G1's native
+feasibility and immutable Metal/CUDA bundle recipes, populate the fixed generation profile and
+calibration fixtures, and deliver resident GPU generation with its real provider caller.
+
+**Constraints.** This branch remains design-only. Requests 34/35/41 track existing language-owned
+limitations; Align's opaque Move resource already ships at the consumer pin and will own native
+request state. No new resource language request is needed. Actual AMD qualification waits for
+hardware; NVIDIA host inventory is collected when the user runs the future qualifier.
 
 **Latest durable verification.** PR #201 passed its focused allocated-stub owner, formatting,
 layer-forward and runtime-provider smokes, Python compilation, runner self-test, exact-head
@@ -25,7 +39,20 @@ below the unchanged 871,174,011-ns floor. Comprehensive review found two P2 publ
 issues, both repaired in `4446bd3`; no valid finding remained. Merged-head self-test passed at
 `f23f5d8`.
 
-**Intentional uncommitted files.** None. Models, raw evidence and build products remain outside Git.
+For the current design candidate, all eight canonical JSON codec rows parse and round-trip to their
+exact one-line bytes, including real self-hashes, Git objects, command hashes and cross-references;
+`git diff --check` is clean. Earlier reviews removed premature G5/G6 contracts and closed G1 source,
+environment, numeric and CPU-fallback gaps. The final comprehensive review at `475a1c3` found seven
+G1 evidence issues. The consolidated repair records the OLMoE cache budget, complete comparison
+coverage, exact output bytes, full weight/KV residency and the minimal terminal/build vocabulary
+needed to encode success and failure. Toolchain identity preimages are recipe-owned observations;
+the request to retain a complete SDK/toolchain closure is rejected because G1 makes no
+bit-reproducible-build claim. The repair is limited to recorded findings and its delta was inspected;
+no further full-review loop is required. Exact-head publication preflight and merge remain, after
+which work stops as requested.
+
+**Intentional uncommitted files.** None after the design candidate is committed. Models, raw
+evidence and build products remain outside Git.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

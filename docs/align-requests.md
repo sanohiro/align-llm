@@ -8792,7 +8792,8 @@ Blocked gate or slice: R5 microbenchmark C only. R5C-METAL-PREFILL-ARM
   memory without it; required microbenchmark C (async prefetch of the next layer's window while the
   current graph computes) cannot be written at all at this pin and stays deferred with this gap
   named rather than worked around.
-Independent work that may continue: all of R5C-METAL-PREFILL-ARM.
+Independent work that may continue: R5C and GPU program G1-G4 synchronous generation/offload;
+  G5 same-thread host preparation overlapping queued device work does not require task capture.
 Resume condition: an Align release admits an owned-value (or exclusive-borrow) capture into a
   `spawn` closure, and/or an owned task result, sufficient to hand a prefetch task the Align-owned
   window it must fill.
@@ -8858,6 +8859,22 @@ or error propagation, joins its tasks before captured frame-owned locals or encl
 are released — and exclusivity is already what `borrow mut` proves. Disjointness between two spawned
 tasks is the open question; the natural bound is **one exclusive capture per spawn**, rejecting two
 spawns that capture the same root.
+
+### GPU program evidence refresh (2026-09-06)
+
+The GPU design in `docs/specs/gpu-runtime.md` retains this requirement without making all GPU
+execution depend on it. At current sibling `46664a01352f7a669339c2eae2661d55659b96c2`,
+`docs/guide/10-closures-and-parallelism.md` still restricts captures to Copy values and explicitly
+rejects Move captures; `crates/align_sema/src/lib.rs` retains the owned-value capture diagnostic.
+This refresh is source inspection, not a claim that new compiler probes ran.
+
+Scheduling is a second acceptance dimension: `align_rt_tg_register` in
+`crates/align_runtime/src/lib.rs` appends tasks, and `align_rt_tg_wait` dispatches them. Do not assume
+`spawn` immediately starts background I/O concurrent with intervening caller work. A consuming
+prefetch design must demonstrate real overlap through the shipped scheduling contract as well as
+exclusive storage ownership. It must not capture an integerized address or add hidden native I/O
+workers to bypass this language-owned requirement. The original acceptance targets below remain;
+G5 adds its actual generation/overlap owner when it first consumes a shipped solution.
 
 ### Acceptance criteria
 
