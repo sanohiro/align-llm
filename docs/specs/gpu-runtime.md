@@ -464,6 +464,11 @@ OLMoE routing, selected-expert `mul_mat_id`, weighting and reduction stay in the
 execution must not inherit the CPU path's per-layer router readback and expert-claim boundary.
 Never call a CPU pointer primitive on device-only storage. OLMoE keeps gate/up/down identity and
 ordered expert reduction; any compact expert view carries an explicit global/local map.
+The shaped `op_view_2d` boundary accepts only four-byte `F32` and `I32` sources. G1 takes the
+leading `{n_expert_used, tokens}` `I32` view of the descending argsort result with the source's
+dimension-1 stride and zero offset, then passes those global IDs directly to the fully resident
+`n_expert`-plane stacks. Quantized and other element widths remain invalid, and the real and stub
+shims enforce the same type and extent checks.
 
 Before admission, `runtime_weights.allocation_bytes(owner, shape)` asks the selected backend buffer
 type for one tensor's allocation size and rounds it to that buffer's alignment. It creates no device
@@ -503,8 +508,8 @@ order and poison process state if native safety cannot be proven.
 | native owner | construct, move, borrow, explicit completion | failure at each construction prefix and completion stage | exactly-once reverse Drop; `gpu-native-owner` in whole/per-unit builds |
 | admission/allocation | exact weights/KV/workspace within both caps; UMA alias accounted once | overflow, zero/one-byte-too-small cap, driver allocation race | release every prefix; `gpu-budget-boundary`, `gpu-uma-alias`, `gpu-allocation-prefix` |
 | weight planning/upload | selected-backend allocation query; exact checked sum; sequential bounded chunks complete each tensor once | invalid type/shape, overflow, empty/out-of-order/oversized chunk, next add or finish before completion, source truncation, transfer failure | invalid input preserves cursor; native failure poisons then reverse-releases; `gpu-weight-chunk` |
-| graph and pointers | supported graph on declared GPU; device-safe transfers | unsupported op/buffer, device pointer passed to CPU, stale reference, nonfinite output | complete before reset/free; `gpu-graph-placement`, `gpu-device-pointer`, `gpu-scheduler-reset` |
-| Qwen/OLMoE decode | prefill, >1 decode, resident KV, correct positions/router/expert map | immediate EOG, maximum 1/128, context edge, routing tie, truncated source | KV outlives steps; `gpu-decode-kv`, `gpu-expert-map`, `gpu-eog`, `gpu-context-boundary` |
+| graph and pointers | supported graph on declared GPU; device-safe transfers; bounded F32/I32 views use source-derived strides and extents | unsupported op/buffer/type, forged or out-of-range view, device pointer passed to CPU, stale reference, nonfinite output | complete before reset/free; `gpu-device-smoke`, `gpu-graph-placement`, `gpu-device-pointer`, `gpu-scheduler-reset` |
+| Qwen/OLMoE decode | prefill, >1 decode, resident KV, correct positions/router/expert map; OLMoE argsort is narrowed to exactly `n_expert_used` global IDs before selected-expert `mul_mat_id` | immediate EOG, maximum 1/128, context edge, routing tie, truncated source | KV outlives steps; `gpu-device-smoke`, `gpu-decode-kv`, `gpu-expert-map`, `gpu-eog`, `gpu-context-boundary` |
 | invocation guard | sequential same-bundle requests and concurrent CPU independence | concurrent GPU request, different bundle, failed prior native init | guard released only from safe state; `gpu-invocation-busy`, `gpu-second-after-failure` |
 | sampler/result | same logits preserve exact greedy/RNG/filter/output behavior | malformed/nonfinite logits, decode error, partial text | no handle escapes; `gpu-sampler-fixed`, `gpu-output-refusal` |
 | profile/calibration | exact four-row expansion executes every calibration/holdout twice | omitted/extra/reordered/cross-model case, changed tolerance/expected output | immutable input recheck; `gpu-profile-coverage`, `gpu-holdout-replay` |

@@ -1,0 +1,99 @@
+module olmoe_nodes
+
+import ggml_ffi
+import layer_olmoe
+
+fn node_label(slot: i64) -> string {
+  b := builder()
+  b.write("node[")
+  b.write_int(slot)
+  b.write("]")
+  return b.to_string()
+}
+
+// G1's compact resident OLMoE walker. Prefill and decode use the checked-in tables directly;
+// `decode` enables only the two table-declared CONCAT rows.
+pub fn build(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  borrow nodes: layer_olmoe.MmNodeTable,
+  last: bool,
+  wide: bool,
+  decode: bool,
+) -> Result<(), ggml_ffi.Fault> {
+  mut row := 0
+  loop {
+    if row >= nodes.count { break }
+    if layer_olmoe.mm_row_issued_at(nodes.when[row], last, wide, decode) {
+      op := nodes.op[row]
+      out := nodes.out[row]
+      swap := nodes.alt_when[row] != layer_olmoe.WHEN_ALWAYS
+        && layer_olmoe.mm_row_issued_at(nodes.alt_when[row], last, wide, decode)
+      a := if swap && nodes.alt_a[row] >= 0 { nodes.alt_a[row] } else { nodes.a[row] }
+      b := if swap && nodes.alt_b[row] >= 0 { nodes.alt_b[row] } else { nodes.b[row] }
+      tag := node_label(out)
+      label: str := tag
+      if op == layer_olmoe.OP_GET_ROWS {
+        ggml_ffi.op_get_rows(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_olmoe.OP_RMS_NORM {
+        ggml_ffi.op_rms_norm(ctx, slots, out, a, nodes.p0[row], label)?
+      }
+      if op == layer_olmoe.OP_MUL {
+        ggml_ffi.op_mul(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_olmoe.OP_ADD {
+        ggml_ffi.op_add(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_olmoe.OP_MUL_MAT {
+        ggml_ffi.op_mul_mat(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_olmoe.OP_RESHAPE_3D {
+        ggml_ffi.op_reshape_3d(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], label,
+        )?
+      }
+      if op == layer_olmoe.OP_PERMUTE {
+        ggml_ffi.op_permute(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row], label,
+        )?
+      }
+      if op == layer_olmoe.OP_CONT_3D {
+        ggml_ffi.op_cont_3d(ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], label)?
+      }
+      if op == layer_olmoe.OP_ROPE {
+        ggml_ffi.op_rope_neox(
+          ctx, slots, out, a, b, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row], label,
+        )?
+      }
+      if op == layer_olmoe.OP_SOFT_MAX {
+        ggml_ffi.op_soft_max_ext(ctx, slots, out, a, b, nodes.p0[row], nodes.p1[row], label)?
+      }
+      if op == layer_olmoe.OP_SWIGLU {
+        ggml_ffi.op_swiglu_split(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_olmoe.OP_PAD {
+        ggml_ffi.op_pad(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row], label,
+        )?
+      }
+      if op == layer_olmoe.OP_ARGSORT {
+        ggml_ffi.op_argsort(ctx, slots, out, a, nodes.p0[row], label)?
+      }
+      if op == layer_olmoe.OP_MUL_MAT_ID {
+        ggml_ffi.op_mul_mat_id(ctx, slots, out, a, b, nodes.c[row], label)?
+      }
+      if op == layer_olmoe.OP_VIEW_2D {
+        ggml_ffi.op_view_2d(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row],
+          nodes.p4[row], label,
+        )?
+      }
+      if op == layer_olmoe.OP_CONCAT {
+        ggml_ffi.op_concat(ctx, slots, out, a, b, nodes.p0[row], label)?
+      }
+    }
+    row = row + 1
+  }
+  return Ok(())
+}

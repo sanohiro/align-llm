@@ -1756,11 +1756,10 @@ pub fn op_mul_mat_id(
   }
 }
 
-// A 2-D window on a tensor, addressed by dimension **selector**. `nb1_dim` names the axis whose
-// stride becomes the view's row stride and `offset_dim` names the axis the offset counts in, so the
-// caller supplies two small integers in `[0, 3]` and an index — never a byte count and never a
-// pointer. The expert reduction's slot `i` is `view_2d(weighted, n_embd, T, nb1_dim: 2,
-// offset_dim: 1, offset_index: i)`.
+// A 2-D F32 or I32 window addressed by dimension **selector**. `nb1_dim` names the axis whose stride
+// becomes the view's row stride and `offset_dim` names the axis the offset counts in, so the caller
+// supplies two small integers in `[0, 3]` and an index — never a byte count and never a pointer.
+// The expert reduction uses F32 views; G1 uses an I32 view of the leading selected argsort ids.
 pub fn op_view_2d(
   ctx: raw,
   borrow slots: slice<u8>,

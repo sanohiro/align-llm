@@ -1,12 +1,14 @@
 module runtime_device_smoke
 
 import ggml_ffi
+import layer_olmoe
 import layer_qwen2
 import runtime_device
 import runtime_execution
 import runtime_inputs
 import runtime_kv
 import runtime_memory
+import runtime_olmoe
 import runtime_options
 import runtime_qwen
 import runtime_weights
@@ -1209,6 +1211,31 @@ fn add_qwen_weight(
   return Ok(index)
 }
 
+fn add_olmoe_weight(
+  borrow owner: ggml_ffi.GpuDevice,
+  n_dims: i64,
+  ne0: i64,
+  ne1: i64,
+  ne2: i64,
+  borrow ones: slice<u8>,
+) -> Result<i64, Error> {
+  index := runtime_weights.add(
+    owner,
+    runtime_weights.Shape {
+      ggml_type: 0,
+      n_dims: n_dims,
+      ne0: ne0,
+      ne1: ne1,
+      ne2: ne2,
+      ne3: 1,
+    },
+  )?
+  bytes := ne0 * ne1 * ne2 * 4
+  image := ones[0..bytes]
+  runtime_weights.upload(owner, index, 0, image)?
+  return Ok(index)
+}
+
 fn nonzero_word(borrow values: slice<u8>) -> bool {
   mut at := 0
   loop {
@@ -1494,6 +1521,305 @@ fn exercise_qwen_graph(
   return Ok(())
 }
 
+fn exercise_olmoe_graph(
+  backend: str,
+  device: str,
+  bundle_root: str,
+  bundle_id: str,
+) -> Result<(), Error> {
+  owner := opened(backend, device, bundle_root)?
+  g := layer_olmoe.Geometry {
+    code: "".clone(),
+    detail: "".clone(),
+    arch: "olmoe".clone(),
+    n_layer: 1,
+    n_embd: 2,
+    n_head: 1,
+    n_head_kv: 1,
+    head_dim: 2,
+    n_ff_exp: 2,
+    n_vocab: 4,
+    n_expert: 3,
+    n_expert_used: 2,
+    context_length: 4,
+    rms_eps_bits: 897988541,
+    rope_type: layer_olmoe.ROPE_TYPE_NEOX,
+    rope_dim_count: 2,
+    rope_freq_base_bits: 1176256512,
+    attn_scale_bits: layer_olmoe.attn_scale_bits(2),
+  }
+  if runtime_olmoe.weight_count(g.n_layer) != 15 || runtime_olmoe.kv_count(g.n_layer) != 2
+    || runtime_olmoe.output_slot() != 23 {
+    return Err(Error.Invalid)
+  }
+  runtime_memory.admit(
+    owner,
+    runtime_memory.MemoryPlan {
+      weights_bytes: 576,
+      kv_bytes: 64,
+      workspace_bytes: 262144,
+      metadata_bytes: 262144,
+      staging_bytes: 4096,
+      legacy_cache_bytes: 0,
+    },
+  )?
+  runtime_memory.allocate(owner)?
+
+  mut one_storage := buffer(1024)
+  mut one_at := 0
+  loop {
+    if one_at >= 256 { break }
+    one_storage.put_u32_le(1065353216)
+    one_at = one_at + 1
+  }
+  ones := one_storage.bytes()
+  runtime_weights.begin(owner, runtime_olmoe.weight_count(g.n_layer))?
+  if add_olmoe_weight(owner, 2, g.n_embd, g.n_vocab, 1, ones)? != 0 {
+    return Err(Error.Invalid)
+  }
+  layer_members := layer_olmoe.mm_layer_member_table(g)
+  mut member := 0
+  loop {
+    if member >= layer_members.count { break }
+    if add_olmoe_weight(
+      owner, layer_members.n_dims[member], layer_members.ne0[member],
+      layer_members.ne1[member], 1, ones,
+    )? != 1 + member {
+      return Err(Error.Invalid)
+    }
+    member = member + 1
+  }
+  mut expert := 0
+  loop {
+    if expert >= 3 { break }
+    if add_olmoe_weight(
+      owner, 3, layer_olmoe.claim_ne0(g, expert), layer_olmoe.claim_ne1(g, expert),
+      g.n_expert, ones,
+    )? != 10 + expert {
+      return Err(Error.Invalid)
+    }
+    expert = expert + 1
+  }
+  head_members := layer_olmoe.mm_head_member_table(g)
+  member = 0
+  loop {
+    if member >= head_members.count { break }
+    if add_olmoe_weight(
+      owner, head_members.n_dims[member], head_members.ne0[member],
+      head_members.ne1[member], 1, ones,
+    )? != 13 + member {
+      return Err(Error.Invalid)
+    }
+    member = member + 1
+  }
+  runtime_weights.finish(owner)?
+
+  runtime_kv.begin(owner, runtime_olmoe.kv_count(g.n_layer))?
+  k_index := runtime_kv.add(
+    owner,
+    runtime_kv.Shape {
+      ggml_type: 0,
+      n_dims: 3,
+      ne0: g.head_dim,
+      ne1: g.context_length,
+      ne2: g.n_head_kv,
+      ne3: 1,
+    },
+  )?
+  v_index := runtime_kv.add(
+    owner,
+    runtime_kv.Shape {
+      ggml_type: 0,
+      n_dims: 3,
+      ne0: g.context_length,
+      ne1: g.head_dim,
+      ne2: g.n_head_kv,
+      ne3: 1,
+    },
+  )?
+  if k_index != 0 || v_index != 1 { return Err(Error.Invalid) }
+  runtime_kv.finish(owner)?
+
+  runtime_inputs.begin(owner, runtime_olmoe.INPUT_COUNT)?
+  prefill_tokens := runtime_inputs.add(
+    owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 2, ne1: 1, ne2: 1, ne3: 1,
+    },
+  )?
+  prefill_positions := runtime_inputs.add(
+    owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 2, ne1: 1, ne2: 1, ne3: 1,
+    },
+  )?
+  prefill_mask := runtime_inputs.add(
+    owner, runtime_inputs.Shape {
+      ggml_type: 0, n_dims: 2, ne0: 4, ne1: 2, ne2: 1, ne3: 1,
+    },
+  )?
+  decode_token := runtime_inputs.add(
+    owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 1, ne1: 1, ne2: 1, ne3: 1,
+    },
+  )?
+  decode_position := runtime_inputs.add(
+    owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 1, ne1: 1, ne2: 1, ne3: 1,
+    },
+  )?
+  decode_mask := runtime_inputs.add(
+    owner, runtime_inputs.Shape {
+      ggml_type: 0, n_dims: 2, ne0: 4, ne1: 1, ne2: 1, ne3: 1,
+    },
+  )?
+  output_id := runtime_inputs.add(
+    owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 1, ne1: 1, ne2: 1, ne3: 1,
+    },
+  )?
+  if prefill_tokens != runtime_olmoe.INPUT_PREFILL_TOKENS
+    || prefill_positions != runtime_olmoe.INPUT_PREFILL_POSITIONS
+    || prefill_mask != runtime_olmoe.INPUT_PREFILL_MASK
+    || decode_token != runtime_olmoe.INPUT_DECODE_TOKEN
+    || decode_position != runtime_olmoe.INPUT_DECODE_POSITION
+    || decode_mask != runtime_olmoe.INPUT_DECODE_MASK
+    || output_id != runtime_olmoe.INPUT_OUTPUT_ID {
+    return Err(Error.Invalid)
+  }
+  runtime_inputs.finish(owner)?
+
+  mut prefill_token_values := buffer(8)
+  prefill_token_values.put_u32_le(0)
+  prefill_token_values.put_u32_le(1)
+  mut prefill_position_values := buffer(8)
+  prefill_position_values.put_u32_le(0)
+  prefill_position_values.put_u32_le(1)
+  mut prefill_mask_values := buffer(32)
+  prefill_mask_values.put_u32_le(0)
+  prefill_mask_values.put_u32_le(layer_olmoe.MASK_NEG_INFINITY_BITS as u32)
+  prefill_mask_values.put_u32_le(layer_olmoe.MASK_NEG_INFINITY_BITS as u32)
+  prefill_mask_values.put_u32_le(layer_olmoe.MASK_NEG_INFINITY_BITS as u32)
+  prefill_mask_values.put_u32_le(0)
+  prefill_mask_values.put_u32_le(0)
+  prefill_mask_values.put_u32_le(layer_olmoe.MASK_NEG_INFINITY_BITS as u32)
+  prefill_mask_values.put_u32_le(layer_olmoe.MASK_NEG_INFINITY_BITS as u32)
+  mut output_value := buffer(4)
+  output_value.put_u32_le(1)
+  prefill_token_view := prefill_token_values.bytes()
+  prefill_position_view := prefill_position_values.bytes()
+  prefill_mask_view := prefill_mask_values.bytes()
+  output_view := output_value.bytes()
+  mut slot_storage := buffer(1040)
+  mut slot_word := 0
+  loop {
+    if slot_word >= 260 { break }
+    slot_storage.put_u32_le(0)
+    slot_word = slot_word + 1
+  }
+  slots := slot_storage.bytes()
+  prefill_ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_PREFILL, 98304)
+  if ggml_ffi.handle_absent(prefill_ctx) { return Err(Error.Invalid) }
+  prefill_graph := ggml_ffi.graph_new(prefill_ctx)
+  if ggml_ffi.handle_absent(prefill_graph) { return Err(Error.Invalid) }
+  runtime_olmoe.build_prefill(owner, g, 2, prefill_ctx, prefill_graph, slots)?
+  if ggml_ffi.slot_ne(slots, layer_olmoe.MM_SLOT_TOPK, 0) != g.n_expert_used
+    || ggml_ffi.slot_ne(slots, layer_olmoe.MM_SLOT_TOPK, 1) != 1
+    || ggml_ffi.slot_ne(slots, layer_olmoe.MM_SLOT_COMPACT, 0) != g.n_expert_used
+    || ggml_ffi.slot_ne(slots, layer_olmoe.MM_SLOT_COMPACT, 1) != 1 {
+    return Err(Error.Invalid)
+  }
+  if ggml_ffi.graph_node_count(prefill_graph) < 50 { return Err(Error.Invalid) }
+  prefill_key := topology_key(
+    backend, bundle_id, ggml_ffi.GPU_GRAPH_PREFILL, PREFILL_TENSOR_DIGEST, 2,
+    2, PREFILL_OUTPUT_DIGEST,
+  )?
+  runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
+  runtime_inputs.update(owner, prefill_tokens, 0, prefill_token_view)?
+  runtime_inputs.update(owner, prefill_positions, 0, prefill_position_view)?
+  runtime_inputs.update(owner, prefill_mask, 0, prefill_mask_view)?
+  runtime_inputs.update(owner, output_id, 0, output_view)?
+  runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
+  mut logits := buffer(16)
+  mut logits_at := 0
+  loop {
+    if logits_at >= 4 { break }
+    logits.put_u32_le(0)
+    logits_at = logits_at + 1
+  }
+  logits_view := logits.bytes()
+  ggml_ffi.slot_get(
+    slots, runtime_olmoe.output_slot(), logits_view, 0, logits_view.len(), "olmoe_prefill_logits",
+  ) else {
+    return Err(Error.Invalid)
+  }
+  if !nonzero_word(logits_view) { return Err(Error.Invalid) }
+
+  mut decode_token_value := buffer(4)
+  decode_token_value.put_u32_le(2)
+  mut decode_position_value := buffer(4)
+  decode_position_value.put_u32_le(2)
+  mut decode_mask_values := buffer(16)
+  decode_mask_values.put_u32_le(0)
+  decode_mask_values.put_u32_le(0)
+  decode_mask_values.put_u32_le(0)
+  decode_mask_values.put_u32_le(layer_olmoe.MASK_NEG_INFINITY_BITS as u32)
+  mut decode_output_value := buffer(4)
+  decode_output_value.put_u32_le(0)
+  decode_token_view := decode_token_value.bytes()
+  decode_position_view := decode_position_value.bytes()
+  decode_mask_view := decode_mask_values.bytes()
+  decode_output_view := decode_output_value.bytes()
+  decode_ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_DECODE, 98304)
+  if ggml_ffi.handle_absent(decode_ctx) { return Err(Error.Invalid) }
+  decode_graph := ggml_ffi.graph_new(decode_ctx)
+  if ggml_ffi.handle_absent(decode_graph) { return Err(Error.Invalid) }
+  runtime_olmoe.build_decode(owner, g, 2, decode_ctx, decode_graph, slots)?
+  if ggml_ffi.slot_ne(slots, layer_olmoe.MM_SLOT_TOPK, 0) != g.n_expert_used
+    || ggml_ffi.slot_ne(slots, layer_olmoe.MM_SLOT_TOPK, 1) != 1
+    || ggml_ffi.slot_ne(slots, layer_olmoe.MM_SLOT_COMPACT, 0) != g.n_expert_used
+    || ggml_ffi.slot_ne(slots, layer_olmoe.MM_SLOT_COMPACT, 1) != 1 {
+    return Err(Error.Invalid)
+  }
+  if ggml_ffi.graph_node_count(decode_graph) < 52 { return Err(Error.Invalid) }
+  decode_key := topology_key(
+    backend, bundle_id, ggml_ffi.GPU_GRAPH_DECODE, DECODE_TENSOR_DIGEST, 3,
+    1, DECODE_OUTPUT_DIGEST,
+  )?
+  runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
+  runtime_inputs.update(owner, decode_token, 0, decode_token_view)?
+  runtime_inputs.update(owner, decode_position, 0, decode_position_view)?
+  runtime_inputs.update(owner, decode_mask, 0, decode_mask_view)?
+  runtime_inputs.update(owner, output_id, 0, decode_output_view)?
+  runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
+  ggml_ffi.slot_get(
+    slots, runtime_olmoe.output_slot(), logits_view, 0, logits_view.len(), "olmoe_decode_logits",
+  ) else {
+    return Err(Error.Invalid)
+  }
+  if !nonzero_word(logits_view) { return Err(Error.Invalid) }
+  ggml_ffi.gpu_kv_slot(owner, k_index, slots, 100) else { return Err(Error.Invalid) }
+  ggml_ffi.gpu_kv_slot(owner, v_index, slots, 101) else { return Err(Error.Invalid) }
+  mut k_values := buffer(32)
+  mut v_values := buffer(32)
+  mut kv_at := 0
+  loop {
+    if kv_at >= 8 { break }
+    k_values.put_u32_le(0)
+    v_values.put_u32_le(0)
+    kv_at = kv_at + 1
+  }
+  k_view := k_values.bytes()
+  v_view := v_values.bytes()
+  ggml_ffi.slot_get(slots, 100, k_view, 0, k_view.len(), "olmoe_k_plane") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.slot_get(slots, 101, v_view, 0, v_view.len(), "olmoe_v_plane") else {
+    return Err(Error.Invalid)
+  }
+  if !nonzero_word(k_view) || !nonzero_word(v_view) { return Err(Error.Invalid) }
+  runtime_device.synchronize(owner)?
+  return Ok(())
+}
+
 fn expect_allocation_failure(
   backend: str,
   device: str,
@@ -1704,6 +2030,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   exercise_live_owner(backend, device, bundle_root, backend_path, bundle_id)?
   exercise_v_layout(backend, device, bundle_root, bundle_id)?
   exercise_qwen_graph(backend, device, bundle_root, bundle_id)?
+  exercise_olmoe_graph(backend, device, bundle_root, bundle_id)?
 
   expect_verification_refusal(backend, device, other_bundle_root)?
   expect_bundle_switch(

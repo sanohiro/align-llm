@@ -4028,8 +4028,8 @@ int32_t align_ggml_op_mul_mat_id(
 /* The stride and the offset are derived from the source's **own** strides, exactly as the real
  * shim derives them from `a->nb[]`; an engine tensor is contiguous, so the strides are the products
  * of its extents. The extent test is the same strict one: the reachable span of a strided view is
- * `offset + (ne1 - 1) * nb1 + ne0 * 4`. The F32 source gate below is the same one too, since
- * correction C13 restated it in `scripts/ggml_shim.c`.
+ * `offset + (ne1 - 1) * nb1 + ne0 * 4`. G1 adds I32 argsort views, so the four-byte F32/I32 type
+ * gate below stays identical to `scripts/ggml_shim.c`.
  */
 int32_t align_ggml_op_view_2d(
     void *ctx, void *slots, int64_t out, int64_t a, int64_t ne0, int64_t ne1,
@@ -4057,7 +4057,7 @@ int32_t align_ggml_op_view_2d(
     if (ne0 <= 0 || ne1 <= 0 || offset_index < 0 || ne0 > sa->ne[0]) {
         return ALIGN_GGML_SHAPE;
     }
-    if (sa->type != ALIGN_STUB_TYPE_F32) {
+    if (sa->type != ALIGN_STUB_TYPE_F32 && sa->type != ALIGN_STUB_TYPE_I32) {
         return ALIGN_GGML_TYPE;
     }
     nb[0] = 4;
@@ -4070,7 +4070,7 @@ int32_t align_ggml_op_view_2d(
     if (span < 0 || span > align_stub_nbytes(sa)) {
         return ALIGN_GGML_BOUNDS;
     }
-    t = align_stub_new(ctx, ALIGN_STUB_TYPE_F32, ne0, ne1, 1, 1);
+    t = align_stub_new(ctx, sa->type, ne0, ne1, 1, 1);
     if (t == NULL) {
         return ALIGN_GGML_INIT;
     }
