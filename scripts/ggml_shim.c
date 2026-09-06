@@ -1773,23 +1773,27 @@ void *align_gpu_graph_context_open(void *owner, int32_t kind, int64_t metadata_b
     return (void *) ctx;
 }
 
-/* A maximum-context KV tensor keeps its allocation and native strides for the whole request.  A
- * graph receives only the currently valid sequence prefix.  Deriving every stride here prevents
- * the language caller from manufacturing a byte offset into device storage. */
+/* A maximum-context KV tensor keeps its allocation and native strides for the whole request.  K
+ * stores sequence on dimension 1; V stores it on dimension 0, matching the two attention
+ * operands.  A graph receives only the currently valid prefix.  Deriving the selected extent here
+ * prevents the language caller from manufacturing a byte offset into device storage. */
 int32_t align_gpu_kv_prefix_slot(
-        void *owner, int64_t index, int32_t kind, int64_t valid_width,
+        void *owner, int64_t index, int32_t kind, int32_t layout, int64_t valid_width,
         void *slots, int64_t out) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     struct ggml_tensor *tensor = align_gpu_kv_at(state, index);
     struct ggml_tensor *view = NULL;
     struct ggml_context *ctx = align_gpu_graph_context_at(state, kind);
+    int sequence_dim = layout == 0 ? 1 : 0;
     if (state == NULL || tensor == NULL || ctx == NULL || state->graph_prepared[kind]
-        || valid_width <= 0
-        || valid_width > tensor->ne[1] || tensor->type != GGML_TYPE_F32) {
+        || (layout != 0 && layout != 1) || valid_width <= 0
+        || valid_width > tensor->ne[sequence_dim] || tensor->type != GGML_TYPE_F32) {
         return ALIGN_GPU_CONFIG;
     }
     view = ggml_view_4d(ctx, tensor,
-                        tensor->ne[0], valid_width, tensor->ne[2], tensor->ne[3],
+                        layout == 0 ? tensor->ne[0] : valid_width,
+                        layout == 0 ? valid_width : tensor->ne[1],
+                        tensor->ne[2], tensor->ne[3],
                         tensor->nb[1], tensor->nb[2], tensor->nb[3], 0);
     if (view == NULL) {
         return ALIGN_GPU_ALLOCATION;
@@ -1799,11 +1803,11 @@ int32_t align_gpu_kv_prefix_slot(
 }
 
 /* Store one graph-produced K or V range directly into the request's resident plane.  The caller
- * supplies a logical starting column, never a byte offset; the plane's native strides define the
- * destination view.  Returning the `ggml_cpy` node lets the graph register the write before any
- * later prefix consumer without a host readback or a temporary concatenated plane. */
+ * supplies a layout and logical starting position, never a byte offset; the selected sequence
+ * axis and plane's native strides define the destination view.  Returning the `ggml_cpy` node lets
+ * the graph register the write before any later prefix consumer without a host readback. */
 int32_t align_gpu_kv_write_slot(
-        void *owner, int64_t index, int32_t kind, int64_t position,
+        void *owner, int64_t index, int32_t kind, int32_t layout, int64_t position,
         void *slots, int64_t out, int64_t source) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     struct ggml_tensor *tensor = align_gpu_kv_at(state, index);
@@ -1811,19 +1815,26 @@ int32_t align_gpu_kv_write_slot(
     struct ggml_tensor *view = NULL;
     struct ggml_tensor *result = NULL;
     struct ggml_context *ctx = align_gpu_graph_context_at(state, kind);
+    int sequence_dim = layout == 0 ? 1 : 0;
+    int dim = 0;
     size_t offset = 0;
     if (state == NULL || tensor == NULL || src == NULL || ctx == NULL
-        || state->graph_prepared[kind] || position < 0
+        || state->graph_prepared[kind] || (layout != 0 && layout != 1) || position < 0
         || tensor->type != GGML_TYPE_F32 || src->type != tensor->type
-        || src->ne[0] != tensor->ne[0] || src->ne[1] <= 0
-        || src->ne[2] != tensor->ne[2] || src->ne[3] != tensor->ne[3]
-        || position > tensor->ne[1] || src->ne[1] > tensor->ne[1] - position) {
+        || src->ne[sequence_dim] <= 0
+        || position > tensor->ne[sequence_dim]
+        || src->ne[sequence_dim] > tensor->ne[sequence_dim] - position) {
         return ALIGN_GPU_CONFIG;
     }
-    if ((uint64_t) position > (uint64_t) SIZE_MAX / tensor->nb[1]) {
+    for (dim = 0; dim < 4; ++dim) {
+        if (dim != sequence_dim && src->ne[dim] != tensor->ne[dim]) {
+            return ALIGN_GPU_CONFIG;
+        }
+    }
+    if ((uint64_t) position > (uint64_t) SIZE_MAX / tensor->nb[sequence_dim]) {
         return ALIGN_GPU_CONFIG;
     }
-    offset = (size_t) position * tensor->nb[1];
+    offset = (size_t) position * tensor->nb[sequence_dim];
     view = ggml_view_4d(ctx, tensor,
                         src->ne[0], src->ne[1], src->ne[2], src->ne[3],
                         tensor->nb[1], tensor->nb[2], tensor->nb[3], offset);

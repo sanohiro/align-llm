@@ -1540,14 +1540,18 @@ static void align_stub_run(align_stub_tensor *t) {
     } break;
     case ALIGN_STUB_OP_KV_RANGE: {
         int64_t position = t->lp[0];
+        int64_t layout = t->lp[1];
         for (i3 = 0; i3 < t->ne[3]; i3++) {
             for (i2 = 0; i2 < t->ne[2]; i2++) {
                 for (i1 = 0; i1 < t->ne[1]; i1++) {
                     for (i0 = 0; i0 < t->ne[0]; i0++) {
                         int64_t target = i0 + t->ne[0]
                             * (i1 + t->ne[1] * (i2 + t->ne[2] * i3));
-                        int64_t source = i0 + a->ne[0]
-                            * ((position + i1) + a->ne[1] * (i2 + a->ne[2] * i3));
+                        int64_t source = layout == 0
+                            ? i0 + a->ne[0]
+                                * ((position + i1) + a->ne[1] * (i2 + a->ne[2] * i3))
+                            : (position + i0) + a->ne[0]
+                                * (i1 + a->ne[1] * (i2 + a->ne[2] * i3));
                         d[target] = x[source];
                     }
                 }
@@ -1560,14 +1564,18 @@ static void align_stub_run(align_stub_tensor *t) {
         float *destination_data = (float *) destination->data;
         float *plane_data = (float *) plane->data;
         int64_t position = destination->lp[0];
+        int64_t layout = destination->lp[1];
         for (i3 = 0; i3 < t->ne[3]; i3++) {
             for (i2 = 0; i2 < t->ne[2]; i2++) {
                 for (i1 = 0; i1 < t->ne[1]; i1++) {
                     for (i0 = 0; i0 < t->ne[0]; i0++) {
                         int64_t source = i0 + t->ne[0]
                             * (i1 + t->ne[1] * (i2 + t->ne[2] * i3));
-                        int64_t plane_at = i0 + plane->ne[0]
-                            * ((position + i1) + plane->ne[1] * (i2 + plane->ne[2] * i3));
+                        int64_t plane_at = layout == 0
+                            ? i0 + plane->ne[0]
+                                * ((position + i1) + plane->ne[1] * (i2 + plane->ne[2] * i3))
+                            : (position + i0) + plane->ne[0]
+                                * (i1 + plane->ne[1] * (i2 + plane->ne[2] * i3));
                         float value = x[source];
                         destination_data[source] = value;
                         plane_data[plane_at] = value;
@@ -2283,19 +2291,22 @@ void *align_gpu_graph_context_open(void *owner, int32_t kind, int64_t metadata_b
 }
 
 int32_t align_gpu_kv_prefix_slot(
-        void *owner, int64_t index, int32_t kind, int64_t valid_width,
+        void *owner, int64_t index, int32_t kind, int32_t layout, int64_t valid_width,
         void *slots, int64_t out) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     align_stub_tensor *tensor = align_gpu_stub_kv_at(state, index);
     align_stub_tensor *view = NULL;
     void *ctx = align_gpu_graph_context_at(state, kind);
+    int sequence_dim = layout == 0 ? 1 : 0;
     if (state == NULL || tensor == NULL || ctx == NULL || state->graph_prepared[kind]
-        || valid_width <= 0
-        || valid_width > tensor->ne[1] || tensor->type != ALIGN_STUB_TYPE_F32) {
+        || (layout != 0 && layout != 1) || valid_width <= 0
+        || valid_width > tensor->ne[sequence_dim] || tensor->type != ALIGN_STUB_TYPE_F32) {
         return ALIGN_GPU_CONFIG;
     }
     view = align_stub_new(ctx, ALIGN_STUB_TYPE_F32,
-                          tensor->ne[0], valid_width, tensor->ne[2], tensor->ne[3]);
+                          layout == 0 ? tensor->ne[0] : valid_width,
+                          layout == 0 ? valid_width : tensor->ne[1],
+                          tensor->ne[2], tensor->ne[3]);
     if (view == NULL) {
         return ALIGN_GPU_ALLOCATION;
     }
@@ -2304,7 +2315,7 @@ int32_t align_gpu_kv_prefix_slot(
 }
 
 int32_t align_gpu_kv_write_slot(
-        void *owner, int64_t index, int32_t kind, int64_t position,
+        void *owner, int64_t index, int32_t kind, int32_t layout, int64_t position,
         void *slots, int64_t out, int64_t source) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     align_stub_tensor *tensor = align_gpu_stub_kv_at(state, index);
@@ -2312,14 +2323,21 @@ int32_t align_gpu_kv_write_slot(
     align_stub_tensor *view = NULL;
     align_stub_tensor *result = NULL;
     void *ctx = align_gpu_graph_context_at(state, kind);
+    int sequence_dim = layout == 0 ? 1 : 0;
+    int dim = 0;
     int32_t status = ALIGN_GGML_OK;
     if (state == NULL || tensor == NULL || src == NULL || ctx == NULL
-        || state->graph_prepared[kind] || position < 0
+        || state->graph_prepared[kind] || (layout != 0 && layout != 1) || position < 0
         || tensor->type != ALIGN_STUB_TYPE_F32 || src->type != tensor->type
-        || src->ne[0] != tensor->ne[0] || src->ne[1] <= 0
-        || src->ne[2] != tensor->ne[2] || src->ne[3] != tensor->ne[3]
-        || position > tensor->ne[1] || src->ne[1] > tensor->ne[1] - position) {
+        || src->ne[sequence_dim] <= 0
+        || position > tensor->ne[sequence_dim]
+        || src->ne[sequence_dim] > tensor->ne[sequence_dim] - position) {
         return ALIGN_GPU_CONFIG;
+    }
+    for (dim = 0; dim < 4; ++dim) {
+        if (dim != sequence_dim && src->ne[dim] != tensor->ne[dim]) {
+            return ALIGN_GPU_CONFIG;
+        }
     }
     view = align_stub_new(ctx, ALIGN_STUB_TYPE_F32,
                           src->ne[0], src->ne[1], src->ne[2], src->ne[3]);
@@ -2329,6 +2347,7 @@ int32_t align_gpu_kv_write_slot(
         return ALIGN_GPU_ALLOCATION;
     }
     view->lp[0] = position;
+    view->lp[1] = layout;
     status = align_stub_bind(slots, out, view, tensor, NULL, ALIGN_STUB_OP_KV_RANGE);
     if (status != ALIGN_GGML_OK) {
         return ALIGN_GPU_CONFIG;

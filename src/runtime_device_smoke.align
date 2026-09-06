@@ -462,15 +462,21 @@ fn exercise_live_owner(
   ggml_ffi.gpu_input_slot(owner, 0, slots, 2) else {
     return Err(Error.Invalid)
   }
-  match runtime_kv.prefix_slot(owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, 0, slots, 4) {
+  match runtime_kv.prefix_slot(
+    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K, 0, slots, 4,
+  ) {
     Ok(_) => { return Err(Error.Invalid) }
     Err(_) => {}
   }
-  match runtime_kv.prefix_slot(owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, 129, slots, 4) {
+  match runtime_kv.prefix_slot(
+    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K, 129, slots, 4,
+  ) {
     Ok(_) => { return Err(Error.Invalid) }
     Err(_) => {}
   }
-  runtime_kv.prefix_slot(owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, 2, slots, 4)?
+  runtime_kv.prefix_slot(
+    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K, 2, slots, 4,
+  )?
   ggml_ffi.gpu_input_slot(owner, query_index, slots, 5) else {
     return Err(Error.Invalid)
   }
@@ -478,27 +484,29 @@ fn exercise_live_owner(
     return Err(Error.Invalid)
   }
   match runtime_kv.write_slot(
-    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, -1, slots, 15, 14,
+    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K, -1, slots, 15, 14,
   ) {
     Ok(_) => { return Err(Error.Invalid) }
     Err(_) => {}
   }
   match runtime_kv.write_slot(
-    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, 127, slots, 15, 14,
+    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K, 127, slots, 15, 14,
   ) {
     Ok(_) => { return Err(Error.Invalid) }
     Err(_) => {}
   }
   match runtime_kv.write_slot(
-    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, 2, slots, 15, 2,
+    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K, 2, slots, 15, 2,
   ) {
     Ok(_) => { return Err(Error.Invalid) }
     Err(_) => {}
   }
   runtime_kv.write_slot(
-    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, 2, slots, 15, 14,
+    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K, 2, slots, 15, 14,
   )?
-  runtime_kv.prefix_slot(owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, 4, slots, 16)?
+  runtime_kv.prefix_slot(
+    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K, 4, slots, 16,
+  )?
   match runtime_inputs.mask_prefix_slot(
     owner, mask_index, ggml_ffi.GPU_GRAPH_PREFILL, 0, 1, slots, 7,
   ) {
@@ -604,13 +612,13 @@ fn exercise_live_owner(
     Err(_) => {}
   }
   match runtime_kv.prefix_slot(
-    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, 1, slots, 12,
+    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K, 1, slots, 12,
   ) {
     Ok(_) => { return Err(Error.Invalid) }
     Err(_) => {}
   }
   match runtime_kv.write_slot(
-    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, 3, slots, 18, 14,
+    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K, 3, slots, 18, 14,
   ) {
     Ok(_) => { return Err(Error.Invalid) }
     Err(_) => {}
@@ -880,7 +888,9 @@ fn exercise_live_owner(
   ggml_ffi.slots_init(slots, slots.len(), "gpu_rebuilt_graph_slots") else {
     return Err(Error.Invalid)
   }
-  runtime_kv.prefix_slot(owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, 1, slots, 0)?
+  runtime_kv.prefix_slot(
+    owner, 0, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K, 1, slots, 0,
+  )?
   ggml_ffi.gpu_input_slot(owner, query_index, slots, 1) else {
     return Err(Error.Invalid)
   }
@@ -957,6 +967,161 @@ fn exercise_live_owner(
     owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_REUSES) != 1
     || runtime_execution.state(
     owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_INVALIDATIONS) != 0 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn exercise_v_layout(
+  backend: str,
+  device: str,
+  bundle_root: str,
+  bundle_id: str,
+) -> Result<(), Error> {
+  owner := opened(backend, device, bundle_root)?
+  runtime_memory.admit(
+    owner,
+    runtime_memory.MemoryPlan {
+      weights_bytes: 32,
+      kv_bytes: 32,
+      workspace_bytes: 65536,
+      metadata_bytes: 65536,
+      staging_bytes: 4,
+      legacy_cache_bytes: 0,
+    },
+  )?
+  runtime_memory.allocate(owner)?
+
+  runtime_weights.begin(owner, 1)?
+  weight := runtime_weights.add(
+    owner,
+    runtime_weights.Shape {
+      ggml_type: 0,
+      n_dims: 1,
+      ne0: 1,
+      ne1: 1,
+      ne2: 1,
+      ne3: 1,
+    },
+  )?
+  mut weight_bytes := buffer(4)
+  weight_bytes.put_u32_le(1065353216)
+  weight_view := weight_bytes.bytes()
+  runtime_weights.upload(owner, weight, weight_view)?
+  runtime_weights.finish(owner)?
+
+  runtime_kv.begin(owner, 1)?
+  plane := runtime_kv.add(
+    owner,
+    runtime_kv.Shape {
+      ggml_type: 0,
+      n_dims: 3,
+      ne0: 4,
+      ne1: 2,
+      ne2: 1,
+      ne3: 1,
+    },
+  )?
+  runtime_kv.finish(owner)?
+  mut zero_plane := buffer(32)
+  mut zero_at := 0
+  loop {
+    if zero_at >= 8 { break }
+    zero_plane.put_u32_le(0)
+    zero_at = zero_at + 1
+  }
+  zero_view := zero_plane.bytes()
+  runtime_kv.update(owner, plane, 0, zero_view)?
+
+  runtime_inputs.begin(owner, 1)?
+  source := runtime_inputs.add(
+    owner,
+    runtime_inputs.Shape {
+      ggml_type: 0,
+      n_dims: 3,
+      ne0: 2,
+      ne1: 2,
+      ne2: 1,
+      ne3: 1,
+    },
+  )?
+  runtime_inputs.finish(owner)?
+
+  ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_PREFILL, 16384)
+  if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
+  mut slot_storage := buffer(256)
+  mut slot_word := 0
+  loop {
+    if slot_word >= 64 { break }
+    slot_storage.put_u32_le(0)
+    slot_word = slot_word + 1
+  }
+  slots := slot_storage.bytes()
+  ggml_ffi.slots_init(slots, slots.len(), "gpu_v_layout_slots") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_input_slot(owner, source, slots, 0) else { return Err(Error.Invalid) }
+  match runtime_kv.prefix_slot(
+    owner, plane, ggml_ffi.GPU_GRAPH_PREFILL, 2, 3, slots, 2,
+  ) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  match runtime_kv.write_slot(
+    owner, plane, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K, 1, slots, 1, 0,
+  ) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  runtime_kv.write_slot(
+    owner, plane, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_V, 1, slots, 1, 0,
+  )?
+  runtime_kv.prefix_slot(
+    owner, plane, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_V, 3, slots, 2,
+  )?
+  ggml_ffi.gpu_kv_slot(owner, plane, slots, 3) else { return Err(Error.Invalid) }
+  if ggml_ffi.slot_ne(slots, 2, 0) != 3 || ggml_ffi.slot_ne(slots, 2, 1) != 2 {
+    return Err(Error.Invalid)
+  }
+  graph := ggml_ffi.graph_new(ctx)
+  if graph.is_null() { return Err(Error.Invalid) }
+  ggml_ffi.graph_expand(graph, slots, 1, "gpu_v_layout_write") else {
+    return Err(Error.Invalid)
+  }
+  key := topology_key(
+    backend, bundle_id, ggml_ffi.GPU_GRAPH_PREFILL, PREFILL_TENSOR_DIGEST, 3,
+    PREFILL_OUTPUT_DIGEST,
+  )?
+  runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
+  mut values := buffer(16)
+  values.put_u32_le(1065353216)
+  values.put_u32_le(1073741824)
+  values.put_u32_le(1077936128)
+  values.put_u32_le(1082130432)
+  value_view := values.bytes()
+  runtime_inputs.update(owner, source, 0, value_view)?
+  runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
+  runtime_device.synchronize(owner)?
+
+  mut full := buffer(32)
+  mut full_at := 0
+  loop {
+    if full_at >= 8 { break }
+    full.put_u32_le(4294967295)
+    full_at = full_at + 1
+  }
+  full_view := full.bytes()
+  ggml_ffi.slot_get(slots, 3, full_view, 0, full_view.len(), "gpu_v_plane") else {
+    return Err(Error.Invalid)
+  }
+  if full_view.u32_le(0) != 0
+    || full_view.u32_le(4) != 1065353216
+    || full_view.u32_le(8) != 1073741824
+    || full_view.u32_le(12) != 0
+    || full_view.u32_le(16) != 0
+    || full_view.u32_le(20) != 1077936128
+    || full_view.u32_le(24) != 1082130432
+    || full_view.u32_le(28) != 0 {
     return Err(Error.Invalid)
   }
   return Ok(())
@@ -1170,6 +1335,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   expect_weight_allocation_failure(backend, device, bundle_root)?
   exercise_live_owner(backend, device, bundle_root, backend_path, bundle_id)?
   exercise_live_owner(backend, device, bundle_root, backend_path, bundle_id)?
+  exercise_v_layout(backend, device, bundle_root, bundle_id)?
 
   expect_verification_refusal(backend, device, other_bundle_root)?
   expect_bundle_switch(

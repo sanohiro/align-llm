@@ -87,6 +87,8 @@ pub GPU_GRAPH_REUSES := 2
 pub GPU_GRAPH_INVALIDATIONS := 3
 pub GPU_GRAPH_PREFILL := 0
 pub GPU_GRAPH_DECODE := 1
+pub GPU_KV_LAYOUT_K := 0
+pub GPU_KV_LAYOUT_V := 1
 
 // Outside the `ggml_status` range (`-2 ..= 2`), so a null argument handed to the compute wrapper is
 // never mistaken for a backend verdict.
@@ -262,10 +264,11 @@ extern "C" link("align_ggml_shim") {
   ) -> i32
   fn align_gpu_kv_slot(owner: raw, index: i64, slots: slice<u8>, out: i64) -> i32
   fn align_gpu_kv_prefix_slot(
-    owner: raw, index: i64, kind: i32, valid_width: i64, slots: slice<u8>, out: i64,
+    owner: raw, index: i64, kind: i32, layout: i32, valid_width: i64,
+    slots: slice<u8>, out: i64,
   ) -> i32
   fn align_gpu_kv_write_slot(
-    owner: raw, index: i64, kind: i32, position: i64,
+    owner: raw, index: i64, kind: i32, layout: i32, position: i64,
     slots: slice<u8>, out: i64, source: i64,
   ) -> i32
   fn align_gpu_kv_state(owner: raw, field: i32) -> i64
@@ -699,6 +702,7 @@ pub fn gpu_kv_prefix_slot(
   borrow owner: GpuDevice,
   index: i64,
   kind: i64,
+  layout: i64,
   valid_width: i64,
   borrow slots: slice<u8>,
   out: i64,
@@ -706,22 +710,28 @@ pub fn gpu_kv_prefix_slot(
   if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
     return Err(fault("CONFIG", "graph_kind"))
   }
+  if layout != GPU_KV_LAYOUT_K && layout != GPU_KV_LAYOUT_V {
+    return Err(fault("CONFIG", "kv_layout"))
+  }
   unsafe {
     status := align_gpu_kv_prefix_slot(
-      resource.raw(resource.borrow(owner)), index, kind as i32, valid_width, slots, out,
+      resource.raw(resource.borrow(owner)), index, kind as i32, layout as i32,
+      valid_width, slots, out,
     ) as i64
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
   }
 }
 
-// G1 resident execution. The graph-produced source is copied into the request's resident KV plane
-// at a logical sequence position. C derives every byte stride and returns the copy node, so the
-// caller can expand it before a later prefix consumer without staging K/V through host memory.
+// G1 resident execution. K and V keep their attention-ready layouts, with the sequence on dimension
+// 1 and 0 respectively. The graph-produced source is copied into its request-resident plane at a
+// logical position. C derives the selected axis and every byte stride and returns the copy node, so
+// the caller can expand it before a later prefix consumer without staging K/V through host memory.
 pub fn gpu_kv_write_slot(
   borrow owner: GpuDevice,
   index: i64,
   kind: i64,
+  layout: i64,
   position: i64,
   borrow slots: slice<u8>,
   out: i64,
@@ -730,9 +740,13 @@ pub fn gpu_kv_write_slot(
   if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
     return Err(fault("CONFIG", "graph_kind"))
   }
+  if layout != GPU_KV_LAYOUT_K && layout != GPU_KV_LAYOUT_V {
+    return Err(fault("CONFIG", "kv_layout"))
+  }
   unsafe {
     status := align_gpu_kv_write_slot(
-      resource.raw(resource.borrow(owner)), index, kind as i32, position, slots, out, source,
+      resource.raw(resource.borrow(owner)), index, kind as i32, layout as i32,
+      position, slots, out, source,
     ) as i64
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())

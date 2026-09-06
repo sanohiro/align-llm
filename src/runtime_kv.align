@@ -48,11 +48,12 @@ pub fn prefix_slot(
   borrow owner: ggml_ffi.GpuDevice,
   index: i64,
   kind: i64,
+  layout: i64,
   valid_width: i64,
   borrow slots: slice<u8>,
   out: i64,
 ) -> Result<(), Error> {
-  ggml_ffi.gpu_kv_prefix_slot(owner, index, kind, valid_width, slots, out) else {
+  ggml_ffi.gpu_kv_prefix_slot(owner, index, kind, layout, valid_width, slots, out) else {
     return Err(Error.Invalid)
   }
   return Ok(())
@@ -62,12 +63,13 @@ pub fn write_slot(
   borrow owner: ggml_ffi.GpuDevice,
   index: i64,
   kind: i64,
+  layout: i64,
   position: i64,
   borrow slots: slice<u8>,
   out: i64,
   source: i64,
 ) -> Result<(), Error> {
-  ggml_ffi.gpu_kv_write_slot(owner, index, kind, position, slots, out, source) else {
+  ggml_ffi.gpu_kv_write_slot(owner, index, kind, layout, position, slots, out, source) else {
     return Err(Error.Invalid)
   }
   return Ok(())
