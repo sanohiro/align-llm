@@ -170,6 +170,12 @@ reachable from the exact merging head at publication. The bundle's ggml commit a
 digest must equal the `ggml` record, whose commit/tree/blob objects are retained and replayed by the
 same rules; neither repository may borrow the other's manifest.
 
+The bundle producer disables Git replacements and grafts, applies fixed no-fsmonitor/no-hook Git
+options to every source query, and rejects a nonempty replacement-ref namespace before status or
+worktree reads. It recomputes the captured commit, tree and blob closure before materializing the
+private build tree or invoking CMake. Repository-local command configuration and a replacement tree
+therefore cannot execute or become build input before source admission.
+
 ### 3.5 Qualification profile schema 1
 
 Top-level key order is

@@ -25,6 +25,14 @@ MAX_RETAINED_DATA_BYTES = 512 * 1024 * 1024
 MAX_BUNDLE_ARTIFACT_BYTES = 512 * 1024 * 1024
 ZERO_DIGEST = "0" * 64
 EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()
+GIT_SAFE_OPTIONS = (
+    "--no-pager",
+    "-c", "core.useReplaceRefs=false",
+    "-c", "core.fsmonitor=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "credential.helper=",
+    "-c", "diff.external=",
+)
 
 COMMON_FLAGS = (
     "-G", "Ninja",
@@ -153,6 +161,10 @@ def isolated_environment(tools: dict[str, str], owned_root: pathlib.Path) -> dic
         "CXX": tools["cxx"],
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_GRAFT_FILE": os.devnull,
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_PAGER": "cat",
         "GIT_TERMINAL_PROMPT": "0",
         "HOME": os.fspath(home),
         "LC_ALL": "C",
@@ -539,6 +551,23 @@ def text_command(
     return command(argv, cwd=cwd, environment=environment).decode("utf-8").strip()
 
 
+def git_command(
+    git: str, arguments: list[str], *, source: pathlib.Path,
+    environment: dict[str, str],
+) -> bytes:
+    return command(
+        [git, *GIT_SAFE_OPTIONS, *arguments], cwd=source, environment=environment,
+    )
+
+
+def git_text(
+    git: str, arguments: list[str], *, source: pathlib.Path,
+    environment: dict[str, str],
+) -> str:
+    return git_command(git, arguments, source=source, environment=environment) \
+        .decode("utf-8").strip()
+
+
 def flags(backend: str) -> list[str]:
     return [*COMMON_FLAGS, *BACKEND_FLAGS[backend]]
 
@@ -555,36 +584,84 @@ def plan(backend: str) -> dict[str, object]:
 
 def require_source(source: pathlib.Path, git: str, environment: dict[str, str]) -> None:
     source = source.resolve()
-    top = pathlib.Path(text_command(
-        [git, "rev-parse", "--show-toplevel"], cwd=source, environment=environment,
+    top = pathlib.Path(git_text(
+        git, ["rev-parse", "--show-toplevel"], source=source, environment=environment,
     )).resolve()
     if top != source:
         raise RecipeError("source is not the Git worktree root")
-    if text_command([git, "rev-parse", "HEAD"], cwd=source,
-                    environment=environment) != GGML_COMMIT:
+    if git_text(git, ["rev-parse", "HEAD"], source=source,
+                environment=environment) != GGML_COMMIT:
         raise RecipeError("source HEAD is not the pinned ggml commit")
-    if text_command([git, "remote", "get-url", "origin"], cwd=source,
-                    environment=environment) != GGML_REPOSITORY:
+    if git_text(git, ["remote", "get-url", "origin"], source=source,
+                environment=environment) != GGML_REPOSITORY:
         raise RecipeError("source origin is not the pinned ggml repository")
-    status = command(
-        [git, "status", "--porcelain=v1", "--untracked-files=all", "--ignored"],
-        cwd=source, environment=environment,
+    replacements = git_command(
+        git, ["for-each-ref", "--format=%(refname)%00", "refs/replace/"],
+        source=source, environment=environment,
+    )
+    if replacements:
+        raise RecipeError("source repository contains Git replacement refs")
+    status = git_command(
+        git, ["status", "--porcelain=v1", "--untracked-files=all", "--ignored"],
+        source=source, environment=environment,
     )
     if status:
         raise RecipeError("source worktree contains modified, untracked, or ignored paths")
 
 
+def validate_captured_source(
+    manifest: dict[str, object], manifest_raw: bytes, raw_commit: bytes,
+    blobs: dict[str, bytes], expected_kind: str,
+) -> None:
+    validated = validate_source_manifest(parse_canonical(
+        manifest_raw, MAX_SOURCE_MANIFEST_BYTES,
+    ))
+    if validated != manifest or validated["source_kind"] != expected_kind:
+        raise RecipeError("captured source manifest does not match its owner")
+    object_format = str(validated["object_format"])
+    if digest(raw_commit) != validated["commit_object_sha256"]:
+        raise RecipeError("captured source commit content digest does not match")
+    if object_oid(object_format, b"commit", raw_commit) != validated["commit"]:
+        raise RecipeError("captured source commit Git object does not match")
+    try:
+        first_line = raw_commit.split(b"\n", 1)[0].decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise RecipeError("captured source commit tree header is invalid") from exc
+    if first_line != f"tree {validated['tree']}":
+        raise RecipeError("captured source commit names a different tree")
+
+    rows = validated["files"]
+    assert isinstance(rows, list)
+    expected_blobs = {str(row["sha256"]) for row in rows}
+    if set(blobs) != expected_blobs:
+        raise RecipeError("captured source blob closure is invalid")
+    retained_bytes = len(manifest_raw) + len(raw_commit)
+    identities: dict[str, tuple[int, str]] = {}
+    for sha256, data in blobs.items():
+        retained_bytes += len(data)
+        if retained_bytes > MAX_RETAINED_DATA_BYTES or digest(data) != sha256:
+            raise RecipeError("captured source blob content or retained-data bound is invalid")
+        identities[sha256] = (len(data), object_oid(object_format, b"blob", data))
+    for ordinal, row in enumerate(rows):
+        length, git_oid = identities[str(row["sha256"])]
+        if length != row["bytes"] or git_oid != row["git_oid"]:
+            raise RecipeError(f"captured source blob identity does not match row {ordinal}")
+    if build_tree_oid(object_format, rows) != validated["tree"]:
+        raise RecipeError("captured source tree Git object does not match")
+
+
 def source_snapshot(
     source: pathlib.Path, git: str, environment: dict[str, str],
 ) -> tuple[dict[str, object], bytes, bytes, dict[str, bytes]]:
-    tree = text_command([git, "rev-parse", "HEAD^{tree}"], cwd=source, environment=environment)
-    object_format = text_command(
-        [git, "rev-parse", "--show-object-format"], cwd=source, environment=environment,
+    tree = git_text(git, ["rev-parse", "HEAD^{tree}"], source=source,
+                    environment=environment)
+    object_format = git_text(
+        git, ["rev-parse", "--show-object-format"], source=source, environment=environment,
     )
-    raw_commit = command([git, "cat-file", "commit", "HEAD"], cwd=source,
-                         environment=environment)
-    listing = command([git, "ls-tree", "-rz", "--full-tree", "HEAD"], cwd=source,
-                      environment=environment)
+    raw_commit = git_command(git, ["cat-file", "commit", "HEAD"], source=source,
+                             environment=environment)
+    listing = git_command(git, ["ls-tree", "-rz", "--full-tree", "HEAD"], source=source,
+                          environment=environment)
     rows: list[dict[str, object]] = []
     blobs: dict[str, bytes] = {}
     for raw_row in listing.split(b"\0"):
@@ -637,6 +714,7 @@ def source_snapshot(
     rendered = canonical(manifest)
     if not rows or len(rows) > 100_000 or len(rendered) > MAX_SOURCE_MANIFEST_BYTES:
         raise RecipeError("source manifest exceeds its schema-1 bounds")
+    validate_captured_source(manifest, rendered, raw_commit, blobs, "ggml")
     return manifest, rendered, raw_commit, blobs
 
 
