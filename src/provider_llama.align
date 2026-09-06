@@ -29,7 +29,7 @@ LlamaTokenResponse { tokens: array<i64> }
 StreamParsed { ok: bool, text: string }
 
 pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
-  validate_kind(config.kind)?
+  validate_config(config)?
   body := request_bytes(request, false)
   response := provider_http.post_json(
     config.endpoint,
@@ -43,7 +43,7 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
 }
 
 pub fn stream(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
-  validate_kind(config.kind)?
+  validate_config(config)?
   body := request_bytes(request, true)
   response := provider_http.post_json(
     config.endpoint,
@@ -62,7 +62,7 @@ pub fn stream(config: model.ProviderConfig, request: model.GenerationRequest) ->
 }
 
 pub fn count_tokens(config: model.ProviderConfig, text: str) -> Result<model.TokenCount, Error> {
-  validate_kind(config.kind)?
+  validate_config(config)?
   if config.tokenize_endpoint.len() == 0 {
     return Ok(model.TokenCount { count: estimate_tokens(text), exact: false })
   }
@@ -124,6 +124,12 @@ fn validate_kind(kind: model.ProviderKind) -> Result<(), Error> = match kind {
   LocalOpenAI => Err(Error.Invalid),
   LlamaCpp => Ok(()),
   AlignRuntime => Err(Error.Invalid),
+}
+
+fn validate_config(config: model.ProviderConfig) -> Result<(), Error> {
+  validate_kind(config.kind)?
+  if config.runtime_options_path.len() > 0 { return Err(Error.Invalid) }
+  return Ok(())
 }
 
 // The single source of llama.cpp request bytes: the same bytes go on the wire and are the SHA-256

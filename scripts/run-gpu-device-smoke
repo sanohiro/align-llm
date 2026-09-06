@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# G1 model-free device/resource owner. Both executions use the exact Align source and dynamic-link
+# boundary: the ordinary stub proves fail-closed absence, and the GPU stub proves Move/Drop,
+# process-wide exclusion, same-bundle reuse, and different-bundle refusal without model weights.
+
+unset ALIGN_LLM_GGML_INCLUDE ALIGN_LLM_GGML_LIB ALIGN_LLM_GGML_FORCE
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+work_dir=$(mktemp -d)
+ordinary_shim="${work_dir}/ordinary-shim"
+gpu_shim="${work_dir}/gpu-shim"
+executable="${work_dir}/runtime-device-smoke"
+
+cleanup() {
+  status=$?
+  rm -rf "${work_dir}"
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+ALIGN_LLM_GGML_SHIM_DIR="${ordinary_shim}" \
+  "${root_dir}/scripts/build-ggml-shim" >/dev/null
+ALIGN_LLM_GGML_FORCE=engine+gpu ALIGN_LLM_GGML_SHIM_DIR="${gpu_shim}" \
+  "${root_dir}/scripts/build-ggml-shim" >/dev/null
+
+(
+  cd "${root_dir}"
+  export LIBRARY_PATH="${gpu_shim}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+  "${compiler}" build src/runtime_device_smoke.align >/dev/null
+  mv runtime_device_smoke "${executable}"
+)
+
+bundle_id=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+export DYLD_LIBRARY_PATH="${ordinary_shim}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${ordinary_shim}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+ordinary_output=$("${executable}" unavailable metal stub-gpu "${ordinary_shim}" "${bundle_id}")
+if [ "${ordinary_output}" != "runtime device smoke: UNAVAILABLE PASS" ]; then
+  printf '%s\n' "gpu device smoke: FAIL unavailable output: ${ordinary_output}" >&2
+  exit 1
+fi
+
+export DYLD_LIBRARY_PATH="${gpu_shim}"
+export LD_LIBRARY_PATH="${gpu_shim}"
+gpu_output=$("${executable}" available metal stub-gpu "${gpu_shim}" "${bundle_id}")
+if [ "${gpu_output}" != "runtime device smoke: AVAILABLE PASS" ]; then
+  printf '%s\n' "gpu device smoke: FAIL available output: ${gpu_output}" >&2
+  exit 1
+fi
+
+printf '%s\n' "gpu device smoke: PASS"

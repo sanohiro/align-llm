@@ -1,12 +1,15 @@
 module ggml_ffi
 
+import ggml_ffi.internal.resource
+
 // R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md` sections 3.4 and 3.9). The
-// **only** module in this repository that contains an `extern` declaration or an `unsafe` block,
-// and `scripts/run-ggml-spike-smoke` asserts exactly that: it greps `src/` for an `unsafe {` block
-// opener and for an `extern "C"` line and requires each list to be this file alone. The assertion
-// is deliberately about the *block*, not about the word — the sibling modules discuss the boundary
-// in prose and `src/prompt_verifier_smoke.align` names an `unsafe_workspace` parameter, so a bare
-// `grep -rl unsafe src/` would name files that hold no unsafe code (section 6, correction C19).
+// boundary package in this repository that contains an `extern` declaration or an `unsafe` block.
+// `scripts/run-ggml-spike-smoke` asserts that both lists contain this module plus only the required
+// `ggml_ffi.internal.resource` Drop-hook leaf. The assertion is deliberately about the *block*, not
+// about the word — sibling modules discuss the boundary in prose and
+// `src/prompt_verifier_smoke.align` names an `unsafe_workspace` parameter, so a bare `grep -rl
+// unsafe src/` would name files that hold no unsafe code (section 6, correction C19, extended by
+// G1's opaque native owner).
 //
 // The block below names exactly one library — the repository's own shim — and that is the whole of
 // section 3.2's build-input decision. `src/main.align`'s import graph never reaches this module, so
@@ -41,6 +44,15 @@ pub STATUS_BOUNDS := -7
 // shared values: a `ggml_gallocr` predicate that answered `false`, and a node-slot store refusal.
 pub STATUS_ALLOC := -8
 pub STATUS_SLOT := -9
+
+pub GPU_STATUS_OK := 0
+pub GPU_STATUS_CONFIG := -1
+pub GPU_STATUS_BUSY := -2
+pub GPU_STATUS_BUNDLE_SWITCH := -3
+pub GPU_STATUS_BACKEND_UNAVAILABLE := -4
+pub GPU_STATUS_DEVICE_UNAVAILABLE := -5
+pub GPU_STATUS_POISONED := -6
+pub GPU_STATUS_ALLOCATION := -7
 
 // Outside the `ggml_status` range (`-2 ..= 2`), so a null argument handed to the compute wrapper is
 // never mistaken for a backend verdict.
@@ -77,6 +89,8 @@ pub DEVICE_TEXT_DESCRIPTION := 1
 pub MAX_DEVICE_TEXT_BYTES := 128
 
 pub Fault { code: string, detail: string }
+
+pub resource GpuDevice = ggml_ffi.internal.resource.drop_gpu_device
 
 fn fault(code: str, detail: str) -> Fault =
 Fault { code: code.clone(), detail: detail.clone() }
@@ -132,6 +146,20 @@ pub fn r5_code_for(status: i64) -> str {
   return "R5_ABI"
 }
 
+fn gpu_fault_for(status: i64) -> Fault {
+  if status == GPU_STATUS_CONFIG { return fault("CONFIG", "device") }
+  if status == GPU_STATUS_BUSY { return fault("BUSY", "device") }
+  if status == GPU_STATUS_BUNDLE_SWITCH { return fault("BUNDLE_IDENTITY", "bundle_switch") }
+  if status == GPU_STATUS_BACKEND_UNAVAILABLE {
+    return fault("BACKEND_UNAVAILABLE", "registry")
+  }
+  if status == GPU_STATUS_DEVICE_UNAVAILABLE {
+    return fault("DEVICE_UNAVAILABLE", "device")
+  }
+  if status == GPU_STATUS_ALLOCATION { return fault("ALLOCATION", "device_owner") }
+  return fault("DEVICE_LOST", "poisoned")
+}
+
 // ---------------------------------------------------------------------------------------------
 // The boundary
 // ---------------------------------------------------------------------------------------------
@@ -145,6 +173,18 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_type_ok(kind: i32, ne0: i64) -> i32
   fn align_ptr_align_mod(p: slice<u8>, modulus: i64) -> i64
   fn align_ggml_device_open() -> raw
+  fn align_gpu_device_open(
+    backend: str, backend_len: i64,
+    device: str, device_len: i64,
+    backend_path: str, backend_path_len: i64,
+    bundle_id: str, bundle_id_len: i64,
+    host_budget_bytes: i64, device_budget_bytes: i64,
+    out: raw,
+  ) -> i32
+  fn align_gpu_device_handle(owner: raw) -> raw
+  fn align_gpu_backend_handle(owner: raw) -> raw
+  fn align_gpu_device_synchronize(owner: raw) -> i32
+  fn align_gpu_device_close(owner: raw) -> ()
   // R5C section 3.4. The registry's own device selection for either kind, its numeric properties,
   // its buffer type's maximum length, and its two names.
   fn align_ggml_device_by_kind(kind: i32) -> raw
@@ -286,6 +326,62 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_gallocr_bytes(galloc: raw) -> i64
   fn align_ggml_gallocr_free(galloc: raw) -> ()
   fn align_ggml_graph_compute(backend: raw, graph: raw) -> i32
+}
+
+pub fn gpu_device_open(
+  backend: str,
+  device: str,
+  backend_path: str,
+  bundle_id: str,
+  host_budget_bytes: i64,
+  device_budget_bytes: i64,
+) -> Result<GpuDevice, Fault> {
+  unsafe {
+    output := raw.alloc(8)
+    raw.store(output, 0, raw.null())
+    status := align_gpu_device_open(
+      backend,
+      backend.len(),
+      device,
+      device.len(),
+      backend_path,
+      backend_path.len(),
+      bundle_id,
+      bundle_id.len(),
+      host_budget_bytes,
+      device_budget_bytes,
+      output,
+    ) as i64
+    state: raw := raw.load(output, 0)
+    raw.free(output)
+    if status != GPU_STATUS_OK {
+      if !state.is_null() { align_gpu_device_close(state) }
+      return Err(gpu_fault_for(status))
+    }
+    if state.is_null() { return Err(fault("DEVICE_LOST", "null_owner")) }
+    owner: GpuDevice := resource.from_raw(state)
+    return Ok(owner)
+  }
+}
+
+pub fn gpu_device_handle(borrow owner: GpuDevice) -> raw {
+  unsafe {
+    return align_gpu_device_handle(resource.raw(resource.borrow(owner)))
+  }
+}
+
+pub fn gpu_backend_handle(borrow owner: GpuDevice) -> raw {
+  unsafe {
+    return align_gpu_backend_handle(resource.raw(resource.borrow(owner)))
+  }
+}
+
+pub fn gpu_device_synchronize(borrow owner: GpuDevice) -> Result<(), Fault> {
+  unsafe {
+    status := align_gpu_device_synchronize(resource.raw(resource.borrow(owner))) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
 }
 
 // The hosted static shim contains the deterministic engine as well as the ordinary unavailable

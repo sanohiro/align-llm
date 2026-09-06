@@ -1,0 +1,155 @@
+module runtime_options
+
+import core.json
+import std.fs
+
+MAX_OPTIONS_BYTES := 16384
+MAX_DEVICE_BYTES := 256
+MAX_PATH_BYTES := 4096
+
+pub RuntimeOptions {
+  schema_version: i64,
+  backend: string,
+  device: string,
+  backend_bundle: string,
+  placement: string,
+  host_budget_bytes: i64,
+  device_budget_bytes: i64,
+  prefetch: string,
+}
+
+fn valid_text(value: str, maximum: i64) -> bool {
+  return value.len() > 0 && value.len() <= maximum && !value.contains("\0")
+}
+
+fn value_boundary(borrow bytes: slice<u8>, at: i64) -> bool {
+  if at == 0 { return true }
+  previous := bytes[at - 1]
+  return previous == 9 || previous == 10 || previous == 13 || previous == 32
+    || previous == 91 || previous == 123 || previous == 44 || previous == 58
+}
+
+// The shipped JSON parser deliberately accepts two non-RFC lexical forms. G1's wire contract is
+// strict, so reject those forms before using the shared parser: raw C0 bytes inside strings and a
+// multi-digit integer whose first digit is zero.
+fn strict_lexical(document: str) -> bool {
+  bytes := document.bytes()
+  mut at := 0
+  mut inside := false
+  mut escaped := false
+  loop {
+    if at >= bytes.len() { break }
+    byte := bytes[at]
+    if inside {
+      if escaped {
+        escaped = false
+      } else if byte == 92 {
+        escaped = true
+      } else if byte == 34 {
+        inside = false
+      } else if byte < 32 {
+        return false
+      }
+    } else if byte == 34 {
+      inside = true
+    } else if value_boundary(bytes, at) {
+      if byte == 48 && at + 1 < bytes.len()
+        && bytes[at + 1] >= 48 && bytes[at + 1] <= 57 {
+        return false
+      }
+      if byte == 45 && at + 2 < bytes.len() && bytes[at + 1] == 48
+        && bytes[at + 2] >= 48 && bytes[at + 2] <= 57 {
+        return false
+      }
+    }
+    at = at + 1
+  }
+  return !inside && !escaped
+}
+
+fn strict_shape(document: str) -> Result<(), Error> {
+  if !strict_lexical(document) { return Err(Error.Invalid) }
+  arena {
+    d := json.doc(document)?
+    if d.len() != 8 { return Err(Error.Invalid) }
+    mut schema_version := false
+    mut backend := false
+    mut device := false
+    mut backend_bundle := false
+    mut placement := false
+    mut host_budget_bytes := false
+    mut device_budget_bytes := false
+    mut prefetch := false
+    mut at := 0
+    loop {
+      if at >= d.len() { break }
+      key := d.key(at) else { return Err(Error.Invalid) }
+      if key == "schema_version" && !schema_version { schema_version = true
+      } else if key == "backend" && !backend { backend = true
+      } else if key == "device" && !device { device = true
+      } else if key == "backend_bundle" && !backend_bundle { backend_bundle = true
+      } else if key == "placement" && !placement { placement = true
+      } else if key == "host_budget_bytes" && !host_budget_bytes { host_budget_bytes = true
+      } else if key == "device_budget_bytes" && !device_budget_bytes { device_budget_bytes = true
+      } else if key == "prefetch" && !prefetch { prefetch = true
+      } else { return Err(Error.Invalid) }
+      at = at + 1
+    }
+    if !schema_version || !backend || !device || !backend_bundle || !placement
+      || !host_budget_bytes || !device_budget_bytes || !prefetch {
+      return Err(Error.Invalid)
+    }
+  }
+  return Ok(())
+}
+
+fn read_bounded(path: str) -> Result<string, Error> {
+  if !valid_text(path, MAX_PATH_BYTES) { return Err(Error.Invalid) }
+  source := fs.open(path)?
+  mut accumulated := buffer(0)
+  mut chunk := buffer(4096)
+  mut total := 0
+  loop {
+    if total == MAX_OPTIONS_BYTES {
+      mut probe := buffer(1)
+      if source.read(probe)? > 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := MAX_OPTIONS_BYTES - total
+    count := if remaining < 4096 {
+      mut tail := buffer(remaining)
+      read_count := source.read(tail)?
+      accumulated.append(tail.bytes())
+      read_count
+    } else {
+      read_count := source.read(chunk)?
+      accumulated.append(chunk.bytes())
+      read_count
+    }
+    if count == 0 { break }
+    total = total + count
+  }
+  return Ok(accumulated.bytes().as_str()?.clone())
+}
+
+pub fn decode(document: str) -> Result<RuntimeOptions, Error> {
+  strict_shape(document)?
+  options: RuntimeOptions := json.decode(document)?
+  if options.schema_version != 1
+    || (options.backend != "metal" && options.backend != "cuda")
+    || !valid_text(options.device, MAX_DEVICE_BYTES)
+    || !valid_text(options.backend_bundle, MAX_PATH_BYTES)
+    || options.placement != "resident"
+    || options.host_budget_bytes < 1
+    || options.device_budget_bytes < 1
+    || options.prefetch != "off" {
+    return Err(Error.Invalid)
+  }
+  return Ok(options)
+}
+
+pub fn load(path: str) -> Result<RuntimeOptions, Error> {
+  document := read_bounded(path)?
+  document_view: str := document
+  return decode(document_view)
+}

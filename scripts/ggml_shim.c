@@ -28,6 +28,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -918,6 +919,206 @@ void *align_ggml_device_by_kind(int32_t kind) {
         return (void *) ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
     }
     return NULL;
+}
+
+/* G1 resident device owner. The runtime has already verified the bundle manifest and artifacts;
+ * this boundary loads the exact selected backend artifact, pins the verified bundle id, selects
+ * one exact registry/device pair, and holds the process-wide serial invocation guard.
+ */
+#define ALIGN_GPU_OK                    0
+#define ALIGN_GPU_CONFIG              (-1)
+#define ALIGN_GPU_BUSY                (-2)
+#define ALIGN_GPU_BUNDLE_SWITCH       (-3)
+#define ALIGN_GPU_BACKEND_UNAVAILABLE (-4)
+#define ALIGN_GPU_DEVICE_UNAVAILABLE  (-5)
+#define ALIGN_GPU_POISONED            (-6)
+#define ALIGN_GPU_ALLOCATION          (-7)
+
+struct align_gpu_device_state {
+    ggml_backend_dev_t device;
+    ggml_backend_t backend;
+    int64_t host_budget_bytes;
+    int64_t device_budget_bytes;
+};
+
+static atomic_int align_gpu_busy = 0;
+static atomic_int align_gpu_registry_state = 0;
+static char align_gpu_bundle_id[65];
+static ggml_backend_reg_t align_gpu_registry = NULL;
+
+static int align_gpu_copy_text(char *out, size_t cap, const void *input, int64_t length) {
+    if (out == NULL || input == NULL || length <= 0 || (uint64_t) length >= (uint64_t) cap
+        || memchr(input, '\0', (size_t) length) != NULL) {
+        return 0;
+    }
+    memcpy(out, input, (size_t) length);
+    out[length] = '\0';
+    return 1;
+}
+
+static const char *align_gpu_registry_name(const char *backend) {
+    if (strcmp(backend, "metal") == 0) {
+        return "MTL";
+    }
+    if (strcmp(backend, "cuda") == 0) {
+        return "CUDA";
+    }
+    return NULL;
+}
+
+static int align_gpu_bundle_id_ok(const char *bundle_id) {
+    size_t index = 0;
+    if (bundle_id == NULL) {
+        return 0;
+    }
+    for (index = 0; index < 64; ++index) {
+        unsigned char byte = (unsigned char) bundle_id[index];
+        if (!((byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'f'))) {
+            return 0;
+        }
+    }
+    return bundle_id[64] == '\0';
+}
+
+int32_t align_gpu_device_open(
+        const void *backend_input, int64_t backend_length,
+        const void *device_input, int64_t device_length,
+        const void *backend_path_input, int64_t backend_path_length,
+        const void *bundle_id_input, int64_t bundle_id_length,
+        int64_t host_budget_bytes, int64_t device_budget_bytes,
+        void *output) {
+    char backend_name[6];
+    char device_name[257];
+    char backend_path[4097];
+    char bundle_id[65];
+    const char *registry_name = NULL;
+    ggml_backend_reg_t selected_registry = NULL;
+    ggml_backend_dev_t selected_device = NULL;
+    struct align_gpu_device_state *state = NULL;
+    size_t device_matches = 0;
+    size_t i = 0;
+    int expected = 0;
+    int registry_state = 0;
+
+    if (output == NULL) {
+        return ALIGN_GPU_CONFIG;
+    }
+    *(void **) output = NULL;
+    if (!align_gpu_copy_text(backend_name, sizeof(backend_name), backend_input, backend_length)
+        || !align_gpu_copy_text(device_name, sizeof(device_name), device_input, device_length)
+        || !align_gpu_copy_text(
+            backend_path, sizeof(backend_path), backend_path_input, backend_path_length)
+        || !align_gpu_copy_text(bundle_id, sizeof(bundle_id), bundle_id_input, bundle_id_length)
+        || bundle_id_length != 64 || !align_gpu_bundle_id_ok(bundle_id)
+        || host_budget_bytes <= 0 || device_budget_bytes <= 0) {
+        return ALIGN_GPU_CONFIG;
+    }
+    registry_name = align_gpu_registry_name(backend_name);
+    if (registry_name == NULL) {
+        return ALIGN_GPU_CONFIG;
+    }
+    if (!atomic_compare_exchange_strong(&align_gpu_busy, &expected, 1)) {
+        return ALIGN_GPU_BUSY;
+    }
+
+    registry_state = atomic_load(&align_gpu_registry_state);
+    if (registry_state < 0) {
+        atomic_store(&align_gpu_busy, 0);
+        return ALIGN_GPU_POISONED;
+    }
+    if (registry_state > 0 && memcmp(align_gpu_bundle_id, bundle_id, 65) != 0) {
+        atomic_store(&align_gpu_busy, 0);
+        return ALIGN_GPU_BUNDLE_SWITCH;
+    }
+    if (registry_state == 0) {
+        selected_registry = ggml_backend_load(backend_path);
+    } else {
+        selected_registry = align_gpu_registry;
+    }
+    if (selected_registry == NULL
+        || strcmp(ggml_backend_reg_name(selected_registry), registry_name) != 0) {
+        if (registry_state == 0) {
+            atomic_store(&align_gpu_registry_state, -1);
+        }
+        atomic_store(&align_gpu_busy, 0);
+        return ALIGN_GPU_BACKEND_UNAVAILABLE;
+    }
+    for (i = 0; i < ggml_backend_reg_dev_count(selected_registry); ++i) {
+        ggml_backend_dev_t candidate = ggml_backend_reg_dev_get(selected_registry, i);
+        if (candidate != NULL && strcmp(ggml_backend_dev_name(candidate), device_name) == 0) {
+            selected_device = candidate;
+            device_matches += 1;
+        }
+    }
+    if (device_matches != 1 || selected_device == NULL) {
+        if (registry_state == 0) {
+            atomic_store(&align_gpu_registry_state, -1);
+        }
+        atomic_store(&align_gpu_busy, 0);
+        return ALIGN_GPU_DEVICE_UNAVAILABLE;
+    }
+
+    state = (struct align_gpu_device_state *) calloc(1, sizeof(*state));
+    if (state == NULL) {
+        if (registry_state == 0) {
+            atomic_store(&align_gpu_registry_state, -1);
+        }
+        atomic_store(&align_gpu_busy, 0);
+        return ALIGN_GPU_ALLOCATION;
+    }
+    state->device = selected_device;
+    state->backend = ggml_backend_dev_init(selected_device, NULL);
+    state->host_budget_bytes = host_budget_bytes;
+    state->device_budget_bytes = device_budget_bytes;
+    if (state->backend == NULL) {
+        free(state);
+        if (registry_state == 0) {
+            atomic_store(&align_gpu_registry_state, -1);
+        }
+        atomic_store(&align_gpu_busy, 0);
+        return ALIGN_GPU_POISONED;
+    }
+    if (registry_state == 0) {
+        memcpy(align_gpu_bundle_id, bundle_id, 65);
+        align_gpu_registry = selected_registry;
+        atomic_store(&align_gpu_registry_state, 1);
+    }
+    *(void **) output = state;
+    return ALIGN_GPU_OK;
+}
+
+void *align_gpu_device_handle(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    return state == NULL ? NULL : (void *) state->device;
+}
+
+void *align_gpu_backend_handle(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    return state == NULL ? NULL : (void *) state->backend;
+}
+
+int32_t align_gpu_device_synchronize(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || state->backend == NULL) {
+        return ALIGN_GPU_CONFIG;
+    }
+    ggml_backend_synchronize(state->backend);
+    return ALIGN_GPU_OK;
+}
+
+void align_gpu_device_close(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL) {
+        return;
+    }
+    if (state->backend != NULL) {
+        ggml_backend_synchronize(state->backend);
+        ggml_backend_free(state->backend);
+        state->backend = NULL;
+    }
+    state->device = NULL;
+    free(state);
+    atomic_store(&align_gpu_busy, 0);
 }
 
 static ggml_backend_dev_t align_ggml_cpu_device(void) {

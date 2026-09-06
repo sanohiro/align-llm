@@ -102,6 +102,7 @@ fn validate_kind(kind: model.ProviderKind) -> Result<(), Error> = match kind {
 
 fn validate_request_config(config: model.ProviderConfig) -> Result<(), Error> {
   validate_kind(config.kind)?
+  if config.runtime_options_path.len() > 0 { return Err(Error.Invalid) }
   cloud := match config.kind {
     CloudOpenAI => true,
     LocalOpenAI => false,

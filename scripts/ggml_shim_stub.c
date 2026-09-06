@@ -25,6 +25,8 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdatomic.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* --- BEGIN R4.5 SHARED SHIM CONTRACT --- */
@@ -1536,6 +1538,123 @@ void *align_ggml_device_by_kind(int32_t kind) {
     }
 #endif
     return NULL;
+}
+
+#define ALIGN_GPU_OK                    0
+#define ALIGN_GPU_CONFIG              (-1)
+#define ALIGN_GPU_BUSY                (-2)
+#define ALIGN_GPU_BUNDLE_SWITCH       (-3)
+#define ALIGN_GPU_BACKEND_UNAVAILABLE (-4)
+#define ALIGN_GPU_DEVICE_UNAVAILABLE  (-5)
+#define ALIGN_GPU_POISONED            (-6)
+#define ALIGN_GPU_ALLOCATION          (-7)
+
+struct align_gpu_device_state {
+    void *device;
+    void *backend;
+};
+
+static atomic_int align_gpu_busy = 0;
+static char align_gpu_bundle_id[65];
+static int align_gpu_bundle_pinned = 0;
+
+static int align_gpu_stub_backend_ok(const void *input, int64_t length) {
+    if (input == NULL) {
+        return 0;
+    }
+    return (length == 5 && memcmp(input, "metal", 5) == 0)
+        || (length == 4 && memcmp(input, "cuda", 4) == 0);
+}
+
+static int align_gpu_stub_text_ok(const void *input, int64_t length, int64_t maximum) {
+    return input != NULL && length > 0 && length <= maximum
+        && memchr(input, '\0', (size_t) length) == NULL;
+}
+
+static int align_gpu_stub_bundle_id_ok(const void *input, int64_t length) {
+    const unsigned char *bytes = (const unsigned char *) input;
+    int64_t index = 0;
+    if (bytes == NULL || length != 64) {
+        return 0;
+    }
+    for (index = 0; index < length; ++index) {
+        if (!((bytes[index] >= '0' && bytes[index] <= '9')
+              || (bytes[index] >= 'a' && bytes[index] <= 'f'))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int32_t align_gpu_device_open(
+        const void *backend_input, int64_t backend_length,
+        const void *device_input, int64_t device_length,
+        const void *backend_path_input, int64_t backend_path_length,
+        const void *bundle_id_input, int64_t bundle_id_length,
+        int64_t host_budget_bytes, int64_t device_budget_bytes,
+        void *output) {
+    int expected = 0;
+    if (output == NULL) {
+        return ALIGN_GPU_CONFIG;
+    }
+    *(void **) output = NULL;
+    if (!align_gpu_stub_backend_ok(backend_input, backend_length)
+        || !align_gpu_stub_text_ok(device_input, device_length, 256)
+        || !align_gpu_stub_text_ok(backend_path_input, backend_path_length, 4096)
+        || !align_gpu_stub_bundle_id_ok(bundle_id_input, bundle_id_length)
+        || host_budget_bytes <= 0 || device_budget_bytes <= 0) {
+        return ALIGN_GPU_CONFIG;
+    }
+    if (!atomic_compare_exchange_strong(&align_gpu_busy, &expected, 1)) {
+        return ALIGN_GPU_BUSY;
+    }
+    if (align_gpu_bundle_pinned
+        && memcmp(align_gpu_bundle_id, bundle_id_input, 64) != 0) {
+        atomic_store(&align_gpu_busy, 0);
+        return ALIGN_GPU_BUNDLE_SWITCH;
+    }
+#ifndef ALIGN_GGML_STUB_GPU
+    atomic_store(&align_gpu_busy, 0);
+    return ALIGN_GPU_BACKEND_UNAVAILABLE;
+#else
+    struct align_gpu_device_state *state = NULL;
+    state = (struct align_gpu_device_state *) calloc(1, sizeof(*state));
+    if (state == NULL) {
+        atomic_store(&align_gpu_busy, 0);
+        return ALIGN_GPU_ALLOCATION;
+    }
+    align_stub_gpu_token = 1;
+    state->device = (void *) &align_stub_gpu_token;
+    state->backend = state;
+    if (!align_gpu_bundle_pinned) {
+        memcpy(align_gpu_bundle_id, bundle_id_input, 64);
+        align_gpu_bundle_id[64] = '\0';
+        align_gpu_bundle_pinned = 1;
+    }
+    *(void **) output = state;
+    return ALIGN_GPU_OK;
+#endif
+}
+
+void *align_gpu_device_handle(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    return state == NULL ? NULL : state->device;
+}
+
+void *align_gpu_backend_handle(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    return state == NULL ? NULL : state->backend;
+}
+
+int32_t align_gpu_device_synchronize(void *owner) {
+    return owner == NULL ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
+}
+
+void align_gpu_device_close(void *owner) {
+    if (owner != NULL) {
+        free(owner);
+        atomic_store(&align_gpu_busy, 0);
+    }
 }
 
 /* One fixed device memory figure for both `memory_free` and `memory_total`, so the golden documents

@@ -1,0 +1,97 @@
+module runtime_device_smoke
+
+import ggml_ffi
+
+fn opened(
+  backend: str,
+  device: str,
+  backend_path: str,
+  bundle_id: str,
+) -> Result<ggml_ffi.GpuDevice, Error> = match ggml_ffi.gpu_device_open(
+  backend, device, backend_path, bundle_id, 1048576, 1048576,
+) {
+  Ok(owner) => Ok(owner),
+  Err(_) => Err(Error.Invalid),
+}
+
+fn exercise_live_owner(
+  backend: str,
+  device: str,
+  backend_path: str,
+  bundle_id: str,
+) -> Result<(), Error> {
+  owner := opened(backend, device, backend_path, bundle_id)?
+  if ggml_ffi.gpu_device_handle(owner).is_null()
+    || ggml_ffi.gpu_backend_handle(owner).is_null() {
+    return Err(Error.Invalid)
+  }
+  match ggml_ffi.gpu_device_synchronize(owner) {
+    Ok(_) => {}
+    Err(_) => { return Err(Error.Invalid) }
+  }
+
+  // The owner holds the process guard until Drop. A second open in this lexical lifetime must
+  // refuse before it can inspect or mutate registry state.
+  match ggml_ffi.gpu_device_open(
+    backend, device, backend_path, bundle_id, 1048576, 1048576,
+  ) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(fault) => {
+      if fault.code != "BUSY" { return Err(Error.Invalid) }
+    }
+  }
+  return Ok(())
+}
+
+fn expect_unavailable(
+  backend: str,
+  device: str,
+  backend_path: str,
+  bundle_id: str,
+) -> Result<(), Error> = match ggml_ffi.gpu_device_open(
+  backend, device, backend_path, bundle_id, 1048576, 1048576,
+) {
+  Ok(_) => Err(Error.Invalid),
+  Err(fault) => if fault.code == "BACKEND_UNAVAILABLE" { Ok(()) } else { Err(Error.Invalid) },
+}
+
+fn expect_bundle_switch(
+  backend: str,
+  device: str,
+  backend_path: str,
+  bundle_id: str,
+) -> Result<(), Error> = match ggml_ffi.gpu_device_open(
+  backend, device, backend_path, bundle_id, 1048576, 1048576,
+) {
+  Ok(_) => Err(Error.Invalid),
+  Err(fault) => if fault.code == "BUNDLE_IDENTITY" { Ok(()) } else { Err(Error.Invalid) },
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 6 { return Err(Error.Invalid) }
+  mode := args[1]
+  backend := args[2]
+  device := args[3]
+  backend_path := args[4]
+  bundle_id := args[5]
+
+  if mode == "unavailable" {
+    expect_unavailable(backend, device, backend_path, bundle_id)?
+    print("runtime device smoke: UNAVAILABLE PASS")
+    return Ok(())
+  }
+  if mode != "available" { return Err(Error.Invalid) }
+
+  // Returning from the helper drops the first owner. Reopening the same pinned bundle proves the
+  // guard was released on that ordinary return path; returning again covers a second lifetime.
+  exercise_live_owner(backend, device, backend_path, bundle_id)?
+  exercise_live_owner(backend, device, backend_path, bundle_id)?
+
+  mut other_bundle := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  if bundle_id == other_bundle {
+    other_bundle = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  }
+  expect_bundle_switch(backend, device, backend_path, other_bundle)?
+  print("runtime device smoke: AVAILABLE PASS")
+  return Ok(())
+}

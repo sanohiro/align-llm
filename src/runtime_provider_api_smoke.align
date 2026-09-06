@@ -29,6 +29,7 @@ fn config(
     max_response_bytes: max_response_bytes,
     runtime_pack_path: pack_path,
     runtime_geometry_path: geometry_path,
+    runtime_options_path: "",
     runtime_cache_budget_bytes: cache_budget_bytes,
   }
 }
