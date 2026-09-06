@@ -933,12 +933,22 @@ void *align_ggml_device_by_kind(int32_t kind) {
 #define ALIGN_GPU_DEVICE_UNAVAILABLE  (-5)
 #define ALIGN_GPU_POISONED            (-6)
 #define ALIGN_GPU_ALLOCATION          (-7)
+#define ALIGN_GPU_MEMORY_BUDGET       (-8)
 
 struct align_gpu_device_state {
     ggml_backend_dev_t device;
     ggml_backend_t backend;
     int64_t host_budget_bytes;
     int64_t device_budget_bytes;
+    int64_t host_planned_bytes;
+    int64_t device_planned_bytes;
+    int64_t weights_bytes;
+    int64_t kv_bytes;
+    int64_t workspace_bytes;
+    int64_t metadata_bytes;
+    int64_t staging_bytes;
+    int64_t legacy_cache_bytes;
+    int memory_planned;
 };
 
 static atomic_int align_gpu_busy = 0;
@@ -1104,6 +1114,62 @@ int32_t align_gpu_device_synchronize(void *owner) {
     }
     ggml_backend_synchronize(state->backend);
     return ALIGN_GPU_OK;
+}
+
+static int align_gpu_add_bytes(int64_t left, int64_t right, int64_t *out) {
+    if (out == NULL || left < 0 || right < 0 || left > INT64_MAX - right) {
+        return 0;
+    }
+    *out = left + right;
+    return 1;
+}
+
+int32_t align_gpu_memory_admit(
+        void *owner, int64_t weights_bytes, int64_t kv_bytes, int64_t workspace_bytes,
+        int64_t metadata_bytes, int64_t staging_bytes, int64_t legacy_cache_bytes) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    int64_t device_total = 0;
+    int64_t host_total = 0;
+    if (state == NULL || state->memory_planned || weights_bytes <= 0 || kv_bytes <= 0
+        || workspace_bytes <= 0 || metadata_bytes <= 0 || staging_bytes <= 0
+        || legacy_cache_bytes < 0) {
+        return ALIGN_GPU_CONFIG;
+    }
+    if (!align_gpu_add_bytes(weights_bytes, kv_bytes, &device_total)
+        || !align_gpu_add_bytes(device_total, workspace_bytes, &device_total)
+        || !align_gpu_add_bytes(metadata_bytes, staging_bytes, &host_total)
+        || !align_gpu_add_bytes(host_total, legacy_cache_bytes, &host_total)
+        || device_total > state->device_budget_bytes || host_total > state->host_budget_bytes) {
+        return ALIGN_GPU_MEMORY_BUDGET;
+    }
+    state->weights_bytes = weights_bytes;
+    state->kv_bytes = kv_bytes;
+    state->workspace_bytes = workspace_bytes;
+    state->metadata_bytes = metadata_bytes;
+    state->staging_bytes = staging_bytes;
+    state->legacy_cache_bytes = legacy_cache_bytes;
+    state->device_planned_bytes = device_total;
+    state->host_planned_bytes = host_total;
+    state->memory_planned = 1;
+    return ALIGN_GPU_OK;
+}
+
+int64_t align_gpu_memory_bytes(void *owner, int32_t field) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || !state->memory_planned) {
+        return -1;
+    }
+    switch (field) {
+    case 0: return state->host_planned_bytes;
+    case 1: return state->device_planned_bytes;
+    case 2: return state->weights_bytes;
+    case 3: return state->kv_bytes;
+    case 4: return state->workspace_bytes;
+    case 5: return state->metadata_bytes;
+    case 6: return state->staging_bytes;
+    case 7: return state->legacy_cache_bytes;
+    default: return -1;
+    }
 }
 
 void align_gpu_device_close(void *owner) {

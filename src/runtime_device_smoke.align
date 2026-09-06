@@ -2,6 +2,7 @@ module runtime_device_smoke
 
 import ggml_ffi
 import runtime_device
+import runtime_memory
 import runtime_options
 
 fn options(backend: str, device: str, bundle_root: str) -> runtime_options.RuntimeOptions =
@@ -54,7 +55,53 @@ fn exercise_live_owner(
       if fault.code != "BUSY" { return Err(Error.Invalid) }
     }
   }
+  runtime_memory.admit(
+    owner,
+    runtime_memory.MemoryPlan {
+      weights_bytes: 524288,
+      kv_bytes: 262144,
+      workspace_bytes: 262144,
+      metadata_bytes: 4096,
+      staging_bytes: 1044480,
+      legacy_cache_bytes: 0,
+    },
+  )?
+  if runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_HOST_TOTAL) != 1048576
+    || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_DEVICE_TOTAL) != 1048576
+    || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_WEIGHTS) != 524288
+    || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_KV) != 262144
+    || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_WORKSPACE) != 262144
+    || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_METADATA) != 4096
+    || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_STAGING) != 1044480
+    || runtime_memory.bytes(owner, ggml_ffi.GPU_MEMORY_LEGACY_CACHE) != 0 {
+    return Err(Error.Invalid)
+  }
+  match ggml_ffi.gpu_memory_admit(owner, 1, 1, 1, 1, 1, 0) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(fault) => {
+      if fault.code != "CONFIG" { return Err(Error.Invalid) }
+    }
+  }
   return Ok(())
+}
+
+fn expect_memory_budget_refusal(
+  backend: str,
+  device: str,
+  bundle_root: str,
+  weights_bytes: i64,
+  kv_bytes: i64,
+  workspace_bytes: i64,
+  metadata_bytes: i64,
+  staging_bytes: i64,
+) -> Result<(), Error> {
+  owner := opened(backend, device, bundle_root)?
+  return match ggml_ffi.gpu_memory_admit(
+    owner, weights_bytes, kv_bytes, workspace_bytes, metadata_bytes, staging_bytes, 0,
+  ) {
+    Ok(_) => Err(Error.Invalid),
+    Err(fault) => if fault.code == "MEMORY_BUDGET" { Ok(()) } else { Err(Error.Invalid) },
+  }
 }
 
 fn expect_unavailable(
@@ -110,6 +157,10 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   // Returning from the helper drops the first owner. Reopening the same pinned bundle proves the
   // guard was released on that ordinary return path; returning again covers a second lifetime.
   expect_verification_refusal(backend, device, invalid_bundle_root)?
+  expect_memory_budget_refusal(backend, device, bundle_root, 524289, 262144, 262144, 1, 1)?
+  expect_memory_budget_refusal(backend, device, bundle_root, 1, 1, 1, 1, 1048576)?
+  expect_memory_budget_refusal(backend, device, bundle_root, 1, 1, 1, 9223372036854775807, 1)?
+  expect_memory_budget_refusal(backend, device, bundle_root, 9223372036854775807, 1, 1, 1, 1)?
   exercise_live_owner(backend, device, bundle_root, backend_path, bundle_id)?
   exercise_live_owner(backend, device, bundle_root, backend_path, bundle_id)?
 

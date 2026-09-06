@@ -53,6 +53,16 @@ pub GPU_STATUS_BACKEND_UNAVAILABLE := -4
 pub GPU_STATUS_DEVICE_UNAVAILABLE := -5
 pub GPU_STATUS_POISONED := -6
 pub GPU_STATUS_ALLOCATION := -7
+pub GPU_STATUS_MEMORY_BUDGET := -8
+
+pub GPU_MEMORY_HOST_TOTAL := 0
+pub GPU_MEMORY_DEVICE_TOTAL := 1
+pub GPU_MEMORY_WEIGHTS := 2
+pub GPU_MEMORY_KV := 3
+pub GPU_MEMORY_WORKSPACE := 4
+pub GPU_MEMORY_METADATA := 5
+pub GPU_MEMORY_STAGING := 6
+pub GPU_MEMORY_LEGACY_CACHE := 7
 
 // Outside the `ggml_status` range (`-2 ..= 2`), so a null argument handed to the compute wrapper is
 // never mistaken for a backend verdict.
@@ -157,6 +167,7 @@ fn gpu_fault_for(status: i64) -> Fault {
     return fault("DEVICE_UNAVAILABLE", "device")
   }
   if status == GPU_STATUS_ALLOCATION { return fault("ALLOCATION", "device_owner") }
+  if status == GPU_STATUS_MEMORY_BUDGET { return fault("MEMORY_BUDGET", "admission") }
   return fault("DEVICE_LOST", "poisoned")
 }
 
@@ -184,6 +195,16 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_device_handle(owner: raw) -> raw
   fn align_gpu_backend_handle(owner: raw) -> raw
   fn align_gpu_device_synchronize(owner: raw) -> i32
+  fn align_gpu_memory_admit(
+    owner: raw,
+    weights_bytes: i64,
+    kv_bytes: i64,
+    workspace_bytes: i64,
+    metadata_bytes: i64,
+    staging_bytes: i64,
+    legacy_cache_bytes: i64,
+  ) -> i32
+  fn align_gpu_memory_bytes(owner: raw, field: i32) -> i64
   fn align_gpu_device_close(owner: raw) -> ()
   // R5C section 3.4. The registry's own device selection for either kind, its numeric properties,
   // its buffer type's maximum length, and its two names.
@@ -381,6 +402,39 @@ pub fn gpu_device_synchronize(borrow owner: GpuDevice) -> Result<(), Fault> {
     status := align_gpu_device_synchronize(resource.raw(resource.borrow(owner))) as i64
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
+  }
+}
+
+pub fn gpu_memory_admit(
+  borrow owner: GpuDevice,
+  weights_bytes: i64,
+  kv_bytes: i64,
+  workspace_bytes: i64,
+  metadata_bytes: i64,
+  staging_bytes: i64,
+  legacy_cache_bytes: i64,
+) -> Result<(), Fault> {
+  unsafe {
+    status := align_gpu_memory_admit(
+      resource.raw(resource.borrow(owner)),
+      weights_bytes,
+      kv_bytes,
+      workspace_bytes,
+      metadata_bytes,
+      staging_bytes,
+      legacy_cache_bytes,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_memory_bytes(borrow owner: GpuDevice, field: i64) -> i64 {
+  if field < GPU_MEMORY_HOST_TOTAL || field > GPU_MEMORY_LEGACY_CACHE {
+    return -1
+  }
+  unsafe {
+    return align_gpu_memory_bytes(resource.raw(resource.borrow(owner)), field as i32)
   }
 }
 
