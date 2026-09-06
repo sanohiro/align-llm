@@ -60,8 +60,8 @@ if [ -z "${real_region}" ] || [ "${real_region}" != "${stub_region}" ]; then
   echo "ggml spike smoke: FAIL the shared shim contract differs between the two C files" >&2
   exit 1
 fi
-if grep -q "malloc" "${root_dir}/scripts/ggml_shim.c" "${root_dir}/scripts/ggml_shim_stub.c"; then
-  echo "ggml spike smoke: FAIL an unexpected malloc call appears in a shim" >&2
+if [[ "${real_region}" == *malloc* ]]; then
+  echo "ggml spike smoke: FAIL the legacy shared boundary gained a malloc call" >&2
   exit 1
 fi
 # The keyword, not the word: `prompt_verifier_smoke.align` legitimately names an

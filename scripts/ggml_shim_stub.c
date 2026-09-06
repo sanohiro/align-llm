@@ -1553,6 +1553,11 @@ void *align_ggml_device_by_kind(int32_t kind) {
 struct align_gpu_device_state {
     void *device;
     void *backend;
+    void *metadata_ctx;
+    void *staging;
+    void *weights_buffer;
+    void *kv_buffer;
+    void *workspace_buffer;
     int64_t host_budget_bytes;
     int64_t device_budget_bytes;
     int64_t host_planned_bytes;
@@ -1564,6 +1569,7 @@ struct align_gpu_device_state {
     int64_t staging_bytes;
     int64_t legacy_cache_bytes;
     int memory_planned;
+    int memory_allocated;
 };
 
 static atomic_int align_gpu_busy = 0;
@@ -1720,9 +1726,99 @@ int64_t align_gpu_memory_bytes(void *owner, int32_t field) {
     }
 }
 
+static void align_gpu_memory_release(struct align_gpu_device_state *state) {
+    if (state == NULL) {
+        return;
+    }
+    free(state->workspace_buffer);
+    state->workspace_buffer = NULL;
+    free(state->kv_buffer);
+    state->kv_buffer = NULL;
+    free(state->weights_buffer);
+    state->weights_buffer = NULL;
+    free(state->staging);
+    state->staging = NULL;
+    free(state->metadata_ctx);
+    state->metadata_ctx = NULL;
+    state->memory_allocated = 0;
+}
+
+#ifndef ALIGN_GPU_FORCE_ALLOCATION_PREFIX
+#define ALIGN_GPU_FORCE_ALLOCATION_PREFIX 0
+#endif
+
+int32_t align_gpu_memory_allocate(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || state->backend == NULL || !state->memory_planned
+        || state->memory_allocated) {
+        return ALIGN_GPU_CONFIG;
+    }
+    if ((uint64_t) state->metadata_bytes > SIZE_MAX || (uint64_t) state->staging_bytes > SIZE_MAX
+        || (uint64_t) state->weights_bytes > SIZE_MAX || (uint64_t) state->kv_bytes > SIZE_MAX
+        || (uint64_t) state->workspace_bytes > SIZE_MAX) {
+        return ALIGN_GPU_ALLOCATION;
+    }
+    if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 1) {
+        state->metadata_ctx = malloc((size_t) state->metadata_bytes);
+    }
+    if (state->metadata_ctx == NULL) {
+        goto fail;
+    }
+    if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 2) {
+        state->staging = malloc((size_t) state->staging_bytes);
+    }
+    if (state->staging == NULL) {
+        goto fail;
+    }
+    if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 3) {
+        state->weights_buffer = malloc((size_t) state->weights_bytes);
+    }
+    if (state->weights_buffer == NULL) {
+        goto fail;
+    }
+    if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 4) {
+        state->kv_buffer = malloc((size_t) state->kv_bytes);
+    }
+    if (state->kv_buffer == NULL) {
+        goto fail;
+    }
+    if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 5) {
+        state->workspace_buffer = malloc((size_t) state->workspace_bytes);
+    }
+    if (state->workspace_buffer == NULL) {
+        goto fail;
+    }
+    state->memory_allocated = 1;
+    return ALIGN_GPU_OK;
+
+fail:
+    align_gpu_memory_release(state);
+    return ALIGN_GPU_ALLOCATION;
+}
+
+int64_t align_gpu_memory_allocated_bytes(void *owner, int32_t field) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || !state->memory_allocated) {
+        return -1;
+    }
+    switch (field) {
+    case 0: return state->metadata_bytes + state->staging_bytes;
+    case 1: return state->weights_bytes + state->kv_bytes + state->workspace_bytes;
+    case 2: return state->weights_bytes;
+    case 3: return state->kv_bytes;
+    case 4: return state->workspace_bytes;
+    case 5: return state->metadata_bytes;
+    case 6: return state->staging_bytes;
+    case 7: return 0;
+    default: return -1;
+    }
+}
+
 void align_gpu_device_close(void *owner) {
-    if (owner != NULL) {
-        free(owner);
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state != NULL) {
+        align_gpu_memory_release(state);
+        free(state);
         atomic_store(&align_gpu_busy, 0);
     }
 }

@@ -28,3 +28,13 @@ pub fn admit(borrow owner: ggml_ffi.GpuDevice, plan: MemoryPlan) -> Result<(), E
 
 pub fn bytes(borrow owner: ggml_ffi.GpuDevice, field: i64) -> i64 =
 ggml_ffi.gpu_memory_bytes(owner, field)
+
+pub fn allocate(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {
+  ggml_ffi.gpu_memory_allocate(owner) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn allocated_bytes(borrow owner: ggml_ffi.GpuDevice, field: i64) -> i64 =
+ggml_ffi.gpu_memory_allocated_bytes(owner, field)

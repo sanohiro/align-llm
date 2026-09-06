@@ -19,7 +19,8 @@ set -euo pipefail
 #                           `engine+alloc`, `engine+compute`, `engine+reference`,
 #                           `engine+slot-range`, `engine+slot-empty`,
 #                           `engine+no-mark-output`, `engine+pad-negative`, and
-#                           `engine+pad-oversize` select the ggml-free deterministic engine of
+#                           `engine+pad-oversize`; the `engine+gpu+alloc-*` variants select one
+#                           forced G1 allocation prefix. These select the ggml-free engine of
 #                           `docs/specs/r5a-dense-layer-forward.md` section 5.1 and need the stub
 #   ALIGN_LLM_GGML_SHIM_DIR output directory; defaults to `build/lib` inside the work tree
 #   ALIGN_LLM_GGML_SHIM_STATIC `1` builds a static stub archive; it refuses real/forced modes
@@ -172,6 +173,26 @@ else
     # the GPU arm's own failure surface is fully covered on a host with no GPU.
     engine+gpu)        include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1")
                        flavour="stub+engine+gpu" ;;
+    engine+gpu+alloc-metadata)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GPU_FORCE_ALLOCATION_PREFIX=1")
+                       flavour="stub+engine+gpu+force-alloc-metadata" ;;
+    engine+gpu+alloc-staging)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GPU_FORCE_ALLOCATION_PREFIX=2")
+                       flavour="stub+engine+gpu+force-alloc-staging" ;;
+    engine+gpu+alloc-weights)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GPU_FORCE_ALLOCATION_PREFIX=3")
+                       flavour="stub+engine+gpu+force-alloc-weights" ;;
+    engine+gpu+alloc-kv)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GPU_FORCE_ALLOCATION_PREFIX=4")
+                       flavour="stub+engine+gpu+force-alloc-kv" ;;
+    engine+gpu+alloc-workspace)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GPU_FORCE_ALLOCATION_PREFIX=5")
+                       flavour="stub+engine+gpu+force-alloc-workspace" ;;
     engine+gpu+no-host-ptr)
                        include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
                                        "-DALIGN_GGML_FORCE_NO_HOST_PTR=1")

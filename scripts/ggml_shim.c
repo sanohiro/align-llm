@@ -11,10 +11,9 @@
  *
  *  1. **No ggml type appears in any signature.** Handles cross as `void *`, results as `int32_t`
  *     or `int64_t`. ABI drift therefore cannot silently change an Align declaration.
- *  2. **Nothing here allocates memory the document describes.** It reserves no heap, opens no
- *     path, and reads no byte the caller did not hand over. Every byte ggml computes over came from
- *     an Align `buffer` filled by `f.pread`, which is what makes "Align owns the buffer" true
- *     rather than nominal.
+ *  2. **Allocation follows the active owner contract.** The legacy external-buffer functions
+ *     reserve no model memory. G1's invocation root allocates only the explicitly admitted
+ *     metadata, staging, weights, KV and workspace ranges and releases every prefix in reverse.
  *  3. **Fail closed before ggml can abort.** `ggml_backend_cpu_buffer_from_ptr` calls `abort()`
  *     through `GGML_ASSERT` on a pointer that is not `TENSOR_ALIGNMENT`-aligned (section 2.4), so
  *     every pointer and every size is validated here, in C, before the call that would assert.
@@ -938,6 +937,11 @@ void *align_ggml_device_by_kind(int32_t kind) {
 struct align_gpu_device_state {
     ggml_backend_dev_t device;
     ggml_backend_t backend;
+    struct ggml_context *metadata_ctx;
+    void *staging;
+    ggml_backend_buffer_t weights_buffer;
+    ggml_backend_buffer_t kv_buffer;
+    ggml_backend_buffer_t workspace_buffer;
     int64_t host_budget_bytes;
     int64_t device_budget_bytes;
     int64_t host_planned_bytes;
@@ -949,6 +953,7 @@ struct align_gpu_device_state {
     int64_t staging_bytes;
     int64_t legacy_cache_bytes;
     int memory_planned;
+    int memory_allocated;
 };
 
 static atomic_int align_gpu_busy = 0;
@@ -1172,6 +1177,128 @@ int64_t align_gpu_memory_bytes(void *owner, int32_t field) {
     }
 }
 
+static void align_gpu_memory_release(struct align_gpu_device_state *state) {
+    if (state == NULL) {
+        return;
+    }
+    if (state->workspace_buffer != NULL) {
+        ggml_backend_buffer_free(state->workspace_buffer);
+        state->workspace_buffer = NULL;
+    }
+    if (state->kv_buffer != NULL) {
+        ggml_backend_buffer_free(state->kv_buffer);
+        state->kv_buffer = NULL;
+    }
+    if (state->weights_buffer != NULL) {
+        ggml_backend_buffer_free(state->weights_buffer);
+        state->weights_buffer = NULL;
+    }
+    free(state->staging);
+    state->staging = NULL;
+    if (state->metadata_ctx != NULL) {
+        ggml_free(state->metadata_ctx);
+        state->metadata_ctx = NULL;
+    }
+    state->memory_allocated = 0;
+}
+
+#ifndef ALIGN_GPU_FORCE_ALLOCATION_PREFIX
+#define ALIGN_GPU_FORCE_ALLOCATION_PREFIX 0
+#endif
+
+int32_t align_gpu_memory_allocate(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_init_params params;
+    ggml_backend_buffer_type_t buft = NULL;
+    if (state == NULL || state->backend == NULL || !state->memory_planned
+        || state->memory_allocated) {
+        return ALIGN_GPU_CONFIG;
+    }
+    if ((uint64_t) state->metadata_bytes > SIZE_MAX || (uint64_t) state->staging_bytes > SIZE_MAX
+        || (uint64_t) state->weights_bytes > SIZE_MAX || (uint64_t) state->kv_bytes > SIZE_MAX
+        || (uint64_t) state->workspace_bytes > SIZE_MAX) {
+        return ALIGN_GPU_ALLOCATION;
+    }
+    params.mem_size = (size_t) state->metadata_bytes;
+    params.mem_buffer = NULL;
+    params.no_alloc = true;
+    if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 1) {
+        state->metadata_ctx = ggml_init(params);
+    }
+    if (state->metadata_ctx == NULL) {
+        goto fail;
+    }
+    if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 2) {
+        state->staging = malloc((size_t) state->staging_bytes);
+    }
+    if (state->staging == NULL) {
+        goto fail;
+    }
+    buft = ggml_backend_get_default_buffer_type(state->backend);
+    if (buft == NULL) {
+        goto fail;
+    }
+    if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 3) {
+        state->weights_buffer =
+            ggml_backend_buft_alloc_buffer(buft, (size_t) state->weights_bytes);
+    }
+    if (state->weights_buffer == NULL) {
+        goto fail;
+    }
+    if (ggml_backend_buffer_get_size(state->weights_buffer) != (size_t) state->weights_bytes) {
+        goto fail;
+    }
+    if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 4) {
+        state->kv_buffer = ggml_backend_buft_alloc_buffer(buft, (size_t) state->kv_bytes);
+    }
+    if (state->kv_buffer == NULL) {
+        goto fail;
+    }
+    if (ggml_backend_buffer_get_size(state->kv_buffer) != (size_t) state->kv_bytes) {
+        goto fail;
+    }
+    if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 5) {
+        state->workspace_buffer =
+            ggml_backend_buft_alloc_buffer(buft, (size_t) state->workspace_bytes);
+    }
+    if (state->workspace_buffer == NULL) {
+        goto fail;
+    }
+    if (ggml_backend_buffer_get_size(state->workspace_buffer) != (size_t) state->workspace_bytes) {
+        goto fail;
+    }
+    state->memory_allocated = 1;
+    return ALIGN_GPU_OK;
+
+fail:
+    align_gpu_memory_release(state);
+    return ALIGN_GPU_ALLOCATION;
+}
+
+int64_t align_gpu_memory_allocated_bytes(void *owner, int32_t field) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    int64_t weights = 0;
+    int64_t kv = 0;
+    int64_t workspace = 0;
+    if (state == NULL || !state->memory_allocated) {
+        return -1;
+    }
+    weights = (int64_t) ggml_backend_buffer_get_size(state->weights_buffer);
+    kv = (int64_t) ggml_backend_buffer_get_size(state->kv_buffer);
+    workspace = (int64_t) ggml_backend_buffer_get_size(state->workspace_buffer);
+    switch (field) {
+    case 0: return state->metadata_bytes + state->staging_bytes;
+    case 1: return weights + kv + workspace;
+    case 2: return weights;
+    case 3: return kv;
+    case 4: return workspace;
+    case 5: return state->metadata_bytes;
+    case 6: return state->staging_bytes;
+    case 7: return 0;
+    default: return -1;
+    }
+}
+
 void align_gpu_device_close(void *owner) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL) {
@@ -1179,6 +1306,9 @@ void align_gpu_device_close(void *owner) {
     }
     if (state->backend != NULL) {
         ggml_backend_synchronize(state->backend);
+    }
+    align_gpu_memory_release(state);
+    if (state->backend != NULL) {
         ggml_backend_free(state->backend);
         state->backend = NULL;
     }

@@ -13,6 +13,7 @@ work_dir=$(mktemp -d)
 work_dir=$(CDPATH= cd -- "${work_dir}" && pwd -P)
 ordinary_shim="${work_dir}/ordinary-shim"
 gpu_shim="${work_dir}/gpu-shim"
+allocation_shims="${work_dir}/allocation-shims"
 executable="${work_dir}/runtime-device-smoke"
 
 cleanup() {
@@ -26,6 +27,12 @@ ALIGN_LLM_GGML_SHIM_DIR="${ordinary_shim}" \
   "${root_dir}/scripts/build-ggml-shim" >/dev/null
 ALIGN_LLM_GGML_FORCE=engine+gpu ALIGN_LLM_GGML_SHIM_DIR="${gpu_shim}" \
   "${root_dir}/scripts/build-ggml-shim" >/dev/null
+mkdir -p "${allocation_shims}"
+for prefix in metadata staging weights kv workspace; do
+  ALIGN_LLM_GGML_FORCE="engine+gpu+alloc-${prefix}" \
+    ALIGN_LLM_GGML_SHIM_DIR="${allocation_shims}/${prefix}" \
+    "${root_dir}/scripts/build-ggml-shim" >/dev/null
+done
 
 python3 - "${work_dir}" <<'PY'
 import hashlib
@@ -122,5 +129,17 @@ if [ "${gpu_output}" != "runtime device smoke: AVAILABLE PASS" ]; then
   printf '%s\n' "gpu device smoke: FAIL available output: ${gpu_output}" >&2
   exit 1
 fi
+
+for prefix in metadata staging weights kv workspace; do
+  export DYLD_LIBRARY_PATH="${allocation_shims}/${prefix}"
+  export LD_LIBRARY_PATH="${allocation_shims}/${prefix}"
+  allocation_output=$("${executable}" allocation-failure metal stub-gpu \
+    "${work_dir}/bundle" "${work_dir}/invalid-bundle" "${work_dir}/other-bundle" \
+    "${backend_path}" "${bundle_id}")
+  if [ "${allocation_output}" != "runtime device smoke: ALLOCATION FAILURE PASS" ]; then
+    printf '%s\n' "gpu device smoke: FAIL ${prefix} allocation output: ${allocation_output}" >&2
+    exit 1
+  fi
+done
 
 printf '%s\n' "gpu device smoke: PASS"
