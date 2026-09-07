@@ -36,7 +36,7 @@ endif
 
 .PHONY: check run build fmt format-check gpu-config-smoke gpu-backend-recipe-smoke gpu-source-replay gpu-bundle-smoke gpu-device-smoke ggml-spike ggml-spike-smoke ggml-spike-qualification layer-forward-smoke layer-forward-qualification model-forward-qualification metal-forward-qualification moe-layer-forward-qualification moe-model-forward-qualification decode-step-qualification moe-decode-step-qualification gguf-smoke gguf-reference-parity model-ir-smoke model-ir-parity expert-trace-smoke expert-trace-parity residency-sim-smoke residency-sim-qualification alignpack-smoke alignpack-qualification tokenizer-smoke tokenizer-parity prompt-smoke prompt-parity runtime-provider-smoke runtime-provider-gate olmoe-sampling-qualification eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-source-verifier-smoke prompt-snapshot-helper-smoke prompt-fixed-adapter-smoke prompt-evaluate-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke prompt-gate-check baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption c6e-request2-adoption c6f1-request11-adoption c6f2-request14-adoption c6-evaluation-adoption c7-owned-record-source-expiry-adoption c7-persisted-result-cli-smoke c7-persisted-result-lifetime-smoke c7-persisted-result-owned-move-smoke c7-persisted-result-wire-smoke c7-persisted-result-noncanonical-input-smoke c7-persisted-result-independent-destinations-smoke persisted-result-smoke persisted-result-qualification darwin-profile-gate c4-repair-gate c4-editset-gate c4-template-gate prompt-repair-adapter-smoke prompt-template-adapter-smoke ci
 .PHONY: prefix-corpus-check prefix-ttft-runner-check prefix-ttft-qualification
-.PHONY: gpu-profile-coverage gpu-input-admission gpu-source-materialization gpu-evidence-publication
+.PHONY: gpu-profile-coverage gpu-input-admission gpu-source-materialization gpu-qualification-cli gpu-evidence-publication
 .PHONY: gpu-result-replay
 .PHONY: gpu-command-environment gpu-process-cleanup gpu-build-failure-evidence gpu-preparation-evidence
 check:
@@ -101,6 +101,11 @@ gpu-input-admission:
 # output byte before any compiler or native build consumes it.
 gpu-source-materialization:
 	./scripts/run-gpu-source-materialization-smoke
+
+# G1 validates the complete CLI/input/output boundary before it creates invocation scratch or
+# permits a later preparation command to touch a compiler, linker, or device.
+gpu-qualification-cli:
+	./scripts/run-gpu-qualification-cli-smoke
 
 gpu-evidence-publication:
 	./scripts/run-gpu-evidence-publication-smoke

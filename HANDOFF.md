@@ -41,6 +41,10 @@ The preparation contract now fixes the only linkable real order: compiler, runti
 candidate, then CPU reference. The earlier validator placed the candidate before its required
 `libalign_ggml_shim`; the authoritative prose, canonical vector, validator, failure ordinals and
 owners now agree.
+The current CLI-admission batch accepts each fixed flag exactly once in any order, rejects every
+bad suite or incomplete value, admits all input and the new output path before side effects, then
+creates one private output-sibling invocation root with owned home, temporary, work and reconstructed
+source trees. Closing the invocation removes the complete scratch root without creating evidence.
 
 Request 59 is critical and blocking for production-provider integration, the main executable, and
 publication. Pinned v0.7.5 and pulled Align main `8aa9c76d` reject the unchanged valid
@@ -78,7 +82,7 @@ independent.
 per-unit checking at `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Metal and CUDA still require
 their final real-host evidence; AMD hardware is unavailable. Models, raw evidence, and build
 products remain outside Git. The current qualifier batches pass `gmake gpu-input-admission`,
-`gmake gpu-source-materialization`, `gmake gpu-evidence-publication`,
+`gmake gpu-source-materialization`, `gmake gpu-qualification-cli`, `gmake gpu-evidence-publication`,
 `gmake gpu-build-failure-evidence`, `gmake gpu-result-replay`,
 `gmake gpu-preparation-evidence`, `gmake gpu-command-environment`, `gmake gpu-process-cleanup`,
 `gmake gate-topology-check`, `scripts/check-format`, Python bytecode compilation, and `git diff --check`.

@@ -172,6 +172,28 @@ def _write_exclusive(root: pathlib.Path, relative: str, data: bytes) -> None:
             os.close(descriptor)
 
 
+def validate_output(
+    admitted: AdmittedInput, output: pathlib.Path,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """Resolve a new output and its real parent without creating either evidence or scratch."""
+    destination = output.absolute()
+    parent = destination.parent
+    try:
+        parent_metadata = parent.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise RecipeError("evidence output parent is absent") from exc
+    if not stat.S_ISDIR(parent_metadata.st_mode) or destination.exists() or destination.is_symlink():
+        raise RecipeError("evidence output must be a new path beneath a real directory")
+    try:
+        admitted_root = admitted.root.resolve(strict=True)
+        resolved_parent = parent.resolve(strict=True)
+    except OSError as exc:
+        raise RecipeError("evidence output or input root cannot be resolved") from exc
+    if resolved_parent == admitted_root or admitted_root in resolved_parent.parents:
+        raise RecipeError("evidence output must be outside the qualification input root")
+    return destination, parent
+
+
 def publish(
     admitted: AdmittedInput,
     evidence: dict[str, object],
@@ -209,21 +231,7 @@ def publish(
                 or row["sha256"] != hashlib.sha256(data).hexdigest():
             raise RecipeError("evidence prepared content identity does not match result")
 
-    destination = output.absolute()
-    parent = destination.parent
-    try:
-        parent_metadata = parent.stat(follow_symlinks=False)
-    except OSError as exc:
-        raise RecipeError("evidence output parent is absent") from exc
-    if not stat.S_ISDIR(parent_metadata.st_mode) or destination.exists() or destination.is_symlink():
-        raise RecipeError("evidence output must be a new path beneath a real directory")
-    try:
-        admitted_root = admitted.root.resolve(strict=True)
-        resolved_parent = parent.resolve(strict=True)
-    except OSError as exc:
-        raise RecipeError("evidence output or input root cannot be resolved") from exc
-    if resolved_parent == admitted_root or admitted_root in resolved_parent.parents:
-        raise RecipeError("evidence output must be outside the qualification input root")
+    destination, parent = validate_output(admitted, output)
 
     try:
         stage = pathlib.Path(tempfile.mkdtemp(prefix=f".{destination.name}.stage-", dir=parent))

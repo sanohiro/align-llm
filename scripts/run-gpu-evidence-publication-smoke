@@ -41,9 +41,10 @@ def produced_files(*, candidate: bool = True) -> dict[str, publication.RetainedF
         "compiler": b"cc\n",
         "qualifier": b"runner\n",
         "runtime": b"runtime\n",
+        "shim": b"shim\n",
     }
     if candidate:
-        values.update({"candidate": b"candidate\n", "shim": b"shim\n"})
+        values["candidate"] = b"candidate\n"
     return {
         f"artifacts/{hashlib.sha256(data).hexdigest()}": publication.RetainedFile(
             "shim" if name == "shim" else "helper", data,
@@ -127,8 +128,7 @@ def main() -> None:
         unavailable = {"state": "unavailable", "name": "", "version": "", "sha256": ""}
         build_evidence = copy.deepcopy(evidence)
         build_evidence["source"]["candidate"] = copy.deepcopy(unavailable)
-        build_evidence["source"]["shim"] = copy.deepcopy(unavailable)
-        build_evidence["preparation_commands"] = build_evidence["preparation_commands"][:3]
+        build_evidence["preparation_commands"] = build_evidence["preparation_commands"][:4]
         build_evidence["failure"] = {
             "category": "BUILD",
             "stage": "candidate_build",
@@ -137,10 +137,10 @@ def main() -> None:
         }
         build_produced = produced_files(candidate=False)
         build_produced.update({
-            "logs/002.stdout": publication.RetainedFile(
+            "logs/003.stdout": publication.RetainedFile(
                 "stdout", b"candidate-build-output\n",
             ),
-            "logs/002.stderr": publication.RetainedFile(
+            "logs/003.stderr": publication.RetainedFile(
                 "stderr", b"candidate-build-error\n",
             ),
         })
