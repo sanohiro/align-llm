@@ -5,21 +5,15 @@ this file records durable execution state.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
-Branch `agent/g1-gpu-generation` is based on main `15efe15a3fc3369b93a3343d96f0ac10ab58e4ef`.
-The user narrowed publication to Request 61 only. That request is merged into main through
-PR #211 (`4364908c208ba20b2c60b0d68d366102a35c64e2`) and linked from Align issue #981.
-The G1 implementation remains on this shared branch, unmerged and not fully qualified. The earlier
-instruction to publish this entire checkpoint was superseded; resume the ordinary G1 completion
-and publication requirements. Native case integration still depends on Request 61.
+Branch `agent/g1-gpu-generation` incorporates main `d4dabfa`. G1 remains unmerged and
+requires its ordinary consumer completion, real Metal/CUDA qualification, review and publication.
+The user authorized continued implementation, PR/merge and subsequent eligible roadmap work.
 
-Align `8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f` is pinned. Requests 59 and 60 are closed after
-PRs #972, #975, #979 and #980 repaired the borrowed-producer/replacement cases, and #973 shipped the
-absolute `--cc` surface. Issues #966/#968 contain client evidence. No Align request currently
-blocks the existing generation path. New Request 61 blocks the native numeric-stream producer:
-the pinned compiler rejects borrowed buffer/writer field receivers and optional writer projections.
-The request register contains exact-pin minimal evidence and adoption owners. No proposed surface
-is consumed; the unsuccessful prototype is removed. Resume that producer only after Align merge,
-pin adoption, `gmake gpu-numeric-stream` and final `gmake gpu-generation-smoke` acceptance.
+Request 61 shipped in Align PR #982 at `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0`;
+issue #981 is closed and the producer's Linux x86_64, Linux ARM64 and macOS CI passed.
+The request is `ALIGN_MERGED`; client pin adoption and both named acceptance owners remain pending.
+The previous `8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f` pin closes Requests 59 and 60.
+Use direct borrowed field receivers and optional-writer matches; plain field assignment still moves.
 
 **Complete implementation checkpoints.**
 
@@ -80,7 +74,7 @@ pin adoption, `gmake gpu-numeric-stream` and final `gmake gpu-generation-smoke` 
 
 **Next actions, in order.**
 
-1. Resume when Request 61 ships: adopt its exact managed pin, implement the native stream producer
+1. Adopt shipped Request 61 at its exact managed pin, implement the native stream producer
    against the shipped surface, then pass `gmake gpu-numeric-stream` and the request's final
    `gmake gpu-generation-smoke` owner. Connect the native case producer to the geometry-derived
    traversal, numeric-pair and case-sequence owners. Source capture, profile construction and local
