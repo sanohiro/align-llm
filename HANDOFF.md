@@ -27,6 +27,9 @@ The current publication batch derives the exact retained closure before side eff
 `result.json` slot under the 4,096-file bound, enforces the 512 MiB directory bound, writes only to
 a private sibling stage, rechecks every input, replays the complete staged evidence, and publishes
 with no-replace rename. It refuses output inside the input root and removes every failed stage.
+The publication audit also fixed the pre-existing preparation-log closure mismatch: a started
+failed preparation command now requires its two bounded streams at the command ordinal, and the
+directory replay accepts exactly those files.
 
 Request 59 is critical and blocking for production-provider integration, the main executable, and
 publication. Pinned v0.7.5 rejects the unchanged valid `AttemptRun.stages` owner only during
@@ -58,8 +61,9 @@ platform profiles, numeric calibration, qualifier wiring, and focused GPU owners
 per-unit checking at `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Metal and CUDA still require
 their final real-host evidence; AMD hardware is unavailable. Models, raw evidence, and build
 products remain outside Git. The current qualifier batches pass `gmake gpu-input-admission`,
-`gmake gpu-evidence-publication`, `gmake gate-topology-check`, `scripts/check-format`, Python
-bytecode compilation, and `git diff --check`.
+`gmake gpu-evidence-publication`, `gmake gpu-build-failure-evidence`, `gmake gpu-result-replay`,
+`gmake gate-topology-check`, `scripts/check-format`, Python bytecode compilation, and
+`git diff --check`.
 
 **Intentional uncommitted files.** None after the qualifier-publication checkpoint is committed.
 

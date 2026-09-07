@@ -36,14 +36,14 @@ def load_fixture_module():
     return module
 
 
-def produced_files() -> dict[str, publication.RetainedFile]:
+def produced_files(*, candidate: bool = True) -> dict[str, publication.RetainedFile]:
     values = {
-        "helper": b"candidate\n",
         "compiler": b"cc\n",
         "qualifier": b"runner\n",
-        "shim": b"shim\n",
         "runtime": b"runtime\n",
     }
+    if candidate:
+        values.update({"candidate": b"candidate\n", "shim": b"shim\n"})
     return {
         f"artifacts/{hashlib.sha256(data).hexdigest()}": publication.RetainedFile(
             "shim" if name == "shim" else "helper", data,
@@ -123,6 +123,33 @@ def main() -> None:
             for path in output.rglob("*") if path.is_file()
         )
         assert not list(temporary.glob(".evidence.stage-*"))
+
+        unavailable = {"state": "unavailable", "name": "", "version": "", "sha256": ""}
+        build_evidence = copy.deepcopy(evidence)
+        build_evidence["source"]["candidate"] = copy.deepcopy(unavailable)
+        build_evidence["source"]["shim"] = copy.deepcopy(unavailable)
+        build_evidence["preparation_commands"] = build_evidence["preparation_commands"][:3]
+        build_evidence["failure"] = {
+            "category": "BUILD",
+            "stage": "candidate_build",
+            "case_ordinal": -1,
+            "detail": "candidate exited 7",
+        }
+        build_produced = produced_files(candidate=False)
+        build_produced.update({
+            "logs/002.stdout": publication.RetainedFile(
+                "stdout", b"candidate-build-output\n",
+            ),
+            "logs/002.stderr": publication.RetainedFile(
+                "stderr", b"candidate-build-error\n",
+            ),
+        })
+        build_prepared = publication.prepare(admitted, build_produced)
+        build_evidence["files"] = build_prepared.rows
+        build_output = temporary / "build-failure"
+        publication.publish(admitted, build_evidence, build_prepared, build_output)
+        build_replayed = records.replay_evidence_directory(build_output)
+        assert build_replayed["evidence"]["failure"]["stage"] == "candidate_build"
 
         occupied = temporary / "occupied"
         occupied.mkdir()

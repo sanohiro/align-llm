@@ -1267,6 +1267,17 @@ def expected_directory_roles(records: dict[str, object]) -> dict[str, str]:
         assert isinstance(identity_value, dict)
         if identity_value["state"] == "available":
             expected[f"artifacts/{identity_value['sha256']}"] = role
+    failure = evidence["failure"]
+    commands = evidence["preparation_commands"]
+    assert isinstance(failure, dict) and isinstance(commands, list)
+    preparation_stages = {
+        "compiler", "runtime", "candidate_build", "shim_build", "cpu_reference_build",
+    }
+    if evidence["status"] == "FAIL" and failure["case_ordinal"] == -1 \
+            and failure["stage"] in preparation_stages and commands:
+        command_ordinal = len(commands) - 1
+        expected[f"logs/{command_ordinal:03d}.stdout"] = "stdout"
+        expected[f"logs/{command_ordinal:03d}.stderr"] = "stderr"
     cases = evidence["cases"]
     assert isinstance(cases, list)
     for case in cases:

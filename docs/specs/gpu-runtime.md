@@ -314,7 +314,10 @@ The directory contains only `result.json`, canonical profile/bundle/calibration 
 `source/ggml/blobs/<sha256>`, `artifacts/<sha256>`, and
 `logs/<three-digit-ordinal>.stdout|stderr`. Models/packs/geometry are identified but not copied.
 Files are single-link regular files. Logs record original count/digest and retain their first 4 MiB;
-truncation fails the case.
+truncation fails the case. When a started preparation command fails, its complete bounded streams
+are required at `logs/<three-digit preparation ordinal>.stdout|stderr`; no earlier successful
+preparation stream is retained. Preparation has no case row, so these names cannot collide with a
+case log in the same evidence bundle.
 
 `GPU_RUNTIME_EVIDENCE` top-level key order is
 `schema_version,artifact_kind,status,suite,profile_id,source,host,bundle,inputs,preparation_commands,files,cases,aggregate,cleanup,failure,elapsed_ns`.
