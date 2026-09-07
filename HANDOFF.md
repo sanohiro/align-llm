@@ -186,7 +186,15 @@ gpu-cpu-reference-build` passes with real Apple toolchain admission using the re
 framing. Python bytecode compilation and `git diff --check` pass. Managed compiler admission,
 real-profile CLI construction and numeric generation qualification remain unfinished.
 
-**Intentional uncommitted files.** None after the host toolchain-admission checkpoint is committed.
+Grouped compiler materialization now reuses the managed toolchain verifier with an injected bounded
+executor. It checks the exact clean source revision and required outputs before probing the
+digest-rechecked compiler; Git and compiler probes share the outer process group and four-entry
+environment. `scripts/test-align-toolchain` and `gmake gpu-explicit-driver` pass, including exact-pin
+adoption, revision mismatch, bootstrap failure and descendant timeout. Python bytecode compilation
+and `git diff --check` pass. Real-profile preparation assembly and native support-library selection
+remain application-owned work before the numeric case producer; no new Align gap was encountered.
+
+**Intentional uncommitted files.** None after the managed compiler-verification checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

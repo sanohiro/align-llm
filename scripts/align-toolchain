@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 
 PROJECT = Path(__file__).resolve().parent.parent
@@ -96,16 +96,23 @@ def git(source: Path, *arguments: str) -> str:
     return run(("git", "-C", os.fspath(source), *arguments), output=True)
 
 
-def verify(source: Path, revision: str) -> None:
+def verify(
+    source: Path, revision: str, *,
+    execute: Callable[[Sequence[str]], str] | None = None,
+) -> None:
+    # Consumers with an existing process/environment owner reuse these admission rules while
+    # supplying their own bounded command execution. The ordinary CLI keeps its current runner.
+    if execute is None:
+        execute = lambda arguments: run(arguments, output=True)
     try:
         metadata = source.lstat()
     except OSError as error:
         raise ToolchainError(f"managed Align checkout is unavailable: {error}") from error
     if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
         raise ToolchainError("managed Align checkout is not a directory")
-    if git(source, "rev-parse", "HEAD") != revision:
+    if execute(("git", "-C", os.fspath(source), "rev-parse", "HEAD")) != revision:
         raise ToolchainError("managed Align checkout revision differs from .align-revision")
-    if git(source, "status", "--porcelain=v1", "--untracked-files=all"):
+    if execute(("git", "-C", os.fspath(source), "status", "--porcelain=v1", "--untracked-files=all")):
         raise ToolchainError("managed Align checkout is dirty")
     for relative in (COMPILER, RUNTIME):
         path = source / relative
@@ -115,7 +122,7 @@ def verify(source: Path, revision: str) -> None:
             raise ToolchainError(f"managed Align output is unavailable: {error}") from error
         if not stat.S_ISREG(output_metadata.st_mode):
             raise ToolchainError(f"managed Align output is not a file: {relative}")
-    run((os.fspath(source / COMPILER), "--version"), output=True)
+    execute((os.fspath(source / COMPILER), "--version"))
 
 
 def digest_file(path: Path) -> tuple[str, int]:

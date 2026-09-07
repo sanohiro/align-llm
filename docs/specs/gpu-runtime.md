@@ -410,6 +410,13 @@ Constants are 1, `GPU_RUNTIME_EVIDENCE`, and `generation`; status is `PASS|FAIL`
   process group or fetch/build Align. The prepared managed compiler is a prerequisite.
   `gpu-preparation-evidence` covers lazy binding, skipped later factories and factory failure;
   `gpu-explicit-driver` covers the real grouped bootstrap and refusal to publish after its failure.
+  Before native bootstrap, that helper reuses `align-toolchain.verify` with a supplied bounded
+  executor: the input must be `target/release/alignc` beneath the exact clean managed source
+  revision, both compiler/runtime outputs must exist, and the compiler version probe must pass.
+  Git uses the admitted executable with replacements, filesystem monitors, hooks and external diff
+  disabled; all verification subprocesses remain in the same outer group and environment.
+  `scripts/test-align-toolchain` continues to own ordinary managed verification semantics;
+  `gpu-explicit-driver` owns the grouped executor, revision refusal and real managed adoption.
 - `files` rows are
   `role,path,bytes,sha256,original_bytes,original_sha256,truncated`, sorted by path and covering
   every retained file other than `result.json`. Roles are

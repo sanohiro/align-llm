@@ -120,7 +120,7 @@ def build_driver_proxy(
 
 
 def grouped_bootstrap_owner(alignc, cc, sdk, parent) -> None:
-    for mode in ("success", "failure", "timeout"):
+    for mode in ("success", "failure", "timeout", "revision"):
         fail = mode != "success"
         work = parent / ("grouped-" + mode)
         work.mkdir(mode=0o700)
@@ -143,7 +143,9 @@ def grouped_bootstrap_owner(alignc, cc, sdk, parent) -> None:
             python=qualification_run.ToolchainExecutable.admit(pathlib.Path(sys.executable)),
             helper=ROOT / "scripts/gpu_compiler_materialize.py", cc=cc_input,
             linker=qualification_run.ToolchainExecutable.admit(pathlib.Path(linker)), sdk=sdk,
-            platform="macos" if sys.platform == "darwin" else "linux", align_revision=revision,
+            git=qualification_run.ToolchainExecutable.admit(pathlib.Path(shutil.which("git"))),
+            platform="macos" if sys.platform == "darwin" else "linux",
+            align_revision="0" * 40 if mode == "revision" else revision,
         )
         state = qualification_run.PreparationState(
             pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture",
@@ -176,6 +178,8 @@ def grouped_bootstrap_owner(alignc, cc, sdk, parent) -> None:
             assert state.failed_result is not None and state.failed_result.descendants_after == 0
             assert state.failed_result.terminal == ("TIMEOUT" if mode == "timeout" else "FAIL")
             assert "logs/000.stderr" in state.retained
+            if mode == "revision":
+                assert b"revision differs" in state.failed_result.stderr.retained
             assert not (work / "alignc").exists() and not (work / "native-driver").exists()
         else:
             assert state.complete, (state.failure_detail,
