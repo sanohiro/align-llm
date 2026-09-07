@@ -124,6 +124,10 @@ gpu-special-file-admission:
 gpu-kit-assembly:
 	./scripts/run-gpu-kit-assembly-smoke
 
+.PHONY: gpu-case-sequence
+gpu-case-sequence:
+	./scripts/run-gpu-case-sequence-smoke
+
 gpu-input-admission:
 	./scripts/run-gpu-input-admission-smoke
 

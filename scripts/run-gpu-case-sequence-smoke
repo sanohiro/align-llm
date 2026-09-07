@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Exercise real case processes and validation-dependent ordered progress."""
+
+import hashlib
+import pathlib
+import sys
+import tempfile
+import time
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+from gpu_backend_recipe import RecipeError
+from gpu_qualification_cases import CaseCommand, CaseSequence
+
+
+def rejected(call):
+    try:
+        call()
+    except RecipeError:
+        pass
+    else:
+        raise AssertionError("invalid sequence transition passed")
+
+
+def main():
+    shell = pathlib.Path("/bin/sh").resolve()
+    token = "<qualifier>:sha256:" + hashlib.sha256(shell.read_bytes()).hexdigest()
+
+    def command(script):
+        return CaseCommand((str(shell), "-c", script), (token, "-c", script), {token: shell})
+
+    with tempfile.TemporaryDirectory(prefix="gpu-case-sequence-") as raw:
+        root = pathlib.Path(raw).resolve()
+        home, work = root / "home", root / "work"
+        home.mkdir(mode=0o700)
+        work.mkdir(mode=0o700)
+        context = dict(cwd=work, home=home, temporary=work)
+        for failure in (None, "construct", "spawn", "child", "validation", "validation-error", "deadline"):
+            state = CaseSequence(16, 30_000_000_000)
+            built, consumed = [], []
+            def factory(index):
+                def construct():
+                    # A child/validation boundary must complete before the next lazy construction.
+                    assert len(consumed) == index
+                    built.append(index)
+                    if index == 1 and failure == "construct":
+                        raise RecipeError("forced construction failure")
+                    if index == 1 and failure == "spawn":
+                        return CaseCommand((str(work / "missing"),), (token,), {token: work / "missing"})
+                    return command("exit 7" if index == 1 and failure == "child" else "printf valid")
+                return construct
+            def consume(index, result):
+                consumed.append(index)
+                if index == 1 and failure == "validation-error":
+                    raise RecipeError("forced numeric parser failure")
+                if index == 1 and failure == "deadline":
+                    state.deadline_ns = time.monotonic_ns() - 1
+                if result.terminal == "PASS":
+                    assert result.stdout.retained == b"valid"
+                return not (index == 1 and failure == "validation")
+            schedule = [factory(index) for index in range(16)]
+            state.run(schedule, consume=consume, **context)
+            assert state.elapsed_ns > 0
+            if failure is None:
+                assert state.complete and state.accepted == 16 and built == consumed == list(range(16))
+            else:
+                assert not state.complete and state.accepted == 1 and state.failure_ordinal == 1
+                assert built == [0, 1]
+                assert consumed == ([0] if failure in ("construct", "spawn") else [0, 1])
+                assert (state.failed_result is None) == (failure in ("construct", "spawn"))
+                if failure == "child":
+                    assert state.failed_result.exit_code == 7
+                if failure == "deadline":
+                    assert "deadline" in state.failure_detail
+            rejected(lambda: state.run(schedule, consume=consume, **context))
+
+        expired = CaseSequence(16, 1)
+        def forbidden():
+            raise AssertionError("expired sequence constructed a command")
+        expired.run([forbidden] * 16, consume=lambda *args: True, **context)
+        assert expired.failure_ordinal == 0 and expired.failed_result is None
+        timed = CaseSequence(16, 500_000_000)
+        logs = []
+        timed.run([lambda: command("printf starting; while :; do :; done")] + [forbidden] * 15,
+                  consume=lambda ordinal, result: logs.append(result) or True, **context)
+        assert timed.failure_ordinal == 0 and timed.accepted == 0 and len(logs) == 1
+        assert timed.failed_result.terminal == "TIMEOUT" and timed.failed_result.stdout.retained == b"starting"
+        assert timed.failed_result.descendants_after == 0
+        for count, budget in ((15, 1), (257, 1), (16, 0), (16, 900_000_000_001), (True, 1)):
+            rejected(lambda: CaseSequence(count, budget))
+        fresh = CaseSequence(16, 30_000_000_000)
+        rejected(lambda: fresh.run([], consume=lambda *args: True, **context))
+    print("gpu case sequence: PASS (ordered validation, shared deadline and terminal prefix)")
+
+
+if __name__ == "__main__":
+    main()

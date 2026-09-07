@@ -67,11 +67,18 @@ pin adoption, `gmake gpu-numeric-stream` and final `gmake gpu-generation-smoke` 
 - Local kit assembly now privately stages captured sources, generated records and bounded model
   copies, runs ordinary retained-root admission and exact file-closure checks, then publishes by
   no-replace rename. Fixture kits cover the real input path; real calibration remains pending.
+- Case sequencing now executes lazy commands under one generation deadline and waits for the
+  integrating consumer's output/numeric validation before constructing the next case. It retains
+  a terminal failure prefix; the consumer owns successful logs and profile-bound case records.
 
 **Next actions, in order.**
 
-1. Continue independent numeric-stream comparison, case orchestration and source/profile kit
-   construction. Request 61 pauses only the native stream producer and its generation hook.
+1. Derive case tensor traversal/counts from model geometry and connect the numeric-pair and case-
+   sequence owners. Source capture, profile construction and local kit assembly are implemented.
+   Request 61 pauses the native stream producer and its generation hook. Resolve diagnostic
+   traversal explicitly before native case integration: the canonical vectors' teacher-forced IDs
+   differ from generated expected IDs, so their forced trajectory cannot alone satisfy the separate
+   diagnostic-output-equals-production requirement.
 2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
    process/record/replay/publication owners, and real source/profile/calibration kit construction.
    The final CLI does not exist yet; do not publish a placeholder success path.
@@ -113,6 +120,9 @@ model order, platform, path, deadline and cache-budget refusals.
 controls after the FIFO repair. The regression covers every affected reader, without a new gate.
 `gmake gpu-kit-assembly` passes full fixture-kit admission, bounded large copying, missing/extra/
 malformed/digest refusals, source/copy failure cleanup and occupied-output/publication-race safety.
+`gmake gpu-case-sequence` passes real process scheduling, validation ordering, construction/spawn/
+nonzero/consumer-failure prefixes and deadline-before-construction/during-validation/child-timeout
+paths, with descendants reaped and no resume after completion or failure.
 These are focused build/registry/runtime checks, not completed GPU numeric qualification.
 
 **External inputs and constraints.** Models, raw evidence, build products and local paths stay
@@ -127,7 +137,7 @@ OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90.
 `1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
 follows from these build and correctness checkpoints.
 
-**Intentional uncommitted files.** None at the kit-assembly checkpoint.
+**Intentional uncommitted files.** None at the case-sequence checkpoint.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

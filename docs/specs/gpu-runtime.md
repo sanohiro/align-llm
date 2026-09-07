@@ -476,6 +476,16 @@ Constants are 1, `GPU_RUNTIME_EVIDENCE`, and `generation`; status is `PASS|FAIL`
 
 Case rows are
 `ordinal,case_id,calibration_case_id,role,execution,repeat_index,model_id,option_id,terminal,category,stage,exit_code,signal,command,output_sha256,token_ids,nonfinite_count,numeric,placement,transfers,memory,timing,stdout_path,stderr_path`.
+The internal case sequence consumes the complete derived command schedule lazily under one
+generation deadline. Its case consumer retains each spawned command's logs and validates the
+profile-bound output/numeric records before allowing the next factory. A failed child is still
+delivered for termination/log evidence; construction or spawn refusal has no invented child/log.
+The first process/validation/deadline failure fixes a terminal prefix, including elapsed validation
+time, and the sequence cannot resume. It does not replace case/evidence validation or construct a
+successful numeric result. `gpu-case-sequence` owns real child execution, ordered validation,
+unstarted failures, nonzero exits, consumer refusal/exception, timeout cleanup and shared-deadline
+exhaustion during validation. The integrating case consumer owns the profile identities and the
+retained results; the sequence itself does not accumulate all successful case logs in memory.
 Ordinals and identity fields equal the profile. Terminal is
 `PASS|FAIL|TIMEOUT|CRASH|SIGNAL|MISSING`; exit code/signal are integer or null. Missing output uses
 an empty digest. `PASS` uses empty category/stage, exit code zero, null signal, a constructed command
