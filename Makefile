@@ -116,6 +116,10 @@ gpu-numeric-pair:
 gpu-profile-assembly:
 	./scripts/run-gpu-profile-assembly-smoke
 
+.PHONY: gpu-special-file-admission
+gpu-special-file-admission:
+	./scripts/run-gpu-special-file-admission-smoke
+
 gpu-input-admission:
 	./scripts/run-gpu-input-admission-smoke
 

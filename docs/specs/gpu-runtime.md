@@ -183,6 +183,11 @@ that the executable has no dynamic ggml/OpenSSL/Zstandard dependency. Publicatio
 shared preparation timeout cover failure/early-exit cleanup of all copied support files.
 Validation order is framing; version/kind; exact keys/types/bounds; tagged presence; references;
 digests; semantic invariants; aggregate and directory closure.
+Regular-file admission opens with no-follow and nonblocking flags before descriptor type checks;
+an unconnected FIFO cannot stall before validation or consume an unbounded preparation interval.
+`gpu-special-file-admission` covers retained input read/digest, source replay, staged backends,
+executable identity, produced artifacts and numeric streams with bounded FIFO/socket/directory/
+symlink refusals and regular-file controls. It is a focused owner, not new aggregate membership.
 
 ### 3.4 Source manifest schema 1
 

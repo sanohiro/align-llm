@@ -61,6 +61,9 @@ pin adoption, `gmake gpu-numeric-stream` and final `gmake gpu-generation-smoke` 
 - Profile assembly now derives hashes, model bindings and complete CPU/GPU repeat expansion from
   frozen source/bundle/calibration records, explicit paths/budgets/deadlines and the existing record
   owner. Real calibration values and outputs still require execution evidence.
+- A reproduced FIFO admission stall is repaired across retained-input, source, staged-backend,
+  executable and produced-artifact readers. Descriptor opens are nonblocking before the existing
+  regular-file checks; numeric streams already used the same rule.
 
 **Next actions, in order.**
 
@@ -102,6 +105,9 @@ and independent retained replay remain passing. The capture owner also passes pr
 writing, occupied directory/symlink preservation and cleanup after injected write/replay failures.
 `gmake gpu-profile-assembly` passes exact normative-vector reproduction, canonical normalization,
 model order, platform, path, deadline and cache-budget refusals.
+`gmake gpu-special-file-admission gpu-input-admission gpu-backend-staging gpu-preparation-evidence
+ gpu-command-environment gpu-source-replay` passes bounded special-file refusals and existing owner
+controls after the FIFO repair. The regression covers every affected reader, without a new gate.
 These are focused build/registry/runtime checks, not completed GPU numeric qualification.
 
 **External inputs and constraints.** Models, raw evidence, build products and local paths stay
@@ -116,7 +122,7 @@ OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90.
 `1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
 follows from these build and correctness checkpoints.
 
-**Intentional uncommitted files.** None at the profile-assembly checkpoint.
+**Intentional uncommitted files.** None at the nonblocking-admission checkpoint.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

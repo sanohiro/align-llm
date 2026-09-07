@@ -65,7 +65,8 @@ def _write(root: pathlib.Path, relative: str, data: bytes) -> pathlib.Path:
 
 
 def _verify(path: pathlib.Path, expected_bytes: int, expected_sha256: str) -> None:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) \
+        | getattr(os, "O_NONBLOCK", 0)
     descriptor: int | None = None
     try:
         descriptor = os.open(path, flags)

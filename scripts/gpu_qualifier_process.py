@@ -102,7 +102,8 @@ def _private_directory(path: pathlib.Path, label: str) -> pathlib.Path:
 def _file_sha256(path: pathlib.Path, label: str, *, single_link: bool = True) -> str:
     if not path.is_absolute():
         raise RecipeError(f"{label} is not absolute")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) \
+        | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
         before = os.fstat(descriptor)

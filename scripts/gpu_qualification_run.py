@@ -89,7 +89,8 @@ def unavailable_identity() -> dict[str, object]:
 def _artifact(path: pathlib.Path) -> tuple[bytes, str]:
     if not path.is_absolute():
         raise RecipeError("produced artifact path is not absolute")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) \
+        | getattr(os, "O_NONBLOCK", 0)
     descriptor: int | None = None
     try:
         descriptor = os.open(path, flags)

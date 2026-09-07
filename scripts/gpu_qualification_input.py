@@ -133,7 +133,8 @@ class _RetainedRoot:
         parent = path.parent.as_posix()
         manager = self.directory(parent) if parent != "." else _borrowed_fd(self.fd)
         with manager as parent_fd:
-            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) \
+                | getattr(os, "O_NONBLOCK", 0)
             try:
                 descriptor = os.open(path.name, flags, dir_fd=parent_fd)
             except OSError as exc:
