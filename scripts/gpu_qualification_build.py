@@ -9,7 +9,7 @@ import stat
 
 from gpu_backend_recipe import RecipeError
 from gpu_qualification_run import PreparationCommand
-from gpu_qualifier_process import _single_link_sha256
+from gpu_qualifier_process import ToolchainDirectory, _single_link_sha256
 
 
 def _input(name: str, path: pathlib.Path) -> str:
@@ -32,6 +32,7 @@ def commands(
     source_commit: str,
     ggml_include: pathlib.Path | None = None,
     backend_library: pathlib.Path | None = None,
+    sdk: ToolchainDirectory | None = None,
 ) -> tuple[PreparationCommand, ...]:
     """Bind admitted build inputs; the driver supplies its verified SDK and host link inputs.
 
@@ -61,6 +62,9 @@ def commands(
                     or work.resolve(strict=True) not in resolved.parents:
                 raise RecipeError("preparation ggml directory is outside the private build root")
 
+    if sdk is not None:
+        sdk.recheck(sdk.sha256)
+
     inputs = dict((
         ("compiler-input", compiler), ("runtime-input", runtime), ("copy-tool", copier),
         ("c-driver", driver), ("reference-driver", reference_driver),
@@ -86,7 +90,7 @@ def commands(
             (str(copier), str(inputs[key]), output.name),
             (tokens["copy-tool"], tokens[key], output.name),
             {tokens["copy-tool"]: copier, tokens[key]: inputs[key]},
-            output, name, align_revision,
+            output, name, align_revision, sdk=sdk,
         ))
 
     flags = [
@@ -97,7 +101,14 @@ def commands(
         flags.extend(("-Xlinker", "-install_name", "-Xlinker", f"@rpath/{shim.name}"))
     physical = [str(driver), *flags, str(shim_source), "-o", shim.name, "-lm"]
     logical = [tokens["c-driver"], *flags, tokens["shim-source"], "-o", shim.name, "-lm"]
-    mappings = {tokens["c-driver"]: driver, tokens["shim-source"]: shim_source}
+    mappings: dict[str, pathlib.Path | ToolchainDirectory] = {
+        tokens["c-driver"]: driver, tokens["shim-source"]: shim_source,
+    }
+    if sdk is not None:
+        sdk_token = "<host-sdk>:sha256:" + sdk.sha256
+        physical.extend(("-isysroot", str(sdk.path)))
+        logical.extend(("-isysroot", sdk_token))
+        mappings[sdk_token] = sdk
     if ggml_include is not None and backend_library is not None:
         physical.extend(("-I", str(ggml_include), "-L", str(backend_library),
                          "-Xlinker", "-rpath", "-Xlinker", str(backend_library),
@@ -108,7 +119,7 @@ def commands(
         mappings.update({"<ggml-include>:owned": ggml_include,
                          "<backend-library>:owned": backend_library})
     result.append(PreparationCommand(
-        tuple(physical), tuple(logical), mappings, shim, "align-ggml-shim", source_commit,
+        tuple(physical), tuple(logical), mappings, shim, "align-ggml-shim", source_commit, sdk=sdk,
     ))
     copied_token = tokens["compiler-input"].replace("<compiler-input>", "<align-compiler>")
     for cwd, name, selected_driver, driver_token in (
@@ -121,7 +132,7 @@ def commands(
              "--cc", driver_token),
             {copied_token: copied_compiler, tokens["entry-source"]: entry,
              driver_token: selected_driver},
-            cwd / entry.stem, name, source_commit, cwd,
+            cwd / entry.stem, name, source_commit, cwd, sdk=sdk,
         ))
     # This directory is the only construction side effect. Validate every path and output first;
     # the invocation owner removes it on failure together with all other private build products.

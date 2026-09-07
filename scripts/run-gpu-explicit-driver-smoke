@@ -43,10 +43,15 @@ def build_driver_proxy(
     proxy: pathlib.Path,
     marker: pathlib.Path,
     library_root: pathlib.Path,
+    sdk: qualification_run.ToolchainDirectory | None = None,
 ) -> None:
     compiler_literal = json.dumps(str(compiler))
     marker_literal = json.dumps(str(marker))
-    library_literal = json.dumps(str(library_root))
+    extras = ["-L", str(library_root), "-Xlinker", "-rpath", "-Xlinker", str(library_root), "-B/usr/bin"]
+    if sdk is not None:
+        sdk.recheck(sdk.sha256)
+        extras.extend(("-isysroot", str(sdk.path)))
+    extra_literals = ", ".join("(char *) " + json.dumps(value) for value in extras)
     source.write_text(
         "#include <errno.h>\n"
         "#include <fcntl.h>\n"
@@ -71,17 +76,13 @@ def build_driver_proxy(
         "      getenv(\"PATH\") != 0 || getenv(\"CC\") != 0 ||\n"
         "      getenv(\"LIBRARY_PATH\") != 0 || getenv(\"DYLD_LIBRARY_PATH\") != 0 ||\n"
         "      getenv(\"LD_LIBRARY_PATH\") != 0) return 91;\n"
-        "  char **selected = calloc((size_t) argc + 8, sizeof(char *));\n"
+        f"  char *extras[] = {{ {extra_literals} }};\n"
+        "  size_t extra_count = sizeof(extras) / sizeof(extras[0]);\n"
+        "  char **selected = calloc((size_t) argc + extra_count + 1, sizeof(char *));\n"
         "  if (selected == 0) return 94;\n"
         "  for (int at = 0; at < argc; at++) selected[at] = argv[at];\n"
         f"  selected[0] = (char *) {compiler_literal};\n"
-        "  selected[argc] = (char *) \"-L\";\n"
-        f"  selected[argc + 1] = (char *) {library_literal};\n"
-        "  selected[argc + 2] = (char *) \"-Xlinker\";\n"
-        "  selected[argc + 3] = (char *) \"-rpath\";\n"
-        "  selected[argc + 4] = (char *) \"-Xlinker\";\n"
-        f"  selected[argc + 5] = (char *) {library_literal};\n"
-        "  selected[argc + 6] = (char *) \"-B/usr/bin\";\n"
+        "  for (size_t at = 0; at < extra_count; at++) selected[(size_t) argc + at] = extras[at];\n"
         f"  execv({compiler_literal}, selected);\n"
         "  return errno == 0 ? 93 : errno;\n"
         "}\n",
@@ -118,7 +119,13 @@ def main() -> None:
         proxy_source = scratch / "driver.c"
         proxy = scratch / "selected-cc"
         marker = scratch / "selected-cc.invoked"
-        build_driver_proxy(cc, proxy_source, proxy, marker, scratch)
+        sdk = None
+        if sys.platform == "darwin":
+            sdk_path = pathlib.Path(subprocess.check_output(
+                ["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True,
+            ).strip())
+            sdk = qualification_run.ToolchainDirectory.admit(sdk_path, sdk_path / "SDKSettings.json")
+        build_driver_proxy(cc, proxy_source, proxy, marker, scratch, sdk)
         source = scratch / "candidate.align"
         source.write_text(
             'extern "C" link("align_ggml_shim") { fn align_ggml_available() -> i32 }\n'
@@ -134,7 +141,7 @@ def main() -> None:
             reference_driver=proxy,
             entry=source, shim_source=ROOT / "scripts" / "ggml_shim_stub.c",
             platform="macos" if sys.platform == "darwin" else "linux",
-            align_revision=revision, source_commit=source_commit,
+            align_revision=revision, source_commit=source_commit, sdk=sdk,
         )
         qualification_run.run_preparation(state, commands, cwd=scratch, home=home, temporary=scratch)
         assert state.complete, (

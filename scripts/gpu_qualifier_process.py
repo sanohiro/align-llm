@@ -15,7 +15,7 @@ import time
 from collections.abc import Mapping, Sequence
 
 from gpu_backend_recipe import MAX_BUNDLE_ARTIFACT_BYTES, RecipeError
-from gpu_qualification_records import validate_command
+from gpu_qualification_records import command_path, validate_command
 
 
 LOG_LIMIT = 4 * 1024 * 1024
@@ -133,6 +133,51 @@ def _single_link_sha256(path: pathlib.Path, label: str) -> str:
     return digest.hexdigest()
 
 
+@dataclasses.dataclass(frozen=True)
+class ToolchainDirectory:
+    """An installed SDK root identified by its bounded, in-root metadata file."""
+
+    path: pathlib.Path
+    metadata_path: pathlib.Path
+    sha256: str
+    root_identity: tuple[int, ...]
+
+    @staticmethod
+    def _identity(path: pathlib.Path) -> tuple[int, ...]:
+        metadata = path.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise RecipeError("SDK root is not a directory")
+        return tuple(getattr(metadata, field) for field in (
+            "st_dev", "st_ino", "st_mode", "st_mtime_ns", "st_ctime_ns",
+        ))
+
+    @classmethod
+    def admit(cls, path: pathlib.Path, metadata_path: pathlib.Path) -> ToolchainDirectory:
+        if not path.is_absolute() or not metadata_path.is_absolute():
+            raise RecipeError("SDK root and metadata must be absolute")
+        root = path.resolve(strict=True)
+        # The resolver may select a versioned SDK through a directory alias, but the metadata
+        # file itself must be a no-follow regular input, just like the other hashed inputs.
+        if metadata_path.is_symlink():
+            raise RecipeError("SDK metadata is a symlink")
+        metadata = metadata_path.resolve(strict=True)
+        if root not in metadata.parents:
+            raise RecipeError("SDK metadata is outside its root")
+        identity = cls._identity(root)
+        result = cls(root, metadata, _single_link_sha256(metadata, "SDK metadata"), identity)
+        result.recheck(result.sha256)
+        return result
+
+    def recheck(self, expected: str) -> None:
+        if expected != self.sha256 or self._identity(self.path) != self.root_identity:
+            raise RecipeError("SDK root identity changed")
+        if self.path not in self.metadata_path.resolve(strict=True).parents \
+                or _single_link_sha256(self.metadata_path, "SDK metadata") != expected:
+            raise RecipeError("SDK metadata identity changed")
+        if self._identity(self.path) != self.root_identity:
+            raise RecipeError("SDK root changed during verification")
+
+
 def _is_beneath(path: pathlib.Path, roots: tuple[pathlib.Path, ...]) -> bool:
     try:
         resolved = path.resolve(strict=True)
@@ -142,27 +187,38 @@ def _is_beneath(path: pathlib.Path, roots: tuple[pathlib.Path, ...]) -> bool:
 
 
 def _verify_argv(
-    physical_argv: Sequence[str], logical_argv: Sequence[str], mappings: Mapping[str, pathlib.Path],
+    physical_argv: Sequence[str], logical_argv: Sequence[str],
+    mappings: Mapping[str, pathlib.Path | ToolchainDirectory],
     owned_roots: tuple[pathlib.Path, ...],
+    *, allow_toolchain_directories: bool = False,
 ) -> None:
     if len(physical_argv) != len(logical_argv) or not physical_argv:
         raise RecipeError("physical and logical argv do not match")
+    used: set[str] = set()
     for ordinal, (physical, logical) in enumerate(zip(physical_argv, logical_argv, strict=True)):
-        if logical.startswith("<"):
-            if logical not in mappings:
+        reference = command_path(logical)
+        if reference is not None:
+            prefix, token = reference
+            used.add(token)
+            if token not in mappings:
                 raise RecipeError(f"logical argv[{ordinal}] has no physical mapping")
-            mapped = mappings[logical]
-            if str(mapped) != physical:
+            binding = mappings[token]
+            mapped = binding.path if isinstance(binding, ToolchainDirectory) else binding
+            if prefix + str(mapped) != physical:
                 raise RecipeError(f"logical argv[{ordinal}] mapping changed")
-            if ":sha256:" in logical:
-                expected = logical.rsplit(":sha256:", 1)[1]
+            if isinstance(binding, ToolchainDirectory):
+                if not allow_toolchain_directories or ":sha256:" not in token:
+                    raise RecipeError("SDK directory binding is only valid for hashed preparation inputs")
+                binding.recheck(token.rsplit(":sha256:", 1)[1])
+            elif ":sha256:" in token:
+                expected = token.rsplit(":sha256:", 1)[1]
                 if _single_link_sha256(mapped, f"argv[{ordinal}]") != expected:
                     raise RecipeError(f"logical argv[{ordinal}] digest does not match")
             elif not _is_beneath(mapped, owned_roots):
                 raise RecipeError(f"logical argv[{ordinal}] is outside owned roots")
         elif physical != logical:
             raise RecipeError(f"literal argv[{ordinal}] changed")
-    extra = set(mappings) - {item for item in logical_argv if item.startswith("<")}
+    extra = set(mappings) - used
     if extra:
         raise RecipeError("unused logical path mapping")
 
@@ -248,12 +304,13 @@ def run_owned_command(
     kind: str,
     physical_argv: Sequence[str],
     logical_argv: Sequence[str],
-    mappings: Mapping[str, pathlib.Path],
+    mappings: Mapping[str, pathlib.Path | ToolchainDirectory],
     cwd: pathlib.Path,
     home: pathlib.Path,
     temporary: pathlib.Path,
     timeout_seconds: float,
     deadline_ns: int | None = None,
+    sdk: ToolchainDirectory | None = None,
     log_limit: int = LOG_LIMIT,
     spawn: object = subprocess.Popen,
 ) -> OwnedCommandResult:
@@ -274,7 +331,10 @@ def run_owned_command(
         from gpu_qualification_records import command_digest
         command["sha256"] = command_digest(kind, command["argv"], logical_environment)
         validate_command(command, allow_sentinel=False, expected_kind=kind)
-        _verify_argv(physical_argv, logical_argv, mappings, (home_root, temporary_root, cwd_root))
+        _verify_argv(
+            physical_argv, logical_argv, mappings, (home_root, temporary_root, cwd_root),
+            allow_toolchain_directories=kind != "case",
+        )
         executable = pathlib.Path(physical_argv[0])
         _single_link_sha256(executable, "command executable")
 
@@ -284,6 +344,10 @@ def run_owned_command(
             "TMPDIR": str(temporary_root),
             "TZ": "UTC",
         }
+        if sdk is not None:
+            if kind == "case":
+                raise RecipeError("SDK dependency is only valid for preparation")
+            sdk.recheck(sdk.sha256)
         started_ns = time.monotonic_ns()
         if deadline_ns is not None:
             if type(deadline_ns) is not int or deadline_ns <= started_ns:

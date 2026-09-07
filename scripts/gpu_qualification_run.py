@@ -15,7 +15,9 @@ from gpu_backend_recipe import MAX_BUNDLE_ARTIFACT_BYTES, RecipeError, canonical
 from gpu_qualification_input import AdmittedInput
 from gpu_qualification_publish import RetainedFile
 from gpu_qualification_records import case_order_sha256
-from gpu_qualifier_process import CommandNotStarted, OwnedCommandResult, run_owned_command
+from gpu_qualifier_process import (
+    CommandNotStarted, OwnedCommandResult, ToolchainDirectory, run_owned_command,
+)
 
 
 PREPARATION = (
@@ -31,11 +33,12 @@ PREPARATION = (
 class PreparationCommand:
     physical_argv: tuple[str, ...]
     logical_argv: tuple[str, ...]
-    mappings: Mapping[str, pathlib.Path]
+    mappings: Mapping[str, pathlib.Path | ToolchainDirectory]
     output: pathlib.Path
     name: str
     version: str
     cwd: pathlib.Path | None = None
+    sdk: ToolchainDirectory | None = None
 
 
 def run_preparation(
@@ -63,6 +66,7 @@ def run_preparation(
             output=command.output,
             name=command.name,
             version=command.version,
+            sdk=command.sdk,
         )
         if state.failure_ordinal is not None:
             return
@@ -144,7 +148,7 @@ class PreparationState:
         *,
         physical_argv: Sequence[str],
         logical_argv: Sequence[str],
-        mappings: Mapping[str, pathlib.Path],
+        mappings: Mapping[str, pathlib.Path | ToolchainDirectory],
         cwd: pathlib.Path,
         home: pathlib.Path,
         temporary: pathlib.Path,
@@ -152,6 +156,7 @@ class PreparationState:
         output: pathlib.Path,
         name: str,
         version: str,
+        sdk: ToolchainDirectory | None = None,
     ) -> OwnedCommandResult | None:
         if self.failure_ordinal is not None:
             raise RecipeError("preparation cannot continue after failure")
@@ -188,6 +193,7 @@ class PreparationState:
                 temporary=temporary,
                 timeout_seconds=min(timeout_seconds, remaining_ns / 1_000_000_000),
                 deadline_ns=self.deadline_ns,
+                sdk=sdk,
             )
         except CommandNotStarted:
             self.fail_unstarted("preparation command could not start")

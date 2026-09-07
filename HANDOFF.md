@@ -141,9 +141,16 @@ check. Remaining build integration is application-owned: the GPU bundle delibera
 CPU backend, so the actual reference driver must link a separately built CPU backend from the same
 admitted ggml source; the model-free stub does not qualify that CPU reference. Host SDK/tool input
 selection, real-profile CLI construction and the numeric case producer remain next. No new Align
-capability request follows from these application build requirements.
+capability request follows from these application build requirements. CMake path definitions now
+retain and validate a single digest-bound or owned path value, including produced-input identity
+checks during replay. The SDK owner binds an installed root to its in-root single-link metadata,
+rechecks direct and indirect preparation dependencies, and refuses metadata/root changes or any
+case-time SDK binding. The explicit-driver owner passes with the real Apple SDK in the shim argv
+and both candidate-driver invocations. `gmake gpu-command-environment gpu-preparation-evidence
+gpu-explicit-driver gpu-build-failure-evidence gpu-result-replay gpu-qualification-cli
+gpu-profile-coverage`, Python bytecode compilation and `git diff --check` pass at this checkpoint.
 
-**Intentional uncommitted files.** None after the preparation-sequence checkpoint is committed.
+**Intentional uncommitted files.** None after the SDK/CMake preparation checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

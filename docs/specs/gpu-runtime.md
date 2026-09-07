@@ -432,7 +432,25 @@ are unnecessary. These fixed sources override rather than merge with the parent 
 Evidence retains the complete logical argv and `NAME=value` environment arrays for every
 preparation and case command. Machine-local input paths become
 `<logical-id>:sha256:<digest>` and invocation-owned directory/output paths become
-`<logical-id>:owned`; secrets are not accepted as qualifier inputs. The hash preimage is ASCII `GPU_QUALIFIER_COMMAND`, NUL, then kind as a
+`<logical-id>:owned`; secrets are not accepted as qualifier inputs. A path may also be the entire
+value of one CMake definition: `-DNAME=<logical-path>`, `-DNAME:PATH=<logical-path>`, or
+`-DNAME:FILEPATH=<logical-path>`, with `NAME` matching `[A-Z][A-Z0-9_]*`. The definition prefix
+is literal and retained unchanged; the runner substitutes and rechecks exactly one mapped path
+value. No suffix or multi-path expansion is accepted. `gpu-command-environment` owns acceptance,
+malformed prefixes/values, unchanged literal flags, mapping mismatch and digest refusal before
+spawn. Host SDK directories are the sole non-file `:sha256:` mapping: the build resolver
+supplies a resolved absolute directory and a bounded single-link metadata file within it. The
+logical digest covers that metadata file. `gpu_qualifier_process.ToolchainDirectory` captures the
+root's device/inode/mode/mtime/ctime and verifies those fields plus the metadata digest before each
+preparation spawn; relative roots, metadata outside the root, changed roots/metadata, and SDK
+bindings in case commands fail before spawn. The bundle's SDK probe identity is checked separately
+by host toolchain admission. The preparation sequence also rechecks the same bound SDK immediately
+before spawning a compiler whose selected C driver supplies the SDK indirectly. This attests the
+selected installed SDK, not a snapshot of every SDK
+file; complete SDK content closure remains N/A under schema 1's explicit non-reproducible-toolchain
+limit. Application model, source, bundle and owned-output paths retain their existing mappings.
+`gpu-command-environment` covers SDK construction, mutation/replacement, case refusal and valid
+CMake substitution. The hash preimage is ASCII `GPU_QUALIFIER_COMMAND`, NUL, then kind as a
 little-endian u64 UTF-8 byte length plus bytes, little-endian u32 argv count, each argv with the same
 u64 framing, little-endian u32 environment count, then each retained environment entry with the
 same u64 framing. A constructed command has nonempty

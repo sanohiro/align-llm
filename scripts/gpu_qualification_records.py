@@ -589,6 +589,20 @@ def command_digest(kind: str, argv: list[str], environment: list[str]) -> str:
     return result.hexdigest()
 
 
+def command_path(value: str) -> tuple[str, str] | None:
+    """Split a standalone path token or a CMake definition with exactly one path value."""
+    if value.startswith("<"):
+        if not LOGICAL_PATH.fullmatch(value):
+            raise RecipeError("command argv contains a malformed logical path")
+        return "", value
+    if value.startswith("-D") and "=<" in value:
+        match = re.fullmatch(r"(-D[A-Z][A-Z0-9_]*(?::(?:PATH|FILEPATH))?=)(<.*)", value)
+        if match is None or not LOGICAL_PATH.fullmatch(match.group(2)):
+            raise RecipeError("command argv contains a malformed CMake path definition")
+        return match.group(1), match.group(2)
+    return None
+
+
 def validate_command(
     value: object, *, allow_sentinel: bool, expected_kind: str | None = None,
 ) -> dict[str, object]:
@@ -610,8 +624,7 @@ def validate_command(
         text = bounded_text(item, 1, 4096, f"command argv[{ordinal}]")
         if "\0" in text:
             raise RecipeError("command argv contains NUL")
-        if text.startswith("<") and not LOGICAL_PATH.fullmatch(text):
-            raise RecipeError("command argv contains a malformed logical path")
+        command_path(text)
         if text.startswith(("/", "~/", "\\")) or re.search(r"(?:^|=)[A-Za-z]:[\\/]", text) \
                 or "=/" in text:
             raise RecipeError("command argv exposes a machine-local path")
@@ -989,7 +1002,10 @@ def validate_evidence(
     }
     for command in commands:
         for argument in command["argv"]:
-            match = re.fullmatch(r"<([^>]+)>:sha256:([0-9a-f]{64})", argument)
+            reference = command_path(argument)
+            match = None if reference is None else re.fullmatch(
+                r"<([^>]+)>:sha256:([0-9a-f]{64})", reference[1],
+            )
             if match and match.group(1) in command_identity_names:
                 produced = source[command_identity_names[match.group(1)]]
                 if produced["state"] == "available" and produced["sha256"] != match.group(2):

@@ -183,6 +183,122 @@ def environment_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathli
         child.assert_not_called()
 
 
+def cmake_definition_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path) -> None:
+    token = "<cmake-tool>:sha256:" + hashlib.sha256(fixture.read_bytes()).hexdigest()
+    for prefix in ("-DTOOL=", "-DTOOL:PATH=", "-DTOOL:FILEPATH="):
+        script = '[ "$1" = "$2$3" ]'
+        physical = [str(fixture), "-c", script, "cmake-definition", prefix + str(fixture),
+                    prefix, str(fixture), "-DLITERAL=ON"]
+        logical = [token, "-c", script, "cmake-definition", prefix + token, prefix, token,
+                   "-DLITERAL=ON"]
+        mappings = {token: fixture}
+        arguments = dict(
+            kind="candidate_build", physical_argv=physical, logical_argv=logical,
+            mappings=mappings, cwd=scratch, home=home, temporary=scratch, timeout_seconds=2,
+        )
+        result = run_owned_command(**arguments)
+        assert result.terminal == "PASS", result.stderr.retained
+        assert result.command["argv"][4] == prefix + token
+        invalid = physical.copy()
+        invalid[4] = prefix + str(scratch)
+        with mock.patch.object(process_owner.subprocess, "Popen") as child:
+            rejected(lambda: run_owned_command(**(arguments | {
+                "physical_argv": invalid, "spawn": child,
+            })), "mapping changed")
+            child.assert_not_called()
+
+    for definition in (
+        "-Dlower=" + token, "-D9TOOL=" + token, "-DTOOL:STRING=" + token,
+        "-DTOOL=" + token + "/suffix", "-DTOOL=" + token + ";" + token,
+    ):
+        invalid = logical.copy()
+        invalid[4] = definition
+        with mock.patch.object(process_owner.subprocess, "Popen") as child:
+            rejected(lambda: run_owned_command(**(arguments | {
+                "logical_argv": invalid, "spawn": child,
+            })), "malformed CMake path")
+            child.assert_not_called()
+
+    invalid = physical.copy()
+    invalid[-1] = "-DLITERAL=OFF"
+    with mock.patch.object(process_owner.subprocess, "Popen") as child:
+        rejected(lambda: run_owned_command(**(arguments | {
+            "physical_argv": invalid, "spawn": child,
+        })), "literal argv")
+        child.assert_not_called()
+
+    wrong = "<cmake-input>:sha256:" + "0" * 64
+    invalid = logical.copy()
+    invalid[4] = "-DTOOL:FILEPATH=" + wrong
+    with mock.patch.object(process_owner.subprocess, "Popen") as child:
+        rejected(lambda: run_owned_command(**(arguments | {
+            "logical_argv": invalid, "mappings": mappings | {wrong: fixture}, "spawn": child,
+        })), "digest does not match")
+        child.assert_not_called()
+
+
+def sdk_directory_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path) -> None:
+    sdk = home.parent / "sdk"
+    sdk.mkdir()
+    metadata = sdk / "SDKSettings.json"
+    metadata.write_bytes(b'{"version":1}\n')
+    alias = home.parent / "sdk-alias"
+    alias.symlink_to(sdk, target_is_directory=True)
+    admitted = process_owner.ToolchainDirectory.admit(alias, metadata)
+    assert admitted.path == sdk.resolve()
+    token = "<host-sdk>:sha256:" + admitted.sha256
+    executable = "<sdk-probe>:sha256:" + hashlib.sha256(fixture.read_bytes()).hexdigest()
+    arguments = dict(
+        kind="shim_build",
+        physical_argv=[str(fixture), "-c", '[ "$1" = "-DSDK=$2" ]', "sdk-directory",
+                       "-DSDK=" + str(admitted.path), str(admitted.path)],
+        logical_argv=[executable, "-c", '[ "$1" = "-DSDK=$2" ]', "sdk-directory",
+                      "-DSDK=" + token, token],
+        mappings={executable: fixture, token: admitted}, cwd=scratch, home=home,
+        temporary=scratch, timeout_seconds=2,
+    )
+    assert run_owned_command(**arguments).terminal == "PASS"
+    indirect = arguments | {
+        "physical_argv": [str(fixture), "-c", "exit 0"],
+        "logical_argv": [executable, "-c", "exit 0"],
+        "mappings": {executable: fixture}, "sdk": admitted,
+    }
+    assert run_owned_command(**indirect).terminal == "PASS"
+    with mock.patch.object(process_owner.subprocess, "Popen") as child:
+        rejected(lambda: run_owned_command(**(indirect | {"kind": "case", "spawn": child})),
+                 "dependency is only valid for preparation")
+        child.assert_not_called()
+    with mock.patch.object(process_owner.subprocess, "Popen") as child:
+        rejected(lambda: run_owned_command(**(arguments | {"kind": "case", "spawn": child})),
+                 "only valid for hashed preparation inputs")
+        child.assert_not_called()
+    rejected(lambda: process_owner.ToolchainDirectory.admit(pathlib.Path("relative"), metadata),
+             "must be absolute")
+    rejected(lambda: process_owner.ToolchainDirectory.admit(sdk, fixture.resolve()),
+             "outside its root")
+
+    metadata.write_bytes(b'{"version":2}\n')
+    with mock.patch.object(process_owner.subprocess, "Popen") as child:
+        rejected(lambda: run_owned_command(**(indirect | {"spawn": child})), "metadata identity changed")
+        child.assert_not_called()
+    with mock.patch.object(process_owner.subprocess, "Popen") as child:
+        rejected(lambda: run_owned_command(**(arguments | {"spawn": child})), "metadata identity changed")
+        child.assert_not_called()
+    metadata.write_bytes(b'{"version":1}\n')
+    sdk.rename(home.parent / "old-sdk")
+    sdk.mkdir()
+    metadata.write_bytes(b'{"version":1}\n')
+    with mock.patch.object(process_owner.subprocess, "Popen") as child:
+        rejected(lambda: run_owned_command(**(arguments | {"spawn": child})), "root identity changed")
+        child.assert_not_called()
+    linked = sdk / "linked.json"
+    os.link(metadata, linked)
+    rejected(lambda: process_owner.ToolchainDirectory.admit(sdk, metadata), "single-link regular")
+    linked.unlink()
+    linked.symlink_to(metadata)
+    rejected(lambda: process_owner.ToolchainDirectory.admit(sdk, linked), "metadata is a symlink")
+
+
 def cleanup_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path) -> None:
     signaled = invoke(fixture, "signal", home, scratch)
     assert signaled.terminal == "SIGNAL" and signaled.signal == 15
@@ -344,6 +460,24 @@ def build_failure_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: path
     )
     assert validated["evidence"]["failure"]["category"] == "BUILD"
 
+    for digest_value, should_pass in ((compiler_digest, True), ("0" * 64, False)):
+        cmake = copy.deepcopy(evidence)
+        cmake_command = cmake["preparation_commands"][2]
+        cmake_command["argv"].append("-DCMAKE_C_COMPILER=<align-compiler>:sha256:" + digest_value)
+        cmake_command["sha256"] = records.command_digest(
+            cmake_command["kind"], cmake_command["argv"], cmake_command["environment"],
+        )
+        def validate_cmake():
+            return records.validate_evidence_records(
+                runtime_option_raw=lines[0], align_source_raw=lines[1], ggml_source_raw=lines[2],
+                bundle_raw=lines[3], calibration_raws=lines[4:6], profile_raw=lines[6],
+                evidence_raw=records.canonical(cmake),
+            )
+        if should_pass:
+            validate_cmake()
+        else:
+            rejected(validate_cmake, "command identity does not match produced input")
+
     invalid = copy.deepcopy(evidence)
     invalid["source"]["candidate"] = {
         "state": "available", "name": "candidate", "version": "fixture",
@@ -377,6 +511,8 @@ with tempfile.TemporaryDirectory(prefix="align-llm-gpu-process-") as temporary:
     fixture = make_fixture(scratch)
     if args.owner == "environment":
         environment_owner(fixture, home, scratch)
+        cmake_definition_owner(fixture, home, scratch)
+        sdk_directory_owner(fixture, home, scratch)
     elif args.owner == "cleanup":
         cleanup_owner(fixture, home, scratch)
         interrupted_capture_owner(fixture, home, scratch)
