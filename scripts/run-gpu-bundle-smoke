@@ -10,8 +10,27 @@ work_dir=$(mktemp -d)
 work_dir=$(CDPATH= cd -- "${work_dir}" && pwd -P)
 executable="${work_dir}/runtime-bundle-smoke"
 
+private_roots() {
+  python3 - <<'PY'
+import pathlib
+import tempfile
+
+root = pathlib.Path(tempfile.gettempdir())
+for path in sorted(root.glob("align_llm_gpu-*")):
+    if path.is_dir():
+        print(path)
+PY
+}
+
+private_roots_before=$(private_roots)
+
 cleanup() {
   status=$?
+  private_roots_after=$(private_roots)
+  if [ "${private_roots_after}" != "${private_roots_before}" ]; then
+    printf '%s\n' "gpu bundle smoke: private staging root leaked" >&2
+    status=1
+  fi
   rm -rf "${work_dir}"
   exit "${status}"
 }
@@ -29,6 +48,7 @@ commit = "bb4caa7540188872173c44d161602d9271386413"
 zero = "0" * 64
 empty = hashlib.sha256(b"").hexdigest()
 plugin_bytes = b"fixture-metal-plugin"
+metadata_bytes = b"meta"
 
 
 def digest(data):
@@ -62,7 +82,15 @@ def base_manifest(path="libggml-metal.so", role="backend_plugin", data=plugin_by
             "toolkit": {"name": "none", "version": "none", "sha256": empty},
         },
         "build_flags": ["-DGGML_METAL=ON"],
-        "artifacts": [{"role": role, "path": path, "bytes": len(data), "sha256": digest(data)}],
+        "artifacts": [
+            {"role": role, "path": path, "bytes": len(data), "sha256": digest(data)},
+            {
+                "role": "metadata",
+                "path": "metadata.bin",
+                "bytes": len(metadata_bytes),
+                "sha256": digest(metadata_bytes),
+            },
+        ],
     }
 
 
@@ -79,6 +107,7 @@ def write_bundle(name, manifest, artifact_path=None, artifact_data=plugin_bytes,
         target = directory / artifact_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(artifact_data)
+    (directory / "metadata.bin").write_bytes(metadata_bytes)
     (directory / "manifest.json").write_bytes(manifest_bytes if manifest_bytes is not None else finish(manifest))
     return directory
 
@@ -91,6 +120,9 @@ write_bundle("bad-id", bad_id_manifest, "libggml-metal.so", manifest_bytes=canon
 
 mutated = write_bundle("mutated-artifact", base_manifest(), "libggml-metal.so")
 (mutated / "libggml-metal.so").write_bytes(b"fixture-metal-plugio")
+
+mutated_metadata = write_bundle("mutated-metadata", base_manifest(), "libggml-metal.so")
+(mutated_metadata / "metadata.bin").write_bytes(b"META")
 
 unknown_manifest = base_manifest()
 unknown_manifest["unknown"] = 1
@@ -147,10 +179,45 @@ PY
   mv runtime_bundle_smoke "${executable}"
 )
 
+inspection_output="${work_dir}/private-root-inspection"
+"${executable}" --inspect-private-root "${work_dir}/valid" >"${inspection_output}" &
+inspection_pid=$!
+inspection_root=""
+inspection_attempt=0
+while [ "${inspection_attempt}" -lt 100 ]; do
+  if [ -s "${inspection_output}" ]; then
+    inspection_root=$(sed -n '1p' "${inspection_output}")
+    break
+  fi
+  sleep 0.01
+  inspection_attempt=$((inspection_attempt + 1))
+done
+if [ -z "${inspection_root}" ] || [ ! -d "${inspection_root}" ]; then
+  printf '%s\n' "gpu bundle smoke: private staging root was not observable" >&2
+  wait "${inspection_pid}" || true
+  exit 1
+fi
+if private_mode=$(stat -f '%Lp' "${inspection_root}" 2>/dev/null); then
+  :
+else
+  private_mode=$(stat -c '%a' "${inspection_root}")
+fi
+if [ "${private_mode}" != 700 ]; then
+  printf '%s\n' "gpu bundle smoke: private staging mode: ${private_mode}" >&2
+  wait "${inspection_pid}" || true
+  exit 1
+fi
+wait "${inspection_pid}"
+if [ "$(sed -n '2p' "${inspection_output}")" != "runtime bundle private root: PASS" ]; then
+  printf '%s\n' "gpu bundle smoke: private staging inspection failed" >&2
+  exit 1
+fi
+
 output=$("${executable}" \
   "${work_dir}/valid" \
   "${work_dir}/bad-id" \
   "${work_dir}/mutated-artifact" \
+  "${work_dir}/mutated-metadata" \
   "${work_dir}/unknown-key" \
   "${work_dir}/duplicate-key" \
   "${work_dir}/noncanonical" \

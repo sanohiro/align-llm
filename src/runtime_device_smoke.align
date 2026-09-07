@@ -144,7 +144,8 @@ fn exercise_live_owner(
 ) -> Result<(), Error> {
   owner := opened(backend, device, bundle_root)?
   if ggml_ffi.gpu_device_handle(owner).is_null()
-    || ggml_ffi.gpu_backend_handle(owner).is_null() {
+    || ggml_ffi.gpu_backend_handle(owner).is_null()
+    || !ggml_ffi.gpu_device_staging_path_valid(owner) {
     return Err(Error.Invalid)
   }
   match ggml_ffi.gpu_device_synchronize(owner) {
@@ -2000,6 +2001,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   bundle_id := args[8]
 
   if mode == "unavailable" {
+    expect_unavailable(backend, device, bundle_root)?
     expect_unavailable(backend, device, bundle_root)?
     print("runtime device smoke: UNAVAILABLE PASS")
     return Ok(())

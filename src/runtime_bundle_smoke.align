@@ -1,15 +1,42 @@
 module runtime_bundle_smoke
 
 import runtime_bundle
+import std.fs
+import std.path
+import std.time
 
 fn expect_valid(root: str) -> Result<(), Error> {
   verified := runtime_bundle.verify(root, "metal", 1048576)?
   if verified.bundle_id.len() != 64 || verified.manifest_sha256.len() != 64
-    || verified.backend_sha256.len() != 64 || verified.artifact_bytes != 20
-    || !verified.backend_path.ends_with("/libggml-metal.so") {
+    || verified.backend_sha256.len() != 64 || verified.artifact_bytes != 24
+    || verified.staged_artifact_count != 2
+    || verified.backend_path != path.join(verified.staging_root, "artifact-0")
+    || verified.backend_path == path.join(root, "libggml-metal.so") {
     print(root)
     return Err(Error.Invalid)
   }
+  second := runtime_bundle.verify(root, "metal", 1048576)?
+  if second.staging_root == verified.staging_root { return Err(Error.Invalid) }
+  runtime_bundle.cleanup(second)?
+  original_path := path.join(root, "libggml-metal.so")
+  original := fs.open_rw(original_path)?
+  mut mutation := buffer(0)
+  mutation.append("fixture-metal-plugio".bytes())
+  original.pwrite(mutation.bytes(), 0)?
+  staged := fs.open_beneath_single_link(verified.staging_root, "artifact-0")?
+  mut staged_bytes := buffer(20)
+  if staged.read(staged_bytes)? != 20
+    || staged_bytes.bytes().as_str()? != "fixture-metal-plugin" {
+    return Err(Error.Invalid)
+  }
+  metadata := fs.open_beneath_single_link(verified.staging_root, "artifact-1")?
+  mut metadata_bytes := buffer(4)
+  if metadata.read(metadata_bytes)? != 4 || metadata_bytes.bytes().as_str()? != "meta" {
+    return Err(Error.Invalid)
+  }
+  staging_root := verified.staging_root.clone()
+  runtime_bundle.cleanup(verified)?
+  if fs.exists(staging_root) { return Err(Error.Invalid) }
   return Ok(())
 }
 
@@ -29,6 +56,14 @@ match runtime_bundle.verify(root, "metal", 19) {
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 3 && args[1] == "--inspect-private-root" {
+    verified := runtime_bundle.verify(args[2], "metal", 1048576)?
+    print(verified.staging_root)
+    time.sleep(500000000)
+    runtime_bundle.cleanup(verified)?
+    print("runtime bundle private root: PASS")
+    return Ok(())
+  }
   if args.len() < 3 { return Err(Error.Invalid) }
   expect_valid(args[1])?
   expect_invalid(args[1], "cuda")?

@@ -10,17 +10,46 @@ pub fn open(options: runtime_options.RuntimeOptions) -> Result<ggml_ffi.GpuDevic
     options.backend,
     options.host_budget_bytes,
   )?
-  owner := ggml_ffi.gpu_device_open(
+  opened := ggml_ffi.gpu_device_open(
     options.backend,
     options.device,
     verified.backend_path,
     verified.bundle_id,
     options.host_budget_bytes,
     options.device_budget_bytes,
-  ) else {
-    return Err(Error.Invalid)
+  )
+  return match opened {
+    Ok(owner) => {
+      if ggml_ffi.gpu_device_staging_consumed(owner) {
+        match ggml_ffi.gpu_staging_transfer(
+          verified.staging_root,
+          verified.staged_artifact_count,
+          false,
+        ) {
+          Ok(_) => Ok(owner),
+          Err(_) => Err(Error.Invalid),
+        }
+      } else {
+        match runtime_bundle.cleanup(verified) {
+          Ok(_) => Ok(owner),
+          Err(_) => Err(Error.Invalid),
+        }
+      }
+    }
+    Err(fault) => {
+      if fault.code == "CONFIG" || fault.code == "BUSY" || fault.code == "BUNDLE_IDENTITY"
+        || ggml_ffi.gpu_staging_owned() {
+        runtime_bundle.cleanup(verified) else { return Err(Error.Invalid) }
+      } else {
+        ggml_ffi.gpu_staging_transfer(
+          verified.staging_root,
+          verified.staged_artifact_count,
+          true,
+        ) else { return Err(Error.Invalid) }
+      }
+      Err(Error.Invalid)
+    }
   }
-  return Ok(owner)
 }
 
 pub fn synchronize(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {

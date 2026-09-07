@@ -221,6 +221,12 @@ extern "C" link("align_ggml_shim") {
   ) -> i32
   fn align_gpu_device_handle(owner: raw) -> raw
   fn align_gpu_backend_handle(owner: raw) -> raw
+  fn align_gpu_device_staging_consumed(owner: raw) -> i32
+  fn align_gpu_device_staging_path_valid(owner: raw) -> i32
+  fn align_gpu_staging_owned() -> i32
+  fn align_gpu_staging_transfer(
+    root: str, root_len: i64, artifact_count: i64, poison: i32,
+  ) -> i32
   fn align_gpu_device_synchronize(owner: raw) -> i32
   fn align_gpu_memory_admit(
     owner: raw,
@@ -502,6 +508,37 @@ pub fn gpu_device_handle(borrow owner: GpuDevice) -> raw {
 pub fn gpu_backend_handle(borrow owner: GpuDevice) -> raw {
   unsafe {
     return align_gpu_backend_handle(resource.raw(resource.borrow(owner)))
+  }
+}
+
+pub fn gpu_device_staging_consumed(borrow owner: GpuDevice) -> bool {
+  unsafe {
+    return align_gpu_device_staging_consumed(resource.raw(resource.borrow(owner))) == 1
+  }
+}
+
+pub fn gpu_device_staging_path_valid(borrow owner: GpuDevice) -> bool {
+  unsafe {
+    return align_gpu_device_staging_path_valid(resource.raw(resource.borrow(owner))) == 1
+  }
+}
+
+pub fn gpu_staging_owned() -> bool {
+  unsafe {
+    return align_gpu_staging_owned() == 1
+  }
+}
+
+pub fn gpu_staging_transfer(root: str, artifact_count: i64, poison: bool) -> Result<(), Fault> {
+  unsafe {
+    status := align_gpu_staging_transfer(
+      root,
+      root.len(),
+      artifact_count,
+      if poison { 1 } else { 0 },
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
   }
 }
 

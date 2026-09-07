@@ -60,6 +60,8 @@ pub BackendBundle {
 pub VerifiedBundle {
   bundle_id: string,
   manifest_sha256: string,
+  staging_root: string,
+  staged_artifact_count: i64,
   backend_path: string,
   backend_sha256: string,
   artifact_bytes: i64,
@@ -190,23 +192,73 @@ fn read_manifest(root: str) -> Result<string, Error> {
   return Ok(accumulated.bytes().as_str()?.clone())
 }
 
-fn verify_artifact(root: str, borrow artifact: Artifact, host_budget_bytes: i64) -> bool {
+fn staged_name(index: i64) -> string {
+  name := builder()
+  name.write("artifact-")
+  name.write_int(index)
+  return name.to_string()
+}
+
+fn read_verified_artifact(
+  root: str,
+  borrow artifact: Artifact,
+  host_budget_bytes: i64,
+) -> Result<buffer, Error> {
   if artifact.bytes < 1 || artifact.bytes > MAX_ARTIFACT_BYTES
     || artifact.bytes > host_budget_bytes {
-    return false
+    return Err(Error.Invalid)
   }
-  source := fs.open_beneath_single_link(root, artifact.path) else { return false }
+  source := fs.open_beneath_single_link(root, artifact.path)?
   mut accumulated := buffer(0)
   mut chunk := buffer(65536)
   mut total := 0
   loop {
     if total == artifact.bytes {
       mut probe := buffer(1)
+      if source.read(probe)? > 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := artifact.bytes - total
+    count := if remaining < 65536 {
+      mut tail := buffer(remaining)
+      read_count := source.read(tail)?
+      accumulated.append(tail.bytes())
+      read_count
+    } else {
+      read_count := source.read(chunk)?
+      accumulated.append(chunk.bytes())
+      read_count
+    }
+    if count == 0 { return Err(Error.Invalid) }
+    total = total + count
+  }
+  accumulated_bytes := accumulated.bytes()
+  if accumulated.len() != artifact.bytes
+    || digest_bytes(accumulated_bytes) != artifact.sha256 {
+    return Err(Error.Invalid)
+  }
+  return Ok(accumulated)
+}
+
+fn write_staged(root: str, name: str, borrow data: slice<u8>) -> Result<(), Error> {
+  output := fs.create_exclusive_beneath(root, name)?
+  output.write(data)?
+  return output.flush()
+}
+
+fn staged_matches(root: str, name: str, bytes: i64, digest: str) -> bool {
+  source := fs.open_beneath_single_link(root, name) else { return false }
+  mut accumulated := buffer(0)
+  mut chunk := buffer(65536)
+  mut total := 0
+  loop {
+    if total == bytes {
+      mut probe := buffer(1)
       count := source.read(probe) else { return false }
       if count != 0 { return false }
       break
     }
-    remaining := artifact.bytes - total
+    remaining := bytes - total
     count := if remaining < 65536 {
       mut tail := buffer(remaining)
       read_count := source.read(tail) else { return false }
@@ -221,8 +273,36 @@ fn verify_artifact(root: str, borrow artifact: Artifact, host_budget_bytes: i64)
     total = total + count
   }
   accumulated_bytes := accumulated.bytes()
-  return accumulated.len() == artifact.bytes
-    && digest_bytes(accumulated_bytes) == artifact.sha256
+  return accumulated.len() == bytes && digest_bytes(accumulated_bytes) == digest
+}
+
+fn remove_staging(root: str, count: i64) -> bool {
+  mut clean := true
+  mut at := count
+  loop {
+    if at <= 0 { break }
+    at = at - 1
+    name := staged_name(at)
+    artifact_path := path.join(root, name)
+    match fs.remove(artifact_path) {
+      Ok(_) => {}
+      Err(_) => { clean = false }
+    }
+  }
+  return match fs.remove_empty_dir(root) {
+    Ok(_) => clean,
+    Err(_) => false,
+  }
+}
+
+pub fn cleanup(staged: VerifiedBundle) -> Result<(), Error> {
+  if staged.staging_root.len() < 1 || staged.staged_artifact_count < 1 {
+    return Err(Error.Invalid)
+  }
+  if !remove_staging(staged.staging_root, staged.staged_artifact_count) {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
 }
 
 fn valid_identity(borrow identity: Identity) -> bool {
@@ -304,7 +384,7 @@ pub fn verify(root: str, expected_backend: str, host_budget_bytes: i64) -> Resul
   }
 
   expected_plugin := plugin_name(bundle.backend)
-  mut plugin_relative := "".clone()
+  mut plugin_index := -1
   mut plugin_sha256 := "".clone()
   mut plugin_count := 0
   mut total_bytes := 0
@@ -337,12 +417,9 @@ pub fn verify(root: str, expected_backend: str, host_budget_bytes: i64) -> Resul
     total_bytes = total_bytes + bundle.artifacts[artifact_at].bytes
     if bundle.artifacts[artifact_at].role == "backend_plugin"
       && bundle.artifacts[artifact_at].path == expected_plugin {
-      plugin_relative = bundle.artifacts[artifact_at].path.clone()
+      plugin_index = artifact_at
       plugin_sha256 = bundle.artifacts[artifact_at].sha256.clone()
       plugin_count = plugin_count + 1
-    }
-    if !verify_artifact(root, bundle.artifacts[artifact_at], host_budget_bytes) {
-      return Err(Error.Invalid)
     }
     artifact_at = artifact_at + 1
   }
@@ -366,10 +443,42 @@ pub fn verify(root: str, expected_backend: str, host_budget_bytes: i64) -> Resul
   zero_view: str := zero_bytes
   if digest_text(zero_view) != claimed_id { return Err(Error.Invalid) }
 
-  backend_path := path.join(root, plugin_relative)
+  staging_root := fs.create_private_temp_dir("align_llm_gpu")?
+  mut staged_count := 0
+  artifact_at = 0
+  loop {
+    if artifact_at >= bundle.artifacts.len() { break }
+    staged_count = artifact_at + 1
+    staged := read_verified_artifact(root, bundle.artifacts[artifact_at], host_budget_bytes) else {
+      remove_staging(staging_root, staged_count)
+      return Err(Error.Invalid)
+    }
+    name := staged_name(artifact_at)
+    staged_bytes := staged.bytes()
+    match write_staged(staging_root, name, staged_bytes) {
+      Ok(_) => {}
+      Err(_) => {
+        remove_staging(staging_root, staged_count)
+        return Err(Error.Invalid)
+      }
+    }
+    if !staged_matches(
+      staging_root,
+      name,
+      bundle.artifacts[artifact_at].bytes,
+      bundle.artifacts[artifact_at].sha256,
+    ) {
+      remove_staging(staging_root, staged_count)
+      return Err(Error.Invalid)
+    }
+    artifact_at = artifact_at + 1
+  }
+  backend_path := path.join(staging_root, staged_name(plugin_index))
   return Ok(VerifiedBundle {
       bundle_id: claimed_id,
       manifest_sha256: digest_text(document_view),
+      staging_root: staging_root,
+      staged_artifact_count: staged_count,
       backend_path: backend_path,
       backend_sha256: plugin_sha256,
       artifact_bytes: total_bytes,

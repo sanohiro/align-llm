@@ -16,8 +16,27 @@ gpu_shim="${work_dir}/gpu-shim"
 allocation_shims="${work_dir}/allocation-shims"
 executable="${work_dir}/runtime-device-smoke"
 
+private_roots() {
+  python3 - <<'PY'
+import pathlib
+import tempfile
+
+root = pathlib.Path(tempfile.gettempdir())
+for path in sorted(root.glob("align_llm_gpu-*")):
+    if path.is_dir():
+        print(path)
+PY
+}
+
+private_roots_before=$(private_roots)
+
 cleanup() {
   status=$?
+  private_roots_after=$(private_roots)
+  if [ "${private_roots_after}" != "${private_roots_before}" ]; then
+    printf '%s\n' "gpu device smoke: private staging root leaked" >&2
+    status=1
+  fi
   rm -rf "${work_dir}"
   exit "${status}"
 }

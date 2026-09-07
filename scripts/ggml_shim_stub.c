@@ -26,8 +26,10 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* --- BEGIN R4.5 SHARED SHIM CONTRACT --- */
 #if defined(__aarch64__)
@@ -1710,11 +1712,86 @@ struct align_gpu_device_state {
     int64_t graph_invalidation_count[ALIGN_GPU_GRAPH_KINDS];
     int workspace_prepared;
     int workspace_failed;
+    int staging_consumed;
+    int staging_path_valid;
 };
 
 static atomic_int align_gpu_busy = 0;
 static char align_gpu_bundle_id[65];
 static int align_gpu_bundle_pinned = 0;
+static int align_gpu_poisoned = 0;
+static char align_gpu_staging_root[4097];
+static int64_t align_gpu_staging_count = 0;
+
+#if defined(__GNUC__)
+__attribute__((destructor))
+#endif
+static void align_gpu_staging_cleanup(void) {
+    char artifact[4128];
+    int64_t index = align_gpu_staging_count;
+    while (index > 0) {
+        index -= 1;
+        if (snprintf(artifact, sizeof(artifact), "%s/artifact-%lld",
+                     align_gpu_staging_root, (long long) index) > 0) {
+            (void) remove(artifact);
+        }
+    }
+    if (align_gpu_staging_root[0] != '\0') {
+        (void) rmdir(align_gpu_staging_root);
+    }
+    align_gpu_staging_root[0] = '\0';
+    align_gpu_staging_count = 0;
+}
+
+int32_t align_gpu_staging_transfer(
+        const void *root_input, int64_t root_length, int64_t artifact_count, int32_t poison) {
+    if (root_input == NULL || root_length <= 0 || root_length > 4096
+        || artifact_count <= 0 || artifact_count > 128
+        || memchr(root_input, '\0', (size_t) root_length) != NULL
+        || align_gpu_staging_root[0] != '\0') {
+        return ALIGN_GPU_CONFIG;
+    }
+    memcpy(align_gpu_staging_root, root_input, (size_t) root_length);
+    align_gpu_staging_root[root_length] = '\0';
+    align_gpu_staging_count = artifact_count;
+    if (poison != 0) {
+        align_gpu_poisoned = 1;
+    }
+    return ALIGN_GPU_OK;
+}
+
+int32_t align_gpu_staging_owned(void) {
+    return align_gpu_staging_root[0] == '\0' ? 0 : 1;
+}
+
+#ifdef ALIGN_GGML_STUB_GPU
+static int align_gpu_stub_private_backend_path(const void *input, int64_t length) {
+    const unsigned char *bytes = (const unsigned char *) input;
+    static const unsigned char root[] = "/align_llm_gpu-";
+    static const unsigned char artifact[] = "/artifact-";
+    int64_t at = 0;
+    int root_found = 0;
+    if (bytes == NULL || length < 1 || bytes[0] != '/') {
+        return 0;
+    }
+    for (at = 0; at + (int64_t) sizeof(root) - 1 <= length; ++at) {
+        if (memcmp(bytes + at, root, sizeof(root) - 1) == 0) {
+            root_found = 1;
+            break;
+        }
+    }
+    if (!root_found) {
+        return 0;
+    }
+    for (; at + (int64_t) sizeof(artifact) <= length; ++at) {
+        if (memcmp(bytes + at, artifact, sizeof(artifact) - 1) == 0) {
+            unsigned char digit = bytes[at + sizeof(artifact) - 1];
+            return digit >= '0' && digit <= '9';
+        }
+    }
+    return 0;
+}
+#endif
 
 static int align_gpu_stub_backend_ok(const void *input, int64_t length) {
     if (input == NULL) {
@@ -1766,6 +1843,10 @@ int32_t align_gpu_device_open(
     if (!atomic_compare_exchange_strong(&align_gpu_busy, &expected, 1)) {
         return ALIGN_GPU_BUSY;
     }
+    if (align_gpu_poisoned) {
+        atomic_store(&align_gpu_busy, 0);
+        return ALIGN_GPU_POISONED;
+    }
     if (align_gpu_bundle_pinned
         && memcmp(align_gpu_bundle_id, bundle_id_input, 64) != 0) {
         atomic_store(&align_gpu_busy, 0);
@@ -1786,6 +1867,9 @@ int32_t align_gpu_device_open(
     state->backend = state;
     state->host_budget_bytes = host_budget_bytes;
     state->device_budget_bytes = device_budget_bytes;
+    state->staging_consumed = !align_gpu_bundle_pinned;
+    state->staging_path_valid = align_gpu_stub_private_backend_path(
+        backend_path_input, backend_path_length);
     if (!align_gpu_bundle_pinned) {
         memcpy(align_gpu_bundle_id, bundle_id_input, 64);
         align_gpu_bundle_id[64] = '\0';
@@ -1794,6 +1878,16 @@ int32_t align_gpu_device_open(
     *(void **) output = state;
     return ALIGN_GPU_OK;
 #endif
+}
+
+int32_t align_gpu_device_staging_consumed(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    return state == NULL ? 0 : state->staging_consumed;
+}
+
+int32_t align_gpu_device_staging_path_valid(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    return state == NULL ? 0 : state->staging_path_valid;
 }
 
 void *align_gpu_device_handle(void *owner) {

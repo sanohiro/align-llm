@@ -3,34 +3,27 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Documentation checkpoint: runtime foundations (2026-09-07)
+## Active capability: G1 resident GPU generation (2026-09-07)
 
-Main `b39c39d87c10f25ae56e21660ee9929f956788f4` records Request 55's v0.7.3 release as PR #208,
-following the runtime-foundations summary in PR #205, the competitive GPU design in PR #204, and
-G1's contract in PR #203. The CPU measurement sequence is complete through item 79. G1
-implementation continues on `agent/g1-gpu-generation`; GPU execution is not yet merged. Main
-remains pinned to Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`, while that active branch has
-adopted v0.7.3.
+Branch `agent/g1-gpu-generation` is rebased onto main `1a37b5b9084ccd7e2bcb0e3f4fb2b5c901e6df39`
+and implements the complete G1 consumer contract in `docs/specs/gpu-runtime.md`. Internal
+checkpoints through `7314d42` cover strict runtime options, provider dispatch, canonical bundle and
+source ownership, device memory and graph ownership, resident Qwen/OLMoE prefill and decode,
+qualification records, evidence replay, and owned qualifier processes. G1 remains one unpublished
+consumer-complete capability.
 
-Align Request 55's retained-root single-link reader shipped in v0.7.3. Request 56's private
-temporary-directory lifecycle shipped in v0.7.5 from release merge `b74a31df`, so all filesystem
-surfaces for G1's immutable native loading are now available. The constructor certifies only the
-opened inode at one observation point, so G1 must still copy the digest-verified reader bytes into
-private load staging during the joint v0.7.5 adoption. Safe release removes the stage; an
-unload-unsafe failure transfers its handles and complete tree to process-owned poisoned quarantine
-until exit.
+Align v0.7.5 release merge `b74a31df760a0f27a70daf18125b94716b85b901` is pinned. Checkpoint
+`87684fa` confirms Request 58's compiler repair on Apple M1 and corrects the Qwen fixture's actual
+whole-tensor member representation. The current private-staging checkpoint closes Requests 55 and
+56: every admitted artifact is copied from its retained single-link reader into a distinct mode
+0700 root, reopened and digest-verified, and only the private plugin path reaches native loading.
+Safe prefixes are removed; the first successful registry load transfers the tree to process
+ownership, and an unload-unsafe failure transfers it to poisoned process ownership until exit.
 
-Request 58's MIR producer fixed-point repair shipped in Align v0.7.4 from release merge `37268739`.
-The Align Linux owner reaches native linking in 15.52 seconds; align-llm must still adopt the fix and
-pass the named Apple M1 `gmake gpu-qwen-load-smoke` owner before the resident Qwen loader resumes.
-Request 21 remains PROPOSED: the sibling Align source still has no `fs.open_ro` constructor.
-
-PR #205 records the subsequent discussion in `docs/specs/gpu-runtime-performance.md` §1.1–§1.2 and
-its architecture/roadmap pointers. It separates the goal, historical measured evidence, unresolved
-hypotheses and Align's actual zero-copy/collection-fusion/SoA/bounded-I/O/parallelism contribution.
-Existing IR/layout/ownership foundations remain; neither a failed individual policy nor a language
-microbenchmark decides whole-runtime speed. No new benchmark, public runtime contract or
-implementation requirement is introduced.
+Request 59 is critical and blocking for production-provider integration, the main executable, and
+publication. Pinned v0.7.5 rejects the unchanged valid `AttemptRun.stages` owner only during
+per-unit checking; whole-program checking passes. Align issue #966 owns the repair. Private staging,
+platform profiles, numeric calibration, qualifier wiring, and focused GPU owners remain independent.
 
 **Next actions, in order.**
 
@@ -51,18 +44,18 @@ implementation requirement is introduced.
    win. Freeze each actual performance campaign's workload, resource/cost limits and decision rule
    before tuning. Do not claim current speed or larger-model support from this design.
 
-**Verification and constraints.** PR #204 completed its comprehensive review, one recorded repair,
-exact-head docs preflight and all three hosted docs-scope check jobs. This follow-up cross-checks
-its historical figures against their owning specifications and language claims against the exact
-Align pin. `git diff --check` passed; static checks passed for Markdown fences, relative/pinned
-source links, evidence-owner values/rounding and the eight unchanged G1 JSON vectors. Source tests,
-GPU builds and new speed measurements are N/A for this documentation-only update. Requests
-21/34/35/38/41 remain language-owned limitations. Requests 55, 56, and 58 are released; their
-remaining lifecycle work is align-llm adoption and consumer verification. Metal and CUDA require
-their own real-host evidence. AMD hardware is unavailable. Models, raw evidence and build products
-remain outside Git.
+**Verification and constraints.** At pinned v0.7.5, `gmake gpu-bundle-smoke`,
+`gmake gpu-device-smoke`, `gmake gpu-qwen-load-smoke`, and per-unit checks for `runtime_bundle`,
+`runtime_device`, and `ggml_ffi` pass. The real shim compiles against Homebrew ggml with
+`-Wall -Wextra -Werror`; Mac links use
+`LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib`. Request 59 is reproduced by
+`scripts/alignc check-per-unit src/verification_loop.align` and blocks `gmake build` before
+`gmake ggml-spike-smoke` can execute. The same module passes whole-program checking at v0.7.5 and
+per-unit checking at `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Metal and CUDA still require
+their final real-host evidence; AMD hardware is unavailable. Models, raw evidence, and build
+products remain outside Git.
 
-**Intentional uncommitted files.** None after this documentation candidate is committed.
+**Intentional uncommitted files.** None after the private-staging checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 
