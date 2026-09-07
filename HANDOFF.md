@@ -34,16 +34,20 @@ The current preparation-state batch sequences compiler, runtime, candidate, shim
 commands through the closed-environment process owner. It publishes an identity only after the
 bounded single-link output passes, stops after the first failure, and constructs a replayable
 pre-case FAIL result with the exact successful prefix and failed-command logs.
+The current source-materialization batch reconstructs both admitted Git closures beneath one new
+private invocation root, verifies exact file closure, modes and content, rechecks the retained
+inputs, and removes every partial tree on failure.
 
 Request 59 is critical and blocking for production-provider integration, the main executable, and
-publication. Pinned v0.7.5 rejects the unchanged valid `AttemptRun.stages` owner only during
-per-unit checking; whole-program checking passes. Align issue #966 owns the repair. Private staging,
-platform profiles, numeric calibration, qualifier wiring, and focused GPU owners remain independent.
+publication. Pinned v0.7.5 and pulled Align main `8aa9c76d` reject the unchanged valid
+`AttemptRun.stages` owner only during per-unit checking; whole-program checking passes. Align issue
+#966 remains open and owns the repair. Private staging, platform profiles, numeric calibration,
+qualifier wiring, and focused GPU owners remain independent.
 
 **Next actions, in order.**
 
-1. Add the fixed `gpu-runtime-qualify` CLI orchestration and real source materialization commands on
-   top of the completed input, preparation, and publication owners.
+1. Add the fixed `gpu-runtime-qualify` CLI orchestration and real compiler/runtime/candidate/shim/CPU
+   preparation commands on top of the completed input, source, process, and publication owners.
 2. Prepare both platform profiles and numeric calibrations, then connect the retained source,
    process, record, Qwen-loader, and provider owners into the publication qualifier where Request 59
    does not block compilation.
@@ -65,11 +69,17 @@ platform profiles, numeric calibration, qualifier wiring, and focused GPU owners
 per-unit checking at `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Metal and CUDA still require
 their final real-host evidence; AMD hardware is unavailable. Models, raw evidence, and build
 products remain outside Git. The current qualifier batches pass `gmake gpu-input-admission`,
-`gmake gpu-evidence-publication`, `gmake gpu-build-failure-evidence`, `gmake gpu-result-replay`,
+`gmake gpu-source-materialization`, `gmake gpu-evidence-publication`,
+`gmake gpu-build-failure-evidence`, `gmake gpu-result-replay`,
 `gmake gpu-preparation-evidence`, `gmake gpu-command-environment`, `gmake gpu-process-cleanup`,
 `gmake gate-topology-check`, `scripts/check-format`, Python bytecode compilation, and `git diff --check`.
+The external Qwen model input `509287f78cb4...894d3c` now has verified AlignPack
+`a0bd07028a2c...e99b04` and geometry `697b32f19f2d...2492666`; `--pack-verify` compared all
+4,677,120,000 payload bytes and returned `IDENTICAL`. The external OLMoE model/pack/geometry
+identities remain `4ddc0e53159e...9c684f`, `20423ebf5a90...df6ae`, and
+`1f828d2c601e...11ada`.
 
-**Intentional uncommitted files.** None after the qualifier-preparation checkpoint is committed.
+**Intentional uncommitted files.** None after the source-materialization checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 
