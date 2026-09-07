@@ -351,7 +351,15 @@ Constants are 1, `GPU_RUNTIME_EVIDENCE`, and `generation`; status is `PASS|FAIL`
   compiler materialization, runtime materialization, shim build, candidate build, then CPU-reference
   build. The shim must exist before Align links the candidate. FAIL permits the
   constructed/executed prefix; PASS requires the runner-derived complete sequence and all
-  successful identities.
+  successful identities. An unstarted preparation failure (including exhaustion of the shared
+  preparation deadline between steps) names the next step in `failure.stage`, leaves its produced
+  identity unavailable, and retains only the successful command prefix with no logs for that step.
+  A started failure additionally retains its constructed command and both bounded logs. Earlier
+  identities must be available and later identities unavailable in both cases; neither has cases.
+  `gpu_qualification_run` owns this distinction and one monotonic deadline for all five steps;
+  no step starts after it expires and each started step receives only the remaining duration.
+  The `gpu-preparation-evidence` owner exercises every unstarted slot, deadline exhaustion,
+  a reduced remaining child timeout, the successful sequence, and refusal to resume after failure.
 - `files` rows are
   `role,path,bytes,sha256,original_bytes,original_sha256,truncated`, sorted by path and covering
   every retained file other than `result.json`. Roles are

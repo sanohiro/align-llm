@@ -125,9 +125,17 @@ The process-capture checkpoint guarantees group termination, direct-child reapin
 closure after capture setup, partial registration, stream-read, interrupt or inspector failures.
 `gmake gpu-process-cleanup gpu-command-environment gpu-build-failure-evidence
 gpu-preparation-evidence`, Python bytecode compilation and `git diff --check` pass. This is an
-internal G1 checkpoint; the CLI orchestration remains the next implementation action.
+internal G1 checkpoint. The next preparation checkpoint adds the fixed five-command orchestrator
+and one shared monotonic deadline, preserves unstarted failures as the successful prefix without
+invented logs, and rejects later work after either failure kind. `gmake gpu-preparation-evidence`
+replays every unstarted slot and an output-validation deadline failure. `gmake gpu-explicit-driver`
+now copies the real managed compiler and runtime, builds the actual ggml-free shim through the
+closed-environment native driver, links two real Align callers, and executes both against that shim.
+The environment, process-cleanup, build-failure, publication and replay owners also pass, as do
+Python bytecode compilation and `git diff --check`. No GPU numeric qualification follows from this
+model-free result. The real-profile CLI command construction and case producer remain next.
 
-**Intentional uncommitted files.** None after the process-capture checkpoint is committed.
+**Intentional uncommitted files.** None after the preparation-sequence checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

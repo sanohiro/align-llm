@@ -13,6 +13,7 @@ import selectors
 import subprocess
 import sys
 import tempfile
+import time
 from unittest import mock
 
 
@@ -172,6 +173,16 @@ def environment_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathli
     ), "digest does not match")
 
 
+    physical, logical, mappings = command_inputs(fixture, "environment", home, scratch)
+    with mock.patch.object(process_owner.subprocess, "Popen") as child:
+        rejected(lambda: run_owned_command(
+            kind="candidate_build", physical_argv=physical, logical_argv=logical,
+            mappings=mappings, cwd=scratch, home=home, temporary=scratch,
+            timeout_seconds=2, deadline_ns=time.monotonic_ns() - 1, spawn=child,
+        ), "deadline expired")
+        child.assert_not_called()
+
+
 def cleanup_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path) -> None:
     signaled = invoke(fixture, "signal", home, scratch)
     assert signaled.terminal == "SIGNAL" and signaled.signal == 15
@@ -258,7 +269,6 @@ def interrupted_capture_owner(
         assert child.poll() is not None, fault
         assert child.stdout.closed and child.stderr.closed, fault
         # Recheck outside fault injection; the inspector-failure arm still must send SIGKILL.
-        import time
         deadline = time.monotonic() + 2
         while process_owner._group_member_count(child.pid) and time.monotonic() < deadline:
             time.sleep(0.01)

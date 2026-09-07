@@ -10,6 +10,8 @@ import json
 import pathlib
 import sys
 import tempfile
+import time
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -53,6 +55,7 @@ def run_step(
     script: str,
     output_name: str,
     name: str,
+    timeout: float = 2,
 ) -> None:
     physical, logical, mappings = command(shell, script, output_name)
     state.run_step(
@@ -62,11 +65,160 @@ def run_step(
         cwd=scratch,
         home=home,
         temporary=scratch,
-        timeout_seconds=2,
+        timeout_seconds=timeout,
         output=scratch / output_name,
         name=name,
         version="fixture",
     )
+
+
+def unstarted_and_deadline_owner(admitted, fixture, temporary: pathlib.Path) -> None:
+    shell = pathlib.Path("/bin/sh").resolve(strict=True)
+    host = json.loads(fixture.fixture_lines()[7])["host"]
+    stages = ("compiler", "runtime", "shim_build", "candidate_build", "cpu_reference_build")
+    for failed_ordinal in range(5):
+        root = temporary / f"unstarted-{failed_ordinal}"
+        root.mkdir(mode=0o700)
+        home = root / "home"
+        scratch = root / "work"
+        home.mkdir(mode=0o700)
+        scratch.mkdir(mode=0o700)
+        state = qualification_run.PreparationState(shell, name="gpu-runtime-qualify", version="fixture")
+        for ordinal in range(failed_ordinal):
+            run_step(state, shell, scratch, home,
+                     script='printf "%s" "$1" > "$1"',
+                     output_name=f"artifact-{ordinal}", name=f"artifact-{ordinal}")
+        output = scratch / "blocked"
+        if failed_ordinal == 0:
+            # A budget exhausted before any command must not manufacture a compiler log.
+            state.deadline_ns = time.monotonic_ns() - 1
+        elif failed_ordinal == 4:
+            # Exhaustion after a successful prefix must not attribute its last log to the next step.
+            state.deadline_ns = time.monotonic_ns() - 1
+        else:
+            output.write_bytes(b"occupied")
+        physical, logical, mappings = command(shell, 'exit 91', output.name)
+        arguments = dict(
+            physical_argv=physical, logical_argv=logical, mappings=mappings,
+            cwd=scratch, home=home, temporary=scratch, timeout_seconds=2,
+            output=output, name="unstarted", version="fixture",
+        )
+        with mock.patch.object(qualification_run, "run_owned_command") as child:
+            assert state.run_step(**arguments) is None
+            child.assert_not_called()
+        assert state.failure_ordinal == failed_ordinal and state.failed_result is None
+        assert not state.complete and len(state.commands) == failed_ordinal
+        try:
+            state.run_step(**arguments)
+        except RecipeError as error:
+            assert "cannot continue" in str(error)
+        else:
+            raise AssertionError("unstarted failure allowed preparation to resume")
+        evidence = qualification_run.failure_evidence(
+            admitted, state, align_revision="8cefc803d5c7f883a8db5b67250ed4ed069b43a4",
+            host=host, category="PREPARATION" if failed_ordinal < 2 else "BUILD",
+            stage=stages[failed_ordinal], detail=state.failure_detail,
+        )
+        prepared = publication.prepare(admitted, state.retained)
+        evidence["files"] = prepared.rows
+        output_evidence = root / "evidence"
+        publication.publish(admitted, evidence, prepared, output_evidence)
+        replayed = records.replay_evidence_directory(output_evidence)["evidence"]
+        assert len(replayed["preparation_commands"]) == failed_ordinal
+        assert not any(row["role"] in {"stdout", "stderr"} for row in replayed["files"])
+
+    root = temporary / "remaining-budget"
+    root.mkdir(mode=0o700)
+    state = qualification_run.PreparationState(shell, name="gpu-runtime-qualify", version="fixture")
+    original_run = qualification_run.run_owned_command
+    durations = []
+
+    def remaining_run(**arguments):
+        durations.append(arguments["timeout_seconds"])
+        assert arguments["deadline_ns"] == state.deadline_ns
+        assert 0 < arguments["timeout_seconds"] <= 10
+        return original_run(**arguments)
+
+    # No sleep is needed: give the sequence ten seconds of its original budget to consume.
+    state.deadline_ns = time.monotonic_ns() + 10_000_000_000
+    commands = []
+    for ordinal in range(5):
+        output_name = f"success-{ordinal}"
+        physical, logical, mappings = command(shell, 'printf "%s" "$1" > "$1"', output_name)
+        commands.append(qualification_run.PreparationCommand(
+            tuple(physical), tuple(logical), mappings, root / output_name,
+            output_name, "fixture",
+        ))
+    with mock.patch.object(qualification_run, "run_owned_command", remaining_run):
+        qualification_run.run_preparation(state, commands, cwd=root, home=root, temporary=root)
+    assert state.complete and len(durations) == 5
+    assert all(later < earlier for earlier, later in zip(durations, durations[1:]))
+
+    for failure_mode in ("started", "unstarted"):
+        prefix_root = temporary / f"sequence-{failure_mode}"
+        prefix_root.mkdir(mode=0o700)
+        prefix_state = qualification_run.PreparationState(
+            shell, name="gpu-runtime-qualify", version="fixture",
+        )
+        prefix_commands = []
+        for ordinal in range(5):
+            output_name = f"sequence-{ordinal}"
+            script = 'exit 7' if ordinal == 2 else 'printf "%s" "$1" > "$1"'
+            physical, logical, mappings = command(shell, script, output_name)
+            prefix_commands.append(qualification_run.PreparationCommand(
+                tuple(physical), tuple(logical), mappings, prefix_root / output_name,
+                output_name, "fixture",
+            ))
+        if failure_mode == "unstarted":
+            (prefix_root / "sequence-2").write_bytes(b"occupied")
+        qualification_run.run_preparation(
+            prefix_state, prefix_commands, cwd=prefix_root, home=prefix_root, temporary=prefix_root,
+        )
+        assert prefix_state.failure_ordinal == 2
+        assert len(prefix_state.commands) == (3 if failure_mode == "started" else 2)
+        assert not (prefix_root / "sequence-3").exists()
+        assert not (prefix_root / "sequence-4").exists()
+
+    # A digest refusal is an unstarted failure, so it cannot leave a command or invented logs.
+    root = temporary / "digest-refusal"
+    root.mkdir(mode=0o700)
+    state = qualification_run.PreparationState(shell, name="gpu-runtime-qualify", version="fixture")
+    physical, logical, mappings = command(shell, 'exit 91', "absent")
+    wrong = "<qualifier>:sha256:" + "0" * 64
+    logical[0] = wrong
+    mappings = {wrong: shell}
+    result = state.run_step(
+        physical_argv=physical, logical_argv=logical, mappings=mappings,
+        cwd=root, home=root, temporary=root, timeout_seconds=2, output=root / "absent",
+        name="unstarted", version="fixture",
+    )
+    assert result is None and state.failure_ordinal == 0 and not state.commands
+
+
+    root = temporary / "output-deadline"
+    root.mkdir(mode=0o700)
+    state = qualification_run.PreparationState(shell, name="gpu-runtime-qualify", version="fixture")
+    original_artifact = qualification_run._artifact
+
+    def expired_artifact(path):
+        retained = original_artifact(path)
+        state.deadline_ns = time.monotonic_ns() - 1
+        return retained
+
+    with mock.patch.object(qualification_run, "_artifact", expired_artifact):
+        run_step(state, shell, root, root, script='printf "built" > "$1"',
+                 output_name="late-output", name="late-output")
+    assert state.failure_ordinal == 0 and state.failed_result is not None
+    assert state.identities["align_compiler"]["state"] == "unavailable"
+    assert "logs/000.stdout" in state.retained and "logs/000.stderr" in state.retained
+    evidence = qualification_run.failure_evidence(
+        admitted, state, align_revision="8cefc803d5c7f883a8db5b67250ed4ed069b43a4", host=host,
+        category="PREPARATION", stage="compiler", detail=state.failure_detail,
+    )
+    prepared = publication.prepare(admitted, state.retained)
+    evidence["files"] = prepared.rows
+    publication.publish(admitted, evidence, prepared, root / "evidence")
+    records.replay_evidence_directory(root / "evidence")
 
 
 def main() -> None:
@@ -77,6 +229,7 @@ def main() -> None:
         input_root.mkdir()
         fixture.materialize(input_root)
         admitted = qualification_input.admit(input_root / "profile.json")
+        unstarted_and_deadline_owner(admitted, fixture, temporary)
 
         home = temporary / "home"
         scratch = temporary / "scratch"

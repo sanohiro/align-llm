@@ -1125,8 +1125,11 @@ def validate_evidence(
         }
         failed_preparation = preparation_failure_stages.get(str(failure["stage"]))
         if failed_preparation is not None:
-            if len(commands) != failed_preparation + 1 \
-                    or source[identity_order[failed_preparation]]["state"] != "unavailable":
+            if len(commands) not in {failed_preparation, failed_preparation + 1} \
+                    or failure["case_ordinal"] != -1 or case_values \
+                    or any(source[key]["state"] != ("available" if ordinal < failed_preparation
+                                                   else "unavailable")
+                           for ordinal, key in enumerate(identity_order)):
                 raise RecipeError("preparation failure identity or command prefix is invalid")
     if status == "PASS" and (
         cleanup["descendants_after"] != 0 or cleanup["descendants_before"] != 0
@@ -1271,10 +1274,12 @@ def expected_directory_roles(records: dict[str, object]) -> dict[str, str]:
     commands = evidence["preparation_commands"]
     assert isinstance(failure, dict) and isinstance(commands, list)
     preparation_stages = {
-        "compiler", "runtime", "candidate_build", "shim_build", "cpu_reference_build",
+        "compiler": 0, "runtime": 1, "shim_build": 2, "candidate_build": 3,
+        "cpu_reference_build": 4,
     }
+    failed_ordinal = preparation_stages.get(str(failure["stage"]))
     if evidence["status"] == "FAIL" and failure["case_ordinal"] == -1 \
-            and failure["stage"] in preparation_stages and commands:
+            and failed_ordinal is not None and len(commands) == failed_ordinal + 1:
         command_ordinal = len(commands) - 1
         expected[f"logs/{command_ordinal:03d}.stdout"] = "stdout"
         expected[f"logs/{command_ordinal:03d}.stderr"] = "stderr"

@@ -3,17 +3,19 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import os
 import pathlib
 import stat
+import time
 from collections.abc import Mapping, Sequence
 
 from gpu_backend_recipe import MAX_BUNDLE_ARTIFACT_BYTES, RecipeError, canonical
 from gpu_qualification_input import AdmittedInput
 from gpu_qualification_publish import RetainedFile
 from gpu_qualification_records import case_order_sha256
-from gpu_qualifier_process import OwnedCommandResult, run_owned_command
+from gpu_qualifier_process import CommandNotStarted, OwnedCommandResult, run_owned_command
 
 
 PREPARATION = (
@@ -23,6 +25,46 @@ PREPARATION = (
     ("candidate_build", "candidate", "helper"),
     ("cpu_reference_build", "cpu_reference", "helper"),
 )
+
+
+@dataclasses.dataclass(frozen=True)
+class PreparationCommand:
+    physical_argv: tuple[str, ...]
+    logical_argv: tuple[str, ...]
+    mappings: Mapping[str, pathlib.Path]
+    output: pathlib.Path
+    name: str
+    version: str
+
+
+def run_preparation(
+    state: PreparationState,
+    commands: Sequence[PreparationCommand],
+    *,
+    cwd: pathlib.Path,
+    home: pathlib.Path,
+    temporary: pathlib.Path,
+) -> None:
+    """Execute exactly the five preparation slots, sharing one budget and stopping on first fault."""
+    if state.commands or state.failure_ordinal is not None:
+        raise RecipeError("preparation sequence requires a fresh state")
+    if len(commands) != len(PREPARATION):
+        raise RecipeError("preparation sequence requires exactly five commands")
+    for command in commands:
+        state.run_step(
+            physical_argv=command.physical_argv,
+            logical_argv=command.logical_argv,
+            mappings=command.mappings,
+            cwd=cwd,
+            home=home,
+            temporary=temporary,
+            timeout_seconds=3600,
+            output=command.output,
+            name=command.name,
+            version=command.version,
+        )
+        if state.failure_ordinal is not None:
+            return
 
 
 def unavailable_identity() -> dict[str, object]:
@@ -67,7 +109,14 @@ def _artifact(path: pathlib.Path) -> tuple[bytes, str]:
 
 
 class PreparationState:
-    def __init__(self, qualifier: pathlib.Path, *, name: str, version: str) -> None:
+    def __init__(
+        self, qualifier: pathlib.Path, *, name: str, version: str,
+        preparation_timeout_ns: int = 3_600_000_000_000,
+    ) -> None:
+        if type(preparation_timeout_ns) is not int or not 0 < preparation_timeout_ns <= 3_600_000_000_000:
+            raise RecipeError("preparation deadline is outside its bound")
+        self.started_ns = time.monotonic_ns()
+        self.deadline_ns = self.started_ns + preparation_timeout_ns
         data, sha256 = _artifact(qualifier.absolute())
         self.identities = {
             key: unavailable_identity() for _, key, _ in PREPARATION
@@ -79,6 +128,7 @@ class PreparationState:
         self.retained: dict[str, RetainedFile] = {}
         self.failed_result: OwnedCommandResult | None = None
         self.failure_detail = ""
+        self.failure_ordinal: int | None = None
         self.elapsed_ns = 0
         self._retain(f"artifacts/{sha256}", RetainedFile("helper", data))
 
@@ -101,41 +151,57 @@ class PreparationState:
         output: pathlib.Path,
         name: str,
         version: str,
-    ) -> OwnedCommandResult:
-        if self.failed_result is not None:
+    ) -> OwnedCommandResult | None:
+        if self.failure_ordinal is not None:
             raise RecipeError("preparation cannot continue after failure")
         ordinal = len(self.commands)
         if ordinal >= len(PREPARATION):
             raise RecipeError("preparation command sequence is complete")
         kind, identity_key, role = PREPARATION[ordinal]
-        resolved_cwd = cwd.resolve(strict=True)
-        output_absolute = output.absolute()
+        remaining_ns = self.deadline_ns - time.monotonic_ns()
+        if remaining_ns <= 0:
+            self.fail_unstarted("preparation deadline expired before command construction")
+            return None
         try:
-            output_parent = output_absolute.parent.resolve(strict=True)
-        except OSError as exc:
-            raise RecipeError("produced artifact parent is absent") from exc
-        if output_parent != resolved_cwd and resolved_cwd not in output_parent.parents:
-            raise RecipeError("produced artifact is outside the preparation root")
-        if output_absolute.exists() or output_absolute.is_symlink():
-            raise RecipeError("produced artifact output is occupied")
-        result = run_owned_command(
-            kind=kind,
-            physical_argv=physical_argv,
-            logical_argv=logical_argv,
-            mappings=mappings,
-            cwd=cwd,
-            home=home,
-            temporary=temporary,
-            timeout_seconds=timeout_seconds,
-        )
+            resolved_cwd = cwd.resolve(strict=True)
+            output_absolute = output.absolute()
+            try:
+                output_parent = output_absolute.parent.resolve(strict=True)
+            except OSError as exc:
+                raise RecipeError("produced artifact parent is absent") from exc
+            if output_parent != resolved_cwd and resolved_cwd not in output_parent.parents:
+                raise RecipeError("produced artifact is outside the preparation root")
+            if output_absolute.exists() or output_absolute.is_symlink():
+                raise RecipeError("produced artifact output is occupied")
+        except (RecipeError, OSError):
+            self.fail_unstarted("preparation output cannot be admitted")
+            return None
+        try:
+            result = run_owned_command(
+                kind=kind,
+                physical_argv=physical_argv,
+                logical_argv=logical_argv,
+                mappings=mappings,
+                cwd=cwd,
+                home=home,
+                temporary=temporary,
+                timeout_seconds=min(timeout_seconds, remaining_ns / 1_000_000_000),
+                deadline_ns=self.deadline_ns,
+            )
+        except CommandNotStarted:
+            self.fail_unstarted("preparation command could not start")
+            return None
         self.commands.append(result.command)
-        self.elapsed_ns += result.elapsed_ns
+        self.elapsed_ns = max(self.elapsed_ns, time.monotonic_ns() - self.started_ns)
         if result.terminal == "PASS":
             try:
                 data, sha256 = _artifact(output_absolute)
             except RecipeError:
                 self._fail(result, "preparation output is absent or invalid")
             else:
+                if time.monotonic_ns() >= self.deadline_ns:
+                    self._fail(result, "preparation deadline expired while validating output")
+                    return result
                 try:
                     self._retain(f"artifacts/{sha256}", RetainedFile(role, data))
                 except RecipeError:
@@ -144,14 +210,24 @@ class PreparationState:
                     self.identities[identity_key] = {
                         "state": "available", "name": name, "version": version, "sha256": sha256,
                     }
+                    self.elapsed_ns = max(self.elapsed_ns, time.monotonic_ns() - self.started_ns)
                     return result
         else:
             self._fail(result, f"preparation command {ordinal} did not pass")
         return result
 
+    def fail_unstarted(self, detail: str) -> None:
+        if self.failure_ordinal is not None or len(self.commands) >= len(PREPARATION):
+            raise RecipeError("preparation cannot fail an unstarted step after completion or failure")
+        self.failure_ordinal = len(self.commands)
+        self.failure_detail = detail
+        self.elapsed_ns = max(self.elapsed_ns, time.monotonic_ns() - self.started_ns)
+
     def _fail(self, result: OwnedCommandResult, detail: str) -> None:
+        self.failure_ordinal = len(self.commands) - 1
         self.failed_result = result
         self.failure_detail = detail
+        self.elapsed_ns = max(self.elapsed_ns, time.monotonic_ns() - self.started_ns)
         ordinal = len(self.commands) - 1
         for suffix, role, captured in (
             ("stdout", "stdout", result.stdout),
@@ -169,7 +245,7 @@ class PreparationState:
 
     @property
     def complete(self) -> bool:
-        return len(self.commands) == len(PREPARATION) and self.failed_result is None
+        return len(self.commands) == len(PREPARATION) and self.failure_ordinal is None
 
 
 def failure_evidence(
@@ -185,10 +261,10 @@ def failure_evidence(
 ) -> dict[str, object]:
     """Construct a pre-case FAIL result; publication adds its exact retained file rows."""
     failed = preparation.failed_result
-    if failed is None and not preparation.complete:
+    if preparation.failure_ordinal is None and not preparation.complete:
         raise RecipeError("pre-case failure evidence requires complete preparation")
-    if failed is not None:
-        ordinal = len(preparation.commands) - 1
+    if preparation.failure_ordinal is not None:
+        ordinal = preparation.failure_ordinal
         expected_stage = {
             "compiler_materialize": "compiler",
             "runtime_materialize": "runtime",

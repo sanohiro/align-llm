@@ -24,6 +24,10 @@ POLL_SECONDS = 0.05
 KILL_GRACE_SECONDS = 1.0
 
 
+class CommandNotStarted(RecipeError):
+    """Command admission or spawn failed before an owned child existed."""
+
+
 @dataclasses.dataclass(frozen=True)
 class CapturedLog:
     retained: bytes
@@ -249,40 +253,48 @@ def run_owned_command(
     home: pathlib.Path,
     temporary: pathlib.Path,
     timeout_seconds: float,
+    deadline_ns: int | None = None,
     log_limit: int = LOG_LIMIT,
     spawn: object = subprocess.Popen,
 ) -> OwnedCommandResult:
     """Run one verified command in a new group and return bounded complete-log identities."""
-    if not 0 < timeout_seconds <= 60 * 60 or not 0 <= log_limit <= LOG_LIMIT:
-        raise RecipeError("command timeout or log bound is invalid")
-    home_root = _private_directory(home, "command HOME")
-    temporary_root = _private_directory(temporary, "command TMPDIR")
-    cwd_root = _private_directory(cwd, "command cwd")
-    logical_environment = ["HOME=<home>:owned", "LC_ALL=C", "TMPDIR=<tmp>:owned", "TZ=UTC"]
-    command = {
-        "kind": kind,
-        "argv": list(logical_argv),
-        "environment": logical_environment,
-        "sha256": "0" * 64,
-    }
-    from gpu_qualification_records import command_digest
-    command["sha256"] = command_digest(kind, command["argv"], logical_environment)
-    validate_command(command, allow_sentinel=False, expected_kind=kind)
-    _verify_argv(physical_argv, logical_argv, mappings, (home_root, temporary_root, cwd_root))
-    executable = pathlib.Path(physical_argv[0])
-    _single_link_sha256(executable, "command executable")
+    try:
+        if not 0 < timeout_seconds <= 60 * 60 or not 0 <= log_limit <= LOG_LIMIT:
+            raise RecipeError("command timeout or log bound is invalid")
+        home_root = _private_directory(home, "command HOME")
+        temporary_root = _private_directory(temporary, "command TMPDIR")
+        cwd_root = _private_directory(cwd, "command cwd")
+        logical_environment = ["HOME=<home>:owned", "LC_ALL=C", "TMPDIR=<tmp>:owned", "TZ=UTC"]
+        command = {
+            "kind": kind,
+            "argv": list(logical_argv),
+            "environment": logical_environment,
+            "sha256": "0" * 64,
+        }
+        from gpu_qualification_records import command_digest
+        command["sha256"] = command_digest(kind, command["argv"], logical_environment)
+        validate_command(command, allow_sentinel=False, expected_kind=kind)
+        _verify_argv(physical_argv, logical_argv, mappings, (home_root, temporary_root, cwd_root))
+        executable = pathlib.Path(physical_argv[0])
+        _single_link_sha256(executable, "command executable")
 
-    actual_environment = {
-        "HOME": str(home_root),
-        "LC_ALL": "C",
-        "TMPDIR": str(temporary_root),
-        "TZ": "UTC",
-    }
-    started_ns = time.monotonic_ns()
-    process = spawn(
-        tuple(physical_argv), cwd=cwd_root, env=actual_environment, stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, close_fds=True,
-    )
+        actual_environment = {
+            "HOME": str(home_root),
+            "LC_ALL": "C",
+            "TMPDIR": str(temporary_root),
+            "TZ": "UTC",
+        }
+        started_ns = time.monotonic_ns()
+        if deadline_ns is not None:
+            if type(deadline_ns) is not int or deadline_ns <= started_ns:
+                raise RecipeError("command deadline expired before spawn")
+            timeout_seconds = min(timeout_seconds, (deadline_ns - started_ns) / 1_000_000_000)
+        process = spawn(
+            tuple(physical_argv), cwd=cwd_root, env=actual_environment, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, close_fds=True,
+        )
+    except (RecipeError, OSError) as error:
+        raise CommandNotStarted(str(error)) from error
     selector: selectors.BaseSelector | None = None
     completed = False
     try:
@@ -296,7 +308,7 @@ def run_owned_command(
             sinks[pipe.fileno()] = _LogSink(log_limit)
 
         timed_out = False
-        deadline = time.monotonic() + timeout_seconds
+        deadline = started_ns / 1_000_000_000 + timeout_seconds
         while process.poll() is None and time.monotonic() < deadline:
             _drain(selector, sinks, POLL_SECONDS)
         if process.poll() is None:
