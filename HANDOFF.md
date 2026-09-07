@@ -64,6 +64,9 @@ pin adoption, `gmake gpu-numeric-stream` and final `gmake gpu-generation-smoke` 
 - A reproduced FIFO admission stall is repaired across retained-input, source, staged-backend,
   executable and produced-artifact readers. Descriptor opens are nonblocking before the existing
   regular-file checks; numeric streams already used the same rule.
+- Local kit assembly now privately stages captured sources, generated records and bounded model
+  copies, runs ordinary retained-root admission and exact file-closure checks, then publishes by
+  no-replace rename. Fixture kits cover the real input path; real calibration remains pending.
 
 **Next actions, in order.**
 
@@ -108,6 +111,8 @@ model order, platform, path, deadline and cache-budget refusals.
 `gmake gpu-special-file-admission gpu-input-admission gpu-backend-staging gpu-preparation-evidence
  gpu-command-environment gpu-source-replay` passes bounded special-file refusals and existing owner
 controls after the FIFO repair. The regression covers every affected reader, without a new gate.
+`gmake gpu-kit-assembly` passes full fixture-kit admission, bounded large copying, missing/extra/
+malformed/digest refusals, source/copy failure cleanup and occupied-output/publication-race safety.
 These are focused build/registry/runtime checks, not completed GPU numeric qualification.
 
 **External inputs and constraints.** Models, raw evidence, build products and local paths stay
@@ -122,7 +127,7 @@ OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90.
 `1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
 follows from these build and correctness checkpoints.
 
-**Intentional uncommitted files.** None at the nonblocking-admission checkpoint.
+**Intentional uncommitted files.** None at the kit-assembly checkpoint.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

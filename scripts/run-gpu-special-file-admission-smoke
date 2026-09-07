@@ -20,6 +20,7 @@ from gpu_qualification_backend import _verify
 from gpu_qualifier_process import _file_sha256
 from gpu_qualification_run import _artifact
 from gpu_qualification_stream import NumericStream
+from gpu_qualification_kit import _copy
 path = pathlib.Path(sys.argv[2])
 operation, valid = sys.argv[3], sys.argv[4] == "valid"
 expected = hashlib.sha256(b"data").hexdigest()
@@ -45,6 +46,13 @@ def consume():
         assert _file_sha256(path, "executable") == expected
     elif operation == "artifact":
         assert _artifact(path) == (b"data", expected)
+    elif operation == "kit-copy":
+        destination = path.parent / "copied"
+        try:
+            _copy(path, destination)
+            assert destination.read_bytes() == b"data"
+        finally:
+            destination.unlink(missing_ok=True)
     else:
         with NumericStream(path, model=1, maximum_bytes=108):
             pass
@@ -73,7 +81,7 @@ def main():
         sockpath = root / "socket"
         with socket.socket(socket.AF_UNIX) as sock:
             sock.bind(str(sockpath))
-            for operation in ("source", "input-read", "input-digest", "backend", "executable", "artifact", "stream"):
+            for operation in ("source", "input-read", "input-digest", "backend", "executable", "artifact", "stream", "kit-copy"):
                 cases = [(path, "invalid") for path in (fifo, directory, symlink, sockpath)]
                 if operation != "stream":
                     cases.append((regular, "valid"))

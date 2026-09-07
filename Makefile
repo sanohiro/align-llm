@@ -120,6 +120,10 @@ gpu-profile-assembly:
 gpu-special-file-admission:
 	./scripts/run-gpu-special-file-admission-smoke
 
+.PHONY: gpu-kit-assembly
+gpu-kit-assembly:
+	./scripts/run-gpu-kit-assembly-smoke
+
 gpu-input-admission:
 	./scripts/run-gpu-input-admission-smoke
 

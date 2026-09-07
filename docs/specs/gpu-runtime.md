@@ -186,7 +186,7 @@ digests; semantic invariants; aggregate and directory closure.
 Regular-file admission opens with no-follow and nonblocking flags before descriptor type checks;
 an unconnected FIFO cannot stall before validation or consume an unbounded preparation interval.
 `gpu-special-file-admission` covers retained input read/digest, source replay, staged backends,
-executable identity, produced artifacts and numeric streams with bounded FIFO/socket/directory/
+executable identity, produced artifacts, numeric streams and kit copying with bounded FIFO/socket/directory/
 symlink refusals and regular-file controls. It is a focused owner, not new aggregate membership.
 
 ### 3.4 Source manifest schema 1
@@ -694,6 +694,26 @@ Python reader's chunk/ordinal/footer/model/link/mutation/early-exit refusals. Th
 reader are checked against the same byte vector independently. `gpu-generation-smoke` will own
 the production logit hook and reservation; full layer/router production remains in the G1 numeric
 case integration. No performance claim or additional aggregate membership is introduced.
+
+### 3.11 Local qualification kit assembly
+
+The internal kit owner accepts canonical profile bytes, both captured source closures and an exact
+relative-path mapping of supplied local files or generated record bytes. It creates a private
+output-sibling staging directory, writes regular files exclusively and copies large model inputs
+in at most 1 MiB chunks. Local file inputs must be single-link no-follow regular files; descriptor
+and path identity and original size are checked after copying. Source capture uses the shared
+writer from §3.4. No hardlink/symlink to a model input is installed in a kit.
+
+Before publication, ordinary retained-root admission verifies all profile/calibration/bundle/model
+hashes and both source closures; its referenced file set must equal the written file set. Missing,
+extra, duplicate/prefix-colliding, traversal or reserved profile/source paths fail. Publication uses
+the existing no-replace directory rename. An occupied output is preserved; any failed copy,
+admission or rename removes only the private stage. The caller retains the supplied inputs and
+owns the completed output. No remote transport, credential handling, new CLI or qualification
+success is provided by this assembly API. `gpu-kit-assembly` owns actual fixture-kit admission,
+large bounded copying, occupied-output preservation, input mutation, malformed/missing/extra paths,
+digest refusal and partial-stage cleanup. Real calibration and backend qualification remain G1
+integration prerequisites.
 
 ## 4. Execution and memory design
 
