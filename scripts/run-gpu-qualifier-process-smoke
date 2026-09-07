@@ -318,6 +318,17 @@ def host_tool_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.
     )
     result = run_owned_command(**arguments)
     assert result.terminal == "PASS" and result.stdout.retained == str(alias).encode(), result
+    direct_token = "<fixture>:sha256:" + hashlib.sha256(fixture.read_bytes()).hexdigest()
+    indirect = arguments | {
+        "physical_argv": [str(fixture), "-c", "exit 0"],
+        "logical_argv": [direct_token, "-c", "exit 0"], "mappings": {direct_token: fixture},
+        "tool_dependencies": (admitted,),
+    }
+    assert run_owned_command(**indirect).terminal == "PASS"
+    with mock.patch.object(process_owner.subprocess, "Popen") as child:
+        rejected(lambda: run_owned_command(**(indirect | {"kind": "case", "spawn": child})),
+                 "dependency is only valid for preparation")
+        child.assert_not_called()
     with mock.patch.object(process_owner.subprocess, "Popen") as child:
         rejected(lambda: run_owned_command(**(arguments | {"kind": "case", "spawn": child})),
                  "only valid for hashed preparation inputs")
@@ -335,6 +346,7 @@ def host_tool_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.
     alias.symlink_to(replacement)
     with mock.patch.object(process_owner.subprocess, "Popen") as child:
         rejected(lambda: run_owned_command(**(arguments | {"spawn": child})), "alias target changed")
+        rejected(lambda: run_owned_command(**(indirect | {"spawn": child})), "alias target changed")
         child.assert_not_called()
     alias.unlink()
     alias.symlink_to(target)

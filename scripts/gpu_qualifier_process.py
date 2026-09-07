@@ -341,6 +341,7 @@ def run_owned_command(
     timeout_seconds: float,
     deadline_ns: int | None = None,
     sdk: ToolchainDirectory | None = None,
+    tool_dependencies: Sequence[ToolchainExecutable] = (),
     log_limit: int = LOG_LIMIT,
     spawn: object = subprocess.Popen,
 ) -> OwnedCommandResult:
@@ -383,6 +384,10 @@ def run_owned_command(
             if kind == "case":
                 raise RecipeError("SDK dependency is only valid for preparation")
             sdk.recheck(sdk.sha256)
+        if tool_dependencies and kind == "case":
+            raise RecipeError("host tool dependency is only valid for preparation")
+        for tool in tool_dependencies:
+            tool.recheck(tool.sha256)
         started_ns = time.monotonic_ns()
         if deadline_ns is not None:
             if type(deadline_ns) is not int or deadline_ns <= started_ns:

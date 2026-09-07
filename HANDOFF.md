@@ -161,7 +161,15 @@ permission are rechecked; ordinary application artifacts retain single-link admi
 `gmake fmt`, Python bytecode compilation and `git diff --check` pass. This is build and registry
 evidence only; host-tool CLI assembly and numeric generation qualification remain unfinished.
 
-**Intentional uncommitted files.** None after the static CPU-reference checkpoint is committed.
+The native preparation driver is now production code shared by the candidate and static-reference
+owners. It preserves UTF-8/space-containing argument paths, uses one private linker alias, and
+executes the selected compiler with the exact four-entry environment. Indirect compiler/linker
+dependencies are rechecked at each preparation spawn and are refused for cases. The real explicit
+driver, CPU-reference, command-environment and preparation-evidence owners pass, including occupied
+output, failed bootstrap and expired deadline refusals. Linux reference linkage now spells the
+dynamic-loader support library `-ldl`; real CUDA/Linux qualification remains outstanding.
+
+**Intentional uncommitted files.** None after the native preparation-driver checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

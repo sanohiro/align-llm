@@ -163,7 +163,7 @@ def main() -> None:
         entry = app / "src/runtime_cpu_reference_smoke.align"
         proxy = work / "selected-cc"
         marker = work / "driver-environment"
-        fixture.build_driver_proxy(tools["cc"].path, work / "driver.c", proxy, marker, work, sdk)
+        native = fixture.build_driver_proxy(tools["cc"].path, work / "driver.c", proxy, marker, work, sdk)
         revision = (ROOT / ".align-revision").read_text().strip()
         source_commit = subprocess.check_output([git, "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
         planned = list(build.commands(
@@ -179,6 +179,8 @@ def main() -> None:
             tools=tools, sdk=sdk, platform=platform, ggml_commit=recipe.GGML_COMMIT,
             source_commit=source_commit, compiler_sha256=hashlib.sha256(compiler.read_bytes()).hexdigest(),
         )
+        planned = [dataclasses.replace(command, tool_dependencies=native.tool_dependencies)
+                   for command in planned]
         state = preparation.PreparationState(
             pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture",
             preparation_timeout_ns=600_000_000_000,

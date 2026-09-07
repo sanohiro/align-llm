@@ -38,7 +38,7 @@ int main(int argc, char **argv) {
         "$<TARGET_FILE:ggml>", "$<TARGET_FILE:ggml-cpu>", "$<TARGET_FILE:ggml-base>",
         "@REFERENCE_CXX_LIBRARY@", "-pthread", "-lm",
 #ifndef __APPLE__
-        "-ld",
+        "-ldl",
 #endif
     };
     size_t count = sizeof(extra) / sizeof(extra[0]);

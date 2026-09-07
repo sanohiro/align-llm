@@ -39,6 +39,7 @@ class PreparationCommand:
     version: str
     cwd: pathlib.Path | None = None
     sdk: ToolchainDirectory | None = None
+    tool_dependencies: tuple[ToolchainExecutable, ...] = ()
 
 
 def run_preparation(
@@ -67,6 +68,7 @@ def run_preparation(
             name=command.name,
             version=command.version,
             sdk=command.sdk,
+            tool_dependencies=command.tool_dependencies,
         )
         if state.failure_ordinal is not None:
             return
@@ -157,6 +159,7 @@ class PreparationState:
         name: str,
         version: str,
         sdk: ToolchainDirectory | None = None,
+        tool_dependencies: Sequence[ToolchainExecutable] = (),
     ) -> OwnedCommandResult | None:
         if self.failure_ordinal is not None:
             raise RecipeError("preparation cannot continue after failure")
@@ -194,6 +197,7 @@ class PreparationState:
                 timeout_seconds=min(timeout_seconds, remaining_ns / 1_000_000_000),
                 deadline_ns=self.deadline_ns,
                 sdk=sdk,
+                tool_dependencies=tool_dependencies,
             )
         except CommandNotStarted:
             self.fail_unstarted("preparation command could not start")
