@@ -84,8 +84,8 @@ Issues #966 and #968 contain the final real-client evidence. Neither request blo
 2. Prepare both platform profiles and numeric calibrations, then connect the retained source,
    process, record, resident-generation, and provider owners into the publication qualifier.
 3. Run Metal locally and hand the same bounded kit to the CUDA host. Publish G1 only when it is
-   consumer-complete, then review, repair, exact-head preflight, and merge. Stop after this pull
-   request as requested; do not begin G1R in this work session.
+   consumer-complete, then review, repair, exact-head preflight, and merge. After merging, refresh
+   main and start G1R or the next eligible independent consumer; continue until asked to stop.
 
 **Verification and constraints.** At pinned `8dc80978`, `gmake build`, `gmake ggml-spike-smoke`,
 `gmake gpu-explicit-driver`, and the Request 59 per-unit checks for `verification_loop.align`,
@@ -121,7 +121,13 @@ with bundle ID `0a472538ef35...814b`, manifest digest `f928428facfe...8d1`, sour
 `64db6180009a...6f4`, and source-snapshot digest `c2860034df35...8b3`. Its 3,430-file, 169 MiB
 closure passed the recipe bounds, and the real shim linked against the staged bundle successfully.
 
-**Intentional uncommitted files.** None after the latest Align pin adoption is committed.
+The process-capture checkpoint guarantees group termination, direct-child reaping and pipe/selector
+closure after capture setup, partial registration, stream-read, interrupt or inspector failures.
+`gmake gpu-process-cleanup gpu-command-environment gpu-build-failure-evidence
+gpu-preparation-evidence`, Python bytecode compilation and `git diff --check` pass. This is an
+internal G1 checkpoint; the CLI orchestration remains the next implementation action.
+
+**Intentional uncommitted files.** None after the process-capture checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

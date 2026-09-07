@@ -283,39 +283,66 @@ def run_owned_command(
         tuple(physical_argv), cwd=cwd_root, env=actual_environment, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, close_fds=True,
     )
-    if process.stdout is None or process.stderr is None:
-        raise RecipeError("command log pipes were not created")
-    selector = selectors.DefaultSelector()
-    sinks: dict[int, _LogSink] = {}
-    for pipe in (process.stdout, process.stderr):
-        os.set_blocking(pipe.fileno(), False)
-        selector.register(pipe.fileno(), selectors.EVENT_READ)
-        sinks[pipe.fileno()] = _LogSink(log_limit)
-
-    timed_out = False
-    deadline = time.monotonic() + timeout_seconds
-    while process.poll() is None and time.monotonic() < deadline:
-        _drain(selector, sinks, POLL_SECONDS)
-    if process.poll() is None:
-        timed_out = True
-        descendants_before = _group_member_count(process.pid)
-        _terminate_group(process, KILL_GRACE_SECONDS)
-    else:
-        descendants_before = _group_member_count(process.pid)
-        if descendants_before:
-            _terminate_group(process, KILL_GRACE_SECONDS)
+    selector: selectors.BaseSelector | None = None
+    completed = False
     try:
-        process.wait(timeout=KILL_GRACE_SECONDS)
-    except subprocess.TimeoutExpired:
-        _terminate_group(process, 0)
-        process.wait(timeout=KILL_GRACE_SECONDS)
-    _drain(selector, sinks, KILL_GRACE_SECONDS)
-    for fd in list(selector.get_map()):
-        selector.unregister(fd)
-    selector.close()
-    process.stdout.close()
-    process.stderr.close()
-    descendants_after = _group_member_count(process.pid)
+        selector = selectors.DefaultSelector()
+        if process.stdout is None or process.stderr is None:
+            raise RecipeError("command log pipes were not created")
+        sinks: dict[int, _LogSink] = {}
+        for pipe in (process.stdout, process.stderr):
+            os.set_blocking(pipe.fileno(), False)
+            selector.register(pipe.fileno(), selectors.EVENT_READ)
+            sinks[pipe.fileno()] = _LogSink(log_limit)
+
+        timed_out = False
+        deadline = time.monotonic() + timeout_seconds
+        while process.poll() is None and time.monotonic() < deadline:
+            _drain(selector, sinks, POLL_SECONDS)
+        if process.poll() is None:
+            timed_out = True
+            descendants_before = _group_member_count(process.pid)
+            _terminate_group(process, KILL_GRACE_SECONDS)
+        else:
+            descendants_before = _group_member_count(process.pid)
+            if descendants_before:
+                _terminate_group(process, KILL_GRACE_SECONDS)
+        try:
+            process.wait(timeout=KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            _terminate_group(process, 0)
+            process.wait(timeout=KILL_GRACE_SECONDS)
+        _drain(selector, sinks, KILL_GRACE_SECONDS)
+        for fd in list(selector.get_map()):
+            selector.unregister(fd)
+        descendants_after = _group_member_count(process.pid)
+        completed = True
+    finally:
+        try:
+            if not completed:
+                # Inspection or capture can itself fail. Send the group signal before consulting
+                # any fallible process inspector, and reap the direct child even after an interrupt.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=KILL_GRACE_SECONDS)
+                cleanup_deadline = time.monotonic() + KILL_GRACE_SECONDS
+                while _group_member_count(process.pid) and time.monotonic() < cleanup_deadline:
+                    time.sleep(POLL_SECONDS)
+                if _group_member_count(process.pid):
+                    raise RecipeError("interrupted command process group could not be killed")
+        finally:
+            try:
+                if selector is not None:
+                    selector.close()
+            finally:
+                try:
+                    if process.stdout is not None:
+                        process.stdout.close()
+                finally:
+                    if process.stderr is not None:
+                        process.stderr.close()
 
     returncode = process.returncode
     if timed_out:

@@ -9,13 +9,17 @@ import hashlib
 import json
 import os
 import pathlib
+import selectors
+import subprocess
 import sys
 import tempfile
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import gpu_qualifier_process as process_owner  # noqa: E402
 import gpu_qualification_records as records  # noqa: E402
 from gpu_backend_recipe import RecipeError  # noqa: E402
 from gpu_qualifier_process import retained_file_row, run_owned_command  # noqa: E402
@@ -63,6 +67,7 @@ case "$mode" in
     ;;
   timeout)
     "$1" 30 &
+    printf 'child-started\\n'
     wait
     ;;
   descendant)
@@ -192,6 +197,75 @@ def cleanup_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Pa
     ).hexdigest()
 
 
+def interrupted_capture_owner(
+    fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path,
+) -> None:
+    # Fail before capture setup, during partial registration, with a live descendant, and while
+    # inspecting that group. Each path must reap the actual child and close both actual pipes.
+    for fault in ("selector", "register", "drain", "interrupt", "inspect"):
+        observed = []
+        opened_selectors = []
+        error = KeyboardInterrupt() if fault == "interrupt" else OSError("injected capture failure")
+        original_drain = process_owner._drain
+        original_selector = selectors.DefaultSelector
+
+        def spawn(*args, **kwargs):
+            child = subprocess.Popen(*args, **kwargs)
+            observed.append(child)
+            return child
+
+        class PartialSelector(original_selector):
+            def register(self, *args, **kwargs):
+                if len(self.get_map()) == 1:
+                    raise error
+                return super().register(*args, **kwargs)
+
+        def new_selector():
+            if fault == "selector":
+                raise error
+            selected = PartialSelector() if fault == "register" else original_selector()
+            opened_selectors.append(selected)
+            return selected
+
+        def interrupted_drain(selector, sinks, maximum_wait):
+            original_drain(selector, sinks, maximum_wait)
+            if any(sink.original_bytes for sink in sinks.values()):
+                raise error
+
+        physical, logical, mappings = command_inputs(fixture, "timeout", home, scratch)
+        with mock.patch.object(process_owner.selectors, "DefaultSelector", new_selector):
+            with mock.patch.object(
+                process_owner, "_drain",
+                interrupted_drain if fault in {"drain", "interrupt"} else original_drain,
+            ):
+                inspector = process_owner._group_member_count
+                with mock.patch.object(
+                    process_owner, "_group_member_count",
+                    side_effect=error if fault == "inspect" else inspector,
+                ):
+                    try:
+                        run_owned_command(
+                            kind="candidate_build", physical_argv=physical,
+                            logical_argv=logical, mappings=mappings, cwd=scratch, home=home,
+                            temporary=scratch, timeout_seconds=0.2, spawn=spawn,
+                        )
+                    except BaseException as caught:
+                        assert caught is error, (fault, caught)
+                    else:
+                        raise AssertionError(f"capture fault was swallowed: {fault}")
+        assert len(observed) == 1
+        child = observed[0]
+        assert child.poll() is not None, fault
+        assert child.stdout.closed and child.stderr.closed, fault
+        # Recheck outside fault injection; the inspector-failure arm still must send SIGKILL.
+        import time
+        deadline = time.monotonic() + 2
+        while process_owner._group_member_count(child.pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert process_owner._group_member_count(child.pid) == 0, fault
+        assert all(selected.get_map() is None for selected in opened_selectors), fault
+
+
 def build_failure_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path) -> None:
     result = invoke(fixture, "failure", home, scratch)
     assert result.terminal == "FAIL" and result.exit_code == 7 and result.signal is None
@@ -295,6 +369,7 @@ with tempfile.TemporaryDirectory(prefix="align-llm-gpu-process-") as temporary:
         environment_owner(fixture, home, scratch)
     elif args.owner == "cleanup":
         cleanup_owner(fixture, home, scratch)
+        interrupted_capture_owner(fixture, home, scratch)
     else:
         build_failure_owner(fixture, home, scratch)
 print(f"gpu {args.owner} smoke: PASS")
