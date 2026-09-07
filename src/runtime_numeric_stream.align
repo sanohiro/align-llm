@@ -1,0 +1,150 @@
+module runtime_numeric_stream
+
+import std.fs
+
+pub HOST_BYTES := 65576
+pub Frame { kind: i64, layer: i64, step: i64, width: i64, height: i64 }
+pub Stream {
+  sink: Option<writer>,
+  header: buffer,
+  active: bool,
+  failed: bool,
+  finished: bool,
+  maximum_bytes: i64,
+  written_bytes: i64,
+  records: i64,
+  nonfinite_count: i64,
+}
+
+pub fn disabled() -> Stream = Stream {
+  sink: None, header: buffer(0), active: false, failed: false, finished: false,
+  maximum_bytes: 0, written_bytes: 0, records: 0, nonfinite_count: 0,
+}
+
+pub fn reservation(borrow owner: Stream) -> i64 = if owner.active { HOST_BYTES } else { 0 }
+
+fn put(borrow mut owner: Stream, offset: i64, value: i64, count: i64) {
+  mut bytes := owner.header.bytes()
+  mut rest := value
+  mut at := 0
+  loop {
+    if at >= count { break }
+    bytes[offset + at] = (rest % 256) as u8
+    rest = rest / 256
+    at = at + 1
+  }
+}
+
+fn write(borrow owner: Stream, borrow bytes: slice<u8>) -> Result<(), Error> {
+  match owner.sink {
+    Some(sink) => { sink.write(bytes)? },
+    None => { return Err(Error.Invalid) },
+  }
+  return Ok(())
+}
+
+pub fn create(root: str, relative: str, model: i64, maximum_bytes: i64,
+  host_budget_bytes: i64) -> Result<Stream, Error> {
+  if (model != 1 && model != 2) || maximum_bytes < 108 || maximum_bytes > 4294967296
+    || host_budget_bytes < HOST_BYTES { return Err(Error.Invalid) }
+  mut header := buffer(40)
+  mut at := 0
+  loop {
+    if at >= 40 { break }
+    header.put_u8(0)
+    at = at + 1
+  }
+  sink := fs.create_exclusive_beneath(root, relative)?
+  mut owner := Stream {
+    sink: Some(sink), header: header, active: true, failed: true, finished: false,
+    maximum_bytes: maximum_bytes, written_bytes: 24, records: 0, nonfinite_count: 0,
+  }
+  mut bytes := owner.header.bytes()
+  bytes[0] = 71
+  bytes[1] = 49
+  bytes[2] = 84
+  bytes[3] = 82
+  bytes[4] = 65
+  bytes[5] = 67
+  bytes[6] = 69
+  bytes[7] = 49
+  put(owner, 8, model, 4)
+  put(owner, 16, maximum_bytes, 8)
+  header_view := owner.header.bytes()
+  prefix := header_view[0..24]
+  write(owner, prefix)?
+  owner.failed = false
+  return Ok(owner)
+}
+
+pub fn record(borrow mut owner: Stream, frame: Frame, borrow payload: slice<u8>) -> Result<(), Error> {
+  if !owner.active { return Ok(()) }
+  if owner.failed || owner.finished { return Err(Error.Invalid) }
+  owner.failed = true
+  if frame.kind < 1 || frame.kind > 6 || frame.layer < 0 || frame.layer > 4294967295
+    || frame.step < 0 || frame.step > 4096 || (frame.kind == 1 && frame.step > 127)
+    || frame.width < 1 || frame.width > 16777216 || frame.height < 1 || frame.height > 16777216
+    || payload.len() > 67108864 || frame.width * frame.height * 4 != payload.len() {
+    return Err(Error.Invalid)
+  }
+  if frame.kind == 1 || frame.kind == 6 {
+    if frame.layer != 4294967295 || frame.height != 1 { return Err(Error.Invalid) }
+  } else {
+    if frame.layer == 4294967295 { return Err(Error.Invalid) }
+  }
+  if owner.written_bytes > owner.maximum_bytes - payload.len() - 80 { return Err(Error.Invalid) }
+  mut offset := 0
+  loop {
+    if offset >= payload.len() { break }
+    bits := payload.u32_le(offset)
+    if frame.kind == 4 {
+      if bits >= 2147483648 { return Err(Error.Invalid) }
+    } else {
+      if (bits / 8388608) % 256 == 255 { owner.nonfinite_count = owner.nonfinite_count + 1 }
+    }
+    offset = offset + 4
+  }
+  if owner.nonfinite_count != 0 { return Err(Error.Invalid) }
+  ordinal := owner.records
+  put(owner, 0, frame.kind, 4)
+  put(owner, 4, frame.layer, 4)
+  put(owner, 8, frame.step, 4)
+  put(owner, 12, frame.width, 4)
+  put(owner, 16, frame.height, 4)
+  put(owner, 20, 0, 4)
+  put(owner, 24, payload.len(), 8)
+  put(owner, 32, ordinal, 8)
+  header_view := owner.header.bytes()
+  write(owner, header_view)?
+  write(owner, payload)?
+  owner.written_bytes = owner.written_bytes + 40 + payload.len()
+  owner.records = owner.records + 1
+  owner.failed = false
+  return Ok(())
+}
+
+pub fn finish(borrow mut owner: Stream) -> Result<(), Error> {
+  if !owner.active { return Ok(()) }
+  if owner.failed || owner.finished { return Err(Error.Invalid) }
+  owner.failed = true
+  if owner.records < 1 { return Err(Error.Invalid) }
+  ordinal := owner.records
+  mut bytes := owner.header.bytes()
+  mut at := 0
+  loop {
+    if at >= 32 { break }
+    bytes[at] = 0
+    at = at + 1
+  }
+  put(owner, 32, ordinal, 8)
+  header_view := owner.header.bytes()
+  write(owner, header_view)?
+  match owner.sink {
+    Some(sink) => { sink.flush()? },
+    None => { return Err(Error.Invalid) },
+  }
+  owner.written_bytes = owner.written_bytes + 40
+  owner.finished = true
+  owner.failed = false
+  return Ok(())
+}

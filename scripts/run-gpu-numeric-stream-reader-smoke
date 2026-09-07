@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the G1 private numeric reader independently of the blocked native producer."""
+"""Verify the G1 private numeric reader against an independent byte golden."""
 
 from __future__ import annotations
 
@@ -165,7 +165,7 @@ def main():
             with NumericStream(path, model=1, maximum_bytes=160):
                 pass
         rejected(early_exit, "not completely consumed")
-    print("gpu numeric stream reader: PASS (native producer awaits Request 61)")
+    print("gpu numeric stream reader: PASS")
 
 
 if __name__ == "__main__":

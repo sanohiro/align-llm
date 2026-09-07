@@ -3,9 +3,8 @@
 Status: implementation checkpoint, 2026-09-08; G1 qualification remains incomplete.
 
 Resident provider generation and qualification infrastructure are implemented on the development
-branch. Native numeric-stream production/final qualifier CLI remain blocked by
-[Align Request 61](https://github.com/sanohiro/align/issues/981). Only that request documentation was
-published through PR #211. Real Metal and CUDA qualification and populated calibration/profile
+branch. Request 61 shipped and native numeric-stream production passes its byte/state owner.
+Observed generation/final qualifier integration now depends on Request 62 in `docs/align-requests.md`. Real Metal and CUDA qualification and populated calibration/profile
 evidence remain required to close G1. No runtime performance, full numeric qualification or CUDA
 correctness claim follows from the current implementation checkpoint.
 
@@ -644,9 +643,9 @@ canonical compact JSON bytes of the profile's `cases` array without a final LF.
 
 ### 3.10 Private numeric stream version 1
 
-The native producer API below is planned and blocked by Request 61 in `docs/align-requests.md`.
-The Python reader/comparison work may proceed under `gpu-numeric-stream-reader`; no consumer uses
-hypothetical handle projections. `gpu-numeric-stream` remains the planned combined native owner.
+Request 61 shipped at Align `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0` (PR #982).
+The native producer adopts direct borrowed field receivers and optional-writer projections;
+`gpu-numeric-stream` is its combined native/independent-reader owner.
 
 The case helper writes numeric tensors to an invocation-owned scratch file; the parent consumes
 the adjacent CPU/GPU pair, then removes both streams. These files are not retained evidence,
@@ -729,6 +728,23 @@ second tensor-sized allocation. Inactive recording is a no-op. An active malform
 failed write poisons the owner; no later record or finish can succeed. Finished owners reject
 further writes. The Move owner closes its optional writer on drop; partial-file removal belongs to
 invocation cleanup. No durability or atomic multi-file publication is claimed for scratch streams.
+
+The following observed entrypoints remain planned and blocked by Request 62.
+`generate_qwen_observed` and `generate_olmoe_observed` retain the existing generation arguments
+and append `borrow mut stream: runtime_numeric_stream.Stream`; the ordinary entrypoints create a
+disabled stream. The observed variants charge `reservation(stream)` in metadata admission before
+upload and record kind-1 logits at each sampling position. They leave footer/cleanup to the case
+owner, which must append the diagnostic traversals before finishing. Return values, sampling,
+source identity and GPU ownership remain those of the ordinary entrypoints. A stream failure
+propagates `Error` and prevents a successful case; no tensor-sized observation buffer is added.
+
+| Native adoption closure | Implementation | Exact owner |
+| --- | --- | --- |
+| Construction, return, drop, absent writer | `runtime_numeric_stream.create/disabled` | `runtime_numeric_stream_smoke.golden/main` |
+| Golden bytes, repeated writes, footer | `record/finish` | `golden`, independent reader `GOLDEN` |
+| Malformed, nonfinite, budget, early failure, terminal transitions | `record/finish/create` | `refusal/main`, reader malformed owners |
+| Production Qwen/OLMoE prefill/decode and reservation | Planned observed entrypoints, `prepare_memory` | Deferred: Request 62; `runtime_generation_smoke` observed cases |
+| Diagnostic layer/router and case integration | Native case producer | Deferred within G1; final qualification remains pending |
 
 `gmake gpu-numeric-stream` owns construction/return/drop, inactive recording, exact golden bytes,
 occupied path, shape/nonfinite/byte-budget refusal, poisoned and finished transitions, and the

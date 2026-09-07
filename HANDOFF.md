@@ -9,11 +9,14 @@ Branch `agent/g1-gpu-generation` incorporates main `d4dabfa`. G1 remains unmerge
 requires its ordinary consumer completion, real Metal/CUDA qualification, review and publication.
 The user authorized continued implementation, PR/merge and subsequent eligible roadmap work.
 
-Request 61 shipped in Align PR #982 at `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0`;
-issue #981 is closed and the producer's Linux x86_64, Linux ARM64 and macOS CI passed.
-The request is `ALIGN_MERGED`; client pin adoption and both named acceptance owners remain pending.
-The previous `8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f` pin closes Requests 59 and 60.
-Use direct borrowed field receivers and optional-writer matches; plain field assignment still moves.
+Align `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0` is now pinned and its managed release
+compiler/runtime are materialized and verified. Request 61's stream writer passes the independent
+byte/state owner. Its final observed-generation acceptance remains pending: new Request 62 blocks
+imported non-retaining mutable stream helpers with a local logits view under per-unit compilation.
+The exact minimal fixture passes whole-program checking and fails per-unit checking. The attempted
+observed-generation hooks were removed; no rejected/hypothetical surface remains in source.
+Request 62 also records a non-blocking derived-view helper precision case. Header encoding borrows
+the complete stream owner using Request 61's shipped surface. Existing generation smoke passes.
 
 **Complete implementation checkpoints.**
 
@@ -74,13 +77,11 @@ Use direct borrowed field receivers and optional-writer matches; plain field ass
 
 **Next actions, in order.**
 
-1. Adopt shipped Request 61 at its exact managed pin, implement the native stream producer
-   against the shipped surface, then pass `gmake gpu-numeric-stream` and the request's final
-   `gmake gpu-generation-smoke` owner. Connect the native case producer to the geometry-derived
-   traversal, numeric-pair and case-sequence owners. Source capture, profile construction and local
-   kit assembly are implemented. Native diagnostic integration must implement separate generation
-   reproduction and teacher-forced traversals; the same forced trajectory cannot satisfy both.
-   Its combined runtime remains subject to the existing generation deadline.
+1. Resume observed native generation when Request 62 ships: adopt its exact managed pin, add
+   Qwen/OLMoE production-logit hooks and the 65,576-byte host reservation before upload, then pass
+   `gmake gpu-numeric-stream` and `gmake gpu-generation-smoke` with observed prefill/decode.
+   Connect native diagnostic production to geometry traversal, numeric pairing and case sequencing.
+   Separate generation reproduction and teacher-forced traversals share the generation deadline.
 2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
    process/record/replay/publication owners, and real source/profile/calibration kit construction.
    The final CLI does not exist yet; do not publish a placeholder success path.
@@ -142,7 +143,15 @@ OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90.
 `1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
 follows from these build and correctness checkpoints.
 
-**Intentional uncommitted files.** None at the case-traversal checkpoint.
+**Latest native-stream checkpoint.** `gmake gpu-numeric-stream` passes native construction,
+return/drop, disabled mode, independent 160-byte golden, occupied path, scalar admission,
+shape/nonfinite/byte-budget refusals and poisoned/finished transitions, plus the existing independent
+reader owner. `gmake gpu-generation-smoke` passes the existing unobserved consumer at the new pin;
+it does not close Request 61/62 observed integration. `scripts/align-toolchain verify` passes.
+The native compiler build requires this host's installed LLVM 22 configuration; ordinary managed
+commands now reuse the verified release artifacts. No G1 PR or hardware completion is claimed.
+
+**Intentional uncommitted files.** None after the native-stream implementation checkpoint.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 
