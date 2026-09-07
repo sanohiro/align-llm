@@ -65,6 +65,7 @@ with tempfile.TemporaryDirectory(prefix="gpu-qualification-cli-") as raw_tempora
     assert invocation.work.stat().st_mode & 0o077 == 0
     assert invocation.sources.align_llm.is_dir()
     assert invocation.sources.ggml.is_dir()
+    assert invocation.backend.manifest.read_bytes() == invocation.admitted.bundle_raw
     assert not output.exists()
     root = invocation.root
     invocation.cleanup()

@@ -11,6 +11,7 @@ import tempfile
 from collections.abc import Sequence
 
 from gpu_backend_recipe import RecipeError
+from gpu_qualification_backend import StagedBackend, stage
 from gpu_qualification_input import AdmittedInput, admit
 from gpu_qualification_publish import validate_output
 from gpu_qualification_source import MaterializedSources, materialize
@@ -32,6 +33,7 @@ class Invocation:
     temporary: pathlib.Path
     work: pathlib.Path
     sources: MaterializedSources
+    backend: StagedBackend
 
     def cleanup(self) -> None:
         try:
@@ -89,7 +91,8 @@ def open_invocation(arguments: Arguments) -> Invocation:
         temporary = _private_child(root, "tmp")
         work = _private_child(root, "work")
         sources = materialize(admitted, work)
-        return Invocation(arguments, admitted, root, home, temporary, work, sources)
+        backend = stage(admitted, work)
+        return Invocation(arguments, admitted, root, home, temporary, work, sources, backend)
     except BaseException:
         if root is not None and root.exists() and not root.is_symlink():
             shutil.rmtree(root)
