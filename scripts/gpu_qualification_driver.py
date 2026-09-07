@@ -25,12 +25,11 @@ def _c_string(value: str) -> str:
     return '"' + "".join(f"\\{byte:03o}" for byte in value.encode("utf-8")) + '"'
 
 
-def build_driver(
+def plan_driver(
     *, compiler: ToolchainExecutable, linker: ToolchainExecutable,
-    sdk: ToolchainDirectory, work: pathlib.Path, home: pathlib.Path,
-    temporary: pathlib.Path, library_root: pathlib.Path, platform: str,
-    deadline_ns: int,
-) -> NativeDriver:
+    sdk: ToolchainDirectory, work: pathlib.Path,
+    library_root: pathlib.Path, platform: str,
+) -> DriverBuild:
     if platform not in {"macos", "linux", "wsl2"}:
         raise RecipeError("native driver platform is unsupported")
     for root in (work, library_root):
@@ -97,18 +96,39 @@ int main(int argc, char **argv) {
     logical.extend(("-isysroot", sdk_token))
     physical.extend(("-B", str(tool_root)))
     logical.extend(("-B", "<native-tools>:owned"))
+    return DriverBuild(
+        NativeDriver(output, sdk, (compiler, selected_linker)), tuple(physical), tuple(logical),
+        {cc_token: compiler, source_token: source, sdk_token: sdk, "<native-tools>:owned": tool_root},
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class DriverBuild:
+    driver: NativeDriver
+    physical_argv: tuple[str, ...]
+    logical_argv: tuple[str, ...]
+    mappings: dict[str, pathlib.Path | ToolchainDirectory | ToolchainExecutable]
+
+
+def build_driver(
+    *, compiler: ToolchainExecutable, linker: ToolchainExecutable,
+    sdk: ToolchainDirectory, work: pathlib.Path, home: pathlib.Path,
+    temporary: pathlib.Path, library_root: pathlib.Path, platform: str,
+    deadline_ns: int,
+) -> NativeDriver:
+    planned = plan_driver(compiler=compiler, linker=linker, sdk=sdk, work=work,
+                          library_root=library_root, platform=platform)
     try:
         result = run_owned_command(
-            kind="compiler_materialize", physical_argv=physical, logical_argv=logical,
-            mappings={cc_token: compiler, source_token: source, sdk_token: sdk,
-                      "<native-tools>:owned": tool_root},
+            kind="compiler_materialize", physical_argv=planned.physical_argv,
+            logical_argv=planned.logical_argv, mappings=planned.mappings,
             cwd=work, home=home, temporary=temporary, timeout_seconds=60,
-            deadline_ns=deadline_ns, sdk=sdk, tool_dependencies=(compiler, selected_linker),
+            deadline_ns=deadline_ns, sdk=sdk, tool_dependencies=planned.driver.tool_dependencies,
         )
         if result.terminal != "PASS":
             raise RecipeError("native driver compilation failed: " + result.stderr.retained.decode(errors="replace"))
-        ToolchainExecutable.admit(output)
+        ToolchainExecutable.admit(planned.driver.path)
     except BaseException:
-        output.unlink(missing_ok=True)
+        planned.driver.path.unlink(missing_ok=True)
         raise
-    return NativeDriver(output, sdk, (compiler, selected_linker))
+    return planned.driver

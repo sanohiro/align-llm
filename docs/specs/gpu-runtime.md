@@ -387,6 +387,15 @@ Constants are 1, `GPU_RUNTIME_EVIDENCE`, and `generation`; status is `PASS|FAIL`
   no step starts after it expires and each started step receives only the remaining duration.
   The `gpu-preparation-evidence` owner exercises every unstarted slot, deadline exhaustion,
   a reduced remaining child timeout, the successful sequence, and refusal to resume after failure.
+  Command factories may bind a completed earlier output only when their own slot is reached;
+  construction failure or an already-expired deadline is an unstarted failure with no invented
+  command/log. Compiler materialization includes native-driver compilation in the same owned
+  process group before it publishes the copied compiler. Its checked-in Python helper receives
+  explicit compiler, linker, SDK and source/output paths, uses the four-entry environment, and
+  leaves descendant capture and the shared deadline to the outer owner. It does not start a nested
+  process group or fetch/build Align. The prepared managed compiler is a prerequisite.
+  `gpu-preparation-evidence` covers lazy binding, skipped later factories and factory failure;
+  `gpu-explicit-driver` covers the real grouped bootstrap and refusal to publish after its failure.
 - `files` rows are
   `role,path,bytes,sha256,original_bytes,original_sha256,truncated`, sorted by path and covering
   every retained file other than `result.json`. Roles are

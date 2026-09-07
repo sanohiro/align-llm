@@ -119,6 +119,77 @@ def build_driver_proxy(
     return dataclasses.replace(native, path=proxy)
 
 
+def grouped_bootstrap_owner(alignc, cc, sdk, parent) -> None:
+    for mode in ("success", "failure", "timeout"):
+        fail = mode != "success"
+        work = parent / ("grouped-" + mode)
+        work.mkdir(mode=0o700)
+        entry = work / "grouped.align"
+        entry.write_text(
+            'extern "C" link("align_ggml_shim") { fn align_ggml_available() -> i32 }\n'
+            'fn main() { unsafe { print(align_ggml_available()) } }\n', encoding="utf-8",
+        )
+        linker = (subprocess.check_output(["/usr/bin/xcrun", "--find", "ld"], text=True).strip()
+                  if sys.platform == "darwin" else shutil.which("ld"))
+        cc_path = pathlib.Path("/usr/bin/false") if fail else cc
+        if mode == "timeout":
+            cc_path = work / "blocked-cc"
+            cc_path.write_text("#!/bin/sh\n/bin/sleep 30 &\nwait\n", encoding="utf-8")
+            cc_path.chmod(0o700)
+        cc_input = qualification_run.ToolchainExecutable.admit(cc_path)
+        revision = (ROOT / ".align-revision").read_text().strip()
+        first = qualification_build.compiler_materialization_command(
+            work=work, compiler=alignc,
+            python=qualification_run.ToolchainExecutable.admit(pathlib.Path(sys.executable)),
+            helper=ROOT / "scripts/gpu_compiler_materialize.py", cc=cc_input,
+            linker=qualification_run.ToolchainExecutable.admit(pathlib.Path(linker)), sdk=sdk,
+            platform="macos" if sys.platform == "darwin" else "linux", align_revision=revision,
+        )
+        state = qualification_run.PreparationState(
+            pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture",
+            preparation_timeout_ns=2_000_000_000 if mode == "timeout" else 60_000_000_000,
+        )
+        tail = []
+
+        def command_at(ordinal):
+            assert not fail, "later factory ran after bootstrap failure"
+            if not tail:
+                dependencies = (cc_input, qualification_run.ToolchainExecutable.admit(work / "native-tools/ld"))
+                tail.extend(dataclasses.replace(command, tool_dependencies=dependencies) for command in
+                    qualification_build.commands(
+                        work=work, compiler=alignc, runtime=alignc.parent / "libalign_runtime.a",
+                        copier=pathlib.Path("/bin/cp").resolve(), driver=work / "native-driver",
+                        reference_driver=work / "native-driver", entry=entry,
+                        shim_source=ROOT / "scripts/ggml_shim_stub.c",
+                        platform="macos" if sys.platform == "darwin" else "linux",
+                        align_revision=revision, source_commit="a" * 40, sdk=sdk,
+                        compiler_materialized=True,
+                    ))
+            return tail[ordinal]
+
+        qualification_run.run_preparation(
+            state, [first, *(lambda ordinal=ordinal: command_at(ordinal) for ordinal in range(1, 5))],
+            cwd=work, home=work, temporary=work,
+        )
+        if fail:
+            assert state.failure_ordinal == 0 and len(state.commands) == 1
+            assert state.failed_result is not None and state.failed_result.descendants_after == 0
+            assert state.failed_result.terminal == ("TIMEOUT" if mode == "timeout" else "FAIL")
+            assert "logs/000.stderr" in state.retained
+            assert not (work / "alignc").exists() and not (work / "native-driver").exists()
+        else:
+            assert state.complete, (state.failure_detail,
+                state.failed_result.stderr.retained if state.failed_result else "unstarted")
+            assert len(state.commands) == 5
+            for binary in (tail[3].output, tail[4].output):
+                token = digest_token("grouped-binary", binary)
+                observed = qualification_run.run_owned_command(
+                    kind="case", physical_argv=[str(binary)], logical_argv=[token], mappings={token: binary},
+                    cwd=work, home=work, temporary=work, timeout_seconds=5,
+                )
+                assert observed.terminal == "PASS" and observed.stdout.retained == b"0\n"
+
+
 def main() -> None:
     if len(sys.argv) != 3:
         raise SystemExit("usage: run-gpu-explicit-driver-smoke ALIGNC CC")
@@ -222,6 +293,8 @@ def main() -> None:
             else:
                 raise AssertionError("native driver published a failed build")
             assert not (failed_work / "native-driver").exists()
+
+        grouped_bootstrap_owner(alignc, cc, sdk, scratch)
 
     print("gpu explicit C-driver preparation smoke: PASS")
 

@@ -9,7 +9,7 @@ import os
 import pathlib
 import stat
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from gpu_backend_recipe import MAX_BUNDLE_ARTIFACT_BYTES, RecipeError, canonical
 from gpu_qualification_input import AdmittedInput
@@ -44,7 +44,7 @@ class PreparationCommand:
 
 def run_preparation(
     state: PreparationState,
-    commands: Sequence[PreparationCommand],
+    commands: Sequence[PreparationCommand | Callable[[], PreparationCommand]],
     *,
     cwd: pathlib.Path,
     home: pathlib.Path,
@@ -55,7 +55,15 @@ def run_preparation(
         raise RecipeError("preparation sequence requires a fresh state")
     if len(commands) != len(PREPARATION):
         raise RecipeError("preparation sequence requires exactly five commands")
-    for command in commands:
+    for planned in commands:
+        if time.monotonic_ns() >= state.deadline_ns:
+            state.fail_unstarted("preparation deadline expired before command construction")
+            return
+        try:
+            command = planned() if callable(planned) else planned
+        except (RecipeError, OSError):
+            state.fail_unstarted("preparation command construction failed")
+            return
         state.run_step(
             physical_argv=command.physical_argv,
             logical_argv=command.logical_argv,

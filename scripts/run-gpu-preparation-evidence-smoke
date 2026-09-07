@@ -154,7 +154,7 @@ def unstarted_and_deadline_owner(admitted, fixture, temporary: pathlib.Path) -> 
     assert state.complete and len(durations) == 5
     assert all(later < earlier for earlier, later in zip(durations, durations[1:]))
 
-    for failure_mode in ("started", "unstarted"):
+    for failure_mode in ("started", "unstarted", "factory"):
         prefix_root = temporary / f"sequence-{failure_mode}"
         prefix_root.mkdir(mode=0o700)
         prefix_state = qualification_run.PreparationState(
@@ -171,13 +171,32 @@ def unstarted_and_deadline_owner(admitted, fixture, temporary: pathlib.Path) -> 
             ))
         if failure_mode == "unstarted":
             (prefix_root / "sequence-2").write_bytes(b"occupied")
+        constructed = []
+
+        def construct(ordinal):
+            constructed.append(ordinal)
+            if ordinal:
+                assert (prefix_root / f"sequence-{ordinal - 1}").exists()
+            if ordinal == 2 and failure_mode == "factory":
+                raise RecipeError("fixture factory failed")
+            return prefix_commands[ordinal]
+
         qualification_run.run_preparation(
-            prefix_state, prefix_commands, cwd=prefix_root, home=prefix_root, temporary=prefix_root,
+            prefix_state, [lambda ordinal=ordinal: construct(ordinal) for ordinal in range(5)],
+            cwd=prefix_root, home=prefix_root, temporary=prefix_root,
         )
+        assert constructed == [0, 1, 2]
         assert prefix_state.failure_ordinal == 2
         assert len(prefix_state.commands) == (3 if failure_mode == "started" else 2)
         assert not (prefix_root / "sequence-3").exists()
         assert not (prefix_root / "sequence-4").exists()
+
+    expired = qualification_run.PreparationState(shell, name="gpu-runtime-qualify", version="fixture")
+    expired.deadline_ns = time.monotonic_ns() - 1
+    factory = mock.Mock(side_effect=AssertionError("expired factory ran"))
+    qualification_run.run_preparation(expired, [factory] * 5, cwd=root, home=root, temporary=root)
+    factory.assert_not_called()
+    assert expired.failure_ordinal == 0 and not expired.commands
 
     # A digest refusal is an unstarted failure, so it cannot leave a command or invented logs.
     root = temporary / "digest-refusal"

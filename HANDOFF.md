@@ -169,7 +169,15 @@ driver, CPU-reference, command-environment and preparation-evidence owners pass,
 output, failed bootstrap and expired deadline refusals. Linux reference linkage now spells the
 dynamic-loader support library `-ldl`; real CUDA/Linux qualification remains outstanding.
 
-**Intentional uncommitted files.** None after the native preparation-driver checkpoint is committed.
+Compiler materialization now has a grouped helper that builds the native driver and copies the
+already-prepared managed compiler within the first owned command. Later preparation factories bind
+that driver's actual bytes only after successful completion; construction failure and deadline
+exhaustion preserve the unstarted failure prefix. `gmake gpu-explicit-driver` passes the complete
+five-command grouped route, actual bootstrap failure and termination of a hanging compiler with its
+child. The preparation-evidence and CLI owners, Python bytecode compilation and `git diff --check`
+also pass. Host toolchain admission and the real-profile/numeric orchestration remain next.
+
+**Intentional uncommitted files.** None after the grouped compiler-materialization checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

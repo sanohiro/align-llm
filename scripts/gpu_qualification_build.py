@@ -17,6 +17,34 @@ def _input(name: str, path: pathlib.Path) -> str:
     return token
 
 
+def compiler_materialization_command(
+    *, work: pathlib.Path, compiler: pathlib.Path, python: ToolchainExecutable,
+    helper: pathlib.Path, cc: ToolchainExecutable, linker: ToolchainExecutable,
+    sdk: ToolchainDirectory, platform: str, align_revision: str,
+) -> PreparationCommand:
+    if platform not in {"macos", "linux", "wsl2"} \
+            or re.fullmatch(r"[0-9a-f]{40}", align_revision) is None:
+        raise RecipeError("compiler materialization platform or revision is invalid")
+    compiler_token = _input("compiler-input", compiler)
+    helper_token = _input("compiler-materializer", helper)
+    python_token = "<host-python>:sha256:" + python.sha256
+    cc_token = "<host-cc>:sha256:" + cc.sha256
+    linker_token = "<host-linker>:sha256:" + linker.sha256
+    sdk_token = "<host-sdk>:sha256:" + sdk.sha256
+    metadata_token = _input("host-sdk-metadata", sdk.metadata_path)
+    digest = compiler_token.rsplit(":sha256:", 1)[1]
+    physical = (str(python.path), "-B", str(helper), str(compiler), digest, str(cc.path),
+                str(linker.path), str(sdk.path), str(sdk.metadata_path), str(work), platform, "alignc")
+    logical = (python_token, "-B", helper_token, compiler_token, digest, cc_token,
+               linker_token, sdk_token, metadata_token, "<compiler-work>:owned", platform, "alignc")
+    return PreparationCommand(
+        physical, logical, {python_token: python, helper_token: helper, compiler_token: compiler,
+                            cc_token: cc, linker_token: linker, sdk_token: sdk,
+                            metadata_token: sdk.metadata_path, "<compiler-work>:owned": work},
+        work / "alignc", "alignc", align_revision, work, sdk, (cc, linker),
+    )
+
+
 def cpu_reference_command(
     *,
     work: pathlib.Path,
@@ -124,6 +152,7 @@ def commands(
     ggml_include: pathlib.Path | None = None,
     backend_library: pathlib.Path | None = None,
     sdk: ToolchainDirectory | None = None,
+    compiler_materialized: bool = False,
 ) -> tuple[PreparationCommand, ...]:
     """Bind admitted build inputs; the driver supplies its verified SDK and host link inputs.
 
@@ -168,7 +197,12 @@ def commands(
     copied_runtime = work / "libalign_runtime.a"
     reference_work = work / "cpu-reference"
     candidate = work / entry.stem
+    if compiler_materialized and _file_sha256(copied_compiler, "materialized compiler") \
+            != _file_sha256(compiler, "compiler input"):
+        raise RecipeError("materialized compiler does not match its input")
     for output in (shim, copied_compiler, copied_runtime, reference_work, candidate):
+        if output == copied_compiler and compiler_materialized:
+            continue
         if output.exists() or output.is_symlink():
             raise RecipeError("preparation build output is occupied")
 
