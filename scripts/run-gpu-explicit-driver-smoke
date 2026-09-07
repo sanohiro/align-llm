@@ -88,15 +88,24 @@ def build_driver_proxy(
         "}\n",
         encoding="utf-8",
     )
-    completed = subprocess.run(
-        [str(compiler), str(source), "-o", str(proxy)],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+    cc_input = qualification_run.ToolchainExecutable.admit(compiler)
+    cc_token = "<host-cc>:sha256:" + cc_input.sha256
+    source_token = digest_token("driver-source", source)
+    physical = [str(compiler), str(source), "-o", proxy.name]
+    logical = [cc_token, source_token, "-o", proxy.name]
+    mappings = {cc_token: cc_input, source_token: source}
+    if sdk is not None:
+        sdk_token = "<host-sdk>:sha256:" + sdk.sha256
+        physical.extend(("-isysroot", str(sdk.path)))
+        logical.extend(("-isysroot", sdk_token))
+        mappings[sdk_token] = sdk
+    completed = qualification_run.run_owned_command(
+        kind="compiler_materialize", physical_argv=physical, logical_argv=logical,
+        mappings=mappings, cwd=library_root, home=library_root, temporary=library_root,
+        timeout_seconds=60, sdk=sdk,
     )
-    if completed.returncode != 0:
-        raise AssertionError(completed.stderr.decode(errors="replace"))
+    if completed.terminal != "PASS":
+        raise AssertionError(completed.stderr.retained.decode(errors="replace"))
 
 
 def main() -> None:

@@ -1,0 +1,15 @@
+module runtime_cpu_reference_smoke
+
+import ggml_ffi
+
+fn main() -> Result<(), Error> {
+  device := ggml_ffi.device_open()
+  if device.is_null() { return Err(Error.Invalid) }
+  backend := ggml_ffi.backend_open(device)
+  if backend.is_null() { return Err(Error.Invalid) }
+  name := ggml_ffi.backend_name(backend)
+  ggml_ffi.backend_close(backend)
+  if name != "CPU" { return Err(Error.Invalid) }
+  print("static CPU reference: PASS")
+  return Ok(())
+}

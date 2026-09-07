@@ -9,12 +9,103 @@ import stat
 
 from gpu_backend_recipe import RecipeError
 from gpu_qualification_run import PreparationCommand
-from gpu_qualifier_process import ToolchainDirectory, _single_link_sha256
+from gpu_qualifier_process import ToolchainDirectory, ToolchainExecutable, _file_sha256
 
 
 def _input(name: str, path: pathlib.Path) -> str:
-    token = f"<{name}>:sha256:{_single_link_sha256(path, name)}"
+    token = f"<{name}>:sha256:{_file_sha256(path, name)}"
     return token
+
+
+def cpu_reference_command(
+    *,
+    work: pathlib.Path,
+    output: pathlib.Path,
+    compiler: pathlib.Path,
+    entry: pathlib.Path,
+    ggml_source: pathlib.Path,
+    shim_source: pathlib.Path,
+    project_source: pathlib.Path,
+    parent_driver: pathlib.Path,
+    tools: dict[str, ToolchainExecutable],
+    sdk: ToolchainDirectory,
+    platform: str,
+    ggml_commit: str,
+    source_commit: str,
+    compiler_sha256: str | None = None,
+) -> PreparationCommand:
+    """Construct the same-source static CPU reference as one bounded preparation command."""
+    if compiler_sha256 is not None and re.fullmatch(r"[0-9a-f]{64}", compiler_sha256) is None:
+        raise RecipeError("CPU reference compiler identity is invalid")
+    if set(tools) != {"cmake", "cc", "cxx", "ar", "ranlib", "linker", "ninja"}:
+        raise RecipeError("CPU reference tool set is incomplete or contains an extra tool")
+    if platform not in {"macos", "linux", "wsl2"} or any(
+        re.fullmatch(r"[0-9a-f]{40}", value) is None for value in (ggml_commit, source_commit)
+    ):
+        raise RecipeError("CPU reference platform or source identity is invalid")
+    if not work.is_absolute() or not stat.S_ISDIR(work.stat(follow_symlinks=False).st_mode) \
+            or work.stat().st_mode & 0o077:
+        raise RecipeError("CPU reference work root is not private and absolute")
+    root = work.resolve(strict=True)
+    for directory in (output, ggml_source, project_source):
+        if not directory.is_absolute() or not directory.is_dir() \
+                or root not in directory.resolve(strict=True).parents:
+            raise RecipeError("CPU reference directory is outside its private work root")
+    if entry.suffix != ".align" or (output / entry.stem).exists() \
+            or (output / entry.stem).is_symlink() or (output / "build").exists() \
+            or (output / "build").is_symlink():
+        raise RecipeError("CPU reference entry or output is invalid")
+
+    mappings: dict[str, pathlib.Path | ToolchainDirectory | ToolchainExecutable] = {}
+    physical: list[str] = []
+    logical: list[str] = []
+    for name in ("cmake", "cc", "cxx", "ar", "ranlib", "linker", "ninja"):
+        tool = tools[name]
+        tool.recheck(tool.sha256)
+        token = "<host-" + name + ">:sha256:" + tool.sha256
+        mappings[token] = tool
+        if name == "cmake":
+            continue
+        physical.append(f"-D{name.upper()}:FILEPATH={tool.path}")
+        logical.append(f"-D{name.upper()}:FILEPATH={token}")
+    cmake_token = "<host-cmake>:sha256:" + tools["cmake"].sha256
+    physical.insert(0, str(tools["cmake"].path))
+    logical.insert(0, cmake_token)
+    for variable, label, path in (
+        ("ALIGNC", "align-compiler", compiler), ("ENTRY", "cpu-entry", entry),
+        ("SHIM_SOURCE", "cpu-shim-source", shim_source),
+        ("PARENT_DRIVER", "cpu-parent-driver", parent_driver),
+    ):
+        token = ("<align-compiler>:sha256:" + compiler_sha256
+                 if variable == "ALIGNC" and compiler_sha256 is not None else _input(label, path))
+        mappings[token] = path
+        physical.append(f"-D{variable}:FILEPATH={path}")
+        logical.append(f"-D{variable}:FILEPATH={token}")
+    for variable, label, path in (
+        ("OUTPUT", "cpu-output", output), ("GGML_SOURCE", "cpu-ggml-source", ggml_source),
+        ("PROJECT_SOURCE", "cpu-project", project_source),
+    ):
+        token = f"<{label}>:owned"
+        mappings[token] = path
+        physical.append(f"-D{variable}:PATH={path}")
+        logical.append(f"-D{variable}:PATH={token}")
+    sdk.recheck(sdk.sha256)
+    sdk_token = "<host-sdk>:sha256:" + sdk.sha256
+    mappings[sdk_token] = sdk
+    physical.append(f"-DSDK:PATH={sdk.path}")
+    logical.append(f"-DSDK:PATH={sdk_token}")
+    literals = (f"-DHOST_PLATFORM={platform}", f"-DGGML_COMMIT={ggml_commit}")
+    physical.extend(literals)
+    logical.extend(literals)
+    script = project_source / "build.cmake"
+    script_token = _input("cpu-build-script", script)
+    mappings[script_token] = script
+    physical.extend(("-P", str(script)))
+    logical.extend(("-P", script_token))
+    return PreparationCommand(
+        tuple(physical), tuple(logical), mappings, output / entry.stem,
+        "cpu-reference", source_commit, work, sdk,
+    )
 
 
 def commands(

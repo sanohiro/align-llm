@@ -215,6 +215,33 @@ Every row names the bundle's backend and one exact device from that registry. Me
 `platform=macos`; CUDA requires `linux|wsl2`. The empty option sentinel below is the only exception
 to the identifier grammar.
 
+
+The CPU-reference preparation command runs the checked-in
+`scripts/gpu_cpu_reference/build.cmake` through an explicitly bound CMake executable. Its absolute
+inputs are the admitted ggml tree, Align entry and compiler, shim source, native project, parent C
+driver, C/C++ compilers, archiver, ranlib, linker, Ninja and SDK; its new private output root is
+invocation-owned. It configures and builds with two workers, within the shared preparation deadline.
+The native project fixes static ggml/base/CPU and shim archives, `GGML_BACKEND_DL=OFF`, CPU on, all
+GPU/BLAS/Accelerate/OpenMP/remote backends off, native CPU tuning/repacking/KleidiAI off, and
+floating-point contraction off. It disables Git/tool-cache discovery rather than querying another
+checkout. A generated native C driver passes the exact CPU archives to the parent driver when
+linking the release Align reference. Intermediate archives and the generated driver are private
+build products; the resulting CPU-reference executable contains them and is the retained produced
+identity. No separate CPU shared library or backend plugin is a runtime dependency.
+
+`ALIGN_GGML_STATIC_CPU_ONLY` is set only for this reference's shim. Its registry opener uses the
+statically registered CPU backend and performs no plugin-directory or environment search. The
+ordinary application shim keeps its existing registry behavior. The owning
+`gpu-cpu-reference-build` qualification builds the real pinned source, runs an Align caller against
+the CPU registry, verifies the lack of dynamic ggml dependencies, and places a constructor-bearing
+plugin beside the executable to prove that it is not loaded. This is build/registry evidence;
+model numeric and generation coverage remains owned by the complete generation suite. Construction,
+invalid inputs and failed native/Align subcommands are owned by the same helper; every nonzero
+subcommand aborts the CPU-reference step and its existing preparation/publication owner retains the
+bounded failed-command streams. The helper accepts no shell strings, ambient build flags or network
+fetch. SDK content reproducibility and performance claims remain N/A for the reasons above.
+
+
 Case rows are
 `case_id,calibration_case_id,role,execution,repeat_index,model_id,option_id,maximum_tokens`.
 The calibration reference resolves within the named model and `role` equals its
@@ -448,7 +475,14 @@ by host toolchain admission. The preparation sequence also rechecks the same bou
 before spawning a compiler whose selected C driver supplies the SDK indirectly. This attests the
 selected installed SDK, not a snapshot of every SDK
 file; complete SDK content closure remains N/A under schema 1's explicit non-reproducible-toolchain
-limit. Application model, source, bundle and owned-output paths retain their existing mappings.
+limit. Installed compiler/build-tool executables may preserve an absolute alias path (for example,
+`clang++` or `ranlib`) whose basename selects tool behavior. `ToolchainExecutable` binds that
+path to its resolved regular executable and byte digest, permits the host installation's hard
+links, and rechecks the same resolved target, digest and execute permission before preparation
+spawn. It is refused for case commands. The ordinary single-link/no-follow rule still owns
+application model, source, bundle, produced-helper and output paths; host tool admission is not a
+way to relax those inputs. `gpu-command-environment` covers alias behavior, target replacement,
+byte drift, non-executable input, case refusal and unprefixed executable selection.
 `gpu-command-environment` covers SDK construction, mutation/replacement, case refusal and valid
 CMake substitution. The hash preimage is ASCII `GPU_QUALIFIER_COMMAND`, NUL, then kind as a
 little-endian u64 UTF-8 byte length plus bytes, little-endian u32 argv count, each argv with the same

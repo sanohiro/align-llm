@@ -150,7 +150,18 @@ and both candidate-driver invocations. `gmake gpu-command-environment gpu-prepar
 gpu-explicit-driver gpu-build-failure-evidence gpu-result-replay gpu-qualification-cli
 gpu-profile-coverage`, Python bytecode compilation and `git diff --check` pass at this checkpoint.
 
-**Intentional uncommitted files.** None after the SDK/CMake preparation checkpoint is committed.
+The static CPU-reference checkpoint builds ggml/base/cpu and the real shim from the same admitted
+ggml source, disables dynamic registry probing, and links them through the explicit native driver.
+`GPU_GGML_SOURCE=<pinned-checkout> gmake gpu-cpu-reference-build` passes on Apple M1, including
+an executable poison-plugin positive control, absence of dynamic ggml dependencies, the exact
+launch environment, configure/build failures, and a real Align compile rejection. Installed host
+tool aliases retain their invocation basename while their resolved target, digest and execute
+permission are rechecked; ordinary application artifacts retain single-link admission.
+`gmake gpu-command-environment gpu-preparation-evidence gpu-qualification-cli gate-topology-check`,
+`gmake fmt`, Python bytecode compilation and `git diff --check` pass. This is build and registry
+evidence only; host-tool CLI assembly and numeric generation qualification remain unfinished.
+
+**Intentional uncommitted files.** None after the static CPU-reference checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

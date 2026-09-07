@@ -299,6 +299,63 @@ def sdk_directory_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: path
     rejected(lambda: process_owner.ToolchainDirectory.admit(sdk, linked), "metadata is a symlink")
 
 
+def host_tool_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path) -> None:
+    tools = home.parent / "host-tools"
+    tools.mkdir()
+    target = tools / "tool"
+    original = fixture.read_bytes()
+    target.write_bytes(original)
+    target.chmod(0o700)
+    os.link(target, tools / "hardlink")
+    alias = tools / "compiler-mode"
+    alias.symlink_to(fixture.resolve())
+    admitted = process_owner.ToolchainExecutable.admit(alias)
+    token = "<host-compiler>:sha256:" + admitted.sha256
+    arguments = dict(
+        kind="shim_build", physical_argv=[str(alias), "-c", 'printf "%s" "$0"'],
+        logical_argv=[token, "-c", 'printf "%s" "$0"'], mappings={token: admitted},
+        cwd=scratch, home=home, temporary=scratch, timeout_seconds=2,
+    )
+    result = run_owned_command(**arguments)
+    assert result.terminal == "PASS" and result.stdout.retained == str(alias).encode(), result
+    with mock.patch.object(process_owner.subprocess, "Popen") as child:
+        rejected(lambda: run_owned_command(**(arguments | {"kind": "case", "spawn": child})),
+                 "only valid for hashed preparation inputs")
+        rejected(lambda: run_owned_command(**(arguments | {
+            "physical_argv": ["-DTOOL=" + str(alias)],
+            "logical_argv": ["-DTOOL=" + token], "spawn": child,
+        })), "executable is not absolute")
+        child.assert_not_called()
+    rejected(lambda: process_owner.ToolchainExecutable.admit(pathlib.Path("relative")), "not absolute")
+
+    replacement = tools / "replacement"
+    replacement.write_bytes(original)
+    replacement.chmod(0o700)
+    alias.unlink()
+    alias.symlink_to(replacement)
+    with mock.patch.object(process_owner.subprocess, "Popen") as child:
+        rejected(lambda: run_owned_command(**(arguments | {"spawn": child})), "alias target changed")
+        child.assert_not_called()
+    alias.unlink()
+    alias.symlink_to(target)
+    admitted = process_owner.ToolchainExecutable.admit(alias)
+    arguments["mappings"] = {token: admitted}
+    target.write_bytes(original + b"changed")
+    with mock.patch.object(process_owner.subprocess, "Popen") as child:
+        rejected(lambda: run_owned_command(**(arguments | {"spawn": child})), "tool digest changed")
+        child.assert_not_called()
+    target.write_bytes(original)
+    target.chmod(0o600)
+    rejected(lambda: process_owner.ToolchainExecutable.admit(alias), "not executable")
+    target.chmod(0o700)
+    with mock.patch.object(process_owner.subprocess, "Popen") as child:
+        rejected(lambda: run_owned_command(**(arguments | {
+            "physical_argv": [str(target), "-c", "exit 0"],
+            "logical_argv": [token, "-c", "exit 0"], "mappings": {token: target}, "spawn": child,
+        })), "single-link regular")
+        child.assert_not_called()
+
+
 def cleanup_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path) -> None:
     signaled = invoke(fixture, "signal", home, scratch)
     assert signaled.terminal == "SIGNAL" and signaled.signal == 15
@@ -513,6 +570,7 @@ with tempfile.TemporaryDirectory(prefix="align-llm-gpu-process-") as temporary:
         environment_owner(fixture, home, scratch)
         cmake_definition_owner(fixture, home, scratch)
         sdk_directory_owner(fixture, home, scratch)
+        host_tool_owner(fixture, home, scratch)
     elif args.owner == "cleanup":
         cleanup_owner(fixture, home, scratch)
         interrupted_capture_owner(fixture, home, scratch)

@@ -897,12 +897,14 @@ int32_t align_ggml_available(void) {
 static void align_ggml_registry_ready(void) {
     static int loaded = 0;
     if (!loaded) {
+#ifndef ALIGN_GGML_STATIC_CPU_ONLY
         const char *backend_dir = getenv(ALIGN_GGML_BACKEND_DIR_ENV);
         if (backend_dir != NULL && backend_dir[0] != '\0') {
             ggml_backend_load_all_from_path(backend_dir);
         } else {
             ggml_backend_load_all();
         }
+#endif
         loaded = 1;
     }
 }

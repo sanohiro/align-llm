@@ -40,6 +40,7 @@ endif
 .PHONY: gpu-result-replay
 .PHONY: gpu-command-environment gpu-process-cleanup gpu-build-failure-evidence gpu-preparation-evidence gpu-explicit-driver
 .PHONY: gpu-olmoe-load-smoke gpu-generation-smoke
+.PHONY: gpu-cpu-reference-build
 check:
 	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
 	  diagnostic="$$(mktemp)"; \
@@ -143,6 +144,12 @@ gpu-explicit-driver:
 	@compiler="$$(./scripts/align-toolchain ensure compiler)"; \
 	  cc="$$(command -v "$${CC:-cc}")"; \
 	  ./scripts/run-gpu-explicit-driver-smoke "$$compiler" "$$cc"
+
+# Same-source static CPU reference, including actual CPU discovery and refusal to probe a nearby
+# plugin. This focused owner requires an explicit clean checkout of the pinned ggml source.
+gpu-cpu-reference-build:
+	@test -n "$${GPU_GGML_SOURCE:-}" || { echo "set GPU_GGML_SOURCE to the pinned ggml checkout" >&2; exit 1; }
+	./scripts/run-gpu-cpu-reference-smoke "$$(./scripts/align-toolchain ensure compiler)" "$${GPU_GGML_SOURCE}"
 
 # G1's model-free backend bundle owner. It verifies canonical identity and artifact bytes through
 # no-follow rooted opens before any native library or registry operation is possible.

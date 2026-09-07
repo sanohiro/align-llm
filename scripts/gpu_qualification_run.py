@@ -16,7 +16,7 @@ from gpu_qualification_input import AdmittedInput
 from gpu_qualification_publish import RetainedFile
 from gpu_qualification_records import case_order_sha256
 from gpu_qualifier_process import (
-    CommandNotStarted, OwnedCommandResult, ToolchainDirectory, run_owned_command,
+    CommandNotStarted, OwnedCommandResult, ToolchainDirectory, ToolchainExecutable, run_owned_command,
 )
 
 
@@ -33,7 +33,7 @@ PREPARATION = (
 class PreparationCommand:
     physical_argv: tuple[str, ...]
     logical_argv: tuple[str, ...]
-    mappings: Mapping[str, pathlib.Path | ToolchainDirectory]
+    mappings: Mapping[str, pathlib.Path | ToolchainDirectory | ToolchainExecutable]
     output: pathlib.Path
     name: str
     version: str
@@ -148,7 +148,7 @@ class PreparationState:
         *,
         physical_argv: Sequence[str],
         logical_argv: Sequence[str],
-        mappings: Mapping[str, pathlib.Path | ToolchainDirectory],
+        mappings: Mapping[str, pathlib.Path | ToolchainDirectory | ToolchainExecutable],
         cwd: pathlib.Path,
         home: pathlib.Path,
         temporary: pathlib.Path,

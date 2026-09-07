@@ -99,14 +99,14 @@ def _private_directory(path: pathlib.Path, label: str) -> pathlib.Path:
     return path.resolve(strict=True)
 
 
-def _single_link_sha256(path: pathlib.Path, label: str) -> str:
+def _file_sha256(path: pathlib.Path, label: str, *, single_link: bool = True) -> str:
     if not path.is_absolute():
         raise RecipeError(f"{label} is not absolute")
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
         before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 \
+        if not stat.S_ISREG(before.st_mode) or (single_link and before.st_nlink != 1) \
                 or before.st_size > MAX_BUNDLE_ARTIFACT_BYTES:
             raise RecipeError(f"{label} is not a single-link regular file")
         digest = hashlib.sha256()
@@ -131,6 +131,35 @@ def _single_link_sha256(path: pathlib.Path, label: str) -> str:
     ):
         raise RecipeError(f"{label} changed while it was verified")
     return digest.hexdigest()
+
+
+@dataclasses.dataclass(frozen=True)
+class ToolchainExecutable:
+    """A host tool whose verified alias basename must survive execution."""
+
+    path: pathlib.Path
+    target: pathlib.Path
+    sha256: str
+
+    @classmethod
+    def admit(cls, path: pathlib.Path) -> ToolchainExecutable:
+        if not path.is_absolute():
+            raise RecipeError("host tool path is not absolute")
+        target = path.resolve(strict=True)
+        result = cls(path, target, _file_sha256(target, "host tool", single_link=False))
+        result.recheck(result.sha256)
+        return result
+
+    def recheck(self, expected: str) -> None:
+        if not self.path.is_absolute() or self.path.resolve(strict=True) != self.target:
+            raise RecipeError("host tool alias target changed")
+        if expected != self.sha256 \
+                or _file_sha256(self.target, "host tool", single_link=False) != expected:
+            raise RecipeError("host tool digest changed")
+        if not os.access(self.path, os.X_OK):
+            raise RecipeError("host tool is not executable")
+        if self.path.resolve(strict=True) != self.target:
+            raise RecipeError("host tool alias changed during verification")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -164,7 +193,7 @@ class ToolchainDirectory:
         if root not in metadata.parents:
             raise RecipeError("SDK metadata is outside its root")
         identity = cls._identity(root)
-        result = cls(root, metadata, _single_link_sha256(metadata, "SDK metadata"), identity)
+        result = cls(root, metadata, _file_sha256(metadata, "SDK metadata"), identity)
         result.recheck(result.sha256)
         return result
 
@@ -172,7 +201,7 @@ class ToolchainDirectory:
         if expected != self.sha256 or self._identity(self.path) != self.root_identity:
             raise RecipeError("SDK root identity changed")
         if self.path not in self.metadata_path.resolve(strict=True).parents \
-                or _single_link_sha256(self.metadata_path, "SDK metadata") != expected:
+                or _file_sha256(self.metadata_path, "SDK metadata") != expected:
             raise RecipeError("SDK metadata identity changed")
         if self._identity(self.path) != self.root_identity:
             raise RecipeError("SDK root changed during verification")
@@ -188,9 +217,9 @@ def _is_beneath(path: pathlib.Path, roots: tuple[pathlib.Path, ...]) -> bool:
 
 def _verify_argv(
     physical_argv: Sequence[str], logical_argv: Sequence[str],
-    mappings: Mapping[str, pathlib.Path | ToolchainDirectory],
+    mappings: Mapping[str, pathlib.Path | ToolchainDirectory | ToolchainExecutable],
     owned_roots: tuple[pathlib.Path, ...],
-    *, allow_toolchain_directories: bool = False,
+    *, allow_toolchain_inputs: bool = False,
 ) -> None:
     if len(physical_argv) != len(logical_argv) or not physical_argv:
         raise RecipeError("physical and logical argv do not match")
@@ -203,16 +232,17 @@ def _verify_argv(
             if token not in mappings:
                 raise RecipeError(f"logical argv[{ordinal}] has no physical mapping")
             binding = mappings[token]
-            mapped = binding.path if isinstance(binding, ToolchainDirectory) else binding
+            is_toolchain = isinstance(binding, (ToolchainDirectory, ToolchainExecutable))
+            mapped = binding.path if is_toolchain else binding
             if prefix + str(mapped) != physical:
                 raise RecipeError(f"logical argv[{ordinal}] mapping changed")
-            if isinstance(binding, ToolchainDirectory):
-                if not allow_toolchain_directories or ":sha256:" not in token:
-                    raise RecipeError("SDK directory binding is only valid for hashed preparation inputs")
+            if is_toolchain:
+                if not allow_toolchain_inputs or ":sha256:" not in token:
+                    raise RecipeError("host toolchain binding is only valid for hashed preparation inputs")
                 binding.recheck(token.rsplit(":sha256:", 1)[1])
             elif ":sha256:" in token:
                 expected = token.rsplit(":sha256:", 1)[1]
-                if _single_link_sha256(mapped, f"argv[{ordinal}]") != expected:
+                if _file_sha256(mapped, f"argv[{ordinal}]") != expected:
                     raise RecipeError(f"logical argv[{ordinal}] digest does not match")
             elif not _is_beneath(mapped, owned_roots):
                 raise RecipeError(f"logical argv[{ordinal}] is outside owned roots")
@@ -304,7 +334,7 @@ def run_owned_command(
     kind: str,
     physical_argv: Sequence[str],
     logical_argv: Sequence[str],
-    mappings: Mapping[str, pathlib.Path | ToolchainDirectory],
+    mappings: Mapping[str, pathlib.Path | ToolchainDirectory | ToolchainExecutable],
     cwd: pathlib.Path,
     home: pathlib.Path,
     temporary: pathlib.Path,
@@ -333,10 +363,15 @@ def run_owned_command(
         validate_command(command, allow_sentinel=False, expected_kind=kind)
         _verify_argv(
             physical_argv, logical_argv, mappings, (home_root, temporary_root, cwd_root),
-            allow_toolchain_directories=kind != "case",
+            allow_toolchain_inputs=kind != "case",
         )
         executable = pathlib.Path(physical_argv[0])
-        _single_link_sha256(executable, "command executable")
+        if not executable.is_absolute():
+            raise RecipeError("command executable is not absolute")
+        executable_reference = command_path(logical_argv[0])
+        executable_binding = None if executable_reference is None else mappings.get(executable_reference[1])
+        if not isinstance(executable_binding, ToolchainExecutable):
+            _file_sha256(executable, "command executable")
 
         actual_environment = {
             "HOME": str(home_root),
