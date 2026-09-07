@@ -34,8 +34,12 @@ implementation requirement is introduced.
 
 **Next actions, in order.**
 
-1. Complete the requested Requests 56/58 register publication with authoritative-doc review and
-   exact-head docs preflight. GitHub owns the final review/check record.
+1. Publish the request-register audit and merged Align answers on
+   `docs/align-request-deliveries-20260907`, based on main `1a37b5b`. Requests 39/45/52/54/59/60
+   now record producer delivery; their consumer adoption remains pending. The documentation
+   checkpoint uses static consistency checks and exact-head docs preflight. After publication,
+   continue the G1 adoption below, batching its merged prerequisites including Requests 59/60;
+   Request 59 requires Align #979 (`5250e996`) or a descendant, including its earlier repairs.
 2. On the active G1 branch, adopt Align v0.7.5 containing Requests 55, 56, and 58. Verify private
    staged-byte-to-native-load identity races, cleanup prefixes, poisoned process ownership, and the
    Apple M1 Qwen loader owner.

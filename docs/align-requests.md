@@ -20,6 +20,30 @@ these; it waits for the Align capability and then exercises it as a real client.
 Verified against the `../align` compiler on 2026-07-24. File paths are stable references; line
 numbers are approximate and may drift — locate by function name.
 
+## Align audit answer (2026-09-07)
+
+Audited every numbered request (1–60) against Align main
+`b947b5d92e17242e5511a80de8d5a446c7ed8b83`, after PR #975. The complete
+[per-request audit](../../align/docs/impl/align-llm-request-audit-2026-09-07.md)
+records existing coverage, remaining work, evidence limits, and recommendations.
+At the start of this audit, metadata totals were 22 CLOSED, 1 ALIGN_LLM_VERIFIED,
+7 ALIGN_MERGED, and 30 PROPOSED; no row was ACCEPTED or IMPLEMENTING. Subsequent
+implementation updates below advance only their respective rows. PROPOSED does not mean
+wholly absent: string ordering (27), readable buffer accumulation (28),
+Result<buffer> (34), and directory listing (53) already cover parts of the asks.
+
+At the audited revision, R45 still reproduced and was the next compiler correctness
+priority; R39 and R42/43/49 also had local evidence of remaining defects.
+The shipped answers below subsequently record the R39 and R45 repairs. R52/54/55/56/
+58/59/60 are delivered on the Align side; consumer adoption remains separate.
+R59 now includes #979 and #975 as well as #972. Current R21 (`fs.open_ro`) is distinct
+from #892's historical R21, reconciled here as R44. Historical summaries below
+must not override those identities or the individual current metadata.
+No consumer acceptance status was advanced by this audit. Closed entries use
+their recorded adoption evidence; the audit did not rerun the consumer suite.
+Missing optional APIs remain proposals when existing approaches meet the current
+need. This answer updates the request register; consumer implementation remains separate.
+
 ## Request protocol
 
 Every new or reopened request must begin with this metadata:
@@ -8636,7 +8660,7 @@ continuing evidence that the chunking is structural rather than incidental.
 ## Request 39 — Release of rebound `buffer` allocations before frame exit
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none. R5B-MODEL-PREFILL-FORWARD reads each weight member through one buffer
@@ -8647,7 +8671,7 @@ Independent work that may continue: all of R5B-MODEL-PREFILL-FORWARD, R4-ALIGNPA
 Resume condition: an Align release frees (or makes reclaimable within the same frame) the storage a
   `borrow mut buffer` parameter held before a rebinding assignment (`window = buffer(n)`) replaces
   it, rather than retaining every prior allocation until the caller's frame exits.
-Align commit or pull request: none
+Align commit or pull request: Align PR #980 merged as 8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f
 align-llm verification: `src/model_forward.align`'s `read_into_window`/`fill_members` collapse onto
   `alignpack_read.read_exact` (removing the duplicated per-member read path built solely to avoid
   the rebind-retention cost), and `make layer-forward-smoke` / `make model-forward-qualification`
@@ -8706,6 +8730,31 @@ a value reached only through a `borrow mut` parameter.
    pass.
 
 ---
+
+### Align shipped answer (2026-09-07)
+
+PR #980 merged as `8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f`. Replacement
+through a mutable borrowed Move value now runs the old value's ordinary Drop
+plan using the caller's existing cleanup flag, after evaluating the replacement
+and before installing it. Borrowed parameters still have no callee-exit Drop;
+arena-owned old values remain governed by their false individual-cleanup bit.
+No API, ownership model, runtime symbol, or ABI was added.
+
+The exact live-byte owner proves one live buffer after each of 32 replacements,
+at most old-plus-new during construction, and no remaining buffer after caller
+exit. Whole/per-unit owners also cover forwarded calls, generic resources and
+records, error-return cleanup, shared/Copy controls, and arena/heap transitions.
+The original local 32-fill probe fell from 66,908 to 11,880 KiB peak RSS, comparable
+to its one-fill control; this observation is not a portable RSS guarantee.
+
+Independent review was CLEAN. All 116 focused owner tests, final bounded gate,
+Clippy, required Linux x86-64/ARM64/macOS CI, and
+`cargo build --release --workspace` passed. The broader return_provenance suite
+retains the same three producer/foreign-call failures on base and candidate;
+they are recorded separately in the owning
+`../align/docs/impl/08-memory-model-v2.md` section 21.
+Consumer adoption and its model qualification remain pending. No versioned
+release or consumer-code change is claimed.
 
 ## Request 40 — `array_builder<T>` as a struct field type
 
@@ -9267,7 +9316,7 @@ consumer capability in `docs/specs/c8-optional-targeted-stage.md`.
 ## Request 45 — Compiler soundness: moving a field out of a decoded record double-frees at run time
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: no
 Blocked gate or slice: none. R3-RESIDENCY-SIM (`docs/specs/r3-residency-sim.md` section 7.5 item 3)
@@ -9278,7 +9327,7 @@ Resume condition: an Align release either rejects the move at check time with a 
   (the same family Request 36 already gets for a whole nested Move-struct field), or makes codegen
   correctly transfer ownership of the moved-out field so the source record's recursive `Drop` no
   longer frees it a second time.
-Align commit or pull request: none
+Align commit or pull request: Align PR #978 merged as a03c623397ba59ce48db0bf588631b0696820c69
 align-llm verification: remove the `.clone()` at `src/residency_sim.align:624-634` (move
   `document.run.build_source` directly into `TraceLoad.build_source`) and pass
   `make residency-sim-smoke` without the process aborting.
@@ -9444,6 +9493,23 @@ align-llm; the defect is the silent, unrecorded acceptance, not a preference bet
    case (no `SIGTRAP`/`SIGABRT`).
 
 ---
+
+### Align shipped answer (2026-09-07)
+
+PR #978 merged as `a03c623397ba59ce48db0bf588631b0696820c69`. Completed
+constructor/call actions now enforce the existing named diagnostic for unsupported
+nested owned-field moves. This is the diagnostic outcome accepted by this
+request, not a new deep-move capability. Both check paths reject the original
+reported source before execution; explicit cloning, borrowing, Copy extraction,
+and supported shallow moves remain available. Therefore the direct-move version
+of acceptance item 3 is not the shipped answer: consumer verification should
+retain its explicit clone and assert the diagnostic for the unsupported variant.
+
+Independent review was CLEAN. The 126 JSON/borrow/tagged owner tests, the
+mutation-verified negative owner, bounded gate, Clippy, required Linux x86-64/
+ARM64/macOS CI, and `cargo build --release --workspace` passed. The owning
+closure is in `../align/docs/impl/25-recursive-owned-json-plan.md` section 14.
+No versioned release or consumer adoption is claimed.
 
 ## Request 46 — `borrow mut` array locals inside loops, and no element assignment through an array field
 
@@ -10234,7 +10300,7 @@ implementer to reach for the most natural word for a large contiguous allocation
 ## Request 52 — `match` on an owned record's `Option` field silently moves the payload out, and a later encode drops it
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: no
 Blocked gate or slice: none. C4-REPAIR-MEASURED ships by reading every `Option` member of an owned
@@ -10264,7 +10330,9 @@ Independent work that may continue: all of C4-REPAIR-MEASURED, C4-REPAIR-EDITSET
 Resume condition: an Align release either rejects a `match` that partially moves a payload out of an
   owned record still live at the match site, or preserves the field so a subsequent
   `json.encode` of that record re-emits it. Either answer closes this; silence does not.
-Align commit or pull request: none
+Align commit or pull request: Align PR #970 merged as 8b5cafd340eaca73981dc4f3fc04d3a3271d9da0;
+  closure in ../align/docs/impl/25-recursive-owned-json-plan.md section 13; independent review,
+  local owner/bounded/Clippy gates and Linux x86-64/ARM64/macOS CI passed
 align-llm verification: read `PromptTaskRow.attempts`, `repair_loop_count`, and
   `generation_to_passing_patch_ns` through a direct `match` on the owned row in
   `src/prompt_score.align`, re-encode the row with `json.encode`, and require the encoded bytes to
@@ -10306,6 +10374,19 @@ repository.
 
 Either resolution is acceptable and both are better than the current silence: reject the partial
 move while the record is still live, or keep the payload in place for a `match` that only inspects.
+
+Align reproduced the loss on current source `61f05b07`: owning inspection of
+`Option<array<Item>>` followed by encode emitted `{}`, while borrowed inspection retained the
+field and Copy `Option<i64>` inspection retained its value. MoveCheck already records the partial
+move. The repair makes both `json.encode` and `json.encode_bounded` check that moved root before
+borrowing it and reject it with the existing `use of moved value` diagnostic. It preserves consuming
+owning-match semantics, borrowed inspection, explicit ownership, and ordinary reinitialization;
+there is no new allocation or runtime API. Whole/per-unit imported-generic rejection owners and
+live-source controls pass. PR #970 is merged and `cargo build --release --workspace` completed.
+No versioned release was requested or published for this repair; consumer-owned adoption remains
+pending. For the selected rejection outcome, verification should require the direct owned Move
+inspection/re-encode form to diagnose the moved root and the existing borrowed form to preserve
+canonical bytes. Copy Option fields remain readable and encodable.
 
 ---
 
@@ -10402,7 +10483,7 @@ caller's directory and says so.
 ## Request 54 — ELF support libraries precede user static archives and cannot resolve their symbols
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: no
 Blocked gate or slice: none after the explicit application dependency below. R7-RUNTIME-PROVIDER's
@@ -10410,10 +10491,14 @@ Blocked gate or slice: none after the explicit application dependency below. R7-
 Independent work that may continue: all R7 work. `src/ggml_ffi.align` explicitly records `m` after
   `align_ggml_shim`, using the shipped `extern "C" link("m")` surface rather than a compatibility
   layer or proposed API.
-Resume condition: an Align release orders ELF support libraries after every user archive that may
-  reference them, or repeats the support group after user libraries, and passes the archive repro
-  below.
-Align commit or pull request: none
+Resume condition: align-llm adopts Align f291700fa8957ef8e2be864c8c65549928e528b6 or a descendant
+  and verifies its shim without the explicit m dependency. This commit orders support libraries
+  after user archives and passes the native archive regression; no release tag is required.
+Align commit or pull request: https://github.com/sanohiro/align/pull/971 merged as
+  f291700fa8957ef8e2be864c8c65549928e528b6; closure in
+  ../align/docs/impl/21-build-perf-plan.md Item 2; independent review CLEAN; focused owners,
+  all fourteen local PostgreSQL suites, final preflight, and release workspace build passed;
+  hosted CI passed and merge complete; no versioned release or tag was requested
 align-llm verification: remove the explicit empty `extern "C" link("m")` block from
   `src/ggml_ffi.align`; on Linux, build the ordinary static shim through
   `scripts/run-main-with-shim` and require `alignc build src/main.align` plus
@@ -10783,6 +10868,102 @@ view rejection, and the existing Request 37 owners pass. The exact published ali
 `acfdd3b` reaches the native link step in 15.52 seconds on the Align Linux owner. Align v0.7.4 is
 published; adoption and the required Apple M1 `gmake gpu-qwen-load-smoke` execution remain
 align-llm-owned verification.
+
+---
+
+## Request 59 — Owned builder record return producer certification
+
+```text
+Status: ALIGN_MERGED
+Priority: critical
+Blocking: yes
+Blocked gate or slice: G1 production-provider build and publication
+Independent work that may continue: Request 60 closed-environment driver selection
+Resume condition: adopt Align 5250e996f4e3a00bc4dfe8584d05acf95f10a78e or a descendant and
+  complete the unchanged build/smoke owners
+Align commit or pull request: https://github.com/sanohiro/align/pull/972 merged as
+  85d64929e6627cfedeceed2c4ce7000548f6406d; subsequent PR #975 merged as
+  b947b5d92e17242e5511a80de8d5a446c7ed8b83 and PR #979 merged as
+  5250e996f4e3a00bc4dfe8584d05acf95f10a78e;
+  implementation closure in ../align/docs/impl/xml-producer-investigation.md Request 59
+align-llm verification: unchanged check-per-unit src/verification_loop.align and
+  src/prompt_artifacts.align, gmake build,
+  and gmake ggml-spike-smoke at the adopted commit; consumer adoption remains pending
+```
+
+The public issue is the request source. Align reproduced the exact field-7 error
+on `f291700f` with the unchanged client at `1a37b5b`. The rejected producer is a
+sibling prompt call's Copy arguments projected from an optional borrowed record,
+not an unowned builder result. A reduced Align-owned fixture discriminates the
+pre-fix compiler. The candidate accepts the unchanged client's five per-unit
+modules. The independent review's unseeded-cycle finding is fixed; negative
+owners and final preflight pass. All hosted CI checks passed and the fix is merged.
+Issue #966 records the repair and adoption SHA. Delivery is
+by merge commit revision, not a versioned release.
+
+---
+
+Align continuation (2026-09-07): issue #966's remaining `alignpack.stats_for`
+rejection is fixed by PR #975, merged as
+`b947b5d92e17242e5511a80de8d5a446c7ed8b83`. Copied scalar SSA values no longer
+inherit borrowed storage authority; every producer dependency, absence fact and
+invalid-input check remains enforced. A reduced owned-array record with a borrowed
+indexed integer discriminates the pre-fix compiler. Both unchanged client modules
+pass per-unit checking locally (alignpack: 3 units; verification_loop: 5).
+The 20 producer, 63 owned-tagged, 23 resource-ownership and 17 XML owners, optimized
+workspace build, independent review, final preflight and all hosted CI checks pass.
+The earlier #972 repair remains valid for verification_loop. This intermediate
+repair still requires the #979 continuation below for the complete consumer build; no consumer code or
+build machinery has been changed, no consumer verification is claimed, and no
+release tag is required. Final consumer adoption evidence remains pending.
+
+Align continuation (2026-09-07): [PR #979](https://github.com/sanohiro/align/pull/979)
+merged as `5250e996f4e3a00bc4dfe8584d05acf95f10a78e`. Adoption after #975 exposed
+remaining borrowed `Option<string>` payload reads in cloning, string-to-`str`
+call projections, and owned environment lookup results. The repair authenticates
+the exact borrowed projection while preserving existing ownership producers and
+keeping fixed-array-to-slice compatibility descriptor-only. The checked-in closure
+is `../align/docs/impl/xml-producer-investigation.md`, “Request 59 continuation:
+cloned borrowed sum payloads.” Producer owners and whole/per-unit coverage passed;
+Align also built the unchanged consumer and checked `prompt_artifacts.align`,
+`prompt_experiment.align`, and `prompt_generate.align`. These producer-side checks
+do not complete align-llm pin adoption or its final smoke evidence. Adopt #979 or
+a descendant and run the unchanged consumer owners named above.
+
+---
+
+## Request 60 — Explicit absolute C link driver
+
+```text
+Status: ALIGN_MERGED
+Priority: high
+Blocking: yes
+Blocked gate or slice: G1 candidate preparation in its closed four-variable environment
+Independent work that may continue: consumer adoption of Request 59's merged repair
+Resume condition: pass an authenticated absolute C driver in logical argv at the fixed Align revision
+Align commit or pull request: https://github.com/sanohiro/align/pull/973
+  merged 3051b98c53e8b7a78f10759fe287166a8c6d36fc
+align-llm verification: candidate preparation names the verified absolute C driver with only
+  HOME, LC_ALL, TMPDIR, and TZ present; build/preparation owners complete
+```
+
+The public issue is the request source. Request 59 is now merged in PR #972.
+Align's Request 60 contract and closure matrix are in
+`../align/docs/impl/21-build-perf-plan.md`, Item 2. One explicit absolute driver
+selection covers linking verbs and watch, retaining ordinary development
+defaults. Local owner checks, the bounded PR gate, Clippy, all fourteen
+PostgreSQL suites, standalone benchmark compile checks, and the optimized
+workspace build passed. All required hosted checks passed and PR #973 merged.
+Pin `3051b98c53e8b7a78f10759fe287166a8c6d36fc`; no consumer adoption is claimed
+and its preparation/qualification owners remain pending. Delivery is by commit
+revision without a tag. `--cc PATH`/`--cc=PATH` owns one immutable, validated
+UTF-8 absolute executable path, used directly across build/run/size/test,
+ThinLTO, PGO, and watch; omission keeps ordinary `cc` lookup. Invalid and
+inapplicable selections fail before compilation. Only run admits `--` and
+passes its suffix unchanged to the program. The driver option does not
+authenticate executable bytes or configure that driver's internal linker/tool
+searches; post-validation replacement can still cause an ordinary launch
+failure, never fallback. No language ownership or runtime ABI changed.
 
 ---
 
