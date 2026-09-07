@@ -7,7 +7,7 @@ file records durable project state.
 
 Branch `agent/g1-gpu-generation` is rebased onto main `1a37b5b9084ccd7e2bcb0e3f4fb2b5c901e6df39`
 and implements the complete G1 consumer contract in `docs/specs/gpu-runtime.md`. Internal
-checkpoints through `7314d42` cover strict runtime options, provider dispatch, canonical bundle and
+checkpoints through `8bed065` cover strict runtime options, provider dispatch, canonical bundle and
 source ownership, device memory and graph ownership, resident Qwen/OLMoE prefill and decode,
 qualification records, evidence replay, and owned qualifier processes. G1 remains one unpublished
 consumer-complete capability.
@@ -52,12 +52,19 @@ The resident OLMoE loader now derives every dense and sliced expert tensor direc
 AlignPack index, rejects missing, ambiguous, and shape-invalid members, plans the exact backend
 allocation, and uploads all expert planes into their whole resident tensors through bounded staging.
 Its GPU-stub owner covers the complete 69-piece two-layer fixture and malformed-pack refusals.
+The active generation batch now connects provider dispatch to resident Qwen and OLMoE execution.
+It derives graph-context capacity from model depth, keeps maximum-context KV and one bounded
+workspace resident, executes prefill plus rebuilt decode topologies, rejects nonfinite logits, and
+preserves Qwen greedy and OLMoE greedy/seeded selection. Its model-free owner covers multiple
+decode steps, maximum one, immediate EOG, and repeatable seeded output. The device owner also
+publishes the exact pinned bundle ID to topology identity.
 
 Request 59 is critical and blocking for production-provider integration, the main executable, and
-publication. Pinned v0.7.5 and pulled Align main `c2bb7655` reject the unchanged valid
+publication. Pinned v0.7.5 and pulled Align main `61f05b0720f188b00b9641b10dd1942da181bf0e` reject the unchanged valid
 `AttemptRun.stages` owner only during per-unit checking; whole-program checking passes. Align issue
-#966 remains open and owns the repair. Private staging, platform profiles, numeric calibration,
-qualifier wiring, and focused GPU owners remain independent.
+#966 remains open and owns the repair. The GPU provider path is implemented and passes its direct
+per-unit and model-free owner checks; the main executable and publication build remain blocked.
+Platform profiles, numeric calibration, qualifier wiring, and focused GPU owners remain independent.
 Request 60 / Align issue #968 is also critical and blocking for the closed-environment candidate build. Align's linker
 invokes `cc` by name with no explicit driver option; even without `PATH`, OS default lookup succeeds
 and cannot be bound truthfully to the evidence command. The request requires one explicit absolute
@@ -69,10 +76,10 @@ independent.
 1. Add the fixed `gpu-runtime-qualify` CLI orchestration and real compiler/runtime/candidate/shim/CPU
    preparation commands on top of the completed input, source, process, and publication owners.
 2. Prepare both platform profiles and numeric calibrations, then connect the retained source,
-   process, record, Qwen-loader, and provider owners into the publication qualifier where Request 59
-   does not block compilation.
+   process, record, resident-generation, and provider owners into the publication qualifier where
+   Request 59 does not block compilation.
 3. When Request 59 ships, adopt the fixed Align revision and pass its focused per-unit owner,
-   `gmake build`, and `gmake ggml-spike-smoke`; complete the production-provider integration.
+   `gmake build`, and `gmake ggml-spike-smoke`; verify the implemented production-provider path.
 4. Run Metal locally and hand the same bounded kit to the CUDA host. Publish G1 only when it is
    consumer-complete, then review, repair, exact-head preflight, and merge. Stop after this pull
    request as requested; do not begin G1R in this work session.
@@ -91,6 +98,7 @@ products remain outside Git. The current qualifier batches pass `gmake gpu-input
 `gmake gpu-evidence-publication`,
 `gmake gpu-build-failure-evidence`, `gmake gpu-result-replay`,
 `gmake gpu-preparation-evidence`, `gmake gpu-command-environment`, `gmake gpu-process-cleanup`,
+`gmake gpu-generation-smoke`, per-unit checks for `runtime_generation` and its smoke owner,
 `gmake gate-topology-check`, `scripts/check-format`, Python bytecode compilation, and `git diff --check`.
 The external Qwen model input `509287f78cb4...894d3c` now has verified AlignPack
 `a0bd07028a2c...e99b04` and geometry `697b32f19f2d...2492666`; `--pack-verify` compared all
@@ -102,7 +110,7 @@ with bundle ID `0a472538ef35...814b`, manifest digest `f928428facfe...8d1`, sour
 `64db6180009a...6f4`, and source-snapshot digest `c2860034df35...8b3`. Its 3,430-file, 169 MiB
 closure passed the recipe bounds, and the real shim linked against the staged bundle successfully.
 
-**Intentional uncommitted files.** None after the source-materialization checkpoint is committed.
+**Intentional uncommitted files.** None after the resident-generation checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

@@ -223,6 +223,7 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_backend_handle(owner: raw) -> raw
   fn align_gpu_device_staging_consumed(owner: raw) -> i32
   fn align_gpu_device_staging_path_valid(owner: raw) -> i32
+  fn align_gpu_device_bundle_id(owner: raw, out: slice<u8>, cap: i32) -> i32
   fn align_gpu_staging_owned() -> i32
   fn align_gpu_staging_transfer(
     root: str, root_len: i64, artifact_count: i64, poison: i32,
@@ -520,6 +521,26 @@ pub fn gpu_device_staging_consumed(borrow owner: GpuDevice) -> bool {
 pub fn gpu_device_staging_path_valid(borrow owner: GpuDevice) -> bool {
   unsafe {
     return align_gpu_device_staging_path_valid(resource.raw(resource.borrow(owner))) == 1
+  }
+}
+
+pub fn gpu_device_bundle_id(borrow owner: GpuDevice) -> string {
+  mut window: buffer := buffer(64)
+  mut i := 0
+  loop {
+    if i >= 64 { break }
+    window.put_u8(0 as u8)
+    i = i + 1
+  }
+  unsafe {
+    written := align_gpu_device_bundle_id(
+      resource.raw(resource.borrow(owner)), window.bytes(), 64) as i64
+    if written != 64 { return "".clone() }
+    view := window.bytes()
+    return match view[0..written].as_str() {
+      Ok(value) => value.clone(),
+      Err(_) => "".clone(),
+    }
   }
 }
 

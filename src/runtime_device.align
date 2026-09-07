@@ -56,3 +56,6 @@ pub fn synchronize(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {
   ggml_ffi.gpu_device_synchronize(owner) else { return Err(Error.Invalid) }
   return Ok(())
 }
+
+pub fn bundle_id(borrow owner: ggml_ffi.GpuDevice) -> string =
+ggml_ffi.gpu_device_bundle_id(owner)

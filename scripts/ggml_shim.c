@@ -943,6 +943,7 @@ void *align_ggml_device_by_kind(int32_t kind) {
 struct align_gpu_device_state {
     ggml_backend_dev_t device;
     ggml_backend_t backend;
+    char bundle_id[65];
     struct ggml_context *metadata_ctx;
     void *metadata_storage;
     unsigned char *metadata_base;
@@ -1181,6 +1182,7 @@ int32_t align_gpu_device_open(
     }
     state->device = selected_device;
     state->backend = ggml_backend_dev_init(selected_device, NULL);
+    memcpy(state->bundle_id, bundle_id, 65);
     state->host_budget_bytes = host_budget_bytes;
     state->device_budget_bytes = device_budget_bytes;
     state->staging_consumed = registry_state == 0;
@@ -1210,6 +1212,15 @@ int32_t align_gpu_device_staging_consumed(void *owner) {
 int32_t align_gpu_device_staging_path_valid(void *owner) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     return state == NULL ? 0 : state->staging_path_valid;
+}
+
+int32_t align_gpu_device_bundle_id(void *owner, void *out, int32_t cap) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || out == NULL || cap < 64) {
+        return 0;
+    }
+    memcpy(out, state->bundle_id, 64);
+    return 64;
 }
 
 void *align_gpu_device_handle(void *owner) {

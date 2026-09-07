@@ -1,0 +1,157 @@
+module runtime_generation_smoke
+
+import ggml_ffi
+import runtime_generation
+import runtime_options
+import std.fs
+
+BUNDLE_ID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+QWEN_GEOMETRY := "{\"schema_version\":2,\"kind\":\"R1_MODEL_IR\",\"model\":{\"arch\":\"qwen2\",\"n_layer\":2,\"n_embd\":8,\"n_head\":2,\"n_head_kv\":1,\"head_dim\":4,\"n_ff\":16,\"n_vocab\":32,\"n_expert\":0,\"context_length\":128,\"rms_eps_bits\":\"3727c5ac\",\"rope\":{\"type\":2,\"dim_count\":4,\"freq_base_bits\":\"461c4000\",\"scaling_type\":null}}}"
+
+fn options(device_budget_bytes: i64) -> runtime_options.RuntimeOptions =
+runtime_options.RuntimeOptions {
+  schema_version: 1,
+  backend: "metal".clone(),
+  device: "stub-gpu".clone(),
+  backend_bundle: "fixture".clone(),
+  placement: "resident".clone(),
+  host_budget_bytes: 2097152,
+  device_budget_bytes: device_budget_bytes,
+  prefetch: "off".clone(),
+}
+
+fn prompt() -> array<i64> {
+  mut values: array_builder<i64> := array_builder()
+  values.push(0)
+  values.push(1)
+  return values.build()
+}
+
+fn empty_ids() -> array<i64> {
+  mut values: array_builder<i64> := array_builder()
+  return values.build()
+}
+
+fn valid_ids(borrow ids: array<i64>) -> bool {
+  if ids.len() != 3 { return false }
+  mut at := 0
+  loop {
+    if at >= ids.len() { break }
+    if ids[at] < 0 || ids[at] >= 32 { return false }
+    at = at + 1
+  }
+  return true
+}
+
+fn same_ids(borrow left: array<i64>, borrow right: array<i64>) -> bool {
+  if left.len() != right.len() { return false }
+  mut at := 0
+  loop {
+    if at >= left.len() { break }
+    if left[at] != right[at] { return false }
+    at = at + 1
+  }
+  return true
+}
+
+fn run_qwen(pack_path: str) -> Result<(), Error> {
+  config := options(8388608)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  eog_ids := empty_ids()
+  generated := runtime_generation.generate_qwen(
+    owner, config, pack_path, QWEN_GEOMETRY, prompt_ids, eog_ids, 3)?
+  if !valid_ids(generated)
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 1
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 2
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_INVALIDATIONS) != 1 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn qwen_first_token(pack_path: str) -> Result<i64, Error> {
+  config := options(8388608)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  eog_ids := empty_ids()
+  generated := runtime_generation.generate_qwen(
+    owner, config, pack_path, QWEN_GEOMETRY, prompt_ids, eog_ids, 1)?
+  if generated.len() != 1
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 1
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 0 {
+    return Err(Error.Invalid)
+  }
+  return Ok(generated[0])
+}
+
+fn run_qwen_eog(pack_path: str, eog: i64) -> Result<(), Error> {
+  config := options(8388608)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  mut eog_builder: array_builder<i64> := array_builder()
+  eog_builder.push(eog)
+  eog_ids := eog_builder.build()
+  generated := runtime_generation.generate_qwen(
+    owner, config, pack_path, QWEN_GEOMETRY, prompt_ids, eog_ids, 3)?
+  if generated.len() != 1 || generated[0] != eog
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 0 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn run_olmoe(
+  pack_path: str,
+  geometry_path: str,
+  seed: Option<i64>,
+) -> Result<array<i64>, Error> {
+  config := options(16777216)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  eog_ids := empty_ids()
+  geometry := fs.read_file(geometry_path)?
+  generated := runtime_generation.generate_olmoe(
+    owner, config, pack_path, geometry, prompt_ids, eog_ids, 3, 0, seed)?
+  if !valid_ids(generated)
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 1
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 2
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_INVALIDATIONS) != 1 {
+    return Err(Error.Invalid)
+  }
+  return Ok(generated)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 4 { return Err(Error.Invalid) }
+  run_qwen(args[1])?
+  eog := qwen_first_token(args[1])?
+  run_qwen_eog(args[1], eog)?
+  first := run_olmoe(args[2], args[3], Some(42))?
+  second := run_olmoe(args[2], args[3], Some(42))?
+  if !same_ids(first, second) { return Err(Error.Invalid) }
+  run_olmoe(args[2], args[3], None)?
+  print("runtime generation smoke: PASS")
+  return Ok(())
+}

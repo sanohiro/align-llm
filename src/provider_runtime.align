@@ -9,6 +9,7 @@ import gguf
 import model
 import model_ir
 import runtime_device
+import runtime_generation
 import runtime_options
 import tokenizer_qwen2
 import core.json
@@ -188,29 +189,44 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
     return Err(Error.Invalid)
   }
 
-  match gpu_options {
+  generated_ids: array<i64> := match gpu_options {
     Some(options) => {
-      // Bundle and device side effects occur only after the model, pack, geometry, tokenizer and
-      // context boundary are settled. The owner stays invocation-local and is synchronized before
-      // this pre-execution checkpoint returns; runtime_execution will consume it in the next batch.
+      generation_options := runtime_options.RuntimeOptions {
+        schema_version: options.schema_version,
+        backend: options.backend.clone(),
+        device: options.device.clone(),
+        backend_bundle: options.backend_bundle.clone(),
+        placement: options.placement.clone(),
+        host_budget_bytes: options.host_budget_bytes,
+        device_budget_bytes: options.device_budget_bytes,
+        prefetch: options.prefetch.clone(),
+      }
       device := runtime_device.open(options)?
-      runtime_device.synchronize(device)?
-      return Err(Error.Invalid)
+      if olmoe {
+        runtime_generation.generate_olmoe(
+          device, generation_options, config.runtime_pack_path, geometry_view,
+          prepared.token_ids, prepared.eog_token_ids, request.max_tokens,
+          config.runtime_cache_budget_bytes, request.seed)?
+      } else {
+        runtime_generation.generate_qwen(
+          device, generation_options, config.runtime_pack_path, geometry_view,
+          prepared.token_ids, prepared.eog_token_ids, request.max_tokens)?
+      }
     }
-    None => {}
+    None => {
+      generated := if olmoe {
+        generate_olmoe(
+          config, geometry_view, source_identity, prepared.token_ids, prepared.eog_token_ids,
+          request.max_tokens, request.seed)
+      } else {
+        generate_qwen(
+          config, geometry_view, source_identity, prepared.token_ids, prepared.eog_token_ids,
+          request.max_tokens)
+      }
+      if !generated.ok { return Err(Error.Invalid) }
+      json.decode(generated.token_ids_json)?
+    }
   }
-
-  generated := if olmoe {
-    generate_olmoe(
-      config, geometry_view, source_identity, prepared.token_ids, prepared.eog_token_ids,
-      request.max_tokens, request.seed)
-  } else {
-    generate_qwen(
-      config, geometry_view, source_identity, prepared.token_ids, prepared.eog_token_ids,
-      request.max_tokens)
-  }
-  if !generated.ok { return Err(Error.Invalid) }
-  generated_ids: array<i64> := json.decode(generated.token_ids_json)?
   if generated_ids.len() < 1 || generated_ids.len() > request.max_tokens {
     return Err(Error.Invalid)
   }

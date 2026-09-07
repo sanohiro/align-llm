@@ -145,6 +145,7 @@ fn exercise_live_owner(
   owner := opened(backend, device, bundle_root)?
   if ggml_ffi.gpu_device_handle(owner).is_null()
     || ggml_ffi.gpu_backend_handle(owner).is_null()
+    || runtime_device.bundle_id(owner) != bundle_id
     || !ggml_ffi.gpu_device_staging_path_valid(owner) {
     return Err(Error.Invalid)
   }
