@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Verify the G1 private numeric reader independently of the blocked native producer."""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import pathlib
+import struct
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from gpu_backend_recipe import RecipeError  # noqa: E402
+from gpu_qualification_stream import MAX_CHUNK_BYTES, NumericStream  # noqa: E402
+
+
+GOLDEN = bytes.fromhex(
+    "4731545241434531 01000000 00000000 a000000000000000 "
+    "01000000 ffffffff 00000000 02000000 01000000 00000000 0800000000000000 0000000000000000 "
+    "0000803f 00000040 "
+    "02000000 00000000 00000000 02000000 01000000 00000000 0800000000000000 0100000000000000 "
+    "0000803e 000000bf "
+    "00000000 00000000 00000000 00000000 00000000 00000000 0000000000000000 0200000000000000"
+)
+
+
+def rejected(call, message=None):
+    try:
+        call()
+    except (RecipeError, OSError) as error:
+        if message is not None:
+            assert message in str(error), (message, str(error))
+    else:
+        raise AssertionError("invalid numeric stream was accepted")
+
+
+def consume(path, *, digest=None, model=1, maximum=None):
+    frames, payloads = [], []
+    with NumericStream(path, model=model, maximum_bytes=maximum or max(108, path.stat().st_size),
+                       expected_sha256=digest) as stream:
+        while True:
+            frame = stream.read_frame()
+            if frame is None:
+                break
+            frames.append(frame)
+            data = bytearray()
+            while True:
+                chunk = stream.read_payload()
+                if not chunk:
+                    break
+                data.extend(chunk)
+            payloads.append(bytes(data))
+        assert stream.records == len(frames) and stream.read_frame() is None
+        observed_digest = stream.sha256
+    assert stream._fd == -1 and stream.verified
+    return frames, payloads, observed_digest
+
+
+def main():
+    assert len(GOLDEN) == 160
+    with tempfile.TemporaryDirectory(prefix="gpu-numeric-reader-") as raw:
+        root = pathlib.Path(raw).resolve()
+        path = root / "trace"
+        path.write_bytes(GOLDEN)
+        frames, payloads, digest = consume(path, digest=hashlib.sha256(GOLDEN).hexdigest())
+        assert [(frame.kind, frame.layer, frame.step, frame.width, frame.height, frame.ordinal) for frame in frames] == [
+            (1, 0xffffffff, 0, 2, 1, 0), (2, 0, 0, 2, 1, 1),
+        ]
+        assert payloads == [struct.pack("<2f", 1, 2), struct.pack("<2f", 0.25, -0.5)]
+        rejected(lambda: consume(path, model=2), "header does not match")
+        rejected(lambda: consume(path, digest="0" * 64), "digest does not match")
+        rejected(lambda: consume(path, maximum=159), "bounded single-link")
+
+        for offset, format, value in (
+            (0, "B", 0), (8, "I", 3), (12, "I", 1), (16, "Q", 159),
+            (24, "I", 7), (28, "I", 0), (32, "I", 128), (36, "I", 0),
+            (40, "I", 2), (44, "I", 1), (48, "Q", 9), (56, "Q", 1),
+            (76, "I", 0xffffffff), (120, "I", 1), (152, "Q", 3),
+        ):
+            changed = bytearray(GOLDEN)
+            struct.pack_into("<" + format, changed, offset, value)
+            path.write_bytes(changed)
+            rejected(lambda: consume(path))
+        for length in (0, 23, 64, 107, 159):
+            path.write_bytes(GOLDEN[:length])
+            rejected(lambda: consume(path, maximum=160))
+        trailing = bytearray(GOLDEN + b"x")
+        struct.pack_into("<Q", trailing, 16, len(trailing))
+        path.write_bytes(trailing)
+        rejected(lambda: consume(path), "trailing bytes")
+
+        # A legal large payload is delivered as bounded chunks; it is never one whole read.
+        payload = b"\0" * (MAX_CHUNK_BYTES + 4)
+        size = 24 + 40 + len(payload) + 40
+        large = (struct.pack("<8sIIQ", b"G1TRACE1", 2, 0, size)
+                 + struct.pack("<6I2Q", 3, 0, 0, len(payload) // 4, 1, 0, len(payload), 0)
+                 + payload + struct.pack("<6I2Q", 0, 0, 0, 0, 0, 0, 0, 1))
+        path.write_bytes(large)
+        with NumericStream(path, model=2, maximum_bytes=size) as stream:
+            assert stream.read_frame().payload_bytes == len(payload)
+            assert len(stream.read_payload()) == MAX_CHUNK_BYTES
+            assert stream.read_payload() == b"\0" * 4
+            assert stream.read_payload() == b"" and stream.read_frame() is None
+            assert stream.sha256 == hashlib.sha256(large).hexdigest()
+
+        for change in ("content", "replacement", "hardlink"):
+            path.write_bytes(GOLDEN)
+            stream = NumericStream(path, model=1, maximum_bytes=160)
+            descriptor = stream._fd
+            if change == "content":
+                before = path.stat()
+                os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000))
+            elif change == "replacement":
+                path.rename(root / "old")
+                path.write_bytes(GOLDEN)
+            else:
+                os.link(path, root / "extra")
+            try:
+                with stream:
+                    while stream.read_frame() is not None:
+                        while stream.read_payload():
+                            pass
+            except RecipeError as error:
+                assert "identity changed" in str(error)
+            else:
+                raise AssertionError("changed numeric input was accepted")
+            assert stream._fd == -1 and not stream.verified
+            rejected(lambda: os.fstat(descriptor))
+            (root / "extra").unlink(missing_ok=True)
+
+        path.write_bytes(GOLDEN)
+        for kind in ("symlink", "hardlink", "directory", "fifo"):
+            special = root / kind
+            if kind == "symlink":
+                special.symlink_to(path)
+            elif kind == "hardlink":
+                os.link(path, special)
+            elif kind == "directory":
+                special.mkdir()
+            else:
+                os.mkfifo(special)
+            rejected(lambda: NumericStream(special, model=1, maximum_bytes=160))
+            special.rmdir() if kind == "directory" else special.unlink()
+
+        # Neither ignored payload nor an error caught by the caller permits a later successful EOF.
+        with NumericStream(path, model=1, maximum_bytes=160) as stream:
+            stream.read_frame()
+            while stream.read_payload():
+                pass
+            stream.read_frame()
+            while stream.read_payload():
+                pass
+            stream.read_frame()
+        stream = NumericStream(path, model=1, maximum_bytes=160)
+        stream.read_frame()
+        rejected(stream.read_frame, "payload must be consumed")
+        rejected(stream.read_payload, "already failed")
+        rejected(lambda: stream.sha256, "not been verified")
+        stream.close()
+
+        def early_exit():
+            with NumericStream(path, model=1, maximum_bytes=160):
+                pass
+        rejected(early_exit, "not completely consumed")
+    print("gpu numeric stream reader: PASS (native producer awaits Request 61)")
+
+
+if __name__ == "__main__":
+    main()

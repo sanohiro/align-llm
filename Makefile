@@ -100,6 +100,10 @@ gpu-profile-coverage:
 gpu-numeric-compare:
 	./scripts/run-gpu-numeric-compare-smoke
 
+.PHONY: gpu-numeric-stream-reader
+gpu-numeric-stream-reader:
+	./scripts/run-gpu-numeric-stream-reader-smoke
+
 gpu-input-admission:
 	./scripts/run-gpu-input-admission-smoke
 

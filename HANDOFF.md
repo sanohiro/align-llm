@@ -13,7 +13,11 @@ repair and merge, followed immediately by the next eligible capability until ask
 Align `8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f` is pinned. Requests 59 and 60 are closed after
 PRs #972, #975, #979 and #980 repaired the borrowed-producer/replacement cases, and #973 shipped the
 absolute `--cc` surface. Issues #966/#968 contain client evidence. No Align request currently
-blocks G1; remaining build and qualification integration is application-owned.
+blocks the existing generation path. New Request 61 blocks the native numeric-stream producer:
+the pinned compiler rejects borrowed buffer/writer field receivers and optional writer projections.
+The request register contains exact-pin minimal evidence and adoption owners. No proposed surface
+is consumed; the unsuccessful prototype is removed. Resume that producer only after Align merge,
+pin adoption, `gmake gpu-numeric-stream` and final `gmake gpu-generation-smoke` acceptance.
 
 **Complete implementation checkpoints.**
 
@@ -45,12 +49,13 @@ blocks G1; remaining build and qualification integration is application-owned.
   failure before any preparation command. This is still an internal adapter, not the final CLI.
 - The numeric comparison owner now implements exact scalar tolerance decisions and once-rounded
   error maxima, plus reference-defined routing near-tie groups, selected-slot weight comparisons,
-  and outside-group ID/order preservation. The actual tensor stream producer remains next.
+  and outside-group ID/order preservation. The independent bounded stream reader verifies framing,
+  complete consumption, SHA-256 and retained file identity; the native producer awaits Request 61.
 
 **Next actions, in order.**
 
-1. Implement the actual numeric case producer and production/teacher-forced comparisons required
-   by `docs/specs/gpu-runtime.md`; this is the missing executable consumer of the prepared binaries.
+1. Continue independent numeric-stream comparison, case orchestration and source/profile kit
+   construction. Request 61 pauses only the native stream producer and its generation hook.
 2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
    process/record/replay/publication owners, and real source/profile/calibration kit construction.
    The final CLI does not exist yet; do not publish a placeholder success path.
@@ -77,6 +82,8 @@ outputs, lazy construction failure, actual bootstrap/compile rejection, and desc
 `gmake gate-topology-check`, `gmake fmt`, Python bytecode compilation and `git diff --check` pass.
 `gmake gpu-numeric-compare` passes independent exact-rational scalar checks, stream ordering,
 exponent/tolerance boundaries, nonfinite and malformed input, and routing-group/weight refusals.
+`gmake gpu-numeric-stream-reader` passes the independent byte golden, bounded chunks, malformed
+headers/footer/ordinals, truncation, file/link mutation, special files and incomplete consumption.
 These are focused build/registry/runtime checks, not completed GPU numeric qualification.
 
 **External inputs and constraints.** Models, raw evidence, build products and local paths stay
@@ -91,7 +98,7 @@ OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90.
 `1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
 follows from these build and correctness checkpoints.
 
-**Intentional uncommitted files.** None after the numeric-comparison checkpoint is committed.
+**Intentional uncommitted files.** None at the numeric-reader checkpoint.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 
