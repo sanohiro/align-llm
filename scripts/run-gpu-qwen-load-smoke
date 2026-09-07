@@ -33,12 +33,19 @@ python3 "${root_dir}/scripts/layer_forward_fixture.py" "${work_dir}" --model >/d
 
 export DYLD_LIBRARY_PATH="${gpu_shim}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 export LD_LIBRARY_PATH="${gpu_shim}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+set +e
 output=$("${executable}" \
   "${work_dir}/model-pack.alignpack" \
   "${work_dir}/model-pack-member-missing.alignpack" \
   "${work_dir}/model-pack-shape.alignpack" \
   "${work_dir}/model-pack-type.alignpack" \
   "${work_dir}/model-pack-truncated.alignpack")
+status=$?
+set -e
+if [ "${status}" -ne 0 ]; then
+  printf '%s\n' "gpu qwen load smoke: FAIL status: ${status}; output: ${output}" >&2
+  exit 1
+fi
 if [ "${output}" != "runtime qwen load smoke: PASS" ]; then
   printf '%s\n' "gpu qwen load smoke: FAIL output: ${output}" >&2
   exit 1

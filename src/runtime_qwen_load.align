@@ -207,9 +207,10 @@ fn append_member(
   total: i64,
 ) -> Result<i64, Error> {
   if row < 0 || row >= table.count || member.role_id != table.role[row]
-    || member.n_dims != table.n_dims[row] || member.dim0 != table.ne0[row]
+    || member.n_dims < table.n_dims[row] || member.n_dims > 2
+    || member.dim0 != table.ne0[row]
     || member.dim1 != table.ne1[row] || member.dim2 != 1 || member.dim3 != 1
-    || member.slice_index != 0 || member.slice_count != 1 {
+    || member.slice_index != -1 || member.slice_count != -1 {
     return Err(Error.Invalid)
   }
   bytes := logical_bytes(
