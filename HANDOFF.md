@@ -56,6 +56,8 @@ pin adoption, `gmake gpu-numeric-stream` and final `gmake gpu-generation-smoke` 
 - Shared source capture now accepts an explicitly pinned application checkout as well as ggml,
   preserves each repository identity, verifies captured Git objects and rechecks admission after
   reading. Kit assembly can consume actual application source instead of fixture-only snapshots.
+  Its private staging writer now shares the recipe path, independently replays written objects,
+  preserves occupied outputs and removes newly acquired partial output on write/replay failure.
 
 **Next actions, in order.**
 
@@ -93,7 +95,8 @@ headers/footer/ordinals, truncation, file/link mutation, special files and incom
 results and refusal of matching wrong shapes, wrong ordering, extra/missing frames and CPU drift.
 `gmake gpu-source-capture gpu-backend-recipe-smoke gpu-source-replay` passes actual capture for both
 Git object formats, linked worktrees, exact objects and mutation/identity refusals; recipe defaults
-and independent retained replay remain passing.
+and independent retained replay remain passing. The capture owner also passes private snapshot
+writing, occupied directory/symlink preservation and cleanup after injected write/replay failures.
 These are focused build/registry/runtime checks, not completed GPU numeric qualification.
 
 **External inputs and constraints.** Models, raw evidence, build products and local paths stay

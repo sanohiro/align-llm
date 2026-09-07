@@ -739,6 +739,33 @@ def source_snapshot(
     return manifest, rendered, raw_commit, blobs
 
 
+def write_source_snapshot(
+    destination: pathlib.Path, manifest: dict[str, object], manifest_raw: bytes,
+    raw_commit: bytes, blobs: dict[str, bytes], expected_kind: str,
+) -> dict[str, object]:
+    """Write a new private staging directory; the caller owns final publication."""
+    validate_captured_source(manifest, manifest_raw, raw_commit, blobs, expected_kind)
+    if not destination.is_absolute():
+        raise RecipeError("source snapshot destination must be absolute")
+    # mkdir is the acquisition boundary: an occupied directory or symlink is never ours to remove.
+    destination.mkdir(mode=0o700)
+    try:
+        blob_dir = destination / "blobs"
+        blob_dir.mkdir(mode=0o700)
+        for path, data in (
+            (destination / "manifest.json", manifest_raw), (destination / "commit", raw_commit),
+        ):
+            with path.open("xb") as output:
+                output.write(data)
+        for sha256, data in sorted(blobs.items()):
+            with (blob_dir / sha256).open("xb") as output:
+                output.write(data)
+        return replay_source_snapshot(destination, expected_kind)
+    except BaseException:
+        shutil.rmtree(destination)
+        raise
+
+
 def materialize_source(
     manifest: dict[str, object], blobs: dict[str, bytes], destination: pathlib.Path,
 ) -> None:
@@ -920,13 +947,8 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path) -> None:
             stage = pathlib.Path(raw_stage)
             bundle_dir = stage / "bundle"
             source_dir = stage / "source"
-            blob_dir = source_dir / "blobs"
             bundle_dir.mkdir()
-            blob_dir.mkdir(parents=True)
-            (source_dir / "manifest.json").write_bytes(source_bytes)
-            (source_dir / "commit").write_bytes(raw_commit)
-            for sha256, data in sorted(blobs.items()):
-                (blob_dir / sha256).write_bytes(data)
+            write_source_snapshot(source_dir, manifest, source_bytes, raw_commit, blobs, "ggml")
             artifacts = copy_artifacts(sources, bundle_dir)
             bundle = {
                 "schema_version": 1,

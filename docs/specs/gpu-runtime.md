@@ -219,6 +219,11 @@ working blob against Git, then rechecks root/origin/HEAD/cleanliness before retu
 worktrees use Git queries rather than assuming `.git` is a directory. `gpu-source-capture` owns
 both source kinds, SHA-1/SHA-256, linked-worktree equivalence, dirty/ignored/wrong-origin/commit
 refusals and mutation during capture; `gpu-source-replay` independently owns retained replay.
+The shared staging writer validates the complete captured closure before acquiring a new private
+directory, writes blobs as regular files (including symlink-target bytes), and replays the result.
+An occupied path is preserved; write/replay failure removes only the newly acquired directory.
+`gpu-source-capture` also owns these acquisition and cleanup branches. The caller owns final
+publication; the backend recipe continues to recheck source replay immediately before publication.
 
 ### 3.5 Qualification profile schema 1
 

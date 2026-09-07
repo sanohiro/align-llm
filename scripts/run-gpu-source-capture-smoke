@@ -64,6 +64,60 @@ def main():
                 assert blobs[row["sha256"]] == expected
             recipe.validate_captured_source(manifest, raw_manifest, raw_commit, blobs, "align-llm")
 
+            snapshot = root / (object_format + " snapshot")
+            summary = recipe.write_source_snapshot(snapshot, manifest, raw_manifest, raw_commit, blobs, "align-llm")
+            assert summary["commit"] == commit and summary["file_count"] == 4
+            assert summary == recipe.replay_source_snapshot(snapshot, "align-llm")
+            assert snapshot.stat().st_mode & 0o077 == 0
+            assert (snapshot / "blobs" / recipe.digest(b"same")).read_bytes() == b"same"
+            try:
+                recipe.write_source_snapshot(snapshot, manifest, raw_manifest, raw_commit, blobs, "align-llm")
+            except FileExistsError:
+                pass
+            else:
+                raise AssertionError("occupied snapshot was overwritten")
+            assert summary == recipe.replay_source_snapshot(snapshot, "align-llm")
+            occupied_link = root / (object_format + " occupied link")
+            occupied_link.symlink_to(snapshot, target_is_directory=True)
+            try:
+                recipe.write_source_snapshot(occupied_link, manifest, raw_manifest, raw_commit, blobs, "align-llm")
+            except FileExistsError:
+                pass
+            else:
+                raise AssertionError("snapshot symlink was followed")
+            assert occupied_link.is_symlink() and snapshot.exists()
+
+            failed = root / (object_format + " failed snapshot")
+            original_replay = recipe.replay_source_snapshot
+            def refuse_snapshot(*args):
+                raise recipe.RecipeError("forced write verification failure")
+            recipe.replay_source_snapshot = refuse_snapshot
+            try:
+                rejected(lambda: recipe.write_source_snapshot(failed, manifest, raw_manifest, raw_commit,
+                                                               blobs, "align-llm"), "forced write")
+                assert not failed.exists()
+            finally:
+                recipe.replay_source_snapshot = original_replay
+            original_open = pathlib.Path.open
+            def fail_commit_write(path, *args, **kwargs):
+                if path == failed / "commit":
+                    raise OSError("forced commit write failure")
+                return original_open(path, *args, **kwargs)
+            pathlib.Path.open = fail_commit_write
+            try:
+                try:
+                    recipe.write_source_snapshot(failed, manifest, raw_manifest, raw_commit, blobs, "align-llm")
+                except OSError as error:
+                    assert "forced commit write" in str(error)
+                else:
+                    raise AssertionError("failed snapshot write passed")
+                assert not failed.exists()
+            finally:
+                pathlib.Path.open = original_open
+            rejected(lambda: recipe.write_source_snapshot(failed, manifest, raw_manifest, raw_commit,
+                                                           {}, "align-llm"), "blob closure")
+            assert not failed.exists()
+
             linked = root / (object_format + " linked")
             run("worktree", "add", "--detach", str(linked), commit)
             assert (linked / ".git").is_file()
