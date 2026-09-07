@@ -30,6 +30,10 @@ with no-replace rename. It refuses output inside the input root and removes ever
 The publication audit also fixed the pre-existing preparation-log closure mismatch: a started
 failed preparation command now requires its two bounded streams at the command ordinal, and the
 directory replay accepts exactly those files.
+The current preparation-state batch sequences compiler, runtime, candidate, shim, and CPU-reference
+commands through the closed-environment process owner. It publishes an identity only after the
+bounded single-link output passes, stops after the first failure, and constructs a replayable
+pre-case FAIL result with the exact successful prefix and failed-command logs.
 
 Request 59 is critical and blocking for production-provider integration, the main executable, and
 publication. Pinned v0.7.5 rejects the unchanged valid `AttemptRun.stages` owner only during
@@ -38,8 +42,8 @@ platform profiles, numeric calibration, qualifier wiring, and focused GPU owners
 
 **Next actions, in order.**
 
-1. Connect compiler/runtime/candidate/shim preparation to failure evidence construction and the
-   completed input/publication owners.
+1. Add the fixed `gpu-runtime-qualify` CLI orchestration and real source materialization commands on
+   top of the completed input, preparation, and publication owners.
 2. Prepare both platform profiles and numeric calibrations, then connect the retained source,
    process, record, Qwen-loader, and provider owners into the publication qualifier where Request 59
    does not block compilation.
@@ -62,10 +66,10 @@ per-unit checking at `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Metal and CUDA 
 their final real-host evidence; AMD hardware is unavailable. Models, raw evidence, and build
 products remain outside Git. The current qualifier batches pass `gmake gpu-input-admission`,
 `gmake gpu-evidence-publication`, `gmake gpu-build-failure-evidence`, `gmake gpu-result-replay`,
-`gmake gate-topology-check`, `scripts/check-format`, Python bytecode compilation, and
-`git diff --check`.
+`gmake gpu-preparation-evidence`, `gmake gpu-command-environment`, `gmake gpu-process-cleanup`,
+`gmake gate-topology-check`, `scripts/check-format`, Python bytecode compilation, and `git diff --check`.
 
-**Intentional uncommitted files.** None after the qualifier-publication checkpoint is committed.
+**Intentional uncommitted files.** None after the qualifier-preparation checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

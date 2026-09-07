@@ -38,7 +38,7 @@ endif
 .PHONY: prefix-corpus-check prefix-ttft-runner-check prefix-ttft-qualification
 .PHONY: gpu-profile-coverage gpu-input-admission gpu-evidence-publication
 .PHONY: gpu-result-replay
-.PHONY: gpu-command-environment gpu-process-cleanup gpu-build-failure-evidence
+.PHONY: gpu-command-environment gpu-process-cleanup gpu-build-failure-evidence gpu-preparation-evidence
 check:
 	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
 	  diagnostic="$$(mktemp)"; \
@@ -116,6 +116,9 @@ gpu-process-cleanup:
 # G1's preparation owner turns a real nonzero candidate build into canonical bounded FAIL evidence.
 gpu-build-failure-evidence:
 	./scripts/run-gpu-qualifier-process-smoke build-failure
+
+gpu-preparation-evidence:
+	./scripts/run-gpu-preparation-evidence-smoke
 
 # G1's model-free backend bundle owner. It verifies canonical identity and artifact bytes through
 # no-follow rooted opens before any native library or registry operation is possible.

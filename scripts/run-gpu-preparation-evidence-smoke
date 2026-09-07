@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Exercise owned preparation state through a published candidate-build failure."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import pathlib
+import sys
+import tempfile
+
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import gpu_qualification_input as qualification_input  # noqa: E402
+import gpu_qualification_publish as publication  # noqa: E402
+import gpu_qualification_records as records  # noqa: E402
+import gpu_qualification_run as qualification_run  # noqa: E402
+from gpu_backend_recipe import RecipeError  # noqa: E402
+
+
+def load_fixture_module():
+    path = ROOT / "scripts" / "run-gpu-input-admission-smoke"
+    name = "gpu_preparation_input_fixture"
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    if spec is None or spec.loader is None:
+        raise AssertionError("input admission fixture cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def command(
+    shell: pathlib.Path, script: str, output_name: str,
+) -> tuple[list[str], list[str], dict[str, pathlib.Path]]:
+    sha256 = hashlib.sha256(shell.read_bytes()).hexdigest()
+    token = f"<qualifier>:sha256:{sha256}"
+    argv = [str(shell), "-c", script, "gpu-preparation", output_name]
+    logical = [token, "-c", script, "gpu-preparation", output_name]
+    return argv, logical, {token: shell}
+
+
+def run_step(
+    state: qualification_run.PreparationState,
+    shell: pathlib.Path,
+    scratch: pathlib.Path,
+    home: pathlib.Path,
+    *,
+    script: str,
+    output_name: str,
+    name: str,
+) -> None:
+    physical, logical, mappings = command(shell, script, output_name)
+    state.run_step(
+        physical_argv=physical,
+        logical_argv=logical,
+        mappings=mappings,
+        cwd=scratch,
+        home=home,
+        temporary=scratch,
+        timeout_seconds=2,
+        output=scratch / output_name,
+        name=name,
+        version="fixture",
+    )
+
+
+def main() -> None:
+    fixture = load_fixture_module()
+    with tempfile.TemporaryDirectory(prefix="gpu-preparation-evidence-") as raw_temporary:
+        temporary = pathlib.Path(raw_temporary)
+        input_root = temporary / "input"
+        input_root.mkdir()
+        fixture.materialize(input_root)
+        admitted = qualification_input.admit(input_root / "profile.json")
+
+        home = temporary / "home"
+        scratch = temporary / "scratch"
+        home.mkdir(mode=0o700)
+        scratch.mkdir(mode=0o700)
+        shell = pathlib.Path("/bin/sh").resolve(strict=True)
+        state = qualification_run.PreparationState(
+            shell, name="gpu-runtime-qualify", version="fixture",
+        )
+        run_step(
+            state,
+            shell,
+            scratch,
+            home,
+            script='printf "compiler\\n" > "$1"',
+            output_name="compiler",
+            name="alignc",
+        )
+        run_step(
+            state,
+            shell,
+            scratch,
+            home,
+            script='printf "runtime\\n" > "$1"',
+            output_name="runtime",
+            name="align-runtime",
+        )
+        run_step(
+            state,
+            shell,
+            scratch,
+            home,
+            script='printf "candidate failed\\n"; printf "compiler diagnostic\\n" >&2; exit 7',
+            output_name="candidate",
+            name="candidate",
+        )
+        assert state.failed_result is not None
+        assert state.failed_result.exit_code == 7
+        assert state.identities["align_compiler"]["state"] == "available"
+        assert state.identities["align_runtime"]["state"] == "available"
+        assert state.identities["candidate"]["state"] == "unavailable"
+        try:
+            run_step(
+                state,
+                shell,
+                scratch,
+                home,
+                script='printf "late\\n" > "$1"',
+                output_name="late",
+                name="late",
+            )
+        except RecipeError as error:
+            assert "after failure" in str(error)
+        else:
+            raise AssertionError("preparation continued after failure")
+
+        host = json.loads(fixture.fixture_lines()[7])["host"]
+        try:
+            qualification_run.failure_evidence(
+                admitted,
+                state,
+                align_revision="8cefc803d5c7f883a8db5b67250ed4ed069b43a4",
+                host=host,
+                category="BUILD",
+                stage="shim_build",
+                detail=state.failure_detail,
+            )
+        except RecipeError as error:
+            assert "failed command" in str(error)
+        else:
+            raise AssertionError("preparation failure accepted a mismatched stage")
+        evidence = qualification_run.failure_evidence(
+            admitted,
+            state,
+            align_revision="8cefc803d5c7f883a8db5b67250ed4ed069b43a4",
+            host=host,
+            category="BUILD",
+            stage="candidate_build",
+            detail=state.failure_detail,
+        )
+        prepared = publication.prepare(admitted, state.retained)
+        evidence["files"] = prepared.rows
+        output = temporary / "evidence"
+        publication.publish(admitted, evidence, prepared, output)
+        replayed = records.replay_evidence_directory(output)
+        result = replayed["evidence"]
+        assert result["failure"] == {
+            "category": "BUILD",
+            "stage": "candidate_build",
+            "case_ordinal": -1,
+            "detail": "preparation command 2 did not pass",
+        }
+        assert result["preparation_commands"] == state.commands
+        assert (output / "logs/002.stdout").read_bytes() == b"candidate failed\n"
+        assert (output / "logs/002.stderr").read_bytes() == b"compiler diagnostic\n"
+
+    print("gpu preparation evidence smoke: PASS")
+
+
+if __name__ == "__main__":
+    main()
