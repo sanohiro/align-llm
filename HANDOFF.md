@@ -177,7 +177,16 @@ five-command grouped route, actual bootstrap failure and termination of a hangin
 child. The preparation-evidence and CLI owners, Python bytecode compilation and `git diff --check`
 also pass. Host toolchain admission and the real-profile/numeric orchestration remain next.
 
-**Intentional uncommitted files.** None after the grouped compiler-materialization checkpoint is committed.
+Host toolchain admission now uses bounded closed-environment probes and requires exact agreement
+with all four bundle recipe identities. It selects actual installed aliases, binds SDK metadata,
+and checks SDK selection again after probing. `gmake gpu-qualification-cli` passes fixture macOS,
+Linux and WSL2 paths plus identity, missing-tool, host, malformed-output, deadline, probe-failure,
+SDK-selection and metadata-drift refusals. `GPU_GGML_SOURCE=<pinned-checkout> gmake
+gpu-cpu-reference-build` passes with real Apple toolchain admission using the recipe's exact probe
+framing. Python bytecode compilation and `git diff --check` pass. Managed compiler admission,
+real-profile CLI construction and numeric generation qualification remain unfinished.
+
+**Intentional uncommitted files.** None after the host toolchain-admission checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

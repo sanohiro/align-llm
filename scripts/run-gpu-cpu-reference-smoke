@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import gpu_backend_recipe as recipe  # noqa: E402
 import gpu_qualification_build as build  # noqa: E402
 import gpu_qualification_run as preparation  # noqa: E402
+import gpu_qualification_host as qualification_host  # noqa: E402
 from gpu_qualifier_process import ToolchainDirectory, ToolchainExecutable, run_owned_command  # noqa: E402
 
 
@@ -142,6 +143,17 @@ def main() -> None:
         for directory in (work, home, scratch):
             directory.mkdir(mode=0o700)
         environment = {"HOME": str(home), "LC_ALL": "C", "TMPDIR": str(scratch), "TZ": "UTC"}
+        if platform == "macos":
+            import time
+            expected = recipe.toolchain("metal", {
+                "cc": str(tools["cc"].path), "cxx": str(tools["cxx"].path),
+                "platform": str(executable("xcrun").path),
+            }, environment)
+            admitted_host = qualification_host.admit_host(
+                platform=platform, expected=expected, work=work, home=home, temporary=scratch,
+                deadline_ns=time.monotonic_ns() + 60_000_000_000,
+            )
+            tools, sdk = admitted_host.tools, admitted_host.sdk
         git = str(executable("git").path)
         print("gpu CPU reference: capturing the pinned ggml source", flush=True)
         recipe.require_source(ggml_checkout, git, environment)

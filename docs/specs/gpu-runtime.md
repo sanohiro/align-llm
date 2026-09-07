@@ -152,6 +152,20 @@ Each checked-in backend recipe defines whether an `Identity.sha256` covers one e
 a canonical toolchain probe transcript and fixes the exact probe command and byte framing. Build
 and qualification recompute it before use. Evidence replay verifies the attested identity and
 produced artifact digests; schema 1 does not claim a bit-reproducible SDK/toolchain closure.
+Qualification host admission resolves installed tools once, preserves executable aliases, and runs
+the recipe's exact version probes through the bounded closed-environment process owner. It requires
+an exact match of all four bundle toolchain identities before constructing preparation commands.
+macOS selects Clang, Clang++, ar, ranlib and ld through the admitted `xcrun --find`, binds the
+`macosx` SDK root and `SDKSettings.json`, and confirms the root selection again after the probes.
+Linux/WSL2 select cc, c++, ar, ranlib and ld, bind `/` with resolved `/etc/os-release` metadata, and
+probe ldd and nvcc as the CUDA recipe specifies. CMake and Ninja are explicit installed inputs on
+both hosts. Lookup uses the caller's executable search path only during admission; `CC`, `CXX`,
+`CUDACXX` and build/search environment variables do not select qualifier tools or survive into a
+child. Missing tools, profile/host mismatch, malformed output, timeout, SDK drift, or any identity
+mismatch fail admission. These read-only admission probes attest host inputs; the five recorded
+preparation commands still own all helper/compiler/runtime/shim/candidate/reference production.
+`gpu-qualification-cli` owns fixture probe agreement and each admission refusal;
+`gpu-cpu-reference-build` corroborates admission against the real recipe probe framing.
 Validation order is framing; version/kind; exact keys/types/bounds; tagged presence; references;
 digests; semantic invariants; aggregate and directory closure.
 

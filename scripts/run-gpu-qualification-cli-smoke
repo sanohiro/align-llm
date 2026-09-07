@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import importlib.machinery
+import hashlib
 import pathlib
 import sys
 import tempfile
+import time
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -14,6 +17,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import gpu_qualification_build as build  # noqa: E402
 import gpu_qualification_cli as cli  # noqa: E402
+import gpu_qualification_host as host  # noqa: E402
 from gpu_backend_recipe import RecipeError  # noqa: E402
 
 
@@ -80,6 +84,80 @@ def build_construction_owner(parent: pathlib.Path) -> None:
     assert (work / "cpu-reference").stat().st_mode & 0o077 == 0
 
 
+def host_admission_owner(parent: pathlib.Path) -> None:
+    root = parent / "host"
+    root.mkdir(mode=0o700)
+    sdk = root / "sdk"
+    sdk.mkdir()
+    (sdk / "SDKSettings.json").write_text("fixture SDK")
+    alternative = root / "other-sdk"
+    alternative.mkdir()
+    tool = root / "probe.py"
+    tool.write_text(
+        f"#!{sys.executable}\nimport os, pathlib, sys\n"
+        f"root = pathlib.Path({str(root)!r})\n"
+        "mode = (root / 'mode').read_text() if (root / 'mode').exists() else ''\n"
+        "assert set(os.environ) - {'__CF_USER_TEXT_ENCODING'} == {'HOME', 'LC_ALL', 'TMPDIR', 'TZ'}\n"
+        "if mode == 'failure': raise SystemExit(7)\n"
+        "if mode == 'metadata' and sys.argv[-1] == '--version':\n"
+        "    (root / 'sdk/SDKSettings.json').write_text('changed SDK')\n"
+        "if sys.argv[1:2] == ['--find']:\n"
+        "    print('relative' if mode == 'relative' else root / sys.argv[2])\n"
+        "elif sys.argv[-1] == '--show-sdk-path':\n"
+        "    seen = (root / 'seen').exists()\n"
+        "    (root / 'seen').touch()\n"
+        "    print(root / ('other-sdk' if seen and mode == 'drift' else 'sdk'))\n"
+        "elif sys.argv[-1] == '--show-sdk-version': print('1.2')\n"
+        "else: print('' if mode == 'malformed' else 'fixture compiler')\n",
+        encoding="utf-8",
+    )
+    tool.chmod(0o700)
+    for name in ("cmake", "ninja", "xcrun", "clang", "clang++", "ar", "ranlib", "ld",
+                 "cc", "c++", "ldd", "nvcc"):
+        (root / name).symlink_to(tool)
+
+    def find(name):
+        return host.ToolchainExecutable.admit(root / name)
+
+    def identity(name, version):
+        return {"name": name, "version": version,
+                "sha256": hashlib.sha256((version + "\n").encode()).hexdigest()}
+
+    expected = {"c_compiler": identity("cc", "fixture compiler"),
+                "cxx_compiler": identity("cxx", "fixture compiler"),
+                "sdk": identity("macos", "1.2"),
+                "toolkit": {"name": "none", "version": "none", "sha256": host.EMPTY_DIGEST}}
+    arguments = dict(platform="macos", expected=expected, work=root, home=root, temporary=root,
+                     deadline_ns=time.monotonic_ns() + 60_000_000_000)
+    with mock.patch.object(host, "_find", find), mock.patch.object(host, "_platform", return_value="macos"):
+        admitted = host.admit_host(**arguments)
+        assert admitted.identities == expected and admitted.sdk.path == sdk.resolve()
+        assert admitted.tools["cxx"].path.name == "clang++"
+        for field in expected:
+            changed = expected | {field: expected[field] | {"sha256": "0" * 64}}
+            rejected(lambda: host.admit_host(**(arguments | {"expected": changed})), "does not match the bundle")
+        rejected(lambda: host.admit_host(**(arguments | {"platform": "linux"})), "host platform")
+        rejected(lambda: host.admit_host(**(arguments | {"deadline_ns": 1})), "deadline expired")
+        for mode, message in (("relative", "not absolute"), ("malformed", "version is outside"),
+                              ("drift", "SDK selection changed"), ("failure", "host probe failed"),
+                              ("metadata", "SDK metadata identity changed")):
+            (root / "mode").write_text(mode)
+            (root / "seen").unlink(missing_ok=True)
+            rejected(lambda: host.admit_host(**arguments), message)
+        (root / "mode").unlink()
+        (sdk / "SDKSettings.json").write_text("fixture SDK")
+        with mock.patch.object(host, "_find", side_effect=RecipeError("missing fixture tool")):
+            rejected(lambda: host.admit_host(**arguments), "missing fixture tool")
+    for platform in ("linux", "wsl2"):
+        expected_cuda = expected | {"sdk": identity("glibc", "fixture compiler"),
+                                    "toolkit": identity("cuda", "fixture compiler")}
+        with mock.patch.object(host, "_find", find), \
+                mock.patch.object(host, "_platform", return_value=platform), \
+                mock.patch.object(host, "_system_sdk", return_value=admitted.sdk):
+            observed = host.admit_host(**(arguments | {"platform": platform, "expected": expected_cuda}))
+            assert observed.identities == expected_cuda and observed.tools["cxx"].path.name == "c++"
+
+
 for arguments, message in (
     (["--profile", "a", "--suite", "generation"], "incomplete"),
     (["--profile", "a", "--profile", "b", "--suite", "generation", "--output", "c"],
@@ -100,6 +178,7 @@ fixture = fixture_module()
 with tempfile.TemporaryDirectory(prefix="gpu-qualification-cli-") as raw_temporary:
     temporary = pathlib.Path(raw_temporary)
     build_construction_owner(temporary)
+    host_admission_owner(temporary)
     input_root = temporary / "input"
     input_root.mkdir()
     fixture.materialize(input_root)
