@@ -17,13 +17,20 @@ from gpu_qualification_run import _artifact
 from gpu_qualifier_process import ToolchainDirectory, ToolchainExecutable, _private_directory
 
 
-def verify_managed(compiler, expected, revision, git, work, environment) -> None:
-    path = pathlib.Path(__file__).with_name("align-toolchain")
+def managed_owner(path: pathlib.Path):
     loader = importlib.machinery.SourceFileLoader("gpu_managed_verifier", str(path))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None
     owner = importlib.util.module_from_spec(spec)
-    loader.exec_module(owner)
+    # Admission can read this module from the reconstructed source tree without adding bytecode
+    # files to that tree. The compiler helper itself is also invoked with Python's -B flag.
+    code = compile(path.read_bytes(), str(path), "exec")
+    exec(code, owner.__dict__)
+    return owner
+
+
+def verify_managed(compiler, expected, revision, git, work, environment) -> None:
+    owner = managed_owner(pathlib.Path(__file__).with_name("align-toolchain"))
     source = compiler.parent.parent.parent
     if compiler != source / owner.COMPILER:
         raise RecipeError("compiler input is not a managed release output")

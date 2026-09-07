@@ -173,40 +173,22 @@ def main() -> None:
         proxy = work / "native-driver"
         revision = (ROOT / ".align-revision").read_text().strip()
         source_commit = subprocess.check_output([git, "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
-        first = build.compiler_materialization_command(
+        planned = build.grouped_commands(
             work=work, compiler=compiler, python=ToolchainExecutable.admit(pathlib.Path(sys.executable)),
-            helper=ROOT / "scripts/gpu_compiler_materialize.py", cc=tools["cc"], linker=tools["linker"],
-            git=ToolchainExecutable.admit(pathlib.Path(git)), sdk=sdk, platform=platform,
-            align_revision=revision, support_archives=support_archives,
+            helper=ROOT / "scripts/gpu_compiler_materialize.py", git=ToolchainExecutable.admit(pathlib.Path(git)),
+            copier=ToolchainExecutable.admit(pathlib.Path("/bin/cp")), entry=entry,
+            shim_source=app / "scripts/ggml_shim_stub.c", reference_shim_source=app / "scripts/ggml_shim.c",
+            reference_project=app / "scripts/gpu_cpu_reference", ggml_source=ggml_source,
+            platform=platform, align_revision=revision, source_commit=source_commit,
+            ggml_commit=recipe.GGML_COMMIT, tools=tools, sdk=sdk, support_archives=support_archives,
         )
-        planned = []
-
-        def command_at(ordinal):
-            if not planned:
-                planned.extend(build.commands(
-                    work=work, compiler=compiler, runtime=compiler.parent / "libalign_runtime.a",
-                    copier=pathlib.Path("/bin/cp").resolve(), driver=proxy, reference_driver=proxy,
-                    entry=entry, shim_source=app / "scripts/ggml_shim_stub.c", platform=platform,
-                    align_revision=revision, source_commit=source_commit, sdk=sdk, compiler_materialized=True,
-                ))
-                planned[4] = build.cpu_reference_command(
-                    work=work, output=work / "cpu-reference", compiler=work / "alignc", entry=entry,
-                    ggml_source=ggml_source, shim_source=app / "scripts/ggml_shim.c",
-                    project_source=app / "scripts/gpu_cpu_reference", parent_driver=proxy,
-                    tools=tools, sdk=sdk, platform=platform, ggml_commit=recipe.GGML_COMMIT,
-                    source_commit=source_commit,
-                )
-                dependencies = (tools["cc"], ToolchainExecutable.admit(work / "native-tools/ld"))
-                planned[:] = [dataclasses.replace(command, tool_dependencies=dependencies) for command in planned]
-            return planned[ordinal]
-
         state = preparation.PreparationState(
             pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture",
             preparation_timeout_ns=600_000_000_000,
         )
         print("gpu CPU reference: building compiler/runtime/shim/candidate/static reference", flush=True)
         preparation.run_preparation(
-            state, [first, *(lambda ordinal=ordinal: command_at(ordinal) for ordinal in range(1, 5))],
+            state, planned,
             cwd=work, home=home, temporary=scratch,
         )
         assert state.complete, (
@@ -214,7 +196,8 @@ def main() -> None:
             state.failed_result.stderr.retained.decode(errors="replace") if state.failed_result else "unstarted",
             state.failed_result.stdout.retained.decode(errors="replace") if state.failed_result else "",
         )
-        binary = planned[4].output
+        reference_command = planned[4]()
+        binary = reference_command.output
         binary_token = "<cpu-reference>:sha256:" + hashlib.sha256(binary.read_bytes()).hexdigest()
 
         # An actual loadable constructor detects even a failed/dropped attempt to probe a plugin.
@@ -273,7 +256,7 @@ def main() -> None:
         for name, original in support_archives.items():
             copied = work / "support" / ("lib" + name + ".a")
             assert copied.read_bytes() == original.read_bytes() and copied.stat().st_nlink == 1
-        failure_owners(planned[4], work, home, scratch)
+        failure_owners(reference_command, work, home, scratch)
         print("gpu CPU reference build and static registry: PASS", flush=True)
 
 

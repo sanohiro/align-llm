@@ -39,13 +39,18 @@ blocks G1; remaining build and qualification integration is application-owned.
   absence of dynamic ggml/OpenSSL/Zstandard dependencies. Same-source static ggml/base/cpu and the
   real shim disable all GPU backends and dynamic plugin probing; a loadable poison-plugin positive
   control verifies that the reference does not search ambient plugins.
+- Preparation assembly now connects the admitted profile's source and nested bundle identities,
+  host admission, managed compiler selection and lazy grouped builds. The real CPU-reference owner
+  consumes the shared constructor; the CLI owner covers record-to-builder binding and admission
+  failure before any preparation command. This is still an internal adapter, not the final CLI.
 
 **Next actions, in order.**
 
-1. Assemble the admitted profile/source/host inputs and completed preparation factories into the
-   fixed `gpu-runtime-qualify` CLI. It does not exist yet; do not publish a placeholder success path.
-2. Implement the actual numeric case producer and production/teacher-forced comparisons required
-   by `docs/specs/gpu-runtime.md`, then connect process, record, replay and publication ownership.
+1. Implement the actual numeric case producer and production/teacher-forced comparisons required
+   by `docs/specs/gpu-runtime.md`; this is the missing executable consumer of the prepared binaries.
+2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
+   process/record/replay/publication owners, and real source/profile/calibration kit construction.
+   The final CLI does not exist yet; do not publish a placeholder success path.
 3. Prepare real profiles/calibrations and run Metal locally. Hand the same bounded kit to the
    RTX 4070 Ti CUDA host; both real backend qualifications are required before G1 publication.
 4. When G1 is consumer-complete, perform its comprehensive review, repairs, exact-head preflight
@@ -81,7 +86,7 @@ OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90.
 `1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
 follows from these build and correctness checkpoints.
 
-**Intentional uncommitted files.** None after the support-library checkpoint is committed.
+**Intentional uncommitted files.** None after the preparation-assembly checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

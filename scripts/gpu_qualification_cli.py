@@ -8,6 +8,7 @@ import pathlib
 import shutil
 import stat
 import tempfile
+import sys
 from collections.abc import Sequence
 
 from gpu_backend_recipe import RecipeError
@@ -15,6 +16,11 @@ from gpu_qualification_backend import StagedBackend, stage
 from gpu_qualification_input import AdmittedInput, admit
 from gpu_qualification_publish import validate_output
 from gpu_qualification_source import MaterializedSources, materialize
+from gpu_compiler_materialize import managed_owner
+from gpu_qualification_build import grouped_commands
+from gpu_qualification_host import admit_host, _find
+from gpu_qualification_run import PreparationState, run_preparation
+from gpu_qualifier_process import ToolchainExecutable
 
 
 @dataclasses.dataclass(frozen=True)
@@ -97,3 +103,41 @@ def open_invocation(arguments: Arguments) -> Invocation:
         if root is not None and root.exists() and not root.is_symlink():
             shutil.rmtree(root)
         raise
+
+
+def prepare_invocation(
+    invocation: Invocation, state: PreparationState, *, entry_relative: str = "src/main.align",
+) -> None:
+    """Build the admitted source with the exact host bundle and its managed Align revision."""
+    if state.commands or state.failure_ordinal is not None:
+        raise RecipeError("invocation preparation requires a fresh state")
+    try:
+        profile = invocation.admitted.records["profile"]
+        bundle = invocation.admitted.records["bundle"]
+        host = admit_host(
+            platform=profile["platform"], expected=bundle["toolchain"], work=invocation.work,
+            home=invocation.home, temporary=invocation.temporary, deadline_ns=state.deadline_ns,
+        )
+        app = invocation.sources.align_llm
+        owner = managed_owner(app / "scripts/align-toolchain")
+        revision = owner.read_revision()
+        compiler = owner.selected_path(owner.source_path(owner.cache_root(), revision), "compiler")
+        entry = app / entry_relative
+        if not entry.is_file() or app.resolve(strict=True) not in entry.resolve(strict=True).parents:
+            raise RecipeError("qualification entry is outside its admitted source")
+        planned = grouped_commands(
+            work=invocation.work, compiler=compiler,
+            python=ToolchainExecutable.admit(pathlib.Path(sys.executable)),
+            helper=app / "scripts/gpu_compiler_materialize.py", git=_find("git"), copier=_find("cp"),
+            entry=entry, shim_source=app / "scripts/ggml_shim.c",
+            reference_shim_source=app / "scripts/ggml_shim.c",
+            reference_project=app / "scripts/gpu_cpu_reference", ggml_source=invocation.sources.ggml,
+            platform=host.platform, align_revision=revision, source_commit=profile["source"]["commit"],
+            ggml_commit=bundle["ggml"]["commit"], tools=host.tools, sdk=host.sdk,
+            support_archives=host.support_archives, ggml_include=invocation.sources.ggml / "ggml/include",
+            backend_library=invocation.backend.root,
+        )
+    except (RecipeError, OSError, RuntimeError) as error:
+        state.fail_unstarted("qualification preparation admission failed: " + str(error))
+        return
+    run_preparation(state, planned, cwd=invocation.work, home=invocation.home, temporary=invocation.temporary)

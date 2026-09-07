@@ -6,14 +6,21 @@ from __future__ import annotations
 import pathlib
 import re
 import stat
+import dataclasses
+from collections.abc import Callable
 
 from gpu_backend_recipe import RecipeError
 from gpu_qualification_run import PreparationCommand
 from gpu_qualifier_process import ToolchainDirectory, ToolchainExecutable, _file_sha256
 
 
-def _input(name: str, path: pathlib.Path) -> str:
-    token = f"<{name}>:sha256:{_file_sha256(path, name)}"
+def _input(name: str, path: pathlib.Path | ToolchainExecutable) -> str:
+    if isinstance(path, ToolchainExecutable):
+        path.recheck(path.sha256)
+        digest = path.sha256
+    else:
+        digest = _file_sha256(path, name)
+    token = f"<{name}>:sha256:{digest}"
     return token
 
 
@@ -156,7 +163,7 @@ def commands(
     work: pathlib.Path,
     compiler: pathlib.Path,
     runtime: pathlib.Path,
-    copier: pathlib.Path,
+    copier: pathlib.Path | ToolchainExecutable,
     driver: pathlib.Path,
     reference_driver: pathlib.Path,
     entry: pathlib.Path,
@@ -227,7 +234,7 @@ def commands(
         ("runtime-input", copied_runtime, "align-runtime"),
     ):
         result.append(PreparationCommand(
-            (str(copier), str(inputs[key]), output.name),
+            (str(copier.path if isinstance(copier, ToolchainExecutable) else copier), str(inputs[key]), output.name),
             (tokens["copy-tool"], tokens[key], output.name),
             {tokens["copy-tool"]: copier, tokens[key]: inputs[key]},
             output, name, align_revision, sdk=sdk,
@@ -278,3 +285,44 @@ def commands(
     # the invocation owner removes it on failure together with all other private build products.
     reference_work.mkdir(mode=0o700)
     return tuple(result)
+
+
+def grouped_commands(
+    *, work: pathlib.Path, compiler: pathlib.Path, python: ToolchainExecutable,
+    helper: pathlib.Path, git: ToolchainExecutable, copier: ToolchainExecutable,
+    entry: pathlib.Path, shim_source: pathlib.Path, reference_shim_source: pathlib.Path,
+    reference_project: pathlib.Path, ggml_source: pathlib.Path,
+    platform: str, align_revision: str, source_commit: str, ggml_commit: str,
+    tools: dict[str, ToolchainExecutable], sdk: ToolchainDirectory,
+    support_archives: dict[str, pathlib.Path], ggml_include: pathlib.Path | None = None,
+    backend_library: pathlib.Path | None = None,
+) -> tuple[PreparationCommand | Callable[[], PreparationCommand], ...]:
+    """Bind grouped bootstrap now, and construct its dependent four steps after success."""
+    first = compiler_materialization_command(
+        work=work, compiler=compiler, python=python, helper=helper, cc=tools["cc"],
+        linker=tools["linker"], git=git, sdk=sdk, platform=platform,
+        align_revision=align_revision, support_archives=support_archives,
+    )
+    remaining: list[PreparationCommand] = []
+
+    def command_at(ordinal: int) -> PreparationCommand:
+        if not remaining:
+            driver = work / "native-driver"
+            remaining.extend(commands(
+                work=work, compiler=compiler, runtime=compiler.parent / "libalign_runtime.a",
+                copier=copier, driver=driver, reference_driver=driver, entry=entry,
+                shim_source=shim_source, platform=platform, align_revision=align_revision,
+                source_commit=source_commit, ggml_include=ggml_include,
+                backend_library=backend_library, sdk=sdk, compiler_materialized=True,
+            ))
+            remaining[4] = cpu_reference_command(
+                work=work, output=work / "cpu-reference", compiler=work / "alignc", entry=entry,
+                ggml_source=ggml_source, shim_source=reference_shim_source,
+                project_source=reference_project, parent_driver=driver, tools=tools, sdk=sdk,
+                platform=platform, ggml_commit=ggml_commit, source_commit=source_commit,
+            )
+            dependencies = (tools["cc"], ToolchainExecutable.admit(work / "native-tools/ld"))
+            remaining[:] = [dataclasses.replace(command, tool_dependencies=dependencies) for command in remaining]
+        return remaining[ordinal]
+
+    return (first, *(lambda ordinal=ordinal: command_at(ordinal) for ordinal in range(1, 5)))
