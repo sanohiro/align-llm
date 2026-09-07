@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Verify G1 candidate linking through one authenticated absolute C driver."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import gpu_qualification_run as qualification_run  # noqa: E402
+
+
+def executable(argument: str, label: str) -> pathlib.Path:
+    path = pathlib.Path(argument)
+    try:
+        resolved = path.resolve(strict=True)
+        metadata = resolved.stat()
+    except OSError as error:
+        raise AssertionError(f"{label} is unavailable") from error
+    if not resolved.is_absolute() or not stat.S_ISREG(metadata.st_mode) \
+            or not os.access(resolved, os.X_OK):
+        raise AssertionError(f"{label} is not an absolute executable")
+    return resolved
+
+
+def digest_token(name: str, path: pathlib.Path) -> str:
+    return f"<{name}>:sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+
+
+def shell_step(
+    state: qualification_run.PreparationState,
+    shell: pathlib.Path,
+    scratch: pathlib.Path,
+    home: pathlib.Path,
+    output_name: str,
+    identity_name: str,
+) -> None:
+    token = digest_token("fixture-shell", shell)
+    script = 'printf "%s\\n" "$1" > "$1"'
+    state.run_step(
+        physical_argv=[str(shell), "-c", script, "gpu-preparation", output_name],
+        logical_argv=[token, "-c", script, "gpu-preparation", output_name],
+        mappings={token: shell},
+        cwd=scratch,
+        home=home,
+        temporary=scratch,
+        timeout_seconds=5,
+        output=scratch / output_name,
+        name=identity_name,
+        version="fixture",
+    )
+
+
+def build_driver_proxy(
+    compiler: pathlib.Path,
+    source: pathlib.Path,
+    proxy: pathlib.Path,
+    marker: pathlib.Path,
+) -> None:
+    compiler_literal = json.dumps(str(compiler))
+    marker_literal = json.dumps(str(marker))
+    source.write_text(
+        "#include <errno.h>\n"
+        "#include <fcntl.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "#include <unistd.h>\n"
+        "extern char **environ;\n"
+        "int main(int argc, char **argv) {\n"
+        "  int count = 0;\n"
+        "  (void) argc;\n"
+        f"  int fd = open({marker_literal}, O_WRONLY | O_CREAT | O_EXCL, 0600);\n"
+        "  if (fd < 0) return 92;\n"
+        "  while (environ[count] != 0) {\n"
+        "    size_t length = strlen(environ[count]);\n"
+        "    if (write(fd, environ[count], length) != (ssize_t) length ||\n"
+        "        write(fd, \"\\n\", 1) != 1) return 92;\n"
+        "    count += 1;\n"
+        "  }\n"
+        "  if (close(fd) != 0) return 92;\n"
+        "  if (getenv(\"HOME\") == 0 || getenv(\"TMPDIR\") == 0 ||\n"
+        "      getenv(\"LC_ALL\") == 0 || strcmp(getenv(\"LC_ALL\"), \"C\") != 0 ||\n"
+        "      getenv(\"TZ\") == 0 || strcmp(getenv(\"TZ\"), \"UTC\") != 0 ||\n"
+        "      getenv(\"PATH\") != 0 || getenv(\"CC\") != 0 ||\n"
+        "      getenv(\"LIBRARY_PATH\") != 0 || getenv(\"DYLD_LIBRARY_PATH\") != 0 ||\n"
+        "      getenv(\"LD_LIBRARY_PATH\") != 0) return 91;\n"
+        f"  argv[0] = (char *) {compiler_literal};\n"
+        f"  execv({compiler_literal}, argv);\n"
+        "  return errno == 0 ? 93 : errno;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [str(compiler), str(source), "-o", str(proxy)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(completed.stderr.decode(errors="replace"))
+
+
+def main() -> None:
+    if len(sys.argv) != 3:
+        raise SystemExit("usage: run-gpu-explicit-driver-smoke ALIGNC CC")
+    alignc = executable(sys.argv[1], "managed Align compiler")
+    cc = executable(sys.argv[2], "C compiler")
+    shell = executable("/bin/sh", "fixture shell")
+
+    with tempfile.TemporaryDirectory(prefix="gpu-explicit-driver-") as raw_temporary:
+        temporary = pathlib.Path(raw_temporary)
+        home = temporary / "home"
+        scratch = temporary / "scratch"
+        home.mkdir(mode=0o700)
+        scratch.mkdir(mode=0o700)
+        state = qualification_run.PreparationState(
+            pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture",
+        )
+        shell_step(state, shell, scratch, home, "alignc-copy", "alignc")
+        shell_step(state, shell, scratch, home, "runtime-copy", "align-runtime")
+        shell_step(state, shell, scratch, home, "shim", "align-ggml-shim")
+
+        source = scratch / "candidate.align"
+        source.write_text("fn main() { print(17) }\n", encoding="utf-8")
+        proxy_source = scratch / "driver.c"
+        proxy = scratch / "selected-cc"
+        marker = scratch / "selected-cc.invoked"
+        build_driver_proxy(cc, proxy_source, proxy, marker)
+        alignc_token = digest_token("align-compiler", alignc)
+        cc_token = digest_token("c-driver", proxy)
+        result = state.run_step(
+            physical_argv=[
+                str(alignc), "build", str(source), "--profile", "dev", "--cc", str(proxy),
+            ],
+            logical_argv=[
+                alignc_token, "build", "<candidate-source>:owned", "--profile", "dev",
+                "--cc", cc_token,
+            ],
+            mappings={
+                alignc_token: alignc,
+                "<candidate-source>:owned": source,
+                cc_token: proxy,
+            },
+            cwd=scratch,
+            home=home,
+            temporary=scratch,
+            timeout_seconds=60,
+            output=scratch / "candidate",
+            name="align-llm",
+            version="fixture",
+        )
+        assert result.terminal == "PASS", (
+            result.stderr.retained.decode(errors="replace"),
+            marker.read_text(encoding="utf-8", errors="replace") if marker.exists() else "no marker",
+        )
+        assert result.command["environment"] == [
+            "HOME=<home>:owned", "LC_ALL=C", "TMPDIR=<tmp>:owned", "TZ=UTC",
+        ]
+        assert result.command["argv"][-2:] == ["--cc", cc_token]
+        marker_environment = marker.read_text(encoding="utf-8").splitlines()
+        names = {entry.split("=", 1)[0] for entry in marker_environment}
+        # macOS may synthesize this Core Foundation locale cache after exec. It was not present in
+        # the runner's exact four-entry spawn environment and is not an executable-search input.
+        assert names - {"__CF_USER_TEXT_ENCODING"} == {"HOME", "LC_ALL", "TMPDIR", "TZ"}
+
+        shell_step(state, shell, scratch, home, "cpu-reference", "cpu-reference")
+        assert state.complete
+        assert all(identity["state"] == "available" for identity in state.identities.values())
+
+    print("gpu explicit C-driver preparation smoke: PASS")
+
+
+if __name__ == "__main__":
+    main()

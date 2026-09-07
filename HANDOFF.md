@@ -3,18 +3,16 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Paused capability: G1 resident GPU generation (2026-09-07)
+## Active capability: G1 resident GPU generation (2026-09-07)
 
-Branch `agent/g1-gpu-generation` is rebased onto main `1a37b5b9084ccd7e2bcb0e3f4fb2b5c901e6df39`
-and is pushed through `cd5ed0ab60ea9cf5543e07f2a5e5f39ccd224007`. It remains unpublished and
-has no pull request. The session ended at the user's request while Align Requests 59 and 60 block
-the production build and closed-environment qualification; do not publish an internal checkpoint.
+Branch `agent/g1-gpu-generation` is rebased onto main `15efe15a3fc3369b93a3343d96f0ac10ab58e4ef`.
+It remains unpublished and has no pull request; do not publish an internal checkpoint.
 Implemented checkpoints cover strict runtime options, provider dispatch, canonical bundle and
 source ownership, device memory and graph ownership, resident Qwen/OLMoE prefill and decode,
 qualification records, evidence replay, and owned qualifier processes. G1 remains one unpublished
 consumer-complete capability.
 
-Align v0.7.5 release merge `b74a31df760a0f27a70daf18125b94716b85b901` is pinned. Checkpoint
+Align merge `5250e996f4e3a00bc4dfe8584d05acf95f10a78e` is pinned. Checkpoint
 `87684fa` confirms Request 58's compiler repair on Apple M1 and corrects the Qwen fixture's actual
 whole-tensor member representation. The current private-staging checkpoint closes Requests 55 and
 56: every admitted artifact is copied from its retained single-link reader into a distinct mode
@@ -63,44 +61,32 @@ publishes the exact pinned bundle ID to topology identity. The generation opener
 provider's retained source identity against one AlignPack handle and keeps that same handle through
 plan construction and every staged upload, so path replacement cannot retarget validated weights.
 
-Request 59 is critical and blocking for production-provider integration, the main executable, and
-publication. Pinned v0.7.5 and pulled Align main `8b5cafd340eaca73981dc4f3fc04d3a3271d9da0` reject the unchanged valid
-`AttemptRun.stages` owner only during per-unit checking; whole-program checking passes. Align issue
-#966 remains open and owns the repair. The GPU provider path is implemented and passes its direct
-per-unit and model-free owner checks; the main executable and publication build remain blocked.
-Platform profiles, numeric calibration, qualifier wiring, and focused GPU owners remain independent.
-Request 60 / Align issue #968 is also critical and blocking for the closed-environment candidate build. Pulled Align main
-`8b5cafd340eaca73981dc4f3fc04d3a3271d9da0` still has no implementation pull request or explicit driver surface. Align's linker
-invokes `cc` by name with no explicit driver option; even without `PATH`, OS default lookup succeeds
-and cannot be bound truthfully to the evidence command. The request requires one explicit absolute
-C-driver input. Profiles, calibration, case/result owners and pre-build qualifier wiring remain
-independent.
+Requests 59 and 60 are closed. PRs #972, #975, and #979 repair all borrowed-producer cases exposed
+by the unchanged client; its three focused per-unit owners, main build, and ggml spike smoke pass at
+the exact managed pin. PR #973's absolute `--cc` surface is consumed by `gmake gpu-explicit-driver`:
+the complete five-step preparation sequence builds a real Align candidate through a digest-bound
+native proxy with the exact four-entry spawn environment and no executable or library search path.
+Issues #966 and #968 contain the final real-client evidence. Neither request blocks G1 now.
 
 **Resume actions, in order.**
 
-1. Pull `../align`, inspect the implementation and owner tests for Requests 59 and 60, and require a
-   published Align release commit containing both repairs. Do not consume an issue comment,
-   proposed API, or unmerged branch.
-2. Update `.align-revision`, materialize the managed compiler/runtime, and pass the Request 59
-   client targets plus `gmake build`, `gmake ggml-spike-smoke`, and a closed-environment candidate
-   build using Request 60's shipped absolute-driver option.
-3. Add the fixed `gpu-runtime-qualify` CLI orchestration and real compiler/runtime/candidate/shim/CPU
+1. Add the fixed `gpu-runtime-qualify` CLI orchestration and real compiler/runtime/candidate/shim/CPU
    preparation commands on top of the completed input, source, process, and publication owners.
-4. Prepare both platform profiles and numeric calibrations, then connect the retained source,
-   process, record, resident-generation, and provider owners into the publication qualifier where
-   Request 59 does not block compilation.
-5. Run Metal locally and hand the same bounded kit to the CUDA host. Publish G1 only when it is
+2. Prepare both platform profiles and numeric calibrations, then connect the retained source,
+   process, record, resident-generation, and provider owners into the publication qualifier.
+3. Run Metal locally and hand the same bounded kit to the CUDA host. Publish G1 only when it is
    consumer-complete, then review, repair, exact-head preflight, and merge. Stop after this pull
    request as requested; do not begin G1R in this work session.
 
-**Verification and constraints.** At pinned v0.7.5, `gmake gpu-bundle-smoke`,
+**Verification and constraints.** At pinned `5250e996`, `gmake build`, `gmake ggml-spike-smoke`,
+`gmake gpu-explicit-driver`, `gmake gpu-command-environment`, `gmake gpu-preparation-evidence`,
+`gmake gpu-bundle-smoke`,
 `gmake gpu-device-smoke`, `gmake gpu-qwen-load-smoke`, `gmake gpu-olmoe-load-smoke`, and per-unit
 checks for `runtime_bundle`, `runtime_device`, and `ggml_ffi` pass. The real shim compiles against Homebrew ggml with
 `-Wall -Wextra -Werror`; Mac links use
-`LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib`. Request 59 is reproduced by
-`scripts/alignc check-per-unit src/verification_loop.align` and blocks `gmake build` before
-`gmake ggml-spike-smoke` can execute. The same module passes whole-program checking at v0.7.5 and
-per-unit checking at `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Metal and CUDA still require
+`LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib`. Per-unit checks pass for
+`verification_loop.align` (5 units), `alignpack.align` (3), and `prompt_artifacts.align` (1).
+Metal and CUDA still require
 their final real-host evidence; AMD hardware is unavailable. Models, raw evidence, and build
 products remain outside Git. The current qualifier batches pass `gmake gpu-input-admission`,
 `gmake gpu-source-materialization`, `gmake gpu-backend-staging`, `gmake gpu-qualification-cli`,
@@ -120,7 +106,7 @@ with bundle ID `0a472538ef35...814b`, manifest digest `f928428facfe...8d1`, sour
 `64db6180009a...6f4`, and source-snapshot digest `c2860034df35...8b3`. Its 3,430-file, 169 MiB
 closure passed the recipe bounds, and the real shim linked against the staged bundle successfully.
 
-**Intentional uncommitted files.** None after the resident-generation checkpoint is committed.
+**Intentional uncommitted files.** None after the Request 59/60 adoption checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

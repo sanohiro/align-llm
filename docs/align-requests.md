@@ -10867,18 +10867,17 @@ so the request is closed.
 ## Request 59 — per-unit MIR producer certification rejects a valid builder-owned record return
 
 ```text
-Status: PROPOSED
+Status: CLOSED
 Priority: critical
-Blocking: yes
-Blocked gate or slice: G1 production-provider integration, the main executable, and publication
-Independent work that may continue: private bundle staging, platform profiles, numeric calibration,
-  qualifier wiring, and focused Qwen/device owners that do not build the main executable
-Resume condition: Align publishes a fixed revision that accepts the unchanged verification-loop
-  owner through per-unit checking; align-llm pins it and passes both the focused owner and main build
-Align commit or pull request: Align issue #966; https://github.com/sanohiro/align/issues/966
-align-llm verification: `scripts/alignc check-per-unit src/verification_loop.align` and
-  `gmake build` pass at the fixed revision; then `gmake ggml-spike-smoke` reaches and executes its
-  native owner rather than failing while building the main executable
+Blocking: no
+Blocked gate or slice: N/A — the fixed compiler is pinned and every named consumer owner passes
+Independent work that may continue: N/A — the request is closed
+Resume condition: N/A — the request is closed
+Align commit or pull request: Align issue #966; PRs #972, #975, and #979, with the final repair
+  merged as 5250e996f4e3a00bc4dfe8584d05acf95f10a78e
+align-llm verification: at exact managed revision 5250e996, per-unit checks pass for
+  `src/verification_loop.align` (5 units), `src/alignpack.align` (3), and
+  `src/prompt_artifacts.align` (1); `gmake build` and `gmake ggml-spike-smoke` pass
 ```
 
 ### Regression evidence
@@ -10917,21 +10916,20 @@ hide a compiler-owned regression and is not an accepted application workaround.
 ## Request 59 — Owned builder record return producer certification
 
 ```text
-Status: ALIGN_MERGED
+Status: CLOSED
 Priority: critical
-Blocking: yes
-Blocked gate or slice: G1 production-provider build and publication
-Independent work that may continue: Request 60 closed-environment driver selection
-Resume condition: adopt Align 5250e996f4e3a00bc4dfe8584d05acf95f10a78e or a descendant and
-  complete the unchanged build/smoke owners
+Blocking: no
+Blocked gate or slice: N/A — the final producer repair is pinned and all client owners pass
+Independent work that may continue: N/A — the request is closed
+Resume condition: N/A — the request is closed
 Align commit or pull request: https://github.com/sanohiro/align/pull/972 merged as
   85d64929e6627cfedeceed2c4ce7000548f6406d; subsequent PR #975 merged as
   b947b5d92e17242e5511a80de8d5a446c7ed8b83 and PR #979 merged as
   5250e996f4e3a00bc4dfe8584d05acf95f10a78e;
   implementation closure in ../align/docs/impl/xml-producer-investigation.md Request 59
-align-llm verification: unchanged check-per-unit src/verification_loop.align and
-  src/prompt_artifacts.align, gmake build,
-  and gmake ggml-spike-smoke at the adopted commit; consumer adoption remains pending
+align-llm verification: `.align-revision` pins 5250e996; unchanged per-unit checks pass for
+  verification_loop (5 units), alignpack (3), and prompt_artifacts (1), and both `gmake build`
+  and `gmake ggml-spike-smoke` pass on Apple M1
 ```
 
 The public issue is the request source. Align reproduced the exact field-7 error
@@ -10969,25 +10967,26 @@ keeping fixed-array-to-slice compatibility descriptor-only. The checked-in closu
 is `../align/docs/impl/xml-producer-investigation.md`, “Request 59 continuation:
 cloned borrowed sum payloads.” Producer owners and whole/per-unit coverage passed;
 Align also built the unchanged consumer and checked `prompt_artifacts.align`,
-`prompt_experiment.align`, and `prompt_generate.align`. These producer-side checks
-do not complete align-llm pin adoption or its final smoke evidence. Adopt #979 or
-a descendant and run the unchanged consumer owners named above.
+`prompt_experiment.align`, and `prompt_generate.align`. The exact merged revision is now pinned by
+align-llm. All three focused per-unit consumers, the main build, and the native ggml spike owner
+pass; issue #966 records that final real-client evidence. The request is closed.
 
 ---
 
 ## Request 60 — Explicit absolute C link driver
 
 ```text
-Status: ALIGN_MERGED
+Status: CLOSED
 Priority: high
-Blocking: yes
-Blocked gate or slice: G1 candidate preparation in its closed four-variable environment
-Independent work that may continue: consumer adoption of Request 59's merged repair
-Resume condition: pass an authenticated absolute C driver in logical argv at the fixed Align revision
+Blocking: no
+Blocked gate or slice: N/A — the absolute driver is pinned and the closed-environment consumer passes
+Independent work that may continue: N/A — the request is closed
+Resume condition: N/A — the request is closed
 Align commit or pull request: https://github.com/sanohiro/align/pull/973
   merged 3051b98c53e8b7a78f10759fe287166a8c6d36fc
-align-llm verification: candidate preparation names the verified absolute C driver with only
-  HOME, LC_ALL, TMPDIR, and TZ present; build/preparation owners complete
+align-llm verification: at exact managed revision 5250e996, `gmake build` and
+  `gmake gpu-explicit-driver` pass; the complete five-step preparation runs a real candidate link
+  through the digest-bound absolute driver with the canonical four-entry spawn environment
 ```
 
 The public issue is the request source. Request 59 is now merged in PR #972.
@@ -10997,8 +10996,10 @@ selection covers linking verbs and watch, retaining ordinary development
 defaults. Local owner checks, the bounded PR gate, Clippy, all fourteen
 PostgreSQL suites, standalone benchmark compile checks, and the optimized
 workspace build passed. All required hosted checks passed and PR #973 merged.
-Pin `3051b98c53e8b7a78f10759fe287166a8c6d36fc`; no consumer adoption is claimed
-and its preparation/qualification owners remain pending. Delivery is by commit
+Align-llm pins descendant `5250e996f4e3a00bc4dfe8584d05acf95f10a78e`. Its native proxy owner
+proves the selected driver is invoked with no `PATH`, `CC`, or library/loader search environment,
+then completes the real Align candidate link and the full preparation sequence. Issue #968 records
+the consumer evidence, and the request is closed. Delivery is by commit
 revision without a tag. `--cc PATH`/`--cc=PATH` owns one immutable, validated
 UTF-8 absolute executable path, used directly across build/run/size/test,
 ThinLTO, PGO, and watch; omission keeps ordinary `cc` lookup. Invalid and

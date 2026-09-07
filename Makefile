@@ -38,7 +38,7 @@ endif
 .PHONY: prefix-corpus-check prefix-ttft-runner-check prefix-ttft-qualification
 .PHONY: gpu-profile-coverage gpu-input-admission gpu-source-materialization gpu-backend-staging gpu-qualification-cli gpu-evidence-publication
 .PHONY: gpu-result-replay
-.PHONY: gpu-command-environment gpu-process-cleanup gpu-build-failure-evidence gpu-preparation-evidence
+.PHONY: gpu-command-environment gpu-process-cleanup gpu-build-failure-evidence gpu-preparation-evidence gpu-explicit-driver
 .PHONY: gpu-olmoe-load-smoke gpu-generation-smoke
 check:
 	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
@@ -135,6 +135,14 @@ gpu-build-failure-evidence:
 
 gpu-preparation-evidence:
 	./scripts/run-gpu-preparation-evidence-smoke
+
+# Request 60's consumer owner runs a complete preparation sequence and builds one real Align
+# candidate with only the four canonical environment names. A digest-bound native proxy proves
+# that Align selected the exact absolute --cc path instead of consulting a default search path.
+gpu-explicit-driver:
+	@compiler="$$(./scripts/align-toolchain ensure compiler)"; \
+	  cc="$$(command -v "$${CC:-cc}")"; \
+	  ./scripts/run-gpu-explicit-driver-smoke "$$compiler" "$$cc"
 
 # G1's model-free backend bundle owner. It verifies canonical identity and artifact bytes through
 # no-follow rooted opens before any native library or registry operation is possible.
