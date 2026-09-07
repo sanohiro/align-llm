@@ -10970,18 +10970,19 @@ failure, never fallback. No language ownership or runtime ABI changed.
 ## Request 61 — Borrowed access to owned buffer/writer fields and optional writers
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: G1 native numeric-stream producer and observed generation integration
 Independent work that may continue: native-independent G1 stream comparison/traversal, case
   sequencing, source/profile capture and kit assembly are complete through align-llm e22b9d7;
   remaining native case integration and real qualification depend on this request
-Resume condition: Align merges borrow-safe buffer/writer field receivers and optional-writer
-  projections; pin the shipped commit and pass gpu-numeric-stream and gpu-generation-smoke
-Align commit or pull request: pending; tracked in https://github.com/sanohiro/align/issues/981
-align-llm verification: exact managed 8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f rejects all four
-  minimal borrowed handle cases below; the sibling checkout has that same HEAD
+Resume condition: pin shipped Align 3fbb74fe7c351e526c997bd4c70bd00cf1a424a0, restore the
+  numeric-stream producer, and pass gpu-numeric-stream and gpu-generation-smoke
+Align commit or pull request: https://github.com/sanohiro/align/pull/982; merged commit
+  3fbb74fe7c351e526c997bd4c70bd00cf1a424a0; closes issue #981
+align-llm verification: pending for the shipped pin; consumer owns producer restoration and
+  gpu-numeric-stream / gpu-generation-smoke acceptance
 ```
 
 Client implementation checkpoint: https://github.com/sanohiro/align-llm/tree/e22b9d7
@@ -11015,7 +11016,7 @@ Diagnostics are `cannot bind an unsupported Move payload through field of borrow
 Calling `holder.data.bytes()` directly instead emits the temporary-buffer/local-binding diagnostic.
 These are small checked-program rejections, not a compiler timeout or runtime failure.
 
-Current sibling evidence is `crates/align_sema/src/lib.rs`'s
+At the rejected `8dc80978` baseline, sibling evidence is `crates/align_sema/src/lib.rs`'s
 `borrowed_sum_payload_is_admissible`, borrowed match checking, and MoveCheck's field-read rule.
 `crates/align_driver/tests/struct_handle_fields.rs` establishes that buffer/writer fields are owned
 Move handles with recursive drop; its construction/move/drop coverage does not provide this
@@ -11043,6 +11044,35 @@ planned `runtime_numeric_stream` producer only after merge, run `gmake gpu-numer
 the independent Python byte vector and malformed reader cases, then `gmake gpu-generation-smoke`
 as the final integration owner. No aggregate or extra native-platform qualification is added by
 this request's pin adoption alone.
+
+**Align answer (2026-09-08): ALIGN_MERGED.** PR #982 implements stable, non-consuming
+`buffer.bytes()` / `.len()` and `writer.write()` / `.flush()` receivers through direct or nested
+fields of complete borrowed owners. Borrowed matches admit buffer/writer leaves through the
+existing recursive payload grammar, including optional writers. The original complete owner
+retains the allocation/descriptor and sole cleanup responsibility; projections do not move,
+clone, null or independently drop a handle. Derived views retain that owner's lifetime through
+imported returns, retained views and indirect calls. Whole-owner replacement and later eager
+argument mutation invalidate prior views/receivers, including mixed records with slice fields.
+
+Use `holder.data.bytes()` and `holder.sink.write(...)` directly. A plain
+`data := holder.data` remains a Move assignment and is deliberately not an implicit borrow.
+`buffer` mutation methods requiring an exclusive local and exclusive passing of arbitrary
+partial Move fields remain outside this capability; encode through the byte view while borrowing
+the complete stream. No extra array constructor, network retention rule, runtime ABI or interface
+format was added. Existing handle-owning array-construction restrictions remain in force.
+
+Align validation covers whole/per-unit compilation, imported and generic helpers, malformed
+HIR/MIR projections, cache cold/hit/edit/revert paths, source invalidation, exact bytes, and one
+buffer free / writer free / descriptor close on both successful and failed I/O. The focused
+borrowed-handle/parameter/replacement/resource bundle passed 80 tests. The bounded compiler gate,
+Clippy and Linux x86_64/ARM64/macOS CI passed. An unrelated existing owned-string-array producer
+certification failure was reproduced with the pre-change release compiler and remains separately
+recorded; this answer does not claim to fix it.
+
+Align delivery is complete at the merged commit. Consumer pin adoption, restoring
+`runtime_numeric_stream`, the independent byte-vector/malformed-reader acceptance and
+`gmake gpu-generation-smoke` remain align-llm work. This delivery record does not adopt the
+consumer pin or change consumer code or tests.
 
 ---
 
