@@ -128,6 +128,10 @@ gpu-kit-assembly:
 gpu-case-sequence:
 	./scripts/run-gpu-case-sequence-smoke
 
+.PHONY: gpu-case-traversal
+gpu-case-traversal:
+	./scripts/run-gpu-case-traversal-smoke
+
 gpu-input-admission:
 	./scripts/run-gpu-input-admission-smoke
 

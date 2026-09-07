@@ -70,15 +70,19 @@ pin adoption, `gmake gpu-numeric-stream` and final `gmake gpu-generation-smoke` 
 - Case sequencing now executes lazy commands under one generation deadline and waits for the
   integrating consumer's output/numeric validation before constructing the next case. It retains
   a terminal failure prefix; the consumer owns successful logs and profile-bound case records.
+- Numeric traversal now derives counts, frame order and exact byte ceiling from the model-IR
+  projection and frozen case. It compares production sampling plus diagnostic generation
+  reproduction and a separate teacher-forced trajectory, including highest-layer prefill reduction.
+  This resolves the distinct forced/generated IDs in the canonical vectors without weakening the
+  diagnostic-output-equals-production requirement. All three traversals share the existing deadline.
 
 **Next actions, in order.**
 
-1. Derive case tensor traversal/counts from model geometry and connect the numeric-pair and case-
-   sequence owners. Source capture, profile construction and local kit assembly are implemented.
-   Request 61 pauses the native stream producer and its generation hook. Resolve diagnostic
-   traversal explicitly before native case integration: the canonical vectors' teacher-forced IDs
-   differ from generated expected IDs, so their forced trajectory cannot alone satisfy the separate
-   diagnostic-output-equals-production requirement.
+1. Connect the native case producer to the geometry-derived traversal, numeric-pair and case-
+   sequence owners after Request 61 ships. Source capture, profile construction and local kit
+   assembly are implemented. Native diagnostic integration must implement separate generation
+   reproduction and teacher-forced traversals; the same forced trajectory cannot satisfy both.
+   Its combined runtime remains subject to the existing generation deadline.
 2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
    process/record/replay/publication owners, and real source/profile/calibration kit construction.
    The final CLI does not exist yet; do not publish a placeholder success path.
@@ -123,6 +127,9 @@ malformed/digest refusals, source/copy failure cleanup and occupied-output/publi
 `gmake gpu-case-sequence` passes real process scheduling, validation ordering, construction/spawn/
 nonzero/consumer-failure prefixes and deadline-before-construction/during-validation/child-timeout
 paths, with descendants reaped and no resume after completion or failure.
+`gmake gpu-case-traversal` passes independent Qwen/OLMoE tensor/byte/count goldens, reduced last-layer
+prefill, multi-step forced replay, exact paired outcomes, production-prefix binding and shape/
+context/stream-bound refusals. Numeric/nonfinite changes in every traversal affect the outcome.
 These are focused build/registry/runtime checks, not completed GPU numeric qualification.
 
 **External inputs and constraints.** Models, raw evidence, build products and local paths stay
@@ -137,7 +144,7 @@ OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90.
 `1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
 follows from these build and correctness checkpoints.
 
-**Intentional uncommitted files.** None at the case-sequence checkpoint.
+**Intentional uncommitted files.** None at the case-traversal checkpoint.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

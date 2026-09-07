@@ -500,11 +500,11 @@ False requires zero bit patterns/counts and true permits an exact zero error res
 expected counts are independently derived from model geometry and case token widths. PASS requires
 every actual count to equal its expected count, positive scalar/layer/final-logit counts, zero Qwen
 router boundaries and positive OLMoE router boundaries.
-Scalar/final-logit counts include both the diagnostic teacher-forced comparisons and production
-logits already read at every sampling position, including an EOG decision. These are separate
+Scalar/final-logit counts include diagnostic generation-reproduction and teacher-forced comparisons
+and production logits already read at every sampling position, including an EOG decision. These are separate
 comparison positions even when their token prefixes coincide. Layer/router counts describe only
-diagnostic replay. Errors, nonfinites and mismatches aggregate both paths; neither may hide the
-other's failure. Production logits compare to the adjacent CPU run at the same actual token prefix;
+diagnostic replay. Errors, nonfinites and mismatches aggregate all three traversals; none may hide
+another's failure. Production logits compare to the adjacent CPU run at the same actual token prefix;
 divergent generated IDs fail the existing output contract rather than comparing unrelated positions.
 
 `placement` is
@@ -512,7 +512,7 @@ divergent generated IDs fail the existing output contract rather than comparing 
 Counts cover only model graph operations from embedding through output projection; tokenizer,
 prompt construction, sampling, EOG control and text decode are explicitly outside them. The
 reviewed production graph trace derives the three expected counts from exact model geometry,
-prompt width, output selection and generated steps; diagnostic teacher-forced work is excluded.
+prompt width, output selection and generated steps; all diagnostic work is excluded.
 A passing GPU row requires each expected count equal its
 GPU count and every CPU count zero. Expected weights are the exact immutable model footprint;
 expected KV is the request-capacity footprint derived from geometry and the case's admitted prompt
@@ -687,6 +687,31 @@ an exception poisons the pair and complete comparison cannot be resumed after st
 and final case evidence remain part of the pending case integration, not proof supplied by this
 internal reader API.
 
+The case traversal is production sampling logits first, then diagnostic generation reproduction,
+then a separate diagnostic teacher-forced traversal. Each diagnostic traversal emits prefill and
+its decode steps in order. Within a step, layers ascend; each OLMoE layer emits routing triples in
+token order, then its layer output. A final-logit frame follows all layers. Prefill layer outputs
+and routing have prompt width except the highest layer, whose output selection reduces width to
+one in the shipped Qwen/OLMoE builders; every decode layer has width one. Production/reproduction
+sampling positions equal the frozen generated-token count, including an EOG token when sampled.
+Before paired consumption, the case owner must establish that both actual generated ID sequences
+equal the frozen sequence, so no production comparison uses divergent token prefixes. The forced
+traversal has one prefill plus one decode position per supplied teacher-forced token; it does not
+stop on EOG because those tokens are numeric replay inputs, not sampling decisions.
+
+For layer count L, embedding width E, vocabulary V, prompt width T, production sampling count P,
+and forced-token count F, diagnostic layer-column count is
+`C = 2 * ((L - 1) * T + 1) + (P - 1 + F) * L`.
+Expected layer-frame count is `L * (P + F + 1)` and expected final-logit scalar count is
+`V * (2 * P + F + 1)`. Qwen expected scalar count adds `E * C`; OLMoE additionally adds
+`(expert_count + selected_count) * C` and has C routing boundaries. Selected integer IDs are not
+scalars but contribute `selected_count * C * 4` payload bytes to the exact stream-size bound.
+The geometry/case traversal owner computes counts and size before opening streams and iterates
+expectations without retaining a tensor-sized manifest. `gpu-case-traversal` owns independent tiny
+Qwen/OLMoE byte/count goldens, prefill reduction, multiple decode/forced steps, bounded shapes and
+stream size, complete pair consumption and mismatch/nonfinite propagation. This internal plan
+does not substitute for the native geometry validator or the actual generated-output precondition.
+
 `runtime_numeric_stream.disabled()` creates an inactive owner with no file and zero payload
 capacity. `create(root,relative,model,maximum_bytes,host_budget_bytes)` validates scalars and its
 65,576-byte host payload reservation before the shipped exclusive-beneath create. `record(owner,
@@ -824,16 +849,20 @@ precommitted tolerances; generated token/output expectations and repeated execut
 Evidence must show nonzero GPU operations, complete resident weights/KV, bounded managed memory and
 no hidden all-CPU execution.
 
-Each GPU case helper first executes the production path, then an explicitly diagnostic replay with
-the same build, model, prompt, sampler inputs and attention policy. The replay may expose layer and
+Each CPU/GPU case helper first executes the production path, then an explicitly diagnostic phase with
+the same build, model, prompt, sampler inputs and attention policy. That phase first reproduces
+generation and checks its output against production, then separately traverses the frozen
+teacher-forced sequence. The two trajectories cannot be conflated: a supplied forced token need
+not equal the token generated at that position. Both diagnostic trajectories expose layer and
 router tensors for complete numeric comparison against the adjacent CPU reference. Case output,
 placement, transfer, memory and timing fields describe production execution. `numeric` includes
 production-logit and diagnostic internal/logit comparisons as defined in §3.8. Check all production
 logits already read for sampling against the adjacent CPU reference with the same frozen scalar
 tolerances and nonfinite policy. Matching generated IDs alone cannot qualify production fusion;
 diagnostic output markings may disable that fusion. No extra intermediate readback is required.
-The case command owns both passes, the case deadline and overall elapsed time include both,
-and either pass failing makes the case FAIL. Diagnostic output must match the production output.
+The case command owns all three traversals; the case deadline and overall elapsed time include
+all of them, and any traversal failing makes the case FAIL. Diagnostic generation output must
+match the production output; the forced traversal makes no generated-output claim.
 Diagnostic tensor marking/readbacks never enter the performance workload or certify its residency;
 production allocation/binding traces own that evidence. Schema-1 timing remains diagnostic only.
 
