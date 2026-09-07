@@ -9,6 +9,9 @@ Branch `agent/g1-gpu-generation` is based on main `15efe15a3fc3369b93a3343d96f0a
 It remains unpublished and has no pull request. G1 is one consumer-complete capability; do not
 publish its internal checkpoints. The current user requests continuous implementation, review,
 repair and merge, followed immediately by the next eligible capability until asked to stop.
+The latest implementation checkpoint is `e22b9d7`. Native-independent comparison, sequencing and
+kit work is complete; remaining native integration is paused on Request 61. The roadmap orders
+G1R/G2 after G1, so neither is an eligible substitute while this prerequisite remains unshipped.
 
 Align `8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f` is pinned. Requests 59 and 60 are closed after
 PRs #972, #975, #979 and #980 repaired the borrowed-producer/replacement cases, and #973 shipped the
@@ -78,9 +81,11 @@ pin adoption, `gmake gpu-numeric-stream` and final `gmake gpu-generation-smoke` 
 
 **Next actions, in order.**
 
-1. Connect the native case producer to the geometry-derived traversal, numeric-pair and case-
-   sequence owners after Request 61 ships. Source capture, profile construction and local kit
-   assembly are implemented. Native diagnostic integration must implement separate generation
+1. Resume when Request 61 ships: adopt its exact managed pin, implement the native stream producer
+   against the shipped surface, then pass `gmake gpu-numeric-stream` and the request's final
+   `gmake gpu-generation-smoke` owner. Connect the native case producer to the geometry-derived
+   traversal, numeric-pair and case-sequence owners. Source capture, profile construction and local
+   kit assembly are implemented. Native diagnostic integration must implement separate generation
    reproduction and teacher-forced traversals; the same forced trajectory cannot satisfy both.
    Its combined runtime remains subject to the existing generation deadline.
 2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,

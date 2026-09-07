@@ -11018,8 +11018,9 @@ Status: PROPOSED
 Priority: high
 Blocking: yes
 Blocked gate or slice: G1 native numeric-stream producer and observed generation integration
-Independent work that may continue: Python stream validation/comparison, case orchestration,
-  source/profile kit construction, and existing production-generation ownership checks
+Independent work that may continue: native-independent G1 stream comparison/traversal, case
+  sequencing, source/profile capture and kit assembly are complete through align-llm e22b9d7;
+  remaining native case integration and real qualification depend on this request
 Resume condition: Align merges borrow-safe buffer/writer field receivers and optional-writer
   projections; pin the shipped commit and pass gpu-numeric-stream and gpu-generation-smoke
 Align commit or pull request: pending
