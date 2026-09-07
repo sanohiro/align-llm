@@ -6,11 +6,11 @@ this file records durable execution state.
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
 Branch `agent/g1-gpu-generation` is based on main `15efe15a3fc3369b93a3343d96f0ac10ab58e4ef`.
-The user explicitly requested publication and merge of the current implementation checkpoint.
-This overrides the normal no-checkpoint-publication rule for this change only. Review and executable
-preflight remain required. G1 is not complete or backend-qualified by this checkpoint merge.
-Request 61 is filed as https://github.com/sanohiro/align/issues/981; native case integration and
-real Metal/CUDA qualification remain the active follow-up. G1R/G2 still follow completed G1.
+The user narrowed publication to Request 61 only. That request is merged into main through
+PR #211 (`4364908c208ba20b2c60b0d68d366102a35c64e2`) and linked from Align issue #981.
+The G1 implementation remains on this shared branch, unmerged and not fully qualified. The earlier
+instruction to publish this entire checkpoint was superseded; resume the ordinary G1 completion
+and publication requirements. Native case integration still depends on Request 61.
 
 Align `8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f` is pinned. Requests 59 and 60 are closed after
 PRs #972, #975, #979 and #980 repaired the borrowed-producer/replacement cases, and #973 shipped the
