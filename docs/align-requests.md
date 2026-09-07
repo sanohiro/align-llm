@@ -11023,7 +11023,7 @@ Independent work that may continue: native-independent G1 stream comparison/trav
   remaining native case integration and real qualification depend on this request
 Resume condition: Align merges borrow-safe buffer/writer field receivers and optional-writer
   projections; pin the shipped commit and pass gpu-numeric-stream and gpu-generation-smoke
-Align commit or pull request: pending
+Align commit or pull request: pending; tracked in https://github.com/sanohiro/align/issues/981
 align-llm verification: exact managed 8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f rejects all four
   minimal borrowed handle cases below; the sibling checkout has that same HEAD
 ```

@@ -6,7 +6,9 @@ this file records durable execution state.
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
 Branch `agent/g1-gpu-generation` is based on main `15efe15a3fc3369b93a3343d96f0ac10ab58e4ef`.
-It remains unpublished and has no pull request. G1 is one consumer-complete capability; do not
+The shared branch is pushed through `f4418f8`; it has no pull request and is not merged.
+Request 61 is filed as https://github.com/sanohiro/align/issues/981.
+G1 is one consumer-complete capability; do not
 publish its internal checkpoints. The current user requests continuous implementation, review,
 repair and merge, followed immediately by the next eligible capability until asked to stop.
 The latest implementation checkpoint is `e22b9d7`. Native-independent comparison, sequencing and
