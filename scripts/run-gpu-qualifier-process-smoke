@@ -196,8 +196,8 @@ def build_failure_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: path
     result = invoke(fixture, "failure", home, scratch)
     assert result.terminal == "FAIL" and result.exit_code == 7 and result.signal is None
     assert result.descendants_after == 0
-    stdout_row = retained_file_row("stdout", "logs/002.stdout", result.stdout)
-    stderr_row = retained_file_row("stderr", "logs/002.stderr", result.stderr)
+    stdout_row = retained_file_row("stdout", "logs/003.stdout", result.stdout)
+    stderr_row = retained_file_row("stderr", "logs/003.stderr", result.stderr)
 
     lines = fixture_lines()
     evidence = json.loads(lines[7])
@@ -207,18 +207,21 @@ def build_failure_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: path
     evidence["source"]["align_compiler"] = {
         "state": "available", "name": "sh", "version": "fixture", "sha256": compiler_digest,
     }
+    shim_command = evidence["preparation_commands"][2]
+    shim_command["argv"][0] = f"<cc>:sha256:{compiler_digest}"
+    shim_command["sha256"] = records.command_digest(
+        shim_command["kind"], shim_command["argv"], shim_command["environment"],
+    )
     evidence["source"]["candidate"] = {
         "state": "unavailable", "name": "", "version": "", "sha256": "",
     }
-    evidence["source"]["shim"] = copy.deepcopy(evidence["source"]["candidate"])
     evidence["source"]["cpu_reference"] = copy.deepcopy(evidence["source"]["candidate"])
     evidence["preparation_commands"] = [
-        *evidence["preparation_commands"][:2],
+        *evidence["preparation_commands"][:3],
         result.command,
     ]
     unavailable_digests = {
         "1e81270f1a47dce22a2e4985250c74b2e3374443734f1492b03ea2cd2af4ec48",
-        "b7c748b4a4d1c37826a11b7bd04068a24094832a969948118b75e48a2dfd23e6",
     }
     evidence["files"] = [
         row for row in evidence["files"]

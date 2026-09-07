@@ -962,7 +962,7 @@ def validate_evidence(
     if not isinstance(commands, list) or len(commands) > 16:
         raise RecipeError("preparation command count is outside its bound")
     order = (
-        "compiler_materialize", "runtime_materialize", "candidate_build", "shim_build",
+        "compiler_materialize", "runtime_materialize", "shim_build", "candidate_build",
         "cpu_reference_build",
     )
     for ordinal, command in enumerate(commands):
@@ -972,7 +972,7 @@ def validate_evidence(
                                              expected_kind=order[ordinal])
     if status == "PASS" and len(commands) != len(order):
         raise RecipeError("passing evidence has incomplete preparation commands")
-    identity_order = ("align_compiler", "align_runtime", "candidate", "shim", "cpu_reference")
+    identity_order = ("align_compiler", "align_runtime", "shim", "candidate", "cpu_reference")
     for ordinal, identity_key in enumerate(identity_order):
         state = source[identity_key]["state"]
         if ordinal < max(0, len(commands) - 1) and state != "available":
@@ -1119,8 +1119,8 @@ def validate_evidence(
         preparation_failure_stages = {
             "compiler": 0,
             "runtime": 1,
-            "candidate_build": 2,
-            "shim_build": 3,
+            "shim_build": 2,
+            "candidate_build": 3,
             "cpu_reference_build": 4,
         }
         failed_preparation = preparation_failure_stages.get(str(failure["stage"]))

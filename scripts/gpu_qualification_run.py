@@ -19,8 +19,8 @@ from gpu_qualifier_process import OwnedCommandResult, run_owned_command
 PREPARATION = (
     ("compiler_materialize", "align_compiler", "helper"),
     ("runtime_materialize", "align_runtime", "helper"),
-    ("candidate_build", "candidate", "helper"),
     ("shim_build", "shim", "shim"),
+    ("candidate_build", "candidate", "helper"),
     ("cpu_reference_build", "cpu_reference", "helper"),
 )
 

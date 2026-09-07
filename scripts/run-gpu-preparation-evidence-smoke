@@ -109,6 +109,15 @@ def main() -> None:
             shell,
             scratch,
             home,
+            script='printf "shim\\n" > "$1"',
+            output_name="shim",
+            name="shim",
+        )
+        run_step(
+            state,
+            shell,
+            scratch,
+            home,
             script='printf "candidate failed\\n"; printf "compiler diagnostic\\n" >&2; exit 7',
             output_name="candidate",
             name="candidate",
@@ -117,6 +126,7 @@ def main() -> None:
         assert state.failed_result.exit_code == 7
         assert state.identities["align_compiler"]["state"] == "available"
         assert state.identities["align_runtime"]["state"] == "available"
+        assert state.identities["shim"]["state"] == "available"
         assert state.identities["candidate"]["state"] == "unavailable"
         try:
             run_step(
@@ -141,7 +151,7 @@ def main() -> None:
                 align_revision="8cefc803d5c7f883a8db5b67250ed4ed069b43a4",
                 host=host,
                 category="BUILD",
-                stage="shim_build",
+                stage="cpu_reference_build",
                 detail=state.failure_detail,
             )
         except RecipeError as error:
@@ -167,11 +177,11 @@ def main() -> None:
             "category": "BUILD",
             "stage": "candidate_build",
             "case_ordinal": -1,
-            "detail": "preparation command 2 did not pass",
+            "detail": "preparation command 3 did not pass",
         }
         assert result["preparation_commands"] == state.commands
-        assert (output / "logs/002.stdout").read_bytes() == b"candidate failed\n"
-        assert (output / "logs/002.stderr").read_bytes() == b"compiler diagnostic\n"
+        assert (output / "logs/003.stdout").read_bytes() == b"candidate failed\n"
+        assert (output / "logs/003.stderr").read_bytes() == b"compiler diagnostic\n"
 
     print("gpu preparation evidence smoke: PASS")
 

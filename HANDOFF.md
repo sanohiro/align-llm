@@ -30,13 +30,17 @@ with no-replace rename. It refuses output inside the input root and removes ever
 The publication audit also fixed the pre-existing preparation-log closure mismatch: a started
 failed preparation command now requires its two bounded streams at the command ordinal, and the
 directory replay accepts exactly those files.
-The current preparation-state batch sequences compiler, runtime, candidate, shim, and CPU-reference
+The current preparation-state batch sequences compiler, runtime, shim, candidate, and CPU-reference
 commands through the closed-environment process owner. It publishes an identity only after the
 bounded single-link output passes, stops after the first failure, and constructs a replayable
 pre-case FAIL result with the exact successful prefix and failed-command logs.
 The current source-materialization batch reconstructs both admitted Git closures beneath one new
 private invocation root, verifies exact file closure, modes and content, rechecks the retained
 inputs, and removes every partial tree on failure.
+The preparation contract now fixes the only linkable real order: compiler, runtime, shim,
+candidate, then CPU reference. The earlier validator placed the candidate before its required
+`libalign_ggml_shim`; the authoritative prose, canonical vector, validator, failure ordinals and
+owners now agree.
 
 Request 59 is critical and blocking for production-provider integration, the main executable, and
 publication. Pinned v0.7.5 and pulled Align main `8aa9c76d` reject the unchanged valid
