@@ -3,6 +3,23 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
+## Request 61 producer delivery (2026-09-08)
+
+Branch `docs/request-61-delivery`, based on main `4364908` (PR #211), records Align PR #982
+merged at `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0`. Request 61 is `ALIGN_MERGED`;
+consumer verification remains pending. The upstream merge identity and successful Linux x86_64,
+Linux ARM64 and macOS CI were verified against the producer PR.
+
+Next: on the active G1 consumer branch, adopt that shipped commit or a descendant, restore
+`runtime_numeric_stream`, then pass `gmake gpu-numeric-stream` and `gmake gpu-generation-smoke`.
+The dependent integration remains blocked until that adoption and acceptance pass. This task
+publishes only the delivery record; it does not perform consumer adoption. The older request-register
+publication action below was completed by PR #210 and is historical.
+
+Verification: documentation consistency checked against Align PR #982; source tests and platform
+qualification are N/A because no executable surface changes. Run exact-head `python3 scripts/pre-pr`
+before publication. No intentional uncommitted files remain after this candidate is committed.
+
 ## Documentation checkpoint: runtime foundations (2026-09-07)
 
 Main `b39c39d87c10f25ae56e21660ee9929f956788f4` records Request 55's v0.7.3 release as PR #208,
