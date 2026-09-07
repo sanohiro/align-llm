@@ -5,7 +5,7 @@ this file records durable execution state.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
-Branch `agent/g1-gpu-generation` incorporates main `d4dabfa`. G1 remains unmerged and
+Branch `agent/g1-gpu-generation` incorporates main `1a96d39` (Request 62 publication PR #213). G1 remains unmerged and
 requires its ordinary consumer completion, real Metal/CUDA qualification, review and publication.
 The user authorized continued implementation, PR/merge and subsequent eligible roadmap work.
 
@@ -49,7 +49,7 @@ the complete stream owner using Request 61's shipped surface. Existing generatio
 - The numeric comparison owner now implements exact scalar tolerance decisions and once-rounded
   error maxima, plus reference-defined routing near-tie groups, selected-slot weight comparisons,
   and outside-group ID/order preservation. The independent bounded stream reader verifies framing,
-  complete consumption, SHA-256 and retained file identity; the native producer awaits Request 61.
+  complete consumption, SHA-256 and retained file identity; the native producer now passes its owner.
   Paired consumption now binds the prior CPU digest and independent expected frames, streams scalar
   tensors and compares routing triples. Geometry-derived case traversal is implemented below.
 - Shared source capture now accepts an explicitly pinned application checkout as well as ggml,
@@ -74,6 +74,12 @@ the complete stream owner using Request 61's shipped surface. Existing generatio
   reproduction and a separate teacher-forced trajectory, including highest-layer prefill reduction.
   This resolves the distinct forced/generated IDs in the canonical vectors without weakening the
   diagnostic-output-equals-production requirement. All three traversals share the existing deadline.
+
+**Eligibility checkpoint.** Request 62 is published through merged PR #213. Native-independent
+stream, comparison/traversal, case sequencing and kit/preparation seams have owner-tested
+checkpoints. Remaining useful end-to-end integration depends on the borrowed native case consumer;
+G1R/G2 follow G1 and are not yet eligible. Resume after the shipped compiler fix instead of
+publishing dormant seams or inventing a successful final CLI.
 
 **Next actions, in order.**
 
