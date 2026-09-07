@@ -47,6 +47,11 @@ publication. Pinned v0.7.5 and pulled Align main `8aa9c76d` reject the unchanged
 `AttemptRun.stages` owner only during per-unit checking; whole-program checking passes. Align issue
 #966 remains open and owns the repair. Private staging, platform profiles, numeric calibration,
 qualifier wiring, and focused GPU owners remain independent.
+Request 60 / Align issue #968 is also critical and blocking for the closed-environment candidate build. Align's linker
+invokes `cc` by name with no explicit driver option; even without `PATH`, OS default lookup succeeds
+and cannot be bound truthfully to the evidence command. The request requires one explicit absolute
+C-driver input. Profiles, calibration, case/result owners and pre-build qualifier wiring remain
+independent.
 
 **Next actions, in order.**
 
