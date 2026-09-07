@@ -3,24 +3,30 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Request 61 producer delivery (2026-09-08)
+## Request 62 consumer blocker (2026-09-08)
 
-Branch `docs/request-61-delivery`, based on main `4364908` (PR #211), records Align PR #982
-merged at `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0`. Request 61 is `ALIGN_MERGED`;
-consumer verification remains pending. The upstream merge identity and successful Linux x86_64,
-Linux ARM64 and macOS CI were verified against the producer PR.
+Branch `agent/request-62-publication` is based on main `d4dabfa`. Request 61 shipped in Align
+PR #982 at `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0`. Its managed compiler builds and the
+G1 branch's native stream passes its independent byte/state owner. Observed generation reveals
+Request 62: an imported non-retaining writer helper accepts a local payload under whole-program
+checking but rejects it under per-unit checking. The exact fixture and acceptance are in the
+request register. Request 61's final observed-generation acceptance remains pending.
 
-Next: on the active G1 consumer branch, adopt that shipped commit or a descendant, restore
-`runtime_numeric_stream`, then pass `gmake gpu-numeric-stream` and `gmake gpu-generation-smoke`.
-The dependent integration remains blocked until that adoption and acceptance pass. This task
-publishes only the delivery record; it does not perform consumer adoption. The older request-register
-publication action below was completed by PR #210 and is historical.
+This branch publishes the compiler request only. G1 remains on `agent/g1-gpu-generation`; its
+observed generation/native diagnostic consumer pauses until Request 62 ships. Independent native
+stream and Python qualification work may continue. Resume by adopting the shipped fix, then pass
+`gmake gpu-numeric-stream` and `gmake gpu-generation-smoke` including observed Qwen/OLMoE logits.
+Real Metal/CUDA qualification still precedes G1 publication and the next roadmap consumer G1R.
 
-Verification: documentation consistency checked against Align PR #982; source tests and platform
-qualification are N/A because no executable surface changes. Run exact-head `python3 scripts/pre-pr`
-before publication. No intentional uncommitted files remain after this candidate is committed.
+Verification: the exact managed pin passes the request fixture's `check` and rejects
+`check-per-unit`; native stream bytes match the independent 160-byte golden on the G1 branch.
+Documentation-only publication uses `git diff --check` and exact-head `python3 scripts/pre-pr`.
+No intentional uncommitted files remain after this documentation candidate is committed.
 
-## Documentation checkpoint: runtime foundations (2026-09-07)
+## Historical documentation checkpoint: runtime foundations (2026-09-07)
+
+The request-register publication action below was completed by PR #210. Its older action list is
+historical; the active Request 62 resume instructions above take precedence.
 
 Main `b39c39d87c10f25ae56e21660ee9929f956788f4` records Request 55's v0.7.3 release as PR #208,
 following the runtime-foundations summary in PR #205, the competitive GPU design in PR #204, and

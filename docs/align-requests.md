@@ -11110,3 +11110,92 @@ took a bisection against a known-good file to find. Nothing in the diagnostic na
 implementation's own identifiers avoid the word (`window`, `region`, `resident_*`) as ordinary code
 rather than as a workaround. Priority is not raised: the cost was one bisection, and it is recorded
 because the request predicted exactly this and it happened.
+
+---
+
+## Request 62 — Preserve borrowed stream helper provenance across per-unit interfaces
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: G1 observed generation and native diagnostic case integration
+Independent work that may continue: native stream byte/state owners and Python qualification
+  infrastructure; the native stream alone passes its independent golden, but cannot close G1
+Resume condition: Align ships whole/per-unit parity for non-retaining mutable stream helpers;
+  adopt the shipped pin and pass gpu-numeric-stream and gpu-generation-smoke with observed logits
+Align commit or pull request: pending
+align-llm verification: managed 3fbb74fe7c351e526c997bd4c70bd00cf1a424a0 builds the native
+  stream and passes gpu-numeric-stream; the two-file fixture below passes check but fails
+  check-per-unit, and the production observed-generation caller fails native build
+```
+
+Request 61's shipped receivers work: the bounded writer produces the independent 160-byte golden,
+rejects malformed/nonfinite/over-budget records, preserves occupied outputs and enforces terminal
+states. Its real caller borrows an existing stream and records a local logits-buffer view during
+prefill and decode. That view is consumed synchronously by `writer.write`; it is not stored in the
+stream. Whole-program checking accepts this minimal imported helper, but per-unit checking rejects
+its caller with `cannot retain a shorter-lived view through this mutable borrow; copy it into the
+destination region first`.
+
+`helper.align`:
+
+```align
+module helper
+pub Holder { sink: Option<writer>, data: buffer, count: i64 }
+pub fn emit(borrow mut owner: Holder, borrow bytes: slice<u8>) -> Result<(), Error> {
+  match owner.sink { Some(sink) => { sink.write(bytes)? }, None => {} }
+  owner.count = 1
+  return Ok(())
+}
+```
+
+`main.align`:
+
+```align
+import helper
+fn caller(borrow mut owner: helper.Holder) -> Result<(), Error> {
+  mut data := buffer(1)
+  data.put_u8(65)
+  bytes := data.bytes()
+  helper.emit(owner, bytes)?
+  return Ok(())
+}
+fn main() {}
+```
+
+From the G1 consumer checkout with `.align-revision` set to
+`3fbb74fe7c351e526c997bd4c70bd00cf1a424a0`, run
+`scripts/alignc check <directory>/main.align` and
+`scripts/alignc check-per-unit <directory>/main.align`. This request-only publication branch does
+not adopt that pin. The first reports three checked functions; the second
+rejects `helper.emit(owner, bytes)`. Sibling HEAD is the same shipped commit. The current source
+owns inferred mutable-borrow retention in `crates/align_sema/src/lib.rs`
+(`BorrowMutRetentionSummary`, `infer_return_provenance`, imported-call fallback). The disagreement
+is evidence of a compiler/interface gap; the precise faulty summary path remains for Align to
+identify. It is not an application need to retain or clone the payload.
+
+A second, non-blocking precision case was found at the same pin. With the same `Holder` and
+shared `emit(borrow owner: Holder, borrow bytes: slice<u8>)`, a helper
+`put(borrow mut bytes: slice<u8>) { bytes[0] = 66 }` called on `owner.data.bytes()` makes a later
+`emit(owner, bytes)` fail with `its external provenance ended unexpectedly`. Inline byte mutation
+passes, and a buffer-only holder remains usable after the helper. The implemented codec instead
+borrows its complete stream owner for header encoding, as already permitted by Request 61; this
+existing application structure does not remove the language-owned precision requirement.
+
+**Proposed surface.** Keep syntax, ownership and writer APIs unchanged. Export/replay enough
+mutable-borrow retention information to distinguish synchronous consumption from retained views,
+including a complete owner containing buffer and optional writer fields. Mutating bytes through
+a derived view must not retire the disjoint writer or complete owner. Actual owner replacement,
+view escape and retained shorter-lived input must remain rejected. No compatibility wrapper,
+second tensor allocation or proposed interface is consumed by G1.
+
+**Acceptance.** Whole-program and per-unit owners cover the exact two-file positive, repeated
+writes through a borrowed existing stream, local payloads, nested helper calls, header mutation,
+error propagation, and native exact-byte output. Add negative twins that actually retain the local
+view or replace/drop the original owner. Imported cold/hit/edit/revert and checked-interface replay
+must preserve the same non-retention and source identity facts. Cover the derived-byte helper
+precision case independently from imported retention. In align-llm, adopt the merged commit, run
+`gmake gpu-numeric-stream`, and pass `gmake gpu-generation-smoke` with Qwen and OLMoE observed
+prefill/decode logits and host reservation before upload. The request does not add an aggregate or
+hardware qualification; G1's existing real Metal/CUDA qualification remains separately required.
