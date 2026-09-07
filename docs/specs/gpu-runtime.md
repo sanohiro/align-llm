@@ -184,6 +184,16 @@ Constants are 1 and `GPU_RUNTIME_PROFILE`; platform is `macos|linux|wsl2`; sourc
 `commit,manifest_sha256` and must resolve a `source_kind=align-llm` manifest; bundle manifest is a
 `FileRef`.
 
+The profile file's retained parent directory is the qualification input root. Every profile path
+resolves beneath that root without following a symlink component. The two complete source closures
+are fixed at `source/align-llm/{manifest.json,commit,blobs/<sha256>}` and
+`source/ggml/{manifest.json,commit,blobs/<sha256>}`. `bundle_manifest.path`, every model, pack,
+geometry and calibration path, and every source-closure file is a single-link regular file. The
+qualifier reads each bounded record through its opened descriptor, replays both exact Git closures,
+streams and rechecks the three model-input digests per model, and validates every cross-record
+identity before creating the evidence staging directory or touching a device. Unreferenced input
+files are ignored and never copied or executed.
+
 Models contain exactly `qwen2` then `olmoe`. A row is
 `model_id,model_path,model_sha256,pack_path,pack_sha256,geometry_path,geometry_sha256,calibration_path,calibration_sha256,runtime_cache_budget_bytes`.
 Every path/digest binds a regular input. Its calibration binds the same model, backend and bundle.
@@ -518,7 +528,7 @@ order and poison process state if native safety cannot be proven.
 | Qwen/OLMoE decode | prefill, >1 decode, resident KV, correct positions/router/expert map; OLMoE argsort is narrowed to exactly `n_expert_used` global IDs before selected-expert `mul_mat_id` | immediate EOG, maximum 1/128, context edge, routing tie, truncated source | KV outlives steps; `gpu-device-smoke`, `gpu-decode-kv`, `gpu-expert-map`, `gpu-eog`, `gpu-context-boundary` |
 | invocation guard | sequential same-bundle requests and concurrent CPU independence | concurrent GPU request, different bundle, failed prior native init | guard released only from safe state; `gpu-invocation-busy`, `gpu-second-after-failure` |
 | sampler/result | same logits preserve exact greedy/RNG/filter/output behavior | malformed/nonfinite logits, decode error, partial text | no handle escapes; `gpu-sampler-fixed`, `gpu-output-refusal` |
-| profile/calibration | exact four-row expansion executes every calibration/holdout twice | omitted/extra/reordered/cross-model case, changed tolerance/expected output | immutable input recheck; `gpu-profile-coverage`, `gpu-holdout-replay` |
+| profile/calibration | exact four-row expansion executes every calibration/holdout twice | omitted/extra/reordered/cross-model case, changed tolerance/expected output, symlink/hard-link/mutated input | immutable descriptor-based input admission and recheck; `gpu-profile-coverage`, `gpu-input-admission`, `gpu-holdout-replay` |
 | evidence/publication | canonical positive codecs, complete align-llm/ggml Git snapshots, available/unavailable build/device identities, exact argv/environment | duplicate/oversize records, source/tree mismatch, ambient-environment injection, compile/crash/timeout, >4,096 files or >512 MiB projected closure | kill/reap owned group, retain bounded diagnostics, exclusive rename; `gpu-schema-codec`, `gpu-source-replay`, `gpu-build-failure-evidence`, `gpu-command-environment`, `gpu-process-cleanup`, `gpu-result-replay` |
 
 The native resource starts as an invocation-local root and is never returned or placed in an Align

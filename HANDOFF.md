@@ -19,6 +19,10 @@ whole-tensor member representation. The current private-staging checkpoint close
 0700 root, reopened and digest-verified, and only the private plugin path reaches native loading.
 Safe prefixes are removed; the first successful registry load transfers the tree to process
 ownership, and an unload-unsafe failure transfers it to poisoned process ownership until exit.
+Checkpoint `630eb77` contains that implementation and is pushed. The current qualifier-input batch
+connects the profile validator to a retained input root: it admits both complete Git source
+closures, every model/pack/geometry/calibration input, and every bundle artifact through stable
+single-link descriptors, then supports a complete publication-time recheck.
 
 Request 59 is critical and blocking for production-provider integration, the main executable, and
 publication. Pinned v0.7.5 rejects the unchanged valid `AttemptRun.stages` owner only during
@@ -27,20 +31,15 @@ platform profiles, numeric calibration, qualifier wiring, and focused GPU owners
 
 **Next actions, in order.**
 
-1. Publish the request-register audit and merged Align answers on
-   `docs/align-request-deliveries-20260907`, based on main `1a37b5b`. Requests 39/45/52/54/59/60
-   now record producer delivery; their consumer adoption remains pending. The documentation
-   checkpoint uses static consistency checks and exact-head docs preflight. After publication,
-   continue the G1 adoption below, batching its merged prerequisites including Requests 59/60;
-   Request 59 requires Align #979 (`5250e996`) or a descendant, including its earlier repairs.
-2. On the active G1 branch, adopt Align v0.7.5 containing Requests 55, 56, and 58. Verify private
-   staged-byte-to-native-load identity races, cleanup prefixes, poisoned process ownership, and the
-   Apple M1 Qwen loader owner.
-3. Continue G1's platform-profile and numeric-calibration work, then connect the retained source,
-   process, and record owners into the publication qualifier. After step 2, connect the Qwen loader
-   and provider integration. These checkpoints belong to one consumer capability, not probe-only
-   PRs.
-4. Deliver G1R next; advance eligible constrained-memory work without waiting for a resident speed
+1. Complete qualifier input admission, failure evidence construction, and exclusive publication.
+2. Prepare both platform profiles and numeric calibrations, then connect the retained source,
+   process, record, Qwen-loader, and provider owners into the publication qualifier where Request 59
+   does not block compilation.
+3. When Request 59 ships, adopt the fixed Align revision and pass its focused per-unit owner,
+   `gmake build`, and `gmake ggml-spike-smoke`; complete the production-provider integration.
+4. Run Metal locally and hand the same bounded kit to the CUDA host. Publish G1 only when it is
+   consumer-complete, then review, repair, exact-head preflight, merge, refresh main, and begin G1R.
+5. Deliver G1R next; advance eligible constrained-memory work without waiting for a resident speed
    win. Freeze each actual performance campaign's workload, resource/cost limits and decision rule
    before tuning. Do not claim current speed or larger-model support from this design.
 
@@ -53,9 +52,11 @@ platform profiles, numeric calibration, qualifier wiring, and focused GPU owners
 `gmake ggml-spike-smoke` can execute. The same module passes whole-program checking at v0.7.5 and
 per-unit checking at `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Metal and CUDA still require
 their final real-host evidence; AMD hardware is unavailable. Models, raw evidence, and build
-products remain outside Git.
+products remain outside Git. The current qualifier-input batch passes `gmake gpu-input-admission`,
+`gmake gate-topology-check`, `scripts/check-format`, Python bytecode compilation, and
+`git diff --check`.
 
-**Intentional uncommitted files.** None after the private-staging checkpoint is committed.
+**Intentional uncommitted files.** None after the qualifier-input checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

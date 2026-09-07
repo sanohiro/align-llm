@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Exercise complete retained-root admission for one G1 qualification input package."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import pathlib
+import shutil
+import sys
+import tempfile
+
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import gpu_qualification_input as qualification_input  # noqa: E402
+import gpu_qualification_records as records  # noqa: E402
+from gpu_backend_recipe import RecipeError  # noqa: E402
+
+
+ALIGN_COMMIT = (
+    b"tree 7c7003088534356ae2b7c5eab9f91755214dc776\n"
+    b"author Fixture <fixture@example.invalid> 0 +0000\n"
+    b"committer Fixture <fixture@example.invalid> 0 +0000\n"
+    b"\n"
+    b"align-llm fixture\n"
+)
+GGML_COMMIT = (
+    b"tree 3098a23e2ae55378d0dfddd09730da71134ac61b\n"
+    b"author Fixture <fixture@example.invalid> 0 +0000\n"
+    b"committer Fixture <fixture@example.invalid> 0 +0000\n"
+    b"\n"
+    b"ggml fixture\n"
+)
+
+
+def fixture_lines() -> list[bytes]:
+    source = (ROOT / "docs" / "specs" / "gpu-runtime.md").read_bytes()
+    heading = source.index(b"### 3.9 Canonical positive vectors")
+    opening = source.index(b"\x60\x60\x60json\n", heading) + len(b"\x60\x60\x60json\n")
+    closing = source.index(b"\x60\x60\x60\n", opening)
+    lines = source[opening:closing].splitlines(keepends=True)
+    if len(lines) != 8:
+        raise AssertionError("the normative G1 vector block must contain eight lines")
+    return lines
+
+
+def write(root: pathlib.Path, relative: str, data: bytes) -> None:
+    target = root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+
+
+def digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def reseal(value: dict[str, object], field: str) -> None:
+    value[field] = "0" * 64
+    value[field] = digest(records.canonical(value))
+
+
+def materialize(root: pathlib.Path) -> dict[str, bytes]:
+    lines = fixture_lines()
+    bundle = json.loads(lines[3])
+    calibrations = [json.loads(lines[4]), json.loads(lines[5])]
+    profile = json.loads(lines[6])
+    model_files = {
+        "inputs/qwen2.model": b"qwen-model\n",
+        "inputs/qwen2.pack": b"qwen-pack\n",
+        "inputs/qwen2.geometry": b"qwen-geometry\n",
+        "inputs/olmoe.model": b"olmoe-model\n",
+        "inputs/olmoe.pack": b"olmoe-pack\n",
+        "inputs/olmoe.geometry": b"olmoe-geometry\n",
+    }
+    for ordinal, model in enumerate(profile["models"]):
+        calibration_model = calibrations[ordinal]["model"]
+        for path_key, digest_key in (
+            ("model_path", "model_sha256"),
+            ("pack_path", "pack_sha256"),
+            ("geometry_path", "geometry_sha256"),
+        ):
+            value = digest(model_files[model[path_key]])
+            model[digest_key] = value
+            calibration_model[digest_key] = value
+        reseal(calibrations[ordinal], "calibration_id")
+        calibration_raw = records.canonical(calibrations[ordinal])
+        model["calibration_sha256"] = digest(calibration_raw)
+        write(root, model["calibration_path"], calibration_raw)
+    profile_raw = records.canonical(profile)
+    write(root, "profile.json", profile_raw)
+    write(root, profile["bundle_manifest"]["path"], lines[3])
+    for artifact in bundle["artifacts"]:
+        if artifact["sha256"] != digest(b"bundle\n"):
+            raise AssertionError("the normative bundle artifact changed")
+        bundle_parent = pathlib.PurePosixPath(profile["bundle_manifest"]["path"]).parent
+        write(root, (bundle_parent / artifact["path"]).as_posix(), b"bundle\n")
+    for path, data in model_files.items():
+        write(root, path, data)
+    write(root, "source/align-llm/manifest.json", lines[1])
+    write(root, "source/align-llm/commit", ALIGN_COMMIT)
+    write(
+        root,
+        "source/align-llm/blobs/"
+        "ab49f3eb142e8e18c94fa79d2017f57b6141b1c4cdc042f1a0d0e3de5297090e",
+        b"runner\n",
+    )
+    write(root, "source/ggml/manifest.json", lines[2])
+    write(root, "source/ggml/commit", GGML_COMMIT)
+    write(
+        root,
+        "source/ggml/blobs/e1df5b4f4e7884f07e600b7e61a71fb3171661050b3281cb675bc06ac644f9d2",
+        b"ggml\n",
+    )
+    return model_files
+
+
+def rejected(root: pathlib.Path, expected: str) -> None:
+    try:
+        qualification_input.admit(root / "profile.json")
+    except RecipeError as error:
+        if expected not in str(error):
+            raise AssertionError((expected, str(error))) from error
+    else:
+        raise AssertionError(f"invalid qualification input passed: {expected}")
+
+
+with tempfile.TemporaryDirectory(prefix="gpu-input-admission-") as raw_temporary:
+    temporary = pathlib.Path(raw_temporary)
+    valid = temporary / "valid"
+    valid.mkdir()
+    model_files = materialize(valid)
+    admitted = qualification_input.admit(valid / "profile.json")
+    assert admitted.records["profile"]["profile_id"] == "metal-fixture"
+    assert admitted.align_source.snapshot_sha256 == \
+        records.source_snapshot_sha256(admitted.align_source.manifest)
+    assert admitted.ggml_source.snapshot_sha256 == \
+        records.source_snapshot_sha256(admitted.ggml_source.manifest)
+    assert len(admitted.files) == 17
+    admitted.recheck()
+
+    mutated = temporary / "mutated"
+    shutil.copytree(valid, mutated)
+    (mutated / "inputs/qwen2.geometry").write_bytes(b"changed\n")
+    rejected(mutated, "geometry_path digest")
+
+    linked = temporary / "linked"
+    shutil.copytree(valid, linked)
+    os.link(linked / "inputs/qwen2.pack", temporary / "pack-alias")
+    rejected(linked, "single-link regular")
+
+    symlinked = temporary / "symlinked"
+    shutil.copytree(valid, symlinked)
+    moved_inputs = temporary / "moved-inputs"
+    (symlinked / "inputs").rename(moved_inputs)
+    os.symlink(moved_inputs, symlinked / "inputs")
+    rejected(symlinked, "qualification directory")
+
+    extra_blob = temporary / "extra-blob"
+    shutil.copytree(valid, extra_blob)
+    (extra_blob / "source/ggml/blobs/extra").write_bytes(b"extra")
+    rejected(extra_blob, "blob closure")
+
+    changed_after = qualification_input.admit(valid / "profile.json")
+    geometry = valid / "inputs/qwen2.geometry"
+    geometry.write_bytes(b"changed\n")
+    try:
+        changed_after.recheck()
+    except RecipeError:
+        pass
+    else:
+        raise AssertionError("post-admission mutation passed recheck")
+    geometry.write_bytes(model_files["inputs/qwen2.geometry"])
+
+print("gpu input admission smoke: PASS")
