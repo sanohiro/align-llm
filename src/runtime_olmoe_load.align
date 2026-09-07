@@ -173,13 +173,12 @@ fn append_piece(
   return Ok(())
 }
 
-pub fn build_plan(
+pub fn build_plan_file(
   borrow owner: ggml_ffi.GpuDevice,
-  pack_path: str,
+  borrow pack: file,
   borrow g: layer_olmoe.Geometry,
 ) -> Result<Plan, Error> {
   table := layer_olmoe.mm_layer_member_table(g)
-  pack := fs.open_rw(pack_path)?
   mut counters := alignpack_read.new_counters()
   index := alignpack_read.open_pack(pack, counters) else { return Err(Error.Invalid) }
   if g.code.len() != 0 || g.n_layer < 1 || g.n_expert < 1 || table.count != 9 {
@@ -314,9 +313,18 @@ pub fn build_plan(
     })
 }
 
-pub fn load(
+pub fn build_plan(
   borrow owner: ggml_ffi.GpuDevice,
   pack_path: str,
+  borrow g: layer_olmoe.Geometry,
+) -> Result<Plan, Error> {
+  pack := fs.open_rw(pack_path)?
+  return build_plan_file(owner, pack, g)
+}
+
+pub fn load_file(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow pack: file,
   borrow plan: Plan,
   staging_bytes: i64,
 ) -> Result<(), Error> {
@@ -329,7 +337,6 @@ pub fn load(
     || plan.piece_pack_offset.len() != plan.piece_bytes.len() {
     return Err(Error.Invalid)
   }
-  pack := fs.open_rw(pack_path)?
   mut chunk := buffer(staging_bytes)
   runtime_weights.begin(owner, plan.count)?
   mut at := 0
@@ -368,4 +375,14 @@ pub fn load(
   }
   runtime_weights.finish(owner)?
   return Ok(())
+}
+
+pub fn load(
+  borrow owner: ggml_ffi.GpuDevice,
+  pack_path: str,
+  borrow plan: Plan,
+  staging_bytes: i64,
+) -> Result<(), Error> {
+  pack := fs.open_rw(pack_path)?
+  return load_file(owner, pack, plan, staging_bytes)
 }

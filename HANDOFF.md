@@ -57,7 +57,9 @@ It derives graph-context capacity from model depth, keeps maximum-context KV and
 workspace resident, executes prefill plus rebuilt decode topologies, rejects nonfinite logits, and
 preserves Qwen greedy and OLMoE greedy/seeded selection. Its model-free owner covers multiple
 decode steps, maximum one, immediate EOG, and repeatable seeded output. The device owner also
-publishes the exact pinned bundle ID to topology identity.
+publishes the exact pinned bundle ID to topology identity. The generation opener rechecks the
+provider's retained source identity against one AlignPack handle and keeps that same handle through
+plan construction and every staged upload, so path replacement cannot retarget validated weights.
 
 Request 59 is critical and blocking for production-provider integration, the main executable, and
 publication. Pinned v0.7.5 and pulled Align main `61f05b0720f188b00b9641b10dd1942da181bf0e` reject the unchanged valid
@@ -98,7 +100,8 @@ products remain outside Git. The current qualifier batches pass `gmake gpu-input
 `gmake gpu-evidence-publication`,
 `gmake gpu-build-failure-evidence`, `gmake gpu-result-replay`,
 `gmake gpu-preparation-evidence`, `gmake gpu-command-environment`, `gmake gpu-process-cleanup`,
-`gmake gpu-generation-smoke`, per-unit checks for `runtime_generation` and its smoke owner,
+`gmake gpu-generation-smoke`, per-unit checking of all 23 units owned by
+`runtime_generation_smoke`,
 `gmake gate-topology-check`, `scripts/check-format`, Python bytecode compilation, and `git diff --check`.
 The external Qwen model input `509287f78cb4...894d3c` now has verified AlignPack
 `a0bd07028a2c...e99b04` and geometry `697b32f19f2d...2492666`; `--pack-verify` compared all

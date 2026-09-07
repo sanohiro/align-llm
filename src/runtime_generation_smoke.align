@@ -3,6 +3,7 @@ module runtime_generation_smoke
 import ggml_ffi
 import runtime_generation
 import runtime_options
+import runtime_pack_identity
 import std.fs
 
 BUNDLE_ID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -54,6 +55,26 @@ fn same_ids(borrow left: array<i64>, borrow right: array<i64>) -> bool {
   return true
 }
 
+fn source_identity(pack_path: str) -> Result<runtime_pack_identity.SourceIdentity, Error> {
+  return runtime_pack_identity.observe_path(pack_path)
+}
+
+fn reject_mismatched_identity(pack_path: str, other_path: str) -> Result<(), Error> {
+  config := options(8388608)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  eog_ids := empty_ids()
+  other_identity := source_identity(other_path)?
+  match runtime_generation.generate_qwen(
+    owner, config, pack_path, other_identity, QWEN_GEOMETRY, prompt_ids, eog_ids, 1) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
 fn run_qwen(pack_path: str) -> Result<(), Error> {
   config := options(8388608)
   owner := ggml_ffi.gpu_device_open(
@@ -62,8 +83,9 @@ fn run_qwen(pack_path: str) -> Result<(), Error> {
   ) else { return Err(Error.Invalid) }
   prompt_ids := prompt()
   eog_ids := empty_ids()
+  identity := source_identity(pack_path)?
   generated := runtime_generation.generate_qwen(
-    owner, config, pack_path, QWEN_GEOMETRY, prompt_ids, eog_ids, 3)?
+    owner, config, pack_path, identity, QWEN_GEOMETRY, prompt_ids, eog_ids, 3)?
   if !valid_ids(generated)
     || ggml_ffi.gpu_graph_state(
     owner, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 1
@@ -84,8 +106,9 @@ fn qwen_first_token(pack_path: str) -> Result<i64, Error> {
   ) else { return Err(Error.Invalid) }
   prompt_ids := prompt()
   eog_ids := empty_ids()
+  identity := source_identity(pack_path)?
   generated := runtime_generation.generate_qwen(
-    owner, config, pack_path, QWEN_GEOMETRY, prompt_ids, eog_ids, 1)?
+    owner, config, pack_path, identity, QWEN_GEOMETRY, prompt_ids, eog_ids, 1)?
   if generated.len() != 1
     || ggml_ffi.gpu_graph_state(
     owner, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 1
@@ -106,8 +129,9 @@ fn run_qwen_eog(pack_path: str, eog: i64) -> Result<(), Error> {
   mut eog_builder: array_builder<i64> := array_builder()
   eog_builder.push(eog)
   eog_ids := eog_builder.build()
+  identity := source_identity(pack_path)?
   generated := runtime_generation.generate_qwen(
-    owner, config, pack_path, QWEN_GEOMETRY, prompt_ids, eog_ids, 3)?
+    owner, config, pack_path, identity, QWEN_GEOMETRY, prompt_ids, eog_ids, 3)?
   if generated.len() != 1 || generated[0] != eog
     || ggml_ffi.gpu_graph_state(
     owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 0 {
@@ -129,8 +153,9 @@ fn run_olmoe(
   prompt_ids := prompt()
   eog_ids := empty_ids()
   geometry := fs.read_file(geometry_path)?
+  identity := source_identity(pack_path)?
   generated := runtime_generation.generate_olmoe(
-    owner, config, pack_path, geometry, prompt_ids, eog_ids, 3, 0, seed)?
+    owner, config, pack_path, identity, geometry, prompt_ids, eog_ids, 3, 0, seed)?
   if !valid_ids(generated)
     || ggml_ffi.gpu_graph_state(
     owner, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 1
@@ -145,6 +170,7 @@ fn run_olmoe(
 
 pub fn main(args: array<str>) -> Result<(), Error> {
   if args.len() != 4 { return Err(Error.Invalid) }
+  reject_mismatched_identity(args[1], args[2])?
   run_qwen(args[1])?
   eog := qwen_first_token(args[1])?
   run_qwen_eog(args[1], eog)?

@@ -598,6 +598,10 @@ pub fn member_count(borrow x: PackIndex) -> i64 {
   return x.member_count
 }
 
+pub fn source_record_offset(borrow x: PackIndex) -> i64 {
+  return x.source_record_offset
+}
+
 pub fn block_at(borrow x: PackIndex, index: i64) -> Result<PackBlock, Fault> {
   if index < 0 || index >= x.block_count {
     return Err(indexed_fault("R4_PACK_REGION", "block", index, ""))

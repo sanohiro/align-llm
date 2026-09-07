@@ -237,9 +237,9 @@ fn append_member(
   return checked_add(total, allocation)
 }
 
-pub fn build_plan(
+pub fn build_plan_file(
   borrow owner: ggml_ffi.GpuDevice,
-  pack_path: str,
+  borrow pack: file,
   borrow g: layer_qwen2.Geometry,
 ) -> Result<Plan, Error> {
   embed_table := layer_qwen2.mf_embed_member_table(g)
@@ -250,7 +250,6 @@ pub fn build_plan(
     head_table.count,
   )?
   if g.code.len() != 0 || count < 1 || count > MAX_TENSORS { return Err(Error.Invalid) }
-  pack := fs.open_rw(pack_path)?
   mut counters := alignpack_read.new_counters()
   index := alignpack_read.open_pack(pack, counters) else { return Err(Error.Invalid) }
   mut kinds: array_builder<i64> := array_builder()
@@ -339,9 +338,18 @@ pub fn build_plan(
     })
 }
 
-pub fn load(
+pub fn build_plan(
   borrow owner: ggml_ffi.GpuDevice,
   pack_path: str,
+  borrow g: layer_qwen2.Geometry,
+) -> Result<Plan, Error> {
+  pack := fs.open_rw(pack_path)?
+  return build_plan_file(owner, pack, g)
+}
+
+pub fn load_file(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow pack: file,
   borrow plan: Plan,
   staging_bytes: i64,
 ) -> Result<(), Error> {
@@ -352,7 +360,6 @@ pub fn load(
     || plan.pack_offset.len() != plan.count {
     return Err(Error.Invalid)
   }
-  pack := fs.open_rw(pack_path)?
   mut chunk := buffer(staging_bytes)
   runtime_weights.begin(owner, plan.count)?
   mut at := 0
@@ -385,4 +392,14 @@ pub fn load(
   }
   runtime_weights.finish(owner)?
   return Ok(())
+}
+
+pub fn load(
+  borrow owner: ggml_ffi.GpuDevice,
+  pack_path: str,
+  borrow plan: Plan,
+  staging_bytes: i64,
+) -> Result<(), Error> {
+  pack := fs.open_rw(pack_path)?
+  return load_file(owner, pack, plan, staging_bytes)
 }

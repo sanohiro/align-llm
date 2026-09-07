@@ -11,12 +11,14 @@ import runtime_memory
 import runtime_olmoe
 import runtime_olmoe_load
 import runtime_options
+import runtime_pack_identity
 import runtime_qwen
 import runtime_qwen_load
 import runtime_sampler
 import runtime_weights
 import std.crypto
 import std.encoding
+import std.fs
 import std.rand
 
 MAX_EXTENT := 9223372036854775807
@@ -334,6 +336,7 @@ pub fn generate_qwen(
   borrow owner: ggml_ffi.GpuDevice,
   borrow options: runtime_options.RuntimeOptions,
   pack_path: str,
+  borrow source_identity: runtime_pack_identity.SourceIdentity,
   geometry_text: str,
   borrow prompt_ids: array<i64>,
   borrow eog_ids: array<i64>,
@@ -347,11 +350,13 @@ pub fn generate_qwen(
     return Err(Error.Invalid)
   }
   graph_capacity := qwen_graph_capacity(g.n_layer)?
-  plan := runtime_qwen_load.build_plan(owner, pack_path, g)?
+  pack := fs.open_rw(pack_path)?
+  runtime_pack_identity.verify_file(pack, source_identity)?
+  plan := runtime_qwen_load.build_plan_file(owner, pack, g)?
   staging := prepare_memory(
     owner, options, plan.count, plan.weights_bytes, runtime_qwen.kv_count(g.n_layer),
     plan.kv_bytes, 0, graph_capacity)?
-  runtime_qwen_load.load(owner, pack_path, plan, staging)?
+  runtime_qwen_load.load_file(owner, pack, plan, staging)?
   initialize_kv(owner, g.n_layer, g.head_dim, g.context_length, g.n_head_kv)?
   initialize_inputs(owner, prompt_ids.len(), g.context_length)?
   graph_bytes := ggml_ffi.graph_context_bytes(graph_capacity)
@@ -413,6 +418,7 @@ pub fn generate_olmoe(
   borrow owner: ggml_ffi.GpuDevice,
   borrow options: runtime_options.RuntimeOptions,
   pack_path: str,
+  borrow source_identity: runtime_pack_identity.SourceIdentity,
   geometry_text: str,
   borrow prompt_ids: array<i64>,
   borrow eog_ids: array<i64>,
@@ -428,11 +434,13 @@ pub fn generate_olmoe(
     return Err(Error.Invalid)
   }
   graph_capacity := olmoe_graph_capacity(g.n_layer, g.n_expert_used)?
-  plan := runtime_olmoe_load.build_plan(owner, pack_path, g)?
+  pack := fs.open_rw(pack_path)?
+  runtime_pack_identity.verify_file(pack, source_identity)?
+  plan := runtime_olmoe_load.build_plan_file(owner, pack, g)?
   staging := prepare_memory(
     owner, options, plan.count, plan.weights_bytes, runtime_olmoe.kv_count(g.n_layer),
     plan.kv_bytes, legacy_cache_bytes, graph_capacity)?
-  runtime_olmoe_load.load(owner, pack_path, plan, staging)?
+  runtime_olmoe_load.load_file(owner, pack, plan, staging)?
   initialize_kv(owner, g.n_layer, g.head_dim, g.context_length, g.n_head_kv)?
   initialize_inputs(owner, prompt_ids.len(), g.context_length)?
   graph_bytes := ggml_ffi.graph_context_bytes(graph_capacity)

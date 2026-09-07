@@ -11,6 +11,7 @@ import model_ir
 import runtime_device
 import runtime_generation
 import runtime_options
+import runtime_pack_identity
 import tokenizer_qwen2
 import core.json
 import std.fs
@@ -180,6 +181,16 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
   if geometry_view != derived_view { return Err(Error.Invalid) }
 
   source_identity := alignpack.verify_source_identity_snapshot(snapshot, config.runtime_pack_path)?
+  runtime_source_identity := runtime_pack_identity.SourceIdentity {
+    file_size: source_identity.file_size,
+    data_offset: source_identity.data_offset,
+    tensor_count: source_identity.tensor_count,
+    kv_count: source_identity.kv_count,
+    version: source_identity.version,
+    alignment: source_identity.alignment,
+    total_tensor_bytes: source_identity.total_tensor_bytes,
+    header_region_sha256: source_identity.header_region_sha256.clone(),
+  }
   prepared := tokenizer_qwen2.prepare_generation_snapshot(snapshot, request.system, request.user)?
   if !tokenizer_ok(prepared.status) { return Err(Error.Invalid) }
   allocation_steps := if request.max_tokens > 1 { request.max_tokens - 1 } else { 1 }
@@ -204,12 +215,14 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
       device := runtime_device.open(options)?
       if olmoe {
         runtime_generation.generate_olmoe(
-          device, generation_options, config.runtime_pack_path, geometry_view,
+          device, generation_options, config.runtime_pack_path, runtime_source_identity,
+          geometry_view,
           prepared.token_ids, prepared.eog_token_ids, request.max_tokens,
           config.runtime_cache_budget_bytes, request.seed)?
       } else {
         runtime_generation.generate_qwen(
-          device, generation_options, config.runtime_pack_path, geometry_view,
+          device, generation_options, config.runtime_pack_path, runtime_source_identity,
+          geometry_view,
           prepared.token_ids, prepared.eog_token_ids, request.max_tokens)?
       }
     }
