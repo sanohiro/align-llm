@@ -62,12 +62,13 @@ provider's retained source identity against one AlignPack handle and keeps that 
 plan construction and every staged upload, so path replacement cannot retarget validated weights.
 
 Request 59 is critical and blocking for production-provider integration, the main executable, and
-publication. Pinned v0.7.5 and pulled Align main `61f05b0720f188b00b9641b10dd1942da181bf0e` reject the unchanged valid
+publication. Pinned v0.7.5 and pulled Align main `8b5cafd340eaca73981dc4f3fc04d3a3271d9da0` reject the unchanged valid
 `AttemptRun.stages` owner only during per-unit checking; whole-program checking passes. Align issue
 #966 remains open and owns the repair. The GPU provider path is implemented and passes its direct
 per-unit and model-free owner checks; the main executable and publication build remain blocked.
 Platform profiles, numeric calibration, qualifier wiring, and focused GPU owners remain independent.
-Request 60 / Align issue #968 is also critical and blocking for the closed-environment candidate build. Align's linker
+Request 60 / Align issue #968 is also critical and blocking for the closed-environment candidate build. Pulled Align main
+`8b5cafd340eaca73981dc4f3fc04d3a3271d9da0` still has no implementation pull request or explicit driver surface. Align's linker
 invokes `cc` by name with no explicit driver option; even without `PATH`, OS default lookup succeeds
 and cannot be bound truthfully to the evidence command. The request requires one explicit absolute
 C-driver input. Profiles, calibration, case/result owners and pre-build qualifier wiring remain
