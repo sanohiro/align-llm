@@ -23,6 +23,10 @@ Checkpoint `630eb77` contains that implementation and is pushed. The current qua
 connects the profile validator to a retained input root: it admits both complete Git source
 closures, every model/pack/geometry/calibration input, and every bundle artifact through stable
 single-link descriptors, then supports a complete publication-time recheck.
+The current publication batch derives the exact retained closure before side effects, reserves the
+`result.json` slot under the 4,096-file bound, enforces the 512 MiB directory bound, writes only to
+a private sibling stage, rechecks every input, replays the complete staged evidence, and publishes
+with no-replace rename. It refuses output inside the input root and removes every failed stage.
 
 Request 59 is critical and blocking for production-provider integration, the main executable, and
 publication. Pinned v0.7.5 rejects the unchanged valid `AttemptRun.stages` owner only during
@@ -31,7 +35,8 @@ platform profiles, numeric calibration, qualifier wiring, and focused GPU owners
 
 **Next actions, in order.**
 
-1. Complete qualifier input admission, failure evidence construction, and exclusive publication.
+1. Connect compiler/runtime/candidate/shim preparation to failure evidence construction and the
+   completed input/publication owners.
 2. Prepare both platform profiles and numeric calibrations, then connect the retained source,
    process, record, Qwen-loader, and provider owners into the publication qualifier where Request 59
    does not block compilation.
@@ -52,11 +57,11 @@ platform profiles, numeric calibration, qualifier wiring, and focused GPU owners
 `gmake ggml-spike-smoke` can execute. The same module passes whole-program checking at v0.7.5 and
 per-unit checking at `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. Metal and CUDA still require
 their final real-host evidence; AMD hardware is unavailable. Models, raw evidence, and build
-products remain outside Git. The current qualifier-input batch passes `gmake gpu-input-admission`,
-`gmake gate-topology-check`, `scripts/check-format`, Python bytecode compilation, and
-`git diff --check`.
+products remain outside Git. The current qualifier batches pass `gmake gpu-input-admission`,
+`gmake gpu-evidence-publication`, `gmake gate-topology-check`, `scripts/check-format`, Python
+bytecode compilation, and `git diff --check`.
 
-**Intentional uncommitted files.** None after the qualifier-input checkpoint is committed.
+**Intentional uncommitted files.** None after the qualifier-publication checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

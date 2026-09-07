@@ -127,51 +127,56 @@ def rejected(root: pathlib.Path, expected: str) -> None:
         raise AssertionError(f"invalid qualification input passed: {expected}")
 
 
-with tempfile.TemporaryDirectory(prefix="gpu-input-admission-") as raw_temporary:
-    temporary = pathlib.Path(raw_temporary)
-    valid = temporary / "valid"
-    valid.mkdir()
-    model_files = materialize(valid)
-    admitted = qualification_input.admit(valid / "profile.json")
-    assert admitted.records["profile"]["profile_id"] == "metal-fixture"
-    assert admitted.align_source.snapshot_sha256 == \
-        records.source_snapshot_sha256(admitted.align_source.manifest)
-    assert admitted.ggml_source.snapshot_sha256 == \
-        records.source_snapshot_sha256(admitted.ggml_source.manifest)
-    assert len(admitted.files) == 17
-    admitted.recheck()
+def main() -> None:
+    with tempfile.TemporaryDirectory(prefix="gpu-input-admission-") as raw_temporary:
+        temporary = pathlib.Path(raw_temporary)
+        valid = temporary / "valid"
+        valid.mkdir()
+        model_files = materialize(valid)
+        admitted = qualification_input.admit(valid / "profile.json")
+        assert admitted.records["profile"]["profile_id"] == "metal-fixture"
+        assert admitted.align_source.snapshot_sha256 == \
+            records.source_snapshot_sha256(admitted.align_source.manifest)
+        assert admitted.ggml_source.snapshot_sha256 == \
+            records.source_snapshot_sha256(admitted.ggml_source.manifest)
+        assert len(admitted.files) == 17
+        admitted.recheck()
 
-    mutated = temporary / "mutated"
-    shutil.copytree(valid, mutated)
-    (mutated / "inputs/qwen2.geometry").write_bytes(b"changed\n")
-    rejected(mutated, "geometry_path digest")
+        mutated = temporary / "mutated"
+        shutil.copytree(valid, mutated)
+        (mutated / "inputs/qwen2.geometry").write_bytes(b"changed\n")
+        rejected(mutated, "geometry_path digest")
 
-    linked = temporary / "linked"
-    shutil.copytree(valid, linked)
-    os.link(linked / "inputs/qwen2.pack", temporary / "pack-alias")
-    rejected(linked, "single-link regular")
+        linked = temporary / "linked"
+        shutil.copytree(valid, linked)
+        os.link(linked / "inputs/qwen2.pack", temporary / "pack-alias")
+        rejected(linked, "single-link regular")
 
-    symlinked = temporary / "symlinked"
-    shutil.copytree(valid, symlinked)
-    moved_inputs = temporary / "moved-inputs"
-    (symlinked / "inputs").rename(moved_inputs)
-    os.symlink(moved_inputs, symlinked / "inputs")
-    rejected(symlinked, "qualification directory")
+        symlinked = temporary / "symlinked"
+        shutil.copytree(valid, symlinked)
+        moved_inputs = temporary / "moved-inputs"
+        (symlinked / "inputs").rename(moved_inputs)
+        os.symlink(moved_inputs, symlinked / "inputs")
+        rejected(symlinked, "qualification directory")
 
-    extra_blob = temporary / "extra-blob"
-    shutil.copytree(valid, extra_blob)
-    (extra_blob / "source/ggml/blobs/extra").write_bytes(b"extra")
-    rejected(extra_blob, "blob closure")
+        extra_blob = temporary / "extra-blob"
+        shutil.copytree(valid, extra_blob)
+        (extra_blob / "source/ggml/blobs/extra").write_bytes(b"extra")
+        rejected(extra_blob, "blob closure")
 
-    changed_after = qualification_input.admit(valid / "profile.json")
-    geometry = valid / "inputs/qwen2.geometry"
-    geometry.write_bytes(b"changed\n")
-    try:
-        changed_after.recheck()
-    except RecipeError:
-        pass
-    else:
-        raise AssertionError("post-admission mutation passed recheck")
-    geometry.write_bytes(model_files["inputs/qwen2.geometry"])
+        changed_after = qualification_input.admit(valid / "profile.json")
+        geometry = valid / "inputs/qwen2.geometry"
+        geometry.write_bytes(b"changed\n")
+        try:
+            changed_after.recheck()
+        except RecipeError:
+            pass
+        else:
+            raise AssertionError("post-admission mutation passed recheck")
+        geometry.write_bytes(model_files["inputs/qwen2.geometry"])
 
-print("gpu input admission smoke: PASS")
+    print("gpu input admission smoke: PASS")
+
+
+if __name__ == "__main__":
+    main()

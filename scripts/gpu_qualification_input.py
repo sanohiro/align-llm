@@ -67,6 +67,16 @@ class AdmittedInput:
     ggml_source: SourceInput
     files: dict[str, FileIdentity]
 
+    def read_retained(self, relative: str, maximum: int) -> bytes:
+        root = _RetainedRoot(self.root)
+        try:
+            data = root.read(relative, maximum)
+            if root.identities.get(relative) != self.files.get(relative):
+                raise RecipeError("qualification input changed after admission")
+            return data
+        finally:
+            root.close()
+
     def recheck(self) -> None:
         current = admit(self.root / self.profile_name)
         if current.files != self.files:
