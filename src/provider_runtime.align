@@ -193,10 +193,10 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
   }
   prepared := tokenizer_qwen2.prepare_generation_snapshot(snapshot, request.system, request.user)?
   if !tokenizer_ok(prepared.status) { return Err(Error.Invalid) }
-  allocation_steps := if request.max_tokens > 1 { request.max_tokens - 1 } else { 1 }
+  decode_steps := if request.max_tokens > 1 { request.max_tokens - 1 } else { 0 }
   if prepared.token_ids.len() < 1 || prepared.token_ids.len() > 2048
-    || prepared.token_ids.len() + allocation_steps > ir.context_length
-    || prepared.token_ids.len() + allocation_steps > 4096 {
+    || prepared.token_ids.len() + decode_steps > ir.context_length
+    || prepared.token_ids.len() + decode_steps > 4096 {
     return Err(Error.Invalid)
   }
 

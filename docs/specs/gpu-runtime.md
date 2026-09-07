@@ -68,13 +68,20 @@ promote an untested tuple.
 | Result and errors | Existing owned `Result<string, Error>` and CLI schema 2 remain. GPU refusal maps to `Error.Invalid` without partial output. Qualification retains the internal category/stage. |
 | Device and bundle | Resolve one exact registry and device from the verified immutable backend bundle. Read the manifest and every artifact through `fs.open_beneath_single_link`; decode the manifest from owned reader bytes. After Request 56 ships, the application staging owner uses `fs.create_private_temp_dir` to create one collision-resistant directory with permissions no broader than `0700`, copies each manifest-bounded artifact into a file created only through `fs.create_exclusive_beneath`, completes and drops its writer, reopens that staged file through `fs.open_beneath_single_link`, and verifies its finalized size/digest before passing only its private absolute path to the native registry. The directory and paths are never exposed to another application branch. Their owner and every loaded library survive through safe native release or transfer together to the process-owned poisoned quarantine until exit; neither the original path nor an ambient search path reaches the loader. Ambiguous, unavailable, incompatible or mismatched identities fail. |
 | Ownership | `runtime_device` owns native state through a package-defined opaque Move resource. `runtime_execution` borrows it only inside one request. Explicit fallible synchronization/release precedes success; exactly-once Drop is the safety fallback. No raw handle or device view escapes. |
-| Memory | Full model weights, KV and reusable compute workspace are device resident. `host_budget_bytes` and `device_budget_bytes` cover application-managed allocations using checked arithmetic. Metal aliases are charged once physically and reported separately. |
+| Memory | Full model weights, request-capacity KV and reusable compute workspace are device resident. KV capacity is exactly `prompt_token_count + maximum_tokens - 1`, bounded by the model context; it covers every K/V row this request can write without reserving unused model-context tail rows. `host_budget_bytes` and `device_budget_bytes` cover application-managed allocations using checked arithmetic. Metal aliases are charged once physically and reported separately. |
 | State | One GPU generation at a time per process. A native atomic guard rejects overlap before device side effects. Safe completion persists no invocation resource. The first successfully initialized bundle pins its manifest digest; a later different bundle fails before loading. If failure after native side effects cannot prove safe unload, the native handles and their staging owner transfer atomically to a process-owned poisoned quarantine, reject every later GPU admission, and remain until process exit; this is the only persisted failure state. CPU calls neither initialize nor replace it. |
 | Validation order | Provider/request syntax; bounded options; model/pack/geometry/prompt/context; bundle identity; exact registry/device; op/buffer capability; admission; allocation/upload; prefill/decode; output validation; synchronization/release; success publication. Failure prevents later stages. |
 | Qualifier | `scripts/gpu-runtime-qualify --profile PROFILE.json --suite generation --output NEW_DIRECTORY`. Schema 1 accepts only `generation`. It builds reviewed source in isolation and publishes §3.8 evidence. An absent requested backend is FAIL, never passing N/A. |
 | Cache identity | Request-local weights bind model/pack/geometry, member/plane, quant layout, bundle/device and request generation. KV additionally binds prompt, position, rope/mask/context and precision. No persisted device cache is introduced. |
 | Acceptance | Model-free matrix owners plus real `generation` PASS on Metal and CUDA. Device-specific evidence may be pending while independent implementation proceeds, but Metal cannot close CUDA. |
 | Metrics | Correctness, ownership and budget compliance only. Timings are observations. Schema 1 decision is always `unmeasured`; no post-run metric selection can create a performance claim. |
+
+The first real Qwen consumer admission exposed why request capacity is part of the contract rather
+than an optimization: its `131072`-row F32 KV footprint was `15032385536` bytes, and its immutable
+weights were another `4677120000` bytes. That exceeds both the 16 GiB host and the Metal device's
+recommended working set before workspace, even though the admitted request can touch at most 4096
+rows. Reserving only those reachable rows preserves generation semantics and makes the declared M1
+qualification physically possible.
 
 ### 3.1 Runtime options schema 1
 
@@ -381,7 +388,8 @@ reviewed production graph trace derives the three expected counts from exact mod
 prompt width, output selection and generated steps; diagnostic teacher-forced work is excluded.
 A passing GPU row requires each expected count equal its
 GPU count and every CPU count zero. Expected weights are the exact immutable model footprint;
-expected KV is the maximum-context footprint derived from geometry. The minimum observed live
+expected KV is the request-capacity footprint derived from geometry and the case's admitted prompt
+token count and maximum-token bound. The minimum observed live
 payload at every boundary from completed upload/binding through final decode equals each
 expectation; allocator padding and reservations are charged separately to managed memory.
 Weight upload count counts first device bindings of distinct tensor identities and equals the
@@ -475,7 +483,7 @@ execution. Extend `ggml_ffi.align` and `ggml_shim.c` only with shaped checked ca
 resource ownership; do not duplicate model math in backend-specific loops.
 
 Use ggml supported-op and allocation queries for the exact graph. Before allocation, checked
-admission includes immutable weights, maximum-context KV, peak activation/workspace, scheduler
+admission includes immutable weights, request-capacity KV, peak activation/workspace, scheduler
 copies, metadata and staging. Available-memory probes are advisory. A one-byte-too-small budget
 fails before weight upload. Driver/runtime overhead is reported separately from managed caps.
 
@@ -530,7 +538,7 @@ order and poison process state if native safety cannot be proven.
 | admission/allocation | exact weights/KV/workspace within both caps; UMA alias accounted once | overflow, zero/one-byte-too-small cap, driver allocation race | release every prefix; `gpu-budget-boundary`, `gpu-uma-alias`, `gpu-allocation-prefix` |
 | weight planning/upload | selected-backend allocation query; exact checked sum; sequential bounded chunks complete each tensor once | invalid type/shape, overflow, empty/out-of-order/oversized chunk, next add or finish before completion, source truncation, transfer failure | invalid input preserves cursor; native failure poisons then reverse-releases; `gpu-weight-chunk` |
 | graph and pointers | supported graph on declared GPU; device-safe transfers; bounded F32/I32 views use source-derived strides and extents | unsupported op/buffer/type, forged or out-of-range view, device pointer passed to CPU, stale reference, nonfinite output | complete before reset/free; `gpu-device-smoke`, `gpu-graph-placement`, `gpu-device-pointer`, `gpu-scheduler-reset` |
-| Qwen/OLMoE decode | prefill, >1 decode, resident KV, correct positions/router/expert map; OLMoE argsort is narrowed to exactly `n_expert_used` global IDs before selected-expert `mul_mat_id` | immediate EOG, maximum 1/128, context edge, routing tie, truncated source | KV outlives steps; `gpu-device-smoke`, `gpu-decode-kv`, `gpu-expert-map`, `gpu-eog`, `gpu-context-boundary` |
+| Qwen/OLMoE decode | prefill, >1 decode, request-capacity resident KV, correct positions/router/expert map; OLMoE argsort is narrowed to exactly `n_expert_used` global IDs before selected-expert `mul_mat_id` | immediate EOG, maximum 1/128, exact model-context edge, one-row-too-small KV, routing tie, truncated source | KV outlives steps; oversized unused model-context tails are not allocated; `gpu-device-smoke`, `gpu-decode-kv`, `gpu-expert-map`, `gpu-eog`, `gpu-context-boundary` |
 | invocation guard | sequential same-bundle requests and concurrent CPU independence | concurrent GPU request, different bundle, failed prior native init | guard released only from safe state; `gpu-invocation-busy`, `gpu-second-after-failure` |
 | sampler/result | same logits preserve exact greedy/RNG/filter/output behavior | malformed/nonfinite logits, decode error, partial text | no handle escapes; `gpu-sampler-fixed`, `gpu-output-refusal` |
 | profile/calibration | exact four-row expansion executes every calibration/holdout twice | omitted/extra/reordered/cross-model case, changed tolerance/expected output, symlink/hard-link/mutated input | immutable descriptor-based input admission and recheck; `gpu-profile-coverage`, `gpu-input-admission`, `gpu-holdout-replay` |

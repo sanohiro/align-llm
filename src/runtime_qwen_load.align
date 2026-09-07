@@ -237,10 +237,11 @@ fn append_member(
   return checked_add(total, allocation)
 }
 
-pub fn build_plan_file(
+pub fn build_plan_file_capacity(
   borrow owner: ggml_ffi.GpuDevice,
   borrow pack: file,
   borrow g: layer_qwen2.Geometry,
+  kv_capacity: i64,
 ) -> Result<Plan, Error> {
   embed_table := layer_qwen2.mf_embed_member_table(g)
   layer_table := layer_qwen2.mf_layer_member_table(g)
@@ -249,7 +250,10 @@ pub fn build_plan_file(
     checked_add(embed_table.count, checked_mul(layer_table.count, g.n_layer)?)?,
     head_table.count,
   )?
-  if g.code.len() != 0 || count < 1 || count > MAX_TENSORS { return Err(Error.Invalid) }
+  if g.code.len() != 0 || count < 1 || count > MAX_TENSORS
+    || kv_capacity < 1 || kv_capacity > g.context_length {
+    return Err(Error.Invalid)
+  }
   mut counters := alignpack_read.new_counters()
   index := alignpack_read.open_pack(pack, counters) else { return Err(Error.Invalid) }
   mut kinds: array_builder<i64> := array_builder()
@@ -304,14 +308,14 @@ pub fn build_plan_file(
     ggml_type: 0,
     n_dims: 3,
     ne0: g.head_dim,
-    ne1: g.context_length,
+    ne1: kv_capacity,
     ne2: g.n_head_kv,
     ne3: 1,
   }
   v_shape := runtime_weights.Shape {
     ggml_type: 0,
     n_dims: 3,
-    ne0: g.context_length,
+    ne0: kv_capacity,
     ne1: g.head_dim,
     ne2: g.n_head_kv,
     ne3: 1,
@@ -336,6 +340,14 @@ pub fn build_plan_file(
       weights_bytes: weights_bytes,
       kv_bytes: kv_bytes,
     })
+}
+
+pub fn build_plan_file(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow pack: file,
+  borrow g: layer_qwen2.Geometry,
+) -> Result<Plan, Error> {
+  return build_plan_file_capacity(owner, pack, g, g.context_length)
 }
 
 pub fn build_plan(

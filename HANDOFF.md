@@ -53,13 +53,16 @@ AlignPack index, rejects missing, ambiguous, and shape-invalid members, plans th
 allocation, and uploads all expert planes into their whole resident tensors through bounded staging.
 Its GPU-stub owner covers the complete 69-piece two-layer fixture and malformed-pack refusals.
 The active generation batch now connects provider dispatch to resident Qwen and OLMoE execution.
-It derives graph-context capacity from model depth, keeps maximum-context KV and one bounded
+It derives graph-context capacity from model depth, keeps exact request-capacity KV and one bounded
 workspace resident, executes prefill plus rebuilt decode topologies, rejects nonfinite logits, and
 preserves Qwen greedy and OLMoE greedy/seeded selection. Its model-free owner covers multiple
-decode steps, maximum one, immediate EOG, and repeatable seeded output. The device owner also
-publishes the exact pinned bundle ID to topology identity. The generation opener rechecks the
-provider's retained source identity against one AlignPack handle and keeps that same handle through
-plan construction and every staged upload, so path replacement cannot retarget validated weights.
+decode steps, maximum one, immediate EOG, repeatable seeded output, and a model whose full context
+cannot fit its device budget while the admitted request can. The device owner also publishes the
+exact pinned bundle ID to topology identity. The generation opener rechecks the provider's retained
+source identity against one AlignPack handle and keeps that same handle through plan construction
+and every staged upload, so path replacement cannot retarget validated weights. The real external
+Qwen 7B model now completes one-token generation on Apple M1 under a 6 GB managed-device budget;
+the previous maximum-context plan required 15,032,385,536 KV bytes plus 4,677,120,000 weight bytes.
 
 Requests 59 and 60 are closed. PRs #972, #975, and #979 repair all borrowed-producer cases exposed
 by the unchanged client; its three focused per-unit owners, main build, and ggml spike smoke pass at
@@ -96,6 +99,9 @@ products remain outside Git. The current qualifier batches pass `gmake gpu-input
 `gmake gpu-generation-smoke`, per-unit checking of all 23 units owned by
 `runtime_generation_smoke`,
 `gmake gate-topology-check`, `scripts/check-format`, Python bytecode compilation, and `git diff --check`.
+The request-capacity checkpoint additionally passes `gmake gpu-qwen-load-smoke
+gpu-olmoe-load-smoke runtime-provider-smoke build`; a real-shim Qwen 7B invocation on Apple M1
+with maximum tokens 1 and a 6 GB managed-device budget returned `PASS` and output `OK`.
 The external Qwen model input `509287f78cb4...894d3c` now has verified AlignPack
 `a0bd07028a2c...e99b04` and geometry `697b32f19f2d...2492666`; `--pack-verify` compared all
 4,677,120,000 payload bytes and returned `IDENTICAL`. The external OLMoE model/pack/geometry
@@ -106,7 +112,7 @@ with bundle ID `0a472538ef35...814b`, manifest digest `f928428facfe...8d1`, sour
 `64db6180009a...6f4`, and source-snapshot digest `c2860034df35...8b3`. Its 3,430-file, 169 MiB
 closure passed the recipe bounds, and the real shim linked against the staged bundle successfully.
 
-**Intentional uncommitted files.** None after the Request 59/60 adoption checkpoint is committed.
+**Intentional uncommitted files.** None after the request-capacity checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

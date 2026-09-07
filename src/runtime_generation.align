@@ -343,22 +343,23 @@ pub fn generate_qwen(
   max_tokens: i64,
 ) -> Result<array<i64>, Error> {
   g := layer_qwen2.parse_geometry(geometry_text)
-  allocation_steps := if max_tokens > 1 { max_tokens - 1 } else { 1 }
+  decode_steps := if max_tokens > 1 { max_tokens - 1 } else { 0 }
+  kv_capacity := prompt_ids.len() + decode_steps
   if g.code.len() != 0 || prompt_ids.len() < 1 || prompt_ids.len() > 2048
     || max_tokens < 1 || max_tokens > 128
-    || prompt_ids.len() + allocation_steps > g.context_length {
+    || kv_capacity > g.context_length {
     return Err(Error.Invalid)
   }
   graph_capacity := qwen_graph_capacity(g.n_layer)?
   pack := fs.open_rw(pack_path)?
   runtime_pack_identity.verify_file(pack, source_identity)?
-  plan := runtime_qwen_load.build_plan_file(owner, pack, g)?
+  plan := runtime_qwen_load.build_plan_file_capacity(owner, pack, g, kv_capacity)?
   staging := prepare_memory(
     owner, options, plan.count, plan.weights_bytes, runtime_qwen.kv_count(g.n_layer),
     plan.kv_bytes, 0, graph_capacity)?
   runtime_qwen_load.load_file(owner, pack, plan, staging)?
-  initialize_kv(owner, g.n_layer, g.head_dim, g.context_length, g.n_head_kv)?
-  initialize_inputs(owner, prompt_ids.len(), g.context_length)?
+  initialize_kv(owner, g.n_layer, g.head_dim, kv_capacity, g.n_head_kv)?
+  initialize_inputs(owner, prompt_ids.len(), kv_capacity)?
   graph_bytes := ggml_ffi.graph_context_bytes(graph_capacity)
   prefill_ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_PREFILL, graph_bytes)
   decode_ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_DECODE, graph_bytes)
@@ -375,7 +376,7 @@ pub fn generate_qwen(
     options, bundle_id, "qwen2", geometry_text, ggml_ffi.GPU_GRAPH_PREFILL,
     prompt_ids.len(), prompt_ids.len())?
   runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
-  update_prompt(owner, prompt_ids, g.context_length, g.n_vocab)?
+  update_prompt(owner, prompt_ids, kv_capacity, g.n_vocab)?
   runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
   mut logits := logits_buffer(g.n_vocab)?
   logits_view := logits.bytes()
@@ -400,7 +401,7 @@ pub fn generate_qwen(
       n_past + 1, 1)?
     runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
     decode_prepared = true
-    update_decode(owner, token, n_past, g.context_length)?
+    update_decode(owner, token, n_past, kv_capacity)?
     runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
     ggml_ffi.slot_get(
       slot_view, runtime_qwen.output_slot(), logits_view, 0, logits_view.len(), "qwen_logits",
@@ -427,22 +428,23 @@ pub fn generate_olmoe(
   seed: Option<i64>,
 ) -> Result<array<i64>, Error> {
   g := layer_olmoe.parse_geometry(geometry_text)
-  allocation_steps := if max_tokens > 1 { max_tokens - 1 } else { 1 }
+  decode_steps := if max_tokens > 1 { max_tokens - 1 } else { 0 }
+  kv_capacity := prompt_ids.len() + decode_steps
   if g.code.len() != 0 || prompt_ids.len() < 1 || prompt_ids.len() > 2048
     || max_tokens < 1 || max_tokens > 128
-    || prompt_ids.len() + allocation_steps > g.context_length {
+    || kv_capacity > g.context_length {
     return Err(Error.Invalid)
   }
   graph_capacity := olmoe_graph_capacity(g.n_layer, g.n_expert_used)?
   pack := fs.open_rw(pack_path)?
   runtime_pack_identity.verify_file(pack, source_identity)?
-  plan := runtime_olmoe_load.build_plan_file(owner, pack, g)?
+  plan := runtime_olmoe_load.build_plan_file_capacity(owner, pack, g, kv_capacity)?
   staging := prepare_memory(
     owner, options, plan.count, plan.weights_bytes, runtime_olmoe.kv_count(g.n_layer),
     plan.kv_bytes, legacy_cache_bytes, graph_capacity)?
   runtime_olmoe_load.load_file(owner, pack, plan, staging)?
-  initialize_kv(owner, g.n_layer, g.head_dim, g.context_length, g.n_head_kv)?
-  initialize_inputs(owner, prompt_ids.len(), g.context_length)?
+  initialize_kv(owner, g.n_layer, g.head_dim, kv_capacity, g.n_head_kv)?
+  initialize_inputs(owner, prompt_ids.len(), kv_capacity)?
   graph_bytes := ggml_ffi.graph_context_bytes(graph_capacity)
   prefill_ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_PREFILL, graph_bytes)
   decode_ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_DECODE, graph_bytes)
@@ -459,7 +461,7 @@ pub fn generate_olmoe(
     options, bundle_id, "olmoe", geometry_text, ggml_ffi.GPU_GRAPH_PREFILL,
     prompt_ids.len(), prompt_ids.len())?
   runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
-  update_prompt(owner, prompt_ids, g.context_length, g.n_vocab)?
+  update_prompt(owner, prompt_ids, kv_capacity, g.n_vocab)?
   runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
   mut logits := logits_buffer(g.n_vocab)?
   logits_view := logits.bytes()
@@ -486,7 +488,7 @@ pub fn generate_olmoe(
       n_past + 1, 1)?
     runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
     decode_prepared = true
-    update_decode(owner, token, n_past, g.context_length)?
+    update_decode(owner, token, n_past, kv_capacity)?
     runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
     ggml_ffi.slot_get(
       slot_view, runtime_olmoe.output_slot(), logits_view, 0, logits_view.len(), "olmoe_logits",

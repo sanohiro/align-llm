@@ -173,15 +173,17 @@ fn append_piece(
   return Ok(())
 }
 
-pub fn build_plan_file(
+pub fn build_plan_file_capacity(
   borrow owner: ggml_ffi.GpuDevice,
   borrow pack: file,
   borrow g: layer_olmoe.Geometry,
+  kv_capacity: i64,
 ) -> Result<Plan, Error> {
   table := layer_olmoe.mm_layer_member_table(g)
   mut counters := alignpack_read.new_counters()
   index := alignpack_read.open_pack(pack, counters) else { return Err(Error.Invalid) }
-  if g.code.len() != 0 || g.n_layer < 1 || g.n_expert < 1 || table.count != 9 {
+  if g.code.len() != 0 || g.n_layer < 1 || g.n_expert < 1 || table.count != 9
+    || kv_capacity < 1 || kv_capacity > g.context_length {
     return Err(Error.Invalid)
   }
   count := checked_add(3, checked_mul(12, g.n_layer)?)?
@@ -289,11 +291,11 @@ pub fn build_plan_file(
   piece_at = piece_at + 1
 
   k_shape := runtime_weights.Shape {
-    ggml_type: 0, n_dims: 3, ne0: g.head_dim, ne1: g.context_length,
+    ggml_type: 0, n_dims: 3, ne0: g.head_dim, ne1: kv_capacity,
     ne2: g.n_head_kv, ne3: 1,
   }
   v_shape := runtime_weights.Shape {
-    ggml_type: 0, n_dims: 3, ne0: g.context_length, ne1: g.head_dim,
+    ggml_type: 0, n_dims: 3, ne0: kv_capacity, ne1: g.head_dim,
     ne2: g.n_head_kv, ne3: 1,
   }
   per_layer_kv := checked_add(
@@ -311,6 +313,14 @@ pub fn build_plan_file(
       piece_bytes: sizes.build(), weights_bytes: weights_bytes,
       kv_bytes: checked_mul(per_layer_kv, g.n_layer)?,
     })
+}
+
+pub fn build_plan_file(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow pack: file,
+  borrow g: layer_olmoe.Geometry,
+) -> Result<Plan, Error> {
+  return build_plan_file_capacity(owner, pack, g, g.context_length)
 }
 
 pub fn build_plan(

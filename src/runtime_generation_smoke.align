@@ -7,7 +7,7 @@ import runtime_pack_identity
 import std.fs
 
 BUNDLE_ID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-QWEN_GEOMETRY := "{\"schema_version\":2,\"kind\":\"R1_MODEL_IR\",\"model\":{\"arch\":\"qwen2\",\"n_layer\":2,\"n_embd\":8,\"n_head\":2,\"n_head_kv\":1,\"head_dim\":4,\"n_ff\":16,\"n_vocab\":32,\"n_expert\":0,\"context_length\":128,\"rms_eps_bits\":\"3727c5ac\",\"rope\":{\"type\":2,\"dim_count\":4,\"freq_base_bits\":\"461c4000\",\"scaling_type\":null}}}"
+QWEN_GEOMETRY := "{\"schema_version\":2,\"kind\":\"R1_MODEL_IR\",\"model\":{\"arch\":\"qwen2\",\"n_layer\":2,\"n_embd\":8,\"n_head\":2,\"n_head_kv\":1,\"head_dim\":4,\"n_ff\":16,\"n_vocab\":32,\"n_expert\":0,\"context_length\":131072,\"rms_eps_bits\":\"3727c5ac\",\"rope\":{\"type\":2,\"dim_count\":4,\"freq_base_bits\":\"461c4000\",\"scaling_type\":null}}}"
 
 fn options(device_budget_bytes: i64) -> runtime_options.RuntimeOptions =
 runtime_options.RuntimeOptions {
