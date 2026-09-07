@@ -36,7 +36,7 @@ At the audited revision, R45 still reproduced and was the next compiler correctn
 priority; R39 and R42/43/49 also had local evidence of remaining defects.
 The shipped answers below subsequently record the R39 and R45 repairs. R52/54/55/56/
 58/59/60 are delivered on the Align side; consumer adoption remains separate.
-R59 now includes #975 as well as #972. Current R21 (`fs.open_ro`) is distinct
+R59 now includes #979 and #975 as well as #972. Current R21 (`fs.open_ro`) is distinct
 from #892's historical R21, reconciled here as R44. Historical summaries below
 must not override those identities or the individual current metadata.
 No consumer acceptance status was advanced by this audit. Closed entries use
@@ -10879,11 +10879,15 @@ Priority: critical
 Blocking: yes
 Blocked gate or slice: G1 production-provider build and publication
 Independent work that may continue: Request 60 closed-environment driver selection
-Resume condition: adopt the fixed Align commit and complete the unchanged build/smoke owners
+Resume condition: adopt Align 5250e996f4e3a00bc4dfe8584d05acf95f10a78e or a descendant and
+  complete the unchanged build/smoke owners
 Align commit or pull request: https://github.com/sanohiro/align/pull/972 merged as
-  85d64929e6627cfedeceed2c4ce7000548f6406d;
+  85d64929e6627cfedeceed2c4ce7000548f6406d; subsequent PR #975 merged as
+  b947b5d92e17242e5511a80de8d5a446c7ed8b83 and PR #979 merged as
+  5250e996f4e3a00bc4dfe8584d05acf95f10a78e;
   implementation closure in ../align/docs/impl/xml-producer-investigation.md Request 59
-align-llm verification: unchanged check-per-unit src/verification_loop.align, gmake build,
+align-llm verification: unchanged check-per-unit src/verification_loop.align and
+  src/prompt_artifacts.align, gmake build,
   and gmake ggml-spike-smoke at the adopted commit; consumer adoption remains pending
 ```
 
@@ -10908,10 +10912,23 @@ indexed integer discriminates the pre-fix compiler. Both unchanged client module
 pass per-unit checking locally (alignpack: 3 units; verification_loop: 5).
 The 20 producer, 63 owned-tagged, 23 resource-ownership and 17 XML owners, optimized
 workspace build, independent review, final preflight and all hosted CI checks pass.
-The earlier #972 repair remains valid for verification_loop. Adopt #975 or a
-descendant and run the unchanged consumer build/smoke owners; no consumer code or
+The earlier #972 repair remains valid for verification_loop. This intermediate
+repair still requires the #979 continuation below for the complete consumer build; no consumer code or
 build machinery has been changed, no consumer verification is claimed, and no
-release tag is required. Issue #966 remains open pending that consumer evidence.
+release tag is required. Final consumer adoption evidence remains pending.
+
+Align continuation (2026-09-07): [PR #979](https://github.com/sanohiro/align/pull/979)
+merged as `5250e996f4e3a00bc4dfe8584d05acf95f10a78e`. Adoption after #975 exposed
+remaining borrowed `Option<string>` payload reads in cloning, string-to-`str`
+call projections, and owned environment lookup results. The repair authenticates
+the exact borrowed projection while preserving existing ownership producers and
+keeping fixed-array-to-slice compatibility descriptor-only. The checked-in closure
+is `../align/docs/impl/xml-producer-investigation.md`, “Request 59 continuation:
+cloned borrowed sum payloads.” Producer owners and whole/per-unit coverage passed;
+Align also built the unchanged consumer and checked `prompt_artifacts.align`,
+`prompt_experiment.align`, and `prompt_generate.align`. These producer-side checks
+do not complete align-llm pin adoption or its final smoke evidence. Adopt #979 or
+a descendant and run the unchanged consumer owners named above.
 
 ---
 
