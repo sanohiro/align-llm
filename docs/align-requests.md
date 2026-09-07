@@ -77,8 +77,8 @@ join routine hosted/capable aggregates merely because it is important; run it wh
 boundary changes or an explicit audit selects it, not for an unrelated pin change.
 
 > **Status (2026-09-07): Requests 1–20, 22, and 57 are CLOSED. Request 21 and Requests 23–43 and
-> 45–54 are PROPOSED and non-blocking; Request 44 remains ALIGN_LLM_VERIFIED; blocking Request 55
-> is ALIGN_MERGED and shipped in Align v0.7.3; blocking Requests 56 and 58 are PROPOSED.
+> 45–54 are PROPOSED and non-blocking; Request 44 remains ALIGN_LLM_VERIFIED; blocking Requests 55,
+> 56, and 58 are ALIGN_MERGED and shipped in Align v0.7.3, v0.7.5, and v0.7.4 respectively.
 > Request 56 owns G1's private load-staging directory lifecycle, and Request 58 owns the bounded
 > borrowed-reader MIR validation pipeline.
 > R8-PARTIAL-LRU-CACHE is merged; the active compatibility adoption advances the Align pin without
@@ -10498,10 +10498,9 @@ Blocked gate or slice: G1 backend-bundle admission and immutable native loading
 Independent work that may continue: GPU bundle construction and verifier logic that does not
   consume the requested constructor or Request 56's private-directory lifecycle; publication
   remains blocked
-Resume condition: Align publishes a release containing the merged constructor and the separate
-  Request 56 private-directory lifecycle; align-llm updates .align-revision, materializes the
-  managed toolchain, adopts both released surfaces, and binds each verified reader byte stream to
-  the private artifact copy passed to the native registry
+Resume condition: align-llm adopts Align v0.7.5, materializes the managed toolchain, adopts both
+  released surfaces, and binds each verified reader byte stream to the private artifact copy passed
+  to the native registry
 Align commit or pull request: contract PR #951 and implementation PR #952 merged; implementation
   commit 22ac8eb8 shipped in Align v0.7.3 from release merge 1517c0e0; authoritative contract in
   ../align/docs/impl/34-fs-single-link-plan.md
@@ -10560,23 +10559,25 @@ Align v0.7.3's implementation preserves the existing sequence through nonblockin
 checks `st_nlink` from that sequence's existing opened-descriptor `fstat` record immediately before
 reader construction. It adds no second syscall and uses a distinct HIR/MIR operation and runtime
 key with the existing A12 ABI shape. Align-side delivery is complete; align-llm adoption and the
-separate application-owned load-staging identity boundary remain pending Request 56.
+separate application-owned load-staging identity boundary remain pending the joint v0.7.5 adoption.
 
 ---
 
 ## Request 56 — `std.fs`: private temporary-directory lifecycle
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: critical
 Blocking: yes
 Blocked gate or slice: G1 backend-bundle private load staging and immutable native loading
 Independent work that may continue: GPU bundle construction and verifier logic that does not create
-  or remove the private load directory; Request 55 adoption preparation
-Resume condition: an Align release ships both constructors below; align-llm adopts that release and
-  `make gpu-bundle-smoke` proves private creation, exclusive child creation, every safe cleanup
-  prefix, and process-owned quarantine after an unload-unsafe native side effect
-Align commit or pull request: pending
+  or remove the private load directory; Request 55 original-path admission
+Resume condition: align-llm adopts Align v0.7.5 and `make gpu-bundle-smoke` proves private creation,
+  exclusive child creation, every safe cleanup prefix, and process-owned quarantine after an
+  unload-unsafe native side effect
+Align commit or pull request: Align PR #962 merged as 41a6d526; shipped in Align v0.7.5 from
+  release merge b74a31df; https://github.com/sanohiro/align/releases/tag/v0.7.5; authoritative
+  contract and closure matrix in ../align/docs/impl/36-fs-private-temp-plan.md
 align-llm verification: update .align-revision to the shipped Align commit; use
   fs.create_private_temp_dir for the unique load root, fs.create_exclusive_beneath for each staged
   artifact, and fs.remove_empty_dir after removing known files; run make gpu-bundle-smoke and prove
@@ -10638,6 +10639,12 @@ each known child first; a failed cleanup is observable and cannot erase an unrel
    failure atomically transfers the native handles plus complete staging tree to a process-owned
    poisoned quarantine that rejects later GPU admission and lasts until exit.
 
+Align v0.7.5 ships both constructors with Linux and macOS owners for canonical temporary-root
+selection, bounded prefix validation, OS-random collision retry, private atomic directory creation,
+single-directory removal, replacement-race refusal, failure cleanup, checked-HIR replay, and the
+runtime ABI inventory. Align-side delivery is complete; align-llm adoption and the named
+`make gpu-bundle-smoke` consumer verification remain pending.
+
 ---
 
 ## Request 57 — MIR producer certification for owned `Result` record fields
@@ -10694,15 +10701,16 @@ the regression is closed without an application-side rewrite.
 ## Request 58 — MIR resource validation must terminate for a bounded borrowed-reader pipeline
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: critical
 Blocking: yes
 Blocked gate or slice: G1 resident Qwen AlignPack loading and production-provider integration
 Independent work that may continue: OLMoE resident graph construction, qualifier/evidence work that
   does not execute the Qwen pack loader, and Request 56 private bundle staging
-Resume condition: an Align release builds the focused owner below within 60 seconds on the named
-  Apple M1 host without weakening resource validation; align-llm adopts it and the owner passes
-Align commit or pull request: pending
+Resume condition: align-llm adopts Align v0.7.5, which contains the v0.7.4 fix, and the named Apple
+  M1 owner passes
+Align commit or pull request: Align PR #960 merged as 3db6a8f2; shipped in Align v0.7.4 from
+  release merge 37268739; https://github.com/sanohiro/align/releases/tag/v0.7.4
 align-llm verification: update .align-revision to the shipped Align commit and run
   `gmake gpu-qwen-load-smoke`; it must compile, reject the four malformed packs, plan exact padded
   weight/KV extents, and upload all 27 tensors through one reused 64-byte staging buffer
@@ -10767,6 +10775,14 @@ Acceptance requires:
 4. Existing Request 37 long-function and loop-`match` regressions do not regress. This request's
    fix must address the additional MIR/code-generation scaling class rather than merely restating
    the source-shaping workaround already applied here.
+
+Align PR #960 replaced the oscillating combined XML/MIR producer state with separate presence,
+absence, and invalidity fixed points while retaining conservative access joins and all invalid
+producer rejection. The reduced whole-program and per-unit owners, including the shorter-lived
+view rejection, and the existing Request 37 owners pass. The exact published align-llm source at
+`acfdd3b` reaches the native link step in 15.52 seconds on the Align Linux owner. Align v0.7.4 is
+published; adoption and the required Apple M1 `gmake gpu-qwen-load-smoke` execution remain
+align-llm-owned verification.
 
 ---
 

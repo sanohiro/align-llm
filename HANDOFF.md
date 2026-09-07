@@ -5,26 +5,25 @@ file records durable project state.
 
 ## Documentation checkpoint: runtime foundations (2026-09-07)
 
-Main `e964408f770c27d3a2b5ecc2148b22ca09fbd4c4` merged the runtime-foundations summary as PR #205,
-following the competitive GPU design in PR #204 and G1's contract in PR #203. The CPU measurement
-sequence is complete through item 79. No implementation is active; GPU execution is not yet
-implemented. Align remains pinned to `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`.
+Main `b39c39d87c10f25ae56e21660ee9929f956788f4` records Request 55's v0.7.3 release as PR #208,
+following the runtime-foundations summary in PR #205, the competitive GPU design in PR #204, and
+G1's contract in PR #203. The CPU measurement sequence is complete through item 79. G1
+implementation continues on `agent/g1-gpu-generation`; GPU execution is not yet merged. Main
+remains pinned to Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`, while that active branch has
+adopted v0.7.3.
 
-Align Request 55's retained-root single-link reader implementation merged in Align PR #952 as
-`22ac8eb8` and shipped in Align v0.7.3 from release merge `1517c0e0`. G1 does not adopt it alone:
-`.align-revision` remains at `8cefc803d5c7f883a8db5b67250ed4ed069b43a4` until Request 56's
-private-directory lifecycle also ships for the same consumer. The constructor certifies only the
-opened inode at one observation point, so G1 must additionally copy the digest-verified reader
-bytes into private load staging. The current pin cannot create that private temporary directory or
-remove it when empty, and align-llm will not hide those operations in its native shim. Safe release
-removes the stage; an unload-unsafe failure transfers its handles and complete tree to process-owned
-poisoned quarantine until exit. Bundle construction and verifier work that consumes neither
-missing surface may continue.
+Align Request 55's retained-root single-link reader shipped in v0.7.3. Request 56's private
+temporary-directory lifecycle shipped in v0.7.5 from release merge `b74a31df`, so all filesystem
+surfaces for G1's immutable native loading are now available. The constructor certifies only the
+opened inode at one observation point, so G1 must still copy the digest-verified reader bytes into
+private load staging during the joint v0.7.5 adoption. Safe release removes the stage; an
+unload-unsafe failure transfers its handles and complete tree to process-owned poisoned quarantine
+until exit.
 
-Request 58 separately blocks G1's resident Qwen AlignPack loader because its bounded
-borrowed-reader pipeline exceeds the 60-second acceptance bound and remained active without a
-diagnostic when stopped after 10 and 15 minutes. OLMoE graph construction and qualification work
-that does not execute that loader may continue.
+Request 58's MIR producer fixed-point repair shipped in Align v0.7.4 from release merge `37268739`.
+The Align Linux owner reaches native linking in 15.52 seconds; align-llm must still adopt the fix and
+pass the named Apple M1 `gmake gpu-qwen-load-smoke` owner before the resident Qwen loader resumes.
+Request 21 remains PROPOSED: the sibling Align source still has no `fs.open_ro` constructor.
 
 PR #205 records the subsequent discussion in `docs/specs/gpu-runtime-performance.md` §1.1–§1.2 and
 its architecture/roadmap pointers. It separates the goal, historical measured evidence, unresolved
@@ -35,15 +34,15 @@ implementation requirement is introduced.
 
 **Next actions, in order.**
 
-1. Complete the requested Request 55 register publication with authoritative-doc review and
+1. Complete the requested Requests 56/58 register publication with authoritative-doc review and
    exact-head docs preflight. GitHub owns the final review/check record.
-2. When Request 56 ships, adopt an exact Align revision containing both Requests 55 and 56 and
-   verify them together at the GPU bundle consumer boundary, including private
-   staged-byte-to-native-load identity races, cleanup prefixes, and poisoned process ownership.
-3. When implementation resumes, start G1's pinned-backend feasibility and immutable Metal/CUDA
-   recipes, continue the OLMoE device graph and eligible qualification work, and resume the Qwen
-   loader and provider integration after Request 58 ships. These checkpoints belong to one
-   consumer capability, not probe-only PRs.
+2. On the active G1 branch, adopt Align v0.7.5 containing Requests 55, 56, and 58. Verify private
+   staged-byte-to-native-load identity races, cleanup prefixes, poisoned process ownership, and the
+   Apple M1 Qwen loader owner.
+3. Continue G1's platform-profile and numeric-calibration work, then connect the retained source,
+   process, and record owners into the publication qualifier. After step 2, connect the Qwen loader
+   and provider integration. These checkpoints belong to one consumer capability, not probe-only
+   PRs.
 4. Deliver G1R next; advance eligible constrained-memory work without waiting for a resident speed
    win. Freeze each actual performance campaign's workload, resource/cost limits and decision rule
    before tuning. Do not claim current speed or larger-model support from this design.
@@ -54,10 +53,10 @@ its historical figures against their owning specifications and language claims a
 Align pin. `git diff --check` passed; static checks passed for Markdown fences, relative/pinned
 source links, evidence-owner values/rounding and the eight unchanged G1 JSON vectors. Source tests,
 GPU builds and new speed measurements are N/A for this documentation-only update. Requests
-34/35/38/41 remain language-owned limitations. Request 55 has shipped in Align v0.7.3; its
-align-llm adoption remains blocked on Request 56 rather than release publication. Request 58
-separately blocks the Qwen loader. Metal and CUDA require their own real-host evidence. AMD
-hardware is unavailable. Models, raw evidence and build products remain outside Git.
+21/34/35/38/41 remain language-owned limitations. Requests 55, 56, and 58 are released; their
+remaining lifecycle work is align-llm adoption and consumer verification. Metal and CUDA require
+their own real-host evidence. AMD hardware is unavailable. Models, raw evidence and build products
+remain outside Git.
 
 **Intentional uncommitted files.** None after this documentation candidate is committed.
 
