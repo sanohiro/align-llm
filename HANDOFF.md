@@ -51,6 +51,8 @@ pin adoption, `gmake gpu-numeric-stream` and final `gmake gpu-generation-smoke` 
   error maxima, plus reference-defined routing near-tie groups, selected-slot weight comparisons,
   and outside-group ID/order preservation. The independent bounded stream reader verifies framing,
   complete consumption, SHA-256 and retained file identity; the native producer awaits Request 61.
+  Paired consumption now binds the prior CPU digest and independent expected frames, streams scalar
+  tensors and compares routing triples. Geometry-derived case traversal is still pending.
 
 **Next actions, in order.**
 
@@ -84,6 +86,8 @@ outputs, lazy construction failure, actual bootstrap/compile rejection, and desc
 exponent/tolerance boundaries, nonfinite and malformed input, and routing-group/weight refusals.
 `gmake gpu-numeric-stream-reader` passes the independent byte golden, bounded chunks, malformed
 headers/footer/ordinals, truncation, file/link mutation, special files and incomplete consumption.
+`gmake gpu-numeric-pair` passes bounded scalar/routing pairing, exact counters, numeric/nonfinite
+results and refusal of matching wrong shapes, wrong ordering, extra/missing frames and CPU drift.
 These are focused build/registry/runtime checks, not completed GPU numeric qualification.
 
 **External inputs and constraints.** Models, raw evidence, build products and local paths stay
@@ -98,7 +102,7 @@ OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90.
 `1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
 follows from these build and correctness checkpoints.
 
-**Intentional uncommitted files.** None at the numeric-reader checkpoint.
+**Intentional uncommitted files.** None at the numeric-pair checkpoint.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

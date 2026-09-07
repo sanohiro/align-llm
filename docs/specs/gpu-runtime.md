@@ -641,6 +641,17 @@ identity again at completion, and computes SHA-256 while reading chunks of at mo
 may bind a previously observed digest; neither an ignored payload nor early close counts as a
 completed stream. The parent retains the CPU digest before launching its paired GPU command.
 
+`gpu_qualification_pair` requires that prior CPU digest and caller-derived frame expectations;
+agreement between two files alone cannot establish the correct shape or order. Scalar frames are
+compared in bounded chunks. Each routing token uses three adjacent height-one frames (scores, IDs,
+weights), ordered by token within the caller's diagnostic layer traversal. Each vector is bounded
+by 4 MiB; the pair retains at most six such vectors for a boundary. IDs are decoded as signed i32
+and validated by the routing owner. Footer verification rejects extra or missing expected tensors;
+an exception poisons the pair and complete comparison cannot be resumed after structural failure.
+`gpu-numeric-pair` owns this independent paired-consumption boundary. Geometry-derived traversal
+and final case evidence remain part of the pending case integration, not proof supplied by this
+internal reader API.
+
 `runtime_numeric_stream.disabled()` creates an inactive owner with no file and zero payload
 capacity. `create(root,relative,model,maximum_bytes,host_budget_bytes)` validates scalars and its
 65,576-byte host payload reservation before the shipped exclusive-beneath create. `record(owner,

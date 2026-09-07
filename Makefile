@@ -104,6 +104,10 @@ gpu-numeric-compare:
 gpu-numeric-stream-reader:
 	./scripts/run-gpu-numeric-stream-reader-smoke
 
+.PHONY: gpu-numeric-pair
+gpu-numeric-pair:
+	./scripts/run-gpu-numeric-pair-smoke
+
 gpu-input-admission:
 	./scripts/run-gpu-input-admission-smoke
 
