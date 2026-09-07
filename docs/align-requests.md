@@ -10967,6 +10967,85 @@ failure, never fallback. No language ownership or runtime ABI changed.
 
 ---
 
+## Request 61 — Borrowed access to owned buffer/writer fields and optional writers
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: G1 native numeric-stream producer and observed generation integration
+Independent work that may continue: native-independent G1 stream comparison/traversal, case
+  sequencing, source/profile capture and kit assembly are complete through align-llm e22b9d7;
+  remaining native case integration and real qualification depend on this request
+Resume condition: Align merges borrow-safe buffer/writer field receivers and optional-writer
+  projections; pin the shipped commit and pass gpu-numeric-stream and gpu-generation-smoke
+Align commit or pull request: pending; tracked in https://github.com/sanohiro/align/issues/981
+align-llm verification: exact managed 8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f rejects all four
+  minimal borrowed handle cases below; the sibling checkout has that same HEAD
+```
+
+Client implementation checkpoint: https://github.com/sanohiro/align-llm/tree/e22b9d7
+
+G1's bounded numeric stream naturally owns one optional writer, one reusable buffer and scalar
+counters. Its `record(borrow mut stream, frame, payload)` operation must write through the retained
+writer and mutate header bytes without moving, cloning, reopening or exposing either handle.
+This is a compiler/language requirement, not a missing application codec. Request 16's closed
+finite borrowed-payload grammar does not cover these handles; this request does not reopen that
+completed consumer or request arbitrary network-handle retention semantics.
+
+At exact pin and sibling HEAD `8dc80978`, `alignc check` rejects this complete fixture:
+
+```align
+Holder { sink: Option<writer> }
+fn emit(borrow holder: Holder) -> Result<(), Error> {
+  match holder.sink {
+    Some(sink) => { sink.write("ok")? },
+    None => {},
+  }
+  return Ok(())
+}
+fn main() {}
+```
+
+Diagnostics are `cannot bind an unsupported Move payload through field of borrowed parameter
+'holder'` and `cannot move a field out of borrowed parameter 'holder'`. Direct
+`emit(borrow sink: Option<writer>)` similarly rejects the borrowed payload. A non-optional
+`Holder { sink: writer }` with `sink := holder.sink; sink.write("ok")?` and a buffer field with
+`data := holder.data; view := data.bytes()` each reject the field read as a move.
+Calling `holder.data.bytes()` directly instead emits the temporary-buffer/local-binding diagnostic.
+These are small checked-program rejections, not a compiler timeout or runtime failure.
+
+Current sibling evidence is `crates/align_sema/src/lib.rs`'s
+`borrowed_sum_payload_is_admissible`, borrowed match checking, and MoveCheck's field-read rule.
+`crates/align_driver/tests/struct_handle_fields.rs` establishes that buffer/writer fields are owned
+Move handles with recursive drop; its construction/move/drop coverage does not provide this
+borrowed receiver path. The normal local writer and local borrowed buffer APIs are shipped.
+
+**Proposed surface.** Preserve syntax and handle layouts. A buffer/writer field reached through a
+borrowed complete owner may be a non-consuming method receiver; a borrowed `Option<writer>` or its
+field may bind an active writer as a borrowed projection for existing writer methods. The source
+retains ownership, descriptor/buffer identity and sole cleanup responsibility. A buffer view carries
+the original owner/generation lifetime; a projected writer cannot be moved, stored, returned,
+captured or independently dropped. Shared/exclusive access must respect the existing method's
+borrow mode. Keep the prohibition on exclusively passing an arbitrary partial Move field unless
+Align separately designs that surface: the application can encode through a borrowed byte view
+while borrowing the complete stream owner. Request 38 already records positional buffer operations;
+bytewise fixed-header encoding itself is an application concern, not a new request.
+
+**Acceptance.** Whole-program and per-unit compiler owners must cover direct and optional fields,
+nested borrowed owners, return/drop of the owned containing stream, repeated writes, mutation of a
+buffer-derived view, failure/early exit, and ordinary owned-match parity. Negative owners must reject
+projection escape, consumption, use after owner replacement/drop, and conflicting owner mutation.
+The runtime owner must prove exact bytes and one close/free per handle, including a failed write.
+Checked HIR/MIR, imported interfaces and cache replay must preserve the same producer identity;
+admitting the syntax without those ownership proofs is not sufficient. In align-llm, restore the
+planned `runtime_numeric_stream` producer only after merge, run `gmake gpu-numeric-stream` against
+the independent Python byte vector and malformed reader cases, then `gmake gpu-generation-smoke`
+as the final integration owner. No aggregate or extra native-platform qualification is added by
+this request's pin adoption alone.
+
+---
+
 ## Not requested (respecting Align's design)
 
 These were considered and deliberately **not** requested, because they conflict with Align's design
