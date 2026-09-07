@@ -6,14 +6,11 @@ this file records durable execution state.
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
 Branch `agent/g1-gpu-generation` is based on main `15efe15a3fc3369b93a3343d96f0ac10ab58e4ef`.
-The shared branch is pushed through `f4418f8`; it has no pull request and is not merged.
-Request 61 is filed as https://github.com/sanohiro/align/issues/981.
-G1 is one consumer-complete capability; do not
-publish its internal checkpoints. The current user requests continuous implementation, review,
-repair and merge, followed immediately by the next eligible capability until asked to stop.
-The latest implementation checkpoint is `e22b9d7`. Native-independent comparison, sequencing and
-kit work is complete; remaining native integration is paused on Request 61. The roadmap orders
-G1R/G2 after G1, so neither is an eligible substitute while this prerequisite remains unshipped.
+The user explicitly requested publication and merge of the current implementation checkpoint.
+This overrides the normal no-checkpoint-publication rule for this change only. Review and executable
+preflight remain required. G1 is not complete or backend-qualified by this checkpoint merge.
+Request 61 is filed as https://github.com/sanohiro/align/issues/981; native case integration and
+real Metal/CUDA qualification remain the active follow-up. G1R/G2 still follow completed G1.
 
 Align `8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f` is pinned. Requests 59 and 60 are closed after
 PRs #972, #975, #979 and #980 repaired the borrowed-producer/replacement cases, and #973 shipped the
@@ -57,7 +54,7 @@ pin adoption, `gmake gpu-numeric-stream` and final `gmake gpu-generation-smoke` 
   and outside-group ID/order preservation. The independent bounded stream reader verifies framing,
   complete consumption, SHA-256 and retained file identity; the native producer awaits Request 61.
   Paired consumption now binds the prior CPU digest and independent expected frames, streams scalar
-  tensors and compares routing triples. Geometry-derived case traversal is still pending.
+  tensors and compares routing triples. Geometry-derived case traversal is implemented below.
 - Shared source capture now accepts an explicitly pinned application checkout as well as ggml,
   preserves each repository identity, verifies captured Git objects and rechecks admission after
   reading. Kit assembly can consume actual application source instead of fixture-only snapshots.

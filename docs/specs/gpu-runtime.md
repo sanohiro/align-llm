@@ -1,6 +1,14 @@
 # G1 GPU runtime: resident Metal and CUDA generation
 
-Status: design only, 2026-09-06. No GPU capability is implemented by this change.
+Status: implementation checkpoint, 2026-09-08; G1 qualification remains incomplete.
+
+The user explicitly requested review and merge of the current implemented checkpoint before the
+remaining Align prerequisite ships. This is a publication exception for this checkpoint, not a
+change to G1 acceptance. Resident provider generation and the qualification infrastructure are
+implemented; native numeric-stream production/final qualifier CLI remain blocked by
+[Align Request 61](https://github.com/sanohiro/align/issues/981). Real Metal and CUDA qualification
+and populated calibration/profile evidence remain required to close G1. No runtime performance,
+full numeric qualification or CUDA correctness claim follows from this checkpoint.
 
 This is the authoritative public contract for roadmap item 80 (G1). It records delivery order and
 non-negotiable principles for items 81–85, but those later consumers must extend the contract,
