@@ -23,7 +23,10 @@ Verification: the exact managed pin passes the request fixture's `check` and rej
 Documentation-only publication uses `git diff --check` and exact-head `python3 scripts/pre-pr`.
 No intentional uncommitted files remain after this documentation candidate is committed.
 
-## Documentation checkpoint: runtime foundations (2026-09-07)
+## Historical documentation checkpoint: runtime foundations (2026-09-07)
+
+The request-register publication action below was completed by PR #210. Its older action list is
+historical; the active Request 62 resume instructions above take precedence.
 
 Main `b39c39d87c10f25ae56e21660ee9929f956788f4` records Request 55's v0.7.3 release as PR #208,
 following the runtime-foundations summary in PR #205, the competitive GPU design in PR #204, and

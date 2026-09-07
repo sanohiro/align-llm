@@ -11164,8 +11164,11 @@ fn caller(borrow mut owner: helper.Holder) -> Result<(), Error> {
 fn main() {}
 ```
 
-Run the exact managed wrapper with `check <directory>/main.align` and
-`check-per-unit <directory>/main.align`. The first reports three checked functions; the second
+From the G1 consumer checkout with `.align-revision` set to
+`3fbb74fe7c351e526c997bd4c70bd00cf1a424a0`, run
+`scripts/alignc check <directory>/main.align` and
+`scripts/alignc check-per-unit <directory>/main.align`. This request-only publication branch does
+not adopt that pin. The first reports three checked functions; the second
 rejects `helper.emit(owner, bytes)`. Sibling HEAD is the same shipped commit. The current source
 owns inferred mutable-borrow retention in `crates/align_sema/src/lib.rs`
 (`BorrowMutRetentionSummary`, `infer_return_provenance`, imported-call fallback). The disagreement
