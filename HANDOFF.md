@@ -12,7 +12,8 @@ source ownership, device memory and graph ownership, resident Qwen/OLMoE prefill
 qualification records, evidence replay, and owned qualifier processes. G1 remains one unpublished
 consumer-complete capability.
 
-Align merge `5250e996f4e3a00bc4dfe8584d05acf95f10a78e` is pinned. Checkpoint
+Align `main` `8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f` is pinned; it contains the Request
+59/60 merges and #980's subsequent mutable-borrow replacement cleanup repair. Checkpoint
 `87684fa` confirms Request 58's compiler repair on Apple M1 and corrects the Qwen fixture's actual
 whole-tensor member representation. The current private-staging checkpoint closes Requests 55 and
 56: every admitted artifact is copied from its retained single-link reader into a distinct mode
@@ -86,9 +87,10 @@ Issues #966 and #968 contain the final real-client evidence. Neither request blo
    consumer-complete, then review, repair, exact-head preflight, and merge. Stop after this pull
    request as requested; do not begin G1R in this work session.
 
-**Verification and constraints.** At pinned `5250e996`, `gmake build`, `gmake ggml-spike-smoke`,
-`gmake gpu-explicit-driver`, `gmake gpu-command-environment`, `gmake gpu-preparation-evidence`,
-`gmake gpu-bundle-smoke`,
+**Verification and constraints.** At pinned `8dc80978`, `gmake build`, `gmake ggml-spike-smoke`,
+`gmake gpu-explicit-driver`, and the Request 59 per-unit checks for `verification_loop.align`,
+`alignpack.align`, and `prompt_artifacts.align` pass. At its contained Request 59/60 merge pin,
+`gmake gpu-command-environment`, `gmake gpu-preparation-evidence`, `gmake gpu-bundle-smoke`,
 `gmake gpu-device-smoke`, `gmake gpu-qwen-load-smoke`, `gmake gpu-olmoe-load-smoke`, and per-unit
 checks for `runtime_bundle`, `runtime_device`, and `ggml_ffi` pass. The real shim compiles against Homebrew ggml with
 `-Wall -Wextra -Werror`; Mac links use
@@ -119,7 +121,7 @@ with bundle ID `0a472538ef35...814b`, manifest digest `f928428facfe...8d1`, sour
 `64db6180009a...6f4`, and source-snapshot digest `c2860034df35...8b3`. Its 3,430-file, 169 MiB
 closure passed the recipe bounds, and the real shim linked against the staged bundle successfully.
 
-**Intentional uncommitted files.** None after the request-capacity checkpoint is committed.
+**Intentional uncommitted files.** None after the latest Align pin adoption is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 
