@@ -120,7 +120,7 @@ def build_driver_proxy(
 
 
 def grouped_bootstrap_owner(alignc, cc, sdk, parent) -> None:
-    for mode in ("success", "failure", "timeout", "revision"):
+    for mode in ("success", "failure", "timeout", "revision", "archive"):
         fail = mode != "success"
         work = parent / ("grouped-" + mode)
         work.mkdir(mode=0o700)
@@ -137,6 +137,12 @@ def grouped_bootstrap_owner(alignc, cc, sdk, parent) -> None:
             cc_path.write_text("#!/bin/sh\n/bin/sleep 30 &\nwait\n", encoding="utf-8")
             cc_path.chmod(0o700)
         cc_input = qualification_run.ToolchainExecutable.admit(cc_path)
+        support = {}
+        if mode == "archive":
+            for name in ("crypto", "ssl", "zstd"):
+                path = work / ("input-lib" + name + ".a")
+                path.write_bytes(b"invalid archive")
+                support[name] = path
         revision = (ROOT / ".align-revision").read_text().strip()
         first = qualification_build.compiler_materialization_command(
             work=work, compiler=alignc,
@@ -146,6 +152,7 @@ def grouped_bootstrap_owner(alignc, cc, sdk, parent) -> None:
             git=qualification_run.ToolchainExecutable.admit(pathlib.Path(shutil.which("git"))),
             platform="macos" if sys.platform == "darwin" else "linux",
             align_revision="0" * 40 if mode == "revision" else revision,
+            support_archives=support,
         )
         state = qualification_run.PreparationState(
             pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture",
@@ -180,6 +187,8 @@ def grouped_bootstrap_owner(alignc, cc, sdk, parent) -> None:
             assert "logs/000.stderr" in state.retained
             if mode == "revision":
                 assert b"revision differs" in state.failed_result.stderr.retained
+            if mode == "archive":
+                assert b"support archive input" in state.failed_result.stderr.retained
             assert not (work / "alignc").exists() and not (work / "native-driver").exists()
         else:
             assert state.complete, (state.failure_detail,

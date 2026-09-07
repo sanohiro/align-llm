@@ -1,8 +1,14 @@
 module runtime_cpu_reference_smoke
 
 import ggml_ffi
+import std.crypto
+import std.encoding
 
 fn main() -> Result<(), Error> {
+  hash := crypto.sha256("hi")
+  if encoding.hex_encode(hash[0..hash.len()]) != "8f434346648f6b96df89dda901c5176b10a6d83961dd3c1ac88b59b2dc327aa4" {
+    return Err(Error.Invalid)
+  }
   device := ggml_ffi.device_open()
   if device.is_null() { return Err(Error.Invalid) }
   backend := ggml_ffi.backend_open(device)

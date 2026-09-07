@@ -21,6 +21,7 @@ def compiler_materialization_command(
     *, work: pathlib.Path, compiler: pathlib.Path, python: ToolchainExecutable,
     helper: pathlib.Path, cc: ToolchainExecutable, linker: ToolchainExecutable,
     git: ToolchainExecutable, sdk: ToolchainDirectory, platform: str, align_revision: str,
+    support_archives: dict[str, pathlib.Path] | None = None,
 ) -> PreparationCommand:
     if platform not in {"macos", "linux", "wsl2"} \
             or re.fullmatch(r"[0-9a-f]{40}", align_revision) is None:
@@ -40,10 +41,21 @@ def compiler_materialization_command(
     logical = (python_token, "-B", helper_token, compiler_token, digest, cc_token,
                linker_token, sdk_token, metadata_token, "<compiler-work>:owned", platform, "alignc",
                git_token, align_revision)
+    mappings = {python_token: python, helper_token: helper, compiler_token: compiler,
+                cc_token: cc, linker_token: linker, git_token: git, sdk_token: sdk,
+                metadata_token: sdk.metadata_path, "<compiler-work>:owned": work}
+    if support_archives:
+        if set(support_archives) != {"crypto", "ssl", "zstd"}:
+            raise RecipeError("compiler support archive set is incomplete")
+        for name in ("crypto", "ssl", "zstd"):
+            path = support_archives[name]
+            token = _input("support-" + name, path)
+            digest = token.rsplit(":sha256:", 1)[1]
+            physical += (str(path), digest)
+            logical += (token, digest)
+            mappings[token] = path
     return PreparationCommand(
-        physical, logical, {python_token: python, helper_token: helper, compiler_token: compiler,
-                            cc_token: cc, linker_token: linker, git_token: git, sdk_token: sdk,
-                            metadata_token: sdk.metadata_path, "<compiler-work>:owned": work},
+        physical, logical, mappings,
         work / "alignc", "alignc", align_revision, work, sdk, (cc, linker),
     )
 

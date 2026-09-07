@@ -62,9 +62,9 @@ def verify_managed(compiler, expected, revision, git, work, environment) -> None
 
 
 def main(arguments: list[str]) -> None:
-    if len(arguments) != 11:
+    if len(arguments) not in (11, 17):
         raise RecipeError("compiler materialization arguments are incomplete")
-    source, expected, cc, ld, sdk_root, sdk_metadata, directory, platform, output_name, git, revision = arguments
+    source, expected, cc, ld, sdk_root, sdk_metadata, directory, platform, output_name, git, revision = arguments[:11]
     if output_name != "alignc":
         raise RecipeError("compiler materialization output is invalid")
     work = _private_directory(pathlib.Path(directory), "compiler work")
@@ -80,10 +80,26 @@ def main(arguments: list[str]) -> None:
     verify_managed(pathlib.Path(source), expected, revision,
                    ToolchainExecutable.admit(pathlib.Path(git)), work, environment)
     sdk = ToolchainDirectory.admit(pathlib.Path(sdk_root), pathlib.Path(sdk_metadata))
+    support = {}
+    if len(arguments) == 17:
+        support_root = work / "support"
+        support_root.mkdir(mode=0o700)
+        for ordinal, name in enumerate(("crypto", "ssl", "zstd")):
+            archive, expected_archive = arguments[11 + ordinal * 2:13 + ordinal * 2]
+            archive_data, archive_digest = _artifact(pathlib.Path(archive))
+            if archive_digest != expected_archive or not archive_data.startswith(b"!<arch>\n"):
+                raise RecipeError("compiler support archive input changed or is invalid")
+            staged = support_root / ("lib" + name + ".a")
+            with staged.open("xb") as stream:
+                stream.write(archive_data)
+            staged.chmod(0o600)
+            if _artifact(staged)[1] != expected_archive:
+                raise RecipeError("compiler support archive copy changed")
+            support[name] = staged
     planned = plan_driver(
         compiler=ToolchainExecutable.admit(pathlib.Path(cc)),
         linker=ToolchainExecutable.admit(pathlib.Path(ld)), sdk=sdk,
-        work=work, library_root=work, platform=platform,
+        work=work, library_root=work, platform=platform, support_archives=support,
     )
     created = False
     try:

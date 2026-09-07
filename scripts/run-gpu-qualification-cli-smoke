@@ -92,6 +92,10 @@ def host_admission_owner(parent: pathlib.Path) -> None:
     (sdk / "SDKSettings.json").write_text("fixture SDK")
     alternative = root / "other-sdk"
     alternative.mkdir()
+    support = root / "support"
+    support.mkdir()
+    for name in ("crypto", "ssl", "zstd"):
+        (support / ("lib" + name + ".a")).write_bytes(b"!<arch>\n")
     tool = root / "probe.py"
     tool.write_text(
         f"#!{sys.executable}\nimport os, pathlib, sys\n"
@@ -108,12 +112,13 @@ def host_admission_owner(parent: pathlib.Path) -> None:
         "    (root / 'seen').touch()\n"
         "    print(root / ('other-sdk' if seen and mode == 'drift' else 'sdk'))\n"
         "elif sys.argv[-1] == '--show-sdk-version': print('1.2')\n"
+        "elif sys.argv[1] == '--variable=libdir': print(root / 'support')\n"
         "else: print('' if mode == 'malformed' else 'fixture compiler')\n",
         encoding="utf-8",
     )
     tool.chmod(0o700)
     for name in ("cmake", "ninja", "xcrun", "clang", "clang++", "ar", "ranlib", "ld",
-                 "cc", "c++", "ldd", "nvcc"):
+                 "cc", "c++", "ldd", "nvcc", "pkg-config"):
         (root / name).symlink_to(tool)
 
     def find(name):
@@ -133,6 +138,19 @@ def host_admission_owner(parent: pathlib.Path) -> None:
         admitted = host.admit_host(**arguments)
         assert admitted.identities == expected and admitted.sdk.path == sdk.resolve()
         assert admitted.tools["cxx"].path.name == "clang++"
+        assert set(admitted.support_archives) == {"crypto", "ssl", "zstd"}
+        rejected(lambda: build.compiler_materialization_command(
+            work=root, compiler=tool, python=host.ToolchainExecutable.admit(pathlib.Path(sys.executable)),
+            helper=ROOT / "scripts/gpu_compiler_materialize.py", cc=admitted.tools["cc"],
+            linker=admitted.tools["linker"], git=admitted.tools["cc"], sdk=admitted.sdk,
+            platform="macos", align_revision="a" * 40,
+            support_archives={"crypto": admitted.support_archives["crypto"]},
+        ), "archive set is incomplete")
+        (support / "libcrypto.a").write_bytes(b"dynamic library")
+        rejected(lambda: host.admit_host(**arguments), "not a static archive")
+        (support / "libcrypto.a").unlink()
+        rejected(lambda: host.admit_host(**arguments), "cannot be read")
+        (support / "libcrypto.a").write_bytes(b"!<arch>\n")
         for field in expected:
             changed = expected | {field: expected[field] | {"sha256": "0" * 64}}
             rejected(lambda: host.admit_host(**(arguments | {"expected": changed})), "does not match the bundle")

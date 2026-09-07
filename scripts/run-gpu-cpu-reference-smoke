@@ -5,8 +5,6 @@ from __future__ import annotations
 
 import hashlib
 import dataclasses
-import importlib.machinery
-import importlib.util
 import json
 import os
 import pathlib
@@ -52,16 +50,6 @@ def host_inputs():
         sdk = ToolchainDirectory.admit(pathlib.Path("/"), pathlib.Path("/etc/os-release").resolve())
         platform = "linux"
     return tools, sdk, platform
-
-
-def driver_fixture():
-    name = "gpu_cpu_reference_driver_fixture"
-    loader = importlib.machinery.SourceFileLoader(name, str(ROOT / "scripts/run-gpu-explicit-driver-smoke"))
-    spec = importlib.util.spec_from_loader(name, loader)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def failure_owners(command, work: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path) -> None:
@@ -136,7 +124,6 @@ def main() -> None:
     compiler = pathlib.Path(sys.argv[1]).resolve(strict=True)
     ggml_checkout = pathlib.Path(sys.argv[2]).resolve(strict=True)
     tools, sdk, platform = host_inputs()
-    fixture = driver_fixture()
     with tempfile.TemporaryDirectory(prefix="gpu-cpu-reference-") as temporary:
         root = pathlib.Path(temporary)
         work, home, scratch = (root / name for name in ("work", "home", "tmp"))
@@ -154,6 +141,16 @@ def main() -> None:
                 deadline_ns=time.monotonic_ns() + 60_000_000_000,
             )
             tools, sdk = admitted_host.tools, admitted_host.sdk
+            support_archives = admitted_host.support_archives
+        else:
+            support_archives = {}
+            for package, names in (("openssl", ("crypto", "ssl")), ("libzstd", ("zstd",))):
+                directory = pathlib.Path(subprocess.check_output(
+                    [str(executable("pkg-config").path), "--variable=libdir", package],
+                    text=True, env=environment,
+                ).strip())
+                for name in names:
+                    support_archives[name] = directory / ("lib" + name + ".a")
         git = str(executable("git").path)
         print("gpu CPU reference: capturing the pinned ggml source", flush=True)
         recipe.require_source(ggml_checkout, git, environment)
@@ -173,32 +170,45 @@ def main() -> None:
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes((ROOT / relative).read_bytes())
         entry = app / "src/runtime_cpu_reference_smoke.align"
-        proxy = work / "selected-cc"
-        marker = work / "driver-environment"
-        native = fixture.build_driver_proxy(tools["cc"].path, work / "driver.c", proxy, marker, work, sdk)
+        proxy = work / "native-driver"
         revision = (ROOT / ".align-revision").read_text().strip()
         source_commit = subprocess.check_output([git, "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
-        planned = list(build.commands(
-            work=work, compiler=compiler, runtime=compiler.parent / "libalign_runtime.a",
-            copier=pathlib.Path("/bin/cp").resolve(), driver=proxy, reference_driver=proxy,
-            entry=entry, shim_source=app / "scripts/ggml_shim_stub.c", platform=platform,
-            align_revision=revision, source_commit=source_commit, sdk=sdk,
-        ))
-        planned[4] = build.cpu_reference_command(
-            work=work, output=work / "cpu-reference", compiler=work / "alignc", entry=entry,
-            ggml_source=ggml_source, shim_source=app / "scripts/ggml_shim.c",
-            project_source=app / "scripts/gpu_cpu_reference", parent_driver=proxy,
-            tools=tools, sdk=sdk, platform=platform, ggml_commit=recipe.GGML_COMMIT,
-            source_commit=source_commit, compiler_sha256=hashlib.sha256(compiler.read_bytes()).hexdigest(),
+        first = build.compiler_materialization_command(
+            work=work, compiler=compiler, python=ToolchainExecutable.admit(pathlib.Path(sys.executable)),
+            helper=ROOT / "scripts/gpu_compiler_materialize.py", cc=tools["cc"], linker=tools["linker"],
+            git=ToolchainExecutable.admit(pathlib.Path(git)), sdk=sdk, platform=platform,
+            align_revision=revision, support_archives=support_archives,
         )
-        planned = [dataclasses.replace(command, tool_dependencies=native.tool_dependencies)
-                   for command in planned]
+        planned = []
+
+        def command_at(ordinal):
+            if not planned:
+                planned.extend(build.commands(
+                    work=work, compiler=compiler, runtime=compiler.parent / "libalign_runtime.a",
+                    copier=pathlib.Path("/bin/cp").resolve(), driver=proxy, reference_driver=proxy,
+                    entry=entry, shim_source=app / "scripts/ggml_shim_stub.c", platform=platform,
+                    align_revision=revision, source_commit=source_commit, sdk=sdk, compiler_materialized=True,
+                ))
+                planned[4] = build.cpu_reference_command(
+                    work=work, output=work / "cpu-reference", compiler=work / "alignc", entry=entry,
+                    ggml_source=ggml_source, shim_source=app / "scripts/ggml_shim.c",
+                    project_source=app / "scripts/gpu_cpu_reference", parent_driver=proxy,
+                    tools=tools, sdk=sdk, platform=platform, ggml_commit=recipe.GGML_COMMIT,
+                    source_commit=source_commit,
+                )
+                dependencies = (tools["cc"], ToolchainExecutable.admit(work / "native-tools/ld"))
+                planned[:] = [dataclasses.replace(command, tool_dependencies=dependencies) for command in planned]
+            return planned[ordinal]
+
         state = preparation.PreparationState(
             pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture",
             preparation_timeout_ns=600_000_000_000,
         )
         print("gpu CPU reference: building compiler/runtime/shim/candidate/static reference", flush=True)
-        preparation.run_preparation(state, planned, cwd=work, home=home, temporary=scratch)
+        preparation.run_preparation(
+            state, [first, *(lambda ordinal=ordinal: command_at(ordinal) for ordinal in range(1, 5))],
+            cwd=work, home=home, temporary=scratch,
+        )
         assert state.complete, (
             state.failure_ordinal, state.failure_detail,
             state.failed_result.stderr.retained.decode(errors="replace") if state.failed_result else "unstarted",
@@ -255,10 +265,14 @@ def main() -> None:
         else:
             dependencies = subprocess.check_output([str(executable("readelf").path), "-d", str(binary)])
             dependency_lines = [line for line in dependencies.splitlines() if b"NEEDED" in line]
-        assert not any(b"ggml" in line.lower() for line in dependency_lines), dependency_lines
+        assert not any(name in line.lower() for name in (b"ggml", b"libcrypto", b"libssl", b"libzstd")
+                       for line in dependency_lines), dependency_lines
         assert all(item["state"] == "available" for item in state.identities.values())
-        names = {line.split("=", 1)[0] for line in marker.read_text().splitlines()}
-        assert names - {"__CF_USER_TEXT_ENCODING"} == {"HOME", "LC_ALL", "TMPDIR", "TZ"}, names
+        assert all(command["environment"] == ["HOME=<home>:owned", "LC_ALL=C", "TMPDIR=<tmp>:owned", "TZ=UTC"]
+                   for command in state.commands)
+        for name, original in support_archives.items():
+            copied = work / "support" / ("lib" + name + ".a")
+            assert copied.read_bytes() == original.read_bytes() and copied.stat().st_nlink == 1
         failure_owners(planned[4], work, home, scratch)
         print("gpu CPU reference build and static registry: PASS", flush=True)
 

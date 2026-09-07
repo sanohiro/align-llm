@@ -29,6 +29,7 @@ def plan_driver(
     *, compiler: ToolchainExecutable, linker: ToolchainExecutable,
     sdk: ToolchainDirectory, work: pathlib.Path,
     library_root: pathlib.Path, platform: str,
+    support_archives: dict[str, pathlib.Path] | None = None,
 ) -> DriverBuild:
     if platform not in {"macos", "linux", "wsl2"}:
         raise RecipeError("native driver platform is unsupported")
@@ -41,6 +42,13 @@ def plan_driver(
     compiler.recheck(compiler.sha256)
     linker.recheck(linker.sha256)
     sdk.recheck(sdk.sha256)
+    support = support_archives or {}
+    if support and set(support) != {"crypto", "ssl", "zstd"}:
+        raise RecipeError("native driver support archive set is incomplete")
+    for path in support.values():
+        if not path.is_absolute() or work.resolve(strict=True) not in path.resolve(strict=True).parents:
+            raise RecipeError("native driver support archive is outside its private work root")
+        _file_sha256(path, "native driver support archive")
     source, output = work / "native-driver.c", work / "native-driver"
     tool_root = work / "native-tools"
     if any(path.exists() or path.is_symlink() for path in (source, output, tool_root)):
@@ -51,6 +59,8 @@ def plan_driver(
     extra = ["-L", str(library_root), "-Xlinker", "-rpath", "-Xlinker", str(library_root),
              "-B", str(tool_root) + "/"]
     extra.extend(["-isysroot", str(sdk.path)] if platform == "macos" else ["--sysroot=" + str(sdk.path)])
+    if platform != "macos":
+        extra.extend(("-lpthread", "-ldl", "-lm"))
     raw = '''#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,16 +83,32 @@ int main(int argc, char **argv) {
     if (home == NULL || temporary == NULL) return 92;
     char *environment[] = {home, (char *) "LC_ALL=C", temporary, (char *) "TZ=UTC", NULL};
     const char *extra[] = { @EXTRA@ };
+    const char *support_names[] = {"-lcrypto", "-lssl", "-lzstd"};
+    const char *support_paths[] = { @SUPPORT@ };
     size_t count = sizeof(extra) / sizeof(extra[0]);
-    char **selected = calloc((size_t) argc + count + 1, sizeof(char *));
+    char **selected = calloc((size_t) argc + count + 2, sizeof(char *));
     if (selected == NULL) return 94;
     selected[0] = (char *) @COMPILER@;
-    for (int at = 1; at < argc; at++) selected[at] = argv[at];
-    for (size_t at = 0; at < count; at++) selected[(size_t) argc + at] = (char *) extra[at];
+    int ssl = 0;
+    for (int at = 1; at < argc; at++) {
+        selected[at] = argv[at];
+        for (size_t index = 0; index < 3; index++) {
+            if (support_paths[index] != NULL && strcmp(argv[at], support_names[index]) == 0) {
+                selected[at] = (char *) support_paths[index];
+                if (index == 1) ssl = 1;
+            }
+        }
+    }
+    size_t next = (size_t) argc;
+    if (ssl) selected[next++] = (char *) support_paths[0];
+    for (size_t at = 0; at < count; at++) selected[next++] = (char *) extra[at];
     execve(selected[0], selected, environment);
     return errno == 0 ? 91 : errno;
 }
 '''.replace("@EXTRA@", ", ".join(map(_c_string, extra))).replace("@COMPILER@", _c_string(str(compiler.path)))
+    raw = raw.replace("@SUPPORT@", ", ".join(
+        _c_string(str(support[name])) if name in support else "NULL" for name in ("crypto", "ssl", "zstd")
+    ))
     with source.open("x", encoding="utf-8") as stream:
         stream.write(raw)
     source.chmod(0o600)
@@ -115,9 +141,10 @@ def build_driver(
     sdk: ToolchainDirectory, work: pathlib.Path, home: pathlib.Path,
     temporary: pathlib.Path, library_root: pathlib.Path, platform: str,
     deadline_ns: int,
+    support_archives: dict[str, pathlib.Path] | None = None,
 ) -> NativeDriver:
     planned = plan_driver(compiler=compiler, linker=linker, sdk=sdk, work=work,
-                          library_root=library_root, platform=platform)
+                          library_root=library_root, platform=platform, support_archives=support_archives)
     try:
         result = run_owned_command(
             kind="compiler_materialize", physical_argv=planned.physical_argv,

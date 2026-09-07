@@ -11,7 +11,7 @@ import shutil
 import sys
 
 from gpu_backend_recipe import EMPTY_DIGEST, RecipeError
-from gpu_qualifier_process import ToolchainDirectory, ToolchainExecutable, run_owned_command
+from gpu_qualifier_process import ToolchainDirectory, ToolchainExecutable, _file_sha256, run_owned_command
 
 
 @dataclasses.dataclass(frozen=True)
@@ -20,6 +20,7 @@ class HostToolchain:
     tools: dict[str, ToolchainExecutable]
     sdk: ToolchainDirectory
     identities: dict[str, dict[str, str]]
+    support_archives: dict[str, pathlib.Path]
 
 
 def _find(name: str) -> ToolchainExecutable:
@@ -108,7 +109,20 @@ def admit_host(
         text(selector, "--sdk", "macosx", "--show-sdk-path"),
     ).resolve(strict=True) != sdk.path:
         raise RecipeError("qualification host SDK selection changed")
+    package_tool = _find("pkg-config")
+    archives = {}
+    for package, names in (("openssl", ("crypto", "ssl")), ("libzstd", ("zstd",))):
+        directory = pathlib.Path(text(package_tool, "--variable=libdir", package))
+        if not directory.is_absolute():
+            raise RecipeError("qualification support library directory is not absolute")
+        for name in names:
+            path = directory / ("lib" + name + ".a")
+            _file_sha256(path, "support archive")
+            with path.open("rb") as stream:
+                if stream.read(8) != b"!<arch>\n":
+                    raise RecipeError("qualification support library is not a static archive")
+            archives[name] = path
     sdk.recheck(sdk.sha256)
     for tool in tools.values():
         tool.recheck(tool.sha256)
-    return HostToolchain(platform, tools, sdk, identities)
+    return HostToolchain(platform, tools, sdk, identities, archives)

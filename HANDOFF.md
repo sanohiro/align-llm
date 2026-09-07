@@ -1,200 +1,87 @@
 # Session handoff
 
-Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
-file records durable project state.
+Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations;
+this file records durable execution state.
 
-## Active capability: G1 resident GPU generation (2026-09-07)
+## Active capability: G1 resident GPU generation (2026-09-08)
 
-Branch `agent/g1-gpu-generation` is rebased onto main `15efe15a3fc3369b93a3343d96f0ac10ab58e4ef`.
-It remains unpublished and has no pull request; do not publish an internal checkpoint.
-Implemented checkpoints cover strict runtime options, provider dispatch, canonical bundle and
-source ownership, device memory and graph ownership, resident Qwen/OLMoE prefill and decode,
-qualification records, evidence replay, and owned qualifier processes. G1 remains one unpublished
-consumer-complete capability.
+Branch `agent/g1-gpu-generation` is based on main `15efe15a3fc3369b93a3343d96f0ac10ab58e4ef`.
+It remains unpublished and has no pull request. G1 is one consumer-complete capability; do not
+publish its internal checkpoints. The current user requests continuous implementation, review,
+repair and merge, followed immediately by the next eligible capability until asked to stop.
 
-Align `main` `8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f` is pinned; it contains the Request
-59/60 merges and #980's subsequent mutable-borrow replacement cleanup repair. Checkpoint
-`87684fa` confirms Request 58's compiler repair on Apple M1 and corrects the Qwen fixture's actual
-whole-tensor member representation. The current private-staging checkpoint closes Requests 55 and
-56: every admitted artifact is copied from its retained single-link reader into a distinct mode
-0700 root, reopened and digest-verified, and only the private plugin path reaches native loading.
-Safe prefixes are removed; the first successful registry load transfers the tree to process
-ownership, and an unload-unsafe failure transfers it to poisoned process ownership until exit.
-Checkpoint `630eb77` contains that implementation and is pushed. The current qualifier-input batch
-connects the profile validator to a retained input root: it admits both complete Git source
-closures, every model/pack/geometry/calibration input, and every bundle artifact through stable
-single-link descriptors, then supports a complete publication-time recheck.
-The current publication batch derives the exact retained closure before side effects, reserves the
-`result.json` slot under the 4,096-file bound, enforces the 512 MiB directory bound, writes only to
-a private sibling stage, rechecks every input, replays the complete staged evidence, and publishes
-with no-replace rename. It refuses output inside the input root and removes every failed stage.
-The publication audit also fixed the pre-existing preparation-log closure mismatch: a started
-failed preparation command now requires its two bounded streams at the command ordinal, and the
-directory replay accepts exactly those files.
-The current preparation-state batch sequences compiler, runtime, shim, candidate, and CPU-reference
-commands through the closed-environment process owner. It publishes an identity only after the
-bounded single-link output passes, stops after the first failure, and constructs a replayable
-pre-case FAIL result with the exact successful prefix and failed-command logs.
-The current source-materialization batch reconstructs both admitted Git closures beneath one new
-private invocation root, verifies exact file closure, modes and content, rechecks the retained
-inputs, and removes every partial tree on failure.
-The preparation contract now fixes the only linkable real order: compiler, runtime, shim,
-candidate, then CPU reference. The earlier validator placed the candidate before its required
-`libalign_ggml_shim`; the authoritative prose, canonical vector, validator, failure ordinals and
-owners now agree.
-The current CLI-admission batch accepts each fixed flag exactly once in any order, rejects every
-bad suite or incomplete value, admits all input and the new output path before side effects, then
-creates one private output-sibling invocation root with owned home, temporary, work and reconstructed
-source trees. Closing the invocation removes the complete scratch root without creating evidence.
-The invocation also rebuilds the admitted backend manifest and every native artifact as private
-single-link files, verifies their finalized bytes, and rechecks all retained inputs. Later shim and
-case commands can therefore consume only invocation-owned native paths.
-The resident OLMoE loader now derives every dense and sliced expert tensor directly from the
-AlignPack index, rejects missing, ambiguous, and shape-invalid members, plans the exact backend
-allocation, and uploads all expert planes into their whole resident tensors through bounded staging.
-Its GPU-stub owner covers the complete 69-piece two-layer fixture and malformed-pack refusals.
-The active generation batch now connects provider dispatch to resident Qwen and OLMoE execution.
-It derives graph-context capacity from model depth, keeps exact request-capacity KV and one bounded
-workspace resident, executes prefill plus rebuilt decode topologies, rejects nonfinite logits, and
-preserves Qwen greedy and OLMoE greedy/seeded selection. Its model-free owner covers multiple
-decode steps, maximum one, immediate EOG, repeatable seeded output, and a model whose full context
-cannot fit its device budget while the admitted request can. The device owner also publishes the
-exact pinned bundle ID to topology identity. The generation opener rechecks the provider's retained
-source identity against one AlignPack handle and keeps that same handle through plan construction
-and every staged upload, so path replacement cannot retarget validated weights. The real external
-Qwen 7B model now completes one-token generation on Apple M1 under a 6 GB managed-device budget;
-the previous maximum-context plan required 15,032,385,536 KV bytes plus 4,677,120,000 weight bytes.
-The first real multi-token run then exposed ggml's contiguous-mask requirement: a live prefix view
-had retained the allocation row stride and `soft_max_ext` aborted. Mask updates now pack the exact
-live rectangle, the native view uses its tight stride, and the shim refuses any non-contiguous
-soft-max mask before calling ggml. Real Qwen and OLMoE prefill plus two decode steps both pass on
-Apple M1 under the same 6 GB managed-device budget.
+Align `8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f` is pinned. Requests 59 and 60 are closed after
+PRs #972, #975, #979 and #980 repaired the borrowed-producer/replacement cases, and #973 shipped the
+absolute `--cc` surface. Issues #966/#968 contain client evidence. No Align request currently
+blocks G1; remaining build and qualification integration is application-owned.
 
-Requests 59 and 60 are closed. PRs #972, #975, and #979 repair all borrowed-producer cases exposed
-by the unchanged client; its three focused per-unit owners, main build, and ggml spike smoke pass at
-the exact managed pin. PR #973's absolute `--cc` surface is consumed by `gmake gpu-explicit-driver`:
-the complete five-step preparation sequence builds a real Align candidate through a digest-bound
-native proxy with the exact four-entry spawn environment and no executable or library search path.
-Issues #966 and #968 contain the final real-client evidence. Neither request blocks G1 now.
+**Complete implementation checkpoints.**
 
-**Resume actions, in order.**
+- Strict runtime options, provider dispatch, canonical source/bundle admission and immutable private
+  staging, device/graph ownership and poisoned-registry quarantine.
+- Resident Qwen and OLMoE weight loading, prefill and multi-step decode; exact request-capacity KV
+  admission instead of allocating maximum-model context; contiguous live-prefix masks. Both real
+  models complete prefill and two decode steps on Apple M1 with a 6 GB managed-device budget.
+- Canonical profile/calibration/evidence validation, complete source reconstruction, retained input
+  rechecks, bounded process groups/logs, failure-prefix evidence, exact publication closure,
+  replay and no-replace output publication.
+- Five-step preparation: compiler, runtime, shim, candidate, static CPU reference. Commands share
+  one monotonic deadline, later factories bind completed outputs, and unstarted failures retain no
+  invented command/log. Capture faults and timeouts terminate descendants and reap the direct child.
+- Native candidate/reference driver, explicit installed SDK and executable-alias admission,
+  indirect tool rechecks, and exact four-entry child environment. Host probes must match all four
+  bundle toolchain identities. Compiler materialization verifies the exact clean managed source
+  through the existing toolchain owner, builds the native driver and copies the compiler within one
+  captured process group. Internal checkpoints through `d58461f` contain that work.
+- The current support-library checkpoint admits OpenSSL/Zstandard static archives, privately copies
+  and digest-verifies them, and binds exact archive arguments in the native driver. The real
+  CPU-reference owner now uses the grouped five-step preparation path, runs SHA-256, and proves
+  absence of dynamic ggml/OpenSSL/Zstandard dependencies. Same-source static ggml/base/cpu and the
+  real shim disable all GPU backends and dynamic plugin probing; a loadable poison-plugin positive
+  control verifies that the reference does not search ambient plugins.
 
-1. Add the fixed `gpu-runtime-qualify` CLI orchestration and real compiler/runtime/candidate/shim/CPU
-   preparation commands on top of the completed input, source, process, and publication owners.
-2. Prepare both platform profiles and numeric calibrations, then connect the retained source,
-   process, record, resident-generation, and provider owners into the publication qualifier.
-3. Run Metal locally and hand the same bounded kit to the CUDA host. Publish G1 only when it is
-   consumer-complete, then review, repair, exact-head preflight, and merge. After merging, refresh
-   main and start G1R or the next eligible independent consumer; continue until asked to stop.
+**Next actions, in order.**
 
-**Verification and constraints.** At pinned `8dc80978`, `gmake build`, `gmake ggml-spike-smoke`,
-`gmake gpu-explicit-driver`, and the Request 59 per-unit checks for `verification_loop.align`,
-`alignpack.align`, and `prompt_artifacts.align` pass. At its contained Request 59/60 merge pin,
-`gmake gpu-command-environment`, `gmake gpu-preparation-evidence`, `gmake gpu-bundle-smoke`,
-`gmake gpu-device-smoke`, `gmake gpu-qwen-load-smoke`, `gmake gpu-olmoe-load-smoke`, and per-unit
-checks for `runtime_bundle`, `runtime_device`, and `ggml_ffi` pass. The real shim compiles against Homebrew ggml with
-`-Wall -Wextra -Werror`; Mac links use
-`LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib`. Per-unit checks pass for
-`verification_loop.align` (5 units), `alignpack.align` (3), and `prompt_artifacts.align` (1).
-Metal and CUDA still require
-their final real-host evidence; AMD hardware is unavailable. Models, raw evidence, and build
-products remain outside Git. The current qualifier batches pass `gmake gpu-input-admission`,
-`gmake gpu-source-materialization`, `gmake gpu-backend-staging`, `gmake gpu-qualification-cli`,
-`gmake gpu-evidence-publication`,
-`gmake gpu-build-failure-evidence`, `gmake gpu-result-replay`,
-`gmake gpu-preparation-evidence`, `gmake gpu-command-environment`, `gmake gpu-process-cleanup`,
-`gmake gpu-generation-smoke`, per-unit checking of all 23 units owned by
-`runtime_generation_smoke`,
-`gmake gate-topology-check`, `scripts/check-format`, Python bytecode compilation, and `git diff --check`.
-The request-capacity checkpoint additionally passes `gmake gpu-qwen-load-smoke
-gpu-olmoe-load-smoke runtime-provider-smoke build`; a real-shim Qwen 7B invocation on Apple M1
-with maximum tokens 1 and a 6 GB managed-device budget returned `PASS` and output `OK`.
-After the live-mask repair, `gmake gpu-generation-smoke gpu-device-smoke` and the real-shim build
-pass; real Qwen and OLMoE maximum-token-3 invocations each complete prefill and two decode steps.
-The external Qwen model input `509287f78cb4...894d3c` now has verified AlignPack
-`a0bd07028a2c...e99b04` and geometry `697b32f19f2d...2492666`; `--pack-verify` compared all
-4,677,120,000 payload bytes and returned `IDENTICAL`. The external OLMoE model/pack/geometry
-identities remain `4ddc0e53159e...9c684f`, `20423ebf5a90...df6ae`, and
-`1f828d2c601e...11ada`.
-The exact ggml source `bb4caa7540188872173c44d161602d9271386413` produced a real Metal bundle
-with bundle ID `0a472538ef35...814b`, manifest digest `f928428facfe...8d1`, source-manifest digest
-`64db6180009a...6f4`, and source-snapshot digest `c2860034df35...8b3`. Its 3,430-file, 169 MiB
-closure passed the recipe bounds, and the real shim linked against the staged bundle successfully.
+1. Assemble the admitted profile/source/host inputs and completed preparation factories into the
+   fixed `gpu-runtime-qualify` CLI. It does not exist yet; do not publish a placeholder success path.
+2. Implement the actual numeric case producer and production/teacher-forced comparisons required
+   by `docs/specs/gpu-runtime.md`, then connect process, record, replay and publication ownership.
+3. Prepare real profiles/calibrations and run Metal locally. Hand the same bounded kit to the
+   RTX 4070 Ti CUDA host; both real backend qualifications are required before G1 publication.
+4. When G1 is consumer-complete, perform its comprehensive review, repairs, exact-head preflight
+   and PR/merge. Refresh main and start G1R or the next eligible independent consumer immediately.
 
-The process-capture checkpoint guarantees group termination, direct-child reaping and pipe/selector
-closure after capture setup, partial registration, stream-read, interrupt or inspector failures.
-`gmake gpu-process-cleanup gpu-command-environment gpu-build-failure-evidence
-gpu-preparation-evidence`, Python bytecode compilation and `git diff --check` pass. This is an
-internal G1 checkpoint. The next preparation checkpoint adds the fixed five-command orchestrator
-and one shared monotonic deadline, preserves unstarted failures as the successful prefix without
-invented logs, and rejects later work after either failure kind. `gmake gpu-preparation-evidence`
-replays every unstarted slot and an output-validation deadline failure. `gmake gpu-explicit-driver`
-now copies the real managed compiler and runtime, builds the actual ggml-free shim through the
-closed-environment native driver, links two real Align callers, and executes both against that shim.
-The environment, process-cleanup, build-failure, publication and replay owners also pass, as do
-Python bytecode compilation and `git diff --check`. No GPU numeric qualification follows from this
-model-free result. The new build-construction owner binds the exact compiler/runtime copies, private ggml directories,
-shim build and two separate release-build working directories. It takes separate candidate and
-CPU-reference drivers. The `gpu-qualification-cli` owner rejects malformed construction without
-output side effects, and `gpu-explicit-driver` consumes this common builder for its real two-caller
-check. Remaining build integration is application-owned: the GPU bundle deliberately disables the
-CPU backend, so the actual reference driver must link a separately built CPU backend from the same
-admitted ggml source; the model-free stub does not qualify that CPU reference. Host SDK/tool input
-selection, real-profile CLI construction and the numeric case producer remain next. No new Align
-capability request follows from these application build requirements. CMake path definitions now
-retain and validate a single digest-bound or owned path value, including produced-input identity
-checks during replay. The SDK owner binds an installed root to its in-root single-link metadata,
-rechecks direct and indirect preparation dependencies, and refuses metadata/root changes or any
-case-time SDK binding. The explicit-driver owner passes with the real Apple SDK in the shim argv
-and both candidate-driver invocations. `gmake gpu-command-environment gpu-preparation-evidence
-gpu-explicit-driver gpu-build-failure-evidence gpu-result-replay gpu-qualification-cli
-gpu-profile-coverage`, Python bytecode compilation and `git diff --check` pass at this checkpoint.
+**Durable verification.** The managed pin passes `gmake build`, `gmake ggml-spike-smoke` and the
+Request 59 per-unit owners for `verification_loop`, `alignpack` and `prompt_artifacts`.
+The resident generation checkpoint passes `gmake gpu-generation-smoke gpu-device-smoke
+ gpu-qwen-load-smoke gpu-olmoe-load-smoke runtime-provider-smoke build` and all 23 units owned by
+`runtime_generation_smoke`. Real Qwen maximum-token-1 returned `PASS`/`OK`; real Qwen and OLMoE
+maximum-token-3 both finish prefill plus two decode steps on Apple M1.
 
-The static CPU-reference checkpoint builds ggml/base/cpu and the real shim from the same admitted
-ggml source, disables dynamic registry probing, and links them through the explicit native driver.
-`GPU_GGML_SOURCE=<pinned-checkout> gmake gpu-cpu-reference-build` passes on Apple M1, including
-an executable poison-plugin positive control, absence of dynamic ggml dependencies, the exact
-launch environment, configure/build failures, and a real Align compile rejection. Installed host
-tool aliases retain their invocation basename while their resolved target, digest and execute
-permission are rechecked; ordinary application artifacts retain single-link admission.
-`gmake gpu-command-environment gpu-preparation-evidence gpu-qualification-cli gate-topology-check`,
-`gmake fmt`, Python bytecode compilation and `git diff --check` pass. This is build and registry
-evidence only; host-tool CLI assembly and numeric generation qualification remain unfinished.
+The input/source/backend/publication checkpoints pass `gmake gpu-input-admission
+ gpu-source-materialization gpu-backend-staging gpu-evidence-publication gpu-build-failure-evidence
+ gpu-result-replay gpu-profile-coverage`. The latest preparation checkpoints pass
+`gmake gpu-command-environment gpu-process-cleanup gpu-preparation-evidence gpu-qualification-cli
+ gpu-explicit-driver`, `scripts/test-align-toolchain`, and
+`GPU_GGML_SOURCE=<pinned-checkout> gmake gpu-cpu-reference-build` on Apple M1. Their owners cover
+malformed/missing/mutated host inputs, SDK and alias drift, exact recipe-probe agreement, occupied
+outputs, lazy construction failure, actual bootstrap/compile rejection, and descendant timeout.
+`gmake gate-topology-check`, `gmake fmt`, Python bytecode compilation and `git diff --check` pass.
+These are focused build/registry/runtime checks, not completed GPU numeric qualification.
 
-The native preparation driver is now production code shared by the candidate and static-reference
-owners. It preserves UTF-8/space-containing argument paths, uses one private linker alias, and
-executes the selected compiler with the exact four-entry environment. Indirect compiler/linker
-dependencies are rechecked at each preparation spawn and are refused for cases. The real explicit
-driver, CPU-reference, command-environment and preparation-evidence owners pass, including occupied
-output, failed bootstrap and expired deadline refusals. Linux reference linkage now spells the
-dynamic-loader support library `-ldl`; real CUDA/Linux qualification remains outstanding.
+**External inputs and constraints.** Models, raw evidence, build products and local paths stay
+outside Git. Metal and CUDA still require final real-host evidence; AMD hardware is unavailable.
+The CUDA kit is for user execution, not remote login, credential collection or model upload.
+The exact ggml source is `bb4caa7540188872173c44d161602d9271386413`; its captured 3,430-file,
+169 MiB closure builds a real Metal bundle `0a472538ef35...814b`, manifest `f928428facfe...8d1`,
+source manifest `64db6180009a...6f4`, snapshot `c2860034df35...8b3`.
+Qwen model `509287f78cb4...894d3c` has verified pack `a0bd07028a2c...e99b04` and geometry
+`697b32f19f2d...2492666`; all 4,677,120,000 payload bytes compare `IDENTICAL`.
+OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90...df6ae` and
+`1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
+follows from these build and correctness checkpoints.
 
-Compiler materialization now has a grouped helper that builds the native driver and copies the
-already-prepared managed compiler within the first owned command. Later preparation factories bind
-that driver's actual bytes only after successful completion; construction failure and deadline
-exhaustion preserve the unstarted failure prefix. `gmake gpu-explicit-driver` passes the complete
-five-command grouped route, actual bootstrap failure and termination of a hanging compiler with its
-child. The preparation-evidence and CLI owners, Python bytecode compilation and `git diff --check`
-also pass. Host toolchain admission and the real-profile/numeric orchestration remain next.
-
-Host toolchain admission now uses bounded closed-environment probes and requires exact agreement
-with all four bundle recipe identities. It selects actual installed aliases, binds SDK metadata,
-and checks SDK selection again after probing. `gmake gpu-qualification-cli` passes fixture macOS,
-Linux and WSL2 paths plus identity, missing-tool, host, malformed-output, deadline, probe-failure,
-SDK-selection and metadata-drift refusals. `GPU_GGML_SOURCE=<pinned-checkout> gmake
-gpu-cpu-reference-build` passes with real Apple toolchain admission using the recipe's exact probe
-framing. Python bytecode compilation and `git diff --check` pass. Managed compiler admission,
-real-profile CLI construction and numeric generation qualification remain unfinished.
-
-Grouped compiler materialization now reuses the managed toolchain verifier with an injected bounded
-executor. It checks the exact clean source revision and required outputs before probing the
-digest-rechecked compiler; Git and compiler probes share the outer process group and four-entry
-environment. `scripts/test-align-toolchain` and `gmake gpu-explicit-driver` pass, including exact-pin
-adoption, revision mismatch, bootstrap failure and descendant timeout. Python bytecode compilation
-and `git diff --check` pass. Real-profile preparation assembly and native support-library selection
-remain application-owned work before the numeric case producer; no new Align gap was encountered.
-
-**Intentional uncommitted files.** None after the managed compiler-verification checkpoint is committed.
+**Intentional uncommitted files.** None after the support-library checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

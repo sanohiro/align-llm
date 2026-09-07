@@ -166,6 +166,21 @@ mismatch fail admission. These read-only admission probes attest host inputs; th
 preparation commands still own all helper/compiler/runtime/shim/candidate/reference production.
 `gpu-qualification-cli` owns fixture probe agreement and each admission refusal;
 `gpu-cpu-reference-build` corroborates admission against the real recipe probe framing.
+The generated application also consumes installed OpenSSL and Zstandard static support archives.
+Host admission runs the admitted `pkg-config --variable=libdir openssl` and
+`pkg-config --variable=libdir libzstd` with the same closed environment, then binds the bounded
+single-link `libcrypto.a`, `libssl.a` and `libzstd.a` files in those directories. Compiler
+materialization copies and digest-verifies them beneath its private work root before native-driver
+construction. The driver replaces only the corresponding exact `-lcrypto`, `-lssl` and `-lzstd`
+arguments with those private archives; SSL additionally resolves against the same private crypto
+archive after its callers. System zlib and platform support libraries remain SDK inputs. There is
+no dynamic OpenSSL/Zstandard search path, fetch, or fallback for a missing archive. These are host
+toolchain inputs, not a new persisted schema or an Align capability request. The model-free driver
+owner may omit all three archives when its caller has no such capability. Partial sets fail before
+construction. The CLI owner covers discovery and malformed/missing inputs; the explicit-driver
+owner covers private copying and refusal; the real CPU-reference owner runs SHA-256 and verifies
+that the executable has no dynamic ggml/OpenSSL/Zstandard dependency. Publication ownership and the
+shared preparation timeout cover failure/early-exit cleanup of all copied support files.
 Validation order is framing; version/kind; exact keys/types/bounds; tagged presence; references;
 digests; semantic invariants; aggregate and directory closure.
 
