@@ -3,11 +3,13 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Active capability: G1 resident GPU generation (2026-09-07)
+## Paused capability: G1 resident GPU generation (2026-09-07)
 
 Branch `agent/g1-gpu-generation` is rebased onto main `1a37b5b9084ccd7e2bcb0e3f4fb2b5c901e6df39`
-and implements the complete G1 consumer contract in `docs/specs/gpu-runtime.md`. Internal
-checkpoints through `8bed065` cover strict runtime options, provider dispatch, canonical bundle and
+and is pushed through `cd5ed0ab60ea9cf5543e07f2a5e5f39ccd224007`. It remains unpublished and
+has no pull request. The session ended at the user's request while Align Requests 59 and 60 block
+the production build and closed-environment qualification; do not publish an internal checkpoint.
+Implemented checkpoints cover strict runtime options, provider dispatch, canonical bundle and
 source ownership, device memory and graph ownership, resident Qwen/OLMoE prefill and decode,
 qualification records, evidence replay, and owned qualifier processes. G1 remains one unpublished
 consumer-complete capability.
@@ -74,16 +76,20 @@ and cannot be bound truthfully to the evidence command. The request requires one
 C-driver input. Profiles, calibration, case/result owners and pre-build qualifier wiring remain
 independent.
 
-**Next actions, in order.**
+**Resume actions, in order.**
 
-1. Add the fixed `gpu-runtime-qualify` CLI orchestration and real compiler/runtime/candidate/shim/CPU
+1. Pull `../align`, inspect the implementation and owner tests for Requests 59 and 60, and require a
+   published Align release commit containing both repairs. Do not consume an issue comment,
+   proposed API, or unmerged branch.
+2. Update `.align-revision`, materialize the managed compiler/runtime, and pass the Request 59
+   client targets plus `gmake build`, `gmake ggml-spike-smoke`, and a closed-environment candidate
+   build using Request 60's shipped absolute-driver option.
+3. Add the fixed `gpu-runtime-qualify` CLI orchestration and real compiler/runtime/candidate/shim/CPU
    preparation commands on top of the completed input, source, process, and publication owners.
-2. Prepare both platform profiles and numeric calibrations, then connect the retained source,
+4. Prepare both platform profiles and numeric calibrations, then connect the retained source,
    process, record, resident-generation, and provider owners into the publication qualifier where
    Request 59 does not block compilation.
-3. When Request 59 ships, adopt the fixed Align revision and pass its focused per-unit owner,
-   `gmake build`, and `gmake ggml-spike-smoke`; verify the implemented production-provider path.
-4. Run Metal locally and hand the same bounded kit to the CUDA host. Publish G1 only when it is
+5. Run Metal locally and hand the same bounded kit to the CUDA host. Publish G1 only when it is
    consumer-complete, then review, repair, exact-head preflight, and merge. Stop after this pull
    request as requested; do not begin G1R in this work session.
 
