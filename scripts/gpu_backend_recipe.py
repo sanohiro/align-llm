@@ -20,6 +20,10 @@ import tempfile
 
 GGML_COMMIT = "bb4caa7540188872173c44d161602d9271386413"
 GGML_REPOSITORY = "https://github.com/ggml-org/llama.cpp.git"
+SOURCE_REPOSITORIES = {
+    "align-llm": "https://github.com/sanohiro/align-llm.git",
+    "ggml": GGML_REPOSITORY,
+}
 MAX_SOURCE_MANIFEST_BYTES = 16 * 1024 * 1024
 MAX_RETAINED_DATA_BYTES = 512 * 1024 * 1024
 MAX_BUNDLE_ARTIFACT_BYTES = 512 * 1024 * 1024
@@ -296,12 +300,8 @@ def validate_source_manifest(value: object) -> dict[str, object]:
             or manifest["artifact_kind"] != "GPU_SOURCE_MANIFEST":
         raise RecipeError("source manifest version or kind is invalid")
     source_kind = manifest["source_kind"]
-    repositories = {
-        "align-llm": "https://github.com/sanohiro/align-llm.git",
-        "ggml": GGML_REPOSITORY,
-    }
-    if not isinstance(source_kind, str) or source_kind not in repositories \
-            or manifest["repository"] != repositories[source_kind]:
+    if not isinstance(source_kind, str) or source_kind not in SOURCE_REPOSITORIES \
+            or manifest["repository"] != SOURCE_REPOSITORIES[source_kind]:
         raise RecipeError("source kind and repository do not match")
     object_format = manifest["object_format"]
     if not isinstance(object_format, str) or object_format not in {"sha1", "sha256"}:
@@ -582,7 +582,24 @@ def plan(backend: str) -> dict[str, object]:
     }
 
 
-def require_source(source: pathlib.Path, git: str, environment: dict[str, str]) -> None:
+def _source_identity(source_kind: str, commit: str | None) -> tuple[str, str]:
+    if source_kind not in SOURCE_REPOSITORIES:
+        raise RecipeError("source kind is invalid")
+    if source_kind == "ggml":
+        if commit is not None and commit != GGML_COMMIT:
+            raise RecipeError("source commit is not the pinned ggml commit")
+        commit = GGML_COMMIT
+    if not isinstance(commit, str) or len(commit) not in (40, 64):
+        raise RecipeError("source requires an exact commit identity")
+    lowercase_hex(commit, len(commit), "source commit")
+    return SOURCE_REPOSITORIES[source_kind], commit
+
+
+def require_source(
+    source: pathlib.Path, git: str, environment: dict[str, str], *,
+    source_kind: str = "ggml", commit: str | None = None,
+) -> None:
+    repository, commit = _source_identity(source_kind, commit)
     source = source.resolve()
     top = pathlib.Path(git_text(
         git, ["rev-parse", "--show-toplevel"], source=source, environment=environment,
@@ -590,11 +607,11 @@ def require_source(source: pathlib.Path, git: str, environment: dict[str, str]) 
     if top != source:
         raise RecipeError("source is not the Git worktree root")
     if git_text(git, ["rev-parse", "HEAD"], source=source,
-                environment=environment) != GGML_COMMIT:
-        raise RecipeError("source HEAD is not the pinned ggml commit")
+                environment=environment) != commit:
+        raise RecipeError(f"source HEAD is not the pinned {source_kind} commit")
     if git_text(git, ["remote", "get-url", "origin"], source=source,
-                environment=environment) != GGML_REPOSITORY:
-        raise RecipeError("source origin is not the pinned ggml repository")
+                environment=environment) != repository:
+        raise RecipeError(f"source origin is not the pinned {source_kind} repository")
     replacements = git_command(
         git, ["for-each-ref", "--format=%(refname)%00", "refs/replace/"],
         source=source, environment=environment,
@@ -652,15 +669,18 @@ def validate_captured_source(
 
 def source_snapshot(
     source: pathlib.Path, git: str, environment: dict[str, str],
+    *, source_kind: str = "ggml", commit: str | None = None,
 ) -> tuple[dict[str, object], bytes, bytes, dict[str, bytes]]:
-    tree = git_text(git, ["rev-parse", "HEAD^{tree}"], source=source,
+    repository, commit = _source_identity(source_kind, commit)
+    require_source(source, git, environment, source_kind=source_kind, commit=commit)
+    tree = git_text(git, ["rev-parse", commit + "^{tree}"], source=source,
                     environment=environment)
     object_format = git_text(
         git, ["rev-parse", "--show-object-format"], source=source, environment=environment,
     )
-    raw_commit = git_command(git, ["cat-file", "commit", "HEAD"], source=source,
+    raw_commit = git_command(git, ["cat-file", "commit", commit], source=source,
                              environment=environment)
-    listing = git_command(git, ["ls-tree", "-rz", "--full-tree", "HEAD"], source=source,
+    listing = git_command(git, ["ls-tree", "-rz", "--full-tree", commit], source=source,
                           environment=environment)
     rows: list[dict[str, object]] = []
     blobs: dict[str, bytes] = {}
@@ -703,10 +723,10 @@ def source_snapshot(
     manifest = {
         "schema_version": 1,
         "artifact_kind": "GPU_SOURCE_MANIFEST",
-        "source_kind": "ggml",
-        "repository": GGML_REPOSITORY,
+        "source_kind": source_kind,
+        "repository": repository,
         "object_format": object_format,
-        "commit": GGML_COMMIT,
+        "commit": commit,
         "commit_object_sha256": digest(raw_commit),
         "tree": tree,
         "files": rows,
@@ -714,7 +734,8 @@ def source_snapshot(
     rendered = canonical(manifest)
     if not rows or len(rows) > 100_000 or len(rendered) > MAX_SOURCE_MANIFEST_BYTES:
         raise RecipeError("source manifest exceeds its schema-1 bounds")
-    validate_captured_source(manifest, rendered, raw_commit, blobs, "ggml")
+    validate_captured_source(manifest, rendered, raw_commit, blobs, source_kind)
+    require_source(source, git, environment, source_kind=source_kind, commit=commit)
     return manifest, rendered, raw_commit, blobs
 
 

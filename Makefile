@@ -91,6 +91,10 @@ gpu-backend-recipe-smoke:
 gpu-source-replay:
 	./scripts/run-gpu-source-replay-smoke
 
+.PHONY: gpu-source-capture
+gpu-source-capture:
+	./scripts/run-gpu-source-capture-smoke
+
 # G1's two-model profile owner. It validates bundle/calibration identity and the exact four-row
 # CPU/GPU expansion for every frozen calibration and holdout case.
 gpu-profile-coverage:

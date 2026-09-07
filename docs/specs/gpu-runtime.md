@@ -212,6 +212,14 @@ worktree reads. It recomputes the captured commit, tree and blob closure before 
 private build tree or invoking CMake. Repository-local command configuration and a replacement tree
 therefore cannot execute or become build input before source admission.
 
+The shared capture owner also accepts `align-llm` with an explicit full commit identity; ggml
+defaults remain the fixed recipe commit and repository. Capture admits the clean root and exact
+origin/HEAD before reading, addresses commit/tree queries by that fixed identity, verifies every
+working blob against Git, then rechecks root/origin/HEAD/cleanliness before returning. Linked
+worktrees use Git queries rather than assuming `.git` is a directory. `gpu-source-capture` owns
+both source kinds, SHA-1/SHA-256, linked-worktree equivalence, dirty/ignored/wrong-origin/commit
+refusals and mutation during capture; `gpu-source-replay` independently owns retained replay.
+
 ### 3.5 Qualification profile schema 1
 
 Top-level key order is

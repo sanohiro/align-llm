@@ -53,6 +53,9 @@ pin adoption, `gmake gpu-numeric-stream` and final `gmake gpu-generation-smoke` 
   complete consumption, SHA-256 and retained file identity; the native producer awaits Request 61.
   Paired consumption now binds the prior CPU digest and independent expected frames, streams scalar
   tensors and compares routing triples. Geometry-derived case traversal is still pending.
+- Shared source capture now accepts an explicitly pinned application checkout as well as ggml,
+  preserves each repository identity, verifies captured Git objects and rechecks admission after
+  reading. Kit assembly can consume actual application source instead of fixture-only snapshots.
 
 **Next actions, in order.**
 
@@ -88,6 +91,9 @@ exponent/tolerance boundaries, nonfinite and malformed input, and routing-group/
 headers/footer/ordinals, truncation, file/link mutation, special files and incomplete consumption.
 `gmake gpu-numeric-pair` passes bounded scalar/routing pairing, exact counters, numeric/nonfinite
 results and refusal of matching wrong shapes, wrong ordering, extra/missing frames and CPU drift.
+`gmake gpu-source-capture gpu-backend-recipe-smoke gpu-source-replay` passes actual capture for both
+Git object formats, linked worktrees, exact objects and mutation/identity refusals; recipe defaults
+and independent retained replay remain passing.
 These are focused build/registry/runtime checks, not completed GPU numeric qualification.
 
 **External inputs and constraints.** Models, raw evidence, build products and local paths stay
@@ -102,7 +108,7 @@ OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90.
 `1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
 follows from these build and correctness checkpoints.
 
-**Intentional uncommitted files.** None at the numeric-pair checkpoint.
+**Intentional uncommitted files.** None at the application-source capture checkpoint.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 
