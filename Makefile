@@ -96,6 +96,10 @@ gpu-source-replay:
 gpu-profile-coverage:
 	./scripts/run-gpu-profile-coverage-smoke
 
+.PHONY: gpu-numeric-compare
+gpu-numeric-compare:
+	./scripts/run-gpu-numeric-compare-smoke
+
 gpu-input-admission:
 	./scripts/run-gpu-input-admission-smoke
 

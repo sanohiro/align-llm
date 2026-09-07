@@ -43,6 +43,9 @@ blocks G1; remaining build and qualification integration is application-owned.
   host admission, managed compiler selection and lazy grouped builds. The real CPU-reference owner
   consumes the shared constructor; the CLI owner covers record-to-builder binding and admission
   failure before any preparation command. This is still an internal adapter, not the final CLI.
+- The numeric comparison owner now implements exact scalar tolerance decisions and once-rounded
+  error maxima, plus reference-defined routing near-tie groups, selected-slot weight comparisons,
+  and outside-group ID/order preservation. The actual tensor stream producer remains next.
 
 **Next actions, in order.**
 
@@ -72,6 +75,8 @@ The input/source/backend/publication checkpoints pass `gmake gpu-input-admission
 malformed/missing/mutated host inputs, SDK and alias drift, exact recipe-probe agreement, occupied
 outputs, lazy construction failure, actual bootstrap/compile rejection, and descendant timeout.
 `gmake gate-topology-check`, `gmake fmt`, Python bytecode compilation and `git diff --check` pass.
+`gmake gpu-numeric-compare` passes independent exact-rational scalar checks, stream ordering,
+exponent/tolerance boundaries, nonfinite and malformed input, and routing-group/weight refusals.
 These are focused build/registry/runtime checks, not completed GPU numeric qualification.
 
 **External inputs and constraints.** Models, raw evidence, build products and local paths stay
@@ -86,7 +91,7 @@ OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90.
 `1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
 follows from these build and correctness checkpoints.
 
-**Intentional uncommitted files.** None after the preparation-assembly checkpoint is committed.
+**Intentional uncommitted files.** None after the numeric-comparison checkpoint is committed.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

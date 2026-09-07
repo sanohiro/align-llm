@@ -340,6 +340,11 @@ subnormals use `M` as the scale floor. NaN or infinity on either side fails `NON
 predicate. Evidence maximum absolute error is the maximum `d`; maximum relative error is the
 maximum `d/s`; each is rounded once to binary64 round-to-nearest-ties-even for its recorded bits.
 `mismatch_count` counts scalar positions failing this predicate.
+`gmake gpu-numeric-compare` is the focused scalar owner. It checks streamed maxima and decisions
+against an independent exact-rational oracle, including exponent extremes, cancellation, signed
+zero, subnormals, nonfinites and tolerance boundaries. Its binary64 comparison filter resolves
+ambiguous threshold equality and potential relative maxima exactly; recorded error bits never use
+a double-rounded relative quotient.
 
 For OLMoE routing, form the reference boundary group from all expert IDs whose reference score is
 within the exact-real near-tie tolerance of the kth selected reference score. If the kth-to-first-
@@ -348,6 +353,13 @@ selected sets must contain the same exact IDs outside the boundary group, may di
 that group, and every corresponding weight still passes the scalar predicate above.
 `near_tie_count` counts token/layer routing boundaries admitted by this second rule, not individual
 experts. No GPU-derived score may enlarge the boundary group.
+Selected IDs must be unique, in range and a descending top-k of their own score vector; exact
+score ties may retain either order. Within an admitted boundary group, compare selected weights by
+their ordered selected slot, while the ordered subsequence of IDs outside that group remains
+identical. An ID/order failure is a routing failure, separate from scalar `mismatch_count`.
+Only a boundary whose scalar and selection comparisons pass increments `near_tie_count`.
+`gpu-numeric-compare` owns exact boundary membership, substitutions, outside-group order, malformed
+selections, weight tolerance and refusal to enlarge a group with GPU scores.
 
 Cases are
 `case_id,role,prompt_utf8,prompt_sha256,prompt_token_ids,teacher_forced_token_ids,sampler_mode,temperature_micros,seed,maximum_tokens,expected_token_ids,expected_output_utf8,expected_output_sha256`.
