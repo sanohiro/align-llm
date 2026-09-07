@@ -1,0 +1,85 @@
+module runtime_olmoe_load_smoke
+
+import ggml_ffi
+import layer_olmoe
+import runtime_memory
+import runtime_olmoe_load
+import runtime_weights
+
+BUNDLE_ID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+fn geometry() -> layer_olmoe.Geometry = layer_olmoe.Geometry {
+  code: "".clone(),
+  detail: "".clone(),
+  arch: "olmoe".clone(),
+  n_layer: 2,
+  n_embd: 8,
+  n_head: 2,
+  n_head_kv: 2,
+  head_dim: 4,
+  n_ff_exp: 16,
+  n_vocab: 32,
+  n_expert: 8,
+  n_expert_used: 3,
+  context_length: 512,
+  rms_eps_bits: 925353388,
+  rope_type: 2,
+  rope_dim_count: 4,
+  rope_freq_base_bits: 1176256512,
+  attn_scale_bits: layer_olmoe.attn_scale_bits(4),
+}
+
+fn expect_plan_refusal(
+  borrow owner: ggml_ffi.GpuDevice,
+  pack_path: str,
+  borrow g: layer_olmoe.Geometry,
+) -> Result<(), Error> = match runtime_olmoe_load.build_plan(owner, pack_path, g) {
+  Ok(_) => Err(Error.Invalid),
+  Err(_) => Ok(()),
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 6 { return Err(Error.Invalid) }
+  owner := ggml_ffi.gpu_device_open(
+    "metal", "stub-gpu", "fixture-plugin", BUNDLE_ID, 1048576, 8388608,
+  ) else {
+    return Err(Error.Invalid)
+  }
+  g := geometry()
+  expect_plan_refusal(owner, args[2], g)?
+  expect_plan_refusal(owner, args[3], g)?
+  expect_plan_refusal(owner, args[4], g)?
+  expect_plan_refusal(owner, args[5], g)?
+
+  plan := runtime_olmoe_load.build_plan(owner, args[1], g)?
+  if plan.count != 27 || plan.ggml_type.len() != 27 || plan.piece_start.len() != 27
+    || plan.piece_pack_offset.len() != 69 || plan.weights_bytes <= 0 || plan.kv_bytes <= 0
+    || plan.ne0[0] != 8 || plan.ne1[0] != 32
+    || plan.ne0[10] != 8 || plan.ne1[10] != 16 || plan.ne2[10] != 8
+    || plan.ne0[26] != 8 || plan.ne1[26] != 32 {
+    return Err(Error.Invalid)
+  }
+  runtime_memory.admit(
+    owner,
+    runtime_memory.MemoryPlan {
+      weights_bytes: plan.weights_bytes,
+      kv_bytes: plan.kv_bytes,
+      workspace_bytes: 4194304,
+      metadata_bytes: 524288,
+      staging_bytes: 4096,
+      legacy_cache_bytes: 0,
+    },
+  )?
+  runtime_memory.allocate(owner)?
+  runtime_olmoe_load.load(owner, args[1], plan, 4096)?
+  if runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_EXPECTED) != 27
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_CREATED) != 27
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED) != 27
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED_BYTES) != 29472
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_FINISHED) != 1 {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_device_synchronize(owner) else { return Err(Error.Invalid) }
+  print("runtime olmoe load smoke: PASS")
+  return Ok(())
+}

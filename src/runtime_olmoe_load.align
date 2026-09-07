@@ -1,0 +1,371 @@
+module runtime_olmoe_load
+
+import alignpack_read
+import ggml_ffi
+import layer_olmoe
+import runtime_weights
+import std.fs
+
+MAX_TENSORS := 49155
+MAX_EXTENT := 9223372036854775807
+
+pub Plan {
+  count: i64,
+  ggml_type: array<i64>,
+  n_dims: array<i64>,
+  ne0: array<i64>,
+  ne1: array<i64>,
+  ne2: array<i64>,
+  ne3: array<i64>,
+  piece_start: array<i64>,
+  piece_count: array<i64>,
+  piece_pack_offset: array<i64>,
+  piece_tensor_offset: array<i64>,
+  piece_bytes: array<i64>,
+  weights_bytes: i64,
+  kv_bytes: i64,
+}
+
+Member {
+  ggml_type: i64,
+  n_dims: i64,
+  ne0: i64,
+  ne1: i64,
+  ne2: i64,
+  ne3: i64,
+  nbytes: i64,
+  pack_offset: i64,
+  slice_index: i64,
+  slice_count: i64,
+}
+
+fn empty_member() -> Member = Member {
+  ggml_type: -1, n_dims: 0, ne0: 0, ne1: 0, ne2: 0, ne3: 0,
+  nbytes: 0, pack_offset: 0, slice_index: -1, slice_count: -1,
+}
+
+fn take_member(
+  borrow pack: file,
+  borrow index: alignpack_read.PackIndex,
+  borrow block: alignpack_read.PackBlock,
+  at: i64,
+  borrow mut counters: alignpack_read.Counters,
+) -> Result<alignpack_read.PackMember, Error> = match
+alignpack_read.member_at(pack, index, block, at, counters) {
+  Ok(member) => Ok(member),
+  Err(_) => Err(Error.Invalid),
+}
+
+fn find_member(
+  borrow pack: file,
+  borrow index: alignpack_read.PackIndex,
+  kind: i64,
+  layer: i64,
+  expert: i64,
+  role: i64,
+  borrow mut counters: alignpack_read.Counters,
+) -> Result<Member, Error> {
+  mut hits := 0
+  mut found := empty_member()
+  mut block_at := 0
+  loop {
+    if block_at >= index.block_count { break }
+    if index.block_kind[block_at] == kind && index.block_layer[block_at] == layer
+      && index.block_expert[block_at] == expert {
+      block := alignpack_read.block_at(index, block_at) else { return Err(Error.Invalid) }
+      mut member_at := 0
+      loop {
+        if member_at >= block.member_count { break }
+        candidate := take_member(pack, index, block, member_at, counters)?
+        if candidate.role_id == role {
+          hits = hits + 1
+          found = Member {
+            ggml_type: candidate.ggml_type,
+            n_dims: candidate.n_dims,
+            ne0: candidate.dim0,
+            ne1: candidate.dim1,
+            ne2: candidate.dim2,
+            ne3: candidate.dim3,
+            nbytes: candidate.nbytes,
+            pack_offset: candidate.pack_offset,
+            slice_index: candidate.slice_index,
+            slice_count: candidate.slice_count,
+          }
+        }
+        member_at = member_at + 1
+      }
+    }
+    block_at = block_at + 1
+  }
+  if hits != 1 { return Err(Error.Invalid) }
+  return Ok(found)
+}
+
+fn ordinary_member_ok(
+  borrow member: Member,
+  n_dims: i64,
+  ne0: i64,
+  ne1: i64,
+) -> bool = member.n_dims == n_dims && member.ne0 == ne0 && member.ne1 == ne1
+  && member.ne2 == 1 && member.ne3 == 1 && member.nbytes > 0
+  && member.slice_index == -1 && member.slice_count == -1
+
+fn checked_add(left: i64, right: i64) -> Result<i64, Error> {
+  if left < 0 || right < 0 || left > MAX_EXTENT - right { return Err(Error.Invalid) }
+  return Ok(left + right)
+}
+
+fn checked_mul(left: i64, right: i64) -> Result<i64, Error> {
+  if left < 0 || right < 0 || (right > 0 && left > MAX_EXTENT / right) {
+    return Err(Error.Invalid)
+  }
+  return Ok(left * right)
+}
+
+fn append_tensor(
+  borrow owner: ggml_ffi.GpuDevice,
+  ggml_type: i64,
+  n_dims: i64,
+  ne0: i64,
+  ne1: i64,
+  ne2: i64,
+  ne3: i64,
+  pieces_at: i64,
+  pieces: i64,
+  borrow mut kinds: array_builder<i64>,
+  borrow mut dims: array_builder<i64>,
+  borrow mut d0: array_builder<i64>,
+  borrow mut d1: array_builder<i64>,
+  borrow mut d2: array_builder<i64>,
+  borrow mut d3: array_builder<i64>,
+  borrow mut starts: array_builder<i64>,
+  borrow mut counts: array_builder<i64>,
+  total: i64,
+) -> Result<i64, Error> {
+  shape := runtime_weights.Shape {
+    ggml_type: ggml_type, n_dims: n_dims, ne0: ne0, ne1: ne1, ne2: ne2, ne3: ne3,
+  }
+  allocation := runtime_weights.allocation_bytes(owner, shape)?
+  if allocation < 1 || pieces_at < 0 || pieces < 1 { return Err(Error.Invalid) }
+  kinds.push(ggml_type)
+  dims.push(n_dims)
+  d0.push(ne0)
+  d1.push(ne1)
+  d2.push(ne2)
+  d3.push(ne3)
+  starts.push(pieces_at)
+  counts.push(pieces)
+  return checked_add(total, allocation)
+}
+
+fn append_piece(
+  pack_offset: i64,
+  tensor_offset: i64,
+  bytes: i64,
+  borrow mut pack_offsets: array_builder<i64>,
+  borrow mut tensor_offsets: array_builder<i64>,
+  borrow mut sizes: array_builder<i64>,
+) -> Result<(), Error> {
+  if pack_offset < 0 || tensor_offset < 0 || bytes < 1 { return Err(Error.Invalid) }
+  pack_offsets.push(pack_offset)
+  tensor_offsets.push(tensor_offset)
+  sizes.push(bytes)
+  return Ok(())
+}
+
+pub fn build_plan(
+  borrow owner: ggml_ffi.GpuDevice,
+  pack_path: str,
+  borrow g: layer_olmoe.Geometry,
+) -> Result<Plan, Error> {
+  table := layer_olmoe.mm_layer_member_table(g)
+  pack := fs.open_rw(pack_path)?
+  mut counters := alignpack_read.new_counters()
+  index := alignpack_read.open_pack(pack, counters) else { return Err(Error.Invalid) }
+  if g.code.len() != 0 || g.n_layer < 1 || g.n_expert < 1 || table.count != 9 {
+    return Err(Error.Invalid)
+  }
+  count := checked_add(3, checked_mul(12, g.n_layer)?)?
+  if count < 1 || count > MAX_TENSORS { return Err(Error.Invalid) }
+
+  mut kinds: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  mut d0: array_builder<i64> := array_builder()
+  mut d1: array_builder<i64> := array_builder()
+  mut d2: array_builder<i64> := array_builder()
+  mut d3: array_builder<i64> := array_builder()
+  mut starts: array_builder<i64> := array_builder()
+  mut counts: array_builder<i64> := array_builder()
+  mut pack_offsets: array_builder<i64> := array_builder()
+  mut tensor_offsets: array_builder<i64> := array_builder()
+  mut sizes: array_builder<i64> := array_builder()
+  mut weights_bytes := 0
+  mut piece_at := 0
+
+  embed := find_member(
+    pack, index, layer_olmoe.KIND_WEIGHT, -1, -1, layer_olmoe.ROLE_TOKEN_EMBD, counters)?
+  if !ordinary_member_ok(embed, 2, g.n_embd, g.n_vocab) { return Err(Error.Invalid) }
+  append_piece(embed.pack_offset, 0, embed.nbytes,
+    pack_offsets, tensor_offsets, sizes)?
+  weights_bytes = append_tensor(
+    owner, embed.ggml_type, 2, g.n_embd, g.n_vocab, 1, 1, piece_at, 1,
+    kinds, dims, d0, d1, d2, d3, starts, counts, weights_bytes)?
+  piece_at = piece_at + 1
+
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer { break }
+    mut member := 0
+    loop {
+      if member >= table.count { break }
+      dense := find_member(
+        pack, index, table.block[member], layer, -1, table.role[member], counters)?
+      if !ordinary_member_ok(dense, table.n_dims[member], table.ne0[member], table.ne1[member]) {
+        return Err(Error.Invalid)
+      }
+      append_piece(dense.pack_offset, 0, dense.nbytes,
+        pack_offsets, tensor_offsets, sizes)?
+      weights_bytes = append_tensor(
+        owner, dense.ggml_type, table.n_dims[member], dense.ne0, dense.ne1, 1, 1, piece_at, 1,
+        kinds, dims, d0, d1, d2, d3, starts, counts, weights_bytes)?
+      piece_at = piece_at + 1
+      member = member + 1
+    }
+    mut role := 0
+    loop {
+      if role >= layer_olmoe.CLAIM_ROLE_COUNT { break }
+      mut plane_bytes := 0
+      mut plane_type := -1
+      mut expert := 0
+      loop {
+        if expert >= g.n_expert { break }
+        claim := find_member(
+          pack, index, layer_olmoe.KIND_EXPERT, layer, expert,
+          layer_olmoe.claim_role(role), counters)?
+        if claim.n_dims != 3 || claim.ne0 != layer_olmoe.claim_ne0(g, role)
+          || claim.ne1 != layer_olmoe.claim_ne1(g, role) || claim.ne2 != g.n_expert
+          || claim.ne3 != 1 || claim.nbytes < 1 || claim.slice_index != expert
+          || claim.slice_count != g.n_expert
+          || (expert > 0 && (claim.nbytes != plane_bytes || claim.ggml_type != plane_type)) {
+          return Err(Error.Invalid)
+        }
+        if expert == 0 {
+          plane_bytes = claim.nbytes
+          plane_type = claim.ggml_type
+        }
+        append_piece(claim.pack_offset, expert * plane_bytes, plane_bytes,
+          pack_offsets, tensor_offsets, sizes)?
+        piece_at = piece_at + 1
+        expert = expert + 1
+      }
+      weights_bytes = append_tensor(
+        owner, plane_type, 3, layer_olmoe.claim_ne0(g, role),
+        layer_olmoe.claim_ne1(g, role), g.n_expert, 1, piece_at - g.n_expert, g.n_expert,
+        kinds, dims, d0, d1, d2, d3, starts, counts, weights_bytes)?
+      role = role + 1
+    }
+    layer = layer + 1
+  }
+
+  norm := find_member(
+    pack, index, layer_olmoe.KIND_WEIGHT, -1, -1, layer_olmoe.ROLE_OUTPUT_NORM, counters)?
+  output := find_member(
+    pack, index, layer_olmoe.KIND_WEIGHT, -1, -1, layer_olmoe.ROLE_OUTPUT, counters)?
+  if !ordinary_member_ok(norm, 1, g.n_embd, 1)
+    || !ordinary_member_ok(output, 2, g.n_embd, g.n_vocab)
+    || (embed.pack_offset == output.pack_offset && embed.nbytes == output.nbytes) {
+    return Err(Error.Invalid)
+  }
+  append_piece(norm.pack_offset, 0, norm.nbytes,
+    pack_offsets, tensor_offsets, sizes)?
+  weights_bytes = append_tensor(
+    owner, norm.ggml_type, 1, g.n_embd, 1, 1, 1, piece_at, 1,
+    kinds, dims, d0, d1, d2, d3, starts, counts, weights_bytes)?
+  piece_at = piece_at + 1
+  append_piece(output.pack_offset, 0, output.nbytes,
+    pack_offsets, tensor_offsets, sizes)?
+  weights_bytes = append_tensor(
+    owner, output.ggml_type, 2, g.n_embd, g.n_vocab, 1, 1, piece_at, 1,
+    kinds, dims, d0, d1, d2, d3, starts, counts, weights_bytes)?
+  piece_at = piece_at + 1
+
+  k_shape := runtime_weights.Shape {
+    ggml_type: 0, n_dims: 3, ne0: g.head_dim, ne1: g.context_length,
+    ne2: g.n_head_kv, ne3: 1,
+  }
+  v_shape := runtime_weights.Shape {
+    ggml_type: 0, n_dims: 3, ne0: g.context_length, ne1: g.head_dim,
+    ne2: g.n_head_kv, ne3: 1,
+  }
+  per_layer_kv := checked_add(
+    runtime_weights.allocation_bytes(owner, k_shape)?,
+    runtime_weights.allocation_bytes(owner, v_shape)?)?
+  result_kinds := kinds.build()
+  result_offsets := pack_offsets.build()
+  if result_kinds.len() != count || result_offsets.len() != piece_at { return Err(Error.Invalid) }
+  return Ok(Plan {
+      count: count,
+      ggml_type: result_kinds,
+      n_dims: dims.build(), ne0: d0.build(), ne1: d1.build(), ne2: d2.build(), ne3: d3.build(),
+      piece_start: starts.build(), piece_count: counts.build(),
+      piece_pack_offset: result_offsets, piece_tensor_offset: tensor_offsets.build(),
+      piece_bytes: sizes.build(), weights_bytes: weights_bytes,
+      kv_bytes: checked_mul(per_layer_kv, g.n_layer)?,
+    })
+}
+
+pub fn load(
+  borrow owner: ggml_ffi.GpuDevice,
+  pack_path: str,
+  borrow plan: Plan,
+  staging_bytes: i64,
+) -> Result<(), Error> {
+  if plan.count < 1 || staging_bytes < 1 || plan.ggml_type.len() != plan.count
+    || plan.n_dims.len() != plan.count || plan.ne0.len() != plan.count
+    || plan.ne1.len() != plan.count || plan.ne2.len() != plan.count
+    || plan.ne3.len() != plan.count || plan.piece_start.len() != plan.count
+    || plan.piece_count.len() != plan.count
+    || plan.piece_pack_offset.len() != plan.piece_tensor_offset.len()
+    || plan.piece_pack_offset.len() != plan.piece_bytes.len() {
+    return Err(Error.Invalid)
+  }
+  pack := fs.open_rw(pack_path)?
+  mut chunk := buffer(staging_bytes)
+  runtime_weights.begin(owner, plan.count)?
+  mut at := 0
+  loop {
+    if at >= plan.count { break }
+    index := runtime_weights.add(owner, runtime_weights.Shape {
+        ggml_type: plan.ggml_type[at], n_dims: plan.n_dims[at],
+        ne0: plan.ne0[at], ne1: plan.ne1[at], ne2: plan.ne2[at], ne3: plan.ne3[at],
+      })?
+    if index != at { return Err(Error.Invalid) }
+    start := plan.piece_start[at]
+    count := plan.piece_count[at]
+    if start < 0 || count < 1 || start > plan.piece_bytes.len() - count {
+      return Err(Error.Invalid)
+    }
+    mut piece := 0
+    loop {
+      if piece >= count { break }
+      row := start + piece
+      mut done := 0
+      loop {
+        if done >= plan.piece_bytes[row] { break }
+        read_count := pack.pread(chunk, plan.piece_pack_offset[row] + done)?
+        if read_count < 1 || read_count > staging_bytes { return Err(Error.Invalid) }
+        take := if read_count > plan.piece_bytes[row] - done {
+          plan.piece_bytes[row] - done
+        } else { read_count }
+        view := chunk.bytes()
+        data := view[0..take]
+        runtime_weights.upload(owner, index, plan.piece_tensor_offset[row] + done, data)?
+        done = done + take
+      }
+      piece = piece + 1
+    }
+    at = at + 1
+  }
+  runtime_weights.finish(owner)?
+  return Ok(())
+}

@@ -48,9 +48,13 @@ source trees. Closing the invocation removes the complete scratch root without c
 The invocation also rebuilds the admitted backend manifest and every native artifact as private
 single-link files, verifies their finalized bytes, and rechecks all retained inputs. Later shim and
 case commands can therefore consume only invocation-owned native paths.
+The resident OLMoE loader now derives every dense and sliced expert tensor directly from the
+AlignPack index, rejects missing, ambiguous, and shape-invalid members, plans the exact backend
+allocation, and uploads all expert planes into their whole resident tensors through bounded staging.
+Its GPU-stub owner covers the complete 69-piece two-layer fixture and malformed-pack refusals.
 
 Request 59 is critical and blocking for production-provider integration, the main executable, and
-publication. Pinned v0.7.5 and pulled Align main `8aa9c76d` reject the unchanged valid
+publication. Pinned v0.7.5 and pulled Align main `c2bb7655` reject the unchanged valid
 `AttemptRun.stages` owner only during per-unit checking; whole-program checking passes. Align issue
 #966 remains open and owns the repair. Private staging, platform profiles, numeric calibration,
 qualifier wiring, and focused GPU owners remain independent.
@@ -70,14 +74,12 @@ independent.
 3. When Request 59 ships, adopt the fixed Align revision and pass its focused per-unit owner,
    `gmake build`, and `gmake ggml-spike-smoke`; complete the production-provider integration.
 4. Run Metal locally and hand the same bounded kit to the CUDA host. Publish G1 only when it is
-   consumer-complete, then review, repair, exact-head preflight, merge, refresh main, and begin G1R.
-5. Deliver G1R next; advance eligible constrained-memory work without waiting for a resident speed
-   win. Freeze each actual performance campaign's workload, resource/cost limits and decision rule
-   before tuning. Do not claim current speed or larger-model support from this design.
+   consumer-complete, then review, repair, exact-head preflight, and merge. Stop after this pull
+   request as requested; do not begin G1R in this work session.
 
 **Verification and constraints.** At pinned v0.7.5, `gmake gpu-bundle-smoke`,
-`gmake gpu-device-smoke`, `gmake gpu-qwen-load-smoke`, and per-unit checks for `runtime_bundle`,
-`runtime_device`, and `ggml_ffi` pass. The real shim compiles against Homebrew ggml with
+`gmake gpu-device-smoke`, `gmake gpu-qwen-load-smoke`, `gmake gpu-olmoe-load-smoke`, and per-unit
+checks for `runtime_bundle`, `runtime_device`, and `ggml_ffi` pass. The real shim compiles against Homebrew ggml with
 `-Wall -Wextra -Werror`; Mac links use
 `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib`. Request 59 is reproduced by
 `scripts/alignc check-per-unit src/verification_loop.align` and blocks `gmake build` before
@@ -95,6 +97,10 @@ The external Qwen model input `509287f78cb4...894d3c` now has verified AlignPack
 4,677,120,000 payload bytes and returned `IDENTICAL`. The external OLMoE model/pack/geometry
 identities remain `4ddc0e53159e...9c684f`, `20423ebf5a90...df6ae`, and
 `1f828d2c601e...11ada`.
+The exact ggml source `bb4caa7540188872173c44d161602d9271386413` produced a real Metal bundle
+with bundle ID `0a472538ef35...814b`, manifest digest `f928428facfe...8d1`, source-manifest digest
+`64db6180009a...6f4`, and source-snapshot digest `c2860034df35...8b3`. Its 3,430-file, 169 MiB
+closure passed the recipe bounds, and the real shim linked against the staged bundle successfully.
 
 **Intentional uncommitted files.** None after the source-materialization checkpoint is committed.
 

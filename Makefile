@@ -39,6 +39,7 @@ endif
 .PHONY: gpu-profile-coverage gpu-input-admission gpu-source-materialization gpu-backend-staging gpu-qualification-cli gpu-evidence-publication
 .PHONY: gpu-result-replay
 .PHONY: gpu-command-environment gpu-process-cleanup gpu-build-failure-evidence gpu-preparation-evidence
+.PHONY: gpu-olmoe-load-smoke
 check:
 	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
 	  diagnostic="$$(mktemp)"; \
@@ -149,6 +150,10 @@ gpu-device-smoke:
 # graph out of the model-free device lifecycle owner while proving bounded sequential upload.
 gpu-qwen-load-smoke:
 	./scripts/run-gpu-qwen-load-smoke
+
+# G1's focused AlignPack-to-resident OLMoE owner verifies dense weights and every expert plane.
+gpu-olmoe-load-smoke:
+	./scripts/run-gpu-olmoe-load-smoke
 
 eval-smoke: build
 	./eval/runners/run-fixed.sh $(EVAL_CORPUS)
