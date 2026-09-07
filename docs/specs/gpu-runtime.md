@@ -233,6 +233,13 @@ Constants are 1 and `GPU_RUNTIME_PROFILE`; platform is `macos|linux|wsl2`; sourc
 `commit,manifest_sha256` and must resolve a `source_kind=align-llm` manifest; bundle manifest is a
 `FileRef`.
 
+The internal profile assembler consumes frozen source, bundle, calibration and runtime-option
+records plus explicit paths, cache budgets and deadlines. It derives record hashes, model bindings
+and the complete ordered CPU/GPU repeat expansion through the existing record owner, then validates
+the assembled profile before returning canonical bytes. It does not choose tolerances or invent
+expected token/output values. `gpu-profile-assembly` compares its result byte-for-byte with the
+independent normative vector and owns normalization and malformed/cross-record refusal cases.
+
 The profile file's retained parent directory is the qualification input root. Every profile path
 resolves beneath that root without following a symlink component. The two complete source closures
 are fixed at `source/align-llm/{manifest.json,commit,blobs/<sha256>}` and

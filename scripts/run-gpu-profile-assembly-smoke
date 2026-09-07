@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Compare profile construction with the independent normative schema-1 vector."""
+
+import dataclasses
+import pathlib
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from gpu_backend_recipe import RecipeError, canonical
+from gpu_qualification_profile import ModelPaths, assemble_profile
+from gpu_qualification_records import MAX_PROFILE_BYTES, parse_record
+
+
+def main():
+    specification = (ROOT / "docs/specs/gpu-runtime.md").read_bytes()
+    heading = specification.index(b"### 3.9 Canonical positive vectors")
+    opening = specification.index(b"```json\n", heading) + len(b"```json\n")
+    closing = specification.index(b"```\n", opening)
+    lines = specification[opening:closing].splitlines(keepends=True)
+    assert len(lines) == 8
+    expected = parse_record(lines[6], MAX_PROFILE_BYTES)
+    paths = tuple(ModelPaths(**{field.name: row[field.name] for field in dataclasses.fields(ModelPaths)})
+                  for row in expected["models"])
+    inputs = dict(
+        profile_id=expected["profile_id"], platform=expected["platform"],
+        option_id=expected["runtime_options"][0]["option_id"], runtime_option_raw=lines[0],
+        align_source_raw=lines[1], ggml_source_raw=lines[2], bundle_raw=lines[3],
+        bundle_manifest_path=expected["bundle_manifest"]["path"], calibration_raws=lines[4:6],
+        model_paths=paths, preparation_deadline_ns=expected["deadlines_ns"]["preparation"],
+        generation_deadline_ns=expected["deadlines_ns"]["generation"],
+    )
+    assert assemble_profile(**inputs) == lines[6]
+    for updates, message in (
+        ({"platform": "linux"}, "platform does not match"),
+        ({"calibration_raws": lines[5:6] + lines[4:5], "model_paths": tuple(reversed(paths))}, "model order"),
+        ({"calibration_raws": lines[4:5]}, "two models"),
+        ({"bundle_manifest_path": "../bundle/manifest.json"}, "invalid component"),
+        ({"preparation_deadline_ns": 0}, "preparation deadline"),
+        ({"generation_deadline_ns": 900_000_000_001}, "generation deadline"),
+        ({"model_paths": (dataclasses.replace(paths[0], model_path="../model"), paths[1])}, "invalid component"),
+        ({"model_paths": (dataclasses.replace(paths[0], runtime_cache_budget_bytes=1), paths[1])}, "cache budget"),
+    ):
+        try:
+            assemble_profile(**(inputs | updates))
+        except RecipeError as error:
+            assert message in str(error), (message, str(error))
+        else:
+            raise AssertionError("invalid assembly inputs passed")
+
+    # Normalization is the shared validator's, not a second set of constructor-specific hashes.
+    shuffled = dict(inputs)
+    for key in ("runtime_option_raw", "align_source_raw", "ggml_source_raw", "bundle_raw"):
+        parsed = parse_record(inputs[key], 16 * 1024 * 1024)
+        shuffled[key] = canonical(dict(reversed(list(parsed.items()))))
+    shuffled["calibration_raws"] = [
+        canonical(dict(reversed(list(parse_record(raw, 256 * 1024).items())))) for raw in lines[4:6]
+    ]
+    assert assemble_profile(**shuffled) == lines[6]
+    assert inputs["model_paths"] == paths and inputs["calibration_raws"] == lines[4:6]
+    print("gpu profile assembly: PASS (normative vector, normalization and cross-record refusals)")
+
+
+if __name__ == "__main__":
+    main()

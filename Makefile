@@ -112,6 +112,10 @@ gpu-numeric-stream-reader:
 gpu-numeric-pair:
 	./scripts/run-gpu-numeric-pair-smoke
 
+.PHONY: gpu-profile-assembly
+gpu-profile-assembly:
+	./scripts/run-gpu-profile-assembly-smoke
+
 gpu-input-admission:
 	./scripts/run-gpu-input-admission-smoke
 

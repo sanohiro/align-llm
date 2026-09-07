@@ -58,6 +58,9 @@ pin adoption, `gmake gpu-numeric-stream` and final `gmake gpu-generation-smoke` 
   reading. Kit assembly can consume actual application source instead of fixture-only snapshots.
   Its private staging writer now shares the recipe path, independently replays written objects,
   preserves occupied outputs and removes newly acquired partial output on write/replay failure.
+- Profile assembly now derives hashes, model bindings and complete CPU/GPU repeat expansion from
+  frozen source/bundle/calibration records, explicit paths/budgets/deadlines and the existing record
+  owner. Real calibration values and outputs still require execution evidence.
 
 **Next actions, in order.**
 
@@ -97,6 +100,8 @@ results and refusal of matching wrong shapes, wrong ordering, extra/missing fram
 Git object formats, linked worktrees, exact objects and mutation/identity refusals; recipe defaults
 and independent retained replay remain passing. The capture owner also passes private snapshot
 writing, occupied directory/symlink preservation and cleanup after injected write/replay failures.
+`gmake gpu-profile-assembly` passes exact normative-vector reproduction, canonical normalization,
+model order, platform, path, deadline and cache-budget refusals.
 These are focused build/registry/runtime checks, not completed GPU numeric qualification.
 
 **External inputs and constraints.** Models, raw evidence, build products and local paths stay
@@ -111,7 +116,7 @@ OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90.
 `1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
 follows from these build and correctness checkpoints.
 
-**Intentional uncommitted files.** None at the application-source capture checkpoint.
+**Intentional uncommitted files.** None at the profile-assembly checkpoint.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 
