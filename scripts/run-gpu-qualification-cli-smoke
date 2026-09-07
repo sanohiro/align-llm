@@ -12,6 +12,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import gpu_qualification_build as build  # noqa: E402
 import gpu_qualification_cli as cli  # noqa: E402
 from gpu_backend_recipe import RecipeError  # noqa: E402
 
@@ -29,6 +30,54 @@ def rejected(call, message: str) -> None:
         assert message in str(error), (message, str(error))
     else:
         raise AssertionError(f"gpu qualifier CLI unexpectedly passed: {message}")
+
+
+def build_construction_owner(parent: pathlib.Path) -> None:
+    work = parent / "build-construction"
+    work.mkdir(mode=0o700)
+    entry = work / "main.align"
+    entry.write_text("fn main() {}\n")
+    shim = work / "shim.c"
+    shim.write_text("int shim(void) { return 0; }\n")
+    shell = pathlib.Path("/bin/sh").resolve(strict=True)
+    arguments = dict(
+        work=work, compiler=shell, runtime=shell, copier=shell, driver=shell,
+        reference_driver=shell,
+        entry=entry, shim_source=shim, platform="macos", align_revision="a" * 40,
+        source_commit="b" * 40,
+    )
+    before = set(work.iterdir())
+    for changes, message in (
+        ({"platform": "other"}, "platform is unsupported"),
+        ({"align_revision": "invalid"}, "revision is invalid"),
+        ({"ggml_include": work}, "both ggml"),
+        ({"ggml_include": parent, "backend_library": parent}, "outside the private"),
+        ({"entry": shim}, "entry filename"),
+    ):
+        rejected(lambda changes=changes: build.commands(**(arguments | changes)), message)
+        assert set(work.iterdir()) == before
+    (work / "alignc").write_bytes(b"occupied")
+    occupied = set(work.iterdir())
+    rejected(lambda: build.commands(**arguments), "output is occupied")
+    assert set(work.iterdir()) == occupied
+    (work / "alignc").unlink()
+
+    include = work / "ggml-include"
+    library = work / "backend"
+    include.mkdir(mode=0o700)
+    library.mkdir(mode=0o700)
+    planned = build.commands(**arguments, ggml_include=include, backend_library=library)
+    assert len(planned) == 5
+    assert planned[0].output == work / "alignc"
+    assert planned[1].output == work / "libalign_runtime.a"
+    assert planned[2].output == work / "libalign_ggml_shim.dylib"
+    assert planned[3].output == work / "main"
+    assert planned[4].output == work / "cpu-reference" / "main"
+    assert planned[3].physical_argv == planned[4].physical_argv
+    assert planned[3].cwd == work and planned[4].cwd == work / "cpu-reference"
+    assert "<ggml-include>:owned" in planned[2].logical_argv
+    assert planned[2].mappings["<backend-library>:owned"] == library
+    assert (work / "cpu-reference").stat().st_mode & 0o077 == 0
 
 
 for arguments, message in (
@@ -50,6 +99,7 @@ assert parsed.output == pathlib.Path("result")
 fixture = fixture_module()
 with tempfile.TemporaryDirectory(prefix="gpu-qualification-cli-") as raw_temporary:
     temporary = pathlib.Path(raw_temporary)
+    build_construction_owner(temporary)
     input_root = temporary / "input"
     input_root.mkdir()
     fixture.materialize(input_root)

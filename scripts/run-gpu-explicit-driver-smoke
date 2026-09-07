@@ -16,6 +16,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import gpu_qualification_build as qualification_build  # noqa: E402
 import gpu_qualification_run as qualification_run  # noqa: E402
 
 
@@ -114,64 +115,27 @@ def main() -> None:
             pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture",
         )
         runtime = alignc.parent / "libalign_runtime.a"
-        copied_compiler = scratch / "alignc"
-        copied_runtime = scratch / "libalign_runtime.a"
-        compiler_token = digest_token("compiler-input", alignc)
-        runtime_token = digest_token("runtime-input", runtime)
-        copier_token = digest_token("copy-tool", copier)
-        commands = []
-        for original, token, copied, name in (
-            (alignc, compiler_token, copied_compiler, "alignc"),
-            (runtime, runtime_token, copied_runtime, "align-runtime"),
-        ):
-            commands.append(qualification_run.PreparationCommand(
-                (str(copier), str(original), copied.name),
-                (copier_token, token, copied.name),
-                {copier_token: copier, token: original}, copied, name, "fixture",
-            ))
-
         proxy_source = scratch / "driver.c"
         proxy = scratch / "selected-cc"
         marker = scratch / "selected-cc.invoked"
         build_driver_proxy(cc, proxy_source, proxy, marker, scratch)
-        selected_token = digest_token("selected-driver", proxy)
-
-        shim_source = ROOT / "scripts" / "ggml_shim_stub.c"
-        shim_token = digest_token("shim-source", shim_source)
-        cc_token = selected_token
-        suffix = "dylib" if sys.platform == "darwin" else "so"
-        shim = scratch / f"libalign_ggml_shim.{suffix}"
-        shim_flags = [
-            "-shared", "-fPIC", "-O2", "-ffp-contract=off", "-DALIGN_GGML_FP_CONTRACT_OFF=1",
-            "-Wall", "-Wextra", "-Werror",
-        ]
-        if sys.platform == "darwin":
-            shim_flags.extend(["-Xlinker", "-install_name", "-Xlinker", f"@rpath/{shim.name}"])
-        else:
-            shim_flags.append("-B/usr/bin")
-        commands.append(qualification_run.PreparationCommand(
-            tuple([str(proxy), *shim_flags, str(shim_source), "-o", shim.name, "-lm"]),
-            tuple([cc_token, *shim_flags, shim_token, "-o", shim.name, "-lm"]),
-            {cc_token: proxy, shim_token: shim_source}, shim, "align-ggml-shim", "fixture",
-        ))
-
-        # The copied compiler has the admitted source digest; its adjacent archive is materialized
-        # before either real Align invocation. Both candidates actually call the newly built shim.
-        copied_token = digest_token("align-compiler", alignc)
-        source_text = (
+        source = scratch / "candidate.align"
+        source.write_text(
             'extern "C" link("align_ggml_shim") { fn align_ggml_available() -> i32 }\n'
-            'fn main() { unsafe { print(align_ggml_available()) } }\n'
+            'fn main() { unsafe { print(align_ggml_available()) } }\n',
+            encoding="utf-8",
         )
-        for name in ("candidate", "cpu_reference"):
-            source = scratch / f"{name}.align"
-            source.write_text(source_text, encoding="utf-8")
-            source_token = digest_token(f"{name.replace('_', '-')}-source", source)
-            commands.append(qualification_run.PreparationCommand(
-                (str(copied_compiler), "build", str(source), "--profile", "dev", "--cc", str(proxy)),
-                (copied_token, "build", source_token, "--profile", "dev", "--cc", selected_token),
-                {copied_token: copied_compiler, source_token: source, selected_token: proxy},
-                scratch / name, name.replace("_", "-"), "fixture",
-            ))
+        revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        source_commit = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        commands = qualification_build.commands(
+            work=scratch, compiler=alignc, runtime=runtime, copier=copier, driver=proxy,
+            reference_driver=proxy,
+            entry=source, shim_source=ROOT / "scripts" / "ggml_shim_stub.c",
+            platform="macos" if sys.platform == "darwin" else "linux",
+            align_revision=revision, source_commit=source_commit,
+        )
         qualification_run.run_preparation(state, commands, cwd=scratch, home=home, temporary=scratch)
         assert state.complete, (
             state.failure_ordinal, state.failure_detail,
@@ -188,8 +152,7 @@ def main() -> None:
         # macOS can synthesize the Core Foundation locale cache after exec.
         assert set(names) - {"__CF_USER_TEXT_ENCODING"} == {"HOME", "LC_ALL", "TMPDIR", "TZ"}
         assert names.count("HOME") == 3
-        for name in ("candidate", "cpu_reference"):
-            candidate = scratch / name
+        for candidate in (commands[3].output, commands[4].output):
             token = digest_token("case-binary", candidate)
             result = qualification_run.run_owned_command(
                 kind="case", physical_argv=[str(candidate)], logical_argv=[token],

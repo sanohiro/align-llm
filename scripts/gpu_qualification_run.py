@@ -35,6 +35,7 @@ class PreparationCommand:
     output: pathlib.Path
     name: str
     version: str
+    cwd: pathlib.Path | None = None
 
 
 def run_preparation(
@@ -55,7 +56,7 @@ def run_preparation(
             physical_argv=command.physical_argv,
             logical_argv=command.logical_argv,
             mappings=command.mappings,
-            cwd=cwd,
+            cwd=cwd if command.cwd is None else command.cwd,
             home=home,
             temporary=temporary,
             timeout_seconds=3600,

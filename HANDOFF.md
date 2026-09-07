@@ -133,7 +133,15 @@ now copies the real managed compiler and runtime, builds the actual ggml-free sh
 closed-environment native driver, links two real Align callers, and executes both against that shim.
 The environment, process-cleanup, build-failure, publication and replay owners also pass, as do
 Python bytecode compilation and `git diff --check`. No GPU numeric qualification follows from this
-model-free result. The real-profile CLI command construction and case producer remain next.
+model-free result. The new build-construction owner binds the exact compiler/runtime copies, private ggml directories,
+shim build and two separate release-build working directories. It takes separate candidate and
+CPU-reference drivers. The `gpu-qualification-cli` owner rejects malformed construction without
+output side effects, and `gpu-explicit-driver` consumes this common builder for its real two-caller
+check. Remaining build integration is application-owned: the GPU bundle deliberately disables the
+CPU backend, so the actual reference driver must link a separately built CPU backend from the same
+admitted ggml source; the model-free stub does not qualify that CPU reference. Host SDK/tool input
+selection, real-profile CLI construction and the numeric case producer remain next. No new Align
+capability request follows from these application build requirements.
 
 **Intentional uncommitted files.** None after the preparation-sequence checkpoint is committed.
 
