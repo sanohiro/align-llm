@@ -2187,8 +2187,10 @@ int32_t align_gpu_input_slot(void *owner, int64_t index, void *slots, int64_t ou
         ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
 }
 
-/* Attention masks are allocated once at their maximum context and prefill width.  The graph sees
- * the exact live rectangle, with the source tensor's row stride and a zero offset. */
+/* Attention masks are allocated once at their request capacity and prefill width.  Updates pack
+ * each live rectangle densely at offset zero, so the graph view must use the live row stride too.
+ * Keeping the allocation stride here makes every prefix except full capacity non-contiguous, and
+ * current ggml deliberately asserts rather than returning an error for such soft-max masks. */
 int32_t align_gpu_mask_prefix_slot(
         void *owner, int64_t index, int32_t kind, int64_t valid_width, int64_t query_width,
         void *slots, int64_t out) {
@@ -2197,13 +2199,13 @@ int32_t align_gpu_mask_prefix_slot(
     struct ggml_tensor *view = NULL;
     struct ggml_context *ctx = align_gpu_graph_context_at(state, kind);
     if (state == NULL || tensor == NULL || ctx == NULL || state->graph_prepared[kind]
-        || valid_width <= 0
+        || valid_width <= 0 || (uint64_t) valid_width > SIZE_MAX / sizeof(float)
         || query_width <= 0 || valid_width > tensor->ne[0] || query_width > tensor->ne[1]
         || tensor->ne[2] != 1 || tensor->ne[3] != 1 || tensor->type != GGML_TYPE_F32) {
         return ALIGN_GPU_CONFIG;
     }
     view = ggml_view_2d(ctx, tensor, valid_width, query_width,
-                        tensor->nb[1], 0);
+                        (size_t) valid_width * sizeof(float), 0);
     if (view == NULL) {
         return ALIGN_GPU_ALLOCATION;
     }
@@ -3422,6 +3424,9 @@ int32_t align_ggml_op_soft_max_ext(
     ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
     if (sm == NULL && mask != ALIGN_GGML_NO_MASK) {
         return ALIGN_GGML_SLOT;
+    }
+    if (sm != NULL && !ggml_is_contiguous(sm)) {
+        return ALIGN_GGML_SHAPE;
     }
     result = ggml_soft_max_ext((struct ggml_context *) ctx, sa, sm,
                                align_ggml_bits_to_f32(scale_bits),

@@ -63,6 +63,11 @@ source identity against one AlignPack handle and keeps that same handle through 
 and every staged upload, so path replacement cannot retarget validated weights. The real external
 Qwen 7B model now completes one-token generation on Apple M1 under a 6 GB managed-device budget;
 the previous maximum-context plan required 15,032,385,536 KV bytes plus 4,677,120,000 weight bytes.
+The first real multi-token run then exposed ggml's contiguous-mask requirement: a live prefix view
+had retained the allocation row stride and `soft_max_ext` aborted. Mask updates now pack the exact
+live rectangle, the native view uses its tight stride, and the shim refuses any non-contiguous
+soft-max mask before calling ggml. Real Qwen and OLMoE prefill plus two decode steps both pass on
+Apple M1 under the same 6 GB managed-device budget.
 
 Requests 59 and 60 are closed. PRs #972, #975, and #979 repair all borrowed-producer cases exposed
 by the unchanged client; its three focused per-unit owners, main build, and ggml spike smoke pass at
@@ -102,6 +107,8 @@ products remain outside Git. The current qualifier batches pass `gmake gpu-input
 The request-capacity checkpoint additionally passes `gmake gpu-qwen-load-smoke
 gpu-olmoe-load-smoke runtime-provider-smoke build`; a real-shim Qwen 7B invocation on Apple M1
 with maximum tokens 1 and a 6 GB managed-device budget returned `PASS` and output `OK`.
+After the live-mask repair, `gmake gpu-generation-smoke gpu-device-smoke` and the real-shim build
+pass; real Qwen and OLMoE maximum-token-3 invocations each complete prefill and two decode steps.
 The external Qwen model input `509287f78cb4...894d3c` now has verified AlignPack
 `a0bd07028a2c...e99b04` and geometry `697b32f19f2d...2492666`; `--pack-verify` compared all
 4,677,120,000 payload bytes and returned `IDENTICAL`. The external OLMoE model/pack/geometry

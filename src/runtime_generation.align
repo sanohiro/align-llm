@@ -209,7 +209,6 @@ fn slot_buffer() -> buffer {
 fn update_prompt(
   borrow owner: ggml_ffi.GpuDevice,
   borrow prompt_ids: array<i64>,
-  context_length: i64,
   n_vocab: i64,
 ) -> Result<(), Error> {
   mut token_image := buffer(checked_mul(prompt_ids.len(), 4)?)
@@ -222,13 +221,13 @@ fn update_prompt(
     position_image.put_u32_le(at as u32)
     at = at + 1
   }
-  mut mask_image := buffer(checked_mul(checked_mul(context_length, prompt_ids.len())?, 4)?)
+  mut mask_image := buffer(checked_mul(checked_mul(prompt_ids.len(), prompt_ids.len())?, 4)?)
   mut row := 0
   loop {
     if row >= prompt_ids.len() { break }
     mut col := 0
     loop {
-      if col >= context_length { break }
+      if col >= prompt_ids.len() { break }
       mask_image.put_u32_le(if col <= row { 0 } else { MASK_NEG_INFINITY_BITS as u32 })
       col = col + 1
     }
@@ -376,7 +375,7 @@ pub fn generate_qwen(
     options, bundle_id, "qwen2", geometry_text, ggml_ffi.GPU_GRAPH_PREFILL,
     prompt_ids.len(), prompt_ids.len())?
   runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
-  update_prompt(owner, prompt_ids, kv_capacity, g.n_vocab)?
+  update_prompt(owner, prompt_ids, g.n_vocab)?
   runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
   mut logits := logits_buffer(g.n_vocab)?
   logits_view := logits.bytes()
@@ -461,7 +460,7 @@ pub fn generate_olmoe(
     options, bundle_id, "olmoe", geometry_text, ggml_ffi.GPU_GRAPH_PREFILL,
     prompt_ids.len(), prompt_ids.len())?
   runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
-  update_prompt(owner, prompt_ids, kv_capacity, g.n_vocab)?
+  update_prompt(owner, prompt_ids, g.n_vocab)?
   runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
   mut logits := logits_buffer(g.n_vocab)?
   logits_view := logits.bytes()
