@@ -125,7 +125,8 @@ def main() -> None:
     ggml_checkout = pathlib.Path(sys.argv[2]).resolve(strict=True)
     tools, sdk, platform = host_inputs()
     with tempfile.TemporaryDirectory(prefix="gpu-cpu-reference-") as temporary:
-        root = pathlib.Path(temporary)
+        root = pathlib.Path(temporary) / "literal$path'quote`tick"
+        root.mkdir(mode=0o700)
         work, home, scratch = (root / name for name in ("work", "home", "tmp"))
         for directory in (work, home, scratch):
             directory.mkdir(mode=0o700)

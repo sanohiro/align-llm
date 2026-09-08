@@ -34,14 +34,18 @@ set(driver_tools "${driver_directory}/native-tools")
 if(NOT EXISTS "${driver_tools}/ld")
     message(FATAL_ERROR "CPU reference requires the admitted private linker")
 endif()
+# These flags cross the generated build tool's shell boundary. Single quotes
+# retain literal dollar/backtick bytes; escape single quotes and Ninja dollars.
+string(REPLACE "'" "'\\''" driver_tools_shell "${driver_tools}")
+string(REPLACE "$" "$$" driver_tools_shell "${driver_tools_shell}")
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -S "${PROJECT_SOURCE}" -B "${OUTPUT}/build" -G Ninja
             "-DCMAKE_MAKE_PROGRAM:FILEPATH=${NINJA}"
             "-DCMAKE_C_COMPILER:FILEPATH=${CC}" "-DCMAKE_CXX_COMPILER:FILEPATH=${CXX}"
             "-DCMAKE_ASM_COMPILER:FILEPATH=${CC}" "-DCMAKE_AR:FILEPATH=${AR}"
             "-DCMAKE_RANLIB:FILEPATH=${RANLIB}" "-DCMAKE_LINKER:FILEPATH=${LINKER}"
-            "-DCMAKE_C_FLAGS:STRING=-B\"${driver_tools}/\""
-            "-DCMAKE_CXX_FLAGS:STRING=-B\"${driver_tools}/\""
+            "-DCMAKE_C_FLAGS:STRING=-B'${driver_tools_shell}/'"
+            "-DCMAKE_CXX_FLAGS:STRING=-B'${driver_tools_shell}/'"
             "${sdk_flag}" -DCMAKE_BUILD_TYPE=Release
             -DCMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH=FALSE
             "-DREFERENCE_ALIGNC:FILEPATH=${ALIGNC}" "-DREFERENCE_ENTRY:FILEPATH=${ENTRY}"
