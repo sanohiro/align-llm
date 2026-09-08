@@ -1534,9 +1534,12 @@ pub GPU_OBSERVATION_HOST_PEAK := 4
 pub GPU_OBSERVATION_DEVICE_PEAK := 5
 pub GPU_OBSERVATION_WEIGHT_PAYLOAD := 6
 pub GPU_OBSERVATION_KV_PAYLOAD := 7
+pub GPU_OBSERVATION_MODEL_OPS := 8
+pub GPU_OBSERVATION_LAYERS := 9
+pub GPU_OBSERVATION_EXPERTS := 10
 
 pub fn gpu_observation_state(borrow owner: GpuDevice, field: i64) -> i64 {
-  if field < GPU_OBSERVATION_NODES || field > GPU_OBSERVATION_KV_PAYLOAD { return -1 }
+  if field < GPU_OBSERVATION_NODES || field > GPU_OBSERVATION_EXPERTS { return -1 }
   unsafe {
     return align_gpu_observation_state(resource.raw(resource.borrow(owner)), field as i32)
   }

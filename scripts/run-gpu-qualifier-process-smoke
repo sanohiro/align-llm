@@ -145,8 +145,7 @@ def environment_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathli
 
     def inspected_spawn(*args, **kwargs):
         observed.update(kwargs)
-        import subprocess
-        return subprocess.Popen(*args, **kwargs)
+        return process_owner._MeasuredProcess(*args, **kwargs)
 
     result = run_owned_command(
         kind="candidate_build", physical_argv=physical, logical_argv=logical,
@@ -154,6 +153,7 @@ def environment_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathli
         spawn=inspected_spawn,
     )
     assert result.terminal == "PASS" and result.exit_code == 0, result
+    assert result.rss_peak_bytes is not None and result.rss_peak_bytes > 0
     assert result.stdout.retained == b"closed-environment\n"
     assert result.stderr.retained == b""
     assert result.descendants_after == 0
@@ -375,6 +375,7 @@ def cleanup_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Pa
 
     timed = invoke(fixture, "timeout", home, scratch, timeout=0.2)
     assert timed.terminal == "TIMEOUT" and timed.exit_code is None and timed.signal is None
+    assert timed.rss_peak_bytes is not None and timed.rss_peak_bytes > 0
     assert timed.descendants_before >= 1 and timed.descendants_after == 0
 
     descendant = invoke(fixture, "descendant", home, scratch)
@@ -406,7 +407,7 @@ def interrupted_capture_owner(
         original_selector = selectors.DefaultSelector
 
         def spawn(*args, **kwargs):
-            child = subprocess.Popen(*args, **kwargs)
+            child = process_owner._MeasuredProcess(*args, **kwargs)
             observed.append(child)
             return child
 
@@ -464,6 +465,7 @@ def interrupted_capture_owner(
 def build_failure_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path) -> None:
     result = invoke(fixture, "failure", home, scratch)
     assert result.terminal == "FAIL" and result.exit_code == 7 and result.signal is None
+    assert result.rss_peak_bytes is not None and result.rss_peak_bytes > 0
     assert result.descendants_after == 0
     stdout_row = retained_file_row("stdout", "logs/003.stdout", result.stdout)
     stderr_row = retained_file_row("stderr", "logs/003.stderr", result.stderr)
@@ -567,6 +569,28 @@ def build_failure_owner(fixture: pathlib.Path, home: pathlib.Path, scratch: path
     ), "failure category")
 
 
+def resident_memory_owner(home: pathlib.Path, scratch: pathlib.Path) -> None:
+    executable = pathlib.Path(sys.executable).resolve(strict=True)
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    token = "<memory-fixture>:sha256:" + digest
+    peaks = []
+    for size in (128 * 1024 * 1024, 0):
+        source = f"data = bytearray({size}); print(len(data))"
+        result = run_owned_command(kind="case",
+            physical_argv=[str(executable), "-c", source], logical_argv=[token, "-c", source],
+            mappings={token: executable}, cwd=scratch, home=home, temporary=scratch, timeout_seconds=10)
+        assert result.terminal == "PASS" and result.stdout.retained == f"{size}\n".encode()
+        assert result.rss_peak_bytes is not None and result.rss_peak_bytes > 0
+        peaks.append(result.rss_peak_bytes)
+    assert peaks[0] >= 96 * 1024 * 1024 and peaks[1] + 64 * 1024 * 1024 < peaks[0], peaks
+    with process_owner._MeasuredProcess([str(executable), "-c", "pass"],
+        env={"HOME": str(home), "TMPDIR": str(scratch), "LC_ALL": "C", "TZ": "UTC"}) as child:
+        assert child.wait(timeout=10) == 0
+        retained = child.rss_peak_bytes
+        assert retained is not None and retained > 0
+        assert child.poll() == 0 and child.wait(timeout=0) == 0 and child.rss_peak_bytes == retained
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("owner", choices=("environment", "cleanup", "build-failure"))
 args = parser.parse_args()
@@ -586,6 +610,7 @@ with tempfile.TemporaryDirectory(prefix="align-llm-gpu-process-") as temporary:
     elif args.owner == "cleanup":
         cleanup_owner(fixture, home, scratch)
         interrupted_capture_owner(fixture, home, scratch)
+        resident_memory_owner(home, scratch)
     else:
         build_failure_owner(fixture, home, scratch)
 print(f"gpu {args.owner} smoke: PASS")

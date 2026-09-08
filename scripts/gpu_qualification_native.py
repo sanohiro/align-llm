@@ -21,6 +21,7 @@ OBSERVATION_INTS = (
     "decode_executions", "allocated_host_bytes", "allocated_device_bytes",
     "weights_buffer_bytes", "kv_buffer_bytes", "managed_host_peak_bytes", "managed_device_peak_bytes",
     "resident_weight_payload_bytes", "resident_kv_payload_bytes",
+    "model_operations", "model_layers", "model_experts",
 )
 OBSERVATION_TEXT = ("bundle_id", "device_name", "device_description")
 PHASES = {"production", "production_binding", "reproduction", "reproduction_binding",
@@ -60,10 +61,31 @@ class Residency:
 
 
 @dataclasses.dataclass(frozen=True)
+class ModelWork:
+    operations: int
+    layers: int
+    experts: int
+
+    @classmethod
+    def derive(cls, traversal: Traversal) -> ModelWork:
+        routed = traversal.model == 2
+        prefill = (29 + traversal.selected if routed else 24) * traversal.layers + 6
+        decode = (34 + traversal.selected if routed else 29) * traversal.layers + 6
+        operations = prefill + (traversal.positions - 1) * decode
+        layers = traversal.layers * traversal.positions
+        experts = (traversal.selected * ((traversal.layers - 1) * traversal.prompt + 1
+                    + traversal.layers * (traversal.positions - 1))) if routed else 0
+        for value in (operations, layers, experts):
+            bounded_i64(value, 0, (1 << 63) - 1, "native model work")
+        return cls(operations, layers, experts)
+
+
+@dataclasses.dataclass(frozen=True)
 class NativeCase:
     document: dict[str, object]
     traversal: Traversal
     residency: Residency
+    model_work: ModelWork
 
     @property
     def stream_path(self) -> Path:
@@ -126,7 +148,8 @@ def prepare(*, model_id: str, geometry: Mapping[str, object], calibration_case: 
         "forced_ids": list(calibration_case["teacher_forced_token_ids"]), "stream_root": str(stream_root),
         "stream_name": stream_name, "stream_limit": traversal.maximum_bytes,
     }
-    result = NativeCase(document, traversal, Residency.derive(geometry, traversal, calibration_case["maximum_tokens"]))
+    result = NativeCase(document, traversal, Residency.derive(geometry, traversal, calibration_case["maximum_tokens"]),
+                        ModelWork.derive(traversal))
     result.input_bytes()
     return result
 
@@ -182,6 +205,12 @@ def _observation(raw: object, case: NativeCase, expected_bundle_id: str | None,
             or observation["resident_kv_payload_bytes"] != case.residency.kv_bytes \
             or observation["weight_upload_count"] != case.residency.weight_count:
         raise RecipeError("native resident payload or binding count differs from independent geometry")
+    if observation["model_operations"] != case.model_work.operations \
+            or observation["model_layers"] != case.model_work.layers \
+            or observation["model_experts"] != case.model_work.experts:
+        actual = tuple(observation[key] for key in ("model_operations", "model_layers", "model_experts"))
+        expected = (case.model_work.operations, case.model_work.layers, case.model_work.experts)
+        raise RecipeError(f"native model work differs from independent geometry: {actual} != {expected}")
     if observation["read_calls"] != positions or observation["read_bytes"] != positions * case.traversal.vocabulary * 4 \
             or observation["prefill_executions"] != 1 or observation["decode_executions"] != positions - 1:
         raise RecipeError("native production observations differ from generated positions")

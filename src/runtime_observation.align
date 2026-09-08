@@ -22,6 +22,9 @@ pub Snapshot {
   managed_device_peak_bytes: i64,
   resident_weight_payload_bytes: i64,
   resident_kv_payload_bytes: i64,
+  model_operations: i64,
+  model_layers: i64,
+  model_experts: i64,
   bundle_id: string,
   device_name: string,
   device_description: string,
@@ -33,6 +36,7 @@ pub fn unavailable() -> Snapshot = Snapshot {
   prefill_executions: 0, decode_executions: 0, allocated_host_bytes: 0, allocated_device_bytes: 0,
   weights_buffer_bytes: 0, kv_buffer_bytes: 0, managed_host_peak_bytes: 0, managed_device_peak_bytes: 0,
   resident_weight_payload_bytes: 0, resident_kv_payload_bytes: 0,
+  model_operations: 0, model_layers: 0, model_experts: 0,
   bundle_id: "".clone(), device_name: "".clone(), device_description: "".clone(),
 }
 
@@ -58,6 +62,9 @@ pub fn capture(borrow owner: ggml_ffi.GpuDevice) -> Result<Snapshot, Error> {
     managed_device_peak_bytes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_DEVICE_PEAK),
     resident_weight_payload_bytes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_WEIGHT_PAYLOAD),
     resident_kv_payload_bytes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_KV_PAYLOAD),
+    model_operations: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_MODEL_OPS),
+    model_layers: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_LAYERS),
+    model_experts: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_EXPERTS),
     bundle_id: ggml_ffi.gpu_device_bundle_id(owner),
     device_name: ggml_ffi.device_text(device, ggml_ffi.DEVICE_TEXT_NAME),
     device_description: ggml_ffi.device_text(device, ggml_ffi.DEVICE_TEXT_DESCRIPTION),
@@ -72,6 +79,7 @@ pub fn capture(borrow owner: ggml_ffi.GpuDevice) -> Result<Snapshot, Error> {
     || result.managed_device_peak_bytes < result.allocated_device_bytes
     || result.resident_weight_payload_bytes < 1 || result.resident_weight_payload_bytes > result.weights_buffer_bytes
     || result.resident_kv_payload_bytes < 1 || result.resident_kv_payload_bytes > result.kv_buffer_bytes
+    || result.model_operations < 1 || result.model_layers < 1 || result.model_experts < 0
     || result.bundle_id.len() != 64 || result.device_name.len() < 1 || result.device_description.len() < 1 {
     return Err(Error.Invalid)
   }

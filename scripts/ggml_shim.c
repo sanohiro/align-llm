@@ -17,9 +17,10 @@
  *  3. **Fail closed before ggml can abort.** `ggml_backend_cpu_buffer_from_ptr` calls `abort()`
  *     through `GGML_ASSERT` on a pointer that is not `TENSOR_ALIGNMENT`-aligned (section 2.4), so
  *     every pointer and every size is validated here, in C, before the call that would assert.
- *  4. **No `struct ggml_tensor` field is read directly except the public stride array.** Its data,
- *     byte extent, and type use accessors. Item 66 writes `nb[2]`/`nb[3]` after checked construction
- *     because ggml exposes no constructor for a standalone fixed-slot expert stack.
+ *  4. **Legacy tensor data, extent and type use accessors.** Item 66 writes `nb[2]`/`nb[3]`
+ *     after checked construction because ggml exposes no standalone fixed-slot expert stack.
+ *     G1's pinned native graph observation also reads public `op`, `src` and `ne` metadata to
+ *     distinguish materializing nodes and identify down-projection work; no device data is read.
  *
  * Built by the `Makefile`'s `build/lib/libalign_ggml_shim.$(SHIM_SUFFIX)` rule when
  * `ALIGN_LLM_GGML_INCLUDE` is set; `scripts/ggml_shim_stub.c` is built instead when it is not.
@@ -1013,6 +1014,9 @@ struct align_gpu_device_state {
     int64_t observation_device_peak;
     int64_t observation_weight_payload;
     int64_t observation_kv_payload;
+    int64_t observation_model_ops;
+    int64_t observation_layers;
+    int64_t observation_experts;
     int observation_failed;
 };
 
@@ -2555,11 +2559,46 @@ int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
     return ALIGN_GPU_OK;
 }
 
+static int align_gpu_count_model_node(struct align_gpu_device_state *state,
+                                      struct ggml_tensor *tensor,
+                                      int64_t *operations, int64_t *layers, int64_t *experts) {
+    struct ggml_tensor *weight = NULL;
+    int64_t ordinal = 0;
+    if (tensor->op == GGML_OP_NONE || tensor->op == GGML_OP_VIEW || tensor->op == GGML_OP_RESHAPE
+        || tensor->op == GGML_OP_PERMUTE || tensor->op == GGML_OP_CPY) { return 1; }
+    if (*operations == INT64_MAX) { return 0; }
+    *operations += 1;
+    if (tensor->op != GGML_OP_MUL_MAT && tensor->op != GGML_OP_MUL_MAT_ID) { return 1; }
+    if (state->weights_expected < 15 || (state->weights_expected - 3) % 12 != 0) { return 1; }
+    weight = ggml_get_first_tensor(state->metadata_ctx);
+    while (weight != NULL && ordinal < state->weights_expected) {
+        if (ordinal > 0 && ordinal % 12 == 0 && tensor->src[0] == weight) {
+            int64_t invoked = 0;
+            if (*layers == INT64_MAX) { return 0; }
+            *layers += 1;
+            if (tensor->op == GGML_OP_MUL_MAT_ID) {
+                if (tensor->ne[1] <= 0 || tensor->ne[2] <= 0
+                    || tensor->ne[1] > INT64_MAX / tensor->ne[2]) { return 0; }
+                invoked = tensor->ne[1] * tensor->ne[2];
+                if (*experts > INT64_MAX - invoked) { return 0; }
+                *experts += invoked;
+            }
+            return 1;
+        }
+        weight = ggml_get_next_tensor(state->metadata_ctx, weight);
+        ordinal += 1;
+    }
+    return 1;
+}
+
 int32_t align_gpu_graph_compute(
         void *owner, int32_t kind, const void *key, int64_t key_length, void *graph) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     enum ggml_status status = GGML_STATUS_FAILED;
     int64_t observed_nodes = 0;
+    int64_t observed_ops = 0;
+    int64_t observed_layers = 0;
+    int64_t observed_experts = 0;
     int node = 0;
     if (state == NULL || graph == NULL || !align_gpu_graph_kind_ok(kind)
         || !state->workspace_prepared || state->workspace_failed || !state->graph_prepared[kind]
@@ -2578,8 +2617,16 @@ int32_t align_gpu_graph_compute(
         if (ggml_graph_node((struct ggml_cgraph *) graph, node)->op != GGML_OP_NONE) {
             observed_nodes += 1;
         }
+        if (!align_gpu_count_model_node(state, ggml_graph_node((struct ggml_cgraph *) graph, node),
+                                         &observed_ops, &observed_layers, &observed_experts)) {
+            state->observation_failed = 1;
+            return ALIGN_GPU_CONFIG;
+        }
     }
-    if (state->observation_failed || state->observation_nodes > INT64_MAX - observed_nodes) {
+    if (state->observation_failed || state->observation_nodes > INT64_MAX - observed_nodes
+        || state->observation_model_ops > INT64_MAX - observed_ops
+        || state->observation_layers > INT64_MAX - observed_layers
+        || state->observation_experts > INT64_MAX - observed_experts) {
         state->observation_failed = 1;
         return ALIGN_GPU_CONFIG;
     }
@@ -2593,6 +2640,9 @@ int32_t align_gpu_graph_compute(
         state->graph_reuse_count[kind] += 1;
     }
     state->observation_nodes += observed_nodes;
+    state->observation_model_ops += observed_ops;
+    state->observation_layers += observed_layers;
+    state->observation_experts += observed_experts;
     state->graph_current_execution_count[kind] += 1;
     state->graph_execution_count[kind] += 1;
     return ALIGN_GPU_OK;
@@ -2600,7 +2650,7 @@ int32_t align_gpu_graph_compute(
 
 int64_t align_gpu_observation_state(void *owner, int32_t field) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
-    if (field < 0 || field > 7 || !align_gpu_observe_payload(state)) { return -1; }
+    if (field < 0 || field > 10 || !align_gpu_observe_payload(state)) { return -1; }
     switch (field) {
     case 0: return state->observation_nodes;
     case 1: return state->observation_read_bytes;
@@ -2610,6 +2660,9 @@ int64_t align_gpu_observation_state(void *owner, int32_t field) {
     case 5: return state->observation_device_peak;
     case 6: return state->observation_weight_payload;
     case 7: return state->observation_kv_payload;
+    case 8: return state->observation_model_ops;
+    case 9: return state->observation_layers;
+    case 10: return state->observation_experts;
     default: return -1;
     }
 }

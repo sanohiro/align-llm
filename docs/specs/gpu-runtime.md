@@ -522,6 +522,19 @@ Counts cover only model graph operations from embedding through output projectio
 prompt construction, sampling, EOG control and text decode are explicitly outside them. The
 reviewed production graph trace derives the three expected counts from exact model geometry,
 prompt width, output selection and generated steps; all diagnostic work is excluded.
+For the pinned decomposed graphs, an operation is a materializing graph node: NONE, VIEW, RESHAPE,
+PERMUTE and resident-KV CPY are excluded. CONT, zero-extent PAD, CONCAT and the two highest-layer
+GET_ROWS remain counted. This is a graph-operation count, not a GPU kernel-launch count.
+The independent projection is `24*L+6` Qwen prefill and `29*L+6` per Qwen decode;
+OLMoE uses `(29+K)*L+6` prefill and `(34+K)*L+6` per decode, where `L` is layer count and
+`K` selected experts. The constant six is embedding/head plus two highest-layer selection nodes.
+Native execution counts only nodes in successfully executed graphs, never the requested table size.
+Each layer is observed at its down projection by matching the node's first source to original
+weight ordinal `12*(layer+1)` in the immutable `3+12*L` layout. For OLMoE MUL_MAT_ID down
+projections, the checked product of output selected-expert and token-column extents counts actual
+expert invocations. Expected layers are `L*positions`; expected expert invocations are
+`K*((L-1)*prompt_tokens+1+L*(positions-1))` (zero for Qwen). Both counters use actual graph
+membership and are compared independently; no host routing readback is added.
 A passing GPU row requires each expected count equal its
 GPU count and every CPU count zero. Expected weights are the exact immutable model footprint;
 expected KV is the request-capacity footprint derived from geometry and the case's admitted prompt
@@ -553,6 +566,18 @@ the driver value is integer or null when unavailable. `timing` is
 `wall_ns,load_ns,ttft_ns,prefill_ns,decode_ns,device_ns,transfer_ns,wait_ns`; wall is positive for a
 started case, and other fields are nonnegative integer or null when unavailable. Overlapping
 observations are not summed into wall.
+
+The process owner collects per-child `wait4` resource usage when it reaps the exact started PID.
+`OwnedCommandResult.rss_peak_bytes` normalizes macOS bytes and Linux/WSL2 KiB to bytes. The value
+is the kernel's child lifetime maximum, including any waited-descendant usage accounted by that
+kernel; it is not a summed process-group peak. Native case children do not launch descendants.
+RSS is not sampled from `/proc` or a cumulative previous-child maximum. The measured child uses
+the existing `Popen` spawn and pipes with public `poll`/`wait` overrides; one lock owns wait/reap,
+timeout/signal cleanup retains the measured result, and no environment or command wrapper changes.
+Injected alternate spawn implementations may report unavailable (`None`); that is never coerced to
+a measured zero. The process owner tests positive success/failure/timeout samples, repeated waits,
+and a large child followed by a small child to detect cumulative-maximum contamination. Existing
+capture/interruption/descendant cleanup owners remain required for this boundary.
 
 `Command` is `kind,argv,environment,sha256`, where kind is
 `compiler_materialize|runtime_materialize|candidate_build|shim_build|cpu_reference_build|case`.
@@ -738,7 +763,8 @@ nonnegative counters for successfully executed non-leaf graph nodes, completed e
 bytes/calls, and explicit backend synchronization calls. `gpu_observation_state(owner, field)`
 uses fields 0 nodes, 1 readback bytes, 2 readback calls, 3 explicit synchronization calls,
 4 managed host allocation peak, 5 managed device allocation peak, 6 resident weight payload
-and 7 resident KV payload; all
+7 resident KV payload, 8 materializing model operations, 9 down-projected layers and
+10 selected expert invocations; all
 start at zero and invalid selectors or a failed counter return -1. `gpu_slot_get(owner, slots,
 index, bytes, offset, size, label)` accepts a positive size no greater than the destination slice,
 nonnegative tensor offset, and a complete in-tensor interval; refusal leaves byte/call counts
@@ -788,6 +814,8 @@ does not replace these production expectations.
 | --- | --- | --- |
 | Construction / defaults / invalid selector | native device state and `gpu_observation_state` | `gpu-device-smoke` zero and selector refusals |
 | Successful compute / repeated graph execution | `align_gpu_graph_compute` | `gpu-device-smoke` node totals across reuse/invalidation |
+| Model/layer/expert projection and overflow | native node/source/extent scan and independent `ModelWork` projection | provider owner both models, immediate EOG/decode, mutated counters; native observation owner wrong down source and counter overflow before compute |
+| Shared graph dependencies across output expansion | stub expansion preserves existing graph membership, matching pinned ggml | native observation owner alternating graphs, repeated/shared output expansion; provider CPU/GPU stream equality |
 | Explicit readback success / malformed bounds or foreign tensor | `gpu_slot_get` and native owner membership check | `gpu-device-smoke` counted bytes/calls and refused unrelated reads |
 | Ordinary and diagnostic generation | `runtime_generation` owner-aware logits readback | `gpu-generation-smoke` and provider trace owner |
 | Early failure / cleanup / CPU independence | no global current-owner binding; existing device Drop | `gpu-device-smoke` and `runtime-provider-smoke` |
@@ -797,6 +825,7 @@ are `available,graph_nodes,read_bytes,read_calls,sync_calls,weight_upload_count,
 kv_upload_bytes,input_upload_bytes,prefill_executions,decode_executions,allocated_host_bytes,
 allocated_device_bytes,weights_buffer_bytes,kv_buffer_bytes,managed_host_peak_bytes,
 managed_device_peak_bytes,resident_weight_payload_bytes,resident_kv_payload_bytes,
+model_operations,model_layers,model_experts,
 bundle_id,device_name,device_description`.
 It captures the existing native state queries before the production device is dropped, validating
 nonnegative counters, positive execution/allocation/weight observations and nonempty identity.

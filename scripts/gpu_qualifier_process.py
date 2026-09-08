@@ -11,6 +11,8 @@ import selectors
 import signal
 import stat
 import subprocess
+import sys
+import threading
 import time
 from collections.abc import Mapping, Sequence
 
@@ -26,6 +28,41 @@ KILL_GRACE_SECONDS = 1.0
 
 class CommandNotStarted(RecipeError):
     """Command admission or spawn failed before an owned child existed."""
+
+
+class _MeasuredProcess(subprocess.Popen[bytes]):
+    """Reap through wait4 while preserving Popen's spawn, pipe and signal interfaces."""
+
+    def __init__(self, *args, **kwargs):
+        self.rss_peak_bytes: int | None = None
+        self._usage_lock = threading.Lock()
+        if not hasattr(os, "wait4") or sys.platform not in {"darwin", "linux"}:
+            raise RecipeError("per-child resource usage is unavailable on this platform")
+        super().__init__(*args, **kwargs)
+
+    def poll(self) -> int | None:
+        with self._usage_lock:
+            if self.returncode is None:
+                pid, status, usage = os.wait4(self.pid, os.WNOHANG)
+                if pid:
+                    self.returncode = os.waitstatus_to_exitcode(status)
+                    peak = usage.ru_maxrss
+                    scale = 1 if sys.platform == "darwin" else 1024
+                    if type(peak) is not int or peak < 0 or peak > ((1 << 63) - 1) // scale:
+                        raise RecipeError("per-child resident memory usage is invalid")
+                    self.rss_peak_bytes = peak * scale
+            return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            result = self.poll()
+            if result is not None:
+                return result
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                raise subprocess.TimeoutExpired(self.args, timeout)
+            time.sleep(POLL_SECONDS if remaining is None else min(POLL_SECONDS, remaining))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -50,6 +87,7 @@ class OwnedCommandResult:
     descendants_before: int
     descendants_after: int
     elapsed_ns: int
+    rss_peak_bytes: int | None = None
 
 
 def retained_file_row(role: str, path: str, captured: CapturedLog) -> dict[str, object]:
@@ -344,7 +382,7 @@ def run_owned_command(
     sdk: ToolchainDirectory | None = None,
     tool_dependencies: Sequence[ToolchainExecutable] = (),
     log_limit: int = LOG_LIMIT,
-    spawn: object = subprocess.Popen,
+    spawn: object = _MeasuredProcess,
 ) -> OwnedCommandResult:
     """Run one verified command in a new group and return bounded complete-log identities."""
     try:
@@ -481,4 +519,5 @@ def run_owned_command(
         descendants_before=descendants_before,
         descendants_after=descendants_after,
         elapsed_ns=max(1, time.monotonic_ns() - started_ns),
+        rss_peak_bytes=getattr(process, "rss_peak_bytes", None),
     )

@@ -77,6 +77,7 @@ def run(plans: Sequence[Plan], *, budget_ns: int, work: Path, home: Path, tempor
             previous = plans[ordinal - 1]
             if previous.identity != plan.identity or previous.case.traversal != plan.case.traversal \
                     or previous.case.residency != plan.case.residency \
+                    or previous.case.model_work != plan.case.model_work \
                     or previous.comparison != plan.comparison or _projection(previous) != _projection(plan):
                 raise RecipeError("native pair does not share its complete frozen identity")
     acquired: set[Path] = set()

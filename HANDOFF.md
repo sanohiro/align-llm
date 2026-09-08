@@ -194,9 +194,25 @@ sticky refusal, preserved peaks, both model payloads, and geometry/native-observ
 RSS, model-operation/layer/expert coverage and final evidence assembly remain unfinished; these
 local observations are not a real-device qualification PASS.
 
+**Model-work and RSS checkpoint.** Native graph observations now count materializing operations,
+down-projected layers by their original weight source, and OLMoE selected expert invocations.
+Independent geometry formulas match both models' prefill/decode and immediate EOG cases. This
+exposed a GPU-stub expansion bug: shared dependencies were registered repeatedly across outputs.
+The stub now preserves per-graph membership like pinned ggml; an alternating/repeated graph
+regression owns it. `python3 scripts/run-gpu-provider-trace-smoke` and `gmake gpu-device-smoke`
+pass, including full numeric equality, wrong down-source/counter-overflow controls and mutated
+observations. The existing Python process owner now retains per-child wait4 RSS in bytes without
+a wrapper or environment change. `gmake gpu-command-environment gpu-process-cleanup`,
+`gmake gpu-build-failure-evidence gpu-case-sequence gpu-qualification-cli` pass; process tests cover
+large-then-small child isolation, repeated waits, timeouts, signals and interrupted capture.
+`gmake fmt`, `git diff --check` and strict real-shim pinned-header C syntax checking pass.
+Next: assemble truthful final case/evidence records, resolve remaining memory scope and partial
+numeric-failure record closure, connect publication/replay and run real hardware qualifications.
+
 **Next actions, in order.**
 
-1. Complete model-operation/layer/expert coverage, RSS observations and profile-bound evidence records.
+1. Assemble profile-bound case/evidence records from completed observations; close partial numeric
+   failure records and make managed-memory versus whole-child RSS scope explicit.
    Prepared executable/profile/calibration binding and native numeric sequencing now pass owners.
 2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
    process/record/replay/publication owners, and real source/profile/calibration kit construction.

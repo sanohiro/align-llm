@@ -213,7 +213,8 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                 assert (case_root / "numeric").read_bytes()[24:] == streams[-1][24:]
                 if architecture == "qwen2" and model_key == "model" and backend == "gpu":
                     for key in ("resident_weight_payload_bytes", "resident_kv_payload_bytes", "weight_upload_count",
-                                "managed_host_peak_bytes", "managed_device_peak_bytes"):
+                                "managed_host_peak_bytes", "managed_device_peak_bytes", "model_operations",
+                                "model_layers", "model_experts"):
                         changed = json.loads(case_run.stdout)
                         changed["production"]["observation"][key] = (
                             changed["production"]["observation"][key] - 1 if "peak" not in key else 0)
