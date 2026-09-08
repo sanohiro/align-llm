@@ -3,25 +3,26 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Merged producer request batch (2026-09-08)
+## G1 producer delivery (2026-09-08)
 
-Branch `docs/align-delivery-batch-983-989`, based on main `b3ca489`, records Requests
-23/42/43/49/51 as `ALIGN_MERGED` through Align PRs #983–#989. The latest producer commit
-is `8bdc0d54265a3f0b5e4958f3325c474c5367f6bb`. Merge identities, published owner evidence
-and required CI results were checked against those PRs. Consumer pin adoption and each request's
-original acceptance remain pending; Request 49 retains its G1 blocking priority.
+Branch `docs/request-62-delivery`, based on main `f8ea28e` (PR #215), records Request 62's
+producer delivery in Align PR #991 at `73251b30f7e5a2df3c904421e577a2bd76325f09`.
+The producer reports 19 of 21 frozen audit cases meeting their expected verdicts, including
+rejection of unsafe cases 08/09 and observed Qwen/OLMoE native byte goldens. Cases 06 and 11
+remain explicit non-blocking precision deferrals; the report remains `ready=false`.
 
-Next: assess the complete frozen G1 audit below against the merged candidate and record every
-A–E disposition, including the lifetime negatives, before declaring the batch ready. Then adopt
-merged prerequisites once on `agent/g1-gpu-generation` and run the named numeric-stream and
-observed generation owners. The historical Request 43/49 refactoring owners remain separate.
-This delivery record does not claim the complete G1 audit passed or close Request 62.
+Next: batch the merged prerequisites into one pin adoption on `agent/g1-gpu-generation`, then
+run `gmake gpu-numeric-stream` and `gmake gpu-generation-smoke` with observed prefill/decode
+logits. Continue diagnostic/case/CLI integration and G1's real Metal/CUDA qualification.
+Requests 23/42/43/49/51 were recorded as `ALIGN_MERGED` in PR #215; their original consumer
+acceptance remains pending. Request 62 is also `ALIGN_MERGED`, with dependent integration
+blocked until consumer adoption and acceptance. Historical Request 43/49 refactoring stays separate.
 
-Verification uses documentation consistency and exact-head `python3 scripts/pre-pr`; executable
-and platform tests are N/A for this publication. No intentional uncommitted files remain after
-this candidate is committed.
+Verification: upstream merge identity, published owner results and required CI were checked.
+This documentation publication uses exact-head `python3 scripts/pre-pr`; source tests and
+platform qualification are N/A. No intentional uncommitted files remain after commit.
 
-## Consolidated G1 compiler handoff (2026-09-08)
+## Historical consolidated G1 compiler handoff (2026-09-08)
 
 The user requested a single audit of foreseeable GPU compiler dependencies before further Align
 interruptions. `docs/align-gpu-readiness.md` records 21 frozen cases, each checked whole-program,

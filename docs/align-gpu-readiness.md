@@ -9,6 +9,14 @@ Treat these as one investigation and delivery batch, with distinct regression ro
 four consecutive requests to interrupt Align's normal development. Keep the historical numbers
 and acceptance owners; do not claim that one inferred cause has already been proven for every row.
 
+**Producer delivery update (2026-09-08).** Align PR [#991](https://github.com/sanohiro/align/pull/991)
+merged as `73251b30f7e5a2df3c904421e577a2bd76325f09`. It reports 19 of 21 cases meeting
+expectations, including the retained-view negatives and observed native byte goldens. Cases 06
+and 11 remain explicitly deferred and non-blocking, so the report remains `ready=false`.
+[Request 62](align-requests.md#request-62--preserve-borrowed-stream-helper-provenance-across-per-unit-interfaces)
+records delivery and pending consumer acceptance. The tables below preserve the original baseline;
+consumer adoption and real GPU qualification remain outstanding.
+
 ## Scope and evidence identity
 
 - Align source: `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0` (PR #982), managed release compiler
