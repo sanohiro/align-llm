@@ -5,6 +5,19 @@ this file records durable execution state.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
+Align producer deliveries through PR #992 are merged at
+`305926b423da9be1f13b0129a7232626e6704d95`; issue #990 is closed. The targeted follow-up
+accepts case 06 and rejects unsafe cases 08/09. Case 11 remains a settled direct-place
+restriction; Request 46 is partially delivered and Request 48 remains proposed. Not all
+requested language/library APIs have shipped. Consumer adoption and acceptance remain pending.
+
+The active branch incorporates main `b5336f0` and preserves its G1 implementation checkpoints.
+Next: adopt the merged compiler/runtime batch once, verify observed stream and generation,
+then continue diagnostic/case/CLI integration and real Metal/CUDA qualification.
+
+### Preserved implementation checkpoint
+
+
 Branch `agent/g1-gpu-generation` incorporates main `b3ca489` (consolidated G1 readiness PR #214). G1 remains unmerged and
 requires its ordinary consumer completion, real Metal/CUDA qualification, review and publication.
 The user authorized continued implementation, PR/merge and subsequent eligible roadmap work.
