@@ -3,6 +3,24 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
+## Merged producer request batch (2026-09-08)
+
+Branch `docs/align-delivery-batch-983-989`, based on main `b3ca489`, records Requests
+23/42/43/49/51 as `ALIGN_MERGED` through Align PRs #983–#989. The latest producer commit
+is `8bdc0d54265a3f0b5e4958f3325c474c5367f6bb`. Merge identities, published owner evidence
+and required CI results were checked against those PRs. Consumer pin adoption and each request's
+original acceptance remain pending; Request 49 retains its G1 blocking priority.
+
+Next: assess the complete frozen G1 audit below against the merged candidate and record every
+A–E disposition, including the lifetime negatives, before declaring the batch ready. Then adopt
+merged prerequisites once on `agent/g1-gpu-generation` and run the named numeric-stream and
+observed generation owners. The historical Request 43/49 refactoring owners remain separate.
+This delivery record does not claim the complete G1 audit passed or close Request 62.
+
+Verification uses documentation consistency and exact-head `python3 scripts/pre-pr`; executable
+and platform tests are N/A for this publication. No intentional uncommitted files remain after
+this candidate is committed.
+
 ## Consolidated G1 compiler handoff (2026-09-08)
 
 The user requested a single audit of foreseeable GPU compiler dependencies before further Align
