@@ -6787,13 +6787,13 @@ valid. Other Move elements, mutable element borrows, partial moves, `arr.at(i)`,
 ## Request 23 — Huge-struct-copy warning fires on borrow parameters
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: low
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: all
 Resume condition: Align ships the diagnostic fix
-Align commit or pull request: none
+Align commit or pull request: #988, merged as c11a152e3e27aebee3bb3c5e708bb1412211a9c7
 align-llm verification: pending — `make check` emits no "huge struct copy" warning for a
   `borrow`/`borrow mut` parameter, specifically none for
   `src/expert_trace.align:1622` (`borrow t: TranscriptScan`), the ten
@@ -6803,6 +6803,21 @@ align-llm verification: pending — `make check` emits no "huge struct copy" war
   `:1331:57` and eleven more), while the by-value warnings the lint
   legitimately owns are unchanged
 ```
+
+### Align progress (2026-09-08)
+
+PR [#988](https://github.com/sanohiro/align/pull/988) restricts the existing
+huge-struct-copy parameter warning to by-value parameters. `borrow` and
+`borrow mut` no longer claim a copy; the size threshold, by-value return warning,
+and generic-signature behavior remain unchanged. Unsupported non-slice `out`
+parameters still produce their existing type error without a misleading copy
+warning. No API, allocation, ownership, interface-format, or native ABI change.
+
+The new parameter-mode owner fails on the old borrowed-parameter behavior and
+passes under both whole-program and per-unit checking after the fix. All seven
+`lint_huge_struct_copy` tests, the bounded local gate, and Clippy passed;
+independent inspection found no actionable issues. All required CI passed.
+Consumer compiler revision adoption remains align-llm-owned.
 
 ### Motivation and current sibling evidence
 
@@ -8945,7 +8960,7 @@ acceptance records, not separate interruption or PR boundaries. Only Request 49'
 G1 consumer changes blocking status; the existing client-closure targets remain authoritative.
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: no
 Blocked gate or slice: none. R5C-METAL-PREFILL-ARM (`docs/specs/r5c-metal-prefill.md` section 6
@@ -8957,12 +8972,55 @@ Resume condition: an Align release makes `alignc check` and `alignc check-per-un
   region-checker (borrow/lifetime) error that `alignc build` reports for the same source, or
   documents an explicit, checkable list of diagnostic classes `check` intentionally defers to
   `build`.
-Align commit or pull request: none
+Align commit or pull request: #983 (mutable-retention transport), #984 (materialized chunks),
+  #985 (grounded Out buffer-storage proof), #986 (target-relative closure joins);
+  #987 (check/build diagnostic boundary documentation).
 align-llm verification: `make check` on `src/gpu_forward.align` plus `src/model_forward.align`
   with a seeded region error (a `borrow mut` out-parameter read by a caller in another module after
   a sibling out-parameter is reassigned, the exact C5 shape) fails with the same diagnostic
   `make build` already reports, instead of passing clean.
 ```
+
+### Align progress (2026-09-08)
+
+PR [#983](https://github.com/sanohiro/align/pull/983) transports exact mutable-retention
+facts through module interfaces. The registered independent-output shape now
+checks and executes in whole/per-unit builds without a client workaround.
+PR [#984](https://github.com/sanohiro/align/pull/984), merged as
+`6fc2f56696089fe1f6504aa3c80e7c07dca438ec`, additionally fixes the unrelated
+producer refusal for `slice<str>.chunks(n)` returning `array<slice<str>>`.
+The header array is owned; its element views retain their source lifetime.
+Neither repair changes the language ownership model or native ABI.
+
+PR [#985](https://github.com/sanohiro/align/pull/985), merged as
+`dcb9038107c67900fac54fd280bda8dc511ada3b`, certifies grounded writable backing for
+`out slice<str>` across fixed/dynamic storage, forwarding, imported/generic calls,
+and storage projections in whole/per-unit builds. Buffer writability is separate
+from header mutability and unreadable old elements. Opaque Copy-view non-Out
+parameters/returns and indirect Out function-value ABI support remain outside
+this capability; no interface format, allocation, ownership, or native ABI changes.
+
+PR [#986](https://github.com/sanohiro/align/pull/986), merged as
+`0dc16ec7015e9b50f8cd556f6f995ec6596090d8`, certifies target-relative closure capture
+sets and callable storage joins across imported forwarding, locals, records,
+variants, and loops. Each concrete producer keeps its own capture identities;
+no interface format, allocation, ownership, or native ABI changes. Opaque incoming
+callable environments, indirect Out function-value ABI support, and broader
+aggregate lifetime precision remain outside this capability.
+
+PR [#987](https://github.com/sanohiro/align/pull/987), merged as
+`67f4ad4656d2c1d78014c49223cc29e54ba096db`, completes the request's explicit
+documentation alternative in Align's `docs/guide/16-toolchain.md` and Japanese
+mirror. The diagnostic table distinguishes whole-program source analysis,
+interface-based analysis, checked-HIR/MIR certification, native emission, and
+link/publication errors. `check-per-unit` covers the build frontend; native
+code-generation and linking checks require `build` with the intended options.
+This documents existing behavior and does not relax ownership checking or excuse
+internal compiler failures on legal source. No new allocation or ownership surface.
+
+Align-side source and malformed-MIR owners passed, and the documentation passed
+its docs-only checks and required CI. Consumer revision adoption and smoke
+verification remain align-llm-owned; no versioned release was requested.
 
 ### Motivation and current sibling evidence
 
@@ -9134,7 +9192,7 @@ acceptance records, not separate interruption or PR boundaries. Only Request 49'
 G1 consumer changes blocking status; the existing client-closure targets remain authoritative.
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none. `model_forward.render_parts` (`src/model_forward.align:3226-3253`)
@@ -9146,12 +9204,38 @@ Independent work that may continue: all of R5C-METAL-PREFILL-ARM.
 Resume condition: an Align release admits a caller in one module to read a `borrow mut` record
   out-parameter filled by a callee in a different module, without the checker merging that
   out-parameter's validity to an unrelated sibling out-parameter's later reassignment.
-Align commit or pull request: none
+Align commit or pull request: Align PR #983 (https://github.com/sanohiro/align/pull/983),
+  merged as 57caf803f2220182f6579dd9fb8505209f7814ce
 align-llm verification: restore the module split R5C originally planned —
   `src/gpu_forward.align` calling `src/model_forward.align`'s `execute` directly and reading
   `TokenColumns`/`ScheduleColumns`/`GraphColumns`/`TopColumns` itself instead of going through
   `render_parts` — and pass `make layer-forward-smoke`.
 ```
+
+### Align answer (2026-09-08)
+
+Align PR #983 (merge `57caf803f2220182f6579dd9fb8505209f7814ce`) transports producer-validated mutable-retention facts across module
+interfaces. Separate `borrow mut` output records no longer acquire dependencies on
+unrelated sibling arguments merely because the callee is imported. The reduced
+independent column-output reproduction passes whole-program and per-unit checking,
+building, and execution. This delivers the same missing analysis boundary as
+Request 49.
+
+Ownership is unchanged: `borrow mut` remains exclusive, actual retained views keep
+their source lifetimes, previous dependent views are invalidated, and replacement
+and Drop retain their existing cleanup rules. Generic bodies infer concrete facts
+at instantiation; indirect calls and imports without validated metadata keep their
+conservative fallback. No runtime allocation or runtime ABI is added.
+
+The capability does not admit the other independently refused forms listed in the
+original motivation, nor repair unrelated MIR producer-certification gaps. An
+existing `out slice<str>` ignored-input fixture cleared retention analysis at #983
+but still met a separate MIR call-argument certification rejection. PR #985 later
+repaired its grounded Out storage boundary, as recorded under Request 42. Align-side regression, malformed-interface, replay, hash,
+cleanup, and required CI checks passed.
+
+Consumer pinning, restoration of the original module split, and
+`make layer-forward-smoke` remain align-llm-owned and unverified here. No new versioned release was published.
 
 ### Motivation and current sibling evidence
 
@@ -9903,7 +9987,7 @@ acceptance records, not separate interruption or PR boundaries. Only Request 49'
 G1 consumer changes blocking status; the existing client-closure targets remain authoritative.
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: G1 observed generation and native diagnostic stream integration;
@@ -9916,7 +10000,8 @@ Resume condition: an Align release admits a call into another module that takes 
   shorter-lived view through this mutable borrow"; and stops unioning a foreign call's several
   `borrow mut` arguments into one region, so that a later write to one does not invalidate reads of
   another.
-Align commit or pull request: none
+Align commit or pull request: Align PR #983 (https://github.com/sanohiro/align/pull/983),
+  merged as 57caf803f2220182f6579dd9fb8505209f7814ce
 align-llm verification: delete `src/decode_step.align`'s local `fail`, `fault_into`,
   `pack_fault_into`, `take`, `take_pack`, `account`, `check_types`, `top_k`, and
   `compare_prefill_logits`, **and `src/moe_decode_step.align`'s local `fail`, `fault_into`,
@@ -9929,6 +10014,31 @@ align-llm verification: delete `src/decode_step.align`'s local `fail`, `fault_in
   `stage_plan_owned`s with the pre-existing `stage_plan`s, and pass `gmake layer-forward-smoke` with
   **all seven** goldens byte-unchanged.
 ```
+
+### Align answer (2026-09-08)
+
+Align PR #983 (merge `57caf803f2220182f6579dd9fb8505209f7814ce`) transports the callee's exact mutable-retention fact through validated
+module interfaces. A direct imported helper that clones a local string into an
+owned output no longer falsely retains that caller-local input through the
+caller's `borrow mut` parameter. Independently filled mutable records no longer
+become related by the former all-arguments fallback. The reduced Request 43/49
+program passes whole/per-unit checking and native execution.
+
+This changes analysis precision, not ownership or allocation rules: cloning stays
+explicit, mutable borrowing stays exclusive, and genuine retained short-lived views
+still reject. Branching/early-return/loop retention, conditional heap replacement,
+generic instantiation, recursive forwarding, malformed records, HIR replay, and
+public-retention hash changes have dedicated owners. Indirect calls and missing
+metadata retain their previous conservative handling. No runtime ABI is added.
+
+At #983, an existing `out slice<str>` call-argument fixture passed retention
+analysis but still failed separate MIR producer certification. PR #985 later
+repaired its grounded Out storage boundary, as recorded under Request 42. This delivery does not claim that every prior
+check/build discrepancy is repaired.
+
+Consumer pinning, removal of duplicated helpers, restoration of `stage_plan`, and
+all seven `layer-forward-smoke` goldens remain align-llm-owned and unverified here.
+No new versioned release was published.
 
 **R6-OLMOE-DECODE is this request's largest client to date.** `src/moe_decode_step.align` carries a
 **third** copy of the failure sink and, beyond it, **thirty-six** functions that exist only because
@@ -10195,7 +10305,7 @@ none to add, and the request gains nothing from this capability.
 ## Request 51 — A reserved word used as an identifier should say so
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: low
 Blocking: no
 Blocked gate or slice: none. Every identifier in `R6-RESIDENT-WEIGHTS` is `resident_*`, `pool`, or
@@ -10203,12 +10313,37 @@ Blocked gate or slice: none. Every identifier in `R6-RESIDENT-WEIGHTS` is `resid
   code, not a workaround.
 Independent work that may continue: all of it. This request is about a diagnostic, not a semantic.
 Resume condition: an Align release reports a reserved word used in an identifier position by name.
-Align commit or pull request: none
+Align commit or pull request: #989, merged as 8bdc0d54265a3f0b5e4958f3325c474c5367f6bb
 align-llm verification: compile the three repros below with the shipped compiler and observe one
   error that names the reserved word and its position, and no cascading top-level errors on later
   lines; no align-llm source changes and no regression of its own, because the subject is the
   compiler's output rather than this repository's behaviour.
 ```
+
+### Align progress (2026-09-08)
+
+PR [#989](https://github.com/sanohiro/align/pull/989) diagnoses the reserved word at
+its own span and recovers the rejected declaration and dependent references.
+Parameter modes, local/tuple/aligned bindings, fields and shorthand, function,
+resource and arena names, and template references use the same identifier
+recovery. Normal keyword constructs, weak identifiers, and the existing dotted
+`template` exception remain valid. Reserved identifiers remain errors; there is
+no new syntax, ownership, allocation, interface-format, or native ABI surface.
+
+The current language also rejects `total(data.bytes())` in the first original
+repro because a Borrow argument must be a stable named local or field. The exact
+original now retains that independent error alongside the reserved-word error.
+Binding `view := data.bytes()` first and passing `view` isolates the name defect
+and reports exactly one error. Align does not suppress independent errors or
+weaken Borrow rules to force the original multi-invalid program to one diagnostic.
+Ambiguous malformed keyword uses and missing statement separators are not a
+promise of one diagnostic for every invalid program.
+
+All 25 parser tests, four diagnostic-quality tests (both checker paths), and two
+frontend fuzz owners (24,000 deterministic cases) passed. Independent review was
+clean; the bounded local gate, Clippy, and all required CI passed. Consumer
+revision adoption and acceptance remain align-llm-owned; no versioned release
+was requested.
 
 ### Motivation and current sibling evidence
 
