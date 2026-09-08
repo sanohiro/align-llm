@@ -1009,6 +1009,10 @@ struct align_gpu_device_state {
     int64_t observation_read_bytes;
     int64_t observation_read_calls;
     int64_t observation_sync_calls;
+    int64_t observation_host_peak;
+    int64_t observation_device_peak;
+    int64_t observation_weight_payload;
+    int64_t observation_kv_payload;
     int observation_failed;
 };
 
@@ -1363,6 +1367,19 @@ static void align_gpu_memory_release(struct align_gpu_device_state *state) {
 #define ALIGN_GPU_FORCE_ALLOCATION_PREFIX 0
 #endif
 
+int64_t align_gpu_memory_allocated_bytes(void *owner, int32_t field);
+
+static void align_gpu_observe_memory(struct align_gpu_device_state *state) {
+    int64_t host = align_gpu_memory_allocated_bytes(state, 0);
+    int64_t device = align_gpu_memory_allocated_bytes(state, 1);
+    if (host < 0 || device < 0) {
+        state->observation_failed = 1;
+        return;
+    }
+    if (host > state->observation_host_peak) { state->observation_host_peak = host; }
+    if (device > state->observation_device_peak) { state->observation_device_peak = device; }
+}
+
 int32_t align_gpu_memory_allocate(void *owner) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     struct ggml_init_params params;
@@ -1469,6 +1486,7 @@ int32_t align_gpu_memory_allocate(void *owner) {
         goto fail;
     }
     state->memory_allocated = 1;
+    align_gpu_observe_memory(state);
     return ALIGN_GPU_OK;
 
 fail:
@@ -1713,6 +1731,66 @@ int32_t align_gpu_weight_upload(
     return ALIGN_GPU_OK;
 }
 
+static int align_gpu_payload_interval(uintptr_t data, size_t bytes, uintptr_t base,
+                                      size_t capacity, size_t *end, int64_t *total) {
+    size_t offset = 0;
+    if (data == 0 || base == 0 || data < base || bytes == 0 || data - base > capacity) {
+        return 0;
+    }
+    offset = (size_t) (data - base);
+    if (offset < *end || bytes > capacity - offset || bytes > (uint64_t) (INT64_MAX - *total)) {
+        return 0;
+    }
+    *end = offset + bytes;
+    *total += (int64_t) bytes;
+    return 1;
+}
+
+static int align_gpu_observe_payload(struct align_gpu_device_state *state) {
+    int64_t seen = 0;
+    int64_t count = 0;
+    int64_t weights = 0;
+    int64_t kv = 0;
+    size_t weight_end = 0;
+    size_t kv_end = 0;
+    struct ggml_tensor *tensor = NULL;
+    uintptr_t weight_base = 0;
+    uintptr_t kv_base = 0;
+    if (state == NULL || state->observation_failed) { return 0; }
+    if (!state->weights_finished) { return 1; }
+    if (!state->memory_allocated || state->weights_buffer == NULL || state->kv_buffer == NULL
+        || state->weights_failed || state->kv_failed) { goto fail; }
+    if (state->weights_expected <= 0 || state->kv_expected < 0
+        || state->kv_expected > INT64_MAX - state->weights_expected) { goto fail; }
+    count = state->weights_expected + (state->kv_finished ? state->kv_expected : 0);
+    weight_base = (uintptr_t) ggml_backend_buffer_get_base(state->weights_buffer);
+    kv_base = (uintptr_t) ggml_backend_buffer_get_base(state->kv_buffer);
+    tensor = ggml_get_first_tensor(state->metadata_ctx);
+    while (seen < count) {
+        uintptr_t data = 0;
+        size_t bytes = 0;
+        if (tensor == NULL) { goto fail; }
+        data = (uintptr_t) ggml_get_data(tensor);
+        bytes = ggml_nbytes(tensor);
+        if (seen < state->weights_expected) {
+            if (!align_gpu_payload_interval(data, bytes, weight_base, (size_t) state->weights_bytes,
+                                            &weight_end, &weights)) { goto fail; }
+        } else if (!align_gpu_payload_interval(data, bytes, kv_base, (size_t) state->kv_bytes,
+                                              &kv_end, &kv)) { goto fail; }
+        seen += 1;
+        tensor = ggml_get_next_tensor(state->metadata_ctx, tensor);
+    }
+    if (seen != count || weights <= 0 || (state->kv_finished && kv <= 0)
+        || (state->observation_weight_payload != 0 && state->observation_weight_payload != weights)
+        || (state->observation_kv_payload != 0 && state->observation_kv_payload != kv)) { goto fail; }
+    state->observation_weight_payload = weights;
+    state->observation_kv_payload = kv;
+    return 1;
+fail:
+    state->observation_failed = 1;
+    return 0;
+}
+
 int32_t align_gpu_weights_finish(void *owner) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL || state->weights_failed || state->weights_finished
@@ -1723,7 +1801,7 @@ int32_t align_gpu_weights_finish(void *owner) {
         return ALIGN_GPU_CONFIG;
     }
     state->weights_finished = 1;
-    return ALIGN_GPU_OK;
+    return align_gpu_observe_payload(state) ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
 }
 
 int64_t align_gpu_weight_state(void *owner, int32_t field) {
@@ -1816,7 +1894,7 @@ int32_t align_gpu_kv_finish(void *owner) {
         return ALIGN_GPU_CONFIG;
     }
     state->kv_finished = 1;
-    return ALIGN_GPU_OK;
+    return align_gpu_observe_payload(state) ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
 }
 
 static struct ggml_tensor *align_gpu_kv_at(struct align_gpu_device_state *state, int64_t index) {
@@ -2168,6 +2246,7 @@ int32_t align_gpu_inputs_finish(void *owner) {
         goto fail;
     }
     state->inputs_finished = 1;
+    align_gpu_observe_memory(state);
     return ALIGN_GPU_OK;
 
 fail:
@@ -2422,6 +2501,7 @@ static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state)
         return ALIGN_GPU_MEMORY_BUDGET;
     }
     state->workspace_prepared = 1;
+    align_gpu_observe_memory(state);
     return ALIGN_GPU_OK;
 }
 
@@ -2437,6 +2517,7 @@ int32_t align_gpu_graph_prepare(
         || state->graph_prepare_count[kind] == INT64_MAX) {
         return ALIGN_GPU_CONFIG;
     }
+    if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     state->workspace_graphs[kind] = (struct ggml_cgraph *) graph;
     memcpy(state->graph_keys[kind], key, 64);
     state->graph_keys[kind][64] = '\0';
@@ -2458,6 +2539,7 @@ int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
         || state->workspace_failed || state->graph_invalidation_count[kind] == INT64_MAX) {
         return ALIGN_GPU_CONFIG;
     }
+    if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     align_gpu_synchronize(state);
     state->graph_prepared[kind] = 0;
     state->workspace_graphs[kind] = NULL;
@@ -2486,6 +2568,7 @@ int32_t align_gpu_graph_compute(
         || memcmp(state->graph_keys[kind], key, 64) != 0) {
         return ALIGN_GPU_CONFIG;
     }
+    if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     if (state->graph_execution_count[kind] == INT64_MAX
         || (state->graph_current_execution_count[kind] > 0
             && state->graph_reuse_count[kind] == INT64_MAX)) {
@@ -2505,6 +2588,7 @@ int32_t align_gpu_graph_compute(
         state->workspace_failed = 1;
         return ALIGN_GPU_COMPUTE;
     }
+    if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     if (state->graph_current_execution_count[kind] > 0) {
         state->graph_reuse_count[kind] += 1;
     }
@@ -2516,12 +2600,16 @@ int32_t align_gpu_graph_compute(
 
 int64_t align_gpu_observation_state(void *owner, int32_t field) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
-    if (state == NULL || state->observation_failed) { return -1; }
+    if (field < 0 || field > 7 || !align_gpu_observe_payload(state)) { return -1; }
     switch (field) {
     case 0: return state->observation_nodes;
     case 1: return state->observation_read_bytes;
     case 2: return state->observation_read_calls;
     case 3: return state->observation_sync_calls;
+    case 4: return state->observation_host_peak;
+    case 5: return state->observation_device_peak;
+    case 6: return state->observation_weight_payload;
+    case 7: return state->observation_kv_payload;
     default: return -1;
     }
 }

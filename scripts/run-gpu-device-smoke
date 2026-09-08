@@ -42,6 +42,11 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+"${CC:-cc}" -O2 -ffp-contract=off -DALIGN_GGML_FP_CONTRACT_OFF=1 \
+  -DALIGN_GGML_STUB_ENGINE=1 -DALIGN_GGML_STUB_GPU=1 \
+  "${root_dir}/scripts/gpu_payload_observation_smoke.c" -lm -o "${work_dir}/payload-observation"
+"${work_dir}/payload-observation"
+
 ALIGN_LLM_GGML_SHIM_DIR="${ordinary_shim}" \
   "${root_dir}/scripts/build-ggml-shim" >/dev/null
 ALIGN_LLM_GGML_FORCE=engine+gpu ALIGN_LLM_GGML_SHIM_DIR="${gpu_shim}" \

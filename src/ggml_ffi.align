@@ -1530,9 +1530,13 @@ pub GPU_OBSERVATION_NODES := 0
 pub GPU_OBSERVATION_READ_BYTES := 1
 pub GPU_OBSERVATION_READ_CALLS := 2
 pub GPU_OBSERVATION_SYNC_CALLS := 3
+pub GPU_OBSERVATION_HOST_PEAK := 4
+pub GPU_OBSERVATION_DEVICE_PEAK := 5
+pub GPU_OBSERVATION_WEIGHT_PAYLOAD := 6
+pub GPU_OBSERVATION_KV_PAYLOAD := 7
 
 pub fn gpu_observation_state(borrow owner: GpuDevice, field: i64) -> i64 {
-  if field < GPU_OBSERVATION_NODES || field > GPU_OBSERVATION_SYNC_CALLS { return -1 }
+  if field < GPU_OBSERVATION_NODES || field > GPU_OBSERVATION_KV_PAYLOAD { return -1 }
   unsafe {
     return align_gpu_observation_state(resource.raw(resource.borrow(owner)), field as i32)
   }

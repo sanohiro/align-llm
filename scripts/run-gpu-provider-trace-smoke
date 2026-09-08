@@ -126,6 +126,10 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                         assert observation[key] > 0, (key, observation)
                     assert observation["bundle_id"] == json.loads((work / "bundle/manifest.json").read_bytes())["bundle_id"]
                     assert observation["device_name"] == "stub-gpu" and observation["device_description"]
+                    assert observation["managed_host_peak_bytes"] == observation["allocated_host_bytes"]
+                    assert observation["managed_device_peak_bytes"] > observation["allocated_device_bytes"]
+                    assert 0 < observation["resident_weight_payload_bytes"] <= observation["weights_buffer_bytes"]
+                    assert 0 < observation["resident_kv_payload_bytes"] <= observation["kv_buffer_bytes"]
 
                 traversal = Traversal.derive(json.loads(geometry.read_bytes()), {
                     "prompt_token_ids": records[-1]["prompt_ids"],
@@ -208,6 +212,30 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                 assert case_output["stream_records"] == traversal.frame_count
                 assert (case_root / "numeric").read_bytes()[24:] == streams[-1][24:]
                 if architecture == "qwen2" and model_key == "model" and backend == "gpu":
+                    for key in ("resident_weight_payload_bytes", "resident_kv_payload_bytes", "weight_upload_count",
+                                "managed_host_peak_bytes", "managed_device_peak_bytes"):
+                        changed = json.loads(case_run.stdout)
+                        changed["production"]["observation"][key] = (
+                            changed["production"]["observation"][key] - 1 if "peak" not in key else 0)
+                        try:
+                            native.success(canonical(changed), native_case,
+                                expected_bundle_id=observation["bundle_id"], expected_device="stub-gpu")
+                        except RecipeError:
+                            pass
+                        else:
+                            raise AssertionError("mutated residency or memory peak was accepted: " + key)
+                    for section, key, value in (("coverage", "assigned_tensor_count", 1),
+                                                ("coverage", "size_sum_ok", False),
+                                                ("quant", "total_tensor_bytes", 1),
+                                                ("model", "head_dim", (1 << 63) - 1)):
+                        changed_geometry = json.loads(geometry.read_bytes())
+                        changed_geometry[section][key] = value
+                        try:
+                            native.Residency.derive(changed_geometry, traversal, 2)
+                        except RecipeError:
+                            pass
+                        else:
+                            raise AssertionError("mutated residency geometry was accepted")
                     fault_root = output / "nonfinite"
                     fault_root.mkdir()
                     input_path.write_bytes(canonical({**case_input, "stream_root": str(fault_root)}))

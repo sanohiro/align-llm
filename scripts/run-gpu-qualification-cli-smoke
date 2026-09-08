@@ -191,7 +191,12 @@ def native_plan_owner(parent: pathlib.Path) -> None:
             "arch": model["model_id"], "n_layer": 2, "n_embd": 8, "n_vocab": 256000,
             "n_expert": 8 if model["model_id"] == "olmoe" else 0,
             "n_expert_used": 2 if model["model_id"] == "olmoe" else 0, "context_length": 4096,
-        }}
+            "head_dim": 4, "n_head_kv": 1,
+        }, "status": "ok", "error_code": "", "source": {"tensor_count": 27},
+            "quant": {"total_tensor_bytes": 256}, "coverage": {
+                "tensor_count": 27, "assigned_tensor_count": 27, "unassigned_tensors": [],
+                "size_sum_ok": True, "total_tensor_bytes": 256,
+            }}
         raw = cli.canonical(geometry)
         (input_root / model["geometry_path"]).write_bytes(raw)
         model["geometry_sha256"] = hashlib.sha256(raw).hexdigest()

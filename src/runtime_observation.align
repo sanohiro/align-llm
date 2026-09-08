@@ -18,6 +18,10 @@ pub Snapshot {
   allocated_device_bytes: i64,
   weights_buffer_bytes: i64,
   kv_buffer_bytes: i64,
+  managed_host_peak_bytes: i64,
+  managed_device_peak_bytes: i64,
+  resident_weight_payload_bytes: i64,
+  resident_kv_payload_bytes: i64,
   bundle_id: string,
   device_name: string,
   device_description: string,
@@ -27,7 +31,8 @@ pub fn unavailable() -> Snapshot = Snapshot {
   available: false, graph_nodes: 0, read_bytes: 0, read_calls: 0, sync_calls: 0,
   weight_upload_count: 0, weight_upload_bytes: 0, kv_upload_bytes: 0, input_upload_bytes: 0,
   prefill_executions: 0, decode_executions: 0, allocated_host_bytes: 0, allocated_device_bytes: 0,
-  weights_buffer_bytes: 0, kv_buffer_bytes: 0,
+  weights_buffer_bytes: 0, kv_buffer_bytes: 0, managed_host_peak_bytes: 0, managed_device_peak_bytes: 0,
+  resident_weight_payload_bytes: 0, resident_kv_payload_bytes: 0,
   bundle_id: "".clone(), device_name: "".clone(), device_description: "".clone(),
 }
 
@@ -49,6 +54,10 @@ pub fn capture(borrow owner: ggml_ffi.GpuDevice) -> Result<Snapshot, Error> {
     allocated_device_bytes: ggml_ffi.gpu_memory_allocated_bytes(owner, ggml_ffi.GPU_MEMORY_DEVICE_TOTAL),
     weights_buffer_bytes: ggml_ffi.gpu_memory_allocated_bytes(owner, ggml_ffi.GPU_MEMORY_WEIGHTS),
     kv_buffer_bytes: ggml_ffi.gpu_memory_allocated_bytes(owner, ggml_ffi.GPU_MEMORY_KV),
+    managed_host_peak_bytes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_HOST_PEAK),
+    managed_device_peak_bytes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_DEVICE_PEAK),
+    resident_weight_payload_bytes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_WEIGHT_PAYLOAD),
+    resident_kv_payload_bytes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_KV_PAYLOAD),
     bundle_id: ggml_ffi.gpu_device_bundle_id(owner),
     device_name: ggml_ffi.device_text(device, ggml_ffi.DEVICE_TEXT_NAME),
     device_description: ggml_ffi.device_text(device, ggml_ffi.DEVICE_TEXT_DESCRIPTION),
@@ -59,6 +68,10 @@ pub fn capture(borrow owner: ggml_ffi.GpuDevice) -> Result<Snapshot, Error> {
     || result.prefill_executions != 1 || result.decode_executions < 0
     || result.allocated_host_bytes < 1 || result.allocated_device_bytes < 1
     || result.weights_buffer_bytes < 1 || result.kv_buffer_bytes < 1
+    || result.managed_host_peak_bytes < result.allocated_host_bytes
+    || result.managed_device_peak_bytes < result.allocated_device_bytes
+    || result.resident_weight_payload_bytes < 1 || result.resident_weight_payload_bytes > result.weights_buffer_bytes
+    || result.resident_kv_payload_bytes < 1 || result.resident_kv_payload_bytes > result.kv_buffer_bytes
     || result.bundle_id.len() != 64 || result.device_name.len() < 1 || result.device_description.len() < 1 {
     return Err(Error.Invalid)
   }

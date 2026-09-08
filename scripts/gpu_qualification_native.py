@@ -19,7 +19,8 @@ OBSERVATION_INTS = (
     "graph_nodes", "read_bytes", "read_calls", "sync_calls", "weight_upload_count",
     "weight_upload_bytes", "kv_upload_bytes", "input_upload_bytes", "prefill_executions",
     "decode_executions", "allocated_host_bytes", "allocated_device_bytes",
-    "weights_buffer_bytes", "kv_buffer_bytes",
+    "weights_buffer_bytes", "kv_buffer_bytes", "managed_host_peak_bytes", "managed_device_peak_bytes",
+    "resident_weight_payload_bytes", "resident_kv_payload_bytes",
 )
 OBSERVATION_TEXT = ("bundle_id", "device_name", "device_description")
 PHASES = {"production", "production_binding", "reproduction", "reproduction_binding",
@@ -27,9 +28,42 @@ PHASES = {"production", "production_binding", "reproduction", "reproduction_bind
 
 
 @dataclasses.dataclass(frozen=True)
+class Residency:
+    weight_count: int
+    weight_bytes: int
+    kv_bytes: int
+
+    @classmethod
+    def derive(cls, geometry: Mapping[str, object], traversal: Traversal, maximum: int) -> Residency:
+        if geometry.get("status") != "ok" or geometry.get("error_code") != "":
+            raise RecipeError("native residency geometry is not successful")
+        coverage, quant, source = (geometry.get(key) for key in ("coverage", "quant", "source"))
+        if not all(isinstance(value, dict) for value in (coverage, quant, source)):
+            raise RecipeError("native residency geometry lacks complete coverage")
+        weight_count = 3 + 12 * traversal.layers
+        for value in (coverage.get("tensor_count"), coverage.get("assigned_tensor_count"),
+                      source.get("tensor_count")):
+            if type(value) is not int or value != weight_count:
+                raise RecipeError("native residency tensor coverage differs from model layout")
+        if coverage.get("unassigned_tensors") != [] or coverage.get("size_sum_ok") is not True:
+            raise RecipeError("native residency coverage is incomplete")
+        weight_bytes = bounded_i64(coverage.get("total_tensor_bytes"), 1, (1 << 63) - 1,
+                                   "native weight payload")
+        if type(quant.get("total_tensor_bytes")) is not int or quant["total_tensor_bytes"] != weight_bytes:
+            raise RecipeError("native residency payload totals differ")
+        model = geometry["model"]
+        head_dim = bounded_i64(model.get("head_dim"), 1, (1 << 63) - 1, "native KV head dimension")
+        heads = bounded_i64(model.get("n_head_kv"), 1, (1 << 63) - 1, "native KV head count")
+        kv_bytes = bounded_i64(8 * traversal.layers * head_dim * heads * (traversal.prompt + maximum - 1),
+                               1, (1 << 63) - 1, "native KV payload")
+        return cls(weight_count, weight_bytes, kv_bytes)
+
+
+@dataclasses.dataclass(frozen=True)
 class NativeCase:
     document: dict[str, object]
     traversal: Traversal
+    residency: Residency
 
     @property
     def stream_path(self) -> Path:
@@ -92,7 +126,7 @@ def prepare(*, model_id: str, geometry: Mapping[str, object], calibration_case: 
         "forced_ids": list(calibration_case["teacher_forced_token_ids"]), "stream_root": str(stream_root),
         "stream_name": stream_name, "stream_limit": traversal.maximum_bytes,
     }
-    result = NativeCase(document, traversal)
+    result = NativeCase(document, traversal, Residency.derive(geometry, traversal, calibration_case["maximum_tokens"]))
     result.input_bytes()
     return result
 
@@ -138,6 +172,16 @@ def _observation(raw: object, case: NativeCase, expected_bundle_id: str | None,
             or not observation["device_description"]:
         raise RecipeError("native device/bundle identity differs")
     positions = case.traversal.positions
+    if observation["managed_host_peak_bytes"] < observation["allocated_host_bytes"] \
+            or observation["managed_device_peak_bytes"] < observation["allocated_device_bytes"]:
+        raise RecipeError("native memory peak is below its current allocation")
+    if not 0 < observation["resident_weight_payload_bytes"] <= observation["weights_buffer_bytes"] \
+            or not 0 < observation["resident_kv_payload_bytes"] <= observation["kv_buffer_bytes"]:
+        raise RecipeError("native resident payload is outside its buffer extent")
+    if observation["resident_weight_payload_bytes"] != case.residency.weight_bytes \
+            or observation["resident_kv_payload_bytes"] != case.residency.kv_bytes \
+            or observation["weight_upload_count"] != case.residency.weight_count:
+        raise RecipeError("native resident payload or binding count differs from independent geometry")
     if observation["read_calls"] != positions or observation["read_bytes"] != positions * case.traversal.vocabulary * 4 \
             or observation["prefill_executions"] != 1 or observation["decode_executions"] != positions - 1:
         raise RecipeError("native production observations differ from generated positions")

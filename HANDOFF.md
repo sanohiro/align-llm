@@ -182,9 +182,21 @@ CPU cases use the separately built `cpu-reference/runtime_case`; no case scratch
 uncompleted preparation, executable/commit/input drift and occupied option-file refusal.
 Placement/resource evidence and the final CLI remain unfinished.
 
+**Resident memory evidence checkpoint.** Native owners retain actual managed allocation peaks
+across workspace replacement/rebuild, separately from current sizes. Weight/KV payload scans
+exclude padding and check original ordered tensor intervals at finish, graph boundaries and snapshot;
+invalid intervals or changed completed payloads poison observation and refuse compute. The parent
+derives exact production weight/KV payload and first-binding count independently from retained
+model IR and request capacity. `gmake gpu-device-smoke`, `gmake gpu-qualification-cli`, and
+`python3 scripts/run-gpu-provider-trace-smoke` pass, including native pointer/size corruption,
+sticky refusal, preserved peaks, both model payloads, and geometry/native-observation mutants.
+`gmake fmt`, `git diff --check` and the real shim's pinned-header strict C syntax check pass.
+RSS, model-operation/layer/expert coverage and final evidence assembly remain unfinished; these
+local observations are not a real-device qualification PASS.
+
 **Next actions, in order.**
 
-1. Complete independent placement/resource observations and profile-bound evidence records.
+1. Complete model-operation/layer/expert coverage, RSS observations and profile-bound evidence records.
    Prepared executable/profile/calibration binding and native numeric sequencing now pass owners.
 2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
    process/record/replay/publication owners, and real source/profile/calibration kit construction.

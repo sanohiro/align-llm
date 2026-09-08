@@ -144,7 +144,11 @@ fn exercise_live_owner(
 ) -> Result<(), Error> {
   owner := opened(backend, device, bundle_root)?
   if ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_NODES) != 0
-    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_BYTES) != 0 {
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_BYTES) != 0
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_HOST_PEAK) != 0
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_DEVICE_PEAK) != 0
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_WEIGHT_PAYLOAD) != 0
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_KV_PAYLOAD) != 0 {
     return Err(Error.Invalid)
   }
   if ggml_ffi.gpu_device_handle(owner).is_null()
@@ -222,7 +226,9 @@ fn exercise_live_owner(
     || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_WORKSPACE) != 524288
     || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_METADATA) != 262144
     || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_STAGING) != 65536
-    || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_LEGACY_CACHE) != 0 {
+    || runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_LEGACY_CACHE) != 0
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_HOST_PEAK) != 327680
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_DEVICE_PEAK) != 1048576 {
     return Err(Error.Invalid)
   }
   match ggml_ffi.gpu_memory_allocate(owner) {
@@ -330,7 +336,9 @@ fn exercise_live_owner(
     return Err(Error.Invalid)
   }
   runtime_weights.finish(owner)?
-  if runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_FINISHED) != 1 {
+  if runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_FINISHED) != 1
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_WEIGHT_PAYLOAD) != 262144
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_KV_PAYLOAD) != 0 {
     return Err(Error.Invalid)
   }
   match runtime_weights.finish(owner) {
@@ -365,6 +373,9 @@ fn exercise_live_owner(
   )?
   if kv_index != 0 { return Err(Error.Invalid) }
   runtime_kv.finish(owner)?
+  if ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_KV_PAYLOAD) != 262144 {
+    return Err(Error.Invalid)
+  }
   mut kv_data := buffer(1024)
   mut kv_at := 0
   loop {
@@ -698,7 +709,9 @@ fn exercise_live_owner(
   actual_workspace := runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_WORKSPACE)
   actual_device := runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_DEVICE_TOTAL)
   if actual_workspace <= 3104 || actual_workspace > 524288
-    || actual_device != 524288 + actual_workspace || actual_device > 1048576 {
+    || actual_device != 524288 + actual_workspace || actual_device >= 1048576
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_HOST_PEAK) != 327680
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_DEVICE_PEAK) != 1048576 {
     return Err(Error.Invalid)
   }
   mut first_input := buffer(4)
@@ -747,7 +760,7 @@ fn exercise_live_owner(
     || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_CALLS) != 0
     || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_SYNC_CALLS) < 1
     || ggml_ffi.gpu_observation_state(owner, -1) != -1
-    || ggml_ffi.gpu_observation_state(owner, 4) != -1 { return Err(Error.Invalid) }
+    || ggml_ffi.gpu_observation_state(owner, 8) != -1 { return Err(Error.Invalid) }
   mut output_data := buffer(262144)
   mut output_at := 0
   loop {
@@ -1010,7 +1023,10 @@ fn exercise_live_owner(
   workspace_after_rebuild := runtime_memory.allocated_bytes(
     owner, ggml_ffi.GPU_MEMORY_WORKSPACE,
   )
-  if workspace_after_rebuild <= 3104 || workspace_after_rebuild > workspace_before_rebuild {
+  if workspace_after_rebuild <= 3104 || workspace_after_rebuild > workspace_before_rebuild
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_DEVICE_PEAK) != 1048576
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_WEIGHT_PAYLOAD) != 262144
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_KV_PAYLOAD) != 262144 {
     return Err(Error.Invalid)
   }
   match ggml_ffi.gpu_graph_compute(

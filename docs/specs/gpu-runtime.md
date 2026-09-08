@@ -736,7 +736,9 @@ does not publish evidence or claim that preparation alone qualifies a backend.
 Native observation contract (private FFI, no persisted schema): the GPU device owner stores checked
 nonnegative counters for successfully executed non-leaf graph nodes, completed explicit readback
 bytes/calls, and explicit backend synchronization calls. `gpu_observation_state(owner, field)`
-uses fields 0 nodes, 1 readback bytes, 2 readback calls and 3 explicit synchronization calls; all
+uses fields 0 nodes, 1 readback bytes, 2 readback calls, 3 explicit synchronization calls,
+4 managed host allocation peak, 5 managed device allocation peak, 6 resident weight payload
+and 7 resident KV payload; all
 start at zero and invalid selectors or a failed counter return -1. `gpu_slot_get(owner, slots,
 index, bytes, offset, size, label)` accepts a positive size no greater than the destination slice,
 nonnegative tensor offset, and a complete in-tensor interval; refusal leaves byte/call counts
@@ -750,6 +752,38 @@ bytes. Diagnostic invocations use separate owners; only the production owner's s
 production placement/transfer evidence. The snapshot precedes owner destruction; cleanup evidence
 owns teardown after it. No timing or performance claim follows from these counters.
 
+Allocation peaks cover this native owner's admitted metadata/staging and resident device buffers,
+starting at successful initial allocation and retaining the maximum across input/workspace
+replacement and graph rebuild. The initial full workspace is a real allocation and remains part
+of the peak after replacement with smaller graph storage. Host and device accounting remain
+separate on UMA; these fields do not measure RSS, driver-private storage, or an unsuccessful initial
+allocation prefix. Observation failure is sticky if a current sample is invalid. Current allocation
+queries retain their existing meaning. `gpu-device-smoke` owns zero defaults, exact initial peaks,
+smaller current workspace with preserved peak, and graph rebuild; the provider trace owner checks
+peak/current ordering and unavailable CPU/diagnostic observations before teardown.
+
+Resident payload observations scan the owner's original ordered metadata tensors after weight/KV
+finish, on graph prepare/invalidate/compute boundaries and on snapshot queries. Each completed
+tensor must retain a nonempty, nonoverlapping interval within its original live owner buffer;
+checked sums exclude allocator padding. A changed completed payload sum or invalid interval poisons
+observation and refuses subsequent compute. Unfinished domains report zero. Original metadata and
+buffers have one owner and no reset/rebind/release path between finish and device Drop; graph
+context reset cannot reset them. This scan supplies payload residency, while model identity and
+one-time weight binding coverage remain owned by the pack loader and its independent geometry
+projection. The device owner verifies partial defaults, exact payloads, repeated graph boundaries
+and a fixture-only displaced-pointer refusal before compute; the provider owner checks positive
+payloads below buffer extents across both models. No payload sum substitutes for model-operation
+or expert coverage.
+
+The parent independently derives expected residency from the retained successful model IR:
+the complete source/coverage tensor count is `3 + 12 * n_layer` for both supported model layouts;
+coverage and quantization totals must agree on the immutable payload. The request-capacity F32
+K/V payload is `8 * n_layer * head_dim * n_head_kv * (prompt_token_count + maximum_tokens - 1)`.
+Native success requires exact observed weight/KV payload and first-binding count, not rounded
+buffer extents. Malformed/incomplete coverage, inconsistent totals, overflow and mutated native
+payload/counts are rejected by the provider/CLI owners. Forced replay has its own capacity and
+does not replace these production expectations.
+
 | Native observation closure | Implementation | Required regression |
 | --- | --- | --- |
 | Construction / defaults / invalid selector | native device state and `gpu_observation_state` | `gpu-device-smoke` zero and selector refusals |
@@ -761,13 +795,16 @@ owns teardown after it. No timing or performance claim follows from these counte
 `runtime_observation.Snapshot` is the provider's owning production-only raw result. Its exact fields
 are `available,graph_nodes,read_bytes,read_calls,sync_calls,weight_upload_count,weight_upload_bytes,
 kv_upload_bytes,input_upload_bytes,prefill_executions,decode_executions,allocated_host_bytes,
-allocated_device_bytes,weights_buffer_bytes,kv_buffer_bytes,bundle_id,device_name,device_description`.
+allocated_device_bytes,weights_buffer_bytes,kv_buffer_bytes,managed_host_peak_bytes,
+managed_device_peak_bytes,resident_weight_payload_bytes,resident_kv_payload_bytes,
+bundle_id,device_name,device_description`.
 It captures the existing native state queries before the production device is dropped, validating
 nonnegative counters, positive execution/allocation/weight observations and nonempty identity.
 CPU, ordinary unobserved calls and diagnostic replay return `available=false` with zero/empty fields;
 this is absence of a GPU observation, not a claim of zero physical resource use. Current allocation
-sizes are deliberately named `allocated_*`, not peaks or payload minima. The qualifier must derive
-those stronger schema-1 claims through their own required observations. `TraceResult` adds this
+sizes remain `allocated_*`; separately sampled native peaks are `managed_*_peak_bytes` and must
+be at least their current totals. Payload minima and RSS still require their own observations.
+`TraceResult` adds this
 snapshot as `observation`; no persisted/public schema changes. Failure to capture refuses the trace.
 The provider trace owner verifies CPU absence, GPU read bytes/calls against sampled positions and
 vocabulary, one prefill plus the actual decode count, bundle/device identity and positive allocations;
