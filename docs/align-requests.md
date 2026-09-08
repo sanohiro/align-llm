@@ -8939,6 +8939,11 @@ G5 adds its actual generation/overlap owner when it first consumes a shipped sol
 
 ## Request 42 — `alignc check` as a superset of `alignc build` (region checking parity)
 
+**G1 batch coordination (2026-09-08).** Investigate this request with Requests 42/43/49/62
+under [the consolidated G1 audit](align-gpu-readiness.md). Request numbers are historical
+acceptance records, not separate interruption or PR boundaries. Only Request 49's newly reached
+G1 consumer changes blocking status; the existing client-closure targets remain authoritative.
+
 ```text
 Status: PROPOSED
 Priority: high
@@ -9122,6 +9127,11 @@ a caller can decide whether a clean `check` is sufficient evidence for its purpo
 ---
 
 ## Request 43 — Cross-module `borrow mut` record out-parameters
+
+**G1 batch coordination (2026-09-08).** Investigate this request with Requests 42/43/49/62
+under [the consolidated G1 audit](align-gpu-readiness.md). Request numbers are historical
+acceptance records, not separate interruption or PR boundaries. Only Request 49's newly reached
+G1 consumer changes blocking status; the existing client-closure targets remain authoritative.
 
 ```text
 Status: PROPOSED
@@ -9887,16 +9897,19 @@ uses for `pack_total` in `schedule_decode`.
 
 ## Request 49 — A cross-module call with a `borrow mut` argument refuses every shorter-lived operand
 
+**G1 batch coordination (2026-09-08).** Investigate this request with Requests 42/43/49/62
+under [the consolidated G1 audit](align-gpu-readiness.md). Request numbers are historical
+acceptance records, not separate interruption or PR boundaries. Only Request 49's newly reached
+G1 consumer changes blocking status; the existing client-closure targets remain authoritative.
+
 ```text
 Status: PROPOSED
-Priority: medium
-Blocking: no
-Blocked gate or slice: none. R6-DECODE-KV-STEP1 ships with `src/decode_step.align` carrying its own
-  copies of `fail`/`fault_into`/`take`/`take_pack`/`account`/`top_k`, a compact re-implementation of
-  the prefill logits comparison, and a new borrow-free `model_forward.stage_plan_owned` beside the
-  `stage_plan` it could not call. `src/model_forward.align`'s existing `pub` surface is otherwise
-  intact and `--model-forward`'s goldens are byte-unchanged.
-Independent work that may continue: all of R6-DECODE-KV-STEP1, and the second decode step.
+Priority: high
+Blocking: yes
+Blocked gate or slice: G1 observed generation and native diagnostic stream integration;
+  Request 62 is the new real-client reproduction of this existing foreign-call limitation
+Independent work that may continue: existing unobserved generation and native-independent
+  qualification owners; the older R6 workaround and cleanup acceptance below remain historical
 Resume condition: an Align release admits a call into another module that takes the caller's own
   `borrow mut` parameter together with an operand rooted in the caller's frame — a string literal, a
   `Result` produced at the call, or a local record — without reporting "cannot retain a
@@ -11115,6 +11128,13 @@ because the request predicted exactly this and it happened.
 
 ## Request 62 — Preserve borrowed stream helper provenance across per-unit interfaces
 
+**Consolidated scope (2026-09-08).** The main failure below is a G1 reproduction of Request 49,
+not a separate new writer capability. Requests 42/43/49/62 share the delivery batch defined by
+[the 21-case G1 readiness audit](align-gpu-readiness.md). It includes normal-call refusals,
+independent-output precision, the non-blocking Request 48 scalar case, and actual-retention
+negative controls. Publish subsequent findings in this bounded set together; do not interrupt
+Align with a new request/PR per reproduced symptom.
+
 ```text
 Status: PROPOSED
 Priority: high
@@ -11199,3 +11219,15 @@ precision case independently from imported retention. In align-llm, adopt the me
 `gmake gpu-numeric-stream`, and pass `gmake gpu-generation-smoke` with Qwen and OLMoE observed
 prefill/decode logits and host reservation before upload. The request does not add an aggregate or
 hardware qualification; G1's existing real Metal/CUDA qualification remains separately required.
+
+
+**Batch safety evidence.** The audit's case 08 actually retains a local buffer view through a
+borrowed record, then reads it after the helper returns. All three compiler modes admit it at
+`3fbb74fe7c351e526c997bd4c70bd00cf1a424a0`; MIR frees the buffer before return. A test-only
+retirement poison shim makes the caller read 221 instead of the stored 65 while retaining the
+allocation to avoid a real use-after-free. Case 09's imported twin is accepted by whole-program
+checking and rejected by per-unit/build. This violates the existing negative acceptance above
+and belongs to the same retention/ownership investigation; it is not permission to admit every
+shorter-lived operand. The report and companion source bundle contain full fixtures, mode results,
+exact compiler identity, and a reproducible proof. Status remains PROPOSED until Align accepts
+and implements the consolidated repair; no production workaround is consumed.

@@ -3,25 +3,29 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
 file records durable project state.
 
-## Request 62 consumer blocker (2026-09-08)
+## Consolidated G1 compiler handoff (2026-09-08)
 
-Branch `agent/request-62-publication` is based on main `d4dabfa`. Request 61 shipped in Align
-PR #982 at `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0`. Its managed compiler builds and the
-G1 branch's native stream passes its independent byte/state owner. Observed generation reveals
-Request 62: an imported non-retaining writer helper accepts a local payload under whole-program
-checking but rejects it under per-unit checking. The exact fixture and acceptance are in the
-request register. Request 61's final observed-generation acceptance remains pending.
+The user requested a single audit of foreseeable GPU compiler dependencies before further Align
+interruptions. `docs/align-gpu-readiness.md` records 21 frozen cases, each checked whole-program,
+per-unit and built at managed Align `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0`. Six admitted
+native cases also pass. The companion source bundle contains exact application snapshots,
+reproduction code, baseline logs and a controlled proof of the actual retained-view lifetime bug.
 
-This branch publishes the compiler request only. G1 remains on `agent/g1-gpu-generation`; its
-observed generation/native diagnostic consumer pauses until Request 62 ships. Independent native
-stream and Python qualification work may continue. Resume by adopting the shipped fix, then pass
-`gmake gpu-numeric-stream` and `gmake gpu-generation-smoke` including observed Qwen/OLMoE logits.
-Real Metal/CUDA qualification still precedes G1 publication and the next roadmap consumer G1R.
+Request 62's primary failure is a G1 consumer of existing Request 49, now marked blocking.
+Coordinate 42/43/49/62 as one producer investigation; keep the distinct lifetime/ownership
+regressions and the non-blocking Request 48 and byte-view precision cases visible. Do not report
+each symptom as another interruption. No production source or pin adoption is part of this report.
 
-Verification: the exact managed pin passes the request fixture's `check` and rejects
-`check-per-unit`; native stream bytes match the independent 160-byte golden on the G1 branch.
-Documentation-only publication uses `git diff --check` and exact-head `python3 scripts/pre-pr`.
-No intentional uncommitted files remain after this documentation candidate is committed.
+Next: Align assesses and repairs the complete batch using the candidate compiler before delivery;
+then G1 adopts the merged prerequisites once and runs native stream plus observed Qwen/OLMoE
+generation acceptance. G1 remains on `agent/g1-gpu-generation`; final diagnostic trajectories,
+case/CLI integration and real Metal/CUDA qualification are still pending. Historical Request 43/49
+consumer refactoring is not silently added to G1's unblock commands.
+
+Verification: the report contains the complete 63 compiler outcomes, native results and exact pin.
+`gmake gpu-case-traversal gpu-case-sequence gpu-qualification-cli gpu-kit-assembly` passes on the
+G1 checkpoint. Documentation-only publication uses `git diff --check` and exact-head
+`python3 scripts/pre-pr`; no executable or platform qualification is claimed by this branch.
 
 ## Historical documentation checkpoint: runtime foundations (2026-09-07)
 
