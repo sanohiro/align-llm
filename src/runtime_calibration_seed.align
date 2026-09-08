@@ -7,17 +7,19 @@ import provider_runtime
 import runtime_numeric_stream
 
 pub fn main(args: array<str>) -> Result<(), Error> {
-  if args.len() != 8 || (args[6] != "qwen2" && args[6] != "olmoe") || args[7].len() > 65536 {
+  if args.len() != 9 || (args[6] != "qwen2" && args[6] != "olmoe") || args[7].len() > 65536 {
     return Err(Error.Invalid)
   }
   snapshot := gguf.open_snapshot(args[1])?
   if snapshot.table.architecture != args[6] { return Err(Error.Invalid) }
+  cache_budget: i64 := json.decode(args[8])?
+  if cache_budget < 0 { return Err(Error.Invalid) }
   olmoe := args[6] == "olmoe"
   config := model.ProviderConfig {
     kind: model.ProviderKind.AlignRuntime, endpoint: "", model: args[1], api_key: "",
     timeout_ns: 0, tokenize_endpoint: "", max_response_bytes: 1048576,
     runtime_pack_path: args[2], runtime_geometry_path: args[3], runtime_options_path: "",
-    runtime_cache_budget_bytes: if olmoe { 1048576 } else { 0 },
+    runtime_cache_budget_bytes: cache_budget,
   }
   request := model.GenerationRequest {
     system: "", user: args[7], max_tokens: 2, temperature: 0.0, seed: None,

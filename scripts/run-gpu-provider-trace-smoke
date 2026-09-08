@@ -116,7 +116,7 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                     seed_root = work / (model.stem + "-seed")
                     seed_root.mkdir()
                     seeded = subprocess.run([str(seed_executable), str(model), str(pack), str(geometry),
-                        str(seed_root), "seed", architecture, "x"], env=environment,
+                        str(seed_root), "seed", architecture, "x", "1048576" if architecture == "olmoe" else "0"], env=environment,
                         capture_output=True, text=True)
                     assert seeded.returncode == 0, seeded.stderr
                     assert json.loads(seeded.stdout) == records[-1]

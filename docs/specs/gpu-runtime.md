@@ -405,9 +405,11 @@ Expected output is the exact generated UTF-8 byte sequence for those IDs. Its di
 those bytes with no added LF; both CPU repeats and both GPU repeats reproduce the bytes and digest.
 
 The private `runtime_calibration_seed` driver obtains CPU expectations before GPU holdout execution.
-Its positional inputs are model, pack, geometry, stream root/name, architecture and prompt; it uses
-an empty system prompt, greedy sampling and two maximum output tokens. Qwen uses zero runtime
-cache budget and OLMoE uses 1 MiB. The output is the owning production `TraceResult` with actual
+Its positional inputs are model, pack, geometry, stream root/name, architecture, prompt and cache
+budget bytes (a nonnegative JSON integer); it uses
+an empty system prompt, greedy sampling and two maximum output tokens. The ordinary CPU owner
+requires zero cache budget for Qwen and enough expert slots for OLMoE; fixture-sized cache budgets
+are not assumed sufficient for real models. The output is the owning production `TraceResult` with actual
 prompt/sample IDs and UTF-8 text, plus its completed production-only numeric stream (16 MiB cap).
 It admits the actual model architecture and cannot select GPU options. It does not freeze a
 calibration, infer tolerances, compare devices or declare qualification PASS. The provider trace

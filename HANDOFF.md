@@ -253,6 +253,15 @@ The provider trace owner now builds it and compares its output with the existing
 results for both models and immediate EOG; `python3 scripts/run-gpu-provider-trace-smoke` passes.
 `gmake fmt` passes. Next: build the same pinned static CPU reference for real expectation capture.
 
+**Real-client admission finding.** The pinned static CPU calibration executable builds successfully,
+but relocated Qwen admission refuses before inference: the supplied full geometry contains its
+original display path while the provider derives that field from the current copied model path.
+This application-owned portability defect blocks both the kit and real calibration; it is not an
+Align gap. Preserve every geometry field and pack/model source binding while deriving the document
+with its recorded display path, then cover relocated fixtures and retry actual CPU expectations.
+The calibration helper now accepts an explicit cache budget; OLMoE's real eight-expert minimum
+cannot use the tiny fixture's 1 MiB budget. The updated provider trace owner passes both models.
+
 **Next actions, in order.**
 
 1. Prepare real profiles/calibrations and run the final `scripts/gpu-runtime-qualify` on Metal.
