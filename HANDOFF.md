@@ -3,6 +3,10 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations;
 this file records durable execution state.
 
+**Current execution constraint:** finish GPU repair, local Metal verification, review and PR/merge.
+Any further user-run CUDA work is performance comparison only after local readiness. The imported
+Pengwin checkpoint below is historical evidence, not authorization to request more CUDA debugging.
+
 ## Pengwin CUDA qualification checkpoint (2026-09-08)
 
 Shared report and follow-up: [issue #218](https://github.com/sanohiro/align-llm/issues/218).
@@ -75,6 +79,25 @@ this failed run pass. The local preparation fixes are reviewed and pushed; PR/me
 The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
+
+**Attention repair checkpoint (unpublished).** Both model graphs now use the pinned reference's
+256-position attention reduction buckets, capped by model context. Physical KV stays request-sized;
+masked padding is explicit in the existing Align node tables. Mask reservation/update widths and
+graph metadata match that policy. Topology still includes the actual valid prefix because current
+decode graphs contain prefix-dependent views; graph reuse is not claimed. Attention KQ uses an
+explicit F32-precision native operation selected by both model walkers, matching upstream CUDA
+precision policy. Unmasked router and ordinary products are unchanged.
+
+`gpu-device-smoke`, `gpu-generation-smoke` and the strict real C workspace/precision owner pass.
+The checked-in independent `eval/gpu/metal/reference-logits.cpp` and comparer reproduce same-device
+evidence using pinned llama.cpp, GPU embedding lookup, F32 KV and disabled flash attention. Real
+Apple M1 native Qwen and OLMoE cases both exit zero and match all seven production/diagnostic
+final-logit rows bitwise: 1,064,448 Qwen scalars and 352,128 OLMoE scalars, including both forced
+decode steps. The comparator consumes the complete numeric stream but does not independently
+compare layer/router frames. Full numerical qualification remains open; the frozen CPU/GPU
+profiles and their failed evidence are unchanged. These observed cases cannot serve as new unseen
+holdouts. Next: finish resource/capability planning before upload and graph reuse, then close the
+remaining review findings and full local qualification. CUDA functional/debug reruns remain excluded.
 
 **Active repair checkpoint (unpublished).** The user requires continued work until GPU completion.
 R2's eager unused workspace allocation is removed in both native implementations. Input planning

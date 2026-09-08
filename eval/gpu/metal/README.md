@@ -83,3 +83,35 @@ all 147 numeric frames are byte-identical to the retained pre-repair diagnostic.
 allocation repair without a numerical change, not a speedup or numerical qualification.
 `scripts/run-gpu-device-smoke` additionally owns the metadata/staging/weights/KV/input/graph
 allocation-failure paths, reopening after failure, and peak preservation across graph rebuilds.
+
+## Independent same-device final logits
+
+`reference-logits.cpp` uses pinned llama.cpp directly. It explicitly places embedding lookup on
+the GPU, uses F32 K/V, disables flash attention and retains upstream's 256-position attention
+buckets. The repaired Align path uses the same reduction width while keeping physical KV at its
+exact request capacity. Its attention KQ operation also sets upstream's explicit F32 precision;
+ordinary products and the unmasked expert router retain their existing precision.
+
+```sh
+c++ -O2 -Wall -Wextra -Werror -ffp-contract=off -std=c++17 \
+  -I "$GGML_CHECKOUT/include" -I "$GGML_CHECKOUT/ggml/include" \
+  eval/gpu/metal/reference-logits.cpp -L "$LLAMA_BUILD/bin" \
+  -Wl,-rpath,"$LLAMA_BUILD/bin" -lllama -lggml -lggml-base -o /tmp/align-reference-logits
+/tmp/align-reference-logits "$MODEL" "$METAL_BUNDLE/libggml-metal.so" \
+  "$PROMPT_IDS" "$FORCED_IDS" /tmp/align-reference-logits.f32
+python3 eval/gpu/metal/compare-reference-logits.py "$MODEL_NUMBER" \
+  "$NUMERIC_STREAM" /tmp/align-reference-logits.f32
+```
+
+`LLAMA_BUILD` must use the same pinned llama.cpp commit. `PROMPT_IDS` and `FORCED_IDS` are
+comma-separated integer lists from the native calibration input; `MODEL_NUMBER` is 1 for Qwen
+and 2 for OLMoE. The reference file contains native little-endian F32 vocabulary rows for prefill
+and every forced decode. The comparer requires byte identity for every production and diagnostic
+final-logit frame while structurally consuming the entire candidate stream.
+
+Observed Apple M1 calibration results after attention-width repair: Qwen has seven identical
+final-logit rows (1,064,448 scalars); OLMoE has seven identical rows (352,128 scalars). Both produce
+their expected two-token output. This covers final logits and forced continuation, not independent
+layer/router comparison or full qualification. The original CPU/GPU frozen profiles remain FAIL;
+their thresholds and historical evidence are unchanged. These observed cases cannot become an
+unseen holdout for a redesigned acceptance contract.

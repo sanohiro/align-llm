@@ -3,12 +3,35 @@
 #include "ggml_shim.c"
 #include <assert.h>
 
+static void attention_precision(void) {
+    struct ggml_init_params params = { .mem_size = 65536, .mem_buffer = NULL, .no_alloc = true };
+    struct ggml_context *ctx = ggml_init(params);
+    _Alignas(8) unsigned char slots[1040];
+    assert(ctx != NULL);
+    assert(align_ggml_slots_init(slots, sizeof(slots)) == 0);
+    assert(align_ggml_slot_new_tensor_2d(ctx, slots, 0, GGML_TYPE_F32, 32, 8) == 0);
+    assert(align_ggml_slot_new_tensor_2d(ctx, slots, 1, GGML_TYPE_F32, 32, 2) == 0);
+    assert(align_ggml_op_attention_scores(ctx, slots, 2, 0, 1) == 0);
+    assert(align_ggml_slot_tensor(slots, 2)->op_params[0] == GGML_PREC_F32);
+    assert(align_ggml_op_mul_mat(ctx, slots, 3, 0, 1) == 0);
+    assert(align_ggml_slot_tensor(slots, 3)->op_params[0] == GGML_PREC_DEFAULT);
+    assert(align_ggml_slot_new_tensor_2d(ctx, slots, 4, GGML_TYPE_F32, 16, 2) == 0);
+    assert(align_ggml_slot_new_tensor_2d(ctx, slots, 5, GGML_TYPE_F16, 32, 2) == 0);
+    assert(align_ggml_op_attention_scores(NULL, slots, 6, 0, 1) == ALIGN_GGML_INIT);
+    assert(align_ggml_op_attention_scores(ctx, slots, 6, 0, 100) == ALIGN_GGML_SLOT);
+    assert(align_ggml_op_attention_scores(ctx, slots, 6, 0, 4) == ALIGN_GGML_SHAPE);
+    assert(align_ggml_op_attention_scores(ctx, slots, 6, 0, 5) == ALIGN_GGML_TYPE);
+    assert(align_ggml_slot_tensor(slots, 6) == NULL);
+    ggml_free(ctx);
+}
+
 int main(int argc, char **argv) {
     ggml_backend_reg_t registry;
     ggml_backend_dev_t device;
     int64_t first_peak = 0;
     int pass;
     assert(argc == 2);
+    attention_precision();
     registry = ggml_backend_load(argv[1]);
     assert(registry != NULL && ggml_backend_reg_dev_count(registry) > 0);
     device = ggml_backend_reg_dev_get(registry, 0);

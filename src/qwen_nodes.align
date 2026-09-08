@@ -46,7 +46,13 @@ pub fn build(
         ggml_ffi.op_add(ctx, slots, out, a, b, label)?
       }
       if op == layer_qwen2.OP_MUL_MAT {
-        ggml_ffi.op_mul_mat(ctx, slots, out, a, b, label)?
+        attention := row + 1 < nodes.count && nodes.op[row + 1] == layer_qwen2.OP_SOFT_MAX
+          && nodes.a[row + 1] == out && nodes.b[row + 1] >= 0
+        if attention {
+          ggml_ffi.op_attention_scores(ctx, slots, out, a, b, label)?
+        } else {
+          ggml_ffi.op_mul_mat(ctx, slots, out, a, b, label)?
+        }
       }
       if op == layer_qwen2.OP_RESHAPE_3D {
         ggml_ffi.op_reshape_3d(

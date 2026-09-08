@@ -376,6 +376,7 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_op_mul(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_add(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_mul_mat(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
+  fn align_ggml_op_attention_scores(ctx: raw, slots: slice<u8>, out: i64, k: i64, q: i64) -> i32
   fn align_ggml_op_reshape_3d(
     ctx: raw, slots: slice<u8>, out: i64, a: i64, ne0: i64, ne1: i64, ne2: i64) -> i32
   fn align_ggml_op_permute(
@@ -1610,6 +1611,15 @@ pub fn op_mul_mat(
   ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, b: i64, label: str) -> Result<(), Fault> {
   unsafe {
     return r5_result(align_ggml_op_mul_mat(ctx, slots, out, a, b) as i64, label)
+  }
+}
+
+// Keep the attention score accumulator at the pinned reference's explicit F32 precision.
+pub fn op_attention_scores(
+  ctx: raw, borrow slots: slice<u8>, out: i64, k: i64, q: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_attention_scores(ctx, slots, out, k, q) as i64, label)
   }
 }
 

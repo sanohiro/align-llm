@@ -1157,6 +1157,34 @@ fails before weight upload. Driver/runtime overhead is reported separately from 
 
 Bind each weight once per invocation, copying only when required. KV and reusable workspaces stay resident through prefill and
 all decode steps. Production host readback is limited to logits needed by the existing sampler.
+
+The decomposed attention reduction width is `min(model_context, ceil(valid_tokens / 256) * 256)`,
+matching the pinned reference's minimum KV-view bucket. `runtime_inputs.attention_width(valid,
+context)` returns this checked positive extent or `Error.Invalid` for nonpositive, out-of-context
+or overflowing input. This private helper owns no allocation, persisted state or schema. Physical
+KV remains request-sized; the existing model node tables explicitly zero-pad attention operands.
+`runtime_generation` reserves masks to the maximum request bucket and uploads each current bucket
+densely, with every future/padded position set to negative infinity. `runtime_qwen` and
+`runtime_olmoe` use that same width in graph construction and topology identity. Graph metadata
+includes the padded nodes. This settles arithmetic shape; it does not claim decode graph reuse.
+
+`ggml_ffi.op_attention_scores(ctx, slots, out, key, query, label) -> Result<(), Fault>` constructs
+one F32 matrix product with `GGML_PREC_F32`, matching pinned llama.cpp's explicit KQ precision.
+`ctx` owns its tensor metadata; all slot tensors remain borrowed and no payload allocation occurs.
+Null context, missing slots, non-F32 inputs and incompatible matrix shapes return the existing
+INIT/SLOT/TYPE/SHAPE faults before construction. Qwen/OLMoE node walkers select this operation
+only for the matrix product immediately consumed by masked attention softmax; unmasked router
+softmax and ordinary matrix products retain their existing precision. No format/schema changes.
+`gpu_workspace_allocation_smoke.c` checks native precision metadata, unchanged ordinary products
+and malformed input refusal; `gpu-device-smoke` and `gpu-generation-smoke` own both walkers.
+
+The repair closure is: `gpu-device-smoke` owns width validation, exact/boundary/context-tail cases
+and both model graphs; `gpu-generation-smoke` owns production/diagnostic invocation success,
+maximum-one and allocation refusal; the independent same-device llama.cpp diagnostic owns real
+Qwen prefill/decode scalar comparison with matched embedding placement and F32 KV. Existing
+failed CPU/GPU calibration evidence remains failed and unchanged. Padded workspace participates
+in the existing memory ceiling and must be included in subsequent performance measurements.
+
 OLMoE routing, selected-expert `mul_mat_id`, weighting and reduction stay in the GPU graph; resident
 execution must not inherit the CPU path's per-layer router readback and expert-claim boundary.
 Never call a CPU pointer primitive on device-only storage. OLMoE keeps gate/up/down identity and

@@ -2061,8 +2061,33 @@ fn expect_bundle_switch(
   Err(fault) => if fault.code == "BUNDLE_IDENTITY" { Ok(()) } else { Err(Error.Invalid) },
 }
 
+fn expect_attention_width() -> Result<(), Error> {
+  if runtime_inputs.attention_width(1, 4096)? != 256
+    || runtime_inputs.attention_width(256, 4096)? != 256
+    || runtime_inputs.attention_width(257, 4096)? != 512
+    || runtime_inputs.attention_width(257, 300)? != 300
+    || runtime_inputs.attention_width(300, 300)? != 300
+    || runtime_inputs.attention_width(2, 4)? != 4 {
+    return Err(Error.Invalid)
+  }
+  match runtime_inputs.attention_width(0, 256) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  match runtime_inputs.attention_width(257, 256) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  match runtime_inputs.attention_width(9223372036854775807, 9223372036854775807) {
+    Ok(_) => { return Err(Error.Invalid) }
+    Err(_) => {}
+  }
+  return Ok(())
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
   if args.len() != 9 { return Err(Error.Invalid) }
+  expect_attention_width()?
   expect_topology_key()?
   mode := args[1]
   backend := args[2]

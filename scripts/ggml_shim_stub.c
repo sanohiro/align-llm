@@ -4041,6 +4041,12 @@ int32_t align_ggml_op_mul_mat(void *ctx, void *slots, int64_t out, int64_t a, in
         sa, sb, ALIGN_STUB_OP_MUL_MAT);
 }
 
+int32_t align_ggml_op_attention_scores(void *ctx, void *slots, int64_t out, int64_t k, int64_t q) {
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    /* The deterministic engine already accumulates its F32 matrix products in F32. */
+    return align_ggml_op_mul_mat(ctx, slots, out, k, q);
+}
+
 int32_t align_ggml_op_reshape_3d(
     void *ctx, void *slots, int64_t out, int64_t a, int64_t ne0, int64_t ne1, int64_t ne2) {
     align_stub_tensor *sa = align_stub_slot(slots, a);

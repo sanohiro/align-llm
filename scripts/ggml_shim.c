@@ -3526,6 +3526,23 @@ int32_t align_ggml_op_mul_mat(void *ctx, void *slots, int64_t out, int64_t a, in
     return align_ggml_slot_store(slots, out, (void *) result);
 }
 
+/* Attention KQ requires the reference's explicit F32 precision, including on CUDA. */
+int32_t align_ggml_op_attention_scores(void *ctx, void *slots, int64_t out, int64_t k, int64_t q) {
+    struct ggml_tensor *key = align_ggml_slot_tensor(slots, k);
+    struct ggml_tensor *query = align_ggml_slot_tensor(slots, q);
+    struct ggml_tensor *result;
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    if (key == NULL || query == NULL) { return ALIGN_GGML_SLOT; }
+    if (key->type != GGML_TYPE_F32 || query->type != GGML_TYPE_F32) { return ALIGN_GGML_TYPE; }
+    if (key->ne[0] != query->ne[0] || key->ne[2] <= 0 || key->ne[3] <= 0
+        || query->ne[2] % key->ne[2] != 0 || query->ne[3] % key->ne[3] != 0
+        || ggml_is_transposed(key)) { return ALIGN_GGML_SHAPE; }
+    result = ggml_mul_mat(ctx, key, query);
+    if (result == NULL) { return ALIGN_GGML_INIT; }
+    ggml_mul_mat_set_prec(result, GGML_PREC_F32);
+    return align_ggml_slot_store(slots, out, result);
+}
+
 int32_t align_ggml_op_reshape_3d(
     void *ctx, void *slots, int64_t out, int64_t a, int64_t ne0, int64_t ne1, int64_t ne2) {
     ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
