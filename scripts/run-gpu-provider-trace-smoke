@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Own the G1 trace adapter through real provider admission and deterministic native execution."""
 import hashlib
+import dataclasses
+import sys
 import importlib
 import json
 import os
@@ -10,6 +12,7 @@ import tempfile
 
 from gpu_qualification_stream import NumericStream, Frame
 import gpu_qualification_native as native
+import gpu_qualification_native_sequence as native_sequence
 from gpu_backend_recipe import RecipeError
 from gpu_qualification_traversal import Traversal, Router
 
@@ -75,6 +78,7 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
     for key in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
         fault_environment[key] = str(fault_shim) + ":" + environment[key]
     options = bundle(work)
+    sequence_templates = []
     for architecture, fixture, manifest in (
         ("qwen2", "runtime_provider_fixture.py", "runtime-manifest.json"),
         ("olmoe", "olmoe_provider_fixture.py", "olmoe-runtime-manifest.json"),
@@ -177,6 +181,13 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                     cache_budget_bytes=1048576 if architecture == "olmoe" else 0,
                     stream_root=case_root, stream_name="numeric")
                 assert native_case.input_bytes() == canonical(case_input)
+                sequence_templates.append(native_sequence.Plan(
+                    (architecture, model_key.replace("_", "-"), 0), native_case, case_executable,
+                    digest(case_executable.read_bytes()),
+                    {key: "00000000" for key in ("absolute_tolerance_f32_bits", "relative_tolerance_f32_bits",
+                                                 "near_tie_tolerance_f32_bits")},
+                    observation["bundle_id"] if backend == "gpu" else None,
+                    "stub-gpu" if backend == "gpu" else None))
                 input_path = output / "case-input.json"
                 input_path.write_bytes(canonical(case_input))
                 case_run = subprocess.run([str(case_executable), str(input_path)], env=environment,
@@ -284,4 +295,87 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
             else:
                 assert len(records[0]["token_ids"]) == 2, records
             assert streams[0] == streams[1], (architecture, model_key)
+    home = work / "sequence-home"
+    temporary = work / "sequence-tmp"
+    home.mkdir(mode=0o700)
+    temporary.mkdir(mode=0o700)
+
+    def plans_for(prefix):
+        plans = []
+        for start in range(0, len(sequence_templates), 2):
+            for repeat in (0, 1):
+                for template in sequence_templates[start:start + 2]:
+                    document = {**template.case.document, "stream_root": str(work / f"{prefix}-{len(plans):03d}")}
+                    plans.append(dataclasses.replace(template,
+                        identity=(*template.identity[:2], repeat),
+                        case=dataclasses.replace(template.case, document=document)))
+        return plans
+
+    observed_cases = []
+    plans = plans_for("complete")
+    state = native_sequence.run(plans, budget_ns=30_000_000_000, work=work, home=home,
+        temporary=temporary, consume=lambda ordinal, outcome: observed_cases.append((ordinal, outcome)) is None)
+    assert state.complete and len(observed_cases) == 16, (state.failure_detail, observed_cases[-1:])
+    for ordinal, outcome in observed_cases:
+        assert outcome.accepted and outcome.process.exit_code == 0
+        assert outcome.process.command["environment"] == ["HOME=<home>:owned", "LC_ALL=C", "TMPDIR=<tmp>:owned", "TZ=UTC"]
+        if ordinal % 2:
+            assert outcome.numeric["compared"] and outcome.numeric["mismatch_count"] == 0
+        else:
+            assert outcome.numeric is None
+    assert all(not Path(plan.case.document["stream_root"]).exists() for plan in plans)
+
+    # Mutating an already-validated CPU stream cannot establish a replacement reference digest.
+    plans = plans_for("cpu-drift")
+    drift_outcomes = []
+    def drift_cpu(ordinal, outcome):
+        drift_outcomes.append(outcome)
+        if ordinal == 0:
+            path = plans[0].case.stream_path
+            raw = bytearray(path.read_bytes())
+            raw[64] ^= 1
+            path.write_bytes(raw)
+        return True
+    state = native_sequence.run(plans, budget_ns=30_000_000_000, work=work, home=home,
+                                temporary=temporary, consume=drift_cpu)
+    assert state.failure_ordinal == 1 and state.accepted == 1 and len(drift_outcomes) == 2
+    assert drift_outcomes[-1].process.exit_code == 0 and not drift_outcomes[-1].accepted
+    assert all(not Path(plan.case.document["stream_root"]).exists() for plan in plans)
+
+    # A deliberately incorrect finite candidate exits zero; comparison must retain that code.
+    bad_candidate = work / "finite-drift-candidate"
+    bad_candidate.write_text("#!" + sys.executable + "\n" +
+        "import json,pathlib,struct,subprocess,sys\n" +
+        "result=subprocess.run([" + repr(str(case_executable)) + ",sys.argv[1]],capture_output=True)\n" +
+        "if result.returncode == 0:\n" +
+        " data=json.loads(pathlib.Path(sys.argv[1]).read_bytes());path=pathlib.Path(data['stream_root'])/data['stream_name']\n" +
+        " raw=bytearray(path.read_bytes());at=24\n" +
+        " while at < len(raw):\n" +
+        "  kind,layer,step,width,height,reserved,length,ordinal=struct.unpack_from('<6I2Q',raw,at)\n" +
+        "  if kind==2: raw[at+40] ^= 1;break\n" +
+        "  at+=40+length\n" +
+        " path.write_bytes(raw)\n" +
+        "sys.stdout.buffer.write(result.stdout);sys.stderr.buffer.write(result.stderr);sys.exit(result.returncode)\n")
+    bad_candidate.chmod(0o700)
+    plans = plans_for("finite-drift")
+    plans[1] = dataclasses.replace(plans[1], executable=bad_candidate,
+                                   executable_sha256=digest(bad_candidate.read_bytes()))
+    mismatch_outcomes = []
+    state = native_sequence.run(plans, budget_ns=30_000_000_000, work=work, home=home,
+        temporary=temporary, consume=lambda ordinal, outcome: mismatch_outcomes.append(outcome) is None)
+    assert state.failure_ordinal == 1 and state.accepted == 1 and len(mismatch_outcomes) == 2
+    mismatch = mismatch_outcomes[-1]
+    assert mismatch.process.exit_code == 0 and mismatch.native is not None and not mismatch.accepted
+    assert mismatch.numeric["mismatch_count"] > 0, mismatch
+    assert all(not Path(plan.case.document["stream_root"]).exists() for plan in plans)
+
+    plans = plans_for("occupied")
+    occupied = Path(plans[0].case.document["stream_root"])
+    occupied.mkdir()
+    (occupied / "sentinel").write_bytes(b"preserve")
+    state = native_sequence.run(plans, budget_ns=30_000_000_000, work=work, home=home,
+        temporary=temporary, consume=lambda ordinal, outcome: (_ for _ in ()).throw(AssertionError("unexpected child")))
+    assert state.failure_ordinal == 0 and state.failed_result is None
+    assert (occupied / "sentinel").read_bytes() == b"preserve"
+
 print("gpu provider trace: PASS (source admission, prompt binding, CPU/GPU output and streams, EOG, cleanup)")

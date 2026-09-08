@@ -246,6 +246,32 @@ passing_records = records.validate_evidence_records(
 )
 assert len(passing_records["evidence"]["cases"]) == 16
 
+# A zero-exit native child can fail subsequent numeric validation; keep its real process status.
+comparison_failed = copy.deepcopy(passing_cases[1])
+comparison_failed.update(terminal="FAIL", category="COMPUTE", stage="readback")
+comparison_failed["numeric"]["mismatch_count"] = 1
+expected_failed = profile["cases"][1]
+calibration_failed = calibration_cases[expected_failed["calibration_case_id"]]
+validated_failed = records.validate_case(comparison_failed, expected=expected_failed,
+    calibration_case=calibration_failed, status="FAIL")
+assert validated_failed["exit_code"] == 0 and validated_failed["output_sha256"]
+for altered in (
+    {**comparison_failed, "exit_code": False},
+    {**comparison_failed, "exit_code": None},
+    {**comparison_failed, "signal": True},
+    {**passing_cases[1], "exit_code": False},
+    {**comparison_failed, "command": {"kind": "", "argv": [], "environment": [], "sha256": ""},
+     "stdout_path": "", "stderr_path": ""},
+):
+    try:
+        records.validate_case(altered, expected=expected_failed,
+            calibration_case=calibration_failed, status="FAIL")
+    except records.RecipeError:
+        pass
+    else:
+        raise AssertionError("case process/qualification status conflation was accepted")
+
+
 bad_coverage = copy.deepcopy(passing)
 bad_coverage["cases"][1]["numeric"]["actual_scalar_count"] = 0
 try:

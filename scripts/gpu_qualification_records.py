@@ -351,7 +351,7 @@ def validate_calibration(value: object) -> dict[str, object]:
         maximum_tokens = bounded_i64(case["maximum_tokens"], 1, 128,
                                      f"cases[{ordinal}].maximum_tokens")
         expected = require_i32_array(case["expected_token_ids"],
-                                     f"cases[{ordinal}].expected_token_ids", maximum=128)
+                                     f"cases[{ordinal}].expected_token_ids", minimum=1, maximum=128)
         if len(expected) > maximum_tokens:
             raise RecipeError("expected token count exceeds maximum_tokens")
         output = bounded_text(case["expected_output_utf8"], 0, MAX_CALIBRATION_BYTES,
@@ -668,6 +668,10 @@ def validate_case(
                             "case terminal")
     category = result["category"]
     stage = result["stage"]
+    if result["exit_code"] is not None:
+        bounded_i64(result["exit_code"], I64_MIN, I64_MAX, "case exit_code")
+    if result["signal"] is not None:
+        bounded_i64(result["signal"], 1, I64_MAX, "case signal")
     if terminal == "PASS":
         if category != "" or stage != "" or result["exit_code"] != 0 or result["signal"] is not None:
             raise RecipeError("passing case terminal fields are invalid")
@@ -676,10 +680,7 @@ def validate_case(
         require_enum(category, FAILURE_CATEGORIES, "case category")
         require_enum(stage, FAILURE_STAGES, "case stage")
         if terminal == "FAIL":
-            if result["signal"] is not None or (
-                result["exit_code"] is not None
-                and bounded_i64(result["exit_code"], I64_MIN, I64_MAX, "case exit_code") == 0
-            ):
+            if result["signal"] is not None:
                 raise RecipeError("failed case exit fields are invalid")
         elif terminal in {"TIMEOUT", "MISSING"}:
             if result["exit_code"] is not None or result["signal"] is not None:
@@ -700,6 +701,8 @@ def validate_case(
     )
     if terminal == "PASS" and not spawned:
         raise RecipeError("passing case has no command")
+    if terminal == "FAIL" and spawned != (result["exit_code"] is not None):
+        raise RecipeError("failed case exit code does not match child existence")
     if spawned:
         require_path(result["stdout_path"], "case stdout_path")
         require_path(result["stderr_path"], "case stderr_path")

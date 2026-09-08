@@ -136,6 +136,13 @@ reseal(calibration, "calibration_id")
 wrong_prompt[4] = records.canonical(calibration)
 rejected(wrong_prompt, "prompt digest")
 
+empty_expected = list(lines)
+calibration = copy.deepcopy(validated["calibrations"][0])
+calibration["cases"][0]["expected_token_ids"] = []
+reseal(calibration, "calibration_id")
+empty_expected[4] = records.canonical(calibration)
+rejected(empty_expected, "expected_token_ids")
+
 wrong_platform = list(lines)
 profile = copy.deepcopy(validated["profile"])
 profile["platform"] = "linux"

@@ -13,7 +13,8 @@ requested language/library APIs have shipped. Requests 61/62 now pass their obse
 
 The active branch incorporates main `b5336f0` and preserves its G1 implementation checkpoints.
 The merged compiler/runtime batch and observed CPU/GPU generation are verified.
-Next: connect native case/CLI integration, then complete real Metal/CUDA qualification.
+Next: connect prepared profile inputs to native cases and complete placement/resource evidence,
+then finish the CLI and real Metal/CUDA qualification.
 
 ### Preserved implementation checkpoint
 
@@ -163,11 +164,20 @@ meets 20 expectations; only explicitly deferred direct-place case 11 remains red
 lifetime controls, observed native generation and real CPU compilation pass. G1 integration is
 eligible; G1R/G2 still follow G1.
 
+**Native sequence checkpoint.** The shared generation deadline now owns lazy CPU/GPU native
+case pairs, full stream validation and numeric comparison before the next child starts. The native
+provider owner passes all 16 fixture cases, retained CPU stream mutation, a finite GPU mismatch
+with actual child exit code zero, and occupied-root preservation; acquired scratch roots are cleaned.
+Evidence validation preserves a real zero exit code for functional FAIL and rejects boolean or
+missing spawned-child statuses. Calibration IDs include terminal EOG and cannot be empty.
+`python3 scripts/run-gpu-provider-trace-smoke` and `gmake gpu-profile-coverage gpu-result-replay
+gpu-evidence-publication gpu-case-traversal` pass. These are local integration checkpoints, not
+real-device qualification or publication evidence.
+
 **Next actions, in order.**
 
-1. Connect native case input/output to geometry traversal, numeric pairing and case sequencing
-   under the shared generation deadline. CPU production, reproduction and forced trace owners
-   are implemented and pass the shared CPU/GPU byte comparison.
+1. Bind prepared executables and admitted profile/calibration inputs to native sequence plans.
+   Complete independent placement/resource observations and profile-bound evidence records.
 2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
    process/record/replay/publication owners, and real source/profile/calibration kit construction.
    The final CLI does not exist yet; do not publish a placeholder success path.

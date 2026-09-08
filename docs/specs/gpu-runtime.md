@@ -399,7 +399,8 @@ Each `case_id` matches `[a-z0-9][a-z0-9._-]{0,48}`, reserving 15 characters for 
 `.gpu_resident.1` suffix. There is at least one `calibration` and one `holdout`. Prompts are at most 65,536 bytes and at
 most 4,096 nonnegative i32 token IDs. Teacher-forced IDs are nonempty. Greedy uses zero
 temperature/seed; seeded uses 300000 micros and any signed-i64 seed. Maximum tokens is 1–128.
-Expected IDs are the same-build CPU result and may be empty only for immediate EOG.
+Expected IDs are the nonempty same-build CPU sampling result, including the terminal EOG
+when sampled. Immediate EOG therefore has one expected ID and empty decoded output text.
 Expected output is the exact generated UTF-8 byte sequence for those IDs. Its digest is SHA-256 of
 those bytes with no added LF; both CPU repeats and both GPU repeats reproduce the bytes and digest.
 
@@ -496,8 +497,9 @@ retained results; the sequence itself does not accumulate all successful case lo
 Ordinals and identity fields equal the profile. Terminal is
 `PASS|FAIL|TIMEOUT|CRASH|SIGNAL|MISSING`; exit code/signal are integer or null. Missing output uses
 an empty digest. `PASS` uses empty category/stage, exit code zero, null signal, a constructed command
-and a nonempty output digest. Every other terminal uses a nonempty category/stage. `FAIL` has a
-nonzero exit code or null when no child started and a null signal; `TIMEOUT` and `MISSING` use null
+and a nonempty output digest. Every other terminal uses a nonempty category/stage. `FAIL` preserves the actual
+integer exit code when a child completed (including zero when subsequent numeric/output validation
+failed), or null when no child started, and has a null signal; `TIMEOUT` and `MISSING` use null
 exit/signal; `CRASH` uses a nonzero exit and null signal; `SIGNAL` uses a null exit and positive
 signal. A spawned row always names its command and two log paths. Output digest is nonempty only
 when a complete validated output existed before the later failure. Numeric is
@@ -534,6 +536,13 @@ Rebinding, streaming and early release fail. Expected operations/layers and both
 resident byte counts are positive, including prompt KV for an immediate-EOG case. Qwen has zero
 expected/GPU experts; OLMoE counts every selected expert application and must have a positive exact
 match.
+The exit code and signal fields are strict integers or null; booleans cannot impersonate zero or
+one. Functional failure after a zero-exit child retains its command/logs and validated output
+digest when available, with the real failure category/stage. `validate_case` owns this distinction;
+`gpu-result-replay` covers a zero-exit comparison failure and rejects boolean or unspawned exit
+claims, while the native case sequence owner covers stopping before the next child. This fixes a
+schema-1 validation gap during G1 integration without adding fields or changing successful records.
+
 `transfers` is
 `host_to_device_bytes,device_to_host_bytes,unexpected_device_to_host_bytes,wait_count`. The
 unexpected value counts bytes outside declared final-logit and compact-routing readbacks and must
@@ -692,6 +701,22 @@ before a paired GPU command may start. Failure admission validates the bounded p
 record without calling it successful numeric evidence. Its native fixture owner exercises actual
 child output plus mutated envelope/stream/binding refusals. The existing `CaseSequence` remains
 the sole process/deadline owner; this module does not publish evidence or infer placement/peaks.
+
+`gpu_qualification_native_sequence` binds a complete list of native plans to `CaseSequence`.
+Adjacent plans must be CPU then GPU for identical model/calibration/repeat identity, frozen input
+projection and comparison policy. Factories exclusively create each case's private scratch directory
+and canonical input only when their turn arrives. Executable SHA-256 and owned input paths use the
+existing closed command environment; no ambient library or credential environment is added.
+The CPU stream is completely validated and hashed before the GPU factory runs. GPU comparison
+uses that retained digest and independent traversal, and numeric mismatch stops the sequence while
+preserving the child's real zero exit code. The consumer receives process logs, validated native
+output/raw observations and comparison results or failure progress before approving the next case.
+Paired numeric scratch is removed after comparison; early exits remove only acquired case roots.
+It does not construct final placement/memory evidence. The native fixture owner covers all 16
+CPU/GPU/repeat executions, bounded environment, exact paired results, retained-CPU mutation refusal,
+occupied scratch preservation and no next child after a post-process validation refusal; the
+existing process owner remains authoritative for timeout/descendant cleanup.
+
 
 
 
