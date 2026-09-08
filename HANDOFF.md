@@ -5,13 +5,14 @@ file records durable project state.
 
 ## G1 producer delivery (2026-09-08)
 
-Branch `docs/request-62-delivery`, based on main `f8ea28e` (PR #215), records Request 62's
-producer delivery in Align PR #991 at `73251b30f7e5a2df3c904421e577a2bd76325f09`.
-The producer reports 19 of 21 frozen audit cases meeting their expected verdicts, including
-rejection of unsafe cases 08/09 and observed Qwen/OLMoE native byte goldens. Cases 06 and 11
-remain explicit non-blocking precision deferrals; the report remains `ready=false`.
+Branch `docs/align-992-delivery`, based on main `ad4786a` (PR #216), records Align PR #992
+at `305926b423da9be1f13b0129a7232626e6704d95`. Its targeted G1 replay accepts case 06,
+rejects unsafe cases 08/09, and passes explicit-copy control 12. Case 11 remains rejected under
+the settled direct-place rule. This five-case report is incomplete and `ready=false`; it does not
+replace #991's full 21-case run. Request 46 receives a partial control-flow repair; array-field
+assignment remains unsupported. Request 48 remains an open language precision proposal.
 
-Next: batch the merged prerequisites into one pin adoption on `agent/g1-gpu-generation`, then
+Next: batch the merged prerequisites through #992 into one pin adoption on `agent/g1-gpu-generation`, then
 run `gmake gpu-numeric-stream` and `gmake gpu-generation-smoke` with observed prefill/decode
 logits. Continue diagnostic/case/CLI integration and G1's real Metal/CUDA qualification.
 Requests 23/42/43/49/51 were recorded as `ALIGN_MERGED` in PR #215; their original consumer

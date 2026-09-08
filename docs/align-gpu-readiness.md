@@ -17,6 +17,12 @@ and 11 remain explicitly deferred and non-blocking, so the report remains `ready
 records delivery and pending consumer acceptance. The tables below preserve the original baseline;
 consumer adoption and real GPU qualification remain outstanding.
 
+**Targeted follow-up (PR #992).** Align `305926b423da9be1f13b0129a7232626e6704d95`
+subsequently admits case 06 and retains rejection of unsafe 08/09. Case 11 remains a settled
+language restriction; the explicit-copy case 12 passes. This five-case replay records
+`complete=false` and `ready=false`, and does not replace the full-run evidence above.
+Request 62's follow-up answer records the producer boundary and pending consumer adoption.
+
 ## Scope and evidence identity
 
 - Align source: `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0` (PR #982), managed release compiler

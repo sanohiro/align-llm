@@ -9813,6 +9813,21 @@ Two independent, narrower asks:
 > the two below are renumbered to **47** and **48**. Nothing outside this register cited either
 > number.
 
+### Align answer — 2026-09-08, partial control-flow repair (#992)
+
+Align commit `305926b423da9be1f13b0129a7232626e6704d95`,
+[PR #992](https://github.com/sanohiro/align/pull/992), repairs completed operand
+snapshots that incorrectly remained live across conditional array mutation and
+replacement, including loop, initializer, field/index assignment and short-circuit
+siblings. Current-owner reads are accepted; a real older view remains invalid after
+its owner is replaced. Parameterized sema owners and whole/per-unit driver controls
+cover the distinction. No allocation, ownership transfer or runtime ABI changes.
+
+This is a **partial** response: direct assignment through an array field
+(`owner.values[0] = value`) still reports `invalid assignment target` and is not
+claimed as shipped by this PR. Consumer refactoring and residency smoke remain
+align-llm-owned and pending; no versioned release was requested or published.
+
 ## Request 47 — A `Borrow` argument may be a temporary value
 
 ```text
@@ -9978,6 +9993,22 @@ Copy the scalar to a local before the call and pass the local.
 R6-MOE-RESIDENT-DENSE is one more client. `block_align`, `n_layer`, and the layout's scalars are
 copied to locals before every call that also takes `borrow mut o`, on the pattern the arm already
 uses for `pack_total` in `schedule_decode`.
+
+### Align answer — 2026-09-08, settled restriction confirmed (#992 audit)
+
+The cross-cutting audit in [PR #992](https://github.com/sanohiro/align/pull/992)
+confirmed that direct-place overlap beside `borrow mut` is explicitly rejected by
+`draft.md` and the Settled borrowing decision in `docs/open-questions.md`, including
+Copy peers. Consequently this request is a language precision proposal, not an
+implementation defect repaired by #992. The temporary-independent-copy workaround
+continues to pass; the direct scalar form continues to reject in whole/per-unit
+checking and build. G1 case 11 remains a non-blocking limitation, while case 12
+checks, builds and runs successfully.
+
+Reopening this restriction follows `docs/impl/23-friction-ledger.md`: five recorded
+mechanical workaround sites across two independent real programs, then the ordinary
+design gate. Synthetic compiler probes do not establish that threshold. This answer
+does not claim consumer adoption or close the proposal.
 
 ## Request 49 — A cross-module call with a `borrow mut` argument refuses every shorter-lived operand
 
@@ -11277,10 +11308,11 @@ Blocking: yes
 Blocked gate or slice: G1 observed generation and native diagnostic case integration
 Independent work that may continue: native stream byte/state owners and Python qualification
   infrastructure; the native stream alone passes its independent golden, but cannot close G1
-Resume condition: adopt shipped Align 73251b30f7e5a2df3c904421e577a2bd76325f09 or a descendant
+Resume condition: adopt shipped Align 305926b423da9be1f13b0129a7232626e6704d95 or a descendant
   and pass gpu-numeric-stream and gpu-generation-smoke with observed logits
 Align commit or pull request: https://github.com/sanohiro/align/pull/991; merged as
-  73251b30f7e5a2df3c904421e577a2bd76325f09
+  73251b30f7e5a2df3c904421e577a2bd76325f09; follow-up https://github.com/sanohiro/align/pull/992
+  merged as 305926b423da9be1f13b0129a7232626e6704d95
 align-llm verification: pending consumer-owned adoption and qualification; baseline reproduction
   and producer delivery evidence are recorded below
 ```
@@ -11399,3 +11431,34 @@ The complete return-provenance owner retains cleanup and allocation-parity check
 The revised independent full-diff review is clean. Align performed no consumer
 adoption or production edits. Adoption, `gpu-numeric-stream`, observed
 `gpu-generation-smoke`, and real Metal/CUDA qualification remain align-llm-owned.
+
+### Align answer — 2026-09-08, cross-cutting follow-up merged (#992)
+
+[PR #992](https://github.com/sanohiro/align/pull/992) merged as
+`305926b423da9be1f13b0129a7232626e6704d95`. Its Align-only cause-class batch repairs
+selected buffer fields inheriting unrelated sibling provenance, stale completed
+operand snapshots across joins, indirect str retention confusing the byte lifetime
+with a local view slot, and canonical borrowed element/field/subview reads failing
+MIR producer certification. Existing ownership, allocation, interface format 10 and
+runtime ABI remain unchanged. Details are in
+[the shipped investigation and closure matrix](https://github.com/sanohiro/align/blob/305926b423da9be1f13b0129a7232626e6704d95/docs/impl/consumer-boundary-investigation.md).
+
+The frozen G1 targeted replay at this compiler accepts case 06 in `check`,
+`check-per-unit` and `build`; actual-retention negatives 08/09 reject in all three
+and were never executed. Case 11 remains rejected under the settled direct-place
+restriction; explicit-copy control 12 checks, builds and executes successfully.
+This five-case replay is not a new complete 21-case readiness claim or real GPU
+qualification. The publication PR preserves the inspected five-case report, including
+its compiler and source hashes; it records `complete=false` and `ready=false`.
+
+A separate optimized replay of case 20's unchanged real CPU reference graph also
+passes: check 84.649s (1,204 functions), check-per-unit 165.777s (17 units), and
+build 169.633s, all within the unchanged 180-second per-phase bound. Its report is
+`/tmp/consumer-g1-cpu-final/report.json`. This is compile/build evidence, not a new
+native-execution or GPU claim.
+
+Independent review was CLEAN; all required Linux x86_64/ARM64/macOS checks passed,
+with 232 focused driver tests, all 36 frontend-cache owners and the bounded
+sema/codegen parameterized owners verified locally. Cache coverage includes cold,
+hit, private edit and restoration, plus rejecting changed retaining helpers.
+Consumer pin adoption and generation/numeric smoke remain align-llm-owned and pending.
