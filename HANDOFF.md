@@ -31,14 +31,29 @@ The user was asked whether to prioritize a redesigned numeric contract with inde
 or arithmetic changes that preserve the current threshold. CUDA host preparation continues
 independently; comprehensive review and publication remain pending.
 
-The user confirmed the CUDA target: WSL2 (Pengwin / Debian 13), NVIDIA GeForce RTX 4070 Ti,
-reported driver 610.62. The supplied probe identifies Pengwin 26.02.5, kernel
-`6.18.33.2-microsoft-standard-WSL2`, x86_64, PCI `00000000:2D:00.0` and compute capability 8.9.
-Use a user-executed kit without remote login. Ninja and nvcc are absent; instructions for Debian
-13's NVIDIA `cuda-toolkit-13-3`, Ninja and static support-library packages were supplied. Existing
-OLMoE GGUF is available on that host, but Qwen's location is unknown. Resume CUDA preparation
-after installed-toolchain confirmation and model admission. Actual qualification must observe
-this tuple and bind the locally built CUDA bundle; no CUDA PASS is claimed. Metal work continues.
+**CUDA result reported in [issue #218](https://github.com/sanohiro/align-llm/issues/218).**
+Pengwin completed preparation with CUDA 13.3 / nvcc 13.3.73 and both models. The reported tested
+head is `28a6fe382aba2e68f9c5ef1ef9bbd98c7493580b`, with the same Align/ggml pins. RTX 4070 Ti /
+CUDA0 / sm_89 / driver 610.62 generates the expected Qwen tokens and records 1,496 GPU operations,
+56 layer executions, zero CPU model operations and resident weights/KV. Formal qualification
+fails at Qwen calibration case 1: 5,058,161 / 5,243,392 scalar mismatches, maximum absolute
+difference 120.86090087890625. The issue reports successful independent replay and cleanup.
+Later formal cases did not execute. Supplemental relocated OLMoE diagnostics are not formal
+evidence; calibration and holdout each report 472 routing mismatches, with matching generated
+text and no nonfinite values. Their observed holdout must not be reused as unseen design data.
+
+The issue's two embedded calibration records pass local schema/self-hash validation, and the
+formal excerpt's counts are consistent. Full replayable artifacts remain on Pengwin; they have
+not been replayed on this host. CUDA arithmetic root cause remains unresolved.
+Pengwin preparation fixes `6fc5097`, `7b0d141`, and `28a6fe3` have been pushed and fast-forwarded
+onto this host. Backend-recipe and qualification-CLI smokes pass locally. The real CPU-reference
+owner also passes on macOS, including literal dollar/quote/backtick path characters and static
+registry isolation, using the pinned compiler and ggml checkout. The issue reports
+independent reviews of the first two repairs and the third's accepted quoting-finding repair;
+the complete bound review envelopes are not present in the issue. Final capability review is
+still outstanding. Next: localize CUDA scalar and routing divergence using the retained streams
+on Pengwin before changing the numerical contract. This host has only the issue excerpts;
+the full CUDA streams and replay closure are not available locally.
 
 ### Preserved implementation checkpoint
 

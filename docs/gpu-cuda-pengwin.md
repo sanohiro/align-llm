@@ -5,9 +5,36 @@ The user-reported target is WSL2 / Pengwin 26.02.5 (Debian 13 trixie), kernel
 `00000000:2D:00.0`, driver `610.62`, compute capability `8.9`. The checked-in CUDA recipe targets
 Linux x86_64 and `sm_89`. These facts identify the requested qualification; they are not a PASS.
 
-The initial probe found Python, Git, C/C++ and CMake, but no Ninja or nvcc. OLMoE's Q4_K_M GGUF
-is present in the user's model directory. Qwen's location remains unconfirmed. Run preparation
-inside Pengwin's Linux filesystem. The qualifier later records actual toolchain and device facts.
+The initial missing-tool/model prerequisites have been resolved. The target ran the public
+qualifier with both models and CUDA 13.3 / nvcc 13.3.73, as reported in
+[issue #218](https://github.com/sanohiro/align-llm/issues/218). Preserve the preparation steps below
+for reproducing that environment. The reported result is numerical FAIL, not a missing-tool failure.
+
+## Reported execution evidence
+
+The tested source is `28a6fe382aba2e68f9c5ef1ef9bbd98c7493580b`, now available on
+`agent/g1-gpu-generation`. The bundle ID is
+`61d557b528275397c81f7a528140199977aa7ef4982d6ae09a90e5f67ace5965`.
+The issue reports independent replay of retained result SHA-256
+`bf6f6849eed100d3cd27d4fe21dab35e69301ea78468bcc91f0ac10941163f86`.
+The complete retained artifact closure remains on Pengwin; the issue contains excerpts and
+calibrations, so inspecting it does not constitute another full replay.
+
+Qwen CPU and CUDA produce `Yes.` with IDs `[9454,13]`. Native CUDA observations account for
+1,496 GPU model operations, 56 layer executions, zero CPU model operations, and resident weights
+and KV. The first GPU calibration case fails COMPUTE/readback with 5,058,161 mismatches among
+5,243,392 scalars and maximum absolute difference 120.86090087890625. Nonfinite count is zero;
+source/input rechecks and cleanup pass. Later formal cases did not execute.
+
+Supplemental relocated OLMoE binaries produce the expected calibration and holdout text, but
+report 1,215,799 / 2,111,728 and 1,286,377 / 2,238,928 scalar mismatches respectively. Each has
+472 routing mismatches and zero nonfinite values. These are diagnostics, not formal qualification
+evidence, and the observed holdout is no longer unseen data for a redesigned acceptance contract.
+
+Preparation fixes preserve compiler invocation aliases, bind the private linker for GCC, and
+quote that linker's path through Ninja and the shell. They do not change runtime arithmetic.
+Next localize the first divergent CUDA operation and routing boundary. Preserve all frozen
+thresholds and this failure; a passing output string alone does not satisfy G1 numerical acceptance.
 
 ## Installed prerequisites
 
@@ -44,7 +71,7 @@ The expected OLMoE GGUF SHA-256 is
 (4,213,512,192 bytes). Hash the existing files before constructing packs or calibration records.
 Do not substitute a different quantization based only on its model name.
 
-## Remaining execution
+## Reproduction and remaining qualification
 
 Build the CUDA bundle from ggml commit `bb4caa7540188872173c44d161602d9271386413` using
 `scripts/gpu_backend_recipe.py --backend cuda --source CHECKOUT --output NEW_DIRECTORY`.
@@ -56,5 +83,5 @@ to PCI `00000000:2D:00.0`. Do not infer the registry device name from the PCI nu
 
 Frozen tolerances and distinct calibration/holdout prompts precede GPU execution. Metal's bundle
 ID and calibration IDs cannot be relabeled as CUDA evidence. Run the public qualifier on the
-populated CUDA kit and replay its retained result. CUDA preparation and qualification remain
-pending until the target executes these steps; Metal evidence cannot close this requirement.
+populated CUDA kit and replay its retained result. Preparation has succeeded on the target; full
+passing numerical qualification remains outstanding. Metal evidence cannot close this requirement.
