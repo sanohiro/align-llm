@@ -53,6 +53,19 @@ assert len(cuda_flags) == len(set(cuda_flags))
 
 with tempfile.TemporaryDirectory(prefix="gpu-backend-recipe-smoke-") as raw_temporary:
     temporary = pathlib.Path(raw_temporary)
+    driver = temporary / "driver"
+    driver.write_text('#!/bin/sh\nprintf "%s\\n" "${0##*/}"\n')
+    driver.chmod(0o755)
+    alias = temporary / "cc"
+    alias.symlink_to(driver)
+    original_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = str(temporary) + os.pathsep + original_path
+    try:
+        for selection in ("cc", str(alias)):
+            admitted = module.resolve_executable(selection, "CC")
+            assert subprocess.check_output([admitted, "--version"]) == b"cc\n"
+    finally:
+        os.environ["PATH"] = original_path
     executable = str(pathlib.Path(sys.executable).resolve())
     fake_tools = {
         "git": executable,

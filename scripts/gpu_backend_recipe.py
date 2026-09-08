@@ -117,7 +117,9 @@ def resolve_executable(value: str, label: str) -> str:
             raise RecipeError(f"{label} cannot be resolved") from exc
         if not resolved.is_file() or not os.access(resolved, os.X_OK):
             raise RecipeError(f"{label} is not executable")
-        return os.fspath(resolved)
+        # Compiler drivers may select behavior and version text from argv[0].
+        # Keep the admitted alias, just as qualification host admission does.
+        return os.fspath(selected)
     resolved_name = shutil.which(value)
     if resolved_name is None:
         raise RecipeError(f"{label} is not available")
@@ -127,7 +129,7 @@ def resolve_executable(value: str, label: str) -> str:
         raise RecipeError(f"{label} cannot be resolved") from exc
     if not resolved.is_file() or not os.access(resolved, os.X_OK):
         raise RecipeError(f"{label} is not executable")
-    return os.fspath(resolved)
+    return os.fspath(pathlib.Path(resolved_name).absolute())
 
 
 def selected_tools(backend: str) -> dict[str, str]:
