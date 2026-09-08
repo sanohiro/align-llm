@@ -134,6 +134,16 @@ read counts and doubled node totals on graph reuse. `gmake gpu-device-smoke gpu-
 -fsyntax-only scripts/ggml_shim.c` against ggml `bb4caa754`. Counters are raw observations;
 production snapshot integration and independent operation/layer/expert closure remain unfinished.
 
+**Production snapshot checkpoint.** `runtime_observation.capture` now exports validated raw GPU
+counters, current allocation sizes and actual bundle/device identity before device destruction.
+The provider retains it only for production observation; CPU, ordinary and diagnostic results
+explicitly carry unavailable observations. `python3 scripts/run-gpu-provider-trace-smoke` passes
+exact read bytes/calls versus vocabulary and generated positions, one prefill plus actual decode
+count, identity/allocation checks and production/diagnostic isolation, alongside full CPU/GPU
+output/stream equality and refusal cleanup. `gmake fmt` and `git diff --check` pass. Current sizes
+are not mislabeled as peaks or payload minima. Next: native three-trajectory case envelope and
+parent integration, then independent placement/resource proof and final qualifier publication.
+
 **Eligibility checkpoint.** Requests 61/62 are consumer-verified. The full frozen 21-case audit
 meets 20 expectations; only explicitly deferred direct-place case 11 remains red. All negative
 lifetime controls, observed native generation and real CPU compilation pass. G1 integration is

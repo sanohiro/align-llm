@@ -10,6 +10,7 @@ import model
 import model_ir
 import runtime_device
 import runtime_numeric_stream
+import runtime_observation
 import runtime_generation
 import runtime_options
 import runtime_pack_identity
@@ -149,7 +150,7 @@ fn generate_olmoe(
   }
 }
 
-pub TraceResult { text: string, token_ids: array<i64>, prompt_ids: array<i64> }
+pub TraceResult { text: string, token_ids: array<i64>, prompt_ids: array<i64>, observation: runtime_observation.Snapshot }
 
 pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
   mut stream := runtime_numeric_stream.disabled()
@@ -224,6 +225,7 @@ fn generate_mode(config: model.ProviderConfig, request: model.GenerationRequest,
     return Err(Error.Invalid)
   }
 
+  mut observation := runtime_observation.unavailable()
   generated_ids: array<i64> := match gpu_options {
     Some(options) => {
       generation_options := runtime_options.RuntimeOptions {
@@ -237,7 +239,7 @@ fn generate_mode(config: model.ProviderConfig, request: model.GenerationRequest,
         prefetch: options.prefetch.clone(),
       }
       device := runtime_device.open(options)?
-      if mode == 2 {
+      ids := if mode == 2 {
         if olmoe {
           runtime_generation.generate_olmoe_diagnostic(
             device, generation_options, config.runtime_pack_path, runtime_source_identity,
@@ -277,6 +279,8 @@ fn generate_mode(config: model.ProviderConfig, request: model.GenerationRequest,
             prepared.token_ids, prepared.eog_token_ids, request.max_tokens)?
         }
       }
+      if mode == 1 { observation = runtime_observation.capture(device)? }
+      ids
     }
     None => {
       generated := if mode != 0 {
@@ -326,7 +330,7 @@ fn generate_mode(config: model.ProviderConfig, request: model.GenerationRequest,
   prompt_ids := prompt_builder.build()
   if forced {
     if generated_ids.len() != forced_ids.len() + 1 { return Err(Error.Invalid) }
-    return Ok(TraceResult { text: "".clone(), token_ids: generated_ids, prompt_ids: prompt_ids })
+    return Ok(TraceResult { text: "".clone(), token_ids: generated_ids, prompt_ids: prompt_ids, observation: observation })
   }
   if generated_ids.len() < 1 || generated_ids.len() > request.max_tokens {
     return Err(Error.Invalid)
@@ -354,7 +358,7 @@ fn generate_mode(config: model.ProviderConfig, request: model.GenerationRequest,
   if decoded_tokenizer_id != prepared_tokenizer_id || decoded.text.len() > config.max_response_bytes {
     return Err(Error.Invalid)
   }
-  return Ok(TraceResult { text: decoded.text.clone(), token_ids: generated_ids, prompt_ids: prompt_ids })
+  return Ok(TraceResult { text: decoded.text.clone(), token_ids: generated_ids, prompt_ids: prompt_ids, observation: observation })
 }
 
 pub fn stream(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {

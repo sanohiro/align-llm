@@ -52,6 +52,9 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   ordinary := provider_runtime.generate(config, request)?
   production := provider_runtime.generate_trace(config, request, 1, empty, trace)?
   reproduction := provider_runtime.generate_trace(config, request, 2, empty, trace)?
+  if reproduction.observation.available || (production.observation.available != (args[6].len() > 0)) {
+    return Err(Error.Invalid)
+  }
   ordinary_view: str := ordinary
   production_view: str := production.text
   reproduction_view: str := reproduction.text
@@ -61,7 +64,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   prepared := tokenizer_qwen2.prepare_generation_model(config.model, request.system, request.user)?
   if !equal_ids(prepared.token_ids, production.prompt_ids) { return Err(Error.Invalid) }
   replay := provider_runtime.generate_trace(config, request, 2, forced, trace)?
-  if replay.text.len() != 0 || replay.token_ids.len() != 3
+  if replay.observation.available || replay.text.len() != 0 || replay.token_ids.len() != 3
     || !equal_ids(production.prompt_ids, replay.prompt_ids) { return Err(Error.Invalid) }
   runtime_numeric_stream.finish(trace)?
   mut failed := runtime_numeric_stream.create(args[4], "refused", if olmoe { 2 } else { 1 }, 108, 65576)?

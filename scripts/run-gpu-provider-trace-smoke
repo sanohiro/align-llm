@@ -91,6 +91,26 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                 lines = result.stdout.splitlines()
                 assert len(lines) == 2 and lines[-1] == "runtime provider trace: PASS", result.stdout
                 records.append(json.loads(lines[0]))
+                observation = records[-1].pop("observation")
+                if backend == "cpu":
+                    assert observation["available"] is False
+                    assert all(value == 0 or value == "" for key, value in observation.items()
+                               if key != "available"), observation
+                else:
+                    vocabulary = json.loads(geometry.read_bytes())["model"]["n_vocab"]
+                    positions = len(records[-1]["token_ids"])
+                    assert observation["available"] is True
+                    assert observation["read_bytes"] == positions * vocabulary * 4, observation
+                    assert observation["read_calls"] == positions, observation
+                    assert observation["prefill_executions"] == 1, observation
+                    assert observation["decode_executions"] == positions - 1, observation
+                    for key in ("graph_nodes", "weight_upload_count", "weight_upload_bytes",
+                                "input_upload_bytes", "allocated_host_bytes", "allocated_device_bytes",
+                                "weights_buffer_bytes", "kv_buffer_bytes"):
+                        assert observation[key] > 0, (key, observation)
+                    assert observation["bundle_id"] == json.loads((work / "bundle/manifest.json").read_bytes())["bundle_id"]
+                    assert observation["device_name"] == "stub-gpu" and observation["device_description"]
+
                 traversal = Traversal.derive(json.loads(geometry.read_bytes()), {
                     "prompt_token_ids": records[-1]["prompt_ids"],
                     "teacher_forced_token_ids": [0, 1], "maximum_tokens": 2,

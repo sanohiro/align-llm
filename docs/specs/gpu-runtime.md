@@ -669,6 +669,23 @@ owns teardown after it. No timing or performance claim follows from these counte
 | Ordinary and diagnostic generation | `runtime_generation` owner-aware logits readback | `gpu-generation-smoke` and provider trace owner |
 | Early failure / cleanup / CPU independence | no global current-owner binding; existing device Drop | `gpu-device-smoke` and `runtime-provider-smoke` |
 
+`runtime_observation.Snapshot` is the provider's owning production-only raw result. Its exact fields
+are `available,graph_nodes,read_bytes,read_calls,sync_calls,weight_upload_count,weight_upload_bytes,
+kv_upload_bytes,input_upload_bytes,prefill_executions,decode_executions,allocated_host_bytes,
+allocated_device_bytes,weights_buffer_bytes,kv_buffer_bytes,bundle_id,device_name,device_description`.
+It captures the existing native state queries before the production device is dropped, validating
+nonnegative counters, positive execution/allocation/weight observations and nonempty identity.
+CPU, ordinary unobserved calls and diagnostic replay return `available=false` with zero/empty fields;
+this is absence of a GPU observation, not a claim of zero physical resource use. Current allocation
+sizes are deliberately named `allocated_*`, not peaks or payload minima. The qualifier must derive
+those stronger schema-1 claims through their own required observations. `TraceResult` adds this
+snapshot as `observation`; no persisted/public schema changes. Failure to capture refuses the trace.
+The provider trace owner verifies CPU absence, GPU read bytes/calls against sampled positions and
+vocabulary, one prefill plus the actual decode count, bundle/device identity and positive allocations;
+ordinary/production/reproduction text and IDs remain equal. Separate owners prevent diagnostic work
+from adding to the production snapshot. Native resource failure/teardown stays with the device owner.
+
+
 
 The private provider trace entrypoint reuses ordinary provider admission, source/geometry identity,
 chat prompt preparation and output decoding. Its inputs are the existing provider configuration and
