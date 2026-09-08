@@ -50,7 +50,7 @@ with tempfile.TemporaryDirectory(prefix="gpu-case-record-") as raw:
             stream_root=root / "numeric", stream_name="stream")
         plan = Plan(("qwen2", frozen["case_id"], 0), case, executable, digest, calibration["comparison"])
         observation = {} if not gpu else {
-            "model_operations": 30, "model_layers": 1, "model_experts": 0,
+            "model_operations": 33, "model_layers": 1, "model_experts": 0,
             "resident_weight_payload_bytes": 256, "resident_kv_payload_bytes": case.residency.kv_bytes,
             "weight_upload_count": 15, "weight_upload_bytes": 256, "kv_upload_bytes": 0,
             "input_upload_bytes": 32, "read_bytes": 2048, "sync_calls": 2,
@@ -129,6 +129,8 @@ with tempfile.TemporaryDirectory(prefix="gpu-case-record-") as raw:
         else:
             assert len(collector.rows) == 2 and collector.rows[1]["terminal"] == "FAIL"
             assert collector.failure["case_ordinal"] == 1
+            if mode == "validation-deadline":
+                assert collector.failure["detail"] == "generation deadline expired during case validation"
             if mode == "unstarted":
                 assert len(collector.retained) == 2 and collector.rows[1]["exit_code"] is None
             else:

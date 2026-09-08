@@ -11,6 +11,7 @@ import stat
 import struct
 
 from gpu_backend_recipe import RecipeError, lowercase_hex
+from gpu_qualification_deadline import Deadline
 
 
 MAX_BYTES = 4 * 1024 * 1024 * 1024
@@ -40,8 +41,11 @@ class Frame:
 class NumericStream:
     def __init__(
         self, path: pathlib.Path, *, model: int, maximum_bytes: int,
-        expected_sha256: str | None = None,
+        expected_sha256: str | None = None, deadline: Deadline | None = None,
     ) -> None:
+        self.deadline = deadline
+        if deadline is not None:
+            deadline.check()
         self._fd = -1
         self._failed = True
         self.verified = False
@@ -76,6 +80,8 @@ class NumericStream:
             raise
 
     def _read_exact(self, count: int) -> bytes:
+        if self.deadline is not None:
+            self.deadline.check()
         if self._fd < 0:
             raise RecipeError("numeric stream is closed")
         if self.consumed_bytes > self.maximum_bytes - count:
@@ -83,13 +89,17 @@ class NumericStream:
         result = bytearray()
         remaining = count
         while remaining:
-            data = os.read(self._fd, remaining)
+            if self.deadline is not None:
+                self.deadline.check()
+            data = os.read(self._fd, min(remaining, 65536))
             if not data:
                 raise RecipeError("numeric stream is truncated")
             self._hash.update(data)
             self.consumed_bytes += len(data)
             remaining -= len(data)
             result.extend(data)
+        if self.deadline is not None:
+            self.deadline.check()
         return bytes(result)
 
     def read_frame(self) -> Frame | None:

@@ -159,5 +159,7 @@ class CaseRecords:
             if row["terminal"] == "PASS":
                 row.update(terminal="FAIL", category="PROCESS", stage="readback")
             self.failure = {"category": row["category"], "stage": row["stage"], "case_ordinal": ordinal,
-                            "detail": "case execution or validation did not complete successfully"}
+                            "detail": ("generation deadline expired during case validation"
+                                       if sequence.failure_detail == "generation deadline expired during case validation"
+                                       else "case execution or validation did not complete successfully")}
         self.finished = True

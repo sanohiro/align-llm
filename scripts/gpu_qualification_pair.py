@@ -9,6 +9,7 @@ import struct
 import sys
 
 from gpu_backend_recipe import RecipeError, lowercase_hex
+from gpu_qualification_deadline import Deadline, checked
 from gpu_qualification_numeric import RoutingComparison, ScalarComparison
 from gpu_qualification_stream import Frame, MAX_CHUNK_BYTES, NumericStream
 
@@ -18,22 +19,24 @@ class NumericPair:
         self, reference: pathlib.Path, candidate: pathlib.Path, *, model: int,
         maximum_bytes: int, reference_sha256: str,
         absolute_bits: str, relative_bits: str, near_tie_bits: str,
+        deadline: Deadline | None = None,
     ) -> None:
+        self.deadline = deadline
         self._stack = contextlib.ExitStack()
         self._failed = True
         self.finished = False
         self.layer_count = 0
         self.final_logit_count = 0
         lowercase_hex(reference_sha256, 64, "paired reference stream digest")
-        self.scalars = ScalarComparison(absolute_bits, relative_bits)
+        self.scalars = ScalarComparison(absolute_bits, relative_bits, deadline=deadline)
         self.routing = RoutingComparison(self.scalars, near_tie_bits)
         try:
             self.reference = self._stack.enter_context(NumericStream(
                 reference, model=model, maximum_bytes=maximum_bytes,
-                expected_sha256=reference_sha256,
+                expected_sha256=reference_sha256, deadline=deadline,
             ))
             self.candidate = self._stack.enter_context(NumericStream(
-                candidate, model=model, maximum_bytes=maximum_bytes,
+                candidate, model=model, maximum_bytes=maximum_bytes, deadline=deadline,
             ))
         except BaseException:
             # Close acquired streams without claiming complete consumption or masking admission.
@@ -77,7 +80,7 @@ class NumericPair:
             self._expect(Frame(kind, layer, step, width, 1, width * 4, ordinal + offset))
             payloads.append((self.reference.read_payload(width * 4), self.candidate.read_payload(width * 4)))
         reference_ids, candidate_ids = (
-            tuple(value for (value,) in struct.iter_unpack("<i", data)) for data in payloads[1]
+            tuple(value for (value,) in checked(struct.iter_unpack("<i", data), self.deadline)) for data in payloads[1]
         )
         self.routing.compare(*payloads[0], reference_ids, candidate_ids, *payloads[2])
         self._failed = False

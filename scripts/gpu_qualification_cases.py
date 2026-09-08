@@ -63,10 +63,10 @@ class CaseSequence:
                 accepted = consume(ordinal, result)
                 if result.terminal != "PASS":
                     raise RecipeError("case child did not pass")
-                if accepted is not True:
-                    raise RecipeError("case output or numeric validation did not pass")
                 if time.monotonic_ns() >= self.deadline_ns:
                     raise RecipeError("generation deadline expired during case validation")
+                if accepted is not True:
+                    raise RecipeError("case output or numeric validation did not pass")
                 self.accepted += 1
             except (RecipeError, OSError) as error:
                 self.failure_ordinal = ordinal

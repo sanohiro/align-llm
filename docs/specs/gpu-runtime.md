@@ -1187,6 +1187,28 @@ Qwen prefill/decode scalar comparison with matched embedding placement and F32 K
 failed CPU/GPU calibration evidence remains failed and unchanged. Padded workspace participates
 in the existing memory ceiling and must be included in subsequent performance measurements.
 
+### Numeric validation deadline repair
+
+The generation sequence passes its original monotonic deadline through native output validation,
+stream framing/hashing and paired scalar/router comparison. This does not create a fresh validation
+budget. Deadline checks occur before/after bounded work: at most 64 KiB per file read/hash and 1,024
+items per scalar, router-score or selected-ID traversal. A deadline refusal closes every reader,
+retains the actual child result and consumed failure prefix, removes owned scratch, and prevents
+starting the next child. No partial comparison becomes PASS. Persisted schemas and numerical
+predicates are unchanged; the private optional deadline argument defaults to absent for offline
+replay and existing owner tools. The owning deadline helper validates a positive integer deadline.
+`python3 scripts/run-gpu-validation-deadline-smoke` owns interruption inside one scalar chunk,
+exact router near-tie construction, delayed payload reads, descriptor cleanup and offline reuse.
+`run-gpu-provider-trace-smoke` proves original-deadline propagation through both native and paired
+validation, actual zero-exit child retention, scratch cleanup and no subsequent child.
+
+| Owner | Closure |
+| --- | --- |
+| `gpu_qualification_native_sequence` / `gpu_qualification_cases` | Share the original deadline; retain child outcome and deadline detail; no next child after interruption. Existing case-sequence/provider owners plus deadline regression. |
+| `gpu_qualification_stream` | Check bounded framing, reads and hashing; close acquired descriptors on expiry; partial readers remain unverified. Numeric stream owner plus delayed-read regression. |
+| `gpu_qualification_native`, `gpu_qualification_pair`, `gpu_qualification_traversal` | Propagate the same deadline through both validation passes, including router payload/ID construction; cleanup on refusal. Native provider and numeric traversal owners. |
+| `gpu_qualification_numeric` | Check scalar loops and every potentially large router traversal without changing exact comparison/tie predicates. Deterministic clock regression expires inside scalar and near-tie work, before the complete supplied chunk is processed. |
+
 ### Pre-upload exact-shape admission repair
 
 Before allocating device payload or reading weight chunks, generation performs one bounded

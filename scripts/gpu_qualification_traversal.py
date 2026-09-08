@@ -7,6 +7,7 @@ import dataclasses
 import pathlib
 from collections.abc import Iterator, Mapping
 
+from gpu_qualification_deadline import Deadline
 from gpu_backend_recipe import RecipeError, bounded_i64
 from gpu_qualification_pair import NumericPair
 from gpu_qualification_records import require_i32_array
@@ -118,6 +119,7 @@ class Traversal:
     def compare(
         self, reference: pathlib.Path, candidate: pathlib.Path, *, reference_sha256: str,
         reference_token_ids: list[int], candidate_token_ids: list[int], comparison: Mapping[str, str],
+        deadline: Deadline | None = None,
     ) -> tuple[dict[str, object], int, int]:
         for tokens in (reference_token_ids, candidate_token_ids):
             require_i32_array(tokens, "actual production tokens", minimum=1, maximum=128)
@@ -127,7 +129,7 @@ class Traversal:
                          reference_sha256=reference_sha256,
                          absolute_bits=comparison["absolute_tolerance_f32_bits"],
                          relative_bits=comparison["relative_tolerance_f32_bits"],
-                         near_tie_bits=comparison["near_tie_tolerance_f32_bits"]) as pair:
+                         near_tie_bits=comparison["near_tie_tolerance_f32_bits"], deadline=deadline) as pair:
             for instruction in self.instructions():
                 if isinstance(instruction, Frame):
                     pair.scalar(instruction)

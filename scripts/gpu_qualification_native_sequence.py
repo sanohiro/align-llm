@@ -8,6 +8,7 @@ import shutil
 from collections.abc import Callable, Sequence
 
 from gpu_backend_recipe import RecipeError, canonical, lowercase_hex
+from gpu_qualification_deadline import Deadline
 from gpu_qualification_backend import _write
 from gpu_qualification_cases import CaseCommand, CaseSequence
 from gpu_qualification_native import NativeCase, NativeSuccess, failure, success
@@ -83,6 +84,7 @@ def run(plans: Sequence[Plan], *, budget_ns: int, work: Path, home: Path, tempor
                     or previous.case.model_work != plan.case.model_work \
                     or previous.comparison != plan.comparison or _projection(previous) != _projection(plan):
                 raise RecipeError("native pair does not share its complete frozen identity")
+    deadline = Deadline(sequence.deadline_ns)
     acquired: set[Path] = set()
     pending: tuple[Plan, NativeSuccess] | None = None
 
@@ -120,7 +122,7 @@ def run(plans: Sequence[Plan], *, budget_ns: int, work: Path, home: Path, tempor
                     failed = failure(process.stdout.retained, plan.case)
                 raise RecipeError("native case child did not pass: " + process.terminal)
             observed = success(process.stdout.retained, plan.case,
-                               expected_bundle_id=plan.bundle_id, expected_device=plan.device)
+                               expected_bundle_id=plan.bundle_id, expected_device=plan.device, deadline=deadline)
             if plan.gpu:
                 if pending is None:
                     raise RecipeError("native GPU case has no validated CPU predecessor")
@@ -129,7 +131,7 @@ def run(plans: Sequence[Plan], *, budget_ns: int, work: Path, home: Path, tempor
                     reference_plan.case.stream_path, plan.case.stream_path,
                     reference_sha256=reference.stream_sha256,
                     reference_token_ids=reference.production["token_ids"],
-                    candidate_token_ids=observed.production["token_ids"], comparison=plan.comparison)
+                    candidate_token_ids=observed.production["token_ids"], comparison=plan.comparison, deadline=deadline)
                 if nonfinite or routing_mismatch or numeric["mismatch_count"]:
                     error = "native paired numeric comparison failed"
                 cleanup(Path(reference_plan.case.document["stream_root"]))

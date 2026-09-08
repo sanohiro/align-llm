@@ -10,6 +10,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 import shutil
+from unittest import mock
+from gpu_qualification_deadline import EXPIRED
 
 from gpu_qualification_stream import NumericStream, Frame
 import gpu_qualification_native as native
@@ -402,6 +404,29 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
         else:
             assert outcome.numeric is None
     assert all(not Path(plan.case.document["stream_root"]).exists() for plan in plans)
+
+    # Expiry inside either native validation or paired comparison keeps the actual child result,
+    # closes both streams and removes the full owned prefix before another child can start.
+    for boundary in ("native", "pair"):
+        plans = plans_for("deadline-" + boundary)
+        expired_outcomes = []
+        provided = CaseSequence(len(plans), 30_000_000_000)
+        original = native_sequence.success if boundary == "native" else Traversal.compare
+        def expire_validation(*args, **kwargs):
+            assert kwargs["deadline"].monotonic_ns == provided.deadline_ns
+            with mock.patch("gpu_qualification_deadline.time.monotonic_ns", return_value=provided.deadline_ns + 1):
+                return original(*args, **kwargs)
+        target, name = (native_sequence, "success") if boundary == "native" else (Traversal, "compare")
+        with mock.patch.object(target, name, expire_validation):
+            state = native_sequence.run(plans, budget_ns=30_000_000_000, work=work, home=home,
+                temporary=temporary, consume=lambda index, outcome: expired_outcomes.append(outcome) or True,
+                sequence=provided)
+        assert state.failure_ordinal == (0 if boundary == "native" else 1)
+        assert len(expired_outcomes) == state.failure_ordinal + 1
+        last = expired_outcomes[-1]
+        assert last.process.exit_code == 0 and last.error == EXPIRED and not last.accepted
+        assert last.numeric is None
+        assert all(not Path(plan.case.document["stream_root"]).exists() for plan in plans)
 
     # Mutating an already-validated CPU stream cannot establish a replacement reference digest.
     plans = plans_for("cpu-drift")

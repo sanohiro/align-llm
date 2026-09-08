@@ -80,6 +80,19 @@ The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
+**Validation deadline checkpoint (unpublished, after `c76deb5`).** R10 now propagates the
+original generation deadline through native validation, stream framing/hashing, scalar loops and
+router near-tie work. Reads/hash chunks are at most 64 KiB; large numeric/ID traversals check every
+1,024 items. Expiry closes readers, preserves the actual child exit/logs and failed prefix, removes
+owned scratch and prevents the next child. Offline validation has no implicit new deadline.
+`run-gpu-validation-deadline-smoke` passes deterministic mid-scalar/mid-router expiry plus delayed
+real reads and cleanup. Numeric compare, stream-reader, pair, case-sequence and case-record owners
+pass. `run-gpu-provider-trace-smoke` passes both shared-deadline propagation/refusal boundaries
+and the complete ordinary CPU/GPU fixture sequence. The case-record fixture's prefill operation
+count is updated from 30 to 33 for the already implemented padded attention graph.
+Next: R1 host accounting, R5/R6 microbatch and corpus, R7/R8/R9 execution evidence and loaded core
+identity, then final local qualification and review/publication. No CUDA debugging rerun is requested.
+
 **Pre-upload admission checkpoint (unpublished, after `c9ef9cf`).** Generation now walks the
 same prefill and every reachable decode-bucket graph in a scoped metadata-only planning phase.
 Zero-sized backend buffer descriptors identify resident leaves without allocating device payload.
