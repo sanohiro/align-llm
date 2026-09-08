@@ -14,7 +14,7 @@ import time
 
 from gpu_backend_recipe import RecipeError, canonical, retained_path
 from gpu_independent_corpus import validate as validate_corpus, MAX_BYTES as CORPUS_LIMIT
-from gpu_qualification_records import parse_record, validate_command, exact_keys, validate_profile_records
+from gpu_qualification_records import parse_record, validate_command, exact_keys, validate_profile_records, parse_json_object
 from gpu_qualification_backend import stage
 from gpu_qualification_native import prepare, success
 from gpu_qualification_input import admit
@@ -38,11 +38,11 @@ def write(path, data):
     return path
 
 
-def json_file(path, limit=RESULT_LIMIT):
+def json_file(path, limit=RESULT_LIMIT, *, framed=True):
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or not 0 < info.st_size <= limit:
         raise RecipeError('acceptance input is not a bounded single-link regular file')
-    return parse_record(path.read_bytes(), limit)
+    return (parse_record if framed else parse_json_object)(path.read_bytes(), limit)
 
 
 def comparator():
@@ -223,7 +223,7 @@ def execute(profile_path, corpus_path, candidate_build, reference_build, destina
         for ordinal, (model_id, case) in enumerate(expected_cases(corpus)):
             deadline.check()
             model = next(m for m in profile['models'] if m['model_id'] == model_id)
-            geometry = json_file(root / 'geometry' / (model_id + '.json'))
+            geometry = json_file(root / 'geometry' / (model_id + '.json'), framed=False)
             base = 'cases/' + str(ordinal)
             reference_relative = base + '/reference'
             write_directory(root / reference_relative)
@@ -375,7 +375,7 @@ def replay(root):
         geometry_path = root / 'geometry' / (model_id + '.json')
         if digest(geometry_path) != model['geometry_sha256']:
             raise RecipeError('acceptance geometry differs from admitted model')
-        geometry = json_file(geometry_path)
+        geometry = json_file(geometry_path, framed=False)
         base = 'cases/' + str(ordinal)
         ref = exact_keys(result['references'][ordinal], ('model_id', 'case_id', 'directory', 'input', 'process'),
                          'acceptance reference row')

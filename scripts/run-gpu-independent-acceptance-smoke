@@ -6,7 +6,7 @@ import sys
 import tempfile
 from gpu_backend_recipe import RecipeError, canonical
 from gpu_independent_acceptance import (process, process_ok, replay_process, write_directory,
-    digest, verify_build, file_inventory, write, replay)
+    digest, verify_build, file_inventory, write, replay, json_file)
 from gpu_qualification_deadline import Deadline
 import time
 
@@ -25,6 +25,9 @@ with tempfile.TemporaryDirectory(prefix='gpu-independent-acceptance-') as tempor
         write_directory(root / name)
     executable = write(root / 'candidate', b'#!/bin/sh\nprintf "native-output\\n"\n')
     executable.chmod(0o700)
+    geometry = write(root / 'geometry.json', b'{"schema_version":2}')
+    assert json_file(geometry, framed=False) == {'schema_version': 2}
+    rejects(lambda: json_file(geometry))
     request = write(root / 'input.json', b'{}\n')
     result = process(root, executable, request, 'candidate', 'case', Deadline(time.monotonic_ns() + 10_000_000_000))
     process_ok(result)
