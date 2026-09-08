@@ -9,6 +9,8 @@ import subprocess
 import tempfile
 
 from gpu_qualification_stream import NumericStream, Frame
+import gpu_qualification_native as native
+from gpu_backend_recipe import RecipeError
 from gpu_qualification_traversal import Traversal, Router
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -161,11 +163,30 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                     "stream_root": str(case_root), "stream_name": "numeric",
                     "stream_limit": traversal.maximum_bytes,
                 }
+                frozen_case = {
+                    "prompt_token_ids": records[-1]["prompt_ids"], "teacher_forced_token_ids": [0, 1],
+                    "maximum_tokens": 2, "expected_token_ids": records[-1]["token_ids"],
+                    "prompt_utf8": "x", "prompt_sha256": digest(b"x"),
+                    "expected_output_utf8": records[-1]["text"],
+                    "expected_output_sha256": digest(records[-1]["text"].encode()),
+                    "temperature_micros": 0, "seed": 0, "sampler_mode": "greedy",
+                }
+                native_case = native.prepare(model_id=architecture, geometry=json.loads(geometry.read_bytes()),
+                    calibration_case=frozen_case, model_path=model, pack_path=pack, geometry_path=geometry,
+                    options_path=options if backend == "gpu" else None,
+                    cache_budget_bytes=1048576 if architecture == "olmoe" else 0,
+                    stream_root=case_root, stream_name="numeric")
+                assert native_case.input_bytes() == canonical(case_input)
                 input_path = output / "case-input.json"
                 input_path.write_bytes(canonical(case_input))
                 case_run = subprocess.run([str(case_executable), str(input_path)], env=environment,
                                           capture_output=True, timeout=30)
                 assert case_run.returncode == 0, (architecture, model_key, backend, case_run.stdout, case_run.stderr)
+                validated = native.success(case_run.stdout, native_case,
+                    expected_bundle_id=observation["bundle_id"] if backend == "gpu" else None,
+                    expected_device="stub-gpu" if backend == "gpu" else None)
+                assert validated.output_sha256 == frozen_case["expected_output_sha256"]
+                assert validated.stream_sha256 == digest((case_root / "numeric").read_bytes())
                 case_output = json.loads(case_run.stdout)
                 assert list(case_output) == ["schema_version", "artifact_kind", "production", "stream_bytes", "stream_records"]
                 assert case_output["schema_version"] == 1 and case_output["artifact_kind"] == "GPU_RUNTIME_CASE_OUTPUT"
@@ -182,10 +203,38 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                     nonfinite = subprocess.run([str(case_executable), str(input_path)], env=fault_environment,
                                                capture_output=True, timeout=30)
                     assert nonfinite.returncode != 0, nonfinite.stdout
-                    failure = json.loads(nonfinite.stdout)
+                    failure = native.failure(nonfinite.stdout, native_case)
                     assert failure["artifact_kind"] == "GPU_RUNTIME_CASE_FAILURE" and failure["phase"] == "production"
                     assert failure["stream_nonfinite_count"] > 0 and failure["stream_records"] == 0, failure
                 if architecture == "qwen2" and model_key == "model" and backend == "cpu":
+                    pristine_output = json.loads(case_run.stdout)
+                    for changed_output in (
+                        {**pristine_output, "unknown": 1},
+                        {**pristine_output, "stream_records": True},
+                        {**pristine_output, "stream_bytes": traversal.maximum_bytes - 1},
+                        {**pristine_output, "production": {**pristine_output["production"], "text": "drift"}},
+                        {**pristine_output, "production": {**pristine_output["production"], "token_ids": [True]}},
+                        {**pristine_output, "production": {**pristine_output["production"],
+                            "observation": {**pristine_output["production"]["observation"], "graph_nodes": 1}}},
+                    ):
+                        try:
+                            native.success(canonical(changed_output), native_case)
+                        except RecipeError:
+                            pass
+                        else:
+                            raise AssertionError("mutated native output was accepted")
+                    numeric_path = case_root / "numeric"
+                    numeric_bytes = numeric_path.read_bytes()
+                    poisoned = bytearray(numeric_bytes)
+                    poisoned[64:68] = bytes.fromhex("0000807f")
+                    numeric_path.write_bytes(poisoned)
+                    try:
+                        native.success(case_run.stdout, native_case)
+                    except RecipeError:
+                        pass
+                    else:
+                        raise AssertionError("nonfinite native numeric payload was accepted")
+                    numeric_path.write_bytes(numeric_bytes)
                     variants = [
                         {**case_input, "unknown": 1},
                         {key: value for key, value in case_input.items() if key != "seed"},

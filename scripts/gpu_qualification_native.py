@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Construct and independently consume invocation-private native generation case records."""
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import math
+from pathlib import Path
+import struct
+from collections.abc import Mapping
+
+from gpu_backend_recipe import RecipeError, bounded_i64, bounded_text, canonical, lowercase_hex
+from gpu_qualification_records import exact_keys, parse_record, require_i32_array
+from gpu_qualification_stream import Frame, NumericStream
+from gpu_qualification_traversal import Traversal
+
+MAX_RECORD_BYTES = 4 * 1024 * 1024
+OBSERVATION_INTS = (
+    "graph_nodes", "read_bytes", "read_calls", "sync_calls", "weight_upload_count",
+    "weight_upload_bytes", "kv_upload_bytes", "input_upload_bytes", "prefill_executions",
+    "decode_executions", "allocated_host_bytes", "allocated_device_bytes",
+    "weights_buffer_bytes", "kv_buffer_bytes",
+)
+OBSERVATION_TEXT = ("bundle_id", "device_name", "device_description")
+PHASES = {"production", "production_binding", "reproduction", "reproduction_binding",
+          "forced", "forced_binding", "finish"}
+
+
+@dataclasses.dataclass(frozen=True)
+class NativeCase:
+    document: dict[str, object]
+    traversal: Traversal
+
+    @property
+    def stream_path(self) -> Path:
+        return Path(self.document["stream_root"]) / self.document["stream_name"]
+
+    def input_bytes(self) -> bytes:
+        data = canonical(self.document)
+        if len(data) > MAX_RECORD_BYTES:
+            raise RecipeError("native case input exceeds its bound")
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
+class NativeSuccess:
+    production: dict[str, object]
+    observation: dict[str, object]
+    output_sha256: str
+    stream_sha256: str
+
+
+def prepare(*, model_id: str, geometry: Mapping[str, object], calibration_case: Mapping[str, object],
+            model_path: Path, pack_path: Path, geometry_path: Path, options_path: Path | None,
+            cache_budget_bytes: int, stream_root: Path, stream_name: str) -> NativeCase:
+    traversal = Traversal.derive(geometry, calibration_case)
+    if model_id != ("qwen2" if traversal.model == 1 else "olmoe"):
+        raise RecipeError("native case model does not match geometry")
+    for path in (model_path, pack_path, geometry_path, stream_root, options_path):
+        if path is not None and (not path.is_absolute() or len(str(path).encode()) > 4096 or "\0" in str(path)):
+            raise RecipeError("native case physical path is invalid")
+    if not stream_name or len(stream_name) > 64 or stream_name[0] not in "abcdefghijklmnopqrstuvwxyz0123456789" \
+            or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789._-" for character in stream_name):
+        raise RecipeError("native case stream name is invalid")
+    bounded_i64(cache_budget_bytes, 0, (1 << 63) - 1, "native cache budget")
+    temperature = calibration_case["temperature_micros"]
+    seed = calibration_case["seed"]
+    if type(temperature) is not int or temperature not in (0, 300000):
+        raise RecipeError("native sampling temperature is invalid")
+    bounded_i64(seed, -(1 << 63), (1 << 63) - 1, "native sampling seed")
+    if temperature == 0 and seed != 0:
+        raise RecipeError("native greedy seed is not zero")
+    prompt = bounded_text(calibration_case["prompt_utf8"], 0, 1048576, "native prompt")
+    text = bounded_text(calibration_case["expected_output_utf8"], 0, 1048576, "native expected output")
+    if (model_id == "qwen2" and (cache_budget_bytes != 0 or temperature != 0)) \
+            or (model_id == "olmoe" and cache_budget_bytes < 1):
+        raise RecipeError("native model sampling/cache policy is invalid")
+    if calibration_case["sampler_mode"] != ("greedy" if temperature == 0 else "seeded"):
+        raise RecipeError("native sampler mode differs from temperature")
+    if hashlib.sha256(prompt.encode()).hexdigest() != calibration_case["prompt_sha256"] \
+            or hashlib.sha256(text.encode()).hexdigest() != calibration_case["expected_output_sha256"]:
+        raise RecipeError("native frozen text digest differs")
+
+    document = {
+        "schema_version": 1, "artifact_kind": "GPU_RUNTIME_CASE_INPUT", "model_id": model_id,
+        "model_path": str(model_path), "pack_path": str(pack_path), "geometry_path": str(geometry_path),
+        "options_path": "" if options_path is None else str(options_path),
+        "cache_budget_bytes": cache_budget_bytes, "prompt_utf8": prompt,
+        "maximum_tokens": calibration_case["maximum_tokens"], "temperature_micros": temperature, "seed": seed,
+        "expected_prompt_ids": list(calibration_case["prompt_token_ids"]),
+        "expected_token_ids": list(calibration_case["expected_token_ids"]), "expected_output_utf8": text,
+        "forced_ids": list(calibration_case["teacher_forced_token_ids"]), "stream_root": str(stream_root),
+        "stream_name": stream_name, "stream_limit": traversal.maximum_bytes,
+    }
+    result = NativeCase(document, traversal)
+    result.input_bytes()
+    return result
+
+
+def _record(raw: bytes, kind: str, keys: tuple[str, ...]) -> dict[str, object]:
+    record = exact_keys(parse_record(raw, MAX_RECORD_BYTES), keys, "native output")
+    if type(record["schema_version"]) is not int or record["schema_version"] != 1 \
+            or record["artifact_kind"] != kind or canonical(record) != raw:
+        raise RecipeError("native output identity or canonical encoding is invalid")
+    return record
+
+
+def failure(raw: bytes, case: NativeCase) -> dict[str, object]:
+    record = _record(raw, "GPU_RUNTIME_CASE_FAILURE", (
+        "schema_version", "artifact_kind", "phase", "stream_nonfinite_count", "stream_bytes", "stream_records"))
+    if not isinstance(record["phase"], str) or record["phase"] not in PHASES:
+        raise RecipeError("native failure phase is invalid")
+    bounded_i64(record["stream_nonfinite_count"], 0, case.traversal.scalar_count, "native nonfinite count")
+    bounded_i64(record["stream_bytes"], 24, case.traversal.maximum_bytes, "native failed stream bytes")
+    bounded_i64(record["stream_records"], 0, case.traversal.frame_count, "native failed stream records")
+    return record
+
+
+def _observation(raw: object, case: NativeCase, expected_bundle_id: str | None,
+                 expected_device: str | None) -> dict[str, object]:
+    observation = exact_keys(raw, ("available", *OBSERVATION_INTS, *OBSERVATION_TEXT), "native observation")
+    gpu = bool(case.document["options_path"])
+    if type(observation["available"]) is not bool or observation["available"] != gpu:
+        raise RecipeError("native observation availability differs from execution")
+    for key in OBSERVATION_INTS:
+        bounded_i64(observation[key], 0, (1 << 63) - 1, "native " + key)
+    for key in OBSERVATION_TEXT:
+        bounded_text(observation[key], 0, 128, "native " + key)
+    if not gpu:
+        if any(observation[key] != 0 for key in OBSERVATION_INTS) \
+                or any(observation[key] != "" for key in OBSERVATION_TEXT):
+            raise RecipeError("CPU result invents GPU observations")
+        return observation
+    if expected_bundle_id is None or expected_device is None:
+        raise RecipeError("GPU observation lacks independent device/bundle identity")
+    lowercase_hex(expected_bundle_id, 64, "native expected bundle")
+    if observation["bundle_id"] != expected_bundle_id or observation["device_name"] != expected_device \
+            or not observation["device_description"]:
+        raise RecipeError("native device/bundle identity differs")
+    positions = case.traversal.positions
+    if observation["read_calls"] != positions or observation["read_bytes"] != positions * case.traversal.vocabulary * 4 \
+            or observation["prefill_executions"] != 1 or observation["decode_executions"] != positions - 1:
+        raise RecipeError("native production observations differ from generated positions")
+    for key in ("graph_nodes", "weight_upload_count", "input_upload_bytes", "allocated_host_bytes",
+                "allocated_device_bytes", "weights_buffer_bytes", "kv_buffer_bytes"):
+        if observation[key] < 1:
+            raise RecipeError("native successful observation is absent: " + key)
+    return observation
+
+
+def _finite(payload: bytes) -> None:
+    if any(not math.isfinite(value) for (value,) in struct.iter_unpack("<f", payload)):
+        raise RecipeError("native numeric stream contains a nonfinite value")
+
+
+def consume_stream(case: NativeCase) -> str:
+    with NumericStream(case.stream_path, model=case.traversal.model,
+                       maximum_bytes=case.traversal.maximum_bytes) as stream:
+        for instruction in case.traversal.instructions():
+            if isinstance(instruction, Frame):
+                if stream.read_frame() != instruction:
+                    raise RecipeError("native numeric frame differs from independent traversal")
+                remaining = instruction.payload_bytes
+                while remaining:
+                    payload = stream.read_payload()
+                    _finite(payload)
+                    remaining -= len(payload)
+            else:
+                payloads = []
+                for offset, (kind, width) in enumerate(((3, instruction.experts), (4, instruction.selected),
+                                                       (5, instruction.selected))):
+                    expected = Frame(kind, instruction.layer, instruction.step, width, 1, width * 4,
+                                     instruction.ordinal + offset)
+                    if stream.read_frame() != expected:
+                        raise RecipeError("native routing frame differs from independent traversal")
+                    payloads.append(stream.read_payload())
+                scores_raw, ids_raw, weights_raw = payloads
+                _finite(scores_raw)
+                _finite(weights_raw)
+                scores = tuple(value for (value,) in struct.iter_unpack("<f", scores_raw))
+                ids = tuple(value for (value,) in struct.iter_unpack("<i", ids_raw))
+                weights = tuple(value for (value,) in struct.iter_unpack("<f", weights_raw))
+                if any(not 0 <= index < len(scores) for index in ids) or len(set(ids)) != len(ids):
+                    raise RecipeError("native routing IDs are invalid")
+                chosen = set(ids)
+                if any(scores[left] < scores[right] for left, right in zip(ids, ids[1:])) \
+                        or any(score > scores[ids[-1]] for index, score in enumerate(scores) if index not in chosen) \
+                        or weights != tuple(scores[index] for index in ids):
+                    raise RecipeError("native routing selection or weights are inconsistent")
+        if stream.read_frame() is not None or stream.consumed_bytes != case.traversal.maximum_bytes:
+            raise RecipeError("native numeric stream has extra data or a wrong size")
+        return stream.sha256
+
+
+def success(raw: bytes, case: NativeCase, *, expected_bundle_id: str | None = None,
+            expected_device: str | None = None) -> NativeSuccess:
+    record = _record(raw, "GPU_RUNTIME_CASE_OUTPUT", (
+        "schema_version", "artifact_kind", "production", "stream_bytes", "stream_records"))
+    production = exact_keys(record["production"], ("text", "token_ids", "prompt_ids", "observation"),
+                            "native production")
+    text = bounded_text(production["text"], 0, 1048576, "native output text")
+    require_i32_array(production["token_ids"], "native output tokens", minimum=1, maximum=128)
+    require_i32_array(production["prompt_ids"], "native output prompt", minimum=1, maximum=2048)
+    if text != case.document["expected_output_utf8"] \
+            or production["token_ids"] != case.document["expected_token_ids"] \
+            or production["prompt_ids"] != case.document["expected_prompt_ids"]:
+        raise RecipeError("native output does not match frozen case")
+    if type(record["stream_bytes"]) is not int or record["stream_bytes"] != case.traversal.maximum_bytes \
+            or type(record["stream_records"]) is not int or record["stream_records"] != case.traversal.frame_count:
+        raise RecipeError("native output stream totals differ from independent traversal")
+    observation = _observation(production["observation"], case, expected_bundle_id, expected_device)
+    return NativeSuccess(production, observation, hashlib.sha256(text.encode()).hexdigest(), consume_stream(case))

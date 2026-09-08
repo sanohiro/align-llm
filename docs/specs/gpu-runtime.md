@@ -682,6 +682,18 @@ placement, peak/minimum memory or timing claim is invented by this helper.
 | Reproduction / forced / write failure | propagate before finishing/printing success | native case owner changed expected output, short stream ceiling and forced GPU nonfinite readback |
 | Cleanup / early exit | native owners Drop, parent scratch ownership and process deadline | native case owner refusal followed by fresh success; existing process cleanup owner |
 
+`gpu_qualification_native` owns parent construction and validation of these private records. It
+builds the input from frozen calibration/geometry and explicit physical paths, deriving the stream
+ceiling independently. Success admission checks exact result/production/observation keys and types,
+output UTF-8 digest and exact frozen text/IDs, raw GPU reads versus vocabulary/positions, execution
+counts, and bundle/device identity. It consumes every expected numeric frame in bounded chunks,
+rejects nonfinites and invalid routing/selected-weight data, and retains the verified stream digest
+before a paired GPU command may start. Failure admission validates the bounded phase/progress
+record without calling it successful numeric evidence. Its native fixture owner exercises actual
+child output plus mutated envelope/stream/binding refusals. The existing `CaseSequence` remains
+the sole process/deadline owner; this module does not publish evidence or infer placement/peaks.
+
+
 
 Native observation contract (private FFI, no persisted schema): the GPU device owner stores checked
 nonnegative counters for successfully executed non-leaf graph nodes, completed explicit readback

@@ -151,7 +151,11 @@ record preserving the stream's observed nonfinite count; pre-writer admission ha
 `python3 scripts/run-gpu-provider-trace-smoke` now also passes native CPU/GPU case execution,
 independent traversal, immediate EOG, unknown/missing/duplicate/bounded-field refusals, frozen
 binding drift, short stream limits, forced GPU nonfinite readback and fresh success after refusal.
-`gmake fmt` and `git diff --check` pass. Parent case/evidence integration remains the next action;
+`gpu_qualification_native` now constructs the same canonical input and independently validates
+native output keys/types, frozen bindings, raw observations, exact frame traversal, nonfinites and
+router selection/weight consistency. Its verified CPU stream digest is available before GPU pairing.
+The same native owner passes mutated envelope/count/type/observation and numeric-payload refusals.
+`gmake fmt` and `git diff --check` pass. Shared case scheduling/evidence integration remains next;
 this private success envelope is not a qualification PASS or a public CLI.
 
 **Eligibility checkpoint.** Requests 61/62 are consumer-verified. The full frozen 21-case audit
