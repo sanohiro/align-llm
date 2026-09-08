@@ -13,8 +13,8 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "scripts"))
 from gpu_backend_recipe import RecipeError
-from gpu_qualification_deadline import checked
-from gpu_qualification_records import parse_json_object, exact_keys
+from gpu_qualification_deadline import checked, finite_f32, sha256_file
+from gpu_qualification_records import parse_json_object, exact_keys, require_i32_array, bounded_text
 from gpu_qualification_stream import Frame, NumericStream
 from gpu_qualification_traversal import Router, Traversal
 
@@ -127,9 +127,7 @@ class Reference:
             path = self.root / row["file"]
             # Bound each read to one frame. Hash each independently acquired tensor once.
             if row["file"] not in self.hashes:
-                with path.open("rb") as source:
-                    digest = hashlib.file_digest(source, "sha256").hexdigest()
-                self.hashes[row["file"]] = digest
+                self.hashes[row["file"]] = sha256_file(path, self.deadline)
             with path.open("rb") as source:
                 source.seek(offset)
                 data = source.read(take)
@@ -150,6 +148,9 @@ def compare(root, candidate, geometry, case, *, deadline=None):
     regular(root / "production.json", 2 * 1024**2)
     production = exact_keys(parse_json_object((root / "production.json").read_bytes(), 2 * 1024**2),
         ("token_ids", "prompt_ids", "text", "tensor_records", "tensor_bytes"), "reference production")
+    require_i32_array(production["token_ids"], "reference output tokens", minimum=1, maximum=128)
+    require_i32_array(production["prompt_ids"], "reference prompt tokens", minimum=1, maximum=2048)
+    bounded_text(production["text"], 0, 1048576, "reference output text")
     rows = [row for group in reference.groups.values() for row in group]
     if type(production["tensor_records"]) is not int or production["tensor_records"] != len(rows) \
             or type(production["tensor_bytes"]) is not int or production["tensor_bytes"] != sum(row["bytes"] for row in rows):
@@ -178,8 +179,7 @@ def compare(root, candidate, geometry, case, *, deadline=None):
                 baseline = reference.read(expected)
                 counts[expected.kind] += expected.width * expected.height
                 if expected.kind != 4:
-                    if any(not math.isfinite(x) for data in (actual, baseline)
-                           for (x,) in checked(struct.iter_unpack("<f", data), deadline)):
+                    if not finite_f32(actual, deadline) or (actual != baseline and not finite_f32(baseline, deadline)):
                         raise RecipeError("nonfinite reference or candidate value")
                 if actual != baseline:
                     mismatches[expected.kind] += sum(a != b for a, b in zip(

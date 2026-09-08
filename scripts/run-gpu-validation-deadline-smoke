@@ -10,7 +10,7 @@ from fractions import Fraction
 from unittest import mock
 
 from gpu_backend_recipe import RecipeError
-from gpu_qualification_deadline import Deadline, EXPIRED
+from gpu_qualification_deadline import Deadline, EXPIRED, finite_f32, sha256_file
 import gpu_qualification_numeric as numeric
 from gpu_qualification_stream import FILE_HEADER, RECORD_HEADER, NumericStream
 
@@ -76,6 +76,27 @@ with tempfile.TemporaryDirectory(prefix="g1-validation-deadline-") as raw:
         assert clean.read_frame() is not None
         assert clean.read_payload() == payload
         assert clean.read_frame() is None
+
+# Bulk f32 validation preserves bit-pattern semantics and checks each 1024-scalar boundary.
+for length in (0, 1, 1023, 1024, 1025, 2048):
+    payload = struct.pack("<f", -1.5) * length
+    assert finite_f32(payload)
+    for index in {0, 1023, 1024, length - 1}:
+        if 0 <= index < length:
+            for bits in (0x7f800000, 0xff800000, 0x7fc00000, 0xff800001):
+                changed = payload[:index * 4] + struct.pack("<I", bits) + payload[(index + 1) * 4:]
+                assert not finite_f32(changed)
+assert finite_f32(struct.pack("<4I", 0, 0x80000000, 0x7f7fffff, 0xff7fffff))
+with mock.patch("gpu_qualification_deadline.time.monotonic_ns", side_effect=[0, 2]) as clock:
+    expired(lambda: finite_f32(struct.pack("<f", 1) * 2048, Deadline(1)))
+    assert clock.call_count == 2
+with tempfile.TemporaryDirectory(prefix="g1-hash-deadline-") as raw:
+    path = pathlib.Path(raw) / "payload"
+    path.write_bytes(b"x" * 131072)
+    with mock.patch("gpu_qualification_deadline.time.monotonic_ns", side_effect=[0, 2]) as clock:
+        expired(lambda: sha256_file(path, Deadline(1)))
+        assert clock.call_count == 2
+    assert sha256_file(path) == __import__("hashlib").sha256(path.read_bytes()).hexdigest()
 
 for invalid in (True, 0, -1, 1.5):
     try:

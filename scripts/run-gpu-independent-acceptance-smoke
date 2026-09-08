@@ -9,6 +9,7 @@ from gpu_independent_acceptance import (process, process_ok, replay_process, wri
     digest, verify_build, file_inventory, write, replay, json_file)
 from gpu_qualification_deadline import Deadline
 import time
+from types import SimpleNamespace
 
 
 def rejects(call):
@@ -40,6 +41,17 @@ with tempfile.TemporaryDirectory(prefix='gpu-independent-acceptance-') as tempor
         altered = copy.deepcopy(result)
         altered[key] = value
         rejects(lambda: replay_process(root, altered, 'case', digest(executable), 'candidate', 'input.json'))
+    fault = canonical({'schema_version': 1, 'artifact_kind': 'GPU_RUNTIME_CASE_FAILURE',
+        'phase': 'production', 'category': 'MEMORY_BUDGET', 'stage': 'plan',
+        'stream_nonfinite_count': 0, 'stream_bytes': 24, 'stream_records': 0})
+    failed = dict(result, terminal='FAIL', exit_code=1)
+    plan = SimpleNamespace(traversal=SimpleNamespace(scalar_count=10, maximum_bytes=100, frame_count=5))
+    try:
+        process_ok(failed, output=fault, plan=plan)
+    except RecipeError as error:
+        assert str(error) == 'native MEMORY_BUDGET/plan refused acceptance'
+    else:
+        raise AssertionError('native first fault was discarded')
     (root / 'case/stdout').write_bytes(b'substituted\n')
     rejects(lambda: replay_process(root, result, 'case', digest(executable), 'candidate', 'input.json'))
     link = root / 'linked'

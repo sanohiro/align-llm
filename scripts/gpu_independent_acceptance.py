@@ -10,15 +10,16 @@ import os
 import pathlib
 import shutil
 import stat
+import subprocess
 import time
 
 from gpu_backend_recipe import RecipeError, canonical, retained_path
 from gpu_independent_corpus import validate as validate_corpus, MAX_BYTES as CORPUS_LIMIT
 from gpu_qualification_records import parse_record, validate_command, exact_keys, validate_profile_records, parse_json_object
 from gpu_qualification_backend import stage
-from gpu_qualification_native import prepare, success
+from gpu_qualification_native import prepare, success, failure as native_failure
 from gpu_qualification_input import admit
-from gpu_qualification_deadline import Deadline
+from gpu_qualification_deadline import Deadline, sha256_file
 from gpu_qualifier_process import run_owned_command, retained_file_row
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -26,9 +27,14 @@ TIMEOUT_NS = 1800_000_000_000
 RESULT_LIMIT = 16 * 1024**2
 
 
-def digest(path):
-    with path.open('rb') as source:
-        return hashlib.file_digest(source, 'sha256').hexdigest()
+def digest(path, deadline=None):
+    return sha256_file(path, deadline)
+
+
+def source_files(root):
+    names = subprocess.check_output(['git', '-C', str(root), 'ls-files', '-z', '--cached', '--others', '--exclude-standard']).split(b'\0')
+    return {name: digest(root / name) for name in sorted({raw.decode() for raw in names if raw})
+            if name.startswith(('src/', 'scripts/', 'eval/')) or name in ('.align-revision', 'Makefile')}
 
 
 def write(path, data):
@@ -52,7 +58,7 @@ def comparator():
     return module
 
 
-def file_inventory(root):
+def file_inventory(root, deadline=None):
     rows = []
     for path in sorted(root.rglob('*')):
         if path.is_dir() and not path.is_symlink():
@@ -64,7 +70,7 @@ def file_inventory(root):
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > 4 * 1024**3:
             raise RecipeError('acceptance artifact is not a bounded single-link file')
-        rows.append({'path': relative, 'bytes': info.st_size, 'sha256': digest(path)})
+        rows.append({'path': relative, 'bytes': info.st_size, 'sha256': digest(path, deadline)})
     return rows
 
 
@@ -154,10 +160,17 @@ def process(root, executable, input_path, role, directory, deadline):
     return record
 
 
-def process_ok(record):
+def process_ok(record, *, output=None, plan=None):
     validate_command(record['command'], allow_sentinel=False, expected_kind='case')
     if record['terminal'] != 'PASS' or record['exit_code'] != 0 or record['signal'] is not None \
             or record['descendants_after'] != 0 or record['stdout']['truncated'] or record['stderr']['truncated']:
+        if output is not None and plan is not None:
+            try:
+                fault = native_failure(output, plan)
+            except RecipeError:
+                pass
+            else:
+                raise RecipeError('native ' + fault['category'] + '/' + fault['stage'] + ' refused acceptance')
         raise RecipeError('independent acceptance process did not complete cleanly')
 
 
@@ -182,10 +195,8 @@ def execute(profile_path, corpus_path, candidate_build, reference_build, destina
     reference = verify_build(reference_build, False)
     if candidate['bundle_id'] != bundle['bundle_id'] or reference['ggml_commit'] != bundle['ggml']['commit']:
         raise RecipeError('independent builds do not bind the admitted backend')
-    for relative, expected in candidate['source_files'].items():
-        retained_path(relative, 'candidate source')
-        if digest(ROOT / relative) != expected:
-            raise RecipeError('current executable inputs differ from the candidate build')
+    if source_files(ROOT) != candidate['source_files']:
+        raise RecipeError('current executable input closure differs from the candidate build')
     if reference['driver_sha256'] != digest(ROOT / 'eval/gpu/reference-acquire.cpp'):
         raise RecipeError('independent reference driver differs from current source')
     destination = destination.absolute()
@@ -247,7 +258,7 @@ def execute(profile_path, corpus_path, candidate_build, reference_build, destina
                 row = {'model_id': model_id, 'case_id': case['case_id'], 'repeat': repeat, 'directory': relative,
                        'input': relative + '/input.json', 'numeric': relative + '/numeric', 'executable': name, 'process': command}
                 result['cases'].append(row)
-                process_ok(command)
+                process_ok(command, output=(root / relative / 'stdout').read_bytes(), plan=plan)
                 native = validate_native((root / relative / 'stdout').read_bytes(), plan, bundle['bundle_id'], options['device'], options, deadline)
                 comparison = compare.compare(root / reference_relative, plan.stream_path, geometry, case, deadline=deadline)
                 deadline.check()
@@ -264,12 +275,11 @@ def execute(profile_path, corpus_path, candidate_build, reference_build, destina
         admitted.recheck()
         verify_build(candidate_build, True)
         verify_build(reference_build, False)
-        for relative, expected in candidate['source_files'].items():
-            if digest(ROOT / relative) != expected:
-                raise RecipeError('candidate executable inputs changed during acceptance')
+        if source_files(ROOT) != candidate['source_files']:
+            raise RecipeError('candidate executable input closure changed during acceptance')
         result['status'] = 'PASS'
-    except Exception as error:
-        result['failure'] = str(error)
+    except (Exception, KeyboardInterrupt) as error:
+        result['failure'] = str(error) or 'independent acceptance interrupted'
     finally:
         result['cleanup'] = True
         for name in ('home', 'tmp'):
@@ -280,11 +290,16 @@ def execute(profile_path, corpus_path, candidate_build, reference_build, destina
                 result['cleanup'] = False
                 result['status'] = 'FAIL'
                 result['failure'] = result['failure'] or 'acceptance cleanup failed: ' + str(error)
+        try:
+            result['files'] = file_inventory(root, deadline if result['status'] == 'PASS' else None)
+        except RecipeError as error:
+            result['status'] = 'FAIL'
+            result['failure'] = result['failure'] or str(error)
+            result['files'] = file_inventory(root)
         result['elapsed_ns'] = time.monotonic_ns() - started
         if result['elapsed_ns'] > TIMEOUT_NS:
             result['status'] = 'FAIL'
             result['failure'] = result['failure'] or 'independent acceptance deadline expired'
-        result['files'] = file_inventory(root)
         write(root / 'result.json', canonical(result))
     return result['status']
 
@@ -369,6 +384,18 @@ def replay(root):
     if not isinstance(result['references'], list) or len(result['references']) != len(ordered) \
             or not isinstance(result['cases'], list) or len(result['cases']) != len(ordered) * 2:
         raise RecipeError('acceptance case coverage is incomplete')
+    allowed = {'corpus.json', 'profile.json', 'bundle.json', 'runtime-options.json', 'backend/manifest.json',
+        'admission/runtime-option.json', 'admission/align-source.json', 'admission/ggml-source.json',
+        'admission/calibration-0.json', 'admission/calibration-1.json', 'candidate/build.json', 'reference/build.json',
+        'reference/reference-acquire'}
+    allowed.update('source/' + name for name in candidate['source_files'])
+    allowed.update('candidate/' + name for name in candidate['executables'])
+    allowed.update('candidate/lib/' + name for name in candidate['libraries'])
+    allowed.update('reference/lib/' + name for name in reference['libraries'])
+    allowed.update('backend/' + artifact['path'] for artifact in bundle['artifacts'])
+    allowed.update('geometry/' + model['model_id'] + '.json' for model in profile['models'])
+    if (root / 'backend/manifest.json').read_bytes() != (root / 'bundle.json').read_bytes():
+        raise RecipeError('acceptance staged backend manifest differs')
     compare = comparator()
     for ordinal, (model_id, case) in enumerate(ordered):
         model = next(m for m in profile['models'] if m['model_id'] == model_id)
@@ -414,10 +441,20 @@ def replay(root):
             native = validate_native((root / relative / 'stdout').read_bytes(), relocated,
                                      bundle['bundle_id'], options['device'], options, None)
             comparison = compare.compare(root / ref['directory'], numeric, geometry, case)
+            allowed.update((row['input'], row['numeric'], relative + '/stdout', relative + '/stderr'))
+            allowed.update((ref['input'], base + '/reference-process/stdout', base + '/reference-process/stderr',
+                            ref['directory'] + '/index.jsonl', ref['directory'] + '/production.json'))
+            allowed.update(ref['directory'] + '/' + name for name in comparison['reference_tensors'])
             if not comparison['bitwise_equal'] or native.stream_sha256 != comparison['candidate_sha256'] \
                     or canonical(comparison) != canonical(row['comparison']):
                 raise RecipeError('acceptance replay numerical comparison differs')
         print(model_id, case['case_id'], 'replay PASS', flush=True)
+    if {row['path'] for row in inventory} != allowed:
+        raise RecipeError('acceptance inventory contains artifacts outside its complete closure')
+    allowed_directories = {parent.as_posix() for name in allowed for parent in pathlib.PurePosixPath(name).parents
+                           if parent.as_posix() != '.'}
+    if {path.relative_to(root).as_posix() for path in root.rglob('*') if path.is_dir()} != allowed_directories:
+        raise RecipeError('acceptance directory cleanup or closure differs')
     if canonical(file_inventory(root)) != canonical(inventory):
         raise RecipeError('acceptance artifacts changed during replay')
     return 'PASS'

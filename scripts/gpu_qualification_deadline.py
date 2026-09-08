@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import math
+import struct
 import time
 from collections.abc import Iterable, Iterator
 from typing import TypeVar
@@ -36,3 +39,38 @@ def checked(values: Iterable[T], deadline: Deadline | None) -> Iterator[T]:
             deadline.check()
         yield value
     deadline.check()
+
+
+_F32_BLOCK = struct.Struct("<1024f")
+
+
+def finite_f32(payload, deadline: Deadline | None = None) -> bool:
+    """Check every IEEE f32 with bounded C-level batches and 1024-scalar deadline checks."""
+    if len(payload) % 4:
+        raise RecipeError("f32 validation payload is truncated")
+    for offset in range(0, len(payload), _F32_BLOCK.size):
+        if deadline is not None:
+            deadline.check()
+        remaining = len(payload) - offset
+        values = _F32_BLOCK.unpack_from(payload, offset) if remaining >= _F32_BLOCK.size else \
+            struct.unpack_from("<" + str(remaining // 4) + "f", payload, offset)
+        if not all(map(math.isfinite, values)):
+            return False
+    if deadline is not None:
+        deadline.check()
+    return True
+
+
+def sha256_file(path, deadline: Deadline | None = None) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while True:
+            if deadline is not None:
+                deadline.check()
+            chunk = source.read(65536)
+            if not chunk:
+                break
+            digest.update(chunk)
+    if deadline is not None:
+        deadline.check()
+    return digest.hexdigest()

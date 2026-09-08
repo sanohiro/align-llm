@@ -12,6 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from gpu_backend_recipe import GGML_COMMIT
 from gpu_qualification_input import admit
+from gpu_independent_acceptance import source_files as capture_source_files
 
 
 def digest(path):
@@ -20,9 +21,7 @@ def digest(path):
 
 
 def source_files():
-    names = subprocess.check_output(['git', '-C', str(ROOT), 'ls-files', '-z', '--cached', '--others', '--exclude-standard']).split(b'\0')
-    return {name: digest(ROOT / name) for name in sorted({raw.decode() for raw in names if raw})
-            if name.startswith(('src/', 'scripts/', 'eval/')) or name in ('.align-revision', 'Makefile')}
+    return capture_source_files(ROOT)
 
 
 def main():

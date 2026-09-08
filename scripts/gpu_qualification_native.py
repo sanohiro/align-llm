@@ -10,7 +10,7 @@ import struct
 from collections.abc import Mapping
 
 from gpu_backend_recipe import RecipeError, bounded_i64, bounded_text, canonical, lowercase_hex
-from gpu_qualification_deadline import Deadline, checked
+from gpu_qualification_deadline import Deadline, checked, finite_f32
 from gpu_qualification_records import exact_keys, parse_record, require_i32_array
 from gpu_qualification_stream import Frame, NumericStream
 from gpu_qualification_traversal import Traversal
@@ -248,7 +248,7 @@ def _observation(raw: object, case: NativeCase, expected_bundle_id: str | None,
 
 
 def _finite(payload: bytes, deadline: Deadline | None = None) -> None:
-    if any(not math.isfinite(value) for (value,) in checked(struct.iter_unpack("<f", payload), deadline)):
+    if not finite_f32(payload, deadline):
         raise RecipeError("native numeric stream contains a nonfinite value")
 
 

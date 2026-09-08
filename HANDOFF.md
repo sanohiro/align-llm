@@ -90,6 +90,12 @@ Model-free corpus, independent-reference and acceptance-process owners pass; leg
 coverage/assembly owners and `gmake fmt` pass. The new acceptance owner retains builds, source,
 inputs, all tensors and two fresh candidate invocations per case; offline replay recomputes the
 full corpus and numeric closure without reopening original model/build paths.
+The first integrated run passed six Qwen cases twice, then was deliberately interrupted during
+2048-token numeric validation because Python per-scalar overhead threatened the fixed run ceiling.
+Bounded 1024-scalar C-level finite checks preserve exact semantics/deadline granularity; the retained
+413499904-value real Qwen comparison now passes in 11.77 seconds. Deadline, native provider trace,
+reference and process owners pass. Inventory hashing now shares the deadline, and replay rejects
+unowned extra files/directories. The interrupted run is not qualification PASS.
 Next: build a clean candidate and execute the complete 19-case/two-repeat Metal owner with a fresh
 pinned reference, then relocated replay and mutation checks. After stable evidence, perform the
 required fresh comprehensive review, final preflight, PR and merge. GPU performance work remains
