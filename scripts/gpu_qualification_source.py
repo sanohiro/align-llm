@@ -11,7 +11,7 @@ import shutil
 import stat
 
 from gpu_backend_recipe import RecipeError, materialize_source, single_link_file_at, stable_directory
-from gpu_qualification_input import AdmittedInput, SourceInput
+from gpu_qualification_input import AdmittedInput, SourceInput, STABLE_FIELDS
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,7 +58,8 @@ def _verify_tree(source: SourceInput, destination: pathlib.Path) -> None:
                     raise RecipeError("materialized source directory closure is invalid")
                 child = os.open(name, flags, dir_fd=descriptor)
                 try:
-                    if os.fstat(child) != metadata:
+                    opened = os.fstat(child)
+                    if any(getattr(opened, field) != getattr(metadata, field) for field in STABLE_FIELDS):
                         raise RecipeError("materialized source directory changed")
                     seen_directories.add(relative)
                     walk(child, relative + "/")
@@ -76,7 +77,8 @@ def _verify_tree(source: SourceInput, destination: pathlib.Path) -> None:
                 if not stat.S_ISREG(metadata.st_mode) or bool(metadata.st_mode & 0o111) != (row["mode"] == "100755"):
                     raise RecipeError("materialized source executable mode differs")
                 data = single_link_file_at(descriptor, name, "materialized source file", row["bytes"])
-            if os.stat(name, dir_fd=descriptor, follow_symlinks=False) != metadata:
+            after = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if any(getattr(after, field) != getattr(metadata, field) for field in STABLE_FIELDS):
                 raise RecipeError("materialized source file changed")
             if len(data) != row["bytes"] or hashlib.sha256(data).hexdigest() != row["sha256"]:
                 raise RecipeError("materialized source content differs")

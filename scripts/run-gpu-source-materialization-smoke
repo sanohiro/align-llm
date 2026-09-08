@@ -64,6 +64,8 @@ with tempfile.TemporaryDirectory(prefix="gpu-source-materialization-") as raw_te
     row = next(row for row in admitted.align_source.manifest["files"] if row["mode"] != "120000")
     target = sources.align_llm / row["path"]
     original_data, original_mode = target.read_bytes(), target.stat().st_mode
+    os.utime(target, ns=(1, target.stat().st_mtime_ns))
+    qualification_source._verify_tree(admitted.align_source, sources.align_llm)
     target.unlink()
     os.mkfifo(target)
     expect_rejected(lambda: qualification_source._verify_tree(admitted.align_source, sources.align_llm), "mode differs")

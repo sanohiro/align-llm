@@ -270,6 +270,15 @@ geometry hashes and the Metal bundle. Tolerances were fixed before GPU execution
 capture uses the pinned static CPU recipe and exact `src/` bytes matching `1e6a1bb`. Next: capture
 clean application source into a complete input kit and run the public Metal qualifier.
 
+**First public Metal invocation / source access-time repair.** The complete real input kit passes
+ordinary admission, but the first public invocation stopped before preparation because source
+rechecks compared full stat tuples, including access time changed by the verification read itself.
+The source owner now uses its shared stable identity fields (device/inode/mode/link count/size/
+mtime/ctime), excluding access time. The aged-atime regression and final CLI publication owner
+pass; the repaired owner also admits/materializes the complete real-model input package.
+No GPU holdout has executed yet. Rebuild the kit's source snapshot from the repaired commit and
+retry the public qualifier; frozen numeric inputs remain unchanged.
+
 **Next actions, in order.**
 
 1. Prepare real profiles/calibrations and run the final `scripts/gpu-runtime-qualify` on Metal.
