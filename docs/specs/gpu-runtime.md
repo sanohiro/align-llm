@@ -4,7 +4,8 @@ Status: implementation checkpoint, 2026-09-08; G1 qualification remains incomple
 
 Resident provider generation and qualification infrastructure are implemented on the development
 branch. Request 61 shipped and native numeric-stream production passes its byte/state owner.
-Observed generation/final qualifier integration now depends on Request 62 in `docs/align-requests.md`. Real Metal and CUDA qualification and populated calibration/profile
+Request 62 shipped through Align `305926b423da9be1f13b0129a7232626e6704d95`;
+observed generation passes its native owner. Final qualifier integration remains pending. Real Metal and CUDA qualification and populated calibration/profile
 evidence remain required to close G1. No runtime performance, full numeric qualification or CUDA
 correctness claim follows from the current implementation checkpoint.
 
@@ -729,7 +730,7 @@ failed write poisons the owner; no later record or finish can succeed. Finished 
 further writes. The Move owner closes its optional writer on drop; partial-file removal belongs to
 invocation cleanup. No durability or atomic multi-file publication is claimed for scratch streams.
 
-The following observed entrypoints remain planned and blocked by Request 62.
+The following observed entrypoints consume Request 62's shipped imported-borrow surface.
 `generate_qwen_observed` and `generate_olmoe_observed` retain the existing generation arguments
 and append `borrow mut stream: runtime_numeric_stream.Stream`; the ordinary entrypoints create a
 disabled stream. The observed variants charge `reservation(stream)` in metadata admission before
@@ -743,13 +744,13 @@ propagates `Error` and prevents a successful case; no tensor-sized observation b
 | Construction, return, drop, absent writer | `runtime_numeric_stream.create/disabled` | `runtime_numeric_stream_smoke.golden/main` |
 | Golden bytes, repeated writes, footer | `record/finish` | `golden`, independent reader `GOLDEN` |
 | Malformed, nonfinite, budget, early failure, terminal transitions | `record/finish/create` | `refusal/main`, reader malformed owners |
-| Production Qwen/OLMoE prefill/decode and reservation | Planned observed entrypoints, `prepare_memory` | Deferred: Request 62; `runtime_generation_smoke` observed cases |
+| Production Qwen/OLMoE prefill/decode and reservation | Observed entrypoints, `prepare_memory` | `runtime_generation_smoke.observed/observed_refusal`: active/inactive prefill/decode, reservation, pre-upload budget refusal and stream failure; independent reader in `run-gpu-generation-smoke` |
 | Diagnostic layer/router and case integration | Native case producer | Deferred within G1; final qualification remains pending |
 
 `gmake gpu-numeric-stream` owns construction/return/drop, inactive recording, exact golden bytes,
 occupied path, shape/nonfinite/byte-budget refusal, poisoned and finished transitions, and the
 Python reader's chunk/ordinal/footer/model/link/mutation/early-exit refusals. The source writer and
-reader are checked against the same byte vector independently. `gpu-generation-smoke` will own
+reader are checked against the same byte vector independently. `gpu-generation-smoke` owns
 the production logit hook and reservation; full layer/router production remains in the G1 numeric
 case integration. No performance claim or additional aggregate membership is introduced.
 

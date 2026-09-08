@@ -7,6 +7,7 @@ import runtime_device
 import runtime_execution
 import runtime_inputs
 import runtime_kv
+import runtime_numeric_stream
 import runtime_memory
 import runtime_olmoe
 import runtime_olmoe_load
@@ -107,13 +108,14 @@ fn prepare_memory(
   kv_bytes: i64,
   legacy_cache_bytes: i64,
   graph_capacity: i64,
+  observation_bytes: i64,
 ) -> Result<i64, Error> {
   tensor_count := checked_add(checked_add(weight_count, kv_count)?, runtime_qwen.INPUT_COUNT)?
   root_metadata := runtime_weights.metadata_bytes(tensor_count)
   graph_metadata := ggml_ffi.graph_context_bytes(graph_capacity)
   if root_metadata < 1 || graph_metadata < 1 { return Err(Error.Invalid) }
   metadata_bytes := checked_add(
-    checked_add(root_metadata, checked_mul(graph_metadata, 2)?)?, 128)?
+    checked_add(root_metadata, checked_mul(graph_metadata, 2)?)?, 128 + observation_bytes)?
   device_used := checked_add(weights_bytes, kv_bytes)?
   if device_used >= options.device_budget_bytes { return Err(Error.Invalid) }
   workspace_bytes := options.device_budget_bytes - device_used
@@ -341,6 +343,21 @@ pub fn generate_qwen(
   borrow eog_ids: array<i64>,
   max_tokens: i64,
 ) -> Result<array<i64>, Error> {
+  mut stream := runtime_numeric_stream.disabled()
+  return generate_qwen_observed(owner, options, pack_path, source_identity, geometry_text, prompt_ids, eog_ids, max_tokens, stream)
+}
+
+pub fn generate_qwen_observed(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow options: runtime_options.RuntimeOptions,
+  pack_path: str,
+  borrow source_identity: runtime_pack_identity.SourceIdentity,
+  geometry_text: str,
+  borrow prompt_ids: array<i64>,
+  borrow eog_ids: array<i64>,
+  max_tokens: i64,
+  borrow mut stream: runtime_numeric_stream.Stream,
+) -> Result<array<i64>, Error> {
   g := layer_qwen2.parse_geometry(geometry_text)
   decode_steps := if max_tokens > 1 { max_tokens - 1 } else { 0 }
   kv_capacity := prompt_ids.len() + decode_steps
@@ -355,7 +372,7 @@ pub fn generate_qwen(
   plan := runtime_qwen_load.build_plan_file_capacity(owner, pack, g, kv_capacity)?
   staging := prepare_memory(
     owner, options, plan.count, plan.weights_bytes, runtime_qwen.kv_count(g.n_layer),
-    plan.kv_bytes, 0, graph_capacity)?
+    plan.kv_bytes, 0, graph_capacity, runtime_numeric_stream.reservation(stream))?
   runtime_qwen_load.load_file(owner, pack, plan, staging)?
   initialize_kv(owner, g.n_layer, g.head_dim, kv_capacity, g.n_head_kv)?
   initialize_inputs(owner, prompt_ids.len(), kv_capacity)?
@@ -383,6 +400,9 @@ pub fn generate_qwen(
     slot_view, runtime_qwen.output_slot(), logits_view, 0, logits_view.len(), "qwen_logits",
   ) else { return Err(Error.Invalid) }
   mut random := rand.seed_with(0)
+  runtime_numeric_stream.record(stream, runtime_numeric_stream.Frame {
+      kind: 1, layer: 4294967295, step: 0, width: g.n_vocab, height: 1,
+    }, logits_view)?
   mut token := choose_token(logits_view, false, random)?
   mut generated: array_builder<i64> := array_builder()
   generated.push(token)
@@ -405,6 +425,9 @@ pub fn generate_qwen(
     ggml_ffi.slot_get(
       slot_view, runtime_qwen.output_slot(), logits_view, 0, logits_view.len(), "qwen_logits",
     ) else { return Err(Error.Invalid) }
+    runtime_numeric_stream.record(stream, runtime_numeric_stream.Frame {
+        kind: 1, layer: 4294967295, step: count, width: g.n_vocab, height: 1,
+      }, logits_view)?
     token = choose_token(logits_view, false, random)?
     generated.push(token)
     count = count + 1
@@ -426,6 +449,23 @@ pub fn generate_olmoe(
   legacy_cache_bytes: i64,
   seed: Option<i64>,
 ) -> Result<array<i64>, Error> {
+  mut stream := runtime_numeric_stream.disabled()
+  return generate_olmoe_observed(owner, options, pack_path, source_identity, geometry_text, prompt_ids, eog_ids, max_tokens, legacy_cache_bytes, seed, stream)
+}
+
+pub fn generate_olmoe_observed(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow options: runtime_options.RuntimeOptions,
+  pack_path: str,
+  borrow source_identity: runtime_pack_identity.SourceIdentity,
+  geometry_text: str,
+  borrow prompt_ids: array<i64>,
+  borrow eog_ids: array<i64>,
+  max_tokens: i64,
+  legacy_cache_bytes: i64,
+  seed: Option<i64>,
+  borrow mut stream: runtime_numeric_stream.Stream,
+) -> Result<array<i64>, Error> {
   g := layer_olmoe.parse_geometry(geometry_text)
   decode_steps := if max_tokens > 1 { max_tokens - 1 } else { 0 }
   kv_capacity := prompt_ids.len() + decode_steps
@@ -440,7 +480,7 @@ pub fn generate_olmoe(
   plan := runtime_olmoe_load.build_plan_file_capacity(owner, pack, g, kv_capacity)?
   staging := prepare_memory(
     owner, options, plan.count, plan.weights_bytes, runtime_olmoe.kv_count(g.n_layer),
-    plan.kv_bytes, legacy_cache_bytes, graph_capacity)?
+    plan.kv_bytes, legacy_cache_bytes, graph_capacity, runtime_numeric_stream.reservation(stream))?
   runtime_olmoe_load.load_file(owner, pack, plan, staging)?
   initialize_kv(owner, g.n_layer, g.head_dim, kv_capacity, g.n_head_kv)?
   initialize_inputs(owner, prompt_ids.len(), kv_capacity)?
@@ -470,6 +510,9 @@ pub fn generate_olmoe(
   sampled := match seed { Some(_) => true, None => false }
   sampling_seed := match seed { Some(value) => value, None => 0 }
   mut random := rand.seed_with(sampling_seed)
+  runtime_numeric_stream.record(stream, runtime_numeric_stream.Frame {
+      kind: 1, layer: 4294967295, step: 0, width: g.n_vocab, height: 1,
+    }, logits_view)?
   mut token := choose_token(logits_view, sampled, random)?
   mut generated: array_builder<i64> := array_builder()
   generated.push(token)
@@ -492,6 +535,9 @@ pub fn generate_olmoe(
     ggml_ffi.slot_get(
       slot_view, runtime_olmoe.output_slot(), logits_view, 0, logits_view.len(), "olmoe_logits",
     ) else { return Err(Error.Invalid) }
+    runtime_numeric_stream.record(stream, runtime_numeric_stream.Frame {
+        kind: 1, layer: 4294967295, step: count, width: g.n_vocab, height: 1,
+      }, logits_view)?
     token = choose_token(logits_view, sampled, random)?
     generated.push(token)
     count = count + 1

@@ -2,6 +2,7 @@ module runtime_generation_smoke
 
 import ggml_ffi
 import runtime_generation
+import runtime_numeric_stream
 import runtime_options
 import runtime_pack_identity
 import std.fs
@@ -168,8 +169,63 @@ fn run_olmoe(
   return Ok(generated)
 }
 
+fn observed(pack_path: str, geometry_text: str, root: str, model: i64, enabled: bool) -> Result<i64, Error> {
+  config := options(16777216)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  eog_ids := empty_ids()
+  identity := source_identity(pack_path)?
+  name := if model == 1 { "qwen-trace" } else { "olmoe-trace" }
+  mut stream := if enabled {
+    runtime_numeric_stream.create(root, name, model, 568, config.host_budget_bytes)?
+  } else { runtime_numeric_stream.disabled() }
+  generated := if model == 1 {
+    runtime_generation.generate_qwen_observed(
+      owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, stream)?
+  } else {
+    runtime_generation.generate_olmoe_observed(
+      owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, 0, Some(42), stream)?
+  }
+  if !valid_ids(generated) || (enabled && stream.records != 3) { return Err(Error.Invalid) }
+  runtime_numeric_stream.finish(stream)?
+  if enabled && stream.written_bytes != 568 { return Err(Error.Invalid) }
+  return Ok(ggml_ffi.gpu_memory_bytes(owner, ggml_ffi.GPU_MEMORY_METADATA))
+}
+
+fn observed_refusal(pack_path: str, geometry_text: str, root: str, model: i64,
+  host_budget: i64, stream_limit: i64, name: str, before_upload: bool) -> Result<(), Error> {
+  mut config := options(16777216)
+  config.host_budget_bytes = host_budget
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  eog_ids := empty_ids()
+  identity := source_identity(pack_path)?
+  mut stream := runtime_numeric_stream.create(root, name, model, stream_limit, 65576)?
+  result := if model == 1 {
+    runtime_generation.generate_qwen_observed(
+      owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, stream)
+  } else {
+    runtime_generation.generate_olmoe_observed(
+      owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, 0, Some(42), stream)
+  }
+  match result { Ok(_) => { return Err(Error.Invalid) }, Err(_) => {} }
+  if before_upload {
+    if ggml_ffi.gpu_weight_state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED_BYTES) != -1
+      || stream.records != 0 { return Err(Error.Invalid) }
+  } else {
+    if !stream.failed || stream.records != 0 { return Err(Error.Invalid) }
+  }
+  return Ok(())
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
-  if args.len() != 4 { return Err(Error.Invalid) }
+  if args.len() != 5 { return Err(Error.Invalid) }
   reject_mismatched_identity(args[1], args[2])?
   run_qwen(args[1])?
   eog := qwen_first_token(args[1])?
@@ -178,6 +234,22 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   second := run_olmoe(args[2], args[3], Some(42))?
   if !same_ids(first, second) { return Err(Error.Invalid) }
   run_olmoe(args[2], args[3], None)?
+  qwen_base := observed(args[1], QWEN_GEOMETRY, args[4], 1, false)?
+  qwen_observed := observed(args[1], QWEN_GEOMETRY, args[4], 1, true)?
+  geometry := fs.read_file(args[3])?
+  olmoe_base := observed(args[2], geometry, args[4], 2, false)?
+  olmoe_observed := observed(args[2], geometry, args[4], 2, true)?
+  if qwen_observed - qwen_base != 65576 || olmoe_observed - olmoe_base != 65576 {
+    return Err(Error.Invalid)
+  }
+  observed_refusal(args[1], QWEN_GEOMETRY, args[4], 1,
+    qwen_observed, 568, "qwen-budget", true)?
+  observed_refusal(args[2], geometry, args[4], 2,
+    olmoe_observed, 568, "olmoe-budget", true)?
+  observed_refusal(args[1], QWEN_GEOMETRY, args[4], 1,
+    2097152, 108, "qwen-stream-limit", false)?
+  observed_refusal(args[2], geometry, args[4], 2,
+    2097152, 108, "olmoe-stream-limit", false)?
   print("runtime generation smoke: PASS")
   return Ok(())
 }

@@ -11194,9 +11194,9 @@ failure, never fallback. No language ownership or runtime ABI changed.
 ## Request 61 — Borrowed access to owned buffer/writer fields and optional writers
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
-Blocking: yes
+Blocking: no
 Blocked gate or slice: G1 native numeric-stream producer and observed generation integration
 Independent work that may continue: native-independent G1 stream comparison/traversal, case
   sequencing, source/profile capture and kit assembly are complete through align-llm e22b9d7;
@@ -11205,8 +11205,10 @@ Resume condition: pin shipped Align 3fbb74fe7c351e526c997bd4c70bd00cf1a424a0, re
   numeric-stream producer, and pass gpu-numeric-stream and gpu-generation-smoke
 Align commit or pull request: https://github.com/sanohiro/align/pull/982; merged commit
   3fbb74fe7c351e526c997bd4c70bd00cf1a424a0; closes issue #981
-align-llm verification: pending for the shipped pin; consumer owns producer restoration and
-  gpu-numeric-stream / gpu-generation-smoke acceptance
+align-llm verification: managed Align 305926b423da9be1f13b0129a7232626e6704d95;
+  gpu-numeric-stream and gpu-generation-smoke PASS with observed Qwen/OLMoE prefill/decode,
+  exact 65,576-byte metadata reservation, pre-upload host-budget refusal and stream failure
+  propagation; scripts/align-toolchain verify PASS
 ```
 
 Client implementation checkpoint: https://github.com/sanohiro/align-llm/tree/e22b9d7
@@ -11347,9 +11349,9 @@ negative controls. Publish subsequent findings in this bounded set together; do 
 Align with a new request/PR per reproduced symptom.
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
-Blocking: yes
+Blocking: no
 Blocked gate or slice: G1 observed generation and native diagnostic case integration
 Independent work that may continue: native stream byte/state owners and Python qualification
   infrastructure; the native stream alone passes its independent golden, but cannot close G1
@@ -11358,8 +11360,10 @@ Resume condition: adopt shipped Align 305926b423da9be1f13b0129a7232626e6704d95 o
 Align commit or pull request: https://github.com/sanohiro/align/pull/991; merged as
   73251b30f7e5a2df3c904421e577a2bd76325f09; follow-up https://github.com/sanohiro/align/pull/992
   merged as 305926b423da9be1f13b0129a7232626e6704d95
-align-llm verification: pending consumer-owned adoption and qualification; baseline reproduction
-  and producer delivery evidence are recorded below
+align-llm verification: managed Align 305926b423da9be1f13b0129a7232626e6704d95;
+  gpu-numeric-stream and gpu-generation-smoke PASS with observed Qwen/OLMoE prefill/decode,
+  exact 65,576-byte metadata reservation, pre-upload host-budget refusal and stream failure
+  propagation; scripts/align-toolchain verify PASS
 ```
 
 At baseline `3fbb74fe`, Request 61's shipped receivers work: the bounded writer produces the independent 160-byte golden,

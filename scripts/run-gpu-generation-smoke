@@ -46,10 +46,30 @@ export LD_LIBRARY_PATH="${gpu_shim}${profile_libs:+:${profile_libs}}${LD_LIBRARY
 output=$("${executable}" \
   "${work_dir}/model-pack.alignpack" \
   "${work_dir}/moe-model-pack.alignpack" \
-  "${work_dir}/moe-model-geometry.json")
+  "${work_dir}/moe-model-geometry.json" "${work_dir}")
 if [ "${output}" != "runtime generation smoke: PASS" ]; then
   printf '%s\n' "gpu generation smoke: FAIL output: ${output}" >&2
   exit 1
 fi
+
+python3 - "${root_dir}/scripts" "${work_dir}" <<'PYVERIFY'
+import math
+from pathlib import Path
+import struct
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from gpu_qualification_stream import Frame, NumericStream
+
+root = Path(sys.argv[2])
+for model, name in ((1, "qwen-trace"), (2, "olmoe-trace")):
+    with NumericStream(root / name, model=model, maximum_bytes=568) as stream:
+        for step in range(3):
+            assert stream.read_frame() == Frame(1, 0xffffffff, step, 32, 1, 128, step)
+            values = struct.unpack("<32f", stream.read_payload())
+            assert all(math.isfinite(value) for value in values)
+        assert stream.read_frame() is None
+        assert stream.verified and stream.consumed_bytes == 568
+PYVERIFY
 
 printf '%s\n' "gpu generation smoke: PASS"

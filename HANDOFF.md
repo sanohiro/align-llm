@@ -9,7 +9,7 @@ Align producer deliveries through PR #992 are merged at
 `305926b423da9be1f13b0129a7232626e6704d95`; issue #990 is closed. The targeted follow-up
 accepts case 06 and rejects unsafe cases 08/09. Case 11 remains a settled direct-place
 restriction; Request 46 is partially delivered and Request 48 remains proposed. Not all
-requested language/library APIs have shipped. Consumer adoption and acceptance remain pending.
+requested language/library APIs have shipped. Requests 61/62 now pass their observed consumer acceptance. Historical request owners remain pending.
 
 The active branch incorporates main `b5336f0` and preserves its G1 implementation checkpoints.
 Next: adopt the merged compiler/runtime batch once, verify observed stream and generation,
@@ -22,30 +22,19 @@ Branch `agent/g1-gpu-generation` incorporates main `b3ca489` (consolidated G1 re
 requires its ordinary consumer completion, real Metal/CUDA qualification, review and publication.
 The user authorized continued implementation, PR/merge and subsequent eligible roadmap work.
 
-Align `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0` is now pinned and its managed release
-compiler/runtime are materialized and verified. Request 61's stream writer passes the independent
-byte/state owner. Its final observed-generation acceptance remains pending: new Request 62 blocks
-imported non-retaining mutable stream helpers with a local logits view under per-unit compilation.
-The exact minimal fixture passes whole-program checking and fails per-unit checking. The attempted
-observed-generation hooks were removed; no rejected/hypothetical surface remains in source.
-Request 62 also records a non-blocking derived-view helper precision case. Header encoding borrows
-the complete stream owner using Request 61's shipped surface. Existing generation smoke passes.
+**Verified adoption checkpoint.** `.align-revision` selects managed Align
+`305926b423da9be1f13b0129a7232626e6704d95`; compiler/runtime materialization and verification pass.
+Qwen/OLMoE observed entrypoints now record prefill and decode logits with the pre-upload
+65,576-byte host reservation. `gmake gpu-numeric-stream gpu-generation-smoke` passes native
+bytes/state, active/inactive observation, exact metadata charge, pre-upload host-budget rejection
+and stream-failure propagation. `gmake fmt` and `git diff --check` pass.
+Requests 61/62 reach `ALIGN_LLM_VERIFIED`; final diagnostic/case/CLI integration remains active.
 
-**Completed handoff: consolidated G1 readiness.** The user requested that all currently
-foreseeable GPU compiler blockers be collected before another Align interruption. The 21-case
-whole/per-unit/build audit is in `docs/align-gpu-readiness.md`. Request 62's main failure is a
-continuing Request 49 consumer, so 49 is now blocking and 42/43/49/62 are coordinated as one
-producer investigation. The audit also reproduces Request 48's non-blocking scalar case and an
-actual retained-local-view safety failure. No production source or pin changed during the audit.
-The companion source bundle contains the frozen actual generation variants, positive/negative
-controls and complete logs; Align can assess its candidate before a single client pin adoption.
-The delivered `g1-align-readiness-20260908.tar.gz` has SHA-256
-`44cdba88617be0091d9a5ab4c1890535350a9e50681aef6eb6a992bb0c27fe05`.
-Its comprehensive review findings were repaired together; oracle coverage, diagnostic-only subset
-reporting and all 1,089 delivered file digests pass.
-Do not resume one-ticket-at-a-time reporting. The next action is the consolidated Align repair,
-then the observed G1 owners and native diagnostic/case integration. Compiler probes do not close
-real Metal/CUDA qualification or the unfinished final qualifier CLI.
+**Producer evidence.** PR #991's complete frozen audit meets 19/21 expectations; PR #992's
+focused follow-up also admits derived-view helper case 06. Same-call scalar case 11 remains an
+explicit non-blocking language restriction. Both reject the real retained-local-view escapes.
+The frozen audit and original source identities remain in `docs/align-gpu-readiness.md`.
+No compiler probe substitutes for observed consumer acceptance or real Metal/CUDA qualification.
 
 **Complete implementation checkpoints.**
 
@@ -186,7 +175,7 @@ it does not close Request 61/62 observed integration. `scripts/align-toolchain v
 The native compiler build requires this host's installed LLVM 22 configuration; ordinary managed
 commands now reuse the verified release artifacts. No G1 PR or hardware completion is claimed.
 
-**Intentional uncommitted files.** None after the native-stream implementation checkpoint.
+**Intentional uncommitted files.** None after the verified observed-generation checkpoint.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 
