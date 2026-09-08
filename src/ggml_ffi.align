@@ -55,6 +55,7 @@ pub GPU_STATUS_POISONED := -6
 pub GPU_STATUS_ALLOCATION := -7
 pub GPU_STATUS_MEMORY_BUDGET := -8
 pub GPU_STATUS_COMPUTE := -9
+pub GPU_STATUS_UNSUPPORTED := -10
 
 pub GPU_MEMORY_HOST_TOTAL := 0
 pub GPU_MEMORY_DEVICE_TOTAL := 1
@@ -195,6 +196,7 @@ fn gpu_fault_for(status: i64) -> Fault {
   }
   if status == GPU_STATUS_ALLOCATION { return fault("ALLOCATION", "device_owner") }
   if status == GPU_STATUS_MEMORY_BUDGET { return fault("MEMORY_BUDGET", "admission") }
+  if status == GPU_STATUS_UNSUPPORTED { return fault("UNSUPPORTED_CAPABILITY", "admission") }
   if status == GPU_STATUS_COMPUTE { return fault("COMPUTE", "graph") }
   return fault("DEVICE_LOST", "poisoned")
 }
@@ -240,6 +242,8 @@ extern "C" link("align_ggml_shim") {
     legacy_cache_bytes: i64,
   ) -> i32
   fn align_gpu_memory_bytes(owner: raw, field: i32) -> i64
+  fn align_gpu_plan_begin(owner: raw) -> i32
+  fn align_gpu_plan_finish(owner: raw) -> i32
   fn align_gpu_memory_allocate(owner: raw) -> i32
   fn align_gpu_memory_allocated_bytes(owner: raw, field: i32) -> i64
   fn align_gpu_weight_metadata_bytes(tensor_count: i64) -> i64
@@ -610,6 +614,22 @@ pub fn gpu_memory_bytes(borrow owner: GpuDevice, field: i64) -> i64 {
   }
   unsafe {
     return align_gpu_memory_bytes(resource.raw(resource.borrow(owner)), field as i32)
+  }
+}
+
+pub fn gpu_plan_begin(borrow owner: GpuDevice) -> Result<(), Fault> {
+  unsafe {
+    status := align_gpu_plan_begin(resource.raw(resource.borrow(owner))) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_plan_finish(borrow owner: GpuDevice) -> Result<(), Fault> {
+  unsafe {
+    status := align_gpu_plan_finish(resource.raw(resource.borrow(owner))) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
   }
 }
 

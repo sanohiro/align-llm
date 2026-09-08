@@ -140,6 +140,124 @@ fn prepare_memory(
   return Ok(staging_bytes)
 }
 
+fn admit_qwen_shapes(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow options: runtime_options.RuntimeOptions,
+  borrow g: layer_qwen2.Geometry,
+  borrow plan: runtime_qwen_load.Plan,
+  geometry_text: str,
+  prompt_width: i64,
+  capacity: i64,
+  graph_capacity: i64,
+  observation_bytes: i64,
+  legacy_cache_bytes: i64,
+) -> Result<(), Error> {
+  runtime_memory.plan_begin(owner)?
+  staging := prepare_memory(owner, options, plan.count, plan.weights_bytes,
+    runtime_qwen.kv_count(g.n_layer), plan.kv_bytes, legacy_cache_bytes,
+    graph_capacity, observation_bytes)?
+  if staging < 1 { return Err(Error.Invalid) }
+  runtime_qwen_load.define(owner, plan)?
+  initialize_kv(owner, g.n_layer, g.head_dim, capacity, g.n_head_kv)?
+  lanes := checked_mul(g.head_dim, g.n_head_kv)?
+  mask_capacity := runtime_inputs.attention_width(capacity, g.context_length)?
+  prefill_width := runtime_inputs.attention_width(prompt_width, g.context_length)?
+  initialize_inputs(owner, prompt_width, mask_capacity, lanes)?
+  graph_bytes := ggml_ffi.graph_context_bytes(graph_capacity)
+  prefill_ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_PREFILL, graph_bytes)
+  decode_ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_DECODE, graph_bytes)
+  if ggml_ffi.handle_absent(prefill_ctx) || ggml_ffi.handle_absent(decode_ctx) {
+    return Err(Error.Invalid)
+  }
+  mut slot_storage := slot_buffer()
+  slot_view := slot_storage.bytes()
+  prefill_graph := ggml_ffi.graph_new(prefill_ctx)
+  if ggml_ffi.handle_absent(prefill_graph) { return Err(Error.Invalid) }
+  runtime_qwen.build_prefill(owner, g, prompt_width, prefill_ctx, prefill_graph, slot_view)?
+  bundle_id := runtime_device.bundle_id(owner)
+  prefill_key := topology(options, bundle_id, "qwen2", geometry_text,
+    ggml_ffi.GPU_GRAPH_PREFILL, prefill_width, prompt_width, prompt_width)?
+  runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
+  mut n_past := prompt_width
+  mut built := false
+  loop {
+    if n_past >= capacity { break }
+    if built { runtime_execution.invalidate(owner, ggml_ffi.GPU_GRAPH_DECODE)? }
+    width := runtime_inputs.attention_width(n_past + 1, g.context_length)?
+    graph := ggml_ffi.graph_new(decode_ctx)
+    if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
+    runtime_qwen.build_decode(owner, g, n_past, capacity, decode_ctx, graph, slot_view)?
+    key := topology(options, bundle_id, "qwen2", geometry_text,
+      ggml_ffi.GPU_GRAPH_DECODE, width, 1, if width < capacity { width } else { capacity })?
+    runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_DECODE, key, graph)?
+    built = true
+    n_past = width
+  }
+  if runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_DEVICE_TOTAL) != 0 {
+    return Err(Error.Invalid)
+  }
+  return runtime_memory.plan_finish(owner)
+}
+
+fn admit_olmoe_shapes(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow options: runtime_options.RuntimeOptions,
+  borrow g: layer_olmoe.Geometry,
+  borrow plan: runtime_olmoe_load.Plan,
+  geometry_text: str,
+  prompt_width: i64,
+  capacity: i64,
+  graph_capacity: i64,
+  observation_bytes: i64,
+  legacy_cache_bytes: i64,
+) -> Result<(), Error> {
+  runtime_memory.plan_begin(owner)?
+  staging := prepare_memory(owner, options, plan.count, plan.weights_bytes,
+    runtime_olmoe.kv_count(g.n_layer), plan.kv_bytes, legacy_cache_bytes,
+    graph_capacity, observation_bytes)?
+  if staging < 1 { return Err(Error.Invalid) }
+  runtime_olmoe_load.define(owner, plan)?
+  initialize_kv(owner, g.n_layer, g.head_dim, capacity, g.n_head_kv)?
+  lanes := checked_mul(g.head_dim, g.n_head_kv)?
+  mask_capacity := runtime_inputs.attention_width(capacity, g.context_length)?
+  prefill_width := runtime_inputs.attention_width(prompt_width, g.context_length)?
+  initialize_inputs(owner, prompt_width, mask_capacity, lanes)?
+  graph_bytes := ggml_ffi.graph_context_bytes(graph_capacity)
+  prefill_ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_PREFILL, graph_bytes)
+  decode_ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_DECODE, graph_bytes)
+  if ggml_ffi.handle_absent(prefill_ctx) || ggml_ffi.handle_absent(decode_ctx) {
+    return Err(Error.Invalid)
+  }
+  mut slot_storage := slot_buffer()
+  slot_view := slot_storage.bytes()
+  prefill_graph := ggml_ffi.graph_new(prefill_ctx)
+  if ggml_ffi.handle_absent(prefill_graph) { return Err(Error.Invalid) }
+  runtime_olmoe.build_prefill(owner, g, prompt_width, prefill_ctx, prefill_graph, slot_view)?
+  bundle_id := runtime_device.bundle_id(owner)
+  prefill_key := topology(options, bundle_id, "olmoe", geometry_text,
+    ggml_ffi.GPU_GRAPH_PREFILL, prefill_width, prompt_width, prompt_width)?
+  runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
+  mut n_past := prompt_width
+  mut built := false
+  loop {
+    if n_past >= capacity { break }
+    if built { runtime_execution.invalidate(owner, ggml_ffi.GPU_GRAPH_DECODE)? }
+    width := runtime_inputs.attention_width(n_past + 1, g.context_length)?
+    graph := ggml_ffi.graph_new(decode_ctx)
+    if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
+    runtime_olmoe.build_decode(owner, g, n_past, capacity, decode_ctx, graph, slot_view)?
+    key := topology(options, bundle_id, "olmoe", geometry_text,
+      ggml_ffi.GPU_GRAPH_DECODE, width, 1, if width < capacity { width } else { capacity })?
+    runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_DECODE, key, graph)?
+    built = true
+    n_past = width
+  }
+  if runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_DEVICE_TOTAL) != 0 {
+    return Err(Error.Invalid)
+  }
+  return runtime_memory.plan_finish(owner)
+}
+
 fn initialize_kv(
   borrow owner: ggml_ffi.GpuDevice,
   n_layer: i64,
@@ -438,6 +556,8 @@ fn generate_qwen_mode(
   plan := runtime_qwen_load.build_plan_file_capacity(owner, pack, g, kv_capacity)?
   capture_bytes := if diagnostic { runtime_diagnostic.required_bytes(g.n_layer, g.n_embd, prompt_ids.len(), 0, 0)? } else { 0 }
   observation_bytes := checked_add(runtime_numeric_stream.reservation(stream), capture_bytes)?
+  admit_qwen_shapes(owner, options, g, plan, geometry_text, prompt_ids.len(), kv_capacity,
+    graph_capacity, observation_bytes, 0)?
   staging := prepare_memory(
     owner, options, plan.count, plan.weights_bytes, runtime_qwen.kv_count(g.n_layer),
     plan.kv_bytes, 0, graph_capacity, observation_bytes)?
@@ -612,6 +732,8 @@ fn generate_olmoe_mode(
   plan := runtime_olmoe_load.build_plan_file_capacity(owner, pack, g, kv_capacity)?
   capture_bytes := if diagnostic { runtime_diagnostic.required_bytes(g.n_layer, g.n_embd, prompt_ids.len(), g.n_expert, g.n_expert_used)? } else { 0 }
   observation_bytes := checked_add(runtime_numeric_stream.reservation(stream), capture_bytes)?
+  admit_olmoe_shapes(owner, options, g, plan, geometry_text, prompt_ids.len(), kv_capacity,
+    graph_capacity, observation_bytes, legacy_cache_bytes)?
   staging := prepare_memory(
     owner, options, plan.count, plan.weights_bytes, runtime_olmoe.kv_count(g.n_layer),
     plan.kv_bytes, legacy_cache_bytes, graph_capacity, observation_bytes)?

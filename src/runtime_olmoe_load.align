@@ -332,13 +332,8 @@ pub fn build_plan(
   return build_plan_file(owner, pack, g)
 }
 
-pub fn load_file(
-  borrow owner: ggml_ffi.GpuDevice,
-  borrow pack: file,
-  borrow plan: Plan,
-  staging_bytes: i64,
-) -> Result<(), Error> {
-  if plan.count < 1 || staging_bytes < 1 || plan.ggml_type.len() != plan.count
+fn validate_plan(borrow plan: Plan) -> Result<(), Error> {
+  if plan.count < 1 || plan.ggml_type.len() != plan.count
     || plan.n_dims.len() != plan.count || plan.ne0.len() != plan.count
     || plan.ne1.len() != plan.count || plan.ne2.len() != plan.count
     || plan.ne3.len() != plan.count || plan.piece_start.len() != plan.count
@@ -347,15 +342,43 @@ pub fn load_file(
     || plan.piece_pack_offset.len() != plan.piece_bytes.len() {
     return Err(Error.Invalid)
   }
+  return Ok(())
+}
+
+fn add_at(borrow owner: ggml_ffi.GpuDevice, borrow plan: Plan, at: i64) -> Result<i64, Error> {
+  return runtime_weights.add(owner, runtime_weights.Shape {
+      ggml_type: plan.ggml_type[at], n_dims: plan.n_dims[at],
+      ne0: plan.ne0[at], ne1: plan.ne1[at], ne2: plan.ne2[at], ne3: plan.ne3[at],
+    })
+}
+
+pub fn define(borrow owner: ggml_ffi.GpuDevice, borrow plan: Plan) -> Result<(), Error> {
+  validate_plan(plan)?
+  runtime_weights.begin(owner, plan.count)?
+  mut at := 0
+  loop {
+    if at >= plan.count { break }
+    index := add_at(owner, plan, at)?
+    if index != at { return Err(Error.Invalid) }
+    at = at + 1
+  }
+  return runtime_weights.finish(owner)
+}
+
+pub fn load_file(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow pack: file,
+  borrow plan: Plan,
+  staging_bytes: i64,
+) -> Result<(), Error> {
+  if staging_bytes < 1 { return Err(Error.Invalid) }
+  validate_plan(plan)?
   mut chunk := buffer(staging_bytes)
   runtime_weights.begin(owner, plan.count)?
   mut at := 0
   loop {
     if at >= plan.count { break }
-    index := runtime_weights.add(owner, runtime_weights.Shape {
-        ggml_type: plan.ggml_type[at], n_dims: plan.n_dims[at],
-        ne0: plan.ne0[at], ne1: plan.ne1[at], ne2: plan.ne2[at], ne3: plan.ne3[at],
-      })?
+    index := add_at(owner, plan, at)?
     if index != at { return Err(Error.Invalid) }
     start := plan.piece_start[at]
     count := plan.piece_count[at]

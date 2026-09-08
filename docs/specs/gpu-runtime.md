@@ -1187,6 +1187,28 @@ Qwen prefill/decode scalar comparison with matched embedding placement and F32 K
 failed CPU/GPU calibration evidence remains failed and unchanged. Padded workspace participates
 in the existing memory ceiling and must be included in subsequent performance measurements.
 
+### Pre-upload exact-shape admission repair
+
+Before allocating device payload or reading weight chunks, generation performs one bounded
+metadata-only traversal using the same model builders as execution. The selected owner enters a
+planning phase, defines all weight/KV/input shapes, and checks prefill plus every reachable decode
+bucket. The real backend uses zero-sized buffer-type descriptors for external leaves, with null
+data pointers; no sentinel addresses or GPU payload allocations are permitted. Allocator measurement
+therefore excludes resident leaves while retaining exact temporary graph requirements. Every node
+and external buffer type must be supported by the exact selected device. The largest measured
+workspace plus inputs must fit the already checked request ceiling.
+
+| Surface / owner | Contract and validation | Closure owner |
+| --- | --- | --- |
+| `runtime_memory.plan_begin/plan_finish` | Begin only on an unplanned device owner. In planning mode, allocation owns metadata only and weight `add/finish` define shapes without accepting bytes. All upload, compute and readback operations refuse. Finish requires successful prepared graphs, frees all planning metadata/descriptors, and restores the same device/bundle/budgets to its initial allocation state. Planning handles never escape the helper. Failure returns through ordinary resource cleanup and never starts payload allocation. Schema/cache identity: N/A, invocation-local state only. | Real workspace owner: zero allocated device bytes/upload/compute, unsupported shape and insufficient workspace, repeated/invalid lifecycle and cleanup |
+| Native graph preparation | Walk every exact graph node with `ggml_backend_dev_supports_op`, and admit the selected external buffer type with `ggml_backend_dev_supports_buft`. Measure with `ggml_gallocr_reserve_n_size` before creating a workspace allocator. Refusal is terminal for this owner; ordinary execution also checks the prepared graph. | Real workspace owner: supported graph, injected unsupported operation, allocation ceiling refusal before upload |
+| Model load owners | `define` validates the same checked plan and adds the same ordered shapes as ordinary load, without opening or reading payload. Existing streamed upload remains the execution path after admission. | Both model device/generation owners; zero pre-admission uploads |
+| `runtime_generation` | Reuse the already validated immutable plan. In a scoped helper, define roots, build prefill and each reachable fixed decode bucket, then discard all shape-only handles before normal allocation/loading. Diagnostic captures remain disabled during planning because they do not alter graph shapes or operations. All buckets, including the final clipped one, are checked. Cost ceiling: at most one prefill plus nine decode shapes for the existing 2048-prompt/128-generation bound; one root and two graph metadata arenas live at once, zero weight reads or GPU compute. | Generation owner: maximum-one, same bucket and boundary crossing; real Qwen/OLMoE final-logit comparison |
+
+This initial admission traversal does not claim bounded prefill microbatch support; its chunk
+policy and coverage remain required separately. Execution and planning must use the same eventual
+chunk policy. A planning failure never falls through to the ordinary upload path.
+
 ### Resident decode graph reuse repair
 
 The decode graph reads a fixed `min(attention_bucket, request_capacity)` resident KV prefix.

@@ -80,6 +80,23 @@ The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
+**Pre-upload admission checkpoint (unpublished, after `c9ef9cf`).** Generation now walks the
+same prefill and every reachable decode-bucket graph in a scoped metadata-only planning phase.
+Zero-sized backend buffer descriptors identify resident leaves without allocating device payload.
+The exact device admits buffer types and every graph operation, and allocator measurement checks
+workspace/input requirements before normal allocation or any weight read/upload. Planning upload,
+compute and readback are refused. Successful planning releases every descriptor/graph and restores
+the same device owner for ordinary execution; failures stop before that transition.
+`gpu-generation-smoke`, `run-gpu-device-smoke` and the complete `run-gpu-provider-trace-smoke` pass.
+The strict real Metal C owner passes zero-payload planning, insufficient workspace, injected
+unsupported operations, malformed/repeated lifecycle, cleanup, and subsequent real allocation.
+Unsupported operations now have a distinct private `UNSUPPORTED_CAPABILITY` fault; first-fault
+propagation through final evidence remains R8 work. Both real Metal model cases exit zero and
+retain all seven bitwise-identical final-logit rows against the independent pinned reference
+(1,064,448 Qwen / 352,128 OLMoE scalars). Full numeric qualification remains open.
+Next: complete host accounting (R1), microbatch/corpus (R5/R6), evidence/loader/deadline findings
+(R7–R10), and final qualification/review/publication. No additional CUDA debugging is requested.
+
 **Resident decode reuse checkpoint (unpublished, after `dbb958f`).** R4 now uses dependent
 indexed resident K/V writes and fixed context-clipped 256-position views. Both model generation
 owners prove consecutive reuse and exactly one rebuild across the 256-position boundary.

@@ -112,6 +112,74 @@ static void indexed_writes(ggml_backend_dev_t device) {
     puts("real GPU indexed KV writes: PASS (reuse, prefix preservation, tail and invalid inputs)");
 }
 
+static void shape_admission(ggml_backend_dev_t device) {
+    for (int pass = 0; pass < 2; ++pass) {
+        struct align_gpu_device_state state = {0};
+        struct ggml_context *ctx;
+        struct ggml_cgraph *graph;
+        struct ggml_tensor *input;
+        char key[64];
+        float value = 0;
+        int64_t ceiling = pass == 0 ? 65536 : 256;
+        state.device = device;
+        state.backend = ggml_backend_dev_init(device, NULL);
+        state.host_budget_bytes = 1048576;
+        state.device_budget_bytes = 1048576;
+        memcpy(state.bundle_id, "shape-admission-owner", 21);
+        assert(state.backend != NULL);
+        assert(align_gpu_plan_finish(&state) == ALIGN_GPU_CONFIG);
+        assert(align_gpu_plan_begin(&state) == 0);
+        assert(align_gpu_plan_begin(&state) == ALIGN_GPU_CONFIG);
+        assert(align_gpu_memory_admit(&state, 256, 64, ceiling, 262144, 64, 0) == 0);
+        assert(align_gpu_memory_allocate(&state) == 0);
+        assert(align_gpu_memory_allocated_bytes(&state, 1) == 0 && state.staging == NULL);
+        assert(align_gpu_weights_begin(&state, 2) == 0);
+        assert(align_gpu_weight_add(&state, GGML_TYPE_F32, 1, 32, 1, 1, 1) == 0);
+        assert(align_gpu_weight_add(&state, GGML_TYPE_F32, 1, 32, 1, 1, 1) == 1);
+        assert(align_gpu_weights_finish(&state) == 0);
+        assert(align_gpu_weight_upload(&state, 0, 0, &value, 4) == ALIGN_GPU_CONFIG);
+        assert(align_gpu_kv_begin(&state, 1) == 0);
+        assert(align_gpu_kv_add(&state, GGML_TYPE_F32, 1, 16, 1, 1, 1) == 0);
+        assert(align_gpu_kv_finish(&state) == 0);
+        assert(align_gpu_kv_update(&state, 0, 0, &value, 4) == ALIGN_GPU_CONFIG);
+        assert(align_gpu_inputs_begin(&state, 1) == 0);
+        assert(align_gpu_input_add(&state, GGML_TYPE_F32, 1, 32, 1, 1, 1) == 0);
+        assert(align_gpu_inputs_finish(&state) == 0);
+        assert(align_gpu_input_update(&state, 0, 0, &value, 4) == ALIGN_GPU_CONFIG);
+        ctx = align_gpu_graph_context_open(&state, 0, 131072);
+        assert(ctx != NULL);
+        input = align_gpu_input_at(&state, 0);
+        assert(input != NULL && input->data == NULL && input->buffer != NULL);
+        graph = ggml_new_graph(ctx);
+        ggml_build_forward_expand(graph, ggml_repeat_4d(ctx, input, 1024, 1, 1, 1));
+        memset(key, 'a', sizeof(key));
+        int32_t status = align_gpu_graph_prepare(&state, 0, key, sizeof(key), graph);
+        if (ALIGN_GPU_FORCE_UNSUPPORTED_OP) { assert(status == ALIGN_GPU_UNSUPPORTED); }
+        else if (pass == 1) { assert(status == ALIGN_GPU_MEMORY_BUDGET); }
+        else { assert(status == 0 && state.shape_workspace_peak >= 4096); }
+        assert(align_gpu_graph_compute(&state, 0, key, sizeof(key), graph) == ALIGN_GPU_CONFIG);
+        assert(align_gpu_memory_allocated_bytes(&state, 1) == 0);
+        assert(state.weights_uploaded == 0 && state.weights_uploaded_bytes == 0);
+        assert(state.input_updated_bytes == 0 && state.kv_updated_bytes == 0);
+        assert(state.graph_execution_count[0] == 0 && state.workspace_allocator == NULL);
+        if (status == 0) {
+            assert(align_gpu_plan_finish(&state) == 0);
+            assert(state.device == device && state.backend != NULL);
+            assert(strcmp(state.bundle_id, "shape-admission-owner") == 0);
+            assert(!state.memory_planned && !state.memory_allocated && !state.shape_planning);
+            assert(align_gpu_plan_finish(&state) == ALIGN_GPU_CONFIG);
+            assert(align_gpu_memory_admit(&state, 256, 64, ceiling, 262144, 64, 0) == 0);
+            assert(align_gpu_memory_allocate(&state) == 0);
+            assert(align_gpu_memory_allocated_bytes(&state, 1) == 320);
+        } else { assert(align_gpu_plan_finish(&state) == ALIGN_GPU_CONFIG); }
+        align_gpu_memory_release(&state);
+        assert(state.metadata_storage == NULL && state.weights_buffer == NULL && state.kv_buffer == NULL);
+        assert(state.input_buffer == NULL && state.workspace_allocator == NULL);
+        ggml_backend_free(state.backend);
+    }
+    puts("real GPU shape admission: PASS (zero payload, bounds, unsupported operation and lifecycle)");
+}
+
 int main(int argc, char **argv) {
     ggml_backend_reg_t registry;
     ggml_backend_dev_t device;
@@ -123,6 +191,8 @@ int main(int argc, char **argv) {
     assert(registry != NULL && ggml_backend_reg_dev_count(registry) > 0);
     device = ggml_backend_reg_dev_get(registry, 0);
     assert(device != NULL && ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_GPU);
+    shape_admission(device);
+    if (ALIGN_GPU_FORCE_UNSUPPORTED_OP) { return 0; }
     indexed_writes(device);
     for (pass = 0; pass < 2; ++pass) {
         struct align_gpu_device_state state = {0};
