@@ -13,6 +13,7 @@ from gpu_qualification_records import validate_calibration
 
 base = json.loads((ROOT / 'eval/gpu/metal/independent-acceptance.json').read_bytes())
 validate(copy.deepcopy(base))
+validate(json.loads((ROOT / "eval/gpu/metal/independent-attention-acceptance.json").read_bytes()))
 
 
 def refused(value):
@@ -67,4 +68,19 @@ except RecipeError:
     pass
 else:
     raise AssertionError('wrong admitted bundle passed')
+version2 = copy.deepcopy(base)
+version2['schema_version'] = 2
+for entry in version2['models']:
+    entry['attention_policy'] = 'flash_f32'
+validate(seal(version2))
+for bad in ('auto', '', None, 1):
+    changed = copy.deepcopy(version2)
+    changed['models'][0]['attention_policy'] = bad
+    refused(changed)
+changed = copy.deepcopy(version2)
+del changed['models'][0]['attention_policy']
+refused(changed)
+changed = copy.deepcopy(version2)
+changed['schema_version'] = 1
+refused(changed)
 print('GPU independent corpus owner: PASS (all required coverage, legacy incomplete profiles, identity and malformed cases)')

@@ -190,7 +190,7 @@ pub fn execute(borrow input: Input) -> Result<Output, Error> {
   if forced.text.len() != 0 || forced.token_ids.len() != input.forced_ids.len() + 1
     || !equal_ids(forced.prompt_ids, production.prompt_ids) { return refuse(stream, "forced_binding") }
   runtime_numeric_stream.finish(stream) else { return refuse(stream, "finish") }
-  return Ok(Output { schema_version: 1, artifact_kind: "GPU_RUNTIME_CASE_OUTPUT".clone(),
+  return Ok(Output { schema_version: 2, artifact_kind: "GPU_RUNTIME_CASE_OUTPUT".clone(),
       production: production, stream_bytes: stream.written_bytes, stream_records: stream.records })
 }
 

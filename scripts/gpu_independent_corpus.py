@@ -35,7 +35,7 @@ def coverage(model_id, cases, eog_ids):
 def validate(value, *, bundle_id=None, models=None):
     result = exact_keys(value, ('schema_version', 'artifact_kind', 'corpus_id', 'backend',
                                 'bundle_id', 'ggml_commit', 'models'), 'independent corpus')
-    bounded_i64(result['schema_version'], 1, 1, 'independent corpus version')
+    bounded_i64(result['schema_version'], 1, 2, 'independent corpus version')
     if result['artifact_kind'] != 'GPU_INDEPENDENT_ACCEPTANCE_CORPUS' or result['ggml_commit'] != GGML_COMMIT:
         raise RecipeError('independent corpus kind or ggml revision is invalid')
     require_enum(result['backend'], {'metal', 'cuda'}, 'independent corpus backend')
@@ -49,7 +49,10 @@ def validate(value, *, bundle_id=None, models=None):
         raise RecipeError('independent corpus requires exactly two models')
     all_ids = set()
     for ordinal, model_id in enumerate(('qwen2', 'olmoe')):
-        entry = exact_keys(entries[ordinal], ('model', 'eog_token_ids', 'cases'), 'independent corpus model')
+        fields = ('model', 'eog_token_ids', 'cases') + (('attention_policy',) if result['schema_version'] == 2 else ())
+        entry = exact_keys(entries[ordinal], fields, 'independent corpus model')
+        if result['schema_version'] == 2:
+            require_enum(entry['attention_policy'], {'decomposed', 'flash_f32'}, 'independent attention policy')
         model = exact_keys(entry['model'], ('model_id', 'model_sha256', 'pack_sha256', 'geometry_sha256', 'quantization'),
                            'independent model identity')
         if model['model_id'] != model_id or model['quantization'] != 'Q4_K_M':

@@ -763,9 +763,12 @@ The helper executes production, validates exact frozen prompt IDs, sampled IDs a
 then requires independent diagnostic generation to reproduce those values before forced replay.
 It finishes the numeric stream only after all three succeed. Each provider call owns its snapshot,
 KV and device; all share one scratch writer and the parent's generation deadline. Success prints
-one `GPU_RUNTIME_CASE_OUTPUT` schema-1 record plus LF, ordered as `schema_version,artifact_kind,
+one `GPU_RUNTIME_CASE_OUTPUT` schema-2 record plus LF, ordered as `schema_version,artifact_kind,
 production,stream_bytes,stream_records`, where production is the provider's `TraceResult` including
-its raw observation. This envelope is private scratch output, not schema-1 qualification evidence.
+its raw observation. Schema 2 adds `attention_policy` after `available` in that observation,
+with `decomposed|flash_f32`; CPU always records `decomposed`. Schema-1 captured output has no
+policy field and remains readable as decomposed evidence. This envelope is private scratch output,
+not schema-1 qualification evidence.
 Failures return nonzero and leave no success envelope or finished stream. Admission/source errors
 before a writer exists produce no envelope. Once the writer exists, failure prints one private
 `GPU_RUNTIME_CASE_FAILURE` schema-1 record ordered `schema_version,artifact_kind,phase,category,stage,
@@ -1754,7 +1757,6 @@ The full native owner and its relocated replay additionally own numerical closur
 row, repeated execution and original-path independence. Build directories and frozen corpus are
 explicit prerequisites; the acceptance owner never installs a compiler or acquires model weights.
 
-
 The first fresh candidate stream receives one combined framing, finite-value, router-semantic and
 complete independent tensor comparison. Native production metadata and capacity checks remain
 separate and mandatory. A second fresh process receives its own metadata/capacity checks and a
@@ -1764,3 +1766,59 @@ similarly consumes each unique retained stream once while validating both execut
 Before PASS publication, the final immutable inventory must match every compared numeric, reference
 index/production and tensor hash. This removes duplicate validation work without sampling values,
 skipping cases or weakening the fixed execution ceiling.
+
+### G1 E5 attention selection (implementation checkpoint)
+
+The invocation selects one attention policy before shape planning or payload allocation: `decomposed`
+or `flash_f32`. It probes the exact device for every reachable prefill/decode shape at the chosen
+microbatch width. Unsupported fused shapes select decomposed attention before execution; a failed
+compute never retries another algorithm. A capacity retry reselects at the next committed width.
+Both policies retain F32 persistent K/V. The `flash_f32` policy explicitly casts each bounded
+K/V attention view to F16 in the planned graph, matching pinned `llama-graph.cpp`; its output and
+requested accumulation precision remain F32. Flash V uses the K-style `{head_dim, capacity, kv_heads}`
+layout, eliminating a per-step transpose/copy of the past. The policy enters graph identity and
+native observation. A policy cannot change while payload or graph handles are live.
+
+| Private surface / owner | Inputs and result | Validation, allocation and failure | Regression |
+| --- | --- | --- | --- |
+| `gpu_attention_probe(owner, query_tokens, kv_width, head_dim, query_heads, kv_heads)` / `ggml_ffi` and native shim | Positive exact dimensions; `Result<bool, Fault>` | Ready owner only, query width 1..128, divisible head grouping; scoped no-payload metadata and exact-device Flash/mask/K/V-cast capability checks; unsupported is `Ok(false)` without changing first fault | `gpu-attention-policy`: supported/refused/malformed probe and zero-payload state |
+| `gpu_attention_select(owner, policy)` / native owner | Integer 0 decomposed or 1 flash; `Result<(), Fault>` | Ready owner only, no payload/graph references; explicit selection survives planning finalization and capacity cancellation permits reselection | `gpu-attention-policy`: selection lifetime, failed plan and recovery |
+| `gpu_attention_policy(owner)` / native owner | Selected integer or invalid-owner refusal | Borrow only, no allocation; starts at 0 | Native state/observation owner |
+| `op_attention_mask(ctx, slots, out, source)` / native shim | F32 mask to contiguous F16 graph tensor | Validate context/slots/shape before construction; one explicit cast per graph; allocator owns its bytes | `gpu-attention-policy`: dtype, shape, malformed slot |
+| `op_flash_attention(ctx, slots, out, q, k, v, mask, scale_bits)` / native shim | F32 Q/K/V, contiguous F16 mask, finite positive F32 scale; F32 output in `{head_dim, query_heads, query_tokens}` order | Exact compatible dimensions/strides, explicit F16 casts of both bounded K/V views before Flash, no host tensor pointer reads; ordinary graph allocator owns all temporary storage | Real Flash graph comparison and malformed graph owner |
+
+Pinned `llama-graph.cpp` explicitly casts F32 K/V views to F16 before Flash. Both backend consumers
+now construct these two visible graph casts, whose allocator charges the bounded temporary payloads
+before upload. Persistent K/V stays F32. Probing checks both casts plus the F16 Flash shape.
+The same-policy independent upstream
+reference owns numerical acceptance; no cross-policy bitwise equivalence or relaxed tolerance is
+assumed. The decomposed baseline and historical FAILs retain their original source-bound owners.
+
+Construction, all prefill chunks, consecutive decode/bucket crossing, early EOG, failed admission,
+cleanup, and both architectures belong in the existing full generation/native owners with policy
+observations. Native schema-2 case output adds the selected policy; schema-1 captured outputs remain
+readable as decomposed evidence. Independent corpus schema 2 adds a per-model `attention_policy`
+(`decomposed` or `flash_f32`); schema 1 remains implicitly decomposed. Acquisition records bind the
+selected policy and fresh upstream run before candidate execution. All existing required case
+coverage and two repetitions remain mandatory. The full-run 1800-second ceiling is unchanged.
+No runtime speed claim is made by this correctness capability; the following performance owner
+must measure the production path without diagnostic tensor readbacks.
+
+The material-operation observation excludes ggml `CPY`/view/KV-write nodes as before. Flash replaces
+four counted score/softmax/value/contiguous operations with one counted fused operation per fully
+executed layer; its shared mask cast and the two per-layer K/V casts are `CPY` nodes. The independent counter therefore subtracts three
+operations per executed layer from the decomposed geometry count. Real model observations must
+confirm this derivation; a policy label alone cannot satisfy placement acceptance.
+
+E7's real backend owner is `scripts/run-gpu-attention-policy-smoke GGML_SOURCE CORE_LIB BACKEND_PLUGIN`.
+It executes a causal/GQA Flash graph four times with stable tensor addresses and changed V payloads,
+checking every result against the analytical mean. On the admitted Apple M1 backend this passes;
+backend initialization records fusion, concurrency and graph optimization enabled. The existing
+`gpu-device` owner separately checks Align graph identity, changed input/KV updates and stale-key
+refusal. Full-model corpus cases own successive decode and the 256-position bucket transition.
+For pinned CUDA, `ggml_backend_cuda_graph_compute` requires two calls with stable properties before
+capture; changed properties reset warmup. `ggml_cuda_graph_check_compability` rejects synchronizing
+`MUL_MAT_ID` fallbacks. Backend uncaptured execution remains valid in that case. No actual CUDA
+capture/replay counter has been obtained on this Mac; neither recipe flags nor Metal observations
+are CUDA capture evidence. Subsequent CUDA performance evidence must retain this limitation unless
+its actual backend trace proves capture. This is not a request for another CUDA debugging run.

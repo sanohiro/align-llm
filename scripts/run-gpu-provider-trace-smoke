@@ -149,10 +149,11 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                     assert seeded.returncode == 0, seeded.stderr
                     assert json.loads(seeded.stdout) == records[-1]
                 observation = records[-1].pop("observation")
+                assert observation["attention_policy"] == "decomposed"
                 if backend == "cpu":
                     assert observation["available"] is False
                     assert all(value == 0 or value == "" for key, value in observation.items()
-                               if key != "available"), observation
+                               if key not in ("available", "attention_policy")), observation
                 else:
                     vocabulary = json.loads(geometry.read_bytes())["model"]["n_vocab"]
                     positions = len(records[-1]["token_ids"])
@@ -245,9 +246,26 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                     expected_device="stub-gpu" if backend == "gpu" else None)
                 assert validated.output_sha256 == frozen_case["expected_output_sha256"]
                 assert validated.stream_sha256 == digest((case_root / "numeric").read_bytes())
+                legacy = json.loads(case_run.stdout)
+                legacy["schema_version"] = 1
+                del legacy["production"]["observation"]["attention_policy"]
+                native.success_metadata(canonical(legacy), native_case,
+                    expected_bundle_id=observation["bundle_id"] if backend == "gpu" else None,
+                    expected_device="stub-gpu" if backend == "gpu" else None)
+                for policy in ("flash_f32", "auto", None):
+                    changed = json.loads(case_run.stdout)
+                    changed["production"]["observation"]["attention_policy"] = policy
+                    try:
+                        native.success_metadata(canonical(changed), native_case,
+                            expected_bundle_id=observation["bundle_id"] if backend == "gpu" else None,
+                            expected_device="stub-gpu" if backend == "gpu" else None)
+                    except RecipeError:
+                        pass
+                    else:
+                        raise AssertionError("invented native attention policy passed")
                 case_output = json.loads(case_run.stdout)
                 assert list(case_output) == ["schema_version", "artifact_kind", "production", "stream_bytes", "stream_records"]
-                assert case_output["schema_version"] == 1 and case_output["artifact_kind"] == "GPU_RUNTIME_CASE_OUTPUT"
+                assert case_output["schema_version"] == 2 and case_output["artifact_kind"] == "GPU_RUNTIME_CASE_OUTPUT"
                 case_production = case_output["production"]
                 assert case_production.pop("observation") == observation
                 assert case_production == records[-1]

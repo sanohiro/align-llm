@@ -1,6 +1,7 @@
 module runtime_qwen
 
 import ggml_ffi
+import runtime_attention
 import layer_qwen2
 import qwen_nodes
 import runtime_inputs
@@ -92,6 +93,7 @@ fn bind_prefill_inputs(
     owner, INPUT_PREFILL_MASK, ggml_ffi.GPU_GRAPH_PREFILL, width, tokens,
     slots, layer_qwen2.MF_SLOT_MASK,
   )?
+  runtime_attention.prepare_mask(owner, ctx, slots, layer_qwen2.MF_SLOT_MASK)?
   ggml_ffi.gpu_input_slot(owner, INPUT_OUTPUT_ID, slots, layer_qwen2.MF_SLOT_OUT_IDS) else {
     return Err(Error.Invalid)
   }
@@ -101,6 +103,7 @@ fn bind_prefill_inputs(
 fn bind_decode_inputs(
   borrow owner: ggml_ffi.GpuDevice,
   width: i64,
+  ctx: raw,
   borrow slots: slice<u8>,
 ) -> Result<(), Error> {
   ggml_ffi.gpu_input_slot(owner, INPUT_DECODE_TOKEN, slots, layer_qwen2.MF_SLOT_TOKENS) else {
@@ -113,6 +116,7 @@ fn bind_decode_inputs(
     owner, INPUT_DECODE_MASK, ggml_ffi.GPU_GRAPH_DECODE, width, 1,
     slots, layer_qwen2.MF_SLOT_MASK,
   )?
+  runtime_attention.prepare_mask(owner, ctx, slots, layer_qwen2.MF_SLOT_MASK)?
   ggml_ffi.gpu_input_slot(owner, INPUT_OUTPUT_ID, slots, layer_qwen2.MF_SLOT_OUT_IDS) else {
     return Err(Error.Invalid)
   }
@@ -221,6 +225,7 @@ pub fn build_prefill_chunk(
   carry(slots, layer_qwen2.mf_embed_output_slot())?
 
   nodes := layer_qwen2.mf_layer_node_table(g, tokens, width)
+  use_flash := runtime_attention.fused(owner)
   mut layer := 0
   loop {
     if layer >= g.n_layer { break }
@@ -231,16 +236,25 @@ pub fn build_prefill_chunk(
     }
     runtime_kv.prefill_chunk(owner, 2 * layer, ggml_ffi.GPU_KV_LAYOUT_K,
       position, position + tokens, width, ctx, slots, 32, 31)?
-    qwen_nodes.build_range(ctx, slots, nodes, last, true, false, 17, 21) else {
-      return Err(Error.Invalid)
+    if use_flash {
+      runtime_attention.values(ctx, slots, 26, 35, 36, g.head_dim, tokens, g.n_head_kv)?
+    } else {
+      qwen_nodes.build_range(ctx, slots, nodes, last, true, false, 17, 21) else {
+        return Err(Error.Invalid)
+      }
     }
-    runtime_kv.prefill_chunk(owner, 2 * layer + 1, ggml_ffi.GPU_KV_LAYOUT_V,
+    runtime_kv.prefill_chunk(owner, 2 * layer + 1, if use_flash { ggml_ffi.GPU_KV_LAYOUT_K } else { ggml_ffi.GPU_KV_LAYOUT_V },
       position, position + tokens, width, ctx, slots, 37, 36)?
     expand(graph, slots, 32, "qwen_prefill_k")?
     expand(graph, slots, 37, "qwen_prefill_v")?
     if last && !final_chunk { return Ok(()) }
-    qwen_nodes.build_range(ctx, slots, nodes, last, true, false, 22, nodes.count) else {
-      return Err(Error.Invalid)
+    if use_flash {
+      runtime_attention.output(ctx, slots, 38, 40, 29, 32, 37, layer_qwen2.MF_SLOT_MASK, g.attn_scale_bits, g.n_embd, tokens)?
+      qwen_nodes.build_range(ctx, slots, nodes, last, true, false, 25, nodes.count) else { return Err(Error.Invalid) }
+    } else {
+      qwen_nodes.build_range(ctx, slots, nodes, last, true, false, 22, nodes.count) else {
+        return Err(Error.Invalid)
+      }
     }
     runtime_diagnostic.retain(capture, slots, layer, 0, layer_qwen2.mf_layer_output_slot())?
     carry(slots, layer_qwen2.mf_layer_output_slot())?
@@ -284,7 +298,7 @@ pub fn build_decode_diagnostic(
   }
   width := runtime_inputs.attention_width(n_past + 1, g.context_length)?
   view_width := if width < capacity { width } else { capacity }
-  bind_decode_inputs(owner, width, slots)?
+  bind_decode_inputs(owner, width, ctx, slots)?
   bind_weight(owner, 0, slots, 0)?
   embed := layer_qwen2.mf_embed_node_table()
   qwen_nodes.build(ctx, slots, embed, false, false, false) else {
@@ -293,6 +307,7 @@ pub fn build_decode_diagnostic(
   carry(slots, layer_qwen2.mf_embed_output_slot())?
 
   nodes := layer_qwen2.mf_decode_layer_node_table(g, view_width - 1, 1, width)
+  use_flash := runtime_attention.fused(owner)
   mut layer := 0
   loop {
     if layer >= g.n_layer { break }
@@ -305,15 +320,27 @@ pub fn build_decode_diagnostic(
       owner, 2 * layer, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_KV_LAYOUT_K,
       INPUT_DECODE_POSITION, view_width, slots, layer_qwen2.MF_SLOT_NODE_BASE + 16, DECODE_K_SOURCE,
     )?
-    qwen_nodes.build_range(ctx, slots, nodes, last, width > 1, true, 17, 22) else {
-      return Err(Error.Invalid)
+    if use_flash {
+      qwen_nodes.build_range(ctx, slots, nodes, last, width > 1, true, 17, 18) else { return Err(Error.Invalid) }
+      runtime_attention.values(ctx, slots, 26, 36, 37, g.head_dim, 1, g.n_head_kv)?
+    } else {
+      qwen_nodes.build_range(ctx, slots, nodes, last, width > 1, true, 17, 22) else {
+        return Err(Error.Invalid)
+      }
     }
     runtime_kv.write_indexed_prefix(
-      owner, 2 * layer + 1, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_KV_LAYOUT_V,
-      INPUT_V_INDICES, view_width, slots, layer_qwen2.MF_SLOT_NODE_BASE + 22, DECODE_V_SOURCE,
+      owner, 2 * layer + 1, ggml_ffi.GPU_GRAPH_DECODE,
+      if use_flash { ggml_ffi.GPU_KV_LAYOUT_K } else { ggml_ffi.GPU_KV_LAYOUT_V },
+      if use_flash { INPUT_DECODE_POSITION } else { INPUT_V_INDICES }, view_width, slots, layer_qwen2.MF_SLOT_NODE_BASE + 22, DECODE_V_SOURCE,
     )?
-    qwen_nodes.build_range(ctx, slots, nodes, last, width > 1, true, 23, nodes.count) else {
-      return Err(Error.Invalid)
+    if use_flash {
+      ggml_ffi.op_pad(ctx, slots, 39, 38, 0, width - view_width, 0, 0, "flash_value_padding") else { return Err(Error.Invalid) }
+      runtime_attention.output(ctx, slots, 40, 42, 29, 33, 39, layer_qwen2.MF_SLOT_MASK, g.attn_scale_bits, g.n_embd, 1)?
+      qwen_nodes.build_range(ctx, slots, nodes, last, width > 1, true, 27, nodes.count) else { return Err(Error.Invalid) }
+    } else {
+      qwen_nodes.build_range(ctx, slots, nodes, last, width > 1, true, 23, nodes.count) else {
+        return Err(Error.Invalid)
+      }
     }
     runtime_diagnostic.retain(capture, slots, layer, 0, layer_qwen2.mf_decode_layer_output_slot())?
     carry(slots, layer_qwen2.mf_decode_layer_output_slot())?

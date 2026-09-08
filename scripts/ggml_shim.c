@@ -31,6 +31,7 @@
 #endif
 #include <dlfcn.h>
 #include <limits.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdatomic.h>
@@ -1046,6 +1047,7 @@ struct align_gpu_device_state {
     int64_t metadata_bytes;
     int64_t staging_bytes;
     int64_t legacy_cache_bytes;
+    int attention_policy;
     int shape_planning;
     int64_t shape_workspace_peak;
     int memory_planned;
@@ -1386,6 +1388,56 @@ void *align_gpu_backend_handle(void *owner) {
     return state == NULL ? NULL : (void *) state->backend;
 }
 
+/* Probing owns only a small metadata context. Unsupported operations are a policy choice,
+ * not a native failure, and never allocate payloads or disturb the first-fault latch. */
+int32_t align_gpu_attention_probe(void *owner, int64_t queries, int64_t width,
+        int64_t head_dim, int64_t heads, int64_t kv_heads) {
+    struct align_gpu_device_state *state = owner;
+    struct ggml_init_params params = {0};
+    struct ggml_context *ctx;
+    struct ggml_tensor *q, *k, *v, *mask, *half_mask, *half_k, *half_v, *attention;
+    int supported;
+    if (state == NULL || state->device == NULL || state->memory_planned || state->shape_planning
+        || queries < 1 || queries > 128 || width < 1 || width > 262144
+        || head_dim < 1 || head_dim > 512 || heads < 1 || heads > 128
+        || kv_heads < 1 || kv_heads > heads || heads % kv_heads != 0) {
+        return -ALIGN_GPU_CONFIG;
+    }
+    params.mem_size = ggml_tensor_overhead() * 8;
+    params.no_alloc = true;
+    ctx = ggml_init(params);
+    if (ctx == NULL) { return -ALIGN_GPU_ALLOCATION; }
+    q = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, head_dim, queries, heads);
+    k = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, head_dim, width, kv_heads);
+    v = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, head_dim, width, kv_heads);
+    mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, width, queries);
+    half_mask = ggml_cast(ctx, mask, GGML_TYPE_F16);
+    half_k = ggml_cast(ctx, k, GGML_TYPE_F16);
+    half_v = ggml_cast(ctx, v, GGML_TYPE_F16);
+    attention = ggml_flash_attn_ext(ctx, q, half_k, half_v, half_mask, 1.0f, 0.0f, 0.0f);
+    ggml_flash_attn_ext_set_prec(attention, GGML_PREC_F32);
+    supported = ggml_backend_dev_supports_op(state->device, half_mask)
+        && ggml_backend_dev_supports_op(state->device, half_k)
+        && ggml_backend_dev_supports_op(state->device, half_v)
+        && ggml_backend_dev_supports_op(state->device, attention);
+    ggml_free(ctx);
+    return supported ? 1 : 0;
+}
+
+int32_t align_gpu_attention_select(void *owner, int32_t policy) {
+    struct align_gpu_device_state *state = owner;
+    if (state == NULL || state->memory_planned || state->shape_planning || policy < 0 || policy > 1) {
+        return ALIGN_GPU_CONFIG;
+    }
+    state->attention_policy = policy;
+    return ALIGN_GPU_OK;
+}
+
+int32_t align_gpu_attention_policy(void *owner) {
+    struct align_gpu_device_state *state = owner;
+    return state == NULL ? -1 : state->attention_policy;
+}
+
 int32_t align_gpu_device_synchronize(void *owner) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL || state->backend == NULL) {
@@ -1522,6 +1574,7 @@ int32_t align_gpu_plan_finish(void *owner) {
         || state->graph_execution_count[0] != 0 || state->graph_execution_count[1] != 0) {
         return ALIGN_GPU_CONFIG;
     }
+    initial.attention_policy = state->attention_policy;
     initial.device = state->device;
     initial.backend = state->backend;
     memcpy(initial.bundle_id, state->bundle_id, sizeof(initial.bundle_id));
@@ -1542,6 +1595,7 @@ int32_t align_gpu_plan_cancel(void *owner) {
         || state->graph_execution_count[0] != 0 || state->graph_execution_count[1] != 0) {
         return ALIGN_GPU_CONFIG;
     }
+    initial.attention_policy = state->attention_policy;
     initial.device = state->device;
     initial.backend = state->backend;
     memcpy(initial.bundle_id, state->bundle_id, sizeof(initial.bundle_id));
@@ -3909,6 +3963,50 @@ int32_t align_ggml_op_attention_scores(void *ctx, void *slots, int64_t out, int6
     result = ggml_mul_mat(ctx, key, query);
     if (result == NULL) { return ALIGN_GGML_INIT; }
     ggml_mul_mat_set_prec(result, GGML_PREC_F32);
+    return align_ggml_slot_store(slots, out, result);
+}
+
+int32_t align_ggml_op_attention_mask(void *ctx, void *slots, int64_t out, int64_t source) {
+    struct ggml_tensor *mask = align_ggml_slot_tensor(slots, source);
+    struct ggml_tensor *result;
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    if (mask == NULL || out < 0 || out >= align_ggml_slot_capacity(slots)) { return ALIGN_GGML_SLOT; }
+    if (mask->type != GGML_TYPE_F32) { return ALIGN_GGML_TYPE; }
+    if (mask->ne[0] < 1 || mask->ne[1] < 1 || mask->ne[2] != 1 || mask->ne[3] != 1) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_cast(ctx, mask, GGML_TYPE_F16);
+    return result == NULL ? ALIGN_GGML_INIT : align_ggml_slot_store(slots, out, result);
+}
+
+int32_t align_ggml_op_flash_attention(void *ctx, void *slots, int64_t out,
+        int64_t query_slot, int64_t key_slot, int64_t value_slot, int64_t mask_slot, int32_t scale_bits) {
+    struct ggml_tensor *q = align_ggml_slot_tensor(slots, query_slot);
+    struct ggml_tensor *k = align_ggml_slot_tensor(slots, key_slot);
+    struct ggml_tensor *v = align_ggml_slot_tensor(slots, value_slot);
+    struct ggml_tensor *mask = align_ggml_slot_tensor(slots, mask_slot);
+    struct ggml_tensor *result;
+    float scale;
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    if (q == NULL || k == NULL || v == NULL || mask == NULL
+        || out < 0 || out >= align_ggml_slot_capacity(slots)) { return ALIGN_GGML_SLOT; }
+    if (q->type != GGML_TYPE_F32 || k->type != GGML_TYPE_F32 || v->type != GGML_TYPE_F32
+        || mask->type != GGML_TYPE_F16) { return ALIGN_GGML_TYPE; }
+    memcpy(&scale, &scale_bits, sizeof(scale));
+    if (!isfinite(scale) || scale <= 0.0f || q->ne[0] != k->ne[0] || k->ne[0] != v->ne[0]
+        || k->ne[1] != v->ne[1] || k->ne[2] != v->ne[2] || k->ne[2] < 1
+        || q->ne[2] % k->ne[2] != 0 || q->ne[3] != 1 || k->ne[3] != 1 || v->ne[3] != 1
+        || q->nb[0] != sizeof(float) || k->nb[0] != sizeof(float) || v->nb[0] != sizeof(float)
+        || mask->ne[0] != k->ne[1] || mask->ne[1] < q->ne[1]
+        || mask->ne[2] != 1 || mask->ne[3] != 1 || !ggml_is_contiguous(mask)
+        || q->ne[0] < 1 || q->ne[1] < 1 || q->ne[2] < 1 || k->ne[1] < 1) { return ALIGN_GGML_SHAPE; }
+    /* Match pinned llama-graph.cpp: persistent KV stays F32, while each bounded
+     * attention view is explicitly converted to F16 inside the planned graph. */
+    k = ggml_cast(ctx, k, GGML_TYPE_F16);
+    v = ggml_cast(ctx, v, GGML_TYPE_F16);
+    result = ggml_flash_attn_ext(ctx, q, k, v, mask, scale, 0.0f, 0.0f);
+    if (result == NULL) { return ALIGN_GGML_INIT; }
+    ggml_flash_attn_ext_set_prec(result, GGML_PREC_F32);
     return align_ggml_slot_store(slots, out, result);
 }
 

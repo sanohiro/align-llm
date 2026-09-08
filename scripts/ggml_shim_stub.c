@@ -1771,6 +1771,7 @@ struct align_gpu_device_state {
     int64_t metadata_bytes;
     int64_t staging_bytes;
     int64_t legacy_cache_bytes;
+    int attention_policy;
     int shape_planning;
     int64_t shape_workspace_peak;
     int memory_planned;
@@ -2077,6 +2078,29 @@ void *align_gpu_backend_handle(void *owner) {
     return state == NULL ? NULL : state->backend;
 }
 
+int32_t align_gpu_attention_probe(void *owner, int64_t queries, int64_t width,
+        int64_t head_dim, int64_t heads, int64_t kv_heads) {
+    struct align_gpu_device_state *state = owner;
+    if (state == NULL || state->device == NULL || state->memory_planned || state->shape_planning
+        || queries < 1 || queries > 128 || width < 1 || width > 262144
+        || head_dim < 1 || head_dim > 512 || heads < 1 || heads > 128
+        || kv_heads < 1 || kv_heads > heads || heads % kv_heads != 0) { return -ALIGN_GPU_CONFIG; }
+    /* This engine intentionally owns the real decomposed fallback, not GPU Flash math. */
+    return 0;
+}
+int32_t align_gpu_attention_select(void *owner, int32_t policy) {
+    struct align_gpu_device_state *state = owner;
+    if (state == NULL || state->memory_planned || state->shape_planning || policy < 0 || policy > 1) {
+        return ALIGN_GPU_CONFIG;
+    }
+    state->attention_policy = policy;
+    return ALIGN_GPU_OK;
+}
+int32_t align_gpu_attention_policy(void *owner) {
+    struct align_gpu_device_state *state = owner;
+    return state == NULL ? -1 : state->attention_policy;
+}
+
 int32_t align_gpu_device_synchronize(void *owner) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL || state->observation_sync_calls == INT64_MAX) {
@@ -2202,6 +2226,7 @@ int32_t align_gpu_plan_finish(void *owner) {
         || state->graph_execution_count[0] != 0 || state->graph_execution_count[1] != 0) {
         return ALIGN_GPU_CONFIG;
     }
+    initial.attention_policy = state->attention_policy;
     initial.device = state->device;
     initial.backend = state->backend;
     memcpy(initial.bundle_id, state->bundle_id, sizeof(initial.bundle_id));
@@ -2222,6 +2247,7 @@ int32_t align_gpu_plan_cancel(void *owner) {
         || state->graph_execution_count[0] != 0 || state->graph_execution_count[1] != 0) {
         return ALIGN_GPU_CONFIG;
     }
+    initial.attention_policy = state->attention_policy;
     initial.device = state->device;
     initial.backend = state->backend;
     memcpy(initial.bundle_id, state->bundle_id, sizeof(initial.bundle_id));
@@ -5168,4 +5194,14 @@ int32_t align_ggml_graph_compute(void *backend, void *graph) {
         align_stub_run(g->nodes[i]);
     }
     return 0;
+}
+
+int32_t align_ggml_op_attention_mask(void *ctx, void *slots, int64_t out, int64_t source) {
+    (void) ctx; (void) slots; (void) out; (void) source;
+    return ALIGN_GGML_UNAVAILABLE;
+}
+int32_t align_ggml_op_flash_attention(void *ctx, void *slots, int64_t out,
+        int64_t q, int64_t k, int64_t v, int64_t mask, int32_t scale_bits) {
+    (void) ctx; (void) slots; (void) out; (void) q; (void) k; (void) v; (void) mask; (void) scale_bits;
+    return ALIGN_GGML_UNAVAILABLE;
 }

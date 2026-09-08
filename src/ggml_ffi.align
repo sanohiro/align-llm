@@ -400,6 +400,10 @@ extern "C" link("align_ggml_shim") {
     owner: raw, kind: i32, key: str, key_length: i64, graph: raw,
   ) -> i32
   fn align_gpu_graph_state(owner: raw, kind: i32, field: i32) -> i64
+  fn align_gpu_attention_probe(owner: raw, queries: i64, width: i64, head_dim: i64,
+    heads: i64, kv_heads: i64) -> i32
+  fn align_gpu_attention_select(owner: raw, policy: i32) -> i32
+  fn align_gpu_attention_policy(owner: raw) -> i32
   fn align_gpu_observation_state(owner: raw, field: i32) -> i64
   fn align_gpu_slot_get(owner: raw, slots: slice<u8>, index: i64,
     bytes: slice<u8>, offset: i64, size: i64) -> i32
@@ -456,6 +460,9 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_op_add(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_mul_mat(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_attention_scores(ctx: raw, slots: slice<u8>, out: i64, k: i64, q: i64) -> i32
+  fn align_ggml_op_attention_mask(ctx: raw, slots: slice<u8>, out: i64, source: i64) -> i32
+  fn align_ggml_op_flash_attention(ctx: raw, slots: slice<u8>, out: i64,
+    q: i64, k: i64, v: i64, mask: i64, scale_bits: i32) -> i32
   fn align_ggml_op_reshape_3d(
     ctx: raw, slots: slice<u8>, out: i64, a: i64, ne0: i64, ne1: i64, ne2: i64) -> i32
   fn align_ggml_op_permute(
@@ -679,6 +686,31 @@ pub fn gpu_device_synchronize(borrow owner: GpuDevice) -> Result<(), Fault> {
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
   }
+}
+
+pub fn gpu_attention_probe(borrow owner: GpuDevice, queries: i64, width: i64,
+  head_dim: i64, heads: i64, kv_heads: i64) -> Result<bool, Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_attention_probe(resource.raw(resource.borrow(owner)), queries, width, head_dim, heads, kv_heads) as i64
+    if status < 0 { return Err(gpu_fault_for(0 - status)) }
+    if status > 1 { return Err(gpu_fault_for(GPU_STATUS_CONFIG)) }
+    return Ok(status == 1)
+  }
+}
+
+pub fn gpu_attention_select(borrow owner: GpuDevice, policy: i64) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if policy < 0 || policy > 1 { return Err(gpu_fault_for(GPU_STATUS_CONFIG)) }
+  unsafe {
+    status := align_gpu_attention_select(resource.raw(resource.borrow(owner)), policy as i32) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_attention_policy(borrow owner: GpuDevice) -> i64 {
+  unsafe { return align_gpu_attention_policy(resource.raw(resource.borrow(owner))) as i64 }
 }
 
 pub fn gpu_host_reserve(borrow owner: GpuDevice, bytes: i64) -> Result<(), Fault> {
@@ -1833,6 +1865,16 @@ pub fn op_mul_mat(
 }
 
 // Keep the attention score accumulator at the pinned reference's explicit F32 precision.
+pub fn op_attention_mask(ctx: raw, borrow slots: slice<u8>, out: i64, source: i64, label: str) -> Result<(), Fault> {
+  unsafe { return r5_result(align_ggml_op_attention_mask(ctx, slots, out, source) as i64, label) }
+}
+
+pub fn op_flash_attention(ctx: raw, borrow slots: slice<u8>, out: i64, q: i64, k: i64,
+  v: i64, mask: i64, scale_bits: i64, label: str) -> Result<(), Fault> {
+  if scale_bits < 0 || scale_bits > 2147483647 { return Err(fault("R5_SHAPE", label)) }
+  unsafe { return r5_result(align_ggml_op_flash_attention(ctx, slots, out, q, k, v, mask, scale_bits as i32) as i64, label) }
+}
+
 pub fn op_attention_scores(
   ctx: raw, borrow slots: slice<u8>, out: i64, k: i64, q: i64, label: str,
 ) -> Result<(), Fault> {

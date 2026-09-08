@@ -145,7 +145,11 @@ static bool callback(ggml_tensor *t, bool ask, void *opaque) {
 int main(int argc, char **argv) {
     assert(argc == 2 && fs::file_size(argv[1]) <= 1048576);
     std::ifstream input(argv[1]); auto request = json::parse(input);
-    assert(request.is_object() && request.size() == 6);
+    assert(request.is_object() && (request.size() == 6 || request.size() == 7));
+    assert((request.size() == 6 && !request.contains("attention_policy")) ||
+           (request.size() == 7 && request.contains("attention_policy")));
+    const std::string attention_policy = request.value("attention_policy", std::string("decomposed"));
+    assert(attention_policy == "decomposed" || attention_policy == "flash_f32");
     for (const char *key : {"model_path", "plugin_path", "output_root"}) {
         assert(request.at(key).is_string());
         auto path = request.at(key).get<std::string>();
@@ -185,7 +189,7 @@ int main(int argc, char **argv) {
     cp.n_ctx = uint32_t(((prompt.size() + maximum + 255) / 256) * 256);
     cp.n_batch = cp.n_ctx; cp.n_ubatch = 128;
     cp.type_k = cp.type_v = GGML_TYPE_F32;
-    cp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    cp.flash_attn_type = attention_policy == "flash_f32" ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED;
     cp.n_threads = cp.n_threads_batch = 4;
     cp.cb_eval = callback; cp.cb_eval_user_data = &capture;
     auto ctx = llama_init_from_model(model, cp); assert(ctx);

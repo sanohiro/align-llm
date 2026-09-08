@@ -99,6 +99,7 @@ class NativeCase:
     traversal: Traversal
     residency: Residency
     model_work: ModelWork
+    attention_policy: str | None = None
 
     @property
     def stream_path(self) -> Path:
@@ -176,7 +177,7 @@ def prepare(*, model_id: str, geometry: Mapping[str, object], calibration_case: 
 
 def _record(raw: bytes, kind: str, keys: tuple[str, ...]) -> dict[str, object]:
     record = exact_keys(parse_record(raw, MAX_RECORD_BYTES), keys, "native output")
-    if type(record["schema_version"]) is not int or record["schema_version"] != 1 \
+    if type(record["schema_version"]) is not int or record["schema_version"] not in ((1, 2) if kind == "GPU_RUNTIME_CASE_OUTPUT" else (1,)) \
             or record["artifact_kind"] != kind or canonical(record) != raw:
         raise RecipeError("native output identity or canonical encoding is invalid")
     return record
@@ -203,8 +204,16 @@ def failure(raw: bytes, case: NativeCase) -> dict[str, object]:
 
 
 def _observation(raw: object, case: NativeCase, expected_bundle_id: str | None,
-                 expected_device: str | None) -> dict[str, object]:
-    observation = exact_keys(raw, ("available", *OBSERVATION_INTS, *OBSERVATION_TEXT), "native observation")
+                 expected_device: str | None, version: int = 1) -> dict[str, object]:
+    extra = ("attention_policy",) if version == 2 else ()
+    observation = exact_keys(raw, ("available", *OBSERVATION_INTS, *OBSERVATION_TEXT, *extra), "native observation")
+    policy = observation.get("attention_policy", "decomposed")
+    if policy not in ("decomposed", "flash_f32") or (case.attention_policy is not None and policy != case.attention_policy):
+        raise RecipeError("native attention policy differs from independent admission")
+    work = case.model_work
+    if policy == "flash_f32":
+        # The shared mask cast is a CPY, excluded by the material model-op counter.
+        work = dataclasses.replace(work, operations=work.operations - 3 * work.layers)
     gpu = bool(case.document["options_path"])
     if type(observation["available"]) is not bool or observation["available"] != gpu:
         raise RecipeError("native observation availability differs from execution")
@@ -213,6 +222,8 @@ def _observation(raw: object, case: NativeCase, expected_bundle_id: str | None,
     for key in OBSERVATION_TEXT:
         bounded_text(observation[key], 0, 128, "native " + key)
     if not gpu:
+        if policy != "decomposed":
+            raise RecipeError("CPU result invents GPU attention policy")
         if any(observation[key] != 0 for key in OBSERVATION_INTS) \
                 or any(observation[key] != "" for key in OBSERVATION_TEXT):
             raise RecipeError("CPU result invents GPU observations")
@@ -236,11 +247,11 @@ def _observation(raw: object, case: NativeCase, expected_bundle_id: str | None,
             or observation["resident_kv_payload_bytes"] != case.residency.kv_bytes \
             or observation["weight_upload_count"] != case.residency.weight_count:
         raise RecipeError("native resident payload or binding count differs from independent geometry")
-    if observation["model_operations"] != case.model_work.operations \
-            or observation["model_layers"] != case.model_work.layers \
-            or observation["model_experts"] != case.model_work.experts:
+    if observation["model_operations"] != work.operations \
+            or observation["model_layers"] != work.layers \
+            or observation["model_experts"] != work.experts:
         actual = tuple(observation[key] for key in ("model_operations", "model_layers", "model_experts"))
-        expected = (case.model_work.operations, case.model_work.layers, case.model_work.experts)
+        expected = (work.operations, work.layers, work.experts)
         raise RecipeError(f"native model work differs from independent geometry: {actual} != {expected}")
     if observation["read_calls"] != positions or observation["read_bytes"] != positions * case.traversal.vocabulary * 4 \
             or observation["prefill_executions"] != case.traversal.prefill_chunks \
@@ -320,7 +331,7 @@ def success_metadata(raw: bytes, case: NativeCase, *, expected_bundle_id: str | 
     if type(record["stream_bytes"]) is not int or record["stream_bytes"] != case.traversal.maximum_bytes \
             or type(record["stream_records"]) is not int or record["stream_records"] != case.traversal.frame_count:
         raise RecipeError("native output stream totals differ from independent traversal")
-    observation = _observation(production["observation"], case, expected_bundle_id, expected_device)
+    observation = _observation(production["observation"], case, expected_bundle_id, expected_device, record["schema_version"])
     return NativeMetadata(production, observation, hashlib.sha256(text.encode()).hexdigest())
 
 

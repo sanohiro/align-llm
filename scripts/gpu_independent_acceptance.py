@@ -138,6 +138,10 @@ def plan_for(profile, model, geometry, case, root, physical_input_root, options_
         stream_root=root / output, stream_name='numeric')
 
 
+def attention_policy(corpus, model_id):
+    return next(entry for entry in corpus["models"] if entry["model"]["model_id"] == model_id).get("attention_policy", "decomposed")
+
+
 def expected_cases(corpus):
     for entry in corpus['models']:
         for case in entry['cases']:
@@ -269,6 +273,8 @@ def execute(profile_path, corpus_path, candidate_build, reference_build, destina
                        'prompt_token_ids': case['prompt_token_ids'], 'maximum_tokens': case['maximum_tokens'],
                        'seed': case['seed'] if case['sampler_mode'] == 'seeded' else None,
                        'output_root': str(root / reference_relative)}
+            if corpus['schema_version'] == 2:
+                request['attention_policy'] = attention_policy(corpus, model_id)
             input_path = write(root / base / 'reference-input.json', canonical(request))
             command = process(root, root / 'reference/reference-acquire', input_path, 'independent-reference', base + '/reference-process', deadline)
             result['references'].append({'model_id': model_id, 'case_id': case['case_id'], 'directory': reference_relative,
@@ -278,6 +284,7 @@ def execute(profile_path, corpus_path, candidate_build, reference_build, destina
                 relative = base + '/repeat-' + str(repeat)
                 write_directory(root / relative)
                 plan = plan_for(profile, model, geometry, case, root, admitted.root, root / 'runtime-options.json', relative)
+                plan = dataclasses.replace(plan, attention_policy=attention_policy(corpus, model_id))
                 input_path = write(root / relative / 'input.json', plan.input_bytes())
                 name = 'runtime_immediate_eog_smoke' if case['input_mode'] == 'continuation' else 'runtime_case'
                 command = process(root, root / 'candidate' / name, input_path, 'candidate', relative, deadline)
@@ -446,6 +453,8 @@ def replay(root):
                    'maximum_tokens': case['maximum_tokens'],
                    'seed': case['seed'] if case['sampler_mode'] == 'seeded' else None,
                    'output_root': str(origin / ref['directory'])}
+        if corpus['schema_version'] == 2:
+            request['attention_policy'] = attention_policy(corpus, model_id)
         if (root / ref['input']).read_bytes() != canonical(request):
             raise RecipeError('acceptance reference input differs from frozen case')
         replay_process(root, ref['process'], base + '/reference-process', reference['executable_sha256'],
@@ -462,6 +471,7 @@ def replay(root):
                 raise RecipeError('acceptance candidate order or paths differ')
             plan = plan_for(profile, model, geometry, case, origin, result['input_root'],
                             origin / 'runtime-options.json', relative)
+            plan = dataclasses.replace(plan, attention_policy=attention_policy(corpus, model_id))
             if (root / row['input']).read_bytes() != plan.input_bytes():
                 raise RecipeError('acceptance candidate input differs from frozen case')
             replay_process(root, row['process'], relative, candidate['executables'][name], 'candidate', row['input'])

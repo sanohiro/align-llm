@@ -186,8 +186,9 @@ the immutable recipe; holdout results cannot change them.
 E1–E4, E6 and E8 are architectural work in G1, not optional future micro-optimizations. E5/E7
 require a supported, qualified backend path or a recorded concrete capability limitation; an
 unqualified feature cannot delay all independent work. No speedup is inferred from enabling a flag.
-Actual optimization counters/traces are evidence for these owners, while schema-1 generation
-qualification remains the correctness gate.
+Actual optimization counters/traces are evidence for these owners. The complete same-policy
+independent GPU acceptance corpus and relocated replay in `gpu-runtime.md` own shipping correctness;
+historical schema-1 CPU/GPU FAILs and their frozen tolerances remain historical evidence.
 
 Growing KV length must not accidentally make E2 a rebuild-every-token policy. Use recipe-fixed
 bounded KV-view buckets with an explicit valid-position mask where the pinned backend supports

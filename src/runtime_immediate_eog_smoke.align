@@ -120,7 +120,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     return Err(Error.Invalid)
   }
   runtime_numeric_stream.finish(stream)?
-  output := runtime_case.Output { schema_version: 1, artifact_kind: "GPU_RUNTIME_CASE_OUTPUT".clone(),
+  output := runtime_case.Output { schema_version: 2, artifact_kind: "GPU_RUNTIME_CASE_OUTPUT".clone(),
     production: observed, stream_bytes: stream.written_bytes, stream_records: stream.records }
   print(json.encode(output))
   return Ok(())

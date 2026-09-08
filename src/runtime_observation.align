@@ -1,9 +1,11 @@
 module runtime_observation
 
 import ggml_ffi
+import runtime_attention
 
 pub Snapshot {
   available: bool,
+  attention_policy: string,
   graph_nodes: i64,
   read_bytes: i64,
   read_calls: i64,
@@ -36,6 +38,7 @@ pub Snapshot {
 }
 
 pub fn unavailable() -> Snapshot = Snapshot {
+  attention_policy: "decomposed".clone(),
   available: false, graph_nodes: 0, read_bytes: 0, read_calls: 0, sync_calls: 0,
   weight_upload_count: 0, weight_upload_bytes: 0, kv_upload_bytes: 0, input_upload_bytes: 0,
   prefill_executions: 0, prefill_microbatch_width: 0, decode_executions: 0, allocated_host_bytes: 0, allocated_device_bytes: 0,
@@ -49,6 +52,7 @@ pub fn unavailable() -> Snapshot = Snapshot {
 pub fn capture(borrow owner: ggml_ffi.GpuDevice) -> Result<Snapshot, Error> {
   device := ggml_ffi.gpu_device_handle(owner)
   result := Snapshot {
+    attention_policy: runtime_attention.name(owner).clone(),
     available: true,
     graph_nodes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_NODES),
     read_bytes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_BYTES),
