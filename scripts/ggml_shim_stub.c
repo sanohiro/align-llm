@@ -2669,7 +2669,11 @@ int32_t align_gpu_mask_prefix_slot(
     if (view == NULL) {
         return ALIGN_GPU_ALLOCATION;
     }
-    return align_stub_bind(slots, out, view, tensor, NULL, ALIGN_STUB_OP_PREFIX_VIEW)
+    /* Masks are uploaded as a packed live rectangle, matching the real ggml_view_2d stride.
+     * KV prefixes retain their backing stride; reusing that kernel here shifts later rows. */
+    view->lp[0] = valid_width * (int64_t) sizeof(float);
+    view->lp[1] = 0;
+    return align_stub_bind(slots, out, view, tensor, NULL, ALIGN_STUB_OP_VIEW)
         == ALIGN_GGML_OK ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
 }
 

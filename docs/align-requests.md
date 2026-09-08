@@ -8362,6 +8362,15 @@ demand stream this capability exists to publish — and R5A correction C9's shap
 rendered as it is produced into one string rather than carried as a column set, exactly as R5E's
 `schedule[]` is. **No status change**, `Blocking: no`.
 
+G1 provider tracing at Align `305926b423da9be1f13b0129a7232626e6704d95` is another
+non-blocking client of the nested field move restriction: returning prepared prompt IDs from the
+tokenizer record still rejects with the nested-field move diagnostic. The owning provider result
+materializes its bounded prompt ID array explicitly. The sibling diagnostic remains in
+`crates/align_sema/src/lib.rs`; this does not claim Request 36 is delivered or change its original
+acceptance target. Scalar `json.decode` without an owned-text leaf also retains its documented
+input provenance (`docs/impl/core-design/json.md`); exporting its IDs requires materialization,
+which is an application ownership conversion rather than a new compiler gap.
+
 ### Motivation and current sibling evidence
 
 R5A-DENSE-LAYER-FORWARD's document (`docs/specs/r5a-dense-layer-forward.md` section 3.7) was designed

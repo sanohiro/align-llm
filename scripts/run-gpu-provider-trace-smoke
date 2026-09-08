@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Own the G1 trace adapter through real provider admission and deterministic native execution."""
+import hashlib
+import importlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+from gpu_qualification_stream import NumericStream, Frame
+from gpu_qualification_traversal import Traversal, Router
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def canonical(value):
+    return json.dumps(value, separators=(",", ":")).encode() + b"\n"
+
+
+def digest(value):
+    return hashlib.sha256(value).hexdigest()
+
+
+def bundle(root):
+    destination = root / "bundle"
+    destination.mkdir()
+    data = b"provider-trace-stub"
+    (destination / "libggml-metal.so").write_bytes(data)
+    identity = lambda name: {"name": name, "version": "fixture", "sha256": digest(name.encode())}
+    record = {
+        "schema_version": 1, "artifact_kind": "GPU_BACKEND_BUNDLE", "bundle_id": "0" * 64,
+        "backend": "metal", "ggml": {"commit": "bb4caa7540188872173c44d161602d9271386413",
+        "source_manifest_sha256": digest(b"source"), "version": "fixture"},
+        "target": {"os": "macos", "arch": "aarch64", "gpu_architectures": ["apple_m1"]},
+        "toolchain": {"c_compiler": identity("cc"), "cxx_compiler": identity("cxx"),
+                      "sdk": identity("macos"),
+                      "toolkit": {"name": "none", "version": "none", "sha256": digest(b"")}},
+        "build_flags": [], "artifacts": [{"role": "backend_plugin", "path": "libggml-metal.so",
+                                            "bytes": len(data), "sha256": digest(data)}],
+    }
+    record["bundle_id"] = digest(canonical(record))
+    (destination / "manifest.json").write_bytes(canonical(record))
+    options = root / "options.json"
+    options.write_bytes(canonical({"schema_version": 1, "backend": "metal", "device": "stub-gpu",
+        "backend_bundle": str(destination), "placement": "resident",
+        "host_budget_bytes": 536870912, "device_budget_bytes": 536870912, "prefetch": "off"}))
+    return options
+
+
+with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
+    work = Path(raw).resolve()
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith("ALIGN_LLM_GGML_")}
+    shim = work / "shim"
+    environment.update(ALIGN_LLM_GGML_FORCE="engine+gpu", ALIGN_LLM_GGML_SHIM_DIR=str(shim))
+    subprocess.run([str(ROOT / "scripts/build-ggml-shim")], env=environment, check=True)
+    for key in ("LIBRARY_PATH", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+        environment[key] = str(shim) + (":" + environment[key] if environment.get(key) else "")
+    compiler = os.environ.get("ALIGNC", str(ROOT / "scripts/alignc"))
+    subprocess.run([compiler, "build", "src/runtime_provider_trace_smoke.align"],
+                   cwd=ROOT, env=environment, check=True)
+    executable = work / "trace"
+    (ROOT / "runtime_provider_trace_smoke").rename(executable)
+    options = bundle(work)
+    for architecture, fixture, manifest in (
+        ("qwen2", "runtime_provider_fixture.py", "runtime-manifest.json"),
+        ("olmoe", "olmoe_provider_fixture.py", "olmoe-runtime-manifest.json"),
+    ):
+        fixture_module = importlib.import_module(fixture.removesuffix(".py"))
+        fixture_module.SYSTEM = ""
+        record = fixture_module.build(work)
+        eog_key = "immediate_eog_model"
+        for model_key in ("model", eog_key):
+            model = work / record[model_key]
+            geometry = work / (model.stem + ".json")
+            pack = work / (model.stem + ".alignpack")
+            for arguments in (["--model-ir", str(model), str(geometry)],
+                              ["--pack", str(model), str(pack), str(work / "pack.json")]):
+                subprocess.run([str(ROOT / "main"), *arguments], check=True,
+                               stdout=subprocess.DEVNULL, env=environment)
+            records = []
+            streams = []
+            for backend in ("cpu", "gpu"):
+                output = work / (model.stem + "-" + backend)
+                output.mkdir()
+                result = subprocess.run([str(executable), str(model), str(pack), str(geometry),
+                    str(output), "trace", str(options) if backend == "gpu" else "", architecture],
+                    env=environment, capture_output=True, text=True)
+                assert result.returncode == 0, (architecture, model_key, backend, result.stdout, result.stderr)
+                lines = result.stdout.splitlines()
+                assert len(lines) == 2 and lines[-1] == "runtime provider trace: PASS", result.stdout
+                records.append(json.loads(lines[0]))
+                traversal = Traversal.derive(json.loads(geometry.read_bytes()), {
+                    "prompt_token_ids": records[-1]["prompt_ids"],
+                    "teacher_forced_token_ids": [0, 1], "maximum_tokens": 2,
+                    "expected_token_ids": records[-1]["token_ids"],
+                })
+                expected_frames = []
+                for instruction in traversal.instructions():
+                    if isinstance(instruction, Router):
+                        for offset, (kind, width) in enumerate(((3, instruction.experts),
+                                (4, instruction.selected), (5, instruction.selected))):
+                            expected_frames.append(Frame(kind, instruction.layer, instruction.step,
+                                width, 1, width * 4, instruction.ordinal + offset))
+                    else:
+                        expected_frames.append(instruction)
+                path = output / "trace"
+                with NumericStream(path, model=1 if architecture == "qwen2" else 2,
+                                   maximum_bytes=16777216) as stream:
+                    for expected_frame in expected_frames:
+                        frame = stream.read_frame()
+                        assert frame == expected_frame, (architecture, model_key, backend, frame, expected_frame)
+                        remaining = frame.payload_bytes
+                        while remaining:
+                            remaining -= len(stream.read_payload())
+                    assert stream.read_frame() is None and stream.verified
+                    assert path.stat().st_size == traversal.maximum_bytes
+                streams.append(path.read_bytes())
+            assert records[0] == records[1], (architecture, model_key, records)
+            assert len(records[0]["prompt_ids"]) == record["prompt_tokens"]
+            if model_key == eog_key:
+                assert records[0]["text"] == "" and len(records[0]["token_ids"]) == 1, records
+            else:
+                assert len(records[0]["token_ids"]) == 2, records
+            assert streams[0] == streams[1], (architecture, model_key)
+print("gpu provider trace: PASS (source admission, prompt binding, CPU/GPU output and streams, EOG, cleanup)")

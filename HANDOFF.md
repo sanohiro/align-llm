@@ -112,6 +112,17 @@ its sampler self-test and 61 CLI assertions; `gmake fmt` and `git diff --check` 
 native fixture results, not real-device numeric qualification. The focused trace owner is not
 added to an aggregate automatically.
 
+**Provider trace checkpoint.** `provider_runtime.generate_trace` now reuses ordinary GGUF,
+pack/geometry admission, chat prompt preparation and output decoding for CPU/GPU production,
+reproduction and forced replay. It returns owned text, sampled IDs including EOG, and prepared
+prompt IDs. `python3 scripts/run-gpu-provider-trace-smoke` passes both architectures through actual
+GGUF/pack fixtures, independent geometry traversal, exact CPU/GPU streams and output, immediate
+EOG, stream refusal and subsequent invocation. `gmake gpu-device-smoke runtime-provider-smoke`
+passes, including 61 provider CLI assertions. A packed-mask row-stride mismatch in the GPU stub
+was found and corrected to match the real shim; longer provider prompts now own that regression.
+Request 36 gains this non-blocking nested-array-field client; no new language API is assumed.
+The native case envelope, production measurement instrumentation and final CLI remain active.
+
 **Eligibility checkpoint.** Requests 61/62 are consumer-verified. The full frozen 21-case audit
 meets 20 expectations; only explicitly deferred direct-place case 11 remains red. All negative
 lifetime controls, observed native generation and real CPU compilation pass. G1 integration is

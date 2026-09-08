@@ -644,6 +644,36 @@ canonical compact JSON bytes of the profile's `cases` array without a final LF.
 
 ### 3.10 Private numeric stream version 1
 
+The private provider trace entrypoint reuses ordinary provider admission, source/geometry identity,
+chat prompt preparation and output decoding. Its inputs are the existing provider configuration and
+generation request plus mode 1 (production) or 2 (diagnostic), borrowed forced IDs and a borrowed
+mutable stream. Forced IDs are allowed only in mode 2, with the same vocabulary/context bounds as
+the native generators. Results own output text, actual sampled IDs (including terminal EOG), and
+prepared prompt IDs. Forced replay returns empty text: its predictions are numeric evidence, not
+a completion. No persisted schema, cache identity or public CLI is added (N/A). `provider_runtime`
+owns this boundary; errors preserve the ordinary `Result<_, Error>` refusal and automatic native
+owner teardown. Each call owns an independent snapshot, device and KV lifecycle. The qualifier
+passes empty system text and the calibration's prompt UTF-8 as user text, and must compare prepared
+IDs with the frozen calibration before accepting a case.
+
+| Provider trace closure | Implementation | Required owner evidence |
+| --- | --- | --- |
+| Construction / malformed mode and forced IDs | `provider_runtime.generate_trace` / shared admission | provider trace smoke invalid mode/forced controls |
+| CPU and GPU production / reproduction | shared `generate_mode` dispatch | provider trace smoke ordinary/observed/reproduced output and token equality |
+| Forced success / early EOG | shared bounds, diagnostic native dispatch | provider trace smoke forced replay across EOG |
+| Stream failure / cleanup | existing CPU outcome and GPU device owners | native CPU/GPU trace owners plus provider trace smoke failure and subsequent success |
+| Source, geometry, prompt and decoding | existing provider admission and tokenizer | `runtime-provider-smoke` plus provider trace smoke prepared prompt binding |
+
+Provider trace owner: `python3 scripts/run-gpu-provider-trace-smoke` passes Qwen/OLMoE greedy
+production, reproduction, forced continuation across immediate EOG, exact independent traversal,
+CPU/GPU byte equality and stream failure followed by success. Existing seeded CPU/native GPU
+owners remain `scripts/run-gpu-cpu-trace-smoke` and `gpu-generation-smoke`. The provider owner also
+regresses packed multi-row masks when request KV capacity exceeds prompt width: the stub uses the
+real shim's `valid_width * sizeof(float)` row stride instead of the KV backing stride.
+`gmake gpu-device-smoke runtime-provider-smoke` passes the affected resource/provider regressions.
+
+
+
 Request 61 shipped at Align `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0` (PR #982).
 The native producer adopts direct borrowed field receivers and optional-writer projections;
 `gpu-numeric-stream` is its combined native/independent-reader owner.
