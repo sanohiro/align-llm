@@ -640,8 +640,10 @@ absolute path, starts from an empty environment, and inserts exactly `HOME=<owne
 `LC_ALL=C`, `TMPDIR=<owned-temp>`, and `TZ=UTC`, in that canonical name order. No ambient name
 survives: in particular `PATH`, compiler/linker flags and search paths, cache variables and
 `CUDA_VISIBLE_DEVICES` are unset. Compiler/SDK inputs are absolute verified argv; runtime artifacts
-are loaded only from the invocation-owned private staged absolute paths, so loader search variables
-are unnecessary. These fixed sources override rather than merge with the parent environment.
+load the selected plugin from its invocation-owned private staged absolute path. The already linked
+ggml core is an explicit immutable executable prerequisite, verified as described below; loader
+search variables are unnecessary. These fixed sources override rather than merge with the parent
+environment.
 
 Evidence retains the complete logical argv and `NAME=value` environment arrays for every
 preparation and case command. Machine-local input paths become
@@ -1461,3 +1463,28 @@ device qualification.
 This design-only change requires documentation consistency, canonical-schema inspection,
 `git diff --check`, one stable comprehensive review and the documentation publication preflight.
 Source tests, compiler adoption, GPU builds and device qualification are N/A until G1 implementation.
+
+### Linked core admission repair (review R9)
+
+The G1 shared shim links `libggml` and `libggml-base` before Align admission. These two
+installed libraries are explicit immutable executable prerequisites for the process lifetime;
+they are not claimed to be loaded from the later plugin staging directory. The admitted bundle
+must declare the unversioned shared-library entries for both cores. Builds with an explicit ggml
+library directory embed their SHA-256 identities. Before loading any plugin, `runtime_device.open`
+asks the native `dladdr` owner for the canonical absolute image paths containing `ggml_init`
+(base) and `ggml_backend_load` (registry). `runtime_bundle` verifies those actual files through
+single-link readers against the declared sizes/digests and the shim's embedded identities.
+Missing identity, unavailable image, substituted core, wrong file kind or mismatch refuses with
+`BUNDLE_IDENTITY/device` before device initialization, and removes owned staging. Static/ambient
+legacy shim builds retain legacy CPU behavior but cannot admit a real G1 device without identities.
+The model-free stub has no dynamically linked core and explicitly reports that fact.
+
+| Surface/owner | Inputs and result | Closure and evidence |
+| --- | --- | --- |
+| Native core observation, `ggml_shim.c`, `ggml_ffi` | Core ordinal 0 base / 1 registry; bounded UTF-8 canonical path and 64-byte build digest, no allocation or transferable handles; invalid ordinal/capacity returns empty failure | `run-gpu-linked-core-smoke`: actual loaded image, exact/small buffers, invalid ordinal, substituted search-path image on ELF and Mach-O |
+| Bundle core verification, `runtime_bundle`, `runtime_device` | Verified artifact array, actual path/build digest, existing host budget; hash/size match required; no new public CLI or schema | Same owner: matching bundle succeeds; missing/mismatched core/build identity refuses before plugin load; staging cleanup on every refusal |
+| Shim builders, `build-ggml-shim`, `gpu_qualification_build` | Explicit library directory owns unversioned core files; build definitions bind exact bytes; no environment identity override | Same owner and preparation smoke: both definitions retained in physical/logical argv; legacy stub remains available |
+
+No performance claim; admission performs two bounded library reads before model allocation. The
+existing single-threaded invocation exclusion and immutable prerequisite lifetime remain required.
+This repairs unreleased schema 1 semantics without rewriting historical evidence.

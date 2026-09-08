@@ -73,7 +73,14 @@ def build_construction_owner(parent: pathlib.Path) -> None:
     library = work / "backend"
     include.mkdir(mode=0o700)
     library.mkdir(mode=0o700)
+    for name in ("ggml", "ggml-base"):
+        (library / f"lib{name}.dylib").write_bytes(name.encode())
     planned = build.commands(**arguments, ggml_include=include, backend_library=library)
+    for core, name in (("BASE", "ggml-base"), ("REGISTRY", "ggml")):
+        digest = hashlib.sha256(name.encode()).hexdigest()
+        definition = f'-DALIGN_GPU_CORE_{core}_SHA256="{digest}"'
+        assert definition in planned[2].physical_argv
+        assert definition in planned[2].logical_argv
     assert len(planned) == 5
     assert planned[0].output == work / "alignc"
     assert planned[1].output == work / "libalign_runtime.a"

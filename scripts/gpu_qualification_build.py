@@ -257,6 +257,14 @@ def commands(
         logical.extend(("-isysroot", sdk_token))
         mappings[sdk_token] = sdk
     if ggml_include is not None and backend_library is not None:
+        for core, name in (("BASE", "ggml-base"), ("REGISTRY", "ggml")):
+            digest = _file_sha256(backend_library / f"lib{name}.{suffix}", "linked core")
+            definition = f'-DALIGN_GPU_CORE_{core}_SHA256="{digest}"'
+            physical.append(definition)
+            logical.append(definition)
+        if platform != "macos":
+            physical.append("-ldl")
+            logical.append("-ldl")
         physical.extend(("-I", str(ggml_include), "-L", str(backend_library),
                          "-Xlinker", "-rpath", "-Xlinker", str(backend_library),
                          "-lggml", "-lggml-base"))

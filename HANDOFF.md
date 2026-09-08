@@ -80,6 +80,18 @@ The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
+**Linked-core checkpoint (unpublished, after `9afcb40`).** R9 now treats the already linked
+base/registry libraries as explicit immutable executable prerequisites. Both real shim builders
+embed the exact link-input hashes; native loader observation identifies the actual canonical image
+paths; Align verifies those files against the bundle before any plugin/device initialization.
+Missing identities or mismatches refuse with `BUNDLE_IDENTITY/device` and clean staging.
+`run-gpu-linked-core-smoke` passes on macOS with real pinned cores, including dynamic-loader
+substitution, changed bundle cores, missing entries and missing build identities. Its native-only
+ELF mode passes in GCC 14/Linux against freshly built pinned cores, without CUDA. Device, bundle
+and preparation CLI owners pass. Next: R1 complete host accounting and R5/R6 prefill/corpus,
+then full local numerical qualification, final comprehensive review, preflight and PR/merge.
+No additional user CUDA debugging is requested.
+
 **Private first-fault checkpoint (unpublished, after `32a161f`).** R8 retains the first GPU
 status and lifecycle stage in a pointer-free thread-local diagnostic latch. Reset/active-stage/
 first-fault/read operations are private to qualification; ordinary provider errors stay unchanged.

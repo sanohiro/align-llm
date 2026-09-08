@@ -263,6 +263,8 @@ pub fn gpu_last_failure() -> Fault {
 // ---------------------------------------------------------------------------------------------
 
 extern "C" link("align_ggml_shim") {
+  fn align_gpu_core_required() -> i32
+  fn align_gpu_core_identity(core: i32, field: i32, out: slice<u8>, cap: i32) -> i32
   fn align_gpu_failure_reset() -> ()
   fn align_gpu_failure_activity(stage: i32) -> ()
   fn align_gpu_failure_record(status: i32, stage: i32) -> ()
@@ -537,6 +539,29 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_gallocr_bytes(galloc: raw) -> i64
   fn align_ggml_gallocr_free(galloc: raw) -> ()
   fn align_ggml_graph_compute(backend: raw, graph: raw) -> i32
+}
+
+pub fn gpu_core_required() -> bool {
+  unsafe { return align_gpu_core_required() != 0 }
+}
+
+pub fn gpu_core_identity(core: i32, field: i32) -> string {
+  mut window := buffer(4096)
+  mut at := 0
+  loop {
+    if at >= 4096 { break }
+    window.put_u8(0 as u8)
+    at = at + 1
+  }
+  unsafe {
+    written := align_gpu_core_identity(core, field, window.bytes(), 4096) as i64
+    if written < 1 || written > 4096 { return "".clone() }
+    view := window.bytes()
+    return match view[0..written].as_str() {
+      Ok(value) => value.clone(),
+      Err(_) => "".clone(),
+    }
+  }
 }
 
 pub fn gpu_device_open(

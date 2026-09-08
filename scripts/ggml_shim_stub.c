@@ -31,6 +31,13 @@
 #include <string.h>
 #include <unistd.h>
 
+/* No real core is linked by the model-free stub. */
+int32_t align_gpu_core_required(void) { return 0; }
+int32_t align_gpu_core_identity(int32_t core, int32_t field, void *out, int32_t cap) {
+    (void) core; (void) field; (void) out; (void) cap;
+    return 0;
+}
+
 /* --- BEGIN R4.5 SHARED SHIM CONTRACT --- */
 #if defined(__aarch64__)
 #include <arm_neon.h>

@@ -107,8 +107,22 @@ if [ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ]; then
     # directory in the shim itself is what survives that. A system ggml is unaffected: the rpath is
     # simply never consulted.
     link_flags=("-L${ALIGN_LLM_GGML_LIB}" "-Wl,-rpath,${ALIGN_LLM_GGML_LIB}")
+    # Bind the actual link inputs, not an externally supplied identity string.
+    for core in BASE REGISTRY; do
+      core_name=ggml-base
+      if [ "${core}" = REGISTRY ]; then core_name=ggml; fi
+      core_digest=$(python3 - "${ALIGN_LLM_GGML_LIB}/lib${core_name}.${suffix}" <<'PY_HASH'
+import hashlib
+import pathlib
+import sys
+print(hashlib.file_digest(pathlib.Path(sys.argv[1]).open("rb"), "sha256").hexdigest())
+PY_HASH
+)
+      include_flags+=("-DALIGN_GPU_CORE_${core}_SHA256=\"${core_digest}\"")
+    done
   fi
   link_flags+=("-lggml" "-lggml-base")
+  if [ "${suffix}" = so ]; then link_flags+=("-ldl"); fi
   # Section 4.6's named mechanism for the three failures no input can produce. Only the real shim
   # honours it, and only when the qualification asks: an ordinary build never defines a macro.
   case "${ALIGN_LLM_GGML_FORCE:-}" in

@@ -15,6 +15,20 @@ pub fn open(options: runtime_options.RuntimeOptions) -> Result<ggml_ffi.GpuDevic
     ggml_ffi.gpu_note_failure(ggml_ffi.GPU_STATUS_BUNDLE_SWITCH, ggml_ffi.GPU_STAGE_DEVICE)
     return Err(Error.Invalid)
   }
+  if ggml_ffi.gpu_core_required() {
+    mut core: i32 := 0
+    loop {
+      if core >= 2 { break }
+      actual_path := ggml_ffi.gpu_core_identity(core, 0)
+      build_digest := ggml_ffi.gpu_core_identity(core, 1)
+      if !runtime_bundle.verify_core(verified, core, actual_path, build_digest, options.host_budget_bytes) {
+        ggml_ffi.gpu_note_failure(ggml_ffi.GPU_STATUS_BUNDLE_SWITCH, ggml_ffi.GPU_STAGE_DEVICE)
+        runtime_bundle.cleanup(verified) else { return Err(Error.Invalid) }
+        return Err(Error.Invalid)
+      }
+      core = core + 1
+    }
+  }
   opened := ggml_ffi.gpu_device_open(
     options.backend,
     options.device,

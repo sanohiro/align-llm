@@ -26,6 +26,11 @@
  * `ALIGN_LLM_GGML_INCLUDE` is set; `scripts/ggml_shim_stub.c` is built instead when it is not.
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <dlfcn.h>
+#include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdatomic.h>
@@ -37,6 +42,36 @@
 #include "ggml.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
+
+/* G1 linked-core observation. The executable owns immutable installed cores; the
+ * plugin bundle is admitted only after Align verifies these actual loaded paths. */
+#ifndef ALIGN_GPU_CORE_BASE_SHA256
+#define ALIGN_GPU_CORE_BASE_SHA256 ""
+#endif
+#ifndef ALIGN_GPU_CORE_REGISTRY_SHA256
+#define ALIGN_GPU_CORE_REGISTRY_SHA256 ""
+#endif
+int32_t align_gpu_core_required(void) { return 1; }
+int32_t align_gpu_core_identity(int32_t core, int32_t field, void *out, int32_t cap) {
+    Dl_info info;
+    char resolved[PATH_MAX];
+    const char *value;
+    size_t length;
+    if (core < 0 || core > 1 || field < 0 || field > 1 || out == NULL || cap < 1) { return 0; }
+    if (field == 1) {
+        value = core == 0 ? ALIGN_GPU_CORE_BASE_SHA256 : ALIGN_GPU_CORE_REGISTRY_SHA256;
+        if (strlen(value) != 64) { return 0; }
+    } else {
+        const void *symbol = core == 0 ? (const void *) ggml_init : (const void *) ggml_backend_load;
+        if (dladdr(symbol, &info) == 0 || info.dli_fname == NULL
+                || realpath(info.dli_fname, resolved) == NULL || resolved[0] != '/') { return 0; }
+        value = resolved;
+    }
+    length = strlen(value);
+    if (length == 0 || length > 4096 || length > (size_t) cap) { return 0; }
+    memcpy(out, value, length);
+    return (int32_t) length;
+}
 
 /* --- BEGIN R4.5 SHARED SHIM CONTRACT --- */
 #if defined(__aarch64__)

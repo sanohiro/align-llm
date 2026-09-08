@@ -65,6 +65,10 @@ pub VerifiedBundle {
   backend_path: string,
   backend_sha256: string,
   artifact_bytes: i64,
+  core_base_bytes: i64,
+  core_base_sha256: string,
+  core_registry_bytes: i64,
+  core_registry_sha256: string,
 }
 
 fn digest_bytes(borrow bytes: slice<u8>) -> string {
@@ -473,6 +477,27 @@ pub fn verify(root: str, expected_backend: str, host_budget_bytes: i64) -> Resul
     }
     artifact_at = artifact_at + 1
   }
+  mut core_base_bytes := 0
+  mut core_base_sha256 := "".clone()
+  mut core_registry_bytes := 0
+  mut core_registry_sha256 := "".clone()
+  base_name := if bundle.target.os == "macos" { "libggml-base.dylib" } else { "libggml-base.so" }
+  registry_name := if bundle.target.os == "macos" { "libggml.dylib" } else { "libggml.so" }
+  artifact_at = 0
+  loop {
+    if artifact_at >= bundle.artifacts.len() { break }
+    if bundle.artifacts[artifact_at].role == "shared_library" {
+      if bundle.artifacts[artifact_at].path == base_name {
+        core_base_bytes = bundle.artifacts[artifact_at].bytes
+        core_base_sha256 = bundle.artifacts[artifact_at].sha256.clone()
+      }
+      if bundle.artifacts[artifact_at].path == registry_name {
+        core_registry_bytes = bundle.artifacts[artifact_at].bytes
+        core_registry_sha256 = bundle.artifacts[artifact_at].sha256.clone()
+      }
+    }
+    artifact_at = artifact_at + 1
+  }
   backend_path := path.join(staging_root, staged_name(plugin_index))
   return Ok(VerifiedBundle {
       bundle_id: claimed_id,
@@ -482,5 +507,29 @@ pub fn verify(root: str, expected_backend: str, host_budget_bytes: i64) -> Resul
       backend_path: backend_path,
       backend_sha256: plugin_sha256,
       artifact_bytes: total_bytes,
+      core_base_bytes: core_base_bytes,
+      core_base_sha256: core_base_sha256,
+      core_registry_bytes: core_registry_bytes,
+      core_registry_sha256: core_registry_sha256,
     })
+}
+
+// The core is an immutable executable prerequisite. Read the observed loaded file,
+// never a manifest path substituted for native loader observation.
+pub fn verify_core(
+  borrow bundle: VerifiedBundle, core: i32, actual_path: str, build_digest: str,
+  host_budget_bytes: i64,
+) -> bool {
+  if (core != 0 && core != 1) || !valid_digest(build_digest)
+    || actual_path.len() < 2 || actual_path.len() > 4096
+    || !actual_path.starts_with("/") || actual_path.contains("\0") { return false }
+  bytes := if core == 0 { bundle.core_base_bytes } else { bundle.core_registry_bytes }
+  digest: str := if core == 0 { bundle.core_base_sha256 } else { bundle.core_registry_sha256 }
+  if bytes < 1 || digest != build_digest { return false }
+  observed := Artifact {
+    role: "shared_library".clone(), path: actual_path[1..actual_path.len()].clone(),
+    bytes: bytes, sha256: digest.clone(),
+  }
+  read_verified_artifact("/", observed, host_budget_bytes) else { return false }
+  return true
 }
