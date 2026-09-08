@@ -404,6 +404,17 @@ when sampled. Immediate EOG therefore has one expected ID and empty decoded outp
 Expected output is the exact generated UTF-8 byte sequence for those IDs. Its digest is SHA-256 of
 those bytes with no added LF; both CPU repeats and both GPU repeats reproduce the bytes and digest.
 
+The private `runtime_calibration_seed` driver obtains CPU expectations before GPU holdout execution.
+Its positional inputs are model, pack, geometry, stream root/name, architecture and prompt; it uses
+an empty system prompt, greedy sampling and two maximum output tokens. Qwen uses zero runtime
+cache budget and OLMoE uses 1 MiB. The output is the owning production `TraceResult` with actual
+prompt/sample IDs and UTF-8 text, plus its completed production-only numeric stream (16 MiB cap).
+It admits the actual model architecture and cannot select GPU options. It does not freeze a
+calibration, infer tolerances, compare devices or declare qualification PASS. The provider trace
+owner compares its CPU output and IDs with the independently executed native case for both models
+and immediate-EOG fixtures. Schema/cache identity and public CLI are N/A: this is an internal
+expectation-acquisition tool consumed when assembling the frozen records.
+
 Tolerances and expected outputs are frozen before holdout execution and cannot be enlarged after a
 failure. Teacher forcing compares common layer/router/final-logit positions so an early generated
 token difference cannot hide later numeric drift. Both repeated GPU executions must match the

@@ -246,6 +246,13 @@ now connects all 16 CPU/GPU executions to case records, retains 32 logs and obse
 per-child RSS; `python3 scripts/run-gpu-provider-trace-smoke` passes. Final host/device identity
 fields and top-level source/cleanup/publication integration remain next.
 
+**Calibration expectation acquisition.** `runtime_calibration_seed` is a private CPU-only
+production trace driver with an explicit prompt, greedy sampling and two output tokens. It emits
+actual prompt/sample IDs and UTF-8 output without claiming qualification or inventing tolerances.
+The provider trace owner now builds it and compares its output with the existing trace/native-case
+results for both models and immediate EOG; `python3 scripts/run-gpu-provider-trace-smoke` passes.
+`gmake fmt` passes. Next: build the same pinned static CPU reference for real expectation capture.
+
 **Next actions, in order.**
 
 1. Prepare real profiles/calibrations and run the final `scripts/gpu-runtime-qualify` on Metal.

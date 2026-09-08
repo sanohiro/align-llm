@@ -72,6 +72,9 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
     subprocess.run([compiler, "build", "src/runtime_case.align"], cwd=ROOT, env=environment, check=True)
     case_executable = work / "case"
     (ROOT / "runtime_case").rename(case_executable)
+    subprocess.run([compiler, "build", "src/runtime_calibration_seed.align"], cwd=ROOT, env=environment, check=True)
+    seed_executable = work / "calibration-seed"
+    (ROOT / "runtime_calibration_seed").rename(seed_executable)
     fault_environment = dict(environment)
     fault_shim = work / "nonfinite-shim"
     fault_environment.update(ALIGN_LLM_GGML_FORCE="engine+gpu+inf-readback",
@@ -109,6 +112,14 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                 lines = result.stdout.splitlines()
                 assert len(lines) == 2 and lines[-1] == "runtime provider trace: PASS", result.stdout
                 records.append(json.loads(lines[0]))
+                if backend == "cpu":
+                    seed_root = work / (model.stem + "-seed")
+                    seed_root.mkdir()
+                    seeded = subprocess.run([str(seed_executable), str(model), str(pack), str(geometry),
+                        str(seed_root), "seed", architecture, "x"], env=environment,
+                        capture_output=True, text=True)
+                    assert seeded.returncode == 0, seeded.stderr
+                    assert json.loads(seeded.stdout) == records[-1]
                 observation = records[-1].pop("observation")
                 if backend == "cpu":
                     assert observation["available"] is False
