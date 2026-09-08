@@ -5,7 +5,7 @@ this file records durable execution state.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
-Branch `agent/g1-gpu-generation` incorporates main `1a96d39` (Request 62 publication PR #213). G1 remains unmerged and
+Branch `agent/g1-gpu-generation` incorporates main `b3ca489` (consolidated G1 readiness PR #214). G1 remains unmerged and
 requires its ordinary consumer completion, real Metal/CUDA qualification, review and publication.
 The user authorized continued implementation, PR/merge and subsequent eligible roadmap work.
 
@@ -18,7 +18,7 @@ observed-generation hooks were removed; no rejected/hypothetical surface remains
 Request 62 also records a non-blocking derived-view helper precision case. Header encoding borrows
 the complete stream owner using Request 61's shipped surface. Existing generation smoke passes.
 
-**Active investigation: consolidated G1 readiness.** The user requested that all currently
+**Completed handoff: consolidated G1 readiness.** The user requested that all currently
 foreseeable GPU compiler blockers be collected before another Align interruption. The 21-case
 whole/per-unit/build audit is in `docs/align-gpu-readiness.md`. Request 62's main failure is a
 continuing Request 49 consumer, so 49 is now blocking and 42/43/49/62 are coordinated as one
@@ -26,6 +26,10 @@ producer investigation. The audit also reproduces Request 48's non-blocking scal
 actual retained-local-view safety failure. No production source or pin changed during the audit.
 The companion source bundle contains the frozen actual generation variants, positive/negative
 controls and complete logs; Align can assess its candidate before a single client pin adoption.
+The delivered `g1-align-readiness-20260908.tar.gz` has SHA-256
+`44cdba88617be0091d9a5ab4c1890535350a9e50681aef6eb6a992bb0c27fe05`.
+Its comprehensive review findings were repaired together; oracle coverage, diagnostic-only subset
+reporting and all 1,089 delivered file digests pass.
 Do not resume one-ticket-at-a-time reporting. The next action is the consolidated Align repair,
 then the observed G1 owners and native diagnostic/case integration. Compiler probes do not close
 real Metal/CUDA qualification or the unfinished final qualifier CLI.
