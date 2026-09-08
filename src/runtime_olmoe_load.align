@@ -179,9 +179,19 @@ pub fn build_plan_file_capacity(
   borrow g: layer_olmoe.Geometry,
   kv_capacity: i64,
 ) -> Result<Plan, Error> {
+  return build_plan_file_capacity_bounded(owner, pack, g, kv_capacity, 9223372036854775807)
+}
+
+pub fn build_plan_file_capacity_bounded(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow pack: file,
+  borrow g: layer_olmoe.Geometry,
+  kv_capacity: i64,
+  maximum_blocks: i64,
+) -> Result<Plan, Error> {
   table := layer_olmoe.mm_layer_member_table(g)
   mut counters := alignpack_read.new_counters()
-  index := alignpack_read.open_pack(pack, counters) else { return Err(Error.Invalid) }
+  index := alignpack_read.open_pack_bounded(pack, counters, maximum_blocks) else { return Err(Error.Invalid) }
   if g.code.len() != 0 || g.n_layer < 1 || g.n_expert < 1 || table.count != 9
     || kv_capacity < 1 || kv_capacity > g.context_length {
     return Err(Error.Invalid)

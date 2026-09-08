@@ -80,6 +80,19 @@ The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
+**Host-capacity checkpoint (unpublished, after `e8b7a3f`).** R1 now reserves the complete
+bounded application capacity separately from native allocation peaks, charges both simultaneous
+upload windows, and removes unused diagnostic bytes from native metadata. Pack index bounds are
+checked before column allocation. Evidence carries the separate application reservation and checks
+its sum with native peak against the host cap. Bundle staging uses exact-capacity images and drops
+the source before staged verification. The pinned runtime's allocation-count owner passes Qwen/
+OLMoE observed and diagnostic generation under 2 MiB, 512 KiB pre-upload refusal, bounded index
+refusal, and 32 MiB artifact staging under 34 MiB (tracked peak 33,630,883 bytes). Generation,
+provider trace, device, bundle, replay/case record and strict real Metal native owners pass.
+`gmake fmt` and `git diff --check` pass. Next: bounded prefill and full real corpus (R5/R6),
+remaining numerical qualification, final comprehensive review, publication preflight and PR/merge.
+No additional user CUDA debugging is requested.
+
 **Linked-core checkpoint (unpublished, after `9afcb40`).** R9 now treats the already linked
 base/registry libraries as explicit immutable executable prerequisites. Both real shim builders
 embed the exact link-input hashes; native loader observation identifies the actual canonical image

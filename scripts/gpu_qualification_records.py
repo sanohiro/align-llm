@@ -827,7 +827,7 @@ def validate_case(
         raise RecipeError("passing GPU row contains an unexpected readback")
 
     memory = exact_keys(result["memory"], (
-        "managed_host_peak_bytes", "managed_device_peak_bytes", "uma_alias_peak_bytes",
+        "managed_host_peak_bytes", "application_host_reserved_bytes", "managed_device_peak_bytes", "uma_alias_peak_bytes",
         "rss_peak_bytes", "driver_peak_bytes",
     ), "case memory")
     result["memory"] = memory
@@ -1105,7 +1105,7 @@ def validate_evidence(
         assert isinstance(memory, dict)
         option = profile["runtime_options"][0]
         assert isinstance(option, dict)
-        if memory["managed_host_peak_bytes"] > option["host_budget_bytes"] \
+        if memory["managed_host_peak_bytes"] + memory["application_host_reserved_bytes"] > option["host_budget_bytes"] \
                 or memory["managed_device_peak_bytes"] > option["device_budget_bytes"]:
             raise RecipeError("evidence case exceeds profile memory budget")
     if status == "PASS" and len(case_values) != len(profile_cases):

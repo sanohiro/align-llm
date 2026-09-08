@@ -243,6 +243,16 @@ pub fn build_plan_file_capacity(
   borrow g: layer_qwen2.Geometry,
   kv_capacity: i64,
 ) -> Result<Plan, Error> {
+  return build_plan_file_capacity_bounded(owner, pack, g, kv_capacity, 9223372036854775807)
+}
+
+pub fn build_plan_file_capacity_bounded(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow pack: file,
+  borrow g: layer_qwen2.Geometry,
+  kv_capacity: i64,
+  maximum_blocks: i64,
+) -> Result<Plan, Error> {
   embed_table := layer_qwen2.mf_embed_member_table(g)
   layer_table := layer_qwen2.mf_layer_member_table(g)
   head_table := layer_qwen2.mf_head_member_table(g)
@@ -255,7 +265,7 @@ pub fn build_plan_file_capacity(
     return Err(Error.Invalid)
   }
   mut counters := alignpack_read.new_counters()
-  index := alignpack_read.open_pack(pack, counters) else { return Err(Error.Invalid) }
+  index := alignpack_read.open_pack_bounded(pack, counters, maximum_blocks) else { return Err(Error.Invalid) }
   mut kinds: array_builder<i64> := array_builder()
   mut dims: array_builder<i64> := array_builder()
   mut d0: array_builder<i64> := array_builder()

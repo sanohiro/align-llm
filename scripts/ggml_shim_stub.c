@@ -1740,6 +1740,7 @@ struct align_gpu_device_state {
     int64_t graph_context_bytes[ALIGN_GPU_GRAPH_KINDS];
     int64_t graph_metadata_offset;
     int64_t host_budget_bytes;
+    int64_t application_host_reserved_bytes;
     int64_t device_budget_bytes;
     int64_t host_planned_bytes;
     int64_t device_planned_bytes;
@@ -2073,6 +2074,19 @@ static int align_gpu_add_bytes(int64_t left, int64_t right, int64_t *out) {
     return 1;
 }
 
+int32_t align_gpu_host_reserve(void *owner, int64_t bytes) {
+    struct align_gpu_device_state *state = owner;
+    if (state == NULL || state->memory_planned || bytes < 0) { return ALIGN_GPU_CONFIG; }
+    if (bytes > state->host_budget_bytes) { return ALIGN_GPU_MEMORY_BUDGET; }
+    state->application_host_reserved_bytes = bytes;
+    return ALIGN_GPU_OK;
+}
+
+int64_t align_gpu_host_reserved(void *owner) {
+    struct align_gpu_device_state *state = owner;
+    return state == NULL ? -1 : state->application_host_reserved_bytes;
+}
+
 int32_t align_gpu_memory_admit(
         void *owner, int64_t weights_bytes, int64_t kv_bytes, int64_t workspace_bytes,
         int64_t metadata_bytes, int64_t staging_bytes, int64_t legacy_cache_bytes) {
@@ -2088,6 +2102,7 @@ int32_t align_gpu_memory_admit(
         || !align_gpu_add_bytes(device_total, workspace_bytes, &device_total)
         || !align_gpu_add_bytes(metadata_bytes, staging_bytes, &host_total)
         || !align_gpu_add_bytes(host_total, legacy_cache_bytes, &host_total)
+        || !align_gpu_add_bytes(host_total, state->application_host_reserved_bytes, &host_total)
         || device_total > state->device_budget_bytes || host_total > state->host_budget_bytes) {
         return ALIGN_GPU_MEMORY_BUDGET;
     }
@@ -2170,6 +2185,7 @@ int32_t align_gpu_plan_finish(void *owner) {
     initial.backend = state->backend;
     memcpy(initial.bundle_id, state->bundle_id, sizeof(initial.bundle_id));
     initial.host_budget_bytes = state->host_budget_bytes;
+    initial.application_host_reserved_bytes = state->application_host_reserved_bytes;
     initial.device_budget_bytes = state->device_budget_bytes;
     initial.staging_consumed = state->staging_consumed;
     initial.staging_path_valid = state->staging_path_valid;

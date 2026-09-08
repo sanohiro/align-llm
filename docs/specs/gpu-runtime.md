@@ -608,7 +608,9 @@ schema-1 validation gap during G1 integration without adding fields or changing 
 unexpected value counts bytes outside declared final-logit and compact-routing readbacks and must
 be zero for PASS. Production resident generation does not read routing decisions back to the host;
 the compact-routing allowance applies only to diagnostic replay below. `memory` is
-`managed_host_peak_bytes,managed_device_peak_bytes,uma_alias_peak_bytes,rss_peak_bytes,driver_peak_bytes`.
+`managed_host_peak_bytes,application_host_reserved_bytes,managed_device_peak_bytes,uma_alias_peak_bytes,rss_peak_bytes,driver_peak_bytes`.
+`application_host_reserved_bytes` is the conservative separate capacity reservation; it is not
+an observed peak. Native peak plus that reservation must fit the declared host cap.
 Managed peaks describe the production device owner's admitted native allocation domain, as do
 production placement and transfer counters; they are not whole-process heap peaks. CPU rows have
 no allocation in that GPU-managed domain and report zero there. Diagnostic invocations independently
@@ -1488,3 +1490,55 @@ The model-free stub has no dynamically linked core and explicitly reports that f
 No performance claim; admission performs two bounded library reads before model allocation. The
 existing single-threaded invocation exclusion and immutable prerequisite lifetime remain required.
 This repairs unreleased schema 1 semantics without rewriting historical evidence.
+
+### Managed host accounting repair (review R1)
+
+Admission covers both native allocations and the caller-owned buffers alive beside them. Native
+allocation observations retain their explicitly named native domain; a conservative application
+capacity reservation is separate from measured allocation peaks. It is never reported as measured
+RSS or relabeled driver-private storage. The reservation includes model-plan arrays and their
+construction overlap, slots, logits, prompt/decode masks and index images, generated IDs, topology
+serialization, numeric stream and diagnostic storage, file-reader windows and allocation shells.
+Both the native upload staging allocation and the loader's Align buffer are charged when they
+coexist. Diagnostic bytes are not allocated again as unused native metadata.
+
+| Owner / phase | Checked inputs and policy | Closure owner |
+| --- | --- | --- |
+| `runtime_bundle`, manifest read/decode | Read capacity is bounded by the host budget before reading. Parsing/owned canonical representations reserve 128 bytes per manifest byte plus 128 KiB for bounded reader/path/shell scratch, checked before JSON parsing. This is a conservative capacity bound, not a measured peak. Maximum manifest size/schema unchanged. | `run-gpu-bundle-smoke`: tight cap refusal before staging, malformed manifest, ordinary bundle and cleanup |
+| `runtime_bundle`, artifact staging and core verification | Exact declared artifact capacity plus 64 KiB read window and fixed shell/path allowance; checked against remaining budget before allocation. The original artifact buffer is dropped before staged verification; no growing full-file buffer or simultaneous second image. Core verification uses the same bounded reader after manifest ownership has ended. | Same owner and `run-gpu-linked-core-smoke`: exact read, truncation/trailing bytes, digest mismatch, bounded staging and cleanup |
+| Generation / model plan / native admission | Checked independent application reservation reduces native admission capacity; shared planning and execution use the same reservation. Smallest nonzero transfer buffer must fit twice. Failure records `MEMORY_BUDGET/plan` before payload upload. | `run-gpu-device-smoke`, `gpu-generation-smoke` and allocation-tracked tight-budget owner for both architectures and diagnostic mode |
+
+The pinned runtime's ordinary allocation families and compiler-emitted ownership define reservation
+sizes; no hypothetical budget allocator or incremental hash API is consumed. Request 29 remains
+the owner of incremental SHA-256. Borrowed provider inputs remain charged to their existing owner;
+new GPU-owned copies and transient construction storage are charged here. Historical evidence is
+not rewritten. Final ledger-to-diff mapping must include the independently tracked tight-budget
+owner before R1 is dispositioned as repaired.
+
+R1 implementation reservation: `runtime_generation.application_capacity` charges 24 bytes per
+potential i64 plan/index/generated element (including builder realloc overlap), 8 plan columns per
+resident tensor plus three per OLMoE upload piece, and eight index columns per pack block. The pack
+bound is `2 + 2*layers` for Qwen and `2 + (2+experts)*layers` for OLMoE, matching the block IR.
+`alignpack_read.open_pack_bounded` checks that bound after structural header validation and before
+column construction; its ordinary unbounded-to-consumer wrapper retains the existing format limit.
+`runtime_pack_identity` and both resident loaders propagate the same bound. Masks charge all prompt
+queries at the maximum reachable attention bucket; decode images charge that width plus V indices;
+logits charge vocabulary F32s; stream/capture charge their explicit required capacities. Graph
+bookkeeping and fixed-width node tables reserve 2,048 bytes per maximum graph node; geometry and
+owned topology text reserve 128 bytes per supplied geometry byte; 256 KiB plus slots covers
+reader windows, remaining small shells and paths. These are deliberately conservative bounds.
+Native metadata omits the separate stream/capture reservation. The remaining cap after fixed
+storage and the 64-byte Align buffer shell is divided between the two simultaneous staging
+windows, each at most 16 MiB. `align_gpu_host_reserve` binds the separate capacity before native
+memory admission and preserves it across metadata-only shape planning. It has no allocation side
+effect and rejects negative/late requests or capacities above the host cap. The private observation
+and public per-case memory record carry `application_host_reserved_bytes`; result validation checks
+its sum with the native peak. No aggregate treats that reservation as a measured peak.
+
+`run-gpu-host-capacity-smoke <pinned-align-checkout>` uses that pin's existing `alloc-count`
+requested-live-byte probes in an isolated test runtime, without changing the managed release.
+It measures both resident model loaders, observed and diagnostic generation at a 2 MiB cap,
+refuses 512 KiB before upload, rejects an oversized pack index before its columns, and measures
+32 MiB artifact staging at a 34 MiB cap. The probe covers Align buffers/builders/C-owned payload;
+native owner counters independently cover native metadata/staging. It is a focused owner, not an
+aggregate addition or a production runtime ABI dependency.

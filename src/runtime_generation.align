@@ -102,6 +102,29 @@ fn olmoe_graph_capacity(n_layer: i64, n_expert_used: i64) -> Result<i64, Error> 
   return checked_add(4, checked_mul(n_layer, per_layer)?)
 }
 
+// Upper bounds on application-owned requested capacities, independently of native
+// allocation counters. Array builders double from four elements; 24 bytes per
+// i64 covers old/new realloc overlap. Fixed allowances cover small shells, file
+// windows, topology serialization and pinned allocator bookkeeping.
+fn application_capacity(weight_count: i64, pieces: i64, blocks: i64, graph_capacity: i64,
+  geometry_bytes: i64, prompt: i64, mask_width: i64, lanes: i64, vocabulary: i64,
+  generated: i64, observation_bytes: i64) -> Result<i64, Error> {
+  plan_elements := checked_add(checked_mul(weight_count, 8)?, checked_mul(pieces, 3)?)?
+  index_elements := checked_mul(blocks, 8)?
+  arrays := checked_mul(checked_add(checked_add(plan_elements, index_elements)?, generated)?, 24)?
+  prompt_images := checked_add(checked_mul(prompt, 8)?, checked_mul(checked_mul(prompt, mask_width)?, 4)?)?
+  decode_images := checked_mul(checked_add(mask_width, lanes)?, 4)?
+  outputs := checked_add(checked_mul(vocabulary, 4)?, observation_bytes)?
+  graph_control := checked_add(checked_mul(graph_capacity, 2048)?, checked_mul(geometry_bytes, 128)?)?
+  return checked_add(checked_add(checked_add(arrays, prompt_images)?, checked_add(decode_images, outputs)?)?,
+    checked_add(graph_control, 262144 + SLOT_BYTES)?)
+}
+
+fn reserve_application(borrow owner: ggml_ffi.GpuDevice, bytes: i64) -> Result<(), Error> {
+  ggml_ffi.gpu_host_reserve(owner, bytes) else { return Err(Error.Invalid) }
+  return Ok(())
+}
+
 fn prepare_memory(
   borrow owner: ggml_ffi.GpuDevice,
   borrow options: runtime_options.RuntimeOptions,
@@ -118,22 +141,27 @@ fn prepare_memory(
   graph_metadata := ggml_ffi.graph_context_bytes(graph_capacity)
   if root_metadata < 1 || graph_metadata < 1 { return Err(Error.Invalid) }
   metadata_bytes := checked_add(
-    checked_add(root_metadata, checked_mul(graph_metadata, 2)?)?, 128 + observation_bytes)?
+    checked_add(root_metadata, checked_mul(graph_metadata, 2)?)?, 128)?
   device_used := checked_add(weights_bytes, kv_bytes)?
   if device_used >= options.device_budget_bytes {
     ggml_ffi.gpu_note_failure(ggml_ffi.GPU_STATUS_MEMORY_BUDGET, ggml_ffi.GPU_STAGE_PLAN)
     return Err(Error.Invalid)
   }
   workspace_bytes := options.device_budget_bytes - device_used
-  host_used := checked_add(metadata_bytes, legacy_cache_bytes)?
+  host_used := checked_add(checked_add(metadata_bytes, legacy_cache_bytes)?, observation_bytes)?
   if host_used >= options.host_budget_bytes {
     ggml_ffi.gpu_note_failure(ggml_ffi.GPU_STATUS_MEMORY_BUDGET, ggml_ffi.GPU_STAGE_PLAN)
     return Err(Error.Invalid)
   }
+  // Native staging and the Align loader window coexist. Buffer shell is separate.
   host_remaining := options.host_budget_bytes - host_used
-  staging_bytes := if host_remaining < MAX_STAGING_BYTES {
-    host_remaining
-  } else { MAX_STAGING_BYTES }
+  if host_remaining < 66 {
+    ggml_ffi.gpu_note_failure(ggml_ffi.GPU_STATUS_MEMORY_BUDGET, ggml_ffi.GPU_STAGE_PLAN)
+    return Err(Error.Invalid)
+  }
+  each_staging := (host_remaining - 64) / 2
+  staging_bytes := if each_staging < MAX_STAGING_BYTES { each_staging } else { MAX_STAGING_BYTES }
+  reserve_application(owner, checked_add(observation_bytes, staging_bytes + 64)?)?
   runtime_memory.admit(owner, runtime_memory.MemoryPlan {
       weights_bytes: weights_bytes,
       kv_bytes: kv_bytes,
@@ -536,6 +564,7 @@ fn generate_qwen_mode(
   diagnostic: bool,
   borrow forced_ids: array<i64>,
 ) -> Result<array<i64>, Error> {
+  reserve_application(owner, checked_add(262144, checked_mul(geometry_text.len(), 128)?)?)?
   g := layer_qwen2.parse_geometry(geometry_text)
   forced := diagnostic && forced_ids.len() > 0
   if forced_ids.len() > 4096 || (!diagnostic && forced_ids.len() != 0) { return Err(Error.Invalid) }
@@ -557,11 +586,18 @@ fn generate_qwen_mode(
   v_lanes := checked_mul(g.head_dim, g.n_head_kv)?
   if checked_mul(v_lanes, kv_capacity)? > 2147483647 { return Err(Error.Invalid) }
   graph_capacity := qwen_graph_capacity(g.n_layer)?
-  pack := fs.open_rw(pack_path)?
-  runtime_pack_identity.verify_file(pack, source_identity)?
-  plan := runtime_qwen_load.build_plan_file_capacity(owner, pack, g, kv_capacity)?
   capture_bytes := if diagnostic { runtime_diagnostic.required_bytes(g.n_layer, g.n_embd, prompt_ids.len(), 0, 0)? } else { 0 }
-  observation_bytes := checked_add(runtime_numeric_stream.reservation(stream), capture_bytes)?
+  stream_capture := checked_add(runtime_numeric_stream.reservation(stream), capture_bytes)?
+  maximum_blocks := checked_add(2, checked_mul(g.n_layer, 2)?)?
+  maximum_pieces := 0
+  mask_bound := runtime_inputs.attention_width(kv_capacity, g.context_length)?
+  observation_bytes := application_capacity(runtime_qwen.weight_count(g.n_layer), maximum_pieces,
+    maximum_blocks, graph_capacity, geometry_text.len(), prompt_ids.len(), mask_bound,
+    v_lanes, g.n_vocab, decode_steps + 1, stream_capture)?
+  reserve_application(owner, observation_bytes)?
+  pack := fs.open_rw(pack_path)?
+  runtime_pack_identity.verify_file_bounded(pack, source_identity, maximum_blocks)?
+  plan := runtime_qwen_load.build_plan_file_capacity_bounded(owner, pack, g, kv_capacity, maximum_blocks)?
   admit_qwen_shapes(owner, options, g, plan, geometry_text, prompt_ids.len(), kv_capacity,
     graph_capacity, observation_bytes, 0)?
   staging := prepare_memory(
@@ -712,6 +748,7 @@ fn generate_olmoe_mode(
   diagnostic: bool,
   borrow forced_ids: array<i64>,
 ) -> Result<array<i64>, Error> {
+  reserve_application(owner, checked_add(262144, checked_mul(geometry_text.len(), 128)?)?)?
   g := layer_olmoe.parse_geometry(geometry_text)
   forced := diagnostic && forced_ids.len() > 0
   if forced_ids.len() > 4096 || (!diagnostic && forced_ids.len() != 0) { return Err(Error.Invalid) }
@@ -733,11 +770,18 @@ fn generate_olmoe_mode(
   v_lanes := checked_mul(g.head_dim, g.n_head_kv)?
   if checked_mul(v_lanes, kv_capacity)? > 2147483647 { return Err(Error.Invalid) }
   graph_capacity := olmoe_graph_capacity(g.n_layer, g.n_expert_used)?
-  pack := fs.open_rw(pack_path)?
-  runtime_pack_identity.verify_file(pack, source_identity)?
-  plan := runtime_olmoe_load.build_plan_file_capacity(owner, pack, g, kv_capacity)?
   capture_bytes := if diagnostic { runtime_diagnostic.required_bytes(g.n_layer, g.n_embd, prompt_ids.len(), g.n_expert, g.n_expert_used)? } else { 0 }
-  observation_bytes := checked_add(runtime_numeric_stream.reservation(stream), capture_bytes)?
+  stream_capture := checked_add(runtime_numeric_stream.reservation(stream), capture_bytes)?
+  maximum_blocks := checked_add(2, checked_mul(g.n_layer, checked_add(2, g.n_expert)?)?)?
+  maximum_pieces := checked_add(3, checked_mul(g.n_layer, checked_add(9, checked_mul(3, g.n_expert)?)?)?)?
+  mask_bound := runtime_inputs.attention_width(kv_capacity, g.context_length)?
+  observation_bytes := application_capacity(runtime_olmoe.weight_count(g.n_layer), maximum_pieces,
+    maximum_blocks, graph_capacity, geometry_text.len(), prompt_ids.len(), mask_bound,
+    v_lanes, g.n_vocab, decode_steps + 1, stream_capture)?
+  reserve_application(owner, observation_bytes)?
+  pack := fs.open_rw(pack_path)?
+  runtime_pack_identity.verify_file_bounded(pack, source_identity, maximum_blocks)?
+  plan := runtime_olmoe_load.build_plan_file_capacity_bounded(owner, pack, g, kv_capacity, maximum_blocks)?
   admit_olmoe_shapes(owner, options, g, plan, geometry_text, prompt_ids.len(), kv_capacity,
     graph_capacity, observation_bytes, legacy_cache_bytes)?
   staging := prepare_memory(

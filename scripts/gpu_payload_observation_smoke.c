@@ -1,8 +1,10 @@
 /* Internal fault injection complements the public Align device owner. */
 #include "ggml_shim_stub.c"
 #include <assert.h>
+#include "gpu_host_reservation_smoke.h"
 
 int main(void) {
+    host_reservation();
     struct align_gpu_device_state state = {0};
     align_stub_tensor *weight;
     align_stub_tensor *kv;

@@ -90,6 +90,7 @@ def assemble(ordinal: int, expected: Mapping[str, object], plan: Plan, outcome: 
         },
         "memory": {
             "managed_host_peak_bytes": observation.get("managed_host_peak_bytes", 0),
+            "application_host_reserved_bytes": observation.get("application_host_reserved_bytes", 0),
             "managed_device_peak_bytes": observation.get("managed_device_peak_bytes", 0),
             "uma_alias_peak_bytes": 0,
             "rss_peak_bytes": 0 if process is None or process.rss_peak_bytes is None else process.rss_peak_bytes,

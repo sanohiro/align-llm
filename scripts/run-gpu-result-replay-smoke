@@ -218,6 +218,7 @@ for ordinal, expected in enumerate(profile["cases"]):
         },
         "memory": {
             "managed_host_peak_bytes": 1,
+            "application_host_reserved_bytes": 0,
             "managed_device_peak_bytes": 1 if gpu else 0,
             "uma_alias_peak_bytes": 0,
             "rss_peak_bytes": 1,
@@ -299,6 +300,19 @@ for altered in (
     else:
         raise AssertionError("case process/qualification status conflation was accepted")
 
+
+bad_host_capacity = copy.deepcopy(passing)
+bad_host_capacity["cases"][1]["memory"]["application_host_reserved_bytes"] = (1 << 63) - 1
+try:
+    records.validate_evidence_records(
+        runtime_option_raw=lines[0], align_source_raw=lines[1], ggml_source_raw=lines[2],
+        bundle_raw=lines[3], calibration_raws=lines[4:6], profile_raw=lines[6],
+        evidence_raw=records.canonical(bad_host_capacity),
+    )
+except records.RecipeError as error:
+    assert "memory budget" in str(error)
+else:
+    raise AssertionError("native peak plus application capacity exceeding host cap was accepted")
 
 bad_coverage = copy.deepcopy(passing)
 bad_coverage["cases"][1]["numeric"]["actual_scalar_count"] = 0

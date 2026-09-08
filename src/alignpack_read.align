@@ -333,6 +333,12 @@ fn region_inside(start: i64, length: i64, total: i64) -> bool {
 // recompute the source-identity digest, and does not check padding — those are `--pack-verify`'s
 // and stay there.
 pub fn open_pack(borrow f: file, borrow mut c: Counters) -> Result<PackIndex, Fault> {
+  return open_pack_bounded(f, c, MAX_TABLE_BYTES / BLOCK_RECORD_BYTES)
+}
+
+// A consumer can bound index ownership before any block-column allocation.
+pub fn open_pack_bounded(borrow f: file, borrow mut c: Counters,
+  maximum_blocks: i64) -> Result<PackIndex, Fault> {
   file_size := match f.len() {
     Ok(value) => value,
     Err(failure) => { return Err(os_fault("R4_PACK_UNREADABLE", failure)) },
@@ -481,6 +487,10 @@ pub fn open_pack(borrow f: file, borrow mut c: Counters) -> Result<PackIndex, Fa
     || !disjoint(payload_offset, payload_bytes, member_table_offset, member_table_bytes)
     || !disjoint(payload_offset, payload_bytes, source_record_offset, SOURCE_RECORD_BYTES) {
     return Err(fault("R4_PACK_REGION", "payload"))
+  }
+
+  if maximum_blocks < 1 || block_count > maximum_blocks {
+    return Err(fault("R4_PACK_REGION", "block_count_budget"))
   }
 
   mut kind_column: array_builder<i64> := array_builder()

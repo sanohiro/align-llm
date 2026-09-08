@@ -296,6 +296,8 @@ extern "C" link("align_ggml_shim") {
     root: str, root_len: i64, artifact_count: i64, poison: i32,
   ) -> i32
   fn align_gpu_device_synchronize(owner: raw) -> i32
+  fn align_gpu_host_reserve(owner: raw, bytes: i64) -> i32
+  fn align_gpu_host_reserved(owner: raw) -> i64
   fn align_gpu_memory_admit(
     owner: raw,
     weights_bytes: i64,
@@ -672,6 +674,19 @@ pub fn gpu_device_synchronize(borrow owner: GpuDevice) -> Result<(), Fault> {
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
   }
+}
+
+pub fn gpu_host_reserve(borrow owner: GpuDevice, bytes: i64) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_host_reserve(resource.raw(resource.borrow(owner)), bytes) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+  }
+  return Ok(())
+}
+
+pub fn gpu_host_reserved(borrow owner: GpuDevice) -> i64 {
+  unsafe { return align_gpu_host_reserved(resource.raw(resource.borrow(owner))) }
 }
 
 pub fn gpu_memory_admit(

@@ -2,6 +2,7 @@
  * Compile against the pinned ggml headers/libraries; argv[1] is its GPU plugin. */
 #include "ggml_shim.c"
 #include <assert.h>
+#include "gpu_host_reservation_smoke.h"
 
 static void first_fault(void) {
     align_gpu_failure_reset();
@@ -194,6 +195,7 @@ static void shape_admission(ggml_backend_dev_t device) {
 }
 
 int main(int argc, char **argv) {
+    host_reservation();
     ggml_backend_reg_t registry;
     ggml_backend_dev_t device;
     int64_t first_peak = 0;

@@ -20,7 +20,7 @@ OBSERVATION_INTS = (
     "graph_nodes", "read_bytes", "read_calls", "sync_calls", "weight_upload_count",
     "weight_upload_bytes", "kv_upload_bytes", "input_upload_bytes", "prefill_executions",
     "decode_executions", "allocated_host_bytes", "allocated_device_bytes",
-    "weights_buffer_bytes", "kv_buffer_bytes", "managed_host_peak_bytes", "managed_device_peak_bytes",
+    "weights_buffer_bytes", "kv_buffer_bytes", "managed_host_peak_bytes", "application_host_reserved_bytes", "managed_device_peak_bytes",
     "resident_weight_payload_bytes", "resident_kv_payload_bytes",
     "model_operations", "model_layers", "model_experts",
     "device_total_bytes", "device_free_bytes",

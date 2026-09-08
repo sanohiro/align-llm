@@ -68,6 +68,13 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   expect_valid(args[1])?
   expect_invalid(args[1], "cuda")?
   expect_budget_invalid(args[1])?
+  manifest := fs.read_file(path.join(args[1], "manifest.json"))?
+  tight_budget := 131072 + manifest.len() * 128 + 73728 + 19
+  match runtime_bundle.verify(args[1], "metal", tight_budget) {
+    Ok(staged) => { runtime_bundle.cleanup(staged)?
+      return Err(Error.Invalid) },
+    Err(_) => {},
+  }
   mut at := 2
   loop {
     if at >= args.len() { break }

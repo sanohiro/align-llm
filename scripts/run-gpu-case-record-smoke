@@ -59,7 +59,7 @@ with tempfile.TemporaryDirectory(prefix="gpu-case-record-") as raw:
             "resident_weight_payload_bytes": 256, "resident_kv_payload_bytes": case.residency.kv_bytes,
             "weight_upload_count": 15, "weight_upload_bytes": 256, "kv_upload_bytes": 0,
             "input_upload_bytes": 32, "read_bytes": 2048, "sync_calls": 2,
-            "managed_host_peak_bytes": 8192, "managed_device_peak_bytes": 65536,
+            "managed_host_peak_bytes": 8192, "application_host_reserved_bytes": 4096, "managed_device_peak_bytes": 65536,
         }
         native = NativeSuccess({"token_ids": frozen["expected_token_ids"]}, observation,
                                frozen["expected_output_sha256"], "a" * 64)

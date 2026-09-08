@@ -31,8 +31,12 @@ fn same(borrow left: SourceIdentity, borrow right: SourceIdentity) -> bool {
 }
 
 pub fn observe_file(borrow pack: file) -> Result<SourceIdentity, Error> {
+  return observe_file_bounded(pack, 9223372036854775807)
+}
+
+pub fn observe_file_bounded(borrow pack: file, maximum_blocks: i64) -> Result<SourceIdentity, Error> {
   mut counters := alignpack_read.new_counters()
-  index := match alignpack_read.open_pack(pack, counters) {
+  index := match alignpack_read.open_pack_bounded(pack, counters, maximum_blocks) {
     Ok(value) => value,
     Err(_) => { return Err(Error.Invalid) },
   }
@@ -94,6 +98,13 @@ pub fn verify_file(
   borrow expected: SourceIdentity,
 ) -> Result<(), Error> {
   observed := observe_file(pack)?
+  if !same(observed, expected) { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn verify_file_bounded(borrow pack: file, borrow expected: SourceIdentity,
+  maximum_blocks: i64) -> Result<(), Error> {
+  observed := observe_file_bounded(pack, maximum_blocks)?
   if !same(observed, expected) { return Err(Error.Invalid) }
   return Ok(())
 }
