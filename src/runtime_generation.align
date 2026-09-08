@@ -120,10 +120,16 @@ fn prepare_memory(
   metadata_bytes := checked_add(
     checked_add(root_metadata, checked_mul(graph_metadata, 2)?)?, 128 + observation_bytes)?
   device_used := checked_add(weights_bytes, kv_bytes)?
-  if device_used >= options.device_budget_bytes { return Err(Error.Invalid) }
+  if device_used >= options.device_budget_bytes {
+    ggml_ffi.gpu_note_failure(ggml_ffi.GPU_STATUS_MEMORY_BUDGET, ggml_ffi.GPU_STAGE_PLAN)
+    return Err(Error.Invalid)
+  }
   workspace_bytes := options.device_budget_bytes - device_used
   host_used := checked_add(metadata_bytes, legacy_cache_bytes)?
-  if host_used >= options.host_budget_bytes { return Err(Error.Invalid) }
+  if host_used >= options.host_budget_bytes {
+    ggml_ffi.gpu_note_failure(ggml_ffi.GPU_STATUS_MEMORY_BUDGET, ggml_ffi.GPU_STAGE_PLAN)
+    return Err(Error.Invalid)
+  }
   host_remaining := options.host_budget_bytes - host_used
   staging_bytes := if host_remaining < MAX_STAGING_BYTES {
     host_remaining

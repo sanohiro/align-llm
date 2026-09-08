@@ -2101,7 +2101,24 @@ fn expect_attention_width() -> Result<(), Error> {
   return Ok(())
 }
 
+fn expect_first_fault() -> Result<(), Error> {
+  ggml_ffi.gpu_failure_reset()
+  ggml_ffi.gpu_failure_activity(ggml_ffi.GPU_STAGE_PLAN)
+  active := ggml_ffi.gpu_last_failure()
+  if active.code.len() != 0 || active.detail != "plan" { return Err(Error.Invalid) }
+  ggml_ffi.gpu_note_failure(ggml_ffi.GPU_STATUS_MEMORY_BUDGET, 0)
+  ggml_ffi.gpu_failure_activity(ggml_ffi.GPU_STAGE_RELEASE)
+  ggml_ffi.gpu_note_failure(ggml_ffi.GPU_STATUS_POISONED, ggml_ffi.GPU_STAGE_RELEASE)
+  first := ggml_ffi.gpu_last_failure()
+  if first.code != "MEMORY_BUDGET" || first.detail != "plan" { return Err(Error.Invalid) }
+  ggml_ffi.gpu_failure_reset()
+  clear := ggml_ffi.gpu_last_failure()
+  if clear.code.len() != 0 || clear.detail.len() != 0 { return Err(Error.Invalid) }
+  return Ok(())
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
+  expect_first_fault()?
   if args.len() != 9 { return Err(Error.Invalid) }
   expect_attention_width()?
   expect_topology_key()?

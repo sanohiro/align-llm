@@ -205,6 +205,22 @@ else
                        include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
                                        "-DALIGN_GGML_FORCE_MAX_BUFFER_SIZE=1024")
                        flavour="stub+engine+gpu+force-max-buffer" ;;
+    engine+gpu+transfer)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GPU_FORCE_TRANSFER_FAILURE=1")
+                       flavour="stub+engine+gpu+force-transfer" ;;
+    engine+gpu+prefill)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GPU_FORCE_COMPUTE_KIND=0")
+                       flavour="stub+engine+gpu+force-prefill" ;;
+    engine+gpu+decode)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GPU_FORCE_COMPUTE_KIND=1")
+                       flavour="stub+engine+gpu+force-decode" ;;
+    engine+gpu+unsupported)
+                       include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
+                                       "-DALIGN_GPU_FORCE_UNSUPPORTED_OP=1")
+                       flavour="stub+engine+gpu+force-unsupported" ;;
     engine+gpu+compute)
                        include_flags+=("${engine}" "-DALIGN_GGML_STUB_GPU=1"
                                        "-DALIGN_GGML_FORCE_COMPUTE_FAILURE=1")

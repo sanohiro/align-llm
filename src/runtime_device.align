@@ -5,11 +5,16 @@ import runtime_bundle
 import runtime_options
 
 pub fn open(options: runtime_options.RuntimeOptions) -> Result<ggml_ffi.GpuDevice, Error> {
+  ggml_ffi.gpu_failure_reset()
+  ggml_ffi.gpu_failure_activity(ggml_ffi.GPU_STAGE_DEVICE)
   verified := runtime_bundle.verify(
     options.backend_bundle,
     options.backend,
     options.host_budget_bytes,
-  )?
+  ) else {
+    ggml_ffi.gpu_note_failure(ggml_ffi.GPU_STATUS_BUNDLE_SWITCH, ggml_ffi.GPU_STAGE_DEVICE)
+    return Err(Error.Invalid)
+  }
   opened := ggml_ffi.gpu_device_open(
     options.backend,
     options.device,

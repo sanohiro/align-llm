@@ -1,6 +1,7 @@
 module runtime_case
 
 import core.json
+import ggml_ffi
 import gguf
 import model
 import provider_runtime
@@ -43,14 +44,24 @@ Failure {
   schema_version: i64,
   artifact_kind: string,
   phase: string,
+  category: string,
+  stage: string,
   stream_nonfinite_count: i64,
   stream_bytes: i64,
   stream_records: i64,
 }
 
 fn refuse(borrow stream: runtime_numeric_stream.Stream, phase: str) -> Result<Output, Error> {
+  native := ggml_ffi.gpu_last_failure()
+  native_code: str := native.code
+  native_stage: str := native.detail
+  binding := phase == "production_binding" || phase == "reproduction_binding" || phase == "forced_binding"
+  category := if stream.nonfinite_count > 0 { "NONFINITE" } else {
+    if binding || native_code.len() == 0 { "COMPUTE" } else { native_code }
+  }
+  stage := if stream.nonfinite_count > 0 || binding || native_stage.len() == 0 { "readback" } else { native_stage }
   failed := Failure { schema_version: 1, artifact_kind: "GPU_RUNTIME_CASE_FAILURE".clone(),
-    phase: phase.clone(), stream_nonfinite_count: stream.nonfinite_count,
+    phase: phase.clone(), category: category.clone(), stage: stage.clone(), stream_nonfinite_count: stream.nonfinite_count,
     stream_bytes: stream.written_bytes, stream_records: stream.records }
   print(json.encode(failed))
   return Err(Error.Invalid)
@@ -135,6 +146,7 @@ pub fn load(path: str) -> Result<Input, Error> {
 }
 
 pub fn execute(borrow input: Input) -> Result<Output, Error> {
+  ggml_ffi.gpu_failure_reset()
   validate(input)?
   snapshot := gguf.open_snapshot(input.model_path)?
   if snapshot.table.architecture != input.model_id { return Err(Error.Invalid) }

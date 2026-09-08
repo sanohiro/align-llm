@@ -85,6 +85,15 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
     subprocess.run([str(ROOT / "scripts/build-ggml-shim")], env=fault_environment, check=True)
     for key in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
         fault_environment[key] = str(fault_shim) + ":" + environment[key]
+    native_fault_environments = {}
+    for mode in ("alloc-weights", "transfer", "prefill", "decode", "unsupported"):
+        fault = dict(environment)
+        directory = work / (mode + "-shim")
+        fault.update(ALIGN_LLM_GGML_FORCE="engine+gpu+" + mode, ALIGN_LLM_GGML_SHIM_DIR=str(directory))
+        subprocess.run([str(ROOT / "scripts/build-ggml-shim")], env=fault, check=True)
+        for key in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+            fault[key] = str(directory) + ":" + environment[key]
+        native_fault_environments[mode] = fault
     options = bundle(work)
     sequence_templates = []
     for architecture, fixture, manifest in (
@@ -272,6 +281,41 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                             pass
                         else:
                             raise AssertionError("mutated residency geometry was accepted")
+                    for mode, category, stage in (
+                        ("alloc-weights", "ALLOCATION", "allocate"), ("transfer", "TRANSFER", "upload"),
+                        ("prefill", "COMPUTE", "prefill"), ("decode", "COMPUTE", "decode"),
+                        ("unsupported", "UNSUPPORTED_CAPABILITY", "plan"),
+                        ("device", "DEVICE_UNAVAILABLE", "device"), ("budget", "MEMORY_BUDGET", "plan"),
+                    ):
+                        refused_root = output / ("native-fault-" + mode)
+                        refused_root.mkdir()
+                        document = {**case_input, "stream_root": str(refused_root)}
+                        if mode in {"device", "budget"}:
+                            changed = json.loads(options.read_bytes())
+                            if mode == "device":
+                                changed["device"] = "absent-device"
+                            else:
+                                changed["device_budget_bytes"] = 1
+                            changed_path = refused_root / "options.json"
+                            changed_path.write_bytes(canonical(changed))
+                            document["options_path"] = str(changed_path)
+                        input_path.write_bytes(canonical(document))
+                        refused = subprocess.run([str(case_executable), str(input_path)],
+                            env=native_fault_environments.get(mode, environment), capture_output=True, timeout=30)
+                        assert refused.returncode != 0, (mode, refused.stdout)
+                        first = native.failure(refused.stdout, native_case)
+                        assert (first["category"], first["stage"]) == (category, stage), (mode, first)
+                        assert first["phase"] == "production" and first["stream_nonfinite_count"] == 0
+                        assert first["stream_records"] == (1 if mode == "decode" else 0), (mode, first)
+                        for field, value in (("category", "PROCESS"), ("stage", "case_spawn"),
+                                             ("category", []), ("stream_nonfinite_count", 1)):
+                            altered = {**first, field: value}
+                            try:
+                                native.failure(canonical(altered), native_case)
+                            except RecipeError:
+                                pass
+                            else:
+                                raise AssertionError("invalid native first-fault record admitted")
                     fault_root = output / "nonfinite"
                     fault_root.mkdir()
                     input_path.write_bytes(canonical({**case_input, "stream_root": str(fault_root)}))
@@ -332,7 +376,7 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                         assert refused.returncode != 0, (ordinal, refused.stdout)
                         if ordinal in (2, 3, 4, 9):
                             failure = json.loads(refused.stdout)
-                            assert list(failure) == ["schema_version", "artifact_kind", "phase", "stream_nonfinite_count", "stream_bytes", "stream_records"]
+                            assert list(failure) == ["schema_version", "artifact_kind", "phase", "category", "stage", "stream_nonfinite_count", "stream_bytes", "stream_records"]
                             assert failure["schema_version"] == 1 and failure["artifact_kind"] == "GPU_RUNTIME_CASE_FAILURE"
                             assert failure["phase"] == ("production" if ordinal == 9 else "production_binding")
                             assert failure["stream_nonfinite_count"] == 0 and failure["stream_bytes"] >= 24

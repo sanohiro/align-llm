@@ -941,9 +941,44 @@ void *align_ggml_device_by_kind(int32_t kind) {
 #define ALIGN_GPU_MEMORY_BUDGET       (-8)
 #define ALIGN_GPU_COMPUTE             (-9)
 #define ALIGN_GPU_UNSUPPORTED        (-10)
+#define ALIGN_GPU_TRANSFER           (-11)
 #define ALIGN_GPU_GRAPH_KINDS           2
 #define ALIGN_GPU_GRAPH_PREFILL         0
 #define ALIGN_GPU_GRAPH_DECODE          1
+
+/* Private diagnostics contain no owner pointer and cannot extend native lifetimes. */
+static _Thread_local int32_t align_gpu_first_status;
+static _Thread_local int32_t align_gpu_first_stage;
+static _Thread_local int32_t align_gpu_active_stage;
+
+void align_gpu_failure_reset(void) {
+    align_gpu_first_status = 0;
+    align_gpu_first_stage = 0;
+    align_gpu_active_stage = 0;
+}
+
+void align_gpu_failure_activity(int32_t stage) {
+    if (stage >= 1 && stage <= 10) { align_gpu_active_stage = stage; }
+}
+
+void align_gpu_failure_record(int32_t status, int32_t stage) {
+    if (align_gpu_first_status == 0 && status <= -1 && status >= -11) {
+        align_gpu_first_status = status;
+        align_gpu_first_stage = stage >= 1 && stage <= 10 ? stage : align_gpu_active_stage;
+    }
+}
+
+int32_t align_gpu_failure_status(void) { return align_gpu_first_status; }
+int32_t align_gpu_failure_stage(void) {
+    return align_gpu_first_status != 0 ? align_gpu_first_stage : align_gpu_active_stage;
+}
+
+#ifndef ALIGN_GPU_FORCE_TRANSFER_FAILURE
+#define ALIGN_GPU_FORCE_TRANSFER_FAILURE 0
+#endif
+#ifndef ALIGN_GPU_FORCE_COMPUTE_KIND
+#define ALIGN_GPU_FORCE_COMPUTE_KIND (-1)
+#endif
 
 struct align_gpu_device_state {
     ggml_backend_dev_t device;
@@ -1815,6 +1850,7 @@ int32_t align_gpu_weight_upload(
         || (size_t) length > logical - state->pending_weight_uploaded_bytes) {
         return ALIGN_GPU_CONFIG;
     }
+    if (ALIGN_GPU_FORCE_TRANSFER_FAILURE) { state->weights_failed = 1; return ALIGN_GPU_TRANSFER; }
     memcpy(state->staging, data, (size_t) length);
     ggml_backend_tensor_set_async(
         state->backend, state->pending_weight, state->staging, (size_t) offset, (size_t) length);
@@ -2816,6 +2852,7 @@ int32_t align_gpu_graph_compute(
     if (kind == ALIGN_GPU_GRAPH_DECODE
         && ((state->row_registered[0] && !state->row_position_valid)
             || (state->row_registered[1] && !state->row_values_valid))) { return ALIGN_GPU_CONFIG; }
+    if (kind == ALIGN_GPU_FORCE_COMPUTE_KIND) { state->workspace_failed = 1; return ALIGN_GPU_COMPUTE; }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     if (state->graph_execution_count[kind] == INT64_MAX
         || (state->graph_current_execution_count[kind] > 0

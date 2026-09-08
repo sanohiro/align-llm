@@ -36,6 +36,8 @@ def assemble(ordinal: int, expected: Mapping[str, object], plan: Plan, outcome: 
     terminal = "FAIL" if process is None or (process.terminal == "PASS" and not accepted) else process.terminal
     category, stage = ("", "") if accepted else ("PROCESS", "case_spawn")
     nonfinite = 0 if failed is None else failed["stream_nonfinite_count"]
+    if failed is not None:
+        category, stage = failed["category"], failed["stage"]
     if outcome is not None and process.terminal == "PASS" and not accepted:
         category, stage = "COMPUTE", "readback"
     if nonfinite:

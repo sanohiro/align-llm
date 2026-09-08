@@ -764,7 +764,7 @@ production,stream_bytes,stream_records`, where production is the provider's `Tra
 its raw observation. This envelope is private scratch output, not schema-1 qualification evidence.
 Failures return nonzero and leave no success envelope or finished stream. Admission/source errors
 before a writer exists produce no envelope. Once the writer exists, failure prints one private
-`GPU_RUNTIME_CASE_FAILURE` schema-1 record ordered `schema_version,artifact_kind,phase,
+`GPU_RUNTIME_CASE_FAILURE` schema-1 record ordered `schema_version,artifact_kind,phase,category,stage,
 stream_nonfinite_count,stream_bytes,stream_records`. Phase is `production|production_binding|
 reproduction|reproduction_binding|forced|forced_binding|finish`; counters report only observations
 made by that stream, preserving nonfinite/write progress without claiming complete traversal.
@@ -1186,6 +1186,26 @@ maximum-one and allocation refusal; the independent same-device llama.cpp diagno
 Qwen prefill/decode scalar comparison with matched embedding placement and F32 KV. Existing
 failed CPU/GPU calibration evidence remains failed and unchanged. Padded workspace participates
 in the existing memory ceiling and must be included in subsequent performance measurements.
+
+### Private first-fault retention repair
+
+The public provider still returns its existing `Error.Invalid`. Its private native case failure
+adds `category` and `stage` before the stream counters. A thread-local diagnostic latch retains
+only the first GPU fault and its active stage; later synchronization or cleanup cannot replace it.
+The latch stores integers, owns no device pointer, and is reset at private case entry and each GPU
+request's device-admission entry. Successful admission planning does not clear a recorded fault.
+No diagnostic state persists in the public result or replaces the serial GPU owner guard.
+
+| Owner | Contract / closure |
+| --- | --- |
+| Native shim / `ggml_ffi` | Reset, mark an active lifecycle stage, latch the first nonzero status, and read the stable category/stage. Fallible GPU boundaries mark device/plan/allocation/upload/prefill/decode/readback/synchronization/release before work. Fault conversion latches before returning its existing `Fault`. Explicit pre-upload budget refusals record `MEMORY_BUDGET/plan`; native unsupported operations retain `UNSUPPORTED_CAPABILITY/plan`. Device owner tests cover reset, first-fault precedence and no stale result. |
+| `runtime_device` / `runtime_generation` | Bundle refusal and arithmetic budget refusal retain their specific internal category before returning `Error.Invalid`. Ordinary immutable device ownership/cleanup stays unchanged. |
+| `runtime_case` / native reader | Emit and strictly consume category/stage with the original traversal phase and stream prefix. Stream nonfinite failures retain `NONFINITE/readback`; output-binding failures are `COMPUTE/readback`. Failures without a specific native status retain a bounded stage-aware fallback, never a fabricated spawn failure. |
+| Case records / execution evidence | Prefer the validated child's first category/stage over generic nonzero-exit classification. Keep actual process exit/signal/logs, and record cleanup failure separately. Provider owner injects device, budget, allocation, transfer, prefill and decode failures; case/evidence owners prove first-fault and cleanup precedence. |
+
+The unpublished schema-1 private failure object changes with its owning producer and consumer.
+Historical failure objects remain evidence under their captured source version. A crash that never
+emits a valid private failure continues to retain its actual process terminal status.
 
 ### Executed artifact and case-input binding repair
 

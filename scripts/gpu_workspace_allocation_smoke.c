@@ -3,6 +3,19 @@
 #include "ggml_shim.c"
 #include <assert.h>
 
+static void first_fault(void) {
+    align_gpu_failure_reset();
+    assert(align_gpu_failure_status() == 0 && align_gpu_failure_stage() == 0);
+    align_gpu_failure_activity(2);
+    assert(align_gpu_failure_status() == 0 && align_gpu_failure_stage() == 2);
+    align_gpu_failure_record(ALIGN_GPU_MEMORY_BUDGET, 0);
+    align_gpu_failure_activity(9);
+    align_gpu_failure_record(ALIGN_GPU_POISONED, 9);
+    assert(align_gpu_failure_status() == ALIGN_GPU_MEMORY_BUDGET && align_gpu_failure_stage() == 2);
+    align_gpu_failure_reset();
+    assert(align_gpu_failure_status() == 0 && align_gpu_failure_stage() == 0);
+}
+
 static void attention_precision(void) {
     struct ggml_init_params params = { .mem_size = 65536, .mem_buffer = NULL, .no_alloc = true };
     struct ggml_context *ctx = ggml_init(params);
@@ -186,6 +199,7 @@ int main(int argc, char **argv) {
     int64_t first_peak = 0;
     int pass;
     assert(argc == 2);
+    first_fault();
     attention_precision();
     registry = ggml_backend_load(argv[1]);
     assert(registry != NULL && ggml_backend_reg_dev_count(registry) > 0);

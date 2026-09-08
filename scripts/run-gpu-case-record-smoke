@@ -77,6 +77,15 @@ with tempfile.TemporaryDirectory(prefix="gpu-case-record-") as raw:
         assert row["memory"]["managed_device_peak_bytes"] == (65536 if gpu else 0)
         assert logs[row["stdout_path"]].data == b"native-output"
         assert logs[row["stderr_path"]].original_sha256 == hashlib.sha256(b"native-error").hexdigest()
+        for category, stage in (("DEVICE_UNAVAILABLE", "device"), ("MEMORY_BUDGET", "plan"),
+                                ("ALLOCATION", "allocate"), ("TRANSFER", "upload"),
+                                ("COMPUTE", "prefill"), ("COMPUTE", "decode")):
+            failed_process = dataclasses.replace(process, terminal="FAIL", exit_code=1)
+            failed = Outcome(failed_process, None, None,
+                {"category": category, "stage": stage, "stream_nonfinite_count": 0}, "native failure")
+            row_failed, retained_failed = assemble(ordinal, expected, plan, failed)
+            assert (row_failed["category"], row_failed["stage"]) == (category, stage)
+            assert row_failed["exit_code"] == 1 and len(retained_failed) == 3
         unstarted, no_logs = assemble(ordinal, expected, plan, None)
         assert unstarted["terminal"] == "FAIL" and unstarted["exit_code"] is None
         assert not unstarted["command"]["argv"] and not no_logs and not unstarted["stdout_path"]
@@ -100,7 +109,7 @@ with tempfile.TemporaryDirectory(prefix="gpu-case-record-") as raw:
             assert refused["output_sha256"] == native.output_sha256
             failed_process = dataclasses.replace(process, terminal="FAIL", exit_code=1)
             refused, _ = assemble(ordinal, expected, plan, Outcome(failed_process, None, None,
-                {"stream_nonfinite_count": 1}, "native nonfinite"))
+                {"stream_nonfinite_count": 1, "category": "NONFINITE", "stage": "readback"}, "native nonfinite"))
             assert refused["category"] == "NONFINITE" and refused["nonfinite_count"] == 1
             assert refused["numeric"] == empty_numeric() and refused["output_sha256"] == ""
             assert refused["placement"]["minimum_weights_device_bytes"] == 0

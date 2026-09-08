@@ -1666,6 +1666,7 @@ void *align_ggml_device_by_kind(int32_t kind) {
 #define ALIGN_GPU_MEMORY_BUDGET       (-8)
 #define ALIGN_GPU_COMPUTE             (-9)
 #define ALIGN_GPU_UNSUPPORTED        (-10)
+#define ALIGN_GPU_TRANSFER           (-11)
 #define ALIGN_GPU_GRAPH_KINDS           2
 #define ALIGN_GPU_GRAPH_PREFILL         0
 #define ALIGN_GPU_GRAPH_DECODE          1
@@ -1680,6 +1681,40 @@ void align_ggml_gallocr_free(void *galloc);
 int32_t align_ggml_graph_compute(void *backend, void *graph);
 static int64_t align_stub_plan(align_stub_graph *g, unsigned char *base);
 static void align_stub_context_reset(void *ctx);
+
+/* Private diagnostics contain no owner pointer and cannot extend native lifetimes. */
+static _Thread_local int32_t align_gpu_first_status;
+static _Thread_local int32_t align_gpu_first_stage;
+static _Thread_local int32_t align_gpu_active_stage;
+
+void align_gpu_failure_reset(void) {
+    align_gpu_first_status = 0;
+    align_gpu_first_stage = 0;
+    align_gpu_active_stage = 0;
+}
+
+void align_gpu_failure_activity(int32_t stage) {
+    if (stage >= 1 && stage <= 10) { align_gpu_active_stage = stage; }
+}
+
+void align_gpu_failure_record(int32_t status, int32_t stage) {
+    if (align_gpu_first_status == 0 && status <= -1 && status >= -11) {
+        align_gpu_first_status = status;
+        align_gpu_first_stage = stage >= 1 && stage <= 10 ? stage : align_gpu_active_stage;
+    }
+}
+
+int32_t align_gpu_failure_status(void) { return align_gpu_first_status; }
+int32_t align_gpu_failure_stage(void) {
+    return align_gpu_first_status != 0 ? align_gpu_first_stage : align_gpu_active_stage;
+}
+
+#ifndef ALIGN_GPU_FORCE_TRANSFER_FAILURE
+#define ALIGN_GPU_FORCE_TRANSFER_FAILURE 0
+#endif
+#ifndef ALIGN_GPU_FORCE_COMPUTE_KIND
+#define ALIGN_GPU_FORCE_COMPUTE_KIND (-1)
+#endif
 
 struct align_gpu_device_state {
     void *device;
@@ -1955,6 +1990,10 @@ int32_t align_gpu_device_open(
     return ALIGN_GPU_BACKEND_UNAVAILABLE;
 #else
     struct align_gpu_device_state *state = NULL;
+    if (device_length != 8 || memcmp(device_input, "stub-gpu", 8) != 0) {
+        atomic_store(&align_gpu_busy, 0);
+        return ALIGN_GPU_DEVICE_UNAVAILABLE;
+    }
     state = (struct align_gpu_device_state *) calloc(1, sizeof(*state));
     if (state == NULL) {
         atomic_store(&align_gpu_busy, 0);
@@ -2370,6 +2409,7 @@ int32_t align_gpu_weight_upload(
         || (size_t) length > state->pending_weight_bytes - state->pending_weight_uploaded_bytes) {
         return ALIGN_GPU_CONFIG;
     }
+    if (ALIGN_GPU_FORCE_TRANSFER_FAILURE) { state->weights_failed = 1; return ALIGN_GPU_TRANSFER; }
     memcpy(state->staging, data, (size_t) length);
     memcpy((unsigned char *) state->weights_buffer + state->pending_weight_offset + (size_t) offset,
         state->staging, (size_t) length);
@@ -3202,6 +3242,7 @@ int32_t align_gpu_graph_compute(
     if (kind == ALIGN_GPU_GRAPH_DECODE
         && ((state->row_registered[0] && !state->row_position_valid)
             || (state->row_registered[1] && !state->row_values_valid))) { return ALIGN_GPU_CONFIG; }
+    if (kind == ALIGN_GPU_FORCE_COMPUTE_KIND) { state->workspace_failed = 1; return ALIGN_GPU_COMPUTE; }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     if (state->graph_execution_count[kind] == INT64_MAX
         || (state->graph_current_execution_count[kind] > 0

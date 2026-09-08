@@ -80,6 +80,21 @@ The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
+**Private first-fault checkpoint (unpublished, after `32a161f`).** R8 retains the first GPU
+status and lifecycle stage in a pointer-free thread-local diagnostic latch. Reset/active-stage/
+first-fault/read operations are private to qualification; ordinary provider errors stay unchanged.
+Private case failures now include validated category/stage alongside traversal/stream progress.
+Case/evidence assembly preserves that initiating fault and the actual child exit/logs; cleanup
+cannot replace it. Budget and bundle refusals are recorded before returning generic provider errors.
+The stub now rejects unknown device names, matching its advertised exact `stub-gpu` identity.
+The complete provider owner passes injected device, memory-budget, allocation, transfer, unsupported
+operation, prefill and decode failures with exact category/stage and stream prefix, plus both models'
+ordinary sequence and deadline cases. Case-record/execution-evidence owners pass. Device smoke and
+the strict real Metal C owner pass first-fault precedence/reset, and existing memory/KV owners.
+`gmake fmt` and `git diff --check` pass. Next: R1 host accounting, R5/R6 bounded prefill/corpus and
+R9 actual linked-core identity, then full local qualification, final review and publication/merge.
+No additional CUDA debugging is requested.
+
 **Execution/input binding checkpoint (unpublished, after `89efeb2`).** R7 started-case commands
 now bind the role-specific produced candidate/CPU reference and exact owned input by SHA-256.
 Each started row retains its canonical input at `case-inputs/NNN.json`; unstarted rows retain none.

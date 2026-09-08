@@ -169,12 +169,21 @@ def _record(raw: bytes, kind: str, keys: tuple[str, ...]) -> dict[str, object]:
 
 def failure(raw: bytes, case: NativeCase) -> dict[str, object]:
     record = _record(raw, "GPU_RUNTIME_CASE_FAILURE", (
-        "schema_version", "artifact_kind", "phase", "stream_nonfinite_count", "stream_bytes", "stream_records"))
+        "schema_version", "artifact_kind", "phase", "category", "stage", "stream_nonfinite_count", "stream_bytes", "stream_records"))
     if not isinstance(record["phase"], str) or record["phase"] not in PHASES:
         raise RecipeError("native failure phase is invalid")
+    if not isinstance(record["category"], str) or not isinstance(record["stage"], str) \
+            or record["category"] not in {"CONFIG", "BACKEND_UNAVAILABLE", "DEVICE_UNAVAILABLE", "BUNDLE_IDENTITY",
+                                   "UNSUPPORTED_CAPABILITY", "MEMORY_BUDGET", "ALLOCATION", "TRANSFER",
+                                   "COMPUTE", "NONFINITE", "DEVICE_LOST", "BUSY", "CLEANUP"} \
+            or record["stage"] not in {"options", "model", "device", "plan", "allocate", "upload",
+                                       "prefill", "decode", "readback", "synchronize", "release"}:
+        raise RecipeError("native first-fault category or stage is invalid")
     bounded_i64(record["stream_nonfinite_count"], 0, case.traversal.scalar_count, "native nonfinite count")
     bounded_i64(record["stream_bytes"], 24, case.traversal.maximum_bytes, "native failed stream bytes")
     bounded_i64(record["stream_records"], 0, case.traversal.frame_count, "native failed stream records")
+    if (record["category"] == "NONFINITE") != (record["stream_nonfinite_count"] > 0):
+        raise RecipeError("native nonfinite category differs from its counter")
     return record
 
 
