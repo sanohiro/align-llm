@@ -80,24 +80,20 @@ The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
-**Independent numerical repair (active, uncommitted after `05d3ae7`).** The new diagnostic
-`eval/gpu/reference-acquire.cpp` uses pinned llama.cpp on the same GPU, every tensor offloaded,
-F32 K/V, decomposed attention and 128-token microbatches. Its stride-aware callback records every
-layer/router tensor; an independent sampler produces frozen expectations before candidate runs.
-`eval/gpu/compare-reference.py` owns complete traversal and bitwise comparison;
-`scripts/run-gpu-independent-reference-smoke` passes missing/duplicate/truncated/nonfinite/mutated
-reference cases. Real Metal now passes 15 frozen provider cases across both models, including
-maximum-one, 128-token generation, 129/257/2048-token prompts, ordinary EOG and OLMoE seeded
-generation: 1446356480 scalar/selection comparisons, all bitwise equal.
-`runtime_immediate_eog_smoke` also passes both real models with an unchanged-model completed
-response prefix, one actual EOG, one readback, zero decode executions and independent exact logits.
-Maximum-prompt plus full-128 generation passes both models; all 17 observed work/residency/capacity
-projections pass. A fresh pinned reference build and its sampler owner also pass. These are local diagnostic
-checkpoints, not formal G1 closure; old CPU/GPU FAIL records and tolerances remain unchanged.
-Next: settle the corrected shipping numerical owner and enforce
-complete corpus coverage (B0/R6), bind reproducible acquisition/build/retained evidence, then final
-review/preflight/PR/merge. GPU performance and subsequent roadmap remain authorized after G1.
-No additional user CUDA debugging.
+**Independent acceptance checkpoint (active after `4beb0b9`).** The corrected shipping oracle
+compares every layer/router/logit bitwise with separately built pinned llama.cpp on the same GPU.
+The frozen complete Metal corpus has 19 cases (9 Qwen, 10 OLMoE), including 2048-token prompt plus
+full 128-token output, chunk tails, seeded OLMoE and unchanged-model immediate EOG. Real exploratory
+owners pass all 17 new cases; historical CPU/GPU FAIL records and tolerances remain unchanged.
+The full immediate-EOG owner now emits the complete ordinary diagnostic/forced-tail traversal.
+Model-free corpus, independent-reference and acceptance-process owners pass; legacy profile
+coverage/assembly owners and `gmake fmt` pass. The new acceptance owner retains builds, source,
+inputs, all tensors and two fresh candidate invocations per case; offline replay recomputes the
+full corpus and numeric closure without reopening original model/build paths.
+Next: build a clean candidate and execute the complete 19-case/two-repeat Metal owner with a fresh
+pinned reference, then relocated replay and mutation checks. After stable evidence, perform the
+required fresh comprehensive review, final preflight, PR and merge. GPU performance work remains
+authorized after G1. No further user CUDA functional/debugging request is permitted.
 
 **Bounded-prefill checkpoint (unpublished, after `db90870`).** R5 implements capacity-selected
 128/64/32/16/8/4/2/1 prefill chunks, dependent resident K/V writes, absolute masks/positions,

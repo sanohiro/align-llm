@@ -13,6 +13,8 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "scripts"))
 from gpu_backend_recipe import RecipeError
+from gpu_qualification_deadline import checked
+from gpu_qualification_records import parse_json_object, exact_keys
 from gpu_qualification_stream import Frame, NumericStream
 from gpu_qualification_traversal import Router, Traversal
 
@@ -25,7 +27,8 @@ def regular(path, maximum):
 
 
 class Reference:
-    def __init__(self, root, traversal):
+    def __init__(self, root, traversal, deadline=None):
+        self.deadline = deadline
         self.root = root
         self.traversal = traversal
         self.groups = collections.defaultdict(list)
@@ -39,7 +42,7 @@ class Reference:
         if not raw.endswith(b"\n"):
             raise RecipeError("reference index is truncated")
         for ordinal, line in enumerate(raw.splitlines()):
-            row = json.loads(line)
+            row = parse_json_object(line, 65536)
             if set(row) != {"file", "step", "name", "type", "shape", "bytes"} \
                     or row["file"] != f"{ordinal}.bin" or type(row["step"]) is not int \
                     or not 0 <= row["step"] <= traversal.positions:
@@ -104,6 +107,8 @@ class Reference:
                 raise RecipeError("reference tensor changed during comparison")
 
     def read(self, frame):
+        if self.deadline is not None:
+            self.deadline.check()
         names = {1: "logits", 6: "logits", 2: f"l_out-{frame.layer}",
                  3: f"ffn_moe_probs-{frame.layer}", 4: f"ffn_moe_topk-{frame.layer}",
                  5: f"ffn_moe_weights-{frame.layer}"}
@@ -139,18 +144,23 @@ class Reference:
         raise RecipeError("reference tensor does not contain the requested frame")
 
 
-def compare(root, candidate, geometry, case):
+def compare(root, candidate, geometry, case, *, deadline=None):
     traversal = Traversal.derive(geometry, case)
-    reference = Reference(root, traversal)
+    reference = Reference(root, traversal, deadline)
     regular(root / "production.json", 2 * 1024**2)
-    production = json.loads((root / "production.json").read_bytes())
+    production = exact_keys(parse_json_object((root / "production.json").read_bytes(), 2 * 1024**2),
+        ("token_ids", "prompt_ids", "text", "tensor_records", "tensor_bytes"), "reference production")
+    rows = [row for group in reference.groups.values() for row in group]
+    if type(production["tensor_records"]) is not int or production["tensor_records"] != len(rows) \
+            or type(production["tensor_bytes"]) is not int or production["tensor_bytes"] != sum(row["bytes"] for row in rows):
+        raise RecipeError("reference production tensor closure differs")
     if production["token_ids"] != case["expected_token_ids"] \
             or production["prompt_ids"] != case["prompt_token_ids"] \
             or production["text"] != case["expected_output_utf8"] \
             or case["teacher_forced_token_ids"] != case["expected_token_ids"]:
         raise RecipeError("reference production does not match the frozen case")
     counts, mismatches = collections.Counter(), collections.Counter()
-    with NumericStream(candidate, model=traversal.model, maximum_bytes=traversal.maximum_bytes) as stream:
+    with NumericStream(candidate, model=traversal.model, maximum_bytes=traversal.maximum_bytes, deadline=deadline) as stream:
         for instruction in traversal.instructions():
             if isinstance(instruction, Router):
                 frames = [Frame(kind, instruction.layer, instruction.step, width, 1, width * 4,
@@ -169,11 +179,11 @@ def compare(root, candidate, geometry, case):
                 counts[expected.kind] += expected.width * expected.height
                 if expected.kind != 4:
                     if any(not math.isfinite(x) for data in (actual, baseline)
-                           for (x,) in struct.iter_unpack("<f", data)):
+                           for (x,) in checked(struct.iter_unpack("<f", data), deadline)):
                         raise RecipeError("nonfinite reference or candidate value")
                 if actual != baseline:
                     mismatches[expected.kind] += sum(a != b for a, b in zip(
-                        struct.iter_unpack("<I", actual), struct.iter_unpack("<I", baseline)))
+                        checked(struct.iter_unpack("<I", actual), deadline), checked(struct.iter_unpack("<I", baseline), deadline)))
         if stream.read_frame() is not None:
             raise RecipeError("candidate has extra frames")
         candidate_sha256 = stream.sha256

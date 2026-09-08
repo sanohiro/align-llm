@@ -324,7 +324,13 @@ def validate_calibration(value: object) -> dict[str, object]:
             or comparison["topk_rule"] != "same-ordered-ids-or-declared-near-tie":
         raise RecipeError("calibration comparison policy is invalid")
 
-    cases = result["cases"]
+    result["cases"] = validate_frozen_cases(result["cases"])
+    self_hash(result, "calibration_id", "numeric calibration")
+    return result
+
+
+def validate_frozen_cases(cases: object) -> list[dict[str, object]]:
+    """Shared immutable sampling/text/token contract, independent of the numeric oracle."""
     if not isinstance(cases, list) or not 2 <= len(cases) <= 32:
         raise RecipeError("calibration case count is outside its bound")
     roles: set[str] = set()
@@ -371,8 +377,7 @@ def validate_calibration(value: object) -> dict[str, object]:
         cases[ordinal] = case
     if roles != {"calibration", "holdout"}:
         raise RecipeError("calibration must contain calibration and holdout cases")
-    self_hash(result, "calibration_id", "numeric calibration")
-    return result
+    return cases
 
 
 def expected_profile_cases(

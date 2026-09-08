@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Own retained execution bindings and fail-closed independent acceptance admission."""
+import copy
+import pathlib
+import sys
+import tempfile
+from gpu_backend_recipe import RecipeError, canonical
+from gpu_independent_acceptance import (process, process_ok, replay_process, write_directory,
+    digest, verify_build, file_inventory, write, replay)
+from gpu_qualification_deadline import Deadline
+import time
+
+
+def rejects(call):
+    try:
+        call()
+    except (RecipeError, OSError, ValueError, KeyError, TypeError):
+        return
+    raise AssertionError('malformed acceptance evidence was accepted')
+
+
+with tempfile.TemporaryDirectory(prefix='gpu-independent-acceptance-') as temporary:
+    root = pathlib.Path(temporary).resolve()
+    for name in ('home', 'tmp'):
+        write_directory(root / name)
+    executable = write(root / 'candidate', b'#!/bin/sh\nprintf "native-output\\n"\n')
+    executable.chmod(0o700)
+    request = write(root / 'input.json', b'{}\n')
+    result = process(root, executable, request, 'candidate', 'case', Deadline(time.monotonic_ns() + 10_000_000_000))
+    process_ok(result)
+    replay_process(root, result, 'case', digest(executable), 'candidate', 'input.json')
+    rejects(lambda: replay_process(root, result, 'case', '0' * 64, 'candidate', 'input.json'))
+    request.write_bytes(b'{"changed":true}\n')
+    rejects(lambda: replay_process(root, result, 'case', digest(executable), 'candidate', 'input.json'))
+    request.write_bytes(b'{}\n')
+    for key, value in (('descendants_after', 1), ('exit_code', 1), ('terminal', 'FAIL'), ('elapsed_ns', True)):
+        altered = copy.deepcopy(result)
+        altered[key] = value
+        rejects(lambda: replay_process(root, altered, 'case', digest(executable), 'candidate', 'input.json'))
+    (root / 'case/stdout').write_bytes(b'substituted\n')
+    rejects(lambda: replay_process(root, result, 'case', digest(executable), 'candidate', 'input.json'))
+    link = root / 'linked'
+    link.symlink_to(executable)
+    rejects(lambda: file_inventory(root))
+    link.unlink()
+    build = write_directory(root / 'build')
+    write(build / 'build.json', canonical({'source_commit': '1' * 40, 'source_dirty': True,
+        'source_files': {'src/main.align': '1' * 64}, 'align_revision': '1' * 40,
+        'compiler_sha256': '1' * 64, 'bundle_id': '1' * 64,
+        'executables': {'runtime_case': '1' * 64, 'runtime_immediate_eog_smoke': '1' * 64},
+        'libraries': {'a': '1' * 64, 'b': '1' * 64, 'c': '1' * 64}, 'commands': [['build']]}))
+    rejects(lambda: verify_build(build, True))
+    write(root / 'result.json', canonical({'status': 'PASS'}))
+    rejects(lambda: replay(root))
+print('GPU independent acceptance owner: PASS (real process, executable/input/log bindings, cleanup, dirty build, incomplete result)')

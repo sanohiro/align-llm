@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Build the actual provider and immediate-EOG owner with an explicit admitted backend bundle."""
+import hashlib
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'scripts'))
+from gpu_backend_recipe import GGML_COMMIT
+from gpu_qualification_input import admit
+
+
+def digest(path):
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
+def source_files():
+    names = subprocess.check_output(['git', '-C', str(ROOT), 'ls-files', '-z', '--cached', '--others', '--exclude-standard']).split(b'\0')
+    return {name: digest(ROOT / name) for name in sorted({raw.decode() for raw in names if raw})
+            if name.startswith(('src/', 'scripts/', 'eval/')) or name in ('.align-revision', 'Makefile')}
+
+
+def main():
+    if len(sys.argv) != 4:
+        raise SystemExit('usage: build-gpu-independent-candidate PINNED_GGML_CHECKOUT KIT_PROFILE NEW_OUTPUT_DIRECTORY')
+    source = pathlib.Path(sys.argv[1]).resolve(strict=True)
+    profile_path = pathlib.Path(sys.argv[2]).resolve(strict=True)
+    output = pathlib.Path(sys.argv[3]).absolute()
+    assert not output.exists() and not output.is_symlink()
+    assert subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip() == GGML_COMMIT
+    assert not subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain'])
+    admitted = admit(profile_path)
+    record = admitted.records['bundle']
+    bundle = (admitted.root / admitted.records['profile']['bundle_manifest']['path']).parent
+    before = source_files()
+    output.mkdir(mode=0o700)
+    output = output.resolve(strict=True)
+    libraries = output / 'lib'
+    libraries.mkdir(mode=0o700)
+    for artifact in record['artifacts']:
+        path = bundle / artifact['path']
+        assert path.stat().st_nlink == 1 and path.stat().st_size == artifact['bytes'] and digest(path) == artifact['sha256']
+        if artifact['role'] != 'backend_plugin':
+            shutil.copyfile(path, libraries / path.name)
+    environment = {key: value for key, value in os.environ.items() if not key.startswith(('ALIGN_LLM_GGML_', 'DYLD_'))
+                   and key not in ('ALIGNC', 'ALIGN_REPO', 'LD_PRELOAD', 'LD_LIBRARY_PATH')}
+    environment.update(ALIGN_LLM_GGML_INCLUDE=str(source / 'ggml/include'), ALIGN_LLM_GGML_LIB=str(libraries),
+                       ALIGN_LLM_GGML_SHIM_DIR=str(libraries))
+    commands = []
+
+    def run(args):
+        commands.append(args)
+        subprocess.run(args, cwd=output, env=environment, check=True)
+
+    compiler = pathlib.Path(subprocess.check_output([str(ROOT / 'scripts/align-toolchain'), 'ensure', 'compiler'], env=environment, text=True).strip())
+    run([str(ROOT / 'scripts/build-ggml-shim')])
+    environment['LIBRARY_PATH'] = str(libraries) + os.pathsep + environment.get('LIBRARY_PATH', '')
+    for entry in ('runtime_case', 'runtime_immediate_eog_smoke'):
+        run([str(ROOT / 'scripts/alignc'), 'build', str(ROOT / 'src' / (entry + '.align'))])
+    assert before == source_files()
+    admitted.recheck()
+    evidence = {'source_commit': subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip(),
+                'source_dirty': bool(subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain'])),
+                'source_files': before, 'align_revision': (ROOT / '.align-revision').read_text().strip(),
+                'compiler_sha256': digest(compiler), 'bundle_id': record['bundle_id'],
+                'executables': {name: digest(output / name) for name in ('runtime_case', 'runtime_immediate_eog_smoke')},
+                'libraries': {path.name: digest(path) for path in sorted(libraries.iterdir())}, 'commands': commands}
+    (output / 'build.json').write_text(json.dumps(evidence, separators=(',', ':')) + '\n')
+    print(output)
+
+
+if __name__ == '__main__':
+    main()

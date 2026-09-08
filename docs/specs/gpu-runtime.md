@@ -1640,7 +1640,8 @@ from the unchanged GGUF. This exercises real weights and genuine terminal metada
 altering logits, token metadata or chat templates to manufacture an EOG. The private
 `runtime_immediate_eog_smoke` driver consumes the existing bounded case input, verifies original
 GGUF/pack/geometry identity, obtains EOG IDs from the tokenizer owner and verifies exactly one
-sample/readback with the real observed generation path. It is an owning regression at the raw-ID
+sample/readback with the real observed generation path, followed by the same complete reproduction
+and teacher-forced layer/router/logit traversal as the provider cases. It is an owning regression at the raw-ID
 boundary; ordinary provider prompt rendering remains covered by the other real cases.
 
 The reproducible acquisition build owner is
@@ -1658,3 +1659,97 @@ executions. All 17 cases' observed model-operation/layer/expert counts, resident
 simultaneous host/device capacities agree with the independent existing native projection.
 The old CPU/GPU numerical FAIL remains separate; formal shipping-owner/corpus integration is
 still active and this diagnostic checkpoint does not declare G1 complete.
+
+### Corrected shipping numerical gate and corpus (B0/R6)
+
+The shipping numerical oracle is the independently built pinned llama.cpp graph on the selected
+GPU, compared bitwise at every admitted layer/router/logit value and sampled ID. CPU Q4/Q6 dot
+products quantize activations to Q8_K; the GPU arithmetic used here does not. The earlier universal
+CPU/GPU tolerance therefore tests a different arithmetic contract. Its frozen calibration/result
+records retain their original meaning and FAIL status. A schema-1 `GPU_RUNTIME_RESULT`, including
+one that says PASS, is a cross-backend diagnostic and is insufficient to close G1. This section
+supersedes its use as the shipping numerical oracle; it does not widen any tolerance or turn a
+failed record into a pass. Actual G1 acceptance additionally requires complete corpus coverage,
+observed native placement/capacities, source/build/input identity and retained replay evidence.
+
+The authoritative frozen corpus is `GPU_INDEPENDENT_ACCEPTANCE_CORPUS`, schema 1, with exact keys
+`schema_version,artifact_kind,corpus_id,backend,bundle_id,ggml_commit,models` and a zeroed-field
+canonical self-hash. It is at most 4 MiB. Backend is metal or cuda; bundle/ggml identities bind the
+existing admitted package. There are exactly ordered qwen2/olmoe model entries, each with exact keys
+`model,eog_token_ids,cases`; model uses the existing calibration model identity. EOG IDs are the
+unchanged model's independently prepared IDs and are revalidated by the native terminal owner.
+There are 2–32 cases per model, with unique IDs, both calibration/holdout roles, the existing frozen
+case fields, and `input_mode` equal to `provider` or `continuation`. Expected IDs include EOG, and
+teacher-forced IDs equal expected IDs so the extra independently acquired tail is consumed.
+Qwen is greedy; OLMoE additionally admits its existing fixed seeded policy. All paths and runtime
+budgets remain in the admitted package; the corpus contains no machine-specific paths.
+
+Coverage is derived from actual fields, not caller-supplied coverage labels. Each model requires
+provider maximum-one, provider maximum-128 with all 128 IDs, at least eight successive generated
+IDs, a 129/257-token tail/multiple-chunk prompt, and a 2048-token prompt with maximum-128 and 128
+actual IDs. An actual ordinary EOG stop is required. A continuation case requires maximum-128,
+exactly one actual EOG ID and empty output; its raw input extends the original prepared prompt
+through the independently frozen completed response prefix. OLMoE also requires a seeded provider
+case with at least eight generated IDs. Missing/duplicate/unsupported cases refuse before candidate
+execution. The exact real model context end remains unreachable as explained above; the real
+2048+128 request boundary and the model-free exact-context-end owner are both mandatory.
+
+A complete acceptance run executes each case twice in fresh candidate processes, compares all
+provider diagnostic traversals with the independent frozen reference, and checks immediate-EOG
+readback separately at its owning raw boundary. It validates observed native operation/layer/expert
+counts and resident bytes against the existing independent geometry projection, and checks native
+managed host peak plus application reservation, and managed device peak, against admitted caps.
+No empty/partial/legacy corpus can yield shipping PASS. The whole-run cost ceiling is 1800 seconds
+for the two-model correctness suite; it is not a performance threshold or speed claim. Production
+runtime behavior, CPU arithmetic and sampling policies remain unchanged.
+
+| Surface | Construction / success | Refusal / cleanup | Owner |
+| --- | --- | --- | --- |
+| Corpus framing/model/case identity | exact keys/types, source/model/bundle hashes, canonical self-hash, complete derived coverage | malformed/duplicate/missing coverage before model or candidate execution | `gpu-independent-corpus` |
+| Independent reference | fresh pinned graph, complete typed captures, frozen expected prefix/text, explicit teacher-forced tail | nonfinite/shape/missing/truncated/extra frames fail; caller owns scratch cleanup | acquisition build/sampler owner; independent reference owner |
+| Candidate execution | exact executable/input bindings, two fresh invocations, existing native observations/capacity projections | first native/process/numeric fault retained; no partial shipping PASS | independent acceptance owner |
+| Immediate EOG | unchanged real model, frozen continuation, one terminal ID/readback, no decode | wrong prefix/non-EOG/nonempty output/additional compute rejects | real immediate-EOG owner |
+| Evidence | source/toolchain/executable/dependency/input identity, exact case order, complete compared streams and reference closure | changed/missing/extra artifacts and incomplete coverage refuse replay | independent acceptance replay owner |
+
+The focused executable owner is
+`scripts/run-gpu-independent-acceptance KIT_PROFILE CORPUS CANDIDATE_BUILD REFERENCE_BUILD NEW_EVIDENCE`.
+Candidate builds come from `scripts/build-gpu-independent-candidate PINNED_GGML_CHECKOUT KIT_PROFILE
+NEW_BUILD`; reference builds use the acquisition builder above. Both build manifests bind exact
+executables/dependencies; candidate manifests additionally bind the compiler, Align pin, source
+commit, clean/dirty state and complete checked-in executable-input hashes. Development builds may
+record dirty input, but shipping acceptance refuses it. Receipt replay never executes a recorded
+path or opens a provenance-only model/build path.
+
+The new evidence result has version/kind, status, corpus/profile identities, build/source identities,
+ordered model/case/repeat rows, observed native results, complete command/log identities, compared
+numeric/reference identities, elapsed time, first failure and cleanup state. Files are relative,
+single-link regular artifacts with exact byte counts and SHA-256, including corpus, geometry,
+produced executables/libraries/build manifests, independent tensors/index/production, and native
+inputs/outputs/streams. Model/pack files remain immutable admitted external prerequisites named by
+hash; replay does not reopen their original paths. A repeated byte-identical numeric stream may
+share one retained artifact only after both actual executions were independently validated. The
+replayer derives the entire required case order and coverage again and consumes every numeric
+traversal; source/build/command/corpus/reference disagreement cannot become shipping PASS.
+The existing owned-command implementation owns process groups, deadlines and bounded complete-log
+identities; preparation remains an explicit separately recorded build step.
+
+`GPU_INDEPENDENT_ACCEPTANCE_RESULT` schema 1 has exactly `schema_version`, `artifact_kind`,
+`status`, `origin_root`, `input_root`, `source_commit`, `corpus_sha256`, `profile_sha256`,
+`references`, `cases`, `elapsed_ns`, `failure`, `cleanup`, and `files`. Roots are provenance-only
+absolute strings. Reference rows have `model_id`, `case_id`, `directory`, `input`, and `process`;
+candidate rows add `repeat`, `numeric`, `executable`, and `comparison`. Each process has `command`,
+`terminal`, `exit_code`, `signal`, `elapsed_ns`, `descendants_before`, `descendants_after`, `stdout`,
+and `stderr`; command and complete retained-log records reuse the existing strict schemas.
+Comparison fields are `bitwise_equal`, `scalar_counts`, `bitwise_mismatches`, `candidate_sha256`,
+`reference_index_sha256`, and `reference_tensors`. Inventory rows are `path`, `bytes`, `sha256`.
+The result is bounded to 16 MiB and is written last. Failure retains its completed prefix and
+first fault; only a complete PASS is accepted by `--replay EVIDENCE`. Replay is an offline owner
+with no inherited execution deadline; it requires the original execution to meet its 1800-second
+ceiling. Original legacy profile source identity describes the immutable input kit; the candidate
+build/source identity separately names the implementation actually executed.
+
+Model-free acceptance owners are `scripts/run-gpu-independent-corpus-smoke`,
+`scripts/run-gpu-independent-reference-smoke`, and `scripts/run-gpu-independent-acceptance-smoke`.
+The full native owner and its relocated replay additionally own numerical closure for every corpus
+row, repeated execution and original-path independence. Build directories and frozen corpus are
+explicit prerequisites; the acceptance owner never installs a compiler or acquires model weights.
