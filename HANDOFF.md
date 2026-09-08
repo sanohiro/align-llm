@@ -13,8 +13,8 @@ requested language/library APIs have shipped. Requests 61/62 now pass their obse
 
 The active branch incorporates main `b5336f0` and preserves its G1 implementation checkpoints.
 The merged compiler/runtime batch and observed CPU/GPU generation are verified.
-Next: connect prepared profile inputs to native cases and complete placement/resource evidence,
-then finish the CLI and real Metal/CUDA qualification.
+Next: prepare real profile/calibration inputs and exercise the final CLI on Metal, then obtain
+the user-executed CUDA qualification before comprehensive review and publication.
 
 ### Preserved implementation checkpoint
 
@@ -248,16 +248,26 @@ fields and top-level source/cleanup/publication integration remain next.
 
 **Next actions, in order.**
 
-1. Complete host/device identity fields, then assemble final evidence with exact source/input/
-   cleanup checks and publication. Case collection and the terminal prefix are implemented.
-   Prepared executable/profile/calibration binding and native numeric sequencing now pass owners.
-2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
-   process/record/replay/publication owners, and real source/profile/calibration kit construction.
-   The final CLI does not exist yet; do not publish a placeholder success path.
-3. Prepare real profiles/calibrations and run Metal locally. Hand the same bounded kit to the
-   RTX 4070 Ti CUDA host; both real backend qualifications are required before G1 publication.
-4. When G1 is consumer-complete, perform its comprehensive review, repairs, exact-head preflight
-   and PR/merge. Refresh main and start G1R or the next eligible independent consumer immediately.
+1. Prepare real profiles/calibrations and run the final `scripts/gpu-runtime-qualify` on Metal.
+   The native/provider owners, host observations, final source rechecks, execution evidence,
+   preparation-failure publication and public command now pass their focused owners.
+2. Complete a real passing CLI run, including all frozen holdouts/repeats, resource evidence,
+   exact source/input identity and publication replay. Final success remains unqualified.
+3. Hand the same bounded kit to the user for CUDA execution; do not obtain credentials or
+   automate remote login. Both real Metal and CUDA qualification remain required before G1 PR.
+4. Review the settled consumer-complete candidate once, run exact-HEAD applicable preflight,
+   publish/merge after checks and finding disposition, then refresh main and continue roadmap work.
+
+**Final CLI assembly checkpoint.** `gpu_qualification_execute.py` joins native cases, retained
+records and measured device identity; first-failure precedence survives cleanup failures.
+`scripts/gpu-runtime-qualify` now binds the launcher and loaded project helpers to captured source,
+executes the five-step preparation and native schedule, rechecks sources/inputs, cleans invocation
+state and publishes through the replay owner. Host discovery failure cannot fabricate baseline
+facts. `python3 scripts/run-gpu-execution-evidence-smoke` passes real child lifetimes with native
+boundary fixtures, prefix/device/numeric/cleanup failures. `python3 scripts/run-gpu-final-cli-smoke`
+passes actual captured-source binding, local host probes, preparation refusal, canonical FAIL
+publication/replay, the public subprocess entrypoint, occupied output preservation and altered
+launcher refusal. Final success with real models is the next unfinished boundary.
 
 **Durable verification.** The managed pin passes `gmake build`, `gmake ggml-spike-smoke` and the
 Request 59 per-unit owners for `verification_loop`, `alignpack` and `prompt_artifacts`.

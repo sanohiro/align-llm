@@ -668,14 +668,23 @@ maxima or zero for no case, and decision is always
 `unmeasured`. Schema 1 has no performance comparison. `cleanup` is
 `descendants_before,descendants_after,owned_paths_removed,invocation_state_safe,source_unchanged,inputs_unchanged`.
 `failure` is `category,stage,case_ordinal,detail`, with empty/-1 PASS values and bounded redacted
-FAIL detail. Elapsed time is positive and includes validation through cleanup/publication.
+FAIL detail. Elapsed time is positive, starts before invocation admission, and ends immediately
+before final publication is called, after evidence preparation, source/input rechecks and invocation
+cleanup. Final evidence serialization, filesystem publication and replay are outside that value;
+schema 1 makes no end-to-end performance claim.
 
 PASS requires every profile case present and passing, both model holdout sets passing on GPU,
 nonzero GPU operations, exact expected output bytes, complete numeric comparison coverage,
 weights/KV resident within budgets, one retained device binding per weight tensor, no undeclared readback, exact
 source/input rechecks and safe cleanup. FAIL may contain zero or a profile-order prefix of case rows; missing suffix rows are
 represented by the top-level failure rather than fabricated timings. The CLI returns zero only for
-PASS.
+PASS. The final CLI binds its launcher and every loaded project Python helper to the admitted
+Align source snapshot before preparation and rechecks them before publication. Its private native
+entrypoint is `src/runtime_case.align`. `gpu-execution-evidence` owns the native/device/failure-prefix
+assembly, and the final CLI owner covers failure publication/replay and occupied-output preservation.
+The first failure is authoritative; subsequent cleanup/source failures retain their own false cleanup
+flags without replacing it. Failure before complete baseline host identity cannot publish an invented
+host record and returns nonzero without evidence.
 
 ### 3.9 Canonical positive vectors
 
