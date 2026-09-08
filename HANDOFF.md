@@ -111,7 +111,13 @@ fusion and graph optimization enabled; actual CUDA capture remains unverified. N
 claimed by correctness instrumentation. Preserve `f46310d` ancestry because the validation-only
 benchmark names it: merge commit or fast-forward only, no squash/rewrite.
 
-Next: commit the owner-verified repair, run publication preflight with the prepared pinned Linux
+Linux publication exposed a test-harness portability defect: the native shim's absolute ELF
+SONAME prevents `LD_LIBRARY_PATH` from selecting fault fixtures. The provider/device owners now
+use explicit Linux-only interposition for their owned test shims, preserving production link
+identity. Provider helper relocation also uses a cross-filesystem move. Their combined Linux
+publication owner is the next verification checkpoint; the Metal receipt is unchanged.
+
+Next: run publication preflight with the prepared pinned Linux
 toolchain and real installed Docker profile, publish the reviewed PR, wait for required hosted
 checks, and merge. Then refresh main and implement G1R's reusable coding session before the paired
 performance decision. The user will also verify CUDA, after all Metal work is complete and together

@@ -137,8 +137,16 @@ PY
 
 bundle_id=$(cat "${work_dir}/bundle-id")
 backend_path="${work_dir}/bundle/libggml-metal.so"
-export DYLD_LIBRARY_PATH="${ordinary_shim}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
-export LD_LIBRARY_PATH="${ordinary_shim}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+# ELF embeds the original absolute SONAME. Use explicit test-only interposition
+# when selecting another owned shim; library search paths alone cannot replace it.
+select_shim() {
+  export DYLD_LIBRARY_PATH="$1"
+  export LD_LIBRARY_PATH="$1"
+  case "$(uname -s)" in
+    Linux) export LD_PRELOAD="$1/libalign_ggml_shim.so" ;;
+  esac
+}
+select_shim "${ordinary_shim}"
 ordinary_output=$("${executable}" unavailable metal stub-gpu \
   "${work_dir}/bundle" "${work_dir}/invalid-bundle" "${work_dir}/other-bundle" \
   "${backend_path}" "${bundle_id}")
@@ -147,8 +155,7 @@ if [ "${ordinary_output}" != "runtime device smoke: UNAVAILABLE PASS" ]; then
   exit 1
 fi
 
-export DYLD_LIBRARY_PATH="${gpu_shim}"
-export LD_LIBRARY_PATH="${gpu_shim}"
+select_shim "${gpu_shim}"
 if ! gpu_output=$("${executable}" available metal stub-gpu \
   "${work_dir}/bundle" "${work_dir}/invalid-bundle" "${work_dir}/other-bundle" \
   "${backend_path}" "${bundle_id}"); then
@@ -161,8 +168,7 @@ if [ "${gpu_output}" != "runtime device smoke: AVAILABLE PASS" ]; then
 fi
 
 for prefix in metadata staging weights kv; do
-  export DYLD_LIBRARY_PATH="${allocation_shims}/${prefix}"
-  export LD_LIBRARY_PATH="${allocation_shims}/${prefix}"
+  select_shim "${allocation_shims}/${prefix}"
   allocation_output=$("${executable}" allocation-failure metal stub-gpu \
     "${work_dir}/bundle" "${work_dir}/invalid-bundle" "${work_dir}/other-bundle" \
     "${backend_path}" "${bundle_id}")
@@ -173,8 +179,7 @@ for prefix in metadata staging weights kv; do
 done
 
 for prefix in input workspace; do
-  export DYLD_LIBRARY_PATH="${allocation_shims}/${prefix}"
-  export LD_LIBRARY_PATH="${allocation_shims}/${prefix}"
+  select_shim "${allocation_shims}/${prefix}"
   input_allocation_output=$("${executable}" "${prefix}-allocation-failure" metal stub-gpu \
     "${work_dir}/bundle" "${work_dir}/invalid-bundle" "${work_dir}/other-bundle" \
     "${backend_path}" "${bundle_id}")

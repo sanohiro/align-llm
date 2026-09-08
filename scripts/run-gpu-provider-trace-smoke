@@ -71,13 +71,13 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
     subprocess.run([compiler, "build", "src/runtime_provider_trace_smoke.align"],
                    cwd=ROOT, env=environment, check=True)
     executable = work / "trace"
-    (ROOT / "runtime_provider_trace_smoke").rename(executable)
+    shutil.move(ROOT / "runtime_provider_trace_smoke", executable)
     subprocess.run([compiler, "build", "src/runtime_case.align"], cwd=ROOT, env=environment, check=True)
     case_executable = work / "case"
-    (ROOT / "runtime_case").rename(case_executable)
+    shutil.move(ROOT / "runtime_case", case_executable)
     subprocess.run([compiler, "build", "src/runtime_calibration_seed.align"], cwd=ROOT, env=environment, check=True)
     seed_executable = work / "calibration-seed"
-    (ROOT / "runtime_calibration_seed").rename(seed_executable)
+    shutil.move(ROOT / "runtime_calibration_seed", seed_executable)
     fault_environment = dict(environment)
     fault_shim = work / "nonfinite-shim"
     fault_environment.update(ALIGN_LLM_GGML_FORCE="engine+gpu+inf-readback",
@@ -85,6 +85,10 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
     subprocess.run([str(ROOT / "scripts/build-ggml-shim")], env=fault_environment, check=True)
     for key in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
         fault_environment[key] = str(fault_shim) + ":" + environment[key]
+    # ELF DT_NEEDED uses the shim's absolute SONAME, so LD_LIBRARY_PATH cannot
+    # replace it. Explicit interposition is confined to these owned fault children.
+    if sys.platform.startswith("linux"):
+        fault_environment["LD_PRELOAD"] = str(fault_shim / "libalign_ggml_shim.so")
     native_fault_environments = {}
     for mode in ("alloc-weights", "transfer", "prefill", "decode", "unsupported"):
         fault = dict(environment)
@@ -93,6 +97,8 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
         subprocess.run([str(ROOT / "scripts/build-ggml-shim")], env=fault, check=True)
         for key in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
             fault[key] = str(directory) + ":" + environment[key]
+        if sys.platform.startswith("linux"):
+            fault["LD_PRELOAD"] = str(directory / "libalign_ggml_shim.so")
         native_fault_environments[mode] = fault
     options = bundle(work)
     sequence_templates = []
