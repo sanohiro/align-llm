@@ -12,8 +12,8 @@ restriction; Request 46 is partially delivered and Request 48 remains proposed. 
 requested language/library APIs have shipped. Requests 61/62 now pass their observed consumer acceptance. Historical request owners remain pending.
 
 The active branch incorporates main `b5336f0` and preserves its G1 implementation checkpoints.
-Next: adopt the merged compiler/runtime batch once, verify observed stream and generation,
-then continue diagnostic/case/CLI integration and real Metal/CUDA qualification.
+The merged compiler/runtime batch and observed CPU/GPU generation are verified.
+Next: connect native case/CLI integration, then complete real Metal/CUDA qualification.
 
 ### Preserved implementation checkpoint
 
@@ -103,6 +103,15 @@ pre-upload diagnostic-budget refusal, stream failure and successful subsequent i
 `gmake gpu-generation-smoke gpu-case-traversal`, per-unit generation checking, `gmake fmt` and
 `git diff --check` pass. No real-device numeric qualification is claimed.
 
+**CPU trace checkpoint.** Existing dense/MoE CPU math and resource teardown now support the
+same production, diagnostic reproduction and teacher-forced stream. Ordinary wrappers keep
+observation disabled. `python3 scripts/run-gpu-cpu-trace-smoke` passes exact CPU/GPU fixture
+stream equality, ordinary/observed/reproduced token equality, forced EOG traversal, stream-limit
+failure cleanup and a successful subsequent invocation. `gmake runtime-provider-smoke` passes
+its sampler self-test and 61 CLI assertions; `gmake fmt` and `git diff --check` pass. These are
+native fixture results, not real-device numeric qualification. The focused trace owner is not
+added to an aggregate automatically.
+
 **Eligibility checkpoint.** Requests 61/62 are consumer-verified. The full frozen 21-case audit
 meets 20 expectations; only explicitly deferred direct-place case 11 remains red. All negative
 lifetime controls, observed native generation and real CPU compilation pass. G1 integration is
@@ -110,9 +119,9 @@ eligible; G1R/G2 still follow G1.
 
 **Next actions, in order.**
 
-1. Connect existing CPU production and diagnostic generation to the same stream traversal, with
-   separate production, reproduction and forced owners. Connect native case input/output to
-   geometry traversal, numeric pairing and case sequencing under the shared generation deadline.
+1. Connect native case input/output to geometry traversal, numeric pairing and case sequencing
+   under the shared generation deadline. CPU production, reproduction and forced trace owners
+   are implemented and pass the shared CPU/GPU byte comparison.
 2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
    process/record/replay/publication owners, and real source/profile/calibration kit construction.
    The final CLI does not exist yet; do not publish a placeholder success path.

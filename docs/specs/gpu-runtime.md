@@ -789,6 +789,20 @@ All fallible operations return the existing `Error`; any refusal prevents succes
 | Readback/write failure, graph invalidation, cleanup | capture reset, synchronous graph compute, existing native owner Drop | native diagnostic malformed shape/stream-limit refusal and subsequent independent invocation |
 | CPU reference and final case/publication integration | existing CPU generation owners, native case producer and parent sequencing | pending within G1; the GPU diagnostic checkpoint alone does not close qualification |
 
+CPU tracing extends the existing `decode_step` and `moe_decode_step` generation paths; it does
+not replace their math, sampling, cache or teardown. Their qualification-only trace entrypoints
+append a mode (`1` production logits, `2` diagnostic), borrowed forced IDs and a borrowed mutable
+stream to existing generation inputs. Existing callers use internal mode 0 with a disabled stream.
+Forced IDs are valid only in mode 2, validated against geometry/context before execution; the loop
+uses them as decode inputs and ignores EOG/the sampling maximum only for that replay. Output
+remains the existing owned generation-parts record. CPU layer readbacks and logits use existing
+host buffers; OLMoE routing uses bounded diagnostic scratch before graph teardown. Stream failures
+set the existing outcome error and converge through normal cleanup. No persistent schema changes.
+The native CPU trace owner must compare the complete emitted order/shapes/counts to the independent
+traversal, exercise production/reproduction IDs and forced EOG, and retain unchanged ordinary
+CPU-generation owner evidence. Final native case/CLI integration remains pending within G1.
+
+
 ### 3.11 Local qualification kit assembly
 
 The internal kit owner accepts canonical profile bytes, both captured source closures and an exact

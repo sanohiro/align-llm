@@ -102,42 +102,52 @@ fn emit(borrow slots: slice<u8>, slot: i64, borrow scratch: slice<u8>, offset: i
   return runtime_numeric_stream.record(stream, frame, payload)
 }
 
+pub fn write_layer(borrow owner: Capture, index: i64, layer: i64, step: i64, tokens: i64,
+  borrow mut stream: runtime_numeric_stream.Stream) -> Result<(), Error> {
+  if !owner.active || step < 0 || step > 4096 || index < 0 || index >= owner.layers
+    || layer < 0 || layer >= 4294967295 || tokens < 1 || tokens > owner.prompt {
+    return Err(Error.Invalid)
+  }
+  slots := owner.slots.bytes()
+  scratch := owner.scratch.bytes()
+  base := index * 4
+  if !shape(slots, base, owner.embedding, tokens, false) { return Err(Error.Invalid) }
+  if owner.experts > 0 {
+    if !shape(slots, base + 1, owner.experts, tokens, false)
+      || !shape(slots, base + 2, owner.experts, tokens, false)
+      || !shape(slots, base + 3, owner.selected, tokens, true) { return Err(Error.Invalid) }
+    mut token := 0
+    loop {
+      if token >= tokens { break }
+      emit(slots, base + 1, scratch, token * owner.experts * 4,
+        runtime_numeric_stream.Frame {
+          kind: 3, layer: layer, step: step, width: owner.experts, height: 1,
+        }, stream)?
+      emit(slots, base + 2, scratch, token * owner.experts * 4,
+        runtime_numeric_stream.Frame {
+          kind: 4, layer: layer, step: step, width: owner.selected, height: 1,
+        }, stream)?
+      emit(slots, base + 3, scratch, token * owner.selected * 4,
+        runtime_numeric_stream.Frame {
+          kind: 5, layer: layer, step: step, width: owner.selected, height: 1,
+        }, stream)?
+      token = token + 1
+    }
+  }
+  emit(slots, base, scratch, 0, runtime_numeric_stream.Frame {
+      kind: 2, layer: layer, step: step, width: owner.embedding, height: tokens,
+    }, stream)?
+  return Ok(())
+}
+
 pub fn write(borrow owner: Capture, step: i64,
   borrow mut stream: runtime_numeric_stream.Stream) -> Result<(), Error> {
   if !owner.active || step < 0 || step > 4096 { return Err(Error.Invalid) }
-  slots := owner.slots.bytes()
-  scratch := owner.scratch.bytes()
   mut layer := 0
   loop {
     if layer >= owner.layers { break }
     tokens := if step == 0 && layer != owner.layers - 1 { owner.prompt } else { 1 }
-    base := layer * 4
-    if !shape(slots, base, owner.embedding, tokens, false) { return Err(Error.Invalid) }
-    if owner.experts > 0 {
-      if !shape(slots, base + 1, owner.experts, tokens, false)
-        || !shape(slots, base + 2, owner.experts, tokens, false)
-        || !shape(slots, base + 3, owner.selected, tokens, true) { return Err(Error.Invalid) }
-      mut token := 0
-      loop {
-        if token >= tokens { break }
-        emit(slots, base + 1, scratch, token * owner.experts * 4,
-          runtime_numeric_stream.Frame {
-            kind: 3, layer: layer, step: step, width: owner.experts, height: 1,
-          }, stream)?
-        emit(slots, base + 2, scratch, token * owner.experts * 4,
-          runtime_numeric_stream.Frame {
-            kind: 4, layer: layer, step: step, width: owner.selected, height: 1,
-          }, stream)?
-        emit(slots, base + 3, scratch, token * owner.selected * 4,
-          runtime_numeric_stream.Frame {
-            kind: 5, layer: layer, step: step, width: owner.selected, height: 1,
-          }, stream)?
-        token = token + 1
-      }
-    }
-    emit(slots, base, scratch, 0, runtime_numeric_stream.Frame {
-        kind: 2, layer: layer, step: step, width: owner.embedding, height: tokens,
-      }, stream)?
+    write_layer(owner, layer, layer, step, tokens, stream)?
     layer = layer + 1
   }
   return Ok(())

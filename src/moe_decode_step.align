@@ -1,5 +1,9 @@
 module moe_decode_step
 
+import runtime_diagnostic
+import runtime_cpu_trace
+import runtime_numeric_stream
+
 import std.crypto
 import std.encoding
 import std.fs
@@ -1886,6 +1890,15 @@ if decode {
   layer_olmoe.mm_b_output_slot(n_expert_used)
 }
 
+fn trace_tensor(trace_mode: i64, kind: i64, layer: i64, step: i64, width: i64, height: i64,
+  borrow bytes: slice<u8>, borrow mut trace: runtime_numeric_stream.Stream,
+  borrow mut o: moe_model_forward.Outcome) {
+  if o.code.len() > 0 { return }
+  match runtime_cpu_trace.tensor(trace_mode, kind, layer, step, width, height, bytes, trace) {
+    Ok(_) => {}, Err(_) => { fail(o, "G1_NUMERIC_STREAM", "tensor") },
+  }
+}
+
 fn run_moe_layer(
   device: raw,
   backend: raw,
@@ -1938,7 +1951,16 @@ fn run_moe_layer(
   borrow mut result: moe_model_forward.LayerResult,
   borrow mut state: Plane,
   borrow mut o: moe_model_forward.Outcome,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
 ) {
+  mut capture := if trace_mode == 2 {
+    runtime_diagnostic.create(1, g.n_embd, spec.t_out, g.n_expert, g.n_expert_used) else {
+      fail(o, "G1_NUMERIC_STREAM", "capture")
+      return
+    }
+  } else { runtime_diagnostic.disabled() }
   mut setup_started := time.instant()
   mut weight_ctx := ggml_ffi.null_handle()
   mut input_ctx := ggml_ffi.null_handle()
@@ -2512,6 +2534,21 @@ fn run_moe_layer(
     take(o, moe_model_forward.mark_outputs(
         slot_view, oracle, spec.oracle_base, layer_olmoe.MM_LAYER_ORACLE_COUNT, 1))
   }
+  if o.code.len() == 0 && trace_mode == 2 {
+    match runtime_diagnostic.reset(capture) {
+      Ok(_) => {}, Err(_) => { fail(o, "G1_NUMERIC_STREAM", "capture_reset") },
+    }
+    trace_slots := [b_output_slot_of(decode, g.n_expert_used), probs_node_of(decode),
+      argsort_node_of(decode), b_nodes.out[1]]
+    mut field := 0
+    loop {
+      if field >= 4 || o.code.len() > 0 { break }
+      match runtime_diagnostic.retain(capture, slot_view, 0, field, trace_slots[field]) {
+        Ok(_) => {}, Err(_) => { fail(o, "G1_NUMERIC_STREAM", "capture_slot") },
+      }
+      field = field + 1
+    }
+  }
   if o.code.len() == 0 {
     take(o, ggml_ffi.graph_expand(
         graph_b, slot_view, b_output_slot_of(decode, g.n_expert_used), "output"))
@@ -2690,6 +2727,11 @@ fn run_moe_layer(
   }
   o.generic_transfer_digest_ns = o.generic_transfer_digest_ns
     + (time.instant() - transfer_started)
+  if o.code.len() == 0 && trace_mode == 2 {
+    match runtime_diagnostic.write_layer(capture, 0, spec.layer, step, spec.t_out, trace) {
+      Ok(_) => {}, Err(_) => { fail(o, "G1_NUMERIC_STREAM", "layer") },
+    }
+  }
   // Section 3.7's ordering invariant, in the order it names. (1) before compute, the plane's columns
   // `0 .. n_past-1` were a `slot_set` **source**; (2) compute — phase A, the routing decision, the
   // claim reads, phase B; (3) after compute, the plane's column `n_past` and only that column is a
@@ -3110,6 +3152,9 @@ fn decode_pass(
   borrow mut state: Plane,
   borrow mut decoded: Decode,
   borrow mut o: moe_model_forward.Outcome,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
 ) -> array<i64> {
   mut routed_ids: array_builder<i64> := array_builder()
   mut chunk_temp: buffer := buffer(moe_model_forward.CHUNK_BYTES)
@@ -3232,7 +3277,7 @@ fn decode_pass(
       pos_view, mask_view,
       out_ids_view,
       past_k_view, past_v_view, residual_view, node_view, plane_view, scan, starts, lengths, pak,
-      block_temp, cache, claim_counters, breach, routing, result, state, o)
+      block_temp, cache, claim_counters, breach, routing, result, state, o, trace_mode, forced_ids, trace)
     o.routing_compute_ns = o.routing_compute_ns + result.compute_a_ns
     o.phase_a_attention_ns = o.phase_a_attention_ns + result.compute_a_attention_ns
     o.phase_a_router_ns = o.phase_a_router_ns + result.compute_a_router_ns
@@ -3343,6 +3388,7 @@ fn decode_pass(
     return routed_ids.build()
   }
   transfer_started := time.instant()
+  trace_tensor(trace_mode, 1, 4294967295, step, g.n_vocab, 1, logits_view, trace, o)
   digest := moe_model_forward.digest_region(logits_view)
   decoded.sha256 = digest.sha.clone()
   decoded.bit_sum = digest.bit_sum
@@ -3444,6 +3490,9 @@ fn prefill_pass(
   borrow mut cache: ExpertCache,
   borrow mut state: Plane,
   borrow mut o: moe_model_forward.Outcome,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
 ) -> array<i64> {
   mut chunk_temp: buffer := buffer(moe_model_forward.CHUNK_BYTES)
   mut block_temp: buffer :=
@@ -3526,7 +3575,7 @@ fn prefill_pass(
       a_nodes, b_nodes, oracle, layer_view, claim_window, cache_window, cache_metadata, slot_view,
       index_view, mask_view,
       out_ids_view, plane_view, plane_view, residual_view, node_view, plane_view, scan, starts,
-      lengths, pak, block_temp, cache, claim_counters, breach, routing, result, state, o)
+      lengths, pak, block_temp, cache, claim_counters, breach, routing, result, state, o, trace_mode, forced_ids, trace)
     account(result.activation_a, result.slot_high_water, result.node_count_a, activation, o)
     account(result.activation_b, result.slot_high_water, result.node_count_b, activation, o)
     o.compute_ns = o.compute_ns + result.compute_a_ns + result.compute_b_ns
@@ -3606,6 +3655,7 @@ fn prefill_pass(
   o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read + claim_counters.bytes_read
   o.reference_pread_count = o.reference_pread_count + source_counters.pread_count
   o.reference_bytes_read = o.reference_bytes_read + source_counters.bytes_read
+  trace_tensor(trace_mode, 1, 4294967295, 0, g.n_vocab, 1, logits_view, trace, o)
   return seen_keys
 }
 
@@ -3948,6 +3998,9 @@ fn decode_loop(
   borrow mut state: Plane,
   borrow mut decoded: Decode,
   borrow mut o: moe_model_forward.Outcome,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
 ) -> StepRows {
   rows := builder()
   mut token_ids: array_builder<i64> := array_builder()
@@ -3989,7 +4042,10 @@ fn decode_loop(
   mut step := 1
   loop {
     if o.code.len() > 0 { break }
-    if generation {
+    if forced_ids.len() > 0 {
+      if step > forced_ids.len() { break }
+      token = forced_ids[step - 1]
+    } else if generation {
       if step >= generation_max || generation_eog(eog_ids, token) { break }
     } else if step > steps {
       break
@@ -4079,7 +4135,7 @@ fn decode_loop(
       residual_view,
       logits_view, node_view, plane_view, oracle, embed_nodes, a_nodes, b_nodes, head_nodes, scan,
       ranges.start, ranges.length, token, n_past, step, width, stride, breach, activation, cache,
-      res, state, decoded, o)
+      res, state, decoded, o, trace_mode, forced_ids, trace)
     pass_finished := time.instant()
     if o.code.len() == 0 && generation && decoded.nonfinite_count > 0 {
       fail(o, "R5_LOGITS_NONFINITE", moe_model_forward.labelled(
@@ -4674,6 +4730,9 @@ fn schedule_decode(
   borrow mut top: moe_model_forward.TopColumns,
   borrow mut stepped: StepRows,
   borrow mut o: moe_model_forward.Outcome,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
 ) {
   mut state := empty_plane()
   mut decoded := empty_decode()
@@ -4869,7 +4928,7 @@ fn schedule_decode(
       out_ids_view,
       residual_view, logits_view, node_view, plane_view, prefill_oracle, embed_nodes,
       prefill_a_nodes, head_nodes, scan, ranges.start, ranges.length, width, stride,
-      reference_path, breach, activation, cache, state, o)
+      reference_path, breach, activation, cache, state, o, trace_mode, forced_ids, trace)
     if o.code.len() == 0 { o.plane_source = PLANE_SOURCE_PREFILL }
   }
   if o.code.len() == 0 {
@@ -4920,7 +4979,7 @@ fn schedule_decode(
       first_token, n_past, steps, generation, sampled, random, eog_ids, generation_max, width,
       stride, block_align,
       origin, breach, activation, cache,
-      state, decoded, o)
+      state, decoded, o, trace_mode, forced_ids, trace)
   }
   teardown_started := time.instant()
   // Section 4.3's ordering, on **every** exit path from here: the wrap is freed before the backend
@@ -5068,6 +5127,44 @@ fn execute_mode(
   borrow mut top: moe_model_forward.TopColumns,
   borrow mut stepped: StepRows,
 ) -> moe_model_forward.Outcome {
+  mut trace := runtime_numeric_stream.disabled()
+  mut forced_builder: array_builder<i64> := array_builder()
+  forced_ids := forced_builder.build()
+  return execute_mode_traced(pack_path, geometry_path, expected_geometry, source_identity, tokens_text, reference_path, transcript_path, width_text, logits_path, steps_text, kv_save_text, kv_load_text, resident_text, generation, sampled, phase_a_operation_diagnosis, attention_operation_diagnosis, attention_core_diagnosis, expert_phase_b_operation_diagnosis, plane_upload_diagnosis, sampling_seed, eog_ids, generation_max, tokens, graphs, top, stepped, 0, forced_ids, trace)
+}
+
+fn execute_mode_traced(
+  pack_path: str,
+  geometry_path: str,
+  expected_geometry: str,
+  borrow source_identity: alignpack.SourceIdentity,
+  tokens_text: str,
+  reference_path: str,
+  transcript_path: str,
+  width_text: str,
+  logits_path: str,
+  steps_text: str,
+  kv_save_text: str,
+  kv_load_text: str,
+  resident_text: str,
+  generation: bool,
+  sampled: bool,
+  phase_a_operation_diagnosis: bool,
+  attention_operation_diagnosis: bool,
+  attention_core_diagnosis: bool,
+  expert_phase_b_operation_diagnosis: bool,
+  plane_upload_diagnosis: bool,
+  sampling_seed: i64,
+  borrow eog_ids: array<i64>,
+  generation_max: i64,
+  borrow mut tokens: moe_model_forward.TokenColumns,
+  borrow mut graphs: moe_model_forward.GraphColumns,
+  borrow mut top: moe_model_forward.TopColumns,
+  borrow mut stepped: StepRows,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
+) -> moe_model_forward.Outcome {
   started := time.instant()
   mut o := moe_model_forward.empty_outcome()
   o.fp_contract_off = ggml_ffi.fp_contract_off()
@@ -5121,10 +5218,22 @@ fn execute_mode(
     return o
   }
 
-  max_steps := if generation { 127 } else { layer_olmoe.MAX_DECODE_STEPS }
+  max_steps := if trace_mode == 2 && forced_ids.len() > 0 { 4096 } else if generation { 127 } else { layer_olmoe.MAX_DECODE_STEPS }
   g := stage_inputs(
     tokens_text, width_text, steps_text, geometry_path, expected_geometry, generation, max_steps,
     tokens, o)
+  if o.code.len() > 0 {
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  mut forced_at := 0
+  loop {
+    if forced_at >= forced_ids.len() || o.code.len() > 0 { break }
+    if forced_ids[forced_at] < 0 || forced_ids[forced_at] >= g.n_vocab {
+      fail(o, CODE_TOKENS, "forced")
+    }
+    forced_at = forced_at + 1
+  }
   if o.code.len() > 0 {
     o.elapsed_ns = time.instant() - started
     return o
@@ -5397,7 +5506,7 @@ fn execute_mode(
     residual_bytes,
     logits_bytes, readback_bytes, staged.block_align, reference_path, transcript_path, logits_path,
     steps, generation, sampled, sampling_seed, eog_ids, generation_max, started, graphs, top,
-    stepped, o)
+    stepped, o, trace_mode, forced_ids, trace)
   o.elapsed_ns = time.instant() - started
   return o
 }
@@ -5466,6 +5575,32 @@ fn generate_resident_mode(
   expert_phase_b_operation_diagnosis: bool,
   plane_upload_diagnosis: bool,
 ) -> GenerationParts {
+  mut trace := runtime_numeric_stream.disabled()
+  mut forced_builder: array_builder<i64> := array_builder()
+  forced_ids := forced_builder.build()
+  return generate_resident_mode_traced(pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids, max_tokens, cache_budget_bytes, sampled, sampling_seed, phase_a_operation_diagnosis, attention_operation_diagnosis, attention_core_diagnosis, expert_phase_b_operation_diagnosis, plane_upload_diagnosis, 0, forced_ids, trace)
+}
+
+fn generate_resident_mode_traced(
+  pack_path: str,
+  geometry_path: str,
+  expected_geometry: str,
+  source_identity: alignpack.SourceIdentity,
+  borrow prompt_token_ids: array<i64>,
+  borrow eog_token_ids: array<i64>,
+  max_tokens: i64,
+  cache_budget_bytes: i64,
+  sampled: bool,
+  sampling_seed: i64,
+  phase_a_operation_diagnosis: bool,
+  attention_operation_diagnosis: bool,
+  attention_core_diagnosis: bool,
+  expert_phase_b_operation_diagnosis: bool,
+  plane_upload_diagnosis: bool,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
+) -> GenerationParts {
   if prompt_token_ids.len() < 1 || prompt_token_ids.len() > layer_olmoe.MAX_PREFILL_TOKENS
     || eog_token_ids.len() < 1 || eog_token_ids.len() > 256
     || max_tokens < 1 || max_tokens > 128 || cache_budget_bytes <= 0 {
@@ -5473,7 +5608,15 @@ fn generate_resident_mode(
     fail(refused, CODE_TOKENS, "generation")
     return GenerationParts { outcome: refused, token_ids_json: "[]".clone() }
   }
-  allocation_steps := if max_tokens > 1 { max_tokens - 1 } else { 1 }
+  if trace_mode < 0 || trace_mode > 2 || (trace_mode != 2 && forced_ids.len() != 0)
+    || forced_ids.len() > 4096 {
+    mut refused := moe_model_forward.empty_outcome()
+    fail(refused, CODE_TOKENS, "trace")
+    return GenerationParts { outcome: refused, token_ids_json: "[]".clone() }
+  }
+  allocation_steps := if forced_ids.len() > 0 { forced_ids.len() } else {
+    if max_tokens > 1 { max_tokens - 1 } else { 1 }
+  }
   width := prompt_token_ids.len() + allocation_steps
   if width > layer_olmoe.MAX_ATTENTION_WIDTH {
     mut refused := moe_model_forward.empty_outcome()
@@ -5492,16 +5635,34 @@ fn generate_resident_mode(
   mut graphs := moe_model_forward.empty_graphs()
   mut top := moe_model_forward.empty_top()
   mut stepped := empty_steps()
-  outcome := execute_mode(
+  outcome := execute_mode_traced(
     pack_path, geometry_path, expected_geometry, source_identity, token_view, "", "", width_view,
     "", steps_view, "-", "-", resident_view, true, sampled, phase_a_operation_diagnosis,
     attention_operation_diagnosis, attention_core_diagnosis,
     expert_phase_b_operation_diagnosis, plane_upload_diagnosis,
     sampling_seed, eog_token_ids,
     max_tokens, tokens, graphs, top,
-    stepped)
+    stepped, trace_mode, forced_ids, trace)
   token_ids_json := render_generation_ids(outcome, stepped)
   return GenerationParts { outcome: outcome, token_ids_json: token_ids_json }
+}
+
+pub fn generate_resident_trace(
+  pack_path: str, geometry_path: str, expected_geometry: str,
+  source_identity: alignpack.SourceIdentity,
+  borrow prompt_token_ids: array<i64>, borrow eog_token_ids: array<i64>,
+  max_tokens: i64, cache_budget_bytes: i64, sampled: bool, seed: i64,
+  trace_mode: i64, borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
+) -> GenerationParts {
+  if trace_mode != 1 && trace_mode != 2 {
+    mut refused := moe_model_forward.empty_outcome()
+    fail(refused, CODE_TOKENS, "trace_mode")
+    return GenerationParts { outcome: refused, token_ids_json: "[]".clone() }
+  }
+  return generate_resident_mode_traced(pack_path, geometry_path, expected_geometry, source_identity,
+    prompt_token_ids, eog_token_ids, max_tokens, cache_budget_bytes, sampled, seed,
+    false, false, false, false, false, trace_mode, forced_ids, trace)
 }
 
 pub fn generate_resident(
