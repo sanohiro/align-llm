@@ -37,6 +37,16 @@ explicit non-blocking language restriction. Both reject the real retained-local-
 The frozen audit and original source identities remain in `docs/align-gpu-readiness.md`.
 No compiler probe substitutes for observed consumer acceptance or real Metal/CUDA qualification.
 
+**Host/device observation checkpoint.** Native production snapshots retain the selected ggml
+device's total/free memory and copied device ID. Bounded local host probes and CUDA PCI matching
+are implemented in `gpu_qualification_host_observation.py`; device enrichment refuses architecture
+mismatch, ambiguous/reordered PCI observations and changing native identity. Metal driver identity
+uses the actual OS build. `python3 scripts/run-gpu-host-observation-smoke` passes real local host
+facts and adversarial CUDA fixtures; `python3 scripts/run-gpu-provider-trace-smoke` passes all
+16 native cases with the extended snapshot. Real-shim strict C syntax and `gmake fmt` pass.
+Next: connect this owner and retained case records to final CLI publication and source rechecks;
+real Metal/CUDA qualification and comprehensive review remain outstanding.
+
 **Complete implementation checkpoints.**
 
 - Strict runtime options, provider dispatch, canonical source/bundle admission and immutable private

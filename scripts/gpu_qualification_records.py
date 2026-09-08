@@ -911,7 +911,7 @@ def validate_evidence(
         for key in device_strings:
             bounded_text(host[key], 1, 4096, f"host {key}")
         bounded_i64(host["device_total_bytes"], 1, I64_MAX, "device total bytes")
-        bounded_i64(host["device_free_bytes"], 1, I64_MAX, "device free bytes")
+        bounded_i64(host["device_free_bytes"], 0, I64_MAX, "device free bytes")
         if host["device_free_bytes"] > host["device_total_bytes"]:
             raise RecipeError("host device free bytes exceed total")
     elif status != "FAIL" or any(host[key] != "" for key in device_strings) \

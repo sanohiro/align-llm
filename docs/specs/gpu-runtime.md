@@ -439,9 +439,20 @@ Constants are 1, `GPU_RUNTIME_EVIDENCE`, and `generation`; status is `PASS|FAIL`
 - `host` is
   `platform,os_version,kernel,arch,wsl,cpu,logical_cpus,host_total_bytes,host_free_bytes,backend,device_state,registry_device,device_description,driver,gpu_architecture,device_total_bytes,device_free_bytes`.
   Baseline host fields are always present. `device_state="available"` requires the four device
-  strings nonempty and both byte observations positive. `device_state="unavailable"` requires four
+  strings nonempty, positive total bytes, and free bytes between zero and total. `device_state="unavailable"` requires four
   empty strings and two zeroes, is valid only in FAIL evidence, and truthfully represents discovery
   failure before a device identity exists.
+  Host facts come from bounded installed-system probes under the existing closed process owner:
+  macOS uses `sysctl`, `sw_vers` and `vm_stat`; Linux/WSL use bounded `/etc/os-release`,
+  `/proc/cpuinfo` reads and system page counts. Free host bytes mean currently free pages,
+  excluding reclaimable caches. These admission probes share the preparation deadline and are
+  not additional build commands. Device enrichment shares the generation deadline. CUDA queries
+  `nvidia-smi` for PCI bus ID, name, driver version and compute capability, matches the native
+  device's PCI ID uniquely (normalizing a zero-extended domain), and refuses malformed or
+  ambiguous rows. The observed architecture must occur in the admitted bundle target. The
+  `gpu-host-observation` focused owner covers real local host facts, reordered CUDA enumeration,
+  duplicate/mismatched PCI IDs, malformed probes and changing native device identity. Host
+  observation failure cannot fabricate baseline facts or a passing device observation.
 - `bundle` is
   `manifest_sha256,bundle_id,ggml_source_manifest_sha256,ggml_source_snapshot_sha256,loaded_artifact_sha256s`;
   its source values match §3.6 and replay §3.4, and loaded hashes are a unique manifest subset in
@@ -856,9 +867,18 @@ kv_upload_bytes,input_upload_bytes,prefill_executions,decode_executions,allocate
 allocated_device_bytes,weights_buffer_bytes,kv_buffer_bytes,managed_host_peak_bytes,
 managed_device_peak_bytes,resident_weight_payload_bytes,resident_kv_payload_bytes,
 model_operations,model_layers,model_experts,
-bundle_id,device_name,device_description`.
+device_total_bytes,device_free_bytes,bundle_id,device_name,device_description,device_id`.
 It captures the existing native state queries before the production device is dropped, validating
 nonnegative counters, positive execution/allocation/weight observations and nonempty identity.
+Device memory is the selected ggml device's reported total/free capacity at that snapshot; total
+is positive and free may be zero but cannot exceed total. It is advisory capacity, not an allocation
+peak. `device_id` copies the pinned ggml device property (empty when unavailable); CUDA host
+identity probes match its normalized PCI bus ID, never a presumed enumeration ordinal. Metal
+uses the observed device description and the installed OS build for its integrated driver identity.
+A later GPU observation must preserve bundle, name, description, ID and total capacity; free
+capacity may vary. The provider owner checks these bounds and rejects corrupted device-memory fields. The
+evidence host uses the first successfully observed GPU device and does not invent availability
+from the profile's requested device name. Zero free bytes does not mean an unavailable device.
 CPU, ordinary unobserved calls and diagnostic replay return `available=false` with zero/empty fields;
 this is absence of a GPU observation, not a claim of zero physical resource use. Current allocation
 sizes remain `allocated_*`; separately sampled native peaks are `managed_*_peak_bytes` and must

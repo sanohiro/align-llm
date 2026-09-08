@@ -118,6 +118,7 @@ pub DEVICE_PROP_MEMORY_TOTAL := 5
 
 pub DEVICE_TEXT_NAME := 0
 pub DEVICE_TEXT_DESCRIPTION := 1
+pub DEVICE_TEXT_ID := 2
 
 // The longest device name or description this capability carries. `MTL0` and `Apple M1` are the
 // two this host produces; the bound exists because the shim writes at most the capacity the caller
@@ -1207,7 +1208,7 @@ pub fn device_buft_max_size(device: raw) -> i64 {
 // as `backend_name`: `buffer(n)` reserves capacity without publishing length, so the range is
 // written before the call and the shim writes at most the capacity the caller declares.
 pub fn device_text(device: raw, which: i64) -> string {
-  if which != DEVICE_TEXT_NAME && which != DEVICE_TEXT_DESCRIPTION { return "".clone() }
+  if which != DEVICE_TEXT_NAME && which != DEVICE_TEXT_DESCRIPTION && which != DEVICE_TEXT_ID { return "".clone() }
   mut window: buffer := buffer(MAX_DEVICE_TEXT_BYTES)
   mut i := 0
   loop {

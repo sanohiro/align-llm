@@ -22,8 +22,9 @@ OBSERVATION_INTS = (
     "weights_buffer_bytes", "kv_buffer_bytes", "managed_host_peak_bytes", "managed_device_peak_bytes",
     "resident_weight_payload_bytes", "resident_kv_payload_bytes",
     "model_operations", "model_layers", "model_experts",
+    "device_total_bytes", "device_free_bytes",
 )
-OBSERVATION_TEXT = ("bundle_id", "device_name", "device_description")
+OBSERVATION_TEXT = ("bundle_id", "device_name", "device_description", "device_id")
 PHASES = {"production", "production_binding", "reproduction", "reproduction_binding",
           "forced", "forced_binding", "finish"}
 
@@ -195,6 +196,8 @@ def _observation(raw: object, case: NativeCase, expected_bundle_id: str | None,
             or not observation["device_description"]:
         raise RecipeError("native device/bundle identity differs")
     positions = case.traversal.positions
+    if observation["device_total_bytes"] < 1 or observation["device_free_bytes"] > observation["device_total_bytes"]:
+        raise RecipeError("native device memory properties are invalid")
     if observation["managed_host_peak_bytes"] < observation["allocated_host_bytes"] \
             or observation["managed_device_peak_bytes"] < observation["allocated_device_bytes"]:
         raise RecipeError("native memory peak is below its current allocation")

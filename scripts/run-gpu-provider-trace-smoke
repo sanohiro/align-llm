@@ -132,6 +132,8 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                     assert observation["managed_device_peak_bytes"] > observation["allocated_device_bytes"]
                     assert 0 < observation["resident_weight_payload_bytes"] <= observation["weights_buffer_bytes"]
                     assert 0 < observation["resident_kv_payload_bytes"] <= observation["kv_buffer_bytes"]
+                    assert 0 <= observation["device_free_bytes"] <= observation["device_total_bytes"]
+                    assert observation["device_total_bytes"] > 0
 
                 traversal = Traversal.derive(json.loads(geometry.read_bytes()), {
                     "prompt_token_ids": records[-1]["prompt_ids"],
@@ -216,10 +218,11 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                 if architecture == "qwen2" and model_key == "model" and backend == "gpu":
                     for key in ("resident_weight_payload_bytes", "resident_kv_payload_bytes", "weight_upload_count",
                                 "managed_host_peak_bytes", "managed_device_peak_bytes", "model_operations",
-                                "model_layers", "model_experts"):
+                                "model_layers", "model_experts", "device_total_bytes"):
                         changed = json.loads(case_run.stdout)
                         changed["production"]["observation"][key] = (
-                            changed["production"]["observation"][key] - 1 if "peak" not in key else 0)
+                            changed["production"]["observation"][key] - 1
+                            if "peak" not in key and key != "device_total_bytes" else 0)
                         try:
                             native.success(canonical(changed), native_case,
                                 expected_bundle_id=observation["bundle_id"], expected_device="stub-gpu")

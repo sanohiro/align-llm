@@ -836,6 +836,7 @@ align_ggml_v_scalar_mismatch:
  */
 #define ALIGN_GGML_DEV_TEXT_NAME        0
 #define ALIGN_GGML_DEV_TEXT_DESCRIPTION 1
+#define ALIGN_GGML_DEV_TEXT_ID          2
 
 /* `ggml_backend_buft_get_max_size` reports `SIZE_MAX` for the CPU buffer type, which is not
  * representable as an `int64_t`. Both files clamp rather than truncate, so section 3.9 step 21a
@@ -2795,6 +2796,11 @@ int32_t align_ggml_device_text(void *device, int32_t which, void *out, int32_t c
         text = ggml_backend_dev_name((ggml_backend_dev_t) device);
     } else if (which == ALIGN_GGML_DEV_TEXT_DESCRIPTION) {
         text = ggml_backend_dev_description((ggml_backend_dev_t) device);
+    } else if (which == ALIGN_GGML_DEV_TEXT_ID) {
+        struct ggml_backend_dev_props props;
+        memset(&props, 0, sizeof(props));
+        ggml_backend_dev_get_props((ggml_backend_dev_t) device, &props);
+        text = props.device_id;
     }
     if (text == NULL) {
         return 0;

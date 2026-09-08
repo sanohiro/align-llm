@@ -829,6 +829,7 @@ align_ggml_v_scalar_mismatch:
  */
 #define ALIGN_GGML_DEV_TEXT_NAME        0
 #define ALIGN_GGML_DEV_TEXT_DESCRIPTION 1
+#define ALIGN_GGML_DEV_TEXT_ID          2
 
 /* `ggml_backend_buft_get_max_size` reports `SIZE_MAX` for the CPU buffer type, which is not
  * representable as an `int64_t`. Both files clamp rather than truncate, so section 3.9 step 21a
@@ -3176,6 +3177,8 @@ int32_t align_ggml_device_text(void *device, int32_t which, void *out, int32_t c
         text = align_stub_is_gpu(device) ? gpu_name : cpu_name;
     } else if (which == ALIGN_GGML_DEV_TEXT_DESCRIPTION) {
         text = description;
+    } else if (which == ALIGN_GGML_DEV_TEXT_ID) {
+        text = align_stub_is_gpu(device) ? "0000:01:00.0" : "";
     }
     if (text == NULL) {
         return 0;
