@@ -568,11 +568,13 @@ prompt construction, sampling, EOG control and text decode are explicitly outsid
 reviewed production graph trace derives the three expected counts from exact model geometry,
 prompt width, output selection and generated steps; all diagnostic work is excluded.
 For the pinned decomposed graphs, an operation is a materializing graph node: NONE, VIEW, RESHAPE,
-PERMUTE and resident-KV CPY are excluded. CONT, zero-extent PAD, CONCAT and the two highest-layer
+PERMUTE, resident-KV CPY and SET_ROWS are excluded. CONT, zero-extent PAD and the two highest-layer
 GET_ROWS remain counted. This is a graph-operation count, not a GPU kernel-launch count.
-The independent projection is `24*L+6` Qwen prefill and `29*L+6` per Qwen decode;
-OLMoE uses `(29+K)*L+6` prefill and `(34+K)*L+6` per decode, where `L` is layer count and
-`K` selected experts. The constant six is embedding/head plus two highest-layer selection nodes.
+The independent projection is `(24+P)*L+6` Qwen prefill and `27*L+6` per Qwen decode;
+OLMoE uses `(29+K+P)*L+6` prefill and `(32+K)*L+6` per decode, where `L` is layer count and
+`K` selected experts. `P` is three when the context-clipped 256-position attention bucket is
+wider than the prompt (K CONT, K PAD and V PAD), otherwise zero. Indexed resident writes
+replace both decode CONCAT operations without adding counted model operations. The constant six is embedding/head plus two highest-layer selection nodes.
 Native execution counts only nodes in successfully executed graphs, never the requested table size.
 Each layer is observed at its down projection by matching the node's first source to original
 weight ordinal `12*(layer+1)` in the immutable `3+12*L` layout. For OLMoE MUL_MAT_ID down
@@ -1184,6 +1186,27 @@ maximum-one and allocation refusal; the independent same-device llama.cpp diagno
 Qwen prefill/decode scalar comparison with matched embedding placement and F32 KV. Existing
 failed CPU/GPU calibration evidence remains failed and unchanged. Padded workspace participates
 in the existing memory ceiling and must be included in subsequent performance measurements.
+
+### Resident decode graph reuse repair
+
+The decode graph reads a fixed `min(attention_bucket, request_capacity)` resident KV prefix.
+It writes the current K/V values using device `set_rows` operations before the dependent attention
+views, replacing concatenation of the entire past prefix. Physical K/V layouts remain unchanged.
+Both planes are initialized to zero once, so masked unwritten capacity cannot introduce NaNs.
+Zero padding beyond request capacity remains explicit. The graph is rebuilt only when the
+attention bucket changes; token IDs, positions and causal-mask values are mutable input payloads.
+
+| Surface / owner | Contract and validation | Closure owner |
+| --- | --- | --- |
+| `runtime_qwen` / `runtime_olmoe` decode builders | Add the request capacity argument; split the existing node walk around K/V writes. KQ and V-attention operands depend on the write result. No past-KV concatenation. Metadata and output slots belong to the current graph context; input/payload owners outlive it. | `gpu-device-smoke`: both model graphs, prefix preservation and dependent readback |
+| `qwen_nodes.build_range` / `olmoe_nodes.build_range` | Borrow the existing node table and emit only `[begin,end)`, rejecting invalid bounds. The ordinary full walker delegates to this range. No new persisted table or schema. | `gpu-device-smoke`, `gpu-generation-smoke` |
+| `runtime_kv.write_indexed_prefix(owner,index,kind,layout,indices,width,slots,out,source)` | Native F32 single-token write, then a fixed prefix view of the updated plane. K uses one I32 position; transposed V uses one I32 index per head lane over a flattened destination. Reject wrong owner/state/layout/type/shape, out-of-plane prefix, or an index space exceeding I32 before construction. Views and `set_rows` metadata belong to the graph; no payload allocation. | `gpu-device-smoke`: malformed shape/state, K/V writes, exact tail, rebuild and cleanup |
+| Native input registration / `runtime_inputs.update` | Indexed writes register their input's plane capacity and lane count. Position payloads must be complete and in range. V payloads must be complete and exactly `lane * capacity + position`; changing the K position invalidates the previous V payload. Validate all values before upload; refuse decode compute until both payloads agree. Input registration must agree across all layers. | `gpu-device-smoke`: negative/out-of-range/partial/mismatched indices, no upload on rejection, refusal before complete inputs |
+| `runtime_generation` | Reserve one extra I32 V-index input with `head_dim * n_head_kv` entries. Update it from checked placement arithmetic for each decode; no model value or routing readback. Retain one decode graph/key/output window inside a bucket and invalidate at the boundary. Shape identity binds bucket and actual resident view extent, not the mutable position. | `gpu-generation-smoke`: consecutive reuse, boundary rebuild, maximum-one and diagnostic parity; independent real Metal final-logit comparison |
+
+These private surfaces change no public provider result or persisted format. Their host inputs,
+native metadata and bounded workspace remain subject to the existing admission contract. This
+repair does not waive pre-upload measurement, operation admission, corpus or performance gates.
 
 OLMoE routing, selected-expert `mul_mat_id`, weighting and reduction stay in the GPU graph; resident
 execution must not inherit the CPU path's per-layer router readback and expert-claim boundary.

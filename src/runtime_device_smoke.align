@@ -1439,6 +1439,9 @@ fn exercise_qwen_graph(
       ggml_type: 26, n_dims: 1, ne0: 1, ne1: 1, ne2: 1, ne3: 1,
     },
   )?
+  v_indices := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 2, ne1: 1, ne2: 1, ne3: 1,
+    })?
   if prefill_tokens != runtime_qwen.INPUT_PREFILL_TOKENS
     || prefill_positions != runtime_qwen.INPUT_PREFILL_POSITIONS
     || prefill_mask != runtime_qwen.INPUT_PREFILL_MASK
@@ -1529,7 +1532,7 @@ fn exercise_qwen_graph(
   if ggml_ffi.handle_absent(decode_ctx) { return Err(Error.Invalid) }
   decode_graph := ggml_ffi.graph_new(decode_ctx)
   if ggml_ffi.handle_absent(decode_graph) { return Err(Error.Invalid) }
-  runtime_qwen.build_decode(owner, g, 2, decode_ctx, decode_graph, slots)?
+  runtime_qwen.build_decode(owner, g, 2, 4, decode_ctx, decode_graph, slots)?
   if ggml_ffi.graph_node_count(decode_graph) < 42 { return Err(Error.Invalid) }
   decode_key := topology_key(
     backend, bundle_id, ggml_ffi.GPU_GRAPH_DECODE, DECODE_TENSOR_DIGEST, 3,
@@ -1538,6 +1541,11 @@ fn exercise_qwen_graph(
   runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
   runtime_inputs.update(owner, decode_token, 0, decode_token_view)?
   runtime_inputs.update(owner, decode_position, 0, decode_position_view)?
+  mut v_rows := buffer(8)
+  v_rows.put_u32_le(2)
+  v_rows.put_u32_le(6)
+  v_rows_view := v_rows.bytes()
+  runtime_inputs.update(owner, v_indices, 0, v_rows_view)?
   runtime_inputs.update(owner, decode_mask, 0, decode_mask_view)?
   runtime_inputs.update(owner, output_id, 0, decode_output_view)?
   runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
@@ -1726,6 +1734,9 @@ fn exercise_olmoe_graph(
       ggml_type: 26, n_dims: 1, ne0: 1, ne1: 1, ne2: 1, ne3: 1,
     },
   )?
+  v_indices := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 2, ne1: 1, ne2: 1, ne3: 1,
+    })?
   if prefill_tokens != runtime_olmoe.INPUT_PREFILL_TOKENS
     || prefill_positions != runtime_olmoe.INPUT_PREFILL_POSITIONS
     || prefill_mask != runtime_olmoe.INPUT_PREFILL_MASK
@@ -1822,7 +1833,7 @@ fn exercise_olmoe_graph(
   if ggml_ffi.handle_absent(decode_ctx) { return Err(Error.Invalid) }
   decode_graph := ggml_ffi.graph_new(decode_ctx)
   if ggml_ffi.handle_absent(decode_graph) { return Err(Error.Invalid) }
-  runtime_olmoe.build_decode(owner, g, 2, decode_ctx, decode_graph, slots)?
+  runtime_olmoe.build_decode(owner, g, 2, 4, decode_ctx, decode_graph, slots)?
   if ggml_ffi.slot_ne(slots, layer_olmoe.MM_SLOT_TOPK, 0) != g.n_expert_used
     || ggml_ffi.slot_ne(slots, layer_olmoe.MM_SLOT_TOPK, 1) != 1
     || ggml_ffi.slot_ne(slots, layer_olmoe.MM_SLOT_COMPACT, 0) != g.n_expert_used
@@ -1837,6 +1848,11 @@ fn exercise_olmoe_graph(
   runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
   runtime_inputs.update(owner, decode_token, 0, decode_token_view)?
   runtime_inputs.update(owner, decode_position, 0, decode_position_view)?
+  mut v_rows := buffer(8)
+  v_rows.put_u32_le(2)
+  v_rows.put_u32_le(6)
+  v_rows_view := v_rows.bytes()
+  runtime_inputs.update(owner, v_indices, 0, v_rows_view)?
   runtime_inputs.update(owner, decode_mask, 0, decode_mask_view)?
   runtime_inputs.update(owner, output_id, 0, decode_output_view)?
   runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?

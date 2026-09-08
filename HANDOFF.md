@@ -80,6 +80,21 @@ The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
+**Resident decode reuse checkpoint (unpublished, after `dbb958f`).** R4 now uses dependent
+indexed resident K/V writes and fixed context-clipped 256-position views. Both model generation
+owners prove consecutive reuse and exactly one rebuild across the 256-position boundary.
+`scripts/run-gpu-device-smoke`, `gmake gpu-generation-smoke`, and the strict real Metal
+`scripts/gpu_workspace_allocation_smoke.c` owner pass. The real owner covers preserved prefixes,
+exact capacity tail, zero unwritten capacity, incomplete/mismatched/out-of-range indices refused
+before upload/compute, and zero-workspace resident-only graphs. The independent Python model-work
+projection now accounts for prefill padding and removal of decode concatenation; the complete
+`run-gpu-provider-trace-smoke` passes with the Homebrew OpenSSL/Zstandard library paths.
+Both real Metal cases exit zero after reuse: all seven production/diagnostic final-logit rows remain
+bitwise identical to the pinned independent reference (1,064,448 Qwen and 352,128 OLMoE scalars).
+This remains final-logit evidence, not full layer/router or public qualification. Next: pre-upload
+shape/operation/workspace planning (R2/R3), then remaining resource, corpus, evidence and deadline
+findings. Frozen failed profiles remain unchanged; no additional CUDA debugging is requested.
+
 **Attention repair checkpoint (unpublished).** Both model graphs now use the pinned reference's
 256-position attention reduction buckets, capped by model context. Physical KV stays request-sized;
 masked padding is explicit in the existing Align node tables. Mask reservation/update widths and

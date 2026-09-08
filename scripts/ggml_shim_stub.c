@@ -1045,6 +1045,7 @@ int64_t align_ptr_offset(const void *a, const void *b) {
  * can update the resident backing plane with the same strided layout as the real ggml view. */
 #define ALIGN_STUB_OP_KV_RANGE   18
 #define ALIGN_STUB_OP_CPY        19
+#define ALIGN_STUB_OP_INDEXED_PREFIX 20
 
 typedef struct align_stub_tensor {
     int32_t type;
@@ -1541,6 +1542,31 @@ static void align_stub_run(align_stub_tensor *t) {
             }
         }
     } break;
+    case ALIGN_STUB_OP_INDEXED_PREFIX: {
+        const int32_t *indices = (const int32_t *) t->src[2]->data;
+        float *plane = (float *) b->data;
+        if (t->lp[0] == 0) {
+            int64_t position = indices[0];
+            if (position < 0 || position >= b->ne[1]) { break; }
+            for (i2 = 0; i2 < b->ne[2]; ++i2) {
+                for (i0 = 0; i0 < b->ne[0]; ++i0) {
+                    plane[i0 + b->ne[0] * (position + b->ne[1] * i2)] = x[i0 + b->ne[0] * i2];
+                }
+            }
+        } else {
+            int64_t lanes = b->ne[1] * b->ne[2];
+            for (i0 = 0; i0 < lanes; ++i0) {
+                if (indices[i0] >= 0 && indices[i0] < align_stub_nelements(b)) { plane[indices[i0]] = x[i0]; }
+            }
+        }
+        for (i2 = 0; i2 < t->ne[2]; ++i2) {
+            for (i1 = 0; i1 < t->ne[1]; ++i1) {
+                for (i0 = 0; i0 < t->ne[0]; ++i0) {
+                    d[i0 + t->ne[0] * (i1 + t->ne[1] * i2)] = plane[i0 + b->ne[0] * (i1 + b->ne[1] * i2)];
+                }
+            }
+        }
+    } break;
     case ALIGN_STUB_OP_KV_RANGE: {
         int64_t position = t->lp[0];
         int64_t layout = t->lp[1];
@@ -1727,7 +1753,62 @@ struct align_gpu_device_state {
     int64_t observation_layers;
     int64_t observation_experts;
     int observation_failed;
+    int row_registered[2];
+    int64_t row_input[2];
+    int64_t row_capacity;
+    int64_t row_lanes;
+    int64_t row_position;
+    int row_position_valid;
+    int row_values_valid;
+
 };
+
+static int align_gpu_row_inputs_register(struct align_gpu_device_state *state,
+        int layout, int64_t index, int64_t capacity, int64_t lanes) {
+    int other = 1 - layout;
+    if (capacity <= 0 || lanes <= 0 || lanes > INT32_MAX / capacity
+        || (state->row_registered[other] && state->row_input[other] == index)
+        || (state->row_registered[layout] && state->row_input[layout] != index)
+        || ((state->row_registered[0] || state->row_registered[1])
+            && (state->row_capacity != capacity || state->row_lanes != lanes))) { return 0; }
+    state->row_registered[layout] = 1;
+    state->row_input[layout] = index;
+    state->row_capacity = capacity;
+    state->row_lanes = lanes;
+    return 1;
+}
+
+static int align_gpu_row_input_check(struct align_gpu_device_state *state,
+        int64_t index, int64_t offset, const void *data, int64_t length) {
+    int32_t value;
+    if (state->row_registered[0] && index == state->row_input[0]) {
+        if (offset != 0 || length != 4) { return 0; }
+        memcpy(&value, data, 4);
+        return value >= 0 && value < state->row_capacity;
+    }
+    if (state->row_registered[1] && index == state->row_input[1]) {
+        int64_t lane;
+        if (offset != 0 || length != state->row_lanes * 4 || !state->row_position_valid) { return 0; }
+        for (lane = 0; lane < state->row_lanes; ++lane) {
+            memcpy(&value, (const unsigned char *) data + lane * 4, 4);
+            if (value != lane * state->row_capacity + state->row_position) { return 0; }
+        }
+    }
+    return 1;
+}
+
+static void align_gpu_row_input_accept(struct align_gpu_device_state *state,
+        int64_t index, const void *data) {
+    if (state->row_registered[0] && index == state->row_input[0]) {
+        int32_t value;
+        memcpy(&value, data, 4);
+        state->row_position = value;
+        state->row_position_valid = 1;
+        state->row_values_valid = 0;
+    }
+    if (state->row_registered[1] && index == state->row_input[1]) { state->row_values_valid = 1; }
+}
+
 
 static atomic_int align_gpu_busy = 0;
 static char align_gpu_bundle_id[65];
@@ -2066,7 +2147,7 @@ int32_t align_gpu_memory_allocate(void *owner) {
         goto fail;
     }
     if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 4) {
-        state->kv_buffer = malloc((size_t) state->kv_bytes);
+        state->kv_buffer = calloc(1, (size_t) state->kv_bytes);
     }
     if (state->kv_buffer == NULL) {
         goto fail;
@@ -2716,6 +2797,42 @@ static align_stub_tensor *align_gpu_stub_input_at(
     return NULL;
 }
 
+int32_t align_gpu_kv_write_indexed_prefix(
+        void *owner, int64_t index, int32_t kind, int32_t layout, int64_t indices,
+        int64_t width, void *slots, int64_t out, int64_t source) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    align_stub_tensor *plane = align_gpu_stub_kv_at(state, index);
+    align_stub_tensor *src = align_stub_slot(slots, source);
+    align_stub_tensor *ids = align_gpu_stub_input_at(state, indices);
+    void *ctx = align_gpu_graph_context_at(state, kind);
+    align_stub_tensor *result;
+    int axis = layout == 0 ? 1 : 0;
+    int64_t capacity;
+    int64_t lanes;
+    int32_t status;
+    if (state == NULL || plane == NULL || src == NULL || ids == NULL || ctx == NULL
+        || kind != ALIGN_GPU_GRAPH_DECODE || state->graph_prepared[kind]
+        || (layout != 0 && layout != 1) || width <= 0 || width > plane->ne[axis]
+        || plane->type != ALIGN_STUB_TYPE_F32 || src->type != ALIGN_STUB_TYPE_F32
+        || ids->type != ALIGN_STUB_TYPE_I32 || ids->ne[1] != 1 || ids->ne[2] != 1 || ids->ne[3] != 1
+        || plane->ne[3] != 1 || src->ne[3] != 1 || src->ne[axis] != 1
+        || src->ne[1-axis] != plane->ne[1-axis] || src->ne[2] != plane->ne[2]) { return ALIGN_GPU_CONFIG; }
+    capacity = plane->ne[axis];
+    if (plane->ne[2] <= 0 || plane->ne[1-axis] > INT32_MAX / plane->ne[2]) { return ALIGN_GPU_CONFIG; }
+    lanes = plane->ne[1-axis] * plane->ne[2];
+    if (ids->ne[0] != (layout == 0 ? 1 : lanes)
+        || !align_gpu_row_inputs_register(state, layout, indices, capacity, lanes)) { return ALIGN_GPU_CONFIG; }
+    result = align_stub_new(ctx, ALIGN_STUB_TYPE_F32,
+                            layout == 0 ? plane->ne[0] : width,
+                            layout == 0 ? width : plane->ne[1], plane->ne[2], 1);
+    if (result == NULL) { return ALIGN_GPU_ALLOCATION; }
+    result->lp[0] = layout;
+    status = align_stub_bind(slots, out, result, src, plane, ALIGN_STUB_OP_INDEXED_PREFIX);
+    if (status != ALIGN_GGML_OK) { return ALIGN_GPU_CONFIG; }
+    result->src[2] = ids;
+    return ALIGN_GPU_OK;
+}
+
 int32_t align_gpu_input_slot(void *owner, int64_t index, void *slots, int64_t out) {
     align_stub_tensor *tensor =
         align_gpu_stub_input_at((struct align_gpu_device_state *) owner, index);
@@ -2770,6 +2887,7 @@ int32_t align_gpu_input_update(
         || (uint64_t) length > capacity - (size_t) offset) {
         return ALIGN_GPU_CONFIG;
     }
+    if (!align_gpu_row_input_check(state, index, offset, data, length)) { return ALIGN_GPU_CONFIG; }
     staging = (size_t) state->staging_bytes;
     while (at < (size_t) length) {
         size_t chunk = (size_t) length - at;
@@ -2780,6 +2898,7 @@ int32_t align_gpu_input_update(
         memcpy((unsigned char *) tensor->data + (size_t) offset + at, state->staging, chunk);
         at += chunk;
     }
+    align_gpu_row_input_accept(state, index, data);
     state->input_updated_bytes += length;
     return ALIGN_GPU_OK;
 }
@@ -2974,7 +3093,7 @@ static int align_gpu_count_model_node(struct align_gpu_device_state *state,
     if (tensor->op == ALIGN_STUB_OP_NONE || tensor->op == ALIGN_STUB_OP_VIEW
         || tensor->op == ALIGN_STUB_OP_RESHAPE || tensor->op == ALIGN_STUB_OP_PERMUTE
         || tensor->op == ALIGN_STUB_OP_PREFIX_VIEW || tensor->op == ALIGN_STUB_OP_KV_RANGE
-        || tensor->op == ALIGN_STUB_OP_CPY) { return 1; }
+        || tensor->op == ALIGN_STUB_OP_CPY || tensor->op == ALIGN_STUB_OP_INDEXED_PREFIX) { return 1; }
     if (*operations == INT64_MAX) { return 0; }
     *operations += 1;
     if (tensor->op != ALIGN_STUB_OP_MUL_MAT && tensor->op != ALIGN_STUB_OP_MUL_MAT_ID) { return 1; }
@@ -3015,6 +3134,9 @@ int32_t align_gpu_graph_compute(
         || memcmp(state->graph_keys[kind], key, 64) != 0) {
         return ALIGN_GPU_CONFIG;
     }
+    if (kind == ALIGN_GPU_GRAPH_DECODE
+        && ((state->row_registered[0] && !state->row_position_valid)
+            || (state->row_registered[1] && !state->row_values_valid))) { return ALIGN_GPU_CONFIG; }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     if (state->graph_execution_count[kind] == INT64_MAX
         || (state->graph_current_execution_count[kind] > 0

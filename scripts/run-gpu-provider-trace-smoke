@@ -157,7 +157,7 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                     assert observation["bundle_id"] == json.loads((work / "bundle/manifest.json").read_bytes())["bundle_id"]
                     assert observation["device_name"] == "stub-gpu" and observation["device_description"]
                     assert observation["managed_host_peak_bytes"] == observation["allocated_host_bytes"]
-                    assert observation["managed_device_peak_bytes"] > observation["allocated_device_bytes"]
+                    assert observation["managed_device_peak_bytes"] >= observation["allocated_device_bytes"]
                     assert 0 < observation["resident_weight_payload_bytes"] <= observation["weights_buffer_bytes"]
                     assert 0 < observation["resident_kv_payload_bytes"] <= observation["kv_buffer_bytes"]
                     assert 0 <= observation["device_free_bytes"] <= observation["device_total_bytes"]

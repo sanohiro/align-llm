@@ -68,10 +68,13 @@ class ModelWork:
     experts: int
 
     @classmethod
-    def derive(cls, traversal: Traversal) -> ModelWork:
+    def derive(cls, traversal: Traversal, context: int) -> ModelWork:
         routed = traversal.model == 2
-        prefill = (29 + traversal.selected if routed else 24) * traversal.layers + 6
-        decode = (34 + traversal.selected if routed else 29) * traversal.layers + 6
+        bounded_i64(context, traversal.prompt, (1 << 63) - 1, "native attention context")
+        width = min(context, ((traversal.prompt + 255) // 256) * 256)
+        padding = 3 if width > traversal.prompt else 0
+        prefill = ((29 + traversal.selected if routed else 24) + padding) * traversal.layers + 6
+        decode = (32 + traversal.selected if routed else 27) * traversal.layers + 6
         operations = prefill + (traversal.positions - 1) * decode
         layers = traversal.layers * traversal.positions
         experts = (traversal.selected * ((traversal.layers - 1) * traversal.prompt + 1
@@ -150,7 +153,7 @@ def prepare(*, model_id: str, geometry: Mapping[str, object], calibration_case: 
         "stream_name": stream_name, "stream_limit": traversal.maximum_bytes,
     }
     result = NativeCase(document, traversal, Residency.derive(geometry, traversal, calibration_case["maximum_tokens"]),
-                        ModelWork.derive(traversal))
+                        ModelWork.derive(traversal, geometry["model"]["context_length"]))
     result.input_bytes()
     return result
 

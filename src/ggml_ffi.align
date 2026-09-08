@@ -290,6 +290,10 @@ extern "C" link("align_ggml_shim") {
     owner: raw, index: i64, kind: i32, layout: i32, position: i64,
     slots: slice<u8>, out: i64, source: i64,
   ) -> i32
+  fn align_gpu_kv_write_indexed_prefix(
+    owner: raw, index: i64, kind: i32, layout: i32, indices: i64, width: i64,
+    slots: slice<u8>, out: i64, source: i64,
+  ) -> i32
   fn align_gpu_kv_state(owner: raw, field: i32) -> i64
   fn align_gpu_inputs_begin(owner: raw, tensor_count: i64) -> i32
   fn align_gpu_input_add(
@@ -847,6 +851,23 @@ pub fn gpu_kv_write_slot(
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
   }
+}
+
+pub fn gpu_kv_write_indexed_prefix(
+  borrow owner: GpuDevice, index: i64, kind: i64, layout: i64, indices: i64, width: i64,
+  borrow slots: slice<u8>, out: i64, source: i64,
+) -> Result<(), Fault> {
+  if kind != GPU_GRAPH_DECODE || (layout != GPU_KV_LAYOUT_K && layout != GPU_KV_LAYOUT_V) {
+    return Err(fault("CONFIG", "indexed_kv_layout"))
+  }
+  unsafe {
+    status := align_gpu_kv_write_indexed_prefix(
+      resource.raw(resource.borrow(owner)), index, kind as i32, layout as i32, indices, width,
+      slots, out, source,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+  }
+  return Ok(())
 }
 
 pub fn gpu_kv_state(borrow owner: GpuDevice, field: i64) -> i64 {

@@ -21,9 +21,25 @@ pub fn build(
   wide: bool,
   decode: bool,
 ) -> Result<(), ggml_ffi.Fault> {
-  mut row := 0
+  return build_range(ctx, slots, nodes, last, wide, decode, 0, nodes.count)
+}
+
+pub fn build_range(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  borrow nodes: layer_olmoe.MmNodeTable,
+  last: bool,
+  wide: bool,
+  decode: bool,
+  begin: i64,
+  end: i64,
+) -> Result<(), ggml_ffi.Fault> {
+  if begin < 0 || end < begin || end > nodes.count {
+    return Err(ggml_ffi.Fault { code: "R5_SHAPE".clone(), detail: "node_range".clone() })
+  }
+  mut row := begin
   loop {
-    if row >= nodes.count { break }
+    if row >= end { break }
     if layer_olmoe.mm_row_issued_at(nodes.when[row], last, wide, decode) {
       op := nodes.op[row]
       out := nodes.out[row]

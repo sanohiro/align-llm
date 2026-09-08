@@ -94,7 +94,9 @@ fn run_qwen(pack_path: str) -> Result<(), Error> {
     || ggml_ffi.gpu_graph_state(
     owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 2
     || ggml_ffi.gpu_graph_state(
-    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_INVALIDATIONS) != 1 {
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_INVALIDATIONS) != 0
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_REUSES) != 1 {
     return Err(Error.Invalid)
   }
   return Ok(())
@@ -164,7 +166,9 @@ fn run_olmoe(
     || ggml_ffi.gpu_graph_state(
     owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 2
     || ggml_ffi.gpu_graph_state(
-    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_INVALIDATIONS) != 1 {
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_INVALIDATIONS) != 0
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_REUSES) != 1 {
     return Err(Error.Invalid)
   }
   return Ok(generated)
@@ -305,6 +309,37 @@ fn diagnostic_refusals() -> Result<(), Error> {
   return Ok(())
 }
 
+fn bucket_boundary(pack_path: str, geometry: str, model: i64) -> Result<(), Error> {
+  config := options(67108864)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  mut tokens: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= 254 { break }
+    tokens.push(at % 2)
+    at = at + 1
+  }
+  prompt_ids := tokens.build()
+  eog_ids := empty_ids()
+  identity := source_identity(pack_path)?
+  generated := if model == 1 {
+    runtime_generation.generate_qwen(owner, config, pack_path, identity, geometry, prompt_ids, eog_ids, 5)?
+  } else {
+    runtime_generation.generate_olmoe(owner, config, pack_path, identity, geometry, prompt_ids, eog_ids, 5, 0, Some(42))?
+  }
+  if generated.len() != 5
+    || ggml_ffi.gpu_graph_state(owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 4
+    || ggml_ffi.gpu_graph_state(owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_PREPARED) != 2
+    || ggml_ffi.gpu_graph_state(owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_REUSES) != 2
+    || ggml_ffi.gpu_graph_state(owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_INVALIDATIONS) != 1 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
   if args.len() != 5 { return Err(Error.Invalid) }
   diagnostic_refusals()?
@@ -319,6 +354,8 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   qwen_base := observed(args[1], QWEN_GEOMETRY, args[4], 1, false)?
   qwen_observed := observed(args[1], QWEN_GEOMETRY, args[4], 1, true)?
   geometry := fs.read_file(args[3])?
+  bucket_boundary(args[1], QWEN_GEOMETRY, 1)?
+  bucket_boundary(args[2], geometry, 2)?
   olmoe_base := observed(args[2], geometry, args[4], 2, false)?
   olmoe_observed := observed(args[2], geometry, args[4], 2, true)?
   if qwen_observed - qwen_base != 65576 || olmoe_observed - olmoe_base != 65576 {
