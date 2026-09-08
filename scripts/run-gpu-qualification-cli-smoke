@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import hashlib
+import json
 import pathlib
 import sys
 import tempfile
@@ -179,6 +180,84 @@ def host_admission_owner(parent: pathlib.Path) -> None:
     return admitted
 
 
+def native_plan_owner(parent: pathlib.Path) -> None:
+    input_root = parent / "native-input"
+    input_root.mkdir()
+    fixture.materialize(input_root)
+    profile_path = input_root / "profile.json"
+    profile = json.loads(profile_path.read_bytes())
+    for model in profile["models"]:
+        geometry = {"kind": "R1_MODEL_IR", "schema_version": 2, "model": {
+            "arch": model["model_id"], "n_layer": 2, "n_embd": 8, "n_vocab": 256000,
+            "n_expert": 8 if model["model_id"] == "olmoe" else 0,
+            "n_expert_used": 2 if model["model_id"] == "olmoe" else 0, "context_length": 4096,
+        }}
+        raw = cli.canonical(geometry)
+        (input_root / model["geometry_path"]).write_bytes(raw)
+        model["geometry_sha256"] = hashlib.sha256(raw).hexdigest()
+        calibration_path = input_root / model["calibration_path"]
+        calibration = json.loads(calibration_path.read_bytes())
+        calibration["model"]["geometry_sha256"] = model["geometry_sha256"]
+        fixture.reseal(calibration, "calibration_id")
+        raw = cli.canonical(calibration)
+        calibration_path.write_bytes(raw)
+        model["calibration_sha256"] = hashlib.sha256(raw).hexdigest()
+    profile_path.write_bytes(cli.canonical(profile))
+    invocation = cli.open_invocation(cli.Arguments(profile_path, "generation", parent / "native-result"))
+    try:
+        state = PreparationState(pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture")
+        rejected(lambda: cli.native_plans(invocation, state), "completed preparation")
+        state.commands = [{} for _ in range(5)]  # The build owner independently verifies execution.
+        for key, relative, content in (("candidate", "runtime_case", b"candidate fixture\n"),
+                                       ("cpu_reference", "cpu-reference/runtime_case", b"reference fixture\n")):
+            target = invocation.work / relative
+            target.parent.mkdir(mode=0o700, exist_ok=True)
+            target.write_bytes(content)
+            state.identities[key] = {"state": "available", "name": key,
+                "version": profile["source"]["commit"], "sha256": hashlib.sha256(content).hexdigest()}
+        plans = cli.native_plans(invocation, state)
+        assert len(plans) == len(profile["cases"]) == 16
+        option_path = invocation.work / "runtime-case-options.json"
+        option_bytes = option_path.read_bytes()
+        expected_option = {key: value for key, value in profile["runtime_options"][0].items() if key != "option_id"}
+        expected_option["backend_bundle"] = str(invocation.backend.root)
+        assert option_bytes == cli.canonical(expected_option)
+        for ordinal, (plan, row) in enumerate(zip(plans, profile["cases"])):
+            assert plan.identity == (row["model_id"], row["calibration_case_id"], row["repeat_index"])
+            assert plan.gpu == bool(ordinal % 2)
+            role = "candidate" if plan.gpu else "cpu_reference"
+            assert plan.executable_sha256 == state.identities[role]["sha256"]
+            assert plan.executable == invocation.work / ("runtime_case" if plan.gpu else "cpu-reference/runtime_case")
+            assert plan.case.document["options_path"] == (str(option_path) if plan.gpu else "")
+            assert plan.case.document["stream_root"] == str(invocation.work / f"case-{ordinal:03d}")
+            assert not pathlib.Path(plan.case.document["stream_root"]).exists()
+            calibration = next(item for item in invocation.admitted.records["calibrations"]
+                               if item["model"]["model_id"] == row["model_id"])
+            frozen = next(item for item in calibration["cases"] if item["case_id"] == row["calibration_case_id"])
+            for native_key, frozen_key in (("prompt_utf8", "prompt_utf8"), ("expected_prompt_ids", "prompt_token_ids"),
+                                          ("expected_token_ids", "expected_token_ids"), ("forced_ids", "teacher_forced_token_ids")):
+                assert plan.case.document[native_key] == frozen[frozen_key]
+            assert plan.comparison == calibration["comparison"]
+        rejected(lambda: cli.native_plans(invocation, state), "cannot be written")
+        assert option_path.read_bytes() == option_bytes
+        option_path.unlink()
+        candidate = invocation.work / "runtime_case"
+        pristine = candidate.read_bytes()
+        candidate.write_bytes(b"changed")
+        rejected(lambda: cli.native_plans(invocation, state), "differs from completed preparation")
+        assert not option_path.exists()
+        candidate.write_bytes(pristine)
+        state.identities["candidate"]["version"] = "0" * 40
+        rejected(lambda: cli.native_plans(invocation, state), "differs from completed preparation")
+        state.identities["candidate"]["version"] = profile["source"]["commit"]
+        (input_root / profile["models"][0]["geometry_path"]).write_bytes(b"changed")
+        rejected(lambda: cli.native_plans(invocation, state), "geometry_path digest")
+        assert not option_path.exists()
+    finally:
+        invocation.cleanup()
+    assert not invocation.root.exists()
+
+
 for arguments, message in (
     (["--profile", "a", "--suite", "generation"], "incomplete"),
     (["--profile", "a", "--profile", "b", "--suite", "generation", "--output", "c"],
@@ -198,6 +277,7 @@ assert parsed.output == pathlib.Path("result")
 fixture = fixture_module()
 with tempfile.TemporaryDirectory(prefix="gpu-qualification-cli-") as raw_temporary:
     temporary = pathlib.Path(raw_temporary)
+    native_plan_owner(temporary)
     build_construction_owner(temporary)
     fixture_host = host_admission_owner(temporary)
     input_root = temporary / "input"

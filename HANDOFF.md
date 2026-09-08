@@ -174,10 +174,18 @@ missing spawned-child statuses. Calibration IDs include terminal EOG and cannot 
 gpu-evidence-publication gpu-case-traversal` pass. These are local integration checkpoints, not
 real-device qualification or publication evidence.
 
+**Prepared profile binding checkpoint.** `gpu_qualification_cli.native_plans` rechecks retained
+inputs and prepared candidate/reference identities, derives every profile case from its frozen
+calibration and retained geometry, and writes private GPU options pointing to the staged bundle.
+CPU cases use the separately built `cpu-reference/runtime_case`; no case scratch is created early.
+`gmake gpu-qualification-cli` passes full 16-case construction, exact frozen options/inputs,
+uncompleted preparation, executable/commit/input drift and occupied option-file refusal.
+Placement/resource evidence and the final CLI remain unfinished.
+
 **Next actions, in order.**
 
-1. Bind prepared executables and admitted profile/calibration inputs to native sequence plans.
-   Complete independent placement/resource observations and profile-bound evidence records.
+1. Complete independent placement/resource observations and profile-bound evidence records.
+   Prepared executable/profile/calibration binding and native numeric sequencing now pass owners.
 2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
    process/record/replay/publication owners, and real source/profile/calibration kit construction.
    The final CLI does not exist yet; do not publish a placeholder success path.

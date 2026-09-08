@@ -717,6 +717,19 @@ CPU/GPU/repeat executions, bounded environment, exact paired results, retained-C
 occupied scratch preservation and no next child after a post-process validation refusal; the
 existing process owner remains authoritative for timeout/descendant cleanup.
 
+`gpu_qualification_cli.native_plans` connects a completed five-step preparation to that sequence.
+It rechecks admitted inputs, reads the retained geometry, and binds each exact profile expansion
+row to its frozen calibration case and prepared executable digest. The candidate is
+`work/runtime_case`; the independently built CPU reference is `work/cpu-reference/runtime_case`.
+Both must match the successful preparation identities and application commit. A private runtime
+option record preserves every frozen option except removing the profile-only `option_id` and
+resolving `backend_bundle` to the admitted staged bundle. CPU cases have no GPU options. Case roots
+are distinct direct work children and remain absent until their lazy factory runs. Invocation
+cleanup owns the option file, including construction failure; occupied files are never replaced.
+The CLI owner verifies full case order and frozen inputs, distinct executable bindings, unchanged
+options, uncompleted preparation, executable/input drift and occupied output refusal. This adapter
+does not publish evidence or claim that preparation alone qualifies a backend.
+
 
 
 
