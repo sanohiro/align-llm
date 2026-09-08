@@ -147,7 +147,7 @@ Record limits are:
 | `GPU_RUNTIME_PROFILE` | 256 KiB; exactly 2 models, exactly 1 option, 16–256 cases |
 | `GPU_BACKEND_BUNDLE` | 256 KiB; 1–32 GPU architecture entries, 0–128 flags, 1–128 artifacts; each artifact is 1 byte–512 MiB and their checked aggregate is at most 512 MiB |
 | `GPU_NUMERIC_CALIBRATION` | 1 MiB; 2–32 cases per model, at most 64 across a profile |
-| `GPU_RUNTIME_EVIDENCE` | 8 MiB result; 0–256 cases and 0–4,096 retained files |
+| `GPU_RUNTIME_EVIDENCE` | 8 MiB result; 0–256 cases and 0–8,191 retained files (8,192 including `result.json`) |
 | retained data | 4 MiB per log, 512 MiB total directory |
 
 `FileRef` is `path,sha256`; `Identity` is `name,version,sha256`; `ArtifactRef` is
@@ -403,6 +403,11 @@ Expected IDs are the nonempty same-build CPU sampling result, including the term
 when sampled. Immediate EOG therefore has one expected ID and empty decoded output text.
 Expected output is the exact generated UTF-8 byte sequence for those IDs. Its digest is SHA-256 of
 those bytes with no added LF; both CPU repeats and both GPU repeats reproduce the bytes and digest.
+
+The Python case planner reads geometry as a bounded strict JSON object in the existing R1
+format, which does not require a terminal LF. GPU record LF framing is not imposed on model IR.
+The native provider still checks the original complete geometry bytes against its own frontend.
+The CLI owner uses no-LF geometry and preserves its original digest when constructing all cases.
 
 Relocatable model inputs preserve the geometry document's recorded display path. The shared R7/R8
 provider derives every geometry field from the actual GGUF table using that recorded path, requires
@@ -1202,7 +1207,7 @@ order and poison process state if native safety cannot be proven.
 | invocation guard | sequential same-bundle requests and concurrent CPU independence | concurrent GPU request, different bundle, failed prior native init | guard released only from safe state; `gpu-invocation-busy`, `gpu-second-after-failure` |
 | sampler/result | same logits preserve exact greedy/RNG/filter/output behavior | malformed/nonfinite logits, decode error, partial text | no handle escapes; `gpu-sampler-fixed`, `gpu-output-refusal` |
 | profile/calibration | exact four-row expansion executes every calibration/holdout twice | omitted/extra/reordered/cross-model case, changed tolerance/expected output, symlink/hard-link/mutated input | immutable descriptor-based input admission and recheck; `gpu-profile-coverage`, `gpu-input-admission`, `gpu-holdout-replay` |
-| evidence/publication | canonical positive codecs, complete align-llm/ggml Git snapshots, available/unavailable build/device identities, exact argv/environment | duplicate/oversize records, source/tree mismatch, ambient-environment injection, compile/crash/timeout, >4,096 files or >512 MiB projected closure | kill/reap owned group, retain bounded diagnostics, replay before exclusive rename; `gpu-schema-codec`, `gpu-source-replay`, `gpu-build-failure-evidence`, `gpu-command-environment`, `gpu-process-cleanup`, `gpu-evidence-publication`, `gpu-result-replay` |
+| evidence/publication | canonical positive codecs, complete align-llm/ggml Git snapshots, available/unavailable build/device identities, exact argv/environment | duplicate/oversize records, source/tree mismatch, ambient-environment injection, compile/crash/timeout, >8,192 total files or >512 MiB projected closure | kill/reap owned group, retain bounded diagnostics, replay before exclusive rename; `gpu-schema-codec`, `gpu-source-replay`, `gpu-build-failure-evidence`, `gpu-command-environment`, `gpu-process-cleanup`, `gpu-evidence-publication`, `gpu-result-replay` |
 
 The native resource starts as an invocation-local root and is never returned or placed in an Align
 collection. Owners cover construction, move with source nulling, borrow, replacement, early return
@@ -1214,9 +1219,16 @@ enter it. GPU/GPU entrypoint pairs serialize by rejection before native side eff
 are independent except for ordinary host resource contention. Independent processes have
 independent registries, quarantine states and admission guards.
 
+The complete pinned ggml plus application source already requires more than 4,096 files; evidence
+therefore allows 8,192 total files while retaining the existing 512 MiB byte and 8 MiB JSON bounds.
+Before preparation, the final CLI checks the mandatory input closure and reserves count capacity
+for six produced identities, a failed preparation's two logs and two logs per profile case.
+`gpu-evidence-publication` owns acceptance above the former limit and refusal beyond the new
+bound; `gpu-final-cli` owns refusal before any preparation command when the projection cannot fit.
+
 Before creating the staging directory, the qualifier computes a conservative closure count/size from
 the source manifest, fixed retained inputs, possible produced artifacts and two logs per profile
-case. A projection above 4,096 files or 512 MiB fails without output. Runtime streaming
+case. A projection above 8,192 total files (including `result.json`) or 512 MiB fails without output. Runtime streaming
 enforces the same limits; unexpected growth publishes FAIL only when still within the hard bound.
 
 ## 6. Qualification and acceptance

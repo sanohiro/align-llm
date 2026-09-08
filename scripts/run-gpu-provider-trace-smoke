@@ -103,6 +103,7 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                                stdout=subprocess.DEVNULL, env=environment)
             relocated = work / (model.stem + "-relocated")
             shutil.copyfile(model, relocated)
+            model.unlink()  # The recorded geometry path must never be reopened.
             model = relocated
             # Keep the original geometry bytes/path while moving only the actual model.
             changed_geometry = work / (model.stem + "-changed-geometry.json")

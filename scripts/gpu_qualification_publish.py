@@ -21,13 +21,13 @@ from gpu_backend_recipe import (
 )
 from gpu_qualification_input import AdmittedInput
 from gpu_qualification_records import (
+    MAX_EVIDENCE_FILES,
     expected_directory_roles,
     replay_evidence_directory,
     validate_evidence_records,
 )
 
 
-MAX_EVIDENCE_FILES = 4096
 MAX_EVIDENCE_RESULT_BYTES = 8 * 1024 * 1024
 
 
@@ -120,6 +120,17 @@ def _standard_files(admitted: AdmittedInput) -> dict[str, RetainedFile]:
             raise RecipeError("evidence content-addressed input collision")
         result[destination] = candidate
     return result
+
+
+def preflight_count(admitted: AdmittedInput) -> None:
+    """Reserve the complete possible row count before expensive native preparation."""
+    # These sets mirror content-addressed identities, not manifest path aliases.
+    standard = 1 + 1 + len(admitted.records["calibrations"]) + 4
+    standard += len(admitted.align_source.blobs) + len(admitted.ggml_source.blobs)
+    standard += len({row["sha256"] for row in admitted.records["bundle"]["artifacts"]})
+    projected = standard + 6 + 2 + 2 * len(admitted.records["profile"]["cases"]) + 1
+    if projected > MAX_EVIDENCE_FILES:
+        raise RecipeError("evidence file projection cannot fit the complete qualification")
 
 
 def prepare(

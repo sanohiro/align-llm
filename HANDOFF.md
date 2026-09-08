@@ -279,6 +279,21 @@ pass; the repaired owner also admits/materializes the complete real-model input 
 No GPU holdout has executed yet. Rebuild the kit's source snapshot from the repaired commit and
 retry the public qualifier; frozen numeric inputs remain unchanged.
 
+**Real planning/publication repair.** The diagnostic public invocation built all five artifacts,
+then retained a zero-case planning failure: Python incorrectly imposed GPU-record terminal-LF
+framing on the existing no-LF R1 geometry. The planner now uses the shared strict JSON-object
+reader without changing geometry bytes/hashes. Reconstructed actual prepared inputs now pass
+all 16 native plans, case-record construction and sequence preflight. Publication independently
+failed because the mandatory source closure alone has 4141 files, beyond the former 4096 cap.
+The shared cap is now 8192 total files including result.json, with existing 512 MiB / 8 MiB bounds;
+an early count projection reserves all possible result/log rows before preparation. The final CLI
+owner publishes/replays a real >4096-file source fixture and rejects insufficient count capacity
+before preparation. `gmake gpu-profile-coverage gpu-result-replay gpu-evidence-publication`, the
+CLI and execution-evidence owners pass. Bounded domain failures now retain actionable detail;
+path-bearing/OS errors keep generic detail. The provider trace owner also passes when the original
+recorded model path is removed after relocation. No real GPU holdout has executed. Next: rebuild
+the kit from this repaired source and rerun the public Metal qualification.
+
 **Next actions, in order.**
 
 1. Prepare real profiles/calibrations and run the final `scripts/gpu-runtime-qualify` on Metal.

@@ -12,7 +12,7 @@ from gpu_qualification_cli import Invocation, native_plans
 from gpu_qualification_host_observation import observe_device, probe_owner, same_device
 from gpu_qualification_native_sequence import Outcome, run
 from gpu_qualification_publish import RetainedFile
-from gpu_qualification_run import PreparationState, failure_evidence
+from gpu_qualification_run import PreparationState, failure_evidence, error_detail
 
 
 @dataclasses.dataclass(frozen=True)
@@ -76,8 +76,10 @@ def execute(invocation: Invocation, preparation: PreparationState, *, align_revi
 
         run(plans, budget_ns=budget, work=invocation.work, home=invocation.home,
             temporary=invocation.temporary, consume=consume, sequence=sequence)
-    except (RecipeError, OSError):
-        execution_failure = "native case construction or cleanup did not complete"
+    except (RecipeError, OSError) as error:
+        execution_failure = error_detail(error, "native case construction or cleanup did not complete")
+        if sequence is None or not sequence._used:
+            evidence["failure"]["detail"] = execution_failure
     finally:
         if records is not None and sequence is not None and sequence._used:
             records.finish(sequence)

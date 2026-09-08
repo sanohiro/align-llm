@@ -82,6 +82,16 @@ def run_preparation(
             return
 
 
+def error_detail(error: BaseException, fallback: str) -> str:
+    """Keep bounded domain diagnostics without reflecting filesystem paths or OS errors."""
+    if not isinstance(error, RecipeError):
+        return fallback
+    text = " ".join(str(error).split())
+    if not text or "/" in text or "\\" in text:
+        return fallback
+    return text[:512]
+
+
 def unavailable_identity() -> dict[str, object]:
     return {"state": "unavailable", "name": "", "version": "", "sha256": ""}
 

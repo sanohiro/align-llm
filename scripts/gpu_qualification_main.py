@@ -11,8 +11,8 @@ from gpu_backend_recipe import RecipeError
 from gpu_qualification_cli import Arguments, open_invocation, parse_arguments, prepare_invocation
 from gpu_qualification_execute import execute
 from gpu_qualification_host_observation import observe_host, probe_owner
-from gpu_qualification_publish import prepare, publish
-from gpu_qualification_run import PreparationState, failure_evidence, _artifact
+from gpu_qualification_publish import prepare, publish, preflight_count
+from gpu_qualification_run import PreparationState, failure_evidence, _artifact, error_detail
 from gpu_qualification_source import _verify_tree
 
 
@@ -37,6 +37,7 @@ def qualify(arguments: Arguments, *, launcher: pathlib.Path) -> str:
     cleanup_attempted = False
     try:
         helper_identity(invocation, launcher)
+        preflight_count(invocation.admitted)
         profile = invocation.admitted.records["profile"]
         bundle = invocation.admitted.records["bundle"]
         revision = (invocation.sources.align_llm / ".align-revision").read_text().strip()
@@ -101,8 +102,9 @@ def qualify(arguments: Arguments, *, launcher: pathlib.Path) -> str:
 def main(arguments: Sequence[str], *, launcher: pathlib.Path) -> int:
     try:
         status = qualify(parse_arguments(arguments), launcher=launcher)
-    except (RecipeError, OSError, RuntimeError):
-        print("gpu-runtime-qualify: FAIL (qualification or evidence publication did not complete)", file=sys.stderr)
+    except (RecipeError, OSError, RuntimeError) as error:
+        detail = error_detail(error, "qualification or evidence publication did not complete")
+        print("gpu-runtime-qualify: FAIL (" + detail + ")", file=sys.stderr)
         return 1
     print("gpu-runtime-qualify: " + status)
     return 0 if status == "PASS" else 1

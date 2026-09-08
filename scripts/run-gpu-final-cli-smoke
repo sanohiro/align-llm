@@ -6,6 +6,9 @@ import pathlib
 import shutil
 import subprocess
 import tempfile
+from unittest import mock
+import gpu_qualification_main as qualification_main
+import gpu_qualification_publish as publication
 
 import gpu_backend_recipe as recipe
 from gpu_qualification_cli import Arguments
@@ -28,6 +31,10 @@ with tempfile.TemporaryDirectory(prefix="gpu-final-cli-") as raw:
     shutil.copyfile(launcher, source / "scripts" / launcher.name)
     (source / "scripts" / launcher.name).chmod(0o755)
     shutil.copyfile(ROOT / ".align-revision", source / ".align-revision")
+    # A real complete source closure can exceed the former 4096-file evidence limit.
+    (source / "closure").mkdir()
+    for index in range(4100):
+        (source / "closure" / f"{index:04d}.txt").write_text(f"source blob {index}\n")
     git = shutil.which("git")
     environment = {"HOME": str(root), "LC_ALL": "C", "TMPDIR": str(root), "TZ": "UTC"}
     def run(*args):
@@ -53,10 +60,20 @@ with tempfile.TemporaryDirectory(prefix="gpu-final-cli-") as raw:
     (inputs / "profile.json").write_bytes(recipe.canonical(profile))
     output = root / "evidence"
     arguments = Arguments(inputs / "profile.json", "generation", output)
+    with mock.patch.object(publication, "MAX_EVIDENCE_FILES", 1),             mock.patch.object(qualification_main, "prepare_invocation") as preparation:
+        try:
+            qualify(arguments, launcher=launcher)
+        except recipe.RecipeError as error:
+            assert "projection cannot fit" in str(error)
+        else:
+            raise AssertionError("oversize closure reached preparation")
+        preparation.assert_not_called()
+    assert not output.exists() and not list(root.glob(".evidence.invoke-*"))
     # The fixture bundle has deliberately uninstalled toolchain identities. Actual host
     # admission must stop before compiler construction and still publish replayable FAIL.
     assert qualify(arguments, launcher=launcher) == "FAIL"
     replayed = replay_evidence_directory(output)["evidence"]
+    assert len(replayed["files"]) > 4096
     assert replayed["failure"]["stage"] == "compiler" and replayed["failure"]["category"] == "PREPARATION"
     assert replayed["cases"] == [] and replayed["preparation_commands"] == []
     assert replayed["host"]["cpu"] != "fixture" and replayed["host"]["host_total_bytes"] > 1

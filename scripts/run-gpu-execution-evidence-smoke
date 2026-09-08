@@ -11,6 +11,11 @@ from unittest import mock
 from gpu_backend_recipe import RecipeError
 from gpu_qualification_cases import CaseCommand
 import gpu_qualification_execute as execute
+from gpu_qualification_run import error_detail
+
+assert error_detail(RecipeError("/private/host/path"), "redacted") == "redacted"
+assert error_detail(OSError("host details"), "redacted") == "redacted"
+assert error_detail(RecipeError("record framing is invalid"), "redacted") == "record framing is invalid"
 
 fixture = runpy.run_path(str(pathlib.Path(__file__).with_name("run-gpu-case-record-smoke")))
 plan, outcome, expected = (fixture[key] for key in ("plan", "outcome", "expected"))
@@ -74,6 +79,8 @@ with tempfile.TemporaryDirectory(prefix="gpu-execution-evidence-") as raw:
         count = 16 if mode in {"complete", "cleanup"} else 0 if mode == "planning" else 1 if mode == "device" else 2
         assert len(cases) == count and evidence["aggregate"]["case_count"] == count, mode
         assert len(result.retained) == 2 * (count - (mode == "unstarted")), mode
+        if mode == "planning":
+            assert evidence["failure"]["detail"] == "planning refused"
         if mode not in {"planning", "device"}:
             assert evidence["host"]["device_state"] == "available"
             assert evidence["bundle"]["loaded_artifact_sha256s"] == ["b" * 64]

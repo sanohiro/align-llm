@@ -22,7 +22,7 @@ from gpu_qualification_host import admit_host, _find
 from gpu_qualification_run import PreparationState, run_preparation, _artifact
 from gpu_qualification_native import prepare
 from gpu_qualification_native_sequence import Plan
-from gpu_qualification_records import parse_record
+from gpu_qualification_records import parse_json_object
 from gpu_qualifier_process import ToolchainExecutable
 
 
@@ -163,7 +163,7 @@ def native_plans(invocation: Invocation, state: PreparationState) -> tuple[Plan,
                 or _artifact(path)[1] != identity["sha256"]:
             raise RecipeError("native executable differs from completed preparation")
     models = {model["model_id"]: model for model in profile["models"]}
-    geometries = {key: parse_record(invocation.admitted.read_retained(
+    geometries = {key: parse_json_object(invocation.admitted.read_retained(
         model["geometry_path"], 16 * 1024 * 1024), 16 * 1024 * 1024)
         for key, model in models.items()}
     calibrations = {calibration["model"]["model_id"]: calibration

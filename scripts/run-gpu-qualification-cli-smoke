@@ -197,7 +197,7 @@ def native_plan_owner(parent: pathlib.Path) -> None:
                 "tensor_count": 27, "assigned_tensor_count": 27, "unassigned_tensors": [],
                 "size_sum_ok": True, "total_tensor_bytes": 256,
             }}
-        raw = cli.canonical(geometry)
+        raw = cli.canonical(geometry).removesuffix(b"\n")  # R1 emits no terminal LF.
         (input_root / model["geometry_path"]).write_bytes(raw)
         model["geometry_sha256"] = hashlib.sha256(raw).hexdigest()
         calibration_path = input_root / model["calibration_path"]

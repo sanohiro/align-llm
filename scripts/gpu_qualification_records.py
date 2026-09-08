@@ -28,6 +28,7 @@ from gpu_backend_recipe import (
 )
 
 
+MAX_EVIDENCE_FILES = 8192
 MAX_PROFILE_BYTES = 256 * 1024
 MAX_CALIBRATION_BYTES = 1024 * 1024
 MAX_BUNDLE_BYTES = 256 * 1024
@@ -63,6 +64,13 @@ def parse_record(raw: bytes, maximum: int) -> dict[str, object]:
     if not raw or len(raw) > maximum or raw.startswith(b"\xef\xbb\xbf") \
             or not raw.endswith(b"\n"):
         raise RecipeError("record framing is invalid")
+    return parse_json_object(raw, maximum)
+
+
+def parse_json_object(raw: bytes, maximum: int) -> dict[str, object]:
+    """Read a bounded JSON object without imposing a different format's LF convention."""
+    if not raw or len(raw) > maximum or raw.startswith(b"\xef\xbb\xbf"):
+        raise RecipeError("JSON object framing is invalid")
     try:
         value = json.loads(
             raw.decode("utf-8"),
@@ -1016,7 +1024,7 @@ def validate_evidence(
                     raise RecipeError("preparation command identity does not match produced input")
 
     files = result["files"]
-    if not isinstance(files, list) or len(files) > 4096:
+    if not isinstance(files, list) or len(files) + 1 > MAX_EVIDENCE_FILES:
         raise RecipeError("evidence file count is outside its bound")
     roles = {
         "profile", "bundle_manifest", "calibration", "align_source_manifest",
