@@ -1702,7 +1702,7 @@ provider diagnostic traversals with the independent frozen reference, and checks
 readback separately at its owning raw boundary. It validates observed native operation/layer/expert
 counts and resident bytes against the existing independent geometry projection, and checks native
 managed host peak plus application reservation, and managed device peak, against admitted caps.
-No empty/partial/legacy corpus can yield shipping PASS. The whole-run cost ceiling is 1800 seconds
+No empty/partial/legacy corpus can yield shipping PASS. The schema-2 whole-run qualification cost ceiling is 2400 seconds
 for the two-model correctness suite; it is not a performance threshold or speed claim. Production
 runtime behavior, CPU arithmetic and sampling policies remain unchanged.
 
@@ -1736,7 +1736,7 @@ traversal; source/build/command/corpus/reference disagreement cannot become ship
 The existing owned-command implementation owns process groups, deadlines and bounded complete-log
 identities; preparation remains an explicit separately recorded build step.
 
-`GPU_INDEPENDENT_ACCEPTANCE_RESULT` schema 1 has exactly `schema_version`, `artifact_kind`,
+`GPU_INDEPENDENT_ACCEPTANCE_RESULT` schema 2 has exactly `schema_version`, `artifact_kind`,
 `status`, `origin_root`, `input_root`, `source_commit`, `corpus_sha256`, `profile_sha256`,
 `references`, `cases`, `elapsed_ns`, `failure`, `cleanup`, and `files`. Roots are provenance-only
 absolute strings. Reference rows have `model_id`, `case_id`, `directory`, `input`, and `process`;
@@ -1747,7 +1747,7 @@ Comparison fields are `bitwise_equal`, `scalar_counts`, `bitwise_mismatches`, `c
 `reference_index_sha256`, `reference_production_sha256`, and `reference_tensors`. Inventory rows are `path`, `bytes`, `sha256`.
 The result is bounded to 16 MiB and is written last. Failure retains its completed prefix and
 first fault; only a complete PASS is accepted by `--replay EVIDENCE`. Replay is an offline owner
-with no inherited execution deadline; it requires the original execution to meet its 1800-second
+with no inherited execution deadline; it requires the original execution to meet its schema-bound
 ceiling. Original legacy profile source identity describes the immutable input kit; the candidate
 build/source identity separately names the implementation actually executed.
 
@@ -1800,7 +1800,7 @@ observations. Native schema-2 case output adds the selected policy; schema-1 cap
 readable as decomposed evidence. Independent corpus schema 2 adds a per-model `attention_policy`
 (`decomposed` or `flash_f32`); schema 1 remains implicitly decomposed. Acquisition records bind the
 selected policy and fresh upstream run before candidate execution. All existing required case
-coverage and two repetitions remain mandatory. The full-run 1800-second ceiling is unchanged.
+coverage and two repetitions remain mandatory. The schema-bound whole-run watchdog below applies.
 No runtime speed claim is made by this correctness capability; the following performance owner
 must measure the production path without diagnostic tensor readbacks.
 
@@ -1822,3 +1822,66 @@ capture; changed properties reset warmup. `ggml_cuda_graph_check_compability` re
 capture/replay counter has been obtained on this Mac; neither recipe flags nor Metal observations
 are CUDA capture evidence. Subsequent CUDA performance evidence must retain this limitation unless
 its actual backend trace proves capture. This is not a request for another CUDA debugging run.
+
+### Complete acceptance watchdog and bounded F32 validation
+
+The 19-case qualification includes 19 independently built upstream invocations and 38 fresh native
+invocations; each native invocation contains production, diagnostic reproduction and forced replay.
+This is instrumentation cost, not a production generation latency metric or speedup claim. On this
+Apple M1 the unchanged Flash candidate exhausted the original 1800-second watchdog after 34 matching
+executions: child processes alone consumed 1710.95 seconds, while validation/admission/cleanup took
+102.85 seconds. OLMoE request-ceiling repeat 0 had only run for 3.49 seconds; both complete ceiling
+invocations and immediate-EOG invocations remained. The original cost estimate cannot accommodate
+the required work on this host. Historical timeout receipts remain FAIL.
+
+Before the following validation repair, the revised complete qualification ceiling is fixed at
+2400 seconds (40 minutes). It includes the same acquisition, execution, comparison, hashing and
+cleanup phases; no case, repeat, numeric tensor, memory ceiling or tolerance is removed. Native GPU
+performance remains subject to the separate performance ledger and its measured shipping floor.
+
+| Contract / owner | Inputs, result and identity | Validation / allocation / failure | Required regression |
+| --- | --- | --- | --- |
+| Independent result schema 2 / `gpu_independent_acceptance` | Same exact fields as schema 1; version 2 selects 2400 seconds, version 1 permanently selects its original 1800 seconds | Reject unknown/bool versions, per-process or whole-run excess, and a sum of sequential child durations exceeding whole-run duration. Validate this metadata before numeric replay. No new persisted cache or ownership boundary; failed execution remains FAIL | `run-gpu-independent-acceptance-smoke`: both legacy/current ceilings, overrun, unknown version and inconsistent child totals |
+| Complete F32 finite scan / `gpu_qualification_deadline.finite_f32` | Every little-endian IEEE F32 bit pattern; unchanged boolean/exception result and 1024-scalar deadline granularity | Check exponent bits directly with bounded byte translation/search. The high byte's low seven bits and the next byte's high bit form the exponent; all ones is nonfinite. At most 1024 bytes of flags per block; no float conversion, sampling, omitted tail or changed handling of zero/subnormal/NaN/infinity | `run-gpu-validation-deadline-smoke`: exhaustive 65536 high words with varied low mantissas, signed limits, all block/tail positions, unaligned byte lookalikes, truncation and deadline interruption |
+
+The author consistency pass binds the watchdog to result schema, keeps legacy replay at its
+historical limit, and keeps the IEEE classification independent of GPU arithmetic. Construction,
+success, malformed data and overrun use the same existing process/result owners; early return and
+cleanup keep their previous ownership. Exact bitwise comparison and complete corpus coverage are
+unchanged. The isolated finite-scan prototype on a 4,587,520-byte real layer payload measured
+0.0321 seconds for scalar conversion versus 0.0013 seconds for byte classification; final code must
+repeat that named validation-only measurement and pass its owner before publication.
+
+The interrupted tail was then executed independently with the unchanged `f46310d` binary:
+OLMoE request-ceiling repeats took 134.77 and 139.89 seconds, immediate-EOG repeats took 36.36 and
+35.39 seconds, and all complete numeric comparisons passed. Together with the original completed
+prefix, child execution alone requires over 2054 seconds, excluding the missing independent EOS
+acquisition and whole-run validation. This proves that optimizing the validator alone cannot meet
+the original 1800-second estimate. The fragments do not upgrade the original FAIL receipt.
+
+Final finite-scan measurement (median of seven, 4,587,520 bytes): `f46310d` 26,360,167 ns; byte
+classification 1,167,000 ns. Reproduce against the first Qwen layer file from the retained reference:
+
+```sh
+python3 - "$REFERENCE_F32" <<'PYCODE'
+import pathlib, statistics, subprocess, sys, time, types
+sys.path.insert(0, 'scripts')
+import gpu_qualification_deadline as current
+baseline = types.ModuleType('finite_baseline')
+sys.modules[baseline.__name__] = baseline
+exec(subprocess.check_output(['git', 'show', 'f46310d:scripts/gpu_qualification_deadline.py']), baseline.__dict__)
+payload = pathlib.Path(sys.argv[1]).read_bytes() * 16
+for name, fn in [('f46310d', baseline.finite_f32), ('current', current.finite_f32)]:
+    samples = []
+    for _ in range(7):
+        start = time.perf_counter_ns()
+        assert fn(payload)
+        samples.append(time.perf_counter_ns() - start)
+    print(name, len(payload), statistics.median(samples))
+PYCODE
+```
+
+The measurement baseline must remain reachable in repository history. Integrate this capability
+with a merge commit or fast-forward preserving `f46310d`; verify
+`git merge-base --is-ancestor f46310d HEAD` on the exact merging head. Squash or rewritten-history
+integration is not allowed for this recorded baseline.

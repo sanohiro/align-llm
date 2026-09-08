@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+import math
 import struct
 import tempfile
 import time
@@ -77,6 +78,24 @@ with tempfile.TemporaryDirectory(prefix="g1-validation-deadline-") as raw:
         assert clean.read_payload() == payload
         assert clean.read_frame() is None
 
+# Exhaust the exponent/sign/high-mantissa word with independent floating conversion.
+# The varied low mantissas include both infinities and NaN payloads at exponent 255.
+for high in range(65536):
+    for low in (0, 0xabcd, 0xffff):
+        payload = struct.pack("<I", high << 16 | low)
+        assert finite_f32(payload) == math.isfinite(struct.unpack("<f", payload)[0])
+assert finite_f32(struct.pack("<4I", 0x007f80ff, 0x7f7fffff, 0xff7fffff, 0x00ff80ff))
+for payload in (b"x", b"xx", b"xxx", b"xxxxx"):
+    try:
+        finite_f32(payload)
+    except RecipeError:
+        pass
+    else:
+        raise AssertionError("truncated F32 payload passed")
+with mock.patch("gpu_qualification_deadline.time.monotonic_ns", side_effect=[0, 2]) as clock:
+    expired(lambda: finite_f32(struct.pack("<I", 0x7f7fffff) * 2048, Deadline(1)))
+    assert clock.call_count == 2
+
 # Bulk f32 validation preserves bit-pattern semantics and checks each 1024-scalar boundary.
 for length in (0, 1, 1023, 1024, 1025, 2048):
     payload = struct.pack("<f", -1.5) * length
@@ -105,4 +124,4 @@ for invalid in (True, 0, -1, 1.5):
         pass
     else:
         raise AssertionError("invalid deadline admitted")
-print("GPU validation deadline: PASS (scalar, router, delayed read, cleanup, offline compatibility)")
+print("GPU validation deadline: PASS (exhaustive F32 exponent classes, scalar, router, delayed read, cleanup, offline compatibility)")

@@ -6,7 +6,7 @@ import sys
 import tempfile
 from gpu_backend_recipe import RecipeError, canonical
 from gpu_independent_acceptance import (process, process_ok, replay_process, write_directory,
-    digest, verify_build, file_inventory, write, replay, json_file)
+    digest, verify_build, file_inventory, write, replay, json_file, validate_timings, execution_limit)
 from gpu_qualification_deadline import Deadline
 import time
 from types import SimpleNamespace
@@ -19,6 +19,28 @@ def rejects(call):
         return
     raise AssertionError('malformed acceptance evidence was accepted')
 
+
+for version, seconds in ((1, 1800), (2, 2400)):
+    ceiling = seconds * 1_000_000_000
+    assert execution_limit(version) == ceiling
+    timing = {'schema_version': version, 'elapsed_ns': ceiling,
+              'references': [{'process': {'elapsed_ns': ceiling // 2}}],
+              'cases': [{'process': {'elapsed_ns': ceiling // 2}}]}
+    assert validate_timings(timing) == ceiling
+    rejects(lambda: validate_timings(dict(timing, elapsed_ns=ceiling + 1)))
+    rejects(lambda: validate_timings(dict(timing, elapsed_ns=ceiling - 1)))
+    for invalid in (True, -1, ceiling + 1, '1'):
+        changed = copy.deepcopy(timing)
+        changed['cases'][0]['process']['elapsed_ns'] = invalid
+        rejects(lambda: validate_timings(changed))
+for version in (True, 0, 3, None, '2'):
+    rejects(lambda: execution_limit(version))
+late = {'schema_version': 2, 'elapsed_ns': 1800_000_000_001,
+        'references': [], 'cases': []}
+validate_timings(late)
+rejects(lambda: validate_timings(dict(late, schema_version=1)))
+rejects(lambda: validate_timings(dict(late, cases=[{}])))
+rejects(lambda: validate_timings(dict(late, cases={})))
 
 with tempfile.TemporaryDirectory(prefix='gpu-independent-acceptance-') as temporary:
     root = pathlib.Path(temporary).resolve()
@@ -67,4 +89,4 @@ with tempfile.TemporaryDirectory(prefix='gpu-independent-acceptance-') as tempor
     rejects(lambda: verify_build(build, True))
     write(root / 'result.json', canonical({'status': 'PASS'}))
     rejects(lambda: replay(root))
-print('GPU independent acceptance owner: PASS (real process, executable/input/log bindings, cleanup, dirty build, incomplete result)')
+print('GPU independent acceptance owner: PASS (real process, executable/input/log bindings, cleanup, dirty build, incomplete result, schema-bound watchdog and child time totals)')

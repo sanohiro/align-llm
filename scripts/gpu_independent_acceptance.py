@@ -24,8 +24,37 @@ from gpu_qualification_stream import NumericStream
 from gpu_qualifier_process import run_owned_command, retained_file_row
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-TIMEOUT_NS = 1800_000_000_000
+TIMEOUT_NS = 2400_000_000_000
+LEGACY_TIMEOUT_NS = 1800_000_000_000
 RESULT_LIMIT = 16 * 1024**2
+
+
+def execution_limit(version):
+    if type(version) is not int or version not in (1, 2):
+        raise RecipeError('independent acceptance result version is invalid')
+    return LEGACY_TIMEOUT_NS if version == 1 else TIMEOUT_NS
+
+
+def validate_timings(result):
+    ceiling = execution_limit(result['schema_version'])
+    whole = result['elapsed_ns']
+    if type(whole) is not int or not 0 < whole <= ceiling:
+        raise RecipeError('independent acceptance elapsed time exceeds its schema-bound ceiling')
+    total = 0
+    for name in ('references', 'cases'):
+        rows = result[name]
+        if not isinstance(rows, list):
+            raise RecipeError('independent acceptance process rows are invalid')
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get('process'), dict):
+                raise RecipeError('independent acceptance process record is invalid')
+            elapsed = row['process'].get('elapsed_ns')
+            if type(elapsed) is not int or not 0 <= elapsed <= ceiling:
+                raise RecipeError('independent acceptance child elapsed time is invalid')
+            total += elapsed
+    if total > whole:
+        raise RecipeError('independent acceptance child times exceed whole execution time')
+    return ceiling
 
 
 def digest(path, deadline=None):
@@ -153,7 +182,7 @@ def process(root, executable, input_path, role, directory, deadline):
     input_token = '<case-input>:sha256:' + digest(input_path)
     outcome = run_owned_command(kind='case', physical_argv=(str(executable), str(input_path)),
         logical_argv=(executable_token, input_token), mappings={executable_token: executable, input_token: input_path},
-        cwd=root, home=root / 'home', temporary=root / 'tmp', timeout_seconds=1800, deadline_ns=deadline.monotonic_ns)
+        cwd=root, home=root / 'home', temporary=root / 'tmp', timeout_seconds=TIMEOUT_NS // 1_000_000_000, deadline_ns=deadline.monotonic_ns)
     record = {'command': outcome.command, 'terminal': outcome.terminal, 'exit_code': outcome.exit_code,
               'signal': outcome.signal, 'elapsed_ns': outcome.elapsed_ns,
               'descendants_before': outcome.descendants_before, 'descendants_after': outcome.descendants_after}
@@ -234,7 +263,7 @@ def execute(profile_path, corpus_path, candidate_build, reference_build, destina
         raise RecipeError('acceptance output must be new and outside the source tree')
     destination.mkdir(mode=0o700)
     root = destination.resolve(strict=True)
-    result = {'schema_version': 1, 'artifact_kind': 'GPU_INDEPENDENT_ACCEPTANCE_RESULT', 'status': 'FAIL',
+    result = {'schema_version': 2, 'artifact_kind': 'GPU_INDEPENDENT_ACCEPTANCE_RESULT', 'status': 'FAIL',
               'origin_root': str(root), 'input_root': str(admitted.root), 'source_commit': candidate['source_commit'],
               'corpus_sha256': digest(corpus_path), 'profile_sha256': digest(profile_path),
               'references': [], 'cases': [], 'elapsed_ns': 0, 'failure': '', 'cleanup': False, 'files': []}
@@ -336,15 +365,21 @@ def execute(profile_path, corpus_path, candidate_build, reference_build, destina
         if result['elapsed_ns'] > TIMEOUT_NS:
             result['status'] = 'FAIL'
             result['failure'] = result['failure'] or 'independent acceptance deadline expired'
+        if result['status'] == 'PASS':
+            try:
+                validate_timings(result)
+            except RecipeError as error:
+                result['status'] = 'FAIL'
+                result['failure'] = str(error)
         write(root / 'result.json', canonical(result))
     return result['status']
 
 
-def replay_process(root, record, directory, executable_sha256, role, input_relative):
+def replay_process(root, record, directory, executable_sha256, role, input_relative, *, timeout_ns=TIMEOUT_NS):
     record = exact_keys(record, ('command', 'terminal', 'exit_code', 'signal', 'elapsed_ns',
         'descendants_before', 'descendants_after', 'stdout', 'stderr'), 'acceptance process')
     process_ok(record)
-    if type(record['elapsed_ns']) is not int or not 0 <= record['elapsed_ns'] <= TIMEOUT_NS \
+    if type(record['elapsed_ns']) is not int or not 0 <= record['elapsed_ns'] <= timeout_ns \
             or type(record['descendants_before']) is not int or record['descendants_before'] < 0 \
             or type(record['descendants_after']) is not int:
         raise RecipeError('acceptance process measurements are invalid')
@@ -370,10 +405,9 @@ def replay(root):
     result = exact_keys(json_file(root / 'result.json'), ('schema_version', 'artifact_kind', 'status',
         'origin_root', 'input_root', 'source_commit', 'corpus_sha256', 'profile_sha256',
         'references', 'cases', 'elapsed_ns', 'failure', 'cleanup', 'files'), 'acceptance result')
-    if type(result['schema_version']) is not int or result['schema_version'] != 1 \
-            or result['artifact_kind'] != 'GPU_INDEPENDENT_ACCEPTANCE_RESULT' \
-            or result['status'] != 'PASS' or result['failure'] != '' or result['cleanup'] is not True \
-            or type(result['elapsed_ns']) is not int or not 0 < result['elapsed_ns'] <= TIMEOUT_NS:
+    execution_ceiling = validate_timings(result)
+    if result['artifact_kind'] != 'GPU_INDEPENDENT_ACCEPTANCE_RESULT' \
+            or result['status'] != 'PASS' or result['failure'] != '' or result['cleanup'] is not True:
         raise RecipeError('acceptance result is not a completed bounded PASS')
     inventory = file_inventory(root)
     if canonical(result['files']) != canonical(inventory):
@@ -458,7 +492,7 @@ def replay(root):
         if (root / ref['input']).read_bytes() != canonical(request):
             raise RecipeError('acceptance reference input differs from frozen case')
         replay_process(root, ref['process'], base + '/reference-process', reference['executable_sha256'],
-                       'independent-reference', ref['input'])
+                       'independent-reference', ref['input'], timeout_ns=execution_ceiling)
         for repeat in (0, 1):
             row = exact_keys(result['cases'][ordinal * 2 + repeat], ('model_id', 'case_id', 'repeat',
                 'directory', 'input', 'numeric', 'executable', 'process', 'comparison'), 'acceptance candidate row')
@@ -474,7 +508,7 @@ def replay(root):
             plan = dataclasses.replace(plan, attention_policy=attention_policy(corpus, model_id))
             if (root / row['input']).read_bytes() != plan.input_bytes():
                 raise RecipeError('acceptance candidate input differs from frozen case')
-            replay_process(root, row['process'], relative, candidate['executables'][name], 'candidate', row['input'])
+            replay_process(root, row['process'], relative, candidate['executables'][name], 'candidate', row['input'], timeout_ns=execution_ceiling)
             numeric = root / row['numeric']
             relocated = dataclasses.replace(plan, document=dict(plan.document,
                 stream_root=str(numeric.parent), stream_name=numeric.name))

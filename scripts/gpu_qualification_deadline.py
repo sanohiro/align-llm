@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-import math
-import struct
 import time
 from collections.abc import Iterable, Iterator
 from typing import TypeVar
@@ -41,21 +39,26 @@ def checked(values: Iterable[T], deadline: Deadline | None) -> Iterator[T]:
     deadline.check()
 
 
-_F32_BLOCK = struct.Struct("<1024f")
+# A little-endian F32 is nonfinite exactly when its exponent is all ones:
+# byte 3 has low seven bits 0x7f, and byte 2 has its high bit set.
+_F32_HIGH_EXPONENT = bytes(int((value & 0x7f) == 0x7f) for value in range(256))
+_F32_BLOCK_BYTES = 4096
 
 
 def finite_f32(payload, deadline: Deadline | None = None) -> bool:
-    """Check every IEEE f32 with bounded C-level batches and 1024-scalar deadline checks."""
+    """Classify every F32 exponent, with unchanged 1024-scalar deadline checks."""
     if len(payload) % 4:
         raise RecipeError("f32 validation payload is truncated")
-    for offset in range(0, len(payload), _F32_BLOCK.size):
+    for offset in range(0, len(payload), _F32_BLOCK_BYTES):
         if deadline is not None:
             deadline.check()
-        remaining = len(payload) - offset
-        values = _F32_BLOCK.unpack_from(payload, offset) if remaining >= _F32_BLOCK.size else \
-            struct.unpack_from("<" + str(remaining // 4) + "f", payload, offset)
-        if not all(map(math.isfinite, values)):
-            return False
+        end = min(offset + _F32_BLOCK_BYTES, len(payload))
+        high = bytes(payload[offset + 3:end:4]).translate(_F32_HIGH_EXPONENT)
+        index = high.find(b"\1")
+        while index >= 0:
+            if payload[offset + index * 4 + 2] & 0x80:
+                return False
+            index = high.find(b"\1", index + 1)
     if deadline is not None:
         deadline.check()
     return True

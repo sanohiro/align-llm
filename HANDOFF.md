@@ -80,37 +80,38 @@ The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
-**Active E5 checkpoint (unpublished, integrating on `3f9d735`).** Exact-device probing now selects
-Flash Attention before shape admission for Qwen and OLMoE prefill/decode. Persistent KV remains F32;
-bounded graph K/V views and the shared mask are explicitly cast to F16, matching pinned upstream
-`llama-graph.cpp`. The first attempt omitted those K/V casts and correctly failed bitwise comparison;
-its repaired real-model owner passes all 5,243,392 Qwen and 2,118,368 OLMoE scalar values, including
-routing. No tolerance or historical CPU/GPU FAIL was changed. Native output schema 2 records the
-policy; corpus schema 2 binds it to the independent reference. The complete 19-case Flash corpus
-is independently frozen at `29bfe85d85aca082e9a841eb394300dc0a4b02750db8fd816eb6908fdc962b73`.
-Its full candidate/two-repeat shipping acceptance has not run yet.
+**Active G1 final-validation checkpoint (after `f46310d`, unpublished).** Exact-device probing now
+selects Flash Attention for both models, with F32 persistent KV and explicit bounded F16 views
+matching pinned upstream. Native output/corpus schema 2 binds the policy. Every required real
+Metal case now has two bitwise-matching native executions: the whole-run attempt completed 34,
+then independent tail diagnostics completed the four interrupted/unstarted executions, including
+both 2048-input/128-output OLMoE runs and both immediate-EOG runs. These fragments do not turn the
+original whole-run FAIL into PASS. Frozen Flash corpus ID:
+`29bfe85d85aca082e9a841eb394300dc0a4b02750db8fd816eb6908fdc962b73`.
 
-The unchanged decomposed candidate at `3f9d735` again matched 35 executions but timed out on
-OLMoE request-ceiling repeat 1 (1813.6 seconds, cleanup PASS). Its complete suite is FAIL and
-immediate EOG remained unexecuted. Do not repeat that unchanged attempt or call it completed.
-Prior baseline and original user CPU/GPU FAIL records remain retained. Task-owned exploratory
-numeric duplicates were pruned only after verifying identical retained copies; their inventories
-record the remaining closure. No original weights or user FAIL evidence was removed.
+The 1800-second whole-run cost estimate was wrong: child executions alone require over 2054
+seconds. Result schema 2 therefore fixes the complete watchdog at 2400 seconds, while historical
+schema 1 retains 1800 seconds. All cases/repetitions, numeric tensors, memory caps and bitwise
+criteria are unchanged. Replay now also binds the sum of sequential child durations to whole-run
+time. The finite validator classifies exact IEEE exponent bits in bounded blocks instead of
+converting every float; exhaustive high-word/low-mantissa, malformed, boundary and deadline owners
+pass, as do the independent process/reference owners. The measured validation-only median for
+4,587,520 bytes improves from 26,360,167 to 1,167,000 ns; this is not a GPU speedup claim.
 
-Current narrow evidence: full native-case type check, `gmake fmt`, provider trace with schema-1
-compatibility/schema-2 refusal cases, independent corpus/reference/process owners, and real Metal
-causal/GQA/stable-graph input-update owner PASS. Metal reports fusion/concurrency/graph optimization
-enabled. Pinned CUDA requires stable warmup and rejects synchronizing MoE fallback capture; no
-actual CUDA capture evidence is claimed. The Linux pinned compiler is prepared for publication
-preflight. The original comprehensive review remains bound to its earlier head; the material
-redesign requires one fresh final comprehensive review after stable owner evidence.
+Earlier narrow evidence remains: full native-case type check, `gmake fmt`, provider trace with
+legacy/new schema refusals, complete corpus owner, and the real Metal causal/GQA/stable-graph
+owner PASS. Metal reports fusion and graph optimization enabled. CUDA capture remains unverified;
+pinned synchronization-dependent MoE fallbacks cannot be captured. Historical user CUDA/Metal
+CPU-comparison FAILs and tolerances remain intact. Task-owned numeric duplicates were pruned only
+after identical retained copies were verified; inventories record the remaining closure.
 
-Next: finish integration of the E5 checkpoint, build the clean candidate and run the complete
-Flash corpus with both repetitions, then relocate and replay the retained PASS. Repair any actual
-failure without relaxing comparisons or the fixed 1800-second ceiling. Complete review, publication
-preflight, PR and merge, then continue G1R/session and performance work. The user authorizes that
-continuation. No further user CUDA functional/debugging request is permitted; subsequent CUDA work
-is performance comparison only after local readiness.
+Next: commit this validation repair, build the clean candidate, run the complete current 19-case
+owner and relocated replay, complete the fresh final comprehensive review and publication
+preflight, then PR/merge. The pinned Linux compiler is ready in a separate host cache. The user
+authorizes continuing afterward into G1R/session and measured GPU performance work. No additional
+user CUDA functional/debugging request is allowed; subsequent CUDA work is performance comparison
+only after local readiness. G1R integration preparation exists only as private notes, with no
+public session contract or implementation yet.
 
 **Bounded-prefill checkpoint (unpublished, after `db90870`).** R5 implements capacity-selected
 128/64/32/16/8/4/2/1 prefill chunks, dependent resident K/V writes, absolute masks/positions,
