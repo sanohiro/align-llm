@@ -13,8 +13,32 @@ requested language/library APIs have shipped. Requests 61/62 now pass their obse
 
 The active branch incorporates main `b5336f0` and preserves its G1 implementation checkpoints.
 The merged compiler/runtime batch and observed CPU/GPU generation are verified.
-Next: prepare real profile/calibration inputs and exercise the final CLI on Metal, then obtain
-the user-executed CUDA qualification before comprehensive review and publication.
+Real Metal calibration inputs are frozen. The public qualifier at `0bc76bb` retained and replayed
+a truthful failure prefix: Qwen CPU passed, GPU device selection failed because the local profile
+used `Metal` instead of the observed registry device `MTL0`. A new input kit corrects only that
+selection; frozen calibration/holdout data and tolerances remain unchanged. The corrected run
+reaches native GPU success, observes `MTL0` / Apple M1 and matches frozen output tokens, but
+numeric comparison fails: 4,984,483 mismatches out of 5,243,392 scalars on Qwen calibration.
+The public result preserves that COMPUTE/readback failure, exact counts and successful cleanup.
+Separately retained streams locate divergence at the first production logits (maximum absolute
+difference 0.22494947910308838), before diagnostic retention could explain it. The checked-in
+`eval/gpu/metal/precision-probe.cpp` reproduces CPU/Metal differences in isolated F32/Q4_K/Q6_K
+matrix products at widths 1 and 20 without Align or application graphs. Its strict C++ build and
+six real-backend cases pass execution; README records the observed numerical failures.
+This is a backend arithmetic / application acceptance-contract issue, not an Align language gap.
+R5C section 2.5 already documents analogous residuals. Do not loosen frozen tolerances.
+The user was asked whether to prioritize a redesigned numeric contract with independent data
+or arithmetic changes that preserve the current threshold. CUDA host preparation continues
+independently; comprehensive review and publication remain pending.
+
+The user confirmed the CUDA target: WSL2 (Pengwin / Debian 13), NVIDIA GeForce RTX 4070 Ti,
+reported driver 610.62. The supplied probe identifies Pengwin 26.02.5, kernel
+`6.18.33.2-microsoft-standard-WSL2`, x86_64, PCI `00000000:2D:00.0` and compute capability 8.9.
+Use a user-executed kit without remote login. Ninja and nvcc are absent; instructions for Debian
+13's NVIDIA `cuda-toolkit-13-3`, Ninja and static support-library packages were supplied. Existing
+OLMoE GGUF is available on that host, but Qwen's location is unknown. Resume CUDA preparation
+after installed-toolchain confirmation and model admission. Actual qualification must observe
+this tuple and bind the locally built CUDA bundle; no CUDA PASS is claimed. Metal work continues.
 
 ### Preserved implementation checkpoint
 

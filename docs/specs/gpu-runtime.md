@@ -44,7 +44,9 @@ The current code establishes the starting point:
 ## 2. Hardware and support identity
 
 G1 targets Apple Silicon Metal and compatible NVIDIA CUDA on native Linux or WSL2 Linux. The first
-available validation hosts are an Apple M1 / 16 GiB Mac and the user's RTX 4070 Ti PC. These device
+available validation hosts are an Apple M1 / 16 GiB Mac and the user's RTX 4070 Ti PC running
+WSL2 (Pengwin / Debian 13), with reported NVIDIA driver 610.62. The CUDA qualifier must record
+the actual host/device/driver observations; the reported configuration is not passing evidence. These device
 names are qualification profiles, never product allowlists. Runtime selection queries the named
 backend registry and exact device; it does not choose a generic first GPU.
 
