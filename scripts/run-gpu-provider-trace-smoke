@@ -13,6 +13,8 @@ import tempfile
 from gpu_qualification_stream import NumericStream, Frame
 import gpu_qualification_native as native
 import gpu_qualification_native_sequence as native_sequence
+from gpu_qualification_case_records import CaseRecords
+from gpu_qualification_cases import CaseSequence
 from gpu_backend_recipe import RecipeError
 from gpu_qualification_traversal import Traversal, Router
 
@@ -342,8 +344,24 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
 
     observed_cases = []
     plans = plans_for("complete")
+    expected_rows = [{
+        "case_id": f"{plan.identity[1]}.{'gpu_resident' if plan.gpu else 'cpu'}.{plan.identity[2]}",
+        "calibration_case_id": plan.identity[1], "role": "calibration",
+        "execution": "gpu_resident" if plan.gpu else "cpu", "repeat_index": plan.identity[2],
+        "model_id": plan.identity[0], "option_id": "resident" if plan.gpu else "",
+        "maximum_tokens": plan.case.document["maximum_tokens"],
+    } for plan in plans]
+    collector = CaseRecords(expected_rows, plans)
+    provided_sequence = CaseSequence(16, 30_000_000_000)
+    def collect_case(ordinal, outcome):
+        observed_cases.append((ordinal, outcome))
+        return collector.consume(ordinal, outcome)
     state = native_sequence.run(plans, budget_ns=30_000_000_000, work=work, home=home,
-        temporary=temporary, consume=lambda ordinal, outcome: observed_cases.append((ordinal, outcome)) is None)
+        temporary=temporary, consume=collect_case, sequence=provided_sequence)
+    assert state is provided_sequence
+    collector.finish(state)
+    assert len(collector.rows) == 16 and len(collector.retained) == 32
+    assert all(row["terminal"] == "PASS" and row["memory"]["rss_peak_bytes"] > 0 for row in collector.rows)
     assert state.complete and len(observed_cases) == 16, (state.failure_detail, observed_cases[-1:])
     for ordinal, outcome in observed_cases:
         assert outcome.accepted and outcome.process.exit_code == 0

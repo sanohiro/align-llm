@@ -764,6 +764,13 @@ Construction validates the resulting row through the shared schema owner. This i
 assembly; final source/input/cleanup checks and publication still own the qualification verdict.
 Its owner covers CPU/GPU rows, zero-exit numeric failure, pre-comparison nonfinite failure,
 unstarted cases, missing measurements, real log identities and profile/plan mismatch refusal.
+`CaseRecords` collects consecutive rows/logs and refuses continuation after a failed row. Finishing
+against the exact `CaseSequence` appends an unstarted terminal row when no child was constructed,
+or turns a previously accepted row into zero-exit PROCESS failure when the shared deadline expired
+during validation. It never fabricates a missing suffix. The caller may provide the fresh sequence
+state to native execution so acquired-root cleanup failure cannot discard its process checkpoint.
+The record owner covers ordered completion, first-failure prefix, validation-deadline demotion,
+unstarted suffix failure and refusal of repeated/out-of-order consumption or finish.
 
 `gpu_qualification_cli.native_plans` connects a completed five-step preparation to that sequence.
 It rechecks admitted inputs, reads the retained geometry, and binds each exact profile expansion

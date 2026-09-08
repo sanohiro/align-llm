@@ -220,10 +220,20 @@ explicitly the production native device-owner allocation domain; whole-child RSS
 trajectories and runtime storage. Next: collect the sequence's terminal prefix and connect final
 source/cleanup/evidence publication; no final qualifier CLI or real-device PASS exists yet.
 
+**Terminal-prefix checkpoint.** `CaseRecords` collects consecutive case rows and bounded logs,
+refuses post-failure continuation, and finishes against the retained sequence state. A construction
+failure has an unstarted row; a deadline expiring during validation demotes the actual zero-exit
+row without losing output or logs. Native execution can use caller-owned fresh sequence state,
+preserving its checkpoint even if scratch cleanup fails. `python3 scripts/run-gpu-case-record-smoke`
+passes completion, first-failure and deadline/refusal cases. The complete native provider owner
+now connects all 16 CPU/GPU executions to case records, retains 32 logs and observes positive
+per-child RSS; `python3 scripts/run-gpu-provider-trace-smoke` passes. Final host/device identity
+fields and top-level source/cleanup/publication integration remain next.
+
 **Next actions, in order.**
 
-1. Collect case rows/logs and the sequence's terminal prefix, then assemble final evidence with
-   exact source/input/cleanup checks and publication. Per-case assembly and metric scope are settled.
+1. Complete host/device identity fields, then assemble final evidence with exact source/input/
+   cleanup checks and publication. Case collection and the terminal prefix are implemented.
    Prepared executable/profile/calibration binding and native numeric sequencing now pass owners.
 2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
    process/record/replay/publication owners, and real source/profile/calibration kit construction.

@@ -49,8 +49,11 @@ def _projection(plan: Plan) -> bytes:
 
 
 def run(plans: Sequence[Plan], *, budget_ns: int, work: Path, home: Path, temporary: Path,
-        consume: Callable[[int, Outcome], bool]) -> CaseSequence:
-    sequence = CaseSequence(len(plans), budget_ns)
+        consume: Callable[[int, Outcome], bool], sequence: CaseSequence | None = None) -> CaseSequence:
+    sequence = CaseSequence(len(plans), budget_ns) if sequence is None else sequence
+    if sequence.count != len(plans) or sequence.deadline_ns - sequence.started_ns != budget_ns \
+            or sequence._used:
+        raise RecipeError("native execution requires matching fresh sequence state")
     if len(plans) % 2 or not work.is_absolute() or work.resolve(strict=True) != work:
         raise RecipeError("native case sequence root or pair count is invalid")
     roots = [Path(plan.case.document["stream_root"]) for plan in plans]

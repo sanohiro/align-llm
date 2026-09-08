@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from gpu_backend_recipe import RecipeError
 from gpu_qualification_native_sequence import Outcome, Plan
 from gpu_qualification_publish import RetainedFile
 from gpu_qualification_records import validate_case
+from gpu_qualification_cases import CaseSequence
 
 
 def empty_numeric() -> dict[str, object]:
@@ -107,3 +108,56 @@ def assemble(ordinal: int, expected: Mapping[str, object], plan: Plan, outcome: 
             retained[log_paths[name]] = RetainedFile(name, captured.retained, captured.original_bytes,
                                                     captured.original_sha256)
     return validated, retained
+
+
+class CaseRecords:
+    def __init__(self, expected: Sequence[Mapping[str, object]], plans: Sequence[Plan]) -> None:
+        if len(expected) != len(plans) or not 16 <= len(plans) <= 256:
+            raise RecipeError("case record schedule is incomplete")
+        self.expected = tuple(dict(row) for row in expected)
+        self.plans = tuple(plans)
+        self.rows: list[dict[str, object]] = []
+        self.retained: dict[str, RetainedFile] = {}
+        self.descendants_before = 0
+        self.descendants_after = 0
+        self.finished = False
+        self.failure: dict[str, object] = {"category": "", "stage": "", "case_ordinal": -1, "detail": ""}
+        for ordinal, (row, plan) in enumerate(zip(self.expected, self.plans)):
+            assemble(ordinal, row, plan, None)  # Validate frozen construction before the first child.
+
+    def consume(self, ordinal: int, outcome: Outcome) -> bool:
+        if self.finished or ordinal != len(self.rows) or ordinal >= len(self.plans) \
+                or (self.rows and self.rows[-1]["terminal"] != "PASS"):
+            raise RecipeError("case records require consecutive unfinished consumption")
+        row, retained = assemble(ordinal, self.expected[ordinal], self.plans[ordinal], outcome)
+        self.rows.append(row)
+        self.retained.update(retained)
+        self.descendants_before += outcome.process.descendants_before
+        self.descendants_after += outcome.process.descendants_after
+        return row["terminal"] == "PASS"
+
+    def finish(self, sequence: CaseSequence) -> None:
+        if self.finished or sequence.count != len(self.plans) or not sequence._used:
+            raise RecipeError("case records require one completed sequence checkpoint")
+        if sequence.complete:
+            if len(self.rows) != len(self.plans) or any(row["terminal"] != "PASS" for row in self.rows):
+                raise RecipeError("complete sequence differs from retained case records")
+        else:
+            ordinal = sequence.failure_ordinal
+            if ordinal is None or sequence.accepted != ordinal or len(self.rows) not in {ordinal, ordinal + 1}:
+                raise RecipeError("failed sequence differs from retained case prefix")
+            if len(self.rows) == ordinal:
+                outcome = None if sequence.failed_result is None else Outcome(
+                    sequence.failed_result, None, None, None, "case validation did not complete")
+                row, retained = assemble(ordinal, self.expected[ordinal], self.plans[ordinal], outcome)
+                self.rows.append(row)
+                self.retained.update(retained)
+                if outcome is not None:
+                    self.descendants_before += outcome.process.descendants_before
+                    self.descendants_after += outcome.process.descendants_after
+            row = self.rows[ordinal]
+            if row["terminal"] == "PASS":
+                row.update(terminal="FAIL", category="PROCESS", stage="readback")
+            self.failure = {"category": row["category"], "stage": row["stage"], "case_ordinal": ordinal,
+                            "detail": "case execution or validation did not complete successfully"}
+        self.finished = True
