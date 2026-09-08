@@ -453,6 +453,11 @@ Constants are 1, `GPU_RUNTIME_EVIDENCE`, and `generation`; status is `PASS|FAIL`
   `gpu-host-observation` focused owner covers real local host facts, reordered CUDA enumeration,
   duplicate/mismatched PCI IDs, malformed probes and changing native device identity. Host
   observation failure cannot fabricate baseline facts or a passing device observation.
+  Final source rechecks use descriptor-relative, no-follow directory traversal and bounded
+  single-link file reads. Exact file and directory closure, executable modes, symlink payloads,
+  content digests and stable directory identities must remain valid after child execution.
+  `gpu-source-materialization` owns post-execution FIFO, extra-directory, changed-content and
+  replaced-root refusals as well as initial construction.
 - `bundle` is
   `manifest_sha256,bundle_id,ggml_source_manifest_sha256,ggml_source_snapshot_sha256,loaded_artifact_sha256s`;
   its source values match §3.6 and replay §3.4, and loaded hashes are a unique manifest subset in

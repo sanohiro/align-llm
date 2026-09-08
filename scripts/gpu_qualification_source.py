@@ -10,7 +10,7 @@ import pathlib
 import shutil
 import stat
 
-from gpu_backend_recipe import RecipeError, materialize_source
+from gpu_backend_recipe import RecipeError, materialize_source, single_link_file_at, stable_directory
 from gpu_qualification_input import AdmittedInput, SourceInput
 
 
@@ -40,47 +40,63 @@ def _private_directory(path: pathlib.Path, label: str) -> pathlib.Path:
 
 
 def _verify_tree(source: SourceInput, destination: pathlib.Path) -> None:
-    rows = source.manifest["files"]
-    assert isinstance(rows, list)
-    expected_files = {str(row["path"]) for row in rows if isinstance(row, dict)}
-    actual_files: set[str] = set()
-    for root, directories, files in os.walk(destination, followlinks=False):
-        root_path = pathlib.Path(root)
-        for name in [*directories, *files]:
-            path = root_path / name
-            if path.is_dir() and not path.is_symlink():
-                continue
-            actual_files.add(path.relative_to(destination).as_posix())
-    if actual_files != expected_files:
-        raise RecipeError("materialized source file closure is invalid")
+    rows = {row["path"]: row for row in source.manifest["files"]}
+    expected_directories = {parent.as_posix() for name in rows
+                            for parent in pathlib.PurePosixPath(name).parents
+                            if parent.as_posix() != "."}
+    seen_files: set[str] = set()
+    seen_directories: set[str] = set()
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
 
-    for ordinal, row in enumerate(rows):
-        assert isinstance(row, dict)
-        relative = str(row["path"])
-        target = destination / relative
-        try:
-            metadata = target.lstat()
+    def walk(descriptor: int, prefix: str) -> None:
+        before = os.fstat(descriptor)
+        for name in os.listdir(descriptor):
+            relative = prefix + name
+            metadata = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if stat.S_ISDIR(metadata.st_mode):
+                if relative not in expected_directories:
+                    raise RecipeError("materialized source directory closure is invalid")
+                child = os.open(name, flags, dir_fd=descriptor)
+                try:
+                    if os.fstat(child) != metadata:
+                        raise RecipeError("materialized source directory changed")
+                    seen_directories.add(relative)
+                    walk(child, relative + "/")
+                finally:
+                    os.close(child)
+                continue
+            row = rows.get(relative)
+            if row is None:
+                raise RecipeError("materialized source file closure is invalid")
             if row["mode"] == "120000":
                 if not stat.S_ISLNK(metadata.st_mode):
-                    raise RecipeError(
-                        f"materialized source mode does not match row {ordinal}",
-                    )
-                data = os.readlink(os.fsencode(target))
+                    raise RecipeError("materialized source symlink mode differs")
+                data = os.readlink(os.fsencode(name), dir_fd=descriptor)
             else:
-                if not stat.S_ISREG(metadata.st_mode):
-                    raise RecipeError(
-                        f"materialized source mode does not match row {ordinal}",
-                    )
-                executable = bool(metadata.st_mode & 0o111)
-                if executable != (row["mode"] == "100755"):
-                    raise RecipeError(
-                        f"materialized source executable mode does not match row {ordinal}",
-                    )
-                data = target.read_bytes()
-        except OSError as exc:
-            raise RecipeError(f"materialized source cannot be read at row {ordinal}") from exc
-        if len(data) != row["bytes"] or hashlib.sha256(data).hexdigest() != row["sha256"]:
-            raise RecipeError(f"materialized source content does not match row {ordinal}")
+                if not stat.S_ISREG(metadata.st_mode) or bool(metadata.st_mode & 0o111) != (row["mode"] == "100755"):
+                    raise RecipeError("materialized source executable mode differs")
+                data = single_link_file_at(descriptor, name, "materialized source file", row["bytes"])
+            if os.stat(name, dir_fd=descriptor, follow_symlinks=False) != metadata:
+                raise RecipeError("materialized source file changed")
+            if len(data) != row["bytes"] or hashlib.sha256(data).hexdigest() != row["sha256"]:
+                raise RecipeError("materialized source content differs")
+            seen_files.add(relative)
+        if not stable_directory(before, os.fstat(descriptor)):
+            raise RecipeError("materialized source directory changed")
+
+    try:
+        descriptor = os.open(destination, flags)
+        try:
+            before = os.fstat(descriptor)
+            walk(descriptor, "")
+            if not stable_directory(before, destination.lstat()):
+                raise RecipeError("materialized source root changed")
+        finally:
+            os.close(descriptor)
+    except OSError as error:
+        raise RecipeError("materialized source cannot be read") from error
+    if seen_files != set(rows) or seen_directories != expected_directories:
+        raise RecipeError("materialized source file closure is invalid")
 
 
 def materialize(admitted: AdmittedInput, parent: pathlib.Path) -> MaterializedSources:

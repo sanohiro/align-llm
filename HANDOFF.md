@@ -47,6 +47,12 @@ facts and adversarial CUDA fixtures; `python3 scripts/run-gpu-provider-trace-smo
 Next: connect this owner and retained case records to final CLI publication and source rechecks;
 real Metal/CUDA qualification and comprehensive review remain outstanding.
 
+**Final source recheck checkpoint.** The source owner now verifies exact directory/file closure
+through no-follow descriptors and bounded single-link reads, including after child execution.
+`python3 scripts/run-gpu-source-materialization-smoke` and
+`python3 scripts/run-gpu-qualification-cli-smoke` pass; introduced FIFOs, extra empty directories,
+changed bytes and replaced roots are refused without following or blocking on them.
+
 **Complete implementation checkpoints.**
 
 - Strict runtime options, provider dispatch, canonical source/bundle admission and immutable private

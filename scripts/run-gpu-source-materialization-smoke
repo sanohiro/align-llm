@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import pathlib
+import os
 import sys
 import tempfile
 
@@ -57,6 +58,32 @@ with tempfile.TemporaryDirectory(prefix="gpu-source-materialization-") as raw_te
                 assert target.is_symlink()
             else:
                 assert target.read_bytes() == source_input.blobs[str(row["sha256"])]
+    # Recheck after native children using the same owner; never follow a replaced source root
+    # or block on a FIFO introduced after initial source materialization.
+    qualification_source._verify_tree(admitted.align_source, sources.align_llm)
+    row = next(row for row in admitted.align_source.manifest["files"] if row["mode"] != "120000")
+    target = sources.align_llm / row["path"]
+    original_data, original_mode = target.read_bytes(), target.stat().st_mode
+    target.unlink()
+    os.mkfifo(target)
+    expect_rejected(lambda: qualification_source._verify_tree(admitted.align_source, sources.align_llm), "mode differs")
+    target.unlink()
+    target.write_bytes(original_data)
+    target.chmod(original_mode)
+    target.write_bytes(original_data + b"mutated")
+    expect_rejected(lambda: qualification_source._verify_tree(admitted.align_source, sources.align_llm), "bound")
+    target.write_bytes(original_data)
+    extra = sources.align_llm / "unexpected-empty-directory"
+    extra.mkdir()
+    expect_rejected(lambda: qualification_source._verify_tree(admitted.align_source, sources.align_llm), "directory closure")
+    extra.rmdir()
+    moved = sources.align_llm.with_name("moved-app")
+    sources.align_llm.rename(moved)
+    sources.align_llm.symlink_to(moved, target_is_directory=True)
+    expect_rejected(lambda: qualification_source._verify_tree(admitted.align_source, sources.align_llm), "cannot be read")
+    sources.align_llm.unlink()
+    moved.rename(sources.align_llm)
+    qualification_source._verify_tree(admitted.align_source, sources.align_llm)
     sources.cleanup()
     assert not sources.root.exists()
 
