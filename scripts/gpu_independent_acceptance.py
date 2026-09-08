@@ -17,9 +17,10 @@ from gpu_backend_recipe import RecipeError, canonical, retained_path
 from gpu_independent_corpus import validate as validate_corpus, MAX_BYTES as CORPUS_LIMIT
 from gpu_qualification_records import parse_record, validate_command, exact_keys, validate_profile_records, parse_json_object
 from gpu_qualification_backend import stage
-from gpu_qualification_native import prepare, success, failure as native_failure
+from gpu_qualification_native import prepare, success_metadata, failure as native_failure
 from gpu_qualification_input import admit
 from gpu_qualification_deadline import Deadline, sha256_file
+from gpu_qualification_stream import NumericStream
 from gpu_qualifier_process import run_owned_command, retained_file_row
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -175,12 +176,37 @@ def process_ok(record, *, output=None, plan=None):
 
 
 def validate_native(output, plan, bundle_id, device, caps, deadline):
-    native = success(output, plan, expected_bundle_id=bundle_id, expected_device=device, deadline=deadline)
+    native = success_metadata(output, plan, expected_bundle_id=bundle_id, expected_device=device, deadline=deadline)
     observation = native.observation
     if observation['managed_host_peak_bytes'] + observation['application_host_reserved_bytes'] > caps['host_budget_bytes'] \
             or observation['managed_device_peak_bytes'] > caps['device_budget_bytes']:
         raise RecipeError('independent acceptance exceeds admitted managed capacity')
     return native
+
+
+def match_repeat(path, plan, expected_sha256, deadline=None):
+    """Validate a fresh complete stream and reuse semantics only for exactly identical bytes."""
+    with NumericStream(path, model=plan.traversal.model,
+                       maximum_bytes=plan.traversal.maximum_bytes, deadline=deadline) as stream:
+        while (frame := stream.read_frame()) is not None:
+            remaining = frame.payload_bytes
+            while remaining:
+                remaining -= len(stream.read_payload())
+        if stream.sha256 != expected_sha256:
+            raise RecipeError('fresh-process candidate repetition changed numeric bytes')
+
+
+def bind_comparison_inventory(result):
+    files = {row['path']: row for row in result['files']}
+    for row in result['cases']:
+        comparison = row['comparison']
+        reference = row['directory'].rsplit('/', 1)[0] + '/reference'
+        expected = {row['numeric']: comparison['candidate_sha256'],
+            reference + '/index.jsonl': comparison['reference_index_sha256'],
+            reference + '/production.json': comparison['reference_production_sha256']}
+        expected.update({reference + '/' + name: value for name, value in comparison['reference_tensors'].items()})
+        if any(path not in files or files[path]['sha256'] != value for path, value in expected.items()):
+            raise RecipeError('compared artifact changed before acceptance publication')
 
 
 def execute(profile_path, corpus_path, candidate_build, reference_build, destination):
@@ -260,17 +286,18 @@ def execute(profile_path, corpus_path, candidate_build, reference_build, destina
                 result['cases'].append(row)
                 process_ok(command, output=(root / relative / 'stdout').read_bytes(), plan=plan)
                 native = validate_native((root / relative / 'stdout').read_bytes(), plan, bundle['bundle_id'], options['device'], options, deadline)
-                comparison = compare.compare(root / reference_relative, plan.stream_path, geometry, case, deadline=deadline)
-                deadline.check()
-                if not comparison['bitwise_equal'] or native.stream_sha256 != comparison['candidate_sha256']:
-                    raise RecipeError('independent all-tensor comparison failed')
-                row['comparison'] = comparison
-                if repeat == 1:
+                if repeat == 0:
+                    comparison = compare.compare(root / reference_relative, plan.stream_path, geometry, case, deadline=deadline)
+                    if not comparison['bitwise_equal']:
+                        raise RecipeError('independent all-tensor comparison failed')
+                    row['comparison'] = comparison
+                else:
                     previous = result['cases'][-2]
-                    if comparison['candidate_sha256'] != previous['comparison']['candidate_sha256']:
-                        raise RecipeError('fresh-process candidate repetition changed numeric bytes')
+                    match_repeat(plan.stream_path, plan, previous['comparison']['candidate_sha256'], deadline)
+                    row['comparison'] = dict(previous['comparison'])
                     plan.stream_path.unlink()
                     row['numeric'] = previous['numeric']
+                deadline.check()
                 print(model_id, case['case_id'], 'repeat', repeat, 'PASS', flush=True)
         admitted.recheck()
         verify_build(candidate_build, True)
@@ -292,6 +319,8 @@ def execute(profile_path, corpus_path, candidate_build, reference_build, destina
                 result['failure'] = result['failure'] or 'acceptance cleanup failed: ' + str(error)
         try:
             result['files'] = file_inventory(root, deadline if result['status'] == 'PASS' else None)
+            if result['status'] == 'PASS':
+                bind_comparison_inventory(result)
         except RecipeError as error:
             result['status'] = 'FAIL'
             result['failure'] = result['failure'] or str(error)
@@ -342,6 +371,7 @@ def replay(root):
     inventory = file_inventory(root)
     if canonical(result['files']) != canonical(inventory):
         raise RecipeError('acceptance retained inventory differs')
+    bind_comparison_inventory(result)
     for name in ('origin_root', 'input_root'):
         value = result[name]
         if not isinstance(value, str) or not pathlib.Path(value).is_absolute() or str(pathlib.Path(value)) != value:
@@ -440,13 +470,13 @@ def replay(root):
                 stream_root=str(numeric.parent), stream_name=numeric.name))
             native = validate_native((root / relative / 'stdout').read_bytes(), relocated,
                                      bundle['bundle_id'], options['device'], options, None)
-            comparison = compare.compare(root / ref['directory'], numeric, geometry, case)
+            if repeat == 0:
+                comparison = compare.compare(root / ref['directory'], numeric, geometry, case)
             allowed.update((row['input'], row['numeric'], relative + '/stdout', relative + '/stderr'))
             allowed.update((ref['input'], base + '/reference-process/stdout', base + '/reference-process/stderr',
                             ref['directory'] + '/index.jsonl', ref['directory'] + '/production.json'))
             allowed.update(ref['directory'] + '/' + name for name in comparison['reference_tensors'])
-            if not comparison['bitwise_equal'] or native.stream_sha256 != comparison['candidate_sha256'] \
-                    or canonical(comparison) != canonical(row['comparison']):
+            if not comparison['bitwise_equal'] or canonical(comparison) != canonical(row['comparison']):
                 raise RecipeError('acceptance replay numerical comparison differs')
         print(model_id, case['case_id'], 'replay PASS', flush=True)
     if {row['path'] for row in inventory} != allowed:

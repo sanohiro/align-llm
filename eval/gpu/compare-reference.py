@@ -16,6 +16,7 @@ from gpu_backend_recipe import RecipeError
 from gpu_qualification_deadline import checked, finite_f32, sha256_file
 from gpu_qualification_records import parse_json_object, exact_keys, require_i32_array, bounded_text
 from gpu_qualification_stream import Frame, NumericStream
+from gpu_qualification_native import validate_router
 from gpu_qualification_traversal import Router, Traversal
 
 
@@ -146,7 +147,8 @@ def compare(root, candidate, geometry, case, *, deadline=None):
     traversal = Traversal.derive(geometry, case)
     reference = Reference(root, traversal, deadline)
     regular(root / "production.json", 2 * 1024**2)
-    production = exact_keys(parse_json_object((root / "production.json").read_bytes(), 2 * 1024**2),
+    production_raw = (root / "production.json").read_bytes()
+    production = exact_keys(parse_json_object(production_raw, 2 * 1024**2),
         ("token_ids", "prompt_ids", "text", "tensor_records", "tensor_bytes"), "reference production")
     require_i32_array(production["token_ids"], "reference output tokens", minimum=1, maximum=128)
     require_i32_array(production["prompt_ids"], "reference prompt tokens", minimum=1, maximum=2048)
@@ -170,12 +172,15 @@ def compare(root, candidate, geometry, case, *, deadline=None):
                                                                   (4, instruction.selected), (5, instruction.selected)))]
             else:
                 frames = [instruction]
+            router_payloads = []
             for expected in frames:
                 if stream.read_frame() != expected:
                     raise RecipeError("candidate traversal differs from the independent projection")
                 actual = bytearray()
                 while len(actual) < expected.payload_bytes:
                     actual.extend(stream.read_payload())
+                if isinstance(instruction, Router):
+                    router_payloads.append(actual)
                 baseline = reference.read(expected)
                 counts[expected.kind] += expected.width * expected.height
                 if expected.kind != 4:
@@ -184,6 +189,8 @@ def compare(root, candidate, geometry, case, *, deadline=None):
                 if actual != baseline:
                     mismatches[expected.kind] += sum(a != b for a, b in zip(
                         checked(struct.iter_unpack("<I", actual), deadline), checked(struct.iter_unpack("<I", baseline), deadline)))
+            if isinstance(instruction, Router):
+                validate_router(*router_payloads, deadline=deadline)
         if stream.read_frame() is not None:
             raise RecipeError("candidate has extra frames")
         candidate_sha256 = stream.sha256
@@ -192,7 +199,8 @@ def compare(root, candidate, geometry, case, *, deadline=None):
     reference.finish()
     return {"bitwise_equal": not mismatches, "scalar_counts": dict(counts),
             "bitwise_mismatches": dict(mismatches), "candidate_sha256": candidate_sha256,
-            "reference_index_sha256": reference.index_sha256, "reference_tensors": reference.hashes}
+            "reference_index_sha256": reference.index_sha256, "reference_tensors": reference.hashes,
+            "reference_production_sha256": hashlib.sha256(production_raw).hexdigest()}
 
 
 if __name__ == "__main__":

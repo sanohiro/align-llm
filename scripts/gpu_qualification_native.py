@@ -112,6 +112,13 @@ class NativeCase:
 
 
 @dataclasses.dataclass(frozen=True)
+class NativeMetadata:
+    production: dict[str, object]
+    observation: dict[str, object]
+    output_sha256: str
+
+
+@dataclasses.dataclass(frozen=True)
 class NativeSuccess:
     production: dict[str, object]
     observation: dict[str, object]
@@ -252,6 +259,21 @@ def _finite(payload: bytes, deadline: Deadline | None = None) -> None:
         raise RecipeError("native numeric stream contains a nonfinite value")
 
 
+def validate_router(scores_raw, ids_raw, weights_raw, deadline=None):
+    _finite(scores_raw, deadline)
+    _finite(weights_raw, deadline)
+    scores = tuple(value for (value,) in checked(struct.iter_unpack("<f", scores_raw), deadline))
+    ids = tuple(value for (value,) in checked(struct.iter_unpack("<i", ids_raw), deadline))
+    weights = tuple(value for (value,) in checked(struct.iter_unpack("<f", weights_raw), deadline))
+    if any(not 0 <= index < len(scores) for index in checked(ids, deadline)) or len(set(checked(ids, deadline))) != len(ids):
+        raise RecipeError("native routing IDs are invalid")
+    chosen = set(checked(ids, deadline))
+    if any(scores[left] < scores[right] for left, right in checked(zip(ids, ids[1:]), deadline)) \
+            or any(score > scores[ids[-1]] for index, score in checked(enumerate(scores), deadline) if index not in chosen) \
+            or weights != tuple(scores[index] for index in checked(ids, deadline)):
+        raise RecipeError("native routing selection or weights are inconsistent")
+
+
 def consume_stream(case: NativeCase, *, deadline: Deadline | None = None) -> str:
     with NumericStream(case.stream_path, model=case.traversal.model,
                        maximum_bytes=case.traversal.maximum_bytes, deadline=deadline) as stream:
@@ -274,25 +296,14 @@ def consume_stream(case: NativeCase, *, deadline: Deadline | None = None) -> str
                         raise RecipeError("native routing frame differs from independent traversal")
                     payloads.append(stream.read_payload())
                 scores_raw, ids_raw, weights_raw = payloads
-                _finite(scores_raw, deadline)
-                _finite(weights_raw, deadline)
-                scores = tuple(value for (value,) in checked(struct.iter_unpack("<f", scores_raw), deadline))
-                ids = tuple(value for (value,) in checked(struct.iter_unpack("<i", ids_raw), deadline))
-                weights = tuple(value for (value,) in checked(struct.iter_unpack("<f", weights_raw), deadline))
-                if any(not 0 <= index < len(scores) for index in checked(ids, deadline)) or len(set(checked(ids, deadline))) != len(ids):
-                    raise RecipeError("native routing IDs are invalid")
-                chosen = set(checked(ids, deadline))
-                if any(scores[left] < scores[right] for left, right in checked(zip(ids, ids[1:]), deadline)) \
-                        or any(score > scores[ids[-1]] for index, score in checked(enumerate(scores), deadline) if index not in chosen) \
-                        or weights != tuple(scores[index] for index in checked(ids, deadline)):
-                    raise RecipeError("native routing selection or weights are inconsistent")
+                validate_router(scores_raw, ids_raw, weights_raw, deadline)
         if stream.read_frame() is not None or stream.consumed_bytes != case.traversal.maximum_bytes:
             raise RecipeError("native numeric stream has extra data or a wrong size")
         return stream.sha256
 
 
-def success(raw: bytes, case: NativeCase, *, expected_bundle_id: str | None = None,
-            expected_device: str | None = None, deadline: Deadline | None = None) -> NativeSuccess:
+def success_metadata(raw: bytes, case: NativeCase, *, expected_bundle_id: str | None = None,
+            expected_device: str | None = None, deadline: Deadline | None = None) -> NativeMetadata:
     if deadline is not None:
         deadline.check()
     record = _record(raw, "GPU_RUNTIME_CASE_OUTPUT", (
@@ -310,4 +321,12 @@ def success(raw: bytes, case: NativeCase, *, expected_bundle_id: str | None = No
             or type(record["stream_records"]) is not int or record["stream_records"] != case.traversal.frame_count:
         raise RecipeError("native output stream totals differ from independent traversal")
     observation = _observation(production["observation"], case, expected_bundle_id, expected_device)
-    return NativeSuccess(production, observation, hashlib.sha256(text.encode()).hexdigest(), consume_stream(case, deadline=deadline))
+    return NativeMetadata(production, observation, hashlib.sha256(text.encode()).hexdigest())
+
+
+def success(raw: bytes, case: NativeCase, *, expected_bundle_id: str | None = None,
+            expected_device: str | None = None, deadline: Deadline | None = None) -> NativeSuccess:
+    metadata = success_metadata(raw, case, expected_bundle_id=expected_bundle_id,
+                                expected_device=expected_device, deadline=deadline)
+    return NativeSuccess(metadata.production, metadata.observation, metadata.output_sha256,
+                         consume_stream(case, deadline=deadline))

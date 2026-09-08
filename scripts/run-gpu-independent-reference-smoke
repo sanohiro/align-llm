@@ -65,7 +65,12 @@ def run():
         body.extend(struct.pack("<6I2Q", 0, 0, 0, 0, 0, 0, 0, len(rows)))
         candidate = root / "candidate"
         candidate.write_bytes(struct.pack("<8sIIQ", b"G1TRACE1", 2, 0, len(body) + 24) + body)
-        assert reference.compare(root, candidate, geometry, case)["bitwise_equal"]
+        comparison = reference.compare(root, candidate, geometry, case)
+        assert comparison["bitwise_equal"]
+        from types import SimpleNamespace
+        from gpu_independent_acceptance import match_repeat
+        plan = SimpleNamespace(traversal=reference.Traversal.derive(geometry, case))
+        match_repeat(candidate, plan, comparison['candidate_sha256'])
 
         def rejects(call):
             try:
@@ -73,6 +78,13 @@ def run():
             except (RecipeError, OSError, ValueError, KeyError):
                 return
             raise AssertionError("malformed independent reference was accepted")
+
+        original_candidate = candidate.read_bytes()
+        changed_candidate = bytearray(original_candidate)
+        changed_candidate[64:68] = struct.pack('<f', 17)
+        candidate.write_bytes(changed_candidate)
+        rejects(lambda: match_repeat(candidate, plan, comparison['candidate_sha256']))
+        candidate.write_bytes(original_candidate)
 
         for mutate in (lambda rows: rows.pop(), lambda rows: rows.append(copy.deepcopy(rows[0])),
                        lambda rows: rows[0].update(shape=[4, 127, 1, 1]),

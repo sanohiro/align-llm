@@ -1741,7 +1741,7 @@ candidate rows add `repeat`, `numeric`, `executable`, and `comparison`. Each pro
 `terminal`, `exit_code`, `signal`, `elapsed_ns`, `descendants_before`, `descendants_after`, `stdout`,
 and `stderr`; command and complete retained-log records reuse the existing strict schemas.
 Comparison fields are `bitwise_equal`, `scalar_counts`, `bitwise_mismatches`, `candidate_sha256`,
-`reference_index_sha256`, and `reference_tensors`. Inventory rows are `path`, `bytes`, `sha256`.
+`reference_index_sha256`, `reference_production_sha256`, and `reference_tensors`. Inventory rows are `path`, `bytes`, `sha256`.
 The result is bounded to 16 MiB and is written last. Failure retains its completed prefix and
 first fault; only a complete PASS is accepted by `--replay EVIDENCE`. Replay is an offline owner
 with no inherited execution deadline; it requires the original execution to meet its 1800-second
@@ -1753,3 +1753,14 @@ Model-free acceptance owners are `scripts/run-gpu-independent-corpus-smoke`,
 The full native owner and its relocated replay additionally own numerical closure for every corpus
 row, repeated execution and original-path independence. Build directories and frozen corpus are
 explicit prerequisites; the acceptance owner never installs a compiler or acquires model weights.
+
+
+The first fresh candidate stream receives one combined framing, finite-value, router-semantic and
+complete independent tensor comparison. Native production metadata and capacity checks remain
+separate and mandatory. A second fresh process receives its own metadata/capacity checks and a
+complete bounded framing/hash pass; semantic evidence is reused only if its whole stream SHA-256
+is identical to the already fully compared first stream. A differing byte fails the repeat. Replay
+similarly consumes each unique retained stream once while validating both executions and inputs.
+Before PASS publication, the final immutable inventory must match every compared numeric, reference
+index/production and tensor hash. This removes duplicate validation work without sampling values,
+skipping cases or weakening the fixed execution ceiling.

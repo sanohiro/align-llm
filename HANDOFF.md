@@ -96,9 +96,26 @@ Bounded 1024-scalar C-level finite checks preserve exact semantics/deadline gran
 413499904-value real Qwen comparison now passes in 11.77 seconds. Deadline, native provider trace,
 reference and process owners pass. Inventory hashing now shares the deadline, and replay rejects
 unowned extra files/directories. The interrupted run is not qualification PASS.
-Next: build a clean candidate and execute the complete 19-case/two-repeat Metal owner with a fresh
-pinned reference, then relocated replay and mutation checks. After stable evidence, perform the
-required fresh comprehensive review, final preflight, PR and merge. GPU performance work remains
+The complete `0f7cb48` Metal attempt recorded 35 matching executions but hit the fixed
+1800-second deadline during OLMoE request-ceiling repeat 1. It is FAIL, not qualification PASS;
+cleanup passed. Native and independent numeric validators duplicated full scans. The current
+repair combines those checks into one complete pass, validates fresh repeats by full framing plus
+exact already-validated stream identity, and binds all compared hashes again at final inventory.
+The ceiling and required cases remain unchanged. An isolated `agent/g1-attention-checkpoint`
+worktree contains the E5 native probe/mask/Flash primitives and a compiling Align selection module;
+the real Metal Flash operator owner passes causal mask/GQA arithmetic and capability/lifetime
+refusals. It is not yet wired into either model. No attention checkpoint is published. The Linux pinned compiler has also been built and verified in a separate host cache.
+Next: finish the complete 19-case/two-repeat Metal owner, then relocated replay. A relocated real
+single-case component fixture already passes command/input/extra-artifact/cleanup/reference-count
+mutation checks; ordinary replay correctly rejects its intentionally incomplete case coverage.
+Before the final comprehensive review, close the performance plan's remaining G1 E5/E7 owners:
+current production is decomposed F32 attention only; there is no fused-attention builder/probe yet.
+Pinned Metal advertises Flash Attention for both real 128-wide heads and F32 K/V. CUDA also exposes
+Flash support; its graph implementation requires two stable calls and may reject synchronizing
+MoE fallback shapes. Current same-bucket graph reuse is implemented, but enabling recipe flags
+alone is not actual CUDA capture evidence. Do not call these remaining rows complete or ask the
+user for CUDA debugging; subsequent user CUDA work is performance-only. After those owners and
+stable evidence, perform the required fresh comprehensive review, final preflight, PR and merge. GPU performance work remains
 authorized after G1. No further user CUDA functional/debugging request is permitted.
 
 **Bounded-prefill checkpoint (unpublished, after `db90870`).** R5 implements capacity-selected
