@@ -26,6 +26,8 @@ int main(void) {
     state.memory_allocated = 1;
     weight->data = weights;
     kv->data = cache;
+    assert(align_gpu_observation_state(&state, 11) == 0);
+    assert(align_gpu_observation_state(&state, 12) == -1);
     assert(align_gpu_observation_state(&state, 6) == 0);
     assert(align_gpu_observation_state(&state, 7) == 0);
     state.weights_finished = state.kv_finished = 1;

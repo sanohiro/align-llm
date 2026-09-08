@@ -1535,6 +1535,26 @@ int32_t align_gpu_plan_finish(void *owner) {
     return ALIGN_GPU_OK;
 }
 
+int32_t align_gpu_plan_cancel(void *owner) {
+    struct align_gpu_device_state *state = owner;
+    struct align_gpu_device_state initial = {0};
+    if (state == NULL || !state->shape_planning || state->weights_uploaded != 0
+        || state->graph_execution_count[0] != 0 || state->graph_execution_count[1] != 0) {
+        return ALIGN_GPU_CONFIG;
+    }
+    initial.device = state->device;
+    initial.backend = state->backend;
+    memcpy(initial.bundle_id, state->bundle_id, sizeof(initial.bundle_id));
+    initial.host_budget_bytes = state->host_budget_bytes;
+    initial.application_host_reserved_bytes = state->application_host_reserved_bytes;
+    initial.device_budget_bytes = state->device_budget_bytes;
+    initial.staging_consumed = state->staging_consumed;
+    initial.staging_path_valid = state->staging_path_valid;
+    align_gpu_memory_release(state);
+    *state = initial;
+    return ALIGN_GPU_OK;
+}
+
 #ifndef ALIGN_GPU_FORCE_ALLOCATION_PREFIX
 #define ALIGN_GPU_FORCE_ALLOCATION_PREFIX 0
 #endif
@@ -2282,6 +2302,44 @@ int32_t align_gpu_kv_write_slot(
         ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
 }
 
+/* Prefill writes a fixed chunk and exposes a dependent resident prefix. */
+int32_t align_gpu_kv_write_prefix(
+        void *owner, int64_t index, int32_t kind, int32_t layout, int64_t position,
+        int64_t width, void *slots, int64_t out, int64_t source) {
+    struct align_gpu_device_state *state = owner;
+    struct ggml_tensor *plane = align_gpu_kv_at(state, index);
+    struct ggml_tensor *src = align_ggml_slot_load(slots, source);
+    struct ggml_context *ctx = align_gpu_graph_context_at(state, kind);
+    struct ggml_tensor *write;
+    struct ggml_tensor *view;
+    int axis = layout == 0 ? 1 : 0;
+    size_t offset;
+    size_t used;
+    if (state == NULL || plane == NULL || src == NULL || ctx == NULL
+        || kind != ALIGN_GPU_GRAPH_PREFILL || state->graph_prepared[kind]
+        || (layout != 0 && layout != 1) || position < 0 || width < 1
+        || width > plane->ne[axis] || position >= width || src->ne[axis] != width - position
+        || src->ne[1-axis] != plane->ne[1-axis] || src->ne[2] != plane->ne[2]
+        || src->ne[3] != 1 || plane->ne[3] != 1
+        || plane->type != GGML_TYPE_F32 || src->type != GGML_TYPE_F32
+        || !ggml_is_contiguous(plane) || !ggml_is_contiguous(src)
+        || plane->nb[1] > INT32_MAX || plane->nb[2] > INT32_MAX || plane->nb[3] > INT32_MAX
+        || plane->nb[axis] == 0 || (uint64_t) position > ((1u << 30) - 1) / plane->nb[axis]) {
+        return ALIGN_GPU_CONFIG;
+    }
+    offset = (size_t) position * plane->nb[axis];
+    used = ggml_used_mem(ctx);
+    if (used > ggml_get_mem_size(ctx) || 2 * ggml_tensor_overhead() > ggml_get_mem_size(ctx) - used) {
+        return ALIGN_GPU_ALLOCATION;
+    }
+    write = ggml_set_inplace(ctx, plane, src, plane->nb[1], plane->nb[2], plane->nb[3], offset);
+    if (!ggml_backend_dev_supports_op(state->device, write)) { return ALIGN_GPU_UNSUPPORTED; }
+    view = ggml_view_4d(ctx, write,
+        layout == 0 ? plane->ne[0] : width, layout == 0 ? width : plane->ne[1],
+        plane->ne[2], 1, plane->nb[1], plane->nb[2], plane->nb[3], 0);
+    return align_ggml_slot_store(slots, out, view) == ALIGN_GGML_OK ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
+}
+
 int64_t align_gpu_kv_state(void *owner, int32_t field) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL || state->kv_expected <= 0) {
@@ -2857,7 +2915,7 @@ static int align_gpu_count_model_node(struct align_gpu_device_state *state,
     int64_t ordinal = 0;
     if (tensor->op == GGML_OP_NONE || tensor->op == GGML_OP_VIEW || tensor->op == GGML_OP_RESHAPE
         || tensor->op == GGML_OP_PERMUTE || tensor->op == GGML_OP_CPY
-        || tensor->op == GGML_OP_SET_ROWS) { return 1; }
+        || tensor->op == GGML_OP_SET_ROWS || tensor->op == GGML_OP_SET) { return 1; }
     if (*operations == INT64_MAX) { return 0; }
     *operations += 1;
     if (tensor->op != GGML_OP_MUL_MAT && tensor->op != GGML_OP_MUL_MAT_ID) { return 1; }
@@ -2947,7 +3005,7 @@ int32_t align_gpu_graph_compute(
 
 int64_t align_gpu_observation_state(void *owner, int32_t field) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
-    if (field < 0 || field > 10 || !align_gpu_observe_payload(state)) { return -1; }
+    if (field < 0 || field > 11 || !align_gpu_observe_payload(state)) { return -1; }
     switch (field) {
     case 0: return state->observation_nodes;
     case 1: return state->observation_read_bytes;
@@ -2960,6 +3018,7 @@ int64_t align_gpu_observation_state(void *owner, int32_t field) {
     case 8: return state->observation_model_ops;
     case 9: return state->observation_layers;
     case 10: return state->observation_experts;
+    case 11: return align_gpu_input_at(state, 0) == NULL ? 0 : align_gpu_input_at(state, 0)->ne[0];
     default: return -1;
     }
 }

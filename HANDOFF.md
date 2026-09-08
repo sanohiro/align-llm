@@ -80,6 +80,19 @@ The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
+**Bounded-prefill checkpoint (unpublished, after `db90870`).** R5 implements capacity-selected
+128/64/32/16/8/4/2/1 prefill chunks, dependent resident K/V writes, absolute masks/positions,
+final-only vocabulary projection and exact pre-upload planning for all chunks/decode buckets.
+Diagnostic width is fixed at 128 and its CPU/GPU traversal is canonical chunk-major.
+`scripts/run-gpu-prefill-chunks-smoke` passes both models at 1/128/129/257/2048 tokens against
+an unchunked control, including exact layer/router streams, width-16 smaller-fit and pre-upload
+no-fit refusals. Device, provider trace and allocation-tracked host owners pass; real Metal
+short-case final logits match pinned llama.cpp bitwise (Qwen 1064448 and OLMoE 352128 scalars).
+This does not close real numerical qualification. Next: independent real layer/router diagnosis,
+R6 complete frozen acceptance corpus/admission, formal local qualification, final review,
+preflight and PR/merge. No additional user CUDA debugging. Use
+`python3 scripts/run-gpu-case-record-smoke` (the script is not executable); this owner passes.
+
 **Host-capacity checkpoint (unpublished, after `e8b7a3f`).** R1 now reserves the complete
 bounded application capacity separately from native allocation peaks, charges both simultaneous
 upload windows, and removes unused diagnostic bytes from native metadata. Pack index bounds are

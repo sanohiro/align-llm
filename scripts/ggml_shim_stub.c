@@ -1053,6 +1053,7 @@ int64_t align_ptr_offset(const void *a, const void *b) {
 #define ALIGN_STUB_OP_KV_RANGE   18
 #define ALIGN_STUB_OP_CPY        19
 #define ALIGN_STUB_OP_INDEXED_PREFIX 20
+#define ALIGN_STUB_OP_WRITE_PREFIX 21
 
 typedef struct align_stub_tensor {
     int metadata_only_external;
@@ -1546,6 +1547,26 @@ static void align_stub_run(align_stub_tensor *t) {
                             * (i1 + a->ne[1] * (i2 + a->ne[2] * i3));
                         d[target] = x[source];
                     }
+                }
+            }
+        }
+    } break;
+    case ALIGN_STUB_OP_WRITE_PREFIX: {
+        float *plane = (float *) b->data;
+        int64_t position = t->lp[1];
+        for (i2 = 0; i2 < a->ne[2]; ++i2) {
+            for (i1 = 0; i1 < a->ne[1]; ++i1) {
+                for (i0 = 0; i0 < a->ne[0]; ++i0) {
+                    int64_t target0 = i0 + (t->lp[0] == 1 ? position : 0);
+                    int64_t target1 = i1 + (t->lp[0] == 0 ? position : 0);
+                    plane[target0 + b->ne[0] * (target1 + b->ne[1] * i2)] = x[i0 + a->ne[0] * (i1 + a->ne[1] * i2)];
+                }
+            }
+        }
+        for (i2 = 0; i2 < t->ne[2]; ++i2) {
+            for (i1 = 0; i1 < t->ne[1]; ++i1) {
+                for (i0 = 0; i0 < t->ne[0]; ++i0) {
+                    d[i0 + t->ne[0] * (i1 + t->ne[1] * i2)] = plane[i0 + b->ne[0] * (i1 + b->ne[1] * i2)];
                 }
             }
         }
@@ -2194,6 +2215,26 @@ int32_t align_gpu_plan_finish(void *owner) {
     return ALIGN_GPU_OK;
 }
 
+int32_t align_gpu_plan_cancel(void *owner) {
+    struct align_gpu_device_state *state = owner;
+    struct align_gpu_device_state initial = {0};
+    if (state == NULL || !state->shape_planning || state->weights_uploaded != 0
+        || state->graph_execution_count[0] != 0 || state->graph_execution_count[1] != 0) {
+        return ALIGN_GPU_CONFIG;
+    }
+    initial.device = state->device;
+    initial.backend = state->backend;
+    memcpy(initial.bundle_id, state->bundle_id, sizeof(initial.bundle_id));
+    initial.host_budget_bytes = state->host_budget_bytes;
+    initial.application_host_reserved_bytes = state->application_host_reserved_bytes;
+    initial.device_budget_bytes = state->device_budget_bytes;
+    initial.staging_consumed = state->staging_consumed;
+    initial.staging_path_valid = state->staging_path_valid;
+    align_gpu_memory_release(state);
+    *state = initial;
+    return ALIGN_GPU_OK;
+}
+
 #ifndef ALIGN_GPU_FORCE_ALLOCATION_PREFIX
 #define ALIGN_GPU_FORCE_ALLOCATION_PREFIX 0
 #endif
@@ -2759,6 +2800,36 @@ int32_t align_gpu_kv_write_slot(
         == ALIGN_GGML_OK ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
 }
 
+int32_t align_gpu_kv_write_prefix(
+        void *owner, int64_t index, int32_t kind, int32_t layout, int64_t position,
+        int64_t width, void *slots, int64_t out, int64_t source) {
+    struct align_gpu_device_state *state = owner;
+    align_stub_tensor *plane = align_gpu_stub_kv_at(state, index);
+    align_stub_tensor *src = align_stub_slot(slots, source);
+    void *ctx = align_gpu_graph_context_at(state, kind);
+    align_stub_tensor *result;
+    int axis = layout == 0 ? 1 : 0;
+    if (state == NULL || plane == NULL || src == NULL || ctx == NULL
+        || kind != ALIGN_GPU_GRAPH_PREFILL || state->graph_prepared[kind]
+        || (layout != 0 && layout != 1) || position < 0 || width < 1
+        || width > plane->ne[axis] || position >= width || src->ne[axis] != width - position
+        || src->ne[1-axis] != plane->ne[1-axis] || src->ne[2] != plane->ne[2]
+        || src->ne[3] != 1 || plane->ne[3] != 1
+        || plane->type != ALIGN_STUB_TYPE_F32 || src->type != ALIGN_STUB_TYPE_F32
+        || plane->ne[0] > INT32_MAX / 4 || plane->ne[1] > INT32_MAX / (4 * plane->ne[0])
+        || plane->ne[2] > INT32_MAX / (4 * plane->ne[0] * plane->ne[1])
+        || position > ((1u << 30) - 1) / (layout == 0 ? 4 * plane->ne[0] : 4)) {
+        return ALIGN_GPU_CONFIG;
+    }
+    result = align_stub_new(ctx, ALIGN_STUB_TYPE_F32,
+        layout == 0 ? plane->ne[0] : width, layout == 0 ? width : plane->ne[1], plane->ne[2], 1);
+    if (result == NULL) { return ALIGN_GPU_ALLOCATION; }
+    result->lp[0] = layout;
+    result->lp[1] = position;
+    return align_stub_bind(slots, out, result, src, plane, ALIGN_STUB_OP_WRITE_PREFIX)
+        == ALIGN_GGML_OK ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
+}
+
 int64_t align_gpu_kv_state(void *owner, int32_t field) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL || state->kv_expected <= 0) {
@@ -3220,7 +3291,8 @@ static int align_gpu_count_model_node(struct align_gpu_device_state *state,
     if (tensor->op == ALIGN_STUB_OP_NONE || tensor->op == ALIGN_STUB_OP_VIEW
         || tensor->op == ALIGN_STUB_OP_RESHAPE || tensor->op == ALIGN_STUB_OP_PERMUTE
         || tensor->op == ALIGN_STUB_OP_PREFIX_VIEW || tensor->op == ALIGN_STUB_OP_KV_RANGE
-        || tensor->op == ALIGN_STUB_OP_CPY || tensor->op == ALIGN_STUB_OP_INDEXED_PREFIX) { return 1; }
+        || tensor->op == ALIGN_STUB_OP_CPY || tensor->op == ALIGN_STUB_OP_INDEXED_PREFIX
+        || tensor->op == ALIGN_STUB_OP_WRITE_PREFIX) { return 1; }
     if (*operations == INT64_MAX) { return 0; }
     *operations += 1;
     if (tensor->op != ALIGN_STUB_OP_MUL_MAT && tensor->op != ALIGN_STUB_OP_MUL_MAT_ID) { return 1; }
@@ -3308,7 +3380,7 @@ int32_t align_gpu_graph_compute(
 
 int64_t align_gpu_observation_state(void *owner, int32_t field) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
-    if (field < 0 || field > 10 || !align_gpu_observe_payload(state)) { return -1; }
+    if (field < 0 || field > 11 || !align_gpu_observe_payload(state)) { return -1; }
     switch (field) {
     case 0: return state->observation_nodes;
     case 1: return state->observation_read_bytes;
@@ -3321,6 +3393,7 @@ int64_t align_gpu_observation_state(void *owner, int32_t field) {
     case 8: return state->observation_model_ops;
     case 9: return state->observation_layers;
     case 10: return state->observation_experts;
+    case 11: return align_gpu_stub_input_at(state, 0) == NULL ? 0 : align_gpu_stub_input_at(state, 0)->ne[0];
     default: return -1;
     }
 }

@@ -85,6 +85,7 @@ fn bind_layer_weights(
 
 fn bind_prefill_inputs(
   borrow owner: ggml_ffi.GpuDevice,
+  ctx: raw,
   tokens: i64,
   width: i64,
   borrow slots: slice<u8>,
@@ -95,6 +96,10 @@ fn bind_prefill_inputs(
   ggml_ffi.gpu_input_slot(owner, INPUT_PREFILL_POSITIONS, slots, layer_olmoe.MM_SLOT_POS) else {
     return Err(Error.Invalid)
   }
+  ggml_ffi.op_view_2d(ctx, slots, layer_olmoe.MM_SLOT_TOKENS, layer_olmoe.MM_SLOT_TOKENS,
+    tokens, 1, 1, 0, 0, "prefill_token_prefix") else { return Err(Error.Invalid) }
+  ggml_ffi.op_view_2d(ctx, slots, layer_olmoe.MM_SLOT_POS, layer_olmoe.MM_SLOT_POS,
+    tokens, 1, 1, 0, 0, "prefill_position_prefix") else { return Err(Error.Invalid) }
   runtime_inputs.mask_prefix_slot(
     owner, INPUT_PREFILL_MASK, ggml_ffi.GPU_GRAPH_PREFILL, width, tokens,
     slots, layer_olmoe.MM_SLOT_MASK,
@@ -219,7 +224,22 @@ pub fn build_prefill_diagnostic(
   borrow slots: slice<u8>,
   borrow mut capture: runtime_diagnostic.Capture,
 ) -> Result<(), Error> {
+  return build_prefill_chunk(owner, g, 0, tokens, true, ctx, graph, slots, capture)
+}
+
+pub fn build_prefill_chunk(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: layer_olmoe.Geometry,
+  position: i64,
+  tokens: i64,
+  final_chunk: bool,
+  ctx: raw,
+  graph: raw,
+  borrow slots: slice<u8>,
+  borrow mut capture: runtime_diagnostic.Capture,
+) -> Result<(), Error> {
   runtime_diagnostic.reset(capture)?
+  if position < 0 || position > g.context_length - tokens { return Err(Error.Invalid) }
   if !valid_geometry(g) || tokens < 1 || tokens > layer_olmoe.MAX_PREFILL_TOKENS
     || tokens > g.context_length || ggml_ffi.handle_absent(ctx)
     || ggml_ffi.handle_absent(graph) {
@@ -228,8 +248,8 @@ pub fn build_prefill_diagnostic(
   ggml_ffi.slots_init(slots, slots.len(), "olmoe_prefill_slots") else {
     return Err(Error.Invalid)
   }
-  width := runtime_inputs.attention_width(tokens, g.context_length)?
-  bind_prefill_inputs(owner, tokens, width, slots)?
+  width := runtime_inputs.attention_width(position + tokens, g.context_length)?
+  bind_prefill_inputs(owner, ctx, tokens, width, slots)?
   bind_weight(owner, 0, slots, 0)?
   embed := layer_olmoe.mm_embed_node_table(g)
   olmoe_nodes.build(ctx, slots, embed, false, false, false) else {
@@ -243,19 +263,22 @@ pub fn build_prefill_diagnostic(
     if layer >= g.n_layer { break }
     bind_layer_weights(owner, layer, slots)?
     last := layer == g.n_layer - 1
-    olmoe_nodes.build(ctx, slots, a_nodes, last, width > tokens, false) else {
+    olmoe_nodes.build_range(ctx, slots, a_nodes, last, true, false, 0, 17) else {
       return Err(Error.Invalid)
     }
-    runtime_kv.write_slot(
-      owner, 2 * layer, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K,
-      0, slots, layer_olmoe.MM_SLOT_KPAST, PREFILL_K_SOURCE,
-    )?
-    runtime_kv.write_slot(
-      owner, 2 * layer + 1, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_V,
-      0, slots, layer_olmoe.MM_SLOT_VPAST, PREFILL_V_SOURCE,
-    )?
-    expand(graph, slots, layer_olmoe.MM_SLOT_KPAST, "olmoe_prefill_k")?
-    expand(graph, slots, layer_olmoe.MM_SLOT_VPAST, "olmoe_prefill_v")?
+    runtime_kv.prefill_chunk(owner, 2 * layer, ggml_ffi.GPU_KV_LAYOUT_K,
+      position, position + tokens, width, ctx, slots, 38, 37)?
+    olmoe_nodes.build_range(ctx, slots, a_nodes, last, true, false, 18, 22) else {
+      return Err(Error.Invalid)
+    }
+    runtime_kv.prefill_chunk(owner, 2 * layer + 1, ggml_ffi.GPU_KV_LAYOUT_V,
+      position, position + tokens, width, ctx, slots, 43, 42)?
+    expand(graph, slots, 38, "olmoe_prefill_k")?
+    expand(graph, slots, 43, "olmoe_prefill_v")?
+    if last && !final_chunk { return Ok(()) }
+    olmoe_nodes.build_range(ctx, slots, a_nodes, last, true, false, 23, a_nodes.count) else {
+      return Err(Error.Invalid)
+    }
     bridge_phase_b(ctx, slots, g, if last { 1 } else { tokens }, false)?
     t_out := if last { 1 } else { tokens }
     b_nodes := layer_olmoe.mm_b_node_table(g, t_out)

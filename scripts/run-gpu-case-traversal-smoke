@@ -117,6 +117,15 @@ def main():
             ("expected_token_ids", [], "expected tokens"), ("maximum_tokens", 129, "maximum tokens"),
         ):
             rejected(lambda: Traversal.derive(geometry(False), CASE | {key: value}), message)
+        # Canonical chunk order is independent of the native writer and math kernel.
+        g = geometry(False)
+        g["model"]["context_length"] = 2048
+        long_case = CASE | {"prompt_token_ids": [1] * 257}
+        plan = Traversal.derive(g, long_case)
+        assert plan.prefill_chunks == 3 and plan.layer_count == 12
+        prefill = [row for row in plan.instructions() if isinstance(row, Frame) and row.kind == 2 and row.step == 0]
+        assert [(row.layer, row.height) for row in prefill] == [(0, 128), (0, 128), (0, 1), (1, 1)] * 2
+        assert plan.columns == 2 * (257 + 1) + 4
         # One-layer prefill is reduced; multiple forced steps do not inherit production's stop.
         g = geometry(True)
         g["model"]["n_layer"] = 1

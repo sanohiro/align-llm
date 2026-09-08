@@ -1542,3 +1542,57 @@ refuses 512 KiB before upload, rejects an oversized pack index before its column
 32 MiB artifact staging at a 34 MiB cap. The probe covers Align buffers/builders/C-owned payload;
 native owner counters independently cover native metadata/staging. It is a focused owner, not an
 aggregate addition or a production runtime ABI dependency.
+
+### Bounded prefill repair (review R5; implementation contract)
+
+Production tries widths `128,64,32,16,8,4,2,1`, clipped to prompt length with duplicates skipped.
+Admission evaluates the same metadata-only graph for every chunk (including its final/tail shape)
+and every reachable decode bucket before model payload allocation/upload. It may retry a smaller
+width only for a capacity refusal; unsupported operations and malformed shapes remain terminal.
+A discarded planning attempt releases all metadata and clears only its internal capacity refusal;
+no upload or execution may have occurred. The first width that fits host and device capacities wins.
+No timing search or per-request backend autotuning is introduced. Width and chunk count are native
+observations, distinct from generated positions. The production host mask reservation uses that
+physical width. The previous exact request KV capacity and decode bucket policy are unchanged.
+
+`runtime_qwen` and `runtime_olmoe` construct a chunk from absolute prompt offset, positive token
+count, valid KV prefix and final-chunk flag. Their existing prefill row tables produce contiguous
+K/V; a native `align_gpu_kv_write_prefix` uses pinned `ggml_set_inplace` to write resident K/V and
+returns a dependent prefix view. It validates F32 contiguous inputs, both layout axes, capacity,
+strides and the pinned SET offset limit before calling ggml. Explicit padding reaches the fixed
+attention reduction bucket; masks and RoPE positions use absolute prompt positions. Tokens and
+position inputs use bounded views for the final tail. Non-final chunks expand through the highest
+layer's K/V writes only: no highest-layer attention/FFN or vocabulary projection is needed for
+future tokens. The final chunk selects its last output row and computes one logits vector.
+The selected plugin's exact SET operation is included in pre-upload capability admission.
+
+Diagnostic qualification fixes the nominal width `min(128,prompt)`; insufficient capacity refuses
+before upload instead of silently changing its canonical traversal. Ordinary production retains
+smaller-fit support. Prefill diagnostic frames become chunk-major, then layer-major, using step 0;
+non-final chunks contain lower layers only, and the final chunk includes the single highest-layer
+output. Routers stay token-major within each layer. The CPU diagnostic emitter slices its complete
+prefill observations into that same canonical order without changing CPU arithmetic. Production
+logits and all decode frames retain their existing order. This repairs unreleased stream schema 1;
+historical failed evidence remains owned by its captured validator and is not rewritten.
+
+| Owner | Success construction | Refusal / early exit / cleanup | Named evidence |
+| --- | --- | --- | --- |
+| Native KV prefix and input view, real/stub shim and FFI | dependent resident writes, exact valid prefix, contiguous F32 source and clipped input views | wrong layout/shape/stride/capacity/SET offset refuses before native assertion or compute | real Metal workspace owner; device owner; `gpu-prefill-chunks` |
+| Both model builders / generation | absolute masks/positions, bounded full/tail chunks, final-only head, shared shape planning | only capacity retries; cancellation releases graph metadata, preserves the original device; failed execution publishes no partial output | `gpu-prefill-chunks`: one/exact/tail/multiple chunks, causal prefix, context end, smaller-fit and no-fit |
+| Diagnostic emitter / traversal / work projection | canonical chunk/layer/token ordering, independent CPU slicing; exact production chunk work | wrong width/order/count/refusal fails qualification; diagnostic nominal-width capacity failure is explicit | provider trace, numeric traversal/compare/replay, both real model corpus owners |
+| Host reservation / observation | selected physical query width; actual prefill execution count and chosen width | native peak plus separate application capacity remains within cap for every candidate and final execution | tracked host owner, provider trace |
+
+The capacity decision, final graph diff and numeric reference evidence must be mapped back here
+before R5 is marked repaired. No speed claim is made by merely splitting a prompt.
+
+R5 local implementation evidence: `scripts/run-gpu-prefill-chunks-smoke` passes both models at
+1/128/129/257/2048 prompt tokens against a deliberately unchunked private test build. Final logits
+are byte-identical; diagnostic layer/router streams at 129/257/2048 are byte-identical to the
+full capture sliced by the CPU writer. A 262144-byte device cap chooses width 16 in production
+and refuses the fixed-width diagnostic before uploads; 1024 bytes refuses production before
+uploads. Native work counts are independently projected, and production snapshots admit multiple
+prefill executions. The real Metal native owner, device owner, provider trace, tracked host
+capacity, traversal, numeric-pair and case-record owners pass. Existing short real Qwen and OLMoE
+final-logit comparisons remain bitwise identical to pinned same-device llama.cpp (7 rows each);
+this is supplementary evidence, not full real corpus or cross-backend qualification. R6 and the
+original numerical acceptance failure remain open.

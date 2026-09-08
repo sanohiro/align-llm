@@ -39,6 +39,78 @@ static void attention_precision(void) {
     ggml_free(ctx);
 }
 
+static void chunk_writes(ggml_backend_dev_t device) {
+    struct align_gpu_device_state state = {0};
+    _Alignas(8) unsigned char slots[1040];
+    float weight[16] = {0};
+    float first_k[] = {1, 2, 3, 4};
+    float first_v[] = {11, 12, 21, 22};
+    float tail_k[] = {5, 6, 7, 8, 9, 10};
+    float tail_v[] = {13, 14, 15, 23, 24, 25};
+    float expected_v[] = {11, 12, 13, 14, 15, 21, 22, 23, 24, 25};
+    float observed[10];
+    char key[64];
+    int chunk;
+    state.device = device;
+    state.backend = ggml_backend_dev_init(device, NULL);
+    state.host_budget_bytes = 1048576;
+    state.device_budget_bytes = 1048576;
+    assert(state.backend != NULL);
+    assert(align_gpu_host_reserve(&state, 4096) == 0);
+    assert(align_gpu_plan_begin(&state) == 0);
+    assert(align_gpu_plan_cancel(&state) == 0);
+    assert(align_gpu_host_reserved(&state) == 4096 && state.backend != NULL);
+    assert(align_gpu_plan_cancel(&state) == ALIGN_GPU_CONFIG);
+    assert(align_gpu_memory_admit(&state, 256, 128, 65536, 262144, 64, 0) == 0);
+    assert(align_gpu_memory_allocate(&state) == 0);
+    assert(align_gpu_weights_begin(&state, 1) == 0);
+    assert(align_gpu_weight_add(&state, GGML_TYPE_F32, 1, 64, 1, 1, 1) == 0);
+    for (chunk = 0; chunk < 4; ++chunk) { assert(align_gpu_weight_upload(&state, 0, chunk * 64, weight, 64) == 0); }
+    assert(align_gpu_weights_finish(&state) == 0);
+    assert(align_gpu_kv_begin(&state, 2) == 0);
+    assert(align_gpu_kv_add(&state, GGML_TYPE_F32, 3, 2, 5, 1, 1) == 0);
+    assert(align_gpu_kv_add(&state, GGML_TYPE_F32, 3, 5, 2, 1, 1) == 1);
+    assert(align_gpu_kv_finish(&state) == 0);
+    assert(align_gpu_inputs_begin(&state, 4) == 0);
+    assert(align_gpu_input_add(&state, GGML_TYPE_F32, 2, 2, 2, 1, 1) == 0);
+    assert(align_gpu_input_add(&state, GGML_TYPE_F32, 2, 2, 2, 1, 1) == 1);
+    assert(align_gpu_input_add(&state, GGML_TYPE_F32, 2, 2, 3, 1, 1) == 2);
+    assert(align_gpu_input_add(&state, GGML_TYPE_F32, 2, 3, 2, 1, 1) == 3);
+    assert(align_gpu_inputs_finish(&state) == 0);
+    assert(align_gpu_graph_context_open(&state, 0, 131072) != NULL);
+    for (chunk = 0; chunk < 2; ++chunk) {
+        struct ggml_context *ctx;
+        struct ggml_cgraph *graph;
+        int position = chunk == 0 ? 0 : 2;
+        int width = chunk == 0 ? 2 : 5;
+        if (chunk) { assert(align_gpu_graph_invalidate(&state, 0) == 0); }
+        ctx = state.graph_contexts[0];
+        assert(align_ggml_slots_init(slots, sizeof(slots)) == 0);
+        assert(align_gpu_input_slot(&state, chunk * 2, slots, 0) == 0);
+        assert(align_gpu_input_slot(&state, chunk * 2 + 1, slots, 1) == 0);
+        assert(align_gpu_kv_write_prefix(&state, 0, 0, 0, position, width + 1, slots, 2, 0) == ALIGN_GPU_CONFIG);
+        assert(align_gpu_kv_write_prefix(&state, 0, 0, 2, position, width, slots, 2, 0) == ALIGN_GPU_CONFIG);
+        assert(align_gpu_kv_write_prefix(&state, 0, 0, 0, -1, width, slots, 2, 0) == ALIGN_GPU_CONFIG);
+        assert(align_gpu_kv_write_prefix(&state, 0, 0, 0, position, width, slots, 2, 0) == 0);
+        assert(align_gpu_kv_write_prefix(&state, 1, 0, 1, position, width, slots, 3, 1) == 0);
+        graph = ggml_new_graph(ctx);
+        ggml_build_forward_expand(graph, align_ggml_slot_tensor(slots, 2));
+        ggml_build_forward_expand(graph, align_ggml_slot_tensor(slots, 3));
+        memset(key, chunk == 0 ? 'a' : 'b', sizeof(key));
+        assert(align_gpu_graph_prepare(&state, 0, key, sizeof(key), graph) == 0);
+        assert(align_gpu_input_update(&state, chunk * 2, 0, chunk == 0 ? first_k : tail_k, chunk == 0 ? 16 : 24) == 0);
+        assert(align_gpu_input_update(&state, chunk * 2 + 1, 0, chunk == 0 ? first_v : tail_v, chunk == 0 ? 16 : 24) == 0);
+        assert(align_gpu_graph_compute(&state, 0, key, sizeof(key), graph) == 0);
+    }
+    ggml_backend_tensor_get(align_gpu_kv_at(&state, 0), observed, 0, sizeof(observed));
+    for (chunk = 0; chunk < 10; ++chunk) { assert(observed[chunk] == chunk + 1); }
+    ggml_backend_tensor_get(align_gpu_kv_at(&state, 1), observed, 0, sizeof(observed));
+    assert(memcmp(observed, expected_v, sizeof(observed)) == 0);
+    align_gpu_memory_release(&state);
+    ggml_backend_free(state.backend);
+    puts("real GPU prefill chunk writes: PASS (causal prefix, both layouts, exact tail, cancellation)");
+}
+
 static void indexed_writes(ggml_backend_dev_t device) {
     struct align_gpu_device_state state = {0};
     struct ggml_context *ctx;
@@ -209,6 +281,7 @@ int main(int argc, char **argv) {
     assert(device != NULL && ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_GPU);
     shape_admission(device);
     if (ALIGN_GPU_FORCE_UNSUPPORTED_OP) { return 0; }
+    chunk_writes(device);
     indexed_writes(device);
     for (pass = 0; pass < 2; ++pass) {
         struct align_gpu_device_state state = {0};

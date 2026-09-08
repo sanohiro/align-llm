@@ -92,3 +92,23 @@ pub fn finish(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {
 
 pub fn state(borrow owner: ggml_ffi.GpuDevice, field: i64) -> i64 =
 ggml_ffi.gpu_kv_state(owner, field)
+
+pub fn write_prefix(borrow owner: ggml_ffi.GpuDevice, index: i64, kind: i64,
+  layout: i64, position: i64, width: i64, borrow slots: slice<u8>, out: i64, source: i64) -> Result<(), Error> {
+  ggml_ffi.gpu_kv_write_prefix(owner, index, kind, layout, position, width, slots, out, source) else { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn prefill_chunk(borrow owner: ggml_ffi.GpuDevice, index: i64, layout: i64,
+  position: i64, valid: i64, width: i64, ctx: raw, borrow slots: slice<u8>,
+  out: i64, source: i64) -> Result<(), Error> {
+  if width < valid { return Err(Error.Invalid) }
+  write_prefix(owner, index, ggml_ffi.GPU_GRAPH_PREFILL, layout, position, valid, slots, out, source)?
+  if width > valid {
+    ggml_ffi.op_pad(ctx, slots, out, out,
+      if layout == ggml_ffi.GPU_KV_LAYOUT_V { width - valid } else { 0 },
+      if layout == ggml_ffi.GPU_KV_LAYOUT_K { width - valid } else { 0 },
+      0, 0, "prefill_kv_padding") else { return Err(Error.Invalid) }
+  }
+  return Ok(())
+}

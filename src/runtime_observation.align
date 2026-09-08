@@ -13,6 +13,7 @@ pub Snapshot {
   kv_upload_bytes: i64,
   input_upload_bytes: i64,
   prefill_executions: i64,
+  prefill_microbatch_width: i64,
   decode_executions: i64,
   allocated_host_bytes: i64,
   allocated_device_bytes: i64,
@@ -37,7 +38,7 @@ pub Snapshot {
 pub fn unavailable() -> Snapshot = Snapshot {
   available: false, graph_nodes: 0, read_bytes: 0, read_calls: 0, sync_calls: 0,
   weight_upload_count: 0, weight_upload_bytes: 0, kv_upload_bytes: 0, input_upload_bytes: 0,
-  prefill_executions: 0, decode_executions: 0, allocated_host_bytes: 0, allocated_device_bytes: 0,
+  prefill_executions: 0, prefill_microbatch_width: 0, decode_executions: 0, allocated_host_bytes: 0, allocated_device_bytes: 0,
   weights_buffer_bytes: 0, kv_buffer_bytes: 0, managed_host_peak_bytes: 0, application_host_reserved_bytes: 0, managed_device_peak_bytes: 0,
   resident_weight_payload_bytes: 0, resident_kv_payload_bytes: 0,
   model_operations: 0, model_layers: 0, model_experts: 0,
@@ -57,6 +58,7 @@ pub fn capture(borrow owner: ggml_ffi.GpuDevice) -> Result<Snapshot, Error> {
     weight_upload_bytes: ggml_ffi.gpu_weight_state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED_BYTES),
     kv_upload_bytes: ggml_ffi.gpu_kv_state(owner, ggml_ffi.GPU_KV_UPDATED_BYTES),
     input_upload_bytes: ggml_ffi.gpu_input_state(owner, ggml_ffi.GPU_INPUT_UPDATED_BYTES),
+    prefill_microbatch_width: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_PREFILL_WIDTH),
     prefill_executions: ggml_ffi.gpu_graph_state(owner, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_GRAPH_EXECUTIONS),
     decode_executions: ggml_ffi.gpu_graph_state(owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS),
     allocated_host_bytes: ggml_ffi.gpu_memory_allocated_bytes(owner, ggml_ffi.GPU_MEMORY_HOST_TOTAL),
@@ -81,7 +83,7 @@ pub fn capture(borrow owner: ggml_ffi.GpuDevice) -> Result<Snapshot, Error> {
   if result.graph_nodes < 1 || result.read_bytes < 1 || result.read_calls < 1 || result.sync_calls < 0
     || result.weight_upload_count < 1 || result.weight_upload_bytes < 0
     || result.kv_upload_bytes < 0 || result.input_upload_bytes < 1
-    || result.prefill_executions != 1 || result.decode_executions < 0
+    || result.prefill_executions < 1 || result.prefill_microbatch_width < 1 || result.prefill_microbatch_width > 128 || result.decode_executions < 0
     || result.allocated_host_bytes < 1 || result.allocated_device_bytes < 1
     || result.weights_buffer_bytes < 1 || result.kv_buffer_bytes < 1
     || result.managed_host_peak_bytes < result.allocated_host_bytes

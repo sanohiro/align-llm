@@ -18,7 +18,7 @@ from gpu_qualification_traversal import Traversal
 MAX_RECORD_BYTES = 4 * 1024 * 1024
 OBSERVATION_INTS = (
     "graph_nodes", "read_bytes", "read_calls", "sync_calls", "weight_upload_count",
-    "weight_upload_bytes", "kv_upload_bytes", "input_upload_bytes", "prefill_executions",
+    "weight_upload_bytes", "kv_upload_bytes", "input_upload_bytes", "prefill_executions", "prefill_microbatch_width",
     "decode_executions", "allocated_host_bytes", "allocated_device_bytes",
     "weights_buffer_bytes", "kv_buffer_bytes", "managed_host_peak_bytes", "application_host_reserved_bytes", "managed_device_peak_bytes",
     "resident_weight_payload_bytes", "resident_kv_payload_bytes",
@@ -72,12 +72,20 @@ class ModelWork:
     def derive(cls, traversal: Traversal, context: int) -> ModelWork:
         routed = traversal.model == 2
         bounded_i64(context, traversal.prompt, (1 << 63) - 1, "native attention context")
-        width = min(context, ((traversal.prompt + 255) // 256) * 256)
-        padding = 3 if width > traversal.prompt else 0
-        prefill = ((29 + traversal.selected if routed else 24) + padding) * traversal.layers + 6
+        prefill = 0
+        for offset in range(0, traversal.prompt, 128):
+            valid = min(traversal.prompt, offset + 128)
+            width = min(context, ((valid + 255) // 256) * 256)
+            pads = 2 if width > valid else 0
+            # Contiguous K is required by SET on every chunk. Non-final chunks end
+            # at the highest layer's K/V writes (nine materializing operations),
+            # without that layer's attention/FFN, output narrowing or vocabulary head.
+            full_layer = (30 + traversal.selected if routed else 25) + pads
+            prefill += (full_layer * traversal.layers + 6 if valid == traversal.prompt
+                        else full_layer * (traversal.layers - 1) + 9 + pads + 1)
         decode = (32 + traversal.selected if routed else 27) * traversal.layers + 6
         operations = prefill + (traversal.positions - 1) * decode
-        layers = traversal.layers * traversal.positions
+        layers = traversal.layers * traversal.positions + (traversal.layers - 1) * (traversal.prefill_chunks - 1)
         experts = (traversal.selected * ((traversal.layers - 1) * traversal.prompt + 1
                     + traversal.layers * (traversal.positions - 1))) if routed else 0
         for value in (operations, layers, experts):
@@ -228,7 +236,9 @@ def _observation(raw: object, case: NativeCase, expected_bundle_id: str | None,
         expected = (case.model_work.operations, case.model_work.layers, case.model_work.experts)
         raise RecipeError(f"native model work differs from independent geometry: {actual} != {expected}")
     if observation["read_calls"] != positions or observation["read_bytes"] != positions * case.traversal.vocabulary * 4 \
-            or observation["prefill_executions"] != 1 or observation["decode_executions"] != positions - 1:
+            or observation["prefill_executions"] != case.traversal.prefill_chunks \
+            or observation["prefill_microbatch_width"] != min(128, case.traversal.prompt) \
+            or observation["decode_executions"] != positions - 1:
         raise RecipeError("native production observations differ from generated positions")
     for key in ("graph_nodes", "weight_upload_count", "input_upload_bytes", "allocated_host_bytes",
                 "allocated_device_bytes", "weights_buffer_bytes", "kv_buffer_bytes"):

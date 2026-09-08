@@ -52,3 +52,8 @@ pub fn allocate(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {
 
 pub fn allocated_bytes(borrow owner: ggml_ffi.GpuDevice, field: i64) -> i64 =
 ggml_ffi.gpu_memory_allocated_bytes(owner, field)
+
+pub fn plan_cancel(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {
+  ggml_ffi.gpu_plan_cancel(owner) else { return Err(Error.Invalid) }
+  return Ok(())
+}

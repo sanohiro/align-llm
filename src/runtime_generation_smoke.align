@@ -197,10 +197,12 @@ fn observed(pack_path: str, geometry_text: str, root: str, model: i64, enabled: 
   if !valid_ids(generated) || (enabled && stream.records != 3) { return Err(Error.Invalid) }
   runtime_numeric_stream.finish(stream)?
   if enabled && stream.written_bytes != 568 { return Err(Error.Invalid) }
-  // Fixed simultaneous storage before the two transfer windows and their shell.
+  // Minimum-width simultaneous storage before the two transfer windows and their shell.
+  // This fixture has two prompt tokens and a 256-position attention bucket.
   return Ok(ggml_ffi.gpu_memory_bytes(owner, ggml_ffi.GPU_MEMORY_METADATA)
       + ggml_ffi.gpu_host_reserved(owner)
-      - ggml_ffi.gpu_memory_bytes(owner, ggml_ffi.GPU_MEMORY_STAGING) - 64)
+      - ggml_ffi.gpu_memory_bytes(owner, ggml_ffi.GPU_MEMORY_STAGING) - 64
+      - (prompt_ids.len() - 1) * (8 + 4 * 256))
 }
 
 fn observed_refusal(pack_path: str, geometry_text: str, root: str, model: i64,

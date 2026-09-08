@@ -104,10 +104,16 @@ fn emit(borrow slots: slice<u8>, slot: i64, borrow scratch: slice<u8>, offset: i
 
 pub fn write_layer(borrow owner: Capture, index: i64, layer: i64, step: i64, tokens: i64,
   borrow mut stream: runtime_numeric_stream.Stream) -> Result<(), Error> {
+  return write_layer_slice(owner, index, layer, step, tokens, 0, tokens, stream)
+}
+
+pub fn write_layer_slice(borrow owner: Capture, index: i64, layer: i64, step: i64, tokens: i64, offset: i64, count: i64,
+  borrow mut stream: runtime_numeric_stream.Stream) -> Result<(), Error> {
   if !owner.active || step < 0 || step > 4096 || index < 0 || index >= owner.layers
     || layer < 0 || layer >= 4294967295 || tokens < 1 || tokens > owner.prompt {
     return Err(Error.Invalid)
   }
+  if offset < 0 || count < 1 || offset > tokens || count > tokens - offset { return Err(Error.Invalid) }
   slots := owner.slots.bytes()
   scratch := owner.scratch.bytes()
   base := index * 4
@@ -116,9 +122,9 @@ pub fn write_layer(borrow owner: Capture, index: i64, layer: i64, step: i64, tok
     if !shape(slots, base + 1, owner.experts, tokens, false)
       || !shape(slots, base + 2, owner.experts, tokens, false)
       || !shape(slots, base + 3, owner.selected, tokens, true) { return Err(Error.Invalid) }
-    mut token := 0
+    mut token := offset
     loop {
-      if token >= tokens { break }
+      if token >= offset + count { break }
       emit(slots, base + 1, scratch, token * owner.experts * 4,
         runtime_numeric_stream.Frame {
           kind: 3, layer: layer, step: step, width: owner.experts, height: 1,
@@ -134,8 +140,8 @@ pub fn write_layer(borrow owner: Capture, index: i64, layer: i64, step: i64, tok
       token = token + 1
     }
   }
-  emit(slots, base, scratch, 0, runtime_numeric_stream.Frame {
-      kind: 2, layer: layer, step: step, width: owner.embedding, height: tokens,
+  emit(slots, base, scratch, offset * owner.embedding * 4, runtime_numeric_stream.Frame {
+      kind: 2, layer: layer, step: step, width: owner.embedding, height: count,
     }, stream)?
   return Ok(())
 }
@@ -143,11 +149,47 @@ pub fn write_layer(borrow owner: Capture, index: i64, layer: i64, step: i64, tok
 pub fn write(borrow owner: Capture, step: i64,
   borrow mut stream: runtime_numeric_stream.Stream) -> Result<(), Error> {
   if !owner.active || step < 0 || step > 4096 { return Err(Error.Invalid) }
+  if step == 0 {
+    mut offset := 0
+    loop {
+      if offset >= owner.prompt { break }
+      count := if owner.prompt - offset < 128 { owner.prompt - offset } else { 128 }
+      final_chunk := offset + count == owner.prompt
+      mut layer := 0
+      loop {
+        if layer >= owner.layers { break }
+        if layer == owner.layers - 1 {
+          if final_chunk { write_layer(owner, layer, layer, 0, 1, stream)? }
+        } else {
+          write_layer_slice(owner, layer, layer, 0, owner.prompt, offset, count, stream)?
+        }
+        layer = layer + 1
+      }
+      offset = offset + count
+    }
+    return Ok(())
+  }
   mut layer := 0
   loop {
     if layer >= owner.layers { break }
     tokens := if step == 0 && layer != owner.layers - 1 { owner.prompt } else { 1 }
     write_layer(owner, layer, layer, step, tokens, stream)?
+    layer = layer + 1
+  }
+  return Ok(())
+}
+
+pub fn write_chunk(borrow owner: Capture, tokens: i64, final_chunk: bool,
+  borrow mut stream: runtime_numeric_stream.Stream) -> Result<(), Error> {
+  if !owner.active || tokens < 1 || tokens > 128 { return Err(Error.Invalid) }
+  mut layer := 0
+  loop {
+    if layer >= owner.layers { break }
+    if layer == owner.layers - 1 {
+      if final_chunk { write_layer(owner, layer, layer, 0, 1, stream)? }
+    } else {
+      write_layer(owner, layer, layer, 0, tokens, stream)?
+    }
     layer = layer + 1
   }
   return Ok(())

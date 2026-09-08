@@ -73,6 +73,7 @@ fn bind_layer_weights(
 
 fn bind_prefill_inputs(
   borrow owner: ggml_ffi.GpuDevice,
+  ctx: raw,
   tokens: i64,
   width: i64,
   borrow slots: slice<u8>,
@@ -83,6 +84,10 @@ fn bind_prefill_inputs(
   ggml_ffi.gpu_input_slot(owner, INPUT_PREFILL_POSITIONS, slots, layer_qwen2.MF_SLOT_POS) else {
     return Err(Error.Invalid)
   }
+  ggml_ffi.op_view_2d(ctx, slots, layer_qwen2.MF_SLOT_TOKENS, layer_qwen2.MF_SLOT_TOKENS,
+    tokens, 1, 1, 0, 0, "prefill_token_prefix") else { return Err(Error.Invalid) }
+  ggml_ffi.op_view_2d(ctx, slots, layer_qwen2.MF_SLOT_POS, layer_qwen2.MF_SLOT_POS,
+    tokens, 1, 1, 0, 0, "prefill_position_prefix") else { return Err(Error.Invalid) }
   runtime_inputs.mask_prefix_slot(
     owner, INPUT_PREFILL_MASK, ggml_ffi.GPU_GRAPH_PREFILL, width, tokens,
     slots, layer_qwen2.MF_SLOT_MASK,
@@ -178,7 +183,22 @@ pub fn build_prefill_diagnostic(
   borrow slots: slice<u8>,
   borrow mut capture: runtime_diagnostic.Capture,
 ) -> Result<(), Error> {
+  return build_prefill_chunk(owner, g, 0, tokens, true, ctx, graph, slots, capture)
+}
+
+pub fn build_prefill_chunk(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: layer_qwen2.Geometry,
+  position: i64,
+  tokens: i64,
+  final_chunk: bool,
+  ctx: raw,
+  graph: raw,
+  borrow slots: slice<u8>,
+  borrow mut capture: runtime_diagnostic.Capture,
+) -> Result<(), Error> {
   runtime_diagnostic.reset(capture)?
+  if position < 0 || position > g.context_length - tokens { return Err(Error.Invalid) }
   if !valid_geometry(g) {
     return Err(Error.Invalid)
   }
@@ -191,8 +211,8 @@ pub fn build_prefill_diagnostic(
   ggml_ffi.slots_init(slots, slots.len(), "qwen_prefill_slots") else {
     return Err(Error.Invalid)
   }
-  width := runtime_inputs.attention_width(tokens, g.context_length)?
-  bind_prefill_inputs(owner, tokens, width, slots)?
+  width := runtime_inputs.attention_width(position + tokens, g.context_length)?
+  bind_prefill_inputs(owner, ctx, tokens, width, slots)?
   bind_weight(owner, 0, slots, 0)?
   embed := layer_qwen2.mf_embed_node_table()
   qwen_nodes.build(ctx, slots, embed, false, false, false) else {
@@ -206,19 +226,22 @@ pub fn build_prefill_diagnostic(
     if layer >= g.n_layer { break }
     bind_layer_weights(owner, layer, slots)?
     last := layer == g.n_layer - 1
-    qwen_nodes.build(ctx, slots, nodes, last, width > tokens, false) else {
+    qwen_nodes.build_range(ctx, slots, nodes, last, true, false, 0, 16) else {
       return Err(Error.Invalid)
     }
-    runtime_kv.write_slot(
-      owner, 2 * layer, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_K,
-      0, slots, layer_qwen2.MF_SLOT_KPAST, PREFILL_K_SOURCE,
-    )?
-    runtime_kv.write_slot(
-      owner, 2 * layer + 1, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_KV_LAYOUT_V,
-      0, slots, layer_qwen2.MF_SLOT_VPAST, PREFILL_V_SOURCE,
-    )?
-    expand(graph, slots, layer_qwen2.MF_SLOT_KPAST, "qwen_prefill_k")?
-    expand(graph, slots, layer_qwen2.MF_SLOT_VPAST, "qwen_prefill_v")?
+    runtime_kv.prefill_chunk(owner, 2 * layer, ggml_ffi.GPU_KV_LAYOUT_K,
+      position, position + tokens, width, ctx, slots, 32, 31)?
+    qwen_nodes.build_range(ctx, slots, nodes, last, true, false, 17, 21) else {
+      return Err(Error.Invalid)
+    }
+    runtime_kv.prefill_chunk(owner, 2 * layer + 1, ggml_ffi.GPU_KV_LAYOUT_V,
+      position, position + tokens, width, ctx, slots, 37, 36)?
+    expand(graph, slots, 32, "qwen_prefill_k")?
+    expand(graph, slots, 37, "qwen_prefill_v")?
+    if last && !final_chunk { return Ok(()) }
+    qwen_nodes.build_range(ctx, slots, nodes, last, true, false, 22, nodes.count) else {
+      return Err(Error.Invalid)
+    }
     runtime_diagnostic.retain(capture, slots, layer, 0, layer_qwen2.mf_layer_output_slot())?
     carry(slots, layer_qwen2.mf_layer_output_slot())?
     layer = layer + 1

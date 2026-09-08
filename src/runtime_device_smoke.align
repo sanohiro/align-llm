@@ -760,7 +760,7 @@ fn exercise_live_owner(
     || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_CALLS) != 0
     || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_SYNC_CALLS) < 1
     || ggml_ffi.gpu_observation_state(owner, -1) != -1
-    || ggml_ffi.gpu_observation_state(owner, 11) != -1 { return Err(Error.Invalid) }
+    || ggml_ffi.gpu_observation_state(owner, 12) != -1 { return Err(Error.Invalid) }
   mut output_data := buffer(262144)
   mut output_at := 0
   loop {

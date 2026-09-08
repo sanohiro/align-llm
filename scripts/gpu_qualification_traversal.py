@@ -75,8 +75,12 @@ class Traversal:
         return 2 * ((self.layers - 1) * self.prompt + 1) + (self.positions - 1 + self.forced) * self.layers
 
     @property
+    def prefill_chunks(self) -> int:
+        return (self.prompt + 127) // 128
+
+    @property
     def layer_count(self) -> int:
-        return self.layers * (self.positions + self.forced + 1)
+        return 2 * ((self.layers - 1) * self.prefill_chunks + 1) + self.layers * (self.positions - 1 + self.forced)
 
     @property
     def router_count(self) -> int:
@@ -105,14 +109,20 @@ class Traversal:
             ordinal += 1
         for positions in (self.positions, self.forced + 1):
             for step in range(positions):
-                for layer in range(self.layers):
-                    width = self.prompt if step == 0 and layer != self.layers - 1 else 1
-                    if self.model == 2:
-                        for _ in range(width):
-                            yield Router(layer, step, self.experts, self.selected, ordinal)
-                            ordinal += 3
-                    yield Frame(2, layer, step, self.embedding, width, self.embedding * width * 4, ordinal)
-                    ordinal += 1
+                chunks = range(0, self.prompt, 128) if step == 0 else (0,)
+                for offset in chunks:
+                    count = min(128, self.prompt - offset) if step == 0 else 1
+                    final = step != 0 or offset + count == self.prompt
+                    for layer in range(self.layers):
+                        if step == 0 and layer == self.layers - 1 and not final:
+                            continue
+                        width = count if step == 0 and layer != self.layers - 1 else 1
+                        if self.model == 2:
+                            for _ in range(width):
+                                yield Router(layer, step, self.experts, self.selected, ordinal)
+                                ordinal += 3
+                        yield Frame(2, layer, step, self.embedding, width, self.embedding * width * 4, ordinal)
+                        ordinal += 1
                 yield Frame(6, 0xffffffff, step, self.vocabulary, 1, self.vocabulary * 4, ordinal)
                 ordinal += 1
 
