@@ -263,6 +263,13 @@ calibration outputs successfully. Complete actual expectation capture and final 
 are next. OLMoE calibration uses an explicit 256 MiB expert-cache budget rather than the fixture's
 1 MiB; final profile must retain that same budget.
 
+**Frozen real Metal inputs.** Both real models now have completed CPU calibration and holdout
+expectations in `eval/gpu/metal/`. Qwen emits `Yes.` / `Here is`; OLMoE emits `Do you` / `def add`.
+Their canonical records validate and bind actual prompt/sample IDs, output bytes, model/pack/
+geometry hashes and the Metal bundle. Tolerances were fixed before GPU execution. Calibration
+capture uses the pinned static CPU recipe and exact `src/` bytes matching `1e6a1bb`. Next: capture
+clean application source into a complete input kit and run the public Metal qualifier.
+
 **Next actions, in order.**
 
 1. Prepare real profiles/calibrations and run the final `scripts/gpu-runtime-qualify` on Metal.
