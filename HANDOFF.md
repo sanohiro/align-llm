@@ -4,8 +4,9 @@ Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and 
 this file records durable execution state.
 
 **Current execution constraint:** finish GPU repair, local Metal verification, review and PR/merge.
-Any further user-run CUDA work is performance comparison only after local readiness. The imported
-Pengwin checkpoint below is historical evidence, not authorization to request more CUDA debugging.
+The user will also run CUDA verification, together with performance measurement, after all Metal
+implementation and verification is complete. Do not request earlier CUDA debugging runs. The
+imported Pengwin checkpoint below is historical evidence.
 
 ## Pengwin CUDA qualification checkpoint (2026-09-08)
 
@@ -80,38 +81,43 @@ The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
-**Active G1 final-validation checkpoint (after `f46310d`, unpublished).** Exact-device probing now
-selects Flash Attention for both models, with F32 persistent KV and explicit bounded F16 views
-matching pinned upstream. Native output/corpus schema 2 binds the policy. Every required real
-Metal case now has two bitwise-matching native executions: the whole-run attempt completed 34,
-then independent tail diagnostics completed the four interrupted/unstarted executions, including
-both 2048-input/128-output OLMoE runs and both immediate-EOG runs. These fragments do not turn the
-original whole-run FAIL into PASS. Frozen Flash corpus ID:
+**G1 verification and final-review repair checkpoint (unpublished, based on `5ae5351`).**
+The complete independent Metal acceptance now PASSes: 19 cases, two fresh candidate executions
+per case, every layer/router/logit comparison bitwise equal, and owned cleanup complete in
+2,113,350,082,000 ns (35 minutes 13 seconds) under the fixed schema-2 2400-second ceiling.
+The complete retained directory was moved out of temporary storage and independently replayed
+with `scripts/run-gpu-independent-acceptance --replay`: PASS for all 19 cases. The qualified source
+is `5ae5351424840b2d7783883b0b94fb4d1510f77a`; result SHA-256 is
+`30c587d73530c74a32bb8f5a900db4f4ca9ad15809f52a5c6218fcdd047b4b8b`.
+Frozen corpus `eval/gpu/metal/independent-attention-acceptance.json` retains ID
 `29bfe85d85aca082e9a841eb394300dc0a4b02750db8fd816eb6908fdc962b73`.
+Historical CPU/GPU numeric FAILs, interrupted whole-run FAILs and tolerances remain unchanged.
 
-The 1800-second whole-run cost estimate was wrong: child executions alone require over 2054
-seconds. Result schema 2 therefore fixes the complete watchdog at 2400 seconds, while historical
-schema 1 retains 1800 seconds. All cases/repetitions, numeric tensors, memory caps and bitwise
-criteria are unchanged. Replay now also binds the sum of sequential child durations to whole-run
-time. The finite validator classifies exact IEEE exponent bits in bounded blocks instead of
-converting every float; exhaustive high-word/low-mantissa, malformed, boundary and deadline owners
-pass, as do the independent process/reference owners. The measured validation-only median for
-4,587,520 bytes improves from 26,360,167 to 1,167,000 ns; this is not a GPU speedup claim.
+The final comprehensive review found two localized errors: missing provider positionals after
+stripping the runtime-options pair could overwrite an input, and attention-probe error signs
+aliased CONFIG with supported while losing allocation faults. Both were independently reproduced
+and repaired. The positional minimum is checked before provider work/result writes; native negative
+probe errors pass unchanged through the typed boundary and first-fault recorder. Successful model
+arithmetic/selection is unchanged. The consolidated repair delta was inspected against both findings.
+`gmake build`, `gmake fmt`, `scripts/run-runtime-provider-smoke` (including actual CLI input
+preservation and all admitted arities), and `scripts/run-gpu-attention-policy-smoke` PASS. The last
+owner executes real Flash arithmetic plus real/stub typed probes, malformed/late refusal, injected
+metadata allocation failure, and preservation of the first fault. The full Metal receipt remains
+bound to its qualified head; the final repair has this separate affected-owner evidence.
 
-Earlier narrow evidence remains: full native-case type check, `gmake fmt`, provider trace with
-legacy/new schema refusals, complete corpus owner, and the real Metal causal/GQA/stable-graph
-owner PASS. Metal reports fusion and graph optimization enabled. CUDA capture remains unverified;
-pinned synchronization-dependent MoE fallbacks cannot be captured. Historical user CUDA/Metal
-CPU-comparison FAILs and tolerances remain intact. Task-owned numeric duplicates were pruned only
-after identical retained copies were verified; inventories record the remaining closure.
+The earlier provider trace, bounded-prefill, allocation-tracked host, linked-core identity,
+complete corpus, numeric deadline and independent process/reference owners also PASS. Metal reports
+fusion and graph optimization enabled; actual CUDA capture remains unverified. No GPU speedup is
+claimed by correctness instrumentation. Preserve `f46310d` ancestry because the validation-only
+benchmark names it: merge commit or fast-forward only, no squash/rewrite.
 
-Next: commit this validation repair, build the clean candidate, run the complete current 19-case
-owner and relocated replay, complete the fresh final comprehensive review and publication
-preflight, then PR/merge. The pinned Linux compiler is ready in a separate host cache. The user
-authorizes continuing afterward into G1R/session and measured GPU performance work. No additional
-user CUDA functional/debugging request is allowed; subsequent CUDA work is performance comparison
-only after local readiness. G1R integration preparation exists only as private notes, with no
-public session contract or implementation yet.
+Next: commit the owner-verified repair, run publication preflight with the prepared pinned Linux
+toolchain and real installed Docker profile, publish the reviewed PR, wait for required hosted
+checks, and merge. Then refresh main and implement G1R's reusable coding session before the paired
+performance decision. The user will also verify CUDA, after all Metal work is complete and together
+with performance measurement; do not request earlier CUDA debugging runs. G1R preparation is still
+private source notes, with no public session contract or implementation yet. The sibling Align
+checkout is refreshed, while this capability keeps the managed `305926b4` pin.
 
 **Bounded-prefill checkpoint (unpublished, after `db90870`).** R5 implements capacity-selected
 128/64/32/16/8/4/2/1 prefill chunks, dependent resident K/V writes, absolute masks/positions,

@@ -2084,7 +2084,7 @@ int32_t align_gpu_attention_probe(void *owner, int64_t queries, int64_t width,
     if (state == NULL || state->device == NULL || state->memory_planned || state->shape_planning
         || queries < 1 || queries > 128 || width < 1 || width > 262144
         || head_dim < 1 || head_dim > 512 || heads < 1 || heads > 128
-        || kv_heads < 1 || kv_heads > heads || heads % kv_heads != 0) { return -ALIGN_GPU_CONFIG; }
+        || kv_heads < 1 || kv_heads > heads || heads % kv_heads != 0) { return ALIGN_GPU_CONFIG; }
     /* This engine intentionally owns the real decomposed fallback, not GPU Flash math. */
     return 0;
 }

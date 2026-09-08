@@ -356,7 +356,7 @@ fn provider_demo(args: array<str>) -> Result<(), Error> {
     }
     at = at + 1
   }
-  if runtime && effective_len > 10 { return Err(Error.Invalid) }
+  if runtime && (effective_len < 8 || effective_len > 10) { return Err(Error.Invalid) }
   kind := if runtime { model.ProviderKind.AlignRuntime } else { parse_provider_kind(args[2])? }
   mode := if runtime { "generate" } else if args.len() >= 9 { args[8] } else { "generate" }
   if mode != "generate" && mode != "stream" {

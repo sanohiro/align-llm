@@ -1401,12 +1401,12 @@ int32_t align_gpu_attention_probe(void *owner, int64_t queries, int64_t width,
         || queries < 1 || queries > 128 || width < 1 || width > 262144
         || head_dim < 1 || head_dim > 512 || heads < 1 || heads > 128
         || kv_heads < 1 || kv_heads > heads || heads % kv_heads != 0) {
-        return -ALIGN_GPU_CONFIG;
+        return ALIGN_GPU_CONFIG;
     }
     params.mem_size = ggml_tensor_overhead() * 8;
     params.no_alloc = true;
     ctx = ggml_init(params);
-    if (ctx == NULL) { return -ALIGN_GPU_ALLOCATION; }
+    if (ctx == NULL) { return ALIGN_GPU_ALLOCATION; }
     q = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, head_dim, queries, heads);
     k = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, head_dim, width, kv_heads);
     v = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, head_dim, width, kv_heads);

@@ -693,7 +693,7 @@ pub fn gpu_attention_probe(borrow owner: GpuDevice, queries: i64, width: i64,
   gpu_failure_activity(GPU_STAGE_PLAN)
   unsafe {
     status := align_gpu_attention_probe(resource.raw(resource.borrow(owner)), queries, width, head_dim, heads, kv_heads) as i64
-    if status < 0 { return Err(gpu_fault_for(0 - status)) }
+    if status < 0 { return Err(gpu_fault_for(status)) }
     if status > 1 { return Err(gpu_fault_for(GPU_STATUS_CONFIG)) }
     return Ok(status == 1)
   }

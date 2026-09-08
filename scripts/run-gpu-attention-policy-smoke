@@ -25,4 +25,57 @@ with tempfile.TemporaryDirectory(prefix='gpu-attention-policy-') as temporary:
     if sys.platform != 'darwin':
         command += ['-ldl']
     subprocess.run(command, check=True, env=environment)
-    subprocess.run([str(executable), str(plugin)], check=True, env=environment, timeout=60)
+    output = subprocess.check_output([str(executable), str(plugin)], env=environment, timeout=60, text=True)
+    print(output, end='')
+    identity = next(line for line in output.splitlines() if line.startswith('GPU attention device: '))
+    registry, device = identity.removeprefix('GPU attention device: ').split(' ', 1)
+    backend = {'MTL': 'metal', 'CUDA': 'cuda'}[registry]
+    work = Path(temporary)
+    # Injection is confined to this test translation unit. The actual probe still owns
+    # validation and the failed ggml_init return; production source gains no test hook.
+    fault_header = work / 'allocation.h'
+    fault_header.write_text('#ifndef _GNU_SOURCE\n#define _GNU_SOURCE\n#endif\n#include "ggml.h"\n'
+        'static struct ggml_context *probe_failed_init(struct ggml_init_params params) {\n'
+        '    (void) params; return NULL;\n}\n#define ggml_init probe_failed_init\n')
+    suffix = 'dylib' if sys.platform == 'darwin' else 'so'
+    shim_name = 'libalign_ggml_shim.' + suffix
+    shims = {}
+    for mode in ('supported', 'allocation', 'stub'):
+        directory = work / mode
+        directory.mkdir()
+        library = directory / shim_name
+        compile_command = [os.environ.get('CC', 'cc'), '-std=c11', '-O2', '-fPIC', '-shared',
+            '-Wall', '-Wextra', '-Werror', '-ffp-contract=off', '-DALIGN_GGML_FP_CONTRACT_OFF=1']
+        if sys.platform == 'darwin':
+            compile_command += ['-install_name', str(library)]
+        if mode == 'stub':
+            compile_command += ['-DALIGN_GGML_STUB_ENGINE=1', '-DALIGN_GGML_STUB_GPU=1',
+                                str(root / 'scripts/ggml_shim_stub.c')]
+        else:
+            compile_command += ['-I' + str(source / 'ggml/include')]
+            if mode == 'allocation':
+                compile_command += ['-include', str(fault_header)]
+            compile_command += [str(root / 'scripts/ggml_shim.c'), '-L' + str(libraries),
+                '-Wl,-rpath,' + str(libraries), '-lggml', '-lggml-base']
+            if sys.platform != 'darwin':
+                compile_command += ['-ldl']
+        subprocess.run([*compile_command, '-lm', '-o', str(library)], env=environment, check=True)
+        shims[mode] = directory
+    build_environment = dict(environment)
+    build_environment['LIBRARY_PATH'] = str(shims['supported']) + ':' + environment.get('LIBRARY_PATH', '')
+    generated = root / 'runtime_attention_probe_smoke'
+    if generated.exists():
+        raise SystemExit('attention probe owner refuses to replace an existing generated executable')
+    try:
+        subprocess.run([os.environ.get('ALIGNC', str(root / 'scripts/alignc')), 'build',
+                        'src/runtime_attention_probe_smoke.align'], cwd=root, env=build_environment, check=True)
+        typed = work / 'typed-probe'
+        generated.rename(typed)
+        for mode, directory in shims.items():
+            runtime_environment = dict(environment)
+            for key in ('DYLD_LIBRARY_PATH', 'LD_LIBRARY_PATH'):
+                runtime_environment[key] = str(directory) + ':' + str(libraries)
+            subprocess.run([str(typed), backend, 'stub-gpu' if mode == 'stub' else device,
+                            str(plugin), mode], env=runtime_environment, check=True, timeout=60)
+    finally:
+        generated.unlink(missing_ok=True)
