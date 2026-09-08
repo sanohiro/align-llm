@@ -33,14 +33,11 @@ with tempfile.TemporaryDirectory(prefix="gpu-case-record-") as raw:
     home, temporary = root / "home", root / "tmp"
     home.mkdir(mode=0o700)
     temporary.mkdir(mode=0o700)
-    executable = Path("/bin/sh").resolve()
+    executable = root / "native-fixture"
+    executable_bytes = b"#!/bin/sh\nprintf native-output; printf native-error >&2\n"
+    executable.write_bytes(executable_bytes)
+    executable.chmod(0o700)
     digest = hashlib.sha256(executable.read_bytes()).hexdigest()
-    token = "<candidate>:sha256:" + digest
-    script = "printf native-output; printf native-error >&2"
-    process = run_owned_command(kind="case", physical_argv=[str(executable), "-c", script],
-        logical_argv=[token, "-c", script], mappings={token: executable}, cwd=root,
-        home=home, temporary=temporary, timeout_seconds=5)
-    assert process.terminal == "PASS" and process.rss_peak_bytes > 0
     for gpu in (False, True):
         ordinal = int(gpu)
         expected = profile["cases"][ordinal]
@@ -49,6 +46,14 @@ with tempfile.TemporaryDirectory(prefix="gpu-case-record-") as raw:
             options_path=root / "options" if gpu else None, cache_budget_bytes=0,
             stream_root=root / "numeric", stream_name="stream")
         plan = Plan(("qwen2", frozen["case_id"], 0), case, executable, digest, calibration["comparison"])
+        input_path = root / "case-input.json"
+        input_path.write_bytes(case.input_bytes())
+        input_token = "<case-input>:sha256:" + hashlib.sha256(case.input_bytes()).hexdigest()
+        token = ("<candidate>" if gpu else "<cpu-reference>") + ":sha256:" + digest
+        process = run_owned_command(kind="case", physical_argv=[str(executable), str(input_path)],
+            logical_argv=[token, input_token], mappings={token: executable, input_token: input_path},
+            cwd=root, home=home, temporary=temporary, timeout_seconds=5)
+        assert process.terminal == "PASS" and process.rss_peak_bytes > 0
         observation = {} if not gpu else {
             "model_operations": 33, "model_layers": 1, "model_experts": 0,
             "resident_weight_payload_bytes": 256, "resident_kv_payload_bytes": case.residency.kv_bytes,
@@ -101,7 +106,8 @@ with tempfile.TemporaryDirectory(prefix="gpu-case-record-") as raw:
             assert refused["placement"]["minimum_weights_device_bytes"] == 0
 
     # Record collection owns ordering/deadline disposition; profile expansion has its own owner.
-    command = CaseCommand((str(executable), "-c", script), (token, "-c", script), {token: executable})
+    command = CaseCommand((str(executable), str(input_path)), (token, input_token),
+                          {token: executable, input_token: input_path})
     context = dict(cwd=root, home=home, temporary=temporary)
     for mode in ("complete", "unstarted", "validation-deadline", "comparison"):
         collector = CaseRecords([expected] * 16, [plan] * 16)
@@ -124,7 +130,7 @@ with tempfile.TemporaryDirectory(prefix="gpu-case-record-") as raw:
         collector.finish(sequence)
         assert collector.finished
         if mode == "complete":
-            assert len(collector.rows) == 16 and len(collector.retained) == 32
+            assert len(collector.rows) == 16 and len(collector.retained) == 48
             assert collector.failure["case_ordinal"] == -1
         else:
             assert len(collector.rows) == 2 and collector.rows[1]["terminal"] == "FAIL"
@@ -132,9 +138,9 @@ with tempfile.TemporaryDirectory(prefix="gpu-case-record-") as raw:
             if mode == "validation-deadline":
                 assert collector.failure["detail"] == "generation deadline expired during case validation"
             if mode == "unstarted":
-                assert len(collector.retained) == 2 and collector.rows[1]["exit_code"] is None
+                assert len(collector.retained) == 3 and collector.rows[1]["exit_code"] is None
             else:
-                assert len(collector.retained) == 4 and collector.rows[1]["exit_code"] == 0
+                assert len(collector.retained) == 6 and collector.rows[1]["exit_code"] == 0
         for action in (lambda: collector.finish(sequence), lambda: collector.consume(0, outcome)):
             try:
                 action()

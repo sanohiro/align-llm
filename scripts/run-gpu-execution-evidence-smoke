@@ -33,6 +33,11 @@ with tempfile.TemporaryDirectory(prefix="gpu-execution-evidence-") as raw:
     home, temporary = root / "home", root / "tmp"
     home.mkdir(mode=0o700)
     temporary.mkdir(mode=0o700)
+    executable = root / "native-fixture"
+    executable.write_bytes(fixture["executable_bytes"])
+    executable.chmod(0o700)
+    input_path = root / "input.json"
+    input_path.write_bytes(plan.case.input_bytes())
     invocation = SimpleNamespace(work=root, home=home, temporary=temporary,
         admitted=SimpleNamespace(records={"profile": {"cases": [expected] * 16,
             "deadlines_ns": {"generation": 10_000_000_000}}, "bundle": bundle}))
@@ -53,8 +58,9 @@ with tempfile.TemporaryDirectory(prefix="gpu-execution-evidence-") as raw:
             def construct(index):
                 if mode == "unstarted" and index == 1:
                     raise RecipeError("unstarted case")
-                return CaseCommand((str(fixture["executable"]), "-c", fixture["script"]),
-                    (fixture["token"], "-c", fixture["script"]), {fixture["token"]: fixture["executable"]})
+                return CaseCommand((str(executable), str(input_path)),
+                    (fixture["token"], fixture["input_token"]),
+                    {fixture["token"]: executable, fixture["input_token"]: input_path})
             def observed(index, result):
                 current = dataclasses.replace(outcome, process=result)
                 if mode == "device" or (mode == "identity" and index == 1):
@@ -78,7 +84,7 @@ with tempfile.TemporaryDirectory(prefix="gpu-execution-evidence-") as raw:
         assert evidence["status"] == ("PASS" if mode == "complete" else "FAIL"), mode
         count = 16 if mode in {"complete", "cleanup"} else 0 if mode == "planning" else 1 if mode == "device" else 2
         assert len(cases) == count and evidence["aggregate"]["case_count"] == count, mode
-        assert len(result.retained) == 2 * (count - (mode == "unstarted")), mode
+        assert len(result.retained) == 3 * (count - (mode == "unstarted")), mode
         if mode == "planning":
             assert evidence["failure"]["detail"] == "planning refused"
         if mode not in {"planning", "device"}:

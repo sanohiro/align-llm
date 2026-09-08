@@ -393,7 +393,7 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
         temporary=temporary, consume=collect_case, sequence=provided_sequence)
     assert state is provided_sequence
     collector.finish(state)
-    assert len(collector.rows) == 16 and len(collector.retained) == 32
+    assert len(collector.rows) == 16 and len(collector.retained) == 48
     assert all(row["terminal"] == "PASS" and row["memory"]["rss_peak_bytes"] > 0 for row in collector.rows)
     assert state.complete and len(observed_cases) == 16, (state.failure_detail, observed_cases[-1:])
     for ordinal, outcome in observed_cases:

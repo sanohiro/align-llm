@@ -80,6 +80,19 @@ The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
+**Execution/input binding checkpoint (unpublished, after `89efeb2`).** R7 started-case commands
+now bind the role-specific produced candidate/CPU reference and exact owned input by SHA-256.
+Each started row retains its canonical input at `case-inputs/NNN.json`; unstarted rows retain none.
+Replay checks executable/source identity, input/file identity, and frozen prompt/sampling/expected/
+forced fields without opening recorded physical paths. Publication reserves input plus both logs
+per case within existing ceilings. Historical evidence remains owned by its original validator.
+Result replay passes complete retained-input closure and rejects swapped/unknown executables,
+detached inputs and a rehashed altered prompt. Case-record, execution-evidence, publication,
+final CLI, closed command environment and complete provider-trace owners pass.
+Next: R1 managed-host accounting, R5/R6 microbatch/corpus, R8 native first-fault retention and
+R9 loaded-core identity, then full local qualification, final review and publication/merge.
+No additional CUDA debugging is requested.
+
 **Validation deadline checkpoint (unpublished, after `c76deb5`).** R10 now propagates the
 original generation deadline through native validation, stream framing/hashing, scalar loops and
 router near-tie work. Reads/hash chunks are at most 64 KiB; large numeric/ID traversals check every

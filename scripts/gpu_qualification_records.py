@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 import json
 import math
 import os
@@ -712,6 +713,11 @@ def validate_case(
     if terminal == "FAIL" and spawned != (result["exit_code"] is not None):
         raise RecipeError("failed case exit code does not match child existence")
     if spawned:
+        label = "candidate" if expected["execution"] == "gpu_resident" else "cpu-reference"
+        argv = result["command"]["argv"]
+        if len(argv) != 2 or re.fullmatch(r"<" + label + r">:sha256:[0-9a-f]{64}", argv[0]) is None \
+                or re.fullmatch(r"<case-input>:sha256:[0-9a-f]{64}", argv[1]) is None:
+            raise RecipeError("case command does not bind its role-specific executable and input")
         require_path(result["stdout_path"], "case stdout_path")
         require_path(result["stderr_path"], "case stderr_path")
     elif result["stdout_path"] != "" or result["stderr_path"] != "":
@@ -1030,7 +1036,7 @@ def validate_evidence(
         "profile", "bundle_manifest", "calibration", "align_source_manifest",
         "align_source_commit", "align_source_blob", "ggml_source_manifest",
         "ggml_source_commit", "ggml_source_blob", "helper", "shim", "backend_artifact",
-        "stdout", "stderr",
+        "stdout", "stderr", "case_input",
     }
     previous_path: bytes | None = None
     retained_total = 0
@@ -1082,6 +1088,17 @@ def validate_evidence(
             calibration_case=calibration_cases[str(profile_cases[ordinal]["calibration_case_id"])],
             status=status,
         )
+        command = case_values[ordinal]["command"]
+        if command["kind"]:
+            role = "candidate" if profile_cases[ordinal]["execution"] == "gpu_resident" else "cpu_reference"
+            label = role.replace("_", "-")
+            produced = source[role]
+            if produced["state"] != "available" or command["argv"][0] != f"<{label}>:sha256:{produced['sha256']}":
+                raise RecipeError("case executable identity does not match produced input")
+            retained = next((row for row in files if row["path"] == f"case-inputs/{ordinal:03d}.json"), None)
+            if retained is None or retained["role"] != "case_input" or not 1 <= retained["bytes"] <= 4 * 1024 * 1024 \
+                    or command["argv"][1] != f"<case-input>:sha256:{retained['sha256']}":
+                raise RecipeError("case input identity does not match retained input")
         if case_values[ordinal]["ordinal"] != ordinal:
             raise RecipeError("evidence case ordinal is not contiguous")
         memory = case_values[ordinal]["memory"]
@@ -1318,9 +1335,43 @@ def expected_directory_roles(records: dict[str, object]) -> dict[str, str]:
         command = case["command"]
         assert isinstance(command, dict)
         if command["kind"] != "":
+            expected[f"case-inputs/{case['ordinal']:03d}.json"] = "case_input"
             expected[str(case["stdout_path"])] = "stdout"
             expected[str(case["stderr_path"])] = "stderr"
     return expected
+
+
+def validate_retained_case_input(raw: bytes, case: Mapping[str, object], frozen: Mapping[str, object]) -> None:
+    record = exact_keys(parse_record(raw, 4 * 1024 * 1024), (
+        "schema_version", "artifact_kind", "model_id", "model_path", "pack_path", "geometry_path",
+        "options_path", "cache_budget_bytes", "prompt_utf8", "maximum_tokens", "temperature_micros", "seed",
+        "expected_prompt_ids", "expected_token_ids", "expected_output_utf8", "forced_ids", "stream_root",
+        "stream_name", "stream_limit"), "retained case input")
+    if canonical(record) != raw or type(record["schema_version"]) is not int or record["schema_version"] != 1 \
+            or record["artifact_kind"] != "GPU_RUNTIME_CASE_INPUT" or record["model_id"] != case["model_id"]:
+        raise RecipeError("retained case input identity is invalid")
+    for key, expected_key in (("prompt_utf8", "prompt_utf8"), ("maximum_tokens", "maximum_tokens"),
+                              ("temperature_micros", "temperature_micros"), ("seed", "seed"),
+                              ("expected_prompt_ids", "prompt_token_ids"), ("expected_token_ids", "expected_token_ids"),
+                              ("expected_output_utf8", "expected_output_utf8"), ("forced_ids", "teacher_forced_token_ids")):
+        if type(record[key]) is not type(frozen[expected_key]) or record[key] != frozen[expected_key]:
+            raise RecipeError("retained case input differs from frozen case")
+    for key, maximum in (("expected_prompt_ids", 2048), ("expected_token_ids", 128), ("forced_ids", 4096)):
+        require_i32_array(record[key], "retained case " + key, minimum=1, maximum=maximum)
+    gpu = case["execution"] == "gpu_resident"
+    for key in ("model_path", "pack_path", "geometry_path", "stream_root", "options_path"):
+        value = bounded_text(record[key], 0 if key == "options_path" and not gpu else 1, 4096, "case input path")
+        if "\0" in value or (value and not pathlib.Path(value).is_absolute()):
+            raise RecipeError("retained case input path is invalid")
+    if bool(record["options_path"]) != gpu:
+        raise RecipeError("retained case input execution role differs")
+    budget = bounded_i64(record["cache_budget_bytes"], 0, I64_MAX, "case input cache budget")
+    if (case["model_id"] == "qwen2" and budget != 0) or (case["model_id"] == "olmoe" and budget == 0):
+        raise RecipeError("retained case input cache policy differs")
+    name = bounded_text(record["stream_name"], 1, 64, "case input stream name")
+    if re.fullmatch(r"[a-z0-9][a-z0-9._-]*", name) is None:
+        raise RecipeError("retained case input stream name is invalid")
+    bounded_i64(record["stream_limit"], 108, 4 * 1024 * 1024 * 1024, "case input stream limit")
 
 
 def replay_evidence_directory(root: pathlib.Path) -> dict[str, object]:
@@ -1392,6 +1443,12 @@ def replay_evidence_directory(root: pathlib.Path) -> dict[str, object]:
         if row["role"] != expected_roles[path] or len(data) != row["bytes"] \
                 or hashlib.sha256(data).hexdigest() != row["sha256"]:
             raise RecipeError("evidence retained file identity or role does not match")
+
+    frozen_by_id = {case["case_id"]: case for calibration in calibrations for case in calibration["cases"]}
+    for case in evidence["cases"]:
+        if case["command"]["kind"]:
+            validate_retained_case_input(files[f"case-inputs/{case['ordinal']:03d}.json"],
+                                         case, frozen_by_id[case["calibration_case_id"]])
 
     align_summary = replay_source_snapshot(root / "source" / "align-llm", "align-llm")
     ggml_summary = replay_source_snapshot(root / "source" / "ggml", "ggml")

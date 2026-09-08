@@ -1187,6 +1187,27 @@ Qwen prefill/decode scalar comparison with matched embedding placement and F32 K
 failed CPU/GPU calibration evidence remains failed and unchanged. Padded workspace participates
 in the existing memory ceiling and must be included in subsequent performance measurements.
 
+### Executed artifact and case-input binding repair
+
+Every started case has exactly two logical arguments: `<candidate>:sha256:D` for GPU or
+`<cpu-reference>:sha256:D` for CPU, followed by `<case-input>:sha256:I`. `D` must equal the
+role-specific available produced identity in `source`; `I` is the digest of the exact immutable
+owned input bytes passed to that child. A different executable, swapped role, extra argument or
+unbound input cannot pass replay. The live process owner verifies both hashed mappings before
+launch. Unstarted rows retain their existing empty command and no fabricated input artifact.
+
+| Owner | Contract / closure |
+| --- | --- |
+| `gpu_qualification_native_sequence` | Hash the exact canonical input written exclusively into the case root; bind that hash in the logical command mapping. Existing complete provider owner plus swapped-input refusal. |
+| `gpu_qualification_case_records` | Retain the same input at `case-inputs/NNN.json` with role `case_input`, at most 4 MiB, alongside actual child logs even on failure. The input is evidence only: replay never opens its embedded original physical paths. No model weights are retained. Case-record owner covers started/unstarted and failed prefixes. |
+| `gpu_qualification_records` | Validate role-specific command shape, cross-bind executable digest to `source`, input digest to the required retained file, and retained canonical input sampling/prompt/expected/forced fields to the frozen case. Reject missing/changed/wrong-role input artifacts and executable substitutions. Result replay owner owns negative fixtures. |
+| `gpu_qualification_publish` | Reserve three files per possible started case (input plus two logs) before preparation; retain existing aggregate byte and file ceilings. Publication/CLI owners verify closure and capacity refusal. |
+
+This repairs the unpublished schema-1 evidence contract. Historical evidence remains bound to its
+original captured validator; it is not rewritten or relabeled as newly qualified. Original absolute
+paths inside private input artifacts are recorded provenance, not executable replay instructions.
+The command itself retains only logical hashes and the existing closed environment.
+
 ### Numeric validation deadline repair
 
 The generation sequence passes its original monotonic deadline through native output validation,

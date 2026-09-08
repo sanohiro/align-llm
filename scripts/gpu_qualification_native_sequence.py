@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 from pathlib import Path
 import shutil
 from collections.abc import Callable, Sequence
@@ -103,7 +104,7 @@ def run(plans: Sequence[Plan], *, budget_ns: int, work: Path, home: Path, tempor
         path = _write(root, "input.json", plan.case.input_bytes())
         name = "candidate" if plan.gpu else "cpu-reference"
         executable_token = f"<{name}>:sha256:{plan.executable_sha256}"
-        input_token = "<case-input>:owned"
+        input_token = "<case-input>:sha256:" + hashlib.sha256(plan.case.input_bytes()).hexdigest()
         return CaseCommand((str(plan.executable), str(path)), (executable_token, input_token),
                            {executable_token: plan.executable, input_token: path})
 

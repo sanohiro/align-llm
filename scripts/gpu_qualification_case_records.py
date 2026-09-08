@@ -103,6 +103,13 @@ def assemble(ordinal: int, expected: Mapping[str, object], plan: Plan, outcome: 
     validated = validate_case(row, expected=dict(expected), calibration_case=frozen, status="FAIL")
     retained = {}
     if process is not None:
+        data = plan.case.input_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        label = "candidate" if plan.gpu else "cpu-reference"
+        if process.command["argv"] != [f"<{label}>:sha256:{plan.executable_sha256}",
+                                        f"<case-input>:sha256:{digest}"]:
+            raise RecipeError("case command differs from its executable or owned input")
+        retained[f"case-inputs/{ordinal:03d}.json"] = RetainedFile("case_input", data, len(data), digest)
         for name in ("stdout", "stderr"):
             captured = getattr(process, name)
             retained[log_paths[name]] = RetainedFile(name, captured.retained, captured.original_bytes,

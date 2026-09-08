@@ -128,7 +128,7 @@ def preflight_count(admitted: AdmittedInput) -> None:
     standard = 1 + 1 + len(admitted.records["calibrations"]) + 4
     standard += len(admitted.align_source.blobs) + len(admitted.ggml_source.blobs)
     standard += len({row["sha256"] for row in admitted.records["bundle"]["artifacts"]})
-    projected = standard + 6 + 2 + 2 * len(admitted.records["profile"]["cases"]) + 1
+    projected = standard + 6 + 2 + 3 * len(admitted.records["profile"]["cases"]) + 1
     if projected > MAX_EVIDENCE_FILES:
         raise RecipeError("evidence file projection cannot fit the complete qualification")
 

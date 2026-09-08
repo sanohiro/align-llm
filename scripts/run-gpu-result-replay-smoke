@@ -134,6 +134,7 @@ passing["preparation_commands"].append(command(
                             "build-cpu-reference"],
 ))
 passing_cases = []
+case_input_content = {}
 for ordinal, expected in enumerate(profile["cases"]):
     calibration_case = calibration_cases[expected["calibration_case_id"]]
     gpu = expected["execution"] == "gpu_resident"
@@ -174,6 +175,26 @@ for ordinal, expected in enumerate(profile["cases"]):
     }
     stdout_path = f"logs/{ordinal:03d}.stdout"
     stderr_path = f"logs/{ordinal:03d}.stderr"
+    input_record = {
+        "schema_version": 1, "artifact_kind": "GPU_RUNTIME_CASE_INPUT", "model_id": expected["model_id"],
+        "model_path": "/fixture/model", "pack_path": "/fixture/pack", "geometry_path": "/fixture/geometry",
+        "options_path": "/fixture/options" if gpu else "", "cache_budget_bytes": 1 if expected["model_id"] == "olmoe" else 0,
+        "prompt_utf8": calibration_case["prompt_utf8"], "maximum_tokens": calibration_case["maximum_tokens"],
+        "temperature_micros": calibration_case["temperature_micros"], "seed": calibration_case["seed"],
+        "expected_prompt_ids": calibration_case["prompt_token_ids"], "expected_token_ids": calibration_case["expected_token_ids"],
+        "expected_output_utf8": calibration_case["expected_output_utf8"], "forced_ids": calibration_case["teacher_forced_token_ids"],
+        "stream_root": f"/fixture/case-{ordinal}", "stream_name": "numeric", "stream_limit": 108,
+    }
+    input_bytes = records.canonical(input_record)
+    input_digest = hashlib.sha256(input_bytes).hexdigest()
+    input_path = f"case-inputs/{ordinal:03d}.json"
+    case_input_content[input_path] = input_bytes
+    passing["files"].append({"role": "case_input", "path": input_path, "bytes": len(input_bytes),
+                             "sha256": input_digest, "original_bytes": len(input_bytes),
+                             "original_sha256": input_digest, "truncated": False})
+    executable_role = "candidate" if gpu else "cpu_reference"
+    executable_label = executable_role.replace("_", "-")
+    executable_digest = passing["source"][executable_role]["sha256"]
     passing_cases.append({
         "ordinal": ordinal,
         **{key: value for key, value in expected.items() if key != "maximum_tokens"},
@@ -182,7 +203,8 @@ for ordinal, expected in enumerate(profile["cases"]):
         "stage": "",
         "exit_code": 0,
         "signal": None,
-        "command": command("case", [f"<case-{ordinal}>:owned"]),
+        "command": command("case", [f"<{executable_label}>:sha256:{executable_digest}",
+                                      f"<case-input>:sha256:{input_digest}"]),
         "output_sha256": calibration_case["expected_output_sha256"],
         "token_ids": calibration_case["expected_token_ids"],
         "nonfinite_count": 0,
@@ -326,6 +348,43 @@ with tempfile.TemporaryDirectory(prefix="gpu-result-replay-") as raw_temporary:
         write_file(valid, path, data)
     replayed = records.replay_evidence_directory(valid)
     assert records.canonical(replayed["evidence"]) == lines[7]
+
+    complete = temporary / "complete"
+    complete.mkdir()
+    write_file(complete, "result.json", records.canonical(passing))
+    for row in passing["files"]:
+        write_file(complete, row["path"], case_input_content.get(row["path"], content.get(row["path"], b"")))
+    records.replay_evidence_directory(complete)
+    for name, replacement, message in (
+        ("swapped-executable", passing["cases"][0]["command"]["argv"][0], "role-specific executable"),
+        ("unknown-executable", "<candidate>:sha256:" + "0" * 64, "executable identity"),
+        ("detached-input", "<case-input>:sha256:" + "0" * 64, "input identity"),
+    ):
+        target = temporary / name
+        shutil.copytree(complete, target)
+        changed = copy.deepcopy(passing)
+        argv = changed["cases"][1]["command"]["argv"][:]
+        argv[1 if name == "detached-input" else 0] = replacement
+        changed["cases"][1]["command"] = command("case", argv)
+        write_file(target, "result.json", records.canonical(changed))
+        rejected(target, message)
+    target = temporary / "refrozen-input"
+    shutil.copytree(complete, target)
+    changed = copy.deepcopy(passing)
+    path = "case-inputs/001.json"
+    altered = json.loads(case_input_content[path])
+    altered["prompt_utf8"] = "different prompt"
+    data = records.canonical(altered)
+    digest = hashlib.sha256(data).hexdigest()
+    for row in changed["files"]:
+        if row["path"] == path:
+            row.update(bytes=len(data), original_bytes=len(data), sha256=digest, original_sha256=digest)
+    argv = changed["cases"][1]["command"]["argv"][:]
+    argv[1] = "<case-input>:sha256:" + digest
+    changed["cases"][1]["command"] = command("case", argv)
+    write_file(target, path, data)
+    write_file(target, "result.json", records.canonical(changed))
+    rejected(target, "differs from frozen case")
 
     mutated = temporary / "mutated"
     shutil.copytree(valid, mutated)
