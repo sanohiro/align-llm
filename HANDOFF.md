@@ -144,6 +144,16 @@ output/stream equality and refusal cleanup. `gmake fmt` and `git diff --check` p
 are not mislabeled as peaks or payload minima. Next: native three-trajectory case envelope and
 parent integration, then independent placement/resource proof and final qualifier publication.
 
+**Native case checkpoint.** `runtime_case` executes a canonical bounded private input through
+production, frozen prompt/token/text binding, reproduction and forced replay, then prints one
+success envelope and finishes the stream. A post-writer failure prints a bounded phase/progress
+record preserving the stream's observed nonfinite count; pre-writer admission has no envelope.
+`python3 scripts/run-gpu-provider-trace-smoke` now also passes native CPU/GPU case execution,
+independent traversal, immediate EOG, unknown/missing/duplicate/bounded-field refusals, frozen
+binding drift, short stream limits, forced GPU nonfinite readback and fresh success after refusal.
+`gmake fmt` and `git diff --check` pass. Parent case/evidence integration remains the next action;
+this private success envelope is not a qualification PASS or a public CLI.
+
 **Eligibility checkpoint.** Requests 61/62 are consumer-verified. The full frozen 21-case audit
 meets 20 expectations; only explicitly deferred direct-place case 11 remains red. All negative
 lifetime controls, observed native generation and real CPU compilation pass. G1 integration is

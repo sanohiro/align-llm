@@ -644,6 +644,45 @@ canonical compact JSON bytes of the profile's `cases` array without a final LF.
 
 ### 3.10 Private numeric stream version 1
 
+The invocation-owned native case input is canonical UTF-8 JSON plus one LF, capped at 4 MiB.
+`runtime_case` owns its private schema 1 (`artifact_kind="GPU_RUNTIME_CASE_INPUT"`) with exact
+field order `schema_version,artifact_kind,model_id,model_path,pack_path,geometry_path,options_path,
+cache_budget_bytes,prompt_utf8,maximum_tokens,temperature_micros,seed,expected_prompt_ids,
+expected_token_ids,expected_output_utf8,forced_ids,stream_root,stream_name,stream_limit`.
+Paths name already admitted invocation inputs; empty options selects the static CPU reference.
+Model ID is `qwen2|olmoe` and must match the GGUF architecture. Cache, sampler and token bounds are
+the ordinary provider's, with a signed-i64 seed meaningful only for temperature 300000 micros;
+greedy uses zero temperature and zero seed. Prompt and expected output each cap at 1 MiB;
+prompt IDs are 1–2048, expected sampled IDs including terminal EOG are 1–maximum_tokens, and forced
+IDs are 1–4096. IDs are nonnegative i32 and native generators enforce vocabulary/context bounds.
+The numeric file uses §3.10's root-relative exclusive creation and independently derived byte ceiling.
+Canonical re-encoding rejects extra/duplicate keys, alternate scalar spelling and missing fields.
+
+The helper executes production, validates exact frozen prompt IDs, sampled IDs and output bytes,
+then requires independent diagnostic generation to reproduce those values before forced replay.
+It finishes the numeric stream only after all three succeed. Each provider call owns its snapshot,
+KV and device; all share one scratch writer and the parent's generation deadline. Success prints
+one `GPU_RUNTIME_CASE_OUTPUT` schema-1 record plus LF, ordered as `schema_version,artifact_kind,
+production,stream_bytes,stream_records`, where production is the provider's `TraceResult` including
+its raw observation. This envelope is private scratch output, not schema-1 qualification evidence.
+Failures return nonzero and leave no success envelope or finished stream. Admission/source errors
+before a writer exists produce no envelope. Once the writer exists, failure prints one private
+`GPU_RUNTIME_CASE_FAILURE` schema-1 record ordered `schema_version,artifact_kind,phase,
+stream_nonfinite_count,stream_bytes,stream_records`. Phase is `production|production_binding|
+reproduction|reproduction_binding|forced|forced_binding|finish`; counters report only observations
+made by that stream, preserving nonfinite/write progress without claiming complete traversal.
+The parent process/case owner classifies the failure and retains bounded logs. No production
+placement, peak/minimum memory or timing claim is invented by this helper.
+
+| Native case closure | Implementation | Required owner evidence |
+| --- | --- | --- |
+| Canonical construction / malformed input | `runtime_case.load` / validation | native case owner unknown/missing/duplicate/bounded-field refusals |
+| Source/model and frozen prompt/output binding | shared provider plus exact case comparison | native case owner identity/prompt/token/text mismatch |
+| Three successful trajectories / EOG | independent provider calls sharing one stream | native case owner CPU/GPU independent traversal and immediate EOG |
+| Reproduction / forced / write failure | propagate before finishing/printing success | native case owner changed expected output, short stream ceiling and forced GPU nonfinite readback |
+| Cleanup / early exit | native owners Drop, parent scratch ownership and process deadline | native case owner refusal followed by fresh success; existing process cleanup owner |
+
+
 Native observation contract (private FFI, no persisted schema): the GPU device owner stores checked
 nonnegative counters for successfully executed non-leaf graph nodes, completed explicit readback
 bytes/calls, and explicit backend synchronization calls. `gpu_observation_state(owner, field)`

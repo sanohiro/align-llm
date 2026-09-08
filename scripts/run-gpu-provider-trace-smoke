@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def canonical(value):
-    return json.dumps(value, separators=(",", ":")).encode() + b"\n"
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
 
 
 def digest(value):
@@ -62,6 +62,16 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                    cwd=ROOT, env=environment, check=True)
     executable = work / "trace"
     (ROOT / "runtime_provider_trace_smoke").rename(executable)
+    subprocess.run([compiler, "build", "src/runtime_case.align"], cwd=ROOT, env=environment, check=True)
+    case_executable = work / "case"
+    (ROOT / "runtime_case").rename(case_executable)
+    fault_environment = dict(environment)
+    fault_shim = work / "nonfinite-shim"
+    fault_environment.update(ALIGN_LLM_GGML_FORCE="engine+gpu+inf-readback",
+                             ALIGN_LLM_GGML_SHIM_DIR=str(fault_shim))
+    subprocess.run([str(ROOT / "scripts/build-ggml-shim")], env=fault_environment, check=True)
+    for key in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+        fault_environment[key] = str(fault_shim) + ":" + environment[key]
     options = bundle(work)
     for architecture, fixture, manifest in (
         ("qwen2", "runtime_provider_fixture.py", "runtime-manifest.json"),
@@ -137,6 +147,87 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                     assert stream.read_frame() is None and stream.verified
                     assert path.stat().st_size == traversal.maximum_bytes
                 streams.append(path.read_bytes())
+                case_root = output / "case"
+                case_root.mkdir()
+                case_input = {
+                    "schema_version": 1, "artifact_kind": "GPU_RUNTIME_CASE_INPUT",
+                    "model_id": architecture, "model_path": str(model), "pack_path": str(pack),
+                    "geometry_path": str(geometry), "options_path": str(options) if backend == "gpu" else "",
+                    "cache_budget_bytes": 1048576 if architecture == "olmoe" else 0,
+                    "prompt_utf8": "x", "maximum_tokens": 2, "temperature_micros": 0, "seed": 0,
+                    "expected_prompt_ids": records[-1]["prompt_ids"],
+                    "expected_token_ids": records[-1]["token_ids"],
+                    "expected_output_utf8": records[-1]["text"], "forced_ids": [0, 1],
+                    "stream_root": str(case_root), "stream_name": "numeric",
+                    "stream_limit": traversal.maximum_bytes,
+                }
+                input_path = output / "case-input.json"
+                input_path.write_bytes(canonical(case_input))
+                case_run = subprocess.run([str(case_executable), str(input_path)], env=environment,
+                                          capture_output=True, timeout=30)
+                assert case_run.returncode == 0, (architecture, model_key, backend, case_run.stdout, case_run.stderr)
+                case_output = json.loads(case_run.stdout)
+                assert list(case_output) == ["schema_version", "artifact_kind", "production", "stream_bytes", "stream_records"]
+                assert case_output["schema_version"] == 1 and case_output["artifact_kind"] == "GPU_RUNTIME_CASE_OUTPUT"
+                case_production = case_output["production"]
+                assert case_production.pop("observation") == observation
+                assert case_production == records[-1]
+                assert case_output["stream_bytes"] == traversal.maximum_bytes
+                assert case_output["stream_records"] == traversal.frame_count
+                assert (case_root / "numeric").read_bytes()[24:] == streams[-1][24:]
+                if architecture == "qwen2" and model_key == "model" and backend == "gpu":
+                    fault_root = output / "nonfinite"
+                    fault_root.mkdir()
+                    input_path.write_bytes(canonical({**case_input, "stream_root": str(fault_root)}))
+                    nonfinite = subprocess.run([str(case_executable), str(input_path)], env=fault_environment,
+                                               capture_output=True, timeout=30)
+                    assert nonfinite.returncode != 0, nonfinite.stdout
+                    failure = json.loads(nonfinite.stdout)
+                    assert failure["artifact_kind"] == "GPU_RUNTIME_CASE_FAILURE" and failure["phase"] == "production"
+                    assert failure["stream_nonfinite_count"] > 0 and failure["stream_records"] == 0, failure
+                if architecture == "qwen2" and model_key == "model" and backend == "cpu":
+                    variants = [
+                        {**case_input, "unknown": 1},
+                        {key: value for key, value in case_input.items() if key != "seed"},
+                        {**case_input, "expected_prompt_ids": [0]},
+                        {**case_input, "expected_token_ids": [0]},
+                        {**case_input, "expected_output_utf8": "wrong"},
+                        {**case_input, "forced_ids": []},
+                        {**case_input, "forced_ids": [-1]},
+                        {**case_input, "maximum_tokens": 129},
+                        {**case_input, "model_id": "olmoe"},
+                        {**case_input, "stream_limit": 108},
+                    ]
+                    for ordinal, variant in enumerate(variants):
+                        refused_root = output / f"refusal-{ordinal}"
+                        refused_root.mkdir()
+                        variant["stream_root"] = str(refused_root)
+                        input_path.write_bytes(canonical(variant))
+                        refused = subprocess.run([str(case_executable), str(input_path)], env=environment,
+                                                 capture_output=True, timeout=30)
+                        assert refused.returncode != 0, (ordinal, refused.stdout)
+                        if ordinal in (2, 3, 4, 9):
+                            failure = json.loads(refused.stdout)
+                            assert list(failure) == ["schema_version", "artifact_kind", "phase", "stream_nonfinite_count", "stream_bytes", "stream_records"]
+                            assert failure["schema_version"] == 1 and failure["artifact_kind"] == "GPU_RUNTIME_CASE_FAILURE"
+                            assert failure["phase"] == ("production" if ordinal == 9 else "production_binding")
+                            assert failure["stream_nonfinite_count"] == 0 and failure["stream_bytes"] >= 24
+                        else:
+                            assert refused.stdout == b"", (ordinal, refused.stdout)
+                    duplicate = canonical(case_input).replace(b'{"schema_version":1,', b'{"schema_version":1,"schema_version":1,', 1)
+                    input_path.write_bytes(duplicate)
+                    refused = subprocess.run([str(case_executable), str(input_path)], env=environment,
+                                             capture_output=True, timeout=30)
+                    assert refused.returncode != 0 and refused.stdout == b""
+                    # A fresh success after refusals also retains the previously occupied result.
+                    fresh = output / "after-refusal"
+                    fresh.mkdir()
+                    input_path.write_bytes(canonical({**case_input, "stream_root": str(fresh)}))
+                    recovered = subprocess.run([str(case_executable), str(input_path)], env=environment,
+                                               capture_output=True, timeout=30)
+                    assert recovered.returncode == 0, recovered.stderr
+                    assert (fresh / "numeric").read_bytes() == (case_root / "numeric").read_bytes()
+
             assert records[0] == records[1], (architecture, model_key, records)
             assert len(records[0]["prompt_ids"]) == record["prompt_tokens"]
             if model_key == eog_key:
