@@ -253,14 +253,15 @@ The provider trace owner now builds it and compares its output with the existing
 results for both models and immediate EOG; `python3 scripts/run-gpu-provider-trace-smoke` passes.
 `gmake fmt` passes. Next: build the same pinned static CPU reference for real expectation capture.
 
-**Real-client admission finding.** The pinned static CPU calibration executable builds successfully,
-but relocated Qwen admission refuses before inference: the supplied full geometry contains its
-original display path while the provider derives that field from the current copied model path.
-This application-owned portability defect blocks both the kit and real calibration; it is not an
-Align gap. Preserve every geometry field and pack/model source binding while deriving the document
-with its recorded display path, then cover relocated fixtures and retry actual CPU expectations.
-The calibration helper now accepts an explicit cache budget; OLMoE's real eight-expert minimum
-cannot use the tiny fixture's 1 MiB budget. The updated provider trace owner passes both models.
+**Real-client relocation repair.** The provider now derives the complete geometry using the
+recorded display path while binding the actual opened GGUF table and pack source identity. Every
+geometry byte still must match; the display path is never opened. Relocated Qwen/OLMoE fixtures,
+normal/immediate EOG and geometry-scalar corruption pass the provider trace owner.
+`gmake runtime-provider-smoke` passes sampler vectors plus 61 CLI assertions; `gmake fmt` passes.
+The rebuilt pinned static CPU reference now generates real Qwen calibration/holdout and OLMoE
+calibration outputs successfully. Complete actual expectation capture and final Metal qualification
+are next. OLMoE calibration uses an explicit 256 MiB expert-cache budget rather than the fixture's
+1 MiB; final profile must retain that same budget.
 
 **Next actions, in order.**
 

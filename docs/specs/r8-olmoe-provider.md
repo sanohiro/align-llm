@@ -31,7 +31,7 @@ operand and coordinates provider, tokenizer, frontend, and decoder behavior.
 | EOG | the tokenizer's bounded canonical EOG set from model metadata and admitted control spellings; the terminal EOG id is removed before text decode |
 | Cache | invocation-local deterministic LRU; budget must produce at least `n_expert_used` fixed maximum-key slots and remain within the existing runtime window ceiling |
 | Results/errors | existing provider `Result<string, Error>` and schema-2 CLI record; configuration, architecture, geometry, source identity, prompt, runtime, and decode failures remain `Error.Invalid` with no partial text |
-| Validation order | provider kind/network-only fields and common bounds; paths/request; GGUF; architecture/budget pairing; architecture frontend; exact geometry; pack source identity; prompt/EOG; context bound; generation; decode/identity/response bound |
+| Validation order | provider kind/network-only fields and common bounds; paths/request; GGUF; architecture/budget pairing; bounded geometry and recorded display path; architecture frontend and exact geometry; pack source identity; prompt/EOG; context bound; generation; decode/identity/response bound |
 | Ownership | cache, KV plane, graph state, and generated ids are invocation-local; only an owned output string escapes |
 | Persisted/cache identity | N/A: no cache survives a call; exact geometry and pack source identity are revalidated by the inference opener |
 | Schema version | API record gains one required field; CLI result remains schema 2; diagnostic MoE document and CLI are unchanged |
@@ -82,3 +82,7 @@ no partial state, and make no performance statement requiring a benchmark.
 The comprehensive review found two P2 qualification defects: re-tokenized output did not prove the
 emitted id chain, and SIGTERM could bypass server cleanup. Both are repaired above without changing
 the provider contract or runtime behavior, so the repair does not trigger another full review.
+
+Geometry relocation uses the shared R7 provider contract: the recorded path is provenance only;
+the complete regenerated document and actual open model/pack identity remain exact. The G1
+provider trace owner covers relocated OLMoE source/pack/geometry and scalar-drift refusal.

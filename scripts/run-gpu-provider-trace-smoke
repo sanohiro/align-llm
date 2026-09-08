@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import shutil
 
 from gpu_qualification_stream import NumericStream, Frame
 import gpu_qualification_native as native
@@ -100,6 +101,21 @@ with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
                               ["--pack", str(model), str(pack), str(work / "pack.json")]):
                 subprocess.run([str(ROOT / "main"), *arguments], check=True,
                                stdout=subprocess.DEVNULL, env=environment)
+            relocated = work / (model.stem + "-relocated")
+            shutil.copyfile(model, relocated)
+            model = relocated
+            # Keep the original geometry bytes/path while moving only the actual model.
+            changed_geometry = work / (model.stem + "-changed-geometry.json")
+            geometry_data = geometry.read_bytes()
+            embedding = json.loads(geometry_data)["model"]["n_embd"]
+            changed_geometry.write_bytes(geometry_data.replace(
+                f'"n_embd":{embedding}'.encode(), f'"n_embd":{embedding + 1}'.encode(), 1))
+            refused_root = work / (model.stem + "-refused-geometry")
+            refused_root.mkdir()
+            refused_seed = subprocess.run([str(seed_executable), str(model), str(pack), str(changed_geometry),
+                str(refused_root), "seed", architecture, "x", "1048576" if architecture == "olmoe" else "0"],
+                env=environment, capture_output=True, text=True)
+            assert refused_seed.returncode != 0 and not refused_seed.stdout
             records = []
             streams = []
             for backend in ("cpu", "gpu"):

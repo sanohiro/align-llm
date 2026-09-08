@@ -22,6 +22,10 @@ MAX_PATH_BYTES := 4096
 MAX_GEOMETRY_BYTES := 16777216
 MAX_RESPONSE_BYTES := 1048576
 
+GeometryPath {
+  path: string,
+}
+
 fn valid_path(value: str) -> bool {
   return value.len() > 0 && value.len() <= MAX_PATH_BYTES && !value.contains("\0")
 }
@@ -192,14 +196,16 @@ fn generate_mode(config: model.ProviderConfig, request: model.GenerationRequest,
     || (olmoe && config.runtime_cache_budget_bytes <= 0) {
     return Err(Error.Invalid)
   }
-  ir := if olmoe {
-    frontend_olmoe.build_model_ir(snapshot.table, config.model)
-  } else {
-    frontend_qwen.build_model_ir(snapshot.table, config.model)
-  }
-  if !ir_ok(ir.status) { return Err(Error.Invalid) }
   geometry := read_geometry(config.runtime_geometry_path)?
   geometry_view: str := geometry
+  recorded: GeometryPath := json.decode(geometry_view)?
+  if !valid_path(recorded.path) { return Err(Error.Invalid) }
+  ir := if olmoe {
+    frontend_olmoe.build_model_ir(snapshot.table, recorded.path)
+  } else {
+    frontend_qwen.build_model_ir(snapshot.table, recorded.path)
+  }
+  if !ir_ok(ir.status) { return Err(Error.Invalid) }
   derived_view: str := ir.document
   if geometry_view != derived_view { return Err(Error.Invalid) }
 

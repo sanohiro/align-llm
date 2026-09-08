@@ -404,6 +404,12 @@ when sampled. Immediate EOG therefore has one expected ID and empty decoded outp
 Expected output is the exact generated UTF-8 byte sequence for those IDs. Its digest is SHA-256 of
 those bytes with no added LF; both CPU repeats and both GPU repeats reproduce the bytes and digest.
 
+Relocatable model inputs preserve the geometry document's recorded display path. The shared R7/R8
+provider derives every geometry field from the actual GGUF table using that recorded path, requires
+complete byte equality, and independently verifies the actual model/pack source identity. It never
+opens the recorded path. The provider trace owner executes unchanged geometry/pack bytes with
+copied models and refuses scalar drift; no persisted schema or calibration hash rewrite is needed.
+
 The private `runtime_calibration_seed` driver obtains CPU expectations before GPU holdout execution.
 Its positional inputs are model, pack, geometry, stream root/name, architecture, prompt and cache
 budget bytes (a nonnegative JSON integer); it uses

@@ -117,6 +117,16 @@ is not accepted and not ignored: the runtime has no cancellation primitive at th
 seed is not accepted and not ignored: greedy execution has no seeded twin record and
 `model_info.supports_seed` is false.
 
+The geometry document's `path` is retained provenance text, not an identity of the current
+filesystem location. After bounded geometry reading, decode its required owning `path` field
+and validate the existing nonempty/4096-byte/no-NUL path grammar. Derive the complete frontend
+document from the actual open GGUF table using that recorded path, then compare all bytes.
+This permits an immutable GGUF/pack/geometry trio to move into a qualification kit without
+rewriting its hashes. Model/pack identity remains the actual opened source header/table and
+pack handle; the recorded path is never opened. Missing/malformed paths, changed model scalars,
+extra fields and noncanonical bytes still refuse before inference. The provider trace owner covers
+relocated Qwen/OLMoE fixtures, normal/immediate-EOG outputs and changed geometry scalars.
+
 The geometry comparison is exact bytes, not a field subset. It binds every scalar consumed by
 `layer_qwen2.parse_geometry`, including RoPE and RMS values that alignpack member-table validation
 alone cannot bind. Inference compares its reopened geometry image to those retained bytes before
