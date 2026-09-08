@@ -505,7 +505,10 @@ signal. A spawned row always names its command and two log paths. Output digest 
 when a complete validated output existed before the later failure. Numeric is
 `compared,expected_scalar_count,actual_scalar_count,expected_layer_count,actual_layer_count,expected_router_boundary_count,actual_router_boundary_count,expected_final_logit_count,actual_final_logit_count,max_absolute_f64_bits,max_relative_f64_bits,near_tie_count,mismatch_count`.
 False requires zero bit patterns/counts and true permits an exact zero error result. CPU rows require
-`compared=false`; GPU rows compare against the adjacent same-repeat CPU row and require true. The
+`compared=false`; passing GPU rows compare against the adjacent same-repeat CPU row and require
+true. A GPU case that fails before a complete comparison reports false with zero numeric fields,
+while separately retaining any observed nonfinite count. A failed completed comparison retains
+true and its actual counts/errors. No failed or missing stream is presented as a comparison. The
 expected counts are independently derived from model geometry and case token widths. PASS requires
 every actual count to equal its expected count, positive scalar/layer/final-logit counts, zero Qwen
 router boundaries and positive OLMoE router boundaries.
@@ -561,8 +564,15 @@ schema-1 validation gap during G1 integration without adding fields or changing 
 unexpected value counts bytes outside declared final-logit and compact-routing readbacks and must
 be zero for PASS. Production resident generation does not read routing decisions back to the host;
 the compact-routing allowance applies only to diagnostic replay below. `memory` is
-`managed_host_peak_bytes,managed_device_peak_bytes,uma_alias_peak_bytes,rss_peak_bytes,driver_peak_bytes`;
-the driver value is integer or null when unavailable. `timing` is
+`managed_host_peak_bytes,managed_device_peak_bytes,uma_alias_peak_bytes,rss_peak_bytes,driver_peak_bytes`.
+Managed peaks describe the production device owner's admitted native allocation domain, as do
+production placement and transfer counters; they are not whole-process heap peaks. CPU rows have
+no allocation in that GPU-managed domain and report zero there. Diagnostic invocations independently
+enforce the same managed caps, and whole-child RSS includes production, diagnostics, language-runtime
+storage and envelope handling. The current loader copies into owned device buffers and has no
+retained host-weight UMA alias, so alias bytes are zero even on Metal. The driver value is integer
+or null when unavailable. Explicit native synchronize calls own `wait_count`; it does not claim
+to count internal driver stalls. `timing` is
 `wall_ns,load_ns,ttft_ns,prefill_ns,decode_ns,device_ns,transfer_ns,wait_ns`; wall is positive for a
 started case, and other fields are nonnegative integer or null when unavailable. Overlapping
 observations are not summed into wall.
@@ -741,6 +751,19 @@ It does not construct final placement/memory evidence. The native fixture owner 
 CPU/GPU/repeat executions, bounded environment, exact paired results, retained-CPU mutation refusal,
 occupied scratch preservation and no next child after a post-process validation refusal; the
 existing process owner remains authoritative for timeout/descendant cleanup.
+
+`gpu_qualification_case_records` assembles each profile-bound row from its independently derived
+native plan and observed sequence outcome. It retains actual process status, output/IDs only when
+native success was validated, completed numeric comparison or the explicit uncompared zero record,
+production placement/transfers and native allocation observations, and per-child RSS/wall time.
+Unavailable phase timings and driver memory are null. CPU rows have no GPU-managed placement or
+transfer observations; their whole-child resource use remains visible in RSS. Unstarted rows have
+no command, logs or invented process result. A missing RSS observation or unexpected descendant
+prevents PASS. Logs retain complete-stream digests and bounded bytes at distinct case paths.
+Construction validates the resulting row through the shared schema owner. This is case evidence
+assembly; final source/input/cleanup checks and publication still own the qualification verdict.
+Its owner covers CPU/GPU rows, zero-exit numeric failure, pre-comparison nonfinite failure,
+unstarted cases, missing measurements, real log identities and profile/plan mismatch refusal.
 
 `gpu_qualification_cli.native_plans` connects a completed five-step preparation to that sequence.
 It rechecks admitted inputs, reads the retained geometry, and binds each exact profile expansion

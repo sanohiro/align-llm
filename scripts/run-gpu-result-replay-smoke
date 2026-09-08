@@ -255,7 +255,13 @@ calibration_failed = calibration_cases[expected_failed["calibration_case_id"]]
 validated_failed = records.validate_case(comparison_failed, expected=expected_failed,
     calibration_case=calibration_failed, status="FAIL")
 assert validated_failed["exit_code"] == 0 and validated_failed["output_sha256"]
+uncompared = copy.deepcopy(comparison_failed)
+uncompared.update(output_sha256="", token_ids=[], nonfinite_count=1)
+uncompared["numeric"] = copy.deepcopy(passing_cases[0]["numeric"])
+records.validate_case(uncompared, expected=expected_failed, calibration_case=calibration_failed, status="FAIL")
 for altered in (
+    {**uncompared, "numeric": {**uncompared["numeric"], "actual_scalar_count": 1}},
+    {**passing_cases[1], "numeric": uncompared["numeric"]},
     {**comparison_failed, "exit_code": False},
     {**comparison_failed, "exit_code": None},
     {**comparison_failed, "signal": True},

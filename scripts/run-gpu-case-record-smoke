@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Own case-record assembly using validated-boundary fixtures and real process/log results."""
+import dataclasses
+import hashlib
+import json
+from pathlib import Path
+import tempfile
+
+from gpu_backend_recipe import RecipeError
+from gpu_qualification_case_records import assemble, empty_numeric
+from gpu_qualification_native import prepare, NativeSuccess
+from gpu_qualification_native_sequence import Plan, Outcome
+from gpu_qualifier_process import run_owned_command
+
+ROOT = Path(__file__).resolve().parent.parent
+document = (ROOT / "docs/specs/gpu-runtime.md").read_text()
+vectors = document.split("### 3.9 Canonical positive vectors", 1)[1].split("```json\n", 1)[1].split("```", 1)[0]
+lines = [json.loads(line) for line in vectors.splitlines()]
+profile = lines[6]
+calibration = lines[4]
+frozen = calibration["cases"][0]
+geometry = {"kind": "R1_MODEL_IR", "schema_version": 2, "status": "ok", "error_code": "",
+    "model": {"arch": "qwen2", "n_layer": 1, "n_embd": 8, "n_vocab": 512,
+              "n_expert": 0, "head_dim": 4, "n_head_kv": 1, "context_length": 4096},
+    "source": {"tensor_count": 15}, "quant": {"total_tensor_bytes": 256},
+    "coverage": {"tensor_count": 15, "assigned_tensor_count": 15, "unassigned_tensors": [],
+                 "size_sum_ok": True, "total_tensor_bytes": 256}}
+
+with tempfile.TemporaryDirectory(prefix="gpu-case-record-") as raw:
+    root = Path(raw).resolve()
+    home, temporary = root / "home", root / "tmp"
+    home.mkdir(mode=0o700)
+    temporary.mkdir(mode=0o700)
+    executable = Path("/bin/sh").resolve()
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    token = "<candidate>:sha256:" + digest
+    script = "printf native-output; printf native-error >&2"
+    process = run_owned_command(kind="case", physical_argv=[str(executable), "-c", script],
+        logical_argv=[token, "-c", script], mappings={token: executable}, cwd=root,
+        home=home, temporary=temporary, timeout_seconds=5)
+    assert process.terminal == "PASS" and process.rss_peak_bytes > 0
+    for gpu in (False, True):
+        ordinal = int(gpu)
+        expected = profile["cases"][ordinal]
+        case = prepare(model_id="qwen2", geometry=geometry, calibration_case=frozen,
+            model_path=root / "model", pack_path=root / "pack", geometry_path=root / "geometry",
+            options_path=root / "options" if gpu else None, cache_budget_bytes=0,
+            stream_root=root / "numeric", stream_name="stream")
+        plan = Plan(("qwen2", frozen["case_id"], 0), case, executable, digest, calibration["comparison"])
+        observation = {} if not gpu else {
+            "model_operations": 30, "model_layers": 1, "model_experts": 0,
+            "resident_weight_payload_bytes": 256, "resident_kv_payload_bytes": case.residency.kv_bytes,
+            "weight_upload_count": 15, "weight_upload_bytes": 256, "kv_upload_bytes": 0,
+            "input_upload_bytes": 32, "read_bytes": 2048, "sync_calls": 2,
+            "managed_host_peak_bytes": 8192, "managed_device_peak_bytes": 65536,
+        }
+        native = NativeSuccess({"token_ids": frozen["expected_token_ids"]}, observation,
+                               frozen["expected_output_sha256"], "a" * 64)
+        numeric = None
+        if gpu:
+            numeric = empty_numeric()
+            numeric.update(compared=True, expected_scalar_count=100, actual_scalar_count=100,
+                           expected_layer_count=2, actual_layer_count=2,
+                           expected_final_logit_count=64, actual_final_logit_count=64)
+        outcome = Outcome(process, native, numeric, None, "")
+        row, logs = assemble(ordinal, expected, plan, outcome)
+        assert row["terminal"] == "PASS" and row["exit_code"] == 0
+        assert row["memory"]["rss_peak_bytes"] == process.rss_peak_bytes
+        assert row["timing"]["wall_ns"] == process.elapsed_ns and row["timing"]["decode_ns"] is None
+        assert row["memory"]["managed_device_peak_bytes"] == (65536 if gpu else 0)
+        assert logs[row["stdout_path"]].data == b"native-output"
+        assert logs[row["stderr_path"]].original_sha256 == hashlib.sha256(b"native-error").hexdigest()
+        unstarted, no_logs = assemble(ordinal, expected, plan, None)
+        assert unstarted["terminal"] == "FAIL" and unstarted["exit_code"] is None
+        assert not unstarted["command"]["argv"] and not no_logs and not unstarted["stdout_path"]
+        assert unstarted["output_sha256"] == "" and unstarted["token_ids"] == []
+        for changed in (dataclasses.replace(process, rss_peak_bytes=None),
+                        dataclasses.replace(process, descendants_before=1)):
+            refused, _ = assemble(ordinal, expected, plan, dataclasses.replace(outcome, process=changed))
+            assert refused["terminal"] == "FAIL" and refused["exit_code"] == 0
+        try:
+            assemble(ordinal, {**expected, "model_id": "olmoe"}, plan, outcome)
+        except RecipeError:
+            pass
+        else:
+            raise AssertionError("profile/plan mismatch was accepted")
+        if gpu:
+            mismatch = {**numeric, "mismatch_count": 1}
+            refused, _ = assemble(ordinal, expected, plan, dataclasses.replace(
+                outcome, numeric=mismatch, error="numeric mismatch"))
+            assert refused["terminal"] == "FAIL" and refused["exit_code"] == 0
+            assert refused["numeric"]["compared"] and refused["numeric"]["mismatch_count"] == 1
+            assert refused["output_sha256"] == native.output_sha256
+            failed_process = dataclasses.replace(process, terminal="FAIL", exit_code=1)
+            refused, _ = assemble(ordinal, expected, plan, Outcome(failed_process, None, None,
+                {"stream_nonfinite_count": 1}, "native nonfinite"))
+            assert refused["category"] == "NONFINITE" and refused["nonfinite_count"] == 1
+            assert refused["numeric"] == empty_numeric() and refused["output_sha256"] == ""
+            assert refused["placement"]["minimum_weights_device_bytes"] == 0
+
+print("gpu case records: PASS (observed status/logs, native bindings and honest failure fields)")

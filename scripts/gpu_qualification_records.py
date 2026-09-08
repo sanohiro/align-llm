@@ -732,14 +732,15 @@ def validate_case(
     if result["execution"] == "cpu":
         if numeric["compared"]:
             raise RecipeError("CPU evidence case is numerically compared")
+    elif terminal == "PASS" and not numeric["compared"]:
+        raise RecipeError("GPU evidence case lacks numeric comparison")
+    if not numeric["compared"]:
         for key in numeric_keys[:8] + numeric_keys[10:]:
             if numeric[key] != 0:
-                raise RecipeError("CPU case numeric counts are not zero")
+                raise RecipeError("uncompared case numeric counts are not zero")
         if numeric["max_absolute_f64_bits"] != "0000000000000000" \
                 or numeric["max_relative_f64_bits"] != "0000000000000000":
-            raise RecipeError("CPU case numeric error bits are not zero")
-    elif not numeric["compared"]:
-        raise RecipeError("GPU evidence case lacks numeric comparison")
+            raise RecipeError("uncompared case numeric error bits are not zero")
     if terminal == "PASS":
         if token_ids != calibration_case["expected_token_ids"] \
                 or result["output_sha256"] != calibration_case["expected_output_sha256"]:

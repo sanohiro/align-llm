@@ -209,10 +209,21 @@ large-then-small child isolation, repeated waits, timeouts, signals and interrup
 Next: assemble truthful final case/evidence records, resolve remaining memory scope and partial
 numeric-failure record closure, connect publication/replay and run real hardware qualifications.
 
+**Case-record checkpoint.** `gpu_qualification_case_records.assemble` now builds schema-validated
+CPU/GPU case rows from native plans and outcomes, retains actual exit status and log identities,
+and refuses PASS on absent RSS or unexpected descendants. Unstarted cases have no invented
+command/log/output; GPU failure before comparison has an explicit uncompared zero numeric record
+and preserves any observed nonfinite count. Completed numeric mismatch retains real zero exit,
+comparison counts and validated output digest. `python3 scripts/run-gpu-case-record-smoke` and
+`gmake gpu-result-replay gpu-profile-coverage gpu-evidence-publication` pass. Managed memory is
+explicitly the production native device-owner allocation domain; whole-child RSS covers all three
+trajectories and runtime storage. Next: collect the sequence's terminal prefix and connect final
+source/cleanup/evidence publication; no final qualifier CLI or real-device PASS exists yet.
+
 **Next actions, in order.**
 
-1. Assemble profile-bound case/evidence records from completed observations; close partial numeric
-   failure records and make managed-memory versus whole-child RSS scope explicit.
+1. Collect case rows/logs and the sequence's terminal prefix, then assemble final evidence with
+   exact source/input/cleanup checks and publication. Per-case assembly and metric scope are settled.
    Prepared executable/profile/calibration binding and native numeric sequencing now pass owners.
 2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
    process/record/replay/publication owners, and real source/profile/calibration kit construction.
