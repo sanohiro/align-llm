@@ -1661,7 +1661,6 @@ struct align_gpu_device_state {
     void *staging;
     void *weights_buffer;
     void *kv_buffer;
-    void *workspace_buffer;
     unsigned char *workspace_storage;
     int64_t workspace_allocated_bytes;
     void *input_buffer;
@@ -2003,8 +2002,6 @@ static void align_gpu_memory_release(struct align_gpu_device_state *state) {
     free(state->workspace_storage);
     state->workspace_storage = NULL;
     state->workspace_allocated_bytes = 0;
-    free(state->workspace_buffer);
-    state->workspace_buffer = NULL;
     free(state->input_buffer);
     state->input_buffer = NULL;
     free(state->kv_buffer);
@@ -2074,12 +2071,7 @@ int32_t align_gpu_memory_allocate(void *owner) {
     if (state->kv_buffer == NULL) {
         goto fail;
     }
-    if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 5) {
-        state->workspace_buffer = malloc((size_t) state->workspace_bytes);
-    }
-    if (state->workspace_buffer == NULL) {
-        goto fail;
-    }
+    /* Reserve no unused workspace: input and graph extents are measured separately. */
     state->memory_allocated = 1;
     align_gpu_observe_memory(state);
     return ALIGN_GPU_OK;
@@ -2098,12 +2090,8 @@ int64_t align_gpu_memory_allocated_bytes(void *owner, int32_t field) {
     if (state->workspace_allocator != NULL) {
         workspace = (int64_t) state->input_offset
             + align_ggml_gallocr_bytes(state->workspace_allocator);
-    } else if (state->workspace_buffer != NULL) {
-        workspace = state->workspace_bytes;
     } else if (state->input_buffer != NULL) {
         workspace = (int64_t) state->input_offset;
-    } else {
-        return -1;
     }
     switch (field) {
     case 0: return state->metadata_bytes + state->staging_bytes;
@@ -2667,11 +2655,9 @@ int32_t align_gpu_inputs_finish(void *owner) {
     if (state == NULL || state->inputs_failed || state->inputs_finished
         || state->inputs_expected <= 0 || state->inputs_created != state->inputs_expected
         || state->input_offset == 0 || state->input_offset >= (size_t) state->workspace_bytes
-        || state->workspace_buffer == NULL) {
+        || !state->memory_allocated || state->input_buffer != NULL) {
         return ALIGN_GPU_CONFIG;
     }
-    free(state->workspace_buffer);
-    state->workspace_buffer = NULL;
     if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX != 6) {
         state->input_buffer = malloc(state->input_offset);
     }
@@ -2878,7 +2864,7 @@ static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state)
     void *largest = NULL;
     int64_t largest_bytes = 0;
     int kind = 0;
-    if (state == NULL || state->input_buffer == NULL || state->workspace_buffer != NULL) {
+    if (state == NULL || state->input_buffer == NULL) {
         return ALIGN_GPU_CONFIG;
     }
     if (state->workspace_allocator != NULL) {
@@ -2911,6 +2897,7 @@ static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state)
         || largest_bytes > state->workspace_bytes - (int64_t) state->input_offset) {
         return ALIGN_GPU_MEMORY_BUDGET;
     }
+    if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX == 5) { return ALIGN_GPU_ALLOCATION; }
     state->workspace_storage = (unsigned char *) malloc((size_t) largest_bytes);
     state->workspace_allocator = align_ggml_gallocr_new(state->backend);
     if (state->workspace_storage == NULL || state->workspace_allocator == NULL
@@ -2935,7 +2922,7 @@ int32_t align_gpu_graph_prepare(
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     int32_t status = ALIGN_GPU_OK;
     if (state == NULL || graph == NULL || !state->weights_finished || !state->kv_finished
-        || !state->inputs_finished || state->workspace_failed || state->workspace_buffer != NULL
+        || !state->inputs_finished || state->workspace_failed
         || state->input_buffer == NULL || !align_gpu_graph_kind_ok(kind)
         || state->graph_contexts[kind] == NULL || state->graph_prepared[kind]
         || !align_gpu_topology_key_ok(key, key_length)

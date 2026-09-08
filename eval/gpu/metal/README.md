@@ -62,3 +62,24 @@ diagnostic retention; it does not certify every application operation. The earli
 also documents cross-device logit differences and massive-activation residuals. G1's current
 strict profile remains failed. Choosing a different validation contract requires an explicit
 design decision and independent acceptance data, not widening these frozen thresholds.
+
+## Workspace allocation regression
+
+The model-free real-backend owner checks that increasing the workspace ceiling from 1 MiB to
+1 GiB does not change initial allocations or the measured input/graph peak. It also releases
+each completed allocation set. Run against the same pinned headers and Metal bundle:
+
+```sh
+cc -O2 -Wall -Wextra -Werror -ffp-contract=off -DALIGN_GGML_FP_CONTRACT_OFF=1 \
+  -I "$GGML_CHECKOUT/ggml/include" scripts/gpu_workspace_allocation_smoke.c \
+  -L "$METAL_BUNDLE" -lggml -lggml-base -Wl,-rpath,"$METAL_BUNDLE" \
+  -o /tmp/align-gpu-workspace-allocation
+/tmp/align-gpu-workspace-allocation "$METAL_BUNDLE/libggml-metal.so"
+```
+
+Apple M1: PASS. The Qwen calibration diagnostic with the repaired shim also exits successfully:
+native device peak 4,684,650,528 bytes instead of the former 6,000,000,000-byte ceiling allocation;
+all 147 numeric frames are byte-identical to the retained pre-repair diagnostic. This establishes
+allocation repair without a numerical change, not a speedup or numerical qualification.
+`scripts/run-gpu-device-smoke` additionally owns the metadata/staging/weights/KV/input/graph
+allocation-failure paths, reopening after failure, and peak preservation across graph rebuilds.

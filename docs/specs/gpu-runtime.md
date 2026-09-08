@@ -861,12 +861,13 @@ owns teardown after it. No timing or performance claim follows from these counte
 
 Allocation peaks cover this native owner's admitted metadata/staging and resident device buffers,
 starting at successful initial allocation and retaining the maximum across input/workspace
-replacement and graph rebuild. The initial full workspace is a real allocation and remains part
-of the peak after replacement with smaller graph storage. Host and device accounting remain
+allocation and graph rebuild. The workspace plan is a ceiling, not an allocation request: initial
+allocation owns weights and KV only; input planning queries the backend buffer type without a
+placeholder buffer, then allocates the measured inputs and graph storage. Host and device accounting remain
 separate on UMA; these fields do not measure RSS, driver-private storage, or an unsuccessful initial
 allocation prefix. Observation failure is sticky if a current sample is invalid. Current allocation
 queries retain their existing meaning. `gpu-device-smoke` owns zero defaults, exact initial peaks,
-smaller current workspace with preserved peak, and graph rebuild; the provider trace owner checks
+measured workspace with preserved peak, and graph rebuild; the provider trace owner checks
 peak/current ordering and unavailable CPU/diagnostic observations before teardown.
 
 Resident payload observations scan the owner's original ordered metadata tensors after weight/KV

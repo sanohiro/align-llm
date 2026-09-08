@@ -76,6 +76,17 @@ The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
+**Active repair checkpoint (unpublished).** The user requires continued work until GPU completion.
+R2's eager unused workspace allocation is removed in both native implementations. Input planning
+now queries the backend buffer type, and initial device allocation contains weights/KV only.
+`scripts/run-gpu-device-smoke` passes, including moved graph-allocation fault injection and all
+allocation-prefix cleanup/reopen cases. Real Apple M1 `gpu_workspace_allocation_smoke.c` passes
+identical measured peaks with 1 MiB and 1 GiB workspace ceilings. Qwen's relocated diagnostic exits
+zero with 147 numeric frames byte-identical to the previous run; native device peak decreases from
+6,000,000,000 to 4,684,650,528 bytes. This does not resolve numerical qualification or all of R2:
+exact graph measurement/capability admission before model upload remains active, along with R1
+and R3–R10. The real C shim passes strict syntax checking. No CUDA rerun is requested.
+
 Align producer deliveries through PR #992 are merged at
 `305926b423da9be1f13b0129a7232626e6704d95`; issue #990 is closed. The targeted follow-up
 accepts case 06 and rejects unsafe cases 08/09. Case 11 remains a settled direct-place
@@ -98,9 +109,11 @@ matrix products at widths 1 and 20 without Align or application graphs. Its stri
 six real-backend cases pass execution; README records the observed numerical failures.
 This is a backend arithmetic / application acceptance-contract issue, not an Align language gap.
 R5C section 2.5 already documents analogous residuals. Do not loosen frozen tolerances.
-The user was asked whether to prioritize a redesigned numeric contract with independent data
-or arithmetic changes that preserve the current threshold. CUDA host preparation continues
-independently; comprehensive review and publication remain pending.
+The user requires implementation repair and local Metal verification before any further user-run
+CUDA work. Further user-run CUDA validation is limited to the subsequent performance comparison;
+do not request CUDA functional, numerical, or debugging reruns. Own the numerical investigation
+locally using independent Metal references and the existing CUDA report. No user design decision
+is pending. Do not merge the known-failing capability.
 
 **CUDA result reported in [issue #218](https://github.com/sanohiro/align-llm/issues/218).**
 Pengwin completed preparation with CUDA 13.3 / nvcc 13.3.73 and both models. The reported tested
@@ -121,10 +134,23 @@ onto this host. Backend-recipe and qualification-CLI smokes pass locally. The re
 owner also passes on macOS, including literal dollar/quote/backtick path characters and static
 registry isolation, using the pinned compiler and ggml checkout. The issue reports
 independent reviews of the first two repairs and the third's accepted quoting-finding repair;
-the complete bound review envelopes are not present in the issue. Final capability review is
-still outstanding. Next: localize CUDA scalar and routing divergence using the retained streams
-on Pengwin before changing the numerical contract. This host has only the issue excerpts;
-the full CUDA streams and replay closure are not available locally.
+the complete bound review envelopes are not present in the issue. One comprehensive independent
+review of head `bb8ad9b2958eed57c898494891a0f5e407aca815` against base/merge base
+`b5336f02ec5d4563824490a355a53eb0c8fdafab` is complete: REQUEST CHANGES. The complete finding set
+covers host/device allocation admission, backend operation admission, decode graph reuse, prefill
+chunking, real corpus coverage, replay executable/input binding, native first-fault preservation,
+loaded core-library identity, and validation deadlines. Validate and consolidate these repairs
+alongside the known numerical blocker before publication; do not ask for another CUDA debug run.
+
+Independent pinned llama.cpp Metal diagnostics use the same Qwen prompt, F32 KV and disabled flash
+attention. Explicitly placing its embedding tensor on Metal reduces the production-logit difference
+from the candidate to maximum absolute 0.0030527114868164062 at prefill and
+0.0015549659729003906 at decode. Both still fail the frozen scalar criterion. Default llama.cpp
+leaves this embedding on CPU even with all transformer layers offloaded, so that placement must
+be matched in future local semantic comparisons. This is diagnostic evidence, not qualification.
+Next: resolve the remaining local numerical and execution defects, pass local Metal verification,
+then prepare the CUDA performance comparison. Existing CUDA excerpts remain the available remote
+evidence; do not make obtaining full remote streams a new task for the user.
 
 ### Preserved implementation checkpoint
 

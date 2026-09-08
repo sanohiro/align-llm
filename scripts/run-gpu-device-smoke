@@ -160,7 +160,7 @@ if [ "${gpu_output}" != "runtime device smoke: AVAILABLE PASS" ]; then
   exit 1
 fi
 
-for prefix in metadata staging weights kv workspace; do
+for prefix in metadata staging weights kv; do
   export DYLD_LIBRARY_PATH="${allocation_shims}/${prefix}"
   export LD_LIBRARY_PATH="${allocation_shims}/${prefix}"
   allocation_output=$("${executable}" allocation-failure metal stub-gpu \
@@ -172,15 +172,16 @@ for prefix in metadata staging weights kv workspace; do
   fi
 done
 
-export DYLD_LIBRARY_PATH="${allocation_shims}/input"
-export LD_LIBRARY_PATH="${allocation_shims}/input"
-input_allocation_output=$("${executable}" input-allocation-failure metal stub-gpu \
-  "${work_dir}/bundle" "${work_dir}/invalid-bundle" "${work_dir}/other-bundle" \
-  "${backend_path}" "${bundle_id}")
-if [ "${input_allocation_output}" != "runtime device smoke: INPUT ALLOCATION FAILURE PASS" ]; then
-  printf '%s\n' \
-    "gpu device smoke: FAIL input allocation output: ${input_allocation_output}" >&2
-  exit 1
-fi
+for prefix in input workspace; do
+  export DYLD_LIBRARY_PATH="${allocation_shims}/${prefix}"
+  export LD_LIBRARY_PATH="${allocation_shims}/${prefix}"
+  input_allocation_output=$("${executable}" "${prefix}-allocation-failure" metal stub-gpu \
+    "${work_dir}/bundle" "${work_dir}/invalid-bundle" "${work_dir}/other-bundle" \
+    "${backend_path}" "${bundle_id}")
+  if [ "${input_allocation_output}" != "runtime device smoke: INPUT ALLOCATION FAILURE PASS" ]; then
+    printf '%s\n' "gpu device smoke: FAIL ${prefix} allocation output: ${input_allocation_output}" >&2
+    exit 1
+  fi
+done
 
 printf '%s\n' "gpu device smoke: PASS"
