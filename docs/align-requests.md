@@ -11271,21 +11271,21 @@ negative controls. Publish subsequent findings in this bounded set together; do 
 Align with a new request/PR per reproduced symptom.
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: G1 observed generation and native diagnostic case integration
 Independent work that may continue: native stream byte/state owners and Python qualification
   infrastructure; the native stream alone passes its independent golden, but cannot close G1
-Resume condition: Align ships whole/per-unit parity for non-retaining mutable stream helpers;
-  adopt the shipped pin and pass gpu-numeric-stream and gpu-generation-smoke with observed logits
-Align commit or pull request: pending
-align-llm verification: managed 3fbb74fe7c351e526c997bd4c70bd00cf1a424a0 builds the native
-  stream and passes gpu-numeric-stream; the two-file fixture below passes check but fails
-  check-per-unit, and the production observed-generation caller fails native build
+Resume condition: adopt shipped Align 73251b30f7e5a2df3c904421e577a2bd76325f09 or a descendant
+  and pass gpu-numeric-stream and gpu-generation-smoke with observed logits
+Align commit or pull request: https://github.com/sanohiro/align/pull/991; merged as
+  73251b30f7e5a2df3c904421e577a2bd76325f09
+align-llm verification: pending consumer-owned adoption and qualification; baseline reproduction
+  and producer delivery evidence are recorded below
 ```
 
-Request 61's shipped receivers work: the bounded writer produces the independent 160-byte golden,
+At baseline `3fbb74fe`, Request 61's shipped receivers work: the bounded writer produces the independent 160-byte golden,
 rejects malformed/nonfinite/over-budget records, preserves occupied outputs and enforces terminal
 states. Its real caller borrows an existing stream and records a local logits-buffer view during
 prefill and decode. That view is consumed synchronously by `writer.write`; it is not stored in the
@@ -11324,7 +11324,7 @@ From the G1 consumer checkout with `.align-revision` set to
 `scripts/alignc check <directory>/main.align` and
 `scripts/alignc check-per-unit <directory>/main.align`. This request-only publication branch does
 not adopt that pin. The first reports three checked functions; the second
-rejects `helper.emit(owner, bytes)`. Sibling HEAD is the same shipped commit. The current source
+rejects `helper.emit(owner, bytes)`. The inspected sibling HEAD was the same shipped commit. That source
 owns inferred mutable-borrow retention in `crates/align_sema/src/lib.rs`
 (`BorrowMutRetentionSummary`, `infer_return_provenance`, imported-call fallback). The disagreement
 is evidence of a compiler/interface gap; the precise faulty summary path remains for Align to
@@ -11364,5 +11364,38 @@ allocation to avoid a real use-after-free. Case 09's imported twin is accepted b
 checking and rejected by per-unit/build. This violates the existing negative acceptance above
 and belongs to the same retention/ownership investigation; it is not permission to admit every
 shorter-lived operand. The report and companion source bundle contain full fixtures, mode results,
-exact compiler identity, and a reproducible proof. Status remains PROPOSED until Align accepts
-and implements the consolidated repair; no production workaround is consumed.
+exact compiler identity, and a reproducible proof. This is baseline evidence; the merged
+producer repair and remaining precision deferrals are recorded below.
+
+**Align delivery — consolidated G1 audit (issue #990).**
+
+Align PR [#991](https://github.com/sanohiro/align/pull/991) merged as
+`73251b30f7e5a2df3c904421e577a2bd76325f09`; consumer adoption remains pending.
+
+The batch preserves inferred source retention independently from writable
+storage identity and destination lifetime, including known/unknown storage,
+headerless buffer owners, helper argument completion, loop results, and the Ok
+arm of `map_err`. Short-circuit bypass paths remain checked even when their
+conditional operand returns, breaks, aborts, or never completes. The ownership
+model, writer APIs, interface format 10, and runtime ABI are unchanged. Retaining
+a local buffer view in caller-owned storage is rejected; synchronous writes and
+independent outputs remain accepted.
+
+The producer PR reports all 21 frozen audit cases ran with a matching optimized compiler/runtime.
+Nineteen cases meet their expected verdict, including whole/per-unit/build
+rejection of unsafe cases 08/09 and the independent native stream, six-kind codec,
+and observed Qwen/OLMoE byte goldens. The final CPU-reference build passed the
+unchanged 180-second limit. Cases 06 (derived-view helper invalidation) and 11
+(same-call scalar snapshot) remain explicit non-blocking precision deferrals;
+the aggregate report therefore remains `ready=false`, not a full qualification.
+The case bundle SHA256 is
+`44cdba88617be0091d9a5ab4c1890535350a9e50681aef6eb6a992bb0c27fe05`;
+the producer PR records the final candidate and its validation results.
+
+Producer regression owners cover borrowed/by-value helpers, whole/per-unit parity,
+branch/loop/error/short-circuit combinations, generic forwarding, known storage
+joins and safe lifetime controls, and cache cold/hit/private-edit/revert behavior.
+The complete return-provenance owner retains cleanup and allocation-parity checks.
+The revised independent full-diff review is clean. Align performed no consumer
+adoption or production edits. Adoption, `gpu-numeric-stream`, observed
+`gpu-generation-smoke`, and real Metal/CUDA qualification remain align-llm-owned.
