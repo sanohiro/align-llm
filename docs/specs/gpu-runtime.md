@@ -1596,3 +1596,65 @@ capacity, traversal, numeric-pair and case-record owners pass. Existing short re
 final-logit comparisons remain bitwise identical to pinned same-device llama.cpp (7 rows each);
 this is supplementary evidence, not full real corpus or cross-backend qualification. R6 and the
 original numerical acceptance failure remain open.
+
+### Independent reference acquisition for numerical repair (B0/R6, active)
+
+The frozen CPU/GPU FAIL records are retained. A new local diagnostic acquires the pinned
+llama.cpp graph on the same selected GPU, with every model tensor (including embedding lookup)
+on that device, F32 K/V, decomposed attention and a 128-token microbatch. This isolates graph
+correctness from the CPU quantized-activation arithmetic. It does not relabel the old result or
+change its tolerances. Before replacing any shipping acceptance contract, the complete independent
+layer/router/output evidence and real boundary corpus must be acquired and assessed.
+
+The private `eval/gpu/reference-acquire.cpp` driver accepts one bounded JSON input file containing
+`model_path,plugin_path,prompt_token_ids,maximum_tokens,seed,output_root`; seed is null for greedy
+or a signed 64-bit integer for the existing OLMoE sampling policy. Input IDs must be independently
+prepared before candidate execution. Maximum prompt/output lengths are 2048/128. The caller owns
+a fresh output directory and the model/plugin/linked-library provenance. The driver owns one model,
+context, bounded tensor readback and file handles; any invalid shape, nonfinite value, failed
+backend/decode/write or exceeded 4 GiB retained output ceiling terminates unsuccessfully.
+
+Outputs are invocation-local F32/I32 tensor files plus an index with exact step/name/type/shape,
+and a JSON production token/text record. Captured names are pinned llama.cpp's `l_out`,
+`ffn_moe_probs`, `ffn_moe_topk`, and `ffn_moe_weights`; views are packed using actual strides.
+Repeated microbatch rows are separately indexed rather than overwritten. Logits are captured at
+every generated position plus one teacher-forced row after the final sampled ID (including EOG).
+The zero-column highest-layer result on a non-final upstream microbatch is omitted. Sampling is a separate independent implementation of the already shipped
+stable top-k/top-p/min-p/temperature and SplitMix64/Xoshiro256++/Lemire draw contract. The acquisition
+is not a candidate execution and cannot declare public qualification PASS. Persisted identity is
+N/A until a later accepted qualification envelope binds these private files. No new runtime API,
+cache identity or production allocation is introduced.
+
+Owner evidence: compare every indexed layer/router/logit row with the candidate on fixed short and
+long real prompts; verify seeded decisions against the owning Align sampler; exercise malformed
+input, nonfinite and truncated/missing captures in the consuming comparison owner. Real acceptance
+must cover immediate EOG, maximum one/128, successive decode, maximum supported prompt/request
+capacity and OLMoE seed reproducibility. Exact model-context exhaustion is unreachable through the
+current 2048-prompt/128-output provider for the two real model geometries; its existing model-free
+context-end owner remains explicit, and the real corpus must exercise the reachable request ceiling.
+
+Immediate EOG has a distinct real generation-owner case: take a frozen independent completed
+response, append all of its non-EOG IDs to its original prompt, and request up to 128 new tokens
+through the raw-ID generation boundary. The next independently sampled ID must be an actual EOG
+from the unchanged GGUF. This exercises real weights and genuine terminal metadata without
+altering logits, token metadata or chat templates to manufacture an EOG. The private
+`runtime_immediate_eog_smoke` driver consumes the existing bounded case input, verifies original
+GGUF/pack/geometry identity, obtains EOG IDs from the tokenizer owner and verifies exactly one
+sample/readback with the real observed generation path. It is an owning regression at the raw-ID
+boundary; ordinary provider prompt rendering remains covered by the other real cases.
+
+The reproducible acquisition build owner is
+`scripts/build-gpu-independent-reference PINNED_GGML_CHECKOUT NEW_OUTPUT_DIRECTORY`. It refuses
+an occupied output or a dirty/wrong-revision checkout, freshly builds pinned llama/core libraries
+with the CPU backend for input staging and an explicit externally loaded GPU plugin, and records
+the driver/executable/library/compiler hashes and build commands. `reference-acquire-smoke.cpp`
+checks the independent sampler against shipped Align seed/tie/one-token/min-p goldens. A fresh
+build's complete real Qwen/OLMoE short captures match the candidate bitwise.
+
+The local acquisition checkpoint now covers 15 provider cases: 1446356480 scalar/selection
+comparisons are bitwise equal, including both models at 2048 input plus 128 generated tokens.
+Two additional real continuation cases pass immediate EOG with one readback and zero decode
+executions. All 17 cases' observed model-operation/layer/expert counts, resident payloads and
+simultaneous host/device capacities agree with the independent existing native projection.
+The old CPU/GPU numerical FAIL remains separate; formal shipping-owner/corpus integration is
+still active and this diagnostic checkpoint does not declare G1 complete.

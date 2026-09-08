@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Own complete independent tensor consumption and malformed retained-reference refusal."""
+import copy
+import importlib.util
+import json
+import pathlib
+import struct
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location("independent_reference", ROOT / "eval/gpu/compare-reference.py")
+reference = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(reference)
+from gpu_backend_recipe import RecipeError
+
+
+def run():
+    with tempfile.TemporaryDirectory(prefix="g1-independent-reference-") as temporary:
+        root = pathlib.Path(temporary).resolve()
+        geometry = {"schema_version": 2, "kind": "R1_MODEL_IR", "model": {
+            "arch": "olmoe", "n_layer": 2, "n_embd": 3, "n_vocab": 5,
+            "n_expert": 4, "n_expert_used": 2, "context_length": 512}}
+        case = {"prompt_token_ids": [1] * 129, "teacher_forced_token_ids": [3],
+                "maximum_tokens": 1, "expected_token_ids": [3], "expected_output_utf8": "x"}
+        payloads = {"l_out": struct.pack("<3f", 1, 2, 3), "ffn_moe_probs": struct.pack("<4f", .4, .3, .2, .1),
+                    "ffn_moe_topk": struct.pack("<2i", 0, 1), "ffn_moe_weights": struct.pack("<2f", .4, .3),
+                    "logits": struct.pack("<5f", 0, 1, 2, 4, 3)}
+        index = []
+        for step in (0, 1):
+            for layer in (0, 1):
+                for columns in ((128, 1) if step == 0 and layer == 0 else (1,)):
+                    for name, width, dtype in (("ffn_moe_probs", 4, 0), ("ffn_moe_topk", 2, 26),
+                                               ("ffn_moe_weights", 2, 0), ("l_out", 3, 0)):
+                        shape = [1, width, columns, 1] if name == "ffn_moe_weights" else [width, columns, 1, 1]
+                        data = payloads[name] * columns
+                        row = {"file": f"{len(index)}.bin", "step": step, "name": f"{name}-{layer}",
+                               "type": dtype, "shape": shape, "bytes": len(data)}
+                        (root / row["file"]).write_bytes(data)
+                        index.append(row)
+            data = payloads["logits"]
+            row = {"file": f"{len(index)}.bin", "step": step, "name": "logits", "type": 0,
+                   "shape": [5, 1, 1, 1], "bytes": len(data)}
+            (root / row["file"]).write_bytes(data)
+            index.append(row)
+        canonical_index = b"".join(json.dumps(row).encode() + b"\n" for row in index)
+        (root / "index.jsonl").write_bytes(canonical_index)
+        (root / "production.json").write_text(json.dumps({"token_ids": [3], "prompt_ids": [1] * 129, "text": "x"}))
+        rows = [(1, 0xffffffff, 0, 5, 1, payloads["logits"])]
+        # Enumerate two real traversals independently of the production projection.
+        for last_step in (0, 1):
+            for step in range(last_step + 1):
+                layers = [(0, 128), (0, 1), (1, 1)] if step == 0 else [(0, 1), (1, 1)]
+                for layer, columns in layers:
+                    for _ in range(columns):
+                        for kind, name, width in ((3, "ffn_moe_probs", 4), (4, "ffn_moe_topk", 2), (5, "ffn_moe_weights", 2)):
+                            rows.append((kind, layer, step, width, 1, payloads[name]))
+                    rows.append((2, layer, step, 3, columns, payloads["l_out"] * columns))
+                rows.append((6, 0xffffffff, step, 5, 1, payloads["logits"]))
+        body = bytearray()
+        for ordinal, (kind, layer, step, width, height, data) in enumerate(rows):
+            body.extend(struct.pack("<6I2Q", kind, layer, step, width, height, 0, len(data), ordinal))
+            body.extend(data)
+        body.extend(struct.pack("<6I2Q", 0, 0, 0, 0, 0, 0, 0, len(rows)))
+        candidate = root / "candidate"
+        candidate.write_bytes(struct.pack("<8sIIQ", b"G1TRACE1", 2, 0, len(body) + 24) + body)
+        assert reference.compare(root, candidate, geometry, case)["bitwise_equal"]
+
+        def rejects(call):
+            try:
+                call()
+            except (RecipeError, OSError, ValueError, KeyError):
+                return
+            raise AssertionError("malformed independent reference was accepted")
+
+        for mutate in (lambda rows: rows.pop(), lambda rows: rows.append(copy.deepcopy(rows[0])),
+                       lambda rows: rows[0].update(shape=[4, 127, 1, 1]),
+                       lambda rows: rows[0].update(type=26), lambda rows: rows[0].update(file="../escape")):
+            changed = copy.deepcopy(index)
+            mutate(changed)
+            (root / "index.jsonl").write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in changed))
+            rejects(lambda: reference.compare(root, candidate, geometry, case))
+        (root / "index.jsonl").write_bytes(canonical_index)
+        data = (root / "0.bin").read_bytes()
+        (root / "0.bin").write_bytes(data[:-4])
+        rejects(lambda: reference.compare(root, candidate, geometry, case))
+        (root / "0.bin").write_bytes(struct.pack("<I", 0x7fc00000) + data[4:])
+        rejects(lambda: reference.compare(root, candidate, geometry, case))
+        (root / "0.bin").write_bytes(struct.pack("<f", .5) + data[4:])
+        assert not reference.compare(root, candidate, geometry, case)["bitwise_equal"]
+        (root / "0.bin").write_bytes(data)
+        (root / "index.jsonl").write_bytes(canonical_index[:-1])
+        rejects(lambda: reference.compare(root, candidate, geometry, case))
+        print("GPU independent reference owner: PASS (full/tail capture, complete traversal, scalar mutation, malformed closure)")
+
+
+if __name__ == "__main__":
+    run()

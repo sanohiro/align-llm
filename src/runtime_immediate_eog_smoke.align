@@ -1,0 +1,87 @@
+module runtime_immediate_eog_smoke
+
+import alignpack
+import core.json
+import frontend_olmoe
+import frontend_qwen
+import gguf
+import runtime_case
+import runtime_device
+import runtime_generation
+import runtime_numeric_stream
+import runtime_observation
+import runtime_options
+import runtime_pack_identity
+import std.fs
+import tokenizer_qwen2
+
+GeometryPath { path: string }
+Output { token_ids: array<i64>, observation: runtime_observation.Snapshot }
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 { return Err(Error.Invalid) }
+  input := runtime_case.load(args[1])?
+  if input.maximum_tokens != 128 || input.expected_token_ids.len() != 1
+    || input.expected_output_utf8 != "" || input.temperature_micros != 0 {
+    return Err(Error.Invalid)
+  }
+  snapshot := gguf.open_snapshot(input.model_path)?
+  if snapshot.table.architecture != input.model_id { return Err(Error.Invalid) }
+  geometry := fs.read_file(input.geometry_path)?
+  recorded: GeometryPath := json.decode(geometry)?
+  olmoe := input.model_id == "olmoe"
+  ir := if olmoe { frontend_olmoe.build_model_ir(snapshot.table, recorded.path) } else {
+    frontend_qwen.build_model_ir(snapshot.table, recorded.path)
+  }
+  match ir.status { Ok => {}, Error => { return Err(Error.Invalid) } }
+  if ir.document != geometry { return Err(Error.Invalid) }
+  source := alignpack.verify_source_identity_snapshot(snapshot, input.pack_path)?
+  identity := runtime_pack_identity.SourceIdentity {
+    file_size: source.file_size, data_offset: source.data_offset, tensor_count: source.tensor_count,
+    kv_count: source.kv_count, version: source.version, alignment: source.alignment,
+    total_tensor_bytes: source.total_tensor_bytes, header_region_sha256: source.header_region_sha256.clone(),
+  }
+  prepared := tokenizer_qwen2.prepare_generation_snapshot(snapshot, "", input.prompt_utf8)?
+  match prepared.status { Ok => {}, Error => { return Err(Error.Invalid) } }
+  if input.expected_prompt_ids.len() <= prepared.token_ids.len() { return Err(Error.Invalid) }
+  mut prefix := 0
+  loop {
+    if prefix >= prepared.token_ids.len() { break }
+    if input.expected_prompt_ids[prefix] != prepared.token_ids[prefix] { return Err(Error.Invalid) }
+    prefix = prefix + 1
+  }
+  mut terminal := false
+  mut at := 0
+  loop {
+    if at >= prepared.eog_token_ids.len() { break }
+    if prepared.eog_token_ids[at] == input.expected_token_ids[0] { terminal = true }
+    at = at + 1
+  }
+  if !terminal { return Err(Error.Invalid) }
+  options := runtime_options.load(input.options_path)?
+  mut stream := runtime_numeric_stream.create(input.stream_root, input.stream_name,
+    if olmoe { 2 } else { 1 }, input.stream_limit, options.host_budget_bytes)?
+  generation_options := runtime_options.RuntimeOptions {
+    schema_version: options.schema_version, backend: options.backend.clone(), device: options.device.clone(),
+    backend_bundle: options.backend_bundle.clone(), placement: options.placement.clone(),
+    host_budget_bytes: options.host_budget_bytes, device_budget_bytes: options.device_budget_bytes,
+    prefetch: options.prefetch.clone(),
+  }
+  device := runtime_device.open(options)?
+  ids := if olmoe {
+    runtime_generation.generate_olmoe_observed(device, generation_options, input.pack_path, identity, geometry,
+      input.expected_prompt_ids, prepared.eog_token_ids, 128, input.cache_budget_bytes, None, stream)?
+  } else {
+    runtime_generation.generate_qwen_observed(device, generation_options, input.pack_path, identity, geometry,
+      input.expected_prompt_ids, prepared.eog_token_ids, 128, stream)?
+  }
+  observation := runtime_observation.capture(device)?
+  if ids.len() != 1 || ids[0] != input.expected_token_ids[0]
+    || observation.read_calls != 1 || observation.decode_executions != 0 || stream.records != 1 {
+    return Err(Error.Invalid)
+  }
+  runtime_numeric_stream.finish(stream)?
+  output := Output { token_ids: ids, observation: observation }
+  print(json.encode(output))
+  return Ok(())
+}

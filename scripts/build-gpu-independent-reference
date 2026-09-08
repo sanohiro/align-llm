@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Build the independent model graph and acquisition driver from the pinned checkout."""
+import hashlib
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'scripts'))
+from gpu_backend_recipe import GGML_COMMIT
+
+
+def digest(path):
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
+def main():
+    if len(sys.argv) != 3:
+        raise SystemExit('usage: build-gpu-independent-reference PINNED_GGML_CHECKOUT NEW_OUTPUT_DIRECTORY')
+    source = pathlib.Path(sys.argv[1]).resolve(strict=True)
+    output = pathlib.Path(sys.argv[2]).absolute()
+    if output.exists() or output.is_symlink():
+        raise SystemExit('independent reference output must not exist')
+    assert subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip() == GGML_COMMIT
+    assert not subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain'])
+    output.mkdir(mode=0o700)
+    output = output.resolve(strict=True)
+    cc = shutil.which(os.environ.get('CC', 'cc'))
+    cxx = shutil.which(os.environ.get('CXX', 'c++'))
+    cmake = shutil.which('cmake')
+    assert cc and cxx and cmake
+    commands = []
+
+    def run(args):
+        commands.append(args)
+        subprocess.run(args, check=True)
+
+    run([cmake, '-S', str(source), '-B', str(output / 'build'),
+         '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_SHARED_LIBS=ON', '-DGGML_BACKEND_DL=OFF',
+         '-DGGML_CPU=ON', '-DGGML_METAL=OFF', '-DGGML_CUDA=OFF', '-DGGML_BLAS=OFF',
+         '-DLLAMA_BUILD_COMMON=OFF', '-DLLAMA_BUILD_TESTS=OFF', '-DLLAMA_BUILD_EXAMPLES=OFF',
+         '-DLLAMA_BUILD_TOOLS=OFF', '-DLLAMA_BUILD_SERVER=OFF', '-DLLAMA_CURL=OFF',
+         '-DCMAKE_C_COMPILER=' + cc, '-DCMAKE_CXX_COMPILER=' + cxx,
+         '-DLLAMA_BUILD_NUMBER=10566', '-DLLAMA_BUILD_COMMIT=' + GGML_COMMIT[:9]])
+    run([cmake, '--build', str(output / 'build'), '--target', 'llama', '-j', '4'])
+    libraries = output / 'lib'
+    libraries.mkdir(mode=0o700)
+    for path in sorted((output / 'build/bin').iterdir()):
+        if path.is_file() and ('.so' in path.name or path.name.endswith('.dylib')):
+            shutil.copyfile(path, libraries / path.name)
+    assert any(path.name.startswith('libllama') for path in libraries.iterdir())
+    if sys.platform == 'darwin':
+        runtime_path = '@loader_path/lib'
+    else:
+        runtime_path = '$ORIGIN/lib'
+    common = [cxx, '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-ffp-contract=off',
+              '-I', str(source / 'include'), '-I', str(source / 'ggml/include'), '-I', str(source / 'vendor'),
+              '-L', str(libraries), '-lllama', '-lggml', '-lggml-base', '-Wl,-rpath,' + runtime_path]
+    for name, file in [('reference-acquire', 'reference-acquire.cpp'), ('reference-smoke', 'reference-acquire-smoke.cpp')]:
+        run(common + [str(ROOT / 'eval/gpu' / file), '-o', str(output / name)])
+    run([str(output / 'reference-smoke')])
+    assert subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip() == GGML_COMMIT
+    assert not subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain'])
+    evidence = {'ggml_commit': GGML_COMMIT, 'driver_sha256': digest(ROOT / 'eval/gpu/reference-acquire.cpp'),
+                'executable_sha256': digest(output / 'reference-acquire'),
+                'libraries': {path.name: digest(path) for path in sorted(libraries.iterdir())},
+                'compiler_sha256': digest(pathlib.Path(cxx).resolve()), 'commands': commands}
+    (output / 'build.json').write_text(json.dumps(evidence, separators=(',', ':')) + '\n')
+    print(output / 'reference-acquire')
+
+
+if __name__ == '__main__':
+    main()
