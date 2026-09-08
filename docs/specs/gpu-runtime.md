@@ -644,6 +644,32 @@ canonical compact JSON bytes of the profile's `cases` array without a final LF.
 
 ### 3.10 Private numeric stream version 1
 
+Native observation contract (private FFI, no persisted schema): the GPU device owner stores checked
+nonnegative counters for successfully executed non-leaf graph nodes, completed explicit readback
+bytes/calls, and explicit backend synchronization calls. `gpu_observation_state(owner, field)`
+uses fields 0 nodes, 1 readback bytes, 2 readback calls and 3 explicit synchronization calls; all
+start at zero and invalid selectors or a failed counter return -1. `gpu_slot_get(owner, slots,
+index, bytes, offset, size, label)` accepts a positive size no greater than the destination slice,
+nonnegative tensor offset, and a complete in-tensor interval; refusal leaves byte/call counts
+unchanged. Native counter storage is fixed-size per owner, not a retained event log. Readback takes the device owner explicitly
+and requires the selected tensor to occur in one of that owner's prepared, successfully executed
+graphs; unrelated CPU tensors cannot be attributed through a global current-owner pointer. Invalid
+owner/field/graph/tensor/bounds or counter overflow refuses without a successful observation.
+Graph-node counts include native view/copy nodes, so this raw observation is not by itself the
+schema-1 model-operation/layer/expert closure proof. Existing weight/input/KV counters own upload
+bytes. Diagnostic invocations use separate owners; only the production owner's snapshot feeds
+production placement/transfer evidence. The snapshot precedes owner destruction; cleanup evidence
+owns teardown after it. No timing or performance claim follows from these counters.
+
+| Native observation closure | Implementation | Required regression |
+| --- | --- | --- |
+| Construction / defaults / invalid selector | native device state and `gpu_observation_state` | `gpu-device-smoke` zero and selector refusals |
+| Successful compute / repeated graph execution | `align_gpu_graph_compute` | `gpu-device-smoke` node totals across reuse/invalidation |
+| Explicit readback success / malformed bounds or foreign tensor | `gpu_slot_get` and native owner membership check | `gpu-device-smoke` counted bytes/calls and refused unrelated reads |
+| Ordinary and diagnostic generation | `runtime_generation` owner-aware logits readback | `gpu-generation-smoke` and provider trace owner |
+| Early failure / cleanup / CPU independence | no global current-owner binding; existing device Drop | `gpu-device-smoke` and `runtime-provider-smoke` |
+
+
 The private provider trace entrypoint reuses ordinary provider admission, source/geometry identity,
 chat prompt preparation and output decoding. Its inputs are the existing provider configuration and
 generation request plus mode 1 (production) or 2 (diagnostic), borrowed forced IDs and a borrowed

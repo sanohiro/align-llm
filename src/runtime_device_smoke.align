@@ -143,6 +143,10 @@ fn exercise_live_owner(
   bundle_id: str,
 ) -> Result<(), Error> {
   owner := opened(backend, device, bundle_root)?
+  if ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_NODES) != 0
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_BYTES) != 0 {
+    return Err(Error.Invalid)
+  }
   if ggml_ffi.gpu_device_handle(owner).is_null()
     || ggml_ffi.gpu_backend_handle(owner).is_null()
     || runtime_device.bundle_id(owner) != bundle_id
@@ -737,6 +741,13 @@ fn exercise_live_owner(
     Ok(_) => {}
     Err(_) => { return Err(Error.Invalid) }
   }
+  observed_nodes := ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_NODES)
+  if observed_nodes < 1
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_BYTES) != 0
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_CALLS) != 0
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_SYNC_CALLS) < 1
+    || ggml_ffi.gpu_observation_state(owner, -1) != -1
+    || ggml_ffi.gpu_observation_state(owner, 4) != -1 { return Err(Error.Invalid) }
   mut output_data := buffer(262144)
   mut output_at := 0
   loop {
@@ -745,12 +756,29 @@ fn exercise_live_owner(
     output_at = output_at + 1
   }
   output_view := output_data.bytes()
-  ggml_ffi.slot_get(slots, 3, output_view, 0, output_view.len(), "gpu_graph_output") else {
+  match ggml_ffi.gpu_slot_get(owner, slots, 13, output_view, 0, 4, "unexecuted_graph") {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  match ggml_ffi.gpu_slot_get(owner, slots, 3, output_view, 1, output_view.len(), "read_bounds") {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  match ggml_ffi.gpu_slot_get(owner, slots, 3, output_view, 0, output_view.len() + 1, "output_bounds") {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  if ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_BYTES) != 0
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_CALLS) != 0 {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_slot_get(owner, slots, 3, output_view, 0, output_view.len(), "gpu_graph_output") else {
     return Err(Error.Invalid)
   }
   if output_view.u32_le(0) != 1065353216
     || output_view.u32_le(131072) != 1077936128
     || output_view.u32_le(261120) != 1065353216 {
+    return Err(Error.Invalid)
+  }
+  if ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_BYTES) != output_view.len()
+    || ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_CALLS) != 1 {
     return Err(Error.Invalid)
   }
   mut first_attention := buffer(2048)
@@ -846,7 +874,10 @@ fn exercise_live_owner(
     Ok(_) => {}
     Err(_) => { return Err(Error.Invalid) }
   }
-  ggml_ffi.slot_get(slots, 3, output_view, 0, output_view.len(), "gpu_graph_reused_output") else {
+  if ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_NODES) != 2 * observed_nodes {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_slot_get(owner, slots, 3, output_view, 0, output_view.len(), "gpu_graph_reused_output") else {
     return Err(Error.Invalid)
   }
   mut second_attention := buffer(2048)

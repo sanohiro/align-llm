@@ -1715,6 +1715,11 @@ struct align_gpu_device_state {
     int workspace_failed;
     int staging_consumed;
     int staging_path_valid;
+    int64_t observation_nodes;
+    int64_t observation_read_bytes;
+    int64_t observation_read_calls;
+    int64_t observation_sync_calls;
+    int observation_failed;
 };
 
 static atomic_int align_gpu_busy = 0;
@@ -1913,7 +1918,13 @@ void *align_gpu_backend_handle(void *owner) {
 }
 
 int32_t align_gpu_device_synchronize(void *owner) {
-    return owner == NULL ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || state->observation_sync_calls == INT64_MAX) {
+        if (state != NULL) { state->observation_failed = 1; }
+        return ALIGN_GPU_CONFIG;
+    }
+    state->observation_sync_calls += 1;
+    return ALIGN_GPU_OK;
 }
 
 static int align_gpu_add_bytes(int64_t left, int64_t right, int64_t *out) {
@@ -2889,6 +2900,8 @@ int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
 int32_t align_gpu_graph_compute(
         void *owner, int32_t kind, const void *key, int64_t key_length, void *graph) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    int64_t observed_nodes = 0;
+    int node = 0;
     if (state == NULL || graph == NULL || !align_gpu_graph_kind_ok(kind)
         || !state->workspace_prepared || state->workspace_failed || !state->graph_prepared[kind]
         || state->workspace_graphs[kind] != graph
@@ -2901,6 +2914,15 @@ int32_t align_gpu_graph_compute(
             && state->graph_reuse_count[kind] == INT64_MAX)) {
         return ALIGN_GPU_CONFIG;
     }
+    for (node = 0; node < ((align_stub_graph *) graph)->count; node++) {
+        if (((align_stub_graph *) graph)->nodes[node]->op != ALIGN_STUB_OP_NONE) {
+            observed_nodes += 1;
+        }
+    }
+    if (state->observation_failed || state->observation_nodes > INT64_MAX - observed_nodes) {
+        state->observation_failed = 1;
+        return ALIGN_GPU_CONFIG;
+    }
     if (align_ggml_graph_compute(state->backend, graph) != 0) {
         state->workspace_failed = 1;
         return ALIGN_GPU_COMPUTE;
@@ -2908,9 +2930,22 @@ int32_t align_gpu_graph_compute(
     if (state->graph_current_execution_count[kind] > 0) {
         state->graph_reuse_count[kind] += 1;
     }
+    state->observation_nodes += observed_nodes;
     state->graph_current_execution_count[kind] += 1;
     state->graph_execution_count[kind] += 1;
     return ALIGN_GPU_OK;
+}
+
+int64_t align_gpu_observation_state(void *owner, int32_t field) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || state->observation_failed) { return -1; }
+    switch (field) {
+    case 0: return state->observation_nodes;
+    case 1: return state->observation_read_bytes;
+    case 2: return state->observation_read_calls;
+    case 3: return state->observation_sync_calls;
+    default: return -1;
+    }
 }
 
 int64_t align_gpu_graph_state(void *owner, int32_t kind, int32_t field) {
@@ -3728,6 +3763,37 @@ int32_t align_ggml_slot_get(void *slots, int64_t index, void *bytes, int64_t off
 #else
     return align_ggml_tensor_get((void *) t, bytes, off, n);
 #endif
+}
+
+int32_t align_gpu_slot_get(void *owner, void *slots, int64_t index,
+                           void *bytes, int64_t off, int64_t n) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    align_stub_tensor *tensor = align_stub_slot(slots, index);
+    int kind = 0;
+    int node = 0;
+    int found = 0;
+    int32_t status = ALIGN_GGML_OK;
+    if (state == NULL || tensor == NULL || state->observation_failed || n <= 0
+        || state->observation_read_bytes > INT64_MAX - n
+        || state->observation_read_calls == INT64_MAX) {
+        return ALIGN_GGML_INIT;
+    }
+    for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; kind++) {
+        if (!state->graph_prepared[kind] || state->graph_current_execution_count[kind] < 1) {
+            continue;
+        }
+        align_stub_graph *graph = (align_stub_graph *) state->workspace_graphs[kind];
+        if (graph == NULL) { continue; }
+        for (node = 0; node < graph->count; node++) {
+            if (graph->nodes[node] == tensor) { found = 1; }
+        }
+    }
+    if (!found) { return ALIGN_GGML_SLOT; }
+    status = align_ggml_slot_get(slots, index, bytes, off, n);
+    if (status != ALIGN_GGML_OK) { return status; }
+    state->observation_read_bytes += n;
+    state->observation_read_calls += 1;
+    return ALIGN_GGML_OK;
 }
 
 int32_t align_ggml_slot_mark_output(void *slots, int64_t index) {

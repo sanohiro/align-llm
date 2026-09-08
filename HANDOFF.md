@@ -123,6 +123,17 @@ was found and corrected to match the real shim; longer provider prompts now own 
 Request 36 gains this non-blocking nested-array-field client; no new language API is assumed.
 The native case envelope, production measurement instrumentation and final CLI remain active.
 
+**Native observation checkpoint.** GPU owners now expose successful non-leaf graph-node totals,
+explicit readback bytes/calls and explicit synchronization-call counts. Logits readback requires
+membership in that owner's prepared and executed graph; invalid bounds/unexecuted graphs do not
+increment counters. The native device owner verifies defaults, selector/bounds refusal, successful
+read counts and doubled node totals on graph reuse. `gmake gpu-device-smoke gpu-generation-smoke`,
+`python3 scripts/run-gpu-provider-trace-smoke`, `gmake runtime-provider-smoke`, `gmake fmt` and
+`git diff --check` pass. The real shim also passes `cc -O2 -ffp-contract=off
+-DALIGN_GGML_FP_CONTRACT_OFF=1 -fPIC -Wall -Wextra -Werror -I<pinned-ggml>/ggml/include
+-fsyntax-only scripts/ggml_shim.c` against ggml `bb4caa754`. Counters are raw observations;
+production snapshot integration and independent operation/layer/expert closure remain unfinished.
+
 **Eligibility checkpoint.** Requests 61/62 are consumer-verified. The full frozen 21-case audit
 meets 20 expectations; only explicitly deferred direct-place case 11 remains red. All negative
 lifetime controls, observed native generation and real CPU compilation pass. G1 integration is

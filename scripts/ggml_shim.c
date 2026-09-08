@@ -1005,7 +1005,21 @@ struct align_gpu_device_state {
     int64_t graph_invalidation_count[ALIGN_GPU_GRAPH_KINDS];
     int staging_consumed;
     int staging_path_valid;
+    int64_t observation_nodes;
+    int64_t observation_read_bytes;
+    int64_t observation_read_calls;
+    int64_t observation_sync_calls;
+    int observation_failed;
 };
+
+static void align_gpu_synchronize(struct align_gpu_device_state *state) {
+    if (state->observation_sync_calls == INT64_MAX) {
+        state->observation_failed = 1;
+    } else {
+        state->observation_sync_calls += 1;
+    }
+    ggml_backend_synchronize(state->backend);
+}
 
 static atomic_int align_gpu_busy = 0;
 static atomic_int align_gpu_registry_state = 0;
@@ -1240,8 +1254,8 @@ int32_t align_gpu_device_synchronize(void *owner) {
     if (state == NULL || state->backend == NULL) {
         return ALIGN_GPU_CONFIG;
     }
-    ggml_backend_synchronize(state->backend);
-    return ALIGN_GPU_OK;
+    align_gpu_synchronize(state);
+    return state->observation_failed ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
 }
 
 static int align_gpu_add_bytes(int64_t left, int64_t right, int64_t *out) {
@@ -1688,7 +1702,7 @@ int32_t align_gpu_weight_upload(
     memcpy(state->staging, data, (size_t) length);
     ggml_backend_tensor_set_async(
         state->backend, state->pending_weight, state->staging, (size_t) offset, (size_t) length);
-    ggml_backend_synchronize(state->backend);
+    align_gpu_synchronize(state);
     state->pending_weight_uploaded_bytes += (size_t) length;
     state->weights_uploaded_bytes += length;
     if (state->pending_weight_uploaded_bytes == logical) {
@@ -1742,7 +1756,7 @@ int32_t align_gpu_kv_begin(void *owner, int64_t tensor_count) {
         return ALIGN_GPU_MEMORY_BUDGET;
     }
     ggml_backend_buffer_clear(state->kv_buffer, 0);
-    ggml_backend_synchronize(state->backend);
+    align_gpu_synchronize(state);
     state->kv_expected = tensor_count;
     return ALIGN_GPU_OK;
 }
@@ -1840,7 +1854,7 @@ int32_t align_gpu_kv_update(
         return ALIGN_GPU_CONFIG;
     }
     staging = (size_t) state->staging_bytes;
-    ggml_backend_synchronize(state->backend);
+    align_gpu_synchronize(state);
     while (at < (size_t) length) {
         size_t chunk = (size_t) length - at;
         if (chunk > staging) {
@@ -1849,7 +1863,7 @@ int32_t align_gpu_kv_update(
         memcpy(state->staging, source + at, chunk);
         ggml_backend_tensor_set_async(
             state->backend, tensor, state->staging, (size_t) offset + at, chunk);
-        ggml_backend_synchronize(state->backend);
+        align_gpu_synchronize(state);
         at += chunk;
     }
     state->kv_updated_bytes += length;
@@ -2113,7 +2127,7 @@ int32_t align_gpu_inputs_finish(void *owner) {
         return ALIGN_GPU_CONFIG;
     }
     buft = ggml_backend_buffer_get_type(state->workspace_buffer);
-    ggml_backend_synchronize(state->backend);
+    align_gpu_synchronize(state);
     ggml_backend_buffer_free(state->workspace_buffer);
     state->workspace_buffer = NULL;
     if (buft == NULL) {
@@ -2233,7 +2247,7 @@ int32_t align_gpu_input_update(
         return ALIGN_GPU_CONFIG;
     }
     staging = (size_t) state->staging_bytes;
-    ggml_backend_synchronize(state->backend);
+    align_gpu_synchronize(state);
     while (at < (size_t) length) {
         size_t chunk = (size_t) length - at;
         if (chunk > staging) {
@@ -2242,7 +2256,7 @@ int32_t align_gpu_input_update(
         memcpy(state->staging, source + at, chunk);
         ggml_backend_tensor_set_async(
             state->backend, tensor, state->staging, (size_t) offset + at, chunk);
-        ggml_backend_synchronize(state->backend);
+        align_gpu_synchronize(state);
         at += chunk;
     }
     state->input_updated_bytes += length;
@@ -2356,7 +2370,7 @@ static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state)
     if (state == NULL || state->input_buffer == NULL || state->workspace_buffer != NULL) {
         return ALIGN_GPU_CONFIG;
     }
-    ggml_backend_synchronize(state->backend);
+    align_gpu_synchronize(state);
     for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; ++kind) {
         if (state->graph_prepared[kind]) {
             align_gpu_workspace_context_reset(state, state->graph_contexts[kind]);
@@ -2444,7 +2458,7 @@ int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
         || state->workspace_failed || state->graph_invalidation_count[kind] == INT64_MAX) {
         return ALIGN_GPU_CONFIG;
     }
-    ggml_backend_synchronize(state->backend);
+    align_gpu_synchronize(state);
     state->graph_prepared[kind] = 0;
     state->workspace_graphs[kind] = NULL;
     state->graph_keys[kind][0] = '\0';
@@ -2463,6 +2477,8 @@ int32_t align_gpu_graph_compute(
         void *owner, int32_t kind, const void *key, int64_t key_length, void *graph) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     enum ggml_status status = GGML_STATUS_FAILED;
+    int64_t observed_nodes = 0;
+    int node = 0;
     if (state == NULL || graph == NULL || !align_gpu_graph_kind_ok(kind)
         || !state->workspace_prepared || state->workspace_failed || !state->graph_prepared[kind]
         || state->workspace_graphs[kind] != (struct ggml_cgraph *) graph
@@ -2475,6 +2491,15 @@ int32_t align_gpu_graph_compute(
             && state->graph_reuse_count[kind] == INT64_MAX)) {
         return ALIGN_GPU_CONFIG;
     }
+    for (node = 0; node < ggml_graph_n_nodes((struct ggml_cgraph *) graph); node++) {
+        if (ggml_graph_node((struct ggml_cgraph *) graph, node)->op != GGML_OP_NONE) {
+            observed_nodes += 1;
+        }
+    }
+    if (state->observation_failed || state->observation_nodes > INT64_MAX - observed_nodes) {
+        state->observation_failed = 1;
+        return ALIGN_GPU_CONFIG;
+    }
     status = ggml_backend_graph_compute(state->backend, state->workspace_graphs[kind]);
     if (status != GGML_STATUS_SUCCESS) {
         state->workspace_failed = 1;
@@ -2483,9 +2508,22 @@ int32_t align_gpu_graph_compute(
     if (state->graph_current_execution_count[kind] > 0) {
         state->graph_reuse_count[kind] += 1;
     }
+    state->observation_nodes += observed_nodes;
     state->graph_current_execution_count[kind] += 1;
     state->graph_execution_count[kind] += 1;
     return ALIGN_GPU_OK;
+}
+
+int64_t align_gpu_observation_state(void *owner, int32_t field) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || state->observation_failed) { return -1; }
+    switch (field) {
+    case 0: return state->observation_nodes;
+    case 1: return state->observation_read_bytes;
+    case 2: return state->observation_read_calls;
+    case 3: return state->observation_sync_calls;
+    default: return -1;
+    }
 }
 
 int64_t align_gpu_graph_state(void *owner, int32_t kind, int32_t field) {
@@ -2508,7 +2546,7 @@ void align_gpu_device_close(void *owner) {
         return;
     }
     if (state->backend != NULL) {
-        ggml_backend_synchronize(state->backend);
+        align_gpu_synchronize(state);
     }
     align_gpu_memory_release(state);
     if (state->backend != NULL) {
@@ -3235,6 +3273,38 @@ int32_t align_ggml_slot_get(void *slots, int64_t index, void *bytes, int64_t off
     ggml_backend_tensor_get(tensor, bytes, (size_t) off, (size_t) n);
     return ALIGN_GGML_OK;
 }
+
+int32_t align_gpu_slot_get(void *owner, void *slots, int64_t index,
+                           void *bytes, int64_t off, int64_t n) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *tensor = align_ggml_slot_tensor(slots, index);
+    int kind = 0;
+    int node = 0;
+    int found = 0;
+    int32_t status = ALIGN_GGML_OK;
+    if (state == NULL || tensor == NULL || state->observation_failed || n <= 0
+        || state->observation_read_bytes > INT64_MAX - n
+        || state->observation_read_calls == INT64_MAX) {
+        return ALIGN_GGML_INIT;
+    }
+    for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; kind++) {
+        if (!state->graph_prepared[kind] || state->graph_current_execution_count[kind] < 1) {
+            continue;
+        }
+        struct ggml_cgraph *graph = state->workspace_graphs[kind];
+        if (graph == NULL) { continue; }
+        for (node = 0; node < ggml_graph_n_nodes(graph); node++) {
+            if (ggml_graph_node(graph, node) == tensor) { found = 1; }
+        }
+    }
+    if (!found) { return ALIGN_GGML_SLOT; }
+    status = align_ggml_slot_get(slots, index, bytes, off, n);
+    if (status != ALIGN_GGML_OK) { return status; }
+    state->observation_read_bytes += n;
+    state->observation_read_calls += 1;
+    return ALIGN_GGML_OK;
+}
+
 
 /* Mandatory for every oracle node. Without it `ggml_gallocr` reuses an intermediate's memory and
  * the node read back is not the node computed — the probe hit exactly this before adding it.

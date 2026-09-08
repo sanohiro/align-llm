@@ -443,8 +443,8 @@ fn generate_qwen_mode(
   runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
   mut logits := logits_buffer(g.n_vocab)?
   logits_view := logits.bytes()
-  ggml_ffi.slot_get(
-    slot_view, runtime_qwen.output_slot(), logits_view, 0, logits_view.len(), "qwen_logits",
+  ggml_ffi.gpu_slot_get(
+    owner, slot_view, runtime_qwen.output_slot(), logits_view, 0, logits_view.len(), "qwen_logits",
   ) else { return Err(Error.Invalid) }
   mut random := rand.seed_with(0)
   if diagnostic { runtime_diagnostic.write(capture, 0, stream)? }
@@ -475,8 +475,8 @@ fn generate_qwen_mode(
     input_token := if forced { forced_ids[count - 1] } else { token }
     update_decode(owner, input_token, n_past, kv_capacity)?
     runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
-    ggml_ffi.slot_get(
-      slot_view, runtime_qwen.output_slot(), logits_view, 0, logits_view.len(), "qwen_logits",
+    ggml_ffi.gpu_slot_get(
+      owner, slot_view, runtime_qwen.output_slot(), logits_view, 0, logits_view.len(), "qwen_logits",
     ) else { return Err(Error.Invalid) }
     if diagnostic { runtime_diagnostic.write(capture, count, stream)? }
     runtime_numeric_stream.record(stream, runtime_numeric_stream.Frame {
@@ -608,8 +608,8 @@ fn generate_olmoe_mode(
   runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, prefill_graph)?
   mut logits := logits_buffer(g.n_vocab)?
   logits_view := logits.bytes()
-  ggml_ffi.slot_get(
-    slot_view, runtime_olmoe.output_slot(), logits_view, 0, logits_view.len(), "olmoe_logits",
+  ggml_ffi.gpu_slot_get(
+    owner, slot_view, runtime_olmoe.output_slot(), logits_view, 0, logits_view.len(), "olmoe_logits",
   ) else { return Err(Error.Invalid) }
   sampled := match seed { Some(_) => true, None => false }
   sampling_seed := match seed { Some(value) => value, None => 0 }
@@ -642,8 +642,8 @@ fn generate_olmoe_mode(
     input_token := if forced { forced_ids[count - 1] } else { token }
     update_decode(owner, input_token, n_past, kv_capacity)?
     runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
-    ggml_ffi.slot_get(
-      slot_view, runtime_olmoe.output_slot(), logits_view, 0, logits_view.len(), "olmoe_logits",
+    ggml_ffi.gpu_slot_get(
+      owner, slot_view, runtime_olmoe.output_slot(), logits_view, 0, logits_view.len(), "olmoe_logits",
     ) else { return Err(Error.Invalid) }
     if diagnostic { runtime_diagnostic.write(capture, count, stream)? }
     runtime_numeric_stream.record(stream, runtime_numeric_stream.Frame {
