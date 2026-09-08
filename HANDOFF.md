@@ -18,6 +18,18 @@ observed-generation hooks were removed; no rejected/hypothetical surface remains
 Request 62 also records a non-blocking derived-view helper precision case. Header encoding borrows
 the complete stream owner using Request 61's shipped surface. Existing generation smoke passes.
 
+**Active investigation: consolidated G1 readiness.** The user requested that all currently
+foreseeable GPU compiler blockers be collected before another Align interruption. The 21-case
+whole/per-unit/build audit is in `docs/align-gpu-readiness.md`. Request 62's main failure is a
+continuing Request 49 consumer, so 49 is now blocking and 42/43/49/62 are coordinated as one
+producer investigation. The audit also reproduces Request 48's non-blocking scalar case and an
+actual retained-local-view safety failure. No production source or pin changed during the audit.
+The companion source bundle contains the frozen actual generation variants, positive/negative
+controls and complete logs; Align can assess its candidate before a single client pin adoption.
+Do not resume one-ticket-at-a-time reporting. The next action is the consolidated Align repair,
+then the observed G1 owners and native diagnostic/case integration. Compiler probes do not close
+real Metal/CUDA qualification or the unfinished final qualifier CLI.
+
 **Complete implementation checkpoints.**
 
 - Strict runtime options, provider dispatch, canonical source/bundle admission and immutable private
