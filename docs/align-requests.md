@@ -9619,7 +9619,8 @@ Independent work that may continue: all of R3-RESIDENCY-SIM.
 Resume condition: an Align release admits a `borrow mut array<T>` local passed to a call inside a
   `loop` without invalidating the caller's later reads, and/or admits element assignment through an
   `array<T>` field of a record (`s.field[i] = v`).
-Align commit or pull request: none
+Align commit or pull request: partial repair in https://github.com/sanohiro/align/pull/992,
+  merged as 305926b423da9be1f13b0129a7232626e6704d95; array-field assignment remains unsupported
 align-llm verification: `src/residency_sim.align`'s `replay` function (`:660-920`) collapses its two
   copies of the eviction-and-insert block (`:772-812` and `:856-908`) into one shared `admit` helper
   taking the per-key tables as `borrow mut array<i64>` parameters, called from both call sites inside
@@ -11453,9 +11454,9 @@ its compiler and source hashes; it records `complete=false` and `ready=false`.
 
 A separate optimized replay of case 20's unchanged real CPU reference graph also
 passes: check 84.649s (1,204 functions), check-per-unit 165.777s (17 units), and
-build 169.633s, all within the unchanged 180-second per-phase bound. Its report is
-`/tmp/consumer-g1-cpu-final/report.json`. This is compile/build evidence, not a new
-native-execution or GPU claim.
+build 169.633s, all within the unchanged 180-second per-phase bound. The publication
+PR preserves this separate report and its source/compiler hashes alongside the
+five-case report. This is compile/build evidence, not a new native-execution or GPU claim.
 
 Independent review was CLEAN; all required Linux x86_64/ARM64/macOS checks passed,
 with 232 focused driver tests, all 36 frontend-cache owners and the bounded
