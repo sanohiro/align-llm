@@ -754,6 +754,41 @@ reader are checked against the same byte vector independently. `gpu-generation-s
 the production logit hook and reservation; full layer/router production remains in the G1 numeric
 case integration. No performance claim or additional aggregate membership is introduced.
 
+#### Native diagnostic replay integration
+
+`runtime_diagnostic.Capture` owns one reusable native slot table and one bounded readback buffer.
+It is invocation-local, never persisted or exchanged; schema/cache identity is N/A because its
+references are reset before each graph construction and consumed before that graph is invalidated.
+`disabled()` allocates no payload; `create(layers,embedding,prompt,experts,selected)` validates
+positive geometry and the existing 64 MiB tensor ceiling before allocation. Its reservation is
+`16 + 8 * 4 * layers + 4 * max(embedding * prompt, experts, selected)` bytes. Qwen uses zero
+experts/selected. Generation charges this reservation, plus the existing stream reservation,
+before any weight upload. No new native ABI is required.
+
+The Qwen/OLMoE builders have diagnostic variants with one additional borrowed mutable capture.
+Ordinary builders pass a disabled capture and mark only final logits. Diagnostic builders retain
+and mark each layer output; OLMoE additionally retains the full router probabilities, full argsort
+IDs and gathered selected weights before slots are reused. Shape checks precede readback. Router
+rows use full-expert strides for argsort, preserving a narrowed top-k view's noncontiguous token
+layout. The host retains only one layer output or one routing vector at a time.
+
+`runtime_generation` diagnostic entrypoints preserve observed-generation arguments and append
+borrowed teacher-forced IDs. An empty array reproduces production sampling; a nonempty array
+executes one prefill and every forced decode token, including EOG, without sampling-based early
+exit. They emit the established layer/router/final frames, append no footer, and return the
+sampled IDs for reproduction comparison. Production and each diagnostic traversal use separate
+native invocation owners and fresh KV. The case process deadline covers all three traversals.
+All fallible operations return the existing `Error`; any refusal prevents successful case output.
+
+| Diagnostic closure | Implementation | Discriminating owner |
+| --- | --- | --- |
+| Construction, geometry, reservation, overflow/byte bounds | `runtime_diagnostic.create/reservation`, generation admission | native diagnostic smoke: disabled, invalid geometry, exact reservation, budget refusal before upload |
+| Capture before slot reuse, shape/stride, complete frame order | diagnostic Qwen/OLMoE builders and `runtime_diagnostic.write` | native diagnostic smoke paired with `gpu_qualification_traversal` for both geometries and highest-layer reduction |
+| Production isolation and successful reproduction | disabled builder capture, generation mode dispatch | ordinary generation owner plus diagnostic replay ID equality and production-only kind-1 stream |
+| Forced tokens, EOG, context, early exit | generation diagnostic loop | multi-step forced replay and out-of-vocabulary/context refusal |
+| Readback/write failure, graph invalidation, cleanup | capture reset, synchronous graph compute, existing native owner Drop | native diagnostic malformed shape/stream-limit refusal and subsequent independent invocation |
+| CPU reference and final case/publication integration | existing CPU generation owners, native case producer and parent sequencing | pending within G1; the GPU diagnostic checkpoint alone does not close qualification |
+
 ### 3.11 Local qualification kit assembly
 
 The internal kit owner accepts canonical profile bytes, both captured source closures and an exact

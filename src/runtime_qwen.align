@@ -4,6 +4,7 @@ import ggml_ffi
 import layer_qwen2
 import qwen_nodes
 import runtime_inputs
+import runtime_diagnostic
 import runtime_kv
 
 pub INPUT_PREFILL_TOKENS := 0
@@ -162,6 +163,20 @@ pub fn build_prefill(
   graph: raw,
   borrow slots: slice<u8>,
 ) -> Result<(), Error> {
+  mut capture := runtime_diagnostic.disabled()
+  return build_prefill_diagnostic(owner, g, tokens, ctx, graph, slots, capture)
+}
+
+pub fn build_prefill_diagnostic(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: layer_qwen2.Geometry,
+  tokens: i64,
+  ctx: raw,
+  graph: raw,
+  borrow slots: slice<u8>,
+  borrow mut capture: runtime_diagnostic.Capture,
+) -> Result<(), Error> {
+  runtime_diagnostic.reset(capture)?
   if !valid_geometry(g) {
     return Err(Error.Invalid)
   }
@@ -201,6 +216,7 @@ pub fn build_prefill(
     )?
     expand(graph, slots, layer_qwen2.MF_SLOT_KPAST, "qwen_prefill_k")?
     expand(graph, slots, layer_qwen2.MF_SLOT_VPAST, "qwen_prefill_v")?
+    runtime_diagnostic.retain(capture, slots, layer, 0, layer_qwen2.mf_layer_output_slot())?
     carry(slots, layer_qwen2.mf_layer_output_slot())?
     layer = layer + 1
   }
@@ -216,6 +232,20 @@ pub fn build_decode(
   graph: raw,
   borrow slots: slice<u8>,
 ) -> Result<(), Error> {
+  mut capture := runtime_diagnostic.disabled()
+  return build_decode_diagnostic(owner, g, n_past, ctx, graph, slots, capture)
+}
+
+pub fn build_decode_diagnostic(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: layer_qwen2.Geometry,
+  n_past: i64,
+  ctx: raw,
+  graph: raw,
+  borrow slots: slice<u8>,
+  borrow mut capture: runtime_diagnostic.Capture,
+) -> Result<(), Error> {
+  runtime_diagnostic.reset(capture)?
   if !valid_geometry(g) || n_past < 1 || n_past >= g.context_length
     || ggml_ffi.handle_absent(ctx) || ggml_ffi.handle_absent(graph) {
     return Err(Error.Invalid)
@@ -259,6 +289,7 @@ pub fn build_decode(
     )?
     expand(graph, slots, layer_qwen2.MF_SLOT_KPAST, "qwen_decode_k")?
     expand(graph, slots, layer_qwen2.MF_SLOT_VPAST, "qwen_decode_v")?
+    runtime_diagnostic.retain(capture, slots, layer, 0, layer_qwen2.mf_decode_layer_output_slot())?
     carry(slots, layer_qwen2.mf_decode_layer_output_slot())?
     layer = layer + 1
   }

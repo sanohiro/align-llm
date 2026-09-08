@@ -23,6 +23,16 @@ language restriction; the explicit-copy case 12 passes. This five-case replay re
 `complete=false` and `ready=false`, and does not replace the full-run evidence above.
 Request 62's follow-up answer records the producer boundary and pending consumer adoption.
 
+**Consumer replay (2026-09-08).** The complete frozen 21-case bundle was replayed using managed
+Align `305926b423da9be1f13b0129a7232626e6704d95`, compiler SHA-256
+`0d3c7aaf4b8cecf827cc2fa8d4ac28b2f692002645862571060864b97550863b`.
+Twenty cases meet every expected phase/native oracle, including 06, retained-view negatives 08/09,
+observed Qwen/OLMoE case 21, and the actual CPU graph case 20. Only case 11 remains rejected under
+the explicitly deferred direct-place restriction. The report is `complete=true,ready=false` and
+the runner exits 1 for that known unmet expectation; it is not relabeled a fully green audit.
+The restored application owners `gmake gpu-numeric-stream gpu-generation-smoke` pass at adoption
+checkpoint `491c15c`, including prefill/decode observation and host reservation/refusal.
+
 ## Scope and evidence identity
 
 - Align source: `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0` (PR #982), managed release compiler

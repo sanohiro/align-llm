@@ -93,19 +93,26 @@ No compiler probe substitutes for observed consumer acceptance or real Metal/CUD
   This resolves the distinct forced/generated IDs in the canonical vectors without weakening the
   diagnostic-output-equals-production requirement. All three traversals share the existing deadline.
 
-**Eligibility checkpoint.** Request 62 is published through merged PR #213. Native-independent
-stream, comparison/traversal, case sequencing and kit/preparation seams have owner-tested
-checkpoints. Remaining useful end-to-end integration depends on the borrowed native case consumer;
-G1R/G2 follow G1 and are not yet eligible. Resume after the shipped compiler fix instead of
-publishing dormant seams or inventing a successful final CLI.
+**Native diagnostic checkpoint.** `runtime_diagnostic` retains layer/router tensor slots only
+until synchronous readback, with bounded reusable scratch storage. Qwen/OLMoE diagnostic generation
+reproduces production logits byte-for-byte on the native fixture and emits the geometry-derived
+frame traversal. Separate forced replay ignores EOG and the sampling maximum, and validates every
+forced token and context extent. The generation owner passes complete frames, actual routing
+selection/weight consistency, production isolation, malformed capture, exact reservation,
+pre-upload diagnostic-budget refusal, stream failure and successful subsequent invocation.
+`gmake gpu-generation-smoke gpu-case-traversal`, per-unit generation checking, `gmake fmt` and
+`git diff --check` pass. No real-device numeric qualification is claimed.
+
+**Eligibility checkpoint.** Requests 61/62 are consumer-verified. The full frozen 21-case audit
+meets 20 expectations; only explicitly deferred direct-place case 11 remains red. All negative
+lifetime controls, observed native generation and real CPU compilation pass. G1 integration is
+eligible; G1R/G2 still follow G1.
 
 **Next actions, in order.**
 
-1. Resume observed native generation when Request 62 ships: adopt its exact managed pin, add
-   Qwen/OLMoE production-logit hooks and the 65,576-byte host reservation before upload, then pass
-   `gmake gpu-numeric-stream` and `gmake gpu-generation-smoke` with observed prefill/decode.
-   Connect native diagnostic production to geometry traversal, numeric pairing and case sequencing.
-   Separate generation reproduction and teacher-forced traversals share the generation deadline.
+1. Connect existing CPU production and diagnostic generation to the same stream traversal, with
+   separate production, reproduction and forced owners. Connect native case input/output to
+   geometry traversal, numeric pairing and case sequencing under the shared generation deadline.
 2. Connect the preparation adapter and case producer to the fixed `gpu-runtime-qualify` CLI,
    process/record/replay/publication owners, and real source/profile/calibration kit construction.
    The final CLI does not exist yet; do not publish a placeholder success path.
@@ -167,13 +174,10 @@ OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90.
 `1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
 follows from these build and correctness checkpoints.
 
-**Latest native-stream checkpoint.** `gmake gpu-numeric-stream` passes native construction,
-return/drop, disabled mode, independent 160-byte golden, occupied path, scalar admission,
-shape/nonfinite/byte-budget refusals and poisoned/finished transitions, plus the existing independent
-reader owner. `gmake gpu-generation-smoke` passes the existing unobserved consumer at the new pin;
-it does not close Request 61/62 observed integration. `scripts/align-toolchain verify` passes.
-The native compiler build requires this host's installed LLVM 22 configuration; ordinary managed
-commands now reuse the verified release artifacts. No G1 PR or hardware completion is claimed.
+**Latest native-stream checkpoint.** Managed compiler/runtime verification, native stream,
+observed and diagnostic generation pass as recorded above. Native compiler materialization used
+the host's installed LLVM 22 configuration. Full audit report remains honestly `ready=false`
+for deferred case 11. No G1 PR or hardware completion is claimed.
 
 **Intentional uncommitted files.** None after the verified observed-generation checkpoint.
 

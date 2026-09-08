@@ -1,6 +1,7 @@
 module runtime_generation_smoke
 
 import ggml_ffi
+import runtime_diagnostic
 import runtime_generation
 import runtime_numeric_stream
 import runtime_options
@@ -196,7 +197,7 @@ fn observed(pack_path: str, geometry_text: str, root: str, model: i64, enabled: 
 }
 
 fn observed_refusal(pack_path: str, geometry_text: str, root: str, model: i64,
-  host_budget: i64, stream_limit: i64, name: str, before_upload: bool) -> Result<(), Error> {
+  host_budget: i64, stream_limit: i64, name: str, before_upload: bool, diagnostic: bool) -> Result<(), Error> {
   mut config := options(16777216)
   config.host_budget_bytes = host_budget
   owner := ggml_ffi.gpu_device_open(
@@ -208,11 +209,21 @@ fn observed_refusal(pack_path: str, geometry_text: str, root: str, model: i64,
   identity := source_identity(pack_path)?
   mut stream := runtime_numeric_stream.create(root, name, model, stream_limit, 65576)?
   result := if model == 1 {
-    runtime_generation.generate_qwen_observed(
-      owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, stream)
+    if diagnostic {
+      runtime_generation.generate_qwen_diagnostic(
+        owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, stream, eog_ids)
+    } else {
+      runtime_generation.generate_qwen_observed(
+        owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, stream)
+    }
   } else {
-    runtime_generation.generate_olmoe_observed(
-      owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, 0, Some(42), stream)
+    if diagnostic {
+      runtime_generation.generate_olmoe_diagnostic(
+        owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, 0, Some(42), stream, eog_ids)
+    } else {
+      runtime_generation.generate_olmoe_observed(
+        owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, 0, Some(42), stream)
+    }
   }
   match result { Ok(_) => { return Err(Error.Invalid) }, Err(_) => {} }
   if before_upload {
@@ -224,8 +235,79 @@ fn observed_refusal(pack_path: str, geometry_text: str, root: str, model: i64,
   return Ok(())
 }
 
+fn trace_pass(pack_path: str, geometry_text: str, model: i64, diagnostic: bool,
+  borrow forced: array<i64>, borrow mut stream: runtime_numeric_stream.Stream) -> Result<array<i64>, Error> {
+  config := options(16777216)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  mut eog_builder: array_builder<i64> := array_builder()
+  mut id := 0
+  loop {
+    if forced.len() == 0 || id >= 32 { break }
+    eog_builder.push(id)
+    id = id + 1
+  }
+  eog_ids := eog_builder.build()
+  maximum := if forced.len() > 0 { 1 } else { 3 }
+  identity := source_identity(pack_path)?
+  if model == 1 {
+    if diagnostic {
+      return runtime_generation.generate_qwen_diagnostic(
+        owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, maximum, stream, forced)
+    }
+    return runtime_generation.generate_qwen_observed(
+      owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, maximum, stream)
+  }
+  if diagnostic {
+    return runtime_generation.generate_olmoe_diagnostic(
+      owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, maximum, 0, Some(42), stream, forced)
+  }
+  return runtime_generation.generate_olmoe_observed(
+    owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, maximum, 0, Some(42), stream)
+}
+
+fn complete_trace(pack_path: str, geometry_text: str, root: str, model: i64) -> Result<(), Error> {
+  name := if model == 1 { "qwen-complete" } else { "olmoe-complete" }
+  limit := if model == 1 { 2504 } else { 4968 }
+  mut stream := runtime_numeric_stream.create(root, name, model, limit, 2097152)?
+  empty := empty_ids()
+  forced := prompt()
+  production := trace_pass(pack_path, geometry_text, model, false, empty, stream)?
+  replay := trace_pass(pack_path, geometry_text, model, true, empty, stream)?
+  if !same_ids(production, replay) { return Err(Error.Invalid) }
+  teacher := trace_pass(pack_path, geometry_text, model, true, forced, stream)?
+  if teacher.len() != 3 { return Err(Error.Invalid) }
+  runtime_numeric_stream.finish(stream)?
+  if stream.written_bytes != limit { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn diagnostic_refusals() -> Result<(), Error> {
+  if runtime_diagnostic.required_bytes(2, 8, 2, 8, 3)? != 144 { return Err(Error.Invalid) }
+  match runtime_diagnostic.required_bytes(0, 8, 2, 8, 3) {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  match runtime_diagnostic.required_bytes(2, 16777216, 2, 8, 3) {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  match runtime_diagnostic.required_bytes(2, 8, 2, 8, 9) {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  mut capture := runtime_diagnostic.create(2, 8, 2, 8, 3)?
+  runtime_diagnostic.reset(capture)?
+  mut stream := runtime_numeric_stream.disabled()
+  match runtime_diagnostic.write(capture, 0, stream) {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  return Ok(())
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
   if args.len() != 5 { return Err(Error.Invalid) }
+  diagnostic_refusals()?
   reject_mismatched_identity(args[1], args[2])?
   run_qwen(args[1])?
   eog := qwen_first_token(args[1])?
@@ -243,13 +325,23 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     return Err(Error.Invalid)
   }
   observed_refusal(args[1], QWEN_GEOMETRY, args[4], 1,
-    qwen_observed, 568, "qwen-budget", true)?
+    qwen_observed, 568, "qwen-budget", true, false)?
   observed_refusal(args[2], geometry, args[4], 2,
-    olmoe_observed, 568, "olmoe-budget", true)?
+    olmoe_observed, 568, "olmoe-budget", true, false)?
   observed_refusal(args[1], QWEN_GEOMETRY, args[4], 1,
-    2097152, 108, "qwen-stream-limit", false)?
+    2097152, 108, "qwen-stream-limit", false, false)?
   observed_refusal(args[2], geometry, args[4], 2,
-    2097152, 108, "olmoe-stream-limit", false)?
+    2097152, 108, "olmoe-stream-limit", false, false)?
+  observed_refusal(args[1], QWEN_GEOMETRY, args[4], 1,
+    qwen_observed + 144, 2504, "qwen-diagnostic-budget", true, true)?
+  observed_refusal(args[2], geometry, args[4], 2,
+    olmoe_observed + 144, 4968, "olmoe-diagnostic-budget", true, true)?
+  observed_refusal(args[1], QWEN_GEOMETRY, args[4], 1,
+    2097152, 108, "qwen-diagnostic-limit", false, true)?
+  observed_refusal(args[2], geometry, args[4], 2,
+    2097152, 108, "olmoe-diagnostic-limit", false, true)?
+  complete_trace(args[1], QWEN_GEOMETRY, args[4], 1)?
+  complete_trace(args[2], geometry, args[4], 2)?
   print("runtime generation smoke: PASS")
   return Ok(())
 }

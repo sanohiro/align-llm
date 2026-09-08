@@ -1,0 +1,144 @@
+module runtime_diagnostic
+
+import ggml_ffi
+import runtime_numeric_stream
+
+pub Capture {
+  slots: buffer,
+  scratch: buffer,
+  layers: i64,
+  embedding: i64,
+  prompt: i64,
+  experts: i64,
+  selected: i64,
+  active: bool,
+}
+
+pub fn disabled() -> Capture = Capture {
+  slots: buffer(0), scratch: buffer(0), layers: 0, embedding: 0, prompt: 0,
+  experts: 0, selected: 0, active: false,
+}
+
+pub fn required_bytes(layers: i64, embedding: i64, prompt: i64,
+  experts: i64, selected: i64) -> Result<i64, Error> {
+  if layers < 1 || layers > 4096 || embedding < 1 || embedding > 16777216
+    || prompt < 1 || prompt > 2048 || embedding > 16777216 / prompt
+    || experts < 0 || experts > 1048576 || selected < 0 || selected > experts
+    || (experts == 0 && selected != 0) || (experts > 0 && selected == 0) {
+    return Err(Error.Invalid)
+  }
+  layer_values := embedding * prompt
+  scratch_values := if layer_values > experts { layer_values } else { experts }
+  return Ok(16 + 32 * layers + 4 * scratch_values)
+}
+
+fn zeroes(bytes: i64) -> buffer {
+  mut result := buffer(bytes)
+  mut at := 0
+  loop {
+    if at >= bytes / 4 { break }
+    result.put_u32_le(0)
+    at = at + 1
+  }
+  return result
+}
+
+pub fn create(layers: i64, embedding: i64, prompt: i64,
+  experts: i64, selected: i64) -> Result<Capture, Error> {
+  bytes := required_bytes(layers, embedding, prompt, experts, selected)?
+  slot_bytes := 16 + 32 * layers
+  return Ok(Capture {
+      slots: zeroes(slot_bytes), scratch: zeroes(bytes - slot_bytes), layers: layers,
+      embedding: embedding, prompt: prompt, experts: experts, selected: selected, active: true,
+    })
+}
+
+pub fn reset(borrow mut owner: Capture) -> Result<(), Error> {
+  if !owner.active { return Ok(()) }
+  slots := owner.slots.bytes()
+  ggml_ffi.slots_init(slots, slots.len(), "diagnostic_slots") else { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn retain(borrow mut owner: Capture, borrow source: slice<u8>,
+  layer: i64, field: i64, source_slot: i64) -> Result<(), Error> {
+  if !owner.active { return Ok(()) }
+  if layer < 0 || layer >= owner.layers || field < 0 || field > 3 {
+    return Err(Error.Invalid)
+  }
+  retained := owner.slots.bytes()
+  ggml_ffi.slot_mark_output(source, source_slot, "diagnostic_tensor") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.slot_copy(retained, layer * 4 + field, source, source_slot, "diagnostic_tensor") else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn shape(borrow slots: slice<u8>, slot: i64, width: i64, height: i64,
+  gathered: bool) -> bool {
+  if ggml_ffi.slot_nbytes(slots, slot) != 4 * width * height { return false }
+  if gathered {
+    return ggml_ffi.slot_ne(slots, slot, 0) == 1
+      && ggml_ffi.slot_ne(slots, slot, 1) == width
+      && ggml_ffi.slot_ne(slots, slot, 2) == height
+      && ggml_ffi.slot_ne(slots, slot, 3) == 1
+  }
+  return ggml_ffi.slot_ne(slots, slot, 0) == width
+    && ggml_ffi.slot_ne(slots, slot, 1) == height
+    && ggml_ffi.slot_ne(slots, slot, 2) == 1
+    && ggml_ffi.slot_ne(slots, slot, 3) == 1
+}
+
+fn emit(borrow slots: slice<u8>, slot: i64, borrow scratch: slice<u8>, offset: i64,
+  frame: runtime_numeric_stream.Frame, borrow mut stream: runtime_numeric_stream.Stream) -> Result<(), Error> {
+  bytes := frame.width * frame.height * 4
+  if bytes < 4 || bytes > scratch.len() { return Err(Error.Invalid) }
+  payload := scratch[0..bytes]
+  ggml_ffi.slot_get(slots, slot, payload, offset, bytes, "diagnostic_readback") else {
+    return Err(Error.Invalid)
+  }
+  return runtime_numeric_stream.record(stream, frame, payload)
+}
+
+pub fn write(borrow owner: Capture, step: i64,
+  borrow mut stream: runtime_numeric_stream.Stream) -> Result<(), Error> {
+  if !owner.active || step < 0 || step > 4096 { return Err(Error.Invalid) }
+  slots := owner.slots.bytes()
+  scratch := owner.scratch.bytes()
+  mut layer := 0
+  loop {
+    if layer >= owner.layers { break }
+    tokens := if step == 0 && layer != owner.layers - 1 { owner.prompt } else { 1 }
+    base := layer * 4
+    if !shape(slots, base, owner.embedding, tokens, false) { return Err(Error.Invalid) }
+    if owner.experts > 0 {
+      if !shape(slots, base + 1, owner.experts, tokens, false)
+        || !shape(slots, base + 2, owner.experts, tokens, false)
+        || !shape(slots, base + 3, owner.selected, tokens, true) { return Err(Error.Invalid) }
+      mut token := 0
+      loop {
+        if token >= tokens { break }
+        emit(slots, base + 1, scratch, token * owner.experts * 4,
+          runtime_numeric_stream.Frame {
+            kind: 3, layer: layer, step: step, width: owner.experts, height: 1,
+          }, stream)?
+        emit(slots, base + 2, scratch, token * owner.experts * 4,
+          runtime_numeric_stream.Frame {
+            kind: 4, layer: layer, step: step, width: owner.selected, height: 1,
+          }, stream)?
+        emit(slots, base + 3, scratch, token * owner.selected * 4,
+          runtime_numeric_stream.Frame {
+            kind: 5, layer: layer, step: step, width: owner.selected, height: 1,
+          }, stream)?
+        token = token + 1
+      }
+    }
+    emit(slots, base, scratch, 0, runtime_numeric_stream.Frame {
+        kind: 2, layer: layer, step: step, width: owner.embedding, height: tokens,
+      }, stream)?
+    layer = layer + 1
+  }
+  return Ok(())
+}
