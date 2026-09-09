@@ -1184,6 +1184,23 @@ validation and repair caller; a transport or constructor alone is an unpublished
 
 Closure matrix (test names are implementation targets, not passing evidence):
 
+CUDA repair note (2026-09-09): the reusable-session OLMoE prefill and decode graphs must expand the
+gathered router weights before expert work, matching the pinned `build_moe_ffn` early
+`ggml_build_forward_expand(gf, weights)`. Otherwise graph traversal interleaves expert-id
+dependencies with the softmax/reshape/argsort/view/gather chain, preventing CUDA's top-k MoE
+fusion. The production reference then takes a different floating-point path; retained G1
+tensor observations prevent that fusion and do not expose the production discrepancy.
+`runtime_olmoe.build_prefill_chunk` and `build_decode_diagnostic` own this ordering through an
+explicit internal `session_graph` boolean. Session construction passes `true` to both pre-upload
+shape planning and execution; single-shot callers and convenience builders pass `false`, preserving
+G1's existing production/diagnostic traversal and instrumented oracle contract. The mode is fixed
+for an owner lifetime, so graphs cannot cross modes in the owner-local cache. It changes no external
+CLI, stored identity, allocation owner, validation order, failure or cleanup surface. Existing
+`run-gpu-session-independent` OLMoE requests 5, 7 and 8 are the exact real CUDA regression;
+the complete G1 acceptance/replay, session reuse, host-capacity and coding-retry owners verify
+the affected graph lifetime, diagnostic and caller boundaries. No public schema, sampler,
+acceptance threshold, global fusion setting or CPU graph is changed.
+
 | Owner | Construction/success | Malformed/failure | Early exit/cleanup |
 | --- | --- | --- | --- |
 | `runtime_session_io` | `gpu-session-framing`: golden little-endian frame, fragmented header/body, consecutive frames and 65536-byte boundaries | zero/oversize/truncated frames, invalid response length; bounded pre-allocation refusal | clean EOF, broken pipe, read/write error propagation; all buffers remain lexical owners |

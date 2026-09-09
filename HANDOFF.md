@@ -3,9 +3,39 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations;
 this file records durable execution state.
 
-**Current execution constraint:** the user requested the final CUDA run and a result summary only.
-That attempt is complete; performance remains blocked by the OLMoE session failures below.
-Stop here before runtime repair, further optimization or another roadmap capability.
+**Current execution constraint:** the user has requested repair of the CUDA session mismatches.
+Complete this repair, its CUDA verification and publication for the primary implementation host.
+Do not begin a separate optimization or roadmap capability.
+
+## CUDA session repair checkpoint (2026-09-09)
+
+Branch `agent/cuda-session-repair`, based on merged result report PR #222 (`dd67625`).
+The three OLMoE serial-output discrepancies are repaired at `688232c`: explicitly expand gathered
+router weights before expert work for reusable-session graphs and their pre-upload plans, matching
+the pinned llama.cpp order. Single-shot builders retain their previous traversal; diagnostic
+observation can inhibit CUDA fusion, so the production-session owner is essential.
+
+At the clean manifested `688232c` checkpoint, `scripts/run-gpu-session-independent` passes all
+16 requests, `scripts/run-gpu-session-host-capacity` passes both models including oversized-input
+refusal and subsequent reuse, and full `scripts/run-gpu-independent-acceptance` passes all
+19 cases twice with bitwise-equal comparisons and complete cleanup. Relocated `--replay` passes.
+`make fmt`, `scripts/run-gpu-session-reuse-smoke` (including fault injection), and
+`python3 scripts/run-olmoe-coding-decision --self-test` pass. Exact invocations, hashes, the initial
+review-regression FAIL and final PASS receipts are in `docs/gpu-cuda-session-repair.md`; complete
+evidence remains outside Git under `gpu-cuda-session-repair`.
+
+The native coding validator now admits its owned temporary work directory via a copied child
+environment. Final real retry: Qwen passes attempt 2; OLMoE fails all eight with an incorrect
+`stop - 1` patch. The independent reference reproduces the original eight requests exactly;
+the final repair rerun emits the same eight outputs. This separate coding-quality blocker prevents
+paired performance measurement. Do not relax the task or qualify it as PASS. Internal diagnostic
+times exclude request/response transport and preparation; no speedup is claimed.
+
+The requested mismatch repair and real CUDA requalification are complete. Publication/merge is
+the only active step. After merge, stop at the requested boundary; the primary implementation
+machine can take over. A future campaign must resolve the coding-quality prerequisite and explicitly
+nominate the repaired candidate before timing; the frozen measurement candidate still names the
+original runtime. No new Align capability gap or intentional uncommitted files remain.
 
 ## CUDA execution checkpoint (2026-09-09)
 
@@ -32,11 +62,11 @@ outside Git on this host, including manifested candidate/reference builds and bo
 source/build trees. The earlier environment-correction interruption and historical failed kit
 evidence remain unchanged. Use the working local Docker socket by unsetting ambient `DOCKER_HOST`.
 
-No work is active after this summary. Next, if requested, localize the OLMoE serial differences
+At this historical checkpoint no work was active. The next action was to localize the OLMoE serial differences
 using the complete retained history; this is initially an application/native integration or
 qualification concern, not an evidenced Align gap. Resume timing only after independent session,
 host-capacity and real coding-retry owners pass. Preserve the failed receipts and use a fresh
-output directory. Do not begin G2/G6 or further repair without the next user direction.
+output directory. The active repair above supersedes that stop after the user's next instruction.
 
 ## Previous checkpoint: final CUDA handoff after completed Metal campaign
 
