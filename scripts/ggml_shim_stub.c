@@ -3424,6 +3424,24 @@ int64_t align_gpu_observation_state(void *owner, int32_t field) {
     }
 }
 
+void *align_gpu_graph_context_lookup(void *owner, int32_t kind) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || !align_gpu_graph_kind_ok(kind) || state->shape_planning
+        || state->workspace_failed) { return NULL; }
+    return state->graph_contexts[kind];
+}
+
+void *align_gpu_graph_lookup(void *owner, int32_t kind, const void *key, int64_t key_length) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || !align_gpu_graph_kind_ok(kind) || state->shape_planning
+        || !state->workspace_prepared || state->workspace_failed || !state->graph_prepared[kind]
+        || !align_gpu_topology_key_ok(key, key_length)
+        || memcmp(state->graph_keys[kind], key, 64) != 0) {
+        return NULL;
+    }
+    return state->workspace_graphs[kind];
+}
+
 int64_t align_gpu_graph_state(void *owner, int32_t kind, int32_t field) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL || !align_gpu_graph_kind_ok(kind) || state->graph_contexts[kind] == NULL) {

@@ -8356,6 +8356,15 @@ align-llm verification: collapse `src/layer_forward.align`'s eight column record
   it produces in place; pass `make layer-forward-smoke`.
 ```
 
+G1R adds `runtime_generation.Session.prefix` as a current client. At pinned Align `305926b4`,
+replacing the owned `array<i64>` field after a successful request is rejected; sibling main
+`84b97bce` retains the same diagnostic in `align_sema/src/lib.rs` and its rejection tests.
+The session uses its already fixed admitted KV capacity to allocate a token column once and
+stores fixed-width i64 token bytes plus an explicit valid length. This bounded representation avoids replacement
+and repeated allocation, but does not satisfy the language-owned requirement. Status remains
+`PROPOSED`, `Blocking: no`; G1R may continue. Its focused acceptance is `gpu-session-reuse`,
+including changed/shortened prefixes and a second request after semantic refusal.
+
 R6-OLMOE-DECODE adds `src/moe_decode_step.align` and `gmake moe-decode-step-qualification` as
 clients. Its `steps[]` rows carry a `n_layer x n_expert_used` integer matrix **per step** — the
 demand stream this capability exists to publish — and R5A correction C9's shape forces that to be
@@ -9615,6 +9624,12 @@ closure is in `../align/docs/impl/25-recursive-owned-json-plan.md` section 14.
 No versioned release or consumer adoption is claimed.
 
 ## Request 46 — `borrow mut` array locals inside loops, and no element assignment through an array field
+
+G1R is another current client: `Session.prefix[index] = token` is rejected as an invalid assignment
+target at Align `305926b4`; borrowing the field as `borrow mut array<i64>` is also rejected as a
+partial Move-field borrow. The fixed-capacity prefix therefore uses the shipped Request 61 buffer
+field view with explicit i64 little-endian cells. This is non-blocking, but does not close Request 46.
+
 
 ```text
 Status: PROPOSED

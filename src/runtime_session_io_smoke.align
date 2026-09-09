@@ -1,0 +1,18 @@
+module runtime_session_io_smoke
+
+import runtime_session_io
+
+pub fn main() -> Result<(), Error> {
+  loop {
+    incoming := runtime_session_io.read_frame()?
+    match incoming {
+      None => { break },
+      Some(body) => {
+        view := body.bytes()
+        text := view.as_str()?
+        runtime_session_io.write_frame(text)?
+      },
+    }
+  }
+  return Ok(())
+}

@@ -5,8 +5,31 @@ this file records durable execution state.
 
 **Current execution constraint:** finish GPU repair, local Metal verification, review and PR/merge.
 The user will also run CUDA verification, together with performance measurement, after all Metal
-implementation and verification is complete. Do not request earlier CUDA debugging runs. The
+implementation and verification is complete. Stop once that final CUDA handoff is ready; do not
+continue into subsequent capabilities because the user wants to discuss the next direction.
+Do not request earlier CUDA debugging runs. The
 imported Pengwin checkpoint below is historical evidence.
+
+## Active capability: G1R serial coding session
+
+Branch `agent/g1r-coding-session`, based on G1 merge `de5ba83` (PR #219).
+G1 Metal independent acceptance passed all 19 cases at `5ae5351`; final repair `062f209`
+passed exact-head preflight and all three hosted CI jobs. Review dispositions and integration
+records are on PR #219. Historical CUDA/Metal failures remain historical; no speedup is claimed.
+
+G1R's authoritative session/transport/closure contract is §3.12 of `docs/specs/gpu-runtime.md`.
+Implemented local checkpoint: bounded framing, retained tokenizer, and a serial GPU generation
+owner with separate prefill/decode graph slots and fixed-capacity token-prefix storage.
+`run-gpu-session-framing-smoke`, `run-gpu-session-tokenizer-smoke`, and
+`run-gpu-session-reuse-smoke` PASS with the managed compiler on Mac. The tokenizer owner removes
+the source file before reuse; the GPU stub owner checks both models, short-long-short requests,
+no additional weight uploads and a valid request after semantic refusal. Real Metal session
+qualification and injected execution-failure coverage remain unfinished.
+Next: add the strict worker protocol, complete host-capacity accounting, connect the actual coding
+caller, and finish named session owners. Complete Metal session qualification before the paired performance
+campaign and the user's combined CUDA verification/measurement. No earlier CUDA run is requested.
+The initial framing/resource composition probes compiled and ran with the pinned Align compiler;
+they are feasibility evidence only. No complete G1R coding consumer or real-device session qualification has passed yet.
 
 ## Pengwin CUDA qualification checkpoint (2026-09-08)
 
