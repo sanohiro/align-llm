@@ -74,7 +74,9 @@ sorted_paths() {
 }
 unsafe_files=$(cd "${root_dir}" \
   && grep -rlE '(^|[^A-Za-z_])unsafe[[:space:]]*\{' src/ | sorted_paths)
-ffi_files="src/ggml_ffi.align src/ggml_ffi/internal/resource.align"
+# The allocation-count probe is imported only by its focused instrumented-runtime test. Its native
+# calls stay inside the same FFI package; ordinary entry points never link its test-only symbols.
+ffi_files="src/ggml_ffi.align src/ggml_ffi/host_probe.align src/ggml_ffi/internal/resource.align"
 if [ "${unsafe_files}" != "${ffi_files}" ]; then
   echo "ggml spike smoke: FAIL unsafe blocks escaped the ggml FFI package: ${unsafe_files}" >&2
   exit 1

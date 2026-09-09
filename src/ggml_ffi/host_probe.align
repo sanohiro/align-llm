@@ -1,0 +1,14 @@
+module ggml_ffi.host_probe
+
+// Test-only probes shipped by the pinned runtime's alloc-count build. Production entry points
+// do not import this module and do not require these instrumentation symbols.
+extern "C" {
+  fn align_rt_requested_live_reset()
+  fn align_rt_requested_live_peak() -> i64
+}
+
+pub fn reset() {
+  unsafe { align_rt_requested_live_reset() }
+}
+
+pub fn peak() -> i64 = unsafe { align_rt_requested_live_peak() }

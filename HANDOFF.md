@@ -81,7 +81,7 @@ The older host-prerequisite paragraph below is superseded by this checkpoint.
 
 ## Active capability: G1 resident GPU generation (2026-09-08)
 
-**G1 verification and final-review repair checkpoint (unpublished, based on `5ae5351`).**
+**G1 qualification and review-repair checkpoint (based on `5ae5351`).**
 The complete independent Metal acceptance now PASSes: 19 cases, two fresh candidate executions
 per case, every layer/router/logit comparison bitwise equal, and owned cleanup complete in
 2,113,350,082,000 ns (35 minutes 13 seconds) under the fixed schema-2 2400-second ceiling.
@@ -114,12 +114,22 @@ benchmark names it: merge commit or fast-forward only, no squash/rewrite.
 Linux publication exposed a test-harness portability defect: the native shim's absolute ELF
 SONAME prevents `LD_LIBRARY_PATH` from selecting fault fixtures. The provider/device owners now
 use explicit Linux-only interposition for their owned test shims, preserving production link
-identity. Provider helper relocation also uses a cross-filesystem move. Their combined Linux
-publication owner is the next verification checkpoint; the Metal receipt is unchanged.
+identity. Provider helper relocation also uses a cross-filesystem move. The combined Linux owner
+and complete selected publication preflight PASS at `dee39c1`, including the real installed
+profile. Both hosted installed-image architectures also PASS. The broad hosted graph identified
+one test-only FFI confinement defect: allocation probes were called directly by the host-capacity
+smoke. Those calls now live in `ggml_ffi.host_probe`, imported only by that instrumented test;
+both legacy smoke owners keep their exact unsafe/extern allowlist within the FFI package. The
+layer owner now scopes its no-allocation assertion to the legacy shared boundary, as the spike
+owner already does; G1 device-owned allocation is outside that legacy contract.
+`run-ggml-spike-smoke`, complete `run-layer-forward-smoke` (including dense/MoE decode and KV),
+and the actual `alloc-count` `run-gpu-host-capacity-smoke` PASS after repair. Production entry points do
+not import the probe or require its test-only runtime symbols. The repair delta changes no
+production generation or resource policy; the Metal receipt is unchanged.
 
-Next: run publication preflight with the prepared pinned Linux
-toolchain and real installed Docker profile, publish the reviewed PR, wait for required hosted
-checks, and merge. Then refresh main and implement G1R's reusable coding session before the paired
+Next: run exact-head publication preflight with owner `gpu-host-capacity` using the prepared
+pinned Linux toolchain and real installed Docker profile, publish the fixture repair, wait for
+required hosted checks, and merge. Then refresh main and implement G1R's reusable coding session before the paired
 performance decision. The user will also verify CUDA, after all Metal work is complete and together
 with performance measurement; do not request earlier CUDA debugging runs. G1R preparation is still
 private source notes, with no public session contract or implementation yet. The sibling Align

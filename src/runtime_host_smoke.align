@@ -2,18 +2,13 @@ module runtime_host_smoke
 
 import alignpack_read
 import ggml_ffi
+import ggml_ffi.host_probe
 import runtime_bundle
 import runtime_generation
 import runtime_numeric_stream
 import runtime_options
 import runtime_pack_identity
 import std.fs
-
-// Existing pinned runtime test probes, available only in the alloc-count build.
-extern "C" {
-  fn align_rt_requested_live_reset()
-  fn align_rt_requested_live_peak() -> i64
-}
 
 fn run(pack_path: str, geometry: str, root: str, model: i64, diagnostic: bool,
   host_budget: i64, expect_success: bool) -> Result<(), Error> {
@@ -36,7 +31,7 @@ fn run(pack_path: str, geometry: str, root: str, model: i64, diagnostic: bool,
   name.write_int(if diagnostic { 1 } else { 0 })
   name.write_int(host_budget)
   filename := name.to_string()
-  unsafe { align_rt_requested_live_reset() }
+  ggml_ffi.host_probe.reset()
   mut stream := runtime_numeric_stream.create(root, filename, model, 65536, host_budget)?
   result := if model == 1 {
     if diagnostic {
@@ -68,7 +63,7 @@ fn run(pack_path: str, geometry: str, root: str, model: i64, diagnostic: bool,
   generated := result?
   if generated.len() != 3 { return Err(Error.Invalid) }
   runtime_numeric_stream.finish(stream)?
-  peak := unsafe { align_rt_requested_live_peak() }
+  peak := ggml_ffi.host_probe.peak()
   reserved := ggml_ffi.gpu_host_reserved(owner)
   native := ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_HOST_PEAK)
   staging := ggml_ffi.gpu_memory_bytes(owner, ggml_ffi.GPU_MEMORY_STAGING)
@@ -104,14 +99,14 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   // The bounded index owner refuses before constructing any block columns.
   pack := fs.open_rw(args[1])?
   mut counters := alignpack_read.new_counters()
-  unsafe { align_rt_requested_live_reset() }
+  ggml_ffi.host_probe.reset()
   match alignpack_read.open_pack_bounded(pack, counters, 1) {
     Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
   }
-  if unsafe { align_rt_requested_live_peak() } > 8192 { return Err(Error.Invalid) }
-  unsafe { align_rt_requested_live_reset() }
+  if ggml_ffi.host_probe.peak() > 8192 { return Err(Error.Invalid) }
+  ggml_ffi.host_probe.reset()
   staged := runtime_bundle.verify(args[6], "metal", 35651584)?
-  artifact_peak := unsafe { align_rt_requested_live_peak() }
+  artifact_peak := ggml_ffi.host_probe.peak()
   if artifact_peak < 33554432 || artifact_peak > 35651584 {
     runtime_bundle.cleanup(staged)?
     return Err(Error.Invalid)
