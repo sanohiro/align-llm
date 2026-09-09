@@ -11564,3 +11564,21 @@ Acceptance must cover finite boundary values, invalid scalar kinds, nonfinite po
 the existing route, exact bounded encoding, source expiry, per-unit interfaces, partial decode
 failure and cleanup after preceding owned strings. G1R currently uses the supported borrowed
 record with explicit text cloning; this does not satisfy the language-owned requirement.
+
+
+### Align assessment (2026-09-09)
+
+Reproduced the exact `system: string`, `user: string`, `temperature: f64` record
+on Align main `ab34b044eeb3a9bc93a3a0ae943d062fb4d58399` (#1002). Both `check` and
+`check-per-unit` reject decode and encode with `owned JSON graph has unsupported
+type f64`. No capability has shipped for this request; status remains PROPOSED.
+
+The recursive-owned JSON Settled entry and `docs/impl/25-recursive-owned-json-plan.md`
+explicitly exclude floats. Under the current `docs/impl/23-friction-ledger.md`
+reopen protocol, changing that restriction requires at least five recorded mechanical
+workaround sites across two independent real programs before the public-contract
+review. This request establishes a reported consumer but does not supply that
+threshold. Align has not changed the consumer or introduced another codec surface.
+The implementation boundary, if admitted, must sweep direct/optional/array float
+leaves, target-bound descriptor transport, shared float parsing/formatting and
+partial-owned-prefix cleanup together. Consumer adoption remains pending.
