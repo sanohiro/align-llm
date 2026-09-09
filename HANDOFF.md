@@ -10,43 +10,26 @@ continue into subsequent capabilities because the user wants to discuss the next
 Do not request earlier CUDA debugging runs. The
 imported Pengwin checkpoint below is historical evidence.
 
-## Active capability: G1R serial coding session
+## Active capability: first resident Metal performance campaign
 
-Branch `agent/g1r-coding-session`, based on G1 merge `de5ba83` (PR #219).
-G1 Metal independent acceptance passed all 19 cases at `5ae5351`; final repair `062f209`
-passed exact-head preflight and all three hosted CI jobs. Review dispositions and integration
-records are on PR #219. Historical CUDA/Metal failures remain historical; no speedup is claimed.
+Branch `agent/g1r-metal-measurement`, based on G1R repair `12a633d` (PR #220).
+G1's full independent Metal corpus passes all 19 cases. G1R's final manifested candidate passes
+all 16 serial independent requests, whole-session host capacity and real two-attempt coding retries
+for both Qwen and OLMoE. Exact-head hosted preflight passes on native Linux with DAC override/read
+search capabilities removed so permission-refusal owners exercise their actual boundary.
+No GPU speedup or CUDA completion is claimed.
 
-G1R's authoritative session/transport/closure contract is §3.12 of `docs/specs/gpu-runtime.md`.
-Implemented local checkpoints `39a7929` and `ceaf477`: bounded framing, retained tokenizer, and a serial GPU generation
-owner with separate prefill/decode graph slots and fixed-capacity token-prefix storage.
-`run-gpu-session-framing-smoke`, `run-gpu-session-tokenizer-smoke`, and
-`run-gpu-session-reuse-smoke` PASS with the managed compiler on Mac. The tokenizer owner removes
-the source file before reuse; the GPU stub owner checks both models, short-long-short requests,
-no additional weight uploads and a valid request after semantic refusal. Real Metal worker readiness passes both original models across repeated/long/short requests and
-semantic refusal. Actual coding generation plus the existing validator passes on both models (one
-attempt each). The instrumented whole-session host owner also passes: Qwen requested peak
-50,452,001 / reservation 371,552,904 / native peak 18,247,871 bytes; OLMoE 29,631,809 /
-324,013,024 / 17,974,079 bytes, within the 1 GiB host budget. These are local observations, not
-performance evidence. Independent same-cache-policy comparison passes Qwen 7 / OLMoE 9 ordered requests, including
-1900-word input, changed prefixes and repeated seed 42; emitted text and prompt/completion counts
-match exactly. This is not a new full layer-tensor qualification. Injected decode failure and
-nonfinite readback both prevent a second execution. Manifested session qualification at `ceaf477` passes all 16 ordered requests, and its instrumented
-host owner and real two-attempt coding owner pass both models. The caller/admission repairs that
-follow this checkpoint require the affected final qualification before publication.
-The strict protocol now passes 90 ordered requests (including escaped multiline prompts); the
-Python caller passes 10 process/response/timeout cleanup cases. The CLI and actual coding runner
-are connected. Next: finish reproducible session qualification/host owners and the independent
-reference sequence; then fix and run the performance campaign, review, preflight, PR and merge. Complete Metal session qualification before the paired performance
-campaign and the user's combined CUDA verification/measurement. No earlier CUDA run is requested.
-The real coding retry owner also passes both models: a one-token first response fails validation,
-then actual test feedback produces a passing patch on the second request in the same GPU session.
-Near-1-MiB input refusal followed by a valid request passes; requested peaks are 257,116,216 bytes
-(Qwen) and 237,296,929 bytes (OLMoE), within the reservations above. Final repaired-head qualification and comparative performance measurement remain unfinished.
-The latest competitive baseline is frozen at upstream llama.cpp `304665fe7ac957df95e3ff8c8c4ffdf92dd6ffa3`;
-its unmodified Metal server and benchmark build passes. Keep the separate same-ggml `bb4caa7` baseline.
-Next: finish repaired caller/qualification verification, preflight, PR and merge; then precommit and
-run the Metal performance campaign and prepare the final combined CUDA handoff.
+The campaign contract is §6.1 of `docs/specs/gpu-runtime-performance.md`. The implementation and
+model-free owner are ready for a local checkpoint; real timing remains to run. The frozen runtime
+is the manifested `12a633d` candidate. Unmodified ordinary Metal baselines build successfully at
+same-ggml `bb4caa7540188872173c44d161602d9271386413` and current upstream
+`304665fe7ac957df95e3ff8c8c4ffdf92dd6ffa3`. Keep both views separate.
+
+Next actions: finish PR #220 checks/merge and refresh main; commit the fixed measurement campaign;
+run its Metal sequence without other local compiler/GPU work; review and publish the complete
+measurement capability and final CUDA instructions. Prepare one final CUDA correctness plus
+measurement run, then stop before subsequent capabilities as requested. No earlier CUDA run is
+requested. Historical CUDA/Metal failures remain unchanged evidence.
 
 ## Pengwin CUDA qualification checkpoint (2026-09-08)
 
