@@ -371,6 +371,7 @@ def run(args):
         arms=[],comparisons=[],failure='',elapsed_ns=0)
     try:
         validator = base.resolve_validator(deadline)
+        record['identities']['validator'] = dict(validator)
         control = destination/'known-good.patch'
         control.write_text(base.KNOWN_GOOD_PATCH)
         passed,_ = base.validate_patch(control,destination,deadline,validator)

@@ -30,8 +30,9 @@ The final handoff capability adds independent backend corpus preparation and one
 correctness-plus-measurement command. Model-free final/preparation/measurement owners pass.
 Real Metal corpus preparation passes all 19 cases and exactly reproduces the original sealed corpus
 `29bfe85d85aca082e9a841eb394300dc0a4b02750db8fd816eb6908fdc962b73`.
-Next: review the stable complete capability, run exact-head publication preflight, PR and merge,
-then provide `docs/gpu-final-cuda.md` and STOP. Do not begin G2/G6 or
+The final handoff is `docs/gpu-final-cuda.md`. After this capability merges, implementation is
+paused for the requested discussion; final CUDA execution remains pending on the user host.
+STOP at this boundary. Do not begin G2/G6 or
 another optimization capability. The user wants to discuss the next direction at this boundary.
 No earlier CUDA debugging run is requested. Historical CUDA/Metal failures remain unchanged.
 

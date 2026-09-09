@@ -77,6 +77,7 @@ def main():
             assert receipt['status']==('PASS' if fail is None else 'FAIL')
             if fail is None: assert len(receipt['result_sha256'])==6
             if fail in calls: assert calls[-1]==fail and 'measurement' not in calls
+    subprocess.run([sys.executable,ROOT/'scripts/run-gpu-reference-link-smoke'],check=True)
     subprocess.run([sys.executable,ROOT/'scripts/run-gpu-independent-preparation-smoke'],check=True)
     subprocess.run([sys.executable,ROOT/'scripts/run-gpu-session-measurement-smoke'],check=True)
     print('final GPU validation owner: PASS')

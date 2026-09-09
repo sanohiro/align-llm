@@ -415,3 +415,5 @@ limits universal recoverable host OOM. Record any actual new language gap when a
 This change runs documentation/source consistency, the unchanged schema-vector check and the docs
 publication preflight, followed by one comprehensive review focused on architecture, ordering and
 honest measurement. Native/GPU tests and speed measurements are N/A for this design-only PR.
+
+The campaign receipt also retains the resolved coding-validator identity (native execution or the immutable Docker image ID), because validation contributes to time to a passing patch. The original Metal receipt predates that field; its separately hashed Docker-event supplement is documented in `docs/gpu-metal-campaign-result.md` without rewriting the measured artifact.

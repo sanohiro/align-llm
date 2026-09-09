@@ -18,6 +18,13 @@ def digest(path):
         return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
+def driver_command(cxx, source, libraries, runtime_path, driver_source, output):
+    return [cxx, '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-ffp-contract=off',
+            '-I', str(source / 'include'), '-I', str(source / 'ggml/include'), '-I', str(source / 'vendor'),
+            str(driver_source), '-L', str(libraries), '-lllama', '-lggml', '-lggml-base',
+            '-Wl,-rpath,' + runtime_path, '-o', str(output)]
+
+
 def main():
     session = len(sys.argv) == 4 and sys.argv[3] == "--session"
     if len(sys.argv) != 3 and not session:
@@ -58,13 +65,10 @@ def main():
         runtime_path = '@loader_path/lib'
     else:
         runtime_path = '$ORIGIN/lib'
-    common = [cxx, '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-ffp-contract=off',
-              '-I', str(source / 'include'), '-I', str(source / 'ggml/include'), '-I', str(source / 'vendor'),
-              '-L', str(libraries), '-lllama', '-lggml', '-lggml-base', '-Wl,-rpath,' + runtime_path]
     driver = 'session-reference' if session else 'reference-acquire'
     driver_source = driver + '.cpp'
     for name, file in [(driver, driver_source), ('reference-smoke', 'reference-acquire-smoke.cpp')]:
-        run(common + [str(ROOT / 'eval/gpu' / file), '-o', str(output / name)])
+        run(driver_command(cxx, source, libraries, runtime_path, ROOT / 'eval/gpu' / file, output / name))
     run([str(output / 'reference-smoke')])
     assert subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip() == GGML_COMMIT
     assert not subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain'])
