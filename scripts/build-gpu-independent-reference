@@ -19,8 +19,9 @@ def digest(path):
 
 
 def main():
-    if len(sys.argv) != 3:
-        raise SystemExit('usage: build-gpu-independent-reference PINNED_GGML_CHECKOUT NEW_OUTPUT_DIRECTORY')
+    session = len(sys.argv) == 4 and sys.argv[3] == "--session"
+    if len(sys.argv) != 3 and not session:
+        raise SystemExit('usage: build-gpu-independent-reference PINNED_GGML_CHECKOUT NEW_OUTPUT_DIRECTORY [--session]')
     source = pathlib.Path(sys.argv[1]).resolve(strict=True)
     output = pathlib.Path(sys.argv[2]).absolute()
     if output.exists() or output.is_symlink():
@@ -60,17 +61,19 @@ def main():
     common = [cxx, '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror', '-ffp-contract=off',
               '-I', str(source / 'include'), '-I', str(source / 'ggml/include'), '-I', str(source / 'vendor'),
               '-L', str(libraries), '-lllama', '-lggml', '-lggml-base', '-Wl,-rpath,' + runtime_path]
-    for name, file in [('reference-acquire', 'reference-acquire.cpp'), ('reference-smoke', 'reference-acquire-smoke.cpp')]:
+    driver = 'session-reference' if session else 'reference-acquire'
+    driver_source = driver + '.cpp'
+    for name, file in [(driver, driver_source), ('reference-smoke', 'reference-acquire-smoke.cpp')]:
         run(common + [str(ROOT / 'eval/gpu' / file), '-o', str(output / name)])
     run([str(output / 'reference-smoke')])
     assert subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip() == GGML_COMMIT
     assert not subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain'])
-    evidence = {'ggml_commit': GGML_COMMIT, 'driver_sha256': digest(ROOT / 'eval/gpu/reference-acquire.cpp'),
-                'executable_sha256': digest(output / 'reference-acquire'),
+    evidence = {'ggml_commit': GGML_COMMIT, 'driver_sha256': digest(ROOT / 'eval/gpu' / driver_source),
+                'executable_sha256': digest(output / driver),
                 'libraries': {path.name: digest(path) for path in sorted(libraries.iterdir())},
                 'compiler_sha256': digest(pathlib.Path(cxx).resolve()), 'commands': commands}
     (output / 'build.json').write_text(json.dumps(evidence, separators=(',', ':')) + '\n')
-    print(output / 'reference-acquire')
+    print(output / driver)
 
 
 if __name__ == '__main__':

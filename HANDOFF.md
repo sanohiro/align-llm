@@ -5,8 +5,48 @@ this file records durable execution state.
 
 **Current execution constraint:** finish GPU repair, local Metal verification, review and PR/merge.
 The user will also run CUDA verification, together with performance measurement, after all Metal
-implementation and verification is complete. Do not request earlier CUDA debugging runs. The
+implementation and verification is complete. Stop once that final CUDA handoff is ready; do not
+continue into subsequent capabilities because the user wants to discuss the next direction.
+Do not request earlier CUDA debugging runs. The
 imported Pengwin checkpoint below is historical evidence.
+
+## Active capability: G1R serial coding session
+
+Branch `agent/g1r-coding-session`, based on G1 merge `de5ba83` (PR #219).
+G1 Metal independent acceptance passed all 19 cases at `5ae5351`; final repair `062f209`
+passed exact-head preflight and all three hosted CI jobs. Review dispositions and integration
+records are on PR #219. Historical CUDA/Metal failures remain historical; no speedup is claimed.
+
+G1R's authoritative session/transport/closure contract is §3.12 of `docs/specs/gpu-runtime.md`.
+Implemented local checkpoints `39a7929` and `ceaf477`: bounded framing, retained tokenizer, and a serial GPU generation
+owner with separate prefill/decode graph slots and fixed-capacity token-prefix storage.
+`run-gpu-session-framing-smoke`, `run-gpu-session-tokenizer-smoke`, and
+`run-gpu-session-reuse-smoke` PASS with the managed compiler on Mac. The tokenizer owner removes
+the source file before reuse; the GPU stub owner checks both models, short-long-short requests,
+no additional weight uploads and a valid request after semantic refusal. Real Metal worker readiness passes both original models across repeated/long/short requests and
+semantic refusal. Actual coding generation plus the existing validator passes on both models (one
+attempt each). The instrumented whole-session host owner also passes: Qwen requested peak
+50,452,001 / reservation 371,552,904 / native peak 18,247,871 bytes; OLMoE 29,631,809 /
+324,013,024 / 17,974,079 bytes, within the 1 GiB host budget. These are local observations, not
+performance evidence. Independent same-cache-policy comparison passes Qwen 7 / OLMoE 9 ordered requests, including
+1900-word input, changed prefixes and repeated seed 42; emitted text and prompt/completion counts
+match exactly. This is not a new full layer-tensor qualification. Injected decode failure and
+nonfinite readback both prevent a second execution. Manifested session qualification at `ceaf477` passes all 16 ordered requests, and its instrumented
+host owner and real two-attempt coding owner pass both models. The caller/admission repairs that
+follow this checkpoint require the affected final qualification before publication.
+The strict protocol now passes 90 ordered requests (including escaped multiline prompts); the
+Python caller passes 10 process/response/timeout cleanup cases. The CLI and actual coding runner
+are connected. Next: finish reproducible session qualification/host owners and the independent
+reference sequence; then fix and run the performance campaign, review, preflight, PR and merge. Complete Metal session qualification before the paired performance
+campaign and the user's combined CUDA verification/measurement. No earlier CUDA run is requested.
+The real coding retry owner also passes both models: a one-token first response fails validation,
+then actual test feedback produces a passing patch on the second request in the same GPU session.
+Near-1-MiB input refusal followed by a valid request passes; requested peaks are 257,116,216 bytes
+(Qwen) and 237,296,929 bytes (OLMoE), within the reservations above. Final repaired-head qualification and comparative performance measurement remain unfinished.
+The latest competitive baseline is frozen at upstream llama.cpp `304665fe7ac957df95e3ff8c8c4ffdf92dd6ffa3`;
+its unmodified Metal server and benchmark build passes. Keep the separate same-ggml `bb4caa7` baseline.
+Next: finish repaired caller/qualification verification, preflight, PR and merge; then precommit and
+run the Metal performance campaign and prepare the final combined CUDA handoff.
 
 ## Pengwin CUDA qualification checkpoint (2026-09-08)
 

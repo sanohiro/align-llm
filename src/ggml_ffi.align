@@ -399,6 +399,8 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_graph_compute(
     owner: raw, kind: i32, key: str, key_length: i64, graph: raw,
   ) -> i32
+  fn align_gpu_graph_context_lookup(owner: raw, kind: i32) -> raw
+  fn align_gpu_graph_lookup(owner: raw, kind: i32, key: str, key_length: i64) -> raw
   fn align_gpu_graph_state(owner: raw, kind: i32, field: i32) -> i64
   fn align_gpu_attention_probe(owner: raw, queries: i64, width: i64, head_dim: i64,
     heads: i64, kv_heads: i64) -> i32
@@ -1271,6 +1273,23 @@ pub fn gpu_graph_compute(
     ) as i64
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
+  }
+}
+
+pub fn gpu_graph_context_lookup(borrow owner: GpuDevice, kind: i64) -> raw {
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE { return null_handle() }
+  unsafe {
+    return align_gpu_graph_context_lookup(resource.raw(resource.borrow(owner)), kind as i32)
+  }
+}
+
+pub fn gpu_graph_lookup(borrow owner: GpuDevice, kind: i64, topology_key: str) -> raw {
+  if (kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE) || topology_key.len() != 64 {
+    return null_handle()
+  }
+  unsafe {
+    return align_gpu_graph_lookup(resource.raw(resource.borrow(owner)), kind as i32,
+      topology_key, topology_key.len())
   }
 }
 

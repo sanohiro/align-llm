@@ -8356,6 +8356,15 @@ align-llm verification: collapse `src/layer_forward.align`'s eight column record
   it produces in place; pass `make layer-forward-smoke`.
 ```
 
+G1R adds `runtime_generation.Session.prefix` as a current client. At pinned Align `305926b4`,
+replacing the owned `array<i64>` field after a successful request is rejected; sibling main
+`84b97bce` retains the same diagnostic in `align_sema/src/lib.rs` and its rejection tests.
+The session uses its already fixed admitted KV capacity to allocate a token column once and
+stores fixed-width i64 token bytes plus an explicit valid length. This bounded representation avoids replacement
+and repeated allocation, but does not satisfy the language-owned requirement. Status remains
+`PROPOSED`, `Blocking: no`; G1R may continue. Its focused acceptance is `gpu-session-reuse`,
+including changed/shortened prefixes and a second request after semantic refusal.
+
 R6-OLMOE-DECODE adds `src/moe_decode_step.align` and `gmake moe-decode-step-qualification` as
 clients. Its `steps[]` rows carry a `n_layer x n_expert_used` integer matrix **per step** — the
 demand stream this capability exists to publish — and R5A correction C9's shape forces that to be
@@ -9615,6 +9624,12 @@ closure is in `../align/docs/impl/25-recursive-owned-json-plan.md` section 14.
 No versioned release or consumer adoption is claimed.
 
 ## Request 46 — `borrow mut` array locals inside loops, and no element assignment through an array field
+
+G1R is another current client: `Session.prefix[index] = token` is rejected as an invalid assignment
+target at Align `305926b4`; borrowing the field as `borrow mut array<i64>` is also rejected as a
+partial Move-field borrow. The fixed-capacity prefix therefore uses the shipped Request 61 buffer
+field view with explicit i64 little-endian cells. This is non-blocking, but does not close Request 46.
+
 
 ```text
 Status: PROPOSED
@@ -11520,3 +11535,32 @@ with 232 focused driver tests, all 36 frontend-cache owners and the bounded
 sema/codegen parameterized owners verified locally. Cache coverage includes cold,
 hit, private edit and restoration, plus rejecting changed retaining helpers.
 Consumer pin adoption and generation/numeric smoke remain align-llm-owned and pending.
+
+## Request 63 — Floating-point fields in owned JSON records
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; G1R decodes the shipped borrowed record and explicitly clones prompt text.
+Independent work that may continue: G1R session protocol, coding integration and qualification.
+Resume condition: a merged Align release supports f64 fields alongside owned string fields in the declared-record JSON route.
+Align commit or pull request: none
+align-llm verification: gpu-session-protocol request decoding, including temperature 0.0/0.3, invalid scalar kinds and source expiry.
+```
+
+G1R's owned request contains `system: string`, `user: string` and `temperature: f64`.
+At pin `305926b4`, `json.decode` rejects this real record with
+`owned JSON graph has unsupported type f64`. Sibling main `84b97bce` still explicitly rejects it:
+`align_sema/src/lib.rs` owns the unsupported-type diagnostic, and
+`align_driver/tests/m5_owned_json.rs` includes the f64 rejection
+case near line 585. The checked-in `docs/impl/core-design/json.md` excludes floats from both
+owned graph grammars. Requests 9 and 13 deliberately excluded floats and do not close this gap.
+
+Proposed surface: extend the existing inferred-target `json.decode`, `json.encode` and
+`json.encode_bounded` owned-record grammar with `f64`, using the same scalar parsing/encoding
+semantics as the shipped borrowed record route. Do not add another JSON tree or codec API.
+Acceptance must cover finite boundary values, invalid scalar kinds, nonfinite policy matching
+the existing route, exact bounded encoding, source expiry, per-unit interfaces, partial decode
+failure and cleanup after preceding owned strings. G1R currently uses the supported borrowed
+record with explicit text cloning; this does not satisfy the language-owned requirement.

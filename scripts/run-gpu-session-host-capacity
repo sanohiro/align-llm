@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Qualify the complete worker with the exact pinned allocation-count runtime."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import time
+
+from gpu_session_client import Session, InvalidRequest, qualification_environment
+from gpu_independent_acceptance import verify_build, digest, source_files
+from gpu_qualification_input import admit
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("profile", "candidate", "align-source", "output"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    args = parser.parse_args()
+    source = args.align_source.resolve(strict=True)
+    pin = (ROOT / ".align-revision").read_text().strip()
+    assert subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip() == pin
+    assert not subprocess.check_output(["git", "-C", str(source), "status", "--porcelain", "--", "crates/align_runtime", "Cargo.toml", "Cargo.lock"])
+    candidate = args.candidate.resolve(strict=True)
+    build = verify_build(candidate, True, session=True)
+    assert source_files(ROOT) == build["source_files"], "host helper must use the candidate source"
+    admitted = admit(args.profile.resolve(strict=True))
+    profile = admitted.records["profile"]
+    assert build["bundle_id"] == admitted.records["bundle"]["bundle_id"]
+    assert len(profile["runtime_options"]) == 1
+    assert {model["model_id"] for model in profile["models"]} == {"qwen2", "olmoe"}
+    assert profile["runtime_options"][0]["placement"] == "resident"
+    assert profile["runtime_options"][0]["prefetch"] == "off"
+    args.output.mkdir()
+    output = args.output.resolve()
+    environment = dict(os.environ)
+    for key in tuple(environment):
+        if key.startswith(("ALIGN_LLM_GGML_", "DYLD_")) or key in ("LD_PRELOAD", "LD_LIBRARY_PATH"):
+            environment.pop(key)
+    compiler = Path(subprocess.check_output([str(ROOT / "scripts/align-toolchain"), "ensure", "compiler"], text=True).strip())
+    assert digest(compiler) == build["compiler_sha256"]
+    subprocess.run(["cargo", "build", "--manifest-path", str(source / "Cargo.toml"), "-p", "align_runtime",
+                    "--release", "--features", "alloc-count", "--target-dir", str(output / "runtime")],
+                   env=environment, check=True, timeout=900)
+    shutil.copyfile(compiler, output / "alignc")
+    (output / "alignc").chmod(0o700)
+    shutil.copyfile(output / "runtime/release/libalign_runtime.a", output / "libalign_runtime.a")
+    environment["LIBRARY_PATH"] = str(candidate / "lib") + os.pathsep + environment.get("LIBRARY_PATH", "")
+    subprocess.run([str(output / "alignc"), "build", str(ROOT / "src/runtime_session_host_smoke.align")],
+                   cwd=output, env=environment, check=True, timeout=900)
+    root = args.profile.resolve().parent
+    options = {key: value for key, value in profile["runtime_options"][0].items() if key != "option_id"}
+    options["backend_bundle"] = str((root / options["backend_bundle"]).resolve())
+    options_path = output / "options.json"
+    options_path.write_text(json.dumps(options))
+    records = []
+    worker_environment = qualification_environment(output)
+    deadline = time.monotonic() + 3600
+    for model in profile["models"]:
+        command = [str(output / "runtime_session_host_smoke"), str(root / model["model_path"]),
+                   str(root / model["pack_path"]), str(root / model["geometry_path"]), str(options_path),
+                   str(model["runtime_cache_budget_bytes"])]
+        with Session(command, timeout=min(300, deadline-time.monotonic()), env=worker_environment) as session:
+            request = dict(schema_version=1, system="", user="Answer with exactly the word Yes.",
+                           max_tokens=8, temperature=0.0, seed=None)
+            session.generate(request)
+            try:
+                session.generate(dict(request, user="z" * 1048300))
+            except InvalidRequest:
+                pass
+            else:
+                raise AssertionError("excessive token count was accepted")
+            session.generate(request)
+            session.process.stdin.close()
+            session.process.wait(timeout=30)
+            session.log.seek(0)
+            log = session.log.read()
+            (output / (model["model_id"] + ".log")).write_bytes(log)
+            assert session.process.returncode == 0, log[-4096:]
+            matched = re.search(rb"session host observed=(\d+) reserved=(\d+) native=(\d+)", log)
+            assert matched, "allocation receipt is absent"
+            observed, reserved, native = map(int, matched.groups())
+            assert 0 < observed <= reserved and native + reserved <= options["host_budget_bytes"]
+            records.append(dict(model=model["model_id"], requested_peak=observed,
+                                reserved=reserved, native_peak=native, budget=options["host_budget_bytes"]))
+            print(model["model_id"] + ": session host capacity PASS", flush=True)
+    assert verify_build(candidate, True, session=True) == build
+    assert source_files(ROOT) == build["source_files"]
+    admitted.recheck()
+    (output / "result.json").write_text(json.dumps(dict(schema_version=1, passed=True,
+        align_revision=pin, allocation_runtime_sha256=digest(output / "libalign_runtime.a"),
+        candidate_build_sha256=digest(candidate / "build.json"), models=records), indent=2) + "\n")
+
+if __name__ == "__main__":
+    main()

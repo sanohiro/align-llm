@@ -1,0 +1,40 @@
+module runtime_session_host_smoke
+
+import core.json
+import ggml_ffi.host_probe
+import model
+import provider_runtime
+import runtime_options
+import std.io
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 6 { return Err(Error.Invalid) }
+  cache: i64 := json.decode(args[5])?
+  config := model.ProviderConfig {
+    kind: model.ProviderKind.AlignRuntime, endpoint: "", model: args[1], api_key: "",
+    timeout_ns: 0, tokenize_endpoint: "", max_response_bytes: 262144,
+    runtime_pack_path: args[2], runtime_geometry_path: args[3], runtime_options_path: args[4],
+    runtime_cache_budget_bytes: cache,
+  }
+  options := runtime_options.load(args[4])?
+  budget := options.host_budget_bytes
+  mut observation := provider_runtime.empty_session_observation()
+  ggml_ffi.host_probe.reset()
+  provider_runtime.run_session_observed(config, observation)?
+  observed := ggml_ffi.host_probe.peak()
+  if observed < 1 || observed > observation.reserved_host_bytes
+    || observation.native_host_peak + observed > budget
+    || observation.native_host_peak + observation.reserved_host_bytes > budget
+    || observation.weight_uploads_before < 1
+    || observation.weight_uploads_before != observation.weight_uploads_after { return Err(Error.Invalid) }
+  line := builder()
+  line.write("session host observed=")
+  line.write_int(observed)
+  line.write(" reserved=")
+  line.write_int(observation.reserved_host_bytes)
+  line.write(" native=")
+  line.write_int(observation.native_host_peak)
+  line.write("\n")
+  io.stderr.write(line.to_string())?
+  return Ok(())
+}

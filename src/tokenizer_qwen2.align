@@ -84,7 +84,7 @@ pub GenerationPromptResult {
   eog_token_ids: array<i64>,
 }
 
-Tokenizer {
+pub Tokenizer {
   olmo: bool,
   tokens: array<string>,
   types: array<i64>,
@@ -104,7 +104,7 @@ Tokenizer {
   tokenizer_id: string,
 }
 
-LoadResult {
+pub LoadResult {
   ok: bool,
   code: string,
   detail: string,
@@ -2072,6 +2072,12 @@ pub fn decode_model(
         token_count,
       ))
   }
+  return decode_loaded(loaded, token_ids, specials)
+}
+
+fn decode_loaded(borrow loaded: LoadResult, borrow token_ids: array<i64>,
+  specials: DecodeSpecials) -> Result<TokenTextResult, Error> {
+  token_count := token_ids.len()
   vocab_size := loaded.vocab_size
   merge_count := loaded.merge_count
   tokenizer_id := loaded.tokenizer.tokenizer_id.clone()
@@ -2193,4 +2199,71 @@ pub fn decode_model(
       token_count: token_count,
       text: text,
     })
+}
+
+pub GenerationTokenizer {
+  loaded: LoadResult,
+  template_id: string,
+  bos_token: string,
+  eog_ids: array<i64>,
+  letter: regex,
+  number: regex,
+  space: regex,
+}
+
+pub fn load_generation_snapshot(snapshot: gguf.GgufSnapshot) -> Result<GenerationTokenizer, Error> {
+  if !table_ok(snapshot.table.status) { return Err(Error.Invalid) }
+  source := gguf.kv_string(snapshot.table, "tokenizer.chat_template") else { return Err(Error.Invalid) }
+  if source.len() > MAX_CHAT_TEMPLATE_BYTES { return Err(Error.Invalid) }
+  template_id := template_id_of(source)
+  olmo := template_id == SUPPORTED_OLMO_CHAT_TEMPLATE_ID
+  if !olmo && template_id != SUPPORTED_CHAT_TEMPLATE_ID { return Err(Error.Invalid) }
+  profile := tokenizer_profile(snapshot.table)
+  if !profile.ok || profile.olmo != olmo { return Err(Error.Invalid) }
+  metadata := collect_eog_metadata(snapshot.table)
+  bos_id := if olmo {
+    gguf.kv_int(snapshot.table, "tokenizer.ggml.bos_token_id") else { return Err(Error.Invalid) }
+  } else { -1 }
+  loaded := load_snapshot(snapshot)?
+  if !loaded.ok || loaded.tokenizer.olmo != olmo { return Err(Error.Invalid) }
+  bos_token := if olmo {
+    if bos_id < 0 || bos_id >= loaded.vocab_size || effective_type(loaded.tokenizer, bos_id) != 3 {
+      return Err(Error.Invalid)
+    }
+    loaded.tokenizer.tokens[bos_id].clone()
+  } else { "".clone() }
+  eog := build_eog_set(loaded.tokenizer, metadata)
+  if !eog.ok { return Err(Error.Invalid) }
+  eog_ids := copy_i64(eog.ids)
+  return Ok(GenerationTokenizer {
+      loaded: loaded, template_id: template_id, bos_token: bos_token, eog_ids: eog_ids,
+      letter: regex.compile("^\\p{L}$")?, number: regex.compile("^\\p{N}$")?,
+      space: regex.compile("^\\s$")?,
+    })
+}
+
+pub fn prepare_retained(borrow session: GenerationTokenizer, system: str, user: str) -> Result<GenerationPromptResult, Error> {
+  fixed := if session.loaded.tokenizer.olmo {
+    OLMO_PROMPT_FIXED_BYTES + session.bos_token.len()
+  } else { PROMPT_FIXED_BYTES }
+  if system.len() > MAX_PROMPT_BYTES || user.len() > MAX_PROMPT_BYTES
+    || system.len() + user.len() + fixed > MAX_PROMPT_BYTES {
+    return Err(Error.Invalid)
+  }
+  prompt := render_prompt(system, user, session.loaded.tokenizer.olmo, session.bos_token)
+  ids := encode_text(session.loaded.tokenizer, prompt, true,
+    session.letter, session.number, session.space)
+  if ids.len() > MAX_OPERATION_TOKEN_IDS { return Err(Error.Invalid) }
+  return Ok(GenerationPromptResult {
+      status: TokenizerStatus.Ok, error_code: "".clone(), error_detail: "".clone(),
+      template_id: session.template_id.clone(), tokenizer_id: session.loaded.tokenizer.tokenizer_id.clone(),
+      vocab_size: session.loaded.vocab_size, merge_count: session.loaded.merge_count,
+      system_bytes: system.len(), user_bytes: user.len(), prompt_bytes: prompt.len(),
+      token_ids: ids, eog_token_ids: copy_i64(session.eog_ids),
+    })
+}
+
+pub fn decode_retained(borrow session: GenerationTokenizer, borrow token_ids: array<i64>,
+  specials: DecodeSpecials) -> Result<TokenTextResult, Error> {
+  return decode_loaded(session.loaded, token_ids, specials)
 }

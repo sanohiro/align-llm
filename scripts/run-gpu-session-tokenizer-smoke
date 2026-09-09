@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Retained tokenization must survive deletion of its admitted source path."""
+import os
+from pathlib import Path
+import selectors
+import shutil
+import subprocess
+import tempfile
+
+import tokenizer_fixture as fixture
+import olmoe_text_fixture as olmo
+from gguf_fixture import Kv, i32v
+
+ROOT = Path(__file__).resolve().parent.parent
+
+def main():
+    compiler = os.environ.get("ALIGNC", str(ROOT / "scripts/alignc"))
+    subprocess.run([compiler, "build", "src/runtime_session_tokenizer_smoke.align"], cwd=ROOT, check=True)
+    with tempfile.TemporaryDirectory(prefix="gpu-session-tokenizer-") as temporary:
+        work = Path(temporary)
+        executable = work / "tokenizer"
+        shutil.move(str(ROOT / "runtime_session_tokenizer_smoke"), executable)
+        qwen = work / "qwen.gguf"
+        tokens, types, merges = fixture.fixture_data()
+        fixture.write_model(qwen, tokens, types, merges,
+                            chat_template=olmo.QWEN_TEMPLATE_PATH.read_text())
+        moe = work / "olmo.gguf"
+        tokens, types, merges, bos = olmo.olmo_data()
+        fixture.write_model(moe, tokens, types, merges, pre="olmo", chat_template=olmo.template_text(),
+                            extra_kvs=[Kv("tokenizer.ggml.bos_token_id", i32v(bos))])
+        for model in (qwen, moe):
+            with subprocess.Popen([executable, model], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE) as child:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(child.stdout, selectors.EVENT_READ)
+                    if not selector.select(timeout=30):
+                        child.kill()
+                        raise AssertionError("tokenizer constructor timed out")
+                assert child.stdout.readline() == b"ready\n", child.stderr.read()
+                model.unlink()
+                output, errors = child.communicate(b"x", timeout=30)
+                assert child.returncode == 0, errors
+                assert output == b"gpu session tokenizer smoke: PASS\n", output
+    print("gpu session tokenizer smoke: PASS (Qwen and OLMoE; source removed before reuse)")
+
+if __name__ == "__main__":
+    main()

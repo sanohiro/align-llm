@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Exercise the real bounded Align session transport over subprocess pipes."""
+import os
+from pathlib import Path
+import shutil
+import struct
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parent.parent
+
+def frame(data):
+    return struct.pack("<I", len(data)) + data
+
+def main():
+    compiler = os.environ.get("ALIGNC", str(ROOT / "scripts/alignc"))
+    subprocess.run([compiler, "build", "src/runtime_session_io_smoke.align"], cwd=ROOT, check=True)
+    with tempfile.TemporaryDirectory(prefix="gpu-session-framing-") as temporary:
+        executable = Path(temporary) / "transport"
+        shutil.move(str(ROOT / "runtime_session_io_smoke"), executable)
+        def run(data, valid=True):
+            result = subprocess.run([executable], input=data, capture_output=True, timeout=30)
+            assert (result.returncode == 0) == valid, (len(data), result.returncode, result.stderr)
+            if valid:
+                assert result.stdout == data, (len(data), len(result.stdout))
+            return result
+        run(b"")
+        for mode in ("empty", "oversized"):
+            result = subprocess.run([executable, mode], capture_output=True, timeout=30)
+            assert result.returncode != 0 and result.stdout == b""
+        result = subprocess.run([executable, "maximum"], capture_output=True, timeout=30)
+        assert result.returncode == 0 and result.stdout == frame(b"x" * 2097152)
+        run(frame(b'{"schema_version":1}'))
+        run(frame("日本語".encode()))
+        run(frame(b"a") + frame(b"bc") + frame(b"d"))
+        for size in (65535, 65536, 65537, 1048576):
+            run(frame(b"x" * size))
+        for data in (b"\x01", b"\x01\x00\x00", struct.pack("<I", 0),
+                     struct.pack("<I", 1048577), struct.pack("<I", 0xffffffff),
+                     struct.pack("<I", 4) + b"abc", frame(b"\xff")):
+            run(data, False)
+        # An oversized header must fail without waiting for any body or EOF.
+        with subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE) as child:
+            child.stdin.write(struct.pack("<I", 1048577))
+            child.stdin.flush()
+            assert child.wait(timeout=10) != 0
+        # Feed each header byte independently; following frames must remain intact.
+        payload = frame(b"fragmented") + frame(b"next")
+        with subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE) as child:
+            for byte in payload:
+                child.stdin.write(bytes([byte]))
+                child.stdin.flush()
+            child.stdin.close()
+            assert child.wait(timeout=10) == 0
+            assert child.stdout.read() == payload
+    print("gpu session framing smoke: PASS")
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Regress coding retries and qualification admission without model execution."""
+import argparse
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from gpu_session_client import SessionError
+
+ROOT = Path(__file__).resolve().parent.parent
+
+def module(name):
+    loader = SourceFileLoader(name.replace('-', '_'), str(ROOT / 'scripts' / name))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    result = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(result)
+    return result
+
+def refused(action):
+    try:
+        action()
+    except ValueError:
+        return
+    raise AssertionError('invalid qualification admission succeeded')
+
+def main():
+    coding = module('run-gpu-session-coding')
+    retry = module('run-gpu-session-coding-smoke')
+    independent = module('run-gpu-session-independent')
+    with tempfile.TemporaryDirectory(prefix='gpu-session-caller-') as temporary:
+        work = Path(temporary)
+        model = work / 'model'
+        model.write_text('fixture')
+        geometry = work / 'geometry'
+        geometry.write_text(json.dumps({'model': {'arch': 'qwen2'}}))
+        arguments = argparse.Namespace(runtime=model, model=model, pack=model, geometry=geometry,
+            options=model, cache_budget=0, output=work / 'coding.json')
+        class Worker:
+            fail_shutdown = False
+            def __init__(self, *_args, **_kwargs):
+                self.timeout = 1
+            def generate(self, request):
+                repaired = ('Previous completion (JSON string):\n""' in request['user']
+                            and 'Validation feedback (JSON string):' in request['user'])
+                return dict(output=coding.base.KNOWN_GOOD_PATCH if repaired else '',
+                            completion_tokens=50 if repaired else 0, elapsed_ns=1)
+            def close(self, *, check=True):
+                if check and self.fail_shutdown:
+                    raise SessionError('fixture EOF synchronization failure')
+        with patch.object(coding, 'Session', Worker), patch.object(coding.base, 'resolve_validator', return_value=None), \
+             patch.object(coding.base, 'validate_patch', return_value=(True, 1)), \
+             patch.object(coding.base, 'validate_patch_details', return_value=(True, 1, '')):
+            assert coding.run(arguments) == 0
+            record = json.loads(arguments.output.read_text())
+            assert [row['status'] for row in record['attempts']] == ['INVALID_PATCH', 'PASS']
+            arguments.output = work / 'shutdown.json'
+            Worker.fail_shutdown = True
+            try:
+                coding.run(arguments)
+            except SessionError:
+                pass
+            else:
+                raise AssertionError('coding success concealed a failed worker shutdown')
+            assert not arguments.output.exists()
+        profile = dict(models=[], runtime_options=[])
+        admitted = SimpleNamespace(records={'profile': profile})
+        retry_args = argparse.Namespace(profile=model, runtime=model, output=work / 'retry.json')
+        with patch.object(argparse.ArgumentParser, 'parse_args', return_value=retry_args), \
+             patch.object(retry, 'admit', return_value=admitted), \
+             patch.object(retry.base, 'resolve_validator', side_effect=AssertionError('validator started before admission')):
+            for models in ([], [{'model_id': 'qwen2'}], [{'model_id': 'qwen2'}, {'model_id': 'qwen2'}]):
+                profile['models'] = models
+                refused(retry.main)
+                assert not retry_args.output.exists()
+        bundle = work / 'bundle'
+        bundle.mkdir()
+        candidate = work / 'candidate'
+        reference = work / 'reference'
+        candidate.mkdir()
+        reference.mkdir()
+        (candidate / 'main').touch()
+        (reference / 'session-reference').touch()
+        profile.update(models=[{'model_id': 'qwen2'}, {'model_id': 'olmoe'}],
+            runtime_options=[dict(option_id='resident', placement='resident', prefetch='off', backend_bundle='bundle')])
+        admitted.records['bundle'] = dict(bundle_id='bundle', ggml={'commit': 'pin'})
+        candidate_build = dict(bundle_id='bundle', source_files={'source': 'hash'})
+        reference_build = dict(ggml_commit='pin', driver_sha256='driver')
+        independent_args = argparse.Namespace(profile=model, runtime=candidate / 'main',
+            reference=reference / 'session-reference', output=work / 'independent')
+        with patch.object(independent, 'admit', return_value=admitted), \
+             patch.object(independent, 'verify_build', side_effect=lambda _path, candidate, **_kw: candidate_build if candidate else reference_build), \
+             patch.object(independent, 'source_files', return_value={'source': 'hash'}), \
+             patch.object(independent, 'sha', return_value='driver'), \
+             patch.object(independent, 'Session', side_effect=AssertionError('worker started before admission')):
+            for field, invalid in [('ggml_commit', 'other-pin'), ('driver_sha256', 'other-driver')]:
+                original = reference_build[field]
+                reference_build[field] = invalid
+                refused(lambda: independent.run(independent_args))
+                assert not independent_args.output.exists()
+                reference_build[field] = original
+            candidate_build['source_files'] = {'source': 'other-hash'}
+            refused(lambda: independent.run(independent_args))
+            assert not independent_args.output.exists()
+    print('gpu session caller smoke: PASS (empty repair, shutdown, model and source admission)')
+
+if __name__ == '__main__':
+    main()

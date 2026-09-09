@@ -995,3 +995,286 @@ fn generate_olmoe_mode(
   runtime_device.synchronize(owner)?
   return Ok(generated.build())
 }
+
+pub Session {
+  owner: ggml_ffi.GpuDevice,
+  options: runtime_options.RuntimeOptions,
+  geometry_text: string,
+  qwen: layer_qwen2.Geometry,
+  olmo: layer_olmoe.Geometry,
+  olmoe: bool,
+  kv_capacity: i64,
+  chunk_width: i64,
+  graph_bytes: i64,
+  prefill_slots: buffer,
+  decode_slots: buffer,
+  prefill_key: string,
+  decode_key: string,
+  prefix: buffer,
+  prefix_count: i64,
+  healthy: bool,
+}
+
+SessionPlan { kv_capacity: i64, chunk_width: i64, graph_bytes: i64 }
+
+fn prepare_session_qwen(borrow owner: ggml_ffi.GpuDevice,
+  borrow options: runtime_options.RuntimeOptions, pack_path: str,
+  borrow source_identity: runtime_pack_identity.SourceIdentity, geometry_text: str,
+  borrow g: layer_qwen2.Geometry, legacy_cache_bytes: i64,
+  retained_host_bytes: i64) -> Result<SessionPlan, Error> {
+  if g.code.len() != 0 || g.context_length < 1 || retained_host_bytes < 0 { return Err(Error.Invalid) }
+  kv_capacity := if g.context_length < 2175 { g.context_length } else { 2175 }
+  maximum_prompt := if g.context_length < 2048 { g.context_length } else { 2048 }
+  v_lanes := checked_mul(g.head_dim, g.n_head_kv)?
+  if checked_mul(v_lanes, kv_capacity)? > 2147483647 { return Err(Error.Invalid) }
+  graph_capacity := qwen_graph_capacity(g.n_layer)?
+  stream_capture := checked_add(retained_host_bytes, 1040 + 2175 * 24)?
+  maximum_blocks := checked_add(2, checked_mul(g.n_layer, 2)?)?
+  maximum_pieces := 0
+  mask_bound := runtime_inputs.attention_width(kv_capacity, g.context_length)?
+  observation_bytes := application_capacity(runtime_qwen.weight_count(g.n_layer), maximum_pieces,
+    maximum_blocks, graph_capacity, geometry_text.len(), 1, mask_bound,
+    v_lanes, g.n_vocab, 128, stream_capture)?
+  reserve_application(owner, observation_bytes)?
+  pack := fs.open_rw(pack_path)?
+  runtime_pack_identity.verify_file_bounded(pack, source_identity, maximum_blocks)?
+  plan := runtime_qwen_load.build_plan_file_capacity_bounded(owner, pack, g, kv_capacity, maximum_blocks)?
+  chunk_width := admit_qwen_shapes(owner, options, g, plan, geometry_text, maximum_prompt, false, kv_capacity,
+    graph_capacity, observation_bytes, 0)?
+  application_bytes := chunk_application(observation_bytes, chunk_width, mask_bound)?
+  staging := prepare_memory(
+    owner, options, plan.count, plan.weights_bytes, runtime_qwen.kv_count(g.n_layer),
+    plan.kv_bytes, 0, graph_capacity, application_bytes)?
+  runtime_qwen_load.load_file(owner, pack, plan, staging)?
+  initialize_kv(owner, g.n_layer, g.head_dim, kv_capacity, g.n_head_kv)?
+  mask_capacity := runtime_inputs.attention_width(kv_capacity, g.context_length)?
+  initialize_inputs(owner, chunk_width, mask_capacity, v_lanes)?
+  return Ok(SessionPlan { kv_capacity: kv_capacity, chunk_width: chunk_width,
+      graph_bytes: ggml_ffi.graph_context_bytes(graph_capacity) })
+}
+
+fn prepare_session_olmoe(borrow owner: ggml_ffi.GpuDevice,
+  borrow options: runtime_options.RuntimeOptions, pack_path: str,
+  borrow source_identity: runtime_pack_identity.SourceIdentity, geometry_text: str,
+  borrow g: layer_olmoe.Geometry, legacy_cache_bytes: i64,
+  retained_host_bytes: i64) -> Result<SessionPlan, Error> {
+  if g.code.len() != 0 || g.context_length < 1 || retained_host_bytes < 0 { return Err(Error.Invalid) }
+  kv_capacity := if g.context_length < 2175 { g.context_length } else { 2175 }
+  maximum_prompt := if g.context_length < 2048 { g.context_length } else { 2048 }
+  v_lanes := checked_mul(g.head_dim, g.n_head_kv)?
+  if checked_mul(v_lanes, kv_capacity)? > 2147483647 { return Err(Error.Invalid) }
+  graph_capacity := olmoe_graph_capacity(g.n_layer, g.n_expert_used)?
+  stream_capture := checked_add(retained_host_bytes, 1040 + 2175 * 24)?
+  maximum_blocks := checked_add(2, checked_mul(g.n_layer, checked_add(2, g.n_expert)?)?)?
+  maximum_pieces := checked_add(3, checked_mul(g.n_layer, checked_add(9, checked_mul(3, g.n_expert)?)?)?)?
+  mask_bound := runtime_inputs.attention_width(kv_capacity, g.context_length)?
+  observation_bytes := application_capacity(runtime_olmoe.weight_count(g.n_layer), maximum_pieces,
+    maximum_blocks, graph_capacity, geometry_text.len(), 1, mask_bound,
+    v_lanes, g.n_vocab, 128, stream_capture)?
+  reserve_application(owner, observation_bytes)?
+  pack := fs.open_rw(pack_path)?
+  runtime_pack_identity.verify_file_bounded(pack, source_identity, maximum_blocks)?
+  plan := runtime_olmoe_load.build_plan_file_capacity_bounded(owner, pack, g, kv_capacity, maximum_blocks)?
+  chunk_width := admit_olmoe_shapes(owner, options, g, plan, geometry_text, maximum_prompt, false, kv_capacity,
+    graph_capacity, observation_bytes, legacy_cache_bytes)?
+  application_bytes := chunk_application(observation_bytes, chunk_width, mask_bound)?
+  staging := prepare_memory(
+    owner, options, plan.count, plan.weights_bytes, runtime_olmoe.kv_count(g.n_layer),
+    plan.kv_bytes, legacy_cache_bytes, graph_capacity, application_bytes)?
+  runtime_olmoe_load.load_file(owner, pack, plan, staging)?
+  initialize_kv(owner, g.n_layer, g.head_dim, kv_capacity, g.n_head_kv)?
+  mask_capacity := runtime_inputs.attention_width(kv_capacity, g.context_length)?
+  initialize_inputs(owner, chunk_width, mask_capacity, v_lanes)?
+  return Ok(SessionPlan { kv_capacity: kv_capacity, chunk_width: chunk_width,
+      graph_bytes: ggml_ffi.graph_context_bytes(graph_capacity) })
+}
+
+pub fn create_session(owner: ggml_ffi.GpuDevice, options: runtime_options.RuntimeOptions,
+  pack_path: str, borrow source_identity: runtime_pack_identity.SourceIdentity,
+  geometry_text: str, olmoe: bool, legacy_cache_bytes: i64,
+  retained_host_bytes: i64) -> Result<Session, Error> {
+  if retained_host_bytes < 0 || retained_host_bytes >= options.host_budget_bytes
+    || (olmoe && legacy_cache_bytes <= 0) || (!olmoe && legacy_cache_bytes != 0) {
+    return Err(Error.Invalid)
+  }
+  reserve_application(owner, checked_add(retained_host_bytes,
+      checked_add(262144, checked_mul(geometry_text.len(), 128)?)?)?)?
+  qwen := if olmoe { layer_qwen2.empty_geometry() } else { layer_qwen2.parse_geometry(geometry_text) }
+  olmo := if olmoe { layer_olmoe.parse_geometry(geometry_text) } else { layer_olmoe.empty_geometry() }
+  plan := if olmoe {
+    prepare_session_olmoe(owner, options, pack_path, source_identity, geometry_text, olmo,
+      legacy_cache_bytes, retained_host_bytes)?
+  } else {
+    prepare_session_qwen(owner, options, pack_path, source_identity, geometry_text, qwen,
+      legacy_cache_bytes, retained_host_bytes)?
+  }
+  prefill := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_PREFILL, plan.graph_bytes)
+  decode := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_DECODE, plan.graph_bytes)
+  if ggml_ffi.handle_absent(prefill) || ggml_ffi.handle_absent(decode) { return Err(Error.Invalid) }
+  mut empty := buffer(plan.kv_capacity * 8)
+  mut at := 0
+  loop {
+    if at >= plan.kv_capacity { break }
+    empty.put_i64_le(0)
+    at = at + 1
+  }
+  return Ok(Session { owner: owner, options: options, geometry_text: geometry_text.clone(),
+      qwen: qwen, olmo: olmo, olmoe: olmoe, kv_capacity: plan.kv_capacity,
+      chunk_width: plan.chunk_width, graph_bytes: plan.graph_bytes,
+      prefill_slots: slot_buffer(), decode_slots: slot_buffer(),
+      prefill_key: "".clone(), decode_key: "".clone(), prefix: empty, prefix_count: 0, healthy: true })
+}
+
+fn prefix_length(borrow session: Session, borrow prompt: array<i64>) -> i64 {
+  old := session.prefix.bytes()
+  mut count := 0
+  loop {
+    if count >= session.prefix_count || count >= prompt.len() - 1 { break }
+    if old.i64_le(count * 8) != prompt[count] { break }
+    count = count + 1
+  }
+  return count
+}
+
+pub fn generate_session(borrow mut session: Session, borrow prompt_ids: array<i64>,
+  borrow eog_ids: array<i64>, max_tokens: i64, seed: Option<i64>) -> Result<array<i64>, Error> {
+  if !session.healthy { return Err(Error.Invalid) }
+  vocabulary := if session.olmoe { session.olmo.n_vocab } else { session.qwen.n_vocab }
+  if prompt_ids.len() < 1 || prompt_ids.len() > 2048 || max_tokens < 1 || max_tokens > 128
+    || prompt_ids.len() + max_tokens - 1 > session.kv_capacity { return Err(Error.Invalid) }
+  seeded := match seed { Some(_) => true, None => false }
+  if (!session.olmoe && seeded) || eog_ids.len() > 256 { return Err(Error.Invalid) }
+  mut eog_at := 0
+  loop {
+    if eog_at >= eog_ids.len() { break }
+    if eog_ids[eog_at] < 0 || eog_ids[eog_at] >= vocabulary { return Err(Error.Invalid) }
+    eog_at = eog_at + 1
+  }
+  mut at := 0
+  loop {
+    if at >= prompt_ids.len() { break }
+    if prompt_ids[at] < 0 || prompt_ids[at] >= vocabulary { return Err(Error.Invalid) }
+    at = at + 1
+  }
+  // Semantic refusal above is recoverable. Any error after this point forbids further reuse.
+  session.healthy = false
+  result := execute_session(session, prompt_ids, eog_ids, max_tokens, seed)?
+  session.healthy = true
+  return Ok(result)
+}
+
+fn execute_session(borrow mut session: Session, borrow prompt_ids: array<i64>,
+  borrow eog_ids: array<i64>, max_tokens: i64, seed: Option<i64>) -> Result<array<i64>, Error> {
+  vocabulary := if session.olmoe { session.olmo.n_vocab } else { session.qwen.n_vocab }
+  context_length := if session.olmoe { session.olmo.context_length } else { session.qwen.context_length }
+  v_lanes := if session.olmoe { session.olmo.head_dim * session.olmo.n_head_kv } else { session.qwen.head_dim * session.qwen.n_head_kv }
+  model_id := if session.olmoe { "olmoe" } else { "qwen2" }
+  bundle_id := runtime_device.bundle_id(session.owner)
+  mut capture := runtime_diagnostic.disabled()
+  mut prompt_offset := prefix_length(session, prompt_ids)
+  mut prefill_view := session.prefill_slots.bytes()
+  mut decode_view := session.decode_slots.bytes()
+  loop {
+    if prompt_offset >= prompt_ids.len() { break }
+    count := if prompt_ids.len() - prompt_offset < session.chunk_width {
+      prompt_ids.len() - prompt_offset
+    } else { session.chunk_width }
+    final_chunk := prompt_offset + count == prompt_ids.len()
+    width := runtime_inputs.attention_width(prompt_offset + count, context_length)?
+    key := topology(session.options, bundle_id, model_id, session.geometry_text,
+      runtime_attention.name(session.owner), ggml_ffi.GPU_GRAPH_PREFILL, width, count,
+      prompt_offset + count, if final_chunk { 1 } else { 0 })?
+    mut graph := ggml_ffi.gpu_graph_lookup(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, key)
+    if ggml_ffi.handle_absent(graph) {
+      if session.prefill_key.len() > 0 {
+        runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)?
+      }
+      context := ggml_ffi.gpu_graph_context_lookup(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)
+      if ggml_ffi.handle_absent(context) { return Err(Error.Invalid) }
+      graph = ggml_ffi.graph_new(context)
+      if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
+      if session.olmoe {
+        runtime_olmoe.build_prefill_chunk(session.owner, session.olmo, prompt_offset, count,
+          final_chunk, context, graph, prefill_view, capture)?
+      } else {
+        runtime_qwen.build_prefill_chunk(session.owner, session.qwen, prompt_offset, count,
+          final_chunk, context, graph, prefill_view, capture)?
+      }
+      runtime_execution.prepare(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
+      session.prefill_key = key.clone()
+    }
+    update_prompt(session.owner, prompt_ids, vocabulary, prompt_offset, count, width)?
+    runtime_execution.compute(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
+    prompt_offset = prompt_offset + count
+  }
+  mut logits := logits_buffer(vocabulary)?
+  logits_view := logits.bytes()
+  output_slot := if session.olmoe { runtime_olmoe.output_slot() } else { runtime_qwen.output_slot() }
+  ggml_ffi.gpu_slot_get(session.owner, prefill_view, output_slot, logits_view, 0,
+    logits_view.len(), "session_prefill_logits") else { return Err(Error.Invalid) }
+  sampled := session.olmoe && match seed { Some(_) => true, None => false }
+  mut random := rand.seed_with(match seed { Some(value) => value, None => 0 })
+  mut token := choose_token(logits_view, sampled, random)?
+  mut generated: array_builder<i64> := array_builder()
+  generated.push(token)
+  mut count := 1
+  mut n_past := prompt_ids.len()
+  loop {
+    if count >= max_tokens || contains(eog_ids, token) { break }
+    width := runtime_inputs.attention_width(n_past + 1, context_length)?
+    key := topology(session.options, bundle_id, model_id, session.geometry_text,
+      runtime_attention.name(session.owner), ggml_ffi.GPU_GRAPH_DECODE, width, 1,
+      if width < session.kv_capacity { width } else { session.kv_capacity }, 1)?
+    mut graph := ggml_ffi.gpu_graph_lookup(session.owner, ggml_ffi.GPU_GRAPH_DECODE, key)
+    if ggml_ffi.handle_absent(graph) {
+      if session.decode_key.len() > 0 {
+        runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_DECODE)?
+      }
+      context := ggml_ffi.gpu_graph_context_lookup(session.owner, ggml_ffi.GPU_GRAPH_DECODE)
+      if ggml_ffi.handle_absent(context) { return Err(Error.Invalid) }
+      graph = ggml_ffi.graph_new(context)
+      if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
+      if session.olmoe {
+        runtime_olmoe.build_decode_diagnostic(session.owner, session.olmo, n_past,
+          session.kv_capacity, context, graph, decode_view, capture)?
+      } else {
+        runtime_qwen.build_decode_diagnostic(session.owner, session.qwen, n_past,
+          session.kv_capacity, context, graph, decode_view, capture)?
+      }
+      runtime_execution.prepare(session.owner, ggml_ffi.GPU_GRAPH_DECODE, key, graph)?
+      session.decode_key = key.clone()
+    }
+    update_decode(session.owner, token, n_past, width, session.kv_capacity, v_lanes)?
+    runtime_execution.compute(session.owner, ggml_ffi.GPU_GRAPH_DECODE, key, graph)?
+    ggml_ffi.gpu_slot_get(session.owner, decode_view, output_slot, logits_view, 0,
+      logits_view.len(), "session_decode_logits") else { return Err(Error.Invalid) }
+    token = choose_token(logits_view, sampled, random)?
+    generated.push(token)
+    count = count + 1
+    n_past = n_past + 1
+  }
+  runtime_device.synchronize(session.owner)?
+  ids := generated.build()
+  publish_prefix(session, prompt_ids, ids)
+  return Ok(ids)
+}
+
+fn publish_prefix(borrow mut session: Session, borrow prompt_ids: array<i64>,
+  borrow ids: array<i64>) {
+  mut destination := session.prefix.bytes()
+  total := prompt_ids.len() + ids.len() - 1
+  mut at := 0
+  loop {
+    if at >= total { break }
+    mut value := if at < prompt_ids.len() { prompt_ids[at] } else { ids[at - prompt_ids.len()] }
+    mut byte := 0
+    loop {
+      if byte >= 8 { break }
+      destination[at * 8 + byte] = (value % 256) as u8
+      value = value / 256
+      byte = byte + 1
+    }
+    at = at + 1
+  }
+  session.prefix_count = total
+}

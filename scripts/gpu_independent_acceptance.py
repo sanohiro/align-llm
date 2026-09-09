@@ -104,7 +104,7 @@ def file_inventory(root, deadline=None):
     return rows
 
 
-def verify_build(directory, candidate):
+def verify_build(directory, candidate, session=False):
     record = json_file(directory / 'build.json')
     fields = ('source_commit', 'source_dirty', 'source_files', 'align_revision', 'compiler_sha256',
               'bundle_id', 'executables', 'libraries', 'commands') if candidate else (
@@ -120,7 +120,8 @@ def verify_build(directory, candidate):
         for relative, expected in record['source_files'].items():
             retained_path(relative, 'candidate source')
             lowercase_hex(expected, 64, 'candidate source digest')
-        if set(record['executables']) != {'runtime_case', 'runtime_immediate_eog_smoke'}:
+        expected_entries = {'main'} if session else {'runtime_case', 'runtime_immediate_eog_smoke'}
+        if set(record['executables']) != expected_entries:
             raise RecipeError('candidate build entrypoints are incomplete')
     if not isinstance(record['libraries'], dict) or not 3 <= len(record['libraries']) <= 128:
         raise RecipeError('independent build dependency closure is incomplete')
@@ -129,7 +130,7 @@ def verify_build(directory, candidate):
     lowercase_hex(record['compiler_sha256'], 64, 'independent compiler')
     if not isinstance(record['commands'], list) or not record['commands']:
         raise RecipeError('independent build commands are absent')
-    executables = record['executables'] if candidate else {'reference-acquire': record['executable_sha256']}
+    executables = record['executables'] if candidate else {('session-reference' if session else 'reference-acquire'): record['executable_sha256']}
     for name, expected in executables.items():
         if name in ('.', '..') or '/' in name or digest(directory / name) != expected:
             raise RecipeError('acceptance executable differs from its build')

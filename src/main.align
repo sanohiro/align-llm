@@ -15,6 +15,7 @@ import alignpack
 import repair
 import model
 import provider
+import provider_runtime
 import repo_index
 import patch_eval
 import persisted_result
@@ -50,6 +51,7 @@ fn print_help() {
   print("       main --prepare-prompt <model.gguf> <system.txt> <user.txt>")
   print("       main prompt <experiment|generate|evaluate|accept|rollback> <request.json> <result.json>")
   print("       main --provider <cloud|openai-local|llama> <endpoint> <model> <api-key-env|-> <prompt> <result.json> [generate|stream] [tokenize-endpoint|-] [timeout-ns]")
+  print("       main --runtime-session <model.gguf> <model.alignpack> <model-ir.json> <options.json> <cache-budget-bytes>")
   print("       main --provider align-runtime <model.gguf> <model.alignpack> <model-ir.json> <prompt> <result.json> [max-tokens] [cache-budget-bytes] [--runtime-options <options.json>]")
 }
 
@@ -1365,7 +1367,19 @@ fn self_check() -> Result<(), Error> {
   return Ok(())
 }
 
+fn runtime_session_command(borrow args: array<str>) -> Result<(), Error> {
+  if args.len() != 7 { return Err(Error.Invalid) }
+  config := model.ProviderConfig {
+    kind: model.ProviderKind.AlignRuntime, endpoint: "", model: args[2], api_key: "",
+    timeout_ns: 0, tokenize_endpoint: "", max_response_bytes: 262144,
+    runtime_pack_path: args[3], runtime_geometry_path: args[4],
+    runtime_options_path: args[5], runtime_cache_budget_bytes: parse_i64(args[6])?,
+  }
+  return provider_runtime.run_session(config)
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() > 1 && args[1] == "--runtime-session" { return runtime_session_command(args) }
   if args.len() == 1 {
     print_help()
   } else {

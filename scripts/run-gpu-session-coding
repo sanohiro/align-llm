@@ -1,0 +1,146 @@
+#!/usr/bin/env python3
+"""Run the existing fixed coding task through a caller-owned GPU session."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+from pathlib import Path
+import signal
+import subprocess
+import tempfile
+import time
+
+from gpu_session_client import Session, SessionError
+
+ROOT = Path(__file__).resolve().parent.parent
+LOADER = SourceFileLoader("gpu_session_coding_base", str(ROOT / "scripts/run-olmoe-coding-decision"))
+SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
+base = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(base)
+
+
+def digest(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def repair_prompt(previous, feedback):
+    return (base.PROMPT_TEXT + "\nPrevious completion (JSON string):\n" + json.dumps(previous)
+            + "\nValidation feedback (JSON string):\n" + json.dumps(feedback)
+            + "\nRecompute the one-line fix "
+              "from the original file above. Return only a complete Git diff beginning exactly with:\n"
+            + base.PATCH_PREFIX + "Complete with exactly one added replacement line.\n")
+
+
+def run(arguments):
+    if arguments.output.exists():
+        raise ValueError("output already exists")
+    if arguments.cache_budget < 0:
+        raise ValueError("negative cache budget")
+    for path in (arguments.runtime, arguments.model, arguments.pack, arguments.geometry, arguments.options):
+        if not path.is_file():
+            raise ValueError(f"missing session input: {path}")
+    geometry = json.loads(arguments.geometry.read_text())
+    architecture = geometry["model"]["arch"]
+    if architecture not in ("qwen2", "olmoe"):
+        raise ValueError("unsupported model architecture")
+    started = time.monotonic_ns()
+    deadline = time.monotonic() + 7200
+    validator = base.resolve_validator(deadline)
+    command = [str(arguments.runtime.resolve()), "--runtime-session", str(arguments.model.resolve()),
+               str(arguments.pack.resolve()), str(arguments.geometry.resolve()),
+               str(arguments.options.resolve()), str(arguments.cache_budget)]
+    attempts = []
+    session = None
+    previous = ""
+    feedback = ""
+    received_completion = False
+    completed = False
+    try:
+        with tempfile.TemporaryDirectory(prefix="gpu-session-coding-") as temporary:
+            work = Path(temporary)
+            control = work / "known-good.patch"
+            control.write_text(base.KNOWN_GOOD_PATCH)
+            passed, _ = base.validate_patch(control, work, deadline, validator)
+            if not passed:
+                raise RuntimeError("known-good validator control failed")
+            for index in range(1, 9):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("coding session total deadline exceeded")
+                request = dict(schema_version=1, system="", user=base.PROMPT_TEXT,
+                               max_tokens=128, temperature=0.3 if architecture == "olmoe" else 0.0,
+                               seed=index if architecture == "olmoe" else None)
+                if received_completion:
+                    request["user"] = repair_prompt(previous, feedback)
+                attempt_start = time.monotonic_ns()
+                row = dict(index=index, seed=request["seed"], status="PROVIDER_FAILED",
+                           output_sha256=None, patch_sha256=None, validation_elapsed_ns=0,
+                           provider_elapsed_ns=None, elapsed_ns=0, error="")
+                try:
+                    if session is None:
+                        session = Session(command, timeout=min(300, deadline - time.monotonic()))
+                    session.timeout = min(300, deadline - time.monotonic())
+                    result = session.generate(request)
+                    previous = result["output"]
+                    received_completion = True
+                    row["provider_elapsed_ns"] = result["elapsed_ns"]
+                    row["output_sha256"] = digest(previous)
+                    row["status"] = "INVALID_PATCH"
+                    feedback = "The completion is not the complete fixed-task diff."
+                    if result["completion_tokens"] == request["max_tokens"]:
+                        feedback += f" The response reached its {request['max_tokens']} output-token limit."
+                    try:
+                        patch_text = base.extract_patch(previous)
+                    except base.DecisionError:
+                        patch_text = None
+                    if patch_text is not None:
+                        patch = work / f"candidate-{index}.patch"
+                        patch.write_text(patch_text)
+                        row["patch_sha256"] = digest(patch_text)
+                        passed, elapsed, feedback = base.validate_patch_details(patch, work, deadline, validator)
+                        row["validation_elapsed_ns"] = elapsed
+                        row["status"] = "PASS" if passed else "FAILING_PATCH"
+                except SessionError as error:
+                    row["error"] = str(error)[-4096:]
+                    if session is not None:
+                        session.close(check=False)
+                    session = None
+                row["validation_feedback"] = feedback
+                row["elapsed_ns"] = time.monotonic_ns() - attempt_start
+                attempts.append(row)
+                print(f"attempt {index}: {row['status']}", flush=True)
+                if row["status"] == "PASS":
+                    break
+            completed = True
+    finally:
+        if session is not None:
+            session.close(check=completed)
+    record = dict(schema_version=1, artifact_kind="GPU_SESSION_CODING", decision="unmeasured",
+                  task_sha256=base.file_sha256(base.TASK), runtime_sha256=base.file_sha256(arguments.runtime),
+                  architecture=architecture, attempts=attempts, passed=attempts[-1]["status"] == "PASS",
+                  elapsed_ns=time.monotonic_ns() - started)
+    with arguments.output.open("x", encoding="utf-8") as target:
+        json.dump(record, target, indent=2, allow_nan=False)
+        target.write("\n")
+    return 0 if record["passed"] else 4
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("runtime", "model", "pack", "geometry", "options", "output"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--cache-budget", type=int, required=True)
+    arguments = parser.parse_args()
+    def interrupted(*_):
+        raise KeyboardInterrupt
+    previous = signal.signal(signal.SIGTERM, interrupted)
+    try:
+        return run(arguments)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

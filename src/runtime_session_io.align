@@ -1,0 +1,43 @@
+module runtime_session_io
+
+import std.io
+
+pub fn read_frame() -> Result<Option<buffer>, Error> {
+  mut header := buffer(4)
+  mut header_left := 4
+  loop {
+    if header_left == 0 { break }
+    mut chunk := buffer(header_left)
+    n := io.stdin.read(chunk)?
+    if n == 0 {
+      if header_left == 4 { return Ok(None) }
+      return Err(Error.Invalid)
+    }
+    header.append(chunk.bytes())
+    header_left = header_left - n
+  }
+  bytes := header.bytes()
+  length := bytes.u32_le(0) as i64
+  if length < 1 || length > 1048576 { return Err(Error.Invalid) }
+  mut body := buffer(length)
+  mut left := length
+  loop {
+    if left == 0 { break }
+    mut chunk := buffer(if left < 65536 { left } else { 65536 })
+    n := io.stdin.read(chunk)?
+    if n == 0 { return Err(Error.Invalid) }
+    body.append(chunk.bytes())
+    left = left - n
+  }
+  return Ok(Some(body))
+}
+
+pub fn write_frame(value: str) -> Result<(), Error> {
+  if value.len() < 1 || value.len() > 2097152 { return Err(Error.Invalid) }
+  mut header := buffer(4)
+  header.put_u32_le(value.len() as u32)
+  io.stdout.write(header.bytes())?
+  io.stdout.write(value)?
+  io.stdout.flush()?
+  return Ok(())
+}

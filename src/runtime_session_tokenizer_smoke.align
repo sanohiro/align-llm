@@ -1,0 +1,55 @@
+module runtime_session_tokenizer_smoke
+
+import gguf
+import tokenizer_qwen2
+import std.io
+
+fn equal_ids(borrow left: array<i64>, borrow right: array<i64>) -> bool {
+  if left.len() != right.len() { return false }
+  mut at := 0
+  loop {
+    if at >= left.len() { break }
+    if left[at] != right[at] { return false }
+    at = at + 1
+  }
+  return true
+}
+
+fn verify(borrow session: tokenizer_qwen2.GenerationTokenizer,
+  borrow expected: tokenizer_qwen2.GenerationPromptResult,
+  system: str, user: str) -> Result<(), Error> {
+  actual := tokenizer_qwen2.prepare_retained(session, system, user)?
+  if !equal_ids(actual.token_ids, expected.token_ids)
+    || !equal_ids(actual.eog_token_ids, expected.eog_token_ids)
+    || actual.template_id != expected.template_id || actual.tokenizer_id != expected.tokenizer_id
+    || actual.prompt_bytes != expected.prompt_bytes { return Err(Error.Invalid) }
+  decoded := tokenizer_qwen2.decode_retained(session, actual.token_ids,
+    tokenizer_qwen2.DecodeSpecials.RenderControl)?
+  match decoded.status { Ok => {}, Error => { return Err(Error.Invalid) } }
+  if !decoded.text.contains(user) || !decoded.text.contains(system) { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 { return Err(Error.Invalid) }
+  first := tokenizer_qwen2.prepare_generation_model(args[1], "system", "hello")?
+  second := tokenizer_qwen2.prepare_generation_model(args[1], "system changed", "hello world")?
+  snapshot := gguf.open_snapshot(args[1])?
+  session := tokenizer_qwen2.load_generation_snapshot(snapshot)?
+  print("ready")
+  io.stdout.flush()?
+  mut signal := buffer(1)
+  if io.stdin.read(signal)? != 1 { return Err(Error.Invalid) }
+  verify(session, first, "system", "hello")?
+  verify(session, second, "system changed", "hello world")?
+  verify(session, first, "system", "hello")?
+  mut invalid: array_builder<i64> := array_builder()
+  invalid.push(-1)
+  bad_ids := invalid.build()
+  refused := tokenizer_qwen2.decode_retained(session, bad_ids,
+    tokenizer_qwen2.DecodeSpecials.RenderControl)?
+  match refused.status { Error => {}, Ok => { return Err(Error.Invalid) } }
+  verify(session, second, "system changed", "hello world")?
+  print("gpu session tokenizer smoke: PASS")
+  return Ok(())
+}
