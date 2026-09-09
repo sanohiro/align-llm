@@ -23,7 +23,8 @@ with ordinary fusion; all 50,304 values matched in that row with router fusion s
 These are diagnostic controls, never shipping environment overrides or relaxed acceptance.
 
 `runtime_olmoe.build_prefill_chunk` and `build_decode_diagnostic` now expand the gathered router
-weights before expert work, matching the pinned graph. No tensor, sampler, global fusion flag,
+weights before expert work for explicitly selected session graphs and their pre-upload plans,
+matching the pinned graph. Single-shot builders retain their established traversal. No tensor, sampler, global fusion flag,
 threshold, CPU path or public format changes. The original failed requests 5, 7 and 8 pass under
 the unchanged full serial history. G1's diagnostic tensor observations inhibit the relevant
 fusion, explaining why its earlier bitwise acceptance alone did not reveal the production issue.
@@ -50,7 +51,7 @@ separately under `cuda-session-diagnosis` and are not qualified production artif
 - `scripts/run-gpu-session-host-capacity --profile PROFILE --candidate SESSION --align-source PINNED_ALIGN_SOURCE --output NEW_DIRECTORY`: PASS on both models at `c342632`, including oversized-input refusal and subsequent reuse. Receipt SHA-256 `0fa7164c1d0213d052cc611b4336701b8913598c938ca6516649187a459db718`.
 - `scripts/run-gpu-session-coding-smoke --profile PROFILE --runtime SESSION/main --output NEW.json`: FAIL after the native-validator repair; Qwen attempt 2 passes, OLMoE attempts 1–8 fail. The original owner produces no success receipt on failure; retain `logs/session-retry-fixed-validator.log`. The diagnostic extraction `retry-failed-attempts.json` binds this log and all eight OLMoE attempts; SHA-256 `84040ae96e0c4f6269a4e4d9f21c1b9ae85edc6843701bdef81508d7a42bbd53`.
 - Independent reference replay of the exact eight retry requests, including actual validation feedback: all eight emitted outputs equal the candidate. `retry-reference.jsonl` SHA-256 `7a9786e53c189eb569051f23fde3471a49bccc82b24fddcdab1f66e5146ae2b5`. This is a diagnostic output comparison, not a passing patch result.
-- Complete G1 acceptance and relocated replay at `ffe4232`: pending final receipt in this checkpoint.
+- Complete G1 acceptance at `ffe4232`: FAIL at OLMoE calibration after Qwen passes. All 100,608 production-logit scalars differ; diagnostic kinds 2–6 remain bitwise equal. The instrumented reference supplies both expected streams, exposing the unconditional expansion's single-shot regression. The review repair scopes expansion to session graphs without changing tolerances; its full acceptance/replay is pending.
 
 No CUDA performance campaign ran. Historical FAIL receipts and the original Metal campaign remain
 unchanged. The frozen measurement candidate still names the original runtime; a future campaign

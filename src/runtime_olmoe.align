@@ -228,7 +228,7 @@ pub fn build_prefill_diagnostic(
   borrow slots: slice<u8>,
   borrow mut capture: runtime_diagnostic.Capture,
 ) -> Result<(), Error> {
-  return build_prefill_chunk(owner, g, 0, tokens, true, ctx, graph, slots, capture)
+  return build_prefill_chunk(owner, g, 0, tokens, true, ctx, graph, slots, false, capture)
 }
 
 pub fn build_prefill_chunk(
@@ -240,6 +240,7 @@ pub fn build_prefill_chunk(
   ctx: raw,
   graph: raw,
   borrow slots: slice<u8>,
+  session_graph: bool,
   borrow mut capture: runtime_diagnostic.Capture,
 ) -> Result<(), Error> {
   runtime_diagnostic.reset(capture)?
@@ -300,7 +301,9 @@ pub fn build_prefill_chunk(
       return Err(Error.Invalid)
     }
     // Match the pinned graph's early router-weight expansion so CUDA can fuse softmax/top-k.
-    expand(graph, slots, layer_olmoe.MM_B_NODE_BASE + 1, "olmoe_router_weights")?
+    if session_graph {
+      expand(graph, slots, layer_olmoe.MM_B_NODE_BASE + 1, "olmoe_router_weights")?
+    }
     runtime_diagnostic.retain(capture, slots, layer, 0, layer_olmoe.mm_b_output_slot(g.n_expert_used))?
     runtime_diagnostic.retain(capture, slots, layer, 1, layer_olmoe.MM_A_NODE_BASE + 33)?
     runtime_diagnostic.retain(capture, slots, layer, 2, layer_olmoe.MM_A_NODE_BASE + 34)?
@@ -322,7 +325,7 @@ pub fn build_decode(
   borrow slots: slice<u8>,
 ) -> Result<(), Error> {
   mut capture := runtime_diagnostic.disabled()
-  return build_decode_diagnostic(owner, g, n_past, capacity, ctx, graph, slots, capture)
+  return build_decode_diagnostic(owner, g, n_past, capacity, ctx, graph, slots, false, capture)
 }
 
 pub fn build_decode_diagnostic(
@@ -333,6 +336,7 @@ pub fn build_decode_diagnostic(
   ctx: raw,
   graph: raw,
   borrow slots: slice<u8>,
+  session_graph: bool,
   borrow mut capture: runtime_diagnostic.Capture,
 ) -> Result<(), Error> {
   runtime_diagnostic.reset(capture)?
@@ -395,7 +399,9 @@ pub fn build_decode_diagnostic(
     olmoe_nodes.build(ctx, slots, b_nodes, false, false, false) else {
       return Err(Error.Invalid)
     }
-    expand(graph, slots, layer_olmoe.MM_DECODE_B_NODE_BASE + 1, "olmoe_router_weights")?
+    if session_graph {
+      expand(graph, slots, layer_olmoe.MM_DECODE_B_NODE_BASE + 1, "olmoe_router_weights")?
+    }
     runtime_diagnostic.retain(capture, slots, layer, 0, layer_olmoe.mm_decode_b_output_slot(g.n_expert_used))?
     runtime_diagnostic.retain(capture, slots, layer, 1, layer_olmoe.MM_A_NODE_BASE + 35)?
     runtime_diagnostic.retain(capture, slots, layer, 2, layer_olmoe.MM_A_NODE_BASE + 36)?

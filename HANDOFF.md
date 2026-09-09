@@ -16,16 +16,20 @@ fusion: disabling only the reference's softmax/top-k fusion restores bitwise agr
 RMS-normalization and expert-matmul split controls do not. The candidate did not expand router
 weights before expert work as the pinned llama.cpp graph does.
 
-`runtime_olmoe` now expands gathered router weights before expert execution in prefill and decode.
-The original nine-request OLMoE sequence then matches the unchanged independent reference exactly,
-including all three previously failing requests. This is preliminary diagnosis, not final shipping
-qualification. No Align capability gap or tolerance change is involved.
+The initial repair passes all 16 independent session requests and both host-capacity owners.
+Review found that its unconditional expansion also changed single-shot production logits against
+G1's instrumented oracle. The consolidated repair selects early router expansion only for session
+construction/planning and execution; single-shot and diagnostic G1 traversal remain unchanged.
+Requalification of this narrowed repair is active. Retain all earlier failed receipts.
 
-Next: complete the session reuse owner, committed manifested CUDA builds, full G1 acceptance and
-replay, serial session/host-capacity/coding-retry qualification; review the stable candidate, run
-publication preflight and merge. Retain the original failed receipts. Formal paired measurement
-remains pending its correctness prerequisites. Diagnostic artifacts remain outside Git under
-`cuda-session-diagnosis`; do not consume its interposed binaries as qualified production builds.
+The native coding validator now admits its owned temporary work directory via a copied child
+environment. Qwen passes retry attempt 2; OLMoE fails all eight with an incorrect `stop - 1` patch.
+The independent reference reproduces all eight outputs exactly. This separate coding-quality
+blocker prevents paired performance measurement; do not relax the task or qualify it as PASS.
+
+Next: build clean manifested candidates, rerun G1 acceptance/replay and session/host owners,
+inspect the review repair delta, run publication preflight and merge. Full diagnosis and receipt
+identities are in `docs/gpu-cuda-session-repair.md`. No new Align capability gap is evidenced.
 
 ## CUDA execution checkpoint (2026-09-09)
 
