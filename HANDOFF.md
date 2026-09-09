@@ -3,9 +3,23 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations;
 this file records durable execution state.
 
-**Current execution constraint:** the user has requested repair of the CUDA session mismatches.
-Complete this repair, its CUDA verification and publication for the primary implementation host.
-Do not begin a separate optimization or roadmap capability.
+**Current execution constraint:** the user requested a complete formal CUDA speed comparison,
+excluding model transport, and wants to finish this work afterward. Complete the frozen comparison,
+report all outcomes, review/preflight and merge; do not start another optimization capability.
+
+## Active final CUDA measurement (2026-09-09)
+
+Branch `agent/cuda-final-measurement`, based on merged repair PR #223 (`c5ce2c7`).
+The new §6.2 campaign nominates qualified runtime `688232c`, keeps the original two baselines,
+models, workload, five paired orders and 7200-second ceiling, and uses reported internal clocks.
+The runtime metric excludes transport and startup; producer clock boundaries and their asymmetry
+are explicit. Coding quality failures remain outcomes and do not prevent independent runtime
+comparison. Existing §6.1/Metal receipts and default command behavior remain unchanged.
+
+Measurement smoke passes malformed clocks, transport/startup exclusion, retained failed portfolios,
+aggregation and the existing HTTP/cleanup controls. Next: independent review of the stable harness,
+real baseline protocol admission, clean committed campaign execution, results/handoff, publication
+preflight and merge. Stop after the comparison is delivered. No Align runtime source changes.
 
 ## CUDA session repair checkpoint (2026-09-09)
 

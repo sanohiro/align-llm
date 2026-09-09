@@ -8,6 +8,7 @@ import http.client
 import importlib.util
 from importlib.machinery import SourceFileLoader
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -29,6 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PIN = 'bb4caa7540188872173c44d161602d9271386413'
 CURRENT = '304665fe7ac957df95e3ff8c8c4ffdf92dd6ffa3'
 CANDIDATE = '12a633d5fe60c3c3f853203c452754a695d908dd'
+CUDA_CANDIDATE = '688232c665aafca3cdff940e9e34eac5c7f0509e'
 ORDER = [('candidate','same','current'), ('same','current','candidate'),
          ('current','candidate','same'), ('current','same','candidate'), ('candidate','current','same')]
 SYSTEM = 'You are a helpful assistant. Follow the output format exactly.'
@@ -82,6 +84,34 @@ def comparison(arms, model, case, reference):
     met = median >= .15 and sum(value > 0 for value in reductions) >= 4
     return dict(decision='met' if met else 'not_met', median_paired_reduction=median,
                 paired_reductions=reductions)
+
+
+def internal_elapsed_ns(result, system):
+    if system == 'candidate':
+        value = result.get('elapsed_ns')
+        if type(value) is not int or value <= 0:
+            raise ValueError('invalid candidate internal clock')
+        return value
+    if system not in ('same', 'current'):
+        raise ValueError('unknown internal clock producer')
+    timings = result.get('timings')
+    if not isinstance(timings, dict):
+        raise ValueError('baseline internal timings missing')
+    values = [timings.get(key) for key in ('prompt_ms', 'predicted_ms')]
+    if any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in values):
+        raise ValueError('invalid baseline internal clock')
+    total = sum(values) * 1_000_000
+    if not math.isfinite(total) or total < 1:
+        raise ValueError('invalid baseline internal clock total')
+    return round(total)
+
+
+def final_cuda(args):
+    return args.campaign == 'cuda-final'
+
+
+def coding_clock(args):
+    return 'processing_to_passing_patch_ns' if final_cuda(args) else 'time_to_passing_patch_ns'
 
 
 def baseline_identity(executable, revision, backend):
@@ -143,7 +173,8 @@ def decode_response(raw):
 
 
 class Server:
-    def __init__(self, executable, model, option, precision, work, deadline):
+    def __init__(self, executable, model, option, precision, work, deadline, *, internal_timing=False):
+        self.internal_timing = internal_timing
         self.deadline = deadline
         self.log = (work / 'server.log').open('w+b')
         with socket.socket() as reservation:
@@ -228,7 +259,11 @@ class Server:
                 raise ValueError('invalid baseline token count')
         if usage['total_tokens'] != usage['prompt_tokens'] + usage['completion_tokens']:
             raise ValueError('inconsistent baseline token count')
-        return dict(output=output, prompt_tokens=usage['prompt_tokens'], completion_tokens=usage['completion_tokens'])
+        result = dict(output=output, prompt_tokens=usage['prompt_tokens'], completion_tokens=usage['completion_tokens'])
+        if self.internal_timing:
+            result['timings'] = response.get('timings')
+            internal_elapsed_ns(result, 'same')
+        return result
 
     def close(self, *, check=True):
         forced = False
@@ -259,7 +294,7 @@ def service(system, args, model, options_path, option, work, deadline):
         worker.command = command
     else:
         worker = Server(getattr(args, system+'_server'), model['model_path'], option,
-                        'f32' if system == 'same' else 'f16', work, deadline)
+                        'f32' if system == 'same' else 'f16', work, deadline, internal_timing=final_cuda(args))
     retained_log = os.fdopen(os.dup(worker.log.fileno()),'rb')
     normal = False
     try:
@@ -287,13 +322,14 @@ def runtime_sequence(system, args, model, options_path, option, work, deadline, 
             before = started if index == 0 else time.monotonic_ns()
             if system == 'candidate': worker.timeout = remaining(deadline)
             result = worker.generate(request)
-            elapsed = time.monotonic_ns()-before
+            elapsed = internal_elapsed_ns(result, system) if final_cuda(args) else time.monotonic_ns()-before
             row['runtime'].append(dict(case=name,elapsed_ns=elapsed,quality=quality(result),result=result))
 
 
 def coding_portfolio(system, args, model, options_path, option, work, deadline, row, validator):
     started = time.monotonic_ns()
     previous,feedback = None,''
+    processing_ns = 0
     with service(system,args,model,options_path,option,work,deadline) as worker:
         row['coding_command'] = worker.command
         for index in range(1,9):
@@ -302,6 +338,7 @@ def coding_portfolio(system, args, model, options_path, option, work, deadline, 
                 seed=index if model['model_id']=='olmoe' else None)
             if system == 'candidate': worker.timeout = remaining(deadline)
             result = worker.generate(request)
+            if final_cuda(args): processing_ns += internal_elapsed_ns(result, system)
             previous = result['output']
             feedback = 'The completion is not the complete fixed-task diff.'
             if result['completion_tokens'] == 128: feedback += ' The response reached its 128 output-token limit.'
@@ -312,10 +349,11 @@ def coding_portfolio(system, args, model, options_path, option, work, deadline, 
                 patch_path = work / f'attempt-{index}.patch'
                 patch_path.write_text(patch_text)
                 passed,validation_ns,feedback = base.validate_patch_details(patch_path,work,deadline,validator)
+            if final_cuda(args): processing_ns += validation_ns
             row['coding']['attempts'].append(dict(index=index,seed=request['seed'],passed=passed,
                 result=result,feedback=feedback,validation_ns=validation_ns))
             if passed:
-                row['coding'].update(passed=True,time_to_passing_patch_ns=time.monotonic_ns()-started)
+                row['coding'].update(passed=True, **{coding_clock(args): processing_ns if final_cuda(args) else time.monotonic_ns()-started})
                 break
 
 
@@ -330,6 +368,8 @@ def run(args):
         raise ValueError('campaign requires one resident option')
     option = {key:value for key,value in profile['runtime_options'][0].items() if key!='option_id'}
     if option['placement'] != 'resident' or option['prefetch'] != 'off': raise ValueError('unsupported campaign option')
+    if final_cuda(args) and option['backend'] != 'cuda': raise ValueError('cuda-final requires CUDA')
+    nomination = CUDA_CANDIDATE if final_cuda(args) else CANDIDATE
     if option['host_budget_bytes'] < 1073741824 or option['device_budget_bytes'] < 6000000000:
         raise ValueError('profile cannot admit the frozen resident memory ceilings')
     if any(row['runtime_cache_budget_bytes']>1073741824 for row in profile['models']):
@@ -339,11 +379,11 @@ def run(args):
     candidate = verify_build(args.runtime.parent,True,session=True)
     if args.runtime.name != 'main' or candidate['bundle_id'] != admitted.records['bundle']['bundle_id']:
         raise ValueError('candidate does not bind the admitted backend')
-    subprocess.run(['git','-C',str(ROOT),'merge-base','--is-ancestor',CANDIDATE,candidate['source_commit']],check=True)
-    paths = subprocess.check_output(['git','-C',str(ROOT),'ls-tree','-r','--name-only',CANDIDATE],text=True).splitlines()
+    subprocess.run(['git','-C',str(ROOT),'merge-base','--is-ancestor',nomination,candidate['source_commit']],check=True)
+    paths = subprocess.check_output(['git','-C',str(ROOT),'ls-tree','-r','--name-only',nomination],text=True).splitlines()
     for path in paths:
         if path.startswith('src/') or path in ('.align-revision','scripts/ggml_shim.c'):
-            expected = subprocess.check_output(['git','-C',str(ROOT),'show',CANDIDATE+':'+path])
+            expected = subprocess.check_output(['git','-C',str(ROOT),'show',nomination+':'+path])
             if hashlib.sha256(expected).hexdigest() != candidate['source_files'].get(path): raise ValueError('candidate runtime differs from the frozen session')
     same = baseline_identity(args.same_server,PIN,option['backend'])
     current = baseline_identity(args.current_server,CURRENT,option['backend'])
@@ -363,14 +403,16 @@ def run(args):
     option['backend_bundle'] = str((args.profile.resolve().parent/option['backend_bundle']).resolve())
     options_path = destination/'options.json'
     options_path.write_text(json.dumps(option))
-    record = dict(schema_version=1,artifact_kind='GPU_SESSION_MEASUREMENT',status='FAIL',decision='incomplete',
-        identities=identities,policy=dict(order=ORDER,cases=CASES,system=SYSTEM,maximum_tokens=128,deadline_seconds=7200,
+    record = dict(schema_version=2 if final_cuda(args) else 1,artifact_kind='GPU_SESSION_MEASUREMENT',status='FAIL',decision='incomplete',
+        identities=identities,policy=dict(campaign=args.campaign,
+            timing_basis='producer_internal_processing' if final_cuda(args) else 'caller_wall_including_startup_and_transport',order=ORDER,cases=CASES,system=SYSTEM,maximum_tokens=128,deadline_seconds=7200,
             same_kv='f32',current_kv='f16',context=2304,batch=2048,microbatch=128,threads=4,flash_attention=True,
             startup_warmup=False,context_shift=False,samplers=['top_k','top_p','min_p','temperature'],
             top_k=40,top_p=.95,min_p=.05,repeat_penalty=1,task_sha256=base.file_sha256(base.TASK)),
         arms=[],comparisons=[],failure='',elapsed_ns=0)
     try:
         validator = base.resolve_validator(deadline)
+        if final_cuda(args) and validator['kind'] != 'native': raise ValueError('cuda-final requires native validation')
         record['identities']['validator'] = dict(validator)
         control = destination/'known-good.patch'
         control.write_text(base.KNOWN_GOOD_PATCH)
@@ -385,7 +427,7 @@ def run(args):
                 for system in order:
                     remaining(deadline)
                     row = dict(model=model_name,repeat=repeat,system=system,status='FAIL',runtime=[],
-                               coding=dict(passed=False,time_to_passing_patch_ns=None,attempts=[]))
+                               coding=dict(passed=False,attempts=[],**{coding_clock(args):None}))
                     record['arms'].append(row)
                     prefix = f'{model_name}-{repeat}-{system}'
                     print(prefix+': start',flush=True)
@@ -415,7 +457,7 @@ def run(args):
                 for repeat in range(5):
                     candidate_row,reference_row = selected.get((repeat,'candidate')),selected.get((repeat,reference))
                     pairs.append(None if not candidate_row or not reference_row or not candidate_row['passed'] or not reference_row['passed']
-                        else (reference_row['time_to_passing_patch_ns']-candidate_row['time_to_passing_patch_ns'])/reference_row['time_to_passing_patch_ns'])
+                        else (reference_row[coding_clock(args)]-candidate_row[coding_clock(args)])/reference_row[coding_clock(args)])
                 record['comparisons'].append(dict(model=model,case='coding',reference=reference,decision='diagnostic',
                     candidate_successes=sum(bool(selected.get((repeat,'candidate'),{}).get('passed')) for repeat in range(5)),
                     reference_successes=sum(bool(selected.get((repeat,reference),{}).get('passed')) for repeat in range(5)),
@@ -430,6 +472,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('profile','runtime','same-server','current-server','output'):
         parser.add_argument('--'+name,type=Path,required=True)
+    parser.add_argument('--campaign', choices=('original','cuda-final'), default='original')
     args=parser.parse_args()
     def interrupted(*_): raise KeyboardInterrupt
     previous=signal.signal(signal.SIGTERM,interrupted)
