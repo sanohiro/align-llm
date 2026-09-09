@@ -38,7 +38,8 @@ unrelated values and leaving the caller environment unmodified.
 
 ## Evidence
 
-Runtime repair checkpoint: `c3426328550c12c38f0877d3452880903c26b363`.
+Initial runtime repair checkpoint: `c3426328550c12c38f0877d3452880903c26b363`.
+Consolidated session-only review repair: `688232c665aafca3cdff940e9e34eac5c7f0509e`.
 Native validator repair checkpoint: `ffe4232` (runtime source unchanged from `c342632`).
 Host/model/bundle/toolchain identities are the same as the original CUDA report. Full evidence
 is retained outside Git under `gpu-cuda-session-repair`; exploratory interposed binaries remain
@@ -47,11 +48,29 @@ separately under `cuda-session-diagnosis` and are not qualified production artif
 - `make fmt`: PASS.
 - `scripts/run-gpu-session-reuse-smoke`: PASS, including injected decode/readback failure.
 - `python3 scripts/run-olmoe-coding-decision --self-test`: PASS.
-- `scripts/run-gpu-session-independent --profile PROFILE --runtime SESSION/main --reference REFERENCE/session-reference --output NEW_DIRECTORY`: PASS, all 16 requests, manifested runtime at `c342632` and unchanged independent reference. Receipt SHA-256 `527b513ed4998a3f585037bc566bd472fef437d4b707c7a5703dbf78f531eb4d`.
-- `scripts/run-gpu-session-host-capacity --profile PROFILE --candidate SESSION --align-source PINNED_ALIGN_SOURCE --output NEW_DIRECTORY`: PASS on both models at `c342632`, including oversized-input refusal and subsequent reuse. Receipt SHA-256 `0fa7164c1d0213d052cc611b4336701b8913598c938ca6516649187a459db718`.
+- `scripts/run-gpu-session-independent --profile PROFILE --runtime SESSION/main --reference REFERENCE/session-reference --output NEW_DIRECTORY`: PASS, all 16 requests, manifested runtime at `688232c` and unchanged independent reference. Receipt `session-scoped-evidence/result.json` SHA-256 `61d82fcaa903449a2e5e67516c11d709c7b6b5cad1c5ee7013d76977d4edc8fe`. The original passing repair receipt remains retained.
+- `scripts/run-gpu-session-host-capacity --profile PROFILE --candidate SESSION --align-source PINNED_ALIGN_SOURCE --output NEW_DIRECTORY`: PASS on both models at `688232c`, including oversized-input refusal and subsequent reuse. Receipt `host-scoped/result.json` SHA-256 `2b3766a2b8e45e9e3db3af42fa6e7ba4d798aff51b584ff7911acf9e9e487bd0`. Requested peaks are 257,116,632 bytes for Qwen and 237,296,925 bytes for OLMoE, below their reservations and the 8,000,000,000-byte host budget.
 - `scripts/run-gpu-session-coding-smoke --profile PROFILE --runtime SESSION/main --output NEW.json`: FAIL after the native-validator repair; Qwen attempt 2 passes, OLMoE attempts 1–8 fail. The original owner produces no success receipt on failure; retain `logs/session-retry-fixed-validator.log`. The diagnostic extraction `retry-failed-attempts.json` binds this log and all eight OLMoE attempts; SHA-256 `84040ae96e0c4f6269a4e4d9f21c1b9ae85edc6843701bdef81508d7a42bbd53`.
 - Independent reference replay of the exact eight retry requests, including actual validation feedback: all eight emitted outputs equal the candidate. `retry-reference.jsonl` SHA-256 `7a9786e53c189eb569051f23fde3471a49bccc82b24fddcdab1f66e5146ae2b5`. This is a diagnostic output comparison, not a passing patch result.
-- Complete G1 acceptance at `ffe4232`: FAIL at OLMoE calibration after Qwen passes. All 100,608 production-logit scalars differ; diagnostic kinds 2–6 remain bitwise equal. The instrumented reference supplies both expected streams, exposing the unconditional expansion's single-shot regression. The review repair scopes expansion to session graphs without changing tolerances; its full acceptance/replay is pending.
+- Complete G1 acceptance at `ffe4232`: FAIL at OLMoE calibration after Qwen passes. All 100,608 production-logit scalars differ; diagnostic kinds 2–6 remain bitwise equal. The instrumented reference supplies both expected streams, exposing the unconditional expansion's single-shot regression. The review repair scopes expansion to session graphs without changing tolerances.
+
+- Complete `scripts/run-gpu-independent-acceptance PROFILE CORPUS CANDIDATE REFERENCE NEW_DIRECTORY` at `688232c`: PASS, 19 cases twice, all 38 comparisons bitwise equal, cleanup complete, 837.041 seconds. The directory was relocated and `scripts/run-gpu-independent-acceptance --replay RELOCATED_DIRECTORY` also PASSes. Receipt `g1-scoped-relocated/result.json` SHA-256 `7e51eba2413d61b4286ea1eac4ab68d9c9d202b60089bd260e8db523a7c9bc5d`.
+- Final coding retry rerun at `688232c`: same FAIL, Qwen passes attempt 2 and OLMoE exhausts eight attempts. All eight OLMoE outputs equal the previously reference-verified outputs; the fresh validator feedback contains new task paths, so this is output stability, not a fresh exact-request reference replay. Retain `logs/retry-scoped.log`; extraction `retry-scoped-failed-attempts.json` SHA-256 `3fb70d1c10acddf35ba90b363b113cc3fa4db1e683f3a0f3be572c6cdaeca956`.
+
+## Diagnostic internal request times
+
+The serial correctness run at `688232c` also records the worker's internal `elapsed_ns`.
+These are one observation per request, without paired baselines or repeated timing statistics;
+they do not establish an optimization benefit. The clock starts after the complete request frame
+has been read and ends before response transport. It includes request parsing, tokenization,
+prefill and decode; it excludes session construction/model admission, transport, downloads and builds.
+
+| Request | Qwen | OLMoE |
+| --- | ---: | ---: |
+| Initial short request, 2 generated tokens | 103.341 ms | 469.805 ms |
+| Identical short request, 2 generated tokens | 41.647 ms | 20.097 ms |
+| Long prompt | 501.639 ms (1936 input, 2 output) | 317.941 ms (1944 input, 8 output) |
+| Longer completion | 1487.530 ms (39 input, 127 output) | 317.179 ms (47 input, 78 output) |
 
 No CUDA performance campaign ran. Historical FAIL receipts and the original Metal campaign remain
 unchanged. The frozen measurement candidate still names the original runtime; a future campaign

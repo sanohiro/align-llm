@@ -7,29 +7,35 @@ this file records durable execution state.
 Complete this repair, its CUDA verification and publication for the primary implementation host.
 Do not begin a separate optimization or roadmap capability.
 
-## Active CUDA session repair (2026-09-09)
+## CUDA session repair checkpoint (2026-09-09)
 
 Branch `agent/cuda-session-repair`, based on merged result report PR #222 (`dd67625`).
-The original OLMoE failures reproduce in serial history; a fresh long request and the first fresh
-seeded request agree. Diagnostic logit comparisons localize the discrepancy to CUDA router
-fusion: disabling only the reference's softmax/top-k fusion restores bitwise agreement, while
-RMS-normalization and expert-matmul split controls do not. The candidate did not expand router
-weights before expert work as the pinned llama.cpp graph does.
+The three OLMoE serial-output discrepancies are repaired at `688232c`: explicitly expand gathered
+router weights before expert work for reusable-session graphs and their pre-upload plans, matching
+the pinned llama.cpp order. Single-shot builders retain their previous traversal; diagnostic
+observation can inhibit CUDA fusion, so the production-session owner is essential.
 
-The initial repair passes all 16 independent session requests and both host-capacity owners.
-Review found that its unconditional expansion also changed single-shot production logits against
-G1's instrumented oracle. The consolidated repair selects early router expansion only for session
-construction/planning and execution; single-shot and diagnostic G1 traversal remain unchanged.
-Requalification of this narrowed repair is active. Retain all earlier failed receipts.
+At the clean manifested `688232c` checkpoint, `scripts/run-gpu-session-independent` passes all
+16 requests, `scripts/run-gpu-session-host-capacity` passes both models including oversized-input
+refusal and subsequent reuse, and full `scripts/run-gpu-independent-acceptance` passes all
+19 cases twice with bitwise-equal comparisons and complete cleanup. Relocated `--replay` passes.
+`make fmt`, `scripts/run-gpu-session-reuse-smoke` (including fault injection), and
+`python3 scripts/run-olmoe-coding-decision --self-test` pass. Exact invocations, hashes, the initial
+review-regression FAIL and final PASS receipts are in `docs/gpu-cuda-session-repair.md`; complete
+evidence remains outside Git under `gpu-cuda-session-repair`.
 
 The native coding validator now admits its owned temporary work directory via a copied child
-environment. Qwen passes retry attempt 2; OLMoE fails all eight with an incorrect `stop - 1` patch.
-The independent reference reproduces all eight outputs exactly. This separate coding-quality
-blocker prevents paired performance measurement; do not relax the task or qualify it as PASS.
+environment. Final real retry: Qwen passes attempt 2; OLMoE fails all eight with an incorrect
+`stop - 1` patch. The independent reference reproduces the original eight requests exactly;
+the final repair rerun emits the same eight outputs. This separate coding-quality blocker prevents
+paired performance measurement. Do not relax the task or qualify it as PASS. Internal diagnostic
+times exclude request/response transport and preparation; no speedup is claimed.
 
-Next: build clean manifested candidates, rerun G1 acceptance/replay and session/host owners,
-inspect the review repair delta, run publication preflight and merge. Full diagnosis and receipt
-identities are in `docs/gpu-cuda-session-repair.md`. No new Align capability gap is evidenced.
+The requested mismatch repair and real CUDA requalification are complete. Publication/merge is
+the only active step. After merge, stop at the requested boundary; the primary implementation
+machine can take over. A future campaign must resolve the coding-quality prerequisite and explicitly
+nominate the repaired candidate before timing; the frozen measurement candidate still names the
+original runtime. No new Align capability gap or intentional uncommitted files remain.
 
 ## CUDA execution checkpoint (2026-09-09)
 
