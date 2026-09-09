@@ -7,19 +7,33 @@ this file records durable execution state.
 excluding model transport, and wants to finish this work afterward. Complete the frozen comparison,
 report all outcomes, review/preflight and merge; do not start another optimization capability.
 
-## Active final CUDA measurement (2026-09-09)
+## Completed final CUDA measurement (2026-09-09)
 
 Branch `agent/cuda-final-measurement`, based on merged repair PR #223 (`c5ce2c7`).
-The new §6.2 campaign nominates qualified runtime `688232c`, keeps the original two baselines,
-models, workload, five paired orders and 7200-second ceiling, and uses reported internal clocks.
-The runtime metric excludes transport and startup; producer clock boundaries and their asymmetry
-are explicit. Coding quality failures remain outcomes and do not prevent independent runtime
-comparison. Existing §6.1/Metal receipts and default command behavior remain unchanged.
+The formal §6.2 campaign at `577a99f78ac418a1505bc6c0caf4f43410228fd3` completed all 30 serial
+arms in 517.206 seconds. Qualified runtime `688232c`, both frozen ordinary llama.cpp baselines,
+original models, five paired orders and the 7200-second ceiling remain fixed. Model transport and
+startup are excluded from the internal runtime metric; producer clock boundaries and their
+asymmetry are explicit. Historical §6.1/Metal results and default behavior remain unchanged.
 
-Measurement smoke passes malformed clocks, transport/startup exclusion, retained failed portfolios,
-aggregation and the existing HTTP/cleanup controls. Next: independent review of the stable harness,
-real baseline protocol admission, clean committed campaign execution, results/handoff, publication
-preflight and merge. Stop after the comparison is delivered. No Align runtime source changes.
+Runtime quality passes all 120 responses; all 16 paired comparisons are slower at the candidate
+median and miss the 15% floor. Warm-short medians for 128 generated tokens: Qwen candidate
+1488.111 ms vs same-ggml 1437.079 ms and current 1408.882 ms; OLMoE candidate 497.534 ms vs
+383.536 ms and 349.199 ms. Qwen coding passes 5/5 portfolios on all systems, each on attempt 1;
+OLMoE passes 0/5 on every system after eight attempts each, so its passing-patch latency is N/A.
+These quality failures do not suppress the separately valid runtime measurements.
+
+`docs/gpu-cuda-final-measurement-result.md` records all case medians, five raw observations,
+paired reductions, counts, coding outcomes, startup context, exact identities and metric limits.
+Full evidence is retained outside Git as `gpu-cuda-final-measurement-v1`; result SHA-256
+`5a4787d0c19ea55b01e7d879ff52a43474d7c5c336e94b8895c96be531414465`.
+The measurement smoke passes, both-model/both-baseline protocol admission passes 4/4, a fresh
+comprehensive harness/plan review has no findings, and independent aggregation reproduces the
+receipt. No runtime source or Align capability changed.
+
+The requested comparison is complete; publication/preflight/merge is the only active step.
+After merge, STOP: the user explicitly wants to finish here. No optimization or roadmap item is
+active or requested, no measurement retry is pending, and no intentional uncommitted files remain.
 
 ## CUDA session repair checkpoint (2026-09-09)
 
