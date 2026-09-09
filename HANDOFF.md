@@ -3,14 +3,42 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations;
 this file records durable execution state.
 
-**Current execution constraint:** finish GPU repair, local Metal verification, review and PR/merge.
-The user will also run CUDA verification, together with performance measurement, after all Metal
-implementation and verification is complete. Stop once that final CUDA handoff is ready; do not
-continue into subsequent capabilities because the user wants to discuss the next direction.
-Do not request earlier CUDA debugging runs. The
-imported Pengwin checkpoint below is historical evidence.
+**Current execution constraint:** the user requested the final CUDA run and a result summary only.
+That attempt is complete; performance remains blocked by the OLMoE session failures below.
+Stop here before runtime repair, further optimization or another roadmap capability.
 
-## Active capability: final CUDA handoff after completed Metal campaign
+## CUDA execution checkpoint (2026-09-09)
+
+Report branch `agent/cuda-validation-results`, based on tested main
+`06680249833b46a8c143ee8d076af7bbe3995309` (merged PR #221). Main was pulled before execution.
+The user requested publication and merge of the report for the primary implementation machine.
+`docs/gpu-cuda-campaign-result.md` and this handoff transfer the retained evidence and resume
+conditions. No implementation changes or intentional uncommitted files remain in this checkpoint.
+
+The final wrapper with the retained `cuda-kit-28a6fe3` on RTX 4070 Ti / CUDA 13.3 completed
+all preparation. G1 independent acceptance PASSes all 19 cases twice, every comparison bitwise
+equal, cleanup complete; relocated replay also PASSes. G1R independent serial requests FAIL:
+Qwen 7/7 PASS, OLMoE 6/9 PASS. OLMoE request indices 5, 7 and 8 differ from the independent
+reference (long greedy prompt and two seed-42 requests). Session host capacity, coding retries
+and the performance campaign did not run after that failure. No CUDA speedup or latency ratio
+is available. The report separately lists diagnostic, single-request internal times: Qwen's
+127-token request took 1.496 s and OLMoE's 78-token request took 0.324 s. These exclude session
+construction and are not comparative benchmark results. Source-download/build time is preparation
+only, excluded from performance metrics.
+
+Exact invocation, phase results, differing outputs and receipt hashes are in
+`docs/gpu-cuda-campaign-result.md`. The complete `gpu-final-cuda-result-v2` directory is retained
+outside Git on this host, including manifested candidate/reference builds and both baseline
+source/build trees. The earlier environment-correction interruption and historical failed kit
+evidence remain unchanged. Use the working local Docker socket by unsetting ambient `DOCKER_HOST`.
+
+No work is active after this summary. Next, if requested, localize the OLMoE serial differences
+using the complete retained history; this is initially an application/native integration or
+qualification concern, not an evidenced Align gap. Resume timing only after independent session,
+host-capacity and real coding-retry owners pass. Preserve the failed receipts and use a fresh
+output directory. Do not begin G2/G6 or further repair without the next user direction.
+
+## Previous checkpoint: final CUDA handoff after completed Metal campaign
 
 Branch `agent/gpu-final-cuda`, based on merged G1R PR #220 (`ff8c9da`). G1 PR #219 and
 G1R PR #220 are merged; main was pulled after both. No further runtime implementation is active.
