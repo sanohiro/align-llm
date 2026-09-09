@@ -281,14 +281,14 @@ def cleanup_container(docker: str, cid_file: Path) -> None:
         raise DecisionError(f"validator container cleanup failed: {diagnostic[-4096:]}")
 
 
-def validate_patch(
+def validate_patch_details(
     patch: Path,
     work: Path,
     deadline: float,
     validator: dict[str, Any],
     *,
     env: dict[str, str] | None = None,
-) -> tuple[bool, int]:
+) -> tuple[bool, int, str]:
     started = time.monotonic_ns()
     argv, cid_file = validation_command(patch, work, validator)
     try:
@@ -305,13 +305,21 @@ def validate_patch(
             cleanup_container(validator["docker"], cid_file)
     elapsed = time.monotonic_ns() - started
     if result.returncode == 0:
-        return True, elapsed
+        return True, elapsed, ""
     if result.returncode == 4:
-        return False, elapsed
+        return False, elapsed, (result.stdout + result.stderr).decode("utf-8", "replace")[-4096:]
     raise DecisionError(
         "validator infrastructure failed (%d): %s"
         % (result.returncode, result.stderr.decode("utf-8", "replace")[-4096:])
     )
+
+
+def validate_patch(
+    patch: Path, work: Path, deadline: float, validator: dict[str, Any],
+    *, env: dict[str, str] | None = None,
+) -> tuple[bool, int]:
+    passed, elapsed, _ = validate_patch_details(patch, work, deadline, validator, env=env)
+    return passed, elapsed
 
 
 def free_port() -> int:

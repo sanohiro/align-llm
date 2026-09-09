@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Compare serial runtime requests with a separately built pinned llama.cpp context."""
+from __future__ import annotations
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import time
+
+from gpu_session_client import Session
+from gpu_independent_acceptance import verify_build
+from gpu_qualification_input import admit
+
+
+def sha(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while block := source.read(8 * 1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def requests(architecture):
+    base = dict(schema_version=1, system="You are a coding assistant. Return a concise patch-oriented answer.",
+                user="Answer with exactly the word Yes.", max_tokens=8, temperature=0.0, seed=None)
+    rows = [base, dict(base),
+            dict(base, user="Context: " + "hello " * 128 + "\nAnswer with exactly the word Yes."),
+            dict(base), dict(base, system="Be concise."),
+            dict(base, user="Context: " + "hello " * 1900 + "\nAnswer with exactly the word Yes."),
+            dict(base, user="Write a Python function that adds two integers. Explain its behavior.", max_tokens=128)]
+    if architecture == "olmoe":
+        seeded = dict(base, user="Write a Python function that adds two integers.", max_tokens=32,
+                      temperature=0.3, seed=42)
+        rows += [seeded, dict(seeded)]
+    return rows
+
+
+def run(args):
+    started = time.monotonic_ns()
+    deadline = time.monotonic() + 7200
+    profile_path = args.profile.resolve(strict=True)
+    root = profile_path.parent
+    admitted = admit(profile_path)
+    profile = admitted.records["profile"]
+    options_rows = profile["runtime_options"]
+    if len(options_rows) != 1:
+        raise ValueError("session qualification requires one explicit resident option")
+    options = {key: value for key, value in options_rows[0].items() if key != "option_id"}
+    if options["placement"] != "resident" or options["prefetch"] != "off":
+        raise ValueError("unsupported session qualification placement")
+    bundle = (root / options["backend_bundle"]).resolve(strict=True)
+    options["backend_bundle"] = str(bundle)
+    models = {row["model_id"]: row for row in profile["models"]}
+    if set(models) != {"qwen2", "olmoe"}:
+        raise ValueError("session qualification requires both G1 models")
+    executable = args.runtime.resolve(strict=True)
+    reference = args.reference.resolve(strict=True)
+    if executable.name != "main" or reference.name != "session-reference":
+        raise ValueError("session qualification requires manifested session entrypoints")
+    candidate_build = verify_build(executable.parent, True, session=True)
+    reference_build = verify_build(reference.parent, False, session=True)
+    if candidate_build["bundle_id"] != admitted.records["bundle"]["bundle_id"]:
+        raise ValueError("candidate build does not bind the admitted bundle")
+    args.output.mkdir()
+    destination = args.output.resolve()
+    options_path = destination / "runtime-options.json"
+    options_path.write_text(json.dumps(options))
+    results = []
+    for architecture in ("qwen2", "olmoe"):
+        model = models[architecture]
+        paths = {}
+        for field in ("model", "pack", "geometry"):
+            path = (root / model[field + "_path"]).resolve(strict=True)
+            paths[field] = path
+        sequence = requests(architecture)
+        command = [str(executable), "--runtime-session", str(paths["model"]), str(paths["pack"]),
+                   str(paths["geometry"]), str(options_path), str(model["runtime_cache_budget_bytes"])]
+        candidate = []
+        with Session(command, timeout=min(300, deadline - time.monotonic())) as session:
+            for index, request in enumerate(sequence):
+                session.timeout = min(300, deadline - time.monotonic())
+                candidate.append(session.generate(request))
+                print(f"{architecture}: candidate {index + 1}/{len(sequence)}", flush=True)
+        request_path = destination / f"{architecture}-reference-input.json"
+        request_path.write_text(json.dumps(dict(model_path=str(paths["model"]),
+            plugin_path=str(bundle / ("libggml-" + options["backend"] + ".so")),
+            device=options["device"], architecture=architecture, requests=sequence)))
+        with (destination / f"{architecture}-reference.log").open("wb") as log:
+            process = subprocess.run([str(reference), str(request_path)], stdout=subprocess.PIPE,
+                                     stderr=log, timeout=min(600, deadline - time.monotonic()), check=True)
+        acquired = [json.loads(line) for line in process.stdout.splitlines()]
+        (destination / f"{architecture}-candidate.json").write_text(json.dumps(candidate, indent=2))
+        (destination / f"{architecture}-reference.json").write_text(json.dumps(acquired, indent=2))
+        if len(acquired) != len(candidate):
+            raise ValueError("reference request count mismatch")
+        for index, (actual, expected) in enumerate(zip(candidate, acquired)):
+            equal = all(actual[key] == expected[key] for key in ("output", "prompt_tokens", "completion_tokens"))
+            results.append(dict(model=architecture, request=index, pass_case=equal,
+                                reused_tokens=expected["reused_tokens"]))
+        print(f"{architecture}: compared {len(sequence)} requests", flush=True)
+    admitted.recheck()
+    if verify_build(executable.parent, True, session=True) != candidate_build or verify_build(reference.parent, False, session=True) != reference_build:
+        raise ValueError("session build changed during qualification")
+    (destination / "candidate-build.json").write_text(json.dumps(candidate_build, indent=2))
+    (destination / "reference-build.json").write_text(json.dumps(reference_build, indent=2))
+    passed = all(row["pass_case"] for row in results)
+    record = dict(schema_version=1, artifact_kind="GPU_SESSION_QUALIFICATION", passed=passed,
+                  decision="unmeasured", runtime_sha256=sha(executable), reference_sha256=sha(reference),
+                  profile_sha256=sha(profile_path), cases=results, elapsed_ns=time.monotonic_ns()-started)
+    (destination / "result.json").write_text(json.dumps(record, indent=2) + "\n")
+    print("gpu session independent: " + ("PASS" if passed else "FAIL"), flush=True)
+    return 0 if passed else 1
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("profile", "runtime", "reference", "output"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    return run(parser.parse_args())
+
+if __name__ == "__main__":
+    raise SystemExit(main())

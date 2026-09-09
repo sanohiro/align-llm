@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Exercise caller deadlines, strict responses and owned process cleanup."""
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+from gpu_session_client import Session, SessionError, InvalidRequest
+
+WORKER = r'''import json, os, struct, sys, time
+mode, marker = sys.argv[1:]
+open(marker, "w").write(str(os.getpid()))
+def send(value):
+    raw = json.dumps(value, separators=(",", ":")).encode()
+    sys.stdout.buffer.write(struct.pack("<I", len(raw)) + raw)
+    sys.stdout.buffer.flush()
+def receive():
+    header = sys.stdin.buffer.read(4)
+    if not header: return None
+    count = struct.unpack("<I", header)[0]
+    return json.loads(sys.stdin.buffer.read(count))
+if mode == "bad-ready":
+    send(dict(schema_version=True, status="ready"))
+else:
+    send(dict(schema_version=1, status="ready"))
+index = 0
+while True:
+    request = receive()
+    if request is None: break
+    index += 1
+    if mode == "timeout": time.sleep(60)
+    if mode == "oversize":
+        sys.stdout.buffer.write(struct.pack("<I", 2097153)); sys.stdout.buffer.flush(); break
+    if mode == "truncated":
+        sys.stdout.buffer.write(struct.pack("<I", 20) + b"{}"); sys.stdout.buffer.flush(); break
+    if mode == "invalid" and index == 1:
+        send(dict(schema_version=1, status="invalid")); continue
+    result = dict(schema_version=2, operation="generate", provider="align-runtime", model="fixture",
+                  endpoint="", status="ok", output="Yes.", prompt_tokens=2, completion_tokens=2,
+                  total_tokens=4, token_count_exact=True, elapsed_ns=1, error="", error_code=-1)
+    if mode == "bad-count": result["completion_tokens"] = True
+    if mode == "bad-total": result["total_tokens"] = 5
+    if mode == "bad-output": result["output"] = 42
+    if mode == "nonfinite": result["elapsed_ns"] = float("nan")
+    send(dict(schema_version=1, status="ok", result=result))
+'''
+
+def gone(marker):
+    pid = int(marker.read_text())
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return
+    raise AssertionError(f"worker process {pid} survived cleanup")
+
+def main():
+    request = dict(schema_version=1, system="", user="hello", max_tokens=8, temperature=0, seed=None)
+    with tempfile.TemporaryDirectory(prefix="gpu-session-client-") as temporary:
+        work = Path(temporary)
+        worker = work / "worker.py"
+        worker.write_text(WORKER)
+        for mode in ("ok", "invalid", "bad-ready", "oversize", "truncated", "bad-count",
+                     "bad-total", "bad-output", "nonfinite", "timeout"):
+            marker = work / (mode + ".pid")
+            command = [sys.executable, "-u", str(worker), mode, str(marker)]
+            try:
+                with Session(command, timeout=2) as session:
+                    if mode == "timeout": session.timeout = 0.05
+                    if mode == "invalid":
+                        try: session.generate(request)
+                        except InvalidRequest: pass
+                        else: raise AssertionError("invalid request accepted")
+                    result = session.generate(request)
+                    assert mode in ("ok", "invalid"), mode
+                    assert result["output"] == "Yes."
+                    assert session.generate(request)["output"] == "Yes."
+            except SessionError:
+                assert mode not in ("ok", "invalid"), mode
+            gone(marker)
+    print("gpu session client smoke: PASS (10 process/response cases)")
+
+if __name__ == "__main__":
+    main()

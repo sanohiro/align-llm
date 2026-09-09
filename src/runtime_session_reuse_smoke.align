@@ -80,20 +80,57 @@ fn run(pack: str, geometry: str, olmo: bool) -> Result<(), Error> {
   match runtime_generation.generate_session(session, invalid, eog, 3, None) {
     Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
   }
+  if !olmo {
+    match runtime_generation.generate_session(session, short, eog, 3, Some(42)) {
+      Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+    }
+  }
   if !session.healthy || session.prefix_count != 4 { return Err(Error.Invalid) }
   after := runtime_generation.generate_session(session, short, eog, 3, None)?
   if !equal_ids(first, after)
     || ggml_ffi.gpu_weight_state(session.owner, ggml_ffi.GPU_WEIGHT_UPLOADED) != uploaded
     || ggml_ffi.gpu_graph_state(session.owner, ggml_ffi.GPU_GRAPH_DECODE,
     ggml_ffi.GPU_GRAPH_REUSES) < 1 { return Err(Error.Invalid) }
+  if ggml_ffi.handle_absent(ggml_ffi.gpu_graph_lookup(session.owner,
+      ggml_ffi.GPU_GRAPH_DECODE, session.decode_key))
+    || !ggml_ffi.handle_absent(ggml_ffi.gpu_graph_lookup(session.owner, -1, session.decode_key))
+    || !ggml_ffi.handle_absent(ggml_ffi.gpu_graph_lookup(session.owner,
+      ggml_ffi.GPU_GRAPH_DECODE, BUNDLE_ID)) { return Err(Error.Invalid) }
+  ggml_ffi.gpu_graph_invalidate(session.owner, ggml_ffi.GPU_GRAPH_DECODE) else { return Err(Error.Invalid) }
+  if !ggml_ffi.handle_absent(ggml_ffi.gpu_graph_lookup(session.owner,
+      ggml_ffi.GPU_GRAPH_DECODE, session.decode_key)) { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn reject_after_fault(pack: str, geometry: str, olmo: bool) -> Result<(), Error> {
+  mut session := open_session(pack, geometry, olmo)?
+  short := prompt(2, 1)
+  empty: array_builder<i64> := array_builder()
+  eog := empty.build()
+  match runtime_generation.generate_session(session, short, eog, 3, None) {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  if session.healthy { return Err(Error.Invalid) }
+  executions := ggml_ffi.gpu_graph_state(session.owner, ggml_ffi.GPU_GRAPH_PREFILL,
+    ggml_ffi.GPU_GRAPH_EXECUTIONS)
+  match runtime_generation.generate_session(session, short, eog, 1, None) {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  if ggml_ffi.gpu_graph_state(session.owner, ggml_ffi.GPU_GRAPH_PREFILL,
+    ggml_ffi.GPU_GRAPH_EXECUTIONS) != executions { return Err(Error.Invalid) }
   return Ok(())
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
   if args.len() != 5 { return Err(Error.Invalid) }
-  run(args[1], QWEN_GEOMETRY, false)?
   geometry := fs.read_file(args[3])?
-  run(args[2], geometry, true)?
+  if args[4] == "fault" {
+    reject_after_fault(args[1], QWEN_GEOMETRY, false)?
+    reject_after_fault(args[2], geometry, true)?
+  } else {
+    run(args[1], QWEN_GEOMETRY, false)?
+    run(args[2], geometry, true)?
+  }
   print("runtime session reuse smoke: PASS")
   return Ok(())
 }

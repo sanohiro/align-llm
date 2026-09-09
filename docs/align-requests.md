@@ -11535,3 +11535,32 @@ with 232 focused driver tests, all 36 frontend-cache owners and the bounded
 sema/codegen parameterized owners verified locally. Cache coverage includes cold,
 hit, private edit and restoration, plus rejecting changed retaining helpers.
 Consumer pin adoption and generation/numeric smoke remain align-llm-owned and pending.
+
+## Request 63 — Floating-point fields in owned JSON records
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; G1R decodes the shipped borrowed record and explicitly clones prompt text.
+Independent work that may continue: G1R session protocol, coding integration and qualification.
+Resume condition: a merged Align release supports f64 fields alongside owned string fields in the declared-record JSON route.
+Align commit or pull request: none
+align-llm verification: gpu-session-protocol request decoding, including temperature 0.0/0.3, invalid scalar kinds and source expiry.
+```
+
+G1R's owned request contains `system: string`, `user: string` and `temperature: f64`.
+At pin `305926b4`, `json.decode` rejects this real record with
+`owned JSON graph has unsupported type f64`. Sibling main `84b97bce` still explicitly rejects it:
+`align_sema/src/lib.rs` owns the unsupported-type diagnostic, and
+`align_driver/tests/m5_owned_json.rs` includes the f64 rejection
+case near line 585. The checked-in `docs/impl/core-design/json.md` excludes floats from both
+owned graph grammars. Requests 9 and 13 deliberately excluded floats and do not close this gap.
+
+Proposed surface: extend the existing inferred-target `json.decode`, `json.encode` and
+`json.encode_bounded` owned-record grammar with `f64`, using the same scalar parsing/encoding
+semantics as the shipped borrowed record route. Do not add another JSON tree or codec API.
+Acceptance must cover finite boundary values, invalid scalar kinds, nonfinite policy matching
+the existing route, exact bounded encoding, source expiry, per-unit interfaces, partial decode
+failure and cleanup after preceding owned strings. G1R currently uses the supported borrowed
+record with explicit text cloning; this does not satisfy the language-owned requirement.

@@ -17,6 +17,11 @@ import runtime_pack_identity
 import tokenizer_qwen2
 import core.json
 import std.fs
+import std.time
+import ggml_ffi
+import result
+import runtime_session_io
+import runtime_session_request
 
 MAX_PATH_BYTES := 4096
 MAX_GEOMETRY_BYTES := 16777216
@@ -402,4 +407,159 @@ pub fn count_prompt(config: model.ProviderConfig, request: model.GenerationReque
     return model.TokenCount { count: -1, exact: false }
   }
   return model.TokenCount { count: prepared.token_ids.len(), exact: true }
+}
+
+fn session_host_reservation(borrow snapshot: gguf.GgufSnapshot, limit: i64) -> Result<i64, Error> {
+  tokens := gguf.kv_array_length(snapshot.table, "tokenizer.ggml.tokens") else { return Err(Error.Invalid) }
+  merges := gguf.kv_array_length(snapshot.table, "tokenizer.ggml.merges") else { return Err(Error.Invalid) }
+  if tokens < 1 || tokens > 1048576 || merges < 0 || merges > 1048576
+    || snapshot.table.kv_count < 0 || snapshot.table.kv_count > 1048576
+    || snapshot.table.tensor_count < 0 || snapshot.table.tensor_count > 1048576
+    || snapshot.table.data_offset < 0 || limit <= 67108864 { return Err(Error.Invalid) }
+  rows := tokens + merges + snapshot.table.kv_count + snapshot.table.tensor_count
+  row_bytes := rows * 256
+  if row_bytes >= limit - 67108864 { return Err(Error.Invalid) }
+  remaining := limit - 67108864 - row_bytes
+  if snapshot.table.data_offset >= remaining / 32 { return Err(Error.Invalid) }
+  return Ok(67108864 + row_bytes + snapshot.table.data_offset * 32)
+}
+
+fn worker_generate(borrow mut generation: runtime_generation.Session,
+  borrow tokenizer: tokenizer_qwen2.GenerationTokenizer,
+  borrow prepared: tokenizer_qwen2.GenerationPromptResult,
+  borrow request: runtime_session_request.Request, model_path: str,
+  started: i64) -> Result<string, Error> {
+  ids := runtime_generation.generate_session(generation, prepared.token_ids,
+    prepared.eog_token_ids, request.max_tokens, request.seed)?
+  if ids.len() < 1 || ids.len() > request.max_tokens { return Err(Error.Invalid) }
+  stopped := contains_id(prepared.eog_token_ids, ids[ids.len() - 1])
+  if !stopped && ids.len() != request.max_tokens { return Err(Error.Invalid) }
+  count := ids.len() - if stopped { 1 } else { 0 }
+  mut completion: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= count { break }
+    completion.push(ids[at])
+    at = at + 1
+  }
+  completion_ids := completion.build()
+  decoded := tokenizer_qwen2.decode_retained(tokenizer, completion_ids,
+    tokenizer_qwen2.DecodeSpecials.SkipControl)?
+  if !tokenizer_ok(decoded.status) || decoded.text.len() > 262144 { return Err(Error.Invalid) }
+  text_view: str := decoded.text
+  record := result.GenerationRecord {
+    schema_version: 2, operation: "generate", provider: "align-runtime", model: model_path,
+    endpoint: "", status: "ok", output: text_view, prompt_tokens: prepared.token_ids.len(),
+    completion_tokens: count, total_tokens: prepared.token_ids.len() + count,
+    token_count_exact: true, elapsed_ns: time.instant() - started, error: "", error_code: -1,
+  }
+  encoded := json.encode_bounded(record, 2097088)?
+  response := builder()
+  response.write("{\"schema_version\":1,\"status\":\"ok\",\"result\":")
+  response.write(encoded)
+  response.write("}")
+  return Ok(response.to_string())
+}
+
+pub SessionObservation {
+  reserved_host_bytes: i64,
+  native_host_peak: i64,
+  weight_uploads_before: i64,
+  weight_uploads_after: i64,
+}
+
+pub fn empty_session_observation() -> SessionObservation = SessionObservation {
+  reserved_host_bytes: 0, native_host_peak: 0, weight_uploads_before: 0, weight_uploads_after: 0,
+}
+
+pub fn run_session(config: model.ProviderConfig) -> Result<(), Error> {
+  mut observation := empty_session_observation()
+  return run_session_observed(config, observation)
+}
+
+pub fn run_session_observed(config: model.ProviderConfig,
+  borrow mut observation: SessionObservation) -> Result<(), Error> {
+  empty_request := model.GenerationRequest {
+    system: "", user: "", max_tokens: 1, temperature: 0.0, seed: None,
+  }
+  validate_generate(config, empty_request)?
+  if config.runtime_options_path.len() == 0 { return Err(Error.Invalid) }
+  options := runtime_options.load(config.runtime_options_path)?
+  if config.runtime_cache_budget_bytes > options.host_budget_bytes { return Err(Error.Invalid) }
+  snapshot := gguf.open_snapshot(config.model)?
+  table_ok := match snapshot.table.status { Ok => true, Error => false }
+  if !table_ok { return Err(Error.Invalid) }
+  olmo := snapshot.table.architecture == "olmoe"
+  if (!olmo && snapshot.table.architecture != "qwen2")
+    || (olmo && config.runtime_cache_budget_bytes <= 0)
+    || (!olmo && config.runtime_cache_budget_bytes != 0) { return Err(Error.Invalid) }
+  geometry := read_geometry(config.runtime_geometry_path)?
+  recorded: GeometryPath := json.decode(geometry)?
+  if !valid_path(recorded.path) { return Err(Error.Invalid) }
+  ir := if olmo { frontend_olmoe.build_model_ir(snapshot.table, recorded.path) } else { frontend_qwen.build_model_ir(snapshot.table, recorded.path) }
+  if !ir_ok(ir.status) || geometry != ir.document { return Err(Error.Invalid) }
+  source_identity := alignpack.verify_source_identity_snapshot(snapshot, config.runtime_pack_path)?
+  identity := runtime_pack_identity.SourceIdentity {
+    file_size: source_identity.file_size, data_offset: source_identity.data_offset,
+    tensor_count: source_identity.tensor_count, kv_count: source_identity.kv_count,
+    version: source_identity.version, alignment: source_identity.alignment,
+    total_tensor_bytes: source_identity.total_tensor_bytes,
+    header_region_sha256: source_identity.header_region_sha256.clone(),
+  }
+  reserved := session_host_reservation(snapshot, options.host_budget_bytes)?
+  tokenizer := tokenizer_qwen2.load_generation_snapshot(snapshot)?
+  // Device construction consumes options; preserve explicit session configuration first.
+  retained_options := runtime_options.RuntimeOptions {
+    schema_version: options.schema_version, backend: options.backend.clone(),
+    device: options.device.clone(), backend_bundle: options.backend_bundle.clone(),
+    placement: options.placement.clone(), host_budget_bytes: options.host_budget_bytes,
+    device_budget_bytes: options.device_budget_bytes, prefetch: options.prefetch.clone(),
+  }
+  device := runtime_device.open(options)?
+  mut generation := runtime_generation.create_session(device, retained_options, config.runtime_pack_path,
+    identity, geometry, olmo, config.runtime_cache_budget_bytes, reserved)?
+  observation.weight_uploads_before = ggml_ffi.gpu_weight_state(generation.owner, ggml_ffi.GPU_WEIGHT_UPLOADED)
+  runtime_session_io.write_frame("{\"schema_version\":1,\"status\":\"ready\"}")?
+  loop {
+    incoming := runtime_session_io.read_frame()?
+    match incoming {
+      None => { break },
+      Some(body) => {
+        document := body.bytes().as_str()?
+        started := time.instant()
+        decoded := runtime_session_request.decode(document)
+        match decoded {
+          Err(_) => { runtime_session_io.write_frame("{\"schema_version\":1,\"status\":\"invalid\"}")? },
+          Ok(request) => {
+            valid_model := generation.olmoe || request.temperature == 0.0
+            prepared: Result<tokenizer_qwen2.GenerationPromptResult, Error> := if valid_model {
+              tokenizer_qwen2.prepare_retained(tokenizer, request.system, request.user)
+            } else { Err(Error.Invalid) }
+            match prepared {
+              Err(_) => { runtime_session_io.write_frame("{\"schema_version\":1,\"status\":\"invalid\"}")? },
+              Ok(prompt) => {
+                if prompt.token_ids.len() < 1 || prompt.token_ids.len() > 2048
+                  || prompt.token_ids.len() + request.max_tokens - 1 > generation.kv_capacity {
+                  runtime_session_io.write_frame("{\"schema_version\":1,\"status\":\"invalid\"}")?
+                } else {
+                  match worker_generate(generation, tokenizer, prompt, request, config.model, started) {
+                    Ok(response) => { runtime_session_io.write_frame(response)? },
+                    Err(error) => {
+                      runtime_session_io.write_frame("{\"schema_version\":1,\"status\":\"failed\"}")?
+                      return Err(error)
+                    },
+                  }
+                }
+              },
+            }
+          },
+        }
+      },
+    }
+  }
+  runtime_device.synchronize(generation.owner)?
+  observation.reserved_host_bytes = ggml_ffi.gpu_host_reserved(generation.owner)
+  observation.native_host_peak = ggml_ffi.gpu_observation_state(generation.owner, ggml_ffi.GPU_OBSERVATION_HOST_PEAK)
+  observation.weight_uploads_after = ggml_ffi.gpu_weight_state(generation.owner, ggml_ffi.GPU_WEIGHT_UPLOADED)
+  return Ok(())
 }

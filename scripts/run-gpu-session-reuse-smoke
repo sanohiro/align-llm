@@ -52,5 +52,16 @@ if [ "${output}" != "runtime session reuse smoke: PASS" ]; then
   exit 1
 fi
 
+for mode in engine+gpu+decode engine+gpu+inf-readback; do
+  ALIGN_LLM_GGML_FORCE="${mode}" ALIGN_LLM_GGML_SHIM_DIR="${gpu_shim}" \
+    "${root_dir}/scripts/build-ggml-shim" >/dev/null
+  output=$("${executable}" "${work_dir}/model-pack.alignpack" \
+    "${work_dir}/moe-model-pack.alignpack" "${work_dir}/moe-model-geometry.json" fault)
+  if [ "${output}" != "runtime session reuse smoke: PASS" ]; then
+    printf '%s\n' "gpu session reuse smoke: FAIL after ${mode}" >&2
+    exit 1
+  fi
+done
+
 
 printf '%s\n' "gpu session reuse smoke: PASS"

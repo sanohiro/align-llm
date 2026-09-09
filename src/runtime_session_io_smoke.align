@@ -2,7 +2,19 @@ module runtime_session_io_smoke
 
 import runtime_session_io
 
-pub fn main() -> Result<(), Error> {
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 2 {
+    if args[1] == "empty" { return runtime_session_io.write_frame("") }
+    limit := if args[1] == "maximum" { 2097152 } else { 2097153 }
+    text := builder()
+    mut count := 0
+    loop {
+      if count == limit { break }
+      text.write("x")
+      count = count + 1
+    }
+    return runtime_session_io.write_frame(text.to_string())
+  }
   loop {
     incoming := runtime_session_io.read_frame()?
     match incoming {

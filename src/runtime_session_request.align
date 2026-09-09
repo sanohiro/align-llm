@@ -1,0 +1,64 @@
+module runtime_session_request
+
+import core.json
+import runtime_options
+
+pub Request {
+  schema_version: i64,
+  system: string,
+  user: string,
+  max_tokens: i64,
+  temperature: f64,
+  seed: Option<i64>,
+}
+
+BorrowedRequest {
+  schema_version: i64,
+  system: str,
+  user: str,
+  max_tokens: i64,
+  temperature: f64,
+  seed: Option<i64>,
+}
+
+pub fn decode(document: str) -> Result<Request, Error> {
+  if document.len() < 1 || document.len() > 1048576
+    || !runtime_options.strict_lexical(document) { return Err(Error.Invalid) }
+  arena {
+    parsed := json.doc(document)?
+    if parsed.len() != 6 { return Err(Error.Invalid) }
+    mut schema := false
+    mut system := false
+    mut user := false
+    mut tokens := false
+    mut temperature := false
+    mut seed := false
+    mut at := 0
+    loop {
+      if at >= parsed.len() { break }
+      key := parsed.key(at) else { return Err(Error.Invalid) }
+      if key == "schema_version" && !schema { schema = true
+      } else if key == "system" && !system { system = true
+      } else if key == "user" && !user { user = true
+      } else if key == "max_tokens" && !tokens { tokens = true
+      } else if key == "temperature" && !temperature { temperature = true
+      } else if key == "seed" && !seed { seed = true
+      } else { return Err(Error.Invalid) }
+      at = at + 1
+    }
+    if !schema || !system || !user || !tokens || !temperature || !seed { return Err(Error.Invalid) }
+  }
+  arena {
+    request: BorrowedRequest := json.decode(document)?
+    if request.schema_version != 1 || request.max_tokens < 1 || request.max_tokens > 128
+      || request.system.contains("\0") || request.user.contains("\0") { return Err(Error.Invalid) }
+    valid_sampling := match request.seed {
+      Some(_) => request.temperature == 0.3,
+      None => request.temperature == 0.0,
+    }
+    if !valid_sampling { return Err(Error.Invalid) }
+    return Ok(Request { schema_version: request.schema_version, system: request.system.clone(),
+        user: request.user.clone(), max_tokens: request.max_tokens, temperature: request.temperature,
+        seed: request.seed })
+  }
+}

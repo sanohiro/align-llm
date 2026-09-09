@@ -25,6 +25,11 @@ def main():
                 assert result.stdout == data, (len(data), len(result.stdout))
             return result
         run(b"")
+        for mode in ("empty", "oversized"):
+            result = subprocess.run([executable, mode], capture_output=True, timeout=30)
+            assert result.returncode != 0 and result.stdout == b""
+        result = subprocess.run([executable, "maximum"], capture_output=True, timeout=30)
+        assert result.returncode == 0 and result.stdout == frame(b"x" * 2097152)
         run(frame(b'{"schema_version":1}'))
         run(frame("日本語".encode()))
         run(frame(b"a") + frame(b"bc") + frame(b"d"))

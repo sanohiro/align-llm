@@ -1,0 +1,21 @@
+module runtime_session_protocol_smoke
+
+import runtime_session_io
+import runtime_session_request
+
+pub fn main() -> Result<(), Error> {
+  loop {
+    incoming := runtime_session_io.read_frame()?
+    match incoming {
+      None => { break },
+      Some(body) => {
+        document := body.bytes().as_str()?
+        match runtime_session_request.decode(document) {
+          Ok(_) => { runtime_session_io.write_frame("ok")? },
+          Err(_) => { runtime_session_io.write_frame("invalid")? },
+        }
+      },
+    }
+  }
+  return Ok(())
+}

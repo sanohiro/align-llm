@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Real GPU retry after an intentionally insufficient first output-token allowance."""
+import argparse
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+from pathlib import Path
+import tempfile
+import time
+
+from gpu_session_client import Session
+
+ROOT = Path(__file__).resolve().parent.parent
+loader = SourceFileLoader("session_coding_owner", str(ROOT / "scripts/run-gpu-session-coding"))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+coding = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(coding)
+base = coding.base
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--profile", type=Path, required=True)
+    parser.add_argument("--runtime", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    if args.output.exists(): raise ValueError("output exists")
+    profile = json.loads(args.profile.read_text())
+    root = args.profile.resolve().parent
+    deadline = time.monotonic() + 7200
+    validator = base.resolve_validator(deadline)
+    records = []
+    with tempfile.TemporaryDirectory(prefix="gpu-session-coding-owner-") as temporary:
+        work = Path(temporary)
+        options = {key: value for key, value in profile["runtime_options"][0].items() if key != "option_id"}
+        options["backend_bundle"] = str((root / options["backend_bundle"]).resolve())
+        options_path = work / "options.json"
+        options_path.write_text(json.dumps(options))
+        for model in profile["models"]:
+            architecture = model["model_id"]
+            assert architecture in ("qwen2", "olmoe")
+            command = [str(args.runtime.resolve()), "--runtime-session", str(root / model["model_path"]),
+                       str(root / model["pack_path"]), str(root / model["geometry_path"]),
+                       str(options_path), str(model["runtime_cache_budget_bytes"])]
+            attempts = []
+            previous = ""
+            feedback = ""
+            with Session(command, timeout=300) as session:
+                worker_pid = session.process.pid
+                for index, maximum in enumerate((1, 128, 128, 128, 128, 128, 128, 128), 1):
+                    prompt = base.PROMPT_TEXT
+                    if index > 1:
+                        prompt = coding.repair_prompt(previous, feedback)
+                    request = dict(schema_version=1, system="", user=prompt, max_tokens=maximum,
+                                   temperature=0.3 if architecture == "olmoe" else 0.0,
+                                   seed=index if architecture == "olmoe" else None)
+                    session.timeout = min(300, deadline - time.monotonic())
+                    result = session.generate(request)
+                    assert session.process.pid == worker_pid
+                    previous = result["output"]
+                    passed = False
+                    feedback = "The completion is not the complete fixed-task diff."
+                    if result["completion_tokens"] == maximum:
+                        feedback += f" The response reached its {maximum} output-token limit."
+                    try:
+                        patch_text = base.extract_patch(previous)
+                    except base.DecisionError:
+                        patch_text = None
+                    if patch_text is not None:
+                        patch = work / f"{architecture}-{index}.patch"
+                        patch.write_text(patch_text)
+                        passed, _, feedback = base.validate_patch_details(patch, work, deadline, validator)
+                    attempts.append(dict(index=index, max_tokens=maximum, passed=passed,
+                                         output_sha256=coding.digest(previous), output=previous, validation_feedback=feedback))
+                    print(f"{architecture} retry owner {index}: {'PASS' if passed else 'RETRY'}", flush=True)
+                    if index == 1: assert not passed, "one-token failure control unexpectedly passed"
+                    if passed: break
+            assert len(attempts) >= 2 and attempts[-1]["passed"], (architecture, attempts)
+            records.append(dict(model=architecture, attempts=attempts))
+    with args.output.open("x") as output:
+        json.dump(dict(schema_version=1, artifact_kind="GPU_SESSION_CODING_RETRY", passed=True,
+                       decision="unmeasured", models=records), output, indent=2)
+    print("gpu session coding retry owner: PASS", flush=True)
+
+if __name__ == "__main__":
+    main()

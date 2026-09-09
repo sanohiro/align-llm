@@ -32,7 +32,7 @@ fn value_boundary(borrow bytes: slice<u8>, at: i64) -> bool {
 // The shipped JSON parser deliberately accepts two non-RFC lexical forms. G1's wire contract is
 // strict, so reject those forms before using the shared parser: raw C0 bytes inside strings and a
 // multi-digit integer whose first digit is zero.
-fn strict_lexical(document: str) -> bool {
+pub fn strict_lexical(document: str) -> bool {
   bytes := document.bytes()
   mut at := 0
   mut inside := false

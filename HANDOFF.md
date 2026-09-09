@@ -23,13 +23,26 @@ owner with separate prefill/decode graph slots and fixed-capacity token-prefix s
 `run-gpu-session-framing-smoke`, `run-gpu-session-tokenizer-smoke`, and
 `run-gpu-session-reuse-smoke` PASS with the managed compiler on Mac. The tokenizer owner removes
 the source file before reuse; the GPU stub owner checks both models, short-long-short requests,
-no additional weight uploads and a valid request after semantic refusal. Real Metal session
-qualification and injected execution-failure coverage remain unfinished.
-Next: add the strict worker protocol, complete host-capacity accounting, connect the actual coding
-caller, and finish named session owners. Complete Metal session qualification before the paired performance
+no additional weight uploads and a valid request after semantic refusal. Real Metal worker readiness passes both original models across repeated/long/short requests and
+semantic refusal. Actual coding generation plus the existing validator passes on both models (one
+attempt each). The instrumented whole-session host owner also passes: Qwen requested peak
+50,452,001 / reservation 371,552,904 / native peak 18,247,871 bytes; OLMoE 29,631,809 /
+324,013,024 / 17,974,079 bytes, within the 1 GiB host budget. These are local observations, not
+performance evidence. Independent same-cache-policy comparison passes Qwen 7 / OLMoE 9 ordered requests, including
+1900-word input, changed prefixes and repeated seed 42; emitted text and prompt/completion counts
+match exactly. This is not a new full layer-tensor qualification. Injected decode failure and
+nonfinite readback both prevent a second execution. Reproducible manifested session builders and
+the qualification command are implemented; clean-head shipping qualification remains to run.
+The strict protocol now passes 90 ordered requests (including escaped multiline prompts); the
+Python caller passes 10 process/response/timeout cleanup cases. The CLI and actual coding runner
+are connected. Next: finish reproducible session qualification/host owners and the independent
+reference sequence; then fix and run the performance campaign, review, preflight, PR and merge. Complete Metal session qualification before the paired performance
 campaign and the user's combined CUDA verification/measurement. No earlier CUDA run is requested.
-The initial framing/resource composition probes compiled and ran with the pinned Align compiler;
-they are feasibility evidence only. No complete G1R coding consumer or real-device session qualification has passed yet.
+The real coding retry owner also passes both models: a one-token first response fails validation,
+then actual test feedback produces a passing patch on the second request in the same GPU session.
+Near-1-MiB input refusal followed by a valid request passes; requested peaks are 257,116,216 bytes
+(Qwen) and 237,296,929 bytes (OLMoE), within the reservations above. Clean-head manifested
+qualification and comparative performance measurement remain unfinished.
 
 ## Pengwin CUDA qualification checkpoint (2026-09-08)
 

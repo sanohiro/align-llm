@@ -1142,6 +1142,14 @@ pub fn generate_session(borrow mut session: Session, borrow prompt_ids: array<i6
   vocabulary := if session.olmoe { session.olmo.n_vocab } else { session.qwen.n_vocab }
   if prompt_ids.len() < 1 || prompt_ids.len() > 2048 || max_tokens < 1 || max_tokens > 128
     || prompt_ids.len() + max_tokens - 1 > session.kv_capacity { return Err(Error.Invalid) }
+  seeded := match seed { Some(_) => true, None => false }
+  if (!session.olmoe && seeded) || eog_ids.len() > 256 { return Err(Error.Invalid) }
+  mut eog_at := 0
+  loop {
+    if eog_at >= eog_ids.len() { break }
+    if eog_ids[eog_at] < 0 || eog_ids[eog_at] >= vocabulary { return Err(Error.Invalid) }
+    eog_at = eog_at + 1
+  }
   mut at := 0
   loop {
     if at >= prompt_ids.len() { break }
