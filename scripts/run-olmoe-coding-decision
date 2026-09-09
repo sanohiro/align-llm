@@ -291,6 +291,10 @@ def validate_patch_details(
 ) -> tuple[bool, int, str]:
     started = time.monotonic_ns()
     argv, cid_file = validation_command(patch, work, validator)
+    if validator["kind"] == "native":
+        # The validator admits external patches only beneath an explicitly owned task root.
+        env = dict(os.environ if env is None else env)
+        env["ALIGN_LLM_TEMP_ROOT"] = str(work.resolve())
     try:
         result = subprocess.run(
             argv,
@@ -570,6 +574,18 @@ def self_test() -> int:
             cleanup_container("docker", cid_file)
         if remove.call_args.args[0] != ["docker", "rm", "-f", "a" * 64]:
             raise DecisionError("validator cleanup did not target its recorded container")
+        native = {"kind": "native", "image_id": None, "docker": None}
+        for explicit in (None, {"SAFE_VALUE": "explicit", "ALIGN_LLM_TEMP_ROOT": "/wrong"}):
+            saved = None if explicit is None else dict(explicit)
+            with mock.patch.dict(os.environ, {"SAFE_VALUE": "ambient", "ALIGN_LLM_TEMP_ROOT": "/wrong"}, clear=True):
+                with mock.patch("subprocess.run", return_value=cleanup_result) as invoke:
+                    validate_patch_details(work / "candidate.patch", work, time.monotonic() + 10,
+                                           native, env=explicit)
+                child = invoke.call_args.kwargs["env"]
+                expected = {"SAFE_VALUE": "ambient" if explicit is None else "explicit",
+                            "ALIGN_LLM_TEMP_ROOT": str(work.resolve())}
+                if child != expected or os.environ["ALIGN_LLM_TEMP_ROOT"] != "/wrong" or explicit != saved:
+                    raise DecisionError("native validator lost its owned root or changed caller environment")
     global server_process
     forced_timeout = subprocess.TimeoutExpired(["llama-server"], 10)
     fake_server = mock.Mock()
