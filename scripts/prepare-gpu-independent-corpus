@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Freeze backend-local expectations from the independent graph before candidate execution."""
+from __future__ import annotations
+import argparse
+import copy
+import json
+from pathlib import Path
+import shutil
+import signal
+import time
+
+from gpu_final_process import run_logged
+from gpu_independent_acceptance import verify_build, digest
+from gpu_independent_corpus import seal, validate
+from gpu_qualification_input import admit
+from gpu_session_client import qualification_environment
+
+ROOT=Path(__file__).resolve().parent.parent
+TEMPLATE=ROOT/'eval/gpu/metal/independent-attention-acceptance.json'
+
+
+def continuation(case, cases, eog_ids):
+    matches=[row for row in cases if row['input_mode']=='provider' and row['prompt_utf8']==case['prompt_utf8']
+             and row['sampler_mode']==case['sampler_mode'] and row['seed']==case['seed']]
+    if len(matches)!=1 or not matches[0]['expected_token_ids'] or matches[0]['expected_token_ids'][-1] not in eog_ids:
+        raise ValueError('immediate-EOG preparation requires one independently completed ordinary response')
+    previous=matches[0]
+    return previous['prompt_token_ids']+previous['expected_token_ids'][:-1]
+
+
+def project(case, production):
+    ids=production['token_ids'];text=production['text']
+    if production['prompt_ids']!=case['prompt_token_ids'] or not isinstance(ids,list) or not 1<=len(ids)<=case['maximum_tokens']:
+        raise ValueError('independent production does not match its requested prompt or output bound')
+    if any(type(token) is not int or token<0 for token in ids) or not isinstance(text,str) or len(text.encode())>262144:
+        raise ValueError('independent production is malformed')
+    import hashlib
+    case.update(expected_token_ids=list(ids),teacher_forced_token_ids=list(ids),expected_output_utf8=text,
+                expected_output_sha256=hashlib.sha256(text.encode()).hexdigest())
+
+
+def run(args):
+    started=time.monotonic_ns();deadline=time.monotonic()+2400
+    admitted=admit(args.profile.resolve(strict=True));profile=admitted.records['profile'];bundle=admitted.records['bundle']
+    reference=args.reference.resolve(strict=True);build=verify_build(reference,False)
+    if build['ggml_commit']!=bundle['ggml']['commit'] or build['driver_sha256']!=digest(ROOT/'eval/gpu/reference-acquire.cpp'):
+        raise ValueError('independent reference does not match the admitted pin and checked-in driver')
+    template=validate(json.loads(TEMPLATE.read_text()))
+    models={row['model_id']:row for row in profile['models']}
+    if len(profile['models'])!=2 or set(models)!={'qwen2','olmoe'}: raise ValueError('preparation requires both models')
+    if len(profile['runtime_options'])!=1 or profile['runtime_options'][0]['placement']!='resident' or profile['runtime_options'][0]['prefetch']!='off':
+        raise ValueError('preparation requires one resident option')
+    for entry in template['models']:
+        if entry['model']['model_sha256']!=models[entry['model']['model_id']]['model_sha256']:
+            raise ValueError('the frozen template requires its original GGUF models')
+    destination=args.output.resolve()
+    if destination==ROOT or ROOT in destination.parents: raise ValueError('preparation output must be outside the checkout')
+    destination.mkdir()
+    environment=qualification_environment(destination)
+    record=dict(schema_version=1,artifact_kind='GPU_INDEPENDENT_CORPUS_PREPARATION',status='FAIL',
+                template_sha256=digest(TEMPLATE),profile_sha256=digest(args.profile),
+                reference_build_sha256=digest(reference/'build.json'),acquisitions=[],corpus_sha256=None,failure='',elapsed_ns=0)
+    corpus=copy.deepcopy(template);corpus.update(backend=bundle['backend'],bundle_id=bundle['bundle_id'])
+    plugin=(args.profile.resolve().parent/profile['runtime_options'][0]['backend_bundle']/('libggml-'+bundle['backend']+'.so')).resolve(strict=True)
+    try:
+        for entry in corpus['models']:
+            model=models[entry['model']['model_id']]
+            for key in ('model_sha256','pack_sha256','geometry_sha256'): entry['model'][key]=model[key]
+            completed=[]
+            for case in entry['cases']:
+                if case['input_mode']=='continuation': case['prompt_token_ids']=continuation(case,completed,entry['eog_token_ids'])
+                scratch=destination/(case['case_id']+'-tensors');scratch.mkdir()
+                request=dict(model_path=str((args.profile.resolve().parent/model['model_path']).resolve(strict=True)),
+                    plugin_path=str(plugin),output_root=str(scratch),prompt_token_ids=case['prompt_token_ids'],
+                    maximum_tokens=case['maximum_tokens'],seed=None if case['sampler_mode']=='greedy' else case['seed'],
+                    attention_policy=entry['attention_policy'])
+                request_path=destination/(case['case_id']+'-request.json');request_path.write_text(json.dumps(request))
+                remaining=min(300,deadline-time.monotonic()-35)
+                if remaining<=0: raise TimeoutError('independent preparation deadline exhausted')
+                print(case['case_id']+': acquire',flush=True)
+                log_path=destination/(case['case_id']+'.log')
+                row=dict(case_id=case['case_id'],status='FAIL',request_sha256=digest(request_path),production_sha256=None,log=log_path.name)
+                record['acquisitions'].append(row)
+                try:
+                    run_logged([reference/'reference-acquire',request_path],log_path,remaining,env=environment)
+                    if log_path.stat().st_size>16*1024*1024:
+                        with log_path.open('r+b') as log: log.truncate(16*1024*1024)
+                        raise ValueError('independent acquisition log exceeded its retained limit')
+                    production_path=scratch/'production.json'
+                    if production_path.stat().st_size>1048576: raise ValueError('independent production exceeded its limit')
+                    production=json.loads(production_path.read_text())
+                    project(case,production)
+                    retained=destination/(case['case_id']+'-production.json');shutil.copyfile(production_path,retained)
+                    row.update(status='PASS',production_sha256=digest(retained));completed.append(case)
+                finally:
+                    if log_path.exists() and log_path.stat().st_size>16*1024*1024:
+                        with log_path.open('r+b') as log: log.truncate(16*1024*1024)
+                    shutil.rmtree(scratch)
+                    record['elapsed_ns']=time.monotonic_ns()-started
+                    (destination/'result.json').write_text(json.dumps(record,indent=2)+'\n')
+        corpus=seal(corpus)
+        validate(corpus,bundle_id=bundle['bundle_id'],models=profile['models'])
+        admitted.recheck()
+        if verify_build(reference,False)!=build or digest(TEMPLATE)!=record['template_sha256'] or digest(ROOT/'eval/gpu/reference-acquire.cpp')!=build['driver_sha256']:
+            raise ValueError('independent preparation identities changed')
+        if time.monotonic()>=deadline: raise TimeoutError('independent preparation deadline exhausted')
+        (destination/'reference-build.json').write_text(json.dumps(build,indent=2)+'\n')
+        corpus_path=destination/'corpus.json';corpus_path.write_text(json.dumps(corpus,separators=(',',':'))+'\n')
+        record.update(status='PASS',corpus_sha256=digest(corpus_path))
+    except (Exception,KeyboardInterrupt) as error:
+        record['failure']=str(error)[-4096:]
+    finally:
+        record['elapsed_ns']=time.monotonic_ns()-started
+        (destination/'result.json').write_text(json.dumps(record,indent=2)+'\n')
+    print('independent corpus preparation: '+record['status'],flush=True)
+    return 0 if record['status']=='PASS' else 1
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    for name in ('profile','reference','output'): parser.add_argument('--'+name,type=Path,required=True)
+    args=parser.parse_args()
+    def interrupted(*_): raise KeyboardInterrupt
+    previous=signal.signal(signal.SIGTERM,interrupted)
+    try: return run(args)
+    finally: signal.signal(signal.SIGTERM,previous)
+
+if __name__=='__main__': raise SystemExit(main())

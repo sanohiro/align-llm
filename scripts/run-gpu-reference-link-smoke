@@ -1,0 +1,33 @@
+#!/usr/bin/env python3
+"""Exercise the reference builder's real driver link command on the native linker."""
+import importlib.util
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT=Path(__file__).resolve().parent.parent
+loader=SourceFileLoader('reference_link_owner',str(ROOT/'scripts/build-gpu-independent-reference'))
+spec=importlib.util.spec_from_loader(loader.name,loader)
+m=importlib.util.module_from_spec(spec);loader.exec_module(m)
+
+with tempfile.TemporaryDirectory() as directory:
+    root=Path(directory);libraries=root/'lib';libraries.mkdir()
+    cxx=shutil.which('c++');assert cxx
+    implementation=root/'library.cpp';implementation.write_text('extern "C" int reference_value() { return 42; }\n')
+    driver=root/'driver.cpp';driver.write_text('extern "C" int reference_value(); int main() { return reference_value() == 42 ? 0 : 1; }\n')
+    suffix='.dylib' if sys.platform=='darwin' else '.so'
+    for name in ('llama','ggml','ggml-base'):
+        subprocess.run([cxx,'-shared','-fPIC',implementation,'-o',libraries/('lib'+name+suffix)],check=True)
+    for name in ('reference-acquire','session-reference','reference-smoke'):
+        command=m.driver_command(cxx,root,libraries,str(libraries),driver,root/name)
+        if sys.platform.startswith('linux'):
+            command.insert(1,'-Wl,--as-needed')
+            invalid=command.copy();invalid.remove(str(driver));invalid.append(str(driver))
+            refusal=subprocess.run(invalid,capture_output=True,text=True)
+            assert refusal.returncode!=0 and 'reference_value' in refusal.stderr, refusal.stderr
+        subprocess.run(command,check=True)
+        subprocess.run([root/name],check=True)
+print('independent reference native link owner: PASS')

@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Own frozen measurement aggregation, admission, HTTP bounds and process cleanup."""
+import argparse
+import http.client
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+from types import SimpleNamespace
+from unittest.mock import patch
+
+ROOT=Path(__file__).resolve().parent.parent
+loader=SourceFileLoader('measurement_owner',str(ROOT/'scripts/run-gpu-session-measurement'))
+spec=importlib.util.spec_from_loader(loader.name,loader)
+m=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+WORKER='''import http.server,json,os,signal,socketserver,sys,time
+from pathlib import Path
+Path(__file__).with_suffix('.pid').write_text(str(os.getpid()))
+if Path(__file__).name=='bad-shutdown':
+ signal.signal(signal.SIGTERM,lambda *_:sys.exit(9))
+class Handler(http.server.BaseHTTPRequestHandler):
+ def log_message(self,*_): pass
+ def do_GET(self):
+  if self.path=='/slow': time.sleep(.4)
+  self.send_response(200);self.end_headers();self.wfile.write(b'{}')
+ def do_POST(self):
+  body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+  assert body['samplers']==['top_k','top_p','min_p','temperature']
+  assert body['repeat_penalty']==1 and body['cache_prompt'] is True
+  record={'choices':[{'message':{'content':'1 2 3'}}],
+          'usage':{'prompt_tokens':10,'completion_tokens':5,'total_tokens':15}}
+  self.send_response(200);self.end_headers();self.wfile.write(json.dumps(record).encode())
+class LocalServer(http.server.HTTPServer):
+ def server_bind(self):
+  socketserver.TCPServer.server_bind(self)
+  self.server_name='localhost'
+  self.server_port=self.server_address[1]
+port=int(sys.argv[sys.argv.index('--port')+1])
+LocalServer(('127.0.0.1',port),Handler).serve_forever()
+'''
+
+def rejected(action):
+ try: action()
+ except (ValueError,subprocess.CalledProcessError): return
+ raise AssertionError('invalid input accepted')
+
+def main():
+ valid=' '.join(str(i) for i in range(1,65))
+ assert m.quality(dict(output=valid,completion_tokens=128))
+ assert m.quality(dict(output=valid+' 6',completion_tokens=128))
+ for output,count in [(valid,127),('1 2 4',128),(valid+' 0',128),('1, 2, 3',128),('1 2 3',128)]:
+  assert not m.quality(dict(output=output,completion_tokens=count))
+ assert len(m.ORDER)==5 and all(set(order)=={'candidate','same','current'} for order in m.ORDER)
+ assert [name for name,_ in m.CASES]==['cold-short','warm-short-cached','warm-long-changed','warm-long-cached']
+ arms=[]
+ for repeat in range(5):
+  for system,latency in [('candidate',80),('same',100)]:
+   arms.append(dict(model='qwen2',repeat=repeat,system=system,status='PASS',runtime=[dict(case='case',quality=True,elapsed_ns=latency)]))
+ assert m.comparison(arms,'qwen2','case','same')['decision']=='met'
+ assert m.comparison(arms[:-1],'qwen2','case','same')['decision']=='invalid_quality'
+ assert m.comparison(arms+[arms[0]],'qwen2','case','same')['decision']=='invalid_quality'
+ arms[0]['runtime'][0]['quality']=False
+ assert m.comparison(arms,'qwen2','case','same')['decision']=='invalid_quality'
+ arms[0]['runtime'][0].update(quality=True,elapsed_ns=120)
+ arms[2]['runtime'][0]['elapsed_ns']=120
+ assert m.comparison(arms,'qwen2','case','same')['decision']=='not_met'
+ rejected(lambda:m.decode_response(b'{"x":1,"x":2}'))
+ rejected(lambda:m.decode_response(b'{"x":NaN}'))
+ request=dict(system='',user='hello',max_tokens=128,temperature=0.0,seed=None)
+ decoder=m.Server.__new__(m.Server);decoder.alias='fixture';decoder.deadline=time.monotonic()+10
+ valid_response=dict(choices=[dict(message=dict(content='hello'))],usage=dict(prompt_tokens=1,completion_tokens=1,total_tokens=2))
+ invalid_responses=[None,dict(choices=[],usage={})]
+ for key,value in [('prompt_tokens',True),('completion_tokens',1.5),('total_tokens',3)]:
+  response=json.loads(json.dumps(valid_response));response['usage'][key]=value;invalid_responses.append(response)
+ response=json.loads(json.dumps(valid_response));response['choices'][0]['message']['content']=[];invalid_responses.append(response)
+ for response in invalid_responses:
+  with patch.object(decoder,'http',return_value=response): rejected(lambda:decoder.generate(request))
+ with tempfile.TemporaryDirectory(prefix='gpu-measurement-owner-') as temporary:
+  work=Path(temporary)
+  profile=work/'profile';profile.touch()
+  with patch.object(m,'admit',return_value=SimpleNamespace(records={'profile':{'models':[]}})):
+   rejected(lambda:m.run(argparse.Namespace(profile=profile,output=work/'absent')))
+   assert not (work/'absent').exists()
+  source=work/'source'
+  subprocess.run(['git','init','-q',str(source)],check=True)
+  subprocess.run(['git','-C',str(source),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid',
+                  'commit','-q','--allow-empty','-m','fixture'],check=True)
+  revision=subprocess.check_output(['git','-C',str(source),'rev-parse','HEAD'],text=True).strip()
+  build=work/'build';(build/'bin').mkdir(parents=True)
+  exe=build/'bin/llama-server';exe.write_text('fixture')
+  cache=build/'CMakeCache.txt'
+  cache.write_text(f'CMAKE_HOME_DIRECTORY:PATH={source}\nCMAKE_BUILD_TYPE:STRING=Release\nGGML_CPU:BOOL=ON\nGGML_METAL:BOOL=ON\n')
+  identity=m.baseline_identity(exe,revision,'metal')
+  rejected(lambda:m.baseline_identity(exe,'0'*40,'metal'))
+  (source/'untracked').touch()
+  rejected(lambda:m.baseline_identity(exe,revision,'metal'))
+  (source/'untracked').unlink()
+  exe.write_text('changed')
+  assert m.baseline_identity(exe,revision,'metal')!=identity
+  for name in ('normal','bad-shutdown'):
+   executable=work/name
+   executable.write_text('#!'+sys.executable+'\n'+WORKER);executable.chmod(0o755)
+   directory=work/(name+'-run');directory.mkdir()
+   server=m.Server(executable,profile,{'device':'fixture'},'f32',directory,time.monotonic()+10)
+   result=server.generate(dict(system='',user='hello',max_tokens=128,temperature=0.0,seed=None))
+   assert result==dict(output='1 2 3',prompt_tokens=10,completion_tokens=5)
+   if name=='normal':
+    started=time.monotonic()
+    try: server.http('/slow',None,.05)
+    except (OSError,http.client.HTTPException): pass
+    else: raise AssertionError('slow HTTP response exceeded deadline without failure')
+    assert time.monotonic()-started<.3
+   try: server.close()
+   except m.SessionError: assert name=='bad-shutdown'
+   else: assert name=='normal'
+   pid=int(executable.with_suffix('.pid').read_text())
+   try: os.kill(pid,0)
+   except ProcessLookupError: pass
+   else: raise AssertionError('baseline process survived cleanup')
+  executable=work/'cancel'
+  executable.write_text('#!'+sys.executable+'\n'+WORKER);executable.chmod(0o755)
+  try:
+   with m.service('same',argparse.Namespace(same_server=executable),{'model_path':profile},profile,
+                  {'device':'fixture'},work/'cancel-run',time.monotonic()+10):
+    raise KeyboardInterrupt
+  except KeyboardInterrupt: pass
+  pid=int(executable.with_suffix('.pid').read_text())
+  try: os.kill(pid,0)
+  except ProcessLookupError: pass
+  else: raise AssertionError('cancelled baseline survived cleanup')
+ print('gpu session measurement smoke: PASS')
+
+if __name__=='__main__': main()
