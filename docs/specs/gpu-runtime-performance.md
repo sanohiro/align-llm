@@ -397,6 +397,35 @@ The author consistency pass binds the prompts, schedule, bounds, sampler and dec
 to the implementation before the first timing run. A changed runtime hypothesis requires a new
 campaign; bookkeeping or a broken harness is repaired transparently without discarding prior output.
 
+### 6.2 Final CUDA comparison without model transport time
+
+The user's final comparison request supersedes the earlier stop after the CUDA repair. This is a
+new, precommitted campaign, not a rerun or replacement of the historical Metal measurement.
+Run the complete comparison and publish negative/quality-limited outcomes without further tuning.
+
+| Contract | Frozen value |
+| --- | --- |
+| Owner / CLI / receipt | The §6.1 command with `--campaign cuda-final`; schema 2 `GPU_SESSION_MEASUREMENT`. Default `--campaign original` retains §6.1 behavior and schema 1. Same fresh external output ownership, identity rechecks, failure retention and cleanup as §6.1. |
+| Candidate / prerequisites | CUDA only, repaired runtime `688232c665aafca3cdff940e9e34eac5c7f0509e` or a manifested descendant with identical runtime sources. Its G1 19×2, session 16/16 and both host-capacity qualifications pass; receipts are in `docs/gpu-cuda-session-repair.md`. The known coding-retry quality failure is a recorded outcome, not an execution prerequisite for this campaign. No correctness threshold or coding task is relaxed. |
+| Inputs / references / limits | Exactly §6.1 models, original GGUFs, two unmodified upstream revisions, resource ceilings, prompts, sampler, quality rule, four ordered runtime cases, eight-attempt coding portfolio and five paired system orders. Thirty serial arms, at most 7200 seconds total and 300 seconds per request/construction; no competing GPU or compiler work. |
+| Runtime metric | Reported internal processing latency, excluding model request/response transport and service construction. Candidate: existing worker `elapsed_ns`, starting after its complete request frame is read and ending before response serialization/transport. References: unmodified server response `timings.prompt_ms + timings.predicted_ms`, converted to nanoseconds. Preserve raw timings and token counts. All components must be finite, nonnegative numbers; total must be positive. Missing/invalid clocks invalidate the campaign, never fall back to caller wall time. |
+| Metric limits | Candidate includes request decoding/tokenization and CPU sampling; llama.cpp's slot clocks cover prompt processing and generation but exclude HTTP handling and some preparation. These are producer-reported internal service clocks, not identical instruction boundaries or pure GPU kernel timings. The asymmetry can penalize the candidate; report it with every conclusion. Do not claim end-to-end request latency or transport-normalized exact parity. No subtraction of estimated network latency is permitted. |
+| Cold / warm | Keep the §6.1 sequence; `cold-short` is the first request in a fresh ready service, with empty KV state. Its internal latency excludes model loading/startup. Record construction-to-ready wall time separately as operational context, never combine it into the internal comparison or material-floor decision. |
+| Coding metric | Retain every attempt and actual native validation. Report success counts, attempts and `processing_to_passing_patch_ns`: sum of each attempt's internal generation time plus the existing native validator's measured wall time through the first passing patch. This includes validation process/filesystem work, excludes model transport, service startup and caller orchestration, and is not wall time to a passing patch. Failed portfolios keep null latency; no successful-only average hides failures. Use the native validator, whose known-good control must pass. |
+| Decisions | §6.1 paired runtime rule unchanged: all five pairs pass quality, median paired reduction at least 15%, at least four pairs faster. Runtime decisions are independent of coding success. Coding pair reductions exist only when both portfolios pass; report a median only when all five pairs exist. A measured negative or incomparable result completes this experiment; it does not qualify failed quality or claim G6 success. |
+| Identity / validation order | Admit profile and CUDA backend, bind the selected candidate and both baselines, require clean campaign source, then capture host/plan/validator identities before any arm. Record `policy.campaign` and `policy.timing_basis`. No new runtime API, allocator, cache format or network endpoint; all such ownership remains with §6.1. |
+
+| Closure | Implementation / acceptance |
+| --- | --- |
+| Construction and successful clocks | `run`, `Server.generate`, `internal_elapsed_ns`, `runtime_sequence`, `coding_portfolio`; measurement smoke exercises baseline/candidate clocks and delayed transport independently of internal time. |
+| Malformed clocks and unsupported backend | Measurement smoke rejects missing clocks, bools, negative/nonfinite/zero totals and non-CUDA final admission; no external output on admission refusal. |
+| Quality failure and aggregation | Existing integer-quality, missing/duplicate pair owners remain; a failed coding portfolio retains attempts and null processing time while runtime comparison remains available. |
+| Early exit, deadline and cleanup | Existing real HTTP timeout, abnormal shutdown and cancellation owners remain; no timing fallback or change to owned service teardown. |
+
+Author consistency pass: §6.2 reuses the settled workload and bounds, nominates only the qualified
+repair, explicitly separates internal clocks from transport/startup, and records quality failure
+without suppressing the independently valid runtime comparison. Review the harness before timing.
+
 ## 7. Implementation entry and verification
 
 Start G1 now from this settled architecture. Inside that capability: probe pinned operations/build
