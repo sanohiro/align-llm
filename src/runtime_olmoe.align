@@ -299,6 +299,8 @@ pub fn build_prefill_chunk(
     olmoe_nodes.build(ctx, slots, b_nodes, false, false, false) else {
       return Err(Error.Invalid)
     }
+    // Match the pinned graph's early router-weight expansion so CUDA can fuse softmax/top-k.
+    expand(graph, slots, layer_olmoe.MM_B_NODE_BASE + 1, "olmoe_router_weights")?
     runtime_diagnostic.retain(capture, slots, layer, 0, layer_olmoe.mm_b_output_slot(g.n_expert_used))?
     runtime_diagnostic.retain(capture, slots, layer, 1, layer_olmoe.MM_A_NODE_BASE + 33)?
     runtime_diagnostic.retain(capture, slots, layer, 2, layer_olmoe.MM_A_NODE_BASE + 34)?
@@ -393,6 +395,7 @@ pub fn build_decode_diagnostic(
     olmoe_nodes.build(ctx, slots, b_nodes, false, false, false) else {
       return Err(Error.Invalid)
     }
+    expand(graph, slots, layer_olmoe.MM_DECODE_B_NODE_BASE + 1, "olmoe_router_weights")?
     runtime_diagnostic.retain(capture, slots, layer, 0, layer_olmoe.mm_decode_b_output_slot(g.n_expert_used))?
     runtime_diagnostic.retain(capture, slots, layer, 1, layer_olmoe.MM_A_NODE_BASE + 35)?
     runtime_diagnostic.retain(capture, slots, layer, 2, layer_olmoe.MM_A_NODE_BASE + 36)?

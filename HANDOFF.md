@@ -3,9 +3,29 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations;
 this file records durable execution state.
 
-**Current execution constraint:** the user requested the final CUDA run and a result summary only.
-That attempt is complete; performance remains blocked by the OLMoE session failures below.
-Stop here before runtime repair, further optimization or another roadmap capability.
+**Current execution constraint:** the user has requested repair of the CUDA session mismatches.
+Complete this repair, its CUDA verification and publication for the primary implementation host.
+Do not begin a separate optimization or roadmap capability.
+
+## Active CUDA session repair (2026-09-09)
+
+Branch `agent/cuda-session-repair`, based on merged result report PR #222 (`dd67625`).
+The original OLMoE failures reproduce in serial history; a fresh long request and the first fresh
+seeded request agree. Diagnostic logit comparisons localize the discrepancy to CUDA router
+fusion: disabling only the reference's softmax/top-k fusion restores bitwise agreement, while
+RMS-normalization and expert-matmul split controls do not. The candidate did not expand router
+weights before expert work as the pinned llama.cpp graph does.
+
+`runtime_olmoe` now expands gathered router weights before expert execution in prefill and decode.
+The original nine-request OLMoE sequence then matches the unchanged independent reference exactly,
+including all three previously failing requests. This is preliminary diagnosis, not final shipping
+qualification. No Align capability gap or tolerance change is involved.
+
+Next: complete the session reuse owner, committed manifested CUDA builds, full G1 acceptance and
+replay, serial session/host-capacity/coding-retry qualification; review the stable candidate, run
+publication preflight and merge. Retain the original failed receipts. Formal paired measurement
+remains pending its correctness prerequisites. Diagnostic artifacts remain outside Git under
+`cuda-session-diagnosis`; do not consume its interposed binaries as qualified production builds.
 
 ## CUDA execution checkpoint (2026-09-09)
 
@@ -32,11 +52,11 @@ outside Git on this host, including manifested candidate/reference builds and bo
 source/build trees. The earlier environment-correction interruption and historical failed kit
 evidence remain unchanged. Use the working local Docker socket by unsetting ambient `DOCKER_HOST`.
 
-No work is active after this summary. Next, if requested, localize the OLMoE serial differences
+At this historical checkpoint no work was active. The next action was to localize the OLMoE serial differences
 using the complete retained history; this is initially an application/native integration or
 qualification concern, not an evidenced Align gap. Resume timing only after independent session,
 host-capacity and real coding-retry owners pass. Preserve the failed receipts and use a fresh
-output directory. Do not begin G2/G6 or further repair without the next user direction.
+output directory. The active repair above supersedes that stop after the user's next instruction.
 
 ## Previous checkpoint: final CUDA handoff after completed Metal campaign
 
