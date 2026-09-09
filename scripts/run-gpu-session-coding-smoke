@@ -8,7 +8,8 @@ from pathlib import Path
 import tempfile
 import time
 
-from gpu_session_client import Session
+from gpu_session_client import Session, qualification_environment
+from gpu_qualification_input import admit
 
 ROOT = Path(__file__).resolve().parent.parent
 loader = SourceFileLoader("session_coding_owner", str(ROOT / "scripts/run-gpu-session-coding"))
@@ -25,13 +26,19 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.output.exists(): raise ValueError("output exists")
-    profile = json.loads(args.profile.read_text())
+    admitted = admit(args.profile.resolve(strict=True))
+    profile = admitted.records["profile"]
+    if len(profile["models"]) != 2 or {row["model_id"] for row in profile["models"]} != {"qwen2", "olmoe"}:
+        raise ValueError("retry qualification requires exactly both models")
+    if len(profile["runtime_options"]) != 1 or profile["runtime_options"][0]["placement"] != "resident" or profile["runtime_options"][0]["prefetch"] != "off":
+        raise ValueError("retry qualification requires one resident option")
     root = args.profile.resolve().parent
     deadline = time.monotonic() + 7200
     validator = base.resolve_validator(deadline)
     records = []
     with tempfile.TemporaryDirectory(prefix="gpu-session-coding-owner-") as temporary:
         work = Path(temporary)
+        environment = qualification_environment(work)
         options = {key: value for key, value in profile["runtime_options"][0].items() if key != "option_id"}
         options["backend_bundle"] = str((root / options["backend_bundle"]).resolve())
         options_path = work / "options.json"
@@ -45,7 +52,7 @@ def main():
             attempts = []
             previous = ""
             feedback = ""
-            with Session(command, timeout=300) as session:
+            with Session(command, timeout=300, env=environment) as session:
                 worker_pid = session.process.pid
                 for index, maximum in enumerate((1, 128, 128, 128, 128, 128, 128, 128), 1):
                     prompt = base.PROMPT_TEXT
@@ -77,6 +84,7 @@ def main():
                     if passed: break
             assert len(attempts) >= 2 and attempts[-1]["passed"], (architecture, attempts)
             records.append(dict(model=architecture, attempts=attempts))
+    admitted.recheck()
     with args.output.open("x") as output:
         json.dump(dict(schema_version=1, artifact_kind="GPU_SESSION_CODING_RETRY", passed=True,
                        decision="unmeasured", models=records), output, indent=2)

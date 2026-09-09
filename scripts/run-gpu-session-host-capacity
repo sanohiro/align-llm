@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import time
 
-from gpu_session_client import Session, InvalidRequest
+from gpu_session_client import Session, InvalidRequest, qualification_environment
 from gpu_independent_acceptance import verify_build, digest, source_files
 from gpu_qualification_input import admit
 
@@ -58,12 +58,13 @@ def main():
     options_path = output / "options.json"
     options_path.write_text(json.dumps(options))
     records = []
+    worker_environment = qualification_environment(output)
     deadline = time.monotonic() + 3600
     for model in profile["models"]:
         command = [str(output / "runtime_session_host_smoke"), str(root / model["model_path"]),
                    str(root / model["pack_path"]), str(root / model["geometry_path"]), str(options_path),
                    str(model["runtime_cache_budget_bytes"])]
-        with Session(command, timeout=min(300, deadline-time.monotonic())) as session:
+        with Session(command, timeout=min(300, deadline-time.monotonic()), env=worker_environment) as session:
             request = dict(schema_version=1, system="", user="Answer with exactly the word Yes.",
                            max_tokens=8, temperature=0.0, seed=None)
             session.generate(request)

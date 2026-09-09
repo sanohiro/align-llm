@@ -5,11 +5,14 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from unittest.mock import patch
 
-from gpu_session_client import Session, SessionError, InvalidRequest
+from gpu_session_client import Session, SessionError, InvalidRequest, qualification_environment
 
 WORKER = r'''import json, os, struct, sys, time
 mode, marker = sys.argv[1:]
+if mode == "environment":
+    assert not any(key.startswith(("LD_", "DYLD_")) for key in os.environ)
 open(marker, "w").write(str(os.getpid()))
 def send(value):
     raw = json.dumps(value, separators=(",", ":")).encode()
@@ -44,6 +47,7 @@ while True:
     if mode == "bad-output": result["output"] = 42
     if mode == "nonfinite": result["elapsed_ns"] = float("nan")
     send(dict(schema_version=1, status="ok", result=result))
+if mode == "shutdown-failure": sys.exit(9)
 '''
 
 def gone(marker):
@@ -60,25 +64,28 @@ def main():
         work = Path(temporary)
         worker = work / "worker.py"
         worker.write_text(WORKER)
+        environment = qualification_environment(work)
         for mode in ("ok", "invalid", "bad-ready", "oversize", "truncated", "bad-count",
-                     "bad-total", "bad-output", "nonfinite", "timeout"):
+                     "bad-total", "bad-output", "nonfinite", "timeout", "environment", "shutdown-failure"):
             marker = work / (mode + ".pid")
             command = [sys.executable, "-u", str(worker), mode, str(marker)]
             try:
-                with Session(command, timeout=2) as session:
+                with patch.dict(os.environ, {"LD_LIBRARY_PATH": "/untrusted", "DYLD_LIBRARY_PATH": "/untrusted"}), Session(command, timeout=2, env=environment) as session:
                     if mode == "timeout": session.timeout = 0.05
                     if mode == "invalid":
                         try: session.generate(request)
                         except InvalidRequest: pass
                         else: raise AssertionError("invalid request accepted")
                     result = session.generate(request)
-                    assert mode in ("ok", "invalid"), mode
+                    assert mode in ("ok", "invalid", "environment", "shutdown-failure"), mode
                     assert result["output"] == "Yes."
                     assert session.generate(request)["output"] == "Yes."
             except SessionError:
-                assert mode not in ("ok", "invalid"), mode
+                assert mode not in ("ok", "invalid", "environment"), mode
+            else:
+                assert mode != "shutdown-failure", "nonzero EOF cleanup was accepted"
             gone(marker)
-    print("gpu session client smoke: PASS (10 process/response cases)")
+    print("gpu session client smoke: PASS (12 process/response/environment cases)")
 
 if __name__ == "__main__":
     main()

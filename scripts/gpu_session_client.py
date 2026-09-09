@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import selectors
 import signal
 import struct
@@ -19,8 +20,17 @@ class InvalidRequest(SessionError):
     pass
 
 
+def qualification_environment(root: Path) -> dict[str, str]:
+    """Give measured executables owned scratch space and no loader overrides."""
+    home, temporary = root / "worker-home", root / "worker-tmp"
+    home.mkdir(exist_ok=True)
+    temporary.mkdir(exist_ok=True)
+    return {"HOME": str(home.resolve()), "TMPDIR": str(temporary.resolve()),
+            "LC_ALL": "C", "TZ": "UTC"}
+
+
 class Session:
-    def __init__(self, command: list[str], timeout: float = 300):
+    def __init__(self, command: list[str], timeout: float = 300, *, env=None):
         if not command or timeout <= 0:
             raise ValueError("a worker command and positive timeout are required")
         self.timeout = timeout
@@ -28,7 +38,7 @@ class Session:
         self.log = tempfile.TemporaryFile()
         try:
             self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                            stderr=self.log, start_new_session=True)
+                                            stderr=self.log, start_new_session=True, env=env)
             os.set_blocking(self.process.stdin.fileno(), False)
             os.set_blocking(self.process.stdout.fileno(), False)
             ready = self._read(time.monotonic() + timeout)
@@ -38,7 +48,7 @@ class Session:
             self.log.seek(0, os.SEEK_END)
             self.log.seek(max(0, self.log.tell() - 4096))
             diagnostic = self.log.read().decode("utf-8", "replace")
-            self.close()
+            self.close(check=False)
             if isinstance(error, Exception):
                 raise SessionError(f"{error}; worker diagnostic: {diagnostic}") from error
             raise
@@ -136,19 +146,21 @@ class Session:
             self.log.seek(0, os.SEEK_END)
             self.log.seek(max(0, self.log.tell() - 4096))
             diagnostic = self.log.read().decode("utf-8", "replace")
-            self.close()
+            self.close(check=False)
             if isinstance(error, Exception):
                 raise SessionError(f"{error}; worker diagnostic: {diagnostic}") from error
             raise
 
-    def close(self):
+    def close(self, *, check=True):
         process, self.process = self.process, None
+        abnormal = False
         if process is not None:
             if process.stdin is not None:
                 process.stdin.close()
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
+                abnormal = True
                 try:
                     os.killpg(process.pid, signal.SIGTERM)
                 except ProcessLookupError:
@@ -168,10 +180,13 @@ class Session:
                 pass
             if process.stdout is not None:
                 process.stdout.close()
+            abnormal = abnormal or process.returncode != 0
         self.log.close()
+        if check and abnormal:
+            raise SessionError(f"worker did not shut down normally (exit {process.returncode})")
 
     def __enter__(self):
         return self
 
-    def __exit__(self, *_):
-        self.close()
+    def __exit__(self, error_type, *_):
+        self.close(check=error_type is None)

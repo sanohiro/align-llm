@@ -56,6 +56,8 @@ def run(arguments):
     session = None
     previous = ""
     feedback = ""
+    received_completion = False
+    completed = False
     try:
         with tempfile.TemporaryDirectory(prefix="gpu-session-coding-") as temporary:
             work = Path(temporary)
@@ -70,7 +72,7 @@ def run(arguments):
                 request = dict(schema_version=1, system="", user=base.PROMPT_TEXT,
                                max_tokens=128, temperature=0.3 if architecture == "olmoe" else 0.0,
                                seed=index if architecture == "olmoe" else None)
-                if previous:
+                if received_completion:
                     request["user"] = repair_prompt(previous, feedback)
                 attempt_start = time.monotonic_ns()
                 row = dict(index=index, seed=request["seed"], status="PROVIDER_FAILED",
@@ -82,6 +84,7 @@ def run(arguments):
                     session.timeout = min(300, deadline - time.monotonic())
                     result = session.generate(request)
                     previous = result["output"]
+                    received_completion = True
                     row["provider_elapsed_ns"] = result["elapsed_ns"]
                     row["output_sha256"] = digest(previous)
                     row["status"] = "INVALID_PATCH"
@@ -102,7 +105,7 @@ def run(arguments):
                 except SessionError as error:
                     row["error"] = str(error)[-4096:]
                     if session is not None:
-                        session.close()
+                        session.close(check=False)
                     session = None
                 row["validation_feedback"] = feedback
                 row["elapsed_ns"] = time.monotonic_ns() - attempt_start
@@ -110,9 +113,10 @@ def run(arguments):
                 print(f"attempt {index}: {row['status']}", flush=True)
                 if row["status"] == "PASS":
                     break
+            completed = True
     finally:
         if session is not None:
-            session.close()
+            session.close(check=completed)
     record = dict(schema_version=1, artifact_kind="GPU_SESSION_CODING", decision="unmeasured",
                   task_sha256=base.file_sha256(base.TASK), runtime_sha256=base.file_sha256(arguments.runtime),
                   architecture=architecture, attempts=attempts, passed=attempts[-1]["status"] == "PASS",

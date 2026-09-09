@@ -8,8 +8,8 @@ from pathlib import Path
 import subprocess
 import time
 
-from gpu_session_client import Session
-from gpu_independent_acceptance import verify_build
+from gpu_session_client import Session, qualification_environment
+from gpu_independent_acceptance import verify_build, source_files
 from gpu_qualification_input import admit
 
 
@@ -60,10 +60,17 @@ def run(args):
         raise ValueError("session qualification requires manifested session entrypoints")
     candidate_build = verify_build(executable.parent, True, session=True)
     reference_build = verify_build(reference.parent, False, session=True)
-    if candidate_build["bundle_id"] != admitted.records["bundle"]["bundle_id"]:
-        raise ValueError("candidate build does not bind the admitted bundle")
+    if (candidate_build["bundle_id"] != admitted.records["bundle"]["bundle_id"]
+            or reference_build["ggml_commit"] != admitted.records["bundle"]["ggml"]["commit"]):
+        raise ValueError("session builds do not bind the admitted bundle")
+    source = Path(__file__).resolve().parent.parent
+    if source_files(source) != candidate_build["source_files"]:
+        raise ValueError("candidate source differs from the qualification source")
+    if reference_build["driver_sha256"] != sha(source / "eval/gpu/session-reference.cpp"):
+        raise ValueError("independent reference driver differs from the qualification source")
     args.output.mkdir()
     destination = args.output.resolve()
+    environment = qualification_environment(destination)
     options_path = destination / "runtime-options.json"
     options_path.write_text(json.dumps(options))
     results = []
@@ -77,7 +84,7 @@ def run(args):
         command = [str(executable), "--runtime-session", str(paths["model"]), str(paths["pack"]),
                    str(paths["geometry"]), str(options_path), str(model["runtime_cache_budget_bytes"])]
         candidate = []
-        with Session(command, timeout=min(300, deadline - time.monotonic())) as session:
+        with Session(command, timeout=min(300, deadline - time.monotonic()), env=environment) as session:
             for index, request in enumerate(sequence):
                 session.timeout = min(300, deadline - time.monotonic())
                 candidate.append(session.generate(request))
@@ -88,7 +95,7 @@ def run(args):
             device=options["device"], architecture=architecture, requests=sequence)))
         with (destination / f"{architecture}-reference.log").open("wb") as log:
             process = subprocess.run([str(reference), str(request_path)], stdout=subprocess.PIPE,
-                                     stderr=log, timeout=min(600, deadline - time.monotonic()), check=True)
+                                     stderr=log, timeout=min(600, deadline - time.monotonic()), check=True, env=environment)
         acquired = [json.loads(line) for line in process.stdout.splitlines()]
         (destination / f"{architecture}-candidate.json").write_text(json.dumps(candidate, indent=2))
         (destination / f"{architecture}-reference.json").write_text(json.dumps(acquired, indent=2))
@@ -100,6 +107,8 @@ def run(args):
                                 reused_tokens=expected["reused_tokens"]))
         print(f"{architecture}: compared {len(sequence)} requests", flush=True)
     admitted.recheck()
+    if source_files(source) != candidate_build["source_files"]:
+        raise ValueError("qualification source changed during execution")
     if verify_build(executable.parent, True, session=True) != candidate_build or verify_build(reference.parent, False, session=True) != reference_build:
         raise ValueError("session build changed during qualification")
     (destination / "candidate-build.json").write_text(json.dumps(candidate_build, indent=2))
