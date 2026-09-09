@@ -3,9 +3,31 @@
 Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations;
 this file records durable execution state.
 
-**Current execution constraint:** the user requested a complete formal CUDA speed comparison,
-excluding model transport, and wants to finish this work afterward. Complete the frozen comparison,
-report all outcomes, review/preflight and merge; do not start another optimization capability.
+**Current execution constraint:** the user accepts the current GPU implementation and correctness
+work as complete, with performance improvement explicitly deferred. Do not resume GPU optimization
+or run another measurement automatically. Await the user's separate major revision request.
+
+## GPU completion boundary accepted (2026-09-09)
+
+Integrated checkpoint: `00988ca874824a3aa5a1396dee85aab1ff5574ac` (merged PR #224).
+Metal implementation, correctness qualification and measurement are complete at their recorded
+checkpoints. CUDA session discrepancies were repaired and requalified; full G1 acceptance,
+relocated replay, all 16 independent serial requests and both-model host capacity pass.
+The final CUDA comparison is complete and merged. Preserve each receipt's actual qualified head;
+this completion decision does not claim a new Metal qualification of the later CUDA repair.
+
+Deferred work remains explicit:
+
+- Performance: neither campaign met its shipping floor. GPU correctness completion is not a
+  performance-gate pass; retain the negative results and the different Metal/CUDA clock boundaries.
+- OLMoE coding quality: the final CUDA campaign has zero successful portfolios on all three
+  systems. Independent replay matched the repaired runtime's failed retry outputs. The task remains
+  failed and separate from the resolved GPU implementation discrepancies.
+
+No implementation or measurement is active. The next action is to receive and scope the user's
+separate major revision request, carrying this completion record into that work. Do not select a
+GPU or roadmap successor automatically. Detailed evidence remains in `docs/gpu-metal-campaign-result.md`,
+`docs/gpu-cuda-session-repair.md` and `docs/gpu-cuda-final-measurement-result.md`.
 
 ## Completed final CUDA measurement (2026-09-09)
 
@@ -31,9 +53,9 @@ The measurement smoke passes, both-model/both-baseline protocol admission passes
 comprehensive harness/plan review has no findings, and independent aggregation reproduces the
 receipt. No runtime source or Align capability changed.
 
-The requested comparison is complete; publication/preflight/merge is the only active step.
-After merge, STOP: the user explicitly wants to finish here. No optimization or roadmap item is
-active or requested, no measurement retry is pending, and no intentional uncommitted files remain.
+The requested comparison and publication are complete: PR #224 merged as `00988ca`.
+No optimization or roadmap item is active, and no measurement retry is pending. The accepted
+completion boundary and next action are recorded above.
 
 ## CUDA session repair checkpoint (2026-09-09)
 
