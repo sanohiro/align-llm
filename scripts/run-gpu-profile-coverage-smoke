@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+"""Exercise the normative G1 profile/calibration vectors and cross-record refusals."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import pathlib
+import sys
+
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import gpu_qualification_records as records  # noqa: E402
+
+
+def fixture_lines() -> list[bytes]:
+    source = (ROOT / "docs" / "specs" / "gpu-runtime.md").read_bytes()
+    heading = source.index(b"### 3.9 Canonical positive vectors")
+    opening = source.index(b"\x60\x60\x60json\n", heading) + len(b"\x60\x60\x60json\n")
+    closing = source.index(b"\x60\x60\x60\n", opening)
+    lines = source[opening:closing].splitlines(keepends=True)
+    if len(lines) != 8 or any(not line.endswith(b"\n") for line in lines):
+        raise AssertionError("the normative G1 vector block must contain exactly eight lines")
+    return lines
+
+
+def reseal(value, field):
+    value[field] = "0" * 64
+    value[field] = hashlib.sha256(records.canonical(value)).hexdigest()
+
+
+def rejected(raws, expected):
+    try:
+        records.validate_profile_records(
+            runtime_option_raw=raws[0],
+            align_source_raw=raws[1],
+            ggml_source_raw=raws[2],
+            bundle_raw=raws[3],
+            calibration_raws=raws[4:6],
+            profile_raw=raws[6],
+        )
+    except records.RecipeError as error:
+        if expected not in str(error):
+            raise AssertionError((expected, str(error))) from error
+    else:
+        raise AssertionError(f"invalid profile records passed: {expected}")
+
+
+lines = fixture_lines()
+validated = records.validate_profile_records(
+    runtime_option_raw=lines[0],
+    align_source_raw=lines[1],
+    ggml_source_raw=lines[2],
+    bundle_raw=lines[3],
+    calibration_raws=lines[4:6],
+    profile_raw=lines[6],
+)
+assert validated["profile"]["profile_id"] == "metal-fixture"
+assert len(validated["profile"]["cases"]) == 16
+assert [item["model"]["model_id"] for item in validated["calibrations"]] == ["qwen2", "olmoe"]
+assert records.canonical(validated["runtime_option"]) == lines[0]
+assert records.canonical(validated["align_source"]) == lines[1]
+assert records.canonical(validated["ggml_source"]) == lines[2]
+assert records.canonical(validated["bundle"]) == lines[3]
+assert [records.canonical(item) for item in validated["calibrations"]] == lines[4:6]
+assert records.canonical(validated["profile"]) == lines[6]
+evidence_records = records.validate_evidence_records(
+    runtime_option_raw=lines[0],
+    align_source_raw=lines[1],
+    ggml_source_raw=lines[2],
+    bundle_raw=lines[3],
+    calibration_raws=lines[4:6],
+    profile_raw=lines[6],
+    evidence_raw=lines[7],
+)
+assert records.canonical(evidence_records["evidence"]) == lines[7]
+
+reordered_ok = list(lines)
+reordered_ok[0] = records.canonical(dict(reversed(list(validated["runtime_option"].items()))))
+align_source = copy.deepcopy(validated["align_source"])
+align_source["files"][0] = dict(reversed(list(align_source["files"][0].items())))
+reordered_ok[1] = records.canonical(dict(reversed(list(align_source.items()))))
+bundle = copy.deepcopy(validated["bundle"])
+reordered_ok[3] = records.canonical(dict(reversed(list(bundle.items()))))
+calibration = copy.deepcopy(validated["calibrations"][0])
+calibration["cases"][0] = dict(reversed(list(calibration["cases"][0].items())))
+reordered_ok[4] = records.canonical(dict(reversed(list(calibration.items()))))
+profile = copy.deepcopy(validated["profile"])
+profile["models"][0] = dict(reversed(list(profile["models"][0].items())))
+reordered_ok[6] = records.canonical(dict(reversed(list(profile.items()))))
+reordered_validated = records.validate_profile_records(
+    runtime_option_raw=reordered_ok[0],
+    align_source_raw=reordered_ok[1],
+    ggml_source_raw=reordered_ok[2],
+    bundle_raw=reordered_ok[3],
+    calibration_raws=reordered_ok[4:6],
+    profile_raw=reordered_ok[6],
+)
+assert records.canonical(reordered_validated["profile"]) == lines[6]
+
+duplicate = list(lines)
+duplicate[0] = duplicate[0].replace(b'{"schema_version":1,',
+                                    b'{"schema_version":1,"schema_version":1,', 1)
+rejected(duplicate, "duplicate JSON key")
+
+bom = list(lines)
+bom[0] = b"\xef\xbb\xbf" + bom[0]
+rejected(bom, "framing")
+
+missing_boundary = list(lines)
+missing_boundary[0] = missing_boundary[0][:-1]
+rejected(missing_boundary, "framing")
+
+second_document = list(lines)
+second_document[0] = second_document[0] + lines[0]
+rejected(second_document, "strict UTF-8 JSON")
+
+uppercase = list(lines)
+calibration = copy.deepcopy(validated["calibrations"][0])
+calibration["model"]["model_sha256"] = calibration["model"]["model_sha256"].upper()
+uppercase[4] = records.canonical(calibration)
+rejected(uppercase, "lowercase hexadecimal")
+
+wrong_bundle = list(lines)
+bundle = copy.deepcopy(validated["bundle"])
+bundle["ggml"]["version"] = "changed"
+wrong_bundle[3] = records.canonical(bundle)
+rejected(wrong_bundle, "self identity")
+
+wrong_prompt = list(lines)
+calibration = copy.deepcopy(validated["calibrations"][0])
+calibration["cases"][0]["prompt_utf8"] = "changed"
+reseal(calibration, "calibration_id")
+wrong_prompt[4] = records.canonical(calibration)
+rejected(wrong_prompt, "prompt digest")
+
+empty_expected = list(lines)
+calibration = copy.deepcopy(validated["calibrations"][0])
+calibration["cases"][0]["expected_token_ids"] = []
+reseal(calibration, "calibration_id")
+empty_expected[4] = records.canonical(calibration)
+rejected(empty_expected, "expected_token_ids")
+
+wrong_platform = list(lines)
+profile = copy.deepcopy(validated["profile"])
+profile["platform"] = "linux"
+wrong_platform[6] = records.canonical(profile)
+rejected(wrong_platform, "platform does not match")
+
+incomplete = list(lines)
+profile = copy.deepcopy(validated["profile"])
+profile["cases"].pop()
+incomplete[6] = records.canonical(profile)
+rejected(incomplete, "case count")
+
+reordered = list(lines)
+profile = copy.deepcopy(validated["profile"])
+profile["cases"][0], profile["cases"][1] = profile["cases"][1], profile["cases"][0]
+reordered[6] = records.canonical(profile)
+rejected(reordered, "complete derived expansion")
+
+budget = list(lines)
+profile = copy.deepcopy(validated["profile"])
+profile["models"][1]["runtime_cache_budget_bytes"] = 2
+budget[6] = records.canonical(profile)
+rejected(budget, "exceeds the host budget")
+
+standalone = list(lines)
+option = copy.deepcopy(validated["runtime_option"])
+option["device"] = "different-device"
+standalone[0] = records.canonical(option)
+rejected(standalone, "standalone and embedded")
+
+print("gpu profile coverage smoke: PASS")

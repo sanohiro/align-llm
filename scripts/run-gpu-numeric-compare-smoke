@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Compare the streaming G1 scalar owner against an independent exact-rational oracle."""
+
+from __future__ import annotations
+
+import math
+import pathlib
+import random
+import struct
+import sys
+from fractions import Fraction
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from gpu_backend_recipe import RecipeError  # noqa: E402
+from gpu_qualification_numeric import MAX_CHUNK_BYTES, RoutingComparison, ScalarComparison  # noqa: E402
+
+
+def value(bits):
+    return struct.unpack("<f", struct.pack("<I", bits))[0]
+
+
+def oracle(pairs, absolute, relative):
+    count = nonfinite = mismatch = 0
+    maximum_absolute = maximum_relative = Fraction(0)
+    floor = Fraction(1, 1 << 126)
+    for r_bits, c_bits in pairs:
+        count += 1
+        r, c = value(r_bits), value(c_bits)
+        if not math.isfinite(r) or not math.isfinite(c):
+            nonfinite += 1
+            continue
+        r, c = Fraction(r), Fraction(c)
+        difference = abs(c - r)
+        scale = max(abs(r), abs(c), floor)
+        mismatch += difference > max(absolute, relative * scale)
+        maximum_absolute = max(maximum_absolute, difference)
+        maximum_relative = max(maximum_relative, difference / scale)
+    return count, nonfinite, mismatch, struct.pack(">d", float(maximum_absolute)).hex(), \
+        struct.pack(">d", float(maximum_relative)).hex()
+
+
+def check(pairs, absolute_bits, relative_bits):
+    owner = ScalarComparison(f"{absolute_bits:08x}", f"{relative_bits:08x}")
+    # Unequal chunk lengths across calls ensure maxima and counts survive stream boundaries.
+    for start in range(0, len(pairs), 97):
+        batch = pairs[start:start + 97]
+        owner.compare(b"".join(struct.pack("<I", r) for r, _ in batch),
+                      b"".join(struct.pack("<I", c) for _, c in batch))
+    observed = (owner.scalar_count, owner.nonfinite_count, owner.mismatch_count,
+                owner.max_absolute_f64_bits, owner.max_relative_f64_bits)
+    expected = oracle(pairs, Fraction(value(absolute_bits)), Fraction(value(relative_bits)))
+    assert observed == expected, (absolute_bits, relative_bits, observed, expected)
+
+
+def routing_owner():
+    def pack(values):
+        return b"".join(struct.pack("<f", value) for value in values)
+
+    def run(r, c, ids, selected, *, tolerance=0.02, absolute=1.0, weights=(0.75, 0.25), candidate_weights=None):
+        scalar = ScalarComparison(struct.pack(">f", absolute).hex(), "00000000")
+        router = RoutingComparison(scalar, struct.pack(">f", tolerance).hex())
+        router.compare(pack(r), pack(c), ids, selected, pack(weights),
+                       pack(weights if candidate_weights is None else candidate_weights))
+        assert router.boundary_count == 1 and scalar.scalar_count == len(r) + len(ids)
+        return router, scalar
+
+    r = (0.6, 0.21, 0.2, 0.01)
+    owner, _ = run(r, (0.6, 0.2, 0.21, 0.01), (0, 1), (0, 2))
+    assert owner.near_tie_count == 1 and owner.routing_mismatch_count == 0
+    owner, _ = run((0.6, 0.3, 0.1), (0.6, 0.1, 0.3), (0, 1), (0, 2))
+    assert owner.near_tie_count == 0 and owner.routing_mismatch_count == 1
+    owner, _ = run(r, (0.1, 0.3, 0.2, 0.4), (0, 1), (3, 1))
+    assert owner.near_tie_count == 0 and owner.routing_mismatch_count == 1
+    owner, _ = run((0.6, 0.21, 0.2, 0.18), (0.6, 0.2, 0.19, 0.21), (0, 1), (0, 3))
+    assert owner.routing_mismatch_count == 1, "GPU scores enlarged the reference group"
+    owner, _ = run((0.6, 0.5, 0.21, 0.2), (0.5, 0.6, 0.2, 0.21), (0, 1, 2), (1, 0, 3),
+                   weights=(0.5, 0.3, 0.2))
+    assert owner.routing_mismatch_count == 1, "outside-group order changed"
+    owner, _ = run((1, 0.5, 0.25), (1, 0.25, 0.5), (0, 1), (0, 2), tolerance=0.25)
+    assert owner.near_tie_count == 1 and owner.routing_mismatch_count == 0
+    owner, _ = run((1, 0.5, value(0x3e7fffff)), (1, 0.25, 0.5), (0, 1), (0, 2), tolerance=0.25)
+    assert owner.routing_mismatch_count == 1, "boundary tolerance was rounded upward"
+    owner, scalar = run(r, (0.6, 0.2, 0.21, 0.01), (0, 1), (0, 2), absolute=0.02,
+                        candidate_weights=(0.5, 0.5))
+    assert scalar.mismatch_count == 2 and owner.near_tie_count == 0
+    owner, _ = run((0.5, 0.5), (0.5, 0.5), (0, 1), (1, 0))
+    assert owner.routing_mismatch_count == 1 and owner.near_tie_count == 0
+    owner, scalar = run((0.6, 0.3, 0.1), (float("nan"), 0.3, 0.1), (0, 1), (0, 1))
+    assert scalar.nonfinite_count == 1 and owner.near_tie_count == 0
+    owner, _ = run((0.6, 0.3, 0.1), (0.6, 0.3, 0.1), (0, 1), (1, 0))
+    assert owner.routing_mismatch_count == 1, "candidate IDs were not sorted"
+    for ids in ((0, 0), (0, -1), (0, 4), (True, 1)):
+        scalar = ScalarComparison("00000000", "00000000")
+        owner = RoutingComparison(scalar, "00000000")
+        try:
+            owner.compare(pack(r), pack(r), (0, 1), ids, pack((0.75, 0.25)), pack((0.75, 0.25)))
+        except RecipeError:
+            pass
+        else:
+            raise AssertionError("malformed routing IDs were accepted")
+        assert owner.boundary_count == 0 and scalar.scalar_count == 0
+
+
+def main():
+    endpoints = [0, 0x80000000, 1, 0x80000001, 0x007fffff, 0x00800000, 0x00800001,
+                 0x3f7fffff, 0x3f800000, 0x3f800001, 0x40000000, 0x7f7fffff,
+                 0xff7fffff, 0x7f800000, 0xff800000, 0x7fc00000, 0x7f800001]
+    pairs = [(r, c) for r in endpoints for c in endpoints]
+    # Exact difference is above/below 1 although binary64 subtraction rounds to exactly 1.
+    pairs.extend([(0x80000001, 0x3f800000), (1, 0x3f800000)])
+    rng = random.Random(104729)
+    pairs.extend((rng.getrandbits(32), rng.getrandbits(32)) for _ in range(5000))
+    for pair in pairs[-250:]:
+        check([pair], 0, 0)
+    for absolute, relative in ((0, 0), (0x80000000, 0), (1, 1), (0x00800000, 1),
+                              (0x3f800000, 0), (0, 0x3f800000), (0, 0x33800000),
+                              (0x38d1b717, 0x358637bd), (0x7f7fffff, 0x7f7fffff)):
+        check(pairs, absolute, relative)
+    check(list(reversed(pairs)), 0x38d1b717, 0x358637bd)
+    # Small exponent neighborhoods exercise cancellation and exact tolerance boundaries.
+    for exponent in (1, 2, 31, 63, 126, 127, 128, 200, 253, 254):
+        center = exponent << 23
+        nearby = [(center + r, center + c) for r in range(-2, 3) for c in range(-2, 3)]
+        check(nearby, max(1, (exponent - 23) << 23), 0x34000000)
+    for absolute, relative in (("7f800000", "00000000"), ("00000000", "bf800000"),
+                              ("7fc00000", "00000000"), ("ABCDEF00", "00000000")):
+        try:
+            ScalarComparison(absolute, relative)
+        except RecipeError:
+            pass
+        else:
+            raise AssertionError("invalid tolerance was accepted")
+    owner = ScalarComparison("00000000", "00000000")
+    for reference, candidate in ((b"a", b"a"), (b"\0" * 4, b""),
+                                 (b"\0" * (MAX_CHUNK_BYTES + 4), b"\0" * (MAX_CHUNK_BYTES + 4))):
+        try:
+            owner.compare(reference, candidate)
+        except RecipeError:
+            pass
+        else:
+            raise AssertionError("invalid numeric chunk was accepted")
+        assert owner.scalar_count == 0
+    owner.scalar_count = (1 << 63) - 1
+    try:
+        owner.compare(b"\0" * 4, b"\0" * 4)
+    except RecipeError:
+        pass
+    else:
+        raise AssertionError("scalar count overflow was accepted")
+    assert owner.scalar_count == (1 << 63) - 1
+    routing_owner()
+    print("gpu numeric scalar and routing comparison: PASS")
+
+
+if __name__ == "__main__":
+    main()

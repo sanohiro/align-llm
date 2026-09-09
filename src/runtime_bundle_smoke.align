@@ -1,0 +1,86 @@
+module runtime_bundle_smoke
+
+import runtime_bundle
+import std.fs
+import std.path
+import std.time
+
+fn expect_valid(root: str) -> Result<(), Error> {
+  verified := runtime_bundle.verify(root, "metal", 1048576)?
+  if verified.bundle_id.len() != 64 || verified.manifest_sha256.len() != 64
+    || verified.backend_sha256.len() != 64 || verified.artifact_bytes != 24
+    || verified.staged_artifact_count != 2
+    || verified.backend_path != path.join(verified.staging_root, "artifact-0")
+    || verified.backend_path == path.join(root, "libggml-metal.so") {
+    print(root)
+    return Err(Error.Invalid)
+  }
+  second := runtime_bundle.verify(root, "metal", 1048576)?
+  if second.staging_root == verified.staging_root { return Err(Error.Invalid) }
+  runtime_bundle.cleanup(second)?
+  original_path := path.join(root, "libggml-metal.so")
+  original := fs.open_rw(original_path)?
+  mut mutation := buffer(0)
+  mutation.append("fixture-metal-plugio".bytes())
+  original.pwrite(mutation.bytes(), 0)?
+  staged := fs.open_beneath_single_link(verified.staging_root, "artifact-0")?
+  mut staged_bytes := buffer(20)
+  if staged.read(staged_bytes)? != 20
+    || staged_bytes.bytes().as_str()? != "fixture-metal-plugin" {
+    return Err(Error.Invalid)
+  }
+  metadata := fs.open_beneath_single_link(verified.staging_root, "artifact-1")?
+  mut metadata_bytes := buffer(4)
+  if metadata.read(metadata_bytes)? != 4 || metadata_bytes.bytes().as_str()? != "meta" {
+    return Err(Error.Invalid)
+  }
+  staging_root := verified.staging_root.clone()
+  runtime_bundle.cleanup(verified)?
+  if fs.exists(staging_root) { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn expect_invalid(root: str, backend: str) -> Result<(), Error> =
+match runtime_bundle.verify(root, backend, 1048576) {
+  Ok(_) => {
+    print(root)
+    Err(Error.Invalid)
+  }
+  Err(_) => Ok(()),
+}
+
+fn expect_budget_invalid(root: str) -> Result<(), Error> =
+match runtime_bundle.verify(root, "metal", 19) {
+  Ok(_) => Err(Error.Invalid),
+  Err(_) => Ok(()),
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 3 && args[1] == "--inspect-private-root" {
+    verified := runtime_bundle.verify(args[2], "metal", 1048576)?
+    print(verified.staging_root)
+    time.sleep(500000000)
+    runtime_bundle.cleanup(verified)?
+    print("runtime bundle private root: PASS")
+    return Ok(())
+  }
+  if args.len() < 3 { return Err(Error.Invalid) }
+  expect_valid(args[1])?
+  expect_invalid(args[1], "cuda")?
+  expect_budget_invalid(args[1])?
+  manifest := fs.read_file(path.join(args[1], "manifest.json"))?
+  tight_budget := 131072 + manifest.len() * 128 + 73728 + 19
+  match runtime_bundle.verify(args[1], "metal", tight_budget) {
+    Ok(staged) => { runtime_bundle.cleanup(staged)?
+      return Err(Error.Invalid) },
+    Err(_) => {},
+  }
+  mut at := 2
+  loop {
+    if at >= args.len() { break }
+    expect_invalid(args[at], "metal")?
+    at = at + 1
+  }
+  print("runtime bundle smoke: PASS")
+  return Ok(())
+}

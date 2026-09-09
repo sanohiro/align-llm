@@ -1,12 +1,15 @@
 module ggml_ffi
 
+import ggml_ffi.internal.resource
+
 // R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md` sections 3.4 and 3.9). The
-// **only** module in this repository that contains an `extern` declaration or an `unsafe` block,
-// and `scripts/run-ggml-spike-smoke` asserts exactly that: it greps `src/` for an `unsafe {` block
-// opener and for an `extern "C"` line and requires each list to be this file alone. The assertion
-// is deliberately about the *block*, not about the word — the sibling modules discuss the boundary
-// in prose and `src/prompt_verifier_smoke.align` names an `unsafe_workspace` parameter, so a bare
-// `grep -rl unsafe src/` would name files that hold no unsafe code (section 6, correction C19).
+// boundary package in this repository that contains an `extern` declaration or an `unsafe` block.
+// `scripts/run-ggml-spike-smoke` asserts that both lists contain this module plus only the required
+// `ggml_ffi.internal.resource` Drop-hook leaf. The assertion is deliberately about the *block*, not
+// about the word — sibling modules discuss the boundary in prose and
+// `src/prompt_verifier_smoke.align` names an `unsafe_workspace` parameter, so a bare `grep -rl
+// unsafe src/` would name files that hold no unsafe code (section 6, correction C19, extended by
+// G1's opaque native owner).
 //
 // The block below names exactly one library — the repository's own shim — and that is the whole of
 // section 3.2's build-input decision. `src/main.align`'s import graph never reaches this module, so
@@ -42,6 +45,63 @@ pub STATUS_BOUNDS := -7
 pub STATUS_ALLOC := -8
 pub STATUS_SLOT := -9
 
+pub GPU_STATUS_OK := 0
+pub GPU_STATUS_CONFIG := -1
+pub GPU_STATUS_BUSY := -2
+pub GPU_STATUS_BUNDLE_SWITCH := -3
+pub GPU_STATUS_BACKEND_UNAVAILABLE := -4
+pub GPU_STATUS_DEVICE_UNAVAILABLE := -5
+pub GPU_STATUS_POISONED := -6
+pub GPU_STATUS_ALLOCATION := -7
+pub GPU_STATUS_MEMORY_BUDGET := -8
+pub GPU_STATUS_COMPUTE := -9
+pub GPU_STATUS_UNSUPPORTED := -10
+pub GPU_STATUS_TRANSFER := -11
+pub GPU_STAGE_DEVICE := 1
+pub GPU_STAGE_PLAN := 2
+pub GPU_STAGE_ALLOCATE := 3
+pub GPU_STAGE_UPLOAD := 4
+pub GPU_STAGE_PREFILL := 5
+pub GPU_STAGE_DECODE := 6
+pub GPU_STAGE_READBACK := 7
+pub GPU_STAGE_SYNCHRONIZE := 8
+pub GPU_STAGE_RELEASE := 9
+pub GPU_STAGE_OPTIONS := 10
+
+pub GPU_MEMORY_HOST_TOTAL := 0
+pub GPU_MEMORY_DEVICE_TOTAL := 1
+pub GPU_MEMORY_WEIGHTS := 2
+pub GPU_MEMORY_KV := 3
+pub GPU_MEMORY_WORKSPACE := 4
+pub GPU_MEMORY_METADATA := 5
+pub GPU_MEMORY_STAGING := 6
+pub GPU_MEMORY_LEGACY_CACHE := 7
+
+pub GPU_WEIGHT_EXPECTED := 0
+pub GPU_WEIGHT_CREATED := 1
+pub GPU_WEIGHT_UPLOADED := 2
+pub GPU_WEIGHT_UPLOADED_BYTES := 3
+pub GPU_WEIGHT_FINISHED := 4
+
+pub GPU_KV_EXPECTED := 0
+pub GPU_KV_CREATED := 1
+pub GPU_KV_UPDATED_BYTES := 2
+pub GPU_KV_FINISHED := 3
+
+pub GPU_INPUT_EXPECTED := 0
+pub GPU_INPUT_CREATED := 1
+pub GPU_INPUT_UPDATED_BYTES := 2
+pub GPU_INPUT_FINISHED := 3
+
+pub GPU_GRAPH_PREPARED := 0
+pub GPU_GRAPH_EXECUTIONS := 1
+pub GPU_GRAPH_REUSES := 2
+pub GPU_GRAPH_INVALIDATIONS := 3
+pub GPU_GRAPH_PREFILL := 0
+pub GPU_GRAPH_DECODE := 1
+pub GPU_KV_LAYOUT_K := 0
+pub GPU_KV_LAYOUT_V := 1
+
 // Outside the `ggml_status` range (`-2 ..= 2`), so a null argument handed to the compute wrapper is
 // never mistaken for a backend verdict.
 pub COMPUTE_NULL := -1000
@@ -70,6 +130,7 @@ pub DEVICE_PROP_MEMORY_TOTAL := 5
 
 pub DEVICE_TEXT_NAME := 0
 pub DEVICE_TEXT_DESCRIPTION := 1
+pub DEVICE_TEXT_ID := 2
 
 // The longest device name or description this capability carries. `MTL0` and `Apple M1` are the
 // two this host produces; the bound exists because the shim writes at most the capacity the caller
@@ -77,6 +138,8 @@ pub DEVICE_TEXT_DESCRIPTION := 1
 pub MAX_DEVICE_TEXT_BYTES := 128
 
 pub Fault { code: string, detail: string }
+
+pub resource GpuDevice = ggml_ffi.internal.resource.drop_gpu_device
 
 fn fault(code: str, detail: str) -> Fault =
 Fault { code: code.clone(), detail: detail.clone() }
@@ -132,11 +195,81 @@ pub fn r5_code_for(status: i64) -> str {
   return "R5_ABI"
 }
 
+fn gpu_describe_fault(status: i64) -> Fault {
+  if status == GPU_STATUS_CONFIG { return fault("CONFIG", "device") }
+  if status == GPU_STATUS_BUSY { return fault("BUSY", "device") }
+  if status == GPU_STATUS_BUNDLE_SWITCH { return fault("BUNDLE_IDENTITY", "bundle_switch") }
+  if status == GPU_STATUS_BACKEND_UNAVAILABLE {
+    return fault("BACKEND_UNAVAILABLE", "registry")
+  }
+  if status == GPU_STATUS_DEVICE_UNAVAILABLE {
+    return fault("DEVICE_UNAVAILABLE", "device")
+  }
+  if status == GPU_STATUS_ALLOCATION { return fault("ALLOCATION", "device_owner") }
+  if status == GPU_STATUS_MEMORY_BUDGET { return fault("MEMORY_BUDGET", "admission") }
+  if status == GPU_STATUS_UNSUPPORTED { return fault("UNSUPPORTED_CAPABILITY", "admission") }
+  if status == GPU_STATUS_TRANSFER { return fault("TRANSFER", "upload") }
+  if status == GPU_STATUS_COMPUTE { return fault("COMPUTE", "graph") }
+  return fault("DEVICE_LOST", "poisoned")
+}
+
+pub fn gpu_failure_reset() -> () { unsafe { align_gpu_failure_reset() } }
+
+pub fn gpu_failure_activity(stage: i64) -> () {
+  if stage < 1 || stage > 10 { return }
+  unsafe { align_gpu_failure_activity(stage as i32) }
+}
+
+pub fn gpu_note_failure(status: i64, stage: i64) -> () {
+  if status > -1 || status < -11 || stage < 0 || stage > 10 { return }
+  unsafe { align_gpu_failure_record(status as i32, stage as i32) }
+}
+
+fn gpu_fault_for(status: i64) -> Fault {
+  gpu_note_failure(status, 0)
+  return gpu_describe_fault(status)
+}
+
+pub fn gpu_last_failure() -> Fault {
+  unsafe {
+    status := align_gpu_failure_status() as i64
+    stage := align_gpu_failure_stage() as i64
+    if status == 0 && stage == 0 { return fault("", "") }
+    described := gpu_describe_fault(if status == 0 { GPU_STATUS_CONFIG } else { status })
+    label := if stage == GPU_STAGE_PLAN { "plan" } else {
+      if stage == GPU_STAGE_ALLOCATE { "allocate" } else {
+        if stage == GPU_STAGE_UPLOAD { "upload" } else {
+          if stage == GPU_STAGE_PREFILL { "prefill" } else {
+            if stage == GPU_STAGE_DECODE { "decode" } else {
+              if stage == GPU_STAGE_READBACK { "readback" } else {
+                if stage == GPU_STAGE_SYNCHRONIZE { "synchronize" } else {
+                  if stage == GPU_STAGE_RELEASE { "release" } else {
+                    if stage == GPU_STAGE_OPTIONS { "options" } else { "device" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    code: str := described.code
+    return fault(if status == 0 { "" } else { code }, label)
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // The boundary
 // ---------------------------------------------------------------------------------------------
 
 extern "C" link("align_ggml_shim") {
+  fn align_gpu_core_required() -> i32
+  fn align_gpu_core_identity(core: i32, field: i32, out: slice<u8>, cap: i32) -> i32
+  fn align_gpu_failure_reset() -> ()
+  fn align_gpu_failure_activity(stage: i32) -> ()
+  fn align_gpu_failure_record(status: i32, stage: i32) -> ()
+  fn align_gpu_failure_status() -> i32
+  fn align_gpu_failure_stage() -> i32
   fn align_ggml_available() -> i32
   fn align_ggml_tensor_alignment() -> i32
   fn align_ggml_blck_size(kind: i32) -> i32
@@ -145,6 +278,136 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_type_ok(kind: i32, ne0: i64) -> i32
   fn align_ptr_align_mod(p: slice<u8>, modulus: i64) -> i64
   fn align_ggml_device_open() -> raw
+  fn align_gpu_device_open(
+    backend: str, backend_len: i64,
+    device: str, device_len: i64,
+    backend_path: str, backend_path_len: i64,
+    bundle_id: str, bundle_id_len: i64,
+    host_budget_bytes: i64, device_budget_bytes: i64,
+    out: raw,
+  ) -> i32
+  fn align_gpu_device_handle(owner: raw) -> raw
+  fn align_gpu_backend_handle(owner: raw) -> raw
+  fn align_gpu_device_staging_consumed(owner: raw) -> i32
+  fn align_gpu_device_staging_path_valid(owner: raw) -> i32
+  fn align_gpu_device_bundle_id(owner: raw, out: slice<u8>, cap: i32) -> i32
+  fn align_gpu_staging_owned() -> i32
+  fn align_gpu_staging_transfer(
+    root: str, root_len: i64, artifact_count: i64, poison: i32,
+  ) -> i32
+  fn align_gpu_device_synchronize(owner: raw) -> i32
+  fn align_gpu_host_reserve(owner: raw, bytes: i64) -> i32
+  fn align_gpu_host_reserved(owner: raw) -> i64
+  fn align_gpu_memory_admit(
+    owner: raw,
+    weights_bytes: i64,
+    kv_bytes: i64,
+    workspace_bytes: i64,
+    metadata_bytes: i64,
+    staging_bytes: i64,
+    legacy_cache_bytes: i64,
+  ) -> i32
+  fn align_gpu_memory_bytes(owner: raw, field: i32) -> i64
+  fn align_gpu_plan_begin(owner: raw) -> i32
+  fn align_gpu_plan_finish(owner: raw) -> i32
+  fn align_gpu_plan_cancel(owner: raw) -> i32
+  fn align_gpu_memory_allocate(owner: raw) -> i32
+  fn align_gpu_memory_allocated_bytes(owner: raw, field: i32) -> i64
+  fn align_gpu_weight_metadata_bytes(tensor_count: i64) -> i64
+  fn align_gpu_weight_allocation_bytes(
+    owner: raw,
+    kind: i32,
+    n_dims: i32,
+    ne0: i64,
+    ne1: i64,
+    ne2: i64,
+    ne3: i64,
+  ) -> i64
+  fn align_gpu_weights_begin(owner: raw, tensor_count: i64) -> i32
+  fn align_gpu_weight_add(
+    owner: raw,
+    kind: i32,
+    n_dims: i32,
+    ne0: i64,
+    ne1: i64,
+    ne2: i64,
+    ne3: i64,
+  ) -> i64
+  fn align_gpu_weight_upload(
+    owner: raw, index: i64, offset: i64, data: slice<u8>, length: i64,
+  ) -> i32
+  fn align_gpu_weights_finish(owner: raw) -> i32
+  fn align_gpu_weight_state(owner: raw, field: i32) -> i64
+  fn align_gpu_kv_begin(owner: raw, tensor_count: i64) -> i32
+  fn align_gpu_kv_add(
+    owner: raw,
+    kind: i32,
+    n_dims: i32,
+    ne0: i64,
+    ne1: i64,
+    ne2: i64,
+    ne3: i64,
+  ) -> i64
+  fn align_gpu_kv_finish(owner: raw) -> i32
+  fn align_gpu_kv_update(
+    owner: raw, index: i64, offset: i64, data: slice<u8>, length: i64,
+  ) -> i32
+  fn align_gpu_kv_slot(owner: raw, index: i64, slots: slice<u8>, out: i64) -> i32
+  fn align_gpu_kv_prefix_slot(
+    owner: raw, index: i64, kind: i32, layout: i32, valid_width: i64,
+    slots: slice<u8>, out: i64,
+  ) -> i32
+  fn align_gpu_kv_write_slot(
+    owner: raw, index: i64, kind: i32, layout: i32, position: i64,
+    slots: slice<u8>, out: i64, source: i64,
+  ) -> i32
+  fn align_gpu_kv_write_prefix(
+    owner: raw, index: i64, kind: i32, layout: i32, position: i64, width: i64,
+    slots: slice<u8>, out: i64, source: i64,
+  ) -> i32
+  fn align_gpu_kv_write_indexed_prefix(
+    owner: raw, index: i64, kind: i32, layout: i32, indices: i64, width: i64,
+    slots: slice<u8>, out: i64, source: i64,
+  ) -> i32
+  fn align_gpu_kv_state(owner: raw, field: i32) -> i64
+  fn align_gpu_inputs_begin(owner: raw, tensor_count: i64) -> i32
+  fn align_gpu_input_add(
+    owner: raw,
+    kind: i32,
+    n_dims: i32,
+    ne0: i64,
+    ne1: i64,
+    ne2: i64,
+    ne3: i64,
+  ) -> i64
+  fn align_gpu_inputs_finish(owner: raw) -> i32
+  fn align_gpu_input_slot(owner: raw, index: i64, slots: slice<u8>, out: i64) -> i32
+  fn align_gpu_mask_prefix_slot(
+    owner: raw, index: i64, kind: i32, valid_width: i64, query_width: i64,
+    slots: slice<u8>, out: i64,
+  ) -> i32
+  fn align_gpu_input_update(
+    owner: raw, index: i64, offset: i64, data: slice<u8>, length: i64,
+  ) -> i32
+  fn align_gpu_input_state(owner: raw, field: i32) -> i64
+  fn align_gpu_weight_slot(owner: raw, index: i64, slots: slice<u8>, out: i64) -> i32
+  fn align_gpu_graph_context_open(owner: raw, kind: i32, metadata_bytes: i64) -> raw
+  fn align_gpu_graph_prepare(
+    owner: raw, kind: i32, key: str, key_length: i64, graph: raw,
+  ) -> i32
+  fn align_gpu_graph_invalidate(owner: raw, kind: i32) -> i32
+  fn align_gpu_graph_compute(
+    owner: raw, kind: i32, key: str, key_length: i64, graph: raw,
+  ) -> i32
+  fn align_gpu_graph_state(owner: raw, kind: i32, field: i32) -> i64
+  fn align_gpu_attention_probe(owner: raw, queries: i64, width: i64, head_dim: i64,
+    heads: i64, kv_heads: i64) -> i32
+  fn align_gpu_attention_select(owner: raw, policy: i32) -> i32
+  fn align_gpu_attention_policy(owner: raw) -> i32
+  fn align_gpu_observation_state(owner: raw, field: i32) -> i64
+  fn align_gpu_slot_get(owner: raw, slots: slice<u8>, index: i64,
+    bytes: slice<u8>, offset: i64, size: i64) -> i32
+  fn align_gpu_device_close(owner: raw) -> ()
   // R5C section 3.4. The registry's own device selection for either kind, its numeric properties,
   // its buffer type's maximum length, and its two names.
   fn align_ggml_device_by_kind(kind: i32) -> raw
@@ -196,6 +459,10 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_op_mul(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_add(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_mul_mat(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
+  fn align_ggml_op_attention_scores(ctx: raw, slots: slice<u8>, out: i64, k: i64, q: i64) -> i32
+  fn align_ggml_op_attention_mask(ctx: raw, slots: slice<u8>, out: i64, source: i64) -> i32
+  fn align_ggml_op_flash_attention(ctx: raw, slots: slice<u8>, out: i64,
+    q: i64, k: i64, v: i64, mask: i64, scale_bits: i32) -> i32
   fn align_ggml_op_reshape_3d(
     ctx: raw, slots: slice<u8>, out: i64, a: i64, ne0: i64, ne1: i64, ne2: i64) -> i32
   fn align_ggml_op_permute(
@@ -286,6 +553,737 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_gallocr_bytes(galloc: raw) -> i64
   fn align_ggml_gallocr_free(galloc: raw) -> ()
   fn align_ggml_graph_compute(backend: raw, graph: raw) -> i32
+}
+
+pub fn gpu_core_required() -> bool {
+  unsafe { return align_gpu_core_required() != 0 }
+}
+
+pub fn gpu_core_identity(core: i32, field: i32) -> string {
+  mut window := buffer(4096)
+  mut at := 0
+  loop {
+    if at >= 4096 { break }
+    window.put_u8(0 as u8)
+    at = at + 1
+  }
+  unsafe {
+    written := align_gpu_core_identity(core, field, window.bytes(), 4096) as i64
+    if written < 1 || written > 4096 { return "".clone() }
+    view := window.bytes()
+    return match view[0..written].as_str() {
+      Ok(value) => value.clone(),
+      Err(_) => "".clone(),
+    }
+  }
+}
+
+pub fn gpu_device_open(
+  backend: str,
+  device: str,
+  backend_path: str,
+  bundle_id: str,
+  host_budget_bytes: i64,
+  device_budget_bytes: i64,
+) -> Result<GpuDevice, Fault> {
+  gpu_failure_activity(GPU_STAGE_DEVICE)
+  unsafe {
+    output := raw.alloc(8)
+    raw.store(output, 0, raw.null())
+    status := align_gpu_device_open(
+      backend,
+      backend.len(),
+      device,
+      device.len(),
+      backend_path,
+      backend_path.len(),
+      bundle_id,
+      bundle_id.len(),
+      host_budget_bytes,
+      device_budget_bytes,
+      output,
+    ) as i64
+    state: raw := raw.load(output, 0)
+    raw.free(output)
+    if status != GPU_STATUS_OK {
+      if !state.is_null() { align_gpu_device_close(state) }
+      return Err(gpu_fault_for(status))
+    }
+    if state.is_null() { return Err(fault("DEVICE_LOST", "null_owner")) }
+    owner: GpuDevice := resource.from_raw(state)
+    return Ok(owner)
+  }
+}
+
+pub fn gpu_device_handle(borrow owner: GpuDevice) -> raw {
+  unsafe {
+    return align_gpu_device_handle(resource.raw(resource.borrow(owner)))
+  }
+}
+
+pub fn gpu_backend_handle(borrow owner: GpuDevice) -> raw {
+  unsafe {
+    return align_gpu_backend_handle(resource.raw(resource.borrow(owner)))
+  }
+}
+
+pub fn gpu_device_staging_consumed(borrow owner: GpuDevice) -> bool {
+  unsafe {
+    return align_gpu_device_staging_consumed(resource.raw(resource.borrow(owner))) == 1
+  }
+}
+
+pub fn gpu_device_staging_path_valid(borrow owner: GpuDevice) -> bool {
+  unsafe {
+    return align_gpu_device_staging_path_valid(resource.raw(resource.borrow(owner))) == 1
+  }
+}
+
+pub fn gpu_device_bundle_id(borrow owner: GpuDevice) -> string {
+  mut window: buffer := buffer(64)
+  mut i := 0
+  loop {
+    if i >= 64 { break }
+    window.put_u8(0 as u8)
+    i = i + 1
+  }
+  unsafe {
+    written := align_gpu_device_bundle_id(
+      resource.raw(resource.borrow(owner)), window.bytes(), 64) as i64
+    if written != 64 { return "".clone() }
+    view := window.bytes()
+    return match view[0..written].as_str() {
+      Ok(value) => value.clone(),
+      Err(_) => "".clone(),
+    }
+  }
+}
+
+pub fn gpu_staging_owned() -> bool {
+  unsafe {
+    return align_gpu_staging_owned() == 1
+  }
+}
+
+pub fn gpu_staging_transfer(root: str, artifact_count: i64, poison: bool) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_RELEASE)
+  unsafe {
+    status := align_gpu_staging_transfer(
+      root,
+      root.len(),
+      artifact_count,
+      if poison { 1 } else { 0 },
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_device_synchronize(borrow owner: GpuDevice) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_SYNCHRONIZE)
+  unsafe {
+    status := align_gpu_device_synchronize(resource.raw(resource.borrow(owner))) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_attention_probe(borrow owner: GpuDevice, queries: i64, width: i64,
+  head_dim: i64, heads: i64, kv_heads: i64) -> Result<bool, Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_attention_probe(resource.raw(resource.borrow(owner)), queries, width, head_dim, heads, kv_heads) as i64
+    if status < 0 { return Err(gpu_fault_for(status)) }
+    if status > 1 { return Err(gpu_fault_for(GPU_STATUS_CONFIG)) }
+    return Ok(status == 1)
+  }
+}
+
+pub fn gpu_attention_select(borrow owner: GpuDevice, policy: i64) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if policy < 0 || policy > 1 { return Err(gpu_fault_for(GPU_STATUS_CONFIG)) }
+  unsafe {
+    status := align_gpu_attention_select(resource.raw(resource.borrow(owner)), policy as i32) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_attention_policy(borrow owner: GpuDevice) -> i64 {
+  unsafe { return align_gpu_attention_policy(resource.raw(resource.borrow(owner))) as i64 }
+}
+
+pub fn gpu_host_reserve(borrow owner: GpuDevice, bytes: i64) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_host_reserve(resource.raw(resource.borrow(owner)), bytes) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+  }
+  return Ok(())
+}
+
+pub fn gpu_host_reserved(borrow owner: GpuDevice) -> i64 {
+  unsafe { return align_gpu_host_reserved(resource.raw(resource.borrow(owner))) }
+}
+
+pub fn gpu_memory_admit(
+  borrow owner: GpuDevice,
+  weights_bytes: i64,
+  kv_bytes: i64,
+  workspace_bytes: i64,
+  metadata_bytes: i64,
+  staging_bytes: i64,
+  legacy_cache_bytes: i64,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_memory_admit(
+      resource.raw(resource.borrow(owner)),
+      weights_bytes,
+      kv_bytes,
+      workspace_bytes,
+      metadata_bytes,
+      staging_bytes,
+      legacy_cache_bytes,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_memory_bytes(borrow owner: GpuDevice, field: i64) -> i64 {
+  if field < GPU_MEMORY_HOST_TOTAL || field > GPU_MEMORY_LEGACY_CACHE {
+    return -1
+  }
+  unsafe {
+    return align_gpu_memory_bytes(resource.raw(resource.borrow(owner)), field as i32)
+  }
+}
+
+pub fn gpu_plan_begin(borrow owner: GpuDevice) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_plan_begin(resource.raw(resource.borrow(owner))) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_plan_cancel(borrow owner: GpuDevice) -> Result<(), Fault> {
+  unsafe {
+    status := align_gpu_plan_cancel(resource.raw(resource.borrow(owner))) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+  }
+  return Ok(())
+}
+
+pub fn gpu_plan_finish(borrow owner: GpuDevice) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_plan_finish(resource.raw(resource.borrow(owner))) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_memory_allocate(borrow owner: GpuDevice) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_ALLOCATE)
+  unsafe {
+    status := align_gpu_memory_allocate(resource.raw(resource.borrow(owner))) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_memory_allocated_bytes(borrow owner: GpuDevice, field: i64) -> i64 {
+  if field < GPU_MEMORY_HOST_TOTAL || field > GPU_MEMORY_LEGACY_CACHE {
+    return -1
+  }
+  unsafe {
+    return align_gpu_memory_allocated_bytes(resource.raw(resource.borrow(owner)), field as i32)
+  }
+}
+
+pub fn gpu_weight_metadata_bytes(tensor_count: i64) -> i64 {
+  unsafe {
+    return align_gpu_weight_metadata_bytes(tensor_count)
+  }
+}
+
+pub fn gpu_weight_allocation_bytes(
+  borrow owner: GpuDevice,
+  kind: i64,
+  n_dims: i64,
+  ne0: i64,
+  ne1: i64,
+  ne2: i64,
+  ne3: i64,
+) -> Result<i64, Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind < 0 || kind > 2147483647 || n_dims < 1 || n_dims > 4 {
+    gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", "weight_shape"))
+  }
+  unsafe {
+    bytes := align_gpu_weight_allocation_bytes(
+      resource.raw(resource.borrow(owner)), kind as i32, n_dims as i32, ne0, ne1, ne2, ne3,
+    )
+    if bytes <= 0 { return Err(gpu_fault_for(bytes)) }
+    return Ok(bytes)
+  }
+}
+
+pub fn gpu_weights_begin(
+  borrow owner: GpuDevice,
+  tensor_count: i64,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_weights_begin(resource.raw(resource.borrow(owner)), tensor_count) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_weight_add(
+  borrow owner: GpuDevice,
+  kind: i64,
+  n_dims: i64,
+  ne0: i64,
+  ne1: i64,
+  ne2: i64,
+  ne3: i64,
+) -> Result<i64, Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind < 0 || kind > 2147483647 || n_dims < 1 || n_dims > 4 {
+    gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", "weight_shape"))
+  }
+  unsafe {
+    index := align_gpu_weight_add(
+      resource.raw(resource.borrow(owner)),
+      kind as i32,
+      n_dims as i32,
+      ne0,
+      ne1,
+      ne2,
+      ne3,
+    )
+    if index < 0 { return Err(gpu_fault_for(index)) }
+    return Ok(index)
+  }
+}
+
+pub fn gpu_weight_upload(
+  borrow owner: GpuDevice,
+  index: i64,
+  offset: i64,
+  borrow data: slice<u8>,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_UPLOAD)
+  unsafe {
+    status := align_gpu_weight_upload(
+      resource.raw(resource.borrow(owner)), index, offset, data, data.len(),
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_weights_finish(borrow owner: GpuDevice) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_UPLOAD)
+  unsafe {
+    status := align_gpu_weights_finish(resource.raw(resource.borrow(owner))) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_weight_state(borrow owner: GpuDevice, field: i64) -> i64 {
+  if field < GPU_WEIGHT_EXPECTED || field > GPU_WEIGHT_FINISHED { return -1 }
+  unsafe {
+    return align_gpu_weight_state(resource.raw(resource.borrow(owner)), field as i32)
+  }
+}
+
+pub fn gpu_kv_begin(borrow owner: GpuDevice, tensor_count: i64) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_kv_begin(resource.raw(resource.borrow(owner)), tensor_count) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_kv_add(
+  borrow owner: GpuDevice,
+  kind: i64,
+  n_dims: i64,
+  ne0: i64,
+  ne1: i64,
+  ne2: i64,
+  ne3: i64,
+) -> Result<i64, Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind < 0 || kind > 2147483647 || n_dims < 1 || n_dims > 4 {
+    gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", "kv_shape"))
+  }
+  unsafe {
+    index := align_gpu_kv_add(
+      resource.raw(resource.borrow(owner)),
+      kind as i32,
+      n_dims as i32,
+      ne0,
+      ne1,
+      ne2,
+      ne3,
+    )
+    if index < 0 { return Err(gpu_fault_for(index)) }
+    return Ok(index)
+  }
+}
+
+pub fn gpu_kv_finish(borrow owner: GpuDevice) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_kv_finish(resource.raw(resource.borrow(owner))) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_kv_update(
+  borrow owner: GpuDevice,
+  index: i64,
+  offset: i64,
+  borrow data: slice<u8>,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_UPLOAD)
+  unsafe {
+    status := align_gpu_kv_update(
+      resource.raw(resource.borrow(owner)), index, offset, data, data.len(),
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_kv_slot(
+  borrow owner: GpuDevice,
+  index: i64,
+  borrow slots: slice<u8>,
+  out: i64,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_kv_slot(
+      resource.raw(resource.borrow(owner)), index, slots, out,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_kv_prefix_slot(
+  borrow owner: GpuDevice,
+  index: i64,
+  kind: i64,
+  layout: i64,
+  valid_width: i64,
+  borrow slots: slice<u8>,
+  out: i64,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+    gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", "graph_kind"))
+  }
+  if layout != GPU_KV_LAYOUT_K && layout != GPU_KV_LAYOUT_V {
+    gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", "kv_layout"))
+  }
+  unsafe {
+    status := align_gpu_kv_prefix_slot(
+      resource.raw(resource.borrow(owner)), index, kind as i32, layout as i32,
+      valid_width, slots, out,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+// G1 resident execution. K and V keep their attention-ready layouts, with the sequence on dimension
+// 1 and 0 respectively. The graph-produced source is copied into its request-resident plane at a
+// logical position. C derives the selected axis and every byte stride and returns the copy node, so
+// the caller can expand it before a later prefix consumer without staging K/V through host memory.
+pub fn gpu_kv_write_slot(
+  borrow owner: GpuDevice,
+  index: i64,
+  kind: i64,
+  layout: i64,
+  position: i64,
+  borrow slots: slice<u8>,
+  out: i64,
+  source: i64,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+    gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", "graph_kind"))
+  }
+  if layout != GPU_KV_LAYOUT_K && layout != GPU_KV_LAYOUT_V {
+    gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", "kv_layout"))
+  }
+  unsafe {
+    status := align_gpu_kv_write_slot(
+      resource.raw(resource.borrow(owner)), index, kind as i32, layout as i32,
+      position, slots, out, source,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_kv_write_prefix(borrow owner: GpuDevice, index: i64, kind: i64,
+  layout: i64, position: i64, width: i64, borrow slots: slice<u8>, out: i64, source: i64) -> Result<(), Fault> {
+  if kind != GPU_GRAPH_PREFILL || (layout != GPU_KV_LAYOUT_K && layout != GPU_KV_LAYOUT_V) {
+    return Err(gpu_fault_for(GPU_STATUS_CONFIG))
+  }
+  unsafe {
+    status := align_gpu_kv_write_prefix(resource.raw(resource.borrow(owner)), index,
+      kind as i32, layout as i32, position, width, slots, out, source) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+  }
+  return Ok(())
+}
+
+pub fn gpu_kv_write_indexed_prefix(
+  borrow owner: GpuDevice, index: i64, kind: i64, layout: i64, indices: i64, width: i64,
+  borrow slots: slice<u8>, out: i64, source: i64,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind != GPU_GRAPH_DECODE || (layout != GPU_KV_LAYOUT_K && layout != GPU_KV_LAYOUT_V) {
+    gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", "indexed_kv_layout"))
+  }
+  unsafe {
+    status := align_gpu_kv_write_indexed_prefix(
+      resource.raw(resource.borrow(owner)), index, kind as i32, layout as i32, indices, width,
+      slots, out, source,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+  }
+  return Ok(())
+}
+
+pub fn gpu_kv_state(borrow owner: GpuDevice, field: i64) -> i64 {
+  if field < GPU_KV_EXPECTED || field > GPU_KV_FINISHED { return -1 }
+  unsafe {
+    return align_gpu_kv_state(resource.raw(resource.borrow(owner)), field as i32)
+  }
+}
+
+pub fn gpu_inputs_begin(borrow owner: GpuDevice, tensor_count: i64) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_inputs_begin(resource.raw(resource.borrow(owner)), tensor_count) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_input_add(
+  borrow owner: GpuDevice,
+  kind: i64,
+  n_dims: i64,
+  ne0: i64,
+  ne1: i64,
+  ne2: i64,
+  ne3: i64,
+) -> Result<i64, Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind < 0 || kind > 2147483647 || n_dims < 1 || n_dims > 4 {
+    gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", "input_shape"))
+  }
+  unsafe {
+    index := align_gpu_input_add(
+      resource.raw(resource.borrow(owner)),
+      kind as i32,
+      n_dims as i32,
+      ne0,
+      ne1,
+      ne2,
+      ne3,
+    )
+    if index < 0 { return Err(gpu_fault_for(index)) }
+    return Ok(index)
+  }
+}
+
+pub fn gpu_inputs_finish(borrow owner: GpuDevice) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_ALLOCATE)
+  unsafe {
+    status := align_gpu_inputs_finish(resource.raw(resource.borrow(owner))) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_input_slot(
+  borrow owner: GpuDevice,
+  index: i64,
+  borrow slots: slice<u8>,
+  out: i64,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_input_slot(
+      resource.raw(resource.borrow(owner)), index, slots, out,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_mask_prefix_slot(
+  borrow owner: GpuDevice,
+  index: i64,
+  kind: i64,
+  valid_width: i64,
+  query_width: i64,
+  borrow slots: slice<u8>,
+  out: i64,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+    gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", "graph_kind"))
+  }
+  unsafe {
+    status := align_gpu_mask_prefix_slot(
+      resource.raw(resource.borrow(owner)), index, kind as i32,
+      valid_width, query_width, slots, out,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_input_update(
+  borrow owner: GpuDevice,
+  index: i64,
+  offset: i64,
+  borrow data: slice<u8>,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_UPLOAD)
+  unsafe {
+    status := align_gpu_input_update(
+      resource.raw(resource.borrow(owner)), index, offset, data, data.len(),
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_input_state(borrow owner: GpuDevice, field: i64) -> i64 {
+  if field < GPU_INPUT_EXPECTED || field > GPU_INPUT_FINISHED { return -1 }
+  unsafe {
+    return align_gpu_input_state(resource.raw(resource.borrow(owner)), field as i32)
+  }
+}
+
+pub fn gpu_weight_slot(
+  borrow owner: GpuDevice,
+  index: i64,
+  borrow slots: slice<u8>,
+  out: i64,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_weight_slot(
+      resource.raw(resource.borrow(owner)), index, slots, out,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_graph_context_open(
+  borrow owner: GpuDevice, kind: i64, metadata_bytes: i64,
+) -> raw {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE { return null_handle() }
+  unsafe {
+    return align_gpu_graph_context_open(
+      resource.raw(resource.borrow(owner)), kind as i32, metadata_bytes,
+    )
+  }
+}
+
+pub fn gpu_graph_prepare(
+  borrow owner: GpuDevice, kind: i64, topology_key: str, graph: raw,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+    gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", "graph_kind"))
+  }
+  unsafe {
+    status := align_gpu_graph_prepare(
+      resource.raw(resource.borrow(owner)), kind as i32,
+      topology_key, topology_key.len(), graph,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_graph_invalidate(borrow owner: GpuDevice, kind: i64) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+    gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", "graph_kind"))
+  }
+  unsafe {
+    status := align_gpu_graph_invalidate(
+      resource.raw(resource.borrow(owner)), kind as i32,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_graph_compute(
+  borrow owner: GpuDevice, kind: i64, topology_key: str, graph: raw,
+) -> Result<(), Fault> {
+  gpu_failure_activity(if kind == GPU_GRAPH_PREFILL { GPU_STAGE_PREFILL } else { GPU_STAGE_DECODE })
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+    gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", "graph_kind"))
+  }
+  unsafe {
+    status := align_gpu_graph_compute(
+      resource.raw(resource.borrow(owner)), kind as i32,
+      topology_key, topology_key.len(), graph,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_graph_state(borrow owner: GpuDevice, kind: i64, field: i64) -> i64 {
+  if (kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE)
+    || field < GPU_GRAPH_PREPARED || field > GPU_GRAPH_INVALIDATIONS {
+    return -1
+  }
+  unsafe {
+    return align_gpu_graph_state(
+      resource.raw(resource.borrow(owner)), kind as i32, field as i32,
+    )
+  }
 }
 
 // The hosted static shim contains the deterministic engine as well as the ordinary unavailable
@@ -456,7 +1454,7 @@ pub fn device_buft_max_size(device: raw) -> i64 {
 // as `backend_name`: `buffer(n)` reserves capacity without publishing length, so the range is
 // written before the call and the shim writes at most the capacity the caller declares.
 pub fn device_text(device: raw, which: i64) -> string {
-  if which != DEVICE_TEXT_NAME && which != DEVICE_TEXT_DESCRIPTION { return "".clone() }
+  if which != DEVICE_TEXT_NAME && which != DEVICE_TEXT_DESCRIPTION && which != DEVICE_TEXT_ID { return "".clone() }
   mut window: buffer := buffer(MAX_DEVICE_TEXT_BYTES)
   mut i := 0
   loop {
@@ -775,6 +1773,40 @@ pub fn slot_set(
   }
 }
 
+pub GPU_OBSERVATION_NODES := 0
+pub GPU_OBSERVATION_READ_BYTES := 1
+pub GPU_OBSERVATION_READ_CALLS := 2
+pub GPU_OBSERVATION_SYNC_CALLS := 3
+pub GPU_OBSERVATION_HOST_PEAK := 4
+pub GPU_OBSERVATION_DEVICE_PEAK := 5
+pub GPU_OBSERVATION_WEIGHT_PAYLOAD := 6
+pub GPU_OBSERVATION_KV_PAYLOAD := 7
+pub GPU_OBSERVATION_MODEL_OPS := 8
+pub GPU_OBSERVATION_LAYERS := 9
+pub GPU_OBSERVATION_EXPERTS := 10
+pub GPU_OBSERVATION_PREFILL_WIDTH := 11
+
+pub fn gpu_observation_state(borrow owner: GpuDevice, field: i64) -> i64 {
+  if field < GPU_OBSERVATION_NODES || field > GPU_OBSERVATION_PREFILL_WIDTH { return -1 }
+  unsafe {
+    return align_gpu_observation_state(resource.raw(resource.borrow(owner)), field as i32)
+  }
+}
+
+pub fn gpu_slot_get(borrow owner: GpuDevice, borrow slots: slice<u8>, index: i64,
+  borrow bytes: slice<u8>, offset: i64, size: i64, label: str,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_READBACK)
+  if offset < 0 || size <= 0 || size > bytes.len() { gpu_note_failure(GPU_STATUS_CONFIG, 0)
+    return Err(fault("CONFIG", label)) }
+  unsafe {
+    status := align_gpu_slot_get(resource.raw(resource.borrow(owner)), slots, index,
+      bytes, offset, size) as i64
+    if status != STATUS_OK { gpu_note_failure(GPU_STATUS_COMPUTE, GPU_STAGE_READBACK) }
+    return r5_result(status, label)
+  }
+}
+
 pub fn slot_get(
   borrow slots: slice<u8>,
   index: i64,
@@ -829,6 +1861,25 @@ pub fn op_mul_mat(
   ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, b: i64, label: str) -> Result<(), Fault> {
   unsafe {
     return r5_result(align_ggml_op_mul_mat(ctx, slots, out, a, b) as i64, label)
+  }
+}
+
+// Keep the attention score accumulator at the pinned reference's explicit F32 precision.
+pub fn op_attention_mask(ctx: raw, borrow slots: slice<u8>, out: i64, source: i64, label: str) -> Result<(), Fault> {
+  unsafe { return r5_result(align_ggml_op_attention_mask(ctx, slots, out, source) as i64, label) }
+}
+
+pub fn op_flash_attention(ctx: raw, borrow slots: slice<u8>, out: i64, q: i64, k: i64,
+  v: i64, mask: i64, scale_bits: i64, label: str) -> Result<(), Fault> {
+  if scale_bits < 0 || scale_bits > 2147483647 { return Err(fault("R5_SHAPE", label)) }
+  unsafe { return r5_result(align_ggml_op_flash_attention(ctx, slots, out, q, k, v, mask, scale_bits as i32) as i64, label) }
+}
+
+pub fn op_attention_scores(
+  ctx: raw, borrow slots: slice<u8>, out: i64, k: i64, q: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_attention_scores(ctx, slots, out, k, q) as i64, label)
   }
 }
 
@@ -1066,11 +2117,10 @@ pub fn op_mul_mat_id(
   }
 }
 
-// A 2-D window on a tensor, addressed by dimension **selector**. `nb1_dim` names the axis whose
-// stride becomes the view's row stride and `offset_dim` names the axis the offset counts in, so the
-// caller supplies two small integers in `[0, 3]` and an index — never a byte count and never a
-// pointer. The expert reduction's slot `i` is `view_2d(weighted, n_embd, T, nb1_dim: 2,
-// offset_dim: 1, offset_index: i)`.
+// A 2-D F32 or I32 window addressed by dimension **selector**. `nb1_dim` names the axis whose stride
+// becomes the view's row stride and `offset_dim` names the axis the offset counts in, so the caller
+// supplies two small integers in `[0, 3]` and an index — never a byte count and never a pointer.
+// The expert reduction uses F32 views; G1 uses an I32 view of the leading selected argsort ids.
 pub fn op_view_2d(
   ctx: raw,
   borrow slots: slice<u8>,

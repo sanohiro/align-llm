@@ -1,0 +1,45 @@
+module runtime_attention_probe_smoke
+
+import ggml_ffi
+
+fn refusal(borrow owner: ggml_ffi.GpuDevice, queries: i64, heads: i64,
+  expected: str) -> Result<(), Error> {
+  ggml_ffi.gpu_failure_reset()
+  match ggml_ffi.gpu_attention_probe(owner, queries, 256, 128, heads, 2) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(value) => { if value.code != expected { return Err(Error.Invalid) } },
+  }
+  observed := ggml_ffi.gpu_last_failure()
+  if observed.code != expected || observed.detail != "plan" { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 5 { return Err(Error.Invalid) }
+  owner := ggml_ffi.gpu_device_open(args[1], args[2], args[3],
+    "1111111111111111111111111111111111111111111111111111111111111111",
+    1048576, 1048576) else { return Err(Error.Invalid) }
+  refusal(owner, 0, 4, "CONFIG")?
+  refusal(owner, 2, 3, "CONFIG")?
+  if args[4] == "allocation" {
+    refusal(owner, 2, 4, "ALLOCATION")?
+  } else {
+    ggml_ffi.gpu_failure_reset()
+    ggml_ffi.gpu_note_failure(ggml_ffi.GPU_STATUS_TRANSFER, ggml_ffi.GPU_STAGE_UPLOAD)
+    supported := ggml_ffi.gpu_attention_probe(owner, 2, 256, 128, 4, 2) else {
+      return Err(Error.Invalid)
+    }
+    if supported != (args[4] == "supported") { return Err(Error.Invalid) }
+    unsupported := ggml_ffi.gpu_attention_probe(owner, 2, 256, 33, 4, 2) else {
+      return Err(Error.Invalid)
+    }
+    if unsupported { return Err(Error.Invalid) }
+    observed := ggml_ffi.gpu_last_failure()
+    if observed.code != "TRANSFER" || observed.detail != "upload" { return Err(Error.Invalid) }
+  }
+  ggml_ffi.gpu_plan_begin(owner) else { return Err(Error.Invalid) }
+  refusal(owner, 2, 4, "CONFIG")?
+  ggml_ffi.gpu_plan_cancel(owner) else { return Err(Error.Invalid) }
+  print("GPU attention typed probe: PASS")
+  return Ok(())
+}

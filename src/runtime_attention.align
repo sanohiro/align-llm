@@ -1,0 +1,61 @@
+module runtime_attention
+
+import ggml_ffi
+import runtime_inputs
+
+pub fn select(borrow owner: ggml_ffi.GpuDevice, prompt: i64, chunk: i64, capacity: i64,
+  context: i64, head_dim: i64, heads: i64, kv_heads: i64) -> Result<(), Error> {
+  if prompt < 1 || chunk < 1 || chunk > 128 || capacity < prompt || capacity > context {
+    return Err(Error.Invalid)
+  }
+  mut position := 0
+  loop {
+    if position >= prompt { break }
+    count := if prompt - position < chunk { prompt - position } else { chunk }
+    width := runtime_inputs.attention_width(position + count, context)?
+    supported := ggml_ffi.gpu_attention_probe(owner, count, width, head_dim, heads, kv_heads) else { return Err(Error.Invalid) }
+    if !supported {
+      ggml_ffi.gpu_attention_select(owner, 0) else { return Err(Error.Invalid) }
+      return Ok(())
+    }
+    position = position + count
+  }
+  position = prompt
+  loop {
+    if position >= capacity { break }
+    width := runtime_inputs.attention_width(position + 1, context)?
+    supported := ggml_ffi.gpu_attention_probe(owner, 1, width, head_dim, heads, kv_heads) else { return Err(Error.Invalid) }
+    if !supported {
+      ggml_ffi.gpu_attention_select(owner, 0) else { return Err(Error.Invalid) }
+      return Ok(())
+    }
+    position = width
+  }
+  ggml_ffi.gpu_attention_select(owner, 1) else { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn fused(borrow owner: ggml_ffi.GpuDevice) -> bool = ggml_ffi.gpu_attention_policy(owner) == 1
+
+pub fn name(borrow owner: ggml_ffi.GpuDevice) -> str = if fused(owner) { "flash_f32" } else { "decomposed" }
+
+pub fn prepare_mask(borrow owner: ggml_ffi.GpuDevice, ctx: raw, borrow slots: slice<u8>, mask: i64) -> Result<(), Error> {
+  if fused(owner) {
+    ggml_ffi.op_attention_mask(ctx, slots, mask, mask, "flash_attention_mask") else { return Err(Error.Invalid) }
+  }
+  return Ok(())
+}
+
+pub fn values(ctx: raw, borrow slots: slice<u8>, raw_value: i64, permuted: i64, out: i64,
+  head_dim: i64, tokens: i64, kv_heads: i64) -> Result<(), Error> {
+  ggml_ffi.op_permute(ctx, slots, permuted, raw_value, 0, 2, 1, 3, "flash_value_order") else { return Err(Error.Invalid) }
+  ggml_ffi.op_cont_3d(ctx, slots, out, permuted, head_dim, tokens, kv_heads, "flash_value_columns") else { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn output(ctx: raw, borrow slots: slice<u8>, attention: i64, out: i64,
+  q: i64, k: i64, v: i64, mask: i64, scale_bits: i64, embedding: i64, tokens: i64) -> Result<(), Error> {
+  ggml_ffi.op_flash_attention(ctx, slots, attention, q, k, v, mask, scale_bits, "flash_attention") else { return Err(Error.Invalid) }
+  ggml_ffi.op_reshape_3d(ctx, slots, out, attention, embedding, tokens, 1, "flash_attention_output") else { return Err(Error.Invalid) }
+  return Ok(())
+}

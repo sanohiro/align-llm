@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Measure Align requested allocations beside native GPU allocations at a tight cap."""
+import os
+import hashlib
+import json
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def main():
+    source = pathlib.Path(sys.argv[1]).resolve(strict=True)
+    pin = (ROOT / ".align-revision").read_text().strip()
+    assert subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip() == pin
+    assert not subprocess.check_output(["git", "-C", str(source), "status", "--porcelain", "--",
+                                       "crates/align_runtime", "Cargo.toml", "Cargo.lock"])
+    compiler = pathlib.Path(subprocess.check_output([str(ROOT / "scripts/align-toolchain"), "ensure", "compiler"], text=True).strip())
+    with tempfile.TemporaryDirectory(prefix="g1-host-capacity-") as temporary:
+        work = pathlib.Path(temporary).resolve()
+        subprocess.run(["cargo", "build", "--manifest-path", str(source / "Cargo.toml"), "-p", "align_runtime",
+                        "--release", "--features", "alloc-count", "--target-dir", str(work / "runtime")], check=True)
+        shutil.copyfile(compiler, work / "alignc")
+        (work / "alignc").chmod(0o700)
+        shutil.copyfile(work / "runtime/release/libalign_runtime.a", work / "libalign_runtime.a")
+        environment = os.environ.copy()
+        for key in ("ALIGN_LLM_GGML_INCLUDE", "ALIGN_LLM_GGML_LIB", "ALIGN_LLM_GGML_SHIM_STATIC"):
+            environment.pop(key, None)
+        environment.update(ALIGN_LLM_GGML_FORCE="engine+gpu", ALIGN_LLM_GGML_SHIM_DIR=str(work / "shim"))
+        subprocess.run([str(ROOT / "scripts/build-ggml-shim")], env=environment, check=True)
+        environment["LIBRARY_PATH"] = str(work / "shim") + os.pathsep + environment.get("LIBRARY_PATH", "")
+        subprocess.run([str(work / "alignc"), "build", str(ROOT / "src/runtime_host_smoke.align")], cwd=work, env=environment, check=True)
+        for mode in ([], ["--moe"]):
+            subprocess.run([sys.executable, str(ROOT / "scripts/layer_forward_fixture.py"), str(work), "--model", *mode],
+                           check=True, stdout=subprocess.DEVNULL)
+        # The consumer smoke's dense model geometry is the same independent fixture model.
+        dense = {"schema_version": 2, "kind": "R1_MODEL_IR", "model": {
+            "arch": "qwen2", "n_layer": 2, "n_embd": 8, "n_head": 2, "n_head_kv": 1,
+            "head_dim": 4, "n_ff": 16, "n_vocab": 32, "n_expert": 0, "context_length": 131072,
+            "rms_eps_bits": "3727c5ac", "rope": {"type": 2, "dim_count": 4,
+            "freq_base_bits": "461c4000", "scaling_type": None}}}
+        (work / "dense.json").write_text(json.dumps(dense, separators=(",", ":")))
+        bundle = work / "large-bundle"
+        bundle.mkdir()
+        data = b"x" * 33554432
+        (bundle / "libggml-metal.so").write_bytes(data)
+        digest = lambda data: hashlib.sha256(data).hexdigest()
+        identity = {"name": "fixture", "version": "fixture", "sha256": digest(b"fixture")}
+        manifest = {"schema_version": 1, "artifact_kind": "GPU_BACKEND_BUNDLE", "bundle_id": "0" * 64,
+                    "backend": "metal", "ggml": {"commit": "bb4caa7540188872173c44d161602d9271386413",
+                    "source_manifest_sha256": digest(b"source"), "version": "fixture"},
+                    "target": {"os": "macos", "arch": "aarch64", "gpu_architectures": ["apple_m1"]},
+                    "toolchain": {"c_compiler": identity, "cxx_compiler": identity, "sdk": identity,
+                                  "toolkit": {"name": "none", "version": "none", "sha256": digest(b"")}},
+                    "build_flags": [], "artifacts": [{"role": "backend_plugin", "path": "libggml-metal.so",
+                                                        "bytes": len(data), "sha256": digest(data)}]}
+        canonical = lambda value: json.dumps(value, separators=(",", ":")).encode() + b"\n"
+        manifest["bundle_id"] = digest(canonical(manifest))
+        (bundle / "manifest.json").write_bytes(canonical(manifest))
+        subprocess.run([str(work / "runtime_host_smoke"), str(work / "model-pack.alignpack"), str(work / "dense.json"),
+                        str(work / "moe-model-pack.alignpack"), str(work / "moe-model-geometry.json"), str(work), str(bundle)],
+                       env=environment, check=True)
+
+
+if __name__ == "__main__":
+    main()

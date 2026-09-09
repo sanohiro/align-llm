@@ -1,0 +1,389 @@
+module runtime_generation_smoke
+
+import ggml_ffi
+import runtime_diagnostic
+import runtime_generation
+import runtime_numeric_stream
+import runtime_options
+import runtime_pack_identity
+import std.fs
+
+BUNDLE_ID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+QWEN_GEOMETRY := "{\"schema_version\":2,\"kind\":\"R1_MODEL_IR\",\"model\":{\"arch\":\"qwen2\",\"n_layer\":2,\"n_embd\":8,\"n_head\":2,\"n_head_kv\":1,\"head_dim\":4,\"n_ff\":16,\"n_vocab\":32,\"n_expert\":0,\"context_length\":131072,\"rms_eps_bits\":\"3727c5ac\",\"rope\":{\"type\":2,\"dim_count\":4,\"freq_base_bits\":\"461c4000\",\"scaling_type\":null}}}"
+
+fn options(device_budget_bytes: i64) -> runtime_options.RuntimeOptions =
+runtime_options.RuntimeOptions {
+  schema_version: 1,
+  backend: "metal".clone(),
+  device: "stub-gpu".clone(),
+  backend_bundle: "fixture".clone(),
+  placement: "resident".clone(),
+  host_budget_bytes: 2097152,
+  device_budget_bytes: device_budget_bytes,
+  prefetch: "off".clone(),
+}
+
+fn prompt() -> array<i64> {
+  mut values: array_builder<i64> := array_builder()
+  values.push(0)
+  values.push(1)
+  return values.build()
+}
+
+fn empty_ids() -> array<i64> {
+  mut values: array_builder<i64> := array_builder()
+  return values.build()
+}
+
+fn valid_ids(borrow ids: array<i64>) -> bool {
+  if ids.len() != 3 { return false }
+  mut at := 0
+  loop {
+    if at >= ids.len() { break }
+    if ids[at] < 0 || ids[at] >= 32 { return false }
+    at = at + 1
+  }
+  return true
+}
+
+fn same_ids(borrow left: array<i64>, borrow right: array<i64>) -> bool {
+  if left.len() != right.len() { return false }
+  mut at := 0
+  loop {
+    if at >= left.len() { break }
+    if left[at] != right[at] { return false }
+    at = at + 1
+  }
+  return true
+}
+
+fn source_identity(pack_path: str) -> Result<runtime_pack_identity.SourceIdentity, Error> {
+  return runtime_pack_identity.observe_path(pack_path)
+}
+
+fn reject_mismatched_identity(pack_path: str, other_path: str) -> Result<(), Error> {
+  config := options(8388608)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  eog_ids := empty_ids()
+  other_identity := source_identity(other_path)?
+  match runtime_generation.generate_qwen(
+    owner, config, pack_path, other_identity, QWEN_GEOMETRY, prompt_ids, eog_ids, 1) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
+fn run_qwen(pack_path: str) -> Result<(), Error> {
+  config := options(8388608)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  eog_ids := empty_ids()
+  identity := source_identity(pack_path)?
+  generated := runtime_generation.generate_qwen(
+    owner, config, pack_path, identity, QWEN_GEOMETRY, prompt_ids, eog_ids, 3)?
+  if !valid_ids(generated)
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 1
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 2
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_INVALIDATIONS) != 0
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_REUSES) != 1 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn qwen_first_token(pack_path: str) -> Result<i64, Error> {
+  config := options(8388608)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  eog_ids := empty_ids()
+  identity := source_identity(pack_path)?
+  generated := runtime_generation.generate_qwen(
+    owner, config, pack_path, identity, QWEN_GEOMETRY, prompt_ids, eog_ids, 1)?
+  if generated.len() != 1
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 1
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 0 {
+    return Err(Error.Invalid)
+  }
+  return Ok(generated[0])
+}
+
+fn run_qwen_eog(pack_path: str, eog: i64) -> Result<(), Error> {
+  config := options(8388608)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  mut eog_builder: array_builder<i64> := array_builder()
+  eog_builder.push(eog)
+  eog_ids := eog_builder.build()
+  identity := source_identity(pack_path)?
+  generated := runtime_generation.generate_qwen(
+    owner, config, pack_path, identity, QWEN_GEOMETRY, prompt_ids, eog_ids, 3)?
+  if generated.len() != 1 || generated[0] != eog
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 0 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn run_olmoe(
+  pack_path: str,
+  geometry_path: str,
+  seed: Option<i64>,
+) -> Result<array<i64>, Error> {
+  config := options(16777216)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  eog_ids := empty_ids()
+  geometry := fs.read_file(geometry_path)?
+  identity := source_identity(pack_path)?
+  generated := runtime_generation.generate_olmoe(
+    owner, config, pack_path, identity, geometry, prompt_ids, eog_ids, 3, 0, seed)?
+  if !valid_ids(generated)
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 1
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 2
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_INVALIDATIONS) != 0
+    || ggml_ffi.gpu_graph_state(
+    owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_REUSES) != 1 {
+    return Err(Error.Invalid)
+  }
+  return Ok(generated)
+}
+
+fn observed(pack_path: str, geometry_text: str, root: str, model: i64, enabled: bool) -> Result<i64, Error> {
+  config := options(16777216)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  eog_ids := empty_ids()
+  identity := source_identity(pack_path)?
+  name := if model == 1 { "qwen-trace" } else { "olmoe-trace" }
+  mut stream := if enabled {
+    runtime_numeric_stream.create(root, name, model, 568, config.host_budget_bytes)?
+  } else { runtime_numeric_stream.disabled() }
+  generated := if model == 1 {
+    runtime_generation.generate_qwen_observed(
+      owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, stream)?
+  } else {
+    runtime_generation.generate_olmoe_observed(
+      owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, 0, Some(42), stream)?
+  }
+  if !valid_ids(generated) || (enabled && stream.records != 3) { return Err(Error.Invalid) }
+  runtime_numeric_stream.finish(stream)?
+  if enabled && stream.written_bytes != 568 { return Err(Error.Invalid) }
+  // Minimum-width simultaneous storage before the two transfer windows and their shell.
+  // This fixture has two prompt tokens and a 256-position attention bucket.
+  return Ok(ggml_ffi.gpu_memory_bytes(owner, ggml_ffi.GPU_MEMORY_METADATA)
+      + ggml_ffi.gpu_host_reserved(owner)
+      - ggml_ffi.gpu_memory_bytes(owner, ggml_ffi.GPU_MEMORY_STAGING) - 64
+      - (prompt_ids.len() - 1) * (8 + 4 * 256))
+}
+
+fn observed_refusal(pack_path: str, geometry_text: str, root: str, model: i64,
+  host_budget: i64, stream_limit: i64, name: str, before_upload: bool, diagnostic: bool) -> Result<(), Error> {
+  mut config := options(16777216)
+  config.host_budget_bytes = host_budget
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  eog_ids := empty_ids()
+  identity := source_identity(pack_path)?
+  mut stream := runtime_numeric_stream.create(root, name, model, stream_limit, 65576)?
+  result := if model == 1 {
+    if diagnostic {
+      runtime_generation.generate_qwen_diagnostic(
+        owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, stream, eog_ids)
+    } else {
+      runtime_generation.generate_qwen_observed(
+        owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, stream)
+    }
+  } else {
+    if diagnostic {
+      runtime_generation.generate_olmoe_diagnostic(
+        owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, 0, Some(42), stream, eog_ids)
+    } else {
+      runtime_generation.generate_olmoe_observed(
+        owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, 3, 0, Some(42), stream)
+    }
+  }
+  match result { Ok(_) => { return Err(Error.Invalid) }, Err(_) => {} }
+  if before_upload {
+    if ggml_ffi.gpu_weight_state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED_BYTES) != -1
+      || stream.records != 0 { return Err(Error.Invalid) }
+  } else {
+    if !stream.failed || stream.records != 0 { return Err(Error.Invalid) }
+  }
+  return Ok(())
+}
+
+fn trace_pass(pack_path: str, geometry_text: str, model: i64, diagnostic: bool,
+  borrow forced: array<i64>, borrow mut stream: runtime_numeric_stream.Stream) -> Result<array<i64>, Error> {
+  config := options(16777216)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  prompt_ids := prompt()
+  mut eog_builder: array_builder<i64> := array_builder()
+  mut id := 0
+  loop {
+    if forced.len() == 0 || id >= 32 { break }
+    eog_builder.push(id)
+    id = id + 1
+  }
+  eog_ids := eog_builder.build()
+  maximum := if forced.len() > 0 { 1 } else { 3 }
+  identity := source_identity(pack_path)?
+  if model == 1 {
+    if diagnostic {
+      return runtime_generation.generate_qwen_diagnostic(
+        owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, maximum, stream, forced)
+    }
+    return runtime_generation.generate_qwen_observed(
+      owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, maximum, stream)
+  }
+  if diagnostic {
+    return runtime_generation.generate_olmoe_diagnostic(
+      owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, maximum, 0, Some(42), stream, forced)
+  }
+  return runtime_generation.generate_olmoe_observed(
+    owner, config, pack_path, identity, geometry_text, prompt_ids, eog_ids, maximum, 0, Some(42), stream)
+}
+
+fn complete_trace(pack_path: str, geometry_text: str, root: str, model: i64) -> Result<(), Error> {
+  name := if model == 1 { "qwen-complete" } else { "olmoe-complete" }
+  limit := if model == 1 { 2504 } else { 4968 }
+  mut stream := runtime_numeric_stream.create(root, name, model, limit, 2097152)?
+  empty := empty_ids()
+  forced := prompt()
+  production := trace_pass(pack_path, geometry_text, model, false, empty, stream)?
+  replay := trace_pass(pack_path, geometry_text, model, true, empty, stream)?
+  if !same_ids(production, replay) { return Err(Error.Invalid) }
+  teacher := trace_pass(pack_path, geometry_text, model, true, forced, stream)?
+  if teacher.len() != 3 { return Err(Error.Invalid) }
+  runtime_numeric_stream.finish(stream)?
+  if stream.written_bytes != limit { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn diagnostic_refusals() -> Result<(), Error> {
+  if runtime_diagnostic.required_bytes(2, 8, 2, 8, 3)? != 144 { return Err(Error.Invalid) }
+  match runtime_diagnostic.required_bytes(0, 8, 2, 8, 3) {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  match runtime_diagnostic.required_bytes(2, 16777216, 2, 8, 3) {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  match runtime_diagnostic.required_bytes(2, 8, 2, 8, 9) {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  mut capture := runtime_diagnostic.create(2, 8, 2, 8, 3)?
+  runtime_diagnostic.reset(capture)?
+  mut stream := runtime_numeric_stream.disabled()
+  match runtime_diagnostic.write(capture, 0, stream) {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  return Ok(())
+}
+
+fn bucket_boundary(pack_path: str, geometry: str, model: i64) -> Result<(), Error> {
+  config := options(67108864)
+  owner := ggml_ffi.gpu_device_open(
+    config.backend, config.device, "fixture-plugin", BUNDLE_ID,
+    config.host_budget_bytes, config.device_budget_bytes,
+  ) else { return Err(Error.Invalid) }
+  mut tokens: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= 254 { break }
+    tokens.push(at % 2)
+    at = at + 1
+  }
+  prompt_ids := tokens.build()
+  eog_ids := empty_ids()
+  identity := source_identity(pack_path)?
+  generated := if model == 1 {
+    runtime_generation.generate_qwen(owner, config, pack_path, identity, geometry, prompt_ids, eog_ids, 5)?
+  } else {
+    runtime_generation.generate_olmoe(owner, config, pack_path, identity, geometry, prompt_ids, eog_ids, 5, 0, Some(42))?
+  }
+  if generated.len() != 5
+    || ggml_ffi.gpu_graph_state(owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS) != 4
+    || ggml_ffi.gpu_graph_state(owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_PREPARED) != 2
+    || ggml_ffi.gpu_graph_state(owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_REUSES) != 2
+    || ggml_ffi.gpu_graph_state(owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_INVALIDATIONS) != 1 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 5 { return Err(Error.Invalid) }
+  diagnostic_refusals()?
+  reject_mismatched_identity(args[1], args[2])?
+  run_qwen(args[1])?
+  eog := qwen_first_token(args[1])?
+  run_qwen_eog(args[1], eog)?
+  first := run_olmoe(args[2], args[3], Some(42))?
+  second := run_olmoe(args[2], args[3], Some(42))?
+  if !same_ids(first, second) { return Err(Error.Invalid) }
+  run_olmoe(args[2], args[3], None)?
+  qwen_base := observed(args[1], QWEN_GEOMETRY, args[4], 1, false)?
+  qwen_observed := observed(args[1], QWEN_GEOMETRY, args[4], 1, true)?
+  geometry := fs.read_file(args[3])?
+  bucket_boundary(args[1], QWEN_GEOMETRY, 1)?
+  bucket_boundary(args[2], geometry, 2)?
+  olmoe_base := observed(args[2], geometry, args[4], 2, false)?
+  olmoe_observed := observed(args[2], geometry, args[4], 2, true)?
+  if qwen_observed - qwen_base != 65576 || olmoe_observed - olmoe_base != 65576 {
+    return Err(Error.Invalid)
+  }
+  observed_refusal(args[1], QWEN_GEOMETRY, args[4], 1,
+    qwen_observed, 568, "qwen-budget", true, false)?
+  observed_refusal(args[2], geometry, args[4], 2,
+    olmoe_observed, 568, "olmoe-budget", true, false)?
+  observed_refusal(args[1], QWEN_GEOMETRY, args[4], 1,
+    2097152, 108, "qwen-stream-limit", false, false)?
+  observed_refusal(args[2], geometry, args[4], 2,
+    2097152, 108, "olmoe-stream-limit", false, false)?
+  observed_refusal(args[1], QWEN_GEOMETRY, args[4], 1,
+    qwen_observed + 144, 2504, "qwen-diagnostic-budget", true, true)?
+  observed_refusal(args[2], geometry, args[4], 2,
+    olmoe_observed + 144, 4968, "olmoe-diagnostic-budget", true, true)?
+  observed_refusal(args[1], QWEN_GEOMETRY, args[4], 1,
+    2097152, 108, "qwen-diagnostic-limit", false, true)?
+  observed_refusal(args[2], geometry, args[4], 2,
+    2097152, 108, "olmoe-diagnostic-limit", false, true)?
+  complete_trace(args[1], QWEN_GEOMETRY, args[4], 1)?
+  complete_trace(args[2], geometry, args[4], 2)?
+  print("runtime generation smoke: PASS")
+  return Ok(())
+}

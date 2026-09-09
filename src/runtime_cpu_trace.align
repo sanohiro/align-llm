@@ -1,0 +1,13 @@
+module runtime_cpu_trace
+
+import runtime_numeric_stream
+
+pub fn tensor(mode: i64, kind: i64, layer: i64, step: i64, width: i64, height: i64,
+  borrow bytes: slice<u8>, borrow mut stream: runtime_numeric_stream.Stream) -> Result<(), Error> {
+  if mode == 0 || (mode == 1 && kind != 1) { return Ok(()) }
+  if mode != 1 && mode != 2 { return Err(Error.Invalid) }
+  frame_kind := if mode == 2 && kind == 1 { 6 } else { kind }
+  return runtime_numeric_stream.record(stream, runtime_numeric_stream.Frame {
+      kind: frame_kind, layer: layer, step: step, width: width, height: height,
+    }, bytes)
+}

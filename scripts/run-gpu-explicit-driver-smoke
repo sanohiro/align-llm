@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""Verify G1 candidate linking through one authenticated absolute C driver."""
+
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import shutil
+import time
+import subprocess
+import sys
+import tempfile
+
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import gpu_qualification_driver as qualification_driver  # noqa: E402
+import gpu_qualification_build as qualification_build  # noqa: E402
+import gpu_qualification_run as qualification_run  # noqa: E402
+
+
+def executable(argument: str, label: str) -> pathlib.Path:
+    path = pathlib.Path(argument)
+    try:
+        resolved = path.resolve(strict=True)
+        metadata = resolved.stat()
+    except OSError as error:
+        raise AssertionError(f"{label} is unavailable") from error
+    if not resolved.is_absolute() or not stat.S_ISREG(metadata.st_mode) \
+            or not os.access(resolved, os.X_OK):
+        raise AssertionError(f"{label} is not an absolute executable")
+    return resolved
+
+
+def digest_token(name: str, path: pathlib.Path) -> str:
+    return f"<{name}>:sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+
+
+def build_driver_proxy(
+    compiler: pathlib.Path,
+    source: pathlib.Path,
+    proxy: pathlib.Path,
+    marker: pathlib.Path,
+    library_root: pathlib.Path,
+    sdk: qualification_run.ToolchainDirectory | None = None,
+) -> qualification_driver.NativeDriver:
+    if sdk is None:
+        sdk = qualification_run.ToolchainDirectory.admit(
+            pathlib.Path("/"), pathlib.Path("/etc/os-release").resolve(),
+        )
+    linker = (subprocess.check_output(["/usr/bin/xcrun", "--find", "ld"], text=True).strip()
+              if sys.platform == "darwin" else shutil.which("ld"))
+    assert linker is not None
+    native = qualification_driver.build_driver(
+        compiler=qualification_run.ToolchainExecutable.admit(compiler),
+        linker=qualification_run.ToolchainExecutable.admit(pathlib.Path(linker)), sdk=sdk,
+        work=library_root, home=library_root, temporary=library_root, library_root=library_root,
+        platform="macos" if sys.platform == "darwin" else "linux",
+        deadline_ns=time.monotonic_ns() + 60_000_000_000,
+    )
+    compiler_literal = json.dumps(str(native.path))
+    marker_literal = json.dumps(str(marker))
+    source.write_text(
+        "#include <errno.h>\n"
+        "#include <fcntl.h>\n"
+        "#include <stdlib.h>\n"
+        "#include <string.h>\n"
+        "#include <unistd.h>\n"
+        "extern char **environ;\n"
+        "int main(int argc, char **argv) {\n"
+        "  int count = 0;\n"
+        f"  int fd = open({marker_literal}, O_WRONLY | O_CREAT | O_APPEND, 0600);\n"
+        "  if (fd < 0) return 92;\n"
+        "  while (environ[count] != 0) {\n"
+        "    size_t length = strlen(environ[count]);\n"
+        "    if (write(fd, environ[count], length) != (ssize_t) length ||\n"
+        "        write(fd, \"\\n\", 1) != 1) return 92;\n"
+        "    count += 1;\n"
+        "  }\n"
+        "  if (close(fd) != 0) return 92;\n"
+        "  if (getenv(\"HOME\") == 0 || getenv(\"TMPDIR\") == 0 ||\n"
+        "      getenv(\"LC_ALL\") == 0 || strcmp(getenv(\"LC_ALL\"), \"C\") != 0 ||\n"
+        "      getenv(\"TZ\") == 0 || strcmp(getenv(\"TZ\"), \"UTC\") != 0 ||\n"
+        "      getenv(\"PATH\") != 0 || getenv(\"CC\") != 0 ||\n"
+        "      getenv(\"LIBRARY_PATH\") != 0 || getenv(\"DYLD_LIBRARY_PATH\") != 0 ||\n"
+        "      getenv(\"LD_LIBRARY_PATH\") != 0) return 91;\n"
+        "  char **selected = calloc((size_t) argc + 1, sizeof(char *));\n"
+        "  if (selected == 0) return 94;\n"
+        "  for (int at = 0; at < argc; at++) selected[at] = argv[at];\n"
+        f"  selected[0] = (char *) {compiler_literal};\n"
+        f"  execv({compiler_literal}, selected);\n"
+        "  return errno == 0 ? 93 : errno;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    cc_input = qualification_run.ToolchainExecutable.admit(compiler)
+    cc_token = "<host-cc>:sha256:" + cc_input.sha256
+    source_token = digest_token("driver-source", source)
+    physical = [str(compiler), str(source), "-o", proxy.name]
+    logical = [cc_token, source_token, "-o", proxy.name]
+    mappings = {cc_token: cc_input, source_token: source}
+    if sdk is not None:
+        sdk_token = "<host-sdk>:sha256:" + sdk.sha256
+        physical.extend(("-isysroot", str(sdk.path)))
+        logical.extend(("-isysroot", sdk_token))
+        mappings[sdk_token] = sdk
+    completed = qualification_run.run_owned_command(
+        kind="compiler_materialize", physical_argv=physical, logical_argv=logical,
+        mappings=mappings, cwd=library_root, home=library_root, temporary=library_root,
+        timeout_seconds=60, sdk=sdk,
+    )
+    if completed.terminal != "PASS":
+        raise AssertionError(completed.stderr.retained.decode(errors="replace"))
+    return dataclasses.replace(native, path=proxy)
+
+
+def grouped_bootstrap_owner(alignc, cc, sdk, parent) -> None:
+    for mode in ("success", "failure", "timeout", "revision", "archive"):
+        fail = mode != "success"
+        work = parent / ("grouped-" + mode)
+        work.mkdir(mode=0o700)
+        entry = work / "grouped.align"
+        entry.write_text(
+            'extern "C" link("align_ggml_shim") { fn align_ggml_available() -> i32 }\n'
+            'fn main() { unsafe { print(align_ggml_available()) } }\n', encoding="utf-8",
+        )
+        linker = (subprocess.check_output(["/usr/bin/xcrun", "--find", "ld"], text=True).strip()
+                  if sys.platform == "darwin" else shutil.which("ld"))
+        cc_path = pathlib.Path("/usr/bin/false") if fail else cc
+        if mode == "timeout":
+            cc_path = work / "blocked-cc"
+            cc_path.write_text("#!/bin/sh\n/bin/sleep 30 &\nwait\n", encoding="utf-8")
+            cc_path.chmod(0o700)
+        cc_input = qualification_run.ToolchainExecutable.admit(cc_path)
+        support = {}
+        if mode == "archive":
+            for name in ("crypto", "ssl", "zstd"):
+                path = work / ("input-lib" + name + ".a")
+                path.write_bytes(b"invalid archive")
+                support[name] = path
+        revision = (ROOT / ".align-revision").read_text().strip()
+        first = qualification_build.compiler_materialization_command(
+            work=work, compiler=alignc,
+            python=qualification_run.ToolchainExecutable.admit(pathlib.Path(sys.executable)),
+            helper=ROOT / "scripts/gpu_compiler_materialize.py", cc=cc_input,
+            linker=qualification_run.ToolchainExecutable.admit(pathlib.Path(linker)), sdk=sdk,
+            git=qualification_run.ToolchainExecutable.admit(pathlib.Path(shutil.which("git"))),
+            platform="macos" if sys.platform == "darwin" else "linux",
+            align_revision="0" * 40 if mode == "revision" else revision,
+            support_archives=support,
+        )
+        state = qualification_run.PreparationState(
+            pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture",
+            preparation_timeout_ns=2_000_000_000 if mode == "timeout" else 60_000_000_000,
+        )
+        tail = []
+
+        def command_at(ordinal):
+            assert not fail, "later factory ran after bootstrap failure"
+            if not tail:
+                dependencies = (cc_input, qualification_run.ToolchainExecutable.admit(work / "native-tools/ld"))
+                tail.extend(dataclasses.replace(command, tool_dependencies=dependencies) for command in
+                    qualification_build.commands(
+                        work=work, compiler=alignc, runtime=alignc.parent / "libalign_runtime.a",
+                        copier=pathlib.Path("/bin/cp").resolve(), driver=work / "native-driver",
+                        reference_driver=work / "native-driver", entry=entry,
+                        shim_source=ROOT / "scripts/ggml_shim_stub.c",
+                        platform="macos" if sys.platform == "darwin" else "linux",
+                        align_revision=revision, source_commit="a" * 40, sdk=sdk,
+                        compiler_materialized=True,
+                    ))
+            return tail[ordinal]
+
+        qualification_run.run_preparation(
+            state, [first, *(lambda ordinal=ordinal: command_at(ordinal) for ordinal in range(1, 5))],
+            cwd=work, home=work, temporary=work,
+        )
+        if fail:
+            assert state.failure_ordinal == 0 and len(state.commands) == 1
+            assert state.failed_result is not None and state.failed_result.descendants_after == 0
+            assert state.failed_result.terminal == ("TIMEOUT" if mode == "timeout" else "FAIL")
+            assert "logs/000.stderr" in state.retained
+            if mode == "revision":
+                assert b"revision differs" in state.failed_result.stderr.retained
+            if mode == "archive":
+                assert b"support archive input" in state.failed_result.stderr.retained
+            assert not (work / "alignc").exists() and not (work / "native-driver").exists()
+        else:
+            assert state.complete, (state.failure_detail,
+                state.failed_result.stderr.retained if state.failed_result else "unstarted")
+            assert len(state.commands) == 5
+            for binary in (tail[3].output, tail[4].output):
+                token = digest_token("grouped-binary", binary)
+                observed = qualification_run.run_owned_command(
+                    kind="case", physical_argv=[str(binary)], logical_argv=[token], mappings={token: binary},
+                    cwd=work, home=work, temporary=work, timeout_seconds=5,
+                )
+                assert observed.terminal == "PASS" and observed.stdout.retained == b"0\n"
+
+
+def main() -> None:
+    if len(sys.argv) != 3:
+        raise SystemExit("usage: run-gpu-explicit-driver-smoke ALIGNC CC")
+    alignc = executable(sys.argv[1], "managed Align compiler")
+    cc = executable(sys.argv[2], "C compiler")
+    copier = executable("/bin/cp", "fixture copier")
+
+    with tempfile.TemporaryDirectory(prefix="gpu-explicit-driver-space \u96ea-") as raw_temporary:
+        temporary = pathlib.Path(raw_temporary)
+        home = temporary / "home"
+        scratch = temporary / "scratch"
+        home.mkdir(mode=0o700)
+        scratch.mkdir(mode=0o700)
+        state = qualification_run.PreparationState(
+            pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture",
+        )
+        runtime = alignc.parent / "libalign_runtime.a"
+        proxy_source = scratch / "driver.c"
+        proxy = scratch / "selected-cc"
+        marker = scratch / "selected-cc.invoked"
+        sdk = None
+        if sys.platform == "darwin":
+            sdk_path = pathlib.Path(subprocess.check_output(
+                ["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True,
+            ).strip())
+            sdk = qualification_run.ToolchainDirectory.admit(sdk_path, sdk_path / "SDKSettings.json")
+        native = build_driver_proxy(cc, proxy_source, proxy, marker, scratch, sdk)
+        sdk = native.sdk
+        source = scratch / "candidate.align"
+        source.write_text(
+            'extern "C" link("align_ggml_shim") { fn align_ggml_available() -> i32 }\n'
+            'fn main() { unsafe { print(align_ggml_available()) } }\n',
+            encoding="utf-8",
+        )
+        revision = (ROOT / ".align-revision").read_text(encoding="utf-8").strip()
+        source_commit = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        commands = qualification_build.commands(
+            work=scratch, compiler=alignc, runtime=runtime, copier=copier, driver=proxy,
+            reference_driver=proxy,
+            entry=source, shim_source=ROOT / "scripts" / "ggml_shim_stub.c",
+            platform="macos" if sys.platform == "darwin" else "linux",
+            align_revision=revision, source_commit=source_commit, sdk=sdk,
+        )
+        commands = tuple(dataclasses.replace(command, tool_dependencies=native.tool_dependencies)
+                         for command in commands)
+        qualification_run.run_preparation(state, commands, cwd=scratch, home=home, temporary=scratch)
+        assert state.complete, (
+            state.failure_ordinal, state.failure_detail,
+            state.failed_result.stderr.retained.decode(errors="replace") if state.failed_result else "unstarted",
+        )
+        assert state.identities["align_compiler"]["sha256"] == hashlib.sha256(alignc.read_bytes()).hexdigest()
+        assert state.identities["align_runtime"]["sha256"] == hashlib.sha256(runtime.read_bytes()).hexdigest()
+        assert all(identity["state"] == "available" for identity in state.identities.values())
+        assert all(command["environment"] == [
+            "HOME=<home>:owned", "LC_ALL=C", "TMPDIR=<tmp>:owned", "TZ=UTC",
+        ] for command in state.commands)
+        marker_environment = marker.read_text(encoding="utf-8").splitlines()
+        names = [entry.split("=", 1)[0] for entry in marker_environment]
+        # macOS can synthesize the Core Foundation locale cache after exec.
+        assert set(names) - {"__CF_USER_TEXT_ENCODING"} == {"HOME", "LC_ALL", "TMPDIR", "TZ"}
+        assert names.count("HOME") == 3
+        for candidate in (commands[3].output, commands[4].output):
+            token = digest_token("case-binary", candidate)
+            result = qualification_run.run_owned_command(
+                kind="case", physical_argv=[str(candidate)], logical_argv=[token],
+                mappings={token: candidate}, cwd=scratch, home=home, temporary=scratch,
+                timeout_seconds=5,
+            )
+            assert result.terminal == "PASS", result.stderr.retained.decode(errors="replace")
+            assert result.stdout.retained == b"0\n"
+
+        construction = dict(
+            compiler=qualification_run.ToolchainExecutable.admit(cc),
+            linker=native.tool_dependencies[1], sdk=sdk, work=scratch, home=home,
+            temporary=scratch, library_root=scratch,
+            platform="macos" if sys.platform == "darwin" else "linux",
+            deadline_ns=time.monotonic_ns() + 60_000_000_000,
+        )
+        before = (scratch / "native-driver").read_bytes()
+        try:
+            qualification_driver.build_driver(**construction)
+        except qualification_run.RecipeError as error:
+            assert "occupied" in str(error)
+        else:
+            raise AssertionError("native driver replaced an existing output")
+        assert (scratch / "native-driver").read_bytes() == before
+        for failure in ("compile", "deadline"):
+            failed_work = scratch / ("failed-" + failure)
+            failed_work.mkdir(mode=0o700)
+            arguments = construction | {"work": failed_work}
+            if failure == "compile":
+                arguments["compiler"] = qualification_run.ToolchainExecutable.admit(pathlib.Path("/usr/bin/false"))
+            else:
+                arguments["deadline_ns"] = time.monotonic_ns() - 1
+            try:
+                qualification_driver.build_driver(**arguments)
+            except qualification_run.RecipeError as error:
+                assert ("compilation failed" if failure == "compile" else "deadline expired") in str(error)
+            else:
+                raise AssertionError("native driver published a failed build")
+            assert not (failed_work / "native-driver").exists()
+
+        grouped_bootstrap_owner(alignc, cc, sdk, scratch)
+
+    print("gpu explicit C-driver preparation smoke: PASS")
+
+
+if __name__ == "__main__":
+    main()

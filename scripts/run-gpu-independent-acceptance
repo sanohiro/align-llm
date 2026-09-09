@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Execute complete independent GPU acceptance or replay a retained PASS."""
+import pathlib
+import sys
+from gpu_independent_acceptance import execute, replay
+
+
+def main():
+    if len(sys.argv) == 3 and sys.argv[1] == '--replay':
+        status = replay(pathlib.Path(sys.argv[2]))
+    elif len(sys.argv) == 6:
+        status = execute(*(pathlib.Path(arg).absolute() for arg in sys.argv[1:]))
+    else:
+        raise SystemExit('usage: run-gpu-independent-acceptance KIT_PROFILE CORPUS CANDIDATE_BUILD REFERENCE_BUILD NEW_EVIDENCE\n'
+                         '       run-gpu-independent-acceptance --replay EVIDENCE')
+    print('GPU independent acceptance:', status)
+    return 0 if status == 'PASS' else 1
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
+        print('GPU independent acceptance: FAIL:', error, file=sys.stderr)
+        raise SystemExit(1)

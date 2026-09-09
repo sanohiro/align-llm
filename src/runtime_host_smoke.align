@@ -1,0 +1,121 @@
+module runtime_host_smoke
+
+import alignpack_read
+import ggml_ffi
+import ggml_ffi.host_probe
+import runtime_bundle
+import runtime_generation
+import runtime_numeric_stream
+import runtime_options
+import runtime_pack_identity
+import std.fs
+
+fn run(pack_path: str, geometry: str, root: str, model: i64, diagnostic: bool,
+  host_budget: i64, expect_success: bool) -> Result<(), Error> {
+  options := runtime_options.RuntimeOptions {
+    schema_version: 1, backend: "metal".clone(), device: "stub-gpu".clone(),
+    backend_bundle: "fixture".clone(), placement: "resident".clone(),
+    host_budget_bytes: host_budget, device_budget_bytes: 16777216, prefetch: "off".clone(),
+  }
+  owner := ggml_ffi.gpu_device_open("metal", "stub-gpu", "fixture-plugin",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", host_budget, 16777216) else { return Err(Error.Invalid) }
+  identity := runtime_pack_identity.observe_path(pack_path)?
+  mut prompt_builder: array_builder<i64> := array_builder()
+  prompt_builder.push(0)
+  prompt_builder.push(1)
+  prompt := prompt_builder.build()
+  mut empty_builder: array_builder<i64> := array_builder()
+  empty := empty_builder.build()
+  name := builder()
+  name.write_int(model)
+  name.write_int(if diagnostic { 1 } else { 0 })
+  name.write_int(host_budget)
+  filename := name.to_string()
+  ggml_ffi.host_probe.reset()
+  mut stream := runtime_numeric_stream.create(root, filename, model, 65536, host_budget)?
+  result := if model == 1 {
+    if diagnostic {
+      runtime_generation.generate_qwen_diagnostic(owner, options, pack_path, identity, geometry,
+        prompt, empty, 3, stream, empty)
+    } else {
+      runtime_generation.generate_qwen_observed(owner, options, pack_path, identity, geometry,
+        prompt, empty, 3, stream)
+    }
+  } else {
+    if diagnostic {
+      runtime_generation.generate_olmoe_diagnostic(owner, options, pack_path, identity, geometry,
+        prompt, empty, 3, 0, Some(42), stream, empty)
+    } else {
+      runtime_generation.generate_olmoe_observed(owner, options, pack_path, identity, geometry,
+        prompt, empty, 3, 0, Some(42), stream)
+    }
+  }
+  if !expect_success {
+    match result { Ok(_) => { return Err(Error.Invalid) }, Err(_) => {} }
+    fault := ggml_ffi.gpu_last_failure()
+    if fault.code != "MEMORY_BUDGET" || fault.detail != "plan"
+      || stream.records != 0
+      || ggml_ffi.gpu_weight_state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED_BYTES) != -1 {
+      return Err(Error.Invalid)
+    }
+    return Ok(())
+  }
+  generated := result?
+  if generated.len() != 3 { return Err(Error.Invalid) }
+  runtime_numeric_stream.finish(stream)?
+  peak := ggml_ffi.host_probe.peak()
+  reserved := ggml_ffi.gpu_host_reserved(owner)
+  native := ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_HOST_PEAK)
+  staging := ggml_ffi.gpu_memory_bytes(owner, ggml_ffi.GPU_MEMORY_STAGING)
+  if peak < staging || peak > reserved || native + peak > host_budget
+    || native + reserved > host_budget {
+    return Err(Error.Invalid)
+  }
+  line := builder()
+  line.write("host capacity: model=")
+  line.write_int(model)
+  line.write(" diagnostic=")
+  line.write_int(if diagnostic { 1 } else { 0 })
+  line.write(" tracked_peak=")
+  line.write_int(peak)
+  line.write(" reserved=")
+  line.write_int(reserved)
+  line.write(" native_peak=")
+  line.write_int(native)
+  print(line.to_string())
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 7 { return Err(Error.Invalid) }
+  qwen := fs.read_file(args[2])?
+  olmoe := fs.read_file(args[4])?
+  run(args[1], qwen, args[5], 1, false, 2097152, true)?
+  run(args[1], qwen, args[5], 1, true, 2097152, true)?
+  run(args[3], olmoe, args[5], 2, false, 2097152, true)?
+  run(args[3], olmoe, args[5], 2, true, 2097152, true)?
+  run(args[1], qwen, args[5], 1, true, 524288, false)?
+  run(args[3], olmoe, args[5], 2, true, 524288, false)?
+  // The bounded index owner refuses before constructing any block columns.
+  pack := fs.open_rw(args[1])?
+  mut counters := alignpack_read.new_counters()
+  ggml_ffi.host_probe.reset()
+  match alignpack_read.open_pack_bounded(pack, counters, 1) {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  if ggml_ffi.host_probe.peak() > 8192 { return Err(Error.Invalid) }
+  ggml_ffi.host_probe.reset()
+  staged := runtime_bundle.verify(args[6], "metal", 35651584)?
+  artifact_peak := ggml_ffi.host_probe.peak()
+  if artifact_peak < 33554432 || artifact_peak > 35651584 {
+    runtime_bundle.cleanup(staged)?
+    return Err(Error.Invalid)
+  }
+  runtime_bundle.cleanup(staged)?
+  line := builder()
+  line.write("bundle tracked peak=")
+  line.write_int(artifact_peak)
+  print(line.to_string())
+  print("GPU tracked host owner: PASS")
+  return Ok(())
+}

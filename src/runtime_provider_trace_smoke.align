@@ -1,0 +1,81 @@
+module runtime_provider_trace_smoke
+
+import core.json
+import model
+import provider_runtime
+import runtime_numeric_stream
+import tokenizer_qwen2
+
+fn equal_ids(borrow left: array<i64>, borrow right: array<i64>) -> bool {
+  if left.len() != right.len() { return false }
+  mut at := 0
+  loop {
+    if at >= left.len() { break }
+    if left[at] != right[at] { return false }
+    at = at + 1
+  }
+  return true
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 8 { return Err(Error.Invalid) }
+  olmoe := args[7] == "olmoe"
+  config := model.ProviderConfig {
+    kind: model.ProviderKind.AlignRuntime, endpoint: "", model: args[1], api_key: "",
+    timeout_ns: 0, tokenize_endpoint: "", max_response_bytes: 1048576,
+    runtime_pack_path: args[2], runtime_geometry_path: args[3],
+    runtime_options_path: args[6], runtime_cache_budget_bytes: if olmoe { 1048576 } else { 0 },
+  }
+  request := model.GenerationRequest {
+    system: "", user: "x", max_tokens: 2,
+    temperature: 0.0, seed: None,
+  }
+  mut empty_builder: array_builder<i64> := array_builder()
+  empty := empty_builder.build()
+  mut forced_builder: array_builder<i64> := array_builder()
+  forced_builder.push(0)
+  forced_builder.push(1)
+  forced := forced_builder.build()
+  mut trace := runtime_numeric_stream.create(args[4], args[5], if olmoe { 2 } else { 1 }, 16777216, 65576)?
+  for_mode := [0, 3]
+  mut index := 0
+  loop {
+    if index >= for_mode.len() { break }
+    match provider_runtime.generate_trace(config, request, for_mode[index], empty, trace) {
+      Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+    }
+    index = index + 1
+  }
+  match provider_runtime.generate_trace(config, request, 1, forced, trace) {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  ordinary := provider_runtime.generate(config, request)?
+  production := provider_runtime.generate_trace(config, request, 1, empty, trace)?
+  reproduction := provider_runtime.generate_trace(config, request, 2, empty, trace)?
+  if reproduction.observation.available || (production.observation.available != (args[6].len() > 0)) {
+    return Err(Error.Invalid)
+  }
+  ordinary_view: str := ordinary
+  production_view: str := production.text
+  reproduction_view: str := reproduction.text
+  if ordinary_view != production_view || production_view != reproduction_view
+    || !equal_ids(production.token_ids, reproduction.token_ids)
+    || !equal_ids(production.prompt_ids, reproduction.prompt_ids) { return Err(Error.Invalid) }
+  prepared := tokenizer_qwen2.prepare_generation_model(config.model, request.system, request.user)?
+  if !equal_ids(prepared.token_ids, production.prompt_ids) { return Err(Error.Invalid) }
+  replay := provider_runtime.generate_trace(config, request, 2, forced, trace)?
+  if replay.observation.available || replay.text.len() != 0 || replay.token_ids.len() != 3
+    || !equal_ids(production.prompt_ids, replay.prompt_ids) { return Err(Error.Invalid) }
+  runtime_numeric_stream.finish(trace)?
+  mut failed := runtime_numeric_stream.create(args[4], "refused", if olmoe { 2 } else { 1 }, 108, 65576)?
+  match provider_runtime.generate_trace(config, request, 1, empty, failed) {
+    Ok(_) => { return Err(Error.Invalid) }, Err(_) => {},
+  }
+  if !failed.failed { return Err(Error.Invalid) }
+  subsequent := provider_runtime.generate(config, request)?
+  subsequent_view: str := subsequent
+  if subsequent_view != ordinary_view { return Err(Error.Invalid) }
+  print(json.encode(production))
+  print("runtime provider trace: PASS")
+  return Ok(())
+}

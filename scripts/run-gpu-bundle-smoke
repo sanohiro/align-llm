@@ -1,0 +1,236 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# G1's model-free bundle owner constructs canonical schema-1 manifests and proves that runtime
+# verification binds the self-hash and exact artifact bytes while rejecting path substitution.
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+work_dir=$(mktemp -d)
+work_dir=$(CDPATH= cd -- "${work_dir}" && pwd -P)
+executable="${work_dir}/runtime-bundle-smoke"
+
+private_roots() {
+  python3 - <<'PY'
+import pathlib
+import tempfile
+
+root = pathlib.Path(tempfile.gettempdir())
+for path in sorted(root.glob("align_llm_gpu-*")):
+    if path.is_dir():
+        print(path)
+PY
+}
+
+private_roots_before=$(private_roots)
+
+cleanup() {
+  status=$?
+  private_roots_after=$(private_roots)
+  if [ "${private_roots_after}" != "${private_roots_before}" ]; then
+    printf '%s\n' "gpu bundle smoke: private staging root leaked" >&2
+    status=1
+  fi
+  rm -rf "${work_dir}"
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+python3 - "${work_dir}" <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+commit = "bb4caa7540188872173c44d161602d9271386413"
+zero = "0" * 64
+empty = hashlib.sha256(b"").hexdigest()
+plugin_bytes = b"fixture-metal-plugin"
+metadata_bytes = b"meta"
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
+
+
+def base_manifest(path="libggml-metal.so", role="backend_plugin", data=plugin_bytes):
+    return {
+        "schema_version": 1,
+        "artifact_kind": "GPU_BACKEND_BUNDLE",
+        "bundle_id": zero,
+        "backend": "metal",
+        "ggml": {
+            "commit": commit,
+            "source_manifest_sha256": digest(b"source-manifest"),
+            "version": "fixture",
+        },
+        "target": {
+            "os": "macos",
+            "arch": "aarch64",
+            "gpu_architectures": ["apple_m1"],
+        },
+        "toolchain": {
+            "c_compiler": {"name": "cc", "version": "fixture", "sha256": digest(b"cc")},
+            "cxx_compiler": {"name": "cxx", "version": "fixture", "sha256": digest(b"cxx")},
+            "sdk": {"name": "macos", "version": "fixture", "sha256": digest(b"sdk")},
+            "toolkit": {"name": "none", "version": "none", "sha256": empty},
+        },
+        "build_flags": ["-DGGML_METAL=ON"],
+        "artifacts": [
+            {"role": role, "path": path, "bytes": len(data), "sha256": digest(data)},
+            {
+                "role": "metadata",
+                "path": "metadata.bin",
+                "bytes": len(metadata_bytes),
+                "sha256": digest(metadata_bytes),
+            },
+        ],
+    }
+
+
+def finish(manifest):
+    manifest["bundle_id"] = zero
+    manifest["bundle_id"] = digest(canonical(manifest))
+    return canonical(manifest)
+
+
+def write_bundle(name, manifest, artifact_path=None, artifact_data=plugin_bytes, manifest_bytes=None):
+    directory = root / name
+    directory.mkdir()
+    if artifact_path is not None:
+        target = directory / artifact_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(artifact_data)
+    (directory / "metadata.bin").write_bytes(metadata_bytes)
+    (directory / "manifest.json").write_bytes(manifest_bytes if manifest_bytes is not None else finish(manifest))
+    return directory
+
+
+valid = write_bundle("valid", base_manifest(), "libggml-metal.so")
+
+bad_id_manifest = base_manifest()
+bad_id_manifest["bundle_id"] = "f" * 64
+write_bundle("bad-id", bad_id_manifest, "libggml-metal.so", manifest_bytes=canonical(bad_id_manifest))
+
+mutated = write_bundle("mutated-artifact", base_manifest(), "libggml-metal.so")
+(mutated / "libggml-metal.so").write_bytes(b"fixture-metal-plugio")
+
+mutated_metadata = write_bundle("mutated-metadata", base_manifest(), "libggml-metal.so")
+(mutated_metadata / "metadata.bin").write_bytes(b"META")
+
+unknown_manifest = base_manifest()
+unknown_manifest["unknown"] = 1
+write_bundle("unknown-key", unknown_manifest, "libggml-metal.so")
+
+duplicate_manifest = finish(base_manifest())
+needle = b'"commit":"' + commit.encode() + b'",'
+duplicate_manifest = duplicate_manifest.replace(needle, needle + needle, 1)
+write_bundle("duplicate-key", base_manifest(), "libggml-metal.so", manifest_bytes=duplicate_manifest)
+
+noncanonical_manifest = finish(base_manifest())
+write_bundle(
+    "noncanonical",
+    base_manifest(),
+    "libggml-metal.so",
+    manifest_bytes=b" " + noncanonical_manifest,
+)
+
+traversal_manifest = base_manifest("../outside-plugin")
+write_bundle("path-traversal", traversal_manifest)
+
+missing_plugin_manifest = base_manifest("libggml.dylib", role="shared_library")
+write_bundle("missing-plugin", missing_plugin_manifest, "libggml.dylib")
+
+duplicate_path_manifest = base_manifest()
+duplicate_path_manifest["artifacts"].append({
+    "role": "metadata",
+    "path": "libggml-metal.so",
+    "bytes": len(plugin_bytes),
+    "sha256": digest(plugin_bytes),
+})
+write_bundle("duplicate-path", duplicate_path_manifest, "libggml-metal.so")
+
+outside = root / "outside-plugin"
+outside.write_bytes(plugin_bytes)
+symlink_dir = write_bundle("symlink-artifact", base_manifest())
+os.symlink(outside, symlink_dir / "libggml-metal.so")
+
+manifest_link = root / "symlink-manifest"
+manifest_link.mkdir()
+(manifest_link / "libggml-metal.so").write_bytes(plugin_bytes)
+os.symlink(valid / "manifest.json", manifest_link / "manifest.json")
+
+hardlink_artifact = write_bundle("hardlink-artifact", base_manifest(), "libggml-metal.so")
+os.link(hardlink_artifact / "libggml-metal.so", hardlink_artifact / "artifact-alias")
+
+hardlink_manifest = write_bundle("hardlink-manifest", base_manifest(), "libggml-metal.so")
+os.link(hardlink_manifest / "manifest.json", hardlink_manifest / "manifest-alias")
+PY
+
+(
+  cd "${root_dir}"
+  "${compiler}" build src/runtime_bundle_smoke.align >/dev/null
+  mv runtime_bundle_smoke "${executable}"
+)
+
+inspection_output="${work_dir}/private-root-inspection"
+"${executable}" --inspect-private-root "${work_dir}/valid" >"${inspection_output}" &
+inspection_pid=$!
+inspection_root=""
+inspection_attempt=0
+while [ "${inspection_attempt}" -lt 100 ]; do
+  if [ -s "${inspection_output}" ]; then
+    inspection_root=$(sed -n '1p' "${inspection_output}")
+    break
+  fi
+  sleep 0.01
+  inspection_attempt=$((inspection_attempt + 1))
+done
+if [ -z "${inspection_root}" ] || [ ! -d "${inspection_root}" ]; then
+  printf '%s\n' "gpu bundle smoke: private staging root was not observable" >&2
+  wait "${inspection_pid}" || true
+  exit 1
+fi
+if private_mode=$(stat -f '%Lp' "${inspection_root}" 2>/dev/null); then
+  :
+else
+  private_mode=$(stat -c '%a' "${inspection_root}")
+fi
+if [ "${private_mode}" != 700 ]; then
+  printf '%s\n' "gpu bundle smoke: private staging mode: ${private_mode}" >&2
+  wait "${inspection_pid}" || true
+  exit 1
+fi
+wait "${inspection_pid}"
+if [ "$(sed -n '2p' "${inspection_output}")" != "runtime bundle private root: PASS" ]; then
+  printf '%s\n' "gpu bundle smoke: private staging inspection failed" >&2
+  exit 1
+fi
+
+output=$("${executable}" \
+  "${work_dir}/valid" \
+  "${work_dir}/bad-id" \
+  "${work_dir}/mutated-artifact" \
+  "${work_dir}/mutated-metadata" \
+  "${work_dir}/unknown-key" \
+  "${work_dir}/duplicate-key" \
+  "${work_dir}/noncanonical" \
+  "${work_dir}/path-traversal" \
+  "${work_dir}/missing-plugin" \
+  "${work_dir}/duplicate-path" \
+  "${work_dir}/symlink-artifact" \
+  "${work_dir}/symlink-manifest" \
+  "${work_dir}/hardlink-artifact" \
+  "${work_dir}/hardlink-manifest")
+if [ "${output}" != "runtime bundle smoke: PASS" ]; then
+  printf '%s\n' "gpu bundle smoke: FAIL output: ${output}" >&2
+  exit 1
+fi
+
+printf '%s\n' "gpu bundle smoke: PASS"

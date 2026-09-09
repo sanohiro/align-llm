@@ -1,0 +1,552 @@
+#!/usr/bin/env python3
+"""Own the G1 trace adapter through real provider admission and deterministic native execution."""
+import hashlib
+import dataclasses
+import sys
+import importlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import shutil
+from unittest import mock
+from gpu_qualification_deadline import EXPIRED
+
+from gpu_qualification_stream import NumericStream, Frame
+import gpu_qualification_native as native
+import gpu_qualification_native_sequence as native_sequence
+from gpu_qualification_case_records import CaseRecords
+from gpu_qualification_cases import CaseSequence
+from gpu_backend_recipe import RecipeError
+from gpu_qualification_traversal import Traversal, Router
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode() + b"\n"
+
+
+def digest(value):
+    return hashlib.sha256(value).hexdigest()
+
+
+def bundle(root):
+    destination = root / "bundle"
+    destination.mkdir()
+    data = b"provider-trace-stub"
+    (destination / "libggml-metal.so").write_bytes(data)
+    identity = lambda name: {"name": name, "version": "fixture", "sha256": digest(name.encode())}
+    record = {
+        "schema_version": 1, "artifact_kind": "GPU_BACKEND_BUNDLE", "bundle_id": "0" * 64,
+        "backend": "metal", "ggml": {"commit": "bb4caa7540188872173c44d161602d9271386413",
+        "source_manifest_sha256": digest(b"source"), "version": "fixture"},
+        "target": {"os": "macos", "arch": "aarch64", "gpu_architectures": ["apple_m1"]},
+        "toolchain": {"c_compiler": identity("cc"), "cxx_compiler": identity("cxx"),
+                      "sdk": identity("macos"),
+                      "toolkit": {"name": "none", "version": "none", "sha256": digest(b"")}},
+        "build_flags": [], "artifacts": [{"role": "backend_plugin", "path": "libggml-metal.so",
+                                            "bytes": len(data), "sha256": digest(data)}],
+    }
+    record["bundle_id"] = digest(canonical(record))
+    (destination / "manifest.json").write_bytes(canonical(record))
+    options = root / "options.json"
+    options.write_bytes(canonical({"schema_version": 1, "backend": "metal", "device": "stub-gpu",
+        "backend_bundle": str(destination), "placement": "resident",
+        "host_budget_bytes": 536870912, "device_budget_bytes": 536870912, "prefetch": "off"}))
+    return options
+
+
+with tempfile.TemporaryDirectory(prefix="g1-provider-trace-") as raw:
+    work = Path(raw).resolve()
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith("ALIGN_LLM_GGML_")}
+    shim = work / "shim"
+    environment.update(ALIGN_LLM_GGML_FORCE="engine+gpu", ALIGN_LLM_GGML_SHIM_DIR=str(shim))
+    subprocess.run([str(ROOT / "scripts/build-ggml-shim")], env=environment, check=True)
+    for key in ("LIBRARY_PATH", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+        environment[key] = str(shim) + (":" + environment[key] if environment.get(key) else "")
+    compiler = os.environ.get("ALIGNC", str(ROOT / "scripts/alignc"))
+    subprocess.run([compiler, "build", "src/runtime_provider_trace_smoke.align"],
+                   cwd=ROOT, env=environment, check=True)
+    executable = work / "trace"
+    shutil.move(ROOT / "runtime_provider_trace_smoke", executable)
+    subprocess.run([compiler, "build", "src/runtime_case.align"], cwd=ROOT, env=environment, check=True)
+    case_executable = work / "case"
+    shutil.move(ROOT / "runtime_case", case_executable)
+    subprocess.run([compiler, "build", "src/runtime_calibration_seed.align"], cwd=ROOT, env=environment, check=True)
+    seed_executable = work / "calibration-seed"
+    shutil.move(ROOT / "runtime_calibration_seed", seed_executable)
+    fault_environment = dict(environment)
+    fault_shim = work / "nonfinite-shim"
+    fault_environment.update(ALIGN_LLM_GGML_FORCE="engine+gpu+inf-readback",
+                             ALIGN_LLM_GGML_SHIM_DIR=str(fault_shim))
+    subprocess.run([str(ROOT / "scripts/build-ggml-shim")], env=fault_environment, check=True)
+    for key in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+        fault_environment[key] = str(fault_shim) + ":" + environment[key]
+    # ELF DT_NEEDED uses the shim's absolute SONAME, so LD_LIBRARY_PATH cannot
+    # replace it. Explicit interposition is confined to these owned fault children.
+    if sys.platform.startswith("linux"):
+        fault_environment["LD_PRELOAD"] = str(fault_shim / "libalign_ggml_shim.so")
+    native_fault_environments = {}
+    for mode in ("alloc-weights", "transfer", "prefill", "decode", "unsupported"):
+        fault = dict(environment)
+        directory = work / (mode + "-shim")
+        fault.update(ALIGN_LLM_GGML_FORCE="engine+gpu+" + mode, ALIGN_LLM_GGML_SHIM_DIR=str(directory))
+        subprocess.run([str(ROOT / "scripts/build-ggml-shim")], env=fault, check=True)
+        for key in ("DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+            fault[key] = str(directory) + ":" + environment[key]
+        if sys.platform.startswith("linux"):
+            fault["LD_PRELOAD"] = str(directory / "libalign_ggml_shim.so")
+        native_fault_environments[mode] = fault
+    options = bundle(work)
+    sequence_templates = []
+    for architecture, fixture, manifest in (
+        ("qwen2", "runtime_provider_fixture.py", "runtime-manifest.json"),
+        ("olmoe", "olmoe_provider_fixture.py", "olmoe-runtime-manifest.json"),
+    ):
+        fixture_module = importlib.import_module(fixture.removesuffix(".py"))
+        fixture_module.SYSTEM = ""
+        record = fixture_module.build(work)
+        eog_key = "immediate_eog_model"
+        for model_key in ("model", eog_key):
+            model = work / record[model_key]
+            geometry = work / (model.stem + ".json")
+            pack = work / (model.stem + ".alignpack")
+            for arguments in (["--model-ir", str(model), str(geometry)],
+                              ["--pack", str(model), str(pack), str(work / "pack.json")]):
+                subprocess.run([str(ROOT / "main"), *arguments], check=True,
+                               stdout=subprocess.DEVNULL, env=environment)
+            relocated = work / (model.stem + "-relocated")
+            shutil.copyfile(model, relocated)
+            model.unlink()  # The recorded geometry path must never be reopened.
+            model = relocated
+            # Keep the original geometry bytes/path while moving only the actual model.
+            changed_geometry = work / (model.stem + "-changed-geometry.json")
+            geometry_data = geometry.read_bytes()
+            embedding = json.loads(geometry_data)["model"]["n_embd"]
+            changed_geometry.write_bytes(geometry_data.replace(
+                f'"n_embd":{embedding}'.encode(), f'"n_embd":{embedding + 1}'.encode(), 1))
+            refused_root = work / (model.stem + "-refused-geometry")
+            refused_root.mkdir()
+            refused_seed = subprocess.run([str(seed_executable), str(model), str(pack), str(changed_geometry),
+                str(refused_root), "seed", architecture, "x", "1048576" if architecture == "olmoe" else "0"],
+                env=environment, capture_output=True, text=True)
+            assert refused_seed.returncode != 0 and not refused_seed.stdout
+            records = []
+            streams = []
+            for backend in ("cpu", "gpu"):
+                output = work / (model.stem + "-" + backend)
+                output.mkdir()
+                result = subprocess.run([str(executable), str(model), str(pack), str(geometry),
+                    str(output), "trace", str(options) if backend == "gpu" else "", architecture],
+                    env=environment, capture_output=True, text=True)
+                assert result.returncode == 0, (architecture, model_key, backend, result.stdout, result.stderr)
+                lines = result.stdout.splitlines()
+                assert len(lines) == 2 and lines[-1] == "runtime provider trace: PASS", result.stdout
+                records.append(json.loads(lines[0]))
+                if backend == "cpu":
+                    seed_root = work / (model.stem + "-seed")
+                    seed_root.mkdir()
+                    seeded = subprocess.run([str(seed_executable), str(model), str(pack), str(geometry),
+                        str(seed_root), "seed", architecture, "x", "1048576" if architecture == "olmoe" else "0"], env=environment,
+                        capture_output=True, text=True)
+                    assert seeded.returncode == 0, seeded.stderr
+                    assert json.loads(seeded.stdout) == records[-1]
+                observation = records[-1].pop("observation")
+                assert observation["attention_policy"] == "decomposed"
+                if backend == "cpu":
+                    assert observation["available"] is False
+                    assert all(value == 0 or value == "" for key, value in observation.items()
+                               if key not in ("available", "attention_policy")), observation
+                else:
+                    vocabulary = json.loads(geometry.read_bytes())["model"]["n_vocab"]
+                    positions = len(records[-1]["token_ids"])
+                    assert observation["available"] is True
+                    assert observation["read_bytes"] == positions * vocabulary * 4, observation
+                    assert observation["read_calls"] == positions, observation
+                    assert observation["prefill_executions"] == 1, observation
+                    assert observation["decode_executions"] == positions - 1, observation
+                    for key in ("graph_nodes", "weight_upload_count", "weight_upload_bytes",
+                                "input_upload_bytes", "allocated_host_bytes", "allocated_device_bytes",
+                                "weights_buffer_bytes", "kv_buffer_bytes"):
+                        assert observation[key] > 0, (key, observation)
+                    assert observation["bundle_id"] == json.loads((work / "bundle/manifest.json").read_bytes())["bundle_id"]
+                    assert observation["device_name"] == "stub-gpu" and observation["device_description"]
+                    assert observation["managed_host_peak_bytes"] == observation["allocated_host_bytes"]
+                    assert observation["managed_device_peak_bytes"] >= observation["allocated_device_bytes"]
+                    assert 0 < observation["resident_weight_payload_bytes"] <= observation["weights_buffer_bytes"]
+                    assert 0 < observation["resident_kv_payload_bytes"] <= observation["kv_buffer_bytes"]
+                    assert 0 <= observation["device_free_bytes"] <= observation["device_total_bytes"]
+                    assert observation["device_total_bytes"] > 0
+
+                traversal = Traversal.derive(json.loads(geometry.read_bytes()), {
+                    "prompt_token_ids": records[-1]["prompt_ids"],
+                    "teacher_forced_token_ids": [0, 1], "maximum_tokens": 2,
+                    "expected_token_ids": records[-1]["token_ids"],
+                })
+                expected_frames = []
+                for instruction in traversal.instructions():
+                    if isinstance(instruction, Router):
+                        for offset, (kind, width) in enumerate(((3, instruction.experts),
+                                (4, instruction.selected), (5, instruction.selected))):
+                            expected_frames.append(Frame(kind, instruction.layer, instruction.step,
+                                width, 1, width * 4, instruction.ordinal + offset))
+                    else:
+                        expected_frames.append(instruction)
+                path = output / "trace"
+                with NumericStream(path, model=1 if architecture == "qwen2" else 2,
+                                   maximum_bytes=16777216) as stream:
+                    for expected_frame in expected_frames:
+                        frame = stream.read_frame()
+                        assert frame == expected_frame, (architecture, model_key, backend, frame, expected_frame)
+                        remaining = frame.payload_bytes
+                        while remaining:
+                            remaining -= len(stream.read_payload())
+                    assert stream.read_frame() is None and stream.verified
+                    assert path.stat().st_size == traversal.maximum_bytes
+                streams.append(path.read_bytes())
+                case_root = output / "case"
+                case_root.mkdir()
+                case_input = {
+                    "schema_version": 1, "artifact_kind": "GPU_RUNTIME_CASE_INPUT",
+                    "model_id": architecture, "model_path": str(model), "pack_path": str(pack),
+                    "geometry_path": str(geometry), "options_path": str(options) if backend == "gpu" else "",
+                    "cache_budget_bytes": 1048576 if architecture == "olmoe" else 0,
+                    "prompt_utf8": "x", "maximum_tokens": 2, "temperature_micros": 0, "seed": 0,
+                    "expected_prompt_ids": records[-1]["prompt_ids"],
+                    "expected_token_ids": records[-1]["token_ids"],
+                    "expected_output_utf8": records[-1]["text"], "forced_ids": [0, 1],
+                    "stream_root": str(case_root), "stream_name": "numeric",
+                    "stream_limit": traversal.maximum_bytes,
+                }
+                frozen_case = {
+                    "prompt_token_ids": records[-1]["prompt_ids"], "teacher_forced_token_ids": [0, 1],
+                    "maximum_tokens": 2, "expected_token_ids": records[-1]["token_ids"],
+                    "prompt_utf8": "x", "prompt_sha256": digest(b"x"),
+                    "expected_output_utf8": records[-1]["text"],
+                    "expected_output_sha256": digest(records[-1]["text"].encode()),
+                    "temperature_micros": 0, "seed": 0, "sampler_mode": "greedy",
+                }
+                native_case = native.prepare(model_id=architecture, geometry=json.loads(geometry.read_bytes()),
+                    calibration_case=frozen_case, model_path=model, pack_path=pack, geometry_path=geometry,
+                    options_path=options if backend == "gpu" else None,
+                    cache_budget_bytes=1048576 if architecture == "olmoe" else 0,
+                    stream_root=case_root, stream_name="numeric")
+                assert native_case.input_bytes() == canonical(case_input)
+                sequence_templates.append(native_sequence.Plan(
+                    (architecture, model_key.replace("_", "-"), 0), native_case, case_executable,
+                    digest(case_executable.read_bytes()),
+                    {key: "00000000" for key in ("absolute_tolerance_f32_bits", "relative_tolerance_f32_bits",
+                                                 "near_tie_tolerance_f32_bits")},
+                    observation["bundle_id"] if backend == "gpu" else None,
+                    "stub-gpu" if backend == "gpu" else None))
+                input_path = output / "case-input.json"
+                input_path.write_bytes(canonical(case_input))
+                case_run = subprocess.run([str(case_executable), str(input_path)], env=environment,
+                                          capture_output=True, timeout=30)
+                assert case_run.returncode == 0, (architecture, model_key, backend, case_run.stdout, case_run.stderr)
+                validated = native.success(case_run.stdout, native_case,
+                    expected_bundle_id=observation["bundle_id"] if backend == "gpu" else None,
+                    expected_device="stub-gpu" if backend == "gpu" else None)
+                assert validated.output_sha256 == frozen_case["expected_output_sha256"]
+                assert validated.stream_sha256 == digest((case_root / "numeric").read_bytes())
+                legacy = json.loads(case_run.stdout)
+                legacy["schema_version"] = 1
+                del legacy["production"]["observation"]["attention_policy"]
+                native.success_metadata(canonical(legacy), native_case,
+                    expected_bundle_id=observation["bundle_id"] if backend == "gpu" else None,
+                    expected_device="stub-gpu" if backend == "gpu" else None)
+                for policy in ("flash_f32", "auto", None):
+                    changed = json.loads(case_run.stdout)
+                    changed["production"]["observation"]["attention_policy"] = policy
+                    try:
+                        native.success_metadata(canonical(changed), native_case,
+                            expected_bundle_id=observation["bundle_id"] if backend == "gpu" else None,
+                            expected_device="stub-gpu" if backend == "gpu" else None)
+                    except RecipeError:
+                        pass
+                    else:
+                        raise AssertionError("invented native attention policy passed")
+                case_output = json.loads(case_run.stdout)
+                assert list(case_output) == ["schema_version", "artifact_kind", "production", "stream_bytes", "stream_records"]
+                assert case_output["schema_version"] == 2 and case_output["artifact_kind"] == "GPU_RUNTIME_CASE_OUTPUT"
+                case_production = case_output["production"]
+                assert case_production.pop("observation") == observation
+                assert case_production == records[-1]
+                assert case_output["stream_bytes"] == traversal.maximum_bytes
+                assert case_output["stream_records"] == traversal.frame_count
+                assert (case_root / "numeric").read_bytes()[24:] == streams[-1][24:]
+                if architecture == "qwen2" and model_key == "model" and backend == "gpu":
+                    for key in ("resident_weight_payload_bytes", "resident_kv_payload_bytes", "weight_upload_count",
+                                "managed_host_peak_bytes", "managed_device_peak_bytes", "model_operations",
+                                "model_layers", "model_experts", "device_total_bytes"):
+                        changed = json.loads(case_run.stdout)
+                        changed["production"]["observation"][key] = (
+                            changed["production"]["observation"][key] - 1
+                            if "peak" not in key and key != "device_total_bytes" else 0)
+                        try:
+                            native.success(canonical(changed), native_case,
+                                expected_bundle_id=observation["bundle_id"], expected_device="stub-gpu")
+                        except RecipeError:
+                            pass
+                        else:
+                            raise AssertionError("mutated residency or memory peak was accepted: " + key)
+                    for section, key, value in (("coverage", "assigned_tensor_count", 1),
+                                                ("coverage", "size_sum_ok", False),
+                                                ("quant", "total_tensor_bytes", 1),
+                                                ("model", "head_dim", (1 << 63) - 1)):
+                        changed_geometry = json.loads(geometry.read_bytes())
+                        changed_geometry[section][key] = value
+                        try:
+                            native.Residency.derive(changed_geometry, traversal, 2)
+                        except RecipeError:
+                            pass
+                        else:
+                            raise AssertionError("mutated residency geometry was accepted")
+                    for mode, category, stage in (
+                        ("alloc-weights", "ALLOCATION", "allocate"), ("transfer", "TRANSFER", "upload"),
+                        ("prefill", "COMPUTE", "prefill"), ("decode", "COMPUTE", "decode"),
+                        ("unsupported", "UNSUPPORTED_CAPABILITY", "plan"),
+                        ("device", "DEVICE_UNAVAILABLE", "device"), ("budget", "MEMORY_BUDGET", "plan"),
+                    ):
+                        refused_root = output / ("native-fault-" + mode)
+                        refused_root.mkdir()
+                        document = {**case_input, "stream_root": str(refused_root)}
+                        if mode in {"device", "budget"}:
+                            changed = json.loads(options.read_bytes())
+                            if mode == "device":
+                                changed["device"] = "absent-device"
+                            else:
+                                changed["device_budget_bytes"] = 1
+                            changed_path = refused_root / "options.json"
+                            changed_path.write_bytes(canonical(changed))
+                            document["options_path"] = str(changed_path)
+                        input_path.write_bytes(canonical(document))
+                        refused = subprocess.run([str(case_executable), str(input_path)],
+                            env=native_fault_environments.get(mode, environment), capture_output=True, timeout=30)
+                        assert refused.returncode != 0, (mode, refused.stdout)
+                        first = native.failure(refused.stdout, native_case)
+                        assert (first["category"], first["stage"]) == (category, stage), (mode, first)
+                        assert first["phase"] == "production" and first["stream_nonfinite_count"] == 0
+                        assert first["stream_records"] == (1 if mode == "decode" else 0), (mode, first)
+                        for field, value in (("category", "PROCESS"), ("stage", "case_spawn"),
+                                             ("category", []), ("stream_nonfinite_count", 1)):
+                            altered = {**first, field: value}
+                            try:
+                                native.failure(canonical(altered), native_case)
+                            except RecipeError:
+                                pass
+                            else:
+                                raise AssertionError("invalid native first-fault record admitted")
+                    fault_root = output / "nonfinite"
+                    fault_root.mkdir()
+                    input_path.write_bytes(canonical({**case_input, "stream_root": str(fault_root)}))
+                    nonfinite = subprocess.run([str(case_executable), str(input_path)], env=fault_environment,
+                                               capture_output=True, timeout=30)
+                    assert nonfinite.returncode != 0, nonfinite.stdout
+                    failure = native.failure(nonfinite.stdout, native_case)
+                    assert failure["artifact_kind"] == "GPU_RUNTIME_CASE_FAILURE" and failure["phase"] == "production"
+                    assert failure["stream_nonfinite_count"] > 0 and failure["stream_records"] == 0, failure
+                if architecture == "qwen2" and model_key == "model" and backend == "cpu":
+                    pristine_output = json.loads(case_run.stdout)
+                    for changed_output in (
+                        {**pristine_output, "unknown": 1},
+                        {**pristine_output, "stream_records": True},
+                        {**pristine_output, "stream_bytes": traversal.maximum_bytes - 1},
+                        {**pristine_output, "production": {**pristine_output["production"], "text": "drift"}},
+                        {**pristine_output, "production": {**pristine_output["production"], "token_ids": [True]}},
+                        {**pristine_output, "production": {**pristine_output["production"],
+                            "observation": {**pristine_output["production"]["observation"], "graph_nodes": 1}}},
+                    ):
+                        try:
+                            native.success(canonical(changed_output), native_case)
+                        except RecipeError:
+                            pass
+                        else:
+                            raise AssertionError("mutated native output was accepted")
+                    numeric_path = case_root / "numeric"
+                    numeric_bytes = numeric_path.read_bytes()
+                    poisoned = bytearray(numeric_bytes)
+                    poisoned[64:68] = bytes.fromhex("0000807f")
+                    numeric_path.write_bytes(poisoned)
+                    try:
+                        native.success(case_run.stdout, native_case)
+                    except RecipeError:
+                        pass
+                    else:
+                        raise AssertionError("nonfinite native numeric payload was accepted")
+                    numeric_path.write_bytes(numeric_bytes)
+                    variants = [
+                        {**case_input, "unknown": 1},
+                        {key: value for key, value in case_input.items() if key != "seed"},
+                        {**case_input, "expected_prompt_ids": [0]},
+                        {**case_input, "expected_token_ids": [0]},
+                        {**case_input, "expected_output_utf8": "wrong"},
+                        {**case_input, "forced_ids": []},
+                        {**case_input, "forced_ids": [-1]},
+                        {**case_input, "maximum_tokens": 129},
+                        {**case_input, "model_id": "olmoe"},
+                        {**case_input, "stream_limit": 108},
+                    ]
+                    for ordinal, variant in enumerate(variants):
+                        refused_root = output / f"refusal-{ordinal}"
+                        refused_root.mkdir()
+                        variant["stream_root"] = str(refused_root)
+                        input_path.write_bytes(canonical(variant))
+                        refused = subprocess.run([str(case_executable), str(input_path)], env=environment,
+                                                 capture_output=True, timeout=30)
+                        assert refused.returncode != 0, (ordinal, refused.stdout)
+                        if ordinal in (2, 3, 4, 9):
+                            failure = json.loads(refused.stdout)
+                            assert list(failure) == ["schema_version", "artifact_kind", "phase", "category", "stage", "stream_nonfinite_count", "stream_bytes", "stream_records"]
+                            assert failure["schema_version"] == 1 and failure["artifact_kind"] == "GPU_RUNTIME_CASE_FAILURE"
+                            assert failure["phase"] == ("production" if ordinal == 9 else "production_binding")
+                            assert failure["stream_nonfinite_count"] == 0 and failure["stream_bytes"] >= 24
+                        else:
+                            assert refused.stdout == b"", (ordinal, refused.stdout)
+                    duplicate = canonical(case_input).replace(b'{"schema_version":1,', b'{"schema_version":1,"schema_version":1,', 1)
+                    input_path.write_bytes(duplicate)
+                    refused = subprocess.run([str(case_executable), str(input_path)], env=environment,
+                                             capture_output=True, timeout=30)
+                    assert refused.returncode != 0 and refused.stdout == b""
+                    # A fresh success after refusals also retains the previously occupied result.
+                    fresh = output / "after-refusal"
+                    fresh.mkdir()
+                    input_path.write_bytes(canonical({**case_input, "stream_root": str(fresh)}))
+                    recovered = subprocess.run([str(case_executable), str(input_path)], env=environment,
+                                               capture_output=True, timeout=30)
+                    assert recovered.returncode == 0, recovered.stderr
+                    assert (fresh / "numeric").read_bytes() == (case_root / "numeric").read_bytes()
+
+            assert records[0] == records[1], (architecture, model_key, records)
+            assert len(records[0]["prompt_ids"]) == record["prompt_tokens"]
+            if model_key == eog_key:
+                assert records[0]["text"] == "" and len(records[0]["token_ids"]) == 1, records
+            else:
+                assert len(records[0]["token_ids"]) == 2, records
+            assert streams[0] == streams[1], (architecture, model_key)
+    home = work / "sequence-home"
+    temporary = work / "sequence-tmp"
+    home.mkdir(mode=0o700)
+    temporary.mkdir(mode=0o700)
+
+    def plans_for(prefix):
+        plans = []
+        for start in range(0, len(sequence_templates), 2):
+            for repeat in (0, 1):
+                for template in sequence_templates[start:start + 2]:
+                    document = {**template.case.document, "stream_root": str(work / f"{prefix}-{len(plans):03d}")}
+                    plans.append(dataclasses.replace(template,
+                        identity=(*template.identity[:2], repeat),
+                        case=dataclasses.replace(template.case, document=document)))
+        return plans
+
+    observed_cases = []
+    plans = plans_for("complete")
+    expected_rows = [{
+        "case_id": f"{plan.identity[1]}.{'gpu_resident' if plan.gpu else 'cpu'}.{plan.identity[2]}",
+        "calibration_case_id": plan.identity[1], "role": "calibration",
+        "execution": "gpu_resident" if plan.gpu else "cpu", "repeat_index": plan.identity[2],
+        "model_id": plan.identity[0], "option_id": "resident" if plan.gpu else "",
+        "maximum_tokens": plan.case.document["maximum_tokens"],
+    } for plan in plans]
+    collector = CaseRecords(expected_rows, plans)
+    provided_sequence = CaseSequence(16, 30_000_000_000)
+    def collect_case(ordinal, outcome):
+        observed_cases.append((ordinal, outcome))
+        return collector.consume(ordinal, outcome)
+    state = native_sequence.run(plans, budget_ns=30_000_000_000, work=work, home=home,
+        temporary=temporary, consume=collect_case, sequence=provided_sequence)
+    assert state is provided_sequence
+    collector.finish(state)
+    assert len(collector.rows) == 16 and len(collector.retained) == 48
+    assert all(row["terminal"] == "PASS" and row["memory"]["rss_peak_bytes"] > 0 for row in collector.rows)
+    assert state.complete and len(observed_cases) == 16, (state.failure_detail, observed_cases[-1:])
+    for ordinal, outcome in observed_cases:
+        assert outcome.accepted and outcome.process.exit_code == 0
+        assert outcome.process.command["environment"] == ["HOME=<home>:owned", "LC_ALL=C", "TMPDIR=<tmp>:owned", "TZ=UTC"]
+        if ordinal % 2:
+            assert outcome.numeric["compared"] and outcome.numeric["mismatch_count"] == 0
+        else:
+            assert outcome.numeric is None
+    assert all(not Path(plan.case.document["stream_root"]).exists() for plan in plans)
+
+    # Expiry inside either native validation or paired comparison keeps the actual child result,
+    # closes both streams and removes the full owned prefix before another child can start.
+    for boundary in ("native", "pair"):
+        plans = plans_for("deadline-" + boundary)
+        expired_outcomes = []
+        provided = CaseSequence(len(plans), 30_000_000_000)
+        original = native_sequence.success if boundary == "native" else Traversal.compare
+        def expire_validation(*args, **kwargs):
+            assert kwargs["deadline"].monotonic_ns == provided.deadline_ns
+            with mock.patch("gpu_qualification_deadline.time.monotonic_ns", return_value=provided.deadline_ns + 1):
+                return original(*args, **kwargs)
+        target, name = (native_sequence, "success") if boundary == "native" else (Traversal, "compare")
+        with mock.patch.object(target, name, expire_validation):
+            state = native_sequence.run(plans, budget_ns=30_000_000_000, work=work, home=home,
+                temporary=temporary, consume=lambda index, outcome: expired_outcomes.append(outcome) or True,
+                sequence=provided)
+        assert state.failure_ordinal == (0 if boundary == "native" else 1)
+        assert len(expired_outcomes) == state.failure_ordinal + 1
+        last = expired_outcomes[-1]
+        assert last.process.exit_code == 0 and last.error == EXPIRED and not last.accepted
+        assert last.numeric is None
+        assert all(not Path(plan.case.document["stream_root"]).exists() for plan in plans)
+
+    # Mutating an already-validated CPU stream cannot establish a replacement reference digest.
+    plans = plans_for("cpu-drift")
+    drift_outcomes = []
+    def drift_cpu(ordinal, outcome):
+        drift_outcomes.append(outcome)
+        if ordinal == 0:
+            path = plans[0].case.stream_path
+            raw = bytearray(path.read_bytes())
+            raw[64] ^= 1
+            path.write_bytes(raw)
+        return True
+    state = native_sequence.run(plans, budget_ns=30_000_000_000, work=work, home=home,
+                                temporary=temporary, consume=drift_cpu)
+    assert state.failure_ordinal == 1 and state.accepted == 1 and len(drift_outcomes) == 2
+    assert drift_outcomes[-1].process.exit_code == 0 and not drift_outcomes[-1].accepted
+    assert all(not Path(plan.case.document["stream_root"]).exists() for plan in plans)
+
+    # A deliberately incorrect finite candidate exits zero; comparison must retain that code.
+    bad_candidate = work / "finite-drift-candidate"
+    bad_candidate.write_text("#!" + sys.executable + "\n" +
+        "import json,pathlib,struct,subprocess,sys\n" +
+        "result=subprocess.run([" + repr(str(case_executable)) + ",sys.argv[1]],capture_output=True)\n" +
+        "if result.returncode == 0:\n" +
+        " data=json.loads(pathlib.Path(sys.argv[1]).read_bytes());path=pathlib.Path(data['stream_root'])/data['stream_name']\n" +
+        " raw=bytearray(path.read_bytes());at=24\n" +
+        " while at < len(raw):\n" +
+        "  kind,layer,step,width,height,reserved,length,ordinal=struct.unpack_from('<6I2Q',raw,at)\n" +
+        "  if kind==2: raw[at+40] ^= 1;break\n" +
+        "  at+=40+length\n" +
+        " path.write_bytes(raw)\n" +
+        "sys.stdout.buffer.write(result.stdout);sys.stderr.buffer.write(result.stderr);sys.exit(result.returncode)\n")
+    bad_candidate.chmod(0o700)
+    plans = plans_for("finite-drift")
+    plans[1] = dataclasses.replace(plans[1], executable=bad_candidate,
+                                   executable_sha256=digest(bad_candidate.read_bytes()))
+    mismatch_outcomes = []
+    state = native_sequence.run(plans, budget_ns=30_000_000_000, work=work, home=home,
+        temporary=temporary, consume=lambda ordinal, outcome: mismatch_outcomes.append(outcome) is None)
+    assert state.failure_ordinal == 1 and state.accepted == 1 and len(mismatch_outcomes) == 2
+    mismatch = mismatch_outcomes[-1]
+    assert mismatch.process.exit_code == 0 and mismatch.native is not None and not mismatch.accepted
+    assert mismatch.numeric["mismatch_count"] > 0, mismatch
+    assert all(not Path(plan.case.document["stream_root"]).exists() for plan in plans)
+
+    plans = plans_for("occupied")
+    occupied = Path(plans[0].case.document["stream_root"])
+    occupied.mkdir()
+    (occupied / "sentinel").write_bytes(b"preserve")
+    state = native_sequence.run(plans, budget_ns=30_000_000_000, work=work, home=home,
+        temporary=temporary, consume=lambda ordinal, outcome: (_ for _ in ()).throw(AssertionError("unexpected child")))
+    assert state.failure_ordinal == 0 and state.failed_result is None
+    assert (occupied / "sentinel").read_bytes() == b"preserve"
+
+print("gpu provider trace: PASS (source admission, prompt binding, CPU/GPU output and streams, EOG, cleanup)")

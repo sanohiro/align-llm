@@ -195,6 +195,63 @@ the existing real shared shim. Do not prepopulate `build/lib` as an implicit pre
 default build deliberately ignores it so a clean checkout and a cached developer tree behave the
 same way.
 
+G1's backend build is `scripts/gpu_backend_recipe.py`. It accepts only a clean checkout at the
+pinned llama.cpp commit and origin, independently checks every working file against its Git blob,
+and requires a new output path. The result separates `bundle/`, which is the
+`runtime_options.backend_bundle` directory, from `source/`, which contains the canonical complete
+source manifest, raw commit and deduplicated content-addressed blobs retained by qualification.
+Both backend plans are visible without building:
+
+```sh
+scripts/gpu_backend_recipe.py --backend metal --print-plan
+scripts/gpu_backend_recipe.py --backend cuda --print-plan
+```
+
+Build on the matching host with:
+
+```sh
+scripts/gpu_backend_recipe.py --backend metal --source LLAMA_CPP --output NEW_DIRECTORY
+scripts/gpu_backend_recipe.py --backend cuda --source LLAMA_CPP --output NEW_DIRECTORY
+```
+
+The Metal tuple is macOS/AArch64/Apple M1. The CUDA tuple is Linux/x86_64/SM89. The recipes disable
+the CPU backend and ambient CPU libraries, build dynamic backends, use only relative loader rpaths,
+and fix CUDA graph and Flash Attention compilation on. The recipe resolves Git, CMake, Ninja and
+the platform toolchain once from `PATH`; `CC`, `CXX`, and `CUDACXX` are the explicit compiler
+overrides. It then runs every probe and build with their resolved absolute paths, a fresh home/temp
+directory and a closed environment. Each schema-1 toolchain digest covers the raw stdout of the
+named absolute probe command (`--version`, or the fixed macOS SDK query). The actual CMake argv
+suffix, including resolved compiler and Ninja paths, is retained as `build_flags`.
+
+The build reconstructs a private source tree from the captured Git blobs and never compiles the
+caller checkout. Before publication, the recipe replays the retained canonical manifest, commit,
+blobs, and reconstructed Git trees without trusting local ancestry. It enforces the bundle's
+per-artifact and aggregate 512 MiB bounds and atomically refuses an occupied output path. `make
+gpu-backend-recipe-smoke` owns both fixed command plans and `make
+gpu-source-replay` owns retained source identity and closure; actual Metal/CUDA qualification
+owns the compiled artifacts and device load.
+
+`make gpu-profile-coverage` validates the normative schema-1 runtime option, source manifests,
+backend bundle, two numeric calibrations and complete two-model qualification profile. It checks
+self-identities and cross-record digests, model/backend/platform/budget bindings, and derives every
+contiguous `(cpu,0),(gpu_resident,0),(cpu,1),(gpu_resident,1)` case row from the frozen calibration
+and holdout inputs. It is model-free and does not claim that a GPU case executed.
+
+`make gpu-result-replay` materializes the normative pre-case FAIL vector as its complete evidence
+directory, validates the result/profile/bundle/calibration cross-references, checks exact file roles,
+sizes, digests and directory closure, then replays both retained Git source snapshots. It rejects
+mutated, extra, symlinked, hard-linked, noncanonical and role-mismatched evidence without requiring
+a model or GPU.
+
+`make gpu-command-environment` rechecks every logical path identity immediately before spawning an
+absolute executable with only its owned HOME/TMPDIR plus `LC_ALL=C` and `TZ=UTC`. The smoke proves
+ambient variables do not cross the boundary and that a changed executable is refused.
+`make gpu-process-cleanup` covers signal and timeout classification, process-group termination,
+post-cleanup membership inspection, and bounded log retention with complete-stream counts and
+digests. `make gpu-build-failure-evidence` converts a real nonzero candidate build into the strict
+preparation-command prefix, unavailable produced identity, bounded logs and top-level schema-1
+BUILD failure. These fixture owners make no GPU claim.
+
 ## Repository-index development
 
 The current C2 slice is `src/repo_index.align`. It asks Git for the tracked file list with

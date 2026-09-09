@@ -1,0 +1,74 @@
+module runtime_weights
+
+import ggml_ffi
+
+pub Shape {
+  ggml_type: i64,
+  n_dims: i64,
+  ne0: i64,
+  ne1: i64,
+  ne2: i64,
+  ne3: i64,
+}
+
+pub fn metadata_bytes(tensor_count: i64) -> i64 =
+ggml_ffi.gpu_weight_metadata_bytes(tensor_count)
+
+pub fn allocation_bytes(
+  borrow owner: ggml_ffi.GpuDevice,
+  shape: Shape,
+) -> Result<i64, Error> = match ggml_ffi.gpu_weight_allocation_bytes(
+  owner,
+  shape.ggml_type,
+  shape.n_dims,
+  shape.ne0,
+  shape.ne1,
+  shape.ne2,
+  shape.ne3,
+) {
+  Ok(bytes) => Ok(bytes),
+  Err(_) => Err(Error.Invalid),
+}
+
+pub fn begin(borrow owner: ggml_ffi.GpuDevice, tensor_count: i64) -> Result<(), Error> {
+  ggml_ffi.gpu_weights_begin(owner, tensor_count) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn add(borrow owner: ggml_ffi.GpuDevice, shape: Shape) -> Result<i64, Error> =
+match ggml_ffi.gpu_weight_add(
+  owner,
+  shape.ggml_type,
+  shape.n_dims,
+  shape.ne0,
+  shape.ne1,
+  shape.ne2,
+  shape.ne3,
+) {
+  Ok(index) => Ok(index),
+  Err(_) => Err(Error.Invalid),
+}
+
+pub fn upload(
+  borrow owner: ggml_ffi.GpuDevice,
+  index: i64,
+  offset: i64,
+  borrow data: slice<u8>,
+) -> Result<(), Error> {
+  ggml_ffi.gpu_weight_upload(owner, index, offset, data) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn finish(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {
+  ggml_ffi.gpu_weights_finish(owner) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn state(borrow owner: ggml_ffi.GpuDevice, field: i64) -> i64 =
+ggml_ffi.gpu_weight_state(owner, field)

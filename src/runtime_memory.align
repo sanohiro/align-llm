@@ -1,0 +1,59 @@
+module runtime_memory
+
+import ggml_ffi
+
+pub MemoryPlan {
+  weights_bytes: i64,
+  kv_bytes: i64,
+  workspace_bytes: i64,
+  metadata_bytes: i64,
+  staging_bytes: i64,
+  legacy_cache_bytes: i64,
+}
+
+pub fn admit(borrow owner: ggml_ffi.GpuDevice, plan: MemoryPlan) -> Result<(), Error> {
+  ggml_ffi.gpu_memory_admit(
+    owner,
+    plan.weights_bytes,
+    plan.kv_bytes,
+    plan.workspace_bytes,
+    plan.metadata_bytes,
+    plan.staging_bytes,
+    plan.legacy_cache_bytes,
+  ) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn bytes(borrow owner: ggml_ffi.GpuDevice, field: i64) -> i64 =
+ggml_ffi.gpu_memory_bytes(owner, field)
+
+pub fn plan_begin(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {
+  ggml_ffi.gpu_plan_begin(owner) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn plan_finish(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {
+  ggml_ffi.gpu_plan_finish(owner) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn allocate(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {
+  ggml_ffi.gpu_memory_allocate(owner) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn allocated_bytes(borrow owner: ggml_ffi.GpuDevice, field: i64) -> i64 =
+ggml_ffi.gpu_memory_allocated_bytes(owner, field)
+
+pub fn plan_cancel(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {
+  ggml_ffi.gpu_plan_cancel(owner) else { return Err(Error.Invalid) }
+  return Ok(())
+}

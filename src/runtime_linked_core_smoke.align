@@ -1,0 +1,28 @@
+module runtime_linked_core_smoke
+
+import ggml_ffi
+import runtime_bundle
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 4 { return Err(Error.Invalid) }
+  if !ggml_ffi.gpu_core_required() { return Err(Error.Invalid) }
+  verified := runtime_bundle.verify(args[1], args[2], 1073741824)?
+  mut accepted := true
+  mut core: i32 := 0
+  loop {
+    if core >= 2 { break }
+    actual := ggml_ffi.gpu_core_identity(core, 0)
+    digest := ggml_ffi.gpu_core_identity(core, 1)
+    if !runtime_bundle.verify_core(verified, core, actual, digest, 1073741824) {
+      accepted = false
+    }
+    core = core + 1
+  }
+  runtime_bundle.cleanup(verified)?
+  if accepted != (args[3] == "accept") { return Err(Error.Invalid) }
+  if ggml_ffi.gpu_core_identity(-1, 0) != "" || ggml_ffi.gpu_core_identity(0, 2) != "" {
+    return Err(Error.Invalid)
+  }
+  print("linked core admission: PASS")
+  return Ok(())
+}

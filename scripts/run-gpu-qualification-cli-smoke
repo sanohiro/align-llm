@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""Exercise G1 qualifier CLI admission before output, scratch, or device side effects."""
+
+from __future__ import annotations
+
+import importlib.machinery
+import hashlib
+import json
+import pathlib
+import sys
+import tempfile
+import time
+from unittest import mock
+from types import SimpleNamespace
+
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import gpu_qualification_build as build  # noqa: E402
+import gpu_qualification_cli as cli  # noqa: E402
+import gpu_qualification_host as host  # noqa: E402
+from gpu_qualification_run import PreparationState  # noqa: E402
+from gpu_backend_recipe import RecipeError  # noqa: E402
+
+
+def fixture_module():
+    path = ROOT / "scripts" / "run-gpu-input-admission-smoke"
+    loader = importlib.machinery.SourceFileLoader("gpu_input_fixture_cli", str(path))
+    return loader.load_module()
+
+
+def rejected(call, message: str) -> None:
+    try:
+        call()
+    except RecipeError as error:
+        assert message in str(error), (message, str(error))
+    else:
+        raise AssertionError(f"gpu qualifier CLI unexpectedly passed: {message}")
+
+
+def build_construction_owner(parent: pathlib.Path) -> None:
+    work = parent / "build-construction"
+    work.mkdir(mode=0o700)
+    entry = work / "main.align"
+    entry.write_text("fn main() {}\n")
+    shim = work / "shim.c"
+    shim.write_text("int shim(void) { return 0; }\n")
+    shell = pathlib.Path("/bin/sh").resolve(strict=True)
+    arguments = dict(
+        work=work, compiler=shell, runtime=shell, copier=shell, driver=shell,
+        reference_driver=shell,
+        entry=entry, shim_source=shim, platform="macos", align_revision="a" * 40,
+        source_commit="b" * 40,
+    )
+    before = set(work.iterdir())
+    for changes, message in (
+        ({"platform": "other"}, "platform is unsupported"),
+        ({"align_revision": "invalid"}, "revision is invalid"),
+        ({"ggml_include": work}, "both ggml"),
+        ({"ggml_include": parent, "backend_library": parent}, "outside the private"),
+        ({"entry": shim}, "entry filename"),
+    ):
+        rejected(lambda changes=changes: build.commands(**(arguments | changes)), message)
+        assert set(work.iterdir()) == before
+    (work / "alignc").write_bytes(b"occupied")
+    occupied = set(work.iterdir())
+    rejected(lambda: build.commands(**arguments), "output is occupied")
+    assert set(work.iterdir()) == occupied
+    (work / "alignc").unlink()
+
+    include = work / "ggml-include"
+    library = work / "backend"
+    include.mkdir(mode=0o700)
+    library.mkdir(mode=0o700)
+    for name in ("ggml", "ggml-base"):
+        (library / f"lib{name}.dylib").write_bytes(name.encode())
+    planned = build.commands(**arguments, ggml_include=include, backend_library=library)
+    for core, name in (("BASE", "ggml-base"), ("REGISTRY", "ggml")):
+        digest = hashlib.sha256(name.encode()).hexdigest()
+        definition = f'-DALIGN_GPU_CORE_{core}_SHA256="{digest}"'
+        assert definition in planned[2].physical_argv
+        assert definition in planned[2].logical_argv
+    assert len(planned) == 5
+    assert planned[0].output == work / "alignc"
+    assert planned[1].output == work / "libalign_runtime.a"
+    assert planned[2].output == work / "libalign_ggml_shim.dylib"
+    assert planned[3].output == work / "main"
+    assert planned[4].output == work / "cpu-reference" / "main"
+    assert planned[3].physical_argv == planned[4].physical_argv
+    assert planned[3].cwd == work and planned[4].cwd == work / "cpu-reference"
+    assert "<ggml-include>:owned" in planned[2].logical_argv
+    assert planned[2].mappings["<backend-library>:owned"] == library
+    assert (work / "cpu-reference").stat().st_mode & 0o077 == 0
+
+
+def host_admission_owner(parent: pathlib.Path) -> None:
+    root = parent / "host"
+    root.mkdir(mode=0o700)
+    sdk = root / "sdk"
+    sdk.mkdir()
+    (sdk / "SDKSettings.json").write_text("fixture SDK")
+    alternative = root / "other-sdk"
+    alternative.mkdir()
+    support = root / "support"
+    support.mkdir()
+    for name in ("crypto", "ssl", "zstd"):
+        (support / ("lib" + name + ".a")).write_bytes(b"!<arch>\n")
+    tool = root / "probe.py"
+    tool.write_text(
+        f"#!{sys.executable}\nimport os, pathlib, sys\n"
+        f"root = pathlib.Path({str(root)!r})\n"
+        "mode = (root / 'mode').read_text() if (root / 'mode').exists() else ''\n"
+        "assert set(os.environ) - {'__CF_USER_TEXT_ENCODING'} == {'HOME', 'LC_ALL', 'TMPDIR', 'TZ'}\n"
+        "if mode == 'failure': raise SystemExit(7)\n"
+        "if mode == 'metadata' and sys.argv[-1] == '--version':\n"
+        "    (root / 'sdk/SDKSettings.json').write_text('changed SDK')\n"
+        "if sys.argv[1:2] == ['--find']:\n"
+        "    print('relative' if mode == 'relative' else root / sys.argv[2])\n"
+        "elif sys.argv[-1] == '--show-sdk-path':\n"
+        "    seen = (root / 'seen').exists()\n"
+        "    (root / 'seen').touch()\n"
+        "    print(root / ('other-sdk' if seen and mode == 'drift' else 'sdk'))\n"
+        "elif sys.argv[-1] == '--show-sdk-version': print('1.2')\n"
+        "elif sys.argv[1] == '--variable=libdir': print(root / 'support')\n"
+        "else: print('' if mode == 'malformed' else 'fixture compiler')\n",
+        encoding="utf-8",
+    )
+    tool.chmod(0o700)
+    for name in ("cmake", "ninja", "xcrun", "clang", "clang++", "ar", "ranlib", "ld",
+                 "cc", "c++", "ldd", "nvcc", "pkg-config"):
+        (root / name).symlink_to(tool)
+
+    def find(name):
+        return host.ToolchainExecutable.admit(root / name)
+
+    def identity(name, version):
+        return {"name": name, "version": version,
+                "sha256": hashlib.sha256((version + "\n").encode()).hexdigest()}
+
+    expected = {"c_compiler": identity("cc", "fixture compiler"),
+                "cxx_compiler": identity("cxx", "fixture compiler"),
+                "sdk": identity("macos", "1.2"),
+                "toolkit": {"name": "none", "version": "none", "sha256": host.EMPTY_DIGEST}}
+    arguments = dict(platform="macos", expected=expected, work=root, home=root, temporary=root,
+                     deadline_ns=time.monotonic_ns() + 60_000_000_000)
+    with mock.patch.object(host, "_find", find), mock.patch.object(host, "_platform", return_value="macos"):
+        admitted = host.admit_host(**arguments)
+        assert admitted.identities == expected and admitted.sdk.path == sdk.resolve()
+        assert admitted.tools["cxx"].path.name == "clang++"
+        assert set(admitted.support_archives) == {"crypto", "ssl", "zstd"}
+        rejected(lambda: build.compiler_materialization_command(
+            work=root, compiler=tool, python=host.ToolchainExecutable.admit(pathlib.Path(sys.executable)),
+            helper=ROOT / "scripts/gpu_compiler_materialize.py", cc=admitted.tools["cc"],
+            linker=admitted.tools["linker"], git=admitted.tools["cc"], sdk=admitted.sdk,
+            platform="macos", align_revision="a" * 40,
+            support_archives={"crypto": admitted.support_archives["crypto"]},
+        ), "archive set is incomplete")
+        (support / "libcrypto.a").write_bytes(b"dynamic library")
+        rejected(lambda: host.admit_host(**arguments), "not a static archive")
+        (support / "libcrypto.a").unlink()
+        rejected(lambda: host.admit_host(**arguments), "cannot be read")
+        (support / "libcrypto.a").write_bytes(b"!<arch>\n")
+        for field in expected:
+            changed = expected | {field: expected[field] | {"sha256": "0" * 64}}
+            rejected(lambda: host.admit_host(**(arguments | {"expected": changed})), "does not match the bundle")
+        rejected(lambda: host.admit_host(**(arguments | {"platform": "linux"})), "host platform")
+        rejected(lambda: host.admit_host(**(arguments | {"deadline_ns": 1})), "deadline expired")
+        for mode, message in (("relative", "not absolute"), ("malformed", "version is outside"),
+                              ("drift", "SDK selection changed"), ("failure", "host probe failed"),
+                              ("metadata", "SDK metadata identity changed")):
+            (root / "mode").write_text(mode)
+            (root / "seen").unlink(missing_ok=True)
+            rejected(lambda: host.admit_host(**arguments), message)
+        (root / "mode").unlink()
+        (sdk / "SDKSettings.json").write_text("fixture SDK")
+        with mock.patch.object(host, "_find", side_effect=RecipeError("missing fixture tool")):
+            rejected(lambda: host.admit_host(**arguments), "missing fixture tool")
+    for platform in ("linux", "wsl2"):
+        expected_cuda = expected | {"sdk": identity("glibc", "fixture compiler"),
+                                    "toolkit": identity("cuda", "fixture compiler")}
+        with mock.patch.object(host, "_find", find), \
+                mock.patch.object(host, "_platform", return_value=platform), \
+                mock.patch.object(host, "_system_sdk", return_value=admitted.sdk):
+            observed = host.admit_host(**(arguments | {"platform": platform, "expected": expected_cuda}))
+            assert observed.identities == expected_cuda and observed.tools["cxx"].path.name == "c++"
+    return admitted
+
+
+def native_plan_owner(parent: pathlib.Path) -> None:
+    input_root = parent / "native-input"
+    input_root.mkdir()
+    fixture.materialize(input_root)
+    profile_path = input_root / "profile.json"
+    profile = json.loads(profile_path.read_bytes())
+    for model in profile["models"]:
+        geometry = {"kind": "R1_MODEL_IR", "schema_version": 2, "model": {
+            "arch": model["model_id"], "n_layer": 2, "n_embd": 8, "n_vocab": 256000,
+            "n_expert": 8 if model["model_id"] == "olmoe" else 0,
+            "n_expert_used": 2 if model["model_id"] == "olmoe" else 0, "context_length": 4096,
+            "head_dim": 4, "n_head_kv": 1,
+        }, "status": "ok", "error_code": "", "source": {"tensor_count": 27},
+            "quant": {"total_tensor_bytes": 256}, "coverage": {
+                "tensor_count": 27, "assigned_tensor_count": 27, "unassigned_tensors": [],
+                "size_sum_ok": True, "total_tensor_bytes": 256,
+            }}
+        raw = cli.canonical(geometry).removesuffix(b"\n")  # R1 emits no terminal LF.
+        (input_root / model["geometry_path"]).write_bytes(raw)
+        model["geometry_sha256"] = hashlib.sha256(raw).hexdigest()
+        calibration_path = input_root / model["calibration_path"]
+        calibration = json.loads(calibration_path.read_bytes())
+        calibration["model"]["geometry_sha256"] = model["geometry_sha256"]
+        fixture.reseal(calibration, "calibration_id")
+        raw = cli.canonical(calibration)
+        calibration_path.write_bytes(raw)
+        model["calibration_sha256"] = hashlib.sha256(raw).hexdigest()
+    profile_path.write_bytes(cli.canonical(profile))
+    invocation = cli.open_invocation(cli.Arguments(profile_path, "generation", parent / "native-result"))
+    try:
+        state = PreparationState(pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture")
+        rejected(lambda: cli.native_plans(invocation, state), "completed preparation")
+        state.commands = [{} for _ in range(5)]  # The build owner independently verifies execution.
+        for key, relative, content in (("candidate", "runtime_case", b"candidate fixture\n"),
+                                       ("cpu_reference", "cpu-reference/runtime_case", b"reference fixture\n")):
+            target = invocation.work / relative
+            target.parent.mkdir(mode=0o700, exist_ok=True)
+            target.write_bytes(content)
+            state.identities[key] = {"state": "available", "name": key,
+                "version": profile["source"]["commit"], "sha256": hashlib.sha256(content).hexdigest()}
+        plans = cli.native_plans(invocation, state)
+        assert len(plans) == len(profile["cases"]) == 16
+        option_path = invocation.work / "runtime-case-options.json"
+        option_bytes = option_path.read_bytes()
+        expected_option = {key: value for key, value in profile["runtime_options"][0].items() if key != "option_id"}
+        expected_option["backend_bundle"] = str(invocation.backend.root)
+        assert option_bytes == cli.canonical(expected_option)
+        for ordinal, (plan, row) in enumerate(zip(plans, profile["cases"])):
+            assert plan.identity == (row["model_id"], row["calibration_case_id"], row["repeat_index"])
+            assert plan.gpu == bool(ordinal % 2)
+            role = "candidate" if plan.gpu else "cpu_reference"
+            assert plan.executable_sha256 == state.identities[role]["sha256"]
+            assert plan.executable == invocation.work / ("runtime_case" if plan.gpu else "cpu-reference/runtime_case")
+            assert plan.case.document["options_path"] == (str(option_path) if plan.gpu else "")
+            assert plan.case.document["stream_root"] == str(invocation.work / f"case-{ordinal:03d}")
+            assert not pathlib.Path(plan.case.document["stream_root"]).exists()
+            calibration = next(item for item in invocation.admitted.records["calibrations"]
+                               if item["model"]["model_id"] == row["model_id"])
+            frozen = next(item for item in calibration["cases"] if item["case_id"] == row["calibration_case_id"])
+            for native_key, frozen_key in (("prompt_utf8", "prompt_utf8"), ("expected_prompt_ids", "prompt_token_ids"),
+                                          ("expected_token_ids", "expected_token_ids"), ("forced_ids", "teacher_forced_token_ids")):
+                assert plan.case.document[native_key] == frozen[frozen_key]
+            assert plan.comparison == calibration["comparison"]
+        rejected(lambda: cli.native_plans(invocation, state), "cannot be written")
+        assert option_path.read_bytes() == option_bytes
+        option_path.unlink()
+        candidate = invocation.work / "runtime_case"
+        pristine = candidate.read_bytes()
+        candidate.write_bytes(b"changed")
+        rejected(lambda: cli.native_plans(invocation, state), "differs from completed preparation")
+        assert not option_path.exists()
+        candidate.write_bytes(pristine)
+        state.identities["candidate"]["version"] = "0" * 40
+        rejected(lambda: cli.native_plans(invocation, state), "differs from completed preparation")
+        state.identities["candidate"]["version"] = profile["source"]["commit"]
+        (input_root / profile["models"][0]["geometry_path"]).write_bytes(b"changed")
+        rejected(lambda: cli.native_plans(invocation, state), "geometry_path digest")
+        assert not option_path.exists()
+    finally:
+        invocation.cleanup()
+    assert not invocation.root.exists()
+
+
+for arguments, message in (
+    (["--profile", "a", "--suite", "generation"], "incomplete"),
+    (["--profile", "a", "--profile", "b", "--suite", "generation", "--output", "c"],
+     "duplicated"),
+    (["--profile", "a", "--suite", "other", "--output", "c"], "unsupported"),
+    (["--profile", "--suite", "generation", "--output", "c"], "no value"),
+    (["--profile", "a", "--suite", "generation", "--other", "c"], "unknown"),
+):
+    rejected(lambda arguments=arguments: cli.parse_arguments(arguments), message)
+
+parsed = cli.parse_arguments([
+    "--output", "result", "--profile", "profile.json", "--suite", "generation",
+])
+assert parsed.profile == pathlib.Path("profile.json")
+assert parsed.output == pathlib.Path("result")
+
+fixture = fixture_module()
+with tempfile.TemporaryDirectory(prefix="gpu-qualification-cli-") as raw_temporary:
+    temporary = pathlib.Path(raw_temporary)
+    native_plan_owner(temporary)
+    build_construction_owner(temporary)
+    fixture_host = host_admission_owner(temporary)
+    input_root = temporary / "input"
+    input_root.mkdir()
+    fixture.materialize(input_root)
+    output_parent = temporary / "output"
+    output_parent.mkdir()
+    output = output_parent / "evidence"
+    arguments = cli.Arguments(input_root / "profile.json", "generation", output)
+    invocation = cli.open_invocation(arguments)
+    assert invocation.root.parent == output_parent
+    assert invocation.root.stat().st_mode & 0o077 == 0
+    assert invocation.home.stat().st_mode & 0o077 == 0
+    assert invocation.temporary.stat().st_mode & 0o077 == 0
+    assert invocation.work.stat().st_mode & 0o077 == 0
+    assert invocation.sources.align_llm.is_dir()
+    assert invocation.sources.ggml.is_dir()
+    assert invocation.backend.manifest.read_bytes() == invocation.admitted.bundle_raw
+    assert not output.exists()
+    entry = invocation.sources.align_llm / "src/main.align"
+    entry.parent.mkdir(mode=0o700)
+    entry.write_text("fn main() {}\n")
+    selected_compiler = fixture_host.tools["cc"].target
+    selected_owner = SimpleNamespace(
+        read_revision=lambda: "a" * 40, cache_root=lambda: temporary,
+        source_path=lambda root, revision: root / revision,
+        selected_path=lambda root, kind: selected_compiler,
+    )
+    state = PreparationState(pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture")
+    with mock.patch.object(cli, "admit_host", return_value=fixture_host), \
+            mock.patch.object(cli, "managed_owner", return_value=selected_owner), \
+            mock.patch.object(cli, "_find", return_value=fixture_host.tools["cc"]), \
+            mock.patch.object(cli, "grouped_commands", return_value=()) as construct, \
+            mock.patch.object(cli, "run_preparation") as run:
+        cli.prepare_invocation(invocation, state)
+        run.assert_called_once()
+        bound = construct.call_args.kwargs
+        assert bound["ggml_commit"] == invocation.admitted.records["bundle"]["ggml"]["commit"]
+        assert bound["source_commit"] == invocation.admitted.records["profile"]["source"]["commit"]
+        assert bound["entry"] == entry and bound["compiler"] == selected_compiler
+        assert bound["backend_library"] == invocation.backend.root
+        assert bound["support_archives"] == fixture_host.support_archives
+    failed = PreparationState(pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture")
+    with mock.patch.object(cli, "admit_host", side_effect=RecipeError("fixture host mismatch")), \
+            mock.patch.object(cli, "run_preparation") as run:
+        cli.prepare_invocation(invocation, failed)
+        run.assert_not_called()
+        assert failed.failure_ordinal == 0 and failed.commands == []
+        assert failed.identities["align_compiler"]["state"] == "unavailable"
+    root = invocation.root
+    invocation.cleanup()
+    assert not root.exists()
+
+    occupied = output_parent / "occupied"
+    occupied.write_text("occupied")
+    before = set(output_parent.iterdir())
+    rejected(
+        lambda: cli.open_invocation(cli.Arguments(
+            input_root / "profile.json", "generation", occupied,
+        )),
+        "must be a new path",
+    )
+    assert set(output_parent.iterdir()) == before
+
+    before = set(input_root.iterdir())
+    rejected(
+        lambda: cli.open_invocation(cli.Arguments(
+            input_root / "profile.json", "generation", input_root / "evidence",
+        )),
+        "outside the qualification input root",
+    )
+    assert set(input_root.iterdir()) == before
+
+    malformed = input_root / "profile.json"
+    original = malformed.read_bytes()
+    malformed.write_bytes(original + b" ")
+    before = set(output_parent.iterdir())
+    rejected(lambda: cli.open_invocation(arguments), "record framing is invalid")
+    assert set(output_parent.iterdir()) == before
+
+print("gpu qualification CLI smoke: PASS")

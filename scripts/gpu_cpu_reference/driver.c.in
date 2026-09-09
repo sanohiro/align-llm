@@ -1,0 +1,52 @@
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+/* The parent driver owns the host SDK and runtime-library flags. Put the private static shim
+ * search directory before that driver's directories, and resolve its ggml references with the
+ * exact same-source archives after the Align object/runtime/user-library arguments. */
+static char *environment_value(const char *prefix, const char *value) {
+    if (value == NULL || value[0] != '/' || strlen(value) > 4096) return NULL;
+    size_t prefix_size = strlen(prefix);
+    size_t value_size = strlen(value);
+    char *result = malloc(prefix_size + value_size + 1);
+    if (result == NULL) return NULL;
+    memcpy(result, prefix, prefix_size);
+    memcpy(result + prefix_size, value, value_size + 1);
+    return result;
+}
+
+int main(int argc, char **argv) {
+    char *home = environment_value("HOME=", getenv("HOME"));
+    char *temporary = environment_value("TMPDIR=", getenv("TMPDIR"));
+    if (home == NULL || temporary == NULL) return 92;
+    char *environment[] = { home, (char *) "LC_ALL=C", temporary, (char *) "TZ=UTC", NULL };
+    /* Ninja may use a shell for its working-directory change. Reestablish the exact command
+     * environment before Align, and again before its selected C driver, without a shell wrapper. */
+    if (argc > 1 && strcmp(argv[1], "--build-entry") == 0) {
+        if (argc != 4 || argv[0][0] != '/' || argv[2][0] != '/' || argv[3][0] != '/') return 93;
+        char *build[] = {
+            argv[2], (char *) "build", argv[3], (char *) "--profile", (char *) "release",
+            (char *) "--cc", argv[0], NULL,
+        };
+        execve(build[0], build, environment);
+        return errno == 0 ? 91 : errno;
+    }
+    const char *extra[] = {
+        "-L", "$<TARGET_FILE_DIR:align_ggml_shim>",
+        "$<TARGET_FILE:ggml>", "$<TARGET_FILE:ggml-cpu>", "$<TARGET_FILE:ggml-base>",
+        "@REFERENCE_CXX_LIBRARY@", "-pthread", "-lm",
+#ifndef __APPLE__
+        "-ldl",
+#endif
+    };
+    size_t count = sizeof(extra) / sizeof(extra[0]);
+    char **selected = calloc((size_t) argc + count + 1, sizeof(char *));
+    if (selected == NULL) return 90;
+    selected[0] = (char *) "@REFERENCE_PARENT_DRIVER@";
+    for (int at = 1; at < argc; at++) selected[at] = argv[at];
+    for (size_t at = 0; at < count; at++) selected[(size_t) argc + at] = (char *) extra[at];
+    execve(selected[0], selected, environment);
+    return errno == 0 ? 91 : errno;
+}

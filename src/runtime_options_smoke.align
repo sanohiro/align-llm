@@ -1,0 +1,36 @@
+module runtime_options_smoke
+
+import runtime_options
+
+VALID := "{\"schema_version\":1,\"backend\":\"metal\",\"device\":\"Apple M1\",\"backend_bundle\":\"bundle\",\"placement\":\"resident\",\"host_budget_bytes\":1,\"device_budget_bytes\":2,\"prefetch\":\"off\"}"
+
+fn expect_valid(document: str) -> Result<(), Error> {
+  value := runtime_options.decode(document)?
+  if value.schema_version != 1 || value.backend != "metal" || value.device != "Apple M1"
+    || value.backend_bundle != "bundle" || value.placement != "resident"
+    || value.host_budget_bytes != 1 || value.device_budget_bytes != 2
+    || value.prefetch != "off" {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn expect_invalid(document: str) -> Result<(), Error> = match runtime_options.decode(document) {
+  Ok(_) => Err(Error.Invalid),
+  Err(_) => Ok(()),
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 { return Err(Error.Invalid) }
+  expect_valid(VALID)?
+  expect_invalid("{\"schema_version\":1,\"backend\":\"cuda\",\"device\":\"GPU\",\"backend_bundle\":\"bundle\",\"placement\":\"resident\",\"host_budget_bytes\":1,\"device_budget_bytes\":2,\"prefetch\":\"off\",\"unknown\":0}")?
+  expect_invalid("{\"schema_version\":1,\"schema_version\":1,\"backend\":\"cuda\",\"device\":\"GPU\",\"backend_bundle\":\"bundle\",\"placement\":\"resident\",\"host_budget_bytes\":1,\"device_budget_bytes\":2,\"prefetch\":\"off\"}")?
+  expect_invalid("{\"schema_version\":1,\"backend\":\"cuda\",\"device\":\"GPU\",\"backend_bundle\":\"bundle\",\"placement\":\"resident\",\"host_budget_bytes\":1,\"device_budget_bytes\":2,\"prefetch\":\"off\"}x")?
+  expect_invalid("{\"schema_version\":1,\"backend\":\"cpu\",\"device\":\"GPU\",\"backend_bundle\":\"bundle\",\"placement\":\"resident\",\"host_budget_bytes\":1,\"device_budget_bytes\":2,\"prefetch\":\"off\"}")?
+  expect_invalid("{\"schema_version\":1,\"backend\":\"cuda\",\"device\":\"GPU\",\"backend_bundle\":\"bundle\",\"placement\":\"resident\",\"host_budget_bytes\":true,\"device_budget_bytes\":2,\"prefetch\":\"off\"}")?
+  expect_invalid("{\"schema_version\":1,\"backend\":\"cuda\",\"device\":\"GPU\",\"backend_bundle\":\"bundle\",\"placement\":\"resident\",\"host_budget_bytes\":1.5,\"device_budget_bytes\":2,\"prefetch\":\"off\"}")?
+  expect_invalid("{\"schema_version\":01,\"backend\":\"cuda\",\"device\":\"GPU\",\"backend_bundle\":\"bundle\",\"placement\":\"resident\",\"host_budget_bytes\":1,\"device_budget_bytes\":2,\"prefetch\":\"off\"}")?
+  runtime_options.load(args[1])?
+  print("runtime options smoke: PASS")
+  return Ok(())
+}

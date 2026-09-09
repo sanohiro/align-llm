@@ -1,0 +1,35 @@
+module runtime_calibration_seed
+
+import core.json
+import gguf
+import model
+import provider_runtime
+import runtime_numeric_stream
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 9 || (args[6] != "qwen2" && args[6] != "olmoe") || args[7].len() > 65536 {
+    return Err(Error.Invalid)
+  }
+  snapshot := gguf.open_snapshot(args[1])?
+  if snapshot.table.architecture != args[6] { return Err(Error.Invalid) }
+  cache_budget: i64 := json.decode(args[8])?
+  if cache_budget < 0 { return Err(Error.Invalid) }
+  olmoe := args[6] == "olmoe"
+  config := model.ProviderConfig {
+    kind: model.ProviderKind.AlignRuntime, endpoint: "", model: args[1], api_key: "",
+    timeout_ns: 0, tokenize_endpoint: "", max_response_bytes: 1048576,
+    runtime_pack_path: args[2], runtime_geometry_path: args[3], runtime_options_path: "",
+    runtime_cache_budget_bytes: cache_budget,
+  }
+  request := model.GenerationRequest {
+    system: "", user: args[7], max_tokens: 2, temperature: 0.0, seed: None,
+  }
+  mut builder: array_builder<i64> := array_builder()
+  no_forcing := builder.build()
+  mut stream := runtime_numeric_stream.create(args[4], args[5], if olmoe { 2 } else { 1 }, 16777216, 65576)?
+  production := provider_runtime.generate_trace(config, request, 1, no_forcing, stream)?
+  if production.observation.available { return Err(Error.Invalid) }
+  runtime_numeric_stream.finish(stream)?
+  print(json.encode(production))
+  return Ok(())
+}

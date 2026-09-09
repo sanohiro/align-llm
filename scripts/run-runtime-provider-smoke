@@ -415,4 +415,6 @@ if (result.returncode == 0 or record is None or record.get("status") != "error"
     raise SystemExit("runtime provider smoke: FAIL non-finite OLMoE logits produced completion text")
 PY
 
+"${root_dir}/scripts/run-gpu-provider-cli-admission-smoke" "${runtime_main}"
+
 echo "runtime provider smoke: PASS (sampler vectors plus 61 CLI assertions)"

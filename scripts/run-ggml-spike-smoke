@@ -60,8 +60,8 @@ if [ -z "${real_region}" ] || [ "${real_region}" != "${stub_region}" ]; then
   echo "ggml spike smoke: FAIL the shared shim contract differs between the two C files" >&2
   exit 1
 fi
-if grep -q "malloc" "${root_dir}/scripts/ggml_shim.c" "${root_dir}/scripts/ggml_shim_stub.c"; then
-  echo "ggml spike smoke: FAIL a shim allocates; the shim owns no memory the document describes" >&2
+if [[ "${real_region}" == *malloc* ]]; then
+  echo "ggml spike smoke: FAIL the legacy shared boundary gained a malloc call" >&2
   exit 1
 fi
 # The keyword, not the word: `prompt_verifier_smoke.align` legitimately names an
@@ -74,14 +74,17 @@ sorted_paths() {
 }
 unsafe_files=$(cd "${root_dir}" \
   && grep -rlE '(^|[^A-Za-z_])unsafe[[:space:]]*\{' src/ | sorted_paths)
-if [ "${unsafe_files}" != "src/ggml_ffi.align" ]; then
-  echo "ggml spike smoke: FAIL an unsafe block appears outside src/ggml_ffi.align: ${unsafe_files}" >&2
+# The allocation-count probe is imported only by its focused instrumented-runtime test. Its native
+# calls stay inside the same FFI package; ordinary entry points never link its test-only symbols.
+ffi_files="src/ggml_ffi.align src/ggml_ffi/host_probe.align src/ggml_ffi/internal/resource.align"
+if [ "${unsafe_files}" != "${ffi_files}" ]; then
+  echo "ggml spike smoke: FAIL unsafe blocks escaped the ggml FFI package: ${unsafe_files}" >&2
   exit 1
 fi
 extern_files=$(cd "${root_dir}" \
   && grep -rlE '^[[:space:]]*extern[[:space:]]+"C"' src/ | sorted_paths)
-if [ "${extern_files}" != "src/ggml_ffi.align" ]; then
-  echo "ggml spike smoke: FAIL an extern block appears outside src/ggml_ffi.align: ${extern_files}" >&2
+if [ "${extern_files}" != "${ffi_files}" ]; then
+  echo "ggml spike smoke: FAIL extern blocks escaped the ggml FFI package: ${extern_files}" >&2
   exit 1
 fi
 

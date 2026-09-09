@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Reject incomplete real acceptance corpora independently of claimed labels or result status."""
+import copy
+import json
+import pathlib
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'scripts'))
+from gpu_backend_recipe import RecipeError
+from gpu_independent_corpus import coverage, seal, validate
+from gpu_qualification_records import validate_calibration
+
+base = json.loads((ROOT / 'eval/gpu/metal/independent-acceptance.json').read_bytes())
+validate(copy.deepcopy(base))
+validate(json.loads((ROOT / "eval/gpu/metal/independent-attention-acceptance.json").read_bytes()))
+
+
+def refused(value):
+    try:
+        validate(seal(value))
+    except RecipeError:
+        return
+    raise AssertionError('incomplete independent acceptance corpus passed')
+
+
+for ordinal, model_id in enumerate(('qwen2', 'olmoe')):
+    entry = base['models'][ordinal]
+    required = coverage(model_id, entry['cases'], entry['eog_token_ids'])
+    assert all(required.values())
+    for requirement in required:
+        changed = copy.deepcopy(base)
+        changed['models'][ordinal]['cases'] = [case for case in entry['cases']
+            if not coverage(model_id, [case], entry['eog_token_ids'])[requirement]]
+        refused(changed)
+    changed = copy.deepcopy(base)
+    changed['models'][ordinal]['cases'].append(copy.deepcopy(entry['cases'][0]))
+    refused(changed)
+    changed = copy.deepcopy(base)
+    changed['models'][ordinal]['eog_token_ids'] = []
+    refused(changed)
+    changed = copy.deepcopy(base)
+    changed['models'][ordinal]['cases'][0]['teacher_forced_token_ids'] = [0]
+    refused(changed)
+    changed = copy.deepcopy(base)
+    changed['models'][ordinal]['cases'][0]['unknown'] = True
+    refused(changed)
+    changed = copy.deepcopy(base)
+    for case in changed['models'][ordinal]['cases']:
+        case['role'] = 'calibration'
+    refused(changed)
+    # The original frozen failed records remain valid historical records. They are not a
+    # complete independent acceptance corpus, even if a caller describes them as passing.
+    legacy = json.loads((ROOT / f'eval/gpu/metal/{model_id}-calibration.json').read_bytes())
+    validate_calibration(copy.deepcopy(legacy))
+    changed = copy.deepcopy(base)
+    changed['models'][ordinal]['cases'] = [dict(case, input_mode='provider') for case in legacy['cases']]
+    refused(changed)
+changed = copy.deepcopy(base)
+changed['models'].reverse()
+refused(changed)
+changed = copy.deepcopy(base)
+changed['schema_version'] = True
+refused(changed)
+try:
+    validate(base, bundle_id='0' * 64)
+except RecipeError:
+    pass
+else:
+    raise AssertionError('wrong admitted bundle passed')
+version2 = copy.deepcopy(base)
+version2['schema_version'] = 2
+for entry in version2['models']:
+    entry['attention_policy'] = 'flash_f32'
+validate(seal(version2))
+for bad in ('auto', '', None, 1):
+    changed = copy.deepcopy(version2)
+    changed['models'][0]['attention_policy'] = bad
+    refused(changed)
+changed = copy.deepcopy(version2)
+del changed['models'][0]['attention_policy']
+refused(changed)
+changed = copy.deepcopy(version2)
+changed['schema_version'] = 1
+refused(changed)
+print('GPU independent corpus owner: PASS (all required coverage, legacy incomplete profiles, identity and malformed cases)')

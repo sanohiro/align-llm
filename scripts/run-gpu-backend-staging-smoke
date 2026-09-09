@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Exercise private qualifier staging of an admitted backend bundle."""
+
+from __future__ import annotations
+
+import importlib.machinery
+import pathlib
+import sys
+import tempfile
+
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import gpu_qualification_backend as backend  # noqa: E402
+import gpu_qualification_input as qualification_input  # noqa: E402
+from gpu_backend_recipe import RecipeError  # noqa: E402
+
+
+def fixture_module():
+    path = ROOT / "scripts" / "run-gpu-input-admission-smoke"
+    loader = importlib.machinery.SourceFileLoader("gpu_input_fixture_backend", str(path))
+    return loader.load_module()
+
+
+def rejected(call, message: str) -> None:
+    try:
+        call()
+    except RecipeError as error:
+        assert message in str(error), (message, str(error))
+    else:
+        raise AssertionError(f"gpu backend staging unexpectedly passed: {message}")
+
+
+fixture = fixture_module()
+with tempfile.TemporaryDirectory(prefix="gpu-backend-staging-") as raw_temporary:
+    temporary = pathlib.Path(raw_temporary)
+    input_root = temporary / "input"
+    input_root.mkdir()
+    fixture.materialize(input_root)
+    admitted = qualification_input.admit(input_root / "profile.json")
+
+    private_parent = temporary / "private"
+    private_parent.mkdir(mode=0o700)
+    staged = backend.stage(admitted, private_parent)
+    assert staged.root.stat().st_mode & 0o077 == 0
+    assert staged.manifest.read_bytes() == admitted.bundle_raw
+    bundle = admitted.records["bundle"]
+    assert isinstance(bundle, dict)
+    artifacts = bundle["artifacts"]
+    assert isinstance(artifacts, list)
+    assert [path.relative_to(staged.root).as_posix() for path in staged.artifacts] == [
+        str(row["path"]) for row in artifacts if isinstance(row, dict)
+    ]
+    assert all(path.stat().st_nlink == 1 and path.stat().st_mode & 0o077 == 0
+               for path in (staged.manifest, *staged.artifacts))
+    staged.cleanup()
+    assert not staged.root.exists()
+
+    occupied_parent = temporary / "occupied-parent"
+    occupied_parent.mkdir(mode=0o700)
+    (occupied_parent / "backend").mkdir()
+    rejected(lambda: backend.stage(admitted, occupied_parent), "output is occupied")
+
+    public_parent = temporary / "public-parent"
+    public_parent.mkdir(mode=0o755)
+    rejected(lambda: backend.stage(admitted, public_parent), "not a private directory")
+
+    changed_parent = temporary / "changed-parent"
+    changed_parent.mkdir(mode=0o700)
+    profile = input_root / "profile.json"
+    original = profile.read_bytes()
+    original_write = backend._write
+
+    def mutate_after_manifest(root, relative, data):
+        target = original_write(root, relative, data)
+        if relative == "manifest.json":
+            profile.write_bytes(original + b" ")
+        return target
+
+    backend._write = mutate_after_manifest
+    rejected(lambda: backend.stage(admitted, changed_parent), "record framing is invalid")
+    assert not (changed_parent / "backend").exists()
+
+print("gpu backend staging smoke: PASS")

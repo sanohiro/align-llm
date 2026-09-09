@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Exercise the actual CPU generation paths against the independent G1 traversal."""
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+from gpu_trace_fixture import verify_complete
+
+ROOT = Path(__file__).resolve().parent.parent
+
+with tempfile.TemporaryDirectory(prefix="g1-cpu-trace-") as raw:
+    work = Path(raw).resolve()
+    shim = work / "shim"
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith("ALIGN_LLM_GGML_")}
+    environment.update(ALIGN_LLM_GGML_FORCE="engine+gpu", ALIGN_LLM_GGML_SHIM_DIR=str(shim))
+    subprocess.run([str(ROOT / "scripts/build-ggml-shim")], env=environment, check=True)
+    for extra in ([], ["--moe"]):
+        subprocess.run(["python3", str(ROOT / "scripts/layer_forward_fixture.py"),
+                        str(work), "--model", *extra], check=True, stdout=subprocess.DEVNULL)
+    for key in ("LIBRARY_PATH", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+        environment[key] = str(shim) + (":" + environment[key] if environment.get(key) else "")
+    compiler = os.environ.get("ALIGNC", str(ROOT / "scripts/alignc"))
+    subprocess.run([compiler, "build", "src/runtime_cpu_trace_smoke.align"],
+                   cwd=ROOT, env=environment, check=True)
+    executable = work / "cpu-trace"
+    (ROOT / "runtime_cpu_trace_smoke").rename(executable)
+    result = subprocess.run([str(executable), str(work / "model-pack.alignpack"),
+                             str(work / "geometry.json"),
+                             str(work / "moe-model-pack.alignpack"),
+                             str(work / "moe-model-geometry.json"), str(work)],
+                            env=environment, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit("CPU trace execution failed:\n" + result.stdout + result.stderr)
+    lines = result.stdout.splitlines()
+    assert len(lines) == 5 and lines[-1] == "runtime CPU trace smoke: PASS", result.stdout
+    for line in lines[:-1]:
+        ids = json.loads(line)
+        assert len(ids) == 3 and all(type(value) is int and 0 <= value < 32 for value in ids)
+    verify_complete(work)
+    subprocess.run([compiler, "build", "src/runtime_generation_smoke.align"],
+                   cwd=ROOT, env=environment, check=True)
+    gpu_executable = work / "gpu-trace"
+    (ROOT / "runtime_generation_smoke").rename(gpu_executable)
+    gpu_output = work / "gpu"
+    gpu_output.mkdir()
+    gpu_result = subprocess.run([str(gpu_executable), str(work / "model-pack.alignpack"),
+                                 str(work / "moe-model-pack.alignpack"),
+                                 str(work / "moe-model-geometry.json"), str(gpu_output)],
+                                env=environment, capture_output=True, text=True)
+    assert gpu_result.returncode == 0, gpu_result.stdout + gpu_result.stderr
+    verify_complete(gpu_output)
+    for name in ("qwen-complete", "olmoe-complete"):
+        assert (work / name).read_bytes() == (gpu_output / name).read_bytes(), name
+print("gpu CPU trace: PASS (ordinary/observed/reproduced generation, forced EOG, exact CPU/GPU numeric traversal)")

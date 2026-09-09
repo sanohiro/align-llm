@@ -1739,9 +1739,14 @@ one asymmetry section 4.2's "the shared contract region is byte-identical" asser
 because the region is the constants and these are the entry points. The gate matters for the same
 reason the extent test does: `ne0` is an element count, `ggml_row_size` is the only place the type
 enters the span arithmetic, and a quantized source would make the extent test a statement about
-block counts while the node table means elements. Both files now refuse anything but F32, which is
-the only type either node table views. No case changes: the node table cannot express a non-F32
+block counts while the node table means elements. At R5D both files refuse anything but F32, which
+is the only type either node table views. No case changes: the node table cannot express a non-F32
 view, and manufacturing one would test the manufactured build.
+
+G1 later widens this same shaped boundary to the other four-byte element type, I32, for an in-graph
+view of selected argsort IDs. [`gpu-runtime.md`](gpu-runtime.md) owns that extension and preserves
+the quantized/sub-byte refusal and identical real/stub checks; R5D's F32 node tables remain
+unchanged.
 
 ### C14 — four published fields the schema did not list
 

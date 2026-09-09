@@ -1,115 +1,706 @@
 # Session handoff
 
-Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations; this
-file records durable project state.
+Read `CLAUDE.md` first. GitHub owns transient pull-request checks, reviews, and attestations;
+this file records durable execution state.
 
-## G1 producer delivery (2026-09-08)
+**Current execution constraint:** finish GPU repair, local Metal verification, review and PR/merge.
+The user will also run CUDA verification, together with performance measurement, after all Metal
+implementation and verification is complete. Do not request earlier CUDA debugging runs. The
+imported Pengwin checkpoint below is historical evidence.
 
-Branch `docs/align-992-delivery`, based on main `ad4786a` (PR #216), records Align PR #992
-at `305926b423da9be1f13b0129a7232626e6704d95`. Its targeted G1 replay accepts case 06,
-rejects unsafe cases 08/09, and passes explicit-copy control 12. Case 11 remains rejected under
-the settled direct-place rule. This five-case report is incomplete and `ready=false`; it does not
-replace #991's full 21-case run. Request 46 receives a partial control-flow repair; array-field
-assignment remains unsupported. Request 48 remains an open language precision proposal.
+## Pengwin CUDA qualification checkpoint (2026-09-08)
 
-Next: batch the merged prerequisites through #992 into one pin adoption on `agent/g1-gpu-generation`, then
-run `gmake gpu-numeric-stream` and `gmake gpu-generation-smoke` with observed prefill/decode
-logits. Continue diagnostic/case/CLI integration and G1's real Metal/CUDA qualification.
-Requests 23/42/43/49/51 were recorded as `ALIGN_MERGED` in PR #215; their original consumer
-acceptance remains pending. Request 62 is also `ALIGN_MERGED`, with dependent integration
-blocked until consumer adoption and acceptance. Historical Request 43/49 refactoring stays separate.
+Shared report and follow-up: [issue #218](https://github.com/sanohiro/align-llm/issues/218).
+It contains the environment, formal FAIL case excerpts, frozen CUDA calibration records,
+supplemental OLMoE findings, preparation fixes and remaining investigation. The full replayable
+kit/result closure remains on the Pengwin host; the issue excerpts do not replace that closure.
+The tested head and three preparation fixes are pushed through `28a6fe3` on
+`origin/agent/g1-gpu-generation`. The next action is to localize
+the first CPU/CUDA divergence and investigate OLMoE routing mismatches without changing the
+frozen tolerances; the receiving environment can now fetch the fixes for integration review.
 
-Verification: upstream merge identity, published owner results and required CI were checked.
-This documentation publication uses exact-head `python3 scripts/pre-pr`; source tests and
-platform qualification are N/A. No intentional uncommitted files remain after commit.
+CUDA qualification tested `agent/g1-gpu-generation` at `28a6fe3`, including three preparation
+fixes atop `5acb2c7`. The user requested real CUDA qualification.
+CUDA Toolkit 13.3 (nvcc 13.3.73), Ninja 1.12.1 and static support packages are installed;
+a compiled `sm_89` kernel ran on RTX 4070 Ti and returned 42 (PASS). Automated preparation
+must explicitly add the CUDA bin directory to PATH; interactive bash already resolves nvcc.
 
-## Historical consolidated G1 compiler handoff (2026-09-08)
+Storage cleanup completed with explicit user authorization: removed unused Cargo debug/clippy
+outputs from the sibling Align checkout and seven historical temporary worktrees, reclaiming
+117.7 GiB. Current release compiler, all source checkouts, Git state, models and evidence remain.
+No active build process or open target file was found before cleanup. WSL relocation is no longer
+needed for the immediate CUDA work. Preparation resumed after cleanup.
 
-The user requested a single audit of foreseeable GPU compiler dependencies before further Align
-interruptions. `docs/align-gpu-readiness.md` records 21 frozen cases, each checked whole-program,
-per-unit and built at managed Align `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0`. Six admitted
-native cases also pass. The companion source bundle contains exact application snapshots,
-reproduction code, baseline logs and a controlled proof of the actual retained-view lifetime bug.
+Both existing GGUFs now pass the exact kit SHA-256 checks. Qwen Q4_K_M was already in the
+project model cache at Hugging Face revision `13fb94bfda8c8cf22497dc57b78f391a9acb426a`;
+the first search missed that cache. Its hash is
+`509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c`.
+OLMoE's hash is `4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f`.
+The redundant task-owned partial download and its resume marker were removed. No download
+needs resuming; use the admitted original model files when assembling the kit.
 
-Request 62's primary failure is a G1 consumer of existing Request 49, now marked blocking.
-Coordinate 42/43/49/62 as one producer investigation; keep the distinct lifetime/ownership
-regressions and the non-blocking Request 48 and byte-view precision cases visible. Do not report
-each symptom as another interruption. No production source or pin adoption is part of this report.
+Managed Align compiler/runtime materialization and `scripts/align-toolchain verify` now pass
+at the pinned revision. Cargo's hard-linked release compiler/runtime outputs were copied into
+single-link files at the same managed paths with unchanged bytes; verification still passes.
+Both models' packs and model-IR geometry were generated by the pinned `make build` executable.
+The CUDA backend loads and enumerates `CUDA0` / NVIDIA GeForce RTX 4070 Ti.
 
-Next: Align assesses and repairs the complete batch using the candidate compiler before delivery;
-then G1 adopts the merged prerequisites once and runs native stream plus observed Qwen/OLMoE
-generation acceptance. G1 remains on `agent/g1-gpu-generation`; final diagnostic trajectories,
-case/CLI integration and real Metal/CUDA qualification are still pending. Historical Request 43/49
-consumer refactoring is not silently added to G1's unblock commands.
+Preparation exposed a recipe/host mismatch: resolving `cc`/`c++` symlinks before invocation
+changes GCC's version text. Local checkpoint `6fc5097` preserves admitted aliases; backend recipe
+and qualification CLI smoke owners pass. One fresh independent review of that two-file fix
+approved it with no findings. The rebuilt CUDA bundle is complete. A second fix (`7b0d141`)
+binds GCC's private linker search in the CPU-reference CMake build. Review found shell/Ninja
+expansion of literal path characters; accepted and repaired in `28a6fe3`. The real
+`run-gpu-cpu-reference-smoke` owner passes with dollar, quote and backtick path characters.
+The three preparation fixes are pushed through `28a6fe3`. Prefer installed `/usr/bin/cmake` (4.3.4) over the older
+`/usr/local/bin/cmake` (3.19), which cannot build the CPU-reference project.
 
-Verification: the report contains the complete 63 compiler outcomes, native results and exact pin.
-`gmake gpu-case-traversal gpu-case-sequence gpu-qualification-cli gpu-kit-assembly` passes on the
-G1 checkpoint. Documentation-only publication uses `git diff --check` and exact-head
-`python3 scripts/pre-pr`; no executable or platform qualification is claimed by this branch.
+Actual static CPU calibration/holdout runs pass for both models: Qwen returns `Yes.` and
+`Here is`; OLMoE returns `Do you` and `def add`. Frozen CUDA calibration IDs are
+`4007cc87d1e2d8d2bc81eec415b405153c287da90102103bd381881e123073e2` and
+`d74bc691a3aa97be2bdbabed2c1b9f46c22fd44fcc3f12a4b1b3669ff841c406`.
+Existing tolerances are unchanged. The complete source/bundle/model kit is admitted at `28a6fe3`.
+Public CUDA qualification completed with a truthful COMPUTE/readback FAIL; independent
+`replay_evidence_directory` accepted the retained result. Qwen CPU passes; CUDA exits 0 and
+returns the same `Yes.` / `[9454, 13]`, with all 1,496 model operations and 56 layer executions
+on GPU and no CPU model operations. Its numeric comparison reports 5,058,161 mismatches out
+of 5,243,392 scalars, maximum absolute difference 120.86090087890625. There are no nonfinite
+values. Native device observation confirms `CUDA0`, RTX 4070 Ti, `sm_89`, driver 610.62.
+Source/input rechecks and owned-process/directory cleanup pass. The suite stops at this first
+failed pair; Qwen holdout/repeats and formal OLMoE qualification did not execute.
 
-## Historical documentation checkpoint: runtime foundations (2026-09-07)
+Supplemental relocated native binaries completed both frozen OLMoE cases on CPU and CUDA,
+with matching `Do you` and `def add` outputs and valid native placement/stream observations.
+Numerical mismatches remain: 1,215,799 / 2,111,728 scalars for calibration and
+1,286,377 / 2,238,928 for holdout. Each also reports 472 routing mismatches; neither has
+nonfinite values. These are diagnostics, not public qualification evidence.
+Next: investigate CPU/GPU arithmetic differences under the existing acceptance contract. No
+CUDA qualification PASS or performance claim is made. Tolerances must not be widened to make
+this failed run pass. The local preparation fixes are reviewed and pushed; PR/merge qualification remains separate.
+The older host-prerequisite paragraph below is superseded by this checkpoint.
 
-The request-register publication action below was completed by PR #210. Its older action list is
-historical; the active Request 62 resume instructions above take precedence.
+## Active capability: G1 resident GPU generation (2026-09-08)
 
-Main `b39c39d87c10f25ae56e21660ee9929f956788f4` records Request 55's v0.7.3 release as PR #208,
-following the runtime-foundations summary in PR #205, the competitive GPU design in PR #204, and
-G1's contract in PR #203. The CPU measurement sequence is complete through item 79. G1
-implementation continues on `agent/g1-gpu-generation`; GPU execution is not yet merged. Main
-remains pinned to Align `8cefc803d5c7f883a8db5b67250ed4ed069b43a4`, while that active branch has
-adopted v0.7.3.
+**G1 qualification and review-repair checkpoint (based on `5ae5351`).**
+The complete independent Metal acceptance now PASSes: 19 cases, two fresh candidate executions
+per case, every layer/router/logit comparison bitwise equal, and owned cleanup complete in
+2,113,350,082,000 ns (35 minutes 13 seconds) under the fixed schema-2 2400-second ceiling.
+The complete retained directory was moved out of temporary storage and independently replayed
+with `scripts/run-gpu-independent-acceptance --replay`: PASS for all 19 cases. The qualified source
+is `5ae5351424840b2d7783883b0b94fb4d1510f77a`; result SHA-256 is
+`30c587d73530c74a32bb8f5a900db4f4ca9ad15809f52a5c6218fcdd047b4b8b`.
+Frozen corpus `eval/gpu/metal/independent-attention-acceptance.json` retains ID
+`29bfe85d85aca082e9a841eb394300dc0a4b02750db8fd816eb6908fdc962b73`.
+Historical CPU/GPU numeric FAILs, interrupted whole-run FAILs and tolerances remain unchanged.
 
-Align Request 55's retained-root single-link reader shipped in v0.7.3. Request 56's private
-temporary-directory lifecycle shipped in v0.7.5 from release merge `b74a31df`, so all filesystem
-surfaces for G1's immutable native loading are now available. The constructor certifies only the
-opened inode at one observation point, so G1 must still copy the digest-verified reader bytes into
-private load staging during the joint v0.7.5 adoption. Safe release removes the stage; an
-unload-unsafe failure transfers its handles and complete tree to process-owned poisoned quarantine
-until exit.
+The final comprehensive review found two localized errors: missing provider positionals after
+stripping the runtime-options pair could overwrite an input, and attention-probe error signs
+aliased CONFIG with supported while losing allocation faults. Both were independently reproduced
+and repaired. The positional minimum is checked before provider work/result writes; native negative
+probe errors pass unchanged through the typed boundary and first-fault recorder. Successful model
+arithmetic/selection is unchanged. The consolidated repair delta was inspected against both findings.
+`gmake build`, `gmake fmt`, `scripts/run-runtime-provider-smoke` (including actual CLI input
+preservation and all admitted arities), and `scripts/run-gpu-attention-policy-smoke` PASS. The last
+owner executes real Flash arithmetic plus real/stub typed probes, malformed/late refusal, injected
+metadata allocation failure, and preservation of the first fault. The full Metal receipt remains
+bound to its qualified head; the final repair has this separate affected-owner evidence.
 
-Request 58's MIR producer fixed-point repair shipped in Align v0.7.4 from release merge `37268739`.
-The Align Linux owner reaches native linking in 15.52 seconds; align-llm must still adopt the fix and
-pass the named Apple M1 `gmake gpu-qwen-load-smoke` owner before the resident Qwen loader resumes.
-Request 21 remains PROPOSED: the sibling Align source still has no `fs.open_ro` constructor.
+The earlier provider trace, bounded-prefill, allocation-tracked host, linked-core identity,
+complete corpus, numeric deadline and independent process/reference owners also PASS. Metal reports
+fusion and graph optimization enabled; actual CUDA capture remains unverified. No GPU speedup is
+claimed by correctness instrumentation. Preserve `f46310d` ancestry because the validation-only
+benchmark names it: merge commit or fast-forward only, no squash/rewrite.
 
-PR #205 records the subsequent discussion in `docs/specs/gpu-runtime-performance.md` §1.1–§1.2 and
-its architecture/roadmap pointers. It separates the goal, historical measured evidence, unresolved
-hypotheses and Align's actual zero-copy/collection-fusion/SoA/bounded-I/O/parallelism contribution.
-Existing IR/layout/ownership foundations remain; neither a failed individual policy nor a language
-microbenchmark decides whole-runtime speed. No new benchmark, public runtime contract or
-implementation requirement is introduced.
+Linux publication exposed a test-harness portability defect: the native shim's absolute ELF
+SONAME prevents `LD_LIBRARY_PATH` from selecting fault fixtures. The provider/device owners now
+use explicit Linux-only interposition for their owned test shims, preserving production link
+identity. Provider helper relocation also uses a cross-filesystem move. The combined Linux owner
+and complete selected publication preflight PASS at `dee39c1`, including the real installed
+profile. Both hosted installed-image architectures also PASS. The broad hosted graph identified
+one test-only FFI confinement defect: allocation probes were called directly by the host-capacity
+smoke. Those calls now live in `ggml_ffi.host_probe`, imported only by that instrumented test;
+both legacy smoke owners keep their exact unsafe/extern allowlist within the FFI package. The
+layer owner now scopes its no-allocation assertion to the legacy shared boundary, as the spike
+owner already does; G1 device-owned allocation is outside that legacy contract.
+`run-ggml-spike-smoke`, complete `run-layer-forward-smoke` (including dense/MoE decode and KV),
+and the actual `alloc-count` `run-gpu-host-capacity-smoke` PASS after repair. Production entry points do
+not import the probe or require its test-only runtime symbols. The repair delta changes no
+production generation or resource policy; the Metal receipt is unchanged.
+
+Next: run exact-head publication preflight with owner `gpu-host-capacity` using the prepared
+pinned Linux toolchain and real installed Docker profile, publish the fixture repair, wait for
+required hosted checks, and merge. Then refresh main and implement G1R's reusable coding session before the paired
+performance decision. The user will also verify CUDA, after all Metal work is complete and together
+with performance measurement; do not request earlier CUDA debugging runs. G1R preparation is still
+private source notes, with no public session contract or implementation yet. The sibling Align
+checkout is refreshed, while this capability keeps the managed `305926b4` pin.
+
+**Bounded-prefill checkpoint (unpublished, after `db90870`).** R5 implements capacity-selected
+128/64/32/16/8/4/2/1 prefill chunks, dependent resident K/V writes, absolute masks/positions,
+final-only vocabulary projection and exact pre-upload planning for all chunks/decode buckets.
+Diagnostic width is fixed at 128 and its CPU/GPU traversal is canonical chunk-major.
+`scripts/run-gpu-prefill-chunks-smoke` passes both models at 1/128/129/257/2048 tokens against
+an unchunked control, including exact layer/router streams, width-16 smaller-fit and pre-upload
+no-fit refusals. Device, provider trace and allocation-tracked host owners pass; real Metal
+short-case final logits match pinned llama.cpp bitwise (Qwen 1064448 and OLMoE 352128 scalars).
+This does not close real numerical qualification. Next: independent real layer/router diagnosis,
+R6 complete frozen acceptance corpus/admission, formal local qualification, final review,
+preflight and PR/merge. No additional user CUDA debugging. Use
+`python3 scripts/run-gpu-case-record-smoke` (the script is not executable); this owner passes.
+
+**Host-capacity checkpoint (unpublished, after `e8b7a3f`).** R1 now reserves the complete
+bounded application capacity separately from native allocation peaks, charges both simultaneous
+upload windows, and removes unused diagnostic bytes from native metadata. Pack index bounds are
+checked before column allocation. Evidence carries the separate application reservation and checks
+its sum with native peak against the host cap. Bundle staging uses exact-capacity images and drops
+the source before staged verification. The pinned runtime's allocation-count owner passes Qwen/
+OLMoE observed and diagnostic generation under 2 MiB, 512 KiB pre-upload refusal, bounded index
+refusal, and 32 MiB artifact staging under 34 MiB (tracked peak 33,630,883 bytes). Generation,
+provider trace, device, bundle, replay/case record and strict real Metal native owners pass.
+`gmake fmt` and `git diff --check` pass. Next: bounded prefill and full real corpus (R5/R6),
+remaining numerical qualification, final comprehensive review, publication preflight and PR/merge.
+No additional user CUDA debugging is requested.
+
+**Linked-core checkpoint (unpublished, after `9afcb40`).** R9 now treats the already linked
+base/registry libraries as explicit immutable executable prerequisites. Both real shim builders
+embed the exact link-input hashes; native loader observation identifies the actual canonical image
+paths; Align verifies those files against the bundle before any plugin/device initialization.
+Missing identities or mismatches refuse with `BUNDLE_IDENTITY/device` and clean staging.
+`run-gpu-linked-core-smoke` passes on macOS with real pinned cores, including dynamic-loader
+substitution, changed bundle cores, missing entries and missing build identities. Its native-only
+ELF mode passes in GCC 14/Linux against freshly built pinned cores, without CUDA. Device, bundle
+and preparation CLI owners pass. Next: R1 complete host accounting and R5/R6 prefill/corpus,
+then full local numerical qualification, final comprehensive review, preflight and PR/merge.
+No additional user CUDA debugging is requested.
+
+**Private first-fault checkpoint (unpublished, after `32a161f`).** R8 retains the first GPU
+status and lifecycle stage in a pointer-free thread-local diagnostic latch. Reset/active-stage/
+first-fault/read operations are private to qualification; ordinary provider errors stay unchanged.
+Private case failures now include validated category/stage alongside traversal/stream progress.
+Case/evidence assembly preserves that initiating fault and the actual child exit/logs; cleanup
+cannot replace it. Budget and bundle refusals are recorded before returning generic provider errors.
+The stub now rejects unknown device names, matching its advertised exact `stub-gpu` identity.
+The complete provider owner passes injected device, memory-budget, allocation, transfer, unsupported
+operation, prefill and decode failures with exact category/stage and stream prefix, plus both models'
+ordinary sequence and deadline cases. Case-record/execution-evidence owners pass. Device smoke and
+the strict real Metal C owner pass first-fault precedence/reset, and existing memory/KV owners.
+`gmake fmt` and `git diff --check` pass. Next: R1 host accounting, R5/R6 bounded prefill/corpus and
+R9 actual linked-core identity, then full local qualification, final review and publication/merge.
+No additional CUDA debugging is requested.
+
+**Execution/input binding checkpoint (unpublished, after `89efeb2`).** R7 started-case commands
+now bind the role-specific produced candidate/CPU reference and exact owned input by SHA-256.
+Each started row retains its canonical input at `case-inputs/NNN.json`; unstarted rows retain none.
+Replay checks executable/source identity, input/file identity, and frozen prompt/sampling/expected/
+forced fields without opening recorded physical paths. Publication reserves input plus both logs
+per case within existing ceilings. Historical evidence remains owned by its original validator.
+Result replay passes complete retained-input closure and rejects swapped/unknown executables,
+detached inputs and a rehashed altered prompt. Case-record, execution-evidence, publication,
+final CLI, closed command environment and complete provider-trace owners pass.
+Next: R1 managed-host accounting, R5/R6 microbatch/corpus, R8 native first-fault retention and
+R9 loaded-core identity, then full local qualification, final review and publication/merge.
+No additional CUDA debugging is requested.
+
+**Validation deadline checkpoint (unpublished, after `c76deb5`).** R10 now propagates the
+original generation deadline through native validation, stream framing/hashing, scalar loops and
+router near-tie work. Reads/hash chunks are at most 64 KiB; large numeric/ID traversals check every
+1,024 items. Expiry closes readers, preserves the actual child exit/logs and failed prefix, removes
+owned scratch and prevents the next child. Offline validation has no implicit new deadline.
+`run-gpu-validation-deadline-smoke` passes deterministic mid-scalar/mid-router expiry plus delayed
+real reads and cleanup. Numeric compare, stream-reader, pair, case-sequence and case-record owners
+pass. `run-gpu-provider-trace-smoke` passes both shared-deadline propagation/refusal boundaries
+and the complete ordinary CPU/GPU fixture sequence. The case-record fixture's prefill operation
+count is updated from 30 to 33 for the already implemented padded attention graph.
+Next: R1 host accounting, R5/R6 microbatch and corpus, R7/R8/R9 execution evidence and loaded core
+identity, then final local qualification and review/publication. No CUDA debugging rerun is requested.
+
+**Pre-upload admission checkpoint (unpublished, after `c9ef9cf`).** Generation now walks the
+same prefill and every reachable decode-bucket graph in a scoped metadata-only planning phase.
+Zero-sized backend buffer descriptors identify resident leaves without allocating device payload.
+The exact device admits buffer types and every graph operation, and allocator measurement checks
+workspace/input requirements before normal allocation or any weight read/upload. Planning upload,
+compute and readback are refused. Successful planning releases every descriptor/graph and restores
+the same device owner for ordinary execution; failures stop before that transition.
+`gpu-generation-smoke`, `run-gpu-device-smoke` and the complete `run-gpu-provider-trace-smoke` pass.
+The strict real Metal C owner passes zero-payload planning, insufficient workspace, injected
+unsupported operations, malformed/repeated lifecycle, cleanup, and subsequent real allocation.
+Unsupported operations now have a distinct private `UNSUPPORTED_CAPABILITY` fault; first-fault
+propagation through final evidence remains R8 work. Both real Metal model cases exit zero and
+retain all seven bitwise-identical final-logit rows against the independent pinned reference
+(1,064,448 Qwen / 352,128 OLMoE scalars). Full numeric qualification remains open.
+Next: complete host accounting (R1), microbatch/corpus (R5/R6), evidence/loader/deadline findings
+(R7–R10), and final qualification/review/publication. No additional CUDA debugging is requested.
+
+**Resident decode reuse checkpoint (unpublished, after `dbb958f`).** R4 now uses dependent
+indexed resident K/V writes and fixed context-clipped 256-position views. Both model generation
+owners prove consecutive reuse and exactly one rebuild across the 256-position boundary.
+`scripts/run-gpu-device-smoke`, `gmake gpu-generation-smoke`, and the strict real Metal
+`scripts/gpu_workspace_allocation_smoke.c` owner pass. The real owner covers preserved prefixes,
+exact capacity tail, zero unwritten capacity, incomplete/mismatched/out-of-range indices refused
+before upload/compute, and zero-workspace resident-only graphs. The independent Python model-work
+projection now accounts for prefill padding and removal of decode concatenation; the complete
+`run-gpu-provider-trace-smoke` passes with the Homebrew OpenSSL/Zstandard library paths.
+Both real Metal cases exit zero after reuse: all seven production/diagnostic final-logit rows remain
+bitwise identical to the pinned independent reference (1,064,448 Qwen and 352,128 OLMoE scalars).
+This remains final-logit evidence, not full layer/router or public qualification. Next: pre-upload
+shape/operation/workspace planning (R2/R3), then remaining resource, corpus, evidence and deadline
+findings. Frozen failed profiles remain unchanged; no additional CUDA debugging is requested.
+
+**Attention repair checkpoint (unpublished).** Both model graphs now use the pinned reference's
+256-position attention reduction buckets, capped by model context. Physical KV stays request-sized;
+masked padding is explicit in the existing Align node tables. Mask reservation/update widths and
+graph metadata match that policy. Topology still includes the actual valid prefix because current
+decode graphs contain prefix-dependent views; graph reuse is not claimed. Attention KQ uses an
+explicit F32-precision native operation selected by both model walkers, matching upstream CUDA
+precision policy. Unmasked router and ordinary products are unchanged.
+
+`gpu-device-smoke`, `gpu-generation-smoke` and the strict real C workspace/precision owner pass.
+The checked-in independent `eval/gpu/metal/reference-logits.cpp` and comparer reproduce same-device
+evidence using pinned llama.cpp, GPU embedding lookup, F32 KV and disabled flash attention. Real
+Apple M1 native Qwen and OLMoE cases both exit zero and match all seven production/diagnostic
+final-logit rows bitwise: 1,064,448 Qwen scalars and 352,128 OLMoE scalars, including both forced
+decode steps. The comparator consumes the complete numeric stream but does not independently
+compare layer/router frames. Full numerical qualification remains open; the frozen CPU/GPU
+profiles and their failed evidence are unchanged. These observed cases cannot serve as new unseen
+holdouts. Next: finish resource/capability planning before upload and graph reuse, then close the
+remaining review findings and full local qualification. CUDA functional/debug reruns remain excluded.
+
+**Active repair checkpoint (unpublished).** The user requires continued work until GPU completion.
+R2's eager unused workspace allocation is removed in both native implementations. Input planning
+now queries the backend buffer type, and initial device allocation contains weights/KV only.
+`scripts/run-gpu-device-smoke` passes, including moved graph-allocation fault injection and all
+allocation-prefix cleanup/reopen cases. Real Apple M1 `gpu_workspace_allocation_smoke.c` passes
+identical measured peaks with 1 MiB and 1 GiB workspace ceilings. Qwen's relocated diagnostic exits
+zero with 147 numeric frames byte-identical to the previous run; native device peak decreases from
+6,000,000,000 to 4,684,650,528 bytes. This does not resolve numerical qualification or all of R2:
+exact graph measurement/capability admission before model upload remains active, along with R1
+and R3–R10. The real C shim passes strict syntax checking. No CUDA rerun is requested.
+
+Align producer deliveries through PR #992 are merged at
+`305926b423da9be1f13b0129a7232626e6704d95`; issue #990 is closed. The targeted follow-up
+accepts case 06 and rejects unsafe cases 08/09. Case 11 remains a settled direct-place
+restriction; Request 46 is partially delivered and Request 48 remains proposed. Not all
+requested language/library APIs have shipped. Requests 61/62 now pass their observed consumer acceptance. Historical request owners remain pending.
+
+The active branch incorporates main `b5336f0` and preserves its G1 implementation checkpoints.
+The merged compiler/runtime batch and observed CPU/GPU generation are verified.
+Real Metal calibration inputs are frozen. The public qualifier at `0bc76bb` retained and replayed
+a truthful failure prefix: Qwen CPU passed, GPU device selection failed because the local profile
+used `Metal` instead of the observed registry device `MTL0`. A new input kit corrects only that
+selection; frozen calibration/holdout data and tolerances remain unchanged. The corrected run
+reaches native GPU success, observes `MTL0` / Apple M1 and matches frozen output tokens, but
+numeric comparison fails: 4,984,483 mismatches out of 5,243,392 scalars on Qwen calibration.
+The public result preserves that COMPUTE/readback failure, exact counts and successful cleanup.
+Separately retained streams locate divergence at the first production logits (maximum absolute
+difference 0.22494947910308838), before diagnostic retention could explain it. The checked-in
+`eval/gpu/metal/precision-probe.cpp` reproduces CPU/Metal differences in isolated F32/Q4_K/Q6_K
+matrix products at widths 1 and 20 without Align or application graphs. Its strict C++ build and
+six real-backend cases pass execution; README records the observed numerical failures.
+This is a backend arithmetic / application acceptance-contract issue, not an Align language gap.
+R5C section 2.5 already documents analogous residuals. Do not loosen frozen tolerances.
+The user requires implementation repair and local Metal verification before any further user-run
+CUDA work. Further user-run CUDA validation is limited to the subsequent performance comparison;
+do not request CUDA functional, numerical, or debugging reruns. Own the numerical investigation
+locally using independent Metal references and the existing CUDA report. No user design decision
+is pending. Do not merge the known-failing capability.
+
+**CUDA result reported in [issue #218](https://github.com/sanohiro/align-llm/issues/218).**
+Pengwin completed preparation with CUDA 13.3 / nvcc 13.3.73 and both models. The reported tested
+head is `28a6fe382aba2e68f9c5ef1ef9bbd98c7493580b`, with the same Align/ggml pins. RTX 4070 Ti /
+CUDA0 / sm_89 / driver 610.62 generates the expected Qwen tokens and records 1,496 GPU operations,
+56 layer executions, zero CPU model operations and resident weights/KV. Formal qualification
+fails at Qwen calibration case 1: 5,058,161 / 5,243,392 scalar mismatches, maximum absolute
+difference 120.86090087890625. The issue reports successful independent replay and cleanup.
+Later formal cases did not execute. Supplemental relocated OLMoE diagnostics are not formal
+evidence; calibration and holdout each report 472 routing mismatches, with matching generated
+text and no nonfinite values. Their observed holdout must not be reused as unseen design data.
+
+The issue's two embedded calibration records pass local schema/self-hash validation, and the
+formal excerpt's counts are consistent. Full replayable artifacts remain on Pengwin; they have
+not been replayed on this host. CUDA arithmetic root cause remains unresolved.
+Pengwin preparation fixes `6fc5097`, `7b0d141`, and `28a6fe3` have been pushed and fast-forwarded
+onto this host. Backend-recipe and qualification-CLI smokes pass locally. The real CPU-reference
+owner also passes on macOS, including literal dollar/quote/backtick path characters and static
+registry isolation, using the pinned compiler and ggml checkout. The issue reports
+independent reviews of the first two repairs and the third's accepted quoting-finding repair;
+the complete bound review envelopes are not present in the issue. One comprehensive independent
+review of head `bb8ad9b2958eed57c898494891a0f5e407aca815` against base/merge base
+`b5336f02ec5d4563824490a355a53eb0c8fdafab` is complete: REQUEST CHANGES. The complete finding set
+covers host/device allocation admission, backend operation admission, decode graph reuse, prefill
+chunking, real corpus coverage, replay executable/input binding, native first-fault preservation,
+loaded core-library identity, and validation deadlines. Validate and consolidate these repairs
+alongside the known numerical blocker before publication; do not ask for another CUDA debug run.
+
+Independent pinned llama.cpp Metal diagnostics use the same Qwen prompt, F32 KV and disabled flash
+attention. Explicitly placing its embedding tensor on Metal reduces the production-logit difference
+from the candidate to maximum absolute 0.0030527114868164062 at prefill and
+0.0015549659729003906 at decode. Both still fail the frozen scalar criterion. Default llama.cpp
+leaves this embedding on CPU even with all transformer layers offloaded, so that placement must
+be matched in future local semantic comparisons. This is diagnostic evidence, not qualification.
+Next: resolve the remaining local numerical and execution defects, pass local Metal verification,
+then prepare the CUDA performance comparison. Existing CUDA excerpts remain the available remote
+evidence; do not make obtaining full remote streams a new task for the user.
+
+### Preserved implementation checkpoint
+
+
+Branch `agent/g1-gpu-generation` incorporates main `b3ca489` (consolidated G1 readiness PR #214). G1 remains unmerged and
+requires its ordinary consumer completion, real Metal/CUDA qualification, review and publication.
+The user authorized continued implementation, PR/merge and subsequent eligible roadmap work.
+
+**Verified adoption checkpoint.** `.align-revision` selects managed Align
+`305926b423da9be1f13b0129a7232626e6704d95`; compiler/runtime materialization and verification pass.
+Qwen/OLMoE observed entrypoints now record prefill and decode logits with the pre-upload
+65,576-byte host reservation. `gmake gpu-numeric-stream gpu-generation-smoke` passes native
+bytes/state, active/inactive observation, exact metadata charge, pre-upload host-budget rejection
+and stream-failure propagation. `gmake fmt` and `git diff --check` pass.
+Requests 61/62 reach `ALIGN_LLM_VERIFIED`; final diagnostic/case/CLI integration remains active.
+
+**Producer evidence.** PR #991's complete frozen audit meets 19/21 expectations; PR #992's
+focused follow-up also admits derived-view helper case 06. Same-call scalar case 11 remains an
+explicit non-blocking language restriction. Both reject the real retained-local-view escapes.
+The frozen audit and original source identities remain in `docs/align-gpu-readiness.md`.
+No compiler probe substitutes for observed consumer acceptance or real Metal/CUDA qualification.
+
+**Host/device observation checkpoint.** Native production snapshots retain the selected ggml
+device's total/free memory and copied device ID. Bounded local host probes and CUDA PCI matching
+are implemented in `gpu_qualification_host_observation.py`; device enrichment refuses architecture
+mismatch, ambiguous/reordered PCI observations and changing native identity. Metal driver identity
+uses the actual OS build. `python3 scripts/run-gpu-host-observation-smoke` passes real local host
+facts and adversarial CUDA fixtures; `python3 scripts/run-gpu-provider-trace-smoke` passes all
+16 native cases with the extended snapshot. Real-shim strict C syntax and `gmake fmt` pass.
+Next: connect this owner and retained case records to final CLI publication and source rechecks;
+real Metal/CUDA qualification and comprehensive review remain outstanding.
+
+**Final source recheck checkpoint.** The source owner now verifies exact directory/file closure
+through no-follow descriptors and bounded single-link reads, including after child execution.
+`python3 scripts/run-gpu-source-materialization-smoke` and
+`python3 scripts/run-gpu-qualification-cli-smoke` pass; introduced FIFOs, extra empty directories,
+changed bytes and replaced roots are refused without following or blocking on them.
+
+**Complete implementation checkpoints.**
+
+- Strict runtime options, provider dispatch, canonical source/bundle admission and immutable private
+  staging, device/graph ownership and poisoned-registry quarantine.
+- Resident Qwen and OLMoE weight loading, prefill and multi-step decode; exact request-capacity KV
+  admission instead of allocating maximum-model context; contiguous live-prefix masks. Both real
+  models complete prefill and two decode steps on Apple M1 with a 6 GB managed-device budget.
+- Canonical profile/calibration/evidence validation, complete source reconstruction, retained input
+  rechecks, bounded process groups/logs, failure-prefix evidence, exact publication closure,
+  replay and no-replace output publication.
+- Five-step preparation: compiler, runtime, shim, candidate, static CPU reference. Commands share
+  one monotonic deadline, later factories bind completed outputs, and unstarted failures retain no
+  invented command/log. Capture faults and timeouts terminate descendants and reap the direct child.
+- Native candidate/reference driver, explicit installed SDK and executable-alias admission,
+  indirect tool rechecks, and exact four-entry child environment. Host probes must match all four
+  bundle toolchain identities. Compiler materialization verifies the exact clean managed source
+  through the existing toolchain owner, builds the native driver and copies the compiler within one
+  captured process group. Internal checkpoints through `d58461f` contain that work.
+- The current support-library checkpoint admits OpenSSL/Zstandard static archives, privately copies
+  and digest-verifies them, and binds exact archive arguments in the native driver. The real
+  CPU-reference owner now uses the grouped five-step preparation path, runs SHA-256, and proves
+  absence of dynamic ggml/OpenSSL/Zstandard dependencies. Same-source static ggml/base/cpu and the
+  real shim disable all GPU backends and dynamic plugin probing; a loadable poison-plugin positive
+  control verifies that the reference does not search ambient plugins.
+- Preparation assembly now connects the admitted profile's source and nested bundle identities,
+  host admission, managed compiler selection and lazy grouped builds. The real CPU-reference owner
+  consumes the shared constructor; the CLI owner covers record-to-builder binding and admission
+  failure before any preparation command. This is still an internal adapter, not the final CLI.
+- The numeric comparison owner now implements exact scalar tolerance decisions and once-rounded
+  error maxima, plus reference-defined routing near-tie groups, selected-slot weight comparisons,
+  and outside-group ID/order preservation. The independent bounded stream reader verifies framing,
+  complete consumption, SHA-256 and retained file identity; the native producer now passes its owner.
+  Paired consumption now binds the prior CPU digest and independent expected frames, streams scalar
+  tensors and compares routing triples. Geometry-derived case traversal is implemented below.
+- Shared source capture now accepts an explicitly pinned application checkout as well as ggml,
+  preserves each repository identity, verifies captured Git objects and rechecks admission after
+  reading. Kit assembly can consume actual application source instead of fixture-only snapshots.
+  Its private staging writer now shares the recipe path, independently replays written objects,
+  preserves occupied outputs and removes newly acquired partial output on write/replay failure.
+- Profile assembly now derives hashes, model bindings and complete CPU/GPU repeat expansion from
+  frozen source/bundle/calibration records, explicit paths/budgets/deadlines and the existing record
+  owner. Real calibration values and outputs still require execution evidence.
+- A reproduced FIFO admission stall is repaired across retained-input, source, staged-backend,
+  executable and produced-artifact readers. Descriptor opens are nonblocking before the existing
+  regular-file checks; numeric streams already used the same rule.
+- Local kit assembly now privately stages captured sources, generated records and bounded model
+  copies, runs ordinary retained-root admission and exact file-closure checks, then publishes by
+  no-replace rename. Fixture kits cover the real input path; real calibration remains pending.
+- Case sequencing now executes lazy commands under one generation deadline and waits for the
+  integrating consumer's output/numeric validation before constructing the next case. It retains
+  a terminal failure prefix; the consumer owns successful logs and profile-bound case records.
+- Numeric traversal now derives counts, frame order and exact byte ceiling from the model-IR
+  projection and frozen case. It compares production sampling plus diagnostic generation
+  reproduction and a separate teacher-forced trajectory, including highest-layer prefill reduction.
+  This resolves the distinct forced/generated IDs in the canonical vectors without weakening the
+  diagnostic-output-equals-production requirement. All three traversals share the existing deadline.
+
+**Native diagnostic checkpoint.** `runtime_diagnostic` retains layer/router tensor slots only
+until synchronous readback, with bounded reusable scratch storage. Qwen/OLMoE diagnostic generation
+reproduces production logits byte-for-byte on the native fixture and emits the geometry-derived
+frame traversal. Separate forced replay ignores EOG and the sampling maximum, and validates every
+forced token and context extent. The generation owner passes complete frames, actual routing
+selection/weight consistency, production isolation, malformed capture, exact reservation,
+pre-upload diagnostic-budget refusal, stream failure and successful subsequent invocation.
+`gmake gpu-generation-smoke gpu-case-traversal`, per-unit generation checking, `gmake fmt` and
+`git diff --check` pass. No real-device numeric qualification is claimed.
+
+**CPU trace checkpoint.** Existing dense/MoE CPU math and resource teardown now support the
+same production, diagnostic reproduction and teacher-forced stream. Ordinary wrappers keep
+observation disabled. `python3 scripts/run-gpu-cpu-trace-smoke` passes exact CPU/GPU fixture
+stream equality, ordinary/observed/reproduced token equality, forced EOG traversal, stream-limit
+failure cleanup and a successful subsequent invocation. `gmake runtime-provider-smoke` passes
+its sampler self-test and 61 CLI assertions; `gmake fmt` and `git diff --check` pass. These are
+native fixture results, not real-device numeric qualification. The focused trace owner is not
+added to an aggregate automatically.
+
+**Provider trace checkpoint.** `provider_runtime.generate_trace` now reuses ordinary GGUF,
+pack/geometry admission, chat prompt preparation and output decoding for CPU/GPU production,
+reproduction and forced replay. It returns owned text, sampled IDs including EOG, and prepared
+prompt IDs. `python3 scripts/run-gpu-provider-trace-smoke` passes both architectures through actual
+GGUF/pack fixtures, independent geometry traversal, exact CPU/GPU streams and output, immediate
+EOG, stream refusal and subsequent invocation. `gmake gpu-device-smoke runtime-provider-smoke`
+passes, including 61 provider CLI assertions. A packed-mask row-stride mismatch in the GPU stub
+was found and corrected to match the real shim; longer provider prompts now own that regression.
+Request 36 gains this non-blocking nested-array-field client; no new language API is assumed.
+The native case envelope, production measurement instrumentation and final CLI remain active.
+
+**Native observation checkpoint.** GPU owners now expose successful non-leaf graph-node totals,
+explicit readback bytes/calls and explicit synchronization-call counts. Logits readback requires
+membership in that owner's prepared and executed graph; invalid bounds/unexecuted graphs do not
+increment counters. The native device owner verifies defaults, selector/bounds refusal, successful
+read counts and doubled node totals on graph reuse. `gmake gpu-device-smoke gpu-generation-smoke`,
+`python3 scripts/run-gpu-provider-trace-smoke`, `gmake runtime-provider-smoke`, `gmake fmt` and
+`git diff --check` pass. The real shim also passes `cc -O2 -ffp-contract=off
+-DALIGN_GGML_FP_CONTRACT_OFF=1 -fPIC -Wall -Wextra -Werror -I<pinned-ggml>/ggml/include
+-fsyntax-only scripts/ggml_shim.c` against ggml `bb4caa754`. Counters are raw observations;
+production snapshot integration and independent operation/layer/expert closure remain unfinished.
+
+**Production snapshot checkpoint.** `runtime_observation.capture` now exports validated raw GPU
+counters, current allocation sizes and actual bundle/device identity before device destruction.
+The provider retains it only for production observation; CPU, ordinary and diagnostic results
+explicitly carry unavailable observations. `python3 scripts/run-gpu-provider-trace-smoke` passes
+exact read bytes/calls versus vocabulary and generated positions, one prefill plus actual decode
+count, identity/allocation checks and production/diagnostic isolation, alongside full CPU/GPU
+output/stream equality and refusal cleanup. `gmake fmt` and `git diff --check` pass. Current sizes
+are not mislabeled as peaks or payload minima. Next: native three-trajectory case envelope and
+parent integration, then independent placement/resource proof and final qualifier publication.
+
+**Native case checkpoint.** `runtime_case` executes a canonical bounded private input through
+production, frozen prompt/token/text binding, reproduction and forced replay, then prints one
+success envelope and finishes the stream. A post-writer failure prints a bounded phase/progress
+record preserving the stream's observed nonfinite count; pre-writer admission has no envelope.
+`python3 scripts/run-gpu-provider-trace-smoke` now also passes native CPU/GPU case execution,
+independent traversal, immediate EOG, unknown/missing/duplicate/bounded-field refusals, frozen
+binding drift, short stream limits, forced GPU nonfinite readback and fresh success after refusal.
+`gpu_qualification_native` now constructs the same canonical input and independently validates
+native output keys/types, frozen bindings, raw observations, exact frame traversal, nonfinites and
+router selection/weight consistency. Its verified CPU stream digest is available before GPU pairing.
+The same native owner passes mutated envelope/count/type/observation and numeric-payload refusals.
+`gmake fmt` and `git diff --check` pass. Shared case scheduling/evidence integration remains next;
+this private success envelope is not a qualification PASS or a public CLI.
+
+**Eligibility checkpoint.** Requests 61/62 are consumer-verified. The full frozen 21-case audit
+meets 20 expectations; only explicitly deferred direct-place case 11 remains red. All negative
+lifetime controls, observed native generation and real CPU compilation pass. G1 integration is
+eligible; G1R/G2 still follow G1.
+
+**Native sequence checkpoint.** The shared generation deadline now owns lazy CPU/GPU native
+case pairs, full stream validation and numeric comparison before the next child starts. The native
+provider owner passes all 16 fixture cases, retained CPU stream mutation, a finite GPU mismatch
+with actual child exit code zero, and occupied-root preservation; acquired scratch roots are cleaned.
+Evidence validation preserves a real zero exit code for functional FAIL and rejects boolean or
+missing spawned-child statuses. Calibration IDs include terminal EOG and cannot be empty.
+`python3 scripts/run-gpu-provider-trace-smoke` and `gmake gpu-profile-coverage gpu-result-replay
+gpu-evidence-publication gpu-case-traversal` pass. These are local integration checkpoints, not
+real-device qualification or publication evidence.
+
+**Prepared profile binding checkpoint.** `gpu_qualification_cli.native_plans` rechecks retained
+inputs and prepared candidate/reference identities, derives every profile case from its frozen
+calibration and retained geometry, and writes private GPU options pointing to the staged bundle.
+CPU cases use the separately built `cpu-reference/runtime_case`; no case scratch is created early.
+`gmake gpu-qualification-cli` passes full 16-case construction, exact frozen options/inputs,
+uncompleted preparation, executable/commit/input drift and occupied option-file refusal.
+Placement/resource evidence and the final CLI remain unfinished.
+
+**Resident memory evidence checkpoint.** Native owners retain actual managed allocation peaks
+across workspace replacement/rebuild, separately from current sizes. Weight/KV payload scans
+exclude padding and check original ordered tensor intervals at finish, graph boundaries and snapshot;
+invalid intervals or changed completed payloads poison observation and refuse compute. The parent
+derives exact production weight/KV payload and first-binding count independently from retained
+model IR and request capacity. `gmake gpu-device-smoke`, `gmake gpu-qualification-cli`, and
+`python3 scripts/run-gpu-provider-trace-smoke` pass, including native pointer/size corruption,
+sticky refusal, preserved peaks, both model payloads, and geometry/native-observation mutants.
+`gmake fmt`, `git diff --check` and the real shim's pinned-header strict C syntax check pass.
+RSS, model-operation/layer/expert coverage and final evidence assembly remain unfinished; these
+local observations are not a real-device qualification PASS.
+
+**Model-work and RSS checkpoint.** Native graph observations now count materializing operations,
+down-projected layers by their original weight source, and OLMoE selected expert invocations.
+Independent geometry formulas match both models' prefill/decode and immediate EOG cases. This
+exposed a GPU-stub expansion bug: shared dependencies were registered repeatedly across outputs.
+The stub now preserves per-graph membership like pinned ggml; an alternating/repeated graph
+regression owns it. `python3 scripts/run-gpu-provider-trace-smoke` and `gmake gpu-device-smoke`
+pass, including full numeric equality, wrong down-source/counter-overflow controls and mutated
+observations. The existing Python process owner now retains per-child wait4 RSS in bytes without
+a wrapper or environment change. `gmake gpu-command-environment gpu-process-cleanup`,
+`gmake gpu-build-failure-evidence gpu-case-sequence gpu-qualification-cli` pass; process tests cover
+large-then-small child isolation, repeated waits, timeouts, signals and interrupted capture.
+`gmake fmt`, `git diff --check` and strict real-shim pinned-header C syntax checking pass.
+Next: assemble truthful final case/evidence records, resolve remaining memory scope and partial
+numeric-failure record closure, connect publication/replay and run real hardware qualifications.
+
+**Case-record checkpoint.** `gpu_qualification_case_records.assemble` now builds schema-validated
+CPU/GPU case rows from native plans and outcomes, retains actual exit status and log identities,
+and refuses PASS on absent RSS or unexpected descendants. Unstarted cases have no invented
+command/log/output; GPU failure before comparison has an explicit uncompared zero numeric record
+and preserves any observed nonfinite count. Completed numeric mismatch retains real zero exit,
+comparison counts and validated output digest. `python3 scripts/run-gpu-case-record-smoke` and
+`gmake gpu-result-replay gpu-profile-coverage gpu-evidence-publication` pass. Managed memory is
+explicitly the production native device-owner allocation domain; whole-child RSS covers all three
+trajectories and runtime storage. Next: collect the sequence's terminal prefix and connect final
+source/cleanup/evidence publication; no final qualifier CLI or real-device PASS exists yet.
+
+**Terminal-prefix checkpoint.** `CaseRecords` collects consecutive case rows and bounded logs,
+refuses post-failure continuation, and finishes against the retained sequence state. A construction
+failure has an unstarted row; a deadline expiring during validation demotes the actual zero-exit
+row without losing output or logs. Native execution can use caller-owned fresh sequence state,
+preserving its checkpoint even if scratch cleanup fails. `python3 scripts/run-gpu-case-record-smoke`
+passes completion, first-failure and deadline/refusal cases. The complete native provider owner
+now connects all 16 CPU/GPU executions to case records, retains 32 logs and observes positive
+per-child RSS; `python3 scripts/run-gpu-provider-trace-smoke` passes. Final host/device identity
+fields and top-level source/cleanup/publication integration remain next.
+
+**Calibration expectation acquisition.** `runtime_calibration_seed` is a private CPU-only
+production trace driver with an explicit prompt, greedy sampling and two output tokens. It emits
+actual prompt/sample IDs and UTF-8 output without claiming qualification or inventing tolerances.
+The provider trace owner now builds it and compares its output with the existing trace/native-case
+results for both models and immediate EOG; `python3 scripts/run-gpu-provider-trace-smoke` passes.
+`gmake fmt` passes. Next: build the same pinned static CPU reference for real expectation capture.
+
+**Real-client relocation repair.** The provider now derives the complete geometry using the
+recorded display path while binding the actual opened GGUF table and pack source identity. Every
+geometry byte still must match; the display path is never opened. Relocated Qwen/OLMoE fixtures,
+normal/immediate EOG and geometry-scalar corruption pass the provider trace owner.
+`gmake runtime-provider-smoke` passes sampler vectors plus 61 CLI assertions; `gmake fmt` passes.
+The rebuilt pinned static CPU reference now generates real Qwen calibration/holdout and OLMoE
+calibration outputs successfully. Complete actual expectation capture and final Metal qualification
+are next. OLMoE calibration uses an explicit 256 MiB expert-cache budget rather than the fixture's
+1 MiB; final profile must retain that same budget.
+
+**Frozen real Metal inputs.** Both real models now have completed CPU calibration and holdout
+expectations in `eval/gpu/metal/`. Qwen emits `Yes.` / `Here is`; OLMoE emits `Do you` / `def add`.
+Their canonical records validate and bind actual prompt/sample IDs, output bytes, model/pack/
+geometry hashes and the Metal bundle. Tolerances were fixed before GPU execution. Calibration
+capture uses the pinned static CPU recipe and exact `src/` bytes matching `1e6a1bb`. Next: capture
+clean application source into a complete input kit and run the public Metal qualifier.
+
+**First public Metal invocation / source access-time repair.** The complete real input kit passes
+ordinary admission, but the first public invocation stopped before preparation because source
+rechecks compared full stat tuples, including access time changed by the verification read itself.
+The source owner now uses its shared stable identity fields (device/inode/mode/link count/size/
+mtime/ctime), excluding access time. The aged-atime regression and final CLI publication owner
+pass; the repaired owner also admits/materializes the complete real-model input package.
+No GPU holdout has executed yet. Rebuild the kit's source snapshot from the repaired commit and
+retry the public qualifier; frozen numeric inputs remain unchanged.
+
+**Real planning/publication repair.** The diagnostic public invocation built all five artifacts,
+then retained a zero-case planning failure: Python incorrectly imposed GPU-record terminal-LF
+framing on the existing no-LF R1 geometry. The planner now uses the shared strict JSON-object
+reader without changing geometry bytes/hashes. Reconstructed actual prepared inputs now pass
+all 16 native plans, case-record construction and sequence preflight. Publication independently
+failed because the mandatory source closure alone has 4141 files, beyond the former 4096 cap.
+The shared cap is now 8192 total files including result.json, with existing 512 MiB / 8 MiB bounds;
+an early count projection reserves all possible result/log rows before preparation. The final CLI
+owner publishes/replays a real >4096-file source fixture and rejects insufficient count capacity
+before preparation. `gmake gpu-profile-coverage gpu-result-replay gpu-evidence-publication`, the
+CLI and execution-evidence owners pass. Bounded domain failures now retain actionable detail;
+path-bearing/OS errors keep generic detail. The provider trace owner also passes when the original
+recorded model path is removed after relocation. No real GPU holdout has executed. Next: rebuild
+the kit from this repaired source and rerun the public Metal qualification.
 
 **Next actions, in order.**
 
-1. Publish the request-register audit and merged Align answers on
-   `docs/align-request-deliveries-20260907`, based on main `1a37b5b`. Requests 39/45/52/54/59/60
-   now record producer delivery; their consumer adoption remains pending. The documentation
-   checkpoint uses static consistency checks and exact-head docs preflight. After publication,
-   continue the G1 adoption below, batching its merged prerequisites including Requests 59/60;
-   Request 59 requires Align #979 (`5250e996`) or a descendant, including its earlier repairs.
-2. On the active G1 branch, adopt Align v0.7.5 containing Requests 55, 56, and 58. Verify private
-   staged-byte-to-native-load identity races, cleanup prefixes, poisoned process ownership, and the
-   Apple M1 Qwen loader owner.
-3. Continue G1's platform-profile and numeric-calibration work, then connect the retained source,
-   process, and record owners into the publication qualifier. After step 2, connect the Qwen loader
-   and provider integration. These checkpoints belong to one consumer capability, not probe-only
-   PRs.
-4. Deliver G1R next; advance eligible constrained-memory work without waiting for a resident speed
-   win. Freeze each actual performance campaign's workload, resource/cost limits and decision rule
-   before tuning. Do not claim current speed or larger-model support from this design.
+1. Prepare real profiles/calibrations and run the final `scripts/gpu-runtime-qualify` on Metal.
+   The native/provider owners, host observations, final source rechecks, execution evidence,
+   preparation-failure publication and public command now pass their focused owners.
+2. Complete a real passing CLI run, including all frozen holdouts/repeats, resource evidence,
+   exact source/input identity and publication replay. Final success remains unqualified.
+3. Hand the same bounded kit to the user for CUDA execution; do not obtain credentials or
+   automate remote login. Both real Metal and CUDA qualification remain required before G1 PR.
+4. Review the settled consumer-complete candidate once, run exact-HEAD applicable preflight,
+   publish/merge after checks and finding disposition, then refresh main and continue roadmap work.
 
-**Verification and constraints.** PR #204 completed its comprehensive review, one recorded repair,
-exact-head docs preflight and all three hosted docs-scope check jobs. This follow-up cross-checks
-its historical figures against their owning specifications and language claims against the exact
-Align pin. `git diff --check` passed; static checks passed for Markdown fences, relative/pinned
-source links, evidence-owner values/rounding and the eight unchanged G1 JSON vectors. Source tests,
-GPU builds and new speed measurements are N/A for this documentation-only update. Requests
-21/34/35/38/41 remain language-owned limitations. Requests 55, 56, and 58 are released; their
-remaining lifecycle work is align-llm adoption and consumer verification. Metal and CUDA require
-their own real-host evidence. AMD hardware is unavailable. Models, raw evidence and build products
-remain outside Git.
+**Final CLI assembly checkpoint.** `gpu_qualification_execute.py` joins native cases, retained
+records and measured device identity; first-failure precedence survives cleanup failures.
+`scripts/gpu-runtime-qualify` now binds the launcher and loaded project helpers to captured source,
+executes the five-step preparation and native schedule, rechecks sources/inputs, cleans invocation
+state and publishes through the replay owner. Host discovery failure cannot fabricate baseline
+facts. `python3 scripts/run-gpu-execution-evidence-smoke` passes real child lifetimes with native
+boundary fixtures, prefix/device/numeric/cleanup failures. `python3 scripts/run-gpu-final-cli-smoke`
+passes actual captured-source binding, local host probes, preparation refusal, canonical FAIL
+publication/replay, the public subprocess entrypoint, occupied output preservation and altered
+launcher refusal. Final success with real models is the next unfinished boundary.
 
-**Intentional uncommitted files.** None after this documentation candidate is committed.
+**Durable verification.** The managed pin passes `gmake build`, `gmake ggml-spike-smoke` and the
+Request 59 per-unit owners for `verification_loop`, `alignpack` and `prompt_artifacts`.
+The resident generation checkpoint passes `gmake gpu-generation-smoke gpu-device-smoke
+ gpu-qwen-load-smoke gpu-olmoe-load-smoke runtime-provider-smoke build` and all 23 units owned by
+`runtime_generation_smoke`. Real Qwen maximum-token-1 returned `PASS`/`OK`; real Qwen and OLMoE
+maximum-token-3 both finish prefill plus two decode steps on Apple M1.
+
+The input/source/backend/publication checkpoints pass `gmake gpu-input-admission
+ gpu-source-materialization gpu-backend-staging gpu-evidence-publication gpu-build-failure-evidence
+ gpu-result-replay gpu-profile-coverage`. The latest preparation checkpoints pass
+`gmake gpu-command-environment gpu-process-cleanup gpu-preparation-evidence gpu-qualification-cli
+ gpu-explicit-driver`, `scripts/test-align-toolchain`, and
+`GPU_GGML_SOURCE=<pinned-checkout> gmake gpu-cpu-reference-build` on Apple M1. Their owners cover
+malformed/missing/mutated host inputs, SDK and alias drift, exact recipe-probe agreement, occupied
+outputs, lazy construction failure, actual bootstrap/compile rejection, and descendant timeout.
+`gmake gate-topology-check`, `gmake fmt`, Python bytecode compilation and `git diff --check` pass.
+`gmake gpu-numeric-compare` passes independent exact-rational scalar checks, stream ordering,
+exponent/tolerance boundaries, nonfinite and malformed input, and routing-group/weight refusals.
+`gmake gpu-numeric-stream-reader` passes the independent byte golden, bounded chunks, malformed
+headers/footer/ordinals, truncation, file/link mutation, special files and incomplete consumption.
+`gmake gpu-numeric-pair` passes bounded scalar/routing pairing, exact counters, numeric/nonfinite
+results and refusal of matching wrong shapes, wrong ordering, extra/missing frames and CPU drift.
+`gmake gpu-source-capture gpu-backend-recipe-smoke gpu-source-replay` passes actual capture for both
+Git object formats, linked worktrees, exact objects and mutation/identity refusals; recipe defaults
+and independent retained replay remain passing. The capture owner also passes private snapshot
+writing, occupied directory/symlink preservation and cleanup after injected write/replay failures.
+`gmake gpu-profile-assembly` passes exact normative-vector reproduction, canonical normalization,
+model order, platform, path, deadline and cache-budget refusals.
+`gmake gpu-special-file-admission gpu-input-admission gpu-backend-staging gpu-preparation-evidence
+ gpu-command-environment gpu-source-replay` passes bounded special-file refusals and existing owner
+controls after the FIFO repair. The regression covers every affected reader, without a new gate.
+`gmake gpu-kit-assembly` passes full fixture-kit admission, bounded large copying, missing/extra/
+malformed/digest refusals, source/copy failure cleanup and occupied-output/publication-race safety.
+`gmake gpu-case-sequence` passes real process scheduling, validation ordering, construction/spawn/
+nonzero/consumer-failure prefixes and deadline-before-construction/during-validation/child-timeout
+paths, with descendants reaped and no resume after completion or failure.
+`gmake gpu-case-traversal` passes independent Qwen/OLMoE tensor/byte/count goldens, reduced last-layer
+prefill, multi-step forced replay, exact paired outcomes, production-prefix binding and shape/
+context/stream-bound refusals. Numeric/nonfinite changes in every traversal affect the outcome.
+These are focused build/registry/runtime checks, not completed GPU numeric qualification.
+
+**External inputs and constraints.** Models, raw evidence, build products and local paths stay
+outside Git. Metal and CUDA still require final real-host evidence; AMD hardware is unavailable.
+The CUDA kit is for user execution, not remote login, credential collection or model upload.
+The exact ggml source is `bb4caa7540188872173c44d161602d9271386413`; its captured 3,430-file,
+169 MiB closure builds a real Metal bundle `0a472538ef35...814b`, manifest `f928428facfe...8d1`,
+source manifest `64db6180009a...6f4`, snapshot `c2860034df35...8b3`.
+Qwen model `509287f78cb4...894d3c` has verified pack `a0bd07028a2c...e99b04` and geometry
+`697b32f19f2d...2492666`; all 4,677,120,000 payload bytes compare `IDENTICAL`.
+OLMoE model/pack/geometry identities are `4ddc0e53159e...9c684f`, `20423ebf5a90...df6ae` and
+`1f828d2c601e...11ada`. The real shim passes `-Wall -Wextra -Werror`. No GPU performance claim
+follows from these build and correctness checkpoints.
+
+**Latest native-stream checkpoint.** Managed compiler/runtime verification, native stream,
+observed and diagnostic generation pass as recorded above. Native compiler materialization used
+the host's installed LLVM 22 configuration. Full audit report remains honestly `ready=false`
+for deferred case 11. No G1 PR or hardware completion is claimed.
+
+**Intentional uncommitted files.** None after the verified observed-generation checkpoint.
 
 ## Merged checkpoint: R8-OLMOE-EXPERT-PHASE-B-OPERATION-DIAGNOSIS (PR #201, 2026-09-06)
 

@@ -1,0 +1,95 @@
+module runtime_prefill_smoke
+
+import core.json
+import ggml_ffi
+import runtime_generation
+import runtime_numeric_stream
+import runtime_observation
+import runtime_options
+import runtime_pack_identity
+import std.fs
+
+Request {
+  model: string, pack: string, geometry: string, prompt: i64, device_budget: i64,
+  root: string, stream: string, diagnostic: bool,
+}
+Output {
+  ok: bool, category: string, width: i64, chunks: i64, layers: i64, operations: i64,
+  experts: i64, reads: i64, uploaded: i64, tokens: array<i64>,
+}
+
+fn decode(document: str) -> Result<Request, Error> = json.decode(document)
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 { return Err(Error.Invalid) }
+  text := fs.read_file(args[1])?
+  request := decode(text)?
+  if request.prompt < 1 || request.prompt > 2048 { return Err(Error.Invalid) }
+  geometry := fs.read_file(request.geometry)?
+  options := runtime_options.RuntimeOptions {
+    schema_version: 1, backend: "metal".clone(), device: "stub-gpu".clone(),
+    backend_bundle: "fixture".clone(), placement: "resident".clone(),
+    host_budget_bytes: 134217728, device_budget_bytes: request.device_budget, prefetch: "off".clone(),
+  }
+  owner := ggml_ffi.gpu_device_open("metal", "stub-gpu", "fixture-plugin",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", options.host_budget_bytes,
+    options.device_budget_bytes) else { return Err(Error.Invalid) }
+  identity := runtime_pack_identity.observe_path(request.pack)?
+  mut prompt_builder: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= request.prompt { break }
+    prompt_builder.push(at % 2)
+    at = at + 1
+  }
+  prompt := prompt_builder.build()
+  mut empty_builder: array_builder<i64> := array_builder()
+  empty := empty_builder.build()
+  mut stream := runtime_numeric_stream.create(request.root, request.stream,
+    if request.model == "qwen2" { 1 } else { 2 }, 67108864, options.host_budget_bytes)?
+  result := if request.diagnostic {
+    if request.model == "qwen2" {
+      runtime_generation.generate_qwen_diagnostic(owner, options, request.pack, identity, geometry,
+        prompt, empty, 1, stream, empty)
+    } else {
+      runtime_generation.generate_olmoe_diagnostic(owner, options, request.pack, identity, geometry,
+        prompt, empty, 1, 0, None, stream, empty)
+    }
+  } else if request.model == "qwen2" {
+    runtime_generation.generate_qwen_observed(owner, options, request.pack, identity, geometry,
+      prompt, empty, 1, stream)
+  } else {
+    runtime_generation.generate_olmoe_observed(owner, options, request.pack, identity, geometry,
+      prompt, empty, 1, 0, None, stream)
+  }
+  mut accepted := false
+  tokens := match result {
+    Ok(values) => { accepted = true
+      values
+    },
+    Err(_) => {
+      mut values: array_builder<i64> := array_builder()
+      values.build()
+    },
+  }
+  if accepted {
+    runtime_numeric_stream.finish(stream)?
+    if !request.diagnostic {
+      snapshot := runtime_observation.capture(owner)?
+      if snapshot.prefill_microbatch_width < 1 { return Err(Error.Invalid) }
+    }
+  }
+  fault := ggml_ffi.gpu_last_failure()
+  output := Output {
+    ok: accepted, category: fault.code.clone(),
+    width: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_PREFILL_WIDTH),
+    chunks: ggml_ffi.gpu_graph_state(owner, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_GRAPH_EXECUTIONS),
+    layers: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_LAYERS),
+    operations: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_MODEL_OPS),
+    experts: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_EXPERTS),
+    reads: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_CALLS),
+    uploaded: ggml_ffi.gpu_weight_state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED_BYTES), tokens: tokens,
+  }
+  print(json.encode_bounded(output, 4096)?)
+  return Ok(())
+}

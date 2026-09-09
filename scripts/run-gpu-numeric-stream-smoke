@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Check native stream bytes against the independently specified reader golden."""
+import importlib.machinery
+import importlib.util
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+ROOT = Path(__file__).resolve().parent.parent
+loader = importlib.machinery.SourceFileLoader("stream_reader_owner", str(ROOT / "scripts/run-gpu-numeric-stream-reader-smoke"))
+spec = importlib.util.spec_from_loader(loader.name, loader)
+reader = importlib.util.module_from_spec(spec)
+loader.exec_module(reader)
+
+with tempfile.TemporaryDirectory(prefix="gpu-native-stream-") as raw:
+    work = Path(raw).resolve()
+    compiler = os.environ.get("ALIGNC", str(ROOT / "scripts/alignc"))
+    subprocess.run([compiler, "build", "src/runtime_numeric_stream_smoke.align"], cwd=ROOT, check=True)
+    executable = work / "smoke"
+    (ROOT / "runtime_numeric_stream_smoke").rename(executable)
+    result = subprocess.run([str(executable), str(work)], check=True, capture_output=True, text=True)
+    assert result.stdout == "runtime numeric stream smoke: PASS\n", result.stdout
+    assert (work / "golden").read_bytes() == reader.GOLDEN
+    reader.consume(work / "golden")
+    assert not (work / "budget").exists() and not (work / "model").exists()
+    for name in ("shape", "bound", "nonfinite", "empty"):
+        assert (work / name).stat().st_size == 24, name
+reader.main()
+print("gpu numeric stream: PASS")

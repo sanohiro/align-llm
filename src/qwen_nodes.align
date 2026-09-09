@@ -1,0 +1,109 @@
+module qwen_nodes
+
+import ggml_ffi
+import layer_qwen2
+
+fn node_label(row: i64) -> string {
+  b := builder()
+  b.write("node[")
+  b.write_int(row)
+  b.write("]")
+  return b.to_string()
+}
+
+// G1's compact data-driven Qwen node walk. It mirrors the established diagnostic walker while
+// `decode` enables only the CONCAT rows already encoded in the checked-in decode table.
+pub fn build(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  borrow nodes: layer_qwen2.NodeTable,
+  last: bool,
+  wide: bool,
+  decode: bool,
+) -> Result<(), ggml_ffi.Fault> {
+  return build_range(ctx, slots, nodes, last, wide, decode, 0, nodes.count)
+}
+
+pub fn build_range(
+  ctx: raw,
+  borrow slots: slice<u8>,
+  borrow nodes: layer_qwen2.NodeTable,
+  last: bool,
+  wide: bool,
+  decode: bool,
+  begin: i64,
+  end: i64,
+) -> Result<(), ggml_ffi.Fault> {
+  if begin < 0 || end < begin || end > nodes.count {
+    return Err(ggml_ffi.Fault { code: "R5_SHAPE".clone(), detail: "node_range".clone() })
+  }
+  mut row := begin
+  loop {
+    if row >= end { break }
+    if layer_qwen2.mf_row_issued_at(nodes.when[row], last, wide, decode) {
+      op := nodes.op[row]
+      out := nodes.out[row]
+      swap := nodes.alt_when[row] != layer_qwen2.WHEN_ALWAYS
+        && layer_qwen2.mf_row_issued_at(nodes.alt_when[row], last, wide, decode)
+      a := if swap && nodes.alt_a[row] >= 0 { nodes.alt_a[row] } else { nodes.a[row] }
+      b := if swap && nodes.alt_b[row] >= 0 { nodes.alt_b[row] } else { nodes.b[row] }
+      tag := node_label(row)
+      label: str := tag
+      if op == layer_qwen2.OP_GET_ROWS {
+        ggml_ffi.op_get_rows(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_qwen2.OP_RMS_NORM {
+        ggml_ffi.op_rms_norm(ctx, slots, out, a, nodes.p0[row], label)?
+      }
+      if op == layer_qwen2.OP_MUL {
+        ggml_ffi.op_mul(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_qwen2.OP_ADD {
+        ggml_ffi.op_add(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_qwen2.OP_MUL_MAT {
+        attention := row + 1 < nodes.count && nodes.op[row + 1] == layer_qwen2.OP_SOFT_MAX
+          && nodes.a[row + 1] == out && nodes.b[row + 1] >= 0
+        if attention {
+          ggml_ffi.op_attention_scores(ctx, slots, out, a, b, label)?
+        } else {
+          ggml_ffi.op_mul_mat(ctx, slots, out, a, b, label)?
+        }
+      }
+      if op == layer_qwen2.OP_RESHAPE_3D {
+        ggml_ffi.op_reshape_3d(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], label,
+        )?
+      }
+      if op == layer_qwen2.OP_PERMUTE {
+        ggml_ffi.op_permute(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row], label,
+        )?
+      }
+      if op == layer_qwen2.OP_CONT_3D {
+        ggml_ffi.op_cont_3d(ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], label)?
+      }
+      if op == layer_qwen2.OP_ROPE {
+        ggml_ffi.op_rope_neox(
+          ctx, slots, out, a, b, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row], label,
+        )?
+      }
+      if op == layer_qwen2.OP_SOFT_MAX {
+        ggml_ffi.op_soft_max_ext(ctx, slots, out, a, b, nodes.p0[row], nodes.p1[row], label)?
+      }
+      if op == layer_qwen2.OP_SWIGLU {
+        ggml_ffi.op_swiglu_split(ctx, slots, out, a, b, label)?
+      }
+      if op == layer_qwen2.OP_PAD {
+        ggml_ffi.op_pad(
+          ctx, slots, out, a, nodes.p0[row], nodes.p1[row], nodes.p2[row], nodes.p3[row], label,
+        )?
+      }
+      if op == layer_qwen2.OP_CONCAT {
+        ggml_ffi.op_concat(ctx, slots, out, a, b, nodes.p0[row], label)?
+      }
+    }
+    row = row + 1
+  }
+  return Ok(())
+}

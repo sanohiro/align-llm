@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Verify expected-shape pairing without depending on a native trace producer."""
+
+import hashlib
+import pathlib
+import struct
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from gpu_backend_recipe import RecipeError
+from gpu_qualification_pair import NumericPair
+from gpu_qualification_stream import Frame, MAX_CHUNK_BYTES
+
+
+def encode(rows):
+    data = bytearray()
+    for ordinal, (kind, layer, step, width, height, payload) in enumerate(rows):
+        data.extend(struct.pack("<6I2Q", kind, layer, step, width, height, 0, len(payload), ordinal))
+        data.extend(payload)
+    data.extend(struct.pack("<6I2Q", 0, 0, 0, 0, 0, 0, 0, len(rows)))
+    return struct.pack("<8sIIQ", b"G1TRACE1", 2, 0, 24 + len(data)) + data
+
+
+def rejected(call, message):
+    try:
+        call()
+    except RecipeError as error:
+        assert message in str(error), (message, str(error))
+    else:
+        raise AssertionError("invalid pair was accepted")
+
+
+def main():
+    rows = [
+        (3, 0, 0, 3, 1, struct.pack("<3f", .6, .3, .1)),
+        (4, 0, 0, 2, 1, struct.pack("<2i", 0, 1)),
+        (5, 0, 0, 2, 1, struct.pack("<2f", .7, .3)),
+        (2, 0, 0, 2, 1, struct.pack("<2f", 1, 2)),
+        (6, 0xffffffff, 0, 2, 1, struct.pack("<2f", 3, 4)),
+    ]
+    with tempfile.TemporaryDirectory(prefix="gpu-numeric-pair-") as raw:
+        root = pathlib.Path(raw).resolve()
+        reference, candidate = root / "cpu", root / "gpu"
+        golden = encode(rows)
+        reference.write_bytes(golden)
+        candidate.write_bytes(golden)
+
+        def pair(digest=None):
+            return NumericPair(reference, candidate, model=2, maximum_bytes=16 * 1024 * 1024,
+                               reference_sha256=digest or hashlib.sha256(reference.read_bytes()).hexdigest(),
+                               absolute_bits="00000000", relative_bits="00000000", near_tie_bits="00000000")
+
+        def consume(digest=None):
+            with pair(digest) as owner:
+                owner.router(layer=0, step=0, experts=3, selected=2, ordinal=0)
+                owner.scalar(Frame(2, 0, 0, 2, 1, 8, 3))
+                owner.scalar(Frame(6, 0xffffffff, 0, 2, 1, 8, 4))
+                owner.finish()
+            assert owner.reference._fd == owner.candidate._fd == -1
+            return owner
+
+        owner = consume()
+        assert owner.scalars.scalar_count == 9 and owner.scalars.mismatch_count == 0
+        assert owner.layer_count == 1 and owner.final_logit_count == 2
+        assert owner.routing.boundary_count == 1 and owner.routing.routing_mismatch_count == 0
+        rejected(owner.finish, "failed or finished")
+        rejected(lambda: consume("0" * 64), "digest does not match")
+
+        changed = list(rows)
+        changed[4] = (*rows[4][:5], struct.pack("<2f", 3, 5))
+        candidate.write_bytes(encode(changed))
+        assert consume().scalars.mismatch_count == 1
+        changed[4] = (*rows[4][:5], struct.pack("<2f", float("nan"), 4))
+        candidate.write_bytes(encode(changed))
+        assert consume().scalars.nonfinite_count == 1
+
+        for ids, message in (((-1, 1), "out of range"), ((0, 0), "duplicated")):
+            changed = list(rows)
+            changed[1] = (*rows[1][:5], struct.pack("<2i", *ids))
+            candidate.write_bytes(encode(changed))
+            rejected(consume, message)
+        changed[1] = (*rows[1][:5], struct.pack("<2i", 1, 0))
+        candidate.write_bytes(encode(changed))
+        assert consume().routing.routing_mismatch_count == 1
+
+        # Both producers agreeing on a wrong layer must still fail the independent expectation.
+        changed = list(rows)
+        changed[3] = (2, 1, *rows[3][2:])
+        reference.write_bytes(encode(changed))
+        candidate.write_bytes(encode(changed))
+        rejected(consume, "independent case expectation")
+        reference.write_bytes(golden)
+        for altered in (rows[:-1], rows + [rows[-1]], [rows[1], rows[0], *rows[2:]]):
+            candidate.write_bytes(encode(altered))
+            rejected(consume, "unrequested frames" if len(altered) > len(rows) else "independent case expectation")
+
+        candidate.write_bytes(golden)
+        def incomplete():
+            with pair():
+                pass
+        rejected(incomplete, "not completely consumed")
+        def caught_failure():
+            with pair() as owner:
+                rejected(lambda: owner.scalar(Frame(2, 0, 0, 2, 1, 8, 0)), "independent case expectation")
+                rejected(owner.finish, "failed or finished")
+        rejected(caught_failure, "not completely consumed")
+
+        payload = b"\0" * (MAX_CHUNK_BYTES + 4)
+        large = encode([(2, 0, 0, len(payload) // 4, 1, payload)])
+        reference.write_bytes(large)
+        candidate.write_bytes(large)
+        with pair() as owner:
+            owner.scalar(Frame(2, 0, 0, len(payload) // 4, 1, len(payload), 0))
+            owner.finish()
+        assert owner.scalars.scalar_count == len(payload) // 4
+    print("gpu numeric pair: PASS (case traversal and native producer remain separate)")
+
+
+if __name__ == "__main__":
+    main()

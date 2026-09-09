@@ -1,0 +1,110 @@
+module runtime_pack_identity
+
+import alignpack_read
+import std.encoding
+import std.fs
+
+SOURCE_RECORD_BYTES := 128
+
+pub SourceIdentity {
+  file_size: i64,
+  data_offset: i64,
+  tensor_count: i64,
+  kv_count: i64,
+  version: i64,
+  alignment: i64,
+  total_tensor_bytes: i64,
+  header_region_sha256: string,
+}
+
+fn same(borrow left: SourceIdentity, borrow right: SourceIdentity) -> bool {
+  left_digest: str := left.header_region_sha256
+  right_digest: str := right.header_region_sha256
+  return left.file_size == right.file_size
+    && left.data_offset == right.data_offset
+    && left.tensor_count == right.tensor_count
+    && left.kv_count == right.kv_count
+    && left.version == right.version
+    && left.alignment == right.alignment
+    && left.total_tensor_bytes == right.total_tensor_bytes
+    && left_digest == right_digest
+}
+
+pub fn observe_file(borrow pack: file) -> Result<SourceIdentity, Error> {
+  return observe_file_bounded(pack, 9223372036854775807)
+}
+
+pub fn observe_file_bounded(borrow pack: file, maximum_blocks: i64) -> Result<SourceIdentity, Error> {
+  mut counters := alignpack_read.new_counters()
+  index := match alignpack_read.open_pack_bounded(pack, counters, maximum_blocks) {
+    Ok(value) => value,
+    Err(_) => { return Err(Error.Invalid) },
+  }
+  mut window := buffer(SOURCE_RECORD_BYTES)
+  offset := alignpack_read.source_record_offset(index)
+  match alignpack_read.read_exact(
+    pack, window, counters, "R4_PACK_UNREADABLE", offset, SOURCE_RECORD_BYTES) {
+    Ok(_) => {},
+    Err(_) => { return Err(Error.Invalid) },
+  }
+  record := window.bytes()
+  file_size := record.u64_le(0) as i64
+  data_offset := record.u64_le(8) as i64
+  tensor_count := record.u64_le(16) as i64
+  kv_count := record.u64_le(24) as i64
+  version := record.u32_le(32) as i64
+  alignment := record.u32_le(36) as i64
+  repeated_data_offset := record.u64_le(40) as i64
+  total_tensor_bytes := record.u64_le(80) as i64
+  if file_size < 0 || data_offset < 0 || tensor_count < 0 || kv_count < 0
+    || version < 0 || alignment < 1 || total_tensor_bytes < 0
+    || repeated_data_offset != data_offset || record.u64_le(88) as i64 != 0 {
+    return Err(Error.Invalid)
+  }
+  mut digest_nonzero := false
+  mut at := 48
+  loop {
+    if at >= 80 { break }
+    if record.u8(at) != 0 { digest_nonzero = true }
+    at = at + 1
+  }
+  if !digest_nonzero { return Err(Error.Invalid) }
+  at = 96
+  loop {
+    if at >= SOURCE_RECORD_BYTES { break }
+    if record.u8(at) != 0 { return Err(Error.Invalid) }
+    at = at + 1
+  }
+  digest := encoding.hex_encode(record[48..80])
+  return Ok(SourceIdentity {
+      file_size: file_size,
+      data_offset: data_offset,
+      tensor_count: tensor_count,
+      kv_count: kv_count,
+      version: version,
+      alignment: alignment,
+      total_tensor_bytes: total_tensor_bytes,
+      header_region_sha256: digest,
+    })
+}
+
+pub fn observe_path(pack_path: str) -> Result<SourceIdentity, Error> {
+  pack := fs.open_rw(pack_path)?
+  return observe_file(pack)
+}
+
+pub fn verify_file(
+  borrow pack: file,
+  borrow expected: SourceIdentity,
+) -> Result<(), Error> {
+  observed := observe_file(pack)?
+  if !same(observed, expected) { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn verify_file_bounded(borrow pack: file, borrow expected: SourceIdentity,
+  maximum_blocks: i64) -> Result<(), Error> {
+  observed := observe_file_bounded(pack, maximum_blocks)?
+  if !same(observed, expected) { return Err(Error.Invalid) }
+  return Ok(())
+}

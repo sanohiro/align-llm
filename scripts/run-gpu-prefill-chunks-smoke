@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""Compare production microbatches with a deliberately unchunked test control."""
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+from gpu_qualification_native import ModelWork
+from gpu_qualification_traversal import Traversal
+
+
+def main():
+    with tempfile.TemporaryDirectory(prefix="g1-prefill-chunks-") as temporary:
+        work = pathlib.Path(temporary).resolve()
+        environment = os.environ.copy()
+        for name in ("ALIGN_LLM_GGML_INCLUDE", "ALIGN_LLM_GGML_LIB", "ALIGN_LLM_GGML_SHIM_STATIC"):
+            environment.pop(name, None)
+        environment.update(ALIGN_LLM_GGML_FORCE="engine+gpu", ALIGN_LLM_GGML_SHIM_DIR=str(work / "shim"))
+        subprocess.run([str(ROOT / "scripts/build-ggml-shim")], env=environment, check=True)
+        environment["LIBRARY_PATH"] = str(work / "shim") + os.pathsep + environment.get("LIBRARY_PATH", "")
+        subprocess.run([str(ROOT / "scripts/alignc"), "build", str(ROOT / "src/runtime_prefill_smoke.align")],
+                       cwd=work, env=environment, check=True)
+        candidate = work / "candidate"
+        (work / "runtime_prefill_smoke").rename(candidate)
+        # The control changes exactly one recipe constant in a private source copy. It uses
+        # one full-prompt graph; no altered bytes reach the checkout or production binary.
+        reference_source = work / "reference-source"
+        shutil.copytree(ROOT / "src", reference_source)
+        path = reference_source / "runtime_generation.align"
+        source = path.read_text()
+        assert source.count("PREFILL_MICROBATCH := 128") == 1
+        path.write_text(source.replace("PREFILL_MICROBATCH := 128", "PREFILL_MICROBATCH := 2048"))
+        observation_path = reference_source / "runtime_observation.align"
+        observation_source = observation_path.read_text()
+        assert observation_source.count("result.prefill_microbatch_width > 128") == 1
+        observation_path.write_text(observation_source.replace("result.prefill_microbatch_width > 128",
+                                                               "result.prefill_microbatch_width > 2048"))
+        # Match the CPU diagnostic writer: slice full-prompt captures into canonical frames.
+        diagnostic_path = reference_source / "runtime_diagnostic.align"
+        diagnostic_source = diagnostic_path.read_text()
+        start = diagnostic_source.index("pub fn write_chunk(")
+        diagnostic_path.write_text(diagnostic_source[:start] + """pub fn write_chunk(borrow owner: Capture, tokens: i64, final_chunk: bool,
+  borrow mut stream: runtime_numeric_stream.Stream) -> Result<(), Error> {
+  if !final_chunk || tokens != owner.prompt { return Err(Error.Invalid) }
+  return write(owner, 0, stream)
+}
+""")
+        subprocess.run([str(ROOT / "scripts/alignc"), "build", str(reference_source / "runtime_prefill_smoke.align")],
+                       cwd=work, env=environment, check=True)
+        reference = work / "runtime_prefill_smoke"
+        for flags in ([], ["--moe"]):
+            subprocess.run([sys.executable, str(ROOT / "scripts/layer_forward_fixture.py"), str(work), "--model", *flags],
+                           stdout=subprocess.DEVNULL, check=True)
+        dense = {"schema_version": 2, "kind": "R1_MODEL_IR", "model": {
+            "arch": "qwen2", "n_layer": 2, "n_embd": 8, "n_head": 2, "n_head_kv": 1,
+            "head_dim": 4, "n_ff": 16, "n_vocab": 32, "n_expert": 0, "context_length": 2048,
+            "rms_eps_bits": "3727c5ac", "rope": {"type": 2, "dim_count": 4,
+            "freq_base_bits": "461c4000", "scaling_type": None}}}
+        (work / "dense.json").write_text(json.dumps(dense, separators=(",", ":")))
+        sparse = json.loads((work / "moe-model-geometry.json").read_bytes())
+        sparse["model"]["context_length"] = 2048
+        (work / "sparse.json").write_text(json.dumps(sparse, separators=(",", ":")))
+
+        def run(executable, model, prompt, budget, label, diagnostic=False):
+            geometry = dense if model == "qwen2" else sparse
+            request = {"model": model, "pack": str(work / ("model-pack.alignpack" if model == "qwen2" else "moe-model-pack.alignpack")),
+                       "geometry": str(work / ("dense.json" if model == "qwen2" else "sparse.json")),
+                       "prompt": prompt, "diagnostic": diagnostic, "device_budget": budget, "root": str(work), "stream": label}
+            input_path = work / (label + ".json")
+            input_path.write_text(json.dumps(request, separators=(",", ":")))
+            row = json.loads(subprocess.check_output([str(executable), str(input_path)], env=environment))
+            if row["ok"] and not diagnostic and row["width"] == min(128, prompt):
+                # A context-end production request admits no forced decode; the work projection
+                # only consumes the prompt, output length and geometry from this value.
+                traversal = Traversal(1 if model == "qwen2" else 2, geometry["model"]["n_layer"],
+                                      geometry["model"]["n_embd"], geometry["model"]["n_vocab"],
+                                      geometry["model"].get("n_expert", 0), geometry["model"].get("n_expert_used", 0),
+                                      prompt, 0, tuple(row["tokens"]))
+                expected = ModelWork.derive(traversal, 2048)
+                assert (row["operations"], row["layers"], row["experts"]) == (expected.operations, expected.layers, expected.experts), row
+            return row, (work / label).read_bytes()
+
+        for model in ("qwen2", "olmoe"):
+            for prompt in (1, 128, 129, 257, 2048):
+                baseline, baseline_bytes = run(reference, model, prompt, 268435456, f"{model}-{prompt}-full")
+                actual, actual_bytes = run(candidate, model, prompt, 268435456, f"{model}-{prompt}-chunks")
+                assert baseline["ok"] and actual["ok"], (baseline, actual)
+                assert actual["category"] == "" and actual["tokens"] == baseline["tokens"]
+                assert actual_bytes == baseline_bytes, (model, prompt, "chunked logits differ")
+                assert baseline["chunks"] == 1 and actual["chunks"] == (prompt + 127) // 128
+                assert actual["reads"] == 1, actual
+            for prompt in (129, 257, 2048):
+                baseline, baseline_bytes = run(reference, model, prompt, 268435456, f"{model}-{prompt}-full-diag", True)
+                actual, actual_bytes = run(candidate, model, prompt, 268435456, f"{model}-{prompt}-chunks-diag", True)
+                assert baseline["ok"] and actual["ok"], (baseline, actual)
+                assert actual_bytes == baseline_bytes, (model, prompt, "layer/router capture differs")
+            diagnostic_refusal, _ = run(candidate, model, 257, 262144, model + "-diag-no-fit", True)
+            assert not diagnostic_refusal["ok"] and diagnostic_refusal["category"] == "MEMORY_BUDGET", diagnostic_refusal
+            assert diagnostic_refusal["uploaded"] == -1, diagnostic_refusal
+            # A tight device cap cannot hold the nominal prompt workspace but admits smaller chunks.
+            reduced, reduced_bytes = run(candidate, model, 257, 262144, model + "-small-fit")
+            expected_bytes = (work / f"{model}-257-full").read_bytes()
+            assert reduced["ok"] and 1 <= reduced["width"] < 128, reduced
+            assert reduced_bytes == expected_bytes and reduced["category"] == "", reduced
+            refused, _ = run(candidate, model, 257, 1024, model + "-no-fit")
+            assert not refused["ok"] and refused["category"] == "MEMORY_BUDGET" and refused["uploaded"] == -1, refused
+            print(f"prefill chunks: {model} PASS (1/128/129/257/2048, exact logits, smaller width {reduced['width']}, no-fit)", flush=True)
+    print("GPU prefill chunks owner: PASS")
+
+
+if __name__ == "__main__":
+    main()

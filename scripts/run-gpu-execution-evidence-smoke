@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Own final generation assembly with real child lifetimes and validated native fixtures."""
+import dataclasses
+import pathlib
+import runpy
+import tempfile
+import time
+from types import SimpleNamespace
+from unittest import mock
+
+from gpu_backend_recipe import RecipeError
+from gpu_qualification_cases import CaseCommand
+import gpu_qualification_execute as execute
+from gpu_qualification_run import error_detail
+
+assert error_detail(RecipeError("/private/host/path"), "redacted") == "redacted"
+assert error_detail(OSError("host details"), "redacted") == "redacted"
+assert error_detail(RecipeError("record framing is invalid"), "redacted") == "record framing is invalid"
+
+fixture = runpy.run_path(str(pathlib.Path(__file__).with_name("run-gpu-case-record-smoke")))
+plan, outcome, expected = (fixture[key] for key in ("plan", "outcome", "expected"))
+observation = {**outcome.native.observation, "available": True, "bundle_id": "a" * 64,
+    "device_name": "Metal", "device_description": "Apple M1", "device_id": "",
+    "device_total_bytes": 1024, "device_free_bytes": 0}
+outcome = dataclasses.replace(outcome, native=dataclasses.replace(outcome.native, observation=observation))
+bundle = {"bundle_id": "a" * 64, "backend": "metal", "target": {"gpu_architectures": ["apple_m1"]},
+          "artifacts": [{"role": "backend_plugin", "path": "libggml-metal.so", "sha256": "b" * 64}]}
+host = dict(platform="macos", backend="metal", os_version="test-build", kernel="test-kernel",
+            device_state="unavailable")
+
+with tempfile.TemporaryDirectory(prefix="gpu-execution-evidence-") as raw:
+    root = pathlib.Path(raw).resolve()
+    home, temporary = root / "home", root / "tmp"
+    home.mkdir(mode=0o700)
+    temporary.mkdir(mode=0o700)
+    executable = root / "native-fixture"
+    executable.write_bytes(fixture["executable_bytes"])
+    executable.chmod(0o700)
+    input_path = root / "input.json"
+    input_path.write_bytes(plan.case.input_bytes())
+    invocation = SimpleNamespace(work=root, home=home, temporary=temporary,
+        admitted=SimpleNamespace(records={"profile": {"cases": [expected] * 16,
+            "deadlines_ns": {"generation": 10_000_000_000}}, "bundle": bundle}))
+    preparation = SimpleNamespace(complete=True, retained={}, started_ns=time.monotonic_ns())
+
+    def initial(*args, **kwargs):
+        return {"status": "FAIL", "host": host, "bundle": {"loaded_artifact_sha256s": []}, "cases": [],
+                "cleanup": {"descendants_before": 0, "descendants_after": 0, "invocation_state_safe": True},
+                "failure": {"category": "CONFIG", "stage": "plan", "case_ordinal": -1, "detail": "fixture"}}
+
+    for mode in ("complete", "planning", "unstarted", "device", "identity", "numeric", "cleanup", "numeric-cleanup"):
+        def plans(*args):
+            if mode == "planning":
+                raise RecipeError("planning refused")
+            return (plan,) * 16
+
+        def run(plans, *, consume, sequence, **kwargs):
+            def construct(index):
+                if mode == "unstarted" and index == 1:
+                    raise RecipeError("unstarted case")
+                return CaseCommand((str(executable), str(input_path)),
+                    (fixture["token"], fixture["input_token"]),
+                    {fixture["token"]: executable, fixture["input_token"]: input_path})
+            def observed(index, result):
+                current = dataclasses.replace(outcome, process=result)
+                if mode == "device" or (mode == "identity" and index == 1):
+                    current = dataclasses.replace(current, native=dataclasses.replace(current.native,
+                        observation={**observation, "device_description": "wrong device"}))
+                if mode.startswith("numeric") and index == 1:
+                    current = dataclasses.replace(current, error="mismatch",
+                        numeric={**current.numeric, "mismatch_count": 1})
+                return consume(index, current)
+            sequence.run([lambda index=index: construct(index) for index in range(16)],
+                cwd=root, home=home, temporary=temporary, consume=observed)
+            if mode.endswith("cleanup"):
+                raise RecipeError("cleanup refused")
+            return sequence
+
+        with mock.patch.object(execute, "native_plans", plans), mock.patch.object(execute, "run", run), \
+                mock.patch.object(execute, "failure_evidence", initial):
+            result = execute.execute(invocation, preparation, align_revision="a" * 40, host=host)
+        evidence = result.evidence
+        cases = evidence["cases"]
+        assert evidence["status"] == ("PASS" if mode == "complete" else "FAIL"), mode
+        count = 16 if mode in {"complete", "cleanup"} else 0 if mode == "planning" else 1 if mode == "device" else 2
+        assert len(cases) == count and evidence["aggregate"]["case_count"] == count, mode
+        assert len(result.retained) == 3 * (count - (mode == "unstarted")), mode
+        if mode == "planning":
+            assert evidence["failure"]["detail"] == "planning refused"
+        if mode not in {"planning", "device"}:
+            assert evidence["host"]["device_state"] == "available"
+            assert evidence["bundle"]["loaded_artifact_sha256s"] == ["b" * 64]
+        if mode.endswith("cleanup"):
+            assert evidence["cleanup"]["invocation_state_safe"] is False
+            assert evidence["failure"]["category"] == ("CLEANUP" if mode == "cleanup" else "COMPUTE")
+        if mode in {"device", "identity"}:
+            assert cases[-1]["exit_code"] == 0 and cases[-1]["terminal"] == "FAIL"
+            assert evidence["failure"]["stage"] == "device"
+        if mode == "unstarted":
+            assert cases[-1]["exit_code"] is None and not cases[-1]["command"]["argv"]
+print("gpu-execution-evidence: PASS (native prefix, device binding, first failure, cleanup retention)")

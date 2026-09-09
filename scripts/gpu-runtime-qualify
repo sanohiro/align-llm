@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""Run the frozen G1 generation qualification profile and publish its evidence."""
+import pathlib
+import sys
+
+sys.dont_write_bytecode = True
+
+from gpu_qualification_main import main
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:], launcher=pathlib.Path(__file__).resolve(strict=True)))

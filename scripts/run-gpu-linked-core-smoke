@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Verify actual linked cores using supplied pinned ggml headers/shared libraries."""
+import hashlib
+import ctypes
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def canonical(value):
+    return json.dumps(value, separators=(",", ":")).encode() + b"\n"
+
+
+def probe_native(shim, bundle, expected):
+    loaded = ctypes.CDLL(shim)
+    loaded.align_gpu_core_identity.argtypes = (ctypes.c_int32, ctypes.c_int32, ctypes.c_void_p, ctypes.c_int32)
+    assert loaded.align_gpu_core_required() == 1
+    assert loaded.align_gpu_core_identity(-1, 0, None, 0) == 0
+    manifest = json.loads(pathlib.Path(bundle, "manifest.json").read_bytes())
+    accepted = True
+    suffix = "dylib" if sys.platform == "darwin" else "so"
+    for core, name in enumerate(("ggml-base", "ggml")):
+        buffer = ctypes.create_string_buffer(4096)
+        assert loaded.align_gpu_core_identity(core, 0, buffer, 1) == 0
+        assert loaded.align_gpu_core_identity(core, 2, buffer, 4096) == 0
+        count = loaded.align_gpu_core_identity(core, 0, buffer, 4096)
+        actual = pathlib.Path(buffer.raw[:count].decode())
+        assert count > 1 and actual.is_absolute() and actual.is_file()
+        count = loaded.align_gpu_core_identity(core, 1, buffer, 4096)
+        identity = buffer.raw[:count].decode()
+        row = next((row for row in manifest["artifacts"] if row["path"] == f"lib{name}.{suffix}"), None)
+        data = actual.read_bytes()
+        accepted &= row is not None and len(identity) == 64 and row["sha256"] == identity == digest(data) and row["bytes"] == len(data)
+    assert accepted == (expected == "accept")
+
+
+def main():
+    native_only = "--native-only" in sys.argv
+    include, library = (pathlib.Path(arg).resolve(strict=True) for arg in sys.argv[1:] if arg != "--native-only")
+    macos = sys.platform == "darwin"
+    suffix = "dylib" if macos else "so"
+    backend = "metal" if macos else "cuda"
+    with tempfile.TemporaryDirectory(prefix="g1-linked-core-") as temporary:
+        work = pathlib.Path(temporary).resolve()
+        cores = work / "cores"
+        cores.mkdir()
+        for source in library.iterdir():
+            if source.name.startswith(("libggml.", "libggml-base.")) and source.is_file():
+                shutil.copyfile(source, cores / source.name)
+        environment = os.environ.copy()
+        for key in ("ALIGN_LLM_GGML_FORCE", "ALIGN_LLM_GGML_SHIM_STATIC", "DYLD_LIBRARY_PATH", "LD_LIBRARY_PATH"):
+            environment.pop(key, None)
+        environment.update(ALIGN_LLM_GGML_INCLUDE=str(include), ALIGN_LLM_GGML_LIB=str(cores),
+                           ALIGN_LLM_GGML_SHIM_DIR=str(work / "shim"))
+        subprocess.run([str(ROOT / "scripts/build-ggml-shim")], env=environment, check=True)
+        shim = work / "shim" / f"libalign_ggml_shim.{suffix}"
+        environment["LIBRARY_PATH"] = str(shim.parent) + os.pathsep + environment.get("LIBRARY_PATH", "")
+        if not native_only:
+            subprocess.run([str(ROOT / "scripts/alignc"), "build", str(ROOT / "src/runtime_linked_core_smoke.align")],
+                           cwd=work, env=environment, check=True)
+        executable = work / "runtime_linked_core_smoke"
+        identity = {"name": "fixture", "version": "fixture", "sha256": digest(b"fixture")}
+        manifest = {
+            "schema_version": 1, "artifact_kind": "GPU_BACKEND_BUNDLE", "bundle_id": "0" * 64,
+            "backend": backend,
+            "ggml": {"commit": "bb4caa7540188872173c44d161602d9271386413",
+                     "source_manifest_sha256": digest(b"source"), "version": "fixture"},
+            "target": {"os": "macos" if macos else "linux", "arch": "aarch64" if os.uname().machine in {"arm64", "aarch64"} else "x86_64",
+                       "gpu_architectures": ["apple_m1" if macos else "sm_89"]},
+            "toolchain": {"c_compiler": identity, "cxx_compiler": identity, "sdk": identity,
+                          "toolkit": {"name": "none", "version": "none", "sha256": digest(b"")} if macos else identity},
+            "build_flags": [], "artifacts": [],
+        }
+        bundle = work / "bundle"
+        bundle.mkdir()
+        files = {f"libggml-{backend}.so": b"not loaded by the core owner"}
+        for name in ("ggml", "ggml-base"):
+            files[f"lib{name}.{suffix}"] = (cores / f"lib{name}.{suffix}").read_bytes()
+        for name, data in files.items():
+            (bundle / name).write_bytes(data)
+            manifest["artifacts"].append({"role": "backend_plugin" if name == f"libggml-{backend}.so" else "shared_library",
+                                          "path": name, "bytes": len(data), "sha256": digest(data)})
+        manifest["artifacts"].sort(key=lambda row: (row["role"], row["path"]))
+
+        def save():
+            manifest["bundle_id"] = "0" * 64
+            manifest["bundle_id"] = digest(canonical(manifest))
+            (bundle / "manifest.json").write_bytes(canonical(manifest))
+
+        def run(accepted, env=environment):
+            expectation = "accept" if accepted else "reject"
+            command = ([sys.executable, str(pathlib.Path(__file__).resolve()), "--probe-native", str(shim), str(bundle), expectation]
+                       if native_only else [str(executable), str(bundle), backend, expectation])
+            subprocess.run(command, env=env, check=True)
+
+        save()
+        run(True)
+        for core in ("ggml", "ggml-base"):
+            name = f"lib{core}.{suffix}"
+            row = next(row for row in manifest["artifacts"] if row["path"] == name)
+            original = files[name]
+            altered = original + b"different-core-identity"
+            (bundle / name).write_bytes(altered)
+            row.update(bytes=len(altered), sha256=digest(altered))
+            save()
+            run(False)
+            (bundle / name).write_bytes(original)
+            row.update(bytes=len(original), sha256=digest(original))
+            save()
+        # Dynamic loader substitution: valid images with different complete file identities.
+        alternate = work / "alternate"
+        shutil.copytree(cores, alternate)
+        for path in alternate.iterdir():
+            path.write_bytes(path.read_bytes() + b"alternate-image")
+        redirected = environment | {"DYLD_LIBRARY_PATH" if macos else "LD_LIBRARY_PATH": str(alternate)}
+        run(False, redirected)
+        removed = manifest["artifacts"].pop()
+        save()
+        run(False)
+        manifest["artifacts"].append(removed)
+        save()
+        # Rebuild without identity definitions: legacy remains linkable, G1 refuses.
+        flags = ["cc", "-shared", "-fPIC", "-O2", "-ffp-contract=off", "-DALIGN_GGML_FP_CONTRACT_OFF=1",
+                 "-Wall", "-Wextra", "-Werror", "-I" + str(include), str(ROOT / "scripts/ggml_shim.c"),
+                 "-L" + str(cores), "-Wl,-rpath," + str(cores), "-lggml", "-lggml-base", "-lm", "-o", str(shim)]
+        if macos:
+            flags += ["-Wl,-install_name," + str(shim)]
+        else:
+            flags += ["-ldl"]
+        subprocess.run(flags, check=True)
+        run(False)
+    print("GPU linked core owner: PASS")
+
+
+if __name__ == "__main__":
+    if sys.argv[1] == "--probe-native":
+        probe_native(*sys.argv[2:])
+    else:
+        main()

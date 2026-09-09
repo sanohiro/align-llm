@@ -1,0 +1,1 @@
+{"schema_version":1,"backend":"metal","device":"fixture-device","backend_bundle":"bundle","placement":"resident","host_budget_bytes":1,"device_budget_bytes":2,"prefetch":"off"}

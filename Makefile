@@ -34,8 +34,13 @@ $(error capable-checks requires the authenticated fresh worker)
 endif
 endif
 
-.PHONY: check run build fmt format-check ggml-spike ggml-spike-smoke ggml-spike-qualification layer-forward-smoke layer-forward-qualification model-forward-qualification metal-forward-qualification moe-layer-forward-qualification moe-model-forward-qualification decode-step-qualification moe-decode-step-qualification gguf-smoke gguf-reference-parity model-ir-smoke model-ir-parity expert-trace-smoke expert-trace-parity residency-sim-smoke residency-sim-qualification alignpack-smoke alignpack-qualification tokenizer-smoke tokenizer-parity prompt-smoke prompt-parity runtime-provider-smoke runtime-provider-gate olmoe-sampling-qualification eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-source-verifier-smoke prompt-snapshot-helper-smoke prompt-fixed-adapter-smoke prompt-evaluate-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke prompt-gate-check baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption c6e-request2-adoption c6f1-request11-adoption c6f2-request14-adoption c6-evaluation-adoption c7-owned-record-source-expiry-adoption c7-persisted-result-cli-smoke c7-persisted-result-lifetime-smoke c7-persisted-result-owned-move-smoke c7-persisted-result-wire-smoke c7-persisted-result-noncanonical-input-smoke c7-persisted-result-independent-destinations-smoke persisted-result-smoke persisted-result-qualification darwin-profile-gate c4-repair-gate c4-editset-gate c4-template-gate prompt-repair-adapter-smoke prompt-template-adapter-smoke ci
+.PHONY: check run build fmt format-check gpu-config-smoke gpu-backend-recipe-smoke gpu-source-replay gpu-bundle-smoke gpu-device-smoke ggml-spike ggml-spike-smoke ggml-spike-qualification layer-forward-smoke layer-forward-qualification model-forward-qualification metal-forward-qualification moe-layer-forward-qualification moe-model-forward-qualification decode-step-qualification moe-decode-step-qualification gguf-smoke gguf-reference-parity model-ir-smoke model-ir-parity expert-trace-smoke expert-trace-parity residency-sim-smoke residency-sim-qualification alignpack-smoke alignpack-qualification tokenizer-smoke tokenizer-parity prompt-smoke prompt-parity runtime-provider-smoke runtime-provider-gate olmoe-sampling-qualification eval-smoke eval-coding loop-smoke provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-source-verifier-smoke prompt-snapshot-helper-smoke prompt-fixed-adapter-smoke prompt-evaluate-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke prompt-gate-check baseline-check gate-topology-check fresh-worker-qualification hosted-checks capable-checks align-revision align-build align-build-only json-scan-row-ownership-adoption c6-json-decoded-owner-adoption c6-json-escape-adoption c6-json-recursive-graph-adoption c6c2-request8-adoption c6c2-request10-adoption c6-json-bounded-encoding-adoption c6-prompt-artifact-adoption c6b-memory-adoption c6-json-adoption-wave c6-borrowed-option-adoption c6-borrowed-array-adoption c6d-request18-adoption c6e-request2-adoption c6f1-request11-adoption c6f2-request14-adoption c6-evaluation-adoption c7-owned-record-source-expiry-adoption c7-persisted-result-cli-smoke c7-persisted-result-lifetime-smoke c7-persisted-result-owned-move-smoke c7-persisted-result-wire-smoke c7-persisted-result-noncanonical-input-smoke c7-persisted-result-independent-destinations-smoke persisted-result-smoke persisted-result-qualification darwin-profile-gate c4-repair-gate c4-editset-gate c4-template-gate prompt-repair-adapter-smoke prompt-template-adapter-smoke ci
 .PHONY: prefix-corpus-check prefix-ttft-runner-check prefix-ttft-qualification
+.PHONY: gpu-profile-coverage gpu-input-admission gpu-source-materialization gpu-backend-staging gpu-qualification-cli gpu-evidence-publication
+.PHONY: gpu-result-replay
+.PHONY: gpu-command-environment gpu-process-cleanup gpu-build-failure-evidence gpu-preparation-evidence gpu-explicit-driver
+.PHONY: gpu-olmoe-load-smoke gpu-generation-smoke
+.PHONY: gpu-cpu-reference-build
 check:
 	@if [ "$${ALIGN_LLM_FRESH_COMPILER:-0}" = 1 ]; then \
 	  diagnostic="$$(mktemp)"; \
@@ -70,6 +75,144 @@ fmt:
 
 format-check:
 	./scripts/check-format
+
+# G1 section 5's narrow model-free owner for the public options record. It reaches the strict
+# lexical and exact-key validator without loading ggml or touching a device.
+gpu-config-smoke:
+	$(ALIGNC) run src/runtime_options_smoke.align eval/fixtures/runtime-options-valid.json
+
+# G1's immutable Metal/CUDA recipe owner. It is model-free and asserts every fixed configure/build
+# switch, including dynamic backend loading, no CPU fallback, CUDA graph/FA and relative rpaths.
+gpu-backend-recipe-smoke:
+	./scripts/run-gpu-backend-recipe-smoke
+
+# G1's retained-source owner. It replays canonical manifests and complete Git commit/tree/blob
+# identity without trusting a checkout or following retained symlinks and aliases.
+gpu-source-replay:
+	./scripts/run-gpu-source-replay-smoke
+
+.PHONY: gpu-source-capture
+gpu-source-capture:
+	./scripts/run-gpu-source-capture-smoke
+
+# G1's two-model profile owner. It validates bundle/calibration identity and the exact four-row
+# CPU/GPU expansion for every frozen calibration and holdout case.
+gpu-profile-coverage:
+	./scripts/run-gpu-profile-coverage-smoke
+
+.PHONY: gpu-numeric-compare
+gpu-numeric-compare:
+	./scripts/run-gpu-numeric-compare-smoke
+
+.PHONY: gpu-numeric-stream
+gpu-numeric-stream:
+	./scripts/run-gpu-numeric-stream-smoke
+
+.PHONY: gpu-numeric-stream-reader
+gpu-numeric-stream-reader:
+	./scripts/run-gpu-numeric-stream-reader-smoke
+
+.PHONY: gpu-numeric-pair
+gpu-numeric-pair:
+	./scripts/run-gpu-numeric-pair-smoke
+
+.PHONY: gpu-profile-assembly
+gpu-profile-assembly:
+	./scripts/run-gpu-profile-assembly-smoke
+
+.PHONY: gpu-special-file-admission
+gpu-special-file-admission:
+	./scripts/run-gpu-special-file-admission-smoke
+
+.PHONY: gpu-kit-assembly
+gpu-kit-assembly:
+	./scripts/run-gpu-kit-assembly-smoke
+
+.PHONY: gpu-case-sequence
+gpu-case-sequence:
+	./scripts/run-gpu-case-sequence-smoke
+
+.PHONY: gpu-case-traversal
+gpu-case-traversal:
+	./scripts/run-gpu-case-traversal-smoke
+
+gpu-input-admission:
+	./scripts/run-gpu-input-admission-smoke
+
+# G1 reconstructs both reviewed Git closures beneath a private invocation root and rechecks every
+# output byte before any compiler or native build consumes it.
+gpu-source-materialization:
+	./scripts/run-gpu-source-materialization-smoke
+
+# G1 stages the admitted manifest and backend artifacts into invocation-owned single-link files
+# before shim linking or case execution can consume native bytes.
+gpu-backend-staging:
+	./scripts/run-gpu-backend-staging-smoke
+
+# G1 validates the complete CLI/input/output boundary before it creates invocation scratch or
+# permits a later preparation command to touch a compiler, linker, or device.
+gpu-qualification-cli:
+	./scripts/run-gpu-qualification-cli-smoke
+
+gpu-evidence-publication:
+	./scripts/run-gpu-evidence-publication-smoke
+
+# G1's evidence owner. It validates the canonical result and every declared retained byte before
+# replaying both complete Git source snapshots.
+gpu-result-replay:
+	./scripts/run-gpu-result-replay-smoke
+
+# G1's qualifier spawn owner resolves verified absolute inputs into an otherwise empty environment.
+gpu-command-environment:
+	./scripts/run-gpu-qualifier-process-smoke environment
+
+# G1's process owner bounds logs and time, terminates its process group, and proves no member remains.
+gpu-process-cleanup:
+	./scripts/run-gpu-qualifier-process-smoke cleanup
+
+# G1's preparation owner turns a real nonzero candidate build into canonical bounded FAIL evidence.
+gpu-build-failure-evidence:
+	./scripts/run-gpu-qualifier-process-smoke build-failure
+
+gpu-preparation-evidence:
+	./scripts/run-gpu-preparation-evidence-smoke
+
+# Request 60's consumer owner runs a complete preparation sequence and builds one real Align
+# candidate with only the four canonical environment names. A digest-bound native proxy proves
+# that Align selected the exact absolute --cc path instead of consulting a default search path.
+gpu-explicit-driver:
+	@compiler="$$(./scripts/align-toolchain ensure compiler)"; \
+	  cc="$$(command -v "$${CC:-cc}")"; \
+	  ./scripts/run-gpu-explicit-driver-smoke "$$compiler" "$$cc"
+
+# Same-source static CPU reference, including actual CPU discovery and refusal to probe a nearby
+# plugin. This focused owner requires an explicit clean checkout of the pinned ggml source.
+gpu-cpu-reference-build:
+	@test -n "$${GPU_GGML_SOURCE:-}" || { echo "set GPU_GGML_SOURCE to the pinned ggml checkout" >&2; exit 1; }
+	./scripts/run-gpu-cpu-reference-smoke "$$(./scripts/align-toolchain ensure compiler)" "$${GPU_GGML_SOURCE}"
+
+# G1's model-free backend bundle owner. It verifies canonical identity and artifact bytes through
+# no-follow rooted opens before any native library or registry operation is possible.
+gpu-bundle-smoke:
+	./scripts/run-gpu-bundle-smoke
+
+# G1 section 5's model-free native resource owner. It uses the unavailable and GPU stub builds to
+# prove fail-closed discovery, serial exclusion, Drop release, and process-pinned bundle identity.
+gpu-device-smoke:
+	./scripts/run-gpu-device-smoke
+
+# G1's focused AlignPack-to-resident-weight owner. It keeps the expensive pack-reader compiler
+# graph out of the model-free device lifecycle owner while proving bounded sequential upload.
+gpu-qwen-load-smoke:
+	./scripts/run-gpu-qwen-load-smoke
+
+# G1's focused AlignPack-to-resident OLMoE owner verifies dense weights and every expert plane.
+gpu-olmoe-load-smoke:
+	./scripts/run-gpu-olmoe-load-smoke
+
+# G1's consumer owner reaches both resident architectures through prefill and decode.
+gpu-generation-smoke:
+	./scripts/run-gpu-generation-smoke
 
 eval-smoke: build
 	./eval/runners/run-fixed.sh $(EVAL_CORPUS)

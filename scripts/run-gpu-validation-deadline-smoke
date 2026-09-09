@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Interrupt real validation loops, retaining cleanup and the original deadline."""
+from __future__ import annotations
+
+import pathlib
+import math
+import struct
+import tempfile
+import time
+from fractions import Fraction
+from unittest import mock
+
+from gpu_backend_recipe import RecipeError
+from gpu_qualification_deadline import Deadline, EXPIRED, finite_f32, sha256_file
+import gpu_qualification_numeric as numeric
+from gpu_qualification_stream import FILE_HEADER, RECORD_HEADER, NumericStream
+
+
+def expired(call):
+    try:
+        call()
+    except RecipeError as error:
+        assert str(error) == EXPIRED, str(error)
+    else:
+        raise AssertionError("validation ran beyond its deadline")
+
+
+# This clock expires after validation starts, inside a single admitted 4 MiB scalar chunk.
+with mock.patch("gpu_qualification_deadline.time.monotonic_ns", side_effect=[0, 0, 2]) as clock:
+    scalar = numeric.ScalarComparison("00000000", "00000000", deadline=Deadline(1))
+    expired(lambda: scalar.compare(struct.pack("<f", 1) * 1048576, struct.pack("<f", 2) * 1048576))
+    assert scalar.mismatch_count == 1024 and clock.call_count == 3
+
+# Equal scores pass scalar checks and reach the costly exact near-tie set construction.
+fractions = [0]
+def counted_fraction(value=0):
+    fractions[0] += 1
+    return Fraction(value)
+with mock.patch.object(numeric, "Fraction", side_effect=counted_fraction), \
+        mock.patch("gpu_qualification_deadline.time.monotonic_ns", side_effect=lambda: 2 if fractions[0] > 2000 else 0):
+    scalar = numeric.ScalarComparison("00000000", "00000000", deadline=Deadline(1))
+    router = numeric.RoutingComparison(scalar, "00000000")
+    scores = struct.pack("<f", 1) * 16384
+    expired(lambda: router.compare(scores, scores, (0,), (0,), struct.pack("<f", 1), struct.pack("<f", 1)))
+    assert 2000 < fractions[0] < 3100, fractions
+    assert router.boundary_count == 1 and router.near_tie_count == 0
+
+# Delayed reads are interrupted within one payload, rather than after its complete consumption.
+with tempfile.TemporaryDirectory(prefix="g1-validation-deadline-") as raw:
+    root = pathlib.Path(raw).resolve()
+    path = root / "numeric"
+    payload = b"\0" * (4 * 1024 * 1024)
+    size = FILE_HEADER.size + RECORD_HEADER.size * 2 + len(payload)
+    path.write_bytes(FILE_HEADER.pack(b"G1TRACE1", 1, 0, size)
+                     + RECORD_HEADER.pack(1, 0xffffffff, 0, len(payload) // 4, 1, 0, len(payload), 0)
+                     + payload + RECORD_HEADER.pack(0, 0, 0, 0, 0, 0, 0, 1))
+    stream = NumericStream(path, model=1, maximum_bytes=size)
+    assert stream.read_frame() is not None
+    original_read = __import__("os").read
+    reads = []
+    def delayed_read(fd, count):
+        reads.append(count)
+        time.sleep(0.02)
+        return original_read(fd, count)
+    stream.deadline = Deadline(time.monotonic_ns() + 60_000_000)
+    started = time.monotonic()
+    def consume():
+        with stream:
+            stream.read_payload()
+    with mock.patch("gpu_qualification_stream.os.read", side_effect=delayed_read):
+        expired(consume)
+    assert time.monotonic() - started < 0.5
+    assert 0 < len(reads) < 16 and max(reads) <= 65536, reads
+    assert stream._fd == -1 and not stream.verified and stream.consumed_bytes < size
+    # The same artifact remains consumable offline without a new implicit deadline.
+    with NumericStream(path, model=1, maximum_bytes=size) as clean:
+        assert clean.read_frame() is not None
+        assert clean.read_payload() == payload
+        assert clean.read_frame() is None
+
+# Exhaust the exponent/sign/high-mantissa word with independent floating conversion.
+# The varied low mantissas include both infinities and NaN payloads at exponent 255.
+for high in range(65536):
+    for low in (0, 0xabcd, 0xffff):
+        payload = struct.pack("<I", high << 16 | low)
+        assert finite_f32(payload) == math.isfinite(struct.unpack("<f", payload)[0])
+assert finite_f32(struct.pack("<4I", 0x007f80ff, 0x7f7fffff, 0xff7fffff, 0x00ff80ff))
+for payload in (b"x", b"xx", b"xxx", b"xxxxx"):
+    try:
+        finite_f32(payload)
+    except RecipeError:
+        pass
+    else:
+        raise AssertionError("truncated F32 payload passed")
+with mock.patch("gpu_qualification_deadline.time.monotonic_ns", side_effect=[0, 2]) as clock:
+    expired(lambda: finite_f32(struct.pack("<I", 0x7f7fffff) * 2048, Deadline(1)))
+    assert clock.call_count == 2
+
+# Bulk f32 validation preserves bit-pattern semantics and checks each 1024-scalar boundary.
+for length in (0, 1, 1023, 1024, 1025, 2048):
+    payload = struct.pack("<f", -1.5) * length
+    assert finite_f32(payload)
+    for index in {0, 1023, 1024, length - 1}:
+        if 0 <= index < length:
+            for bits in (0x7f800000, 0xff800000, 0x7fc00000, 0xff800001):
+                changed = payload[:index * 4] + struct.pack("<I", bits) + payload[(index + 1) * 4:]
+                assert not finite_f32(changed)
+assert finite_f32(struct.pack("<4I", 0, 0x80000000, 0x7f7fffff, 0xff7fffff))
+with mock.patch("gpu_qualification_deadline.time.monotonic_ns", side_effect=[0, 2]) as clock:
+    expired(lambda: finite_f32(struct.pack("<f", 1) * 2048, Deadline(1)))
+    assert clock.call_count == 2
+with tempfile.TemporaryDirectory(prefix="g1-hash-deadline-") as raw:
+    path = pathlib.Path(raw) / "payload"
+    path.write_bytes(b"x" * 131072)
+    with mock.patch("gpu_qualification_deadline.time.monotonic_ns", side_effect=[0, 2]) as clock:
+        expired(lambda: sha256_file(path, Deadline(1)))
+        assert clock.call_count == 2
+    assert sha256_file(path) == __import__("hashlib").sha256(path.read_bytes()).hexdigest()
+
+for invalid in (True, 0, -1, 1.5):
+    try:
+        Deadline(invalid)
+    except RecipeError:
+        pass
+    else:
+        raise AssertionError("invalid deadline admitted")
+print("GPU validation deadline: PASS (exhaustive F32 exponent classes, scalar, router, delayed read, cleanup, offline compatibility)")

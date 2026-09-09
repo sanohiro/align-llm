@@ -66,10 +66,10 @@ PROPOSED -> ACCEPTED -> IMPLEMENTING -> ALIGN_MERGED -> ALIGN_LLM_VERIFIED -> CL
 ```
 
 The currently pinned Align commit is
-`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`, selected by the latest-prerequisite compatibility
-adoption. It advances from the previous compatibility pin through Align PR #933 (`pkg.kv` v1)
-without changing any request lifecycle state, vendoring that package, or consuming a proposed
-surface. The reviewed
+`8dc809787dbfe3a9bc016d5cd903c9ffff7bdb5f`, containing the Request 59/60 deliveries and #980's
+borrowed replacement cleanup repair. The earlier compatibility pin
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4` included Align PR #933 (`pkg.kv` v1) without changing
+request lifecycle state, vendoring that package, or consuming a proposed surface. The reviewed
 `docs/specs/check-gate-topology.md` fresh-compiler design and its FRESH-WORKER/FRESH-IMAGE base
 capabilities are merged. The closed Request 6 installed profile extends that same trust boundary to
 two separately evidenced native Linux rows, x86_64 and aarch64; emulation is not acceptance
@@ -8362,6 +8362,15 @@ demand stream this capability exists to publish — and R5A correction C9's shap
 rendered as it is produced into one string rather than carried as a column set, exactly as R5E's
 `schedule[]` is. **No status change**, `Blocking: no`.
 
+G1 provider tracing at Align `305926b423da9be1f13b0129a7232626e6704d95` is another
+non-blocking client of the nested field move restriction: returning prepared prompt IDs from the
+tokenizer record still rejects with the nested-field move diagnostic. The owning provider result
+materializes its bounded prompt ID array explicitly. The sibling diagnostic remains in
+`crates/align_sema/src/lib.rs`; this does not claim Request 36 is delivered or change its original
+acceptance target. Scalar `json.decode` without an owned-text leaf also retains its documented
+input provenance (`docs/impl/core-design/json.md`); exporting its IDs requires materialization,
+which is an application ownership conversion rather than a new compiler gap.
+
 ### Motivation and current sibling evidence
 
 R5A-DENSE-LAYER-FORWARD's document (`docs/specs/r5a-dense-layer-forward.md` section 3.7) was designed
@@ -10756,26 +10765,21 @@ The first is preferable because it has one support group. Mach-O remains unchang
 ## Request 55 — `std.fs`: retained-root single-link regular-file open
 
 ```text
-Status: ALIGN_MERGED
+Status: CLOSED
 Priority: critical
-Blocking: yes
-Blocked gate or slice: G1 backend-bundle admission and immutable native loading
-Independent work that may continue: GPU bundle construction and verifier logic that does not
-  consume the requested constructor or Request 56's private-directory lifecycle; publication
-  remains blocked
-Resume condition: align-llm adopts Align v0.7.5, materializes the managed toolchain, adopts both
-  released surfaces, and binds each verified reader byte stream to the private artifact copy passed
-  to the native registry
+Blocking: no
+Blocked gate or slice: N/A — the shipped surface is pinned and the immutable native-loading
+  consumer passes
+Independent work that may continue: N/A — the request is closed
+Resume condition: N/A — the request is closed
 Align commit or pull request: contract PR #951 and implementation PR #952 merged; implementation
   commit 22ac8eb8 shipped in Align v0.7.3 from release merge 1517c0e0; authoritative contract in
   ../align/docs/impl/34-fs-single-link-plan.md
-align-llm verification: update .align-revision to the shipped Align commit; open manifest.json and
-  every declared artifact through fs.open_beneath_single_link; decode the manifest from owned read
-  bytes and copy each digest-verified artifact into invocation-owned private load staging; run make
-  gpu-bundle-smoke; accept canonical single-link inputs; reject hard-linked manifest and backend
-  plugin; retain root/intermediate/final symlink refusals; race original replacement and in-place
-  mutation before/during/after copying; prove runtime_device gives the native registry only the
-  unchanged private staged artifact whose digest it records
+align-llm verification: `.align-revision` pins v0.7.5 release merge
+  b74a31df760a0f27a70daf18125b94716b85b901; `gmake gpu-bundle-smoke` accepts canonical single-link
+  inputs, rejects hard-linked and malformed artifacts, stages only digest-verified reader bytes,
+  and proves a later source mutation cannot alter the staged bytes; `gmake gpu-device-smoke` proves
+  the native registry receives only the private staged plugin path and preserves poisoned ownership
 ```
 
 ### Requested surface
@@ -10823,30 +10827,28 @@ by itself the bundle's executable-identity boundary.
 Align v0.7.3's implementation preserves the existing sequence through nonblocking clear, then
 checks `st_nlink` from that sequence's existing opened-descriptor `fstat` record immediately before
 reader construction. It adds no second syscall and uses a distinct HIR/MIR operation and runtime
-key with the existing A12 ABI shape. Align-side delivery is complete; align-llm adoption and the
-separate application-owned load-staging identity boundary remain pending the joint v0.7.5 adoption.
+key with the existing A12 ABI shape. Align-side delivery and the application-owned load-staging
+identity boundary are verified at the pinned v0.7.5 release, so the request is closed.
 
 ---
 
 ## Request 56 — `std.fs`: private temporary-directory lifecycle
 
 ```text
-Status: ALIGN_MERGED
+Status: CLOSED
 Priority: critical
-Blocking: yes
-Blocked gate or slice: G1 backend-bundle private load staging and immutable native loading
-Independent work that may continue: GPU bundle construction and verifier logic that does not create
-  or remove the private load directory; Request 55 original-path admission
-Resume condition: align-llm adopts Align v0.7.5 and `make gpu-bundle-smoke` proves private creation,
-  exclusive child creation, every safe cleanup prefix, and process-owned quarantine after an
-  unload-unsafe native side effect
+Blocking: no
+Blocked gate or slice: N/A — the shipped lifecycle is pinned and its native-loading consumer passes
+Independent work that may continue: N/A — the request is closed
+Resume condition: N/A — the request is closed
 Align commit or pull request: Align PR #962 merged as 41a6d526; shipped in Align v0.7.5 from
   release merge b74a31df; https://github.com/sanohiro/align/releases/tag/v0.7.5; authoritative
   contract and closure matrix in ../align/docs/impl/36-fs-private-temp-plan.md
-align-llm verification: update .align-revision to the shipped Align commit; use
-  fs.create_private_temp_dir for the unique load root, fs.create_exclusive_beneath for each staged
-  artifact, and fs.remove_empty_dir after removing known files; run make gpu-bundle-smoke and prove
-  collisions, symlink occupants, permissions, cleanup prefixes, and poisoned transfer behavior
+align-llm verification: `.align-revision` pins v0.7.5 release merge
+  b74a31df760a0f27a70daf18125b94716b85b901; `gmake gpu-bundle-smoke` proves distinct private roots,
+  mode 0700, exclusive staged children, source/stage byte independence, malformed-prefix cleanup,
+  and explicit release; `gmake gpu-device-smoke` proves safe cleanup, unsafe transfer to poisoned
+  process ownership, later-admission refusal, and exit cleanup with no leaked private roots
 ```
 
 ### Motivation and current sibling evidence
@@ -10907,8 +10909,8 @@ each known child first; a failed cleanup is observable and cannot erase an unrel
 Align v0.7.5 ships both constructors with Linux and macOS owners for canonical temporary-root
 selection, bounded prefix validation, OS-random collision retry, private atomic directory creation,
 single-directory removal, replacement-race refusal, failure cleanup, checked-HIR replay, and the
-runtime ABI inventory. Align-side delivery is complete; align-llm adoption and the named
-`make gpu-bundle-smoke` consumer verification remain pending.
+runtime ABI inventory. Align-side delivery and the named bundle/device consumer verification are
+complete at the pinned v0.7.5 release, so the request is closed.
 
 ---
 
@@ -10966,19 +10968,19 @@ the regression is closed without an application-side rewrite.
 ## Request 58 — MIR resource validation must terminate for a bounded borrowed-reader pipeline
 
 ```text
-Status: ALIGN_MERGED
+Status: CLOSED
 Priority: critical
-Blocking: yes
-Blocked gate or slice: G1 resident Qwen AlignPack loading and production-provider integration
-Independent work that may continue: OLMoE resident graph construction, qualifier/evidence work that
-  does not execute the Qwen pack loader, and Request 56 private bundle staging
-Resume condition: align-llm adopts Align v0.7.5, which contains the v0.7.4 fix, and the named Apple
-  M1 owner passes
+Blocking: no
+Blocked gate or slice: N/A — the fixed compiler is pinned and the Apple M1 consumer passes
+Independent work that may continue: N/A — the request is closed
+Resume condition: N/A — the request is closed
 Align commit or pull request: Align PR #960 merged as 3db6a8f2; shipped in Align v0.7.4 from
   release merge 37268739; https://github.com/sanohiro/align/releases/tag/v0.7.4
-align-llm verification: update .align-revision to the shipped Align commit and run
-  `gmake gpu-qwen-load-smoke`; it must compile, reject the four malformed packs, plan exact padded
-  weight/KV extents, and upload all 27 tensors through one reused 64-byte staging buffer
+align-llm verification: `.align-revision` pins v0.7.5 release merge
+  b74a31df760a0f27a70daf18125b94716b85b901; on Apple M1, `gmake gpu-qwen-load-smoke` builds in
+  approximately two seconds, rejects all four malformed packs, plans exact padded weight/KV
+  extents, and uploads all 27 tensors through one reused 64-byte staging buffer; align-llm commit
+  87684fa also corrects the valid fixture's whole-tensor member metadata exposed by the compiler fix
 ```
 
 ### Motivation and current sibling evidence
@@ -11046,29 +11048,77 @@ absence, and invalidity fixed points while retaining conservative access joins a
 producer rejection. The reduced whole-program and per-unit owners, including the shorter-lived
 view rejection, and the existing Request 37 owners pass. The exact published align-llm source at
 `acfdd3b` reaches the native link step in 15.52 seconds on the Align Linux owner. Align v0.7.4 is
-published; adoption and the required Apple M1 `gmake gpu-qwen-load-smoke` execution remain
-align-llm-owned verification.
+published through the pinned v0.7.5 release, and the required Apple M1 consumer execution passes,
+so the request is closed.
+
+---
+
+## Request 59 — per-unit MIR producer certification rejects a valid builder-owned record return
+
+```text
+Status: CLOSED
+Priority: critical
+Blocking: no
+Blocked gate or slice: N/A — the fixed compiler is pinned and every named consumer owner passes
+Independent work that may continue: N/A — the request is closed
+Resume condition: N/A — the request is closed
+Align commit or pull request: Align issue #966; PRs #972, #975, and #979, with the final repair
+  merged as 5250e996f4e3a00bc4dfe8584d05acf95f10a78e
+align-llm verification: at exact managed revision 5250e996, per-unit checks pass for
+  `src/verification_loop.align` (5 units), `src/alignpack.align` (3), and
+  `src/prompt_artifacts.align` (1); `gmake build` and `gmake ggml-spike-smoke` pass
+```
+
+### Regression evidence
+
+The unchanged `src/verification_loop.align` consumer passes all five per-unit checks with Align
+`8cefc803d5c7f883a8db5b67250ed4ed069b43a4`. It fails with v0.7.3 release merge
+`1517c0e0` and remains rejected by pinned v0.7.5 release merge
+`b74a31df760a0f27a70daf18125b94716b85b901`:
+
+```text
+src/verification_loop.align:1:1: error: cannot certify MIR producers: lowering failed:
+resource MIR in function 'verification_loop$run_attempt' is malformed: producer return leaf
+String at [StructField(7)] is not certified by its body
+```
+
+Field 7 is `AttemptRun.stages`. `run_attempt` initializes the local stage document from an owned
+empty-string clone, replaces it only with owned results from `StageTraceBuilder.to_string()`, and
+moves it into every returned `AttemptRun`. Whole-program
+`scripts/alignc check src/verification_loop.align` accepts all 93 functions at the same v0.7.5
+revision, while per-unit certification rejects the valid owned flow. `gmake ggml-spike-smoke` is
+therefore blocked in its `build` prerequisite before its native owner can execute; the later module
+errors are cascades from the failed import.
+
+### Required behavior and acceptance
+
+Per-unit MIR producer certification must accept this builder-owned string through the joins and
+record return while retaining rejection for borrowed or uncertified escapes. The Align regression
+owner should preserve the relevant builder call, repeated early returns, field assignment, and
+final record construction. Acceptance requires whole-program and per-unit coverage of the reduced
+case, continued rejection of invalid producer fixtures, and successful execution of the unchanged
+align-llm commands named above. Rewriting this valid client around the faulty certification would
+hide a compiler-owned regression and is not an accepted application workaround.
 
 ---
 
 ## Request 59 — Owned builder record return producer certification
 
 ```text
-Status: ALIGN_MERGED
+Status: CLOSED
 Priority: critical
-Blocking: yes
-Blocked gate or slice: G1 production-provider build and publication
-Independent work that may continue: Request 60 closed-environment driver selection
-Resume condition: adopt Align 5250e996f4e3a00bc4dfe8584d05acf95f10a78e or a descendant and
-  complete the unchanged build/smoke owners
+Blocking: no
+Blocked gate or slice: N/A — the final producer repair is pinned and all client owners pass
+Independent work that may continue: N/A — the request is closed
+Resume condition: N/A — the request is closed
 Align commit or pull request: https://github.com/sanohiro/align/pull/972 merged as
   85d64929e6627cfedeceed2c4ce7000548f6406d; subsequent PR #975 merged as
   b947b5d92e17242e5511a80de8d5a446c7ed8b83 and PR #979 merged as
   5250e996f4e3a00bc4dfe8584d05acf95f10a78e;
   implementation closure in ../align/docs/impl/xml-producer-investigation.md Request 59
-align-llm verification: unchanged check-per-unit src/verification_loop.align and
-  src/prompt_artifacts.align, gmake build,
-  and gmake ggml-spike-smoke at the adopted commit; consumer adoption remains pending
+align-llm verification: `.align-revision` pins 5250e996; unchanged per-unit checks pass for
+  verification_loop (5 units), alignpack (3), and prompt_artifacts (1), and both `gmake build`
+  and `gmake ggml-spike-smoke` pass on Apple M1
 ```
 
 The public issue is the request source. Align reproduced the exact field-7 error
@@ -11106,25 +11156,26 @@ keeping fixed-array-to-slice compatibility descriptor-only. The checked-in closu
 is `../align/docs/impl/xml-producer-investigation.md`, “Request 59 continuation:
 cloned borrowed sum payloads.” Producer owners and whole/per-unit coverage passed;
 Align also built the unchanged consumer and checked `prompt_artifacts.align`,
-`prompt_experiment.align`, and `prompt_generate.align`. These producer-side checks
-do not complete align-llm pin adoption or its final smoke evidence. Adopt #979 or
-a descendant and run the unchanged consumer owners named above.
+`prompt_experiment.align`, and `prompt_generate.align`. The exact merged revision is now pinned by
+align-llm. All three focused per-unit consumers, the main build, and the native ggml spike owner
+pass; issue #966 records that final real-client evidence. The request is closed.
 
 ---
 
 ## Request 60 — Explicit absolute C link driver
 
 ```text
-Status: ALIGN_MERGED
+Status: CLOSED
 Priority: high
-Blocking: yes
-Blocked gate or slice: G1 candidate preparation in its closed four-variable environment
-Independent work that may continue: consumer adoption of Request 59's merged repair
-Resume condition: pass an authenticated absolute C driver in logical argv at the fixed Align revision
+Blocking: no
+Blocked gate or slice: N/A — the absolute driver is pinned and the closed-environment consumer passes
+Independent work that may continue: N/A — the request is closed
+Resume condition: N/A — the request is closed
 Align commit or pull request: https://github.com/sanohiro/align/pull/973
   merged 3051b98c53e8b7a78f10759fe287166a8c6d36fc
-align-llm verification: candidate preparation names the verified absolute C driver with only
-  HOME, LC_ALL, TMPDIR, and TZ present; build/preparation owners complete
+align-llm verification: at exact managed revision 5250e996, `gmake build` and
+  `gmake gpu-explicit-driver` pass; the complete five-step preparation runs a real candidate link
+  through the digest-bound absolute driver with the canonical four-entry spawn environment
 ```
 
 The public issue is the request source. Request 59 is now merged in PR #972.
@@ -11134,8 +11185,10 @@ selection covers linking verbs and watch, retaining ordinary development
 defaults. Local owner checks, the bounded PR gate, Clippy, all fourteen
 PostgreSQL suites, standalone benchmark compile checks, and the optimized
 workspace build passed. All required hosted checks passed and PR #973 merged.
-Pin `3051b98c53e8b7a78f10759fe287166a8c6d36fc`; no consumer adoption is claimed
-and its preparation/qualification owners remain pending. Delivery is by commit
+Align-llm pins descendant `5250e996f4e3a00bc4dfe8584d05acf95f10a78e`. Its native proxy owner
+proves the selected driver is invoked with no `PATH`, `CC`, or library/loader search environment,
+then completes the real Align candidate link and the full preparation sequence. Issue #968 records
+the consumer evidence, and the request is closed. Delivery is by commit
 revision without a tag. `--cc PATH`/`--cc=PATH` owns one immutable, validated
 UTF-8 absolute executable path, used directly across build/run/size/test,
 ThinLTO, PGO, and watch; omission keeps ordinary `cc` lookup. Invalid and
@@ -11150,9 +11203,9 @@ failure, never fallback. No language ownership or runtime ABI changed.
 ## Request 61 — Borrowed access to owned buffer/writer fields and optional writers
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
-Blocking: yes
+Blocking: no
 Blocked gate or slice: G1 native numeric-stream producer and observed generation integration
 Independent work that may continue: native-independent G1 stream comparison/traversal, case
   sequencing, source/profile capture and kit assembly are complete through align-llm e22b9d7;
@@ -11161,8 +11214,10 @@ Resume condition: pin shipped Align 3fbb74fe7c351e526c997bd4c70bd00cf1a424a0, re
   numeric-stream producer, and pass gpu-numeric-stream and gpu-generation-smoke
 Align commit or pull request: https://github.com/sanohiro/align/pull/982; merged commit
   3fbb74fe7c351e526c997bd4c70bd00cf1a424a0; closes issue #981
-align-llm verification: pending for the shipped pin; consumer owns producer restoration and
-  gpu-numeric-stream / gpu-generation-smoke acceptance
+align-llm verification: managed Align 305926b423da9be1f13b0129a7232626e6704d95;
+  gpu-numeric-stream and gpu-generation-smoke PASS with observed Qwen/OLMoE prefill/decode,
+  exact 65,576-byte metadata reservation, pre-upload host-budget refusal and stream failure
+  propagation; scripts/align-toolchain verify PASS
 ```
 
 Client implementation checkpoint: https://github.com/sanohiro/align-llm/tree/e22b9d7
@@ -11303,9 +11358,9 @@ negative controls. Publish subsequent findings in this bounded set together; do 
 Align with a new request/PR per reproduced symptom.
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
-Blocking: yes
+Blocking: no
 Blocked gate or slice: G1 observed generation and native diagnostic case integration
 Independent work that may continue: native stream byte/state owners and Python qualification
   infrastructure; the native stream alone passes its independent golden, but cannot close G1
@@ -11314,8 +11369,10 @@ Resume condition: adopt shipped Align 305926b423da9be1f13b0129a7232626e6704d95 o
 Align commit or pull request: https://github.com/sanohiro/align/pull/991; merged as
   73251b30f7e5a2df3c904421e577a2bd76325f09; follow-up https://github.com/sanohiro/align/pull/992
   merged as 305926b423da9be1f13b0129a7232626e6704d95
-align-llm verification: pending consumer-owned adoption and qualification; baseline reproduction
-  and producer delivery evidence are recorded below
+align-llm verification: managed Align 305926b423da9be1f13b0129a7232626e6704d95;
+  gpu-numeric-stream and gpu-generation-smoke PASS with observed Qwen/OLMoE prefill/decode,
+  exact 65,576-byte metadata reservation, pre-upload host-budget refusal and stream failure
+  propagation; scripts/align-toolchain verify PASS
 ```
 
 At baseline `3fbb74fe`, Request 61's shipped receivers work: the bounded writer produces the independent 160-byte golden,

@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""Build the pinned static CPU reference and prove its registry does not load ambient plugins."""
+
+from __future__ import annotations
+
+import hashlib
+import dataclasses
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import gpu_backend_recipe as recipe  # noqa: E402
+import gpu_qualification_build as build  # noqa: E402
+import gpu_qualification_run as preparation  # noqa: E402
+import gpu_qualification_host as qualification_host  # noqa: E402
+from gpu_qualifier_process import ToolchainDirectory, ToolchainExecutable, run_owned_command  # noqa: E402
+
+
+def executable(name: str) -> ToolchainExecutable:
+    found = shutil.which(name)
+    if found is None:
+        raise AssertionError(f"CPU reference owner requires {name}")
+    return ToolchainExecutable.admit(pathlib.Path(found))
+
+
+def host_inputs():
+    tools = {"cmake": executable("cmake"), "ninja": executable("ninja")}
+    if sys.platform == "darwin":
+        for key, name in (("cc", "clang"), ("cxx", "clang++"), ("ar", "ar"),
+                          ("ranlib", "ranlib"), ("linker", "ld")):
+            path = subprocess.check_output(["/usr/bin/xcrun", "--find", name], text=True).strip()
+            tools[key] = ToolchainExecutable.admit(pathlib.Path(path))
+        sdk_path = pathlib.Path(subprocess.check_output(
+            ["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True,
+        ).strip())
+        sdk = ToolchainDirectory.admit(sdk_path, sdk_path / "SDKSettings.json")
+        platform = "macos"
+    else:
+        for key, name in (("cc", "cc"), ("cxx", "c++"), ("ar", "ar"),
+                          ("ranlib", "ranlib"), ("linker", "ld")):
+            tools[key] = executable(name)
+        sdk = ToolchainDirectory.admit(pathlib.Path("/"), pathlib.Path("/etc/os-release").resolve())
+        platform = "linux"
+    return tools, sdk, platform
+
+
+def failure_owners(command, work: pathlib.Path, home: pathlib.Path, scratch: pathlib.Path) -> None:
+    def invoke(planned):
+        return run_owned_command(
+            kind="cpu_reference_build", physical_argv=planned.physical_argv,
+            logical_argv=planned.logical_argv, mappings=planned.mappings,
+            cwd=work, home=home, temporary=scratch, timeout_seconds=30, sdk=planned.sdk,
+        )
+
+    # Exercise both checked-in CMake subcommand guards without rebuilding identical archives.
+    script_token = command.logical_argv[-1]
+    original_script = command.mappings[script_token]
+    for phase in ("configure", "build"):
+        output = work / f"failed-{phase}"
+        output.mkdir(mode=0o700)
+        fake = output / "cmake-tool"
+        marker = output / "phases"
+        fake.write_text(
+            f"#!{sys.executable}\nimport pathlib, sys\n"
+            f"marker = pathlib.Path({str(marker)!r})\n"
+            "with marker.open('a') as stream: stream.write(sys.argv[1] + '\\n')\n"
+            + ("raise SystemExit(7)\n" if phase == "configure" else
+               "raise SystemExit(7 if sys.argv[1] == '--build' else 0)\n"),
+            encoding="utf-8",
+        )
+        fake.chmod(0o700)
+        wrapper = output / "failure.cmake"
+        wrapper.write_text(
+            f"set(CMAKE_COMMAND {json.dumps(str(fake))})\n"
+            f"include({json.dumps(str(original_script))})\n", encoding="utf-8",
+        )
+        wrapper_token = "<failure-script>:sha256:" + hashlib.sha256(wrapper.read_bytes()).hexdigest()
+        physical, logical = list(command.physical_argv), list(command.logical_argv)
+        physical[-1], logical[-1] = str(wrapper), wrapper_token
+        for ordinal, argument in enumerate(logical):
+            if argument == "-DOUTPUT:PATH=<cpu-output>:owned":
+                physical[ordinal] = "-DOUTPUT:PATH=" + str(output)
+        mappings = dict(command.mappings)
+        del mappings[script_token]
+        mappings[wrapper_token] = wrapper
+        mappings["<cpu-output>:owned"] = output
+        failed = invoke(dataclasses.replace(command, physical_argv=tuple(physical),
+                                           logical_argv=tuple(logical), mappings=mappings))
+        assert failed.terminal == "FAIL" and failed.descendants_after == 0
+        assert f"CPU reference {phase} failed".encode() in failed.stderr.retained
+        assert marker.read_text().splitlines() == (["-S"] if phase == "configure" else ["-S", "--build"])
+        assert not (output / command.output.name).exists()
+
+    # The generated native launcher's build mode must propagate a real Align rejection.
+    invalid_entry = work / "invalid.align"
+    invalid_entry.write_text("fn main( {\n", encoding="utf-8")
+    driver = command.output.parent / "build/cpu-reference-driver"
+    compiler = work / "alignc"
+    paths = (("reference-driver", driver), ("align-compiler", compiler), ("invalid-entry", invalid_entry))
+    tokens = {name: f"<{name}>:sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+              for name, path in paths}
+    failed = run_owned_command(
+        kind="cpu_reference_build", physical_argv=[str(driver), "--build-entry", str(compiler), str(invalid_entry)],
+        logical_argv=[tokens["reference-driver"], "--build-entry", tokens["align-compiler"], tokens["invalid-entry"]],
+        mappings={tokens[name]: path for name, path in paths}, cwd=work, home=home,
+        temporary=scratch, timeout_seconds=30, sdk=command.sdk,
+    )
+    assert failed.terminal == "FAIL" and failed.descendants_after == 0
+    assert b"error" in failed.stderr.retained.lower()
+    assert not (work / "invalid").exists()
+
+
+def main() -> None:
+    if len(sys.argv) != 3:
+        raise SystemExit("usage: run-gpu-cpu-reference-smoke ALIGNC PINNED_GGML_SOURCE")
+    compiler = pathlib.Path(sys.argv[1]).resolve(strict=True)
+    ggml_checkout = pathlib.Path(sys.argv[2]).resolve(strict=True)
+    tools, sdk, platform = host_inputs()
+    with tempfile.TemporaryDirectory(prefix="gpu-cpu-reference-") as temporary:
+        root = pathlib.Path(temporary) / "literal$path'quote`tick"
+        root.mkdir(mode=0o700)
+        work, home, scratch = (root / name for name in ("work", "home", "tmp"))
+        for directory in (work, home, scratch):
+            directory.mkdir(mode=0o700)
+        environment = {"HOME": str(home), "LC_ALL": "C", "TMPDIR": str(scratch), "TZ": "UTC"}
+        if platform == "macos":
+            import time
+            expected = recipe.toolchain("metal", {
+                "cc": str(tools["cc"].path), "cxx": str(tools["cxx"].path),
+                "platform": str(executable("xcrun").path),
+            }, environment)
+            admitted_host = qualification_host.admit_host(
+                platform=platform, expected=expected, work=work, home=home, temporary=scratch,
+                deadline_ns=time.monotonic_ns() + 60_000_000_000,
+            )
+            tools, sdk = admitted_host.tools, admitted_host.sdk
+            support_archives = admitted_host.support_archives
+        else:
+            support_archives = {}
+            for package, names in (("openssl", ("crypto", "ssl")), ("libzstd", ("zstd",))):
+                directory = pathlib.Path(subprocess.check_output(
+                    [str(executable("pkg-config").path), "--variable=libdir", package],
+                    text=True, env=environment,
+                ).strip())
+                for name in names:
+                    support_archives[name] = directory / ("lib" + name + ".a")
+        git = str(executable("git").path)
+        print("gpu CPU reference: capturing the pinned ggml source", flush=True)
+        recipe.require_source(ggml_checkout, git, environment)
+        manifest, _, _, blobs = recipe.source_snapshot(ggml_checkout, git, environment)
+        ggml_source = work / "ggml-source"
+        recipe.materialize_source(manifest, blobs, ggml_source)
+        del blobs
+
+        app = work / "app"
+        for relative in (
+            "src/runtime_cpu_reference_smoke.align", "src/ggml_ffi.align",
+            "src/ggml_ffi/internal/resource.align", "scripts/ggml_shim.c", "scripts/ggml_shim_stub.c",
+            "scripts/gpu_cpu_reference/CMakeLists.txt", "scripts/gpu_cpu_reference/build.cmake",
+            "scripts/gpu_cpu_reference/driver.c.in",
+        ):
+            destination = app / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((ROOT / relative).read_bytes())
+        entry = app / "src/runtime_cpu_reference_smoke.align"
+        proxy = work / "native-driver"
+        revision = (ROOT / ".align-revision").read_text().strip()
+        source_commit = subprocess.check_output([git, "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+        planned = build.grouped_commands(
+            work=work, compiler=compiler, python=ToolchainExecutable.admit(pathlib.Path(sys.executable)),
+            helper=ROOT / "scripts/gpu_compiler_materialize.py", git=ToolchainExecutable.admit(pathlib.Path(git)),
+            copier=ToolchainExecutable.admit(pathlib.Path("/bin/cp")), entry=entry,
+            shim_source=app / "scripts/ggml_shim_stub.c", reference_shim_source=app / "scripts/ggml_shim.c",
+            reference_project=app / "scripts/gpu_cpu_reference", ggml_source=ggml_source,
+            platform=platform, align_revision=revision, source_commit=source_commit,
+            ggml_commit=recipe.GGML_COMMIT, tools=tools, sdk=sdk, support_archives=support_archives,
+        )
+        state = preparation.PreparationState(
+            pathlib.Path(__file__), name="gpu-runtime-qualify", version="fixture",
+            preparation_timeout_ns=600_000_000_000,
+        )
+        print("gpu CPU reference: building compiler/runtime/shim/candidate/static reference", flush=True)
+        preparation.run_preparation(
+            state, planned,
+            cwd=work, home=home, temporary=scratch,
+        )
+        assert state.complete, (
+            state.failure_ordinal, state.failure_detail,
+            state.failed_result.stderr.retained.decode(errors="replace") if state.failed_result else "unstarted",
+            state.failed_result.stdout.retained.decode(errors="replace") if state.failed_result else "",
+        )
+        reference_command = planned[4]()
+        binary = reference_command.output
+        binary_token = "<cpu-reference>:sha256:" + hashlib.sha256(binary.read_bytes()).hexdigest()
+
+        # An actual loadable constructor detects even a failed/dropped attempt to probe a plugin.
+        plugin_marker = work / "ambient-plugin-loaded"
+        poison_source = work / "poison.c"
+        poison_source.write_text(
+            '#include <stdio.h>\n'
+            '__attribute__((constructor)) static void mark(void) {\n'
+            f'  FILE *file = fopen({json.dumps(str(plugin_marker))}, "w");\n'
+            '  if (file != NULL) { fputs("loaded", file); fclose(file); }\n'
+            '}\n', encoding="utf-8",
+        )
+        suffix = "dylib" if platform == "macos" else "so"
+        poison = binary.parent / f"libggml-cpu.{suffix}"
+        source_token = "<poison-source>:sha256:" + hashlib.sha256(poison_source.read_bytes()).hexdigest()
+        driver_token = "<fixture-driver>:sha256:" + hashlib.sha256(proxy.read_bytes()).hexdigest()
+        poison_build = run_owned_command(
+            kind="shim_build", physical_argv=[str(proxy), "-shared", "-fPIC", str(poison_source),
+                                             "-o", "cpu-reference/" + poison.name],
+            logical_argv=[driver_token, "-shared", "-fPIC", source_token, "-o", "cpu-reference/" + poison.name],
+            mappings={driver_token: proxy, source_token: poison_source}, cwd=work, home=home,
+            temporary=scratch, timeout_seconds=60, sdk=sdk,
+        )
+        assert poison_build.terminal == "PASS", poison_build.stderr.retained
+        python = ToolchainExecutable.admit(pathlib.Path(sys.executable))
+        python_token = "<host-python>:sha256:" + python.sha256
+        poison_token = "<poison-plugin>:sha256:" + hashlib.sha256(poison.read_bytes()).hexdigest()
+        control = run_owned_command(
+            kind="shim_build",
+            physical_argv=[str(python.path), "-c", "import ctypes, sys; ctypes.CDLL(sys.argv[1])", str(poison)],
+            logical_argv=[python_token, "-c", "import ctypes, sys; ctypes.CDLL(sys.argv[1])", poison_token],
+            mappings={python_token: python, poison_token: poison}, cwd=work, home=home,
+            temporary=scratch, timeout_seconds=15,
+        )
+        assert control.terminal == "PASS" and plugin_marker.read_bytes() == b"loaded"
+        plugin_marker.unlink()
+        observed = run_owned_command(
+            kind="case", physical_argv=[str(binary)], logical_argv=[binary_token],
+            mappings={binary_token: binary}, cwd=work, home=home, temporary=scratch, timeout_seconds=15,
+        )
+        assert observed.terminal == "PASS", observed.stderr.retained
+        assert observed.stdout.retained == b"static CPU reference: PASS\n"
+        assert not plugin_marker.exists(), "static CPU reference searched for an ambient plugin"
+        if platform == "macos":
+            inspector = subprocess.check_output(["/usr/bin/xcrun", "--find", "otool"], text=True).strip()
+            dependencies = subprocess.check_output([inspector, "-L", str(binary)])
+            dependency_lines = dependencies.splitlines()[1:]
+        else:
+            dependencies = subprocess.check_output([str(executable("readelf").path), "-d", str(binary)])
+            dependency_lines = [line for line in dependencies.splitlines() if b"NEEDED" in line]
+        assert not any(name in line.lower() for name in (b"ggml", b"libcrypto", b"libssl", b"libzstd")
+                       for line in dependency_lines), dependency_lines
+        assert all(item["state"] == "available" for item in state.identities.values())
+        assert all(command["environment"] == ["HOME=<home>:owned", "LC_ALL=C", "TMPDIR=<tmp>:owned", "TZ=UTC"]
+                   for command in state.commands)
+        for name, original in support_archives.items():
+            copied = work / "support" / ("lib" + name + ".a")
+            assert copied.read_bytes() == original.read_bytes() and copied.stat().st_nlink == 1
+        failure_owners(reference_command, work, home, scratch)
+        print("gpu CPU reference build and static registry: PASS", flush=True)
+
+
+if __name__ == "__main__":
+    main()

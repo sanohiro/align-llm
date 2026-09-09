@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# G1's consumer owner runs resident load, prefill, decode, greedy Qwen selection, and seeded OLMoE
+# selection through the deterministic GPU stub without requiring model downloads or GPU hardware.
+
+unset ALIGN_LLM_GGML_INCLUDE ALIGN_LLM_GGML_LIB ALIGN_LLM_GGML_FORCE
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+work_dir=$(mktemp -d)
+work_dir=$(CDPATH= cd -- "${work_dir}" && pwd -P)
+gpu_shim="${work_dir}/gpu-shim"
+executable="${work_dir}/runtime-generation-smoke"
+profile_libs=""
+if command -v brew >/dev/null 2>&1; then
+  profile_libs="$(brew --prefix openssl@3)/lib:$(brew --prefix zstd)/lib"
+fi
+
+cleanup() {
+  status=$?
+  python3 - "${work_dir}" <<'PY'
+import shutil
+import sys
+
+shutil.rmtree(sys.argv[1], ignore_errors=True)
+PY
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+ALIGN_LLM_GGML_FORCE=engine+gpu ALIGN_LLM_GGML_SHIM_DIR="${gpu_shim}" \
+  "${root_dir}/scripts/build-ggml-shim" >/dev/null
+python3 "${root_dir}/scripts/layer_forward_fixture.py" "${work_dir}" --model >/dev/null
+python3 "${root_dir}/scripts/layer_forward_fixture.py" "${work_dir}" --model --moe >/dev/null
+
+(
+  cd "${root_dir}"
+  export LIBRARY_PATH="${gpu_shim}${profile_libs:+:${profile_libs}}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+  "${compiler}" build src/runtime_generation_smoke.align >/dev/null
+  mv runtime_generation_smoke "${executable}"
+)
+
+export DYLD_LIBRARY_PATH="${gpu_shim}${profile_libs:+:${profile_libs}}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${gpu_shim}${profile_libs:+:${profile_libs}}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+output=$("${executable}" \
+  "${work_dir}/model-pack.alignpack" \
+  "${work_dir}/moe-model-pack.alignpack" \
+  "${work_dir}/moe-model-geometry.json" "${work_dir}")
+if [ "${output}" != "runtime generation smoke: PASS" ]; then
+  printf '%s\n' "gpu generation smoke: FAIL output: ${output}" >&2
+  exit 1
+fi
+
+python3 "${root_dir}/scripts/gpu_trace_fixture.py" "${work_dir}"
+
+printf '%s\n' "gpu generation smoke: PASS"

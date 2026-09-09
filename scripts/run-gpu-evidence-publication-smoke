@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""Exercise bounded, exclusive, replay-checked G1 evidence publication."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import pathlib
+import shutil
+import stat
+import sys
+import tempfile
+
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import gpu_qualification_input as qualification_input  # noqa: E402
+import gpu_qualification_publish as publication  # noqa: E402
+import gpu_qualification_records as records  # noqa: E402
+from gpu_backend_recipe import RecipeError  # noqa: E402
+
+
+def load_fixture_module():
+    path = ROOT / "scripts" / "run-gpu-input-admission-smoke"
+    name = "gpu_input_admission_fixture"
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    if spec is None or spec.loader is None:
+        raise AssertionError("input admission fixture cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def produced_files(*, candidate: bool = True) -> dict[str, publication.RetainedFile]:
+    values = {
+        "compiler": b"cc\n",
+        "qualifier": b"runner\n",
+        "runtime": b"runtime\n",
+        "shim": b"shim\n",
+    }
+    if candidate:
+        values["candidate"] = b"candidate\n"
+    return {
+        f"artifacts/{hashlib.sha256(data).hexdigest()}": publication.RetainedFile(
+            "shim" if name == "shim" else "helper", data,
+        )
+        for name, data in values.items()
+    }
+
+
+def failure_evidence(admitted, prepared, fixture) -> dict[str, object]:
+    evidence = copy.deepcopy(json.loads(fixture.fixture_lines()[7]))
+    profile = admitted.records["profile"]
+    bundle = admitted.records["bundle"]
+    calibrations = admitted.records["calibrations"]
+    assert isinstance(profile, dict) and isinstance(bundle, dict) and isinstance(calibrations, list)
+    evidence["profile_id"] = profile["profile_id"]
+    evidence["source"].update({
+        "commit": admitted.align_source.manifest["commit"],
+        "source_manifest_sha256": hashlib.sha256(
+            admitted.align_source.manifest_raw,
+        ).hexdigest(),
+        "source_snapshot_sha256": admitted.align_source.snapshot_sha256,
+    })
+    evidence["bundle"].update({
+        "manifest_sha256": hashlib.sha256(records.canonical(bundle)).hexdigest(),
+        "bundle_id": bundle["bundle_id"],
+        "ggml_source_manifest_sha256": hashlib.sha256(
+            admitted.ggml_source.manifest_raw,
+        ).hexdigest(),
+        "ggml_source_snapshot_sha256": admitted.ggml_source.snapshot_sha256,
+    })
+    evidence["inputs"] = {
+        "profile_sha256": hashlib.sha256(records.canonical(profile)).hexdigest(),
+        "models": [
+            {
+                "model_id": model["model_id"],
+                "model_sha256": model["model_sha256"],
+                "pack_sha256": model["pack_sha256"],
+                "geometry_sha256": model["geometry_sha256"],
+            }
+            for model in profile["models"]
+        ],
+        "calibration_ids": [calibration["calibration_id"] for calibration in calibrations],
+        "case_order_sha256": records.case_order_sha256(profile),
+    }
+    evidence["files"] = prepared.rows
+    return evidence
+
+
+def rejected(call, expected: str) -> None:
+    try:
+        call()
+    except RecipeError as error:
+        if expected not in str(error):
+            raise AssertionError((expected, str(error))) from error
+    else:
+        raise AssertionError(f"invalid evidence publication passed: {expected}")
+
+
+def main() -> None:
+    fixture = load_fixture_module()
+    with tempfile.TemporaryDirectory(prefix="gpu-evidence-publication-") as raw_temporary:
+        temporary = pathlib.Path(raw_temporary)
+        input_root = temporary / "input"
+        input_root.mkdir()
+        fixture.materialize(input_root)
+        admitted = qualification_input.admit(input_root / "profile.json")
+        prepared = publication.prepare(admitted, produced_files())
+        evidence = failure_evidence(admitted, prepared, fixture)
+
+        output = temporary / "evidence"
+        publication.publish(admitted, evidence, prepared, output)
+        replayed = records.replay_evidence_directory(output)
+        assert replayed["evidence"]["failure"]["category"] == "DEVICE_UNAVAILABLE"
+        assert stat.S_IMODE(output.stat().st_mode) == 0o700
+        assert all(
+            stat.S_IMODE(path.stat().st_mode) == 0o600
+            for path in output.rglob("*") if path.is_file()
+        )
+        assert not list(temporary.glob(".evidence.stage-*"))
+
+        unavailable = {"state": "unavailable", "name": "", "version": "", "sha256": ""}
+        build_evidence = copy.deepcopy(evidence)
+        build_evidence["source"]["candidate"] = copy.deepcopy(unavailable)
+        build_evidence["preparation_commands"] = build_evidence["preparation_commands"][:4]
+        build_evidence["failure"] = {
+            "category": "BUILD",
+            "stage": "candidate_build",
+            "case_ordinal": -1,
+            "detail": "candidate exited 7",
+        }
+        build_produced = produced_files(candidate=False)
+        build_produced.update({
+            "logs/003.stdout": publication.RetainedFile(
+                "stdout", b"candidate-build-output\n",
+            ),
+            "logs/003.stderr": publication.RetainedFile(
+                "stderr", b"candidate-build-error\n",
+            ),
+        })
+        build_prepared = publication.prepare(admitted, build_produced)
+        build_evidence["files"] = build_prepared.rows
+        build_output = temporary / "build-failure"
+        publication.publish(admitted, build_evidence, build_prepared, build_output)
+        build_replayed = records.replay_evidence_directory(build_output)
+        assert build_replayed["evidence"]["failure"]["stage"] == "candidate_build"
+
+        occupied = temporary / "occupied"
+        occupied.mkdir()
+        (occupied / "marker").write_text("preserved")
+        rejected(
+            lambda: publication.publish(admitted, evidence, prepared, occupied),
+            "new path",
+        )
+        assert (occupied / "marker").read_text() == "preserved"
+
+        bad_evidence = copy.deepcopy(evidence)
+        bad_evidence["files"] = bad_evidence["files"][:-1]
+        rejected(
+            lambda: publication.publish(
+                admitted, bad_evidence, prepared, temporary / "bad-evidence",
+            ),
+            "file rows",
+        )
+
+        rejected(
+            lambda: publication.publish(
+                admitted, evidence, prepared, input_root / "nested-evidence",
+            ),
+            "outside",
+        )
+
+        original_file_limit = publication.MAX_EVIDENCE_FILES
+        publication.MAX_EVIDENCE_FILES = len(prepared.content)
+        try:
+            rejected(
+                lambda: publication.publish(
+                    admitted, evidence, prepared, temporary / "too-many-files",
+                ),
+                "file projection",
+            )
+        finally:
+            publication.MAX_EVIDENCE_FILES = original_file_limit
+        assert not list(temporary.glob(".too-many-files.stage-*"))
+
+        original_byte_limit = publication.MAX_BUNDLE_ARTIFACT_BYTES
+        publication.MAX_BUNDLE_ARTIFACT_BYTES = 1
+        try:
+            rejected(
+                lambda: publication.publish(
+                    admitted, evidence, prepared, temporary / "too-many-bytes",
+                ),
+                "directory projection",
+            )
+        finally:
+            publication.MAX_BUNDLE_ARTIFACT_BYTES = original_byte_limit
+        assert not list(temporary.glob(".too-many-bytes.stage-*"))
+
+        changing_root = temporary / "changing-input"
+        shutil.copytree(input_root, changing_root)
+        changing = qualification_input.admit(changing_root / "profile.json")
+        changing_prepared = publication.prepare(changing, produced_files())
+        changing_evidence = failure_evidence(changing, changing_prepared, fixture)
+        (changing_root / "inputs/qwen2.model").write_bytes(b"changed\n")
+        rejected(
+            lambda: publication.publish(
+                changing,
+                changing_evidence,
+                changing_prepared,
+                temporary / "changed-evidence",
+            ),
+            "digest",
+        )
+        assert not (temporary / "changed-evidence").exists()
+        assert not list(temporary.glob(".changed-evidence.stage-*"))
+
+    print("gpu evidence publication smoke: PASS")
+
+
+if __name__ == "__main__":
+    main()

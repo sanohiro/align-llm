@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# G1's focused bounded Qwen weight planner and loader owner. The GPU stub exposes backend
+# allocation alignment and the same staged upload state machine without requiring GPU hardware.
+
+unset ALIGN_LLM_GGML_INCLUDE ALIGN_LLM_GGML_LIB ALIGN_LLM_GGML_FORCE
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
+work_dir=$(mktemp -d)
+work_dir=$(CDPATH= cd -- "${work_dir}" && pwd -P)
+gpu_shim="${work_dir}/gpu-shim"
+executable="${work_dir}/runtime-qwen-load-smoke"
+
+cleanup() {
+  status=$?
+  rm -rf "${work_dir}"
+  exit "${status}"
+}
+trap cleanup EXIT HUP INT TERM
+
+ALIGN_LLM_GGML_FORCE=engine+gpu ALIGN_LLM_GGML_SHIM_DIR="${gpu_shim}" \
+  "${root_dir}/scripts/build-ggml-shim" >/dev/null
+python3 "${root_dir}/scripts/layer_forward_fixture.py" "${work_dir}" --model >/dev/null
+
+(
+  cd "${root_dir}"
+  export LIBRARY_PATH="${gpu_shim}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+  "${compiler}" build src/runtime_qwen_load_smoke.align >/dev/null
+  mv runtime_qwen_load_smoke "${executable}"
+)
+
+export DYLD_LIBRARY_PATH="${gpu_shim}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
+export LD_LIBRARY_PATH="${gpu_shim}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+set +e
+output=$("${executable}" \
+  "${work_dir}/model-pack.alignpack" \
+  "${work_dir}/model-pack-member-missing.alignpack" \
+  "${work_dir}/model-pack-shape.alignpack" \
+  "${work_dir}/model-pack-type.alignpack" \
+  "${work_dir}/model-pack-truncated.alignpack")
+status=$?
+set -e
+if [ "${status}" -ne 0 ]; then
+  printf '%s\n' "gpu qwen load smoke: FAIL status: ${status}; output: ${output}" >&2
+  exit 1
+fi
+if [ "${output}" != "runtime qwen load smoke: PASS" ]; then
+  printf '%s\n' "gpu qwen load smoke: FAIL output: ${output}" >&2
+  exit 1
+fi
+
+printf '%s\n' "gpu qwen load smoke: PASS"

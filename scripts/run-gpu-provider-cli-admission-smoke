@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""Exercise public provider positional admission without model/device prerequisites."""
+from pathlib import Path
+import json
+import subprocess
+import sys
+import tempfile
+
+if len(sys.argv) not in (1, 2):
+    raise SystemExit('usage: run-gpu-provider-cli-admission-smoke [MAIN]')
+binary = Path(sys.argv[1]).resolve(strict=True) if len(sys.argv) == 2 else Path(__file__).resolve().parents[1] / 'main'
+with tempfile.TemporaryDirectory(prefix='gpu-provider-cli-') as raw:
+    work = Path(raw).resolve()
+    options = work / 'options.json'
+    original = b'{}\n'
+    options.write_bytes(original)
+    prefix = [str(binary), '--provider', 'align-runtime', 'absent-model', 'absent-pack', 'absent-geometry']
+    for positionals in ([], ['prompt']):
+        result = subprocess.run([*prefix, *positionals, '--runtime-options', str(options)],
+                                cwd=work, capture_output=True, timeout=10)
+        assert result.returncode != 0
+        assert options.read_bytes() == original, 'missing positionals overwrote options input'
+        assert not (work / '--runtime-options').exists(), 'option name became result destination'
+    # Every admitted positional shape still reaches the provider error-record boundary.
+    # Deliberately absent model inputs keep this test independent of GPU availability.
+    for with_options in (False, True):
+        for optional in ([], ['1'], ['1', '0']):
+            output = work / ('result-' + str(with_options) + '-' + str(len(optional)) + '.json')
+            args = [*prefix, 'prompt', str(output), *optional]
+            if with_options:
+                args += ['--runtime-options', str(options)]
+            result = subprocess.run(args, cwd=work, capture_output=True, timeout=10)
+            assert result.returncode != 0
+            assert json.loads(output.read_bytes())['status'] == 'error'
+            assert options.read_bytes() == original
+print('GPU provider CLI admission: PASS (missing positionals preserve inputs; all valid arities dispatch)')

@@ -1,0 +1,14 @@
+module ggml_ffi.internal.resource
+
+// The public `GpuDevice` resource is declared by `ggml_ffi`. Align requires its Drop hook to live
+// below the declaring module, so this leaf owns only the final native close. Construction and all
+// checked operations remain in `ggml_ffi`; callers cannot import a raw constructor from here.
+extern "C" link("align_ggml_shim") {
+  fn align_gpu_device_close(owner: raw) -> ()
+}
+
+pub fn drop_gpu_device(state: raw) {
+  unsafe {
+    align_gpu_device_close(state)
+  }
+}

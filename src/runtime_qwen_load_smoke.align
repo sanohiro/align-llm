@@ -1,0 +1,81 @@
+module runtime_qwen_load_smoke
+
+import ggml_ffi
+import layer_qwen2
+import runtime_memory
+import runtime_qwen_load
+import runtime_weights
+
+BUNDLE_ID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+fn geometry() -> layer_qwen2.Geometry = layer_qwen2.Geometry {
+  code: "".clone(),
+  detail: "".clone(),
+  arch: "qwen2".clone(),
+  n_layer: 2,
+  n_embd: 8,
+  n_head: 2,
+  n_head_kv: 1,
+  head_dim: 4,
+  n_ff: 16,
+  n_vocab: 32,
+  n_expert: 0,
+  context_length: 128,
+  rms_eps_bits: 925353388,
+  rope_type: 2,
+  rope_dim_count: 4,
+  rope_freq_base_bits: 1176256512,
+  attn_scale_bits: layer_qwen2.attn_scale_bits(4),
+}
+
+fn expect_plan_refusal(
+  borrow owner: ggml_ffi.GpuDevice,
+  pack_path: str,
+  borrow g: layer_qwen2.Geometry,
+) -> Result<(), Error> = match runtime_qwen_load.build_plan(owner, pack_path, g) {
+  Ok(_) => Err(Error.Invalid),
+  Err(_) => Ok(()),
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 6 { return Err(Error.Invalid) }
+  owner := ggml_ffi.gpu_device_open(
+    "metal", "stub-gpu", "fixture-plugin", BUNDLE_ID, 1048576, 1048576,
+  ) else { return Err(Error.Invalid) }
+  g := geometry()
+  expect_plan_refusal(owner, args[2], g)?
+  expect_plan_refusal(owner, args[3], g)?
+  expect_plan_refusal(owner, args[4], g)?
+  expect_plan_refusal(owner, args[5], g)?
+
+  plan := runtime_qwen_load.build_plan(owner, args[1], g)?
+  if plan.count != 27 || plan.weights_bytes != 7008 || plan.kv_bytes != 8192
+    || plan.ggml_type.len() != 27 || plan.nbytes.len() != 27
+    || plan.ggml_type[0] != 0 || plan.ne0[0] != 8 || plan.ne1[0] != 32
+    || plan.ne0[26] != 8 || plan.ne1[26] != 32 {
+    return Err(Error.Invalid)
+  }
+  runtime_memory.admit(
+    owner,
+    runtime_memory.MemoryPlan {
+      weights_bytes: plan.weights_bytes,
+      kv_bytes: plan.kv_bytes,
+      workspace_bytes: 262144,
+      metadata_bytes: 262144,
+      staging_bytes: 64,
+      legacy_cache_bytes: 0,
+    },
+  )?
+  runtime_memory.allocate(owner)?
+  runtime_qwen_load.load(owner, args[1], plan, 64)?
+  if runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_EXPECTED) != 27
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_CREATED) != 27
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED) != 27
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED_BYTES) != 6944
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_FINISHED) != 1 {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_device_synchronize(owner) else { return Err(Error.Invalid) }
+  print("runtime qwen load smoke: PASS")
+  return Ok(())
+}

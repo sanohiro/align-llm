@@ -1,0 +1,450 @@
+module runtime_qwen_load
+
+import alignpack_read
+import ggml_ffi
+import layer_qwen2
+import runtime_weights
+import std.fs
+
+MAX_TENSORS := 49155
+MAX_EXTENT := 9223372036854775807
+
+Member {
+  role_id: i64,
+  nbytes: i64,
+  pack_offset: i64,
+  ggml_type: i64,
+  n_dims: i64,
+  dim0: i64,
+  dim1: i64,
+  dim2: i64,
+  dim3: i64,
+  slice_index: i64,
+  slice_count: i64,
+}
+
+BlockMatch {
+  hits: i64,
+  member: Member,
+}
+
+pub Plan {
+  count: i64,
+  ggml_type: array<i64>,
+  n_dims: array<i64>,
+  ne0: array<i64>,
+  ne1: array<i64>,
+  ne2: array<i64>,
+  ne3: array<i64>,
+  nbytes: array<i64>,
+  pack_offset: array<i64>,
+  weights_bytes: i64,
+  kv_bytes: i64,
+}
+
+fn checked_add(left: i64, right: i64) -> Result<i64, Error> {
+  if left < 0 || right < 0 || left > MAX_EXTENT - right { return Err(Error.Invalid) }
+  return Ok(left + right)
+}
+
+fn checked_mul(left: i64, right: i64) -> Result<i64, Error> {
+  if left < 0 || right < 0 || (right > 0 && left > MAX_EXTENT / right) {
+    return Err(Error.Invalid)
+  }
+  return Ok(left * right)
+}
+
+fn logical_bytes(
+  ggml_type: i64,
+  n_dims: i64,
+  ne0: i64,
+  ne1: i64,
+  ne2: i64,
+  ne3: i64,
+) -> Result<i64, Error> {
+  block := ggml_ffi.blck_size(ggml_type)
+  unit := ggml_ffi.type_size(ggml_type)
+  if block < 1 || unit < 1 || n_dims < 1 || n_dims > 4 || ne0 < 1 || ne0 % block != 0
+    || ne1 < 1 || ne2 < 1 || ne3 < 1
+    || (n_dims < 2 && ne1 != 1) || (n_dims < 3 && ne2 != 1) || (n_dims < 4 && ne3 != 1) {
+    return Err(Error.Invalid)
+  }
+  mut total := checked_mul(ne0 / block, unit)?
+  total = checked_mul(total, ne1)?
+  total = checked_mul(total, ne2)?
+  return checked_mul(total, ne3)
+}
+
+fn take_block(
+  borrow index: alignpack_read.PackIndex,
+  at: i64,
+) -> Result<alignpack_read.PackBlock, Error> = match alignpack_read.block_at(index, at) {
+  Ok(block) => Ok(block),
+  Err(_) => Err(Error.Invalid),
+}
+
+fn take_member(
+  borrow pack: file,
+  borrow index: alignpack_read.PackIndex,
+  borrow block: alignpack_read.PackBlock,
+  at: i64,
+  borrow mut counters: alignpack_read.Counters,
+) -> Result<alignpack_read.PackMember, Error> = match
+alignpack_read.member_at(pack, index, block, at, counters) {
+  Ok(member) => Ok(member),
+  Err(_) => Err(Error.Invalid),
+}
+
+fn scan_block(
+  borrow pack: file,
+  borrow index: alignpack_read.PackIndex,
+  borrow block: alignpack_read.PackBlock,
+  role: i64,
+  borrow mut counters: alignpack_read.Counters,
+) -> Result<BlockMatch, Error> {
+  mut hits := 0
+  mut found_role := 0
+  mut found_nbytes := 0
+  mut found_pack_offset := 0
+  mut found_type := 0
+  mut found_dims := 0
+  mut found_dim0 := 0
+  mut found_dim1 := 0
+  mut found_dim2 := 0
+  mut found_dim3 := 0
+  mut found_slice_index := 0
+  mut found_slice_count := 0
+  mut member_at := 0
+  loop {
+    if member_at >= block.member_count { break }
+    candidate := take_member(pack, index, block, member_at, counters)?
+    if candidate.role_id == role {
+      hits = hits + 1
+      found_role = candidate.role_id
+      found_nbytes = candidate.nbytes
+      found_pack_offset = candidate.pack_offset
+      found_type = candidate.ggml_type
+      found_dims = candidate.n_dims
+      found_dim0 = candidate.dim0
+      found_dim1 = candidate.dim1
+      found_dim2 = candidate.dim2
+      found_dim3 = candidate.dim3
+      found_slice_index = candidate.slice_index
+      found_slice_count = candidate.slice_count
+    }
+    member_at = member_at + 1
+  }
+  return Ok(BlockMatch {
+      hits: hits,
+      member: Member {
+        role_id: found_role,
+        nbytes: found_nbytes,
+        pack_offset: found_pack_offset,
+        ggml_type: found_type,
+        n_dims: found_dims,
+        dim0: found_dim0,
+        dim1: found_dim1,
+        dim2: found_dim2,
+        dim3: found_dim3,
+        slice_index: found_slice_index,
+        slice_count: found_slice_count,
+      },
+    })
+}
+
+fn find_member(
+  borrow pack: file,
+  borrow index: alignpack_read.PackIndex,
+  kind: i64,
+  layer: i64,
+  role: i64,
+  borrow mut counters: alignpack_read.Counters,
+) -> Result<Member, Error> {
+  mut hits := 0
+  mut found := Member {
+    role_id: 0,
+    nbytes: 0,
+    pack_offset: 0,
+    ggml_type: 0,
+    n_dims: 0,
+    dim0: 0,
+    dim1: 0,
+    dim2: 0,
+    dim3: 0,
+    slice_index: 0,
+    slice_count: 0,
+  }
+  mut block_at := 0
+  loop {
+    if block_at >= index.block_count { break }
+    if index.block_kind[block_at] == kind && index.block_layer[block_at] == layer {
+      block := take_block(index, block_at)?
+      result := scan_block(pack, index, block, role, counters)?
+      if result.hits > 0 {
+        hits = hits + result.hits
+        found = result.member
+      }
+    }
+    block_at = block_at + 1
+  }
+  if hits != 1 { return Err(Error.Invalid) }
+  return Ok(found)
+}
+
+fn append_member(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow member: Member,
+  borrow table: layer_qwen2.MemberTable,
+  row: i64,
+  borrow mut kinds: array_builder<i64>,
+  borrow mut dims: array_builder<i64>,
+  borrow mut d0: array_builder<i64>,
+  borrow mut d1: array_builder<i64>,
+  borrow mut d2: array_builder<i64>,
+  borrow mut d3: array_builder<i64>,
+  borrow mut sizes: array_builder<i64>,
+  borrow mut offsets: array_builder<i64>,
+  total: i64,
+) -> Result<i64, Error> {
+  if row < 0 || row >= table.count || member.role_id != table.role[row]
+    || member.n_dims < table.n_dims[row] || member.n_dims > 2
+    || member.dim0 != table.ne0[row]
+    || member.dim1 != table.ne1[row] || member.dim2 != 1 || member.dim3 != 1
+    || member.slice_index != -1 || member.slice_count != -1 {
+    return Err(Error.Invalid)
+  }
+  bytes := logical_bytes(
+    member.ggml_type, member.n_dims, member.dim0, member.dim1, member.dim2, member.dim3,
+  )?
+  if bytes != member.nbytes { return Err(Error.Invalid) }
+  shape := runtime_weights.Shape {
+    ggml_type: member.ggml_type,
+    n_dims: member.n_dims,
+    ne0: member.dim0,
+    ne1: member.dim1,
+    ne2: member.dim2,
+    ne3: member.dim3,
+  }
+  allocation := runtime_weights.allocation_bytes(owner, shape)?
+  kinds.push(member.ggml_type)
+  dims.push(member.n_dims)
+  d0.push(member.dim0)
+  d1.push(member.dim1)
+  d2.push(member.dim2)
+  d3.push(member.dim3)
+  sizes.push(member.nbytes)
+  offsets.push(member.pack_offset)
+  return checked_add(total, allocation)
+}
+
+pub fn build_plan_file_capacity(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow pack: file,
+  borrow g: layer_qwen2.Geometry,
+  kv_capacity: i64,
+) -> Result<Plan, Error> {
+  return build_plan_file_capacity_bounded(owner, pack, g, kv_capacity, 9223372036854775807)
+}
+
+pub fn build_plan_file_capacity_bounded(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow pack: file,
+  borrow g: layer_qwen2.Geometry,
+  kv_capacity: i64,
+  maximum_blocks: i64,
+) -> Result<Plan, Error> {
+  embed_table := layer_qwen2.mf_embed_member_table(g)
+  layer_table := layer_qwen2.mf_layer_member_table(g)
+  head_table := layer_qwen2.mf_head_member_table(g)
+  count := checked_add(
+    checked_add(embed_table.count, checked_mul(layer_table.count, g.n_layer)?)?,
+    head_table.count,
+  )?
+  if g.code.len() != 0 || count < 1 || count > MAX_TENSORS
+    || kv_capacity < 1 || kv_capacity > g.context_length {
+    return Err(Error.Invalid)
+  }
+  mut counters := alignpack_read.new_counters()
+  index := alignpack_read.open_pack_bounded(pack, counters, maximum_blocks) else { return Err(Error.Invalid) }
+  mut kinds: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  mut d0: array_builder<i64> := array_builder()
+  mut d1: array_builder<i64> := array_builder()
+  mut d2: array_builder<i64> := array_builder()
+  mut d3: array_builder<i64> := array_builder()
+  mut sizes: array_builder<i64> := array_builder()
+  mut offsets: array_builder<i64> := array_builder()
+  mut weights_bytes := 0
+
+  embed := find_member(
+    pack, index, layer_qwen2.KIND_WEIGHT, -1, embed_table.role[0], counters,
+  )?
+  weights_bytes = append_member(
+    owner, embed, embed_table, 0, kinds, dims, d0, d1, d2, d3, sizes, offsets, weights_bytes,
+  )?
+
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer { break }
+    mut row := 0
+    loop {
+      if row >= layer_table.count { break }
+      member := find_member(
+        pack, index, layer_table.block[row], layer, layer_table.role[row], counters,
+      )?
+      weights_bytes = append_member(
+        owner, member, layer_table, row,
+        kinds, dims, d0, d1, d2, d3, sizes, offsets, weights_bytes,
+      )?
+      row = row + 1
+    }
+    layer = layer + 1
+  }
+
+  mut head := 0
+  loop {
+    if head >= head_table.count { break }
+    member := find_member(
+      pack, index, layer_qwen2.KIND_WEIGHT, -1, head_table.role[head], counters,
+    )?
+    weights_bytes = append_member(
+      owner, member, head_table, head,
+      kinds, dims, d0, d1, d2, d3, sizes, offsets, weights_bytes,
+    )?
+    head = head + 1
+  }
+
+  k_shape := runtime_weights.Shape {
+    ggml_type: 0,
+    n_dims: 3,
+    ne0: g.head_dim,
+    ne1: kv_capacity,
+    ne2: g.n_head_kv,
+    ne3: 1,
+  }
+  v_shape := runtime_weights.Shape {
+    ggml_type: 0,
+    n_dims: 3,
+    ne0: kv_capacity,
+    ne1: g.head_dim,
+    ne2: g.n_head_kv,
+    ne3: 1,
+  }
+  per_layer_kv := checked_add(
+    runtime_weights.allocation_bytes(owner, k_shape)?,
+    runtime_weights.allocation_bytes(owner, v_shape)?,
+  )?
+  kv_bytes := checked_mul(per_layer_kv, g.n_layer)?
+  result_kinds := kinds.build()
+  if result_kinds.len() != count { return Err(Error.Invalid) }
+  return Ok(Plan {
+      count: count,
+      ggml_type: result_kinds,
+      n_dims: dims.build(),
+      ne0: d0.build(),
+      ne1: d1.build(),
+      ne2: d2.build(),
+      ne3: d3.build(),
+      nbytes: sizes.build(),
+      pack_offset: offsets.build(),
+      weights_bytes: weights_bytes,
+      kv_bytes: kv_bytes,
+    })
+}
+
+pub fn build_plan_file(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow pack: file,
+  borrow g: layer_qwen2.Geometry,
+) -> Result<Plan, Error> {
+  return build_plan_file_capacity(owner, pack, g, g.context_length)
+}
+
+pub fn build_plan(
+  borrow owner: ggml_ffi.GpuDevice,
+  pack_path: str,
+  borrow g: layer_qwen2.Geometry,
+) -> Result<Plan, Error> {
+  pack := fs.open_rw(pack_path)?
+  return build_plan_file(owner, pack, g)
+}
+
+fn validate_plan(borrow plan: Plan) -> Result<(), Error> {
+  if plan.count < 1 || plan.ggml_type.len() != plan.count
+    || plan.n_dims.len() != plan.count || plan.ne0.len() != plan.count
+    || plan.ne1.len() != plan.count || plan.ne2.len() != plan.count
+    || plan.ne3.len() != plan.count || plan.nbytes.len() != plan.count
+    || plan.pack_offset.len() != plan.count {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn add_at(borrow owner: ggml_ffi.GpuDevice, borrow plan: Plan, at: i64) -> Result<i64, Error> {
+  return runtime_weights.add(
+    owner,
+    runtime_weights.Shape {
+      ggml_type: plan.ggml_type[at],
+      n_dims: plan.n_dims[at],
+      ne0: plan.ne0[at],
+      ne1: plan.ne1[at],
+      ne2: plan.ne2[at],
+      ne3: plan.ne3[at],
+    },
+  )
+}
+
+pub fn define(borrow owner: ggml_ffi.GpuDevice, borrow plan: Plan) -> Result<(), Error> {
+  validate_plan(plan)?
+  runtime_weights.begin(owner, plan.count)?
+  mut at := 0
+  loop {
+    if at >= plan.count { break }
+    index := add_at(owner, plan, at)?
+    if index != at { return Err(Error.Invalid) }
+    at = at + 1
+  }
+  return runtime_weights.finish(owner)
+}
+
+pub fn load_file(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow pack: file,
+  borrow plan: Plan,
+  staging_bytes: i64,
+) -> Result<(), Error> {
+  if staging_bytes < 1 { return Err(Error.Invalid) }
+  validate_plan(plan)?
+  mut chunk := buffer(staging_bytes)
+  runtime_weights.begin(owner, plan.count)?
+  mut at := 0
+  loop {
+    if at >= plan.count { break }
+    index := add_at(owner, plan, at)?
+    if index != at { return Err(Error.Invalid) }
+    mut done := 0
+    loop {
+      if done >= plan.nbytes[at] { break }
+      count := pack.pread(chunk, plan.pack_offset[at] + done)?
+      if count < 1 || count > staging_bytes { return Err(Error.Invalid) }
+      take := if count > plan.nbytes[at] - done { plan.nbytes[at] - done } else { count }
+      view := chunk.bytes()
+      piece := view[0..take]
+      runtime_weights.upload(owner, index, done, piece)?
+      done = done + take
+    }
+    at = at + 1
+  }
+  runtime_weights.finish(owner)?
+  return Ok(())
+}
+
+pub fn load(
+  borrow owner: ggml_ffi.GpuDevice,
+  pack_path: str,
+  borrow plan: Plan,
+  staging_bytes: i64,
+) -> Result<(), Error> {
+  pack := fs.open_rw(pack_path)?
+  return load_file(owner, pack, plan, staging_bytes)
+}

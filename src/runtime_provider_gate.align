@@ -96,6 +96,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       max_response_bytes: 262144,
       runtime_pack_path: "",
       runtime_geometry_path: "",
+      runtime_options_path: "",
       runtime_cache_budget_bytes: 0,
     }
     return run_one(config, request, result_path)
@@ -123,6 +124,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       max_response_bytes: 262144,
       runtime_pack_path: "",
       runtime_geometry_path: "",
+      runtime_options_path: "",
       runtime_cache_budget_bytes: 0,
     }
     return run_one(config, sampled_request, result_path)
@@ -138,6 +140,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       max_response_bytes: 262144,
       runtime_pack_path: args[3],
       runtime_geometry_path: args[4],
+      runtime_options_path: "",
       runtime_cache_budget_bytes: 0,
     }
     return run_one(config, request, result_path)
@@ -155,6 +158,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       max_response_bytes: 262144,
       runtime_pack_path: args[3],
       runtime_geometry_path: args[4],
+      runtime_options_path: "",
       runtime_cache_budget_bytes: cache_budget_bytes,
     }
     return run_one(config, request, result_path)
@@ -185,6 +189,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       max_response_bytes: 262144,
       runtime_pack_path: args[3],
       runtime_geometry_path: args[4],
+      runtime_options_path: "",
       runtime_cache_budget_bytes: cache_budget_bytes,
     }
     return run_one(config, sampled_request, result_path)

@@ -1,0 +1,80 @@
+module runtime_device
+
+import ggml_ffi
+import runtime_bundle
+import runtime_options
+
+pub fn open(options: runtime_options.RuntimeOptions) -> Result<ggml_ffi.GpuDevice, Error> {
+  ggml_ffi.gpu_failure_reset()
+  ggml_ffi.gpu_failure_activity(ggml_ffi.GPU_STAGE_DEVICE)
+  verified := runtime_bundle.verify(
+    options.backend_bundle,
+    options.backend,
+    options.host_budget_bytes,
+  ) else {
+    ggml_ffi.gpu_note_failure(ggml_ffi.GPU_STATUS_BUNDLE_SWITCH, ggml_ffi.GPU_STAGE_DEVICE)
+    return Err(Error.Invalid)
+  }
+  if ggml_ffi.gpu_core_required() {
+    mut core: i32 := 0
+    loop {
+      if core >= 2 { break }
+      actual_path := ggml_ffi.gpu_core_identity(core, 0)
+      build_digest := ggml_ffi.gpu_core_identity(core, 1)
+      if !runtime_bundle.verify_core(verified, core, actual_path, build_digest, options.host_budget_bytes) {
+        ggml_ffi.gpu_note_failure(ggml_ffi.GPU_STATUS_BUNDLE_SWITCH, ggml_ffi.GPU_STAGE_DEVICE)
+        runtime_bundle.cleanup(verified) else { return Err(Error.Invalid) }
+        return Err(Error.Invalid)
+      }
+      core = core + 1
+    }
+  }
+  opened := ggml_ffi.gpu_device_open(
+    options.backend,
+    options.device,
+    verified.backend_path,
+    verified.bundle_id,
+    options.host_budget_bytes,
+    options.device_budget_bytes,
+  )
+  return match opened {
+    Ok(owner) => {
+      if ggml_ffi.gpu_device_staging_consumed(owner) {
+        match ggml_ffi.gpu_staging_transfer(
+          verified.staging_root,
+          verified.staged_artifact_count,
+          false,
+        ) {
+          Ok(_) => Ok(owner),
+          Err(_) => Err(Error.Invalid),
+        }
+      } else {
+        match runtime_bundle.cleanup(verified) {
+          Ok(_) => Ok(owner),
+          Err(_) => Err(Error.Invalid),
+        }
+      }
+    }
+    Err(fault) => {
+      if fault.code == "CONFIG" || fault.code == "BUSY" || fault.code == "BUNDLE_IDENTITY"
+        || ggml_ffi.gpu_staging_owned() {
+        runtime_bundle.cleanup(verified) else { return Err(Error.Invalid) }
+      } else {
+        ggml_ffi.gpu_staging_transfer(
+          verified.staging_root,
+          verified.staged_artifact_count,
+          true,
+        ) else { return Err(Error.Invalid) }
+      }
+      Err(Error.Invalid)
+    }
+  }
+}
+
+pub fn synchronize(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {
+  ggml_ffi.gpu_device_synchronize(owner) else { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn bundle_id(borrow owner: ggml_ffi.GpuDevice) -> string =
+ggml_ffi.gpu_device_bundle_id(owner)

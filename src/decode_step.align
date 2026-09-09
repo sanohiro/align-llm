@@ -1,5 +1,8 @@
 module decode_step
 
+import runtime_cpu_trace
+import runtime_numeric_stream
+
 import std.crypto
 import std.encoding
 import std.fs
@@ -2063,6 +2066,15 @@ fn stage_inputs(
 // reusable one would need and impossible to get wrong.
 // ---------------------------------------------------------------------------------------------
 
+fn trace_tensor(trace_mode: i64, kind: i64, layer: i64, step: i64, width: i64, height: i64,
+  borrow bytes: slice<u8>, borrow mut trace: runtime_numeric_stream.Stream,
+  borrow mut o: model_forward.Outcome) {
+  if o.code.len() > 0 { return }
+  match runtime_cpu_trace.tensor(trace_mode, kind, layer, step, width, height, bytes, trace) {
+    Ok(_) => {}, Err(_) => { fail(o, "G1_NUMERIC_STREAM", "tensor") },
+  }
+}
+
 fn decode_pass(
   borrow pak: file,
   device: raw,
@@ -2112,6 +2124,9 @@ fn decode_pass(
   borrow mut state: Plane,
   borrow mut decoded: Decode,
   borrow mut o: model_forward.Outcome,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
 ) {
   mut transient: buffer := buffer(model_forward.CHUNK_BYTES)
   mut counters := alignpack_read.new_counters()
@@ -2227,6 +2242,16 @@ fn decode_pass(
       past_v_view, node_view, residual_view, plane_view, scan, starts, lengths, true, false,
       n_past, stride, breach, state, result, o)
     account(result, false, activation, o)
+    if trace_mode == 2 && o.code.len() == 0 {
+      expected := g.n_embd * tokens_in * 4
+      if result.out_bytes != expected || expected > residual_view.len() {
+        fail(o, "G1_NUMERIC_STREAM", "layer_shape")
+      } else {
+        trace_bytes := residual_view[0..expected]
+        trace_tensor(trace_mode, 2, layer, n_past - tokens.count + 1, g.n_embd, tokens_in,
+          trace_bytes, trace, o)
+      }
+    }
     decoded.node_count = decoded.node_count + result.node_count
     decoded.compute_ns = decoded.compute_ns + result.compute_ns
     if decoded.slot_high_water < result.slot_high_water {
@@ -2272,6 +2297,8 @@ fn decode_pass(
     fail(o, "R5_RESIDUAL", model_forward.labelled("layer", g.n_layer))
     return
   }
+  trace_tensor(trace_mode, 1, 4294967295, n_past - tokens.count + 1, g.n_vocab, 1,
+    logits_view, trace, o)
   digest := model_forward.digest_region(logits_view)
   decoded.sha256 = digest.sha.clone()
   decoded.bit_sum = digest.bit_sum
@@ -2361,6 +2388,9 @@ fn decode_loop(
   borrow mut state: Plane,
   borrow mut decoded: Decode,
   borrow mut o: model_forward.Outcome,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
 ) -> model_forward.StepColumns {
   mut digests: array_builder<string> := array_builder()
   mut worst_names: array_builder<string> := array_builder()
@@ -2398,7 +2428,10 @@ fn decode_loop(
   mut step := 1
   loop {
     if o.code.len() > 0 { break }
-    if generation {
+    if forced_ids.len() > 0 {
+      if step > forced_ids.len() { break }
+      token = forced_ids[step - 1]
+    } else if generation {
       // `first_token` is generated id 1. Step `k` consumes generated id `k` and produces id
       // `k + 1`, so the maximum is reached before step `generation_max`, and EOG is classified
       // before another graph can consume it.
@@ -2435,7 +2468,7 @@ fn decode_loop(
       head_members, window, layout, resident,
       slot_view, ids_view, pos_view, mask_view, out_ids_view, residual_view, logits_view, node_view,
       plane_view, oracle, embed_nodes, step_nodes, head_nodes, scan, ranges.start, ranges.length,
-      token, n_past, 1, false, width, stride, breach, activation, state, decoded, o)
+      token, n_past, 1, false, width, stride, breach, activation, state, decoded, o, trace_mode, forced_ids, trace)
     if o.code.len() > 0 {
       // Section 2.8. A failure inside step `k` publishes `steps_completed = k - 1` and `k - 1`
       // complete objects: **a partial step publishes no object**, because a half-filled row is a row
@@ -2621,6 +2654,9 @@ fn prefill_pass(
   borrow mut state: Plane,
   borrow mut activation: array_builder<i64>,
   borrow mut o: model_forward.Outcome,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
 ) -> model_forward.ScheduleColumns {
   // The reader's scratch buffer and its two counter pairs are locals, not the caller's. At this pin
   // a cross-module call cannot take the caller's own `borrow mut` parameter beside a shorter-lived
@@ -2735,6 +2771,8 @@ fn prefill_pass(
         fail(o, "R5_RESIDUAL", model_forward.labelled("layer", layer))
       } else {
         compared := residual_view[0..span]
+        trace_tensor(trace_mode, 2, layer, 0, g.n_embd, if last { 1 } else { tokens.count },
+          compared, trace, o)
         digest := model_forward.digest_region(compared)
         sha_view: str := digest.sha
         digests.write(sha_view)
@@ -2764,6 +2802,7 @@ fn prefill_pass(
       mask_view, out_ids_view, residual_view, logits_view, node_view, plane_view, oracle,
       head_nodes, scan, starts, lengths, width, stride, tokens, reference_path, breach, state,
       activation, o)
+    trace_tensor(trace_mode, 1, 4294967295, 0, g.n_vocab, 1, logits_view, trace, o)
   }
   o.reader_pread_count = o.reader_pread_count + counters.pread_count
   o.reader_bytes_read = o.reader_bytes_read + counters.bytes_read
@@ -2985,6 +3024,9 @@ fn schedule_decode(
   borrow mut top: model_forward.TopColumns,
   borrow mut stepped: model_forward.StepColumns,
   borrow mut o: model_forward.Outcome,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
 ) {
   // The plane's and the step's bookkeeping are **locals of this frame**, published into `o` on the
   // way out. They are not out-parameters for the reason `publish` records: a `borrow mut` argument
@@ -3191,7 +3233,7 @@ fn schedule_decode(
       window, layout, resident, slot_view, index_view, mask_wide_view, out_ids_view, residual_view,
       logits_view,
       node_view, plane_view, oracle, embed_nodes, prefill_nodes, head_nodes, scan, ranges.start,
-      ranges.length, width, stride, reference_path, breach, state, activation, o)
+      ranges.length, width, stride, reference_path, breach, state, activation, o, trace_mode, forced_ids, trace)
     if o.code.len() == 0 { o.plane_source = PLANE_SOURCE_PREFILL }
   }
   // R6-PREFIX-SUFFIX-PREFILL sections 2.8 and 2.9. `output` is digested **before** the suffix pass
@@ -3253,7 +3295,7 @@ fn schedule_decode(
       decode_residual_view, logits_view, node_view, plane_view, oracle, embed_nodes, suffix_nodes,
       head_nodes, scan, ranges.start, ranges.length,
       model_forward.column_at(suffix_tokens.ids, 0), tokens.count, suffix_count, true, width,
-      stride, breach, activation, state, suffix_decoded, o)
+      stride, breach, activation, state, suffix_decoded, o, trace_mode, forced_ids, trace)
     if o.code.len() > 0 {
       // Section 2.8: **a partial suffix pass publishes no completion.** `columns_written` stays
       // `T_prefix`, every count stays 0, no step runs, and the plane is freed — so no reader ever
@@ -3312,7 +3354,7 @@ fn schedule_decode(
       slot_view, decode_ids_view, decode_pos_view, mask_decode_view, decode_out_ids_view,
       decode_residual_view, decode_logits_view, node_view, plane_view, oracle, embed_nodes,
       head_nodes, transcript_path, token_id, n_past, steps, generation, eog_ids, generation_max,
-      width, stride, origin, breach, activation, state, decoded, o)
+      width, stride, origin, breach, activation, state, decoded, o, trace_mode, forced_ids, trace)
   }
   // Section 4.3's ordering, on **every** exit path from here: the wrap is freed before the backend
   // and long before `execute`'s arena leaves scope. There is no path between the arena's
@@ -3457,6 +3499,40 @@ fn execute_mode(
   borrow mut top: model_forward.TopColumns,
   borrow mut stepped: model_forward.StepColumns,
 ) -> model_forward.Outcome {
+  mut trace := runtime_numeric_stream.disabled()
+  mut forced_builder: array_builder<i64> := array_builder()
+  forced_ids := forced_builder.build()
+  return execute_mode_traced(pack_path, geometry_path, expected_geometry, source_identity, tokens_text, reference_path, transcript_path, width_text, logits_path, steps_text, kv_save_path, kv_load_path, resident_text, suffix_text, store_text, generation, eog_ids, generation_max, tokens, schedule, graphs, top, stepped, 0, forced_ids, trace)
+}
+
+fn execute_mode_traced(
+  pack_path: str,
+  geometry_path: str,
+  expected_geometry: str,
+  borrow source_identity: alignpack.SourceIdentity,
+  tokens_text: str,
+  reference_path: str,
+  transcript_path: str,
+  width_text: str,
+  logits_path: str,
+  steps_text: str,
+  kv_save_path: str,
+  kv_load_path: str,
+  resident_text: str,
+  suffix_text: str,
+  store_text: str,
+  generation: bool,
+  borrow eog_ids: array<i64>,
+  generation_max: i64,
+  borrow mut tokens: model_forward.TokenColumns,
+  borrow mut schedule: model_forward.ScheduleColumns,
+  borrow mut graphs: model_forward.GraphColumns,
+  borrow mut top: model_forward.TopColumns,
+  borrow mut stepped: model_forward.StepColumns,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
+) -> model_forward.Outcome {
   started := time.instant()
   mut o := model_forward.empty_outcome()
   o.device_kind = ggml_ffi.DEVICE_KIND_CPU
@@ -3549,11 +3625,23 @@ fn execute_mode(
     return o
   }
 
-  max_steps := if generation { 127 } else { layer_qwen2.MAX_DECODE_STEPS }
+  max_steps := if trace_mode == 2 && forced_ids.len() > 0 { 4096 } else if generation { 127 } else { layer_qwen2.MAX_DECODE_STEPS }
   g := stage_inputs(
     tokens_text, suffix_text, width_text, steps_text, geometry_path, expected_geometry, generation,
     kv_requested, max_steps,
     tokens, o)
+  if o.code.len() > 0 {
+    o.elapsed_ns = time.instant() - started
+    return o
+  }
+  mut forced_at := 0
+  loop {
+    if forced_at >= forced_ids.len() || o.code.len() > 0 { break }
+    if forced_ids[forced_at] < 0 || forced_ids[forced_at] >= g.n_vocab {
+      fail(o, CODE_TOKENS, "forced")
+    }
+    forced_at = forced_at + 1
+  }
   if o.code.len() > 0 {
     o.elapsed_ns = time.instant() - started
     return o
@@ -3910,7 +3998,7 @@ fn execute_mode(
     transcript_path, logits_path, effective_save_path, effective_load_path,
     store_miss, pack_digest, geometry_digest, steps,
     generation, eog_ids, generation_max,
-    started, schedule, graphs, top, stepped, o)
+    started, schedule, graphs, top, stepped, o, trace_mode, forced_ids, trace)
   o.elapsed_ns = time.instant() - started
   return o
 }
@@ -3983,6 +4071,45 @@ pub fn generate_resident(
   borrow eog_token_ids: array<i64>,
   max_tokens: i64,
 ) -> GenerationParts {
+  mut trace := runtime_numeric_stream.disabled()
+  mut forced_builder: array_builder<i64> := array_builder()
+  forced_ids := forced_builder.build()
+  return generate_resident_traced_mode(pack_path, geometry_path, expected_geometry, source_identity, prompt_token_ids, eog_token_ids, max_tokens, 0, forced_ids, trace)
+}
+
+pub fn generate_resident_trace(
+  pack_path: str,
+  geometry_path: str,
+  expected_geometry: str,
+  source_identity: alignpack.SourceIdentity,
+  borrow prompt_token_ids: array<i64>,
+  borrow eog_token_ids: array<i64>,
+  max_tokens: i64,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
+) -> GenerationParts {
+  if trace_mode != 1 && trace_mode != 2 {
+    mut refused := model_forward.empty_outcome()
+    fail(refused, CODE_TOKENS, "trace_mode")
+    return GenerationParts { outcome: refused, token_ids_json: "[]".clone() }
+  }
+  return generate_resident_traced_mode(pack_path, geometry_path, expected_geometry, source_identity,
+    prompt_token_ids, eog_token_ids, max_tokens, trace_mode, forced_ids, trace)
+}
+
+fn generate_resident_traced_mode(
+  pack_path: str,
+  geometry_path: str,
+  expected_geometry: str,
+  source_identity: alignpack.SourceIdentity,
+  borrow prompt_token_ids: array<i64>,
+  borrow eog_token_ids: array<i64>,
+  max_tokens: i64,
+  trace_mode: i64,
+  borrow forced_ids: array<i64>,
+  borrow mut trace: runtime_numeric_stream.Stream,
+) -> GenerationParts {
   if prompt_token_ids.len() < 1 || prompt_token_ids.len() > layer_qwen2.MAX_PREFILL_TOKENS
     || eog_token_ids.len() < 1 || eog_token_ids.len() > 256
     || max_tokens < 1 || max_tokens > 128 {
@@ -3990,7 +4117,15 @@ pub fn generate_resident(
     fail(refused, CODE_TOKENS, "generation")
     return GenerationParts { outcome: refused, token_ids_json: "[]".clone() }
   }
-  allocation_steps := if max_tokens > 1 { max_tokens - 1 } else { 1 }
+  if trace_mode < 0 || trace_mode > 2 || (trace_mode != 2 && forced_ids.len() != 0)
+    || forced_ids.len() > 4096 {
+    mut refused := model_forward.empty_outcome()
+    fail(refused, CODE_TOKENS, "trace")
+    return GenerationParts { outcome: refused, token_ids_json: "[]".clone() }
+  }
+  allocation_steps := if forced_ids.len() > 0 { forced_ids.len() } else {
+    if max_tokens > 1 { max_tokens - 1 } else { 1 }
+  }
   width := prompt_token_ids.len() + allocation_steps
   if width > layer_qwen2.MAX_ATTENTION_WIDTH {
     mut refused := model_forward.empty_outcome()
@@ -4008,11 +4143,11 @@ pub fn generate_resident(
   mut graphs := model_forward.empty_graphs()
   mut top := model_forward.empty_top()
   mut stepped := model_forward.empty_steps()
-  mut outcome := execute_mode(
+  mut outcome := execute_mode_traced(
     pack_path, geometry_path, expected_geometry, source_identity,
     token_view, "", "", width_view, "", steps_view, "", "",
     "weights", "-", "-", true, eog_token_ids, max_tokens,
-    tokens, schedule, graphs, top, stepped)
+    tokens, schedule, graphs, top, stepped, trace_mode, forced_ids, trace)
   if outcome.code.len() == 0 {
     nonfinite := generation_nonfinite_count(outcome, stepped)
     if nonfinite > 0 {

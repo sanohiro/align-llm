@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Bound malformed-file admission so FIFO regressions fail instead of hanging an owner."""
+
+import hashlib
+import os
+import pathlib
+import socket
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+CHILD = r'''
+import hashlib, os, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+from gpu_backend_recipe import RecipeError, single_link_file_at
+from gpu_qualification_input import _RetainedRoot
+from gpu_qualification_backend import _verify
+from gpu_qualifier_process import _file_sha256
+from gpu_qualification_run import _artifact
+from gpu_qualification_stream import NumericStream
+from gpu_qualification_kit import _copy
+path = pathlib.Path(sys.argv[2])
+operation, valid = sys.argv[3], sys.argv[4] == "valid"
+expected = hashlib.sha256(b"data").hexdigest()
+def consume():
+    if operation == "source":
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            assert single_link_file_at(descriptor, path.name, "source", 16) == b"data"
+        finally:
+            os.close(descriptor)
+    elif operation in ("input-read", "input-digest"):
+        root = _RetainedRoot(path.parent)
+        try:
+            if operation == "input-read":
+                assert root.read(path.name, 16) == b"data"
+            else:
+                assert root.digest(path.name) == expected
+        finally:
+            root.close()
+    elif operation == "backend":
+        _verify(path, 4, expected)
+    elif operation == "executable":
+        assert _file_sha256(path, "executable") == expected
+    elif operation == "artifact":
+        assert _artifact(path) == (b"data", expected)
+    elif operation == "kit-copy":
+        destination = path.parent / "copied"
+        try:
+            _copy(path, destination)
+            assert destination.read_bytes() == b"data"
+        finally:
+            destination.unlink(missing_ok=True)
+    else:
+        with NumericStream(path, model=1, maximum_bytes=108):
+            pass
+try:
+    consume()
+except (RecipeError, OSError):
+    if valid:
+        raise
+else:
+    if not valid:
+        raise AssertionError("special file was admitted")
+'''
+
+
+def main():
+    with tempfile.TemporaryDirectory(prefix="gpu-special-") as raw:
+        root = pathlib.Path(raw).resolve()
+        regular = root / "regular"
+        regular.write_bytes(b"data")
+        fifo = root / "fifo"
+        os.mkfifo(fifo)
+        directory = root / "directory"
+        directory.mkdir()
+        symlink = root / "symlink"
+        symlink.symlink_to(regular)
+        sockpath = root / "socket"
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.bind(str(sockpath))
+            for operation in ("source", "input-read", "input-digest", "backend", "executable", "artifact", "stream", "kit-copy"):
+                cases = [(path, "invalid") for path in (fifo, directory, symlink, sockpath)]
+                if operation != "stream":
+                    cases.append((regular, "valid"))
+                for path, validity in cases:
+                    try:
+                        result = subprocess.run(
+                            [sys.executable, "-B", "-c", CHILD, str(ROOT / "scripts"), str(path), operation, validity],
+                            capture_output=True, timeout=5,
+                        )
+                    except subprocess.TimeoutExpired as error:
+                        raise AssertionError(f"{operation} blocked on {path.name}") from error
+                    assert result.returncode == 0, (operation, path.name, result.stderr.decode())
+    print("gpu special-file admission: PASS (bounded refusal and regular-file controls)")
+
+
+if __name__ == "__main__":
+    main()

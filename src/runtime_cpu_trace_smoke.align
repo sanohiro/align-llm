@@ -1,0 +1,141 @@
+module runtime_cpu_trace_smoke
+
+import alignpack
+import decode_step
+import moe_decode_step
+import runtime_numeric_stream
+import runtime_pack_identity
+import std.fs
+
+fn ids(first: i64, second: i64) -> array<i64> {
+  mut result: array_builder<i64> := array_builder()
+  if first >= 0 { result.push(first) }
+  if second >= 0 { result.push(second) }
+  return result.build()
+}
+
+fn identity(path: str) -> Result<alignpack.SourceIdentity, Error> {
+  source := runtime_pack_identity.observe_path(path)?
+  return Ok(alignpack.SourceIdentity {
+      file_size: source.file_size, data_offset: source.data_offset,
+      tensor_count: source.tensor_count, kv_count: source.kv_count,
+      version: source.version, alignment: source.alignment,
+      total_tensor_bytes: source.total_tensor_bytes,
+      header_region_sha256: source.header_region_sha256.clone(),
+    })
+}
+
+fn run(pack: str, geometry: str, model: i64, mode: i64, force: bool, expected_failure: bool,
+  borrow mut stream: runtime_numeric_stream.Stream) -> Result<string, Error> {
+  source := identity(pack)?
+  geometry_text := fs.read_file(geometry)?
+  prompt := ids(0, 1)
+  forced := if force { ids(0, 1) } else { ids(-1, -1) }
+  mut eog_builder: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= 32 { break }
+    if force || at == 31 { eog_builder.push(at) }
+    at = at + 1
+  }
+  eog := eog_builder.build()
+  maximum := if force { 1 } else { 3 }
+  if model == 1 {
+    result := if mode == 0 {
+      decode_step.generate_resident(pack, geometry, geometry_text, source, prompt, eog, maximum)
+    } else {
+      decode_step.generate_resident_trace(
+        pack, geometry, geometry_text, source, prompt, eog, maximum, mode, forced, stream)
+    }
+    if result.outcome.code.len() > 0 {
+      if expected_failure {
+        if result.outcome.contexts_created != result.outcome.contexts_freed
+          || result.outcome.backends_created != result.outcome.backends_freed
+          || result.outcome.ggml_buffers_created != result.outcome.ggml_buffers_freed {
+          return Err(Error.Invalid)
+        }
+        return Ok(result.outcome.code.clone())
+      }
+      print(result.outcome.code)
+      print(result.outcome.detail)
+      return Err(Error.Invalid)
+    }
+    if expected_failure { return Err(Error.Invalid) }
+    if !result.outcome.released_before_owner_scope_end { return Err(Error.Invalid) }
+    return Ok(result.token_ids_json.clone())
+  }
+  result := if mode == 0 {
+    moe_decode_step.generate_resident_sampled(
+      pack, geometry, geometry_text, source, prompt, eog, maximum, 1048576, 42)
+  } else {
+    moe_decode_step.generate_resident_trace(
+      pack, geometry, geometry_text, source, prompt, eog, maximum, 1048576, true, 42,
+      mode, forced, stream)
+  }
+  if result.outcome.code.len() > 0 {
+    if expected_failure {
+      if result.outcome.contexts_created != result.outcome.contexts_freed
+        || result.outcome.backends_created != result.outcome.backends_freed
+        || result.outcome.ggml_buffers_created != result.outcome.ggml_buffers_freed {
+        return Err(Error.Invalid)
+      }
+      return Ok(result.outcome.code.clone())
+    }
+    print(result.outcome.code)
+    print(result.outcome.detail)
+    return Err(Error.Invalid)
+  }
+  if expected_failure { return Err(Error.Invalid) }
+  if !result.outcome.released_before_owner_scope_end { return Err(Error.Invalid) }
+  return Ok(result.token_ids_json.clone())
+}
+
+fn complete(pack: str, geometry: str, root: str, model: i64) -> Result<(), Error> {
+  name := if model == 1 { "qwen-complete" } else { "olmoe-complete" }
+  limit := if model == 1 { 2504 } else { 4968 }
+  mut stream := runtime_numeric_stream.create(root, name, model, limit, 65576)?
+  mut inactive := runtime_numeric_stream.disabled()
+  ordinary := run(pack, geometry, model, 0, false, false, inactive)?
+  production := run(pack, geometry, model, 1, false, false, stream)?
+  reproduction := run(pack, geometry, model, 2, false, false, stream)?
+  ordinary_view: str := ordinary
+  production_view: str := production
+  reproduction_view: str := reproduction
+  if ordinary_view != production_view || production_view != reproduction_view { return Err(Error.Invalid) }
+  forced := run(pack, geometry, model, 2, true, false, stream)?
+  print(production)
+  print(forced)
+  runtime_numeric_stream.finish(stream)?
+  if stream.written_bytes != limit { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn refusal(pack: str, geometry: str, root: str, model: i64) -> Result<(), Error> {
+  mut mode := 1
+  loop {
+    if mode > 2 { break }
+    name := if model == 1 {
+      if mode == 1 { "qwen-production-failure" } else { "qwen-diagnostic-failure" }
+    } else {
+      if mode == 1 { "olmoe-production-failure" } else { "olmoe-diagnostic-failure" }
+    }
+    mut stream := runtime_numeric_stream.create(root, name, model, 108, 65576)?
+    code := run(pack, geometry, model, mode, false, true, stream)?
+    code_view: str := code
+    if code_view != "G1_NUMERIC_STREAM" || !stream.failed { return Err(Error.Invalid) }
+    mode = mode + 1
+  }
+  mut inactive := runtime_numeric_stream.disabled()
+  run(pack, geometry, model, 0, false, false, inactive)?
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 6 { return Err(Error.Invalid) }
+  complete(args[1], args[2], args[5], 1)?
+  complete(args[3], args[4], args[5], 2)?
+  refusal(args[1], args[2], args[5], 1)?
+  refusal(args[3], args[4], args[5], 2)?
+  print("runtime CPU trace smoke: PASS")
+  return Ok(())
+}

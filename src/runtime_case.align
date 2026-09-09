@@ -1,0 +1,203 @@
+module runtime_case
+
+import core.json
+import ggml_ffi
+import gguf
+import model
+import provider_runtime
+import runtime_numeric_stream
+import std.fs
+
+MAX_INPUT_BYTES := 4194304
+
+pub Input {
+  schema_version: i64,
+  artifact_kind: string,
+  model_id: string,
+  model_path: string,
+  pack_path: string,
+  geometry_path: string,
+  options_path: string,
+  cache_budget_bytes: i64,
+  prompt_utf8: string,
+  maximum_tokens: i64,
+  temperature_micros: i64,
+  seed: i64,
+  expected_prompt_ids: array<i64>,
+  expected_token_ids: array<i64>,
+  expected_output_utf8: string,
+  forced_ids: array<i64>,
+  stream_root: string,
+  stream_name: string,
+  stream_limit: i64,
+}
+
+pub Output {
+  schema_version: i64,
+  artifact_kind: string,
+  production: provider_runtime.TraceResult,
+  stream_bytes: i64,
+  stream_records: i64,
+}
+
+Failure {
+  schema_version: i64,
+  artifact_kind: string,
+  phase: string,
+  category: string,
+  stage: string,
+  stream_nonfinite_count: i64,
+  stream_bytes: i64,
+  stream_records: i64,
+}
+
+fn refuse(borrow stream: runtime_numeric_stream.Stream, phase: str) -> Result<Output, Error> {
+  native := ggml_ffi.gpu_last_failure()
+  native_code: str := native.code
+  native_stage: str := native.detail
+  binding := phase == "production_binding" || phase == "reproduction_binding" || phase == "forced_binding"
+  category := if stream.nonfinite_count > 0 { "NONFINITE" } else {
+    if binding || native_code.len() == 0 { "COMPUTE" } else { native_code }
+  }
+  stage := if stream.nonfinite_count > 0 || binding || native_stage.len() == 0 { "readback" } else { native_stage }
+  failed := Failure { schema_version: 1, artifact_kind: "GPU_RUNTIME_CASE_FAILURE".clone(),
+    phase: phase.clone(), category: category.clone(), stage: stage.clone(), stream_nonfinite_count: stream.nonfinite_count,
+    stream_bytes: stream.written_bytes, stream_records: stream.records }
+  print(json.encode(failed))
+  return Err(Error.Invalid)
+}
+
+fn path_ok(path: str) -> bool {
+  return path.len() > 0 && path.len() <= 4096 && path.starts_with("/") && !path.contains("\0")
+}
+
+fn ids_ok(borrow ids: array<i64>, maximum: i64) -> bool {
+  if ids.len() < 1 || ids.len() > maximum { return false }
+  mut at := 0
+  loop {
+    if at >= ids.len() { break }
+    if ids[at] < 0 || ids[at] > 2147483647 { return false }
+    at = at + 1
+  }
+  return true
+}
+
+fn equal_ids(borrow left: array<i64>, borrow right: array<i64>) -> bool {
+  if left.len() != right.len() { return false }
+  mut at := 0
+  loop {
+    if at >= left.len() { break }
+    if left[at] != right[at] { return false }
+    at = at + 1
+  }
+  return true
+}
+
+fn validate(borrow input: Input) -> Result<(), Error> {
+  if input.schema_version != 1 || input.artifact_kind != "GPU_RUNTIME_CASE_INPUT"
+    || (input.model_id != "qwen2" && input.model_id != "olmoe")
+    || !path_ok(input.model_path) || !path_ok(input.pack_path) || !path_ok(input.geometry_path)
+    || !path_ok(input.stream_root) || (input.options_path.len() > 0 && !path_ok(input.options_path))
+    || input.cache_budget_bytes < 0 || input.prompt_utf8.len() > 1048576
+    || input.expected_output_utf8.len() > 1048576
+    || input.maximum_tokens < 1 || input.maximum_tokens > 128
+    || (input.temperature_micros != 0 && input.temperature_micros != 300000)
+    || (input.temperature_micros == 0 && input.seed != 0)
+    || !ids_ok(input.expected_prompt_ids, 2048) || !ids_ok(input.expected_token_ids, input.maximum_tokens)
+    || !ids_ok(input.forced_ids, 4096)
+    || input.stream_limit < 108 || input.stream_limit > 4294967296
+    || input.stream_name.len() < 1 || input.stream_name.len() > 64 {
+    return Err(Error.Invalid)
+  }
+  name := input.stream_name.bytes()
+  mut at := 0
+  loop {
+    if at >= name.len() { break }
+    byte := name[at]
+    if !((byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
+        || (at > 0 && (byte == 46 || byte == 45 || byte == 95))) { return Err(Error.Invalid) }
+    at = at + 1
+  }
+  return Ok(())
+}
+
+pub fn load(path: str) -> Result<Input, Error> {
+  source := fs.open(path)?
+  mut bytes := buffer(0)
+  mut chunk := buffer(65536)
+  mut total := 0
+  loop {
+    count := source.read(chunk)?
+    if count == 0 { break }
+    if count > MAX_INPUT_BYTES - total { return Err(Error.Invalid) }
+    bytes.append(chunk.bytes())
+    total = total + count
+  }
+  if total < 2 { return Err(Error.Invalid) }
+  document := bytes.bytes()
+  if document[total - 1] != 10 { return Err(Error.Invalid) }
+  body_bytes := document[0..total - 1]
+  body := body_bytes.as_str()?
+  input: Input := json.decode(body)?
+  canonical := json.encode(input)
+  if canonical != body { return Err(Error.Invalid) }
+  validate(input)?
+  return Ok(input)
+}
+
+pub fn execute(borrow input: Input) -> Result<Output, Error> {
+  ggml_ffi.gpu_failure_reset()
+  validate(input)?
+  snapshot := gguf.open_snapshot(input.model_path)?
+  if snapshot.table.architecture != input.model_id { return Err(Error.Invalid) }
+  model_path: str := input.model_path
+  pack_path: str := input.pack_path
+  geometry_path: str := input.geometry_path
+  options_path: str := input.options_path
+  prompt_text: str := input.prompt_utf8
+  config := model.ProviderConfig {
+    kind: model.ProviderKind.AlignRuntime, endpoint: "", model: model_path, api_key: "",
+    timeout_ns: 0, tokenize_endpoint: "", max_response_bytes: 1048576,
+    runtime_pack_path: pack_path, runtime_geometry_path: geometry_path,
+    runtime_options_path: options_path, runtime_cache_budget_bytes: input.cache_budget_bytes,
+  }
+  request := model.GenerationRequest {
+    system: "", user: prompt_text, max_tokens: input.maximum_tokens,
+    temperature: if input.temperature_micros == 300000 { 0.3 } else { 0.0 },
+    seed: if input.temperature_micros == 300000 { Some(input.seed) } else { None },
+  }
+  mut builder: array_builder<i64> := array_builder()
+  no_forcing := builder.build()
+  mut stream := runtime_numeric_stream.create(input.stream_root, input.stream_name,
+    if input.model_id == "qwen2" { 1 } else { 2 }, input.stream_limit, 65576)?
+  production := match provider_runtime.generate_trace(config, request, 1, no_forcing, stream) {
+    Ok(value) => value,
+    Err(_) => { return refuse(stream, "production") },
+  }
+  if production.text != input.expected_output_utf8
+    || !equal_ids(production.prompt_ids, input.expected_prompt_ids)
+    || !equal_ids(production.token_ids, input.expected_token_ids) { return refuse(stream, "production_binding") }
+  reproduction := match provider_runtime.generate_trace(config, request, 2, no_forcing, stream) {
+    Ok(value) => value,
+    Err(_) => { return refuse(stream, "reproduction") },
+  }
+  if reproduction.text != production.text || !equal_ids(reproduction.token_ids, production.token_ids)
+    || !equal_ids(reproduction.prompt_ids, production.prompt_ids) { return refuse(stream, "reproduction_binding") }
+  forced := match provider_runtime.generate_trace(config, request, 2, input.forced_ids, stream) {
+    Ok(value) => value,
+    Err(_) => { return refuse(stream, "forced") },
+  }
+  if forced.text.len() != 0 || forced.token_ids.len() != input.forced_ids.len() + 1
+    || !equal_ids(forced.prompt_ids, production.prompt_ids) { return refuse(stream, "forced_binding") }
+  runtime_numeric_stream.finish(stream) else { return refuse(stream, "finish") }
+  return Ok(Output { schema_version: 2, artifact_kind: "GPU_RUNTIME_CASE_OUTPUT".clone(),
+      production: production, stream_bytes: stream.written_bytes, stream_records: stream.records })
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 { return Err(Error.Invalid) }
+  input := load(args[1])?
+  result := execute(input)?
+  print(json.encode(result))
+  return Ok(())
+}

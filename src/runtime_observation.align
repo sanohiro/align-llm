@@ -1,0 +1,103 @@
+module runtime_observation
+
+import ggml_ffi
+import runtime_attention
+
+pub Snapshot {
+  available: bool,
+  attention_policy: string,
+  graph_nodes: i64,
+  read_bytes: i64,
+  read_calls: i64,
+  sync_calls: i64,
+  weight_upload_count: i64,
+  weight_upload_bytes: i64,
+  kv_upload_bytes: i64,
+  input_upload_bytes: i64,
+  prefill_executions: i64,
+  prefill_microbatch_width: i64,
+  decode_executions: i64,
+  allocated_host_bytes: i64,
+  allocated_device_bytes: i64,
+  weights_buffer_bytes: i64,
+  kv_buffer_bytes: i64,
+  managed_host_peak_bytes: i64,
+  application_host_reserved_bytes: i64,
+  managed_device_peak_bytes: i64,
+  resident_weight_payload_bytes: i64,
+  resident_kv_payload_bytes: i64,
+  model_operations: i64,
+  model_layers: i64,
+  model_experts: i64,
+  device_total_bytes: i64,
+  device_free_bytes: i64,
+  bundle_id: string,
+  device_name: string,
+  device_description: string,
+  device_id: string,
+}
+
+pub fn unavailable() -> Snapshot = Snapshot {
+  attention_policy: "decomposed".clone(),
+  available: false, graph_nodes: 0, read_bytes: 0, read_calls: 0, sync_calls: 0,
+  weight_upload_count: 0, weight_upload_bytes: 0, kv_upload_bytes: 0, input_upload_bytes: 0,
+  prefill_executions: 0, prefill_microbatch_width: 0, decode_executions: 0, allocated_host_bytes: 0, allocated_device_bytes: 0,
+  weights_buffer_bytes: 0, kv_buffer_bytes: 0, managed_host_peak_bytes: 0, application_host_reserved_bytes: 0, managed_device_peak_bytes: 0,
+  resident_weight_payload_bytes: 0, resident_kv_payload_bytes: 0,
+  model_operations: 0, model_layers: 0, model_experts: 0,
+  device_total_bytes: 0, device_free_bytes: 0,
+  bundle_id: "".clone(), device_name: "".clone(), device_description: "".clone(), device_id: "".clone(),
+}
+
+pub fn capture(borrow owner: ggml_ffi.GpuDevice) -> Result<Snapshot, Error> {
+  device := ggml_ffi.gpu_device_handle(owner)
+  result := Snapshot {
+    attention_policy: runtime_attention.name(owner).clone(),
+    available: true,
+    graph_nodes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_NODES),
+    read_bytes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_BYTES),
+    read_calls: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_READ_CALLS),
+    sync_calls: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_SYNC_CALLS),
+    weight_upload_count: ggml_ffi.gpu_weight_state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED),
+    weight_upload_bytes: ggml_ffi.gpu_weight_state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED_BYTES),
+    kv_upload_bytes: ggml_ffi.gpu_kv_state(owner, ggml_ffi.GPU_KV_UPDATED_BYTES),
+    input_upload_bytes: ggml_ffi.gpu_input_state(owner, ggml_ffi.GPU_INPUT_UPDATED_BYTES),
+    prefill_microbatch_width: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_PREFILL_WIDTH),
+    prefill_executions: ggml_ffi.gpu_graph_state(owner, ggml_ffi.GPU_GRAPH_PREFILL, ggml_ffi.GPU_GRAPH_EXECUTIONS),
+    decode_executions: ggml_ffi.gpu_graph_state(owner, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_GRAPH_EXECUTIONS),
+    allocated_host_bytes: ggml_ffi.gpu_memory_allocated_bytes(owner, ggml_ffi.GPU_MEMORY_HOST_TOTAL),
+    allocated_device_bytes: ggml_ffi.gpu_memory_allocated_bytes(owner, ggml_ffi.GPU_MEMORY_DEVICE_TOTAL),
+    weights_buffer_bytes: ggml_ffi.gpu_memory_allocated_bytes(owner, ggml_ffi.GPU_MEMORY_WEIGHTS),
+    kv_buffer_bytes: ggml_ffi.gpu_memory_allocated_bytes(owner, ggml_ffi.GPU_MEMORY_KV),
+    managed_host_peak_bytes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_HOST_PEAK),
+    application_host_reserved_bytes: ggml_ffi.gpu_host_reserved(owner),
+    managed_device_peak_bytes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_DEVICE_PEAK),
+    resident_weight_payload_bytes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_WEIGHT_PAYLOAD),
+    resident_kv_payload_bytes: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_KV_PAYLOAD),
+    model_operations: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_MODEL_OPS),
+    model_layers: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_LAYERS),
+    model_experts: ggml_ffi.gpu_observation_state(owner, ggml_ffi.GPU_OBSERVATION_EXPERTS),
+    device_total_bytes: ggml_ffi.device_props(device, ggml_ffi.DEVICE_PROP_MEMORY_TOTAL),
+    device_free_bytes: ggml_ffi.device_props(device, ggml_ffi.DEVICE_PROP_MEMORY_FREE),
+    bundle_id: ggml_ffi.gpu_device_bundle_id(owner),
+    device_name: ggml_ffi.device_text(device, ggml_ffi.DEVICE_TEXT_NAME),
+    device_description: ggml_ffi.device_text(device, ggml_ffi.DEVICE_TEXT_DESCRIPTION),
+    device_id: ggml_ffi.device_text(device, ggml_ffi.DEVICE_TEXT_ID),
+  }
+  if result.graph_nodes < 1 || result.read_bytes < 1 || result.read_calls < 1 || result.sync_calls < 0
+    || result.weight_upload_count < 1 || result.weight_upload_bytes < 0
+    || result.kv_upload_bytes < 0 || result.input_upload_bytes < 1
+    || result.prefill_executions < 1 || result.prefill_microbatch_width < 1 || result.prefill_microbatch_width > 128 || result.decode_executions < 0
+    || result.allocated_host_bytes < 1 || result.allocated_device_bytes < 1
+    || result.weights_buffer_bytes < 1 || result.kv_buffer_bytes < 1
+    || result.managed_host_peak_bytes < result.allocated_host_bytes
+    || result.managed_device_peak_bytes < result.allocated_device_bytes
+    || result.resident_weight_payload_bytes < 1 || result.resident_weight_payload_bytes > result.weights_buffer_bytes
+    || result.resident_kv_payload_bytes < 1 || result.resident_kv_payload_bytes > result.kv_buffer_bytes
+    || result.model_operations < 1 || result.model_layers < 1 || result.model_experts < 0
+    || result.device_total_bytes < 1 || result.device_free_bytes < 0 || result.device_free_bytes > result.device_total_bytes
+    || result.bundle_id.len() != 64 || result.device_name.len() < 1 || result.device_description.len() < 1 {
+    return Err(Error.Invalid)
+  }
+  return Ok(result)
+}
