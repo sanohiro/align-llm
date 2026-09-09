@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Own final phase ordering, failure short-circuiting, receipts and subprocess cleanup."""
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+from types import SimpleNamespace
+from unittest.mock import patch
+from gpu_final_process import run_logged
+
+ROOT=Path(__file__).resolve().parent.parent
+loader=SourceFileLoader('final_owner',str(ROOT/'scripts/run-gpu-final-validation'))
+spec=importlib.util.spec_from_loader(loader.name,loader)
+m=importlib.util.module_from_spec(spec);loader.exec_module(m)
+
+def main():
+    flags=m.baseline_options('cuda',['sm_89'])
+    assert '-DCMAKE_CUDA_ARCHITECTURES=89' in flags and '-DGGML_CUDA_FA=ON' in flags
+    assert '-DGGML_METAL=OFF' in flags and '-DGGML_CUDA_GRAPHS=ON' in flags
+    try: m.baseline_options('cuda',[])
+    except ValueError: pass
+    else: raise AssertionError('missing architecture accepted')
+    assert [row[0] for row in m.qualification_steps(Path('/profile'),Path('/out'),Path('/align'))]==[
+        'corpus-preparation','g1-independent','g1-replay','session-independent','session-host','session-retry','measurement']
+    with tempfile.TemporaryDirectory() as directory:
+        root=Path(directory);log=root/'log';stdout=root/'stdout'
+        run_logged([sys.executable,'-c','import sys; print("path"); print("diagnostic",file=sys.stderr)'],log,5,stdout_path=stdout)
+        assert stdout.read_text()=='path\n' and log.read_text()=='diagnostic\n'
+        for code,error in [('raise SystemExit(7)',subprocess.CalledProcessError),('import time; time.sleep(60)',subprocess.TimeoutExpired)]:
+            try: run_logged([sys.executable,'-c',code],log,.1)
+            except error: pass
+            else: raise AssertionError('failed child accepted')
+        child_pid=root/'child.pid'
+        worker='import subprocess,sys,time; from pathlib import Path; p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(60)"]); Path(sys.argv[1]).write_text(str(p.pid)); time.sleep(60)'
+        try: run_logged([sys.executable,'-c',worker,child_pid],log,.5)
+        except subprocess.TimeoutExpired: pass
+        else: raise AssertionError('process group timeout accepted')
+        pid=int(child_pid.read_text())
+        deadline=time.monotonic()+5
+        while True:
+            observed=subprocess.run(['ps','-p',str(pid),'-o','stat='],capture_output=True,text=True).stdout.strip()
+            if not observed or observed.startswith('Z'): break
+            if time.monotonic()>deadline: raise AssertionError('owned child survived timeout')
+            time.sleep(.05)
+        source=root/'source';source.mkdir()
+        subprocess.run(['git','init','-q',source],check=True)
+        subprocess.run(['git','-C',source,'-c','user.name=Owner','-c','user.email=owner@example.invalid','commit','--allow-empty','-qm','fixture'],check=True)
+        revision=subprocess.check_output(['git','-C',source,'rev-parse','HEAD'],text=True).strip()
+        m.source_revision(source,revision)
+        try: m.source_revision(source,'0'*40)
+        except ValueError: pass
+        else: raise AssertionError('incorrect revision accepted')
+        profile=root/'profile';profile.write_text('{}')
+        option=dict(placement='resident',prefetch='off',host_budget_bytes=1073741824,device_budget_bytes=6000000000)
+        admitted=SimpleNamespace(records={'profile':dict(models=[dict(model_id=name,runtime_cache_budget_bytes=0) for name in ('qwen2','olmoe')],runtime_options=[option]),'bundle':dict(backend='cuda',target=dict(gpu_architectures=['sm_89']))},recheck=lambda:None)
+        for fail in (None,'candidate-build','g1-independent','receipt'):
+            output=root/('result-'+str(fail));args=SimpleNamespace(profile=profile,output=output,same_source=source,current_source=source)
+            calls=[]
+            def fake_run(command,log_path,timeout,**kwargs):
+                name=log_path.stem;calls.append(name);log_path.write_text('fixture\n')
+                if name==fail: raise subprocess.CalledProcessError(3,command)
+                if name=='align-source': kwargs['stdout_path'].write_text(str(source)+'\n')
+                paths={'corpus-preparation':('corpus/result.json',{'status':'PASS'}),'g1-independent':('g1-evidence/result.json',{'status':'PASS'}),'session-independent':('session-evidence/result.json',{'passed':True}),'session-host':('session-host/result.json',{'passed':True}),'session-retry':('session-retry.json',{'passed':True}),'measurement':('measurement/result.json',{'status':'FAIL' if fail=='receipt' else 'PASS'})}
+                if name in paths:
+                    relative,record=paths[name];path=output/relative;path.parent.mkdir(exist_ok=True);path.write_text(json.dumps(record))
+                if name=='g1-replay':
+                    assert not (output/'g1-evidence').exists() and (output/'g1-evidence-relocated/result.json').exists()
+            with patch.object(m,'ROOT',source),patch.object(m,'admit',return_value=admitted),patch.object(m,'source_revision'),patch.object(m,'run_logged',side_effect=fake_run):
+                result=m.run(args)
+            receipt=json.loads((output/'result.json').read_text())
+            assert (result==0)==(fail is None)
+            assert receipt['status']==('PASS' if fail is None else 'FAIL')
+            if fail is None: assert len(receipt['result_sha256'])==6
+            if fail in calls: assert calls[-1]==fail and 'measurement' not in calls
+    subprocess.run([sys.executable,ROOT/'scripts/run-gpu-independent-preparation-smoke'],check=True)
+    subprocess.run([sys.executable,ROOT/'scripts/run-gpu-session-measurement-smoke'],check=True)
+    print('final GPU validation owner: PASS')
+
+if __name__=='__main__': main()

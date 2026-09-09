@@ -330,8 +330,11 @@ def run(args):
         raise ValueError('campaign requires one resident option')
     option = {key:value for key,value in profile['runtime_options'][0].items() if key!='option_id'}
     if option['placement'] != 'resident' or option['prefetch'] != 'off': raise ValueError('unsupported campaign option')
-    if option['host_budget_bytes'] != 1073741824 or option['device_budget_bytes'] != 6000000000:
-        raise ValueError('campaign requires the frozen resident memory ceilings')
+    if option['host_budget_bytes'] < 1073741824 or option['device_budget_bytes'] < 6000000000:
+        raise ValueError('profile cannot admit the frozen resident memory ceilings')
+    if any(row['runtime_cache_budget_bytes']>1073741824 for row in profile['models']):
+        raise ValueError('legacy cache ceiling exceeds the frozen campaign host ceiling')
+    option.update(host_budget_bytes=1073741824,device_budget_bytes=6000000000)
     for name in ('runtime','same_server','current_server'): setattr(args,name,getattr(args,name).resolve(strict=True))
     candidate = verify_build(args.runtime.parent,True,session=True)
     if args.runtime.name != 'main' or candidate['bundle_id'] != admitted.records['bundle']['bundle_id']:

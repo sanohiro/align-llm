@@ -10,26 +10,30 @@ continue into subsequent capabilities because the user wants to discuss the next
 Do not request earlier CUDA debugging runs. The
 imported Pengwin checkpoint below is historical evidence.
 
-## Active capability: first resident Metal performance campaign
+## Active capability: final CUDA handoff after completed Metal campaign
 
-Branch `agent/g1r-metal-measurement`, based on G1R repair `12a633d` (PR #220).
-G1's full independent Metal corpus passes all 19 cases. G1R's final manifested candidate passes
-all 16 serial independent requests, whole-session host capacity and real two-attempt coding retries
-for both Qwen and OLMoE. Exact-head hosted preflight passes on native Linux with DAC override/read
-search capabilities removed so permission-refusal owners exercise their actual boundary.
-No GPU speedup or CUDA completion is claimed.
+Branch `agent/gpu-final-cuda`, based on merged G1R PR #220 (`ff8c9da`). G1 PR #219 and
+G1R PR #220 are merged; main was pulled after both. No further runtime implementation is active.
+G1's full independent Metal corpus passes all 19 cases. G1R's manifested `12a633d` candidate passes
+all 16 serial independent requests, whole-session host capacity and actual two-attempt coding
+retries for both models. These receipts retain their original qualified heads.
 
-The campaign contract is §6.1 of `docs/specs/gpu-runtime-performance.md`. The implementation and
-model-free owner are ready for a local checkpoint; real timing remains to run. The frozen runtime
-is the manifested `12a633d` candidate. Unmodified ordinary Metal baselines build successfully at
-same-ggml `bb4caa7540188872173c44d161602d9271386413` and current upstream
-`304665fe7ac957df95e3ff8c8c4ffdf92dd6ffa3`. Keep both views separate.
+The frozen Metal performance campaign at `3b6f200` completed 30 arms in 2482.387 seconds.
+All runtime quality checks pass, but **all 16 runtime comparisons miss the shipping floor**.
+Qwen coding passes all candidate/reference portfolios but the candidate is slower; OLMoE passes
+all candidate portfolios while both references fail all portfolios within eight attempts, so
+paired coding latency is unavailable. Do not claim completed GPU acceleration. Exact values,
+identities, limitations and receipt digest are in `docs/gpu-metal-campaign-result.md`.
+The complete evidence directory is retained outside Git as `g1r-metal-performance-evidence-v1`.
 
-Next actions: finish PR #220 checks/merge and refresh main; commit the fixed measurement campaign;
-run its Metal sequence without other local compiler/GPU work; review and publish the complete
-measurement capability and final CUDA instructions. Prepare one final CUDA correctness plus
-measurement run, then stop before subsequent capabilities as requested. No earlier CUDA run is
-requested. Historical CUDA/Metal failures remain unchanged evidence.
+The final handoff capability adds independent backend corpus preparation and one sequential CUDA
+correctness-plus-measurement command. Model-free final/preparation/measurement owners pass.
+Real Metal corpus preparation passes all 19 cases and exactly reproduces the original sealed corpus
+`29bfe85d85aca082e9a841eb394300dc0a4b02750db8fd816eb6908fdc962b73`.
+Next: review the stable complete capability, run exact-head publication preflight, PR and merge,
+then provide `docs/gpu-final-cuda.md` and STOP. Do not begin G2/G6 or
+another optimization capability. The user wants to discuss the next direction at this boundary.
+No earlier CUDA debugging run is requested. Historical CUDA/Metal failures remain unchanged.
 
 ## Pengwin CUDA qualification checkpoint (2026-09-08)
 

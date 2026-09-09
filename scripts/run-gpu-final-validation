@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Prepare and run final resident correctness and measurement for an existing GPU kit."""
+from __future__ import annotations
+import argparse
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import time
+
+from gpu_final_process import run_logged
+from gpu_independent_acceptance import digest
+from gpu_qualification_input import admit
+
+ROOT=Path(__file__).resolve().parent.parent
+SAME='bb4caa7540188872173c44d161602d9271386413'
+CURRENT='304665fe7ac957df95e3ff8c8c4ffdf92dd6ffa3'
+
+
+def source_revision(path, expected):
+    if subprocess.check_output(['git','-C',str(path),'rev-parse','HEAD'],text=True).strip()!=expected:
+        raise ValueError('upstream source is not at the frozen revision')
+    if subprocess.check_output(['git','-C',str(path),'status','--porcelain']):
+        raise ValueError('upstream source contains local changes')
+
+
+def baseline_options(backend, architectures):
+    flags=['-DCMAKE_BUILD_TYPE=Release','-DGGML_CPU=ON','-DLLAMA_BUILD_TESTS=OFF',
+        '-DLLAMA_BUILD_EXAMPLES=OFF','-DLLAMA_BUILD_TOOLS=ON','-DLLAMA_BUILD_SERVER=ON',
+        '-DLLAMA_BUILD_APP=OFF','-DLLAMA_BUILD_UI=OFF','-DLLAMA_BUILD_MTMD=OFF']
+    if backend=='metal':
+        flags+=['-DGGML_METAL=ON','-DGGML_CUDA=OFF']
+    elif backend=='cuda':
+        if not architectures or any(not value.startswith('sm_') or not value[3:].isdigit() for value in architectures):
+            raise ValueError('CUDA baseline requires explicit admitted sm architectures')
+        flags+=['-DGGML_METAL=OFF','-DGGML_CUDA=ON','-DGGML_CUDA_GRAPHS=ON','-DGGML_CUDA_FA=ON',
+                '-DCMAKE_CUDA_ARCHITECTURES='+(';'.join(value[3:] for value in architectures))]
+    else: raise ValueError('unsupported final validation backend')
+    return flags
+
+
+def qualification_steps(profile, output, align_source):
+    script=lambda name:str(ROOT/'scripts'/name)
+    return [
+        ('corpus-preparation',[script('prepare-gpu-independent-corpus'),'--profile',profile,'--reference',output/'reference','--output',output/'corpus'],2400),
+        ('g1-independent',[script('run-gpu-independent-acceptance'),profile,output/'corpus/corpus.json',output/'candidate',output/'reference',output/'g1-evidence'],2400),
+        ('g1-replay',[script('run-gpu-independent-acceptance'),'--replay',output/'g1-evidence-relocated'],2400),
+        ('session-independent',[script('run-gpu-session-independent'),'--profile',profile,'--runtime',output/'session-candidate/main','--reference',output/'session-reference/session-reference','--output',output/'session-evidence'],7200),
+        ('session-host',[script('run-gpu-session-host-capacity'),'--profile',profile,'--candidate',output/'session-candidate','--align-source',align_source,'--output',output/'session-host'],5400),
+        ('session-retry',[script('run-gpu-session-coding-smoke'),'--profile',profile,'--runtime',output/'session-candidate/main','--output',output/'session-retry.json'],7200),
+        ('measurement',[script('run-gpu-session-measurement'),'--profile',profile,'--runtime',output/'session-candidate/main','--same-server',output/'same-baseline/bin/llama-server','--current-server',output/'current-baseline/bin/llama-server','--output',output/'measurement'],7200)]
+
+
+def run(args):
+    started=time.monotonic_ns();deadline=time.monotonic()+28800;preparation_deadline=time.monotonic()+10800
+    profile=args.profile.resolve(strict=True)
+    admitted=admit(profile);record_profile=admitted.records['profile'];bundle=admitted.records['bundle']
+    if len(record_profile['models'])!=2 or {row['model_id'] for row in record_profile['models']}!={'qwen2','olmoe'}:
+        raise ValueError('final validation requires exactly both models')
+    if len(record_profile['runtime_options'])!=1 or record_profile['runtime_options'][0]['placement']!='resident' or record_profile['runtime_options'][0]['prefetch']!='off':
+        raise ValueError('final validation requires one resident option')
+    option=record_profile['runtime_options'][0]
+    if option['host_budget_bytes']<1073741824 or option['device_budget_bytes']<6000000000 or any(row['runtime_cache_budget_bytes']>1073741824 for row in record_profile['models']):
+        raise ValueError('profile cannot admit the frozen 1-GiB host / 6-GB device campaign')
+    flags=baseline_options(bundle['backend'],bundle['target']['gpu_architectures'])
+    if subprocess.check_output(['git','-C',str(ROOT),'status','--porcelain']):
+        raise ValueError('final validation requires clean committed source')
+    output=args.output.resolve()
+    if output==ROOT or ROOT in output.parents: raise ValueError('output must be new and outside the source checkout')
+    for path,revision in ((args.same_source,SAME),(args.current_source,CURRENT)):
+        if path is not None: source_revision(path.resolve(strict=True),revision)
+    output.mkdir()
+    (output/'logs').mkdir()
+    record=dict(schema_version=1,artifact_kind='GPU_FINAL_VALIDATION',status='FAIL',
+        source_commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip(),
+        profile_sha256=digest(profile),backend=bundle['backend'],steps=[],results={},failure='',elapsed_ns=0)
+    environment=dict(os.environ)
+    environment['GIT_TERMINAL_PROMPT']='0'
+    environment['GIT_NO_REPLACE_OBJECTS']='1'
+    for key in tuple(environment):
+        if key.startswith(('GIT_TRACE','DYLD_','GGML_')) or key in ('GIT_CURL_VERBOSE','LD_PRELOAD','LD_LIBRARY_PATH','ALIGNC','ALIGN_REPO'):
+            environment.pop(key)
+    def step(name,command,maximum,phase_deadline=deadline,stdout_path=None):
+        timeout=min(maximum,phase_deadline-time.monotonic()-35,deadline-time.monotonic()-35)
+        row=dict(name=name,command=[str(value) for value in command],status='FAIL',log='logs/'+name+'.log',elapsed_ns=0)
+        record['steps'].append(row)
+        print(name+': start',flush=True)
+        step_started=time.monotonic_ns()
+        try:
+            run_logged(command,output/row['log'],timeout,env=environment,cwd=ROOT,stdout_path=stdout_path)
+            row['status']='PASS'
+        finally:
+            row['elapsed_ns']=time.monotonic_ns()-step_started
+            if stdout_path is not None: row['stdout']=str(stdout_path.relative_to(output))
+            record['elapsed_ns']=time.monotonic_ns()-started
+            (output/'result.json').write_text(json.dumps(record,indent=2)+'\n')
+        print(name+': PASS',flush=True)
+    try:
+        sources={}
+        for name,given,revision in (('same',args.same_source,SAME),('current',args.current_source,CURRENT)):
+            path=given.resolve(strict=True) if given is not None else output/(name+'-source')
+            if given is None:
+                step(name+'-init',['git','init',path],30,preparation_deadline)
+                step(name+'-origin',['git','-C',path,'remote','add','origin','https://github.com/ggml-org/llama.cpp.git'],30,preparation_deadline)
+                step(name+'-fetch',['git','-C',path,'fetch','--depth=1','--filter=blob:none','origin',revision],1800,preparation_deadline)
+                step(name+'-checkout',['git','-C',path,'checkout','--detach',revision],1800,preparation_deadline)
+            source_revision(path,revision);sources[name]=path
+        step('align-compiler',[ROOT/'scripts/align-toolchain','ensure','compiler'],1800,preparation_deadline)
+        source_path=output/'align-source.path'
+        step('align-source',[ROOT/'scripts/align-toolchain','ensure','source'],1800,preparation_deadline,stdout_path=source_path)
+        if source_path.stat().st_size>4096: raise ValueError('managed source path exceeds its bound')
+        align_source=Path(source_path.read_text().strip()).resolve(strict=True)
+        for name in ('same','current'):
+            target=output/(name+'-baseline')
+            step(name+'-configure',['cmake','-S',sources[name],'-B',target,*flags],1800,preparation_deadline)
+            step(name+'-build',['cmake','--build',target,'--target','llama-server','--parallel','2'],7200,preparation_deadline)
+        for name,script,arguments in [
+            ('candidate','build-gpu-independent-candidate',[sources['same'],profile,output/'candidate']),
+            ('reference','build-gpu-independent-reference',[sources['same'],output/'reference']),
+            ('session-candidate','build-gpu-independent-candidate',[sources['same'],profile,output/'session-candidate','--session']),
+            ('session-reference','build-gpu-independent-reference',[sources['same'],output/'session-reference','--session'])]:
+            step(name+'-build',[ROOT/'scripts'/script,*arguments],1800,preparation_deadline)
+        for name,command,maximum in qualification_steps(profile,output,align_source):
+            if name=='g1-replay':
+                (output/'g1-evidence').rename(output/'g1-evidence-relocated')
+            step(name,command,maximum)
+        admitted.recheck()
+        record['results']={name:str(path.relative_to(output)) for name,path in [
+            ('corpus',output/'corpus/result.json'),('g1',output/'g1-evidence-relocated/result.json'),
+            ('session',output/'session-evidence/result.json'),('host',output/'session-host/result.json'),
+            ('retry',output/'session-retry.json'),('measurement',output/'measurement/result.json')]}
+        record['result_sha256']={}
+        for name,relative in record['results'].items():
+            path=output/relative
+            result=json.loads(path.read_text())
+            passed=result.get('status')=='PASS' if name in ('corpus','g1','measurement') else result.get('passed') is True
+            if not passed: raise ValueError('required receipt did not pass: '+name)
+            record['result_sha256'][name]=digest(path)
+        if subprocess.check_output(['git','-C',str(ROOT),'rev-parse','HEAD'],text=True).strip()!=record['source_commit'] or subprocess.check_output(['git','-C',str(ROOT),'status','--porcelain']):
+            raise ValueError('final validation source changed during execution')
+        if time.monotonic()>=deadline: raise TimeoutError('final validation deadline exhausted')
+        record['status']='PASS'
+    except (Exception,KeyboardInterrupt) as error:
+        record['failure']=str(error)[-4096:]
+    finally:
+        record['elapsed_ns']=time.monotonic_ns()-started
+        (output/'result.json').write_text(json.dumps(record,indent=2)+'\n')
+    print('final GPU validation: '+record['status'],flush=True)
+    return 0 if record['status']=='PASS' else 1
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    for name in ('profile','output'): parser.add_argument('--'+name,type=Path,required=True)
+    for name in ('same-source','current-source'): parser.add_argument('--'+name,type=Path)
+    args=parser.parse_args()
+    def interrupted(*_): raise KeyboardInterrupt
+    previous=signal.signal(signal.SIGTERM,interrupted)
+    try: return run(args)
+    finally: signal.signal(signal.SIGTERM,previous)
+
+if __name__=='__main__': raise SystemExit(main())
