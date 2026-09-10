@@ -22,6 +22,97 @@ numbers are approximate and may drift — locate by function name.
 
 ## Align audit answer (2026-09-07)
 
+### R63 numeric JSON delivery (2026-09-10)
+
+R63 is ALIGN_MERGED in Align main `4cb14895a06e67f32ee72383b53afe72cd8e5555`
+([PR 1015](https://github.com/sanohiro/align/pull/1015)).
+[Plan 47](../../align/docs/impl/47-json-numeric-contract.md) is implemented:
+recursive owned JSON records accept f32/f64 leaves, numeric conversion rounds
+at the target width, and both encoders return owned `Result<string, Error>`.
+Nonfinite output fails with `Error.Invalid`; no partial result is returned.
+Local owner checks, independent review, final preflight and all required CI passed.
+Measured decoder controls and numeric/encoding paths showed no reproducible
+slowdown; the measurements are recorded in
+[the R63 report](../../align/bench/json_numeric/r63-results.md).
+Consumer adoption and protocol verification remain pending and consumer-owned.
+R65 subsequently reached ALIGN_MERGED on 2026-09-11 in PRs #1016–1019,
+complete main commit `b402daa9`. All four capabilities under
+[plan 50](../../align/docs/impl/50-r65-process-capability-handoff.md) and its
+[common contract](../../align/docs/impl/49-native-process-contract.md) are implemented;
+local gates, Linux/macOS CI and the workspace release build passed. Consumer
+adoption and acceptance remain separate, as detailed in Request 65 below.
+
+### Product-boundary implementation delivery (2026-09-10)
+
+This update supersedes the initial design-only status below. Align main
+`d469adcb931848ba03d18dcff022d32d95c2fda9` includes the completed provider batch:
+
+| Request | Shipped capability | Merged PR |
+| --- | --- | --- |
+| 29 | Owned incremental SHA-256 context; borrowed updates and consuming finish. | [1010](https://github.com/sanohiro/align/pull/1010) |
+| 53 | Ordinary directory creation and followed directory observation. | [1012](https://github.com/sanohiro/align/pull/1012) |
+| 64 | Retained directories, independent raw-name cursors, relative byte paths and descriptor metadata/modes. | [1014](https://github.com/sanohiro/align/pull/1014) |
+| 66 | Owned OS-observed host information and optional online logical CPU count. | [1011](https://github.com/sanohiro/align/pull/1011) |
+| 67 | Read-only Move-record slices and borrowed leaf access under the existing ownership model. | [1013](https://github.com/sanohiro/align/pull/1013) |
+
+Provider owner tests, independent review, final local preflight and required CI passed.
+After merging the batch, `cargo build --release --workspace` passed on the main
+revision above. This is an optimized local build, not a versioned release.
+R63 subsequently shipped under owner-approved plan 47, and R65 subsequently
+shipped all four capabilities under plans 49–50 in PRs #1016–1019, as recorded
+above and in their request entries. Consumer pin adoption and client acceptance
+remain consumer-owned and unverified. Only this register was edited in align-llm;
+consumer adoption remains pending.
+
+### Product-cutover design assessment (2026-09-10)
+
+Align assessed the latest R29/R53/R63–67 wave at provider `59bbfe5d` against this
+register at consumer `c9062c5f`. The then-local
+[design proposal](../../align/docs/impl/40-align-llm-product-boundary-plan.md)
+records recommended surfaces, ownership, limits, capability boundaries and owner
+tests. This is design work only: no new implementation, merge, release or client
+acceptance is claimed, and no request lifecycle metadata is advanced.
+
+| Request | Align's proposed answer |
+| --- | --- |
+| 29 | Adopt one owned SHA-256 context using the existing EVP engine; borrow updates, consume finish, retain no preimage. Preserve existing digest engine-failure policy and leave file/chunk ordering and artifact schemas with the caller. |
+| 53 / 64 | Adopt ordinary directory creation/type observation plus complete raw-name retained traversal, independent cursor and descriptor metadata. Exact retained-tree fields/operations remain contract work. `is_dir` cannot establish write permission; native code will not recursively traverse, assemble FILE_SET, or claim atomic identity-conditional deletion. |
+| 65 | Adopt verified input/exec ownership and live-process OS primitives. Supervision, resource limits, first-error policy and cleanup orchestration stay in application Align code. Qualify the Linux namespace/ownership mechanism and close exact release/Drop/global-state contracts before implementing; process groups or subreaping alone do not prove complete isolated absence. No replacement native supervisor API is approved. |
+| 66 | Adopt owned OS-observed system/release/machine plus optional CPU facts. The online logical CPU query is not a physical-host guarantee across VMs/containers and remains distinct from process-available parallelism. The consumer must version intentionally changed evidence semantics. |
+| 67 | Admit the existing read-only slice/readable-place extension as an implementation-gap candidate; no implicit Move-element copy or writable view. It remains nonblocking and separate from product cutover completion. |
+| 63 | Keep the existing 2026-09-09 assessment: the settled owned-JSON float restriction needs the friction-ledger threshold before reopening. If admitted later, extend the existing codec structurally across direct/optional/array leaves and cleanup. |
+
+The locally reported candidates `3805787e`, `c1f99817`, `d66a3107` and their
+host/tree plans are unavailable in the assessed provider checkout. Their reports
+remain external checkpoint evidence, not provider-main verification. Existing
+IMPLEMENTING metadata is preserved as that reported history, not endorsement of
+an unseen implementation. New cutover acceptance commands remain planned; original
+pack/KV acceptance remains separate. Consumer code/pin adoption is still pending
+and consumer-owned. Provider PR numbers for this proposal are pending.
+
+### Product-boundary audit refresh (2026-09-09)
+
+The product cutover replaces the evaluator, task adapters, source/snapshot helpers and coding
+runner with Align application code. The audit uses consumer pin
+`305926b423da9be1f13b0129a7232626e6704d95` and sibling main
+`84b97bce466aeb2ccbc4e0ef34750e90690f27a6`. Requests 29 and 53 gain a dependent consumer;
+Requests 64–66 record retained-tree, process and host-observation gaps, and Request 67 records a
+non-blocking borrowed-collection gap. Coordinate these requirements as one consumer wave.
+Historical prose about the current pin or absent `read_dir` below does not supersede this evidence.
+
+**Remote implementation handoff:** this publication contains requests only. The local Align
+candidate commits/branches, implementation-plan files and new align-llm modules named below are
+unpublished checkpoints, not objects or files another machine can fetch from this PR. Their
+verification is reported local evidence, not merged acceptance. All `run-align-product-cutover`
+commands and new smoke owners are planned client acceptance targets, unavailable in this
+requests-only branch. No request is closed by publication. The existing Request 63 assessment
+from main is preserved. Exact language API contracts still belong to Align before adoption.
+
+**Required language boundary:** application supervision, resource-limit decisions, cleanup/retry
+loops, first-error selection and measurement assembly execute in Align. Native code supplies
+OS operations and safe resource ownership. In particular, Request 65 is not permission to port
+the Python coding runner into a Rust standard-library supervisor.
+
 Audited every numbered request (1–60) against Align main
 `b947b5d92e17242e5511a80de8d5a446c7ed8b83`, after PR #975. The complete
 [per-request audit](../../align/docs/impl/align-llm-request-audit-2026-09-07.md)
@@ -7400,6 +7491,14 @@ so no genuine float-parsing consumer is recorded here.
 
 ## Request 27 — String ordering and sorting
 
+The product cutover adds `prompt_edit_admission.align` as a non-blocking client at pin `305926b4`.
+Direct string-element sort is still rejected; isolated sibling `c1f99817` retains the numeric-only
+and struct-sort checks in `align_sema/src/lib.rs` (`check_array_sort`, `check_array_sort_by_key`).
+The application uses the already shipped scalar-index `sort_by_key` with borrowed string spans,
+following `expert_trace.align`, rather than a native application sort. This is explicit temporary
+key projection, not delivery of this request. Owner: `prompt_edit_admission_smoke.align` sorted
+normalized paths. Original acceptance owners remain unchanged.
+
 ```text
 Status: PROPOSED
 Priority: medium
@@ -7657,22 +7756,50 @@ table can use.
 ## Request 29 — Incremental digest (`sha256` init/update/final)
 
 ```text
-Status: PROPOSED
-Priority: medium
-Blocking: no
-Blocked gate or slice: none. R4-ALIGNPACK-LAYER-MAJOR (`docs/specs/r4-alignpack-layer-major.md`
-  section 2.4.6) ships the bounded header-region digest and reserves the whole-payload
-  `payload_sha256` field as explicitly zero-valued in v1.
-Independent work that may continue: all of R4-ALIGNPACK-LAYER-MAJOR.
-Resume condition: an Align release ships an incremental digest handle; align-llm then fills
-  `payload_sha256` in `--pack` and checks it in `--pack-verify`.
-Align commit or pull request: none
+Status: ALIGN_MERGED
+Priority: high
+Blocking: yes
+Blocked gate or slice: ALIGN-PRODUCT-CUTOVER streamed source/snapshot and canonical evidence hashing.
+Independent work that may continue: existing pack behavior, application algorithms and independent oracles.
+Resume condition: a merged Align release ships incremental SHA-256 and the cutover owner verifies it.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1010
+  merged as 660e79b2; all local gates and platform CI passed; consumer adoption pending
 align-llm verification: pending — `alignpack-qualification` computes the reserved
   `payload_sha256` in `--pack`, checks it in `--pack-verify`, and `make alignpack-smoke` passes
   unchanged.
 ```
 
+### Align implementation answer — 2026-09-10
+
+PR #1010 merged as `660e79b2` and implements `crypto.sha256_stream() -> crypto.digest`, exclusive
+`digest.update(data: bytes) -> ()`, and consuming `digest.finish() -> array<u8>`.
+The nominal handle is Move with recursive automatic Drop; update retains no input.
+Accepted byte views are str, borrowed string, and slice<u8>; buffers use `.bytes()`
+and arrays use `[..]`. Finish returns an independent owned 32-byte array, including
+inside an arena. Provider/OOM/length failures follow the existing hard-error policy.
+There is no reset, clone, manual close, or algorithm selector. Native vectors,
+whole/per-unit ownership and cleanup witnesses, malformed HIR/MIR, ABI exports,
+the bounded gate and Clippy passed locally. Align-llm adoption and qualification
+remain consumer-owned and pending; historical candidate evidence below is not
+an attestation for this implementation.
+
 ### Motivation and current sibling evidence
+
+**Local implementation (2026-09-09):** the isolated Align prerequisite candidate implements
+`crypto.sha256_stream`, exclusive `digest.update` and consuming `digest.finish`. All 13
+stream driver owners, two eager-lifetime owners and five runtime owners pass; the source pin remains unchanged.
+One independent comprehensive Astra/high review found five issues across the foundation wave;
+all were repaired at `3805787e` and affected owners pass. The application does not consume these local APIs. Original and cutover acceptance remain pending.
+
+**2026-09-09 consumer refresh:** `prompt-evaluate.py` streams canonical digest fragments and
+`prompt-snapshot-helper.py`/`prompt-source-verifier.py` digest bounded read chunks. The cutover must
+preserve their allocation bounds instead of constructing an additional entire digest preimage.
+At pin `305926b4` and sibling `84b97bce`, `docs/impl/std-design/crypto.md` and
+`check_crypto_hash` in `crates/align_sema/src/lib.rs` still offer only one-shot SHA-256/SHA-512.
+The new consumer acceptance is `python3 scripts/run-align-product-cutover --functional`
+(`streamed-digest-parity`, `canonical-digest-cap`, `digest-source-expiry`), planned rather than run.
+Keep all original pack/KV acceptance below; this additional consumer does not close those targets
+or authorize a new pack schema during the Python cutover.
 
 R4-ALIGNPACK-LAYER-MAJOR rewrites one GGUF file into one alignpack v1 container and must certify the
 result without re-reading the multi-gigabyte source. A whole-payload digest computed once while
@@ -8337,6 +8464,11 @@ stands in for the missing report and still carries `R4_WINDOW_UNAVAILABLE` on th
 second code was introduced for it.
 
 ## Request 36 — In-place replacement of owned array record fields and moving out of nested fields
+
+The product cutover also encounters the nested-field move restriction when extracting
+`ParsedBlocks.blocks` at pin `305926b4`; sibling `c1f99817` retains the named diagnostic.
+`prompt_edit_admission.align` keeps the original record alive and reads fields in place instead.
+This does not close the gap or add a blocker; its focused owner is the edit-admission smoke.
 
 ```text
 Status: PROPOSED
@@ -9630,7 +9762,6 @@ target at Align `305926b4`; borrowing the field as `borrow mut array<i64>` is al
 partial Move-field borrow. The fixed-capacity prefix therefore uses the shipped Request 61 buffer
 field view with explicit i64 little-endian cells. This is non-blocking, but does not close Request 46.
 
-
 ```text
 Status: PROPOSED
 Priority: medium
@@ -10597,17 +10728,16 @@ canonical bytes. Copy Option fields remain readable and encodable.
 ## Request 53 — `std.fs`: directory creation, directory listing, and a file-type predicate
 
 ```text
-Status: PROPOSED
-Priority: medium
-Blocking: no
-Blocked gate or slice: none today. It becomes blocking for the deferred store-eviction /
-  garbage-collection capability (`docs/specs/r6-prefix-key-corpus.md` section 7), which cannot
-  enumerate what it must evict.
-Independent work that may continue: all of R6-PREFIX-KEY (roadmap item 37) and all of
-  R6-PREFIX-TTFT (roadmap item 38).
-Resume condition: schedule an eviction, garbage-collection, or size-budget capability over the R6
-  prefix store; or an Align release ships any of the three surfaces below.
-Align commit or pull request: none
+Status: ALIGN_MERGED
+Priority: high
+Blocking: yes
+Blocked gate or slice: ALIGN-PRODUCT-CUTOVER nested workspace construction and type admission;
+  the original deferred R6 store-eviction consumer remains unchanged.
+Independent work that may continue: existing R6 behavior, pure evaluation/repair algorithms and oracles.
+Resume condition: remaining directory creation/type operations ship, coordinated with Request 64;
+  the cutover workspace owner and originally named R6 acceptance are verified separately.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1012
+  cf72ea21; merged after independent review, local preflight and Linux x86_64/ARM64 and macOS CI passed; consumer adoption pending
 align-llm verification: `src/decode_step.align`'s `R6_KV_UNWRITABLE store[create]` gains a detail
   that names its cause — `store[absent]`, `store[not_a_directory]`, or `store[denied]` — decided by
   `fs.is_dir` **before** the prefill rather than by a failed create after it; the three
@@ -10617,7 +10747,43 @@ align-llm verification: `src/decode_step.align`'s `R6_KV_UNWRITABLE store[create
   the decode-step golden moving only in those rows.
 ```
 
+### Align implementation answer — 2026-09-10
+
+PR #1012 implements `fs.create_dir(path: str) -> Result<(), Error>` and
+`fs.is_dir(path: str) -> Result<bool, Error>` under import std.fs. Both borrow
+validated UTF-8 paths for one ordinary OS operation. Creation creates one level
+with mode 0777 filtered by the existing umask; existing entries are errors.
+Observation follows symlinks and returns false only after successfully observing
+a non-directory. Missing, denied and traversal failures remain Error. This does
+not certify writability or retain path identity. Existing read_dir is unchanged;
+R64 byte-path operations remain a separate capability.
+
+The 40-test filesystem owner, native malformed-input/output tests, HIR/MIR
+rejection owners, ABI exports, bounded gate and Clippy passed locally. Independent
+full-diff review found no P1/P2 issue. Consumer adoption and its distinct R6 and
+cutover acceptance remain pending. Historical candidate evidence below does not
+attest this implementation.
+
 ### Motivation and current sibling evidence
+
+**Local implementation (2026-09-09):** the isolated Align prerequisite candidate implements
+`fs.create_dir` and fallible `fs.is_dir`; directory listing stays unchanged. The
+40-test fs owner passes with a canonical temporary root. `is_dir` observes type/traversal,
+not write permission; original denied-store acceptance still needs real write admission.
+One independent comprehensive Astra/high review found five issues across the foundation wave;
+all were repaired at `3805787e` and affected owners pass. The application does not consume these local APIs. Original and cutover acceptance remain pending.
+
+**2026-09-09 correction:** directory listing is already shipped. At pin `305926b4` and sibling
+`84b97bce`, `draft.md` documents `fs.read_dir(path: str) -> Result<array<string>, Error>`;
+`crates/align_driver/tests/m9_fs.rs` owns `read_dir_counts_entries`,
+`read_dir_missing_maps_to_not_found`, and `read_dir_empty_dir_is_zero`. The language specification
+explicitly says non-UTF-8 names are omitted. General `create_dir`/`is_dir` are absent from
+`crates/align_sema/src/lib.rs`'s fs dispatch. Request 56 already supplies private root creation
+and empty-directory removal; it does not create nested task paths or inspect arbitrary tree entries.
+Request 64 owns the stronger raw-name/metadata/retained-root requirement, without duplicating this
+ordinary listing request. New consumer owner: `python3 scripts/run-align-product-cutover --containment`
+(`nested-workspace`, `workspace-type-refusal`, `owned-cleanup`), planned and not run.
+The original motivation below records an older pin and must not be read as current absence of listing.
 
 R6-PREFIX-KEY (roadmap item 37) ships a **content-addressed store**: a caller-supplied directory that
 the arm addresses by a derived name, `<STORE>/<64-hex>.akvp`. It never creates the directory, never
@@ -11460,7 +11626,6 @@ precision case independently from imported retention. In align-llm, adopt the me
 prefill/decode logits and host reservation before upload. The request does not add an aggregate or
 hardware qualification; G1's existing real Metal/CUDA qualification remains separately required.
 
-
 **Batch safety evidence.** The audit's case 08 actually retains a local buffer view through a
 borrowed record, then reads it after the helper returns. All three compiler modes admit it at
 `3fbb74fe7c351e526c997bd4c70bd00cf1a424a0`; MIR frees the buffer before return. A test-only
@@ -11539,15 +11704,18 @@ Consumer pin adoption and generation/numeric smoke remain align-llm-owned and pe
 ## Request 63 — Floating-point fields in owned JSON records
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; G1R decodes the shipped borrowed record and explicitly clones prompt text.
 Independent work that may continue: G1R session protocol, coding integration and qualification.
-Resume condition: a merged Align release supports f64 fields alongside owned string fields in the declared-record JSON route.
-Align commit or pull request: none
-align-llm verification: gpu-session-protocol request decoding, including temperature 0.0/0.3, invalid scalar kinds and source expiry.
+Resume condition: adopt Align revision 4cb14895a06e67f32ee72383b53afe72cd8e5555 or later and verify the consumer protocol with owned records.
+Align commit or pull request: 4cb14895a06e67f32ee72383b53afe72cd8e5555; https://github.com/sanohiro/align/pull/1015
+align-llm verification: pending, consumer-owned; gpu-session-protocol request decoding, including temperature 0.0/0.3, invalid scalar kinds and source expiry.
 ```
+
+The following request and dated assessments describe the pre-delivery state;
+the delivery below supersedes their provider-status statements.
 
 G1R's owned request contains `system: string`, `user: string` and `temperature: f64`.
 At pin `305926b4`, `json.decode` rejects this real record with
@@ -11564,3 +11732,440 @@ Acceptance must cover finite boundary values, invalid scalar kinds, nonfinite po
 the existing route, exact bounded encoding, source expiry, per-unit interfaces, partial decode
 failure and cleanup after preceding owned strings. G1R currently uses the supported borrowed
 record with explicit text cloning; this does not satisfy the language-owned requirement.
+
+### Align assessment (2026-09-09)
+
+Reproduced the exact `system: string`, `user: string`, `temperature: f64` record
+on Align main `ab34b044eeb3a9bc93a3a0ae943d062fb4d58399` (#1002). Both `check` and
+`check-per-unit` reject decode and encode with `owned JSON graph has unsupported
+type f64`. No capability has shipped for this request; status remains PROPOSED.
+
+The recursive-owned JSON Settled entry and `docs/impl/25-recursive-owned-json-plan.md`
+explicitly exclude floats. Under the current `docs/impl/23-friction-ledger.md`
+reopen protocol, changing that restriction requires at least five recorded mechanical
+workaround sites across two independent real programs before the public-contract
+review. This request establishes a reported consumer but does not supply that
+threshold. Align has not changed the consumer or introduced another codec surface.
+The implementation boundary, if admitted, must sweep direct/optional/array float
+leaves, target-bound descriptor transport, shared float parsing/formatting and
+partial-owned-prefix cleanup together. Consumer adoption remains pending.
+
+### Align planning follow-up (2026-09-10)
+
+[Plan 46](../../align/docs/impl/46-deferred-client-boundaries-plan.md) records a
+reproduced prerequisite: current borrowed encode and bounded encode emit `inf`
+for infinity, and typed decode accepts `1e999` as infinity. Copying those semantics
+into the owned route is not recommended. Align proposes a shared finite numeric
+conversion policy, ordinary fallible encoding, and structural f32/f64 leaves in
+the existing graph. The owner has since directed reconsideration of R63 for
+standard JSON support with performance preservation; the historical friction count
+is no longer a prerequisite for this request. Out-of-JSON values should cause
+conversion failure, leaving substitutions to the caller. Local before/after
+performance measurements are required. The owner approved `Result<string, Error>` for both encoders, matching bounded
+encode and reusing the existing buffer ownership transfer without another
+full-result copy. R63's stated temperature values 0.0/0.3 fit finite f64; no
+arbitrary-precision prerequisite is established. [Plan 47](../../align/docs/impl/47-json-numeric-contract.md)
+fixes rounding/range/byte vectors, error/ownership order, V3 descriptor/envelope,
+interface 12, the unified encoder ABI and implementation/test/performance owners.
+Its author pass and independent design review are complete. The one P2 finding
+(MIR Static/optional/comma sequence validity) is resolved by an explicit iterative
+validator and mutation matrix; no P1 was found. R63 is ready for the implementation
+model, with performance validation required during implementation. No provider implementation or consumer adoption
+is claimed, and the register edit was uncommitted at that checkpoint.
+
+### Align implementation delivery (2026-09-10)
+
+Merged [PR 1015](https://github.com/sanohiro/align/pull/1015) as
+`4cb14895a06e67f32ee72383b53afe72cd8e5555`. R63 is ALIGN_MERGED.
+The existing recursive owned graph now supports f32 and f64 at its scalar,
+optional and array leaves, including the reported owned string/temperature
+record. Existing root/container restrictions remain unchanged; this does not
+introduce an arbitrary-precision number type or a second codec surface.
+
+Typed float decode rounds directly to the target width using nearest/ties-even,
+preserves signed zero and subnormals, and rejects a result that rounds to
+infinity with the existing `Error.Code(1)`. `doc.as_f64` returns `None` on that
+overflow. Grammar-valid numbers outside finite target range remain acceptable
+when skipped or navigated without typed conversion. The integer path remains
+exact and separate. Temperature values 0.0 and 0.3 fit the supported f64 range.
+
+Both `json.encode` and `json.encode_bounded` return `Result<string, Error>`.
+A selected nonfinite float, a negative bound, or an exceeded bound returns
+`Error.Invalid` without exposing partial output. Successful output owns the
+transferred grow buffer, remains valid independently of source/arena expiry,
+and adds no final full-result copy. Input views remain borrowed through bound
+evaluation and encoding; allocation remains part of the owned output operation.
+Existing terminal allocation/size-overflow behavior is unchanged. Callers must
+handle or propagate the Result and decide any nonfinite-value substitution.
+
+The provider ships V3 owned JSON descriptors/envelopes and interface version 12,
+with whole-program/per-unit regression owners, numeric boundary and rounding
+oracles, native admission/cleanup checks, and symbolic MIR sequence validation.
+Independent review, final local preflight, owner checks and all required
+platform/PostgreSQL CI passed. The
+[performance report](../../align/bench/json_numeric/r63-results.md) records
+unchanged output bytes, no reproducible slowdown, and allocation/lifetime
+measurements against the pre-change baseline.
+
+`cargo build --release --workspace` passed on the merged main revision above.
+This produces optimized local artifacts; no versioned release was published.
+
+Consumer pin adoption and the gpu-session-protocol acceptance cases remain
+pending; Align has not edited or run align-llm code/tests. Only this request
+register is updated. R65 delivery is recorded separately below.
+
+## Request 64 — Complete retained-tree observation and byte-path filesystem operations
+
+```text
+Status: ALIGN_MERGED
+Priority: high
+Blocking: yes
+Blocked gate or slice: ALIGN-PRODUCT-CUTOVER source/snapshot/workspace and validation-resource boundary.
+Independent work that may continue: renderer/scorer/repair algorithms, record codecs and independent oracles.
+Resume condition: Align ships the retained byte-path/metadata capability and the cutover containment owner passes.
+Align commit or pull request: Align PR #1014 (https://github.com/sanohiro/align/pull/1014),
+  merged d469adcb931848ba03d18dcff022d32d95c2fda9; local preflight and Linux/macOS CI pass.
+align-llm verification: pending — python3 scripts/run-align-product-cutover --containment;
+  final integration owner: python3 scripts/run-align-product-cutover --no-python.
+```
+
+At consumer `305926b4` and sibling `84b97bce466aeb2ccbc4e0ef34750e90690f27a6`,
+`docs/language-spec.md`'s `std.fs` contract explicitly omits non-UTF-8 names from `read_dir`.
+`crates/align_driver/tests/m9_fs.rs` tests owned string listings; the fs dispatch in
+`crates/align_sema/src/lib.rs` has no metadata, raw-name listing, byte-path retained open, mode
+inspection/change, or retained-directory owner. `docs/impl/std-design/fs.md` says the existing
+retained-root APIs expose no directory handle or metadata API. Request 55's single-link reader and
+Request 56's private root/empty removal are shipped and remain useful, but do not fill this gap.
+
+The real Python consumer uses `os.scandir`, `os.lstat`, `os.fstat`, byte-name sorting, dir-fd-relative
+no-follow traversal, and file mode/identity comparisons in `prompt-snapshot-helper.py::walk_tree`,
+`prompt-source-verifier.py::parse_file_set_manifest`, and the coding runner's worktree/resource scans.
+Its FILE_SET parser admits bounded raw path bytes. Silent omission would miss modified files or
+make source identity incomplete. Refusing a special entry is different from silently not seeing it.
+
+The reviewed Align ledger `docs/impl/40-retained-tree-plan.md` settles `fs.directory` and an
+independent `fs.dir_cursor`, raw owned `fs.dir_entry.name` bytes, and separate Copy `fs.metadata`
+and `fs.entry_kind` observations. Separating enumeration from metadata leaves vanished-entry policy
+with the caller. Relative byte-path operations borrow the directory and path; admitted opens
+return existing reader/writer owners. Descriptor metadata also applies to reader/writer/file.
+Nested directory creation and explicit removal/mode application share this boundary. Nineteen
+native operations and compiler transport are implemented locally; nine driver and eight native
+owners pass. Fresh Astra/high comprehensive review found two malformed-MIR validation issues;
+both are repaired at c1f99817, with LLVM library 160 pass (5 opt-in ignores), driver 9 and optimized
+build passing. Merged adoption remains outstanding. macOS may natively
+refuse invalid-UTF-8 filename creation with EILSEQ; actual raw-name filesystem qualification is
+retained for Linux. No application code consumes the unmerged surface.
+No JSON filesystem helper, shell traversal or application C emulation is proposed.
+
+Acceptance: bounded complete entry enumeration including invalid UTF-8 names; source byte ordering
+and FILE_SET digest parity; rejection of symlink/FIFO/device entries before blocking reads;
+hardlink and mode checks; ancestor/final substitution; unavailable/denied/vanishing entries;
+directory/regular-file metadata; nested create/remove ownership; and cleanup without deleting a
+replacement. Separate lexical validation from I/O and specify error precedence. Move/borrow,
+partial result construction, per-unit interfaces and native Linux/macOS tests belong to Align.
+Client cases: `raw-tree-parity`, `raw-tree-rejection`, `retained-source-replacement`,
+`workspace-type-refusal`, `nested-workspace`, `resource-ceilings`, `owned-cleanup`.
+
+The cleanup guarantee requires complete absence of contained writers, retained parent/root
+identity and exclusive control of the private parent. The sandbox must not expose that host
+parent as writable; mode 0700 alone does not exclude same-UID descendants. Native stat-then-unlink is not atomic identity
+conditional deletion. Specify concurrency preconditions explicitly; directory Drop only closes
+retained descriptors. Failed child-absence or exclusive-parent proof must not trigger recursive
+removal. Existing Python unconditional cleanup paths are an application defect to repair in the
+cutover, not evidence that a portable atomic deletion primitive already exists.
+
+### Align implementation update (2026-09-10)
+
+The actual provider implementation is PR #1014 under
+[`45-retained-byte-tree-plan.md`](../../align/docs/impl/45-retained-byte-tree-plan.md).
+The historical candidate objects and differently numbered tree ledger reported above
+were unavailable in this provider checkout and are not this implementation's evidence.
+The closed surface has nineteen operations plus two native Drop symbols: owned
+`fs.directory` and independent `fs.dir_cursor`, owned raw `fs.dir_entry.name`, Copy
+`fs.metadata`/`fs.entry_kind`, no-follow relative opens, exclusive creation,
+nonrecursive removal, and descriptor metadata/modes for directory/reader/writer/file.
+Bind method receivers to named locals; next is exclusive (a borrowed helper uses
+`borrow mut`). Borrow an enumerated name explicitly with
+`name: slice<u8> := entry.name` before passing it as a byte-path argument. Paths and outputs are not retained; ordinary approved Move carriers
+use recursive cleanup, and forbidden collection carriers remain rejected through sums.
+
+Local owners cover raw names/retained rename, metadata/native layout, cached cursor
+states, constructor failures, scratch validation, whole/per-unit transport and cache,
+with omitted directory/cursor/name Drop negative controls. Independent review fixes
+and final preflight pass; Linux x86_64, Linux ARM64 and macOS Apple Silicon CI pass.
+PR #1014 merged as `d469adcb931848ba03d18dcff022d32d95c2fda9`.
+No consumer code, pin or acceptance command was modified or run. Traversal, sorting,
+source quiescence, exclusive-parent cleanup and first-error policy remain application
+responsibilities. This does not close R65's containment prerequisite.
+
+## Request 65 — Verified process inputs and complete contained-child lifecycle
+
+```text
+Status: ALIGN_MERGED
+Priority: critical
+Blocking: yes
+Blocked gate or slice: ALIGN-PRODUCT-CUTOVER source tool execution and task validation containment.
+Independent work that may continue: pure application algorithms, artifact/oracle work and existing providers.
+Resume condition: a merged Align process capability preserves the existing consumer containment guarantee;
+  adopted pin passes the focused client and final integration owner.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1016 (common),
+  https://github.com/sanohiro/align/pull/1017 (signals),
+  https://github.com/sanohiro/align/pull/1018 (verified launch),
+  https://github.com/sanohiro/align/pull/1019 (child scope).
+  All merged; complete main commit b402daa9. Consumer adoption/verification remains pending.
+align-llm verification: pending — python3 scripts/run-align-product-cutover --containment;
+  final integration owner: python3 scripts/run-align-product-cutover --no-python.
+```
+
+At pin `305926b4` and sibling `84b97bce`, `docs/impl/std-design/process.md` ships
+`process.command`, cwd/env/env_clear, timeout, bounded text/byte capture and direct-child reap.
+Its Request 11 ledger explicitly leaves `setsid` descendants outside the contract and reaps only
+the direct child. `crates/align_driver/tests/m11_process_command.rs` and the command-method dispatch
+in `crates/align_sema/src/lib.rs` cover that bounded synchronous surface, not retained executable
+selection, controlled inherited descriptors, sealed payloads or a complete containment owner.
+
+The current evaluator/source verifier retain the executable they hash and execute that identity;
+adapters seal inputs into read-only descriptors; the coding runner passes authenticated namespace
+descriptors to the installed containment tool. Their child owners also observe and remove adopted
+descendants after nested `setsid`, including a zombie leader that still has live worker threads.
+Replacing these operations with `c.run()` would silently weaken the existing product contract.
+G1R's independent Python pipe client is a qualification harness; a general interactive child-pipe
+API is not a prerequisite here because an Align caller can own the existing in-process runtime
+session. Do not expand this request merely to translate that test harness.
+
+Implementation-language correction (2026-09-09): the initial unpublished Align R65 supervisor
+draft is withdrawn before implementation. Resource policy, monitoring/control loops, first-error
+selection, report assembly and explicit cleanup orchestration belong in application Align code.
+The request is for composable OS primitives and their safe ownership, not a native implementation
+of the coding runner. Exact replacement signatures are now fixed in Align plans 49–50 below; no caller
+may consume the withdrawn scope/report API. If the language cannot express the composition,
+record that specific gap rather than enlarging the Rust supervisor.
+
+Current isolated sibling evidence at `c1f99817`: `child.wait()` and child Drop block in waitpid;
+`command.run_bytes()` internally polls and performs WNOHANG observation but exposes only a
+synchronous result. There is no Align-callable nonblocking child status, captured-pipe read or
+readiness operation, authenticated descendant handle, or subreaper lease. These are genuine
+standard-library OS gaps, not a need to implement application supervision in Rust. Existing
+`time.instant()`, ordinary records/arrays/loops and R64's retained enumeration are sufficient for
+application deadlines and traversal once these process primitives are available. Native process
+metadata must expose individual observations, leaving aggregation, limit comparison and cleanup
+scheduling to Align. No new interactive input protocol is required for the existing coding task.
+
+Proposed surface: extend the existing explicit `command` builder with verified executable/input
+ownership and an explicit isolated child-ownership lease. Expose bounded nonblocking reads,
+readiness/status, authenticated individual process observations, signalling and reaping so an
+Align caller owns the supervision loop. Observe/bind the currently executing image when it is
+the producer being attested; comparing
+an arbitrary file supplied by the caller cannot attest the running product. Borrow retained
+read-only executable/input owners through launch; inherit only explicitly named descriptor slots;
+prevent input mutation between verification and execution. Align application code aggregates
+observations and constructs the cleanup outcome; no partial successful result escapes failed
+containment. The native lease supplies an honest absence/release observation, not a product result.
+Use the supported OS containment mechanisms (including the already required Linux external
+sandbox primitives) through language-owned typed boundaries. Product command assembly, resource
+limits, interpretation and retry policy remain application Align code. Exact API names and the
+supported-platform contract require an Align ledger before adoption; this client does not consume
+these descriptions as if they were shipped APIs.
+
+Acceptance: executable replacement after admission, sealed-input mutation, descriptor allowlist and
+leak refusal, dual-stream caps, timeout after EOF, spawn failure, nested `setsid`, adopted zombie,
+zombie leader/live thread, resource-limit observation, abrupt cancellation and full child absence.
+Preserve the first execution error while exposing cleanup failure as required by the caller.
+Specify process-global subreaper overlap/exclusion and failed-second-construction behavior; one
+invocation must never kill another's child. Test owned result lifetime, every constructor failure,
+Drop, per-unit interfaces and unsupported-host refusal. Client cases: `verified-exec-replacement`,
+`sealed-input`, `descriptor-allowlist`, `timeout-after-eof`, `descendant-escape`,
+`zombie-thread-group`, `cancel-cleanup`, `concurrent-owner-isolation`, `current-executable-mismatch`.
+
+### Align design answer — complete implementation handoff (2026-09-10)
+
+At this design checkpoint, R65 was ACCEPTED. The implementation delivery below
+supersedes this historical status. [Plan 50](../../align/docs/impl/50-r65-process-capability-handoff.md)
+is the complete plan of record; [plan 49](../../align/docs/impl/49-native-process-contract.md)
+owns its exact common process API. Design review findings are incorporated.
+Plans 40/46/48 retain historical assessments; their extra namespace/init and
+unfinished-platform proposals do not remain implementation prerequisites.
+
+The selected boundary is Align's ordinary ownership and error model:
+
+- Native Linux/macOS live byte reads, finite readiness, file redirection,
+  non-reaping termination observation, typed wait4 status/RSS, group controls,
+  bounded individual process observations and explicit signal subscriptions.
+- Explicit Linux memory-file construction/sealing, admitted native ELF execution
+  from the same retained fd, running-main-image observation, and typed sealed-file/
+  prepared-user-namespace inheritance. The existing external sandbox receives
+  the namespace descriptor and performs its own setns.
+- One explicit Linux child_scope exclusively owns child creation/reaping and
+  subreaping. Authenticated member pidfds permit signalling without PID reuse;
+  only kernel ECHILD under that ownership permits successful absence/release.
+  Second scopes and other Align launches fail before creating children while
+  the lease is active. Retryable release retains ownership; Drop completes native
+  cleanup and restoration. Released owners cannot touch a later owner's children.
+
+Common operations run natively on both hosts. The Linux-specific acquisitions
+have typed contracts on both targets and return Error.Code(native ENOTSUP) on
+macOS before effects, matching the existing consumer's platform-specific paths.
+No administrator registration, dedicated user, privileged service, VM or extra
+Align init is required. Application Align code owns deadlines, resource
+aggregation, first errors, logging and workspace cleanup. No hidden whole-file
+copy or native coding-runner/report API is added. current_image binds the running
+main-image object; it does not itself seal ordinary files or attest libraries.
+
+All exact signatures, argument/error precedence, ownership/Drop, allocation,
+compiler/native ABI and acceptance cases are specified. Implementation proceeds
+in four useful capabilities: common process operations; signal subscription;
+verified launch authority; exclusive child_scope. There is no remaining design
+choice to hand back before coding.
+
+Disposable ordinary-user Linux probes qualified sealing/fd execution, prepared
+namespace handoff into existing bubblewrap, double-setsid adoption, zombie leader
+with live worker, foreign-PID refusal and kernel-empty release. Common Darwin
+mechanisms were source-reviewed; native platform execution remains an
+implementation acceptance test. No implementation PR or consumer acceptance is
+claimed. No consumer code, test, fixture, pin or adoption command was changed or
+run; only this register was updated and was uncommitted at that checkpoint.
+
+### Align implementation complete (2026-09-11)
+
+R65 is ALIGN_MERGED. All four capabilities are on Align main at `b402daa9`:
+[common process operations #1016](https://github.com/sanohiro/align/pull/1016),
+[signal subscriptions #1017](https://github.com/sanohiro/align/pull/1017),
+[verified launch authority #1018](https://github.com/sanohiro/align/pull/1018), and
+[exclusive child scopes #1019](https://github.com/sanohiro/align/pull/1019).
+Plans 49–50 remain the exact API, ownership, error and acceptance contract.
+
+The shipped common Linux/macOS surface includes caller-owned live capture buffers,
+finite readiness, file redirection, typed cached termination/wait4 status and RSS,
+group operations, bounded process observations and explicit signal subscriptions.
+Status observation does not reap; stream EOF and process/group scans do not prove
+that descendants are absent. Signal acquisition is explicit and exclusive;
+retryable close retains ownership until restoration succeeds.
+
+Linux verified launch retains the admitted executable descriptor and explicit
+sealed-file/user-namespace bindings. Memory writers are bounded; sealing consumes
+the writer and verifies kernel seals. Repeated launches retain independent readonly
+file offsets. No hidden whole-file copy, pathname execution fallback or application
+sandbox policy is added. The caller's existing sandbox receives the namespace fd.
+
+Linux child_scope exclusively owns child creation/reaping and subreaping. Stable
+member pidfds authenticate signalling and liveness. Release succeeds only after
+kernel ECHILD and successful restoration; a retryable result retains the lease.
+Drop completes owned descendant cleanup. Root termination, pipe EOF and scans do
+not certify absence. Released owners cannot affect a later scope. Application Align
+code continues to own deadlines, limits, first-error selection and workspace cleanup.
+Linux-specific acquisition on macOS returns Error.Code(native ENOTSUP) before
+side effects, as designed; the common process workflow is native on both hosts.
+
+All four PRs passed independent review and local owner tests, the bounded gate and
+Clippy. Required Linux x86_64, Linux ARM64 and macOS Apple Silicon CI passed.
+Coverage includes native failure/cleanup controls, whole-program and per-unit
+ownership transport, sealed descriptor inheritance, non-SIGCHLD children,
+CLONE_PARENT adoption, zombie leaders with live workers, and imported record-return
+cleanup authentication. The exact `cargo build --release --workspace` succeeded
+in the normal Align workspace. No versioned release was published.
+
+There is no remaining Align implementation prerequisite in this request. Consumer
+pin adoption and the focused/final integration owners above belong to align-llm;
+they have not been run or claimed here. No consumer code, tests, fixtures or pin
+was changed. Only this register is updated; consumer adoption remains pending.
+
+## Request 66 — Explicit host identity for application environment evidence
+
+```text
+Status: ALIGN_MERGED
+Priority: medium
+Blocking: yes
+Blocked gate or slice: ALIGN-PRODUCT-CUTOVER observed EnvironmentProbe production.
+Independent work that may continue: application algorithms and deterministic fixture evidence.
+Resume condition: merged Align host-identity observation is adopted and the environment evidence owner passes.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1011
+  6bdd2dc4; merged after local preflight and Linux x86_64/ARM64 and macOS CI passed; consumer adoption pending.
+align-llm verification: pending — python3 scripts/run-align-product-cutover --functional
+  (host-identity-observation); final integration owner: python3 scripts/run-align-product-cutover --no-python.
+```
+
+### Align implementation answer — 2026-09-10
+
+PR #1011 implements `os.host() -> Result<os.host_info, Error>` (import std.os),
+returning an ordinary Move record with owned `system`, `release`, `machine`,
+`cpu: Option<string>`, and `logical_cpu_count: Option<i64>` in that order.
+The first three are exact uname text with strict UTF-8 validation. CPU description
+is None; a positive representable online sysconf count is Some, otherwise None.
+This count does not promise physical-host, affinity or quota semantics. There is
+no subprocess, distribution parsing, cache or inferred authenticated identity.
+The output is independently owned even inside arenas. Native validation/layout,
+whole/per-unit cleanup with omitted-Drop negative controls, cold/hit cache,
+malformed HIR/MIR, ABI exports, bounded gate and Clippy passed locally.
+Consumer schema interpretation, adoption and qualification remain pending and
+consumer-owned. Historical candidate evidence below does not attest this implementation.
+
+
+`prompt-snapshot-helper.py::environment_probe` and the measurement adapter derive OS, OS release,
+architecture, CPU description and logical CPU count from Python's platform/OS interfaces. These
+are observed evidence, not user declarations. At pin `305926b4` and sibling `84b97bce`,
+`draft.md`/`docs/language-spec.md` list no `std.os` host-information module; the sema builtin
+dispatch has no uname/system-info surface. `process.cpu_count()` does ship, but is quota-aware,
+while the current Python probe uses `os.cpu_count()`. Their differing semantics must not be hidden
+by assigning one value the other's meaning. Request 50 is about physical/available memory and does
+not own host identity.
+
+Reviewed implementation contract: `docs/impl/39-host-observation-plan.md` on the isolated Align
+branch. `os.host() -> Result<os.host_info, Error>` returns three owned mandatory uname strings,
+`cpu: Option<string>` (currently always None), and `logical_cpu_count: Option<i64>` from the OS
+online-count query. Native driver, ownership/per-unit, runtime failure and HIR schema owners pass
+locally; comprehensive Astra/high review is CLEAN. Local integration with Align main `e988740d` is complete; merged client adoption remains pending.
+
+Requested surface: one fallible `std.os` host-information query returning an owned record with OS
+family, release and machine architecture; optional CPU description and physical-host logical CPU
+count have explicit unavailable values. Reuse the existing string/Option/error model. Keep
+process-available parallelism in the shipped `process.cpu_count()` API. No ambient subprocess,
+platform-specific Python helper or application-owned uname ABI workaround. Exact names, fields,
+platform mapping and encoding policy are for Align's ledger; the application consumes only the
+merged answer. The environment record's version must distinguish any intentionally changed
+observation semantics.
+
+Acceptance: actual Linux/macOS OS release and architecture, unsupported optional facts, unavailable
+query errors, UTF-8 policy, container quota versus host count, owned text after source expiry,
+per-unit calling and Drop. Client `host-identity-observation` binds these facts and the admitted
+Align application identity into a new environment digest, with an independent test-side OS oracle.
+
+## Request 67 — Borrowed slices of owned record collections
+
+```text
+Status: ALIGN_MERGED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; product edit admission uses shipped scalar key projection.
+Independent work that may continue: the concentrated Align product cutover.
+Resume condition: a merged surface admits read-only indexed field access through a borrowed slice
+  of owned records, preserving the source owner's lifetime without copying or consuming elements.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1013
+  76cdd7aa; merged after local preflight and Linux x86_64/ARM64 and macOS CI passed; consumer adoption pending.
+align-llm verification: replace the temporary key projection only when the real surface supports
+  the consumer; ./scripts/alignc run src/prompt_edit_admission_smoke.align.
+```
+
+At pin `305926b4`, `FileBlock { path: string, body: string }` records can be read through direct
+array-field projection, but `view: slice<FileBlock> := parsed.blocks` is rejected with
+“slicing a collection of the Move type ... is not supported yet”. Isolated sibling `c1f99817`
+retains this check in `align_sema/src/lib.rs` (`check_slice` and collection argument coercion).
+Request 22's closed indexing guarantee is not a claim that such borrowed slice formation ships.
+This is a compiler/ownership gap, not application policy. No runtime supervisor is an answer.
+
+Proposed Align-consistent surface: retain the existing slice spelling and borrowed-place field
+access, disallow copying/moving a Move element through the view, and tie every projected view to
+its original collection. Acceptance must cover source expiry, replacement while borrowed, direct
+and helper field reads, whole/per-unit transport, eager operands, malformed HIR/MIR and Drop.
+The current application uses documented numeric-index sorting with copied key text and explicit
+borrowed scalar columns. That keeps this request non-blocking and does not hide the requirement.
+
+Align implementation update (2026-09-10): PR 1013 merged the exact plan
+`docs/impl/44-move-record-slice-plan.md`. Existing admitted AoS Move records and
+owned strings can form borrowed slices and re-slices. Indexed record reads load
+only Copy leaves or project owned string to str; nested paths and explicit shared
+indexed helpers preserve backing lifetime and separately reserve the slice header
+through eager operands. Whole Move-element reads, mutable element access and
+unrelated owning collection/pipeline domains stay closed. Views allocate or copy
+no elements. Whole/per-unit, invalidation, malformed HIR/MIR, cleanup negative
+controls and cache owners pass locally. Consumer pin/adoption and the smoke owner
+remain pending and were not modified or run by Align.
