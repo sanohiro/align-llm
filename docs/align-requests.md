@@ -12191,16 +12191,41 @@ clone captured text, and return an independently owned record. This is ordinary
 composition of shipped types and ownership operations, not a request for native
 verification policy or a compatibility API.
 
-At the exact pin above, `./scripts/alignc check-per-unit src/verify.align` rejects
+The following `verify.run` diagnostic is evidence from the unpublished application
+status migration at compiler f83f5c3c, not from this requests-only branch. This
+publication retains the old `.align-revision` and `.code()` consumer. In the local
+migration, replace both `out.code()` calls in `src/verify.align` with
+`exit_code(out.status())` and add this helper after the process import:
+
+```align
+fn exit_code(result: process.wait_result) -> i64 {
+  return match result.termination {
+    Exited(code) => code,
+    Signaled(signal) => 128 + signal,
+  }
+}
+```
+
+With that exact source adaptation and compiler f83f5c3c, per-unit checking rejects
 `verify.run` with:
 
 ```text
 cannot certify MIR producers: lowering failed: resource MIR in function 'run' is malformed: producer return leaf String at [StructField(3)] is not certified by its body
 ```
 
-Minimal reproduction: save the following as `probe.align` and run
-`./scripts/alignc check-per-unit /absolute/path/to/probe.align` from align-llm.
-It reproduces the same diagnostic with `[StructField(1)]`.
+Standalone reproduction requires no application source changes. Build the Align
+checkout at `f83f5c3c365ac992c6c2dc5a371164c9f7b4339f` using its checked-in toolchain
+instructions, save the following as `probe.align`, and explicitly select that
+compiler (substitute its actual absolute release-binary path):
+
+```sh
+ALIGNC=/absolute/path/to/f83f5c3c/target/release/alignc ./scripts/alignc check-per-unit /absolute/path/to/probe.align
+```
+
+The explicit selection overrides this publication branch's old pin. It reproduces
+the same diagnostic with `[StructField(1)]`. Use the same explicit compiler when
+checking the adapted `src/verify.align` helper/nested-error shape above; neither
+the pin update nor that application adaptation is part of this requests-only PR.
 
 ```align
 module probe
