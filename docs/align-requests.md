@@ -12169,3 +12169,84 @@ unrelated owning collection/pipeline domains stay closed. Views allocate or copy
 no elements. Whole/per-unit, invalidation, malformed HIR/MIR, cleanup negative
 controls and cache owners pass locally. Consumer pin/adoption and the smoke owner
 remain pending and were not modified or run by Align.
+
+## Request 68 — Certify owned record returns after captured process status use
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: existing verification primitive and ALIGN-PRODUCT-CUTOVER process consumer.
+Independent work that may continue: retained workspace operations, environment evidence, and pure application modules.
+Resume condition: a merged compiler correction certifies the valid captured-status/owned-record composition;
+  adopt its exact managed pin and pass the named consumer owners.
+Align commit or pull request: none; reproduced at f83f5c3c365ac992c6c2dc5a371164c9f7b4339f.
+align-llm verification: blocked — ./scripts/alignc check-per-unit src/verify.align;
+  final integration owner: make verify-loop-smoke (build, then ./scripts/run-verification-loop-smoke).
+```
+
+The shipped process contract returns a Copy `process.wait_result` from
+`run_output.status()`. An application must be able to inspect its typed termination,
+clone captured text, and return an independently owned record. This is ordinary
+composition of shipped types and ownership operations, not a request for native
+verification policy or a compatibility API.
+
+At the exact pin above, `./scripts/alignc check-per-unit src/verify.align` rejects
+`verify.run` with:
+
+```text
+cannot certify MIR producers: lowering failed: resource MIR in function 'run' is malformed: producer return leaf String at [StructField(3)] is not certified by its body
+```
+
+Minimal reproduction: save the following as `probe.align` and run
+`./scripts/alignc check-per-unit /absolute/path/to/probe.align` from align-llm.
+It reproduces the same diagnostic with `[StructField(1)]`.
+
+```align
+module probe
+import std.process
+pub Snapshot { code: i64, text: string }
+pub fn run() -> Snapshot {
+  command := process.command("true", ["true"].to_array())
+  return match command.run() {
+    Ok(output) => {
+      status := output.status()
+      code := match status.termination { Exited(value) => value, Signaled(value) => 128 + value }
+      text := output.stdout().clone()
+      return Snapshot { code: code, text: text }
+    },
+    Err(_) => Snapshot { code: -1, text: "".clone() },
+  }
+}
+```
+
+Diagnostic controls at the same pin:
+
+- Replacing only the status-derived code expression with `0` passes, retaining the
+  status query and string clone.
+- Explicit `process.wait_result` typing, separate bound status/code/text locals,
+  cloning text before reading status, and flattening the error match still fail.
+- Replacing the captured text with `"hello".clone()` still fails; a captured-view
+  escape is therefore not necessary to trigger the rejection.
+- Passing `output.status()` to a helper that ignores its argument and returns zero
+  still fails; an ordinary integer helper call passes.
+- A standalone user-defined termination sum matched into an integer followed by an
+  owned record return passes.
+
+The rejecting diagnostic is in Align's
+`crates/align_codegen_llvm/src/lib.rs`, in producer-return leaf certification.
+The controls suggest incorrect ownership certification after use of the process
+status result; that causal explanation is an inference, not an established
+compiler root cause. No native shim, fabricated status, or discarded diagnostic
+output is an acceptable application repair.
+
+Requested surface: make the existing status/termination and owned record composition
+compile with its specified ownership semantics. Preserve rejection of actual
+borrowed-output escapes and malformed producer MIR. Acceptance covers the minimal
+case and original helper/nested-error shape, owned literal and captured clones,
+whole/per-unit compilation and correct destruction on success and failure. After
+merge, the client must pass `./scripts/alignc check-per-unit src/verify.align` and
+`make verify-loop-smoke`. The latter's actual Makefile graph builds the application
+then runs `scripts/run-verification-loop-smoke`, whose disposable fixture exercises
+the verification/repair CLI. These are pending acceptance targets, not current
+passing evidence. No new aggregate or GPU qualification is selected.
