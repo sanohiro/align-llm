@@ -12361,3 +12361,308 @@ Consumer-owned acceptance remains pending: adopt the exact merged compiler pin,
 then run `./scripts/alignc check-per-unit src/verify.align` and
 `make verify-loop-smoke`. Align did not modify the consumer source or pin and did
 not run those application owners.
+
+## Request 69 — Indexed shared borrowing of retained-directory owner records
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; the retained tree consumer can recurse within its existing 128-entry bound.
+Independent work that may continue: retained source/tree observation and the concentrated product cutover.
+Resume condition: a merged shared indexed-borrow extension admits existing directory-owning records
+  without moving owners; adopt and verify its actual surface before selecting an iterative owner queue.
+Align commit or pull request: none; reproduced at f83f5c3c365ac992c6c2dc5a371164c9f7b4339f.
+align-llm verification: pending — check-per-unit and whole-program execution of the reproduction below;
+  owner-queue traversal integration is not selected until an actual consumer replaces bounded recursion.
+```
+
+R64 admits ordinary records owning `fs.directory` and their existing collection
+carriers. Align's `crates/align_driver/tests/fs_retained_tree.rs`,
+`CLEANUP_HELPER`/`ownership_cleanup_and_negative_controls`, constructs a fixed
+array of directory-owning `Holder` records and a dynamic builder of cursor-owning
+records with cleanup evidence. However, constructing an owning collection does
+not imply indexed shared access to its elements. Plan 44 retains plan 28's
+`BorrowedDynamicPayload` classifier, whose opaque-handle exclusions remain
+narrower than the owner-carrier grammar. Its tested indexed shared examples in
+`move_record_slices::field_and_shared_calls` contain text and Copy fields.
+
+A source-tree worker queue needs to inspect each retained directory through a
+shared helper while its queue element remains the sole owner. At exact pin
+`f83f5c3c365ac992c6c2dc5a371164c9f7b4339f`, save this as `probe.align`:
+
+```align
+module probe
+import std.fs
+Pending { directory: fs.directory, path: string }
+fn helper(borrow directory: fs.directory) -> Result<(), Error> {
+  observed := directory.metadata()?
+  return Ok(())
+}
+fn inspect(borrow item: Pending) -> Result<(), Error> {
+  return helper(item.directory)
+}
+pub fn main() -> Result<(), Error> {
+  mut pending: array_builder<Pending> := array_builder()
+  pending.push(Pending { directory: fs.open_directory(".")?, path: ".".clone() })
+  items := pending.build()
+  inspect(items[0])?
+  return Ok(())
+}
+```
+
+Build the exact named Align checkout using its checked-in toolchain instructions and
+select that release compiler explicitly, even from a branch whose application pin
+has not yet advanced:
+
+```sh
+ALIGNC=/absolute/path/to/f83f5c3c/target/release/alignc ./scripts/alignc check-per-unit /absolute/path/to/probe.align
+```
+
+This rejects `inspect(items[0])` with:
+
+```text
+cannot shared-borrow an indexed element of the unsupported Move type Pending
+the Borrow argument to 'inspect' must be a stable named local or field, not a temporary value
+```
+
+This is a genuine language-owned composition gap, not a missing native tree walker
+or application traversal policy. Proposed Align-consistent surface: extend the
+existing indexed shared-call boundary to already-admitted ordinary records with
+retained-directory owner leaves. Keep the indexed element and its handle owned by
+the original collection, reserve its storage generation across eager arguments,
+and permit forwarding the handle to an explicitly shared helper. Do not load,
+clone, move, replace or grant exclusive access to the element or handle. Do not
+introduce descriptor integers, an owner extraction shim or hidden native traversal.
+Align owns the exact classifier extension and its supported nested carrier scope.
+
+Acceptance: the example above passes whole/per-unit compilation and execution;
+shared metadata/cursor construction observes the same retained directory after
+pathname replacement; ordinary cleanup closes each original owner exactly once.
+Source replacement/destruction while borrowed, eager operand invalidation,
+whole-element Move reads, mutable indexed borrowing and forged HIR/MIR remain
+rejected. Borrowed-slice calls, if admitted by the resulting shared-call contract,
+need the same source-generation evidence rather than an assumed R67 implication.
+
+This does not block the current tree consumer. The existing authoritative C6 bound
+is **128 expanded files/directories per task**, including each tree root, not 128
+independent trees. `docs/specs/c6-prompt-context-optimizer.md`'s resource table owns
+that limit. `prompt-snapshot-helper.py` sets `MAX_EXPANDED_ARTIFACTS = 128`, seeds
+`directories` with the root, checks `len(directories) + len(files_found)`, and passes
+`MAX_EXPANDED_ARTIFACTS - expanded_entries` into each tree walk. A walker that
+charges an entry before descending therefore has at most 128 retained directory
+frames without imposing a new depth cap. Separately capped additional files are
+not tree recursion. Bounded recursive application traversal may proceed; its
+availability does not erase this non-blocking language requirement.
+
+## Request 70 — Retained-directory link and followed-metadata observations
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: P3 deleted-open-file budget observation; dependent A2/A3/A4 task execution acceptance.
+Independent work that may continue: schema, retained source, repair and evaluator integration work
+  that does not claim complete validation-resource observation or task execution acceptance.
+Resume condition: merge generic retained-directory raw link reading and explicit followed metadata;
+  adopt the actual shipped surface and pass the focused observation and final integration owners.
+Align commit or pull request: none; audited at 177224089629a269bc404f2958b8bfc67b79dcbe.
+align-llm verification: pending — ./scripts/alignc run src/prompt_deleted_open_file_smoke.align
+  (planned, not implemented), followed by python3 scripts/run-align-product-cutover --functional,
+  --containment and --no-python (all planned, not implemented; A2/A3/A4 final integration owners).
+```
+
+### Consumer requirement and current evidence
+
+`docs/specs/align-product-boundary.md` P3 and its `prompt_validation_budget` contract
+preserve separately deduplicated deleted-open-file counts/bytes, excluding identities
+already counted in the visible workspace. The frozen
+`eval/runners/run-coding-task.py::deleted_open_file_usage` enumerates `/proc/<pid>/fd`,
+reads each link target, selects targets ending in the literal ` (deleted)`, then
+follows the descriptor link with `stat`. It keeps regular files, deduplicates native
+`(device, inode)` across descriptors/processes and visible-workspace identities,
+and sums native file sizes. Application deadlines and resource comparisons remain
+in the runner. Vanished/inaccessible entries are skipped by that historical owner;
+its observations are not an atomic snapshot.
+
+The suffix predicate is part of the existing behavior. Replacing it with `links == 0`
+is not equivalent: a still-linked file whose actual name ends in ` (deleted)` can
+match the historical predicate. Any future policy change requires an application
+contract change, not an implicit native interpretation of "deleted".
+
+At exact Align `177224089629a269bc404f2958b8bfc67b79dcbe`, plan 45
+`docs/impl/45-retained-byte-tree-plan.md` supplies `fs.open_directory`, independent
+cursors with raw-byte names, and `fs.metadata` with kind/device/inode/links/size.
+However, `directory.metadata_at` explicitly observes the final entry without
+following links, and `directory.open_read` rejects a final symlink. The checked-in
+`crates/align_sema/src/fs_tree.rs` dispatch and public specification expose neither
+raw link reading nor followed metadata observation. Plan 50's `process.table`
+supplies bounded process identity/ancestry and optional usage observations, not
+open-file observations.
+
+Ordinary procfs contents already have the necessary byte-read path: `fs.open(path)`
+and `reader.read(mut buffer)` permit application-owned bounded streaming. This
+request does not add another byte reader. `fs.open` followed by `reader.metadata`
+is not a substitute for followed `stat`: the shipped
+`align_rt_io_reader_open` in `crates/align_runtime/src/lib.rs` uses `File::open`,
+requiring read permission and potentially opening or blocking on special targets.
+A metadata observation must not open the target's contents merely to learn its kind.
+
+### Proposed surface — not shipped or consumable
+
+Extend the existing `std.fs` retained-directory observation family, subject to
+Align's authoritative ledger and naming review:
+
+```text
+directory.read_link(path: bytes, max_bytes: i64) -> Result<array<u8>, Error>
+directory.metadata_follow(path: bytes) -> Result<fs.metadata, Error>
+```
+
+Both are impure, shared-borrow operations with no retained argument lifetime. Reuse
+plan 45's complete relative-path validation and retained no-follow ancestor
+admission. `read_link` observes the final link itself, returning owned exact target
+bytes without UTF-8 decoding, normalization or a logical NUL terminator. Require a
+positive representable bound before I/O; an over-bound target returns Invalid,
+never a silently truncated successful result. Allocation is explicit in the owned
+array result and bounded by the admitted limit and documented detection scratch.
+
+`metadata_follow` explicitly follows the final link, including Linux procfs magic
+links, to return the existing Copy metadata record without opening target contents.
+Unlike `metadata_at`, this operation does not promise that the observed object is
+beneath the retained root. It grants no descriptor, mutation or signal authority.
+Native errors retain the existing Error mapping; no missing, denied or racing
+observation becomes fabricated metadata. Separate link and metadata calls are
+separate observations, not a pair transaction or identity-stable snapshot.
+
+Do not add a native deleted-file scanner, resource limiter, process-tree policy,
+deduplication routine or application-result assembler. Enumeration, suffix matching,
+identity exclusion, count/byte aggregation, deadlines, completeness decisions and
+failure precedence belong in Align application code. No compatibility layer or
+external helper is selected while this request is unmerged.
+
+### Acceptance
+
+Align-owned whole-program/per-unit and native tests must cover raw invalid-UTF-8
+link targets, ordinary and dangling links, malformed paths/bounds, exact-bound and
+over-bound targets, permission and disappearance errors, retained-parent pathname
+replacement, final-link following, and owned-result lifetime/cleanup. Metadata
+observation of a FIFO must not block by opening it. Generic filesystem cases run
+on Linux/macOS; Linux procfs cases observe an open-unlinked regular file's exact
+link bytes and followed device/inode/size without substituting link metadata.
+
+The planned `src/prompt_deleted_open_file_smoke.align` real-client owner must cover
+multiple descriptors and processes referring to one inode, visible-inode exclusion,
+nonregular targets, literal-suffix behavior including a still-linked suffix-named
+file, and count/byte limits through `prompt_validation_budget`. Its implementation
+must explicitly document which vanished/denied/racing observations preserve the
+historical behavior and how incomplete observations reach the supervisor. Neither
+passing the focused owner nor a completeness flag claims atomic kernel observation.
+
+Final request acceptance also requires the cutover plan's A2 functional, A3 Linux
+installed-profile containment/resource-ceilings, and A4 relocated-no-Python owners
+named above. All three are planned commands, not present acceptance evidence. The
+focused test alone cannot discharge dependent task execution, containment or
+Python-free execution. macOS's unsupported containment remains an explicit refusal;
+this generic filesystem request does not add a cross-platform sandbox promise.
+
+## Request 71 — Borrowed optional-string payload slicing reaches a codegen mismatch
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; the artifact runtime-identity decoder can pass its borrowed payload
+  to an ordinary str helper before slicing.
+Independent work that may continue: full verifier and schema/evaluator integration using the
+  existing explicit str-view call boundary; all other independent product cutover work.
+Resume condition: merge a compiler correction for direct slicing of the borrowed optional-string
+  payload; adopt and verify the actual corrected compiler before simplifying the consumer helper.
+Align commit or pull request: none; reproduced at 177224089629a269bc404f2958b8bfc67b79dcbe.
+align-llm verification: direct reproduction passes check-per-unit but fails run at codegen;
+  ordinary str-helper control passes both and prints PASS at the same pin. Corrected direct
+  whole/per-unit compilation and execution remain pending; final consumer owner is
+  scripts/run-prompt-verifier-smoke after direct-expression adoption.
+```
+
+### Reproduction and shipped control
+
+The current artifact runtime-identity decoder encounters this valid borrowed-text
+composition while parsing an `Option<string>`. At exact managed pin
+`177224089629a269bc404f2958b8bfc67b79dcbe`, save the following self-contained source
+as `borrowed_optional_slice.align`:
+
+```align
+module borrowed_optional_slice
+
+fn check(borrow value: Option<string>) -> bool {
+  return match value {
+    None => false,
+    Some(text) => text[6..46] == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  }
+}
+
+fn main() {
+  value := Some("ALIGN:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".clone())
+  if check(value) { print("PASS") }
+}
+```
+
+With `.align-revision` selecting that exact commit, materialize and verify the
+managed compiler/runtime, then invoke the repository wrapper explicitly:
+
+```sh
+./scripts/align-toolchain ensure compiler
+./scripts/align-toolchain verify
+./scripts/alignc check-per-unit /absolute/path/to/borrowed_optional_slice.align
+./scripts/alignc run /absolute/path/to/borrowed_optional_slice.align
+```
+
+When reproducing from an application branch with another pin, instead build the
+named Align commit using its checked-in toolchain instructions and select it
+explicitly with `ALIGNC=/absolute/path/to/17722408/target/release/alignc` on both
+`./scripts/alignc` commands. Use the documented host linker environment for native
+execution; do not accidentally select an unrelated compiler from PATH.
+
+Observed: `check-per-unit` exits 0 with `ok: checked 1 unit(s) per-unit`; `run`
+exits 1 with:
+
+```text
+alignc: codegen failed for unit `borrowed_optional_slice`: lowering failed: slice-index physical source/result contract mismatch
+```
+
+The diagnostic originates in the slice-index physical type check in
+`crates/align_codegen_llvm/src/lib.rs`. This identifies the failing lowering
+boundary, not a claim that weakening that validator is the correct repair.
+
+An existing-language control replaces only the Some arm with
+`Some(text) => check_text(text)` and adds:
+
+```align
+fn check_text(text: str) -> bool {
+  return text[6..46] == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+```
+
+The same two wrapper commands both exit 0 for this control; execution prints
+`PASS`. The helper admits an ordinary borrowed `str` view before slicing; it does
+not clone the owner, invoke a native parser, change runtime-identity policy or
+consume a proposed API. Its availability keeps this request non-blocking but does
+not erase the compiler-owned requirement. These tiny probes were re-executed at
+the exact named pin; they do not themselves claim full verifier acceptance.
+
+### Requested correction and acceptance
+
+Make the already-admitted borrowed `Option<string>` payload slice lower through
+the existing string-view semantics in both whole-program and per-unit compilation.
+No new source syntax, ownership model, library API or runtime policy is proposed.
+Preserve the source owner and correct view lifetime; do not reinterpret an owned
+string header as a different physical type or bypass the physical-contract gate.
+
+Align acceptance must cover direct and helper forms, Some and None, ordinary
+in-bounds/empty slices, imported helpers and whole/per-unit execution. Invalid
+bounds retain the existing behavior; escaped views, owner invalidation while a
+view remains live and malformed physical source/result contracts remain rejected.
+The real-client owner is `scripts/run-prompt-verifier-smoke` after the corrected
+compiler is pinned and the direct expression is adopted. The current helper path
+may remain in use until that acceptance is complete; no unrelated cutover gate is
+added by this non-blocking compiler correction.
