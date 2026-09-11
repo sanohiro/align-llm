@@ -12813,7 +12813,7 @@ its existence does not admit symlink baselines to current evaluation.
 
 ### Consolidated remaining-prerequisite consumer matrix
 
-Requests 69–71 are already published together in align-llm PR #230. Requests 72–75 belong to one
+Requests 69–71 are already published together in align-llm PR #230. Requests 72–76 belong to one
 remaining-prerequisite batch after the complete audit, not one publication per newly encountered
 operation. The following is an acceptance plan, not passing evidence or authorization to consume
 unmerged APIs. The registry lifecycle remains authoritative per request.
@@ -12826,7 +12826,8 @@ unmerged APIs. The registry lifecycle remains authoritative per request.
 | R72 | Output-parent real-ID write/search preflight; executable sandbox-tool access | Planned `prompt_access_smoke.align` | Same planned A2/A3/A4 commands, with refusal before task launch and unchanged permission observations. |
 | R73 | Sandbox probe, prepared-userns prefix, validation uid/gid argv | Planned `prompt_os_identity_smoke.align` | Same planned A2/A3/A4 commands, including actual installed-profile namespace execution. |
 | R74 | Future admitted symlink-preserving checkout copy | Planned `prompt_symlink_copy_smoke.align` paired with R70 | N/A for current symlink-refusing baseline contract; name first-consumer integration before enabling it. |
-| R75 | Runner/sandbox diagnostics, measurement bounded text, generation-child errors and retained repair edit-body text | Planned `prompt_diagnostic_decode_smoke.align` with independent CPython replacement vectors | Existing A1 renderer/scorer/verifier/state owners below plus planned `python3 scripts/run-align-product-cutover --functional`, `--containment`, `--no-python` (A2/A3/A4). |
+| R75 | Runner/sandbox diagnostics, measurement bounded text, generation-child errors, retained repair edit-body text and FIXTURE_PATCH stdout/stderr measurements | Planned `prompt_diagnostic_decode_smoke.align` with independent CPython replacement vectors | Existing A1 renderer/scorer/verifier/state owners below plus planned `python3 scripts/run-align-product-cutover --functional`, `--containment`, `--no-python` (A2/A3/A4). |
+| R76 | Internal regular-file/symlink Git blob identity in worktree-change observation and allowed-change admission | Planned `prompt_git_blob_identity_smoke.align` with independent Git hash-object oracle | Planned `python3 scripts/run-align-product-cutover --functional`, `--containment`, `--no-python` (A2/A3/A4). |
 
 Batch merged blocking prerequisites for the same consumer into one pin/materialization and actual
 client verification capability. Keep generic provider correctness, application integration and
@@ -12855,7 +12856,10 @@ Frozen `eval/runners/run-coding-task.py` decodes captured output with UTF-8 `err
 then redacts text, encodes and bounds it, and replacement-decodes the possibly split final prefix.
 Its generation-child failure detail instead redacts raw bytes before truncation and replacement
 decoding. `scripts/prompt-repair-adapter.py::edit_set_blocks` replacement-decodes retained redacted
-body bytes. These distinct operation orders are part of their existing consumer contracts; a
+body bytes. `scripts/prompt-fixed-adapter.py` lines 626–627 replacement-decode bounded stdout/stderr
+into FIXTURE_PATCH measurement diagnostics after capture bounding. Include this distinct
+capture-then-decode order, including a bound splitting a multibyte sequence. These distinct
+operation orders are part of their existing consumer contracts; a
 single global reorder would change evidence and could disclose credential fragments.
 
 At the audited pin, the closed `std.encoding` dispatch in
@@ -12905,7 +12909,10 @@ The planned focused client owner
 `./scripts/alignc run src/prompt_diagnostic_decode_smoke.align` and its independent differential
 fixture must cover runner capture diagnostics, sandbox-probe errors, measurement `bounded_text`
 (including its second decode after truncation), generation-child failure details and retained repair
-edit-body text. Pin credential occurrences crossing capture boundaries, replacement bytes next to
+edit-body text, and FIXTURE_PATCH bounded stdout/stderr measurement decoding. The independent
+differential owner must exercise malformed bytes and every representative multibyte truncation
+boundary in both fixed-adapter streams after the existing capture cap. Pin credential occurrences
+crossing capture boundaries, replacement bytes next to
 credential/truncation boundaries, invalid byte runs and empty output. Preserve each consumer's
 redaction/decode/truncation order and ensure no credential bytes enter persisted evidence.
 
@@ -12920,7 +12927,7 @@ added by this text-decoding request.
 ### Remaining non-OS audit conclusion
 
 The bounded audit of the frozen main-Python closure found no other known missing API beyond
-R69–R75. Repair section selection/assembly, FILE parsing, edit admission, patch synthesis, canonical
+R69–R76. Repair section selection/assembly, FILE parsing, edit admission, patch synthesis, canonical
 record/digest construction, versioned validation, score/median aggregation, bounded collections
 and provider request/result orchestration have shipped Align primitives or existing real-client
 implementations. Their incomplete integration is application work, not another native prerequisite.
@@ -12929,3 +12936,81 @@ controls. This source/API audit is not a claim that every future composition has
 new concrete compiler failures must still be recorded with minimal evidence, but speculative
 integration uncertainty is not an additional request. Reconcile this conclusion with the OS and
 provider audits before the single remaining-prerequisite batch is reviewed and published.
+
+## Request 76 — Generic one-shot SHA-1 for existing Git blob identity
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: P3 internal worktree-change observation and allowed-change admission; A2/A3/A4.
+Independent work that may continue: SHA-256 artifact/source identity, records, repair assembly,
+  workspace construction and supervisor work outside completed change-observation acceptance.
+Resume condition: merge generic one-shot SHA-1, adopt the shipped API and verify retained regular
+  file/symlink-target Git blob observations, allowed-change decisions and final integration below.
+Align commit or pull request: none; audited at 177224089629a269bc404f2958b8bfc67b79dcbe.
+align-llm verification: pending; proposed prompt_git_blob_identity_smoke and consolidated batch matrix.
+```
+
+Frozen `eval/runners/run-coding-task.py::git_blob_id` (lines 1073–1075) constructs
+`b"blob " + decimal_byte_length + b"\0" + data` and computes `hashlib.sha1(...).hexdigest()`.
+`actual_worktree_changes` and `check_allowed_changes` consume that result for worktree/index
+comparison and admission; symlink targets are blob payloads too. This is existing Git SHA-1
+object-format behavior, not a new cryptographic security identity. The fixture setup explicitly
+selects Git's sha1 object format; replacing SHA-1 with SHA-256 would change its pinned tree/commit
+semantics and is not this cutover.
+
+At exact Align `177224089629a269bc404f2958b8bfc67b79dcbe`, the checked-in `std.crypto` one-shot
+digest surface supplies SHA-256 and SHA-512, not SHA-1. An explicitly admitted Git `hash-object`
+command could compute the object ID, but the product will not add a subprocess compatibility shim
+for this generic hash primitive. Git remains the independent test oracle and the explicitly
+admitted repository tool for operations it already owns.
+
+Proposed minimal surface, subject to Align's authoritative ledger and naming review:
+
+```text
+crypto.sha1(data: bytes) -> array<u8>
+```
+
+Require `import std.crypto`; use the existing `crypto.sha256` byte-operand admission and ordinary
+owned output/error idiom. Return exactly 20 bytes in standard digest order, independently owned
+with no retained input or arena lifetime. Pure one-shot transform with no configuration, I/O,
+process launch, implicit Git header, hexadecimal formatting or algorithm substitution. Preserve
+the existing SHA-256 operation's terminal allocation/native failure policy rather than introducing
+an unrelated error model. Streaming is not required for this bounded historical one-shot consumer;
+this request promises no interruptible hashing, application deadline or resource-ceiling guarantee.
+The application continues to own source retention, byte bounds, Git blob framing and hex output.
+
+Acceptance: independent published SHA-1 vectors plus exact empty, binary/NUL and Unicode payload
+bytes; imported and whole/per-unit calls; input/arena expiry and ordinary move/drop; lengths around
+SHA-1 block/padding boundaries. Client vectors separately pin decimal UTF-8 byte length, literal
+`blob ` prefix and NUL separator, including payload sizes crossing decimal-length boundaries.
+Compare framed application results to independently invoked `git hash-object --stdin` under the
+explicit sha1 object format. Do not use the implementation under test to compute its expected hash.
+
+The planned owner `./scripts/alignc run src/prompt_git_blob_identity_smoke.align` plus its independent
+fixture covers unchanged/changed regular files, executable-mode differences separately from content,
+and post-validation symlink target bytes through R70. Retained-reader/metadata revalidation owns
+the observed input; hashing does not authorize a pathname reopen or prove immutability. Verify both
+`actual_worktree_changes` and `check_allowed_changes`, including detection of disallowed changes.
+Final acceptance is the planned `python3 scripts/run-align-product-cutover --functional`,
+`--containment` and `--no-python` (A2/A3/A4); no GPU, unrelated aggregate or streaming gate is added.
+
+### Consolidated hash and replacement-decoding root-cause audit
+
+The repair audit inspected every `hashlib` call and every explicit replacement-decoding call in
+all eight frozen product implementations: prompt-evaluate, prompt-measurement-adapter,
+prompt-repair-adapter, prompt-template-adapter, prompt-fixed-adapter, prompt-source-verifier,
+prompt-snapshot-helper and eval/runners/run-coding-task. Only SHA-256 and the runner's one SHA-1
+call occur; no third hash algorithm or dynamic hashlib algorithm selection was found.
+
+UTF-8 replacement consumers are the runner's bounded capture/output/sandbox-probe diagnostics,
+measurement bounded text and generation-child details, repair edit-body text, and fixed-adapter
+stdout/stderr measurements. R75 names all of them, including FIXTURE_PATCH. The runner additionally
+uses ASCII `errors="replace"` while reading `/proc/<pid>/status` for numeric VmRSS observation.
+That source is application-owned process-resource parsing, not persisted UTF-8 diagnostic text:
+non-ASCII bytes cannot become ASCII numeric fields, and this audit does not relabel ASCII decoding
+as the proposed UTF-8 operation. Preserve malformed-field handling in the resource-observation
+owner or use the separately admitted shipped process-table contract with an explicit application
+semantic decision. No additional generic hashing/UTF-8 API gap was identified in this complete
+root-cause scan. Future execution of untested compositions remains separate evidence.
