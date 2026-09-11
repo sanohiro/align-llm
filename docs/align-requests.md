@@ -12173,15 +12173,16 @@ remain pending and were not modified or run by Align.
 ## Request 68 — Certify owned record returns after captured process status use
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: existing verification primitive and ALIGN-PRODUCT-CUTOVER process consumer.
 Independent work that may continue: retained workspace operations, environment evidence, and pure application modules.
 Resume condition: a merged compiler correction certifies the valid captured-status/owned-record composition;
   adopt its exact managed pin and pass the named consumer owners.
-Align commit or pull request: none; reproduced at f83f5c3c365ac992c6c2dc5a371164c9f7b4339f.
-align-llm verification: blocked — ./scripts/alignc check-per-unit src/verify.align;
+Align commit or pull request: https://github.com/sanohiro/align/pull/1021
+  merged as 177224089629a269bc404f2958b8bfc67b79dcbe.
+align-llm verification: pending consumer pin adoption — ./scripts/alignc check-per-unit src/verify.align;
   final integration owner: make verify-loop-smoke (build, then ./scripts/run-verification-loop-smoke).
 ```
 
@@ -12275,3 +12276,88 @@ merge, the client must pass `./scripts/alignc check-per-unit src/verify.align` a
 then runs `scripts/run-verification-loop-smoke`, whose disposable fixture exercises
 the verification/repair CLI. These are pending acceptance targets, not current
 passing evidence. No new aggregate or GPU qualification is selected.
+
+### Align investigation (2026-09-11 — historical pre-fix checkpoint)
+
+Align rebuilt `alignc` at `f83f5c3c365ac992c6c2dc5a371164c9f7b4339f` with
+`scripts/cargo.sh build --release -p align_driver --bin alignc` and reproduced the
+minimal example with `ALIGNC_CACHE=off`. Ordinary `check` passes;
+`check-per-unit` rejects the reported String leaf. A separate harness using the
+same compiled crates also reproduces the rejection through whole-program MIR
+lowering and `validate_mir_producers`.
+
+Confirmed controls: constant code and an ordinary integer helper pass; literal
+text clones, explicitly typed status, cloning before status, and an ignored
+`process.wait_result` helper argument still fail. An otherwise identical
+`run_bytes().status()` composition also fails. A borrowed `run_output` parameter
+with a literal owned-text return reproduces it without a command or error match;
+a user-constructed `process.wait_result` passes.
+
+The first identified internal mismatch is in
+`align_codegen_llvm::xml_out_producer_result_ty`: it defaults these out-slot
+producers to `i32`, whereas `lower_process_live`, the native-owner contract, and
+the observed MIR correctly give infallible RunOutputStatus/RunBytesStatus a Unit
+instruction result and write the Copy record through the output slot.
+`add_out_producer` rejects that result-type mismatch before reaching the native
+contract. This is a concrete cause candidate; a correction and its complete
+regression coverage have not yet been tested.
+
+This checkpoint is investigation only. Status remains PROPOSED; no repair PR or
+new shipped surface is claimed. The original application helper/nested-error
+case, runtime destruction checks, and consumer acceptance targets remain pending.
+The consumer source and compiler pin were not changed.
+
+### Align related-defect survey (2026-09-11 — historical pre-fix checkpoint)
+
+The follow-up survey found one additional valid-source rejection:
+`child.wait()?` followed by reading `termination` or `max_rss_bytes` and returning
+an owned-text record fails producer certification in both whole-program and
+per-unit compilation. The corresponding `child.try_wait()`, `child.status()` and
+`child_scope.wait()` compositions pass. The `ChildWait` instruction correctly
+returns i32, but `add_out_producer` excludes it from native output producers that
+permit selected record-field paths, even though its output is now the ordinary
+Copy `process.wait_result` record. This is a separate admission
+omission from the RunOutputStatus/RunBytesStatus Unit/i32 mismatch.
+
+Static comparison covered all 83 registered out-slot Rvalue variants, including
+all 77 variants with a direct Slot output field, and evaluated all 48
+ProcessLiveKind fallible/scratch decisions. The two captured-status accessors are
+the only result-type mismatches found in that inventory. Fourteen focused source
+probes pass semantic checking; whole/per-unit producer validation agrees on
+three failing cases (two child.wait field paths and captured-status RSS) and
+eleven passing controls, including JSON navigation, random seeding, retained
+file metadata and host observations. These are compilation probes, not runtime
+cleanup or consumer acceptance evidence. Both admission defects remain pending
+repair; no compiler or consumer implementation was changed.
+
+
+### Align delivery (2026-09-11)
+
+PR [#1021](https://github.com/sanohiro/align/pull/1021) merged as
+`177224089629a269bc404f2958b8bfc67b79dcbe` (implementation
+`2d4b476dc3cf734d99aa5ac80416f62129dbcf01`). This supersedes the pending-repair
+statements in the historical investigation checkpoints above.
+
+The compiler now certifies owned record composition after both
+`run_output.status()` and `run_bytes().status()`, and fixes the related rejection
+of `child.wait()?` termination or optional RSS field projections. Out-slot
+certification consumes the existing native instruction result contract and exact
+output type instead of a mismatched default result and a separate opcode path
+allowlist. `process.wait_result` remains Copy. Captured views remain borrowed;
+explicit clones produce independent owned text. No source API, native ABI,
+ownership model, interface format, or process execution policy changed.
+
+Validation passed: original cache-disabled reproduction probes; parameterized
+whole/per-unit producer checks with malformed result, output, receiver, schema,
+projection and forged-owned-text controls; imported/generic helper and nested
+error native tests covering capture/literal clones, propagation, replacement,
+partial moves, and allocation/free balance. Deliberately omitting record Drop
+fails the native balance owner in both compilation modes. Actual borrowed-output
+escapes remain rejected. The full process owner, bounded compiler gate, workspace
+Clippy, independent review, Linux x86_64/ARM64 and macOS CI all passed.
+`cargo build --release --workspace` also passed for the merged implementation.
+
+Consumer-owned acceptance remains pending: adopt the exact merged compiler pin,
+then run `./scripts/alignc check-per-unit src/verify.align` and
+`make verify-loop-smoke`. Align did not modify the consumer source or pin and did
+not run those application owners.
