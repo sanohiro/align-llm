@@ -12974,7 +12974,7 @@ crypto.sha1(data: bytes) -> array<u8>
 
 Require `import std.crypto`; use the existing `crypto.sha256` byte-operand admission and ordinary
 owned output/error idiom. Return exactly 20 bytes in standard digest order, independently owned
-with no retained input or arena lifetime. Pure one-shot transform with no configuration, I/O,
+with no retained input or arena lifetime. Deterministic, Impure one-shot transform (following the existing FFI crypto effect policy) with no configuration, I/O,
 process launch, implicit Git header, hexadecimal formatting or algorithm substitution. Preserve
 the existing SHA-256 operation's terminal allocation/native failure policy rather than introducing
 an unrelated error model. Streaming is not required for this bounded historical one-shot consumer;
