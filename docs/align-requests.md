@@ -13087,3 +13087,515 @@ as the proposed UTF-8 operation. Preserve malformed-field handling in the resour
 owner or use the separately admitted shipped process-table contract with an explicit application
 semantic decision. No additional generic hashing/UTF-8 API gap was identified in this complete
 root-cause scan. Future execution of untested compositions remains separate evidence.
+
+## Request 77 — Indexed owned-string projection passed to a borrowed text parameter
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; repair evidence uses an explicit named str view with no copy.
+Independent work that may continue: all product cutover integration using the ordinary named view.
+Resume condition: the checked slice-field-to-borrowed-text call lowers with valid ownership metadata;
+  adopt the corrected compiler and verify the direct composition before simplifying the caller.
+Align commit or pull request: none; reproduced at merged provider pin
+  6ca79fee6eb221702652c2bb131839708db55eda during the combined R69–R76 client adoption.
+align-llm verification: direct reproduction fails check-per-unit at body_only_metadata_is_valid;
+  named str-view control passes check-per-unit. Repair evidence integration is being owner-tested.
+```
+
+The real `prompt_repair_evidence.build` consumer passes the borrowed body of an admitted
+FILE-block record to the application credential redactor. This minimal reproduction passes
+source checking, then fails HIR validation before MIR lowering at `build`:
+
+```align
+module repair_evidence_borrow_min
+Record { body: string }
+fn redact(borrow text: str) -> string { return text.clone() }
+fn build(blocks: slice<Record>) -> string { return redact(blocks[0].body) }
+fn main() {
+  blocks := [Record { body: "x".clone() }]
+  print(build(blocks))
+}
+```
+
+Expected: the existing shared projection and text-parameter coercion retain the source owner
+for the call and return the redactor's independent owned string. No new syntax, type, allocation,
+implicit clone, mutable projection or native application function is requested. Current diagnostic:
+`program passed checking but failed HIR validation at the MIR boundary`, rejected by
+`body_only_metadata_is_valid` at `repair_evidence_borrow_min$build`.
+
+The ordinary explicit control is `view: str := blocks[0].body; return redact(view)`.
+It preserves application semantics and allocation, but does not discharge the compiler gap.
+Provider acceptance covers local/imported redactors, whole/per-unit checking and execution,
+owned result after source expiry, and rejection of an escaping borrowed result. Client acceptance
+requires both reproduction paths and `src/prompt_repair_evidence_smoke.align` after direct-call
+adoption. No aggregate or platform containment gate is added for this compiler-only boundary.
+
+This is retained in the continuing composition audit. Consolidate any further concrete findings
+before the next external request handoff; it does not pause unrelated work or start a separate
+pin/materialization cycle.
+
+## Request 78 — Payload-free enum fields in heap-built owned records
+
+```text
+Status: PROPOSED
+Priority: low
+Blocking: no
+Blocked gate or slice: none; worktree snapshots use the existing symlink boolean data representation.
+Independent work that may continue: all worktree, source, task and evaluator integration.
+Resume condition: a reviewed heap-record extension admits payload-free enum fields without
+  changing ownership or allocation; verify the actual surface before selecting it in collections.
+Align commit or pull request: none; checked at 6ca79fee6eb221702652c2bb131839708db55eda.
+align-llm verification: minimal heap builder rejected because field kind has excluded enum type;
+  current boolean snapshot representation passes its focused worktree owner.
+```
+
+`prompt_worktree.Entry` initially selected `Kind { Regular, Symlink }` alongside owned path/hash
+strings and raw target bytes. The shipped heap-builder field grammar intentionally excludes enum
+fields. This is a missing language/core collection capability, not a regression or a claim that
+the existing restriction already permits it. A minimal source is:
+
+```align
+module heap_enum_record
+Kind { Regular, Link }
+Entry { kind: Kind, path: string }
+fn main() {
+  mut entries: array_builder<Entry> := array_builder()
+  entries.push(Entry { kind: Kind.Regular, path: "file".clone() })
+  values := entries.build()
+  print(values.len())
+}
+```
+
+`check-per-unit` rejects `array_builder<Entry>` with `field 'kind' has excluded type enum#0`.
+The minimal proposed extension admits existing payload-free enum values as Copy leaves in the
+closed heap-record grammar. Keep the declared enum type and existing layout/tag semantics;
+no magic integer encoding, payload-bearing sum extension, JSON schema, implicit copy of owned
+fields or new collection API is requested. Provider design owns whether and how to widen the
+current intentionally closed grammar.
+
+Acceptance covers both variants through construction, push/build, shared indexed observation,
+source expiry, return and partial-builder Drop, in whole/per-unit compilation and execution.
+Keep unsupported payload-bearing sums rejected unless separately designed. The client owner is
+`scripts/run-prompt-worktree-smoke` only if an enum representation is actually adopted; the
+currently selected explicit symlink boolean remains valid and does not block Python removal.
+Include this nonblocking requirement with R77 in the next consolidated composition handoff.
+
+## Request 79 — Nested borrowed optional report loses a native signal producer contract
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; an ordinary borrowed Report inspection helper compiles.
+Independent work that may continue: fixture setup, Git observation and the product cutover.
+Resume condition: nested optional report/sum projection reaches native signal_number with its
+  declared nominal producer contract intact; verify direct composition before simplifying helpers.
+Align commit or pull request: none; reproduced at 6ca79fee6eb221702652c2bb131839708db55eda.
+align-llm verification: direct minimal check-per-unit fails MIR producer certification;
+  a separate borrowed Report helper passes check-per-unit and execution.
+```
+
+The stopped fixture setup owns a scope and an optional supervisor Report. Reading its cancellation
+signal through nested borrowed payloads passes source checking but fails native producer
+certification. The minimal reproduction needs no application import:
+
+```align
+module fixture_setup_nested_signal
+import std.process
+Stop { Cancelled(process.signal) }
+Report { stop: Stop, data: string }
+Attempt { report: Option<Report> }
+fn inspect(borrow attempt: Attempt) -> i64 {
+  return match attempt.report {
+    None => 0,
+    Some(report) => match report.stop {
+      Cancelled(signal) => process.signal_number(signal),
+    },
+  }
+}
+fn main() {
+  value := Attempt { report: Some(Report { stop: Stop.Cancelled(process.signal.Terminate), data: "".clone() }) }
+  print(inspect(value))
+}
+```
+
+The diagnostic is `cannot certify MIR producers`, with `native owner producer contract mismatch:
+ProcessLive { kind: SignalNumber, args: [Value(2)], out: None }` at `inspect`. Plan49 already ships
+the Copy signal sum and pure native signal mapping; this requests correct composition of existing
+borrows/Option/sum projections, not a new signal API or relaxed producer validation. Moving the
+inner match into `inspect_report(borrow report: Report)` preserves allocation and semantics and
+passes. It does not discharge the compiler gap.
+
+Provider acceptance covers None/Some, every signal, local/imported helpers, whole/per-unit
+compilation and execution, and invalid nominal native arguments remaining rejected. The client
+owner is `src/prompt_fixture_setup_smoke.align` after direct inspection adoption. Keep this
+nonblocking finding in the next consolidated composition batch with R77/R78.
+
+## Request 80 — Fresh scalar array copy retains a loop-local source borrow
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; the Git index capture has an ordinary owned-return helper.
+Independent work that may continue: Git observation, task integration and Python removal.
+Resume condition: a fresh slice.to_array scalar result assigned across a loop iteration is
+  independent of the source owner; verify direct composition before simplifying the helper.
+Align commit or pull request: none; reproduced at 6ca79fee6eb221702652c2bb131839708db55eda.
+align-llm verification: direct assignment fails lifetime checking; owned-return helper passes
+  managed check-per-unit and run across two iterations and source expiry.
+```
+
+`prompt_git_observation` retains raw index bytes after each independently owned command report
+expires. The sibling `docs/language-spec.md` and `draft.md` specify that `slice<T>.to_array()`
+creates a fresh owned array. Scalar u8 elements contain no borrowed source. This minimal legal
+copy nevertheless retains the loop-local owner in its lifetime summary:
+
+```align
+module scalar_copy_loop
+Report { stdout: array<u8> }
+fn report() -> Report {
+  mut values: array_builder<u8> := array_builder()
+  values.push(65 as u8)
+  return Report { stdout: values.build() }
+}
+fn collect() -> array<u8> {
+  empty: array_builder<u8> := array_builder()
+  mut output := empty.build()
+  mut index := 0
+  loop {
+    if index == 2 { break }
+    value := report()
+    bytes: slice<u8> := value.stdout
+    output = bytes.to_array()
+    index = index + 1
+  }
+  return output
+}
+fn main() {
+  result := collect()
+  print(result.len())
+}
+```
+
+The return reports `use of invalidated borrow` because `value` was dropped at the end of its loop
+iteration. A named intermediate does not help; a builder copy also misattributes the copied result
+to the expired builder. The ordinary boundary `fn owned(source: slice<u8>) -> array<u8> =
+source.to_array()` then `output = owned(bytes)` passes and performs the same explicit copy.
+The application selects that local owned-return boundary; no native or compatibility layer is
+added. Provider acceptance must cover direct and helper forms, zero/one/multiple iterations,
+branch replacement, source expiry, whole/per-unit checking/run and genuinely borrowed element
+lifetimes remaining enforced. Final client owner: `src/prompt_git_observation_smoke.align` after
+direct-copy adoption. No aggregate is added; consolidate this nonblocking gap with R77–R79.
+
+## Request 81 — Borrowed record-array projection loses provenance across an owned-return call
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none; task validation passes narrow slice arguments directly from its
+  owned observations and retains candidate state for post-validation equality without copying.
+Independent work that may continue: tool/sandbox admission, source cleanup, evaluator assembly;
+  owned Git-observation consumers and their focused owners already pass.
+Resume condition: certify the existing borrowed record-array call composition without extending
+  source lifetime into the independently owned result; verify the direct task-validation consumer.
+Align commit or pull request: none; reproduced at 6ca79fee6eb221702652c2bb131839708db55eda.
+align-llm verification: minimal source checking passes but check-per-unit/run fail resource MIR
+  validation; consuming the observation passes. Narrow slice-parameter helpers called directly
+  from the owning task function pass managed check-per-unit for the complete18-unit consumer.
+```
+
+The Git observation owner first exposed this when it passed a borrowed owned-record array to an
+application function returning independently cloned paths. The real validation flow then exposed
+the same certification failure in `allowed`, where candidate state must remain available for the
+post-validation equality check. A minimal reproduction is:
+
+```align
+module borrowed_array_return_probe
+Row { path: string }
+Observation { tree: array<Row> }
+fn changes(left: slice<Row>, right: slice<Row>) -> array<string> {
+  mut result: array_builder<string> := array_builder()
+  if left.len() != 0 { result.push(left[0].path.clone()) }
+  if right.len() != 0 { result.push(right[0].path.clone()) }
+  return result.build()
+}
+fn inspect(borrow value: Observation) -> Result<(), Error> {
+  mut rows: array_builder<Row> := array_builder()
+  rows.push(Row { path: "b".clone() })
+  right := rows.build()
+  actual := changes(value.tree, right)
+  if actual.len() != 2 { return Err(Error.Invalid) }
+  return Ok(())
+}
+fn main() -> Result<(), Error> {
+  mut rows: array_builder<Row> := array_builder()
+  rows.push(Row { path: "a".clone() })
+  value := Observation { tree: rows.build() }
+  return inspect(value)
+}
+```
+
+The diagnostic is `cannot certify MIR producers: lowering failed: resource MIR in function
+'inspect' is malformed: XML-capable call argument provenance mismatch`. No XML operation is
+present. Explicitly naming the left slice and forwarding through a borrowed helper also fail;
+`inspect(value: Observation)` succeeds in whole/per-unit checking and execution. The public
+surface already permits shared owned-record array projections and explicit owned clone/build
+results. Preserve those existing lifetimes and MIR producer validation; do not add a special Git
+API, implicit clone, ownership cast or weaken escaping-view rejection.
+
+Provider acceptance covers local/imported owned-return functions, two independent source owners,
+borrowed record fields versus slice parameters, result use and source expiry, whole/per-unit
+compilation/run and genuine borrowed-result escape rejection. Original client targets are
+`src/prompt_git_observation_smoke.align` with borrowed inspection and
+`src/prompt_task_validation_smoke.align`, including candidate state reuse after the call. The
+consuming owner control is useful independent evidence, not discharge of the borrowed contract.
+Consolidate this finding with R77–R80 after the remaining composition audit.
+
+The selected application control narrows `pristine`/`allowed` to the exact tree, entry, directory
+and path slices they inspect. Their caller passes fields directly from its owned baseline/candidate
+records. All original owners remain available for later equality, with no additional clone or
+record consumption. This data-oriented API passes full consumer per-unit compilation and removes
+the immediate blocker; it does not discharge the borrowed-wrapper composition defect.
+
+Additional client: `prompt_sandbox_plan.arguments` encountered the same producer diagnostic when
+borrowing its Config and forwarding array/string fields into validation/build helpers. Named
+views and scalar/slice helper extraction alone still failed at the outer borrowed boundary.
+The planner now naturally consumes its explicitly prepared Config and returns owned argv;
+this adds no deep clone and passes its literal/boundary/ownership owner. Include the original
+borrowed Config form and `src/prompt_sandbox_plan_smoke.align` in provider/client acceptance if
+that borrowed interface is later adopted.
+
+## Request 82 — Shared matching of an optional retained user-namespace owner
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; namespace-bearing command construction can use an explicit shared
+  namespace parameter in the fresh branch, with the normal branch having no namespace owner.
+Independent work that may continue: sandbox probing/command integration and the product cutover.
+Resume condition: an existing Option<process.user_namespace> permits shared payload matching
+  for the shipped inherit_namespace call, without moving or extracting the owner.
+Align commit or pull request: none; reproduced at 6ca79fee6eb221702652c2bb131839708db55eda.
+align-llm verification: minimal source check rejects borrowed optional owner matching;
+  direct shared namespace parameters are the shipped plan50 surface.
+```
+
+Sandbox configuration has an absent namespace in normal mode and a retained prepared namespace
+in fresh mode. Both probe and validation commands duplicate that same authority with
+`inherit_namespace`. The natural shared optional-owner helper is rejected:
+
+```align
+module borrowed_namespace_command
+import std.process
+fn attach(borrow mut command: command, borrow namespace: Option<process.user_namespace>, slot: i64) -> Result<(), Error> {
+  return match namespace {
+    None => if slot == 0 { Ok(()) } else { Err(Error.Invalid) },
+    Some(value) => command.inherit_namespace(value, slot),
+  }
+}
+fn main() -> Result<(), Error> {
+  mut command := process.command("/bin/echo", ["echo", "namespace absent"])
+  absent: Option<process.user_namespace> := None
+  attach(command, absent, 0)?
+  return Ok(())
+}
+```
+
+Diagnostics: `cannot bind an unsupported Move payload through borrowed parameter 'namespace'`
+and `cannot move borrowed parameter 'namespace'`. This is a genuine missing shared-carrier
+capability in the existing model, not a claimed regression of R69's intentionally narrow
+directory/cursor extension. Plan50 ships optional namespace ownership and the shared native
+inheritance operation; the proposed extension composes their existing contracts. Do not add
+integer descriptor casts, mutable indexed access, optional-owner extraction, a duplicate native
+controller or an implicit copy of the namespace. Keep explicit fresh/normal branching as the
+valid current application path.
+
+Acceptance covers None/Some through direct and record-contained optional parameters, repeated
+command inheritance, namespace-source expiry after native duplication, unchanged source on
+duplicate-slot/input failure, escaping-borrow rejection, and whole/per-unit compilation/run.
+Linux owns actual namespace inheritance and release; unsupported platforms retain refusal before
+launch. Client acceptance is the final sandbox command/probe owner after shared optional matching
+is selected. Consolidate this nonblocking requirement with R77–R81; do not start a per-gap pin loop.
+
+## Request 83 — Owned document return composition in optional repair admission
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: prompt_task_inputs repair-template admission and therefore complete
+  evaluator document admission; main evaluator Python removal cannot close without this consumer.
+Independent work that may continue: direct generation integration, measurement/source producers,
+  legacy eval admission, existing primitive owners and consolidated request preparation.
+Resume condition: nested owned document returns compose with typed template decoding and
+  optional owned results in the actual consumer, without weakening producer certification.
+Align commit or pull request: none; reproduced at 6ca79fee6eb221702652c2bb131839708db55eda.
+align-llm verification: ordinary check passes the reduced case; per-unit producer certification
+  rejects it. No full-consumer passing ownership factoring has been found.
+```
+
+The application first admits a retained regular UTF-8 document and its raw digest, then decodes
+an owned repair template. A local helper returns the owned Document through Result. Calling that
+helper inside a borrowed optional-path match before returning Option<Template> passes source
+checking but fails producer certification:
+
+```text
+resource MIR in function 'wrap' is malformed:
+producer return leaf String at [ResultOk, OptionSome, StructField(6)]
+is not certified by its body
+```
+
+Calling the document reader directly passes the reduced case. Direct/optional decoding, simple
+document-return wrappers and isolated optional-path/profile controls also pass. Removing the
+template digest clear/restore mutation does not repair the failing combination. Named text views
+and additional local/imported decoder helpers do not repair it either. Splitting file admission
+into Option<Document> followed by owned decoding passes a small control but not the complete
+consumer: the latter rejects Document.sha256 at [ResultOk, OptionSome, StructField(1)]. Explicit
+admission steps expose an XML-capable argument provenance mismatch despite no XML use.
+
+This is an additional owned-call/return acceptance case, not proof that R81's borrowed-array
+root cause is identical. Preserve the existing owned Document/Template lifetimes, explicit
+allocation and source-expiry behavior. Do not add an application-specific native decoder, deep
+copy compatibility layer, unsafe cast or relaxed producer certificate. Source truth is the
+existing owned record/Result/Option and retained reader surface in plans45/49/50.
+
+Provider acceptance includes the reduced failing call graph and direct-call control, local and
+imported wrappers, caller-owned and borrowed optional path selection, empty/present/error arms,
+owned source expiry, whole/per-unit/ThinLTO compilation and runtime behavior, plus rejection of
+genuinely escaping views. Client acceptance is `scripts/run-prompt-task-inputs-smoke` with actual
+repair-template success/refusal, `src/prompt_evaluation_inputs_smoke.align`, and the final A2
+functional cutover integration. Consolidate with R77–R82 before external handoff; adopt merged
+prerequisites together, not one pin update per request.
+
+Self-contained provider reproduction (save as an Align source file; only core/std imports):
+
+```align
+module product_cutover_owned_document_return
+
+// R83 compiler regression fixture, not product code or a validation bypass.
+// Align 6ca79fee6eb221702652c2bb131839708db55eda:
+//   scripts/alignc check FILE                         PASS (5 functions)
+//   scripts/alignc check-per-unit FILE                FAIL in wrap
+// MIR producer return leaf String at [ResultOk, OptionSome, StructField(6)]
+// is not certified by its body. Only shipped standard/core APIs are imported.
+// Direct-call control: copy this file to /tmp and replace the marked bound call
+// with `source := read_document(root, path.bytes(), remaining, deadline)?`.
+// The control passes check-per-unit. It intentionally omits bound's checks and
+// is diagnostic evidence only; it is not an application repair.
+// Template decoding is reduced to json.decode: digest normalization/restoration
+// is unnecessary to trigger the failure. There is no borrowed record array.
+
+import core.json
+import std.crypto
+import std.encoding
+import std.fs
+import std.time
+
+pub Document { text: string, sha256: string, metadata: fs.metadata }
+
+fn same(before: fs.metadata, after: fs.metadata) -> bool {
+  regular := match after.kind { Regular => true, _ => false }
+  return regular && before.device == after.device && before.inode == after.inode &&
+  after.links == 1 && before.mode == after.mode && before.size == after.size &&
+  before.modified_seconds == after.modified_seconds &&
+  before.modified_nanoseconds == after.modified_nanoseconds &&
+  before.changed_seconds == after.changed_seconds &&
+  before.changed_nanoseconds == after.changed_nanoseconds
+}
+
+fn read_document(borrow root: fs.directory, relative: slice<u8>, maximum: i64, deadline: i64) -> Result<Document, Error> {
+  if maximum < 1 || maximum > 2097152 || time.instant() >= deadline { return Err(Error.Invalid) }
+  input := root.open_read_single_link(relative)?
+  before := input.metadata()?
+  if before.links != 1 || before.size < 0 || before.size > maximum { return Err(Error.Invalid) }
+  mut data := buffer(0)
+  mut total := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Invalid) }
+    if total == maximum {
+      mut probe := buffer(1)
+      if input.read(probe)? != 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := maximum - total
+    mut chunk := buffer(if remaining < 65536 { remaining } else { 65536 })
+    count := input.read(chunk)?
+    if count == 0 { break }
+    data.append(chunk.bytes())
+    total = total + count
+  }
+  after := input.metadata()?
+  if time.instant() >= deadline || total != before.size || !same(before, after) { return Err(Error.Invalid) }
+  text := data.bytes().as_str()?.clone()
+  digest := crypto.sha256(text)
+  return Ok(Document {
+      text: text,
+      sha256: encoding.hex_encode(digest[0..digest.len()]).clone(),
+      metadata: after,
+    })
+}
+
+pub Profile { Diagnostics, EditSet, Policy }
+pub Headers {
+  STATUS: string,
+  POLICY: Option<string>,
+  EDITSET: Option<string>,
+  SUMMARY: string,
+  STDOUT: string,
+  STDERR: string,
+}
+
+pub Template {
+  schema_version: i64,
+  artifact_kind: string,
+  template_id: string,
+  preamble_text: string,
+  section_headers: Headers,
+  closing_text: string,
+  content_sha256: string,
+}
+
+fn decode_template(source: str, profile: Profile) -> Result<Template, Error> {
+  return json.decode(source)
+}
+pub Manifest { path: Option<string>, hash: Option<string>, kind: Option<string> }
+fn bound(borrow root: fs.directory, path: str, hash: str, deadline: i64, borrow mut remaining: i64) -> Result<Document, Error> {
+  source := read_document(root, path.bytes(), remaining, deadline)?
+  remaining = remaining - source.metadata.size
+  if source.sha256 != hash { return Err(Error.Invalid) }
+  return Ok(source)
+}
+pub fn wrap(borrow root: fs.directory, borrow manifest: Manifest, deadline: i64, borrow mut remaining: i64) -> Result<Option<Template>, Error> {
+  return match manifest.path {
+    None => Ok(None),
+    Some(path) => {
+      hash: str := match manifest.hash { None => { return Err(Error.Invalid) }, Some(value) => value }
+      // Replace only the following call for the direct-call control.
+      source := bound(root, path, hash, deadline, remaining)?
+      profile := match manifest.kind {
+        Some(kind) => if kind == "PROVIDER_EDIT" { Profile.Policy } else { Profile.Diagnostics },
+        None => { return Err(Error.Invalid) },
+      }
+      value := decode_template(source.text, profile)?
+      return Ok(Some(value))
+    },
+  }
+}
+```
+
+### Consolidated R77–R83 adoption boundary
+
+R77–R82 are recorded nonblocking requirements; R83 currently blocks complete evaluator input
+admission. This batch covers the concrete composition failures found while implementing retained
+filesystem/process owners, task validation, sandbox command preparation and evaluator document
+admission. It is not a promise that unimplemented measurement/publication code cannot reveal
+further compiler defects. Source trust, provider/repair measurement construction, publication and
+legacy eval retirement remain application implementation work; no hypothetical language API is
+requested for them. Publish this prerequisite batch together. Require the original per-request
+acceptance plus the R83 real consumer before marking verified, and adopt its merged fixes in one
+pin change. Continue independent application work while the provider implements the batch.
