@@ -22,6 +22,37 @@ numbers are approximate and may drift — locate by function name.
 
 ## Align audit answer (2026-09-07)
 
+### R69–R76 provider delivery (2026-09-11)
+
+[Align PR #1024](https://github.com/sanohiro/align/pull/1024) is merged into main
+at `6ca79fee6eb221702652c2bb131839708db55eda`. All required CI checks passed,
+including Linux x86_64/ARM64, native macOS filesystem/identity owners and all
+four PostgreSQL integration shards. Independent review and finding fixes are
+recorded in the PR. [Plan 54](https://github.com/sanohiro/align/blob/6ca79fee6eb221702652c2bb131839708db55eda/docs/impl/54-r69-r76-prerequisite-batch-plan.md)
+owns the exact delivered contract and platform evidence.
+
+The delivered surfaces are retained raw `read_link` (cap 1..2147483646),
+`metadata_follow`, real-ID `access`/`access_at`, exclusive `create_symlink`,
+`os.identity`, pure independently owned `encoding.utf8_decode_lossy`, EVP
+`crypto.sha1` returning an independently owned 20-byte array, shared projection
+of directory/cursor-owning records and canonical borrowed optional-string ranges.
+Existing Error/Move/borrow models remain; link bytes and transform outputs retain
+no input/directory/arena lifetime. Traversal, policy, redaction and Git framing
+remain application responsibilities.
+
+Platform limit: `access` supports Linux/macOS. Strict relative `access_at` supports
+Linux; on macOS it validates inputs then returns `Error.Code(ENOTSUP)` before
+filesystem work. Native XNU execution disproved the earlier final-link rejection
+assumption, and the owner approved explicit refusal instead of weaker semantics.
+Useful macOS relative R72 access remains deferred. Privileged credential/ACL
+fixtures are not claimed complete.
+
+All eight requests are ALIGN_MERGED for this documented provider contract.
+Consumer adoption and acceptance remain pending; this update changes no align-llm
+source, fixtures or toolchain pin. The provider handoff reports that
+`cargo build --release --workspace` passed on the merged main commit.
+No versioned release was requested.
+
 ### R63 numeric JSON delivery (2026-09-10)
 
 R63 is ALIGN_MERGED in Align main `4cb14895a06e67f32ee72383b53afe72cd8e5555`
@@ -12378,14 +12409,17 @@ not run those application owners.
 ## Request 69 — Indexed shared borrowing of retained-directory owner records
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; the retained tree consumer can recurse within its existing 128-entry bound.
 Independent work that may continue: retained source/tree observation and the concentrated product cutover.
 Resume condition: a merged shared indexed-borrow extension admits existing directory-owning records
   without moving owners; adopt and verify its actual surface before selecting an iterative owner queue.
-Align commit or pull request: none; reproduced at f83f5c3c365ac992c6c2dc5a371164c9f7b4339f.
+Align commit or pull request: merged Align PR #1024; main 6ca79fee6eb221702652c2bb131839708db55eda.
+  Shared directory/cursor projection design accepted; no owner extraction or mutable indexed borrow.
+  Original provider reproduction: f83f5c3c365ac992c6c2dc5a371164c9f7b4339f.
+  Consumer adoption pending.
 align-llm verification: pending — check-per-unit and whole-program execution of the reproduction below;
   owner-queue traversal integration is not selected until an actual consumer replaces bounded recursion.
 ```
@@ -12471,7 +12505,7 @@ availability does not erase this non-blocking language requirement.
 ## Request 70 — Retained-directory link and followed-metadata observations
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: P3 deleted-open-file budget observation; dependent A2/A3/A4 task execution acceptance.
@@ -12479,7 +12513,11 @@ Independent work that may continue: schema, retained source, repair and evaluato
   that does not claim complete validation-resource observation or task execution acceptance.
 Resume condition: merge generic retained-directory raw link reading and explicit followed metadata;
   adopt the actual shipped surface and pass the focused observation and final integration owners.
-Align commit or pull request: none; audited at 177224089629a269bc404f2958b8bfc67b79dcbe.
+Align commit or pull request: merged Align PR #1024; main 6ca79fee6eb221702652c2bb131839708db55eda.
+  Implemented under Align plan 54; independent review finding fixed (see batch handoff above).
+  Bounded raw read_link and explicit metadata_follow design accepted; no atomic paired observation.
+  Original provider audit: 177224089629a269bc404f2958b8bfc67b79dcbe.
+  Consumer adoption pending.
 align-llm verification: pending — ./scripts/alignc run src/prompt_deleted_open_file_smoke.align
   (planned, not implemented), followed by python3 scripts/run-align-product-cutover --functional,
   --containment and --no-python (all planned, not implemented; A2/A3/A4 final integration owners).
@@ -12587,7 +12625,7 @@ this generic filesystem request does not add a cross-platform sandbox promise.
 ## Request 71 — Borrowed optional-string payload slicing reaches a codegen mismatch
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; the artifact runtime-identity decoder can pass its borrowed payload
@@ -12596,8 +12634,11 @@ Independent work that may continue: full verifier and schema/evaluator integrati
   existing explicit str-view call boundary; all other independent product cutover work.
 Resume condition: merge a compiler correction for direct slicing of the borrowed optional-string
   payload; adopt and verify the actual corrected compiler before simplifying the consumer helper.
-Align commit or pull request: none; reproduced at 177224089629a269bc404f2958b8bfc67b79dcbe.
-align-llm verification: direct reproduction passes check-per-unit but fails run at codegen;
+Align commit or pull request: merged Align PR #1024; main 6ca79fee6eb221702652c2bb131839708db55eda.
+  Canonical Str descriptor materialization and narrow borrowed-read certification implemented.
+  Original provider reproduction: 177224089629a269bc404f2958b8bfc67b79dcbe.
+  Consumer adoption pending.
+align-llm verification at the original consumer pin: direct reproduction passes check-per-unit but fails run at codegen;
   ordinary str-helper control passes both and prints PASS at the same pin. Corrected direct
   whole/per-unit compilation and execution remain pending; final consumer owner is
   scripts/run-prompt-verifier-smoke after direct-expression adoption.
@@ -12689,14 +12730,19 @@ added by this non-blocking compiler correction.
 ## Request 72 — Retained real-credential access observations
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: P1 output-parent permission preflight and P3 sandbox-tool admission; A2/A3/A4.
 Independent work that may continue: record, repair, source hashing, publication and supervisor algorithms.
 Resume condition: merge retained-directory self/relative real-ID permission observation, adopt its
   shipped API and pass the focused permission owner plus dependent integration owners below.
-Align commit or pull request: none; audited at 177224089629a269bc404f2958b8bfc67b79dcbe.
+Align commit or pull request: merged Align PR #1024; main 6ca79fee6eb221702652c2bb131839708db55eda.
+  Implemented under Align plan 54; independent review finding fixed (see batch handoff above).
+  Real-ID/ACL access and access_at accepted with native no-follow and stage-specific false/Error rules.
+  macOS access_at returns Error.Code(ENOTSUP) before filesystem work; useful relative access remains deferred.
+  Original provider audit: 177224089629a269bc404f2958b8bfc67b79dcbe.
+  Consumer adoption pending.
 align-llm verification: pending; proposed prompt_access_smoke and consolidated batch matrix below.
 ```
 
@@ -12741,14 +12787,18 @@ including rejection before task launch. Final A2/A3/A4 owners are listed in the 
 ## Request 73 — Explicit real user and group identity
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: P3 sandbox capability probe, prepared namespace and validation argv; A2/A3/A4.
 Independent work that may continue: schema, repair, source/workspace algorithms and supervisor logic.
 Resume condition: merge generic real UID/GID observation, adopt the shipped API, and verify both
   namespace argv paths and installed-profile task execution without a procfs compatibility layer.
-Align commit or pull request: none; audited at 177224089629a269bc404f2958b8bfc67b79dcbe.
+Align commit or pull request: merged Align PR #1024; main 6ca79fee6eb221702652c2bb131839708db55eda.
+  Implemented under Align plan 54; independent review finding fixed (see batch handoff above).
+  Copy os.identity_info with real_uid/real_gid accepted; no credential change or authentication claim.
+  Original provider audit: 177224089629a269bc404f2958b8bfc67b79dcbe.
+  Consumer adoption pending.
 align-llm verification: pending; proposed prompt_os_identity_smoke and consolidated batch matrix.
 ```
 
@@ -12784,14 +12834,18 @@ sandbox path. Platform refusal remains explicit where containment is unavailable
 ## Request 74 — Exclusive retained-directory symbolic-link creation
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: N/A for current cutover source admission, which rejects baseline symlinks.
 Independent work that may continue: all current regular-file source/workspace cutover consumers.
 Resume condition: merge the generic retained creation operation and verify its first admitted
   symlink-copy consumer; reclassify as blocking before that consumer is enabled.
-Align commit or pull request: none; audited at 177224089629a269bc404f2958b8bfc67b79dcbe.
+Align commit or pull request: merged Align PR #1024; main 6ca79fee6eb221702652c2bb131839708db55eda.
+  Implemented under Align plan 54; independent review finding fixed (see batch handoff above).
+  Exclusive create_symlink accepted; exact target bytes and occupied-entry preservation.
+  Original provider audit: 177224089629a269bc404f2958b8bfc67b79dcbe.
+  Consumer adoption pending.
 align-llm verification: pending; proposed prompt_symlink_copy_smoke, without adding unrelated A2/A3/A4 gates.
 ```
 
@@ -12851,7 +12905,7 @@ listed here. Non-OS composition audit results must be reconciled before this bat
 ## Request 75 — Owned UTF-8 replacement decoding
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: P2/P3 arbitrary child diagnostics and retained edit-body text; A1/A2/A3/A4.
@@ -12859,7 +12913,10 @@ Independent work that may continue: valid-text repair assembly, records, source/
   raw-byte capture/redaction and supervisor logic that does not claim diagnostic decoding complete.
 Resume condition: merge generic owned replacement decoding, adopt the shipped API and pass the
   differential text owner, all affected diagnostic/edit-body consumers and final integration below.
-Align commit or pull request: none; audited at 177224089629a269bc404f2958b8bfc67b79dcbe.
+Align commit or pull request: merged Align PR #1024; main 6ca79fee6eb221702652c2bb131839708db55eda.
+  Owned utf8_decode_lossy accepted; pure maximal-subpart replacement with no retained input lifetime.
+  Original provider audit: 177224089629a269bc404f2958b8bfc67b79dcbe.
+  Consumer adoption pending.
 align-llm verification: pending; proposed prompt_diagnostic_decode_smoke and consolidated batch matrix.
 ```
 
@@ -12953,7 +13010,7 @@ provider audits before the single remaining-prerequisite batch is reviewed and p
 ## Request 76 — Generic one-shot SHA-1 for existing Git blob identity
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: P3 internal worktree-change observation and allowed-change admission; A2/A3/A4.
@@ -12961,7 +13018,10 @@ Independent work that may continue: SHA-256 artifact/source identity, records, r
   workspace construction and supervisor work outside completed change-observation acceptance.
 Resume condition: merge generic one-shot SHA-1, adopt the shipped API and verify retained regular
   file/symlink-target Git blob observations, allowed-change decisions and final integration below.
-Align commit or pull request: none; audited at 177224089629a269bc404f2958b8bfc67b79dcbe.
+Align commit or pull request: merged Align PR #1024; main 6ca79fee6eb221702652c2bb131839708db55eda.
+  EVP one-shot sha1 accepted; ordinary independently owned 20-byte array, existing Impure effect.
+  Original provider audit: 177224089629a269bc404f2958b8bfc67b79dcbe.
+  Consumer adoption pending.
 align-llm verification: pending; proposed prompt_git_blob_identity_smoke and consolidated batch matrix.
 ```
 
