@@ -9776,6 +9776,19 @@ Resume condition: an Align release admits a `borrow mut array<T>` local passed t
   `array<T>` field of a record (`s.field[i] = v`).
 Align commit or pull request: partial repair in https://github.com/sanohiro/align/pull/992,
   merged as 305926b423da9be1f13b0129a7232626e6704d95; array-field assignment remains unsupported
+  Local read-only view provenance repair: https://github.com/sanohiro/align/pull/1022.
+  Literal/constant origins now survive local records, collections, projections and control flow;
+  known read-only write destinations and explicit out/borrow mut view arguments are rejected.
+  Owned copies retain writable backing; no ownership, allocation or ABI change. Ordinary-call
+  write/result provenance is a separate prerequisite; array-field assignment remains unsupported.
+  Align-local owner tests, Linux/macOS CI and release build passed; consumer adoption is pending.
+  Related callback provenance repair: https://github.com/sanohiro/align/pull/1023,
+  merged as 8c9e24ee094b107e00c6685f3a034e5843eac6a4. Shared string callback results are
+  accepted for local, imported and generic calls. Unknown callable alternatives preserve
+  argument and capture lifetimes; producer validation rejects uninitialized input cycles.
+  No source type, ownership, allocation or ABI change. Align-local owner tests, Linux/macOS CI
+  and the merged workspace release build passed; consumer adoption is pending. Ordinary-call
+  write provenance and array-field assignment remain outside this repair; Request 46 stays open.
 align-llm verification: `src/residency_sim.align`'s `replay` function (`:660-920`) collapses its two
   copies of the eviction-and-insert block (`:772-812` and `:856-908`) into one shared `admit` helper
   taking the per-key tables as `borrow mut array<i64>` parameters, called from both call sites inside
