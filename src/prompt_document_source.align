@@ -1,0 +1,52 @@
+module prompt_document_source
+
+import std.crypto
+import std.encoding
+import std.fs
+import std.time
+
+pub Document { text: string, sha256: string, metadata: fs.metadata }
+
+fn same(before: fs.metadata, after: fs.metadata) -> bool {
+  regular := match after.kind { Regular => true, _ => false }
+  return regular && before.device == after.device && before.inode == after.inode &&
+  after.links == 1 && before.mode == after.mode && before.size == after.size &&
+  before.modified_seconds == after.modified_seconds &&
+  before.modified_nanoseconds == after.modified_nanoseconds &&
+  before.changed_seconds == after.changed_seconds &&
+  before.changed_nanoseconds == after.changed_nanoseconds
+}
+
+pub fn read(borrow root: fs.directory, relative: slice<u8>, maximum: i64, deadline: i64) -> Result<Document, Error> {
+  if maximum < 1 || maximum > 2097152 { return Err(Error.Invalid) }
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  input := root.open_read_single_link(relative)?
+  before := input.metadata()?
+  if before.links != 1 || before.size < 0 || before.size > maximum { return Err(Error.Invalid) }
+  mut data := buffer(0)
+  mut total := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if total == maximum {
+      mut probe := buffer(1)
+      if input.read(probe)? != 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := maximum - total
+    mut chunk := buffer(if remaining < 65536 { remaining } else { 65536 })
+    count := input.read(chunk)?
+    if count == 0 { break }
+    data.append(chunk.bytes())
+    total = total + count
+  }
+  after := input.metadata()?
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  if total != before.size || !same(before, after) { return Err(Error.Invalid) }
+  text := data.bytes().as_str()?.clone()
+  digest := crypto.sha256(text)
+  return Ok(Document {
+      text: text,
+      sha256: encoding.hex_encode(digest[0..digest.len()]).clone(),
+      metadata: after,
+    })
+}

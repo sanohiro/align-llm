@@ -1,0 +1,146 @@
+module prompt_evaluation_inputs
+
+import prompt_artifacts
+import prompt_document_source
+import prompt_evaluation_documents
+import prompt_score
+import prompt_task
+import prompt_task_inputs
+import std.fs
+
+pub Inputs {
+  experiment: prompt_artifacts.PromptExperimentResult,
+  parent: prompt_artifacts.PromptActivationResult,
+  corpus: prompt_artifacts.PromptEvaluationCorpus,
+  acceptance: prompt_artifacts.PromptAcceptancePolicy,
+  preflight: prompt_artifacts.WorkspacePreflightRequest,
+  source_policy: prompt_artifacts.PromptSourceVerifierPolicy,
+  tasks: array<prompt_task_inputs.Task>,
+}
+
+pub Invocation { task_index: i64, sample_index: i64, candidate: bool, seed: i64 }
+
+pub fn schedule(task_count: i64, sample_count: i64, seed_base: i64) -> Result<array<Invocation>, Error> {
+  if task_count < 1 || task_count > 64 || sample_count < 2 || sample_count > 16 { return Err(Error.Invalid) }
+  match seed_base.checked_add(sample_count - 1) { None => { return Err(Error.Invalid) }, Some(_) => {} }
+  mut output: array_builder<Invocation> := array_builder()
+  mut task_index := 0
+  loop {
+    if task_index == task_count { break }
+    mut sample_index := 1
+    loop {
+      if sample_index > sample_count { break }
+      paired_seed := seed_base + (sample_index - 1)
+      candidate_first := sample_index % 2 == 0
+      output.push(Invocation { task_index: task_index, sample_index: sample_index, candidate: candidate_first, seed: paired_seed })
+      output.push(Invocation { task_index: task_index, sample_index: sample_index, candidate: !candidate_first, seed: paired_seed })
+      sample_index = sample_index + 1
+    }
+    task_index = task_index + 1
+  }
+  return Ok(output.build())
+}
+
+fn read(borrow root: fs.directory, path: str, deadline: i64) -> Result<string, Error> {
+  source := prompt_document_source.read(root, path.bytes(), 2097152, deadline)?
+  return Ok(source.text)
+}
+
+fn optional_equal(borrow left: Option<string>, borrow right: Option<string>) -> bool {
+  return match left {
+    None => false,
+    Some(value) => match right { None => false, Some(other) => value == other },
+  }
+}
+
+fn scope_matches(borrow scope: prompt_artifacts.PromptScope, borrow request: prompt_artifacts.PromptEvaluateRequest, borrow corpus: prompt_artifacts.PromptEvaluationCorpus, borrow acceptance: prompt_artifacts.PromptAcceptancePolicy, tasks: slice<prompt_task_inputs.Task>) -> bool {
+  if !prompt_artifacts.verify_prompt_scope_content(scope) || !prompt_artifacts.verify_corpus_revision_content(corpus.corpus_revision) || tasks.len() == 0 ||
+  scope.corpus_id != corpus.corpus_id || scope.corpus_revision.content_sha256 != corpus.corpus_revision.content_sha256 ||
+  scope.acceptance_policy_sha256 != acceptance.content_sha256 ||
+  scope.generation_policy_sha256 != tasks[0].generation.content_sha256 ||
+  scope.evaluation_provider_kind != tasks[0].generation.evaluation_provider_kind ||
+  scope.evaluation_provider_model != tasks[0].generation.evaluation_provider_model ||
+  scope.align_revision != request.verifier_align_revision ||
+  scope.corpus_revision.source_kind != request.verifier_corpus_source_kind ||
+  scope.corpus_revision.source_repository_id != request.verifier_corpus_source_repository_id ||
+  scope.corpus_revision.source_sha256 != request.verifier_corpus_source_sha256 {
+    return false
+  }
+  mut index := 0
+  loop {
+    if index == tasks.len() { break }
+    if tasks[index].manifest.repo_id != scope.repo_id { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn variants_match(borrow experiment: prompt_artifacts.PromptExperimentResult, borrow parent: prompt_artifacts.PromptActivationResult, parent_path: str) -> bool {
+  if !prompt_score.admit_evaluation_experiment(experiment) ||
+  !prompt_score.admit_evaluation_parent(parent) || !prompt_artifacts.verify_prompt_activation_result_content(parent) { return false }
+  return match parent.activation {
+    None => false,
+    Some(activation) => match experiment.scope {
+      None => false,
+      Some(scope) => scope.content_sha256 == activation.scope.content_sha256 &&
+      match experiment.parent_activation {
+        None => false,
+        Some(reference) => reference.artifact_kind == "PROMPT_ACTIVATION_RESULT" &&
+        reference.path == parent_path && reference.content_sha256 == parent.content_sha256 &&
+        match parent.decision_id { None => false, Some(id) => id == reference.artifact_id },
+      } && match experiment.candidate_variant {
+        None => false,
+        Some(candidate) => prompt_artifacts.verify_prompt_variant_content(candidate) &&
+        candidate.base_prompt.content_sha256 == scope.base_prompt_sha256 &&
+        candidate.repo_prompt.content_sha256 == scope.repo_prompt_sha256 &&
+        candidate.content_sha256 != activation.effective_variant.content_sha256,
+      },
+    },
+  }
+}
+
+fn bundle_valid(borrow request: prompt_artifacts.PromptEvaluateRequest, borrow inputs: Inputs) -> bool {
+  if !prompt_score.acceptance_policy_valid(inputs.acceptance) ||
+  inputs.source_policy.content_sha256 != request.verifier_source_policy_sha256 ||
+  !optional_equal(inputs.source_policy.product_executable_sha256, request.product_executable_sha256) ||
+  inputs.preflight.evaluation_id != request.evaluation_id || inputs.preflight.project_root != request.project_root ||
+  inputs.preflight.workspace_path != request.workspace_path ||
+  !variants_match(inputs.experiment, inputs.parent, request.parent_activation_path) { return false }
+  return match inputs.experiment.scope {
+    None => false,
+    Some(scope) => scope_matches(scope, request, inputs.corpus, inputs.acceptance, inputs.tasks) && renderable(inputs),
+  }
+}
+
+fn variant_renderable(borrow variant: prompt_artifacts.PromptVariant, tasks: slice<prompt_task_inputs.Task>) -> bool {
+  mut index := 0
+  loop {
+    if index == tasks.len() { return true }
+    match prompt_task.render(variant, tasks[index].prompt, tasks[index].context, tasks[index].manifest.task_id) {
+      Err(_) => { return false }, Ok(_) => {},
+    }
+    index = index + 1
+  }
+}
+
+fn renderable(borrow inputs: Inputs) -> bool {
+  parent_valid := match inputs.parent.activation { None => false, Some(value) => variant_renderable(value.effective_variant, inputs.tasks) }
+  return parent_valid && match inputs.experiment.candidate_variant { None => false, Some(value) => variant_renderable(value, inputs.tasks) }
+}
+
+// This admits document identities only. Source trust and execution authority are later owners.
+pub fn load(borrow root: fs.directory, borrow request: prompt_artifacts.PromptEvaluateRequest, deadline: i64) -> Result<Inputs, Error> {
+  if request.schema_version != 2 || request.artifact_kind != "PROMPT_EVALUATE_REQUEST" ||
+  request.sample_count < 2 || request.sample_count > 16 { return Err(Error.Invalid) }
+  experiment := prompt_evaluation_documents.experiment(read(root, request.experiment_path, deadline)?)?
+  parent := prompt_evaluation_documents.parent(read(root, request.parent_activation_path, deadline)?)?
+  corpus := prompt_evaluation_documents.corpus(read(root, request.corpus_path, deadline)?)?
+  acceptance := prompt_evaluation_documents.acceptance(read(root, request.acceptance_policy_path, deadline)?)?
+  preflight := prompt_evaluation_documents.preflight(read(root, request.workspace_preflight_path, deadline)?)?
+  source_policy := prompt_evaluation_documents.source_policy(read(root, request.verifier_source_policy_path, deadline)?)?
+  tasks := prompt_task_inputs.load(root, corpus.task_files, deadline)?
+  if !prompt_score.generation_policy_valid(tasks[0].generation, request.sample_count) { return Err(Error.Invalid) }
+  inputs := Inputs { experiment: experiment, parent: parent, corpus: corpus, acceptance: acceptance, preflight: preflight, source_policy: source_policy, tasks: tasks }
+  if !bundle_valid(request, inputs) { return Err(Error.Invalid) }
+  return Ok(inputs)
+}

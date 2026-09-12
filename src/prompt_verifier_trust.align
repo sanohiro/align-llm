@@ -1,0 +1,67 @@
+module prompt_verifier_trust
+
+import core.json
+import prompt_artifacts
+import std.crypto
+import std.encoding
+
+pub Observation { observed: Option<string>, verified: bool }
+
+fn identity(value: str, sha256: bool) -> bool {
+  if value.len() != 64 && (sha256 || value.len() != 40) { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { return true }
+    byte := value.bytes()[index]
+    if !(byte >= 48 && byte <= 57) && !(byte >= 97 && byte <= 102) { return false }
+    index = index + 1
+  }
+}
+
+fn admitted(borrow observation: Observation, expected: str, sha256: bool) -> bool {
+  if !identity(expected, sha256) { return false }
+  return match observation.observed {
+    None => !observation.verified,
+    Some(value) => identity(value, sha256) && (!observation.verified || value == expected),
+  }
+}
+
+fn copied(borrow observation: Observation) -> Option<string> {
+  return match observation.observed { None => None, Some(value) => Some(value.clone()) }
+}
+
+pub fn build(
+  borrow request: prompt_artifacts.PromptEvaluateRequest,
+  borrow application: Observation,
+  borrow language: Observation,
+  borrow corpus: Observation,
+) -> Result<prompt_artifacts.PromptVerifierTrust, Error> {
+  if request.schema_version != 2 || request.artifact_kind != "PROMPT_EVALUATE_REQUEST" ||
+  (request.verifier_corpus_source_kind != "GIT_COMMIT" && request.verifier_corpus_source_kind != "FILE_SET") { return Err(Error.Invalid) }
+  file_set := request.verifier_corpus_source_kind == "FILE_SET"
+  if !admitted(application, request.verifier_align_llm_commit, false) ||
+  !admitted(language, request.verifier_align_revision, false) ||
+  !admitted(corpus, request.verifier_corpus_source_sha256, file_set) { return Err(Error.Invalid) }
+  if request.verifier_corpus_source_repository_id.len() > 256 ||
+  (file_set && request.verifier_corpus_source_repository_id != "") ||
+  (!file_set && request.verifier_corpus_source_repository_id == "") { return Err(Error.Invalid) }
+  mut value := prompt_artifacts.PromptVerifierTrust {
+    schema_version: 1, artifact_kind: "PROMPT_VERIFIER_TRUST".clone(),
+    expected_align_llm_commit: request.verifier_align_llm_commit.clone(),
+    expected_align_revision: request.verifier_align_revision.clone(),
+    expected_corpus_source_kind: request.verifier_corpus_source_kind.clone(),
+    expected_corpus_source_repository_id: request.verifier_corpus_source_repository_id.clone(),
+    expected_corpus_source_sha256: request.verifier_corpus_source_sha256.clone(),
+    align_llm_reachability: if application.verified { "VERIFIED".clone() } else { "UNVERIFIED".clone() },
+    align_llm_observed_head: copied(application),
+    align_reachability: if language.verified { "VERIFIED".clone() } else { "UNVERIFIED".clone() },
+    align_observed_revision: copied(language),
+    corpus_reachability: if corpus.verified { "VERIFIED".clone() } else { "UNVERIFIED".clone() },
+    corpus_observed_source_sha256: copied(corpus),
+    content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(value, 262144)?
+  hash := crypto.sha256(canonical)
+  value.content_sha256 = encoding.hex_encode(hash[0..hash.len()]).clone()
+  return Ok(value)
+}

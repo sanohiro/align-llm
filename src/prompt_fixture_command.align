@@ -1,0 +1,74 @@
+module prompt_fixture_command
+
+import std.process
+import prompt_fixture_environment
+
+pub Profile { fresh: bool, library_path: string, ld_library_path: string, pkg_config_path: string }
+pub Operation { Init, ConfigureNewlines, ConfigureModes, Add, Commit, Status, Head, Tree, IndexFlags, Index, Staged, Untracked, Ignored, ApplyCheck, Apply }
+
+fn nul_free(path: str) -> bool {
+  mut index := 0
+  loop {
+    if index == path.len() { break }
+    if path.bytes()[index] == 0 { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn absolute(path: str) -> bool {
+  return path.len() != 0 && path.bytes()[0] == 47 && nul_free(path)
+}
+
+fn revision(value: str) -> bool {
+  if value.len() != 40 { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { break }
+    byte := value.bytes()[index]
+    if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+pub fn build(borrow image: process.image, workspace: str, operation: Operation, operand: str, borrow profile: Profile) -> Result<command, Error> {
+  if !absolute(workspace) { return Err(Error.Invalid) }
+  valid := match operation {
+    Tree => revision(operand), Staged => revision(operand),
+    ApplyCheck => absolute(operand), Apply => absolute(operand),
+    _ => operand.len() == 0,
+  }
+  if !valid { return Err(Error.Invalid) }
+  environment := prompt_fixture_environment.values(profile.fresh, profile.library_path, profile.ld_library_path, profile.pkg_config_path, false)?
+  argv: array<str> := match operation {
+    Init => ["git", "init", "-q", "--initial-branch=main", "--object-format=sha1"].to_array(),
+    ConfigureNewlines => ["git", "config", "core.autocrlf", "false"].to_array(),
+    ConfigureModes => ["git", "config", "core.filemode", "true"].to_array(),
+    Add => ["git", "add", "--all"].to_array(),
+    Commit => ["git", "-c", "commit.gpgSign=false", "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "Create deterministic evaluation fixture"].to_array(),
+    Status => ["git", "status", "--porcelain", "--ignored", "--untracked-files=all"].to_array(),
+    Head => ["git", "rev-parse", "HEAD"].to_array(),
+    Tree => ["git", "ls-tree", "-r", "-z", "--full-tree", operand].to_array(),
+    IndexFlags => ["git", "ls-files", "-v", "-z"].to_array(),
+    Index => ["git", "ls-files", "--stage", "-z"].to_array(),
+    Staged => ["git", "diff", "--cached", "--name-only", "-z", "--no-renames", "--no-ext-diff", operand].to_array(),
+    Untracked => ["git", "ls-files", "--others", "-z", "--exclude-standard"].to_array(),
+    Ignored => ["git", "ls-files", "--others", "--ignored", "-z", "--exclude-standard"].to_array(),
+    ApplyCheck => ["git", "apply", "--check", operand].to_array(),
+    Apply => ["git", "apply", operand].to_array(),
+  }
+  command := process.command_image(image, argv)?
+  command.cwd(workspace)
+  command.new_session(true)
+  command.env_clear()
+  mut index := 0
+  loop {
+    if index == environment.len() { break }
+    name: str := environment[index].name
+    value: str := environment[index].value
+    command.env(name, value)
+    index = index + 1
+  }
+  return Ok(command)
+}

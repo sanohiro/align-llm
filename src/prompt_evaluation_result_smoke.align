@@ -1,0 +1,26 @@
+module prompt_evaluation_result_smoke
+
+import core.json
+import prompt_artifacts
+import prompt_evaluation_result
+import prompt_score
+import std.fs
+import std.io
+
+Output { result: prompt_artifacts.PromptEvaluationResult, evidence: prompt_artifacts.PromptEvaluationEvidence }
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 3 { return Err(Error.Invalid) }
+  result_text := fs.read_file(args[1])?
+  evidence_text := fs.read_file(args[2])?
+  original: prompt_artifacts.PromptEvaluationResult := json.decode(result_text)?
+  original_evidence: prompt_artifacts.PromptEvaluationEvidence := json.decode(evidence_text)?
+  prompt_score.verify_result(original, original_evidence)?
+  result := prompt_evaluation_result.compact(original)?
+  empty: array_builder<prompt_artifacts.PromptExpectedInputDigest> := array_builder()
+  evidence := prompt_evaluation_result.evidence(original_evidence.evaluation_id, result.content_sha256, original_evidence.trust, empty.build())?
+  prompt_score.verify_result(result, evidence)?
+  output := Output { result: result, evidence: evidence }
+  io.stdout.write(json.encode_bounded(output, 1048576)?)?
+  return io.stdout.flush()
+}

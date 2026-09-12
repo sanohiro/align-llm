@@ -1,0 +1,67 @@
+module prompt_workspace_usage_smoke
+
+import prompt_workspace_usage
+import prompt_deleted_open_file
+import std.fs
+import std.time
+
+fn expired(path: str, deadline: i64) -> Result<prompt_workspace_usage.Usage, Error> {
+  root := fs.open_directory(path)?
+  return prompt_workspace_usage.observe(root, 7, 17, deadline)
+}
+
+fn excluded(borrow usage: prompt_workspace_usage.Usage, path: str, deadline: i64) -> Result<(), Error> {
+  roots := [prompt_deleted_open_file.DescriptorRoot { directory: fs.open_directory(path)? }]
+  none: slice<prompt_deleted_open_file.Inode> := []
+  counted := prompt_deleted_open_file.observe(roots, none, 1, 7, deadline, prompt_deleted_open_file.Context.Stable)?
+  if !counted.complete || counted.files != 1 || counted.bytes != 7 { return Err(Error.Invalid) }
+  zero := prompt_deleted_open_file.observe(roots, usage.visible, 1, 7, deadline, prompt_deleted_open_file.Context.Stable)?
+  if !zero.complete || zero.files != 0 || zero.bytes != 0 { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn invalid(borrow root: fs.directory, files: i64, bytes: i64, deadline: i64) -> Result<(), Error> {
+  match prompt_workspace_usage.observe(root, files, bytes, deadline) {
+    Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } },
+    _ => { return Err(Error.Invalid) },
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 8 { return Err(Error.Invalid) }
+  deadline := time.instant() + 10000000000
+  owned := expired(args[1], deadline)?
+  if owned.files != 7 || owned.bytes != 17 || owned.visible.len() != 3 { return Err(Error.Invalid) }
+  root := fs.open_directory(args[1])?
+  invalid(root, 6, 17, deadline)?
+  invalid(root, 7, 16, deadline)?
+  invalid(root, 0, 17, deadline)?
+  invalid(root, 7, 0, deadline)?
+  invalid(root, 8193, 17, deadline)?
+  invalid(root, 7, 67108865, deadline)?
+  match prompt_workspace_usage.observe(root, 7, 17, 0) { Err(error) => { match error { Timeout => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  fs.rename_no_replace(args[1], args[2])?
+  fs.rename_no_replace(args[3], args[1])?
+  retained := prompt_workspace_usage.observe(root, 7, 17, deadline)?
+  if retained.files != owned.files || retained.bytes != owned.bytes { return Err(Error.Invalid) }
+  excluded(owned, args[4], deadline)?
+  replacement_root := fs.open_directory(args[1])?
+  replacement := prompt_workspace_usage.observe(replacement_root, 1, 1, deadline)?
+  if replacement.files != 0 || replacement.bytes != 0 || replacement.visible.len() != 0 { return Err(Error.Invalid) }
+  deep := fs.open_directory(args[5])?
+  invalid(deep, 8192, 1, deadline)?
+  depth128 := deep.open_dir("d")?
+  exact := prompt_workspace_usage.observe(depth128, 128, 1, deadline)?
+  if exact.files != 128 || exact.bytes != 0 { return Err(Error.Invalid) }
+  git_link := fs.open_directory(args[6])?
+  ignored := prompt_workspace_usage.observe(git_link, 1, 1, deadline)?
+  if ignored.files != 0 || ignored.bytes != 0 { return Err(Error.Invalid) }
+  if args[7] != "none" {
+    raw := fs.open_directory(args[7])?
+    raw_usage := prompt_workspace_usage.observe(raw, 1, 3, deadline)?
+    if raw_usage.files != 1 || raw_usage.bytes != 3 || raw_usage.visible.len() != 1 { return Err(Error.Invalid) }
+  }
+  print("workspace usage smoke: counts, hardlink lengths, visible exclusion, retained roots, kinds, bounds, deadline and depth PASS")
+  return Ok(())
+}

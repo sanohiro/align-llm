@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+"$compiler" check-per-unit "$project_root/src/prompt_evaluation_result_smoke.align"
+(cd "$scratch" && "$compiler" build "$project_root/src/prompt_evaluation_result_smoke.align")
+result="$project_root/eval/prompt/c4-template-gate/c4-template-evaluation.json"
+evidence="$project_root/eval/prompt/c4-template-gate/c4-template-evaluation-evidence.json"
+"$scratch/prompt_evaluation_result_smoke" "$result" "$evidence" > "$scratch/output"
+jq -r '[.workspace_preflight_request,.workspace_preflight,.snapshot_requests[],.snapshot_results[],.input_snapshots[],.snapshot_attestations[]]
+  | map(select(.!=null)) | to_entries[] | "\(.key+1) \(.value.artifact_kind) \(.value.content_sha256)"' "$result" > "$scratch/trace"
+hash="$(shasum -a 256 < "$scratch/trace" | cut -d ' ' -f 1)"
+count="$(wc -l < "$scratch/trace" | tr -d ' ')"
+jq -e --arg hash "$hash" --argjson count "$count" '
+  .result.error_code=="RESULT_TOO_LARGE" and .result.status=="ERROR" and .result.gate_eligible==false and
+  .result.trace_failure.trace_digest_sha256==$hash and .result.trace_failure.trace_record_count==$count and
+  .result.rows==[] and .result.tasks==[] and .result.snapshot_results==[] and .evidence.expected_inputs==[] and
+  .evidence.evaluation_result_sha256==.result.content_sha256
+' "$scratch/output" >/dev/null
+for selector in .result.trace_failure .result .evidence; do
+  claimed="$(jq -r "$selector.content_sha256" "$scratch/output")"
+  jq -cj "$selector | .content_sha256=\"\"" "$scratch/output" > "$scratch/canonical"
+  [[ "$(shasum -a 256 < "$scratch/canonical" | cut -d ' ' -f 1)" == "$claimed" ]]
+done
+printf 'native result compaction: independent ordered trace SHA/count, empty retired graph, canonical pair and full verifier PASS\n'

@@ -1,0 +1,72 @@
+module prompt_evaluation_request
+
+import prompt_artifacts
+
+fn identifier(value: str) -> bool {
+  if value.len() == 0 || value.len() > 128 { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { return true }
+    byte := value.bytes()[index]
+    if byte < 32 || byte > 126 { return false }
+    index = index + 1
+  }
+}
+fn hex(value: str, length: i64) -> bool {
+  if value.len() != length { return false }
+  mut index := 0
+  loop {
+    if index == length { return true }
+    byte := value.bytes()[index]
+    if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return false }
+    index = index + 1
+  }
+}
+pub fn relative(value: str) -> bool {
+  if value.len() == 0 || value.len() > 4096 || value.starts_with("/") { return false }
+  mut start := 0
+  mut index := 0
+  loop {
+    if index > value.len() { return true }
+    if index < value.len() && value.bytes()[index] == 0 { return false }
+    if index == value.len() || value.bytes()[index] == 47 {
+      part := value[start..index]
+      if part.len() == 0 || part.len() > 255 || part == "." || part == ".." { return false }
+      start = index + 1
+    }
+    index = index + 1
+  }
+}
+fn absolute(value: str) -> bool {
+  if value == "/" { return true }
+  return value.len() <= 4096 && value.starts_with("/") && relative(value[1..value.len()])
+}
+
+pub fn safe_id(value: str) -> Option<string> = if identifier(value) && !value.contains("/") && value != "." && value != ".." { Some(value.clone()) } else { None }
+
+pub fn validate(borrow request: prompt_artifacts.PromptEvaluateRequest) -> Result<(), Error> {
+  if request.schema_version != 2 || request.artifact_kind != "PROMPT_EVALUATE_REQUEST" ||
+  !identifier(request.evaluation_id) || request.evaluation_id.contains("/") || request.evaluation_id == "." || request.evaluation_id == ".." ||
+  request.sample_count < 2 || request.sample_count > 16 ||
+  !absolute(request.project_root) || !absolute(request.workspace_path) ||
+  !absolute(request.verifier_align_llm_repository_path) || !absolute(request.verifier_align_repository_path) ||
+  !absolute(request.verifier_corpus_source_path) || !absolute(request.verifier_git_executable_path) ||
+  !relative(request.experiment_path) || !relative(request.parent_activation_path) || !relative(request.corpus_path) ||
+  !relative(request.acceptance_policy_path) || !relative(request.workspace_preflight_path) ||
+  !relative(request.verifier_source_policy_path) || !relative(request.evaluation_evidence_path) ||
+  !(hex(request.verifier_align_llm_commit, 40) || hex(request.verifier_align_llm_commit, 64)) ||
+  !(hex(request.verifier_align_revision, 40) || hex(request.verifier_align_revision, 64)) ||
+  !hex(request.verifier_source_policy_sha256, 64) { return Err(Error.Invalid) }
+  match request.product_executable_path { None => { return Err(Error.Invalid) }, Some(value) => { if !absolute(value) || value == "/" { return Err(Error.Invalid) } } }
+  match request.product_executable_sha256 { None => { return Err(Error.Invalid) }, Some(value) => { if !hex(value, 64) { return Err(Error.Invalid) } } }
+  match request.verifier_python_executable_path { None => {}, Some(_) => { return Err(Error.Invalid) } }
+  match request.generation_child_path { None => {}, Some(_) => { return Err(Error.Invalid) } }
+  match request.generation_child_sha256 { None => {}, Some(_) => { return Err(Error.Invalid) } }
+  if request.verifier_corpus_source_kind == "FILE_SET" {
+    if request.verifier_corpus_source_repository_id.len() != 0 || !hex(request.verifier_corpus_source_sha256, 64) { return Err(Error.Invalid) }
+    return match request.verifier_corpus_file_set_manifest_path { None => Err(Error.Invalid), Some(value) => if absolute(value) && value != "/" { Ok(()) } else { Err(Error.Invalid) } }
+  }
+  if request.verifier_corpus_source_kind != "GIT_COMMIT" || !identifier(request.verifier_corpus_source_repository_id) ||
+  !(hex(request.verifier_corpus_source_sha256, 40) || hex(request.verifier_corpus_source_sha256, 64)) { return Err(Error.Invalid) }
+  return match request.verifier_corpus_file_set_manifest_path { None => Ok(()), Some(_) => Err(Error.Invalid) }
+}

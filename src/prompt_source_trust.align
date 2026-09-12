@@ -1,0 +1,115 @@
+module prompt_source_trust
+
+import prompt_artifacts
+import prompt_file_set_observation
+import prompt_git_metadata
+import prompt_source_directory
+import prompt_source_git
+import prompt_task_supervisor
+import prompt_verifier_trust
+import std.fs
+import std.path
+import std.process
+import std.time
+
+pub Evidence { trust: prompt_artifacts.PromptVerifierTrust, file_set: Option<prompt_file_set_observation.Observation> }
+
+pub Readout { Ready(Evidence), Stopped(prompt_source_git.Attempt), Cancelled(process.signal) }
+Query { Known(prompt_verifier_trust.Observation), Stopped(prompt_source_git.Attempt) }
+
+fn unknown() -> prompt_verifier_trust.Observation = prompt_verifier_trust.Observation { observed: None, verified: false }
+
+fn ordinary_report(borrow report: prompt_task_supervisor.Report) -> bool {
+  if !report.cleanup.released { return false }
+  match report.cleanup.first_error { Some(_) => { return false }, None => {} }
+  match report.drain_error { Some(_) => { return false }, None => {} }
+  return match report.stop { Cancelled(_) => false, _ => true }
+}
+
+fn ordinary(borrow attempt: prompt_source_git.Attempt) -> bool {
+  return match attempt.report { None => false, Some(report) => ordinary_report(report) }
+}
+
+fn git(
+  borrow image: process.image,
+  repository: str,
+  expected: str,
+  borrow mut signals: process.signal_subscription,
+  borrow procfs: fs.directory,
+  deadline: i64,
+) -> Result<Query, Error> {
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  metadata := match prompt_git_metadata.admit(repository, deadline) {
+    Ok(value) => value,
+    Err(_) => { if time.instant() >= deadline { return Err(Error.Timeout) }; return Ok(Query.Known(unknown())) },
+  }
+  result := match prompt_source_git.observe(image, metadata, expected, signals, procfs, deadline) {
+    Ok(value) => value,
+    Err(_) => { if time.instant() >= deadline { return Err(Error.Timeout) }; return Ok(Query.Known(unknown())) },
+  }
+  match result {
+    Observed(value) => { return Ok(Query.Known(prompt_verifier_trust.Observation { observed: Some(value.revision), verified: value.verified })) },
+    Stopped(attempt) => {
+      if !ordinary(attempt) { return Ok(Query.Stopped(attempt)) }
+      // The report certifies release before the stopped attempt's owners drop.
+      if time.instant() >= deadline { return Err(Error.Timeout) }
+      return Ok(Query.Known(unknown()))
+    },
+  }
+}
+
+fn manifest(borrow request: prompt_artifacts.PromptEvaluateRequest) -> Result<string, Error> {
+  return match request.verifier_corpus_file_set_manifest_path { None => Err(Error.Invalid), Some(value) => Ok(value.clone()) }
+}
+
+fn file_set(borrow request: prompt_artifacts.PromptEvaluateRequest, maximum: i64, deadline: i64) -> Result<prompt_file_set_observation.Observation, Error> {
+  manifest_path := manifest(request)?
+  if !manifest_path.starts_with("/") { return Err(Error.Invalid) }
+  directory := prompt_source_directory.resolve("/".bytes(), path.dir(manifest_path).bytes(), deadline)?
+  corpus := prompt_source_directory.resolve("/".bytes(), request.verifier_corpus_source_path.bytes(), deadline)?
+  observed := prompt_file_set_observation.observe(directory.directory, path.base(manifest_path).bytes(), request.verifier_corpus_source_sha256, corpus.directory, maximum, deadline)?
+  return Ok(observed)
+}
+
+// The caller has admitted the request/image and excludes source writers through all observations.
+pub fn run(
+  borrow request: prompt_artifacts.PromptEvaluateRequest,
+  borrow image: process.image,
+  borrow mut signals: process.signal_subscription,
+  borrow procfs: fs.directory,
+  maximum_corpus_bytes: i64,
+  deadline: i64,
+) -> Result<Readout, Error> {
+  if request.schema_version != 2 || request.artifact_kind != "PROMPT_EVALUATE_REQUEST" ||
+  maximum_corpus_bytes < 0 || maximum_corpus_bytes > 2305843009213693951 ||
+  (request.verifier_corpus_source_kind != "GIT_COMMIT" && request.verifier_corpus_source_kind != "FILE_SET") { return Err(Error.Invalid) }
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  match signals.next()? { Some(signal) => { return Ok(Readout.Cancelled(signal)) }, None => {} }
+  application := match git(image, request.verifier_align_llm_repository_path, request.verifier_align_llm_commit, signals, procfs, deadline)? {
+    Known(value) => value, Stopped(attempt) => { return Ok(Readout.Stopped(attempt)) },
+  }
+  language := match git(image, request.verifier_align_repository_path, request.verifier_align_revision, signals, procfs, deadline)? {
+    Known(value) => value, Stopped(attempt) => { return Ok(Readout.Stopped(attempt)) },
+  }
+  retained_files: Option<prompt_file_set_observation.Observation> := if request.verifier_corpus_source_kind == "FILE_SET" {
+    match file_set(request, maximum_corpus_bytes, deadline) { Ok(value) => Some(value), Err(_) => None }
+  } else { None }
+  corpus := if request.verifier_corpus_source_kind == "GIT_COMMIT" {
+    match git(image, request.verifier_corpus_source_path, request.verifier_corpus_source_sha256, signals, procfs, deadline)? {
+      Known(value) => value, Stopped(attempt) => { return Ok(Readout.Stopped(attempt)) },
+    }
+  } else {
+    file_identity(retained_files)
+  }
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  match signals.next()? { Some(signal) => { return Ok(Readout.Cancelled(signal)) }, None => {} }
+  trust := prompt_verifier_trust.build(request, application, language, corpus)?
+  return Ok(Readout.Ready(Evidence { trust: trust, file_set: retained_files }))
+}
+
+fn file_identity(borrow files: Option<prompt_file_set_observation.Observation>) -> prompt_verifier_trust.Observation {
+  return match files {
+    None => unknown(),
+    Some(value) => prompt_verifier_trust.Observation { observed: Some(value.sha256.clone()), verified: true },
+  }
+}

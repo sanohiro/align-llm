@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+trap 'rm -rf "${scratch}"' EXIT
+
+"${compiler}" run "${project_root}/src/prompt_patch_smoke.align"
+
+check_application() {
+  local name="$1" existed="$2" original="$3" expected="$4"
+  local case_root="${scratch}/${name}"
+  mkdir "${case_root}"
+  if [[ "${existed}" == yes ]]; then
+    printf '%s' "${original}" > "${case_root}/file.txt"
+  fi
+  "${compiler}" run "${project_root}/src/prompt_patch_smoke.align" -- "${name}" \
+    > "${scratch}/printed.patch"
+  # Emission uses print: remove exactly its one final LF, preserving all patch bytes.
+  local printed_size
+  printed_size="$(wc -c < "${scratch}/printed.patch")"
+  dd if="${scratch}/printed.patch" of="${scratch}/candidate.patch" \
+    bs=1 count="$((printed_size - 1))" 2>/dev/null
+  git -C "${case_root}" -c core.safecrlf=false apply --whitespace=nowarn \
+    "${scratch}/candidate.patch"
+  printf '%s' "${expected}" > "${scratch}/expected"
+  cmp "${case_root}/file.txt" "${scratch}/expected"
+}
+
+check_application replace yes $'alpha\nbeta\n' $'gamma\n'
+check_application response yes $'alpha\nbeta\n' $'gamma\n'
+check_application old-no-lf yes $'alpha\nbeta' $'alpha\ngamma\n'
+check_application new-no-lf yes $'alpha\n' alpha
+check_application both-no-lf yes alpha beta
+check_application create no '' $'delta\n'
+check_application create-empty no '' ''
+check_application fill-empty yes '' $'\n'
+check_application empty-existing yes $'\n' ''
+printf 'prompt patch: 9 git-apply cases passed\n'

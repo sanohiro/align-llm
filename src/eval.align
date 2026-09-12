@@ -4,6 +4,7 @@ import core.json
 import std.fs
 import std.time
 import verify
+import eval_retirement
 
 // Deterministic scoring for the fixed coding-eval set (roadmap C0). The corpus is a
 // declared JSON record checked into eval/tasks/. Each task runs one captured,
@@ -19,15 +20,15 @@ pub fn verdict_label(v: Verdict) -> str = match v {
 }
 
 TaskSpec {
-  id: str,
-  cmd: str,
-  argv: array<str>,
-  cwd: str,
+  id: string,
+  cmd: string,
+  argv: array<string>,
+  cwd: string,
   timeout_ns: i64,
   expected_code: i64,
 }
 
-TaskCorpus { schema_version: i64, corpus_id: str, task_files: array<str> }
+TaskCorpus { schema_version: i64, corpus_id: string, task_files: array<string> }
 
 TaskResult {
   schema_version: i64,
@@ -54,7 +55,7 @@ fn score(status: verify.RunStatus, code: i64, expected: i64) -> Verdict = match 
   SpawnFailed => Verdict.RunError,
 }
 
-fn run_one(task_id: str, cmd: str, argv: slice<str>, cwd: str, timeout_ns: i64, expected_code: i64) -> Verdict {
+fn run_one(task_id: str, cmd: str, argv: slice<str>, cwd: str, timeout_ns: i64, expected_code: i64) -> Result<Verdict, Error> {
   started := time.instant()
   captured := verify.run(cmd, argv, cwd, timeout_ns)
   elapsed := time.instant() - started
@@ -71,17 +72,30 @@ fn run_one(task_id: str, cmd: str, argv: slice<str>, cwd: str, timeout_ns: i64, 
     stdout: stdout,
     stderr: stderr,
   }
-  print(json.encode(result))
-  return verdict
+  print(json.encode(result)?)
+  return Ok(verdict)
 }
 
-// Load and score a versioned corpus. Decode and use stay in one scope because TaskCorpus owns
-// dynamic arrays and Align intentionally does not return Move structs as Result Ok payloads yet.
+fn run_task(borrow task: TaskSpec) -> Result<Verdict, Error> {
+  return arena temporary {
+    mut arguments: array_builder<str> := array_builder(temporary)
+    mut index := 0
+    loop {
+      if index == task.argv.len() { break }
+      arguments.push(task.argv[index])
+      index = index + 1
+    }
+    argv := arguments.build()
+    run_one(task.id, task.cmd, argv, task.cwd, task.timeout_ns, task.expected_code)
+  }
+}
+
+// Admit the entire corpus into owned records before any command or result line.
 // The final JSON line is stable score data; per-task duration is measurement metadata.
 pub fn run_suite(path: str) -> Result<(), Error> {
   data := fs.read_file(path)?
   corpus: TaskCorpus := json.decode(data)?
-  if corpus.schema_version != 1 {
+  if corpus.schema_version != 1 || corpus.corpus_id == "coding-v1" {
     return Err(Error.Invalid)
   }
   if corpus.task_files.len() == 0 {
@@ -89,7 +103,7 @@ pub fn run_suite(path: str) -> Result<(), Error> {
   }
 
   mut i := 0
-  mut passed := 0
+  mut admitted: array_builder<TaskSpec> := array_builder()
   loop {
     if i >= corpus.task_files.len() {
       break
@@ -98,16 +112,18 @@ pub fn run_suite(path: str) -> Result<(), Error> {
     task: TaskSpec := json.decode(task_data)?
     // Exercise both halves of Request 3 as a real client. The second decoded record is the one
     // actually executed, so a scalar-array encode regression cannot silently retain the old argv.
-    encoded := json.encode(task)
+    encoded := json.encode(task)?
     roundtrip: TaskSpec := json.decode(encoded)?
-    verdict := run_one(
-      roundtrip.id,
-      roundtrip.cmd,
-      roundtrip.argv,
-      roundtrip.cwd,
-      roundtrip.timeout_ns,
-      roundtrip.expected_code,
-    )
+    eval_retirement.admit(roundtrip.cmd, roundtrip.argv, roundtrip.cwd)?
+    admitted.push(roundtrip)
+    i = i + 1
+  }
+  tasks := admitted.build()
+  mut passed := 0
+  i = 0
+  loop {
+    if i == tasks.len() { break }
+    verdict := run_task(tasks[i])?
     match verdict {
       Pass => {
         passed = passed + 1
@@ -119,14 +135,15 @@ pub fn run_suite(path: str) -> Result<(), Error> {
 
   total := corpus.task_files.len()
   failed := total - passed
+  corpus_id: str := corpus.corpus_id
   summary := SuiteResult {
     schema_version: 1,
-    corpus_id: corpus.corpus_id,
+    corpus_id: corpus_id,
     task_count: total,
     pass_count: passed,
     fail_count: failed,
   }
-  print(json.encode(summary))
+  print(json.encode(summary)?)
   if failed != 0 {
     return Err(Error.Invalid)
   }

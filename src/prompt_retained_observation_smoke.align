@@ -1,0 +1,99 @@
+module prompt_retained_observation_smoke
+
+import core.json
+import std.fs
+import std.os
+
+Pending { directory: fs.directory, path: string }
+
+fn inspect(borrow item: Pending) -> Result<fs.metadata, Error> = inspect_directory(item.directory)
+
+fn inspect_directory(borrow directory: fs.directory) -> Result<fs.metadata, Error> {
+  if !directory.access(fs.access_mode { read: true, write: true, execute: true })? { return Err(Error.Invalid) }
+  cursor := directory.cursor()?
+  entry := cursor.next()? else { return Err(Error.Invalid) }
+  return directory.metadata()
+}
+
+fn expired_link(path: str) -> Result<array<u8>, Error> {
+  root := fs.open_directory(path)?
+  target: array<u8> := [120 as u8, 255 as u8, 121 as u8].to_array()
+  target_view: slice<u8> := target
+  root.create_symlink("raw", target_view)?
+  return root.read_link("raw", 3)
+}
+
+fn occupied(borrow root: fs.directory, path: str) -> Result<(), Error> {
+  match root.create_symlink(path, "replacement") {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(_) => {},
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 5 { return Err(Error.Invalid) }
+  owned := expired_link(args[1])?
+  if owned.len() != 3 || owned[0] != 120 || owned[1] != 255 || owned[2] != 121 { return Err(Error.Invalid) }
+  mut queue: array_builder<Pending> := array_builder()
+  queue.push(Pending { directory: fs.open_directory(args[1])?, path: args[1].clone() })
+  items := queue.build()
+  before := inspect(items[0])?
+  fs.rename_no_replace(args[1], args[2])?
+  fs.rename_no_replace(args[3], args[1])?
+  after := inspect(items[0])?
+  if before.device != after.device || before.inode != after.inode { return Err(Error.Invalid) }
+  root := fs.open_directory(args[2])?
+  raw := root.read_link("raw", 3)?
+  if raw.len() != owned.len() || raw[1] != owned[1] { return Err(Error.Invalid) }
+  match root.read_link("raw", 2) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match root.read_link("raw", 0) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match root.read_link("../raw", 3) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  root.create_symlink("absolute", args[2])?
+  root.remove_file("absolute")?
+  match root.metadata_at("absolute") { Err(error) => { match error { NotFound => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match root.create_symlink("invalid", "") { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match root.create_symlink("invalid", "a\0b") { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match root.create_symlink("../invalid", "target") { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  root.create_symlink("link", "file")?
+  direct := root.metadata_at("file")?
+  followed := root.metadata_follow("link")?
+  if direct.device != followed.device || direct.inode != followed.inode || followed.size != 7 { return Err(Error.Invalid) }
+  link_metadata := root.metadata_at("link")?
+  match link_metadata.kind { Symlink => {}, _ => { return Err(Error.Invalid) } }
+  root.create_symlink("fifo-link", "fifo")?
+  fifo_metadata := root.metadata_follow("fifo-link")?
+  match fifo_metadata.kind { Other => {}, _ => { return Err(Error.Invalid) } }
+  root.create_symlink("dangling", "missing")?
+  if root.read_link("dangling", 7)?.len() != 7 { return Err(Error.Invalid) }
+  match root.metadata_follow("dangling") { Err(error) => { match error { NotFound => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  occupied(root, "file")?
+  occupied(root, "directory")?
+  occupied(root, "link")?
+  occupied(root, "dangling")?
+  mode := fs.access_mode { read: true, write: true, execute: true }
+  if !root.access(mode)? { return Err(Error.Invalid) }
+  empty := fs.access_mode { read: false, write: false, execute: false }
+  match root.access(empty) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match root.access_at("../file", mode) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match root.access_at("file", empty) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  if args[4] == "Darwin" {
+    paths := ["file", "missing", "link", "fifo", "missing/child"].to_array()
+    mut index := 0
+    loop {
+      if index == paths.len() { break }
+      path := paths[index]
+      match root.access_at(path, mode) { Err(error) => { match error { Code(code) => { if code != 45 { return Err(Error.Invalid) } }, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+      index = index + 1
+    }
+  } else {
+    read := fs.access_mode { read: true, write: false, execute: false }
+    if !root.access_at("file", read)? { return Err(Error.Invalid) }
+    match root.access_at("link", read) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+    match root.access_at("missing", read) { Err(error) => { match error { NotFound => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  }
+  identity := os.identity()?
+  print(json.encode(identity)?)
+  print("retained-observation: PASS")
+  return Ok(())
+}

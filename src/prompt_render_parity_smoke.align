@@ -88,7 +88,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       text: text_view,
       sha256: sha256_view,
     }
-    print(json.encode(output))
+    print(json.encode(output)?)
     index = index + 1
   }
   return Ok(())

@@ -1,0 +1,127 @@
+module prompt_source_trust_smoke
+
+import prompt_artifacts
+import prompt_file_set
+import core.json
+import prompt_source_trust
+import prompt_tool_image
+import prompt_scope_cleanup
+import std.fs
+import std.io
+import std.process
+import std.time
+
+REQUEST := "{\"schema_version\":2,\"artifact_kind\":\"PROMPT_EVALUATE_REQUEST\",\"evaluation_id\":\"evaluation_id\",\"project_root\":\"project_root\",\"experiment_path\":\"experiment_path\",\"parent_activation_path\":\"parent_activation_path\",\"corpus_path\":\"corpus_path\",\"sample_count\":1,\"acceptance_policy_path\":\"acceptance_policy_path\",\"workspace_path\":\"workspace_path\",\"workspace_preflight_path\":\"workspace_preflight_path\",\"verifier_align_llm_repository_path\":\"verifier_align_llm_repository_path\",\"verifier_align_llm_commit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"verifier_align_repository_path\":\"verifier_align_repository_path\",\"verifier_align_revision\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"verifier_corpus_source_path\":\"verifier_corpus_source_path\",\"verifier_corpus_source_kind\":\"GIT_COMMIT\",\"verifier_corpus_source_repository_id\":\"repo\",\"verifier_corpus_source_sha256\":\"cccccccccccccccccccccccccccccccccccccccc\",\"verifier_source_policy_path\":\"verifier_source_policy_path\",\"verifier_source_policy_sha256\":\"verifier_source_policy_sha256\",\"verifier_git_executable_path\":\"verifier_git_executable_path\",\"evaluation_evidence_path\":\"evaluation_evidence_path\",\"product_executable_path\":\"/product\",\"product_executable_sha256\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"}"
+
+fn path(root: str, name: str) -> string {
+  output := builder()
+  output.write(root)
+  output.write("/")
+  output.write(name)
+  return output.to_string()
+}
+
+fn image(root_path: str, digest: str) -> Result<process.image, Error> {
+  root := fs.open_directory(root_path)?
+  return prompt_tool_image.admit(root, "git".bytes(), digest, 268435456, time.instant() + 10000000000)
+}
+
+fn owned(borrow image: process.image, borrow mut signals: process.signal_subscription, borrow procfs: fs.directory, args: slice<str>) -> Result<prompt_source_trust.Readout, Error> {
+  mode := args[8]
+  if mode == "pre-cancel" {
+    sender := process.command("/bin/sh", ["/bin/sh", "-c", "[ \"$1\" = \"$PPID\" ] || exit 91; kill -TERM \"$1\"", "trust-signal", args[9]])
+    outcome := sender.run()?
+    status := outcome.status()
+    if !match status.termination { Exited(code) => code == 0, _ => false } { return Err(Error.Invalid) }
+  }
+  mut request := prompt_artifacts.decode_prompt_evaluate_request(REQUEST)?
+  request.verifier_align_llm_repository_path = path(args[4], "app")
+  request.verifier_align_repository_path = path(args[4], if mode == "unavailable" { "missing" } else { "language" })
+  request.verifier_corpus_source_path = path(args[4], "corpus")
+  request.verifier_align_llm_commit = if mode == "mismatch" { "0000000000000000000000000000000000000000".clone() } else { args[5].clone() }
+  request.verifier_align_revision = args[6].clone()
+  request.verifier_corpus_source_sha256 = args[7].clone()
+  if mode == "file-set" || mode == "bad-manifest" || mode == "file-cap" || mode == "file-digest" {
+    request.verifier_corpus_source_kind = "FILE_SET".clone()
+    request.verifier_corpus_source_repository_id = "".clone()
+    request.verifier_corpus_file_set_manifest_path = Some(path(args[4], "manifest"))
+    request.verifier_corpus_source_path = path(args[4], "files")
+    if mode == "file-digest" { request.verifier_corpus_source_sha256 = "0000000000000000000000000000000000000000000000000000000000000000".clone() }
+  }
+  deadline := time.instant() + if mode == "deadline" { 500000000 } else { 10000000000 }
+  return prompt_source_trust.run(request, image, signals, procfs, if mode == "file-cap" { 2 } else { 3 }, deadline)
+}
+
+fn inspect(result: Result<prompt_source_trust.Readout, Error>, mode: str) -> Result<(), Error> {
+  value := match result {
+    Ok(value) => value,
+    Err(error) => { if mode == "deadline" && match error { Timeout => true, _ => false } { print("deadline"); return Ok(()) }; return Err(error) },
+  }
+  match value {
+    Ready(evidence) => {
+      if mode == "pre-cancel" || mode == "active-cancel" || mode == "deadline" { return Err(Error.Invalid) }
+      retained_files(evidence, mode)?
+      encoded := encode_trust(evidence.trust)?
+      io.stdout.write(encoded)?
+      io.stdout.flush()?
+    },
+    Cancelled(_) => { if mode != "pre-cancel" { return Err(Error.Invalid) }; print("cancelled") },
+    Stopped(attempt) => {
+      mut scope := attempt.scope
+      cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+      if !cleanup.released { return Err(Error.Timeout) }
+      match cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+      match attempt.error { None => {}, Some(error) => { return Err(error) } }
+      match attempt.report {
+        None => { return Err(Error.Invalid) },
+        Some(report) => {
+          if mode != "active-cancel" || !report.cleanup.released { return Err(Error.Invalid) }
+          match report.cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+          match report.drain_error { None => {}, Some(error) => { return Err(error) } }
+          if !match report.stop { Cancelled(_) => true, _ => false } { return Err(Error.Invalid) }
+        },
+      }
+      print("stopped")
+    },
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 10 { return Err(Error.Invalid) }
+  executable := match image(args[2], args[3]) {
+    Ok(value) => value,
+    Err(error) => { if args[1] == "Darwin" && match error { Code(code) => code == 45, _ => false } { print("source trust: Darwin executable memory ENOTSUP 45"); return Ok(()) }; return Err(error) },
+  }
+  procfs := fs.open_directory("/proc")?
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  result := owned(executable, signals, procfs, args)
+  checked := inspect(result, args[8])
+  restored := signals.close()
+  restored?
+  checked?
+  return Ok(())
+}
+
+// Called after owned() has released its decoded request and all source inputs.
+fn retained_files(borrow evidence: prompt_source_trust.Evidence, mode: str) -> Result<(), Error> {
+  match evidence.file_set {
+    None => { if mode == "file-set" { return Err(Error.Invalid) } },
+    Some(observed) => {
+      if mode != "file-set" || observed.files != 1 || observed.files != observed.members.len() || observed.total_bytes != 3 { return Err(Error.Invalid) }
+      if !path_is_a(observed.members[0]) || observed.members[0].mode != 33188 ||
+      observed.members[0].sha256 != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" { return Err(Error.Invalid) }
+      if observed.sha256 != evidence.trust.expected_corpus_source_sha256 { return Err(Error.Invalid) }
+    },
+  }
+  return Ok(())
+}
+
+fn encode_trust(borrow value: prompt_artifacts.PromptVerifierTrust) -> Result<string, Error> {
+  return json.encode_bounded(value, 262144)
+}
+
+fn path_is_a(borrow entry: prompt_file_set.Entry) -> bool {
+  raw: slice<u8> := entry.path
+  return raw.len() == 1 && raw[0] == 97
+}

@@ -1,0 +1,21 @@
+module record_move_order
+
+// R86 compiler witness, not product code or a validation bypass.
+// Align 1f0627bb accepts this source but prints an empty digest after moving the
+// owner in declaration order despite the clone preceding that move in source.
+import core.json
+
+pub Inner { text: string }
+pub Outer { value: Option<Inner>, digest: Option<string> }
+
+pub fn build(value: Inner) -> Outer {
+  return Outer { digest: Some(value.text.clone()), value: Some(value) }
+}
+
+pub fn main() -> Result<(), Error> {
+  input := Inner { text: "owned".clone() }
+  result := build(input)
+  encoded := json.encode(result)?
+  print(encoded)
+  return Ok(())
+}

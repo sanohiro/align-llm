@@ -1,0 +1,65 @@
+module prompt_edit_admission_smoke
+
+import prompt_edit_admission
+
+fn status_code(status: prompt_edit_admission.AdmissionStatus) -> i64 = match status {
+  Complete => 0, NoFileBlock => 1, HeaderWithoutBlock => 2, UnterminatedBlock => 3,
+  TooManyBlocks => 4, PathNotEditable => 5, DuplicatePath => 6, BodyTooLarge => 7,
+}
+
+fn refused_as(content: str, expected: i64) -> bool {
+  allowed := ["a", "b"]
+  result := prompt_edit_admission.admit(content, allowed)
+  return status_code(result.status) == expected && result.blocks.len() == 0
+}
+
+fn sized_response(count: i64) -> string {
+  output := builder()
+  output.write("FILE: a\n```\n")
+  mut index := 0
+  loop {
+    if index == count { break }
+    output.write("x")
+    index = index + 1
+  }
+  output.write("\n```\n")
+  return output.to_string()
+}
+
+fn main() -> i32 {
+  allowed := ["a", "b"]
+  ordered := prompt_edit_admission.admit("FILE: b\n```\nsecond\n```\nFILE: ./a\n```\nfirst\n```", allowed)
+  if status_code(ordered.status) != 0 || ordered.blocks.len() != 2 { return 1 }
+  if ordered.blocks[0].path != "a" || ordered.blocks[0].body != "first\n" ||
+  ordered.blocks[1].path != "b" || ordered.blocks[1].body != "second\n" { return 2 }
+  if !refused_as("plain prose", 1) { return 3 }
+  if !refused_as("FILE: outside\n```\nx\n```", 5) { return 4 }
+  if !refused_as("FILE: a\n```\nx\n```\nFILE: ./a\n```\ny\n```", 6) { return 5 }
+  // Complete parsing precedes membership: the later malformed block wins.
+  if !refused_as("FILE: outside\n```\nx\n```\nFILE: b", 2) { return 6 }
+  if !refused_as("FILE: a\n```\nx\n```\nFILE: b\n```\ny", 3) { return 7 }
+  if !refused_as("FILE: ././a\n```\nx\n```", 5) { return 8 }
+  boundary := sized_response(262143)
+  accepted := prompt_edit_admission.admit(boundary, allowed)
+  if status_code(accepted.status) != 0 || accepted.blocks.len() != 1 { return 9 }
+  if accepted.blocks[0].body.len() != 262144 { return 10 }
+  oversized := sized_response(262144)
+  if !refused_as(oversized, 7) { return 11 }
+  duplicate := builder()
+  duplicate.write("FILE: a\n```\nfirst\n```\n")
+  duplicate.write(oversized)
+  duplicate_text := duplicate.to_string()
+  if !refused_as(duplicate_text, 6) { return 12 }
+  outside := builder()
+  outside.write("FILE: outside\n```\n")
+  outside.write(accepted.blocks[0].body)
+  outside.write("extra\n```\n")
+  outside_text := outside.to_string()
+  if !refused_as(outside_text, 5) { return 13 }
+  unicode_allowed := ["あ", "é", "z"]
+  unicode_result := prompt_edit_admission.admit("FILE: あ\n```\na\n```\nFILE: é\n```\nb\n```\nFILE: z\n```\nc\n```", unicode_allowed)
+  if status_code(unicode_result.status) != 0 || unicode_result.blocks.len() != 3 { return 14 }
+  if unicode_result.blocks[0].path != "z" || unicode_result.blocks[1].path != "é" || unicode_result.blocks[2].path != "あ" { return 15 }
+  print("prompt edit admission: 15 checks passed")
+  return 0
+}

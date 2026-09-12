@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Independent developer qualification of the native product cutover."""
+import argparse
+import os
+from pathlib import Path
+import platform
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    modes = parser.add_mutually_exclusive_group(required=True)
+    for name in ('functional', 'containment', 'no-python'):
+        modes.add_argument('--' + name, action='store_true')
+    parser.add_argument('--binary', type=Path, default=ROOT / 'main')
+    parser.add_argument('--models', type=Path)
+    parser.add_argument('--libraries', type=Path)
+    parser.add_argument('--shim', type=Path)
+    parser.add_argument('--align-repo', type=Path)
+    args = parser.parse_args()
+    if platform.system() != 'Linux':
+        parser.error('cutover runtime qualification requires Linux; no platform skip is accepted')
+    binary = args.binary.resolve(strict=True)
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        parser.error('--binary must be an executable product file')
+    env = dict(os.environ, ALIGN_LLM_BIN=str(binary))
+
+    def run(command, environment=None):
+        print('cutover owner:', ' '.join(map(str, command)), flush=True)
+        subprocess.run(list(map(str, command)), cwd=ROOT, env=environment or env, check=True)
+
+    if args.functional:
+        run(['bash', 'eval/runners/run-fixed.sh'])
+        run(['bash', 'scripts/run-eval-invalid-smoke'])
+        run(['bash', 'scripts/run-eval-retirement-smoke'])
+        run(['bash', 'scripts/run-prompt-evaluation-native-smoke', 'cutover'])
+    elif args.no_python:
+        for name in ('models', 'libraries', 'shim'):
+            value = getattr(args, name)
+            if value is None or not value.is_dir():
+                parser.error('--no-python requires --models, --libraries and --shim directories')
+        env['CUTOVER_LIBRARIES'] = str(args.libraries.resolve())
+        env['CUTOVER_SHIM'] = str(args.shim.resolve())
+        run(['bash', 'scripts/run-prompt-evaluation-native-smoke', 'cutover-no-python'])
+        run(['bash', 'scripts/run-product-state-no-python', binary, env['CUTOVER_LIBRARIES'], env['CUTOVER_SHIM']])
+        run(['bash', 'scripts/run-product-runtime-no-python', binary, args.models.resolve(), env['CUTOVER_LIBRARIES'], env['CUTOVER_SHIM']])
+    else:
+        for owner in ('task-supervisor', 'validation-resources', 'workspace-cleanup', 'scope-cleanup', 'task-attempt'):
+            run(['bash', 'scripts/run-prompt-' + owner + '-smoke'])
+        command = [sys.executable, 'scripts/run-fresh-worker-qualification',
+                   '--installed-profile-only', '--require-docker']
+        if args.align_repo:
+            command += ['--align-repo', args.align_repo.resolve(strict=True)]
+        isolated = env.copy()
+        isolated.pop('DOCKER_HOST', None)
+        run(command, isolated)
+    print('cutover selected qualification PASS', flush=True)
+
+
+if __name__ == '__main__':
+    main()

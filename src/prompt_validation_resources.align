@@ -1,0 +1,87 @@
+module prompt_validation_resources
+
+import prompt_deleted_open_file
+import prompt_process_usage
+import prompt_validation_budget
+import prompt_workspace_usage
+import std.fs
+import std.process
+import std.time
+
+fn present(rows: slice<process.snapshot>, pid: i64) -> bool {
+  mut low := 0
+  mut high := rows.len()
+  loop {
+    if low == high { break }
+    middle := low + (high - low) / 2
+    if rows[middle].pid < pid { low = middle + 1 } else { high = middle }
+  }
+  return low < rows.len() && rows[low].pid == pid
+}
+
+fn until(deadline: i64, budget: i64) -> i64 {
+  now := time.instant()
+  if deadline <= now { return deadline }
+  return if deadline - now < budget { deadline } else { now + budget }
+}
+
+pub fn observe(
+  borrow workspace: fs.directory,
+  borrow procfs: fs.directory,
+  root: i64,
+  owner: i64,
+  root_terminated: bool,
+  limits: prompt_validation_budget.Limits,
+  deadline: i64,
+) -> Result<prompt_validation_budget.Observation, Error> {
+  if limits.processes <= 0 || limits.processes > 256 || limits.resident_bytes <= 0 ||
+  limits.workspace_files <= 0 || limits.workspace_files > 8192 ||
+  limits.workspace_bytes <= 0 || limits.workspace_bytes > 67108864 { return Err(Error.Invalid) }
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  processes := prompt_process_usage.observe(root, owner, root_terminated, until(deadline, 500000000))?
+  files := prompt_workspace_usage.observe(workspace, limits.workspace_files, limits.workspace_bytes, until(deadline, 100000000))?
+  mut complete := processes.complete
+  mut roots: array_builder<prompt_deleted_open_file.DescriptorRoot> := array_builder()
+  mut missing: array_builder<i64> := array_builder()
+  descriptor_deadline := until(deadline, 100000000)
+  mut index := 0
+  loop {
+    if time.instant() >= descriptor_deadline { return Err(Error.Timeout) }
+    if index == processes.pids.len() { break }
+    path := builder()
+    path.write_int(processes.pids[index])
+    path.write("/fd")
+    name := path.to_string()
+    match procfs.open_dir(name.bytes()) {
+      Ok(directory) => { roots.push(prompt_deleted_open_file.DescriptorRoot { directory: directory }) },
+      Err(error) => {
+        match error { NotFound => { missing.push(processes.pids[index]) }, _ => { complete = false } }
+      },
+    }
+    index = index + 1
+  }
+  missing_pids := missing.build()
+  if missing_pids.len() != 0 {
+    if time.instant() >= descriptor_deadline { return Err(Error.Timeout) }
+    current := process.table(32768)?
+    if time.instant() >= descriptor_deadline { return Err(Error.Timeout) }
+    index = 0
+    loop {
+      if index == missing_pids.len() { break }
+      if present(current, missing_pids[index]) { complete = false }
+      index = index + 1
+    }
+  }
+  descriptors := roots.build()
+  deleted := prompt_deleted_open_file.observe(descriptors, files.visible, limits.workspace_files, limits.workspace_bytes, descriptor_deadline, prompt_deleted_open_file.Context.Procfs)?
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  return Ok(prompt_validation_budget.Observation {
+      complete: complete && deleted.complete,
+      processes: processes.pids.len(),
+      resident_bytes: processes.resident_bytes,
+      visible_files: files.files,
+      visible_bytes: files.bytes,
+      deleted_files: deleted.files,
+      deleted_bytes: deleted.bytes,
+    })
+}

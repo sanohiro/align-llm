@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+cleanup() {
+  status=$?
+  if [[ "${status}" == 0 ]]; then rm -rf "${scratch}"; else printf 'source copy failed; retained fixture: %s\n' "${scratch}" >&2; fi
+}
+trap cleanup EXIT
+mkdir -p "${scratch}/source/dir" "${scratch}/destination" "${scratch}/empty" "${scratch}/empty-dest"
+printf '\000\377A' >"${scratch}/source/binary"
+printf '\000\377A' >"${scratch}/source/dir/executable"
+: >"${scratch}/source/empty"
+head -c 65537 /dev/zero >"${scratch}/source/large"
+chmod 600 "${scratch}/source/binary" "${scratch}/source/empty" "${scratch}/source/large"
+chmod 710 "${scratch}/source/dir/executable"
+chmod 700 "${scratch}/source" "${scratch}/source/dir" "${scratch}/destination"
+cp -Rp "${scratch}/source" "${scratch}/before"
+"${compiler}" check-per-unit "${project_root}/src/prompt_source_copy_smoke.align"
+(cd "${scratch}" && "${compiler}" build "${project_root}/src/prompt_source_copy_smoke.align")
+run_case() { "${scratch}/prompt_source_copy_smoke" "$1" "$2" "$3" - - - -; }
+mode() {
+  if [[ "$(uname -s)" == Darwin ]]; then stat -f '%Lp' "$1"; else stat -c '%a' "$1"; fi
+}
+check_copy() {
+  diff -r "${scratch}/before" "$1"
+  [[ "$(mode "$1")" == 755 && "$(mode "$1/dir")" == 755 ]]
+  [[ "$(mode "$1/binary")" == 644 && "$(mode "$1/empty")" == 644 && "$(mode "$1/large")" == 644 && "$(mode "$1/dir/executable")" == 755 ]]
+}
+run_case normal "${scratch}/source" "${scratch}/destination"
+check_copy "${scratch}/destination"
+diff -r "${scratch}/before" "${scratch}/source"
+[[ "$(mode "${scratch}/source")" == 700 && "$(mode "${scratch}/source/dir")" == 700 && "$(mode "${scratch}/source/binary")" == 600 && "$(mode "${scratch}/source/dir/executable")" == 710 ]]
+run_case empty "${scratch}/empty" "${scratch}/empty-dest"
+chmod 700 "${scratch}/empty"
+run_case refused "${scratch}/empty" "${scratch}/empty"
+[[ "$(mode "${scratch}/empty")" == 700 ]]
+mkdir -p "${scratch}/overlap/inside"
+chmod 700 "${scratch}/overlap/inside"
+run_case refused "${scratch}/overlap" "${scratch}/overlap/inside"
+[[ -z "$(ls -A "${scratch}/overlap/inside")" && "$(mode "${scratch}/overlap/inside")" == 700 ]]
+run_case refused "${scratch}/source" "${scratch}/destination"
+check_copy "${scratch}/destination"
+for kind in symlink hardlink fifo entries bytes expired; do
+  mkdir "${scratch}/${kind}-dest"
+  chmod 700 "${scratch}/${kind}-dest"
+  input="${scratch}/source"
+  case "${kind}" in
+    symlink) mkdir "${scratch}/symlink"; ln -s ../source/binary "${scratch}/symlink/link"; input="${scratch}/symlink" ;;
+    hardlink) mkdir "${scratch}/hardlink"; printf x >"${scratch}/hardlink/a"; ln "${scratch}/hardlink/a" "${scratch}/hardlink/b"; input="${scratch}/hardlink" ;;
+    fifo) mkdir "${scratch}/fifo"; mkfifo "${scratch}/fifo/pipe"; input="${scratch}/fifo" ;;
+  esac
+  run_case "${kind}" "${input}" "${scratch}/${kind}-dest"
+  [[ -z "$(ls -A "${scratch}/${kind}-dest")" && "$(mode "${scratch}/${kind}-dest")" == 700 ]]
+done
+mkdir "${scratch}/retained-dest" "${scratch}/source-decoy" "${scratch}/dest-decoy"
+printf decoy >"${scratch}/source-decoy/unrelated"
+printf occupied >"${scratch}/dest-decoy/occupied"
+"${scratch}/prompt_source_copy_smoke" retained "${scratch}/source" "${scratch}/retained-dest" "${scratch}/old-source" "${scratch}/old-dest" "${scratch}/source-decoy" "${scratch}/dest-decoy"
+check_copy "${scratch}/old-dest"
+diff -r "${scratch}/before" "${scratch}/old-source"
+[[ "$(cat "${scratch}/source/unrelated")" == decoy && "$(cat "${scratch}/retained-dest/occupied")" == occupied ]]
+printf 'source copy smoke: exact binary/chunked payloads, normalized modes, unchanged source, refusals before writes, retained roots and owner expiry PASS\n'

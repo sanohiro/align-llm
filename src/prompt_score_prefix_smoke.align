@@ -1,5 +1,7 @@
 module prompt_score_prefix_smoke
 
+import std.process
+
 import core.json
 import prompt_score
 
@@ -125,7 +127,7 @@ fn emit_case(
     row_count: result.row_count,
     expected_row_count: result.expected_row_count,
   }
-  print(json.encode(output))
+  print((match json.encode(output) { Ok(encoded) => encoded, Err(_) => process.abort() }))
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {

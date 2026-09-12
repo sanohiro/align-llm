@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+completed=0
+cleanup() {
+  if [[ "${completed}" == 1 ]]; then
+    rm -rf "${scratch}"
+  else
+    printf 'workspace cleanup owner failed; preserving storage: %s\n' "${scratch}" >&2
+  fi
+}
+trap cleanup EXIT
+mkdir "${scratch}/outside"
+printf external-guard >"${scratch}/outside/guard"
+printf linked-payload >"${scratch}/outside/hard-target"
+"${compiler}" check-per-unit "${project_root}/src/prompt_workspace_cleanup_smoke.align"
+(
+  cd "${scratch}"
+  "${compiler}" build "${project_root}/src/prompt_workspace_cleanup_smoke.align"
+)
+platform="$(uname -s)"
+modes=(normal empty false deadline identity caps names wrong-root partial replace-root missing-root replace-parent depth128 depth129 path4096 path4097)
+if [[ "${platform}" == Linux ]]; then modes+=(raw scoped); fi
+for mode in "${modes[@]}"; do
+  parent="${scratch}/${mode}"
+  mkdir -p "${parent}/root"
+  case "${mode}" in
+    normal)
+      mkdir "${parent}/root/nested" "${parent}/root/empty"
+      printf nested >"${parent}/root/nested/file"
+      printf ordinary >"${parent}/root/ordinary"
+      mkfifo "${parent}/root/fifo"
+      ln "${scratch}/outside/hard-target" "${parent}/root/hard"
+      ln -s "${scratch}/outside" "${parent}/root/link"
+      ;;
+    partial)
+      printf a >"${parent}/root/a"
+      printf b >"${parent}/root/b"
+      printf c >"${parent}/root/c"
+      ;;
+    raw) printf raw >"${parent}/root/$(printf '\377')" ;;
+    empty|depth128|depth129|path4096|path4097) ;;
+    *) printf payload >"${parent}/root/file" ;;
+  esac
+  if [[ "${mode}" == wrong-root || "${mode}" == replace-root ]]; then
+    mkdir "${parent}/replacement"
+    printf decoy >"${parent}/replacement/guard"
+  elif [[ "${mode}" == replace-parent ]]; then
+    mkdir -p "${parent}.decoy/root"
+    printf decoy >"${parent}.decoy/root/guard"
+  fi
+  "${scratch}/prompt_workspace_cleanup_smoke" "${mode}" "${parent}" "${platform}"
+  [[ "$(cat "${scratch}/outside/guard")" == external-guard ]]
+  [[ "$(cat "${scratch}/outside/hard-target")" == linked-payload ]]
+  case "${mode}" in
+    false|deadline|identity|caps|names|wrong-root)
+      [[ "$(cat "${parent}/root/file")" == payload ]]
+      if [[ "${mode}" == wrong-root ]]; then [[ "$(cat "${parent}/replacement/guard")" == decoy ]]; fi
+      ;;
+    replace-root)
+      [[ "$(cat "${parent}/root/guard")" == decoy ]]
+      [[ ! -e "${parent}/retained" ]]
+      ;;
+    replace-parent)
+      [[ "$(cat "${parent}/root/guard")" == decoy ]]
+      [[ ! -e "${parent}.retained/root" ]]
+      ;;
+    depth129|path4097) [[ -d "${parent}/root" ]] ;;
+    *) [[ ! -e "${parent}/root" ]] ;;
+  esac
+done
+completed=1
+printf 'workspace cleanup: retained identities, bounded retries, outside guards and removal checks PASS (%s)\n' "${platform}"
+if [[ "${platform}" != Linux ]]; then
+  printf 'workspace cleanup: raw-byte filename and native scope-release composition not exercised (Linux only)\n'
+fi

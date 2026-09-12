@@ -1,0 +1,164 @@
+module prompt_source_copy
+
+import std.fs
+import std.time
+
+pub Counts { entries: i64, bytes: i64 }
+
+fn timely(deadline: i64) -> Result<(), Error> {
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  return Ok(())
+}
+
+fn same(before: fs.metadata, after: fs.metadata) -> bool {
+  return before.device == after.device && before.inode == after.inode && before.links == after.links &&
+  before.mode == after.mode && before.size == after.size &&
+  before.modified_seconds == after.modified_seconds && before.modified_nanoseconds == after.modified_nanoseconds &&
+  before.changed_seconds == after.changed_seconds && before.changed_nanoseconds == after.changed_nanoseconds
+}
+
+fn admitted_directory(borrow root: fs.directory, expected: fs.metadata, destination: fs.metadata, deadline: i64) -> Result<(), Error> {
+  timely(deadline)?
+  metadata := root.metadata()?
+  timely(deadline)?
+  if !same(expected, metadata) || (metadata.device == destination.device && metadata.inode == destination.inode) {
+    return Err(Error.Invalid)
+  }
+  return match metadata.kind { Directory => Ok(()), _ => Err(Error.Invalid) }
+}
+
+fn preflight(borrow source: fs.directory, expected: fs.metadata, destination: fs.metadata, prefix_bytes: i64, initial: Counts, max_entries: i64, max_bytes: i64, deadline: i64) -> Result<Counts, Error> {
+  admitted_directory(source, expected, destination, deadline)?
+  cursor := source.cursor()?
+  timely(deadline)?
+  mut counts := initial
+  loop {
+    timely(deadline)?
+    next := cursor.next()?
+    timely(deadline)?
+    entry := next else { break }
+    raw: slice<u8> := entry.name
+    name := raw.as_str()?
+    length := prefix_bytes + (if prefix_bytes == 0 { 0 } else { 1 }) + name.len()
+    if length > 4096 || counts.entries == max_entries { return Err(Error.Invalid) }
+    metadata := source.metadata_at(raw)?
+    timely(deadline)?
+    counts.entries = counts.entries + 1
+    match metadata.kind {
+      Directory => {
+        child := source.open_dir(raw)?
+        timely(deadline)?
+        counts = preflight(child, metadata, destination, length, counts, max_entries, max_bytes, deadline)?
+      },
+      Regular => {
+        if metadata.links != 1 || metadata.size < 0 || metadata.size > max_bytes - counts.bytes { return Err(Error.Invalid) }
+        counts.bytes = counts.bytes + metadata.size
+      },
+      _ => { return Err(Error.Invalid) },
+    }
+  }
+  admitted_directory(source, expected, destination, deadline)?
+  return Ok(counts)
+}
+
+fn copy_file(borrow source: fs.directory, borrow destination: fs.directory, name: slice<u8>, expected: fs.metadata, maximum: i64, deadline: i64) -> Result<i64, Error> {
+  timely(deadline)?
+  input := source.open_read_single_link(name)?
+  timely(deadline)?
+  before := input.metadata()?
+  timely(deadline)?
+  if !same(expected, before) || before.links != 1 || before.size < 0 || before.size > maximum { return Err(Error.Invalid) }
+  output := destination.create_new(name)?
+  timely(deadline)?
+  output.set_mode(384 as u32)?
+  timely(deadline)?
+  mut count := 0
+  loop {
+    timely(deadline)?
+    remaining := before.size - count
+    mut chunk := buffer(if remaining == 0 { 1 } else if remaining < 65536 { remaining } else { 65536 })
+    size := input.read(chunk)?
+    timely(deadline)?
+    if size == 0 { break }
+    if size < 0 || size > remaining || size != chunk.bytes().len() { return Err(Error.Invalid) }
+    output.write(chunk.bytes())?
+    timely(deadline)?
+    count = count + size
+  }
+  if count != before.size || !same(before, input.metadata()?) { return Err(Error.Invalid) }
+  timely(deadline)?
+  if !same(before, source.metadata_at(name)?) { return Err(Error.Invalid) }
+  timely(deadline)?
+  output.flush()?
+  timely(deadline)?
+  mode := if (before.mode & 73) != 0 { 493 as u32 } else { 420 as u32 }
+  output.set_mode(mode)?
+  timely(deadline)?
+  final_metadata := output.metadata()?
+  timely(deadline)?
+  regular := match final_metadata.kind { Regular => true, _ => false }
+  if !regular || final_metadata.links != 1 || final_metadata.size != count || final_metadata.mode != mode { return Err(Error.Invalid) }
+  return Ok(count)
+}
+
+fn transfer(borrow source: fs.directory, borrow destination: fs.directory, expected: fs.metadata, destination_root: fs.metadata, prefix_bytes: i64, initial: Counts, max_entries: i64, max_bytes: i64, deadline: i64) -> Result<Counts, Error> {
+  admitted_directory(source, expected, destination_root, deadline)?
+  cursor := source.cursor()?
+  timely(deadline)?
+  mut counts := initial
+  loop {
+    timely(deadline)?
+    next := cursor.next()?
+    timely(deadline)?
+    entry := next else { break }
+    raw: slice<u8> := entry.name
+    name := raw.as_str()?
+    length := prefix_bytes + (if prefix_bytes == 0 { 0 } else { 1 }) + name.len()
+    if length > 4096 || counts.entries == max_entries { return Err(Error.Invalid) }
+    metadata := source.metadata_at(raw)?
+    timely(deadline)?
+    counts.entries = counts.entries + 1
+    match metadata.kind {
+      Directory => {
+        child_source := source.open_dir(raw)?
+        timely(deadline)?
+        destination.create_dir(raw, 448 as u32)?
+        timely(deadline)?
+        child_destination := destination.open_dir(raw)?
+        timely(deadline)?
+        counts = transfer(child_source, child_destination, metadata, destination_root, length, counts, max_entries, max_bytes, deadline)?
+      },
+      Regular => {
+        counts.bytes = counts.bytes + copy_file(source, destination, raw, metadata, max_bytes - counts.bytes, deadline)?
+      },
+      _ => { return Err(Error.Invalid) },
+    }
+  }
+  admitted_directory(source, expected, destination_root, deadline)?
+  destination.set_mode(493 as u32)?
+  timely(deadline)?
+  metadata := destination.metadata()?
+  timely(deadline)?
+  if metadata.mode != 493 as u32 { return Err(Error.Invalid) }
+  return Ok(counts)
+}
+
+// Destination storage remains with the caller on both success and failure.
+pub fn copy(borrow source: fs.directory, borrow destination: fs.directory, max_entries: i64, max_bytes: i64, deadline: i64) -> Result<Counts, Error> {
+  if max_entries < 1 || max_entries > 128 || max_bytes < 0 || max_bytes > 1073741824 { return Err(Error.Invalid) }
+  timely(deadline)?
+  source_metadata := source.metadata()?
+  timely(deadline)?
+  destination_metadata := destination.metadata()?
+  timely(deadline)?
+  entries := destination.cursor()?
+  timely(deadline)?
+  next := entries.next()?
+  timely(deadline)?
+  match next { Some(_) => { return Err(Error.Invalid) }, None => {} }
+  initial := Counts { entries: 1, bytes: 0 }
+  admitted := preflight(source, source_metadata, destination_metadata, 0, initial, max_entries, max_bytes, deadline)?
+  copied := transfer(source, destination, source_metadata, destination_metadata, 0, initial, max_entries, max_bytes, deadline)?
+  if admitted.entries != copied.entries || admitted.bytes != copied.bytes { return Err(Error.Invalid) }
+  return Ok(copied)
+}

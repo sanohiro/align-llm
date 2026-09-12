@@ -1,0 +1,68 @@
+module prompt_evaluation_native_smoke
+
+import core.json
+import prompt_artifacts
+import prompt_evaluation_inputs
+import prompt_evaluation_invocation
+import prompt_evaluation_native
+import prompt_evaluation_runtime
+import prompt_generation_worker
+import prompt_scope_cleanup
+import prompt_score
+import prompt_workspace
+import std.fs
+import std.io
+import std.process
+import std.time
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 3 && args[1] == "--prompt-generation-worker" { return prompt_generation_worker.run(args[2]) }
+  if args.len() != 2 { return Err(Error.Invalid) }
+  source := fs.read_file(args[1])?
+  request: prompt_artifacts.PromptEvaluateRequest := json.decode(source)?
+  roots := prompt_workspace.admit(request.project_root, request.workspace_path, true, time.instant() + 10000000000)?
+  admitted := prompt_evaluation_inputs.load(roots.project.directory, request, time.instant() + 30000000000)?
+  runtime := prompt_evaluation_runtime.admit(request, admitted.source_policy, admitted.tasks[0].environment, time.instant() + 10000000000)?
+  procfs := fs.open_directory("/proc")?
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  outcome := prompt_evaluation_native.run(request, admitted, roots, runtime, procfs, signals, "")
+  value := match outcome {
+    Ok(value) => value,
+    Err(error) => { signals.close()?; return Err(error) },
+  }
+  return match value {
+    Finished(output) => {
+      signals.close()?
+      // Retain the candidate bytes in this inspection owner's redirected output even if the
+      // independent final verifier refuses them; the production publisher checks before writing.
+      io.stdout.write(json.encode_bounded(output, 276824064)?)?
+      io.stdout.flush()?
+      result: prompt_artifacts.PromptEvaluationResult := json.decode(output.result_source)?
+      evidence: prompt_artifacts.PromptEvaluationEvidence := json.decode(output.evidence_source)?
+      prompt_score.verify_result(result, evidence)?
+      Ok(())
+    },
+    SourceStopped(attempt) => {
+      mut scope := attempt.scope
+      cleaned := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)
+      restored := signals.close()
+      cleanup := cleaned?
+      restored?
+      if !cleanup.released { return Err(Error.Timeout) }
+      Err(Error.Invalid)
+    },
+    TaskStopped(owner) => {
+      io.stderr.write(owner.storage.path)?
+      mut scope := owner.scope
+      cleaned := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)
+      restored := signals.close()
+      cleanup := cleaned?
+      restored?
+      if !cleanup.released { return Err(Error.Timeout) }
+      prompt_evaluation_runtime.remove(owner.storage, true, time.instant() + 10000000000)?
+      mut owned := owner.owned
+      prompt_evaluation_invocation.retire(roots.workspace.directory, owner.names, owned)?
+      Err(Error.Invalid)
+    },
+  }
+}

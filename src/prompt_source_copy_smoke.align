@@ -1,0 +1,45 @@
+module prompt_source_copy_smoke
+
+import prompt_source_copy
+import std.fs
+import std.time
+
+fn owned(source: str, destination: str, deadline: i64) -> Result<prompt_source_copy.Counts, Error> {
+  input := fs.open_directory(source)?
+  output := fs.open_directory(destination)?
+  return prompt_source_copy.copy(input, output, 6, 65543, deadline)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 8 { return Err(Error.Invalid) }
+  deadline := time.instant() + 10000000000
+  if args[1] == "normal" {
+    counts := owned(args[2], args[3], deadline)?
+    if counts.entries != 6 || counts.bytes != 65543 { return Err(Error.Invalid) }
+    print("source copy: PASS")
+    return Ok(())
+  }
+  source := fs.open_directory(args[2])?
+  destination := fs.open_directory(args[3])?
+  if args[1] == "retained" {
+    fs.rename_no_replace(args[2], args[4])?
+    fs.rename_no_replace(args[3], args[5])?
+    fs.rename_no_replace(args[6], args[2])?
+    fs.rename_no_replace(args[7], args[3])?
+    counts := prompt_source_copy.copy(source, destination, 6, 65543, deadline)?
+    if counts.entries != 6 || counts.bytes != 65543 { return Err(Error.Invalid) }
+  } else if args[1] == "empty" {
+    counts := prompt_source_copy.copy(source, destination, 1, 0, deadline)?
+    if counts.entries != 1 || counts.bytes != 0 { return Err(Error.Invalid) }
+  } else {
+    entries := if args[1] == "entries" { 5 } else { 128 }
+    bytes := if args[1] == "bytes" { 65542 } else { 1073741824 }
+    until := if args[1] == "expired" { 0 } else { deadline }
+    match prompt_source_copy.copy(source, destination, entries, bytes, until) {
+      Err(error) => { match error { Invalid => { if args[1] == "expired" { return Err(Error.Invalid) } }, Timeout => { if args[1] != "expired" { return Err(Error.Invalid) } }, _ => { return Err(error) } } },
+      Ok(_) => { return Err(Error.Invalid) },
+    }
+  }
+  print("source copy: PASS")
+  return Ok(())
+}

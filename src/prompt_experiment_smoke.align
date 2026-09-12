@@ -1,5 +1,7 @@
 module prompt_experiment_smoke
 
+import std.process
+
 import core.json
 import prompt_experiment
 
@@ -46,7 +48,7 @@ fn emit_redaction(case_name: str, text: str, credential: str) {
     redacted: redacted_view.clone(),
     redacted_len: redacted_view.len(),
   }
-  print(json.encode(row))
+  print((match json.encode(row) { Ok(encoded) => encoded, Err(_) => process.abort() }))
 }
 
 fn emit_status(case_name: str, value: prompt_experiment.PromptExperimentStatus) {
@@ -55,7 +57,7 @@ fn emit_status(case_name: str, value: prompt_experiment.PromptExperimentStatus) 
     label: prompt_experiment.status_label(value).clone(),
     success: prompt_experiment.status_success(value),
   }
-  print(json.encode(row))
+  print((match json.encode(row) { Ok(encoded) => encoded, Err(_) => process.abort() }))
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {

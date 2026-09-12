@@ -1,0 +1,219 @@
+module prompt_task_inputs
+
+import prompt_artifacts
+import prompt_document_source
+import prompt_evaluation_documents
+import prompt_repair_template
+import prompt_score
+import prompt_task_definition
+import prompt_task_environment
+import prompt_source_admission
+import prompt_source_collection
+import std.fs
+
+pub Task {
+  path: string,
+  source: prompt_source_collection.TaskSource,
+  manifest: prompt_artifacts.PromptEvaluationTask,
+  definition: prompt_task_definition.TaskDefinition,
+  prompt: prompt_artifacts.PromptTextArtifact,
+  context: prompt_artifacts.ContextSources,
+  generation: prompt_artifacts.GenerationPolicy,
+  control: prompt_artifacts.EvaluationProviderControl,
+  environment: prompt_artifacts.EnvironmentPolicy,
+  patch: Option<string>,
+  repair_template: Option<prompt_repair_template.Template>,
+}
+
+fn relative(path: str) -> bool {
+  if path.len() == 0 || path.len() > 4096 || path.starts_with("/") { return false }
+  mut start := 0
+  mut index := 0
+  loop {
+    if index > path.len() { break }
+    if index < path.len() && path.bytes()[index] == 0 { return false }
+    if index == path.len() || path.bytes()[index] == 47 {
+      part := path[start..index]
+      if part.len() == 0 || part.len() > 255 || part == "." || part == ".." { return false }
+      start = index + 1
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn read(borrow root: fs.directory, path: str, deadline: i64, borrow mut remaining: i64) -> Result<prompt_document_source.Document, Error> {
+  if !relative(path) || remaining <= 0 { return Err(Error.Invalid) }
+  value := prompt_document_source.read(root, path.bytes(), if remaining < 2097152 { remaining } else { 2097152 }, deadline)?
+  remaining = remaining - value.metadata.size
+  return Ok(value)
+}
+
+fn member(expectations: slice<prompt_artifacts.ArtifactExpectation>, path: str) -> bool {
+  mut index := 0
+  loop {
+    if index == expectations.len() { return false }
+    if expectations[index].kind == "FILE" && expectations[index].path == path { return true }
+    index = index + 1
+  }
+}
+
+fn bound(borrow root: fs.directory, expectations: slice<prompt_artifacts.ArtifactExpectation>, path: str, sha256: str, deadline: i64, borrow mut remaining: i64) -> Result<prompt_document_source.Document, Error> {
+  if !member(expectations, path) { return Err(Error.Invalid) }
+  value := read(root, path, deadline, remaining)?
+  if value.sha256 != sha256 { return Err(Error.Invalid) }
+  return Ok(value)
+}
+
+fn definition_valid(borrow definition: prompt_task_definition.TaskDefinition, task_id: str) -> bool {
+  if definition.id != task_id || !relative(definition.source_dir) ||
+  definition.allowed_edits.len() > 128 || definition.validation_argv.len() > 4096 ||
+  definition.validation_timeout_seconds > 7200 { return false }
+  mut index := 0
+  loop {
+    if index == definition.allowed_edits.len() { break }
+    path: str := definition.allowed_edits[index]
+    if !relative(path) { return false }
+    mut prior := 0
+    loop {
+      if prior == index { break }
+      if definition.allowed_edits[prior] == path { return false }
+      prior = prior + 1
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn patch(borrow root: fs.directory, borrow manifest: prompt_artifacts.PromptEvaluationTask, deadline: i64, borrow mut remaining: i64) -> Result<Option<string>, Error> {
+  return match manifest.patch_path {
+    None => Ok(None),
+    Some(path) => {
+      hash: str := match manifest.patch_sha256 { None => { return Err(Error.Invalid) }, Some(value) => value }
+      source := bound(root, manifest.artifacts, path, hash, deadline, remaining)?
+      return Ok(Some(source.text))
+    },
+  }
+}
+
+fn repair(borrow root: fs.directory, borrow manifest: prompt_artifacts.PromptEvaluationTask, deadline: i64, borrow mut remaining: i64) -> Result<Option<prompt_repair_template.Template>, Error> {
+  return match manifest.repair_template_path {
+    None => Ok(None),
+    Some(path) => {
+      hash: str := match manifest.repair_template_sha256 { None => { return Err(Error.Invalid) }, Some(value) => value }
+      source := bound(root, manifest.artifacts, path, hash, deadline, remaining)?
+      profile := match manifest.execution_kind {
+        Some(kind) => if kind == "PROVIDER_EDIT" { prompt_repair_template.Profile.Policy } else { prompt_repair_template.Profile.Diagnostics },
+        None => { return Err(Error.Invalid) },
+      }
+      repair_value := prompt_repair_template.decode(source.text, profile)?
+      return Ok(Some(repair_value))
+    },
+  }
+}
+
+fn provider_task(borrow manifest: prompt_artifacts.PromptEvaluationTask) -> bool {
+  return match manifest.execution_kind { Some(kind) => kind == "PROVIDER_EDIT", None => false }
+}
+
+fn repair_fits(borrow value: Option<prompt_repair_template.Template>, maximum: i64) -> bool {
+  return match value { None => true, Some(repair_value) => prompt_repair_template.fits_policy(repair_value, maximum) }
+}
+
+fn one(borrow root: fs.directory, path: str, deadline: i64, borrow mut remaining: i64) -> Result<Task, Error> {
+  source := read(root, path, deadline, remaining)?
+  manifest := prompt_evaluation_documents.task(source.text)?
+  prompt_score.admit_product_task(manifest)?
+  definition_source := bound(root, manifest.artifacts, manifest.task_definition_path, manifest.task_definition_sha256, deadline, remaining)?
+  definition := prompt_task_definition.decode(definition_source.text)?
+  if !definition_valid(definition, manifest.task_id) { return Err(Error.Invalid) }
+  prompt_source := read(root, manifest.task_prompt_path, deadline, remaining)?
+  prompt := prompt_evaluation_documents.task_prompt(prompt_source.text)?
+  context_source := read(root, manifest.context_sources_path, deadline, remaining)?
+  context := prompt_evaluation_documents.context(context_source.text)?
+  if context.task_id != manifest.task_id { return Err(Error.Invalid) }
+  provider := provider_task(manifest)
+  if provider && !member(manifest.artifacts, manifest.task_prompt_path) { return Err(Error.Invalid) }
+  generation_source := read(root, manifest.generation_policy_path, deadline, remaining)?
+  generation := prompt_evaluation_documents.generation(generation_source.text)?
+  control_source := read(root, manifest.provider_control_path, deadline, remaining)?
+  control := prompt_evaluation_documents.control(control_source.text)?
+  if !prompt_score.generation_policy_valid(generation, 1) || !prompt_score.provider_control_valid(control) ||
+  generation.provider_control_sha256 != control.content_sha256 ||
+  generation.evaluation_provider_kind != control.provider_kind ||
+  generation.evaluation_provider_endpoint_id != control.endpoint_id ||
+  generation.evaluation_provider_model != control.model { return Err(Error.Invalid) }
+  environment_source := read(root, manifest.environment_policy_path, deadline, remaining)?
+  environment := prompt_evaluation_documents.environment(environment_source.text)?
+  prompt_task_environment.validate(environment, control)?
+  patch_text := patch(root, manifest, deadline, remaining)?
+  repair_value := repair(root, manifest, deadline, remaining)?
+  if !repair_fits(repair_value, generation.max_prompt_bytes) { return Err(Error.Invalid) }
+  mut declarations: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  mut declaration_index := 0
+  loop {
+    if declaration_index == manifest.artifacts.len() { break }
+    declaration_path: str := manifest.artifacts[declaration_index].path
+    kind: str := manifest.artifacts[declaration_index].kind
+    hash: str := manifest.artifacts[declaration_index].expected_sha256
+    declarations.push(prompt_artifacts.ArtifactExpectation { path: declaration_path.clone(), kind: kind.clone(), expected_sha256: hash.clone() })
+    declaration_index = declaration_index + 1
+  }
+  source_identity := prompt_source_collection.TaskSource { manifest: prompt_source_admission.manifest(path, source), declarations: declarations.build() }
+  return Ok(Task {
+      path: path.clone(), source: source_identity, manifest: manifest, definition: definition, prompt: prompt,
+      context: context, generation: generation, control: control, environment: environment,
+      patch: patch_text, repair_template: repair_value,
+    })
+}
+
+// No child or publication is reachable before every task has been admitted.
+pub fn load(borrow root: fs.directory, paths: slice<string>, deadline: i64) -> Result<array<Task>, Error> {
+  if paths.len() < 1 || paths.len() > 64 { return Err(Error.Invalid) }
+  mut remaining := 134217728
+  mut output: array_builder<Task> := array_builder()
+  mut ids: array_builder<string> := array_builder()
+  mut generation_hash := "".clone()
+  mut control_hash := "".clone()
+  mut environment_hash := "".clone()
+  mut common_cwd := "".clone()
+  mut index := 0
+  loop {
+    if index == paths.len() { break }
+    path: str := paths[index]
+    mut prior := 0
+    loop {
+      if prior == index { break }
+      if paths[prior] == path { return Err(Error.Invalid) }
+      prior = prior + 1
+    }
+    task := one(root, path, deadline, remaining)?
+    if index == 0 {
+      generation_hash = task.generation.content_sha256.clone()
+      control_hash = task.control.content_sha256.clone()
+      environment_hash = task.environment.content_sha256.clone()
+      common_cwd = task.manifest.cwd.clone()
+    } else if task.generation.content_sha256 != generation_hash ||
+    task.control.content_sha256 != control_hash || task.environment.content_sha256 != environment_hash ||
+    task.manifest.cwd != common_cwd {
+      return Err(Error.Invalid)
+    }
+    ids.push(task.manifest.task_id.clone())
+    output.push(task)
+    index = index + 1
+  }
+  identities := ids.build()
+  index = 0
+  loop {
+    if index == identities.len() { break }
+    id: str := identities[index]
+    mut previous := 0
+    loop {
+      if previous == index { break }
+      if identities[previous] == id { return Err(Error.Invalid) }
+      previous = previous + 1
+    }
+    index = index + 1
+  }
+  return Ok(output.build())
+}

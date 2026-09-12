@@ -1,0 +1,327 @@
+module prompt_evaluation_invocation
+
+import core.json
+import prompt_artifacts
+import prompt_evaluation_runtime
+import prompt_fixture_setup
+import prompt_invocation_records
+import prompt_score
+import prompt_snapshot
+import prompt_source_git
+import prompt_task_attempt
+import prompt_task_inputs
+import prompt_workspace
+import std.crypto
+import std.encoding
+import std.fs
+import std.path
+import std.process
+import std.time
+
+pub Failure { code: string, detail: string }
+pub Run {
+  Measured(prompt_artifacts.TaskMeasurement), Failed(Failure),
+  SourceStopped(prompt_source_git.Attempt), TaskStopped(prompt_fixture_setup.Attempt),
+}
+
+fn digest(value: str) -> string {
+  bytes := crypto.sha256(value); return encoding.hex_encode(bytes[0..bytes.len()])
+}
+
+fn fail(code: str, detail: str) -> Run = Run.Failed(Failure { code: code.clone(), detail: detail.clone() })
+
+fn covered(borrow task: prompt_task_inputs.Task, value: str) -> bool {
+  mut index := 0
+  loop {
+    if index == task.manifest.artifacts.len() { return false }
+    item: str := task.manifest.artifacts[index].path
+    if item == value || (task.manifest.artifacts[index].kind == "TREE" && value.len() > item.len() &&
+      value.starts_with(item) && value.bytes()[item.len()] == 47) { return true }
+    index = index + 1
+  }
+}
+
+fn automatic(borrow evaluation: prompt_artifacts.PromptEvaluateRequest, borrow task: prompt_task_inputs.Task) -> array<string> {
+  experiment: str := evaluation.experiment_path
+  parent: str := evaluation.parent_activation_path
+  corpus: str := evaluation.corpus_path
+  acceptance: str := evaluation.acceptance_policy_path
+  preflight: str := evaluation.workspace_preflight_path
+  policy: str := evaluation.verifier_source_policy_path
+  task_path: str := task.path
+  generation: str := task.manifest.generation_policy_path
+  control: str := task.manifest.provider_control_path
+  environment: str := task.manifest.environment_policy_path
+  prompt: str := task.manifest.task_prompt_path
+  context: str := task.manifest.context_sources_path
+  inputs := [experiment, parent, corpus, acceptance, preflight, policy, ".align-revision",
+    task_path, generation, control, environment, prompt, context]
+  mut result: array_builder<string> := array_builder()
+  mut previous := "".clone()
+  loop {
+    mut selected := -1
+    mut index := 0
+    loop {
+      if index == inputs.len() { break }
+      if inputs[index] > previous && !covered(task, inputs[index]) {
+        if selected < 0 || inputs[index] < inputs[selected] { selected = index }
+      }
+      index = index + 1
+    }
+    if selected < 0 { break }
+    result.push(inputs[selected].clone())
+    previous = inputs[selected].clone()
+  }
+  return result.build()
+}
+
+fn generated(value: str, borrow names: prompt_invocation_records.Paths) -> bool {
+  return value == names.variant_relative || value == names.rendered_relative || value == names.request_relative
+}
+
+fn copy_digest(borrow value: prompt_artifacts.ArtifactDigest) -> prompt_artifacts.ArtifactDigest {
+  return prompt_artifacts.ArtifactDigest { path: value.path.clone(), mode: value.mode.clone(), byte_count: value.byte_count, sha256: value.sha256.clone() }
+}
+
+fn same_digest(borrow left: prompt_artifacts.ArtifactDigest, borrow right: prompt_artifacts.ArtifactDigest) -> bool {
+  return left.path == right.path && left.mode == right.mode && left.byte_count == right.byte_count && left.sha256 == right.sha256
+}
+
+fn same_files(left: slice<prompt_artifacts.ArtifactDigest>, right: slice<prompt_artifacts.ArtifactDigest>) -> bool {
+  if left.len() != right.len() { return false }
+  mut index := 0
+  loop { if index == left.len() { return true }; if !same_digest(left[index], right[index]) { return false }; index = index + 1 }
+}
+
+fn persistent(borrow snapshot: prompt_artifacts.SnapshotResult, borrow names: prompt_invocation_records.Paths) -> array<prompt_artifacts.ArtifactDigest> {
+  mut result: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  mut index := 0
+  loop {
+    if index == snapshot.artifact_digests.len() { break }
+    if !generated(snapshot.artifact_digests[index].path, names) { result.push(copy_digest(snapshot.artifact_digests[index])) }
+    index = index + 1
+  }
+  return result.build()
+}
+
+fn same_environment(borrow snapshot: prompt_artifacts.SnapshotResult, borrow environment: prompt_artifacts.EnvironmentIdentity) -> bool {
+  return match snapshot.environment_probe { None => false, Some(probe) => prompt_score.probe_matches_environment(probe, environment) }
+}
+
+fn leaf(borrow names: prompt_invocation_records.Paths, index: i64) -> string {
+  if index == 0 { return path.base(names.variant).clone() }
+  if index == 1 { return path.base(names.rendered).clone() }
+  if index == 2 { return path.base(names.request).clone() }
+  return path.base(names.measurement).clone()
+}
+
+fn write(borrow workspace: fs.directory, borrow names: prompt_invocation_records.Paths, index: i64, text: str, borrow mut owned: i64) -> Result<(), Error> {
+  name := leaf(names, index)
+  status := prompt_workspace.write(workspace, name.bytes(), text)?
+  owned = owned | (1 << index)
+  return match status { Written => Ok(()), Incomplete(error) => Err(error) }
+}
+
+// Only bits granted by this invocation's successful exclusive creates may be retired.
+// The caller invokes this after every possible subprocess writer has been released.
+pub fn retire(borrow workspace: fs.directory, borrow names: prompt_invocation_records.Paths, borrow mut owned: i64) -> Result<(), Error> {
+  if owned < 0 || owned > 15 { return Err(Error.Invalid) }
+  mut first: Option<Error> := None
+  mut index := 0
+  loop {
+    if index == 4 { break }
+    bit := 1 << index
+    if (owned & bit) != 0 {
+      name := leaf(names, index)
+      match workspace.remove_file(name.bytes()) {
+        Ok(_) => { owned = owned & (15 - bit) },
+        Err(error) => match error {
+          NotFound => { owned = owned & (15 - bit) },
+          _ => match first { None => { first = Some(error) }, Some(_) => {} },
+        },
+      }
+    }
+    index = index + 1
+  }
+  return match first { None => Ok(()), Some(error) => Err(error) }
+}
+
+fn request(borrow evaluation: prompt_artifacts.PromptEvaluateRequest, borrow task: prompt_task_inputs.Task, borrow names: prompt_invocation_records.Paths) -> Result<prompt_artifacts.SnapshotRequest, Error> {
+  persistent_files := automatic(evaluation, task)
+  mut additional: array_builder<string> := array_builder()
+  mut index := 0
+  loop { if index == persistent_files.len() { break }; additional.push(persistent_files[index].clone()); index = index + 1 }
+  additional.push(names.variant_relative.clone())
+  additional.push(names.rendered_relative.clone())
+  additional.push(names.request_relative.clone())
+  mut allowed: array_builder<string> := array_builder()
+  allowed.push(leaf(names, 3)); allowed.push(leaf(names, 1)); allowed.push(leaf(names, 2)); allowed.push(leaf(names, 0))
+  return prompt_invocation_records.snapshot_request(evaluation, task.manifest, additional.build(), allowed.build())
+}
+
+fn snapshot_id(borrow value: Option<prompt_artifacts.SnapshotResult>) -> Option<string> {
+  return match value { None => None, Some(record) => Some(record.content_sha256.clone()) }
+}
+fn input_id(borrow value: Option<prompt_artifacts.TaskInputSnapshot>) -> Option<string> {
+  return match value { None => None, Some(record) => Some(record.content_sha256.clone()) }
+}
+fn equal_id(borrow left: Option<string>, borrow right: Option<string>) -> bool {
+  return match left { None => match right { None => true, Some(_) => false }, Some(value) => match right { None => false, Some(other) => value == other } }
+}
+
+fn trace(
+  snapshot_request: prompt_artifacts.SnapshotRequest, before: prompt_artifacts.SnapshotResult,
+  after: Option<prompt_artifacts.SnapshotResult>, input_before: Option<prompt_artifacts.TaskInputSnapshot>,
+  input_after: Option<prompt_artifacts.TaskInputSnapshot>, invocation: prompt_invocation_records.Invocation,
+  phase: str, code: str, detail: str,
+  borrow mut requests: array_builder<prompt_artifacts.SnapshotRequest>, borrow mut snapshots: array_builder<prompt_artifacts.SnapshotResult>,
+  borrow mut inputs: array_builder<prompt_artifacts.TaskInputSnapshot>, borrow mut attestations: array_builder<prompt_artifacts.RunSnapshotAttestation>,
+) -> Result<(), Error> {
+  before_id := before.content_sha256.clone()
+  first_input := input_id(input_before)
+  last_input := input_id(input_after)
+  duplicate_input := equal_id(first_input, last_input)
+  if phase.len() != 0 {
+    mut attestation := prompt_artifacts.RunSnapshotAttestation {
+      schema_version: 1, artifact_kind: "RUN_SNAPSHOT_ATTESTATION".clone(), task_id: snapshot_request.task_id.clone(),
+      sample_index: invocation.sample_index, variant: (if invocation.candidate { "CANDIDATE" } else { "PARENT" }).clone(),
+      status: phase.clone(), error_code: code.clone(), error: detail.clone(),
+      snapshot_request_sha256: snapshot_request.content_sha256.clone(), before_snapshot_result_sha256: before_id.clone(),
+      after_snapshot_result_sha256: snapshot_id(after), before_input_snapshot_sha256: first_input,
+      after_input_snapshot_sha256: last_input, content_sha256: "".clone(),
+    }
+    canonical := json.encode_bounded(attestation, 65536)?
+    attestation.content_sha256 = digest(canonical)
+    attestations.push(attestation)
+  }
+  requests.push(snapshot_request)
+  snapshots.push(before)
+  match after { None => {}, Some(value) => { if value.content_sha256 != before_id { snapshots.push(value) } } }
+  match input_before { None => {}, Some(value) => { inputs.push(value) } }
+  match input_after { None => {}, Some(value) => { if !duplicate_input { inputs.push(value) } } }
+  return Ok(())
+}
+
+pub fn empty_bindings(preparation_ns: i64) -> prompt_invocation_records.AttemptBindings {
+  return prompt_invocation_records.AttemptBindings {
+    snapshot_request_sha256: "".clone(), before_sha256: "".clone(), after_sha256: "".clone(), input_sha256: "".clone(),
+    adapter_request_sha256: "".clone(), preparation_ns: preparation_ns, elapsed_ns: 0,
+  }
+}
+
+// One invocation owns three sealed input files and one optional measurement file in the admitted
+// evaluator workspace. Scratch and every transferred scope remain with the enclosing row loop.
+pub fn run(
+  borrow evaluation: prompt_artifacts.PromptEvaluateRequest, borrow task: prompt_task_inputs.Task,
+  borrow variant: prompt_artifacts.PromptVariant, borrow rendered: prompt_artifacts.RenderedPromptArtifact,
+  borrow environment: prompt_artifacts.EnvironmentIdentity, borrow names: prompt_invocation_records.Paths,
+  invocation: prompt_invocation_records.Invocation, baseline: slice<prompt_artifacts.ArtifactDigest>,
+  borrow runtime: prompt_evaluation_runtime.Runtime, borrow storage: prompt_evaluation_runtime.Storage,
+  borrow source: fs.directory, borrow workspace: fs.directory, borrow procfs: fs.directory,
+  borrow mut signals: process.signal_subscription, credential: str,
+  borrow mut initial_baseline: array_builder<prompt_artifacts.ArtifactDigest>, borrow mut bindings: prompt_invocation_records.AttemptBindings,
+  borrow mut owned: i64, borrow mut scratch_removed: bool,
+  borrow mut requests: array_builder<prompt_artifacts.SnapshotRequest>, borrow mut snapshots: array_builder<prompt_artifacts.SnapshotResult>,
+  borrow mut inputs: array_builder<prompt_artifacts.TaskInputSnapshot>, borrow mut attestations: array_builder<prompt_artifacts.RunSnapshotAttestation>,
+) -> Result<Run, Error> {
+  if owned != 0 || scratch_removed { return Err(Error.Invalid) }
+  product_sha256: str := match evaluation.product_executable_sha256 { None => { return Err(Error.Invalid) }, Some(value) => value }
+  write(workspace, names, 0, json.encode_bounded(variant, 2097152)?, owned)?
+  write(workspace, names, 1, json.encode_bounded(rendered, 2097152)?, owned)?
+  adapter := prompt_invocation_records.adapter(evaluation, task, rendered, names, invocation)?
+  write(workspace, names, 2, json.encode_bounded(adapter, 65536)?, owned)?
+  snapshot_request := request(evaluation, task, names)?
+  before := match prompt_snapshot.observe(snapshot_request, runtime.git, signals, procfs, evaluation.verifier_align_revision,
+    product_sha256, time.instant() + 60000000000)? {
+    Observed(value) => value, Stopped(attempt) => { return Ok(Run.SourceStopped(attempt)) },
+  }
+  bindings.snapshot_request_sha256 = snapshot_request.content_sha256.clone()
+  bindings.before_sha256 = before.content_sha256.clone()
+  bindings.adapter_request_sha256 = adapter.content_sha256.clone()
+  if before.status != "MATCH" {
+    code := if before.status == "MISMATCH" { "SNAPSHOT_MISMATCH" } else { "SNAPSHOT_ERROR" }
+    detail := before.error.clone()
+    trace(snapshot_request, before, None, None, None, invocation, "PRECHECK_FAILED", code, detail, requests, snapshots, inputs, attestations)?
+    return Ok(fail(code, detail))
+  }
+  input_before := prompt_invocation_records.input_snapshot(task.manifest, before, environment.environment_id)?
+  bindings.input_sha256 = input_before.content_sha256.clone()
+  static_before := persistent(before, names)
+  if !same_environment(before, environment) || (baseline.len() != 0 && !same_files(static_before, baseline)) {
+    code := if !same_environment(before, environment) { "ENVIRONMENT_DRIFT" } else { "INPUT_DRIFT" }
+    detail := if code == "ENVIRONMENT_DRIFT" { "task environment drifted between adapter invocations" } else { "task input drifted between adapter invocations" }
+    trace(snapshot_request, before, None, Some(input_before), None, invocation, "PRECHECK_DRIFT", code, detail, requests, snapshots, inputs, attestations)?
+    return Ok(fail(code, detail))
+  }
+  if baseline.len() == 0 {
+    mut index := 0
+    loop { if index == static_before.len() { break }; initial_baseline.push(copy_digest(static_before[index])); index = index + 1 }
+  }
+  if !invocation.candidate && rendered.text.len() > task.generation.max_prompt_bytes {
+    detail := "parent rendered prompt exceeds max_prompt_bytes"
+    trace(snapshot_request, before, None, Some(input_before), None, invocation, "ADAPTER_FAILED", "ADAPTER_RESULT", detail, requests, snapshots, inputs, attestations)?
+    return Ok(fail("ADAPTER_RESULT", detail))
+  }
+  started := time.instant()
+  measured := match prompt_evaluation_runtime.run(runtime, storage, source, procfs, signals, task, adapter, rendered,
+    evaluation.project_root, evaluation.verifier_align_revision, product_sha256, credential) {
+    Err(error) => {
+      code := match error { Timeout => "ADAPTER_TIMEOUT", _ => "ADAPTER_RESULT" }
+      detail := "native task invocation failed before producing a measurement"
+      trace(snapshot_request, before, None, Some(input_before), None, invocation, "ADAPTER_FAILED", code, detail, requests, snapshots, inputs, attestations)?
+      return Ok(fail(code, detail))
+    },
+    Ok(value) => match value {
+      Finished(measurement) => measurement,
+      Stopped(attempt) => {
+        // Evidence construction must never discard the only owner of unreleased writers.
+        recorded := trace(snapshot_request, before, None, Some(input_before), None, invocation, "ADAPTER_FAILED", "CLEANUP_FAILED", "task process writers could not be released", requests, snapshots, inputs, attestations)
+        return Ok(Run.TaskStopped(attempt))
+      },
+    },
+  }
+  scratch_removed = match prompt_evaluation_runtime.remove(storage, true, time.instant() + 10000000000) { Ok(_) => true, Err(_) => false }
+  measurement := prompt_task_attempt.storage_cleanup(measured, scratch_removed)?
+  bindings.elapsed_ns = time.instant() - started
+  encoded := json.encode_bounded(measurement, 262144)?
+  match write(workspace, names, 3, encoded, owned) {
+    Ok(_) => {},
+    Err(_) => {
+      detail := "native measurement could not be persisted"
+      trace(snapshot_request, before, None, Some(input_before), None, invocation, "ADAPTER_FAILED", "ADAPTER_RESULT", detail, requests, snapshots, inputs, attestations)?
+      return Ok(fail("ADAPTER_RESULT", detail))
+    },
+  }
+  observed := match prompt_snapshot.observe(snapshot_request, runtime.git, signals, procfs, evaluation.verifier_align_revision,
+    product_sha256, time.instant() + 60000000000) {
+    Ok(value) => value,
+    Err(_) => {
+      detail := "post-invocation snapshot could not be observed"
+      trace(snapshot_request, before, None, Some(input_before), None, invocation, "POSTCHECK_FAILED", "SNAPSHOT_ERROR", detail, requests, snapshots, inputs, attestations)?
+      return Ok(fail("SNAPSHOT_ERROR", detail))
+    },
+  }
+  after := match observed {
+    Observed(value) => value,
+    Stopped(attempt) => {
+      recorded := trace(snapshot_request, before, None, Some(input_before), None, invocation, "ADAPTER_FAILED", "SNAPSHOT_ERROR", "post-invocation snapshot did not complete", requests, snapshots, inputs, attestations)
+      return Ok(Run.SourceStopped(attempt))
+    },
+  }
+  bindings.after_sha256 = after.content_sha256.clone()
+  if after.status != "MATCH" {
+    code := if after.status == "MISMATCH" { "SNAPSHOT_MISMATCH" } else { "SNAPSHOT_ERROR" }
+    detail := after.error.clone()
+    trace(snapshot_request, before, Some(after), Some(input_before), None, invocation, "POSTCHECK_FAILED", code, detail, requests, snapshots, inputs, attestations)?
+    return Ok(fail(code, detail))
+  }
+  if !same_environment(after, environment) || !same_files(before.artifact_digests, after.artifact_digests) {
+    code := if !same_environment(after, environment) { "ENVIRONMENT_DRIFT" } else { "INPUT_DRIFT" }
+    detail := if code == "ENVIRONMENT_DRIFT" { "task environment drifted after adapter invocation" } else { "task input drifted after adapter invocation" }
+    input_after := prompt_invocation_records.input_snapshot(task.manifest, after, environment.environment_id)?
+    trace(snapshot_request, before, Some(after), Some(input_before), Some(input_after), invocation, "POSTCHECK_DRIFT", code, detail, requests, snapshots, inputs, attestations)?
+    return Ok(fail(code, detail))
+  }
+  trace(snapshot_request, before, Some(after), Some(input_before), None, invocation, "", "NONE", "", requests, snapshots, inputs, attestations)?
+  return Ok(Run.Measured(measurement))
+}

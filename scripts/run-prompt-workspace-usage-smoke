@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+trap 'rm -rf "${scratch}"' EXIT
+mkdir -p "${scratch}/root/nested" "${scratch}/root/.git" "${scratch}/decoy" "${scratch}/fds" "${scratch}/deep" "${scratch}/git-link"
+printf payload >"${scratch}/root/payload (deleted)"
+ln "${scratch}/root/payload (deleted)" "${scratch}/root/alias"
+printf git >"${scratch}/root/nested/.git"
+printf ignored >"${scratch}/root/.git/config"
+mkfifo "${scratch}/root/fifo"
+ln -s / "${scratch}/root/link"
+ln -s missing "${scratch}/root/dangling"
+printf excluded >"${scratch}/decoy/.git"
+ln -s / "${scratch}/git-link/.git"
+ln -s '../retained/payload (deleted)' "${scratch}/fds/8"
+current="${scratch}/deep"
+for ((depth=0; depth<129; depth++)); do current="${current}/d"; mkdir "${current}"; done
+raw=none
+if [[ "$(uname -s)" == Linux ]]; then
+  mkdir "${scratch}/raw"
+  printf raw >"${scratch}/raw/$(printf '\377')"
+  raw="${scratch}/raw"
+fi
+"${compiler}" check-per-unit "${project_root}/src/prompt_workspace_usage_smoke.align"
+"${compiler}" run "${project_root}/src/prompt_workspace_usage_smoke.align" -- \
+  "${scratch}/root" "${scratch}/retained" "${scratch}/decoy" "${scratch}/fds" "${scratch}/deep" "${scratch}/git-link" "${raw}"
+if [[ "${raw}" == none ]]; then
+  printf 'workspace usage raw-name qualification: not exercised (Linux only)\n'
+else
+  printf 'workspace usage raw-name qualification: PASS\n'
+fi

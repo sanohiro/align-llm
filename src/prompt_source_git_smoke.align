@@ -1,0 +1,78 @@
+module prompt_source_git_smoke
+
+import prompt_source_git
+import prompt_git_metadata
+import prompt_tool_image
+import prompt_scope_cleanup
+import std.fs
+import std.process
+import std.time
+
+fn image(path: str, digest: str) -> Result<process.image, Error> {
+  root := fs.open_directory(path)?
+  return prompt_tool_image.admit(root, "git".bytes(), digest, 268435456, time.instant() + 10000000000)
+}
+
+fn run(borrow image: process.image, borrow mut signals: process.signal_subscription, borrow procfs: fs.directory, path: str, expected: str, mode: str) -> Result<prompt_source_git.Readout, Error> {
+  owned_path := path.clone()
+  metadata := prompt_git_metadata.admit(owned_path, time.instant() + 10000000000)?
+  deadline := if mode == "expired" { time.instant() - 1 } else { time.instant() + if mode == "timeout" { 500000000 } else { 10000000000 } }
+  return prompt_source_git.observe(image, metadata, expected, signals, procfs, deadline)
+}
+
+fn inspect(result: Result<prompt_source_git.Readout, Error>, expected: str, mode: str) -> Result<(), Error> {
+  match result {
+    Err(error) => {
+      if mode == "expired" { if !match error { Timeout => true, _ => false } { return Err(error) } } else if mode == "config" || mode == "packed" || mode == "malformed" || mode == "invalid-revision" || mode == "postconfig" {
+        if !match error { Invalid => true, _ => false } { return Err(error) }
+      } else { return Err(error) }
+    },
+    Ok(value) => { match value {
+        Observed(observation) => {
+          if mode != "clean" && mode != "dirty" && mode != "mismatch" && mode != "controlled" { return Err(Error.Invalid) }
+          if observation.revision != expected || observation.verified != (mode == "clean" || mode == "controlled") { return Err(Error.Invalid) }
+        },
+        Stopped(attempt) => {
+          mut scope := attempt.scope
+          cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+          if !cleanup.released { return Err(Error.Timeout) }
+          match cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+          match attempt.error { None => {}, Some(error) => { return Err(error) } }
+          match attempt.report {
+            None => { return Err(Error.Invalid) },
+            Some(report) => {
+              if !report.cleanup.released { return Err(Error.Invalid) }
+              match report.cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+              match report.drain_error { None => {}, Some(error) => { return Err(error) } }
+              match report.stop {
+                Timeout => { if mode != "timeout" { return Err(Error.Invalid) } },
+                Cancelled(_) => { if mode != "cancel" { return Err(Error.Invalid) } },
+                Collected => {
+                  if mode == "oversized" { if !report.stdout_truncated { return Err(Error.Invalid) } } else if mode == "nonzero" { match report.termination { Some(status) => { if !match status { Exited(code) => code == 7, _ => false } { return Err(Error.Invalid) } }, None => { return Err(Error.Invalid) } } } else { return Err(Error.Invalid) }
+                },
+                _ => { return Err(Error.Invalid) },
+              }
+            },
+          }
+        },
+      } },
+  }
+  print(mode)
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 8 { return Err(Error.Invalid) }
+  executable := match image(args[2], args[3]) {
+    Ok(value) => value,
+    Err(error) => { if args[1] == "Darwin" { if match error { Code(code) => code == 45, _ => false } { print("source Git: Darwin executable memory ENOTSUP 45"); return Ok(()) } }; return Err(error) },
+  }
+  procfs := fs.open_directory("/proc")?
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  result := run(executable, signals, procfs, args[4], args[5], args[7])
+  checked := inspect(result, args[6], args[7])
+  restored := signals.close()
+  restored?
+  checked?
+  return Ok(())
+}

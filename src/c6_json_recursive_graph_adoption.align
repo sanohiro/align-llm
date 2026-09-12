@@ -34,7 +34,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   print(reason_count(value))
   print(reason_sample_index(value))
   print(corpus_task_count(value))
-  encoded := prompt_artifacts.encode_prompt_evaluation_result(value)
+  encoded := prompt_artifacts.encode_prompt_evaluation_result(value)?
   print(if encoded.len() > 0 { 1 } else { 0 })
   return Ok(())
 }

@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "$scratch" && pwd -P)"
+trap 'status=$?; if [ "$status" -eq 0 ]; then rm -rf "$scratch"; else echo "Preserved failing fixture: $scratch" >&2; fi' EXIT
+ordinary() { mkdir -p "$scratch/$1/.git/refs" "$scratch/$1/.git/info" "$scratch/$1/.git/objects/info"; }
+ordinary ordinary
+ordinary decoy
+printf original > "$scratch/ordinary/.git/marker"
+printf replacement > "$scratch/decoy/.git/marker"
+printf '[core]\n repositoryformatversion = 0\n filemode = true\n' > "$scratch/ordinary/.git/config"
+mkdir -p "$scratch/administration/worktrees/linked" "$scratch/administration/worktrees/absolute" "$scratch/linked" "$scratch/absolute" "$scratch/relative/admin" "$scratch/relative/common"
+printf 'gitdir: ../administration/worktrees/linked\n' > "$scratch/linked/.git"
+printf '../..\n' > "$scratch/administration/worktrees/linked/commondir"
+printf 'gitdir: %s/administration/worktrees/absolute\n' "$scratch" > "$scratch/absolute/.git"
+printf '%s/administration\n' "$scratch" > "$scratch/administration/worktrees/absolute/commondir"
+printf 'gitdir: admin\n' > "$scratch/relative/.git"
+printf '../common\n' > "$scratch/relative/admin/commondir"
+mkdir "$scratch/missing"
+for name in bad-prefix missing-newline extra-newline nul-pointer empty-pointer large-pointer pointer-symlink pointer-fifo pointer-hardlink git-symlink; do mkdir "$scratch/$name"; done
+printf 'gitdir ../ordinary/.git\n' > "$scratch/bad-prefix/.git"
+printf 'gitdir: ../ordinary/.git' > "$scratch/missing-newline/.git"
+printf 'gitdir: ../ordinary/.git\n\n' > "$scratch/extra-newline/.git"
+printf 'gitdir: ../ordinary/.git\000\n' > "$scratch/nul-pointer/.git"
+printf 'gitdir: \n' > "$scratch/empty-pointer/.git"
+dd if=/dev/zero bs=4097 count=1 2>/dev/null > "$scratch/large-pointer/.git"
+printf 'gitdir: ../ordinary/.git\n' > "$scratch/pointer-hardlink/.git"
+ln "$scratch/pointer-hardlink/.git" "$scratch/pointer-hardlink/peer"
+ln -s ../linked/.git "$scratch/pointer-symlink/.git"
+ln -s ../ordinary/.git "$scratch/git-symlink/.git"
+mkfifo "$scratch/pointer-fifo/.git"
+for name in empty-common common-newline common-nul common-large common-symlink common-fifo common-hardlink config-symlink config-fifo config-hardlink common-command worktree-command worktree-symlink worktree-fifo worktree-hardlink replace-directory replace-file replace-dangling grafts-file grafts-dangling alternates-file alternates-dangling large-config; do ordinary "$name"; done
+printf '\n' > "$scratch/empty-common/.git/commondir"
+printf '../../ordinary/.git' > "$scratch/common-newline/.git/commondir"
+printf '../../ordinary/.git\000\n' > "$scratch/common-nul/.git/commondir"
+dd if=/dev/zero bs=4097 count=1 2>/dev/null > "$scratch/common-large/.git/commondir"
+printf '../../ordinary/.git\n' > "$scratch/common-hardlink/.git/commondir"
+ln "$scratch/common-hardlink/.git/commondir" "$scratch/common-hardlink/.git/peer"
+ln -s ../../administration/worktrees/linked/commondir "$scratch/common-symlink/.git/commondir"
+mkfifo "$scratch/common-fifo/.git/commondir"
+for name in config worktree; do
+  file=config
+  if [ "$name" = worktree ]; then file=config.worktree; fi
+  printf '[core]\n filemode = true\n' > "$scratch/$name-hardlink/.git/$file"
+  ln "$scratch/$name-hardlink/.git/$file" "$scratch/$name-hardlink/.git/peer"
+  ln -s ../../ordinary/.git/config "$scratch/$name-symlink/.git/$file"
+  mkfifo "$scratch/$name-fifo/.git/$file"
+done
+printf '[core]\n fsmonitor = run-command\n' > "$scratch/common-command/.git/config"
+printf '[core]\n hooksPath = hooks\n' > "$scratch/worktree-command/.git/config.worktree"
+mkdir "$scratch/replace-directory/.git/refs/replace"
+: > "$scratch/replace-file/.git/refs/replace"
+ln -s absent "$scratch/replace-dangling/.git/refs/replace"
+: > "$scratch/grafts-file/.git/info/grafts"
+ln -s absent "$scratch/grafts-dangling/.git/info/grafts"
+: > "$scratch/alternates-file/.git/objects/info/alternates"
+ln -s absent "$scratch/alternates-dangling/.git/objects/info/alternates"
+dd if=/dev/zero bs=1048576 count=4 2>/dev/null > "$scratch/large-config/.git/config"
+printf x >> "$scratch/large-config/.git/config"
+# Exact inclusive pointer caps, with normalized relative targets.
+mkdir -p "$scratch/exact-pointer/targetx" "$scratch/exact-common/.git/commonx"
+printf 'gitdir: ' > "$scratch/exact-pointer/.git"
+for ((i=0; i<2040; i++)); do printf './' >> "$scratch/exact-pointer/.git"; done
+printf 'targetx\n' >> "$scratch/exact-pointer/.git"
+for ((i=0; i<2044; i++)); do printf './' >> "$scratch/exact-common/.git/commondir"; done
+printf 'commonx\n' >> "$scratch/exact-common/.git/commondir"
+[ "$(wc -c < "$scratch/exact-pointer/.git" | tr -d ' ')" = 4096 ]
+[ "$(wc -c < "$scratch/exact-common/.git/commondir" | tr -d ' ')" = 4096 ]
+# Distinct linked common owner versus per-worktree config owner.
+mkdir "$scratch/command-shared"
+printf '../../command-shared\n' > "$scratch/common-command/.git/commondir"
+printf '[core]\n fsmonitor = run-command\n' > "$scratch/command-shared/config"
+printf '../../administration\n' > "$scratch/worktree-command/.git/commondir"
+mkdir "$scratch/missing-target"
+printf 'gitdir: ../absent\n' > "$scratch/missing-target/.git"
+ordinary common-missing-target
+printf '../../absent\n' > "$scratch/common-missing-target/.git/commondir"
+ordinary common-extra-newline
+printf '../../ordinary/.git\n\n' > "$scratch/common-extra-newline/.git/commondir"
+# Discriminating CRLF cases: the old parser could successfully audit these
+# benign CR-suffixed decoys, whereas Git strips the terminal CR before LF.
+cr="$(printf '\r')"
+mkdir -p "$scratch/gitdir-crlf" "$scratch/gitdir-target${cr}" "$scratch/common-crlf/.git" "$scratch/common-target${cr}"
+printf '[core]\n filemode = true\n' > "$scratch/gitdir-target${cr}/config"
+printf '[core]\n filemode = true\n' > "$scratch/common-target${cr}/config"
+printf 'gitdir: ../gitdir-target\r\n' > "$scratch/gitdir-crlf/.git"
+printf '../../common-target\r\n' > "$scratch/common-crlf/.git/commondir"
+# Interior CR and spaces remain literal path bytes, unlike terminal CRLF.
+mkdir -p "$scratch/interior-cr" "$scratch/interior-target${cr}middle" "$scratch/spaced" "$scratch/directory with spaces"
+printf 'gitdir: ../interior-target\rmiddle\n' > "$scratch/interior-cr/.git"
+printf 'gitdir: ../directory with spaces\n' > "$scratch/spaced/.git"
+"$compiler" check-per-unit "$project_root/src/prompt_git_metadata_smoke.align"
+"$compiler" run "$project_root/src/prompt_git_metadata_smoke.align" -- "$scratch"

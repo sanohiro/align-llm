@@ -1,6 +1,8 @@
 module repo_index
 
 import core.json
+import source_file_kind
+import std.process
 import std.fs
 import std.path
 import verify
@@ -290,7 +292,7 @@ fn select_tracked_tests(root: str, changed_path: str, timeout_ns: i64, revision:
       if score != 0 {
         reason := related_test_reason(name_match, same_directory)
         record := RelatedTest { path: relative, score: score, reason: reason }
-        encoded := json.encode(record)
+        encoded := match json.encode(record) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
         if score == 120 {
           if score_120_count > 0 { score_120_body.write(",") }
           score_120_body.write(encoded)
@@ -336,7 +338,7 @@ fn select_tracked_tests(root: str, changed_path: str, timeout_ns: i64, revision:
       if is_test_path(relative) {
         record := RelatedTest { path: relative, score: 0, reason: "generic" }
         if generic_count > 0 { candidates_body.write(",") }
-        candidates_body.write(json.encode(record))
+        candidates_body.write(match json.encode(record) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() })
         generic_count = generic_count + 1
       }
     }
@@ -390,7 +392,7 @@ fn render_document(
     test_count: test_count,
     unreadable_count: unreadable_count,
   }
-  meta_json := json.encode(meta)
+  meta_json := match json.encode(meta) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
   b := builder()
   b.write(meta_json[0..meta_json.len() - 1])
   b.write(",\"files\":[")
@@ -425,7 +427,7 @@ fn render_selection_document(
     changed_path: changed_path,
     candidate_count: candidate_count,
   }
-  meta_json := json.encode(meta)
+  meta_json := match json.encode(meta) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
   b := builder()
   b.write(meta_json[0..meta_json.len() - 1])
   b.write(",\"candidates\":[")
@@ -445,7 +447,7 @@ fn inspect_file(root: str, relative: str, listing: str) -> FileFragments {
       is_test: is_test_path(relative),
     }
     return FileFragments {
-      file_json: json.encode(file_record).clone(),
+      file_json: match json.encode(file_record) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() },
       symbols_json: "".clone(),
       imports_json: "".clone(),
       references_json: "".clone(),
@@ -491,7 +493,7 @@ fn inspect_file(root: str, relative: str, listing: str) -> FileFragments {
       if trimmed.starts_with("import ") {
         module_name := first_token(trimmed[7..trimmed.len()])
         import_record := IndexImport { path: relative, name: module_name, line: line_number }
-        import_json := json.encode(import_record)
+        import_json := match json.encode(import_record) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
         if !first_import { imports_body.write(",") }
         first_import = false
         imports_body.write(import_json)
@@ -501,7 +503,7 @@ fn inspect_file(root: str, relative: str, listing: str) -> FileFragments {
         symbol_kind := declaration_kind(trimmed)
         if symbol_name.len() > 0 {
           symbol_record := IndexSymbol { path: relative, name: symbol_name, kind: symbol_kind, line: line_number }
-          symbol_json := json.encode(symbol_record)
+          symbol_json := match json.encode(symbol_record) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
           if !first_symbol { symbols_body.write(",") }
           first_symbol = false
           symbols_body.write(symbol_json)
@@ -521,7 +523,7 @@ fn inspect_file(root: str, relative: str, listing: str) -> FileFragments {
     is_test: is_test_path(relative),
   }
   return FileFragments {
-    file_json: json.encode(file_record).clone(),
+    file_json: match json.encode(file_record) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() },
     symbols_json: symbols_body.to_string(),
     imports_json: imports_body.to_string(),
     references_json: references_body.to_string(),
@@ -570,7 +572,7 @@ fn extract_references(root: str, path_name: str, source: str, code: str, line_nu
           line: line_number,
         }
         if count > 0 { body.write(",") }
-        body.write(json.encode(record))
+        body.write(match json.encode(record) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() })
         count = count + 1
       }
       cursor = dot + 1
@@ -595,7 +597,7 @@ fn extract_references(root: str, path_name: str, source: str, code: str, line_nu
           line: line_number,
         }
         if count > 0 { body.write(",") }
-        body.write(json.encode(record))
+        body.write(match json.encode(record) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() })
         count = count + 1
       }
       cursor = open + 1
@@ -1015,16 +1017,7 @@ fn count_lines(source: str) -> i64 {
   return count
 }
 
-fn language_of(path_name: str) -> str {
-  if path_name.ends_with(".align") { return "align" }
-  if path_name.ends_with(".py") { return "python" }
-  if path_name.ends_with(".rs") { return "rust" }
-  if path_name.ends_with(".md") { return "markdown" }
-  if path_name.ends_with(".json") { return "json" }
-  if path_name.ends_with(".yml") || path_name.ends_with(".yaml") { return "yaml" }
-  if path_name.ends_with(".sh") { return "shell" }
-  return "unknown"
-}
+fn language_of(path_name: str) -> str = source_file_kind.language(path_name)
 
 fn path_stem(path_name: str) -> str {
   base := path.base(path_name)
@@ -1055,21 +1048,10 @@ fn related_test_reason(name_match: bool, same_directory: bool) -> str {
   return "generic"
 }
 
-fn is_test_path(path_name: str) -> bool {
-  if path_name.starts_with("test") || path_name.starts_with("tests/") || path_name.starts_with("test/") {
-    return true
-  }
-  if path_name.contains("/tests/") || path_name.contains("/test/") {
-    return true
-  }
-  if path_name.ends_with("_test.align") || path_name.ends_with("_test.py") {
-    return true
-  }
-  return false
-}
+fn is_test_path(path_name: str) -> bool = source_file_kind.is_test(path_name)
 
 fn test_json(path_name: str) -> string {
   if !is_test_path(path_name) { return "".clone() }
   record := IndexTest { path: path_name, reason: "test-path" }
-  return json.encode(record).clone()
+  return match json.encode(record) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
 }

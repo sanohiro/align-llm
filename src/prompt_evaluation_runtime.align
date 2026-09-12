@@ -1,0 +1,326 @@
+module prompt_evaluation_runtime
+
+import prompt_artifacts
+import prompt_fixture_command
+import prompt_fixture_environment
+import prompt_generation_request
+import prompt_generation_worker
+import prompt_invocation_records
+import prompt_product_image
+import prompt_sandbox
+import prompt_sandbox_plan
+import prompt_source_directory
+import prompt_source_file
+import prompt_task_inputs
+import prompt_task_attempt
+import prompt_task_environment
+import prompt_tool_image
+import prompt_workspace_cleanup
+import std.crypto
+import std.encoding
+import std.fs
+import std.os
+import std.path
+import std.process
+import std.time
+
+pub Runtime {
+  product: process.image, git: process.image, bwrap: process.image,
+  namespace: Option<process.user_namespace>, profile: prompt_fixture_command.Profile,
+  bwrap_path: string, prlimit_path: string, readonly_roots: array<string>, uid: i64, gid: i64,
+}
+
+fn variable(borrow policy: prompt_artifacts.EnvironmentPolicy, name: str) -> Option<string> {
+  mut index := 0
+  loop {
+    if index == policy.allowed_variables.len() { return None }
+    if policy.allowed_variables[index].name == name { return Some(policy.allowed_variables[index].non_secret_value.clone()) }
+    index = index + 1
+  }
+}
+
+fn setting(borrow policy: prompt_artifacts.EnvironmentPolicy, name: str, fallback: str) -> string {
+  return match variable(policy, name) { None => fallback.clone(), Some(value) => value }
+}
+
+fn required(borrow policy: prompt_artifacts.EnvironmentPolicy, name: str) -> Result<string, Error> {
+  return match variable(policy, name) {
+    None => Err(Error.Invalid), Some(value) => if value.len() == 0 { Err(Error.Invalid) } else { Ok(value) },
+  }
+}
+
+fn absolute(value: str) -> bool {
+  if value.len() < 2 || value.len() > 4096 || !value.starts_with("/") || value.ends_with("/") { return false }
+  mut start := 1
+  mut index := 1
+  loop {
+    if index > value.len() { break }
+    if index < value.len() && value.bytes()[index] == 0 { return false }
+    if index == value.len() || value.bytes()[index] == 47 {
+      part := value[start..index]
+      if part.len() == 0 || part == "." || part == ".." { return false }
+      start = index + 1
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn below(path: str, root: str) -> bool {
+  if root == "/" { return absolute(path) }
+  return path.len() > root.len() && path.starts_with(root) && path.bytes()[root.len()] == 47
+}
+
+fn parent(path_value: str, deadline: i64) -> Result<prompt_source_directory.Located, Error> {
+  if !absolute(path_value) { return Err(Error.Invalid) }
+  return prompt_source_directory.resolve("/".bytes(), path.dir(path_value).bytes(), deadline)
+}
+
+fn tool(path_value: str, expected: str, deadline: i64) -> Result<process.image, Error> {
+  root := parent(path_value, deadline)?
+  return prompt_tool_image.admit(root.directory, path.base(path_value).bytes(), expected, 268435456, deadline)
+}
+
+fn sandbox_image(path_value: str, deadline: i64) -> Result<process.image, Error> {
+  root := parent(path_value, deadline)?
+  observed := prompt_source_file.observe(root.directory, path.base(path_value).bytes(), 16777216)?
+  return prompt_tool_image.admit(root.directory, path.base(path_value).bytes(), observed.sha256, 16777216, deadline)
+}
+
+fn roots(borrow policy: prompt_artifacts.EnvironmentPolicy, fresh: bool, deadline: i64) -> Result<array<string>, Error> {
+  mut output: array_builder<string> := array_builder()
+  match variable(policy, "ALIGN_LLM_RUNTIME_ROOTS") {
+    None => {
+      if fresh {
+        defaults := ["/tools", "/usr", "/bin", "/lib", "/lib64", "/runtime"]
+        mut index := 0
+        loop {
+          if index == defaults.len() { break }
+          if time.instant() >= deadline { return Err(Error.Timeout) }
+          match fs.is_dir(defaults[index]) {
+            Ok(exists) => { if exists { output.push(defaults[index].clone()) } },
+            Err(error) => match error { NotFound => {}, _ => { return Err(error) } },
+          }
+          index = index + 1
+        }
+      } else { output.push("/usr".clone()) }
+    },
+    Some(text) => {
+      mut start := 0
+      mut index := 0
+      mut count := 0
+      view: str := text
+      loop {
+        if index > view.len() { break }
+        if index == view.len() || view.bytes()[index] == 58 {
+          item := view[start..index]
+          if !absolute(item) || count == 16 { return Err(Error.Invalid) }
+          if time.instant() >= deadline { return Err(Error.Timeout) }
+          if !fs.is_dir(item)? { return Err(Error.Invalid) }
+          output.push(item.clone())
+          count = count + 1
+          start = index + 1
+        }
+        index = index + 1
+      }
+    },
+  }
+  return Ok(output.build())
+}
+
+// No ambient environment read or subprocess is needed to admit the execution authorities.
+pub fn admit(
+  borrow request: prompt_artifacts.PromptEvaluateRequest, borrow source_policy: prompt_artifacts.PromptSourceVerifierPolicy,
+  borrow policy: prompt_artifacts.EnvironmentPolicy, deadline: i64,
+) -> Result<Runtime, Error> {
+  product_path: str := match request.product_executable_path { None => { return Err(Error.Invalid) }, Some(value) => value }
+  product_digest: str := match request.product_executable_sha256 { None => { return Err(Error.Invalid) }, Some(value) => value }
+  product_root := parent(product_path, deadline)?
+  product := prompt_product_image.admit(product_root.directory, path.base(product_path).bytes(), product_digest, 268435456)?
+  git := tool(request.verifier_git_executable_path, source_policy.git_executable_sha256, deadline)?
+  mode := setting(policy, "ALIGN_LLM_FRESH_COMPILER", "0")
+  if mode != "0" && mode != "1" { return Err(Error.Invalid) }
+  fresh := mode == "1"
+  bwrap_path := if fresh { required(policy, "ALIGN_LLM_BWRAP")? } else { setting(policy, "ALIGN_LLM_BWRAP", "/usr/bin/bwrap") }
+  prlimit_path := if fresh { required(policy, "ALIGN_LLM_PRLIMIT")? } else { setting(policy, "ALIGN_LLM_PRLIMIT", "/usr/bin/prlimit") }
+  if !absolute(prlimit_path) { return Err(Error.Invalid) }
+  prlimit_parent := parent(prlimit_path, deadline)?
+  prlimit := prompt_source_file.observe(prlimit_parent.directory, path.base(prlimit_path).bytes(), 16777216)?
+  if (prlimit.metadata.mode & 73 as u32) == 0 { return Err(Error.Invalid) }
+  bwrap := sandbox_image(bwrap_path, deadline)?
+  readonly_roots := roots(policy, fresh, deadline)?
+  namespace: Option<process.user_namespace> := if fresh {
+    namespace_path := required(policy, "ALIGN_LLM_VALIDATION_USERNS_PATH")?
+    Some(process.user_namespace(namespace_path)?)
+  } else { None }
+  identity := os.identity()?
+  profile := prompt_fixture_command.Profile {
+    fresh: fresh, library_path: setting(policy, "LIBRARY_PATH", ""), ld_library_path: setting(policy, "LD_LIBRARY_PATH", ""),
+    pkg_config_path: setting(policy, "PKG_CONFIG_PATH", ""),
+  }
+  return Ok(Runtime {
+      product: product, git: git, bwrap: bwrap, namespace: namespace, profile: profile,
+      bwrap_path: bwrap_path, prlimit_path: prlimit_path, readonly_roots: readonly_roots, uid: identity.real_uid, gid: identity.real_gid,
+    })
+}
+
+fn target(borrow task: prompt_task_inputs.Task) -> Result<array<string>, Error> {
+  if task.definition.validation_argv.len() == 0 { return Err(Error.Invalid) }
+  requested: str := task.definition.validation_argv[0]
+  mut selected := "".clone()
+  mut matches := 0
+  mut index := 0
+  loop {
+    if index == task.environment.executable_paths.len() { break }
+    executable: str := task.environment.executable_paths[index]
+    if executable == requested || (!requested.contains("/") && path.base(executable) == requested) {
+      selected = executable.clone()
+      matches = matches + 1
+    }
+    index = index + 1
+  }
+  if matches != 1 { return Err(Error.Invalid) }
+  mut argv: array_builder<string> := array_builder()
+  argv.push(selected)
+  index = 1
+  loop {
+    if index == task.definition.validation_argv.len() { break }
+    argv.push(task.definition.validation_argv[index].clone())
+    index = index + 1
+  }
+  return Ok(argv.build())
+}
+
+// The commands independently retain their images, argv, environment and optional namespace.
+pub fn commands(borrow runtime: Runtime, borrow task: prompt_task_inputs.Task, workspace: str) -> Result<prompt_sandbox.Commands, Error> {
+  mut copied_roots: array_builder<string> := array_builder()
+  mut index := 0
+  loop {
+    if index == runtime.readonly_roots.len() { break }
+    copied_roots.push(runtime.readonly_roots[index].clone())
+    index = index + 1
+  }
+  environment := prompt_fixture_environment.values(runtime.profile.fresh, runtime.profile.library_path, runtime.profile.ld_library_path, runtime.profile.pkg_config_path, true)?
+  config := prompt_sandbox_plan.Config {
+    fresh: runtime.profile.fresh, uid: runtime.uid, gid: runtime.gid, namespace_slot: if runtime.profile.fresh { 3 } else { 0 },
+    bwrap_path: runtime.bwrap_path.clone(), prlimit_path: runtime.prlimit_path.clone(), workspace_path: workspace.clone(),
+    readonly_roots: copied_roots.build(), target_argv: target(task)?, environment: environment,
+    timeout_seconds: task.definition.validation_timeout_seconds,
+  }
+  return match runtime.namespace {
+    None => prompt_sandbox.normal(runtime.bwrap, config),
+    Some(namespace) => prompt_sandbox.fresh(runtime.bwrap, namespace, config),
+  }
+}
+
+pub fn source(project: str, borrow task: prompt_task_inputs.Task, deadline: i64) -> Result<prompt_source_directory.Located, Error> {
+  // Snapshot observation and pristine fixture construction can name different directories.
+  // Both must exist during complete-set admission, before any earlier task is dispatched.
+  repository := prompt_source_directory.resolve(project.bytes(), task.manifest.repo_path.bytes(), deadline)?
+  admitted := prompt_source_directory.resolve(project.bytes(), task.definition.source_dir.bytes(), deadline)?
+  raw: slice<u8> := admitted.path
+  if !below(raw.as_str()?, project) { return Err(Error.Invalid) }
+  return Ok(admitted)
+}
+
+pub Storage {
+  parent: fs.directory, root: fs.directory, workspace: fs.directory,
+  path: string, name: string, workspace_path: string, device: u64, inode: u64,
+}
+pub StorageFailure { path: string, error: Error }
+pub Created { Ready(Storage), Retained(StorageFailure) }
+
+fn join(parent: str, leaf: str) -> string {
+  output := builder(); output.write(parent); output.write("/"); output.write(leaf); return output.to_string()
+}
+
+// An error before creation grants no path ownership. A post-create error retains the private
+// path explicitly; the caller must report it instead of silently abandoning or reusing it.
+pub fn storage(borrow runtime: Runtime) -> Result<Created, Error> {
+  base := if runtime.profile.fresh { "/target/tmp" } else { "/tmp" }
+  parent_root := fs.open_directory(base)?
+  mut retries := 0
+  loop {
+    if retries == 128 { return Err(Error.Invalid) }
+    mut random := buffer(16)
+    crypto.random(random)
+    suffix := encoding.hex_encode(random.bytes())
+    name_builder := builder(); name_builder.write("align-evaluation-"); name_builder.write(suffix)
+    name := name_builder.to_string()
+    full := join(base, name)
+    workspace_path := join(full, "worktree")
+    match parent_root.create_dir(name.bytes(), 448 as u32) {
+      Err(error) => match error {
+        Code(code) => { if code != 17 { return Err(error) }; retries = retries + 1 },
+        _ => { return Err(error) },
+      },
+      Ok(_) => {
+        root := match parent_root.open_dir(name.bytes()) {
+          Ok(value) => value, Err(error) => { return Ok(Created.Retained(StorageFailure { path: full, error: error })) },
+        }
+        metadata := match root.metadata() {
+          Ok(value) => value, Err(error) => { return Ok(Created.Retained(StorageFailure { path: full, error: error })) },
+        }
+        if (metadata.mode & 63 as u32) != 0 { return Ok(Created.Retained(StorageFailure { path: full, error: Error.Invalid })) }
+        match root.create_dir("worktree".bytes(), 448 as u32) {
+          Ok(_) => {}, Err(error) => { return Ok(Created.Retained(StorageFailure { path: full, error: error })) },
+        }
+        workspace := match root.open_dir("worktree".bytes()) {
+          Ok(value) => value, Err(error) => { return Ok(Created.Retained(StorageFailure { path: full, error: error })) },
+        }
+        return Ok(Created.Ready(Storage {
+              parent: parent_root, root: root, workspace: workspace, path: full, name: name, workspace_path: workspace_path,
+              device: metadata.device, inode: metadata.inode,
+            }))
+      },
+    }
+  }
+}
+
+pub fn remove(borrow storage: Storage, released: bool, deadline: i64) -> Result<i64, Error> {
+  return prompt_workspace_cleanup.remove(storage.parent, storage.name.bytes(), storage.root,
+    storage.device, storage.inode, released, 32768, deadline)
+}
+
+fn worker(
+  borrow runtime: Runtime, borrow task: prompt_task_inputs.Task, borrow request: prompt_artifacts.TaskAdapterRequest,
+  borrow rendered: prompt_artifacts.RenderedPromptArtifact, cwd: str, credential: str,
+) -> Result<Option<command>, Error> {
+  if task.control.provider_kind == "FIXTURE" { return Ok(None) }
+  generation := prompt_generation_request.build(request, task.control, task.generation)?
+  prompt := prompt_invocation_records.rendered(rendered, rendered.text)?
+  environment := prompt_task_environment.worker(task.environment, task.control, credential)?
+  work := prompt_generation_worker.Work {
+    schema_version: 1, artifact_kind: "PROMPT_GENERATION_WORK".clone(), request: generation, rendered_prompt: prompt,
+  }
+  prepared := prompt_generation_worker.prepare(runtime.product, work, cwd, environment)?
+  return Ok(Some(prepared))
+}
+
+// The caller retains storage through the returned scope or released measurement, and owns the
+// final remove/storage_cleanup decision. This function never deletes a directory implicitly.
+pub fn run(
+  borrow runtime: Runtime, borrow storage: Storage, borrow source: fs.directory, borrow procfs: fs.directory,
+  borrow mut signals: process.signal_subscription, borrow task: prompt_task_inputs.Task,
+  borrow request: prompt_artifacts.TaskAdapterRequest, borrow rendered: prompt_artifacts.RenderedPromptArtifact,
+  project: str, align_revision: str, product_sha256: str, credential: str,
+) -> Result<prompt_task_attempt.Run, Error> {
+  prepared := commands(runtime, task, storage.workspace_path)?
+  generation := worker(runtime, task, request, rendered, project, credential)?
+  paths := prompt_task_attempt.Paths {
+    workspace: storage.workspace_path.clone(), patch: join(storage.path, "patch"), patch_name: "patch".clone(),
+    align_revision: align_revision.clone(), product_sha256: product_sha256.clone(),
+  }
+  return arena out {
+    mut allowed_builder: array_builder<str> := array_builder(out)
+    mut index := 0
+    loop {
+      if index == task.definition.allowed_edits.len() { break }
+      allowed_builder.push(task.definition.allowed_edits[index])
+      index = index + 1
+    }
+    allowed := allowed_builder.build()
+    prompt_task_attempt.run(task, request, rendered, paths, source, storage.workspace, storage.root, procfs,
+      runtime.git, prepared.probe, prepared.validation, generation, signals, runtime.profile, credential, allowed)
+  }
+}

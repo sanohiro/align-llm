@@ -1,0 +1,35 @@
+module prompt_source_admission
+
+import prompt_artifacts
+import prompt_document_source
+import prompt_file_set_observation
+import prompt_source_membership
+import std.fs
+
+fn mode_text(mode: i64) -> string {
+  output := builder()
+  digits := "01234567"
+  mut divisor := 32768
+  loop {
+    digit := (mode / divisor) % 8
+    output.write(digits[digit..digit + 1])
+    if divisor == 1 { break }
+    divisor = divisor / 8
+  }
+  return output.to_string()
+}
+
+// Capture the exact document bytes already admitted by the task loader.
+pub fn manifest(path: str, borrow document: prompt_document_source.Document) -> prompt_artifacts.ArtifactDigest {
+  return prompt_artifacts.ArtifactDigest { path: path.clone(), mode: mode_text(32768 + document.metadata.mode as i64), byte_count: document.metadata.size, sha256: document.sha256.clone() }
+}
+
+pub fn compare(borrow project: fs.directory, borrow corpus: fs.directory, rows: slice<prompt_artifacts.ArtifactDigest>, deadline: i64) -> Result<(), Error> {
+  if rows.len() > 8256 { return Err(Error.Invalid) }
+  return prompt_source_membership.compare(project, corpus, rows, deadline)
+}
+
+pub fn file_set(borrow project: fs.directory, borrow corpus: fs.directory, borrow observation: prompt_file_set_observation.Observation, expected_sha256: str, rows: slice<prompt_artifacts.ArtifactDigest>, deadline: i64) -> Result<(), Error> {
+  compare(project, corpus, rows, deadline)?
+  return prompt_source_membership.file_set(observation, expected_sha256, rows, deadline)
+}

@@ -1,0 +1,84 @@
+module prompt_command
+
+import std.process
+
+pub Environment { name: string, value: string }
+
+fn no_nul(value: str) -> bool {
+  mut index := 0
+  loop {
+    if index == value.len() { break }
+    if value.bytes()[index] == 0 { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn environment_name(value: str) -> bool {
+  if value.len() == 0 || !no_nul(value) { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { break }
+    if value.bytes()[index] == 61 { return false }
+    index = index + 1
+  }
+  return true
+}
+
+// Validate the complete caller-owned text before constructing native command
+// state. The byte budget counts every argument/name/value, including duplicates;
+// cwd has its separate cap. Native string terminators are not input text bytes.
+pub fn prepare(
+  borrow image: process.image,
+  argv: slice<string>,
+  cwd: str,
+  environment: slice<Environment>,
+) -> Result<command, Error> {
+  if argv.len() < 1 || argv.len() > 4096 || environment.len() > 256 { return Err(Error.Invalid) }
+  if argv[0].len() == 0 || cwd.len() == 0 || cwd.len() > 4096 || cwd.bytes()[0] != 47 || !no_nul(cwd) { return Err(Error.Invalid) }
+  mut total := 0
+  mut index := 0
+  loop {
+    if index == argv.len() { break }
+    text: str := argv[index]
+    if text.len() > 2097152 - total || !no_nul(text) { return Err(Error.Invalid) }
+    total = total + text.len()
+    index = index + 1
+  }
+  index = 0
+  loop {
+    if index == environment.len() { break }
+    name: str := environment[index].name
+    value: str := environment[index].value
+    if name.len() > 2097152 - total || !environment_name(name) { return Err(Error.Invalid) }
+    total = total + name.len()
+    if value.len() > 2097152 - total || !no_nul(value) { return Err(Error.Invalid) }
+    total = total + value.len()
+    index = index + 1
+  }
+  // Borrowed argv views live only in this named arena. command_image copies the
+  // strings into native owned command state before the arena or input expires.
+  arena temporary {
+    mut arguments: array_builder<str> := array_builder(temporary)
+    index = 0
+    loop {
+      if index == argv.len() { break }
+      view: str := argv[index]
+      arguments.push(view)
+      index = index + 1
+    }
+    command := process.command_image(image, arguments.build())?
+    command.cwd(cwd)
+    command.env_clear()
+    index = 0
+    loop {
+      if index == environment.len() { break }
+      name: str := environment[index].name
+      value: str := environment[index].value
+      command.env(name, value)
+      index = index + 1
+    }
+    command.new_session(true)
+    return Ok(command)
+  }
+}

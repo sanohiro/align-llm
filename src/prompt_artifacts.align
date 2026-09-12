@@ -1,6 +1,7 @@
 module prompt_artifacts
 
 import core.json
+import prompt_product_wire
 import std.crypto
 import std.encoding
 
@@ -246,11 +247,12 @@ pub PromptSourceVerifierPolicy {
   schema_version: i64,
   artifact_kind: string,
   policy_id: string,
-  helper_path: string,
-  helper_sha256: string,
-  helper_runtime: string,
-  interpreter_sha256: string,
+  helper_path: Option<string>,
+  helper_sha256: Option<string>,
+  helper_runtime: Option<string>,
+  interpreter_sha256: Option<string>,
   git_executable_sha256: string,
+  product_executable_sha256: Option<string>,
   content_sha256: string,
 }
 
@@ -277,19 +279,20 @@ pub TaskAdapterRequest {
   // The task-parameterization fields: every identity the shipped fixed adapter hard-codes becomes a
   // declared input. `patch_path`/`patch_sha256` are `None` for a provider-backed task whose patch
   // comes from the generation response and `Some` only for a deterministic fixture-style task.
-  validation_runner_path: string,
-  validation_runner_sha256: string,
+  validation_runner_path: Option<string>,
+  validation_runner_sha256: Option<string>,
   task_definition_path: string,
   task_definition_sha256: string,
-  validation_argv: array<string>,
+  validation_argv: Option<array<string>>,
   patch_path: Option<string>,
   patch_sha256: Option<string>,
-  generation_child_path: string,
-  generation_child_sha256: string,
+  generation_child_path: Option<string>,
+  generation_child_sha256: Option<string>,
   // The task's own declared deadline. The generation child is bounded by the provider-control
   // deadline and the validation runner by this one, so the two contained children together stay
   // strictly inside the evaluator's outer sum.
   task_deadline_ns: i64,
+  product_executable_sha256: Option<string>,
   content_sha256: string,
 }
 
@@ -318,9 +321,10 @@ pub EnvironmentIdentityCore {
   gpu: string,
   align_llm_commit: string,
   align_revision: string,
-  measurement_adapter_runtime: string,
-  snapshot_helper_runtime: string,
-  source_verifier_runtime: string,
+  measurement_adapter_runtime: Option<string>,
+  snapshot_helper_runtime: Option<string>,
+  source_verifier_runtime: Option<string>,
+  product_runtime: Option<string>,
   source_verifier_policy_sha256: string,
   environment_policy_sha256: string,
 }
@@ -491,14 +495,16 @@ pub PromptEvaluateRequest {
   verifier_corpus_source_sha256: string,
   verifier_source_policy_path: string,
   verifier_source_policy_sha256: string,
-  verifier_python_executable_path: string,
+  verifier_python_executable_path: Option<string>,
   verifier_git_executable_path: string,
   evaluation_evidence_path: string,
-  // The derived generation child is built, not committed, so it cannot be a corpus member. Its
+  product_executable_path: Option<string>,
+  product_executable_sha256: Option<string>,
+  // The legacy derived generation child is built, not committed, so it cannot be a corpus member. Its
   // per-run absolute path and declared digest travel in this request and in the recorded check
   // evidence; they are never frozen into the canonical asset set.
-  generation_child_path: string,
-  generation_child_sha256: string,
+  generation_child_path: Option<string>,
+  generation_child_sha256: Option<string>,
 }
 
 pub PromptSourceVerifierRequest {
@@ -552,12 +558,13 @@ pub PromptEvaluationTask {
   repo_revision: string,
   repo_path: string,
   require_clean_repo: bool,
-  cmd: string,
-  argv: array<string>,
-  snapshot_cmd: string,
-  snapshot_argv: array<string>,
-  measurement_adapter_runtime: string,
-  snapshot_helper_runtime: string,
+  execution_kind: Option<string>,
+  cmd: Option<string>,
+  argv: Option<array<string>>,
+  snapshot_cmd: Option<string>,
+  snapshot_argv: Option<array<string>>,
+  measurement_adapter_runtime: Option<string>,
+  snapshot_helper_runtime: Option<string>,
   cwd: string,
   timeout_ns: i64,
   task_prompt_path: string,
@@ -565,11 +572,11 @@ pub PromptEvaluationTask {
   generation_policy_path: string,
   provider_control_path: string,
   environment_policy_path: string,
-  validation_runner_path: string,
-  validation_runner_sha256: string,
+  validation_runner_path: Option<string>,
+  validation_runner_sha256: Option<string>,
   task_definition_path: string,
   task_definition_sha256: string,
-  validation_argv: array<string>,
+  validation_argv: Option<array<string>>,
   patch_path: Option<string>,
   patch_sha256: Option<string>,
   artifacts: array<ArtifactExpectation>,
@@ -662,6 +669,8 @@ pub TaskMeasurement {
   edit_set_total_bytes: Option<i64>,
   patch_sha256: Option<string>,
   base_adapter_runtime_identity: Option<string>,
+  // Version 4 replaces the legacy base adapter identity with the admitted Align product runtime.
+  product_runtime: Option<string>,
   // The four version-3 members, in their declared position immediately before `content_sha256`
   // and by the same rule version 2 used: the version selects the member list, presence never
   // selects the version. `edit_refusal` is always `Some` at version 3 — `NONE` when nothing was
@@ -1008,15 +1017,20 @@ pub PromptGateSourceLocator {
   corpus_file_set_manifest_relative_path: Option<string>,
   source_verifier_policy_relative_path: string,
   source_verifier_policy_sha256: string,
-  source_verifier_relative_path: string,
-  source_verifier_sha256: string,
-  source_verifier_runtime: string,
-  source_verifier_interpreter_sha256: string,
+  source_verifier_relative_path: Option<string>,
+  source_verifier_sha256: Option<string>,
+  source_verifier_runtime: Option<string>,
+  source_verifier_interpreter_sha256: Option<string>,
+  independent_verifier_relative_path: Option<string>,
+  independent_verifier_sha256: Option<string>,
+  independent_verifier_runtime: Option<string>,
+  independent_verifier_interpreter_sha256: Option<string>,
   git_executable_sha256: string,
-  // The third explicit-input leg: the derived generation child is never a corpus member, so the
+  // The legacy third explicit-input leg: the derived generation child is never a corpus member, so the
   // locator records the digest the gate must observe and the validator binds the supplied
   // `--generation-child-sha256` to it.
-  generation_child_sha256: string,
+  generation_child_sha256: Option<string>,
+  product_executable_sha256: Option<string>,
   content_sha256: string,
 }
 
@@ -1478,7 +1492,7 @@ fn corpus_revision_content_digest(borrow value: CorpusRevision) -> Result<string
   return Ok(digest_text(canonical))
 }
 
-fn verify_corpus_revision_content(borrow value: CorpusRevision) -> bool {
+pub fn verify_corpus_revision_content(borrow value: CorpusRevision) -> bool {
   if value.schema_version != 1 || value.artifact_kind != "CORPUS_REVISION" ||
   !valid_corpus_source_identity(value) ||
   !(if value.source_kind == "GIT_COMMIT" {
@@ -1500,7 +1514,7 @@ fn prompt_scope_content_digest(borrow value: PromptScope) -> Result<string, Erro
   return Ok(digest_text(canonical))
 }
 
-fn verify_prompt_scope_content(borrow value: PromptScope) -> bool {
+pub fn verify_prompt_scope_content(borrow value: PromptScope) -> bool {
   if !valid_scope_shape(value) || !verify_corpus_revision_content(value.corpus_revision) {
     return false
   }
@@ -1790,8 +1804,8 @@ pub fn decode_prompt_variant(value: str) -> Result<PromptVariant, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_prompt_variant(value: PromptVariant) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_variant(value: PromptVariant) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_variant_bounded(value: PromptVariant, max_bytes: i64) -> Result<string, Error> {
@@ -1806,8 +1820,8 @@ pub fn decode_artifact_reference(value: str) -> Result<ArtifactReference, Error>
   return Ok(decoded)
 }
 
-pub fn encode_artifact_reference(value: ArtifactReference) -> string {
-  return json.encode(value).clone()
+pub fn encode_artifact_reference(value: ArtifactReference) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_artifact_reference_bounded(value: ArtifactReference, max_bytes: i64) -> Result<string, Error> {
@@ -1819,8 +1833,8 @@ pub fn decode_context_sources(value: str) -> Result<ContextSources, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_context_sources(value: ContextSources) -> string {
-  return json.encode(value).clone()
+pub fn encode_context_sources(value: ContextSources) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_context_sources_bounded(value: ContextSources, max_bytes: i64) -> Result<string, Error> {
@@ -1832,8 +1846,8 @@ pub fn decode_rendered_prompt_artifact(value: str) -> Result<RenderedPromptArtif
   return Ok(decoded)
 }
 
-pub fn encode_rendered_prompt_artifact(value: RenderedPromptArtifact) -> string {
-  return json.encode(value).clone()
+pub fn encode_rendered_prompt_artifact(value: RenderedPromptArtifact) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_rendered_prompt_artifact_bounded(value: RenderedPromptArtifact, max_bytes: i64) -> Result<string, Error> {
@@ -1845,8 +1859,8 @@ pub fn decode_prompt_scope(value: str) -> Result<PromptScope, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_prompt_scope(value: PromptScope) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_scope(value: PromptScope) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_scope_bounded(value: PromptScope, max_bytes: i64) -> Result<string, Error> {
@@ -1858,8 +1872,8 @@ pub fn decode_corpus_revision(value: str) -> Result<CorpusRevision, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_corpus_revision(value: CorpusRevision) -> string {
-  return json.encode(value).clone()
+pub fn encode_corpus_revision(value: CorpusRevision) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_corpus_revision_bounded(value: CorpusRevision, max_bytes: i64) -> Result<string, Error> {
@@ -1871,8 +1885,8 @@ pub fn decode_context_policy(value: str) -> Result<ContextPolicy, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_context_policy(value: ContextPolicy) -> string {
-  return json.encode(value).clone()
+pub fn encode_context_policy(value: ContextPolicy) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_context_policy_bounded(value: ContextPolicy, max_bytes: i64) -> Result<string, Error> {
@@ -1884,8 +1898,8 @@ pub fn decode_artifact_digest(value: str) -> Result<ArtifactDigest, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_artifact_digest(value: ArtifactDigest) -> string {
-  return json.encode(value).clone()
+pub fn encode_artifact_digest(value: ArtifactDigest) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_artifact_digest_bounded(value: ArtifactDigest, max_bytes: i64) -> Result<string, Error> {
@@ -1897,8 +1911,8 @@ pub fn decode_artifact_expectation(value: str) -> Result<ArtifactExpectation, Er
   return Ok(decoded)
 }
 
-pub fn encode_artifact_expectation(value: ArtifactExpectation) -> string {
-  return json.encode(value).clone()
+pub fn encode_artifact_expectation(value: ArtifactExpectation) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_artifact_expectation_bounded(value: ArtifactExpectation, max_bytes: i64) -> Result<string, Error> {
@@ -1910,8 +1924,8 @@ pub fn decode_snapshot_request(value: str) -> Result<SnapshotRequest, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_snapshot_request(value: SnapshotRequest) -> string {
-  return json.encode(value).clone()
+pub fn encode_snapshot_request(value: SnapshotRequest) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_snapshot_request_bounded(value: SnapshotRequest, max_bytes: i64) -> Result<string, Error> {
@@ -1923,8 +1937,8 @@ pub fn decode_workspace_preflight_request(value: str) -> Result<WorkspacePreflig
   return Ok(decoded)
 }
 
-pub fn encode_workspace_preflight_request(value: WorkspacePreflightRequest) -> string {
-  return json.encode(value).clone()
+pub fn encode_workspace_preflight_request(value: WorkspacePreflightRequest) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_workspace_preflight_request_bounded(value: WorkspacePreflightRequest, max_bytes: i64) -> Result<string, Error> {
@@ -1936,8 +1950,8 @@ pub fn decode_workspace_preflight_result(value: str) -> Result<WorkspacePrefligh
   return Ok(decoded)
 }
 
-pub fn encode_workspace_preflight_result(value: WorkspacePreflightResult) -> string {
-  return json.encode(value).clone()
+pub fn encode_workspace_preflight_result(value: WorkspacePreflightResult) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_workspace_preflight_result_bounded(value: WorkspacePreflightResult, max_bytes: i64) -> Result<string, Error> {
@@ -1949,8 +1963,8 @@ pub fn decode_snapshot_result(value: str) -> Result<SnapshotResult, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_snapshot_result(value: SnapshotResult) -> string {
-  return json.encode(value).clone()
+pub fn encode_snapshot_result(value: SnapshotResult) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_snapshot_result_bounded(value: SnapshotResult, max_bytes: i64) -> Result<string, Error> {
@@ -1962,8 +1976,8 @@ pub fn decode_task_input_snapshot(value: str) -> Result<TaskInputSnapshot, Error
   return Ok(decoded)
 }
 
-pub fn encode_task_input_snapshot(value: TaskInputSnapshot) -> string {
-  return json.encode(value).clone()
+pub fn encode_task_input_snapshot(value: TaskInputSnapshot) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_task_input_snapshot_bounded(value: TaskInputSnapshot, max_bytes: i64) -> Result<string, Error> {
@@ -1975,8 +1989,8 @@ pub fn decode_run_snapshot_attestation(value: str) -> Result<RunSnapshotAttestat
   return Ok(decoded)
 }
 
-pub fn encode_run_snapshot_attestation(value: RunSnapshotAttestation) -> string {
-  return json.encode(value).clone()
+pub fn encode_run_snapshot_attestation(value: RunSnapshotAttestation) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_run_snapshot_attestation_bounded(value: RunSnapshotAttestation, max_bytes: i64) -> Result<string, Error> {
@@ -1988,8 +2002,8 @@ pub fn decode_generation_policy(value: str) -> Result<GenerationPolicy, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_generation_policy(value: GenerationPolicy) -> string {
-  return json.encode(value).clone()
+pub fn encode_generation_policy(value: GenerationPolicy) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_generation_policy_bounded(value: GenerationPolicy, max_bytes: i64) -> Result<string, Error> {
@@ -2001,8 +2015,8 @@ pub fn decode_evaluation_provider_control(value: str) -> Result<EvaluationProvid
   return Ok(decoded)
 }
 
-pub fn encode_evaluation_provider_control(value: EvaluationProviderControl) -> string {
-  return json.encode(value).clone()
+pub fn encode_evaluation_provider_control(value: EvaluationProviderControl) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_evaluation_provider_control_bounded(value: EvaluationProviderControl, max_bytes: i64) -> Result<string, Error> {
@@ -2014,8 +2028,8 @@ pub fn decode_environment_policy(value: str) -> Result<EnvironmentPolicy, Error>
   return Ok(decoded)
 }
 
-pub fn encode_environment_policy(value: EnvironmentPolicy) -> string {
-  return json.encode(value).clone()
+pub fn encode_environment_policy(value: EnvironmentPolicy) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_environment_policy_bounded(value: EnvironmentPolicy, max_bytes: i64) -> Result<string, Error> {
@@ -2027,8 +2041,8 @@ pub fn decode_environment_variable(value: str) -> Result<EnvironmentVariable, Er
   return Ok(decoded)
 }
 
-pub fn encode_environment_variable(value: EnvironmentVariable) -> string {
-  return json.encode(value).clone()
+pub fn encode_environment_variable(value: EnvironmentVariable) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_environment_variable_bounded(value: EnvironmentVariable, max_bytes: i64) -> Result<string, Error> {
@@ -2036,16 +2050,17 @@ pub fn encode_environment_variable_bounded(value: EnvironmentVariable, max_bytes
 }
 
 pub fn decode_prompt_source_verifier_policy(value: str) -> Result<PromptSourceVerifierPolicy, Error> {
+  prompt_product_wire.check_versioned_fields(value)?
   decoded: PromptSourceVerifierPolicy := json.decode(value)?
   canonical_value: PromptSourceVerifierPolicy := json.decode(value)?
-  canonical: string := json.encode(canonical_value).clone()
+  canonical: string := json.encode(canonical_value)?
   canonical_view: str := canonical
   if canonical_view != value { return Err(Error.Invalid) }
   return Ok(decoded)
 }
 
-pub fn encode_prompt_source_verifier_policy(value: PromptSourceVerifierPolicy) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_source_verifier_policy(value: PromptSourceVerifierPolicy) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_source_verifier_policy_bounded(value: PromptSourceVerifierPolicy, max_bytes: i64) -> Result<string, Error> {
@@ -2053,12 +2068,13 @@ pub fn encode_prompt_source_verifier_policy_bounded(value: PromptSourceVerifierP
 }
 
 pub fn decode_task_adapter_request(value: str) -> Result<TaskAdapterRequest, Error> {
+  prompt_product_wire.check_versioned_fields(value)?
   decoded: TaskAdapterRequest := json.decode(value)?
   return Ok(decoded)
 }
 
-pub fn encode_task_adapter_request(value: TaskAdapterRequest) -> string {
-  return json.encode(value).clone()
+pub fn encode_task_adapter_request(value: TaskAdapterRequest) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_task_adapter_request_bounded(value: TaskAdapterRequest, max_bytes: i64) -> Result<string, Error> {
@@ -2070,8 +2086,8 @@ pub fn decode_environment_probe(value: str) -> Result<EnvironmentProbe, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_environment_probe(value: EnvironmentProbe) -> string {
-  return json.encode(value).clone()
+pub fn encode_environment_probe(value: EnvironmentProbe) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_environment_probe_bounded(value: EnvironmentProbe, max_bytes: i64) -> Result<string, Error> {
@@ -2079,12 +2095,13 @@ pub fn encode_environment_probe_bounded(value: EnvironmentProbe, max_bytes: i64)
 }
 
 pub fn decode_environment_identity_core(value: str) -> Result<EnvironmentIdentityCore, Error> {
+  prompt_product_wire.check_versioned_fields(value)?
   decoded: EnvironmentIdentityCore := json.decode(value)?
   return Ok(decoded)
 }
 
-pub fn encode_environment_identity_core(value: EnvironmentIdentityCore) -> string {
-  return json.encode(value).clone()
+pub fn encode_environment_identity_core(value: EnvironmentIdentityCore) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_environment_identity_core_bounded(value: EnvironmentIdentityCore, max_bytes: i64) -> Result<string, Error> {
@@ -2092,12 +2109,13 @@ pub fn encode_environment_identity_core_bounded(value: EnvironmentIdentityCore, 
 }
 
 pub fn decode_environment_identity(value: str) -> Result<EnvironmentIdentity, Error> {
+  prompt_product_wire.check_versioned_fields(value)?
   decoded: EnvironmentIdentity := json.decode(value)?
   return Ok(decoded)
 }
 
-pub fn encode_environment_identity(value: EnvironmentIdentity) -> string {
-  return json.encode(value).clone()
+pub fn encode_environment_identity(value: EnvironmentIdentity) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_environment_identity_bounded(value: EnvironmentIdentity, max_bytes: i64) -> Result<string, Error> {
@@ -2109,8 +2127,8 @@ pub fn decode_evaluation_input_identity(value: str) -> Result<EvaluationInputIde
   return Ok(decoded)
 }
 
-pub fn encode_evaluation_input_identity(value: EvaluationInputIdentity) -> string {
-  return json.encode(value).clone()
+pub fn encode_evaluation_input_identity(value: EvaluationInputIdentity) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_evaluation_input_identity_bounded(value: EvaluationInputIdentity, max_bytes: i64) -> Result<string, Error> {
@@ -2122,8 +2140,8 @@ pub fn decode_generation_request_identity(value: str) -> Result<GenerationReques
   return Ok(decoded)
 }
 
-pub fn encode_generation_request_identity(value: GenerationRequestIdentity) -> string {
-  return json.encode(value).clone()
+pub fn encode_generation_request_identity(value: GenerationRequestIdentity) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_generation_request_identity_bounded(value: GenerationRequestIdentity, max_bytes: i64) -> Result<string, Error> {
@@ -2135,8 +2153,8 @@ pub fn decode_seed_capability_attestation(value: str) -> Result<SeedCapabilityAt
   return Ok(decoded)
 }
 
-pub fn encode_seed_capability_attestation(value: SeedCapabilityAttestation) -> string {
-  return json.encode(value).clone()
+pub fn encode_seed_capability_attestation(value: SeedCapabilityAttestation) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_seed_capability_attestation_bounded(value: SeedCapabilityAttestation, max_bytes: i64) -> Result<string, Error> {
@@ -2148,8 +2166,8 @@ pub fn decode_candidate_proposal(value: str) -> Result<CandidateProposal, Error>
   return Ok(decoded)
 }
 
-pub fn encode_candidate_proposal(value: CandidateProposal) -> string {
-  return json.encode(value).clone()
+pub fn encode_candidate_proposal(value: CandidateProposal) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_candidate_proposal_bounded(value: CandidateProposal, max_bytes: i64) -> Result<string, Error> {
@@ -2205,7 +2223,7 @@ fn experiment_request_input_accepted(
 pub fn decode_prompt_experiment_request(value: str) -> Result<PromptExperimentRequest, Error> {
   decoded: PromptExperimentRequest := json.decode(value)?
   canonical_value: PromptExperimentRequest := json.decode(value)?
-  canonical: string := json.encode(canonical_value).clone()
+  canonical: string := json.encode(canonical_value)?
   canonical_view: str := canonical
   if !experiment_request_input_accepted(canonical_view, value, decoded)? {
     return Err(Error.Invalid)
@@ -2213,8 +2231,8 @@ pub fn decode_prompt_experiment_request(value: str) -> Result<PromptExperimentRe
   return Ok(decoded)
 }
 
-pub fn encode_prompt_experiment_request(value: PromptExperimentRequest) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_experiment_request(value: PromptExperimentRequest) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_experiment_request_bounded(value: PromptExperimentRequest, max_bytes: i64) -> Result<string, Error> {
@@ -2226,8 +2244,8 @@ pub fn decode_prompt_experiment_result(value: str) -> Result<PromptExperimentRes
   return Ok(decoded)
 }
 
-pub fn encode_prompt_experiment_result(value: PromptExperimentResult) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_experiment_result(value: PromptExperimentResult) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_experiment_result_bounded(value: PromptExperimentResult, max_bytes: i64) -> Result<string, Error> {
@@ -2240,7 +2258,7 @@ pub fn encode_prompt_experiment_result_bounded(value: PromptExperimentResult, ma
 pub fn decode_prompt_generation_request(value: str) -> Result<PromptGenerationRequest, Error> {
   decoded: PromptGenerationRequest := json.decode(value)?
   canonical_value: PromptGenerationRequest := json.decode(value)?
-  canonical: string := json.encode(canonical_value).clone()
+  canonical: string := json.encode(canonical_value)?
   canonical_view: str := canonical
   if canonical_view != value {
     shape: PromptGenerationRequest := json.decode(value)?
@@ -2257,8 +2275,8 @@ pub fn decode_prompt_generation_request(value: str) -> Result<PromptGenerationRe
   return Ok(decoded)
 }
 
-pub fn encode_prompt_generation_request(value: PromptGenerationRequest) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_generation_request(value: PromptGenerationRequest) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_generation_request_bounded(value: PromptGenerationRequest, max_bytes: i64) -> Result<string, Error> {
@@ -2275,8 +2293,8 @@ pub fn decode_prompt_generation_response(value: str) -> Result<PromptGenerationR
   }
 }
 
-pub fn encode_prompt_generation_response(value: PromptGenerationResponse) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_generation_response(value: PromptGenerationResponse) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_generation_response_bounded(value: PromptGenerationResponse, max_bytes: i64) -> Result<string, Error> {
@@ -2284,9 +2302,10 @@ pub fn encode_prompt_generation_response_bounded(value: PromptGenerationResponse
 }
 
 pub fn decode_prompt_evaluate_request(value: str) -> Result<PromptEvaluateRequest, Error> {
+  prompt_product_wire.check_versioned_fields(value)?
   decoded: PromptEvaluateRequest := json.decode(value)?
   canonical_value: PromptEvaluateRequest := json.decode(value)?
-  canonical: string := json.encode(canonical_value).clone()
+  canonical: string := json.encode(canonical_value)?
   canonical_view: str := canonical
   if canonical_view != value {
     shape: PromptEvaluateRequest := json.decode(value)?
@@ -2303,8 +2322,8 @@ pub fn decode_prompt_evaluate_request(value: str) -> Result<PromptEvaluateReques
   return Ok(decoded)
 }
 
-pub fn encode_prompt_evaluate_request(value: PromptEvaluateRequest) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_evaluate_request(value: PromptEvaluateRequest) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_evaluate_request_bounded(value: PromptEvaluateRequest, max_bytes: i64) -> Result<string, Error> {
@@ -2316,8 +2335,8 @@ pub fn decode_prompt_source_verifier_request(value: str) -> Result<PromptSourceV
   return Ok(decoded)
 }
 
-pub fn encode_prompt_source_verifier_request(value: PromptSourceVerifierRequest) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_source_verifier_request(value: PromptSourceVerifierRequest) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_source_verifier_request_bounded(value: PromptSourceVerifierRequest, max_bytes: i64) -> Result<string, Error> {
@@ -2329,8 +2348,8 @@ pub fn decode_prompt_source_verifier_result(value: str) -> Result<PromptSourceVe
   return Ok(decoded)
 }
 
-pub fn encode_prompt_source_verifier_result(value: PromptSourceVerifierResult) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_source_verifier_result(value: PromptSourceVerifierResult) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_source_verifier_result_bounded(value: PromptSourceVerifierResult, max_bytes: i64) -> Result<string, Error> {
@@ -2342,8 +2361,8 @@ pub fn decode_prompt_evaluation_corpus(value: str) -> Result<PromptEvaluationCor
   return Ok(decoded)
 }
 
-pub fn encode_prompt_evaluation_corpus(value: PromptEvaluationCorpus) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_evaluation_corpus(value: PromptEvaluationCorpus) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_evaluation_corpus_bounded(value: PromptEvaluationCorpus, max_bytes: i64) -> Result<string, Error> {
@@ -2351,12 +2370,13 @@ pub fn encode_prompt_evaluation_corpus_bounded(value: PromptEvaluationCorpus, ma
 }
 
 pub fn decode_prompt_evaluation_task(value: str) -> Result<PromptEvaluationTask, Error> {
+  prompt_product_wire.check_versioned_fields(value)?
   decoded: PromptEvaluationTask := json.decode(value)?
   return Ok(decoded)
 }
 
-pub fn encode_prompt_evaluation_task(value: PromptEvaluationTask) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_evaluation_task(value: PromptEvaluationTask) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_evaluation_task_bounded(value: PromptEvaluationTask, max_bytes: i64) -> Result<string, Error> {
@@ -2368,8 +2388,8 @@ pub fn decode_regression_limits(value: str) -> Result<RegressionLimits, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_regression_limits(value: RegressionLimits) -> string {
-  return json.encode(value).clone()
+pub fn encode_regression_limits(value: RegressionLimits) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_regression_limits_bounded(value: RegressionLimits, max_bytes: i64) -> Result<string, Error> {
@@ -2377,12 +2397,13 @@ pub fn encode_regression_limits_bounded(value: RegressionLimits, max_bytes: i64)
 }
 
 pub fn decode_task_measurement(value: str) -> Result<TaskMeasurement, Error> {
+  prompt_product_wire.check_versioned_fields(value)?
   decoded: TaskMeasurement := json.decode(value)?
   return Ok(decoded)
 }
 
-pub fn encode_task_measurement(value: TaskMeasurement) -> string {
-  return json.encode(value).clone()
+pub fn encode_task_measurement(value: TaskMeasurement) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_task_measurement_bounded(value: TaskMeasurement, max_bytes: i64) -> Result<string, Error> {
@@ -2406,8 +2427,8 @@ pub fn decode_repair_prompt_source(value: str) -> Result<RepairPromptSource, Err
   return Ok(decoded)
 }
 
-pub fn encode_repair_prompt_source(value: RepairPromptSource) -> string {
-  return json.encode(value).clone()
+pub fn encode_repair_prompt_source(value: RepairPromptSource) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_repair_prompt_source_bounded(value: RepairPromptSource, max_bytes: i64) -> Result<string, Error> {
@@ -2415,12 +2436,13 @@ pub fn encode_repair_prompt_source_bounded(value: RepairPromptSource, max_bytes:
 }
 
 pub fn decode_task_attempt_record(value: str) -> Result<TaskAttemptRecord, Error> {
+  prompt_product_wire.check_versioned_fields(value)?
   decoded: TaskAttemptRecord := json.decode(value)?
   return Ok(decoded)
 }
 
-pub fn encode_task_attempt_record(value: TaskAttemptRecord) -> string {
-  return json.encode(value).clone()
+pub fn encode_task_attempt_record(value: TaskAttemptRecord) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_task_attempt_record_bounded(value: TaskAttemptRecord, max_bytes: i64) -> Result<string, Error> {
@@ -2428,12 +2450,13 @@ pub fn encode_task_attempt_record_bounded(value: TaskAttemptRecord, max_bytes: i
 }
 
 pub fn decode_prompt_task_row(value: str) -> Result<PromptTaskRow, Error> {
+  prompt_product_wire.check_versioned_fields(value)?
   decoded: PromptTaskRow := json.decode(value)?
   return Ok(decoded)
 }
 
-pub fn encode_prompt_task_row(value: PromptTaskRow) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_task_row(value: PromptTaskRow) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_task_row_bounded(value: PromptTaskRow, max_bytes: i64) -> Result<string, Error> {
@@ -2445,8 +2468,8 @@ pub fn decode_prompt_trace_overflow(value: str) -> Result<PromptTraceOverflow, E
   return Ok(decoded)
 }
 
-pub fn encode_prompt_trace_overflow(value: PromptTraceOverflow) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_trace_overflow(value: PromptTraceOverflow) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_trace_overflow_bounded(value: PromptTraceOverflow, max_bytes: i64) -> Result<string, Error> {
@@ -2454,12 +2477,13 @@ pub fn encode_prompt_trace_overflow_bounded(value: PromptTraceOverflow, max_byte
 }
 
 pub fn decode_prompt_evaluation_result(value: str) -> Result<PromptEvaluationResult, Error> {
+  prompt_product_wire.check_versioned_fields(value)?
   decoded: PromptEvaluationResult := json.decode(value)?
   return Ok(decoded)
 }
 
-pub fn encode_prompt_evaluation_result(value: PromptEvaluationResult) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_evaluation_result(value: PromptEvaluationResult) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_evaluation_result_bounded(value: PromptEvaluationResult, max_bytes: i64) -> Result<string, Error> {
@@ -2471,8 +2495,8 @@ pub fn decode_prompt_verifier_trust(value: str) -> Result<PromptVerifierTrust, E
   return Ok(decoded)
 }
 
-pub fn encode_prompt_verifier_trust(value: PromptVerifierTrust) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_verifier_trust(value: PromptVerifierTrust) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_verifier_trust_bounded(value: PromptVerifierTrust, max_bytes: i64) -> Result<string, Error> {
@@ -2484,8 +2508,8 @@ pub fn decode_prompt_expected_input_digest(value: str) -> Result<PromptExpectedI
   return Ok(decoded)
 }
 
-pub fn encode_prompt_expected_input_digest(value: PromptExpectedInputDigest) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_expected_input_digest(value: PromptExpectedInputDigest) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_expected_input_digest_bounded(value: PromptExpectedInputDigest, max_bytes: i64) -> Result<string, Error> {
@@ -2497,8 +2521,8 @@ pub fn decode_prompt_evaluation_evidence(value: str) -> Result<PromptEvaluationE
   return Ok(decoded)
 }
 
-pub fn encode_prompt_evaluation_evidence(value: PromptEvaluationEvidence) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_evaluation_evidence(value: PromptEvaluationEvidence) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_evaluation_evidence_bounded(value: PromptEvaluationEvidence, max_bytes: i64) -> Result<string, Error> {
@@ -2510,8 +2534,8 @@ pub fn decode_prompt_accept_request(value: str) -> Result<PromptAcceptRequest, E
   return Ok(decoded)
 }
 
-pub fn encode_prompt_accept_request(value: PromptAcceptRequest) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_accept_request(value: PromptAcceptRequest) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_accept_request_bounded(value: PromptAcceptRequest, max_bytes: i64) -> Result<string, Error> {
@@ -2523,8 +2547,8 @@ pub fn decode_prompt_rollback_request(value: str) -> Result<PromptRollbackReques
   return Ok(decoded)
 }
 
-pub fn encode_prompt_rollback_request(value: PromptRollbackRequest) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_rollback_request(value: PromptRollbackRequest) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_rollback_request_bounded(value: PromptRollbackRequest, max_bytes: i64) -> Result<string, Error> {
@@ -2536,8 +2560,8 @@ pub fn decode_prompt_activation(value: str) -> Result<PromptActivation, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_prompt_activation(value: PromptActivation) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_activation(value: PromptActivation) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_activation_bounded(value: PromptActivation, max_bytes: i64) -> Result<string, Error> {
@@ -2549,8 +2573,8 @@ pub fn decode_prompt_activation_result(value: str) -> Result<PromptActivationRes
   return Ok(decoded)
 }
 
-pub fn encode_prompt_activation_result(value: PromptActivationResult) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_activation_result(value: PromptActivationResult) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_activation_result_bounded(value: PromptActivationResult, max_bytes: i64) -> Result<string, Error> {
@@ -2562,8 +2586,8 @@ pub fn decode_prompt_acceptance_policy(value: str) -> Result<PromptAcceptancePol
   return Ok(decoded)
 }
 
-pub fn encode_prompt_acceptance_policy(value: PromptAcceptancePolicy) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_acceptance_policy(value: PromptAcceptancePolicy) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_acceptance_policy_bounded(value: PromptAcceptancePolicy, max_bytes: i64) -> Result<string, Error> {
@@ -2575,8 +2599,8 @@ pub fn decode_task_aggregate(value: str) -> Result<TaskAggregate, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_task_aggregate(value: TaskAggregate) -> string {
-  return json.encode(value).clone()
+pub fn encode_task_aggregate(value: TaskAggregate) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_task_aggregate_bounded(value: TaskAggregate, max_bytes: i64) -> Result<string, Error> {
@@ -2588,8 +2612,8 @@ pub fn decode_corpus_aggregate(value: str) -> Result<CorpusAggregate, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_corpus_aggregate(value: CorpusAggregate) -> string {
-  return json.encode(value).clone()
+pub fn encode_corpus_aggregate(value: CorpusAggregate) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_corpus_aggregate_bounded(value: CorpusAggregate, max_bytes: i64) -> Result<string, Error> {
@@ -2601,8 +2625,8 @@ pub fn decode_regression_reason(value: str) -> Result<RegressionReason, Error> {
   return Ok(decoded)
 }
 
-pub fn encode_regression_reason(value: RegressionReason) -> string {
-  return json.encode(value).clone()
+pub fn encode_regression_reason(value: RegressionReason) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_regression_reason_bounded(value: RegressionReason, max_bytes: i64) -> Result<string, Error> {
@@ -2610,12 +2634,13 @@ pub fn encode_regression_reason_bounded(value: RegressionReason, max_bytes: i64)
 }
 
 pub fn decode_prompt_gate_manifest(value: str) -> Result<PromptGateManifest, Error> {
+  prompt_product_wire.check_versioned_fields(value)?
   decoded: PromptGateManifest := json.decode(value)?
   return Ok(decoded)
 }
 
-pub fn encode_prompt_gate_manifest(value: PromptGateManifest) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_gate_manifest(value: PromptGateManifest) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_gate_manifest_bounded(value: PromptGateManifest, max_bytes: i64) -> Result<string, Error> {
@@ -2623,9 +2648,10 @@ pub fn encode_prompt_gate_manifest_bounded(value: PromptGateManifest, max_bytes:
 }
 
 pub fn decode_prompt_gate_source_locator(value: str) -> Result<PromptGateSourceLocator, Error> {
+  prompt_product_wire.check_versioned_fields(value)?
   decoded: PromptGateSourceLocator := json.decode(value)?
   canonical_value: PromptGateSourceLocator := json.decode(value)?
-  canonical: string := json.encode(canonical_value).clone()
+  canonical: string := json.encode(canonical_value)?
   canonical_view: str := canonical
   if canonical_view != value {
     shape: PromptGateSourceLocator := json.decode(value)?
@@ -2642,8 +2668,8 @@ pub fn decode_prompt_gate_source_locator(value: str) -> Result<PromptGateSourceL
   return Ok(decoded)
 }
 
-pub fn encode_prompt_gate_source_locator(value: PromptGateSourceLocator) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_gate_source_locator(value: PromptGateSourceLocator) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_gate_source_locator_bounded(value: PromptGateSourceLocator, max_bytes: i64) -> Result<string, Error> {
@@ -2655,8 +2681,8 @@ pub fn decode_prompt_text_artifact(value: str) -> Result<PromptTextArtifact, Err
   return Ok(decoded)
 }
 
-pub fn encode_prompt_text_artifact(value: PromptTextArtifact) -> string {
-  return json.encode(value).clone()
+pub fn encode_prompt_text_artifact(value: PromptTextArtifact) -> Result<string, Error> {
+  return json.encode(value)
 }
 
 pub fn encode_prompt_text_artifact_bounded(value: PromptTextArtifact, max_bytes: i64) -> Result<string, Error> {

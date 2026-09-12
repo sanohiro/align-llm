@@ -1,0 +1,388 @@
+module prompt_capture_smoke
+
+import prompt_capture
+import std.encoding
+
+Case { raw: str, key: str, limit: i64, expected: str }
+
+fn capture(borrow config: prompt_capture.Pattern, raw: slice<u8>, cuts: i64) -> Result<array<u8>, Error> {
+  mut output := buffer(config.limit)
+  mut state := prompt_capture.cursor()
+  prompt_capture.append(config, output, state, raw[0..0])?
+  mut start := 0
+  mut end := 1
+  mut bit := 1
+  loop {
+    if end >= raw.len() { break }
+    if (cuts / bit) % 2 == 1 {
+      prompt_capture.append(config, output, state, raw[start..end])?
+      prompt_capture.append(config, output, state, raw[end..end])?
+      start = end
+    }
+    end = end + 1
+    bit = bit * 2
+  }
+  prompt_capture.append(config, output, state, raw[start..raw.len()])?
+  result := prompt_capture.finish(config, output, state)?
+  again := prompt_capture.finish(config, output, state)?
+  if encoding.hex_encode(result[0..result.len()]) != encoding.hex_encode(again[0..again.len()]) { return Err(Error.Invalid) }
+  match prompt_capture.append(config, output, state, raw[0..0]) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  return Ok(result)
+}
+
+fn check_case(item: Case, exhaustive: bool) -> Result<(), Error> {
+  raw := encoding.hex_decode(item.raw)?
+  config := prompt_capture.pattern(item.key, item.limit)?
+  mut maximum := 1
+  mut index := 1
+  loop {
+    if index >= raw.bytes().len() { break }
+    maximum = maximum * 2
+    index = index + 1
+  }
+  mut mask := 0
+  loop {
+    if mask == maximum { break }
+    actual := capture(config, raw.bytes(), mask)?
+    if encoding.hex_encode(actual[0..actual.len()]) != item.expected {
+      print("capture differential mismatch")
+      print(item.raw)
+      print(item.key)
+      print(encoding.hex_encode(actual[0..actual.len()]))
+      print(item.expected)
+      return Err(Error.Invalid)
+    }
+    if !exhaustive && mask == 0 && maximum > 1 { mask = maximum - 1 } else { mask = mask + 1 }
+  }
+  return Ok(())
+}
+
+fn expired() -> Result<array<u8>, Error> {
+  config := prompt_capture.pattern("ED]x", 64)?
+  return capture(config, "ED]xx".bytes(), 7)
+}
+
+fn independent_streams() -> Result<(), Error> {
+  config := prompt_capture.pattern("aba", 64)?
+  mut stdout := buffer(64)
+  mut stderr := buffer(64)
+  mut out_state := prompt_capture.cursor()
+  mut err_state := prompt_capture.cursor()
+  prompt_capture.append(config, stdout, out_state, "ab".bytes())?
+  prompt_capture.append(config, stderr, err_state, "a".bytes())?
+  prompt_capture.append(config, stdout, out_state, "aba".bytes())?
+  prompt_capture.append(config, stderr, err_state, "bab".bytes())?
+  out := prompt_capture.finish(config, stdout, out_state)?
+  err := prompt_capture.finish(config, stderr, err_state)?
+  if encoding.hex_encode(out[0..out.len()]) != "5b52454441435445445d6261"
+    || encoding.hex_encode(err[0..err.len()]) != "5b52454441435445445d62" { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+// Exercise the worker ceiling and retained task ceiling with bytewise expectations.
+// A pending credential prefix makes overflow occur in finish rather than append.
+fn large_capture(limit: i64, overflow: bool, pending: bool) -> Result<(), Error> {
+  config := prompt_capture.pattern(if pending { "ab" } else { "" }, limit)?
+  mut output := buffer(limit)
+  mut state := prompt_capture.cursor()
+  mut chunk := buffer(65536)
+  mut index := 0
+  loop {
+    if index == 4096 { break }
+    chunk.append("xxxxxxxxxxxxxxxx")
+    index = index + 1
+  }
+  count := if pending && !overflow { limit - 1 } else { limit }
+  mut remaining := count
+  loop {
+    if remaining == 0 { break }
+    size := if remaining < 65536 { remaining } else { 65536 }
+    prompt_capture.append(config, output, state, chunk.bytes()[0..size])?
+    remaining = remaining - size
+  }
+  if pending {
+    prompt_capture.append(config, output, state, "a".bytes())?
+    if state.truncated || state.matched != 1 { return Err(Error.Invalid) }
+  } else if overflow {
+    prompt_capture.append(config, output, state, "x".bytes())?
+  }
+  actual := prompt_capture.finish(config, output, state)?
+  again := prompt_capture.finish(config, output, state)?
+  if actual.len() != limit || again.len() != limit || state.truncated != overflow || !state.closed || state.matched != 0 {
+    return Err(Error.Invalid)
+  }
+  marker := "\n[output truncated]"
+  prefix := if overflow { limit - marker.len() } else { count }
+  index = 0
+  loop {
+    if index == limit { break }
+    expected := if index < prefix { 120 as u8 } else if overflow { marker.bytes()[index - prefix] } else { 97 as u8 }
+    if actual[index] != expected || again[index] != expected { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  match prompt_capture.append(config, output, state, "x".bytes()) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  return Ok(())
+}
+
+fn main() -> Result<(), Error> {
+  match prompt_capture.pattern("x", -1) { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  match prompt_capture.pattern("x", 2097153) { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  maximum := prompt_capture.pattern("", 65536)?
+  maximum_output := capture(maximum, "".bytes(), 0)?
+  if maximum_output.len() != 0 { return Err(Error.Invalid) }
+  large_capture(65536, false, false)?
+  large_capture(65536, true, true)?
+  large_capture(2097152, false, false)?
+  large_capture(2097152, true, false)?
+  large_capture(2097152, false, true)?
+  large_capture(2097152, true, true)?
+  independent_streams()?
+  owned := expired()?
+  if encoding.hex_encode(owned[0..owned.len()]) != "5b52454441435445445d78" { return Err(Error.Invalid) }
+  // Independent CPython bytes.replace golden outputs; every chunk partition is checked.
+  cases := [
+    Case { raw: "", key: "", limit: 0, expected: "" },
+    Case { raw: "", key: "", limit: 3, expected: "" },
+    Case { raw: "", key: "", limit: 10, expected: "" },
+    Case { raw: "", key: "", limit: 19, expected: "" },
+    Case { raw: "", key: "", limit: 20, expected: "" },
+    Case { raw: "", key: "", limit: 64, expected: "" },
+    Case { raw: "616263", key: "", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "616263", key: "", limit: 3, expected: "616263" },
+    Case { raw: "616263", key: "", limit: 10, expected: "616263" },
+    Case { raw: "616263", key: "", limit: 19, expected: "616263" },
+    Case { raw: "616263", key: "", limit: 20, expected: "616263" },
+    Case { raw: "616263", key: "", limit: 64, expected: "616263" },
+    Case { raw: "616263", key: "abcdef", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "616263", key: "abcdef", limit: 3, expected: "616263" },
+    Case { raw: "616263", key: "abcdef", limit: 10, expected: "616263" },
+    Case { raw: "616263", key: "abcdef", limit: 19, expected: "616263" },
+    Case { raw: "616263", key: "abcdef", limit: 20, expected: "616263" },
+    Case { raw: "616263", key: "abcdef", limit: 64, expected: "616263" },
+    Case { raw: "6161616161", key: "aa", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161616161", key: "aa", limit: 3, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161616161", key: "aa", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161616161", key: "aa", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161616161", key: "aa", limit: 20, expected: "5b0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161616161", key: "aa", limit: 64, expected: "5b52454441435445445d5b52454441435445445d61" },
+    Case { raw: "61626162616261", key: "aba", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "61626162616261", key: "aba", limit: 3, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "61626162616261", key: "aba", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "61626162616261", key: "aba", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "61626162616261", key: "aba", limit: 20, expected: "5b0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "61626162616261", key: "aba", limit: 64, expected: "5b52454441435445445d625b52454441435445445d" },
+    Case { raw: "6161616261616162", key: "aaab", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161616261616162", key: "aaab", limit: 3, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161616261616162", key: "aaab", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161616261616162", key: "aaab", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161616261616162", key: "aaab", limit: 20, expected: "5b52454441435445445d5b52454441435445445d" },
+    Case { raw: "6161616261616162", key: "aaab", limit: 64, expected: "5b52454441435445445d5b52454441435445445d" },
+    Case { raw: "45445d7878", key: "ED]x", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "45445d7878", key: "ED]x", limit: 3, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "45445d7878", key: "ED]x", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "45445d7878", key: "ED]x", limit: 19, expected: "5b52454441435445445d78" },
+    Case { raw: "45445d7878", key: "ED]x", limit: 20, expected: "5b52454441435445445d78" },
+    Case { raw: "45445d7878", key: "ED]x", limit: 64, expected: "5b52454441435445445d78" },
+    Case { raw: "5b52454441435445445d", key: "ED]", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "5b52454441435445445d", key: "ED]", limit: 3, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "5b52454441435445445d", key: "ED]", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "5b52454441435445445d", key: "ED]", limit: 19, expected: "5b5245444143545b52454441435445445d" },
+    Case { raw: "5b52454441435445445d", key: "ED]", limit: 20, expected: "5b5245444143545b52454441435445445d" },
+    Case { raw: "5b52454441435445445d", key: "ED]", limit: 64, expected: "5b5245444143545b52454441435445445d" },
+    Case { raw: "524544414354454478", key: "EDx", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "524544414354454478", key: "EDx", limit: 3, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "524544414354454478", key: "EDx", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "524544414354454478", key: "EDx", limit: 19, expected: "5245444143545b52454441435445445d" },
+    Case { raw: "524544414354454478", key: "EDx", limit: 20, expected: "5245444143545b52454441435445445d" },
+    Case { raw: "524544414354454478", key: "EDx", limit: 64, expected: "5245444143545b52454441435445445d" },
+    Case { raw: "00780078", key: "\u{0000}x", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "00780078", key: "\u{0000}x", limit: 3, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "00780078", key: "\u{0000}x", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "00780078", key: "\u{0000}x", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "00780078", key: "\u{0000}x", limit: 20, expected: "5b52454441435445445d5b52454441435445445d" },
+    Case { raw: "00780078", key: "\u{0000}x", limit: 64, expected: "5b52454441435445445d5b52454441435445445d" },
+    Case { raw: "78e7958ce7958c79", key: "界", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "78e7958ce7958c79", key: "界", limit: 3, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "78e7958ce7958c79", key: "界", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "78e7958ce7958c79", key: "界", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "78e7958ce7958c79", key: "界", limit: 20, expected: "780a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "78e7958ce7958c79", key: "界", limit: 64, expected: "785b52454441435445445d5b52454441435445445d79" },
+    Case { raw: "c3a9c3a978", key: "é", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "c3a9c3a978", key: "é", limit: 3, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "c3a9c3a978", key: "é", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "c3a9c3a978", key: "é", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "c3a9c3a978", key: "é", limit: 20, expected: "5b0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "c3a9c3a978", key: "é", limit: 64, expected: "5b52454441435445445d5b52454441435445445d78" },
+    Case { raw: "ff61626180616261", key: "aba", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "ff61626180616261", key: "aba", limit: 3, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "ff61626180616261", key: "aba", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "ff61626180616261", key: "aba", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "ff61626180616261", key: "aba", limit: 20, expected: "ff0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "ff61626180616261", key: "aba", limit: 64, expected: "ff5b52454441435445445d805b52454441435445445d" },
+    Case { raw: "616261626163", key: "ababad", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "616261626163", key: "ababad", limit: 3, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "616261626163", key: "ababad", limit: 10, expected: "616261626163" },
+    Case { raw: "616261626163", key: "ababad", limit: 19, expected: "616261626163" },
+    Case { raw: "616261626163", key: "ababad", limit: 20, expected: "616261626163" },
+    Case { raw: "616261626163", key: "ababad", limit: 64, expected: "616261626163" },
+    Case { raw: "6162636162", key: "abcabd", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6162636162", key: "abcabd", limit: 3, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6162636162", key: "abcabd", limit: 10, expected: "6162636162" },
+    Case { raw: "6162636162", key: "abcabd", limit: 19, expected: "6162636162" },
+    Case { raw: "6162636162", key: "abcabd", limit: 20, expected: "6162636162" },
+    Case { raw: "6162636162", key: "abcabd", limit: 64, expected: "6162636162" },
+    Case { raw: "6b6579", key: "key", limit: 10, expected: "5b52454441435445445d" },
+    Case { raw: "6b657978", key: "key", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+  ]
+  mut index := 0
+  loop {
+    if index == cases.len() { break }
+    check_case(cases[index], true)?
+    index = index + 1
+  }
+  // CPython Random seed 750070 full-byte corpus: joined and byte-at-a-time input.
+  randomized := [
+    Case { raw: "7878787878787878787878787878787878787878", key: "", limit: 20, expected: "7878787878787878787878787878787878787878" },
+    Case { raw: "787878787878787878787878787878787878787878", key: "", limit: 20, expected: "780a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "61617a", key: "a", limit: 20, expected: "5b0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161", key: "aa", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "616261", key: "aba", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "61329cae", key: "a", limit: 64, expected: "5b52454441435445445d329cae" },
+    Case { raw: "c0ef617df92788", key: "a", limit: 9, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "45445d7845445d7878", key: "ED]x", limit: 18, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "68616169759f5a", key: "a", limit: 9, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "26616161", key: "a", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "61c7a4d793c73c", key: "a", limit: 9, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "61618faf612e74", key: "a", limit: 9, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "616115ca28986129cd", key: "a", limit: 64, expected: "5b52454441435445445d5b52454441435445445d15ca28985b52454441435445445d29cd" },
+    Case { raw: "06b21a306161", key: "aa", limit: 18, expected: "06b21a305b52454441435445445d" },
+    Case { raw: "d755ade2ba7344ed", key: "", limit: 1, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "61612e947e61e12f", key: "a", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "aa61615e49fc0d94926161a96161", key: "aa", limit: 9, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "da616133ff8bfa", key: "aa", limit: 18, expected: "da5b52454441435445445d33ff8bfa" },
+    Case { raw: "e6cb5264616261", key: "aba", limit: 19, expected: "e6cb52645b52454441435445445d" },
+    Case { raw: "6161", key: "aa", limit: 18, expected: "5b52454441435445445d" },
+    Case { raw: "ac6697d2c91d4605", key: "", limit: 64, expected: "ac6697d2c91d4605" },
+    Case { raw: "ef294606fe877e41c9", key: "", limit: 20, expected: "ef294606fe877e41c9" },
+    Case { raw: "613b", key: "a", limit: 64, expected: "5b52454441435445445d3b" },
+    Case { raw: "98835b52455b52454441435445445d4441435445445b52454441435445445d5d", key: "[REDACTED]", limit: 20, expected: "980a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "79765b52454441435445445d5002ca578c9440", key: "[REDACTED]", limit: 9, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "", key: "", limit: 19, expected: "" },
+    Case { raw: "0d619b6113febc", key: "a", limit: 64, expected: "0d5b52454441435445445d9b5b52454441435445445d13febc" },
+    Case { raw: "716169640a3475", key: "a", limit: 20, expected: "715b52454441435445445d69640a3475" },
+    Case { raw: "c2c0c84c1a5b52454441435445445df642976c", key: "[REDACTED]", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "61616161906161", key: "aa", limit: 18, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161e42e3508e63e18066161e9", key: "aa", limit: 20, expected: "5b0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6162615c", key: "aba", limit: 19, expected: "5b52454441435445445d5c" },
+    Case { raw: "6162616162614b5fab3dffbe", key: "aba", limit: 20, expected: "5b0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "4e521c8cec8bf01c", key: "", limit: 18, expected: "4e521c8cec8bf01c" },
+    Case { raw: "a1e7958c84", key: "界", limit: 31, expected: "a15b52454441435445445d84" },
+    Case { raw: "61f56161b0", key: "a", limit: 1, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "5816cf5b52454441435445445d", key: "[REDACTED]", limit: 18, expected: "5816cf5b52454441435445445d" },
+    Case { raw: "72b194c79158b76131d4", key: "a", limit: 18, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "719346d03c", key: "", limit: 31, expected: "719346d03c" },
+    Case { raw: "8612666831616261626161616261c724", key: "aba", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "2cf546bc1e", key: "", limit: 20, expected: "2cf546bc1e" },
+    Case { raw: "3ea75b52454441435445445d5b5b52454441435445445d52454441435445445d15", key: "[REDACTED]", limit: 64, expected: "3ea75b52454441435445445d5b5b52454441435445445d52454441435445445d15" },
+    Case { raw: "d8c69c956161daefa8", key: "aa", limit: 20, expected: "d8c69c955b52454441435445445ddaefa8" },
+    Case { raw: "a62e5b52454441435445445d", key: "[REDACTED]", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "", key: "", limit: 64, expected: "" },
+    Case { raw: "266661616161e26161", key: "aa", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161ba040d6161616199fdcecc9fe6", key: "aa", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "0b45445d784545445d78445d780acee6fb0a7f9791", key: "ED]x", limit: 31, expected: "0b5b52454441435445445d450a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "7df67245445d78", key: "ED]x", limit: 18, expected: "7df6725b52454441435445445d" },
+    Case { raw: "9f61616161937394a98984c374", key: "aa", limit: 31, expected: "9f5b52454441435445445d5b52454441435445445d937394a98984c374" },
+    Case { raw: "616162616261616261e103d251", key: "aba", limit: 1, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "61616161", key: "aa", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "1ef24e61618df9", key: "aa", limit: 9, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "38b6454445445d785d78", key: "ED]x", limit: 20, expected: "38b645445b52454441435445445d5d78" },
+    Case { raw: "1a6ccc", key: "", limit: 31, expected: "1a6ccc" },
+    Case { raw: "d03f945939141a", key: "", limit: 1, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "5b5b52454441435445445d52454441435445445dd2b9", key: "[REDACTED]", limit: 20, expected: "5b0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "acc4e7958c86e7958ce8c8e5", key: "界", limit: 20, expected: "ac0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "35e795e7958c8ce7958c", key: "界", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "1742f8295b52454441435445445d", key: "[REDACTED]", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6b32a7de42772519", key: "", limit: 19, expected: "6b32a7de42772519" },
+    Case { raw: "616261616261", key: "aba", limit: 64, expected: "5b52454441435445445d5b52454441435445445d" },
+    Case { raw: "d361626167938c616261", key: "aba", limit: 18, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "616261", key: "aba", limit: 64, expected: "5b52454441435445445d" },
+    Case { raw: "0a08616261", key: "aba", limit: 9, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "189b5b52454441435445445d8e", key: "[REDACTED]", limit: 31, expected: "189b5b52454441435445445d8e" },
+    Case { raw: "25db35f16ce795e7958c8c36e2", key: "界", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "e795e7958c8c", key: "界", limit: 64, expected: "e7955b52454441435445445d8c" },
+    Case { raw: "fb4545445d78445d7845445d7891", key: "ED]x", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "", key: "", limit: 64, expected: "" },
+    Case { raw: "61616161686161", key: "aa", limit: 18, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "66", key: "", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "5bac94616195619684", key: "a", limit: 1, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "45445d782645445d78b07ede3ca6", key: "ED]x", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "a261616161", key: "aa", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6107617d61cf20", key: "a", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "f7b2e7958ce0", key: "界", limit: 31, expected: "f7b25b52454441435445445de0" },
+    Case { raw: "d528616261f53183aa806161626162617b", key: "aba", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "5f7bcd3276", key: "", limit: 9, expected: "5f7bcd3276" },
+    Case { raw: "76c1e7958c86", key: "界", limit: 64, expected: "76c15b52454441435445445d86" },
+    Case { raw: "a8c3df239a83f3", key: "", limit: 10, expected: "a8c3df239a83f3" },
+    Case { raw: "15", key: "", limit: 64, expected: "15" },
+    Case { raw: "4ee3f98259b9705e", key: "", limit: 10, expected: "4ee3f98259b9705e" },
+    Case { raw: "61306d135bb261bb61", key: "a", limit: 64, expected: "5b52454441435445445d306d135bb25b52454441435445445dbb5b52454441435445445d" },
+    Case { raw: "de8f83e7958ce7e7958c958c435c", key: "界", limit: 31, expected: "de8f835b52454441435445445de75b52454441435445445d958c435c" },
+    Case { raw: "db19ae4c87e785", key: "", limit: 31, expected: "db19ae4c87e785" },
+    Case { raw: "58612381617273dc4cfb6109", key: "a", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "8b37", key: "", limit: 20, expected: "8b37" },
+    Case { raw: "1410f889b16fe7958ce38c61e7958c", key: "界", limit: 9, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "4545445d78445d78221345445d78b4ca", key: "ED]x", limit: 1, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161dc0cddb68cf09c14086161", key: "aa", limit: 31, expected: "5b52454441435445445ddc0cddb68cf09c14085b52454441435445445d" },
+    Case { raw: "e9d32e", key: "", limit: 10, expected: "e9d32e" },
+    Case { raw: "395b525b52454441435445445d454441435445445d5707a6384a", key: "[REDACTED]", limit: 1, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "a4f161626159616261f7", key: "aba", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "5b52454441435b52454441435445445d5445445db130797a8ab4", key: "[REDACTED]", limit: 64, expected: "5b52454441435b52454441435445445d5445445db130797a8ab4" },
+    Case { raw: "e7958cbce7e7958c958c8c17", key: "界", limit: 31, expected: "5b52454441435445445dbce75b52454441435445445d958c8c17" },
+    Case { raw: "0a5b52454441435445445d", key: "[REDACTED]", limit: 18, expected: "0a5b52454441435445445d" },
+    Case { raw: "ecbc61616161bb61615f", key: "aa", limit: 31, expected: "ecbc5b52454441435445445d0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "a6506109ef99", key: "a", limit: 64, expected: "a6505b52454441435445445d09ef99" },
+    Case { raw: "fec0ca9de7958c79e7958c00e7958c9f", key: "界", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "e7e7958c958ce7958c", key: "界", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "5b524544415b52454441435445445d435445445d95a25b52454441435445445d", key: "[REDACTED]", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "c761cd4e007d3b6161", key: "a", limit: 20, expected: "c70a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "e7958c", key: "界", limit: 1, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6182011467c406ea216a", key: "a", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "e429d723c88c", key: "", limit: 18, expected: "e429d723c88c" },
+    Case { raw: "374ce7e7958ce7958c958caa56f0", key: "界", limit: 31, expected: "374ce75b52454441435445445d5b52454441435445445d958caa56f0" },
+    Case { raw: "6162613003bb696c", key: "aba", limit: 19, expected: "5b52454441435445445d3003bb696c" },
+    Case { raw: "fc6161ec033d29fc36", key: "a", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "f57fc37a45445d78bb78", key: "ED]x", limit: 64, expected: "f57fc37a5b52454441435445445dbb78" },
+    Case { raw: "b25b52454441435445445d3c92b5348037cfd05b52454441435445445d", key: "[REDACTED]", limit: 20, expected: "b20a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "75858ac5616261", key: "aba", limit: 20, expected: "75858ac55b52454441435445445d" },
+    Case { raw: "5b52454441435445445d5b52454441435445445d03936b", key: "[REDACTED]", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "59c4e4616261626161b8", key: "aba", limit: 19, expected: "59c4e45b52454441435445445d626161b8" },
+    Case { raw: "3445445d4545445d78445d787846aa28", key: "ED]x", limit: 18, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "2f454545445d78445d78445d78", key: "ED]x", limit: 18, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "148b01aabde7958c", key: "界", limit: 10, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "dfe7958ce7958c", key: "界", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "0ed2972f", key: "", limit: 20, expected: "0ed2972f" },
+    Case { raw: "0fb0297380dd2aaa", key: "", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "9266bd232ce7958ce2e7958cff", key: "界", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "e7958c6aa079ddf173e7958ce7958c7d", key: "界", limit: 20, expected: "5b0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "376161135db515c96161", key: "aa", limit: 64, expected: "375b52454441435445445d135db515c95b52454441435445445d" },
+    Case { raw: "14e7958c", key: "界", limit: 18, expected: "145b52454441435445445d" },
+    Case { raw: "ad61626140d3", key: "aba", limit: 19, expected: "ad5b52454441435445445d40d3" },
+    Case { raw: "e5086161b4c3", key: "a", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "ad359beafcf0d468", key: "", limit: 1, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "05243d61626190e161626112616261", key: "aba", limit: 0, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "61626166616261", key: "aba", limit: 19, expected: "0a5b6f7574707574207472756e63617465645d" },
+    Case { raw: "6161d9181cbbe017", key: "aa", limit: 1, expected: "0a5b6f7574707574207472756e63617465645d" },
+  ]
+  index = 0
+  loop {
+    if index == randomized.len() { break }
+    check_case(randomized[index], false)?
+    index = index + 1
+  }
+  print("capture: exhaustive chunk partitions and 130 independent byte corpus cases passed")
+  return Ok(())
+}

@@ -1,0 +1,73 @@
+module prompt_measurement_outcome
+
+import prompt_score
+
+pub Outcome { Pass, TestFail, Policy, Patch, AdapterError }
+
+pub Input {
+  outcome: Outcome,
+  cleanup_passed: bool,
+  containment_passed: bool,
+  generation_ns: Option<i64>,
+}
+
+pub MeasurementOutcome {
+  status: prompt_score.ScoreStatus,
+  failure_kind: prompt_score.ScoreFailureKind,
+  build_status: prompt_score.ScoreStage,
+  test_status: prompt_score.ScoreStage,
+  policy_violation_count: i64,
+  generation_to_passing_patch_ns: Option<i64>,
+}
+
+// Project execution observations into measurement fields. This function does not establish
+// containment or authorize removal; callers supply observations after their owned cleanup.
+pub fn assemble(input: Input) -> MeasurementOutcome {
+  mut result := MeasurementOutcome {
+    status: prompt_score.ScoreStatus.Error,
+    failure_kind: prompt_score.ScoreFailureKind.Adapter,
+    build_status: prompt_score.ScoreStage.StageError,
+    test_status: prompt_score.ScoreStage.StageError,
+    policy_violation_count: 0,
+    generation_to_passing_patch_ns: None,
+  }
+  match input.outcome {
+    Pass => {
+      result.status = prompt_score.ScoreStatus.Pass
+      result.failure_kind = prompt_score.ScoreFailureKind.None
+      result.build_status = prompt_score.ScoreStage.Pass
+      result.test_status = prompt_score.ScoreStage.Pass
+      result.generation_to_passing_patch_ns = input.generation_ns
+    }
+    TestFail => {
+      result.status = prompt_score.ScoreStatus.Fail
+      result.failure_kind = prompt_score.ScoreFailureKind.Test
+      result.build_status = prompt_score.ScoreStage.Pass
+      result.test_status = prompt_score.ScoreStage.Fail
+    }
+    Policy => {
+      result.status = prompt_score.ScoreStatus.PolicyViolation
+      result.failure_kind = prompt_score.ScoreFailureKind.Policy
+      result.build_status = prompt_score.ScoreStage.NotRun
+      result.test_status = prompt_score.ScoreStage.NotRun
+      result.policy_violation_count = 1
+    }
+    Patch => {
+      result.status = prompt_score.ScoreStatus.Fail
+      result.failure_kind = prompt_score.ScoreFailureKind.Patch
+      result.build_status = prompt_score.ScoreStage.NotRun
+      result.test_status = prompt_score.ScoreStage.NotRun
+    }
+    AdapterError => {}
+  }
+  if !input.containment_passed {
+    result.status = prompt_score.ScoreStatus.Error
+    result.failure_kind = prompt_score.ScoreFailureKind.Containment
+    result.generation_to_passing_patch_ns = None
+  } else if !input.cleanup_passed {
+    result.status = prompt_score.ScoreStatus.Error
+    result.failure_kind = prompt_score.ScoreFailureKind.Cleanup
+    result.generation_to_passing_patch_ns = None
+  }
+  return result
+}

@@ -1,0 +1,89 @@
+module prompt_edit_admission
+
+import prompt_file_blocks
+
+pub AdmissionStatus {
+  Complete,
+  NoFileBlock,
+  HeaderWithoutBlock,
+  UnterminatedBlock,
+  TooManyBlocks,
+  PathNotEditable,
+  DuplicatePath,
+  BodyTooLarge,
+}
+
+pub AdmittedEdits {
+  status: AdmissionStatus,
+  refusal_path: string,
+  blocks: array<prompt_file_blocks.FileBlock>,
+}
+
+fn refused(status: AdmissionStatus, path: str) -> AdmittedEdits {
+  empty: array_builder<prompt_file_blocks.FileBlock> := array_builder()
+  return AdmittedEdits { status: status, refusal_path: path.clone(), blocks: empty.build() }
+}
+
+fn normalized(path: str) -> str {
+  return if path.starts_with("./") { path[2..path.len()] } else { path }
+}
+
+fn block_path(blocks: slice<prompt_file_blocks.FileBlock>, position: i64) -> str {
+  return normalized(blocks[position].path)
+}
+
+fn permitted(path: str, allowed: slice<str>) -> bool {
+  mut index := 0
+  loop {
+    if index == allowed.len() { break }
+    if path == allowed[index] { return true }
+    index = index + 1
+  }
+  return false
+}
+
+pub fn admit(content: str, allowed: slice<str>) -> AdmittedEdits {
+  parsed := prompt_file_blocks.parse(content)
+  match parsed.status {
+    Complete => {}
+    HeaderWithoutBlock => { return refused(AdmissionStatus.HeaderWithoutBlock, "") }
+    UnterminatedBlock => { return refused(AdmissionStatus.UnterminatedBlock, "") }
+    TooManyBlocks => { return refused(AdmissionStatus.TooManyBlocks, "") }
+  }
+  if parsed.blocks.len() == 0 { return refused(AdmissionStatus.NoFileBlock, "") }
+  mut keys: array_builder<i64> := array_builder()
+  mut index := 0
+  loop {
+    if index == parsed.blocks.len() { break }
+    path := normalized(parsed.blocks[index].path)
+    if !permitted(path, allowed) { return refused(AdmissionStatus.PathNotEditable, path) }
+    mut prior := 0
+    loop {
+      if prior == index { break }
+      if path == normalized(parsed.blocks[prior].path) {
+        return refused(AdmissionStatus.DuplicatePath, path)
+      }
+      prior = prior + 1
+    }
+    if parsed.blocks[index].body.len() > 262144 {
+      return refused(AdmissionStatus.BodyTooLarge, path)
+    }
+    keys.push(index)
+    index = index + 1
+  }
+  key_array := keys.build()
+  block_view: slice<prompt_file_blocks.FileBlock> := parsed.blocks
+  sorted := key_array.sort_by_key(fn position { block_path(block_view, position) })
+  mut output: array_builder<prompt_file_blocks.FileBlock> := array_builder()
+  index = 0
+  loop {
+    if index == sorted.len() { break }
+    source := sorted[index]
+    output.push(prompt_file_blocks.FileBlock {
+        path: normalized(parsed.blocks[source].path).clone(),
+        body: parsed.blocks[source].body.clone(),
+      })
+    index = index + 1
+  }
+  return AdmittedEdits { status: AdmissionStatus.Complete, refusal_path: "".clone(), blocks: output.build() }
+}

@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Focused real-backend relocation owner. Input preparation stays outside the product sandbox.
+# This is the runtime slice of A4; it does not claim evaluator or installed-profile acceptance.
+if [[ $# != 4 ]]; then
+  echo 'usage: run-product-runtime-no-python BINARY MODEL_DIRECTORY GGML_LIBRARY_DIRECTORY SHIM_DIRECTORY' >&2
+  exit 2
+fi
+binary="$(realpath "$1")"
+models="$(realpath "$2")"
+libraries="$(realpath "$3")"
+shim="$(realpath "$4")"
+scratch="$(mktemp -d)"
+trap 'status=$?; if [[ $status == 0 ]]; then rm -rf "$scratch"; else echo "Preserved runtime relocation: $scratch" >&2; fi' EXIT
+mkdir "$scratch/product" "$scratch/data" "$scratch/output"
+cp "$binary" "$scratch/product/main"
+for name in runtime-qwen2.gguf runtime-qwen2.alignpack runtime-qwen2-model-ir.json; do
+  cp "$models/$name" "$scratch/data/$name"
+done
+[[ "$(sha256sum "$binary" | cut -d ' ' -f 1)" == "$(sha256sum "$scratch/product/main" | cut -d ' ' -f 1)" ]]
+
+# No /usr/bin, /bin, repository, compiler, Python executable or implementation helper is mounted.
+# Trace outside the namespace so the product has neither the tracer nor a test-side helper.
+strace -f -qq -e trace=execve,execveat -o "$scratch/exec.trace" \
+  bwrap --unshare-all --die-with-parent --new-session \
+  --ro-bind /lib /lib --ro-bind /usr/lib /usr/lib \
+  --ro-bind "$libraries" /native --ro-bind "$shim" /shim \
+  --ro-bind "$scratch/product" /product --bind "$scratch/data" /data \
+  --bind "$scratch/output" /output --tmpfs /tmp --proc /proc --dev /dev \
+  --clearenv --setenv LD_LIBRARY_PATH /shim:/native --setenv LC_ALL C --chdir /tmp \
+  /product/main --provider align-runtime /data/runtime-qwen2.gguf /data/runtime-qwen2.alignpack \
+    /data/runtime-qwen2-model-ir.json x /output/result.json 3 > "$scratch/stdout" 2> "$scratch/stderr"
+jq -e '.schema_version==2 and .provider=="align-runtime" and .endpoint=="in-process" and
+  .operation=="generate" and .status=="ok" and .completion_tokens==3 and
+  .prompt_tokens>0 and .token_count_exact==true and (.output|length)>0' "$scratch/output/result.json" >/dev/null
+# Existing mapped-file readers open O_RDWR. Supply private writable copies and prove their bytes
+# stayed unchanged; the source models are never writable through this namespace.
+for name in runtime-qwen2.gguf runtime-qwen2.alignpack runtime-qwen2-model-ir.json; do
+  cmp "$models/$name" "$scratch/data/$name"
+done
+# bwrap is the outer test launcher. The relocated product must be the only executed payload.
+grep -q 'execve("/product/main"' "$scratch/exec.trace"
+if grep 'execve' "$scratch/exec.trace" | grep -v 'execve("/product/main"' | grep -v 'execve(".*/bwrap"' >/dev/null; then
+  cat "$scratch/exec.trace" >&2
+  exit 1
+fi
+printf 'real runtime relocation: copied product/data, three generated tokens, no Python/helper mounts or descendant execution PASS\n'

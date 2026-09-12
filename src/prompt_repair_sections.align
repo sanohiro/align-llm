@@ -1,0 +1,131 @@
+module prompt_repair_sections
+
+import prompt_artifacts
+import prompt_file_blocks
+
+pub Sources {
+  status: string,
+  policy: string,
+  edit_set: string,
+  summary: string,
+  stdout: string,
+  stderr: string,
+}
+
+fn status_text(borrow measurement: prompt_artifacts.TaskMeasurement) -> string {
+  output := builder()
+  output.write("status: ")
+  output.write(measurement.status)
+  output.write("\nfailure_kind: ")
+  output.write(measurement.failure_kind)
+  output.write("\nbuild_status: ")
+  output.write(measurement.build_status)
+  output.write("\ntest_status: ")
+  output.write(measurement.test_status)
+  return output.to_string()
+}
+
+fn policy_text(allowed: slice<str>, borrow policy: prompt_artifacts.EditPolicy) -> Result<string, Error> {
+  output := builder()
+  output.write("editable paths, spelled exactly:")
+  mut index := 0
+  loop {
+    if index == allowed.len() { break }
+    output.write("\n  ")
+    output.write(allowed[index])
+    index = index + 1
+  }
+  output.write("\nA FILE: block naming any other path is refused before the tests run.")
+  if policy.refuse_unchanged_files {
+    output.write("\nA FILE: block whose content is identical to that file's current content is refused before the\ntests run.")
+  }
+  output.write("\nAt most ")
+  output.write_int(policy.maximum_file_blocks)
+  output.write(" FILE: blocks. At most ")
+  output.write_int(policy.maximum_edit_bytes)
+  output.write(" bytes in any one block.")
+  return Ok(output.to_string())
+}
+
+fn fence(body: str) -> string {
+  mut longest := 0
+  mut start := 0
+  mut index := 0
+  loop {
+    if index > body.len() { break }
+    if index == body.len() || body.bytes()[index] == 10 {
+      line := prompt_file_blocks.protocol_trim(body[start..index])
+      mut all_ticks := line.len() > 0
+      mut cursor := 0
+      loop {
+        if cursor == line.len() { break }
+        if line.bytes()[cursor] != 96 { all_ticks = false; break }
+        cursor = cursor + 1
+      }
+      if all_ticks && line.len() > longest { longest = line.len() }
+      start = index + 1
+    }
+    index = index + 1
+  }
+  length := if longest < 3 { 3 } else { longest + 1 }
+  output := builder()
+  index = 0
+  loop {
+    if index == length { break }
+    output.write("`")
+    index = index + 1
+  }
+  return output.to_string()
+}
+
+fn block_text(borrow block: prompt_artifacts.EditSetBlock) -> Result<string, Error> {
+  output := builder()
+  output.write("FILE: ")
+  output.write(block.path)
+  match block.body_text {
+    None => {
+      output.write(" [omitted for prompt budget: ")
+      output.write_int(block.body_bytes)
+      output.write(" bytes]")
+    },
+    Some(body) => {
+      marker := fence(body)
+      output.write("\n")
+      output.write(marker)
+      output.write("\n")
+      output.write(body)
+      if body.len() > 0 && !body.ends_with("\n") { output.write("\n") }
+      output.write(marker)
+    },
+  }
+  return Ok(output.to_string())
+}
+
+fn edit_set_text(borrow blocks: array<prompt_artifacts.EditSetBlock>) -> Result<string, Error> {
+  output := builder()
+  mut index := 0
+  loop {
+    if index == blocks.len() { break }
+    if index > 0 { output.write("\n\n") }
+    text := block_text(blocks[index])?
+    output.write(text)
+    index = index + 1
+  }
+  return Ok(output.to_string())
+}
+
+// Every measurement string is already persisted/redacted. Do not show completion_text or
+// edit_refusal as additional prompt content, and never apply disclosed edits to a workspace.
+pub fn render(
+  borrow measurement: prompt_artifacts.TaskMeasurement,
+  allowed: slice<str>,
+  borrow policy: Option<prompt_artifacts.EditPolicy>,
+) -> Result<Sources, Error> {
+  policy_source := match policy { None => "".clone(), Some(value) => policy_text(allowed, value)? }
+  edits := match measurement.edit_set { None => "".clone(), Some(blocks) => edit_set_text(blocks)? }
+  return Ok(Sources {
+      status: status_text(measurement), policy: policy_source, edit_set: edits,
+      summary: measurement.diagnostic_summary.clone(), stdout: measurement.diagnostic_stdout.clone(),
+      stderr: measurement.diagnostic_stderr.clone(),
+    })
+}

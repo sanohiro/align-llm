@@ -1,0 +1,102 @@
+module prompt_validation_attempt_smoke
+
+import prompt_capture
+import prompt_fixture_command
+import prompt_fixture_setup
+import prompt_scope_cleanup
+import prompt_tool_image
+import prompt_validation_attempt
+import prompt_workspace_cleanup
+import std.fs
+import std.path
+import std.process
+import std.time
+
+fn interrupted(attempt: prompt_fixture_setup.Attempt, valid: bool) -> Result<(), Error> {
+  mut scope := attempt.scope
+  cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+  if !cleanup.released { return Err(Error.Timeout) }
+  if !valid { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn inspect(value: prompt_validation_attempt.Attempt, mode: str) -> Result<(), Error> {
+  return match value {
+    Finished(completed) => {
+      if mode == "probe-failed" || mode == "timeout" || mode == "shared-deadline" { return Err(Error.Invalid) }
+      valid := match completed.outcome {
+        Passed => mode == "passed",
+        TestFailed => mode == "test-failed",
+        UnexpectedBaselinePass => mode == "baseline-pass",
+        PatchRejected => mode == "rejected",
+        PolicyViolation => mode == "disallowed",
+        _ => false,
+      }
+      if !valid || !completed.before.cleanup.released { return Err(Error.Invalid) }
+      match completed.after {
+        Some(report) => {
+          if !report.cleanup.released || (mode != "passed" && mode != "test-failed") { return Err(Error.Invalid) }
+        },
+        None => { if mode == "passed" || mode == "test-failed" { return Err(Error.Invalid) } },
+      }
+      return Ok(())
+    },
+    // Consume every transferred scope before interpreting the phase or removing storage.
+    SetupStopped(attempt) => interrupted(attempt, false),
+    ContainmentStopped(attempt) => interrupted(attempt, mode == "probe-failed"),
+    ValidationStopped(attempt) => interrupted(attempt, mode == "timeout" || mode == "shared-deadline"),
+  }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 10 { return Err(Error.Invalid) }
+  if args[1] == "Darwin" {
+    match fs.memory_file(fs.memory_kind.Executable, 1) {
+      Err(error) => match error { Code(code) => { if code != 45 { return Err(Error.Invalid) } }, _ => { return Err(error) } },
+      Ok(_) => { return Err(Error.Invalid) },
+    }
+    print("validation attempt: Darwin ENOTSUP PASS; Linux execution not exercised")
+    return Ok(())
+  }
+  image_root := fs.open_directory(args[2])?
+  git := prompt_tool_image.admit(image_root, "git".bytes(), args[3], 16777216, time.instant() + 10000000000)?
+  source := fs.open_directory(args[4])?
+  workspace := fs.open_directory(args[5])?
+  original := workspace.metadata()?
+  procfs := fs.open_directory("/proc")?
+  mode := args[8]
+  probe_path := if mode == "probe-failed" { "/usr/bin/false" } else { "/usr/bin/true" }
+  probe := process.command(probe_path, [probe_path])
+  validation := process.command("/bin/sh", ["/bin/sh", "-c", "printf invoked >> \"$1\"; if [ \"$2\" = timeout ]; then exec sleep 120; fi; if [ \"$2\" = baseline-pass ]; then exit 0; fi; if [ \"$(cat a)\" = before ]; then exit 1; fi; if [ \"$2\" = test-failed ]; then exit 2; fi; exit 0", "attempt-owner", args[9], if mode == "shared-deadline" { "timeout" } else { mode }])
+  validation.cwd(args[5])
+  profile := prompt_fixture_command.Profile { fresh: false, library_path: "".clone(), ld_library_path: "".clone(), pkg_config_path: "".clone() }
+  pattern := prompt_capture.pattern("", 65536)?
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  started := time.instant()
+  deadline := if mode == "expired" { started } else if mode == "shared-deadline" { started + 500000000 } else { started + 60000000000 }
+  result := prompt_validation_attempt.run(source, workspace, procfs, git, probe, validation, signals,
+    args[5], args[6], args[7], ["a"], if mode == "timeout" { 1 } else { 5 }, profile, pattern, deadline)
+  elapsed := time.instant() - started
+  restored := signals.close()
+  checked: Result<(), Error> := match result {
+    Err(error) => match error {
+      Invalid => if mode == "wrong-revision" || mode == "source-link" { Ok(()) } else { Err(error) },
+      Timeout => if mode == "expired" { Ok(()) } else { Err(error) },
+      _ => Err(error),
+    },
+    Ok(value) => inspect(value, mode),
+  }
+  // A failed assertion keeps the workspace available for inspection.
+  restored?
+  checked?
+  if mode == "shared-deadline" && (elapsed < 500000000 || elapsed >= 3000000000) { return Err(Error.Invalid) }
+  if mode == "expired" {
+    cursor := workspace.cursor()?
+    match cursor.next()? { None => {}, Some(_) => { return Err(Error.Invalid) } }
+  }
+  parent := fs.open_directory(path.dir(args[5]))?
+  removed := prompt_workspace_cleanup.remove(parent, path.base(args[5]).bytes(), workspace,
+    original.device, original.inode, true, 32768, time.instant() + 10000000000)?
+  print(mode)
+  return Ok(())
+}

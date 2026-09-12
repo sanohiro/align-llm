@@ -1,0 +1,169 @@
+module prompt_command_smoke
+
+import prompt_command
+import prompt_tool_image
+import std.fs
+import std.process
+import std.time
+
+fn names(count: i64, first: str, rest: str) -> array<string> {
+  mut output: array_builder<string> := array_builder()
+  mut index := 0
+  loop {
+    if index == count { break }
+    output.push((if index == 0 { first } else { rest }).clone())
+    index = index + 1
+  }
+  return output.build()
+}
+
+fn environment(count: i64, name: str, value: str) -> array<prompt_command.Environment> {
+  mut output: array_builder<prompt_command.Environment> := array_builder()
+  mut index := 0
+  loop {
+    if index == count { break }
+    output.push(prompt_command.Environment { name: name.clone(), value: value.clone() })
+    index = index + 1
+  }
+  return output.build()
+}
+
+fn repeated(size: i64) -> string {
+  output := builder()
+  mut index := 0
+  loop { if index == size { break }; output.write("x"); index = index + 1 }
+  return output.to_string()
+}
+
+fn rejected(borrow image: process.image, argv: slice<string>, cwd: str, env: slice<prompt_command.Environment>) -> Result<(), Error> {
+  return match prompt_command.prepare(image, argv, cwd, env) {
+    Ok(_) => Err(Error.Invalid),
+    Err(error) => match error { Invalid => Ok(()), _ => Err(error) },
+  }
+}
+
+fn boundaries(root_path: str, digest: str, cwd: str) -> Result<(), Error> {
+  root := fs.open_directory(root_path)?
+  image := prompt_tool_image.admit(root, "shell".bytes(), digest, 16777216, time.instant() + 10000000000)?
+  normal := names(1, "sh", "")
+  empty_env := environment(0, "", "")
+  empty_args := names(0, "", "")
+  rejected(image, empty_args, cwd, empty_env)?
+  empty_zero := names(1, "", "")
+  rejected(image, empty_zero, cwd, empty_env)?
+  nul_zero := names(1, "sh\0x", "")
+  rejected(image, nul_zero, cwd, empty_env)?
+  nul_argument := names(2, "sh", "x\0y")
+  rejected(image, nul_argument, cwd, empty_env)?
+  excessive := names(4097, "sh", "")
+  rejected(image, excessive, cwd, empty_env)?
+  maximum := names(4096, "sh", "")
+  prompt_command.prepare(image, maximum, cwd, empty_env)?
+  bad_cwds := ["", "relative", "/tmp/\0bad"]
+  mut index := 0
+  loop { if index == bad_cwds.len() { break }; rejected(image, normal, bad_cwds[index], empty_env)?; index = index + 1 }
+  full := repeated(4095)
+  absolute := builder()
+  absolute.write("/"); absolute.write(full)
+  exact_cwd := absolute.to_string()
+  prompt_command.prepare(image, normal, exact_cwd, empty_env)?
+  longer := builder()
+  longer.write(exact_cwd); longer.write("x")
+  long_cwd := longer.to_string()
+  rejected(image, normal, long_cwd, empty_env)?
+  invalid_names := ["", "A=B", "A\0B"]
+  index = 0
+  loop {
+    if index == invalid_names.len() { break }
+    invalid := environment(1, invalid_names[index], "value")
+    rejected(image, normal, cwd, invalid)?
+    index = index + 1
+  }
+  nul_value := environment(1, "NAME", "a\0b")
+  rejected(image, normal, cwd, nul_value)?
+  too_many := environment(257, "DUP", "")
+  rejected(image, normal, cwd, too_many)?
+  maximum_env := environment(256, "DUP", "")
+  prompt_command.prepare(image, normal, cwd, maximum_env)?
+  unusual := environment(1, "space ;$name", "")
+  prompt_command.prepare(image, normal, cwd, unusual)?
+  // Two argv0 bytes + one name byte + 2097149 value bytes is exactly 2MiB.
+  full_value := repeated(2097149)
+  exact := environment(1, "N", full_value)
+  prompt_command.prepare(image, normal, cwd, exact)?
+  large_value := repeated(2097150)
+  over := environment(1, "N", large_value)
+  rejected(image, normal, cwd, over)?
+  // Cross the same cap with argv alone, including argv0 in the accounting.
+  exact_arg := names(2, "sh", large_value)
+  prompt_command.prepare(image, exact_arg, cwd, empty_env)?
+  excess_value := repeated(2097151)
+  excess_arg := names(2, "sh", excess_value)
+  rejected(image, excess_arg, cwd, empty_env)?
+  return Ok(())
+}
+
+fn owned(root_path: str, name: str, digest: str, cwd: str, shell: bool) -> Result<command, Error> {
+  root := fs.open_directory(root_path)?
+  image := prompt_tool_image.admit(root, name.bytes(), digest, 16777216, time.instant() + 10000000000)?
+  mut args: array_builder<string> := array_builder()
+  mut vars: array_builder<prompt_command.Environment> := array_builder()
+  if shell {
+    args.push("custom argv0".clone())
+    args.push("-c".clone())
+    args.push("printf '%s\\n' \"$0\" \"$PWD\" \"${EMPTY+x}:$EMPTY\" \"$DUP\" \"$LITERAL\" \"${PROMPT_COMMAND_AMBIENT-unset}\" \"$1\"; IFS= read -r stat < /proc/$$/stat; fields=${stat##*) }; set -- $fields; [ \"$3\" = \"$$\" ] && [ \"$4\" = \"$$\" ]".clone())
+    args.push("custom argv0".clone())
+    args.push("argument ;$(ignored)".clone())
+    vars.push(prompt_command.Environment { name: "DUP".clone(), value: "first".clone() })
+    vars.push(prompt_command.Environment { name: "EMPTY".clone(), value: "".clone() })
+    vars.push(prompt_command.Environment { name: "DUP".clone(), value: "last value".clone() })
+    vars.push(prompt_command.Environment { name: "LITERAL".clone(), value: " spaces ;$(ignored)\n界 ".clone() })
+  } else {
+    args.push("custom-echo".clone())
+    args.push("a b".clone())
+    args.push("$(touch SHOULD_NOT_EXIST);*".clone())
+    args.push("".clone())
+    args.push("界".clone())
+  }
+  owned_args := args.build()
+  owned_vars := vars.build()
+  owned_cwd := cwd.clone()
+  prepared := prompt_command.prepare(image, owned_args, owned_cwd, owned_vars)?
+  root.remove_file(name.bytes())?
+  return Ok(prepared)
+}
+
+fn execute(command: command, expected: str) -> Result<(), Error> {
+  command.timeout_ns(10000000000)
+  command.max_capture_bytes(65536)
+  output := command.run()?
+  status := output.status()
+  if !match status.termination { Exited(code) => code == 0, _ => false } { return Err(Error.Invalid) }
+  if output.stdout() != expected || output.stderr().len() != 0 {
+    print("owned command output mismatch"); print(output.stdout()); print(output.stderr()); return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 6 { return Err(Error.Invalid) }
+  if args[1] == "Darwin" {
+    match fs.memory_file(fs.memory_kind.Executable, 1) {
+      Err(error) => { match error { Code(code) => { if code != 45 { return Err(Error.Invalid) } }, _ => { return Err(error) } } },
+      Ok(_) => { return Err(Error.Invalid) },
+    }
+    print("command: Darwin executable-memory ENOTSUP 45 PASS; Linux execution not exercised")
+    return Ok(())
+  }
+  if args[1] != "Linux" { return Err(Error.Invalid) }
+  boundaries(args[2], args[3], args[5])?
+  shell := owned(args[2], "shell", args[3], args[5], true)?
+  expected := builder()
+  expected.write("custom argv0\n"); expected.write(args[5])
+  expected.write("\nx:\nlast value\n spaces ;$(ignored)\n界 \nunset\nargument ;$(ignored)\n")
+  execute(shell, expected.to_string())?
+  echo := owned(args[2], "echo", args[4], args[5], false)?
+  execute(echo, "a b $(touch SHOULD_NOT_EXIST);*  界\n")?
+  print("command: input bounds, native copy after owner expiry, literal argv/env/cwd, duplicate/empty values and new session PASS")
+  return Ok(())
+}

@@ -1,0 +1,229 @@
+module prompt_snapshot
+
+import prompt_artifacts
+import prompt_environment
+import prompt_git_metadata
+import prompt_source_directory
+import prompt_source_file
+import prompt_source_git
+import prompt_tree_snapshot
+import prompt_workspace
+import core.json
+import std.crypto
+import std.encoding
+import std.fs
+import std.process
+import std.time
+
+pub Readout { Observed(prompt_artifacts.SnapshotResult), Stopped(prompt_source_git.Attempt) }
+pub FileStatus { Matched, Mismatch(string) }
+File { Observed(prompt_artifacts.ArtifactDigest), Mismatch(string) }
+
+fn digest(source: str) -> string {
+  hash := crypto.sha256(source)
+  return encoding.hex_encode(hash[0..hash.len()]).clone()
+}
+
+fn mode_text(mode: u32) -> string {
+  output := builder()
+  digits := "01234567"
+  full := 32768 + mode as i64
+  mut divisor := 32768
+  loop {
+    digit := (full / divisor) % 8
+    output.write(digits[digit..digit + 1])
+    if divisor == 1 { break }
+    divisor = divisor / 8
+  }
+  return output.to_string()
+}
+
+fn file(borrow root: fs.directory, path: str, maximum: i64) -> Result<File, Error> {
+  metadata := match root.metadata_at(path.bytes()) { Ok(value) => value, Err(_) => { return Ok(File.Mismatch("PATH".clone())) } }
+  match metadata.kind {
+    Regular => {},
+    Symlink => { return Ok(File.Mismatch("PATH".clone())) },
+    _ => { return Ok(File.Mismatch("TYPE".clone())) },
+  }
+  observed := prompt_source_file.observe(root, path.bytes(), maximum)?
+  return Ok(File.Observed(prompt_artifacts.ArtifactDigest {
+        path: path.clone(), mode: mode_text(observed.metadata.mode), byte_count: observed.metadata.size,
+        sha256: observed.sha256.clone(),
+      }))
+}
+
+fn file_identity(borrow value: prompt_artifacts.ArtifactDigest, mode: str) -> string {
+  bytes := builder()
+  bytes.write(mode)
+  bytes.write(" ")
+  bytes.write(value.path)
+  bytes.write("\0F ")
+  bytes.write(value.sha256)
+  bytes.write("\n")
+  return digest(bytes.to_string())
+}
+
+fn mismatched(code: str) -> FileStatus {
+  return FileStatus.Mismatch(code.clone())
+}
+
+fn file_mismatch(borrow value: prompt_artifacts.ArtifactDigest, expected: str, deadline: i64) -> Result<string, Error> {
+  mut permissions := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if permissions == 4096 { break }
+    mode := mode_text(permissions as u32)
+    if mode != value.mode && file_identity(value, mode) == expected { return Ok("MODE".clone()) }
+    permissions = permissions + 1
+  }
+  return Ok("CONTENT".clone())
+}
+
+// Keep the declared ordering, including directory rows in TREE observations. A failed
+// observation never exposes a partial digest array as a successful snapshot. The caller owns
+// an initially empty builder and discards it unless the returned status is Matched.
+pub fn files(borrow root: fs.directory, borrow request: prompt_artifacts.SnapshotRequest, borrow mut output: array_builder<prompt_artifacts.ArtifactDigest>, deadline: i64) -> Result<FileStatus, Error> {
+  if request.static_expectations.len() > 64 || request.additional_files.len() > 32 { return Err(Error.Invalid) }
+  mut entries := 0
+  mut bytes := 0
+  mut index := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if index == request.static_expectations.len() { break }
+    if entries >= 128 { return Err(Error.Invalid) }
+    path: str := request.static_expectations[index].path
+    expected: str := request.static_expectations[index].expected_sha256
+    kind: str := request.static_expectations[index].kind
+    if kind == "FILE" {
+      observed := match file(root, path, 1073741824 - bytes)? { Observed(value) => value, Mismatch(code) => { return Ok(FileStatus.Mismatch(code)) } }
+      if file_identity(observed, observed.mode) != expected { return Ok(FileStatus.Mismatch(file_mismatch(observed, expected, deadline)?)) }
+      entries = entries + 1
+      bytes = bytes + observed.byte_count
+      output.push(observed)
+    } else {
+      if kind != "TREE" { return Err(Error.Invalid) }
+      tree := prompt_tree_snapshot.observe(root, path, 128 - entries, 1073741824 - bytes)?
+      if tree.sha256 != expected { return Ok(mismatched("TREE")) }
+      entries = entries + tree.artifact_digests.len()
+      bytes = bytes + tree.byte_count
+      mut row := 0
+      loop {
+        if row == tree.artifact_digests.len() { break }
+        output.push(prompt_artifacts.ArtifactDigest {
+            path: tree.artifact_digests[row].path.clone(), mode: tree.artifact_digests[row].mode.clone(),
+            byte_count: tree.artifact_digests[row].byte_count, sha256: tree.artifact_digests[row].sha256.clone(),
+          })
+        row = row + 1
+      }
+    }
+    index = index + 1
+  }
+  index = 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if index == request.additional_files.len() { break }
+    path: str := request.additional_files[index]
+    observed := match file(root, path, 1073741824 - bytes)? { Observed(value) => value, Mismatch(code) => { return Ok(FileStatus.Mismatch(code)) } }
+    bytes = bytes + observed.byte_count
+    output.push(observed)
+    index = index + 1
+  }
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  return Ok(FileStatus.Matched)
+}
+
+fn workspace_allowed(borrow root: fs.directory, allowed: slice<string>, deadline: i64) -> Result<bool, Error> {
+  if allowed.len() > 32 { return Err(Error.Invalid) }
+  cursor := root.cursor()?
+  mut count := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    next := cursor.next()?
+    entry := next else { break }
+    count = count + 1
+    if count > allowed.len() { return Ok(false) }
+    name: slice<u8> := entry.name
+    text := name.as_str()?
+    mut matched := false
+    mut index := 0
+    loop {
+      if index == allowed.len() { break }
+      if allowed[index] == text { matched = true }
+      index = index + 1
+    }
+    if !matched { return Ok(false) }
+  }
+  return Ok(true)
+}
+
+fn result(task_id: str, status: str, code: str, detail: str, probe: Option<prompt_artifacts.EnvironmentProbe>, digests: array<prompt_artifacts.ArtifactDigest>) -> Result<Readout, Error> {
+  mut value := prompt_artifacts.SnapshotResult {
+    schema_version: 1, artifact_kind: "SNAPSHOT_RESULT".clone(), task_id: task_id.clone(),
+    status: status.clone(), error_code: code.clone(), error: detail.clone(), environment_probe: probe,
+    artifact_digests: digests, content_sha256: "".clone(),
+  }
+  encoded := json.encode_bounded(value, 1048576)?
+  value.content_sha256 = digest(encoded)
+  return Ok(Readout.Observed(value))
+}
+
+fn failed(task_id: str, status: str, code: str, detail: str, probe: Option<prompt_artifacts.EnvironmentProbe>) -> Result<Readout, Error> {
+  empty: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  return result(task_id, status, code, detail, probe, empty.build())
+}
+
+pub fn observe(
+  borrow request: prompt_artifacts.SnapshotRequest,
+  borrow git: process.image,
+  borrow mut signals: process.signal_subscription,
+  borrow procfs: fs.directory,
+  align_revision: str,
+  product_sha256: str,
+  deadline: i64,
+) -> Result<Readout, Error> {
+  if request.schema_version != 1 || request.artifact_kind != "SNAPSHOT_REQUEST" { return Err(Error.Invalid) }
+  initial := match prompt_environment.observe(prompt_environment.Producer.Snapshot, align_revision, product_sha256) {
+    Ok(value) => Some(value),
+    Err(_) => { return failed(request.task_id, "ERROR", "ENVIRONMENT", "snapshot environment is unavailable", None) },
+  }
+  roots := match prompt_workspace.admit(request.project_root, request.workspace_path, false, deadline) {
+    Ok(value) => value,
+    Err(_) => { return failed(request.task_id, "ERROR", "INTERNAL", "snapshot workspace is unavailable", initial) },
+  }
+  repository := match prompt_source_directory.resolve(roots.project.path, request.repo_path.bytes(), deadline) {
+    Ok(value) => value,
+    Err(_) => { return failed(request.task_id, "ERROR", "INTERNAL", "snapshot repository is unavailable", initial) },
+  }
+  if request.require_clean_repo {
+    path: slice<u8> := repository.path
+    metadata := match prompt_git_metadata.admit(path.as_str()?, deadline) {
+      Ok(value) => value,
+      Err(_) => { return failed(request.task_id, "ERROR", "INTERNAL", "snapshot Git metadata is unavailable", initial) },
+    }
+    observation := prompt_source_git.observe(git, metadata, request.repo_revision, signals, procfs, deadline)?
+    match observation {
+      Stopped(attempt) => { return Ok(Readout.Stopped(attempt)) },
+      Observed(value) => {
+        if !value.verified {
+          code := if value.revision != request.repo_revision { "REPO_REVISION" } else { "DIRTY_REPO" }
+          return failed(request.task_id, "MISMATCH", code, "snapshot repository revision or cleanliness differs", initial)
+        }
+      },
+    }
+  }
+  if !workspace_allowed(roots.workspace.directory, request.allowed_workspace_entries, deadline)? {
+    return failed(request.task_id, "MISMATCH", "PATH", "workspace contains an undeclared entry", initial)
+  }
+  mut digests: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  observed := match files(roots.project.directory, request, digests, deadline) {
+    Ok(value) => value,
+    Err(_) => { return failed(request.task_id, "ERROR", "INTERNAL", "snapshot input is unavailable or exceeds its bound", initial) },
+  }
+  match observed {
+    Mismatch(code) => failed(request.task_id, "MISMATCH", code, "snapshot expectation does not match", initial),
+    Matched => {
+      final_probe := prompt_environment.observe(prompt_environment.Producer.Snapshot, align_revision, product_sha256)?
+      return result(request.task_id, "MATCH", "NONE", "", Some(final_probe), digests.build())
+    },
+  }
+}

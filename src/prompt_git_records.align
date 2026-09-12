@@ -1,0 +1,120 @@
+module prompt_git_records
+
+pub TreeEntry { path: string, mode: string, blob: string }
+
+fn records(raw: slice<u8>, truncated: bool) -> Result<array<string>, Error> {
+  if truncated || raw.len() > 65536 { return Err(Error.Invalid) }
+  if raw.len() != 0 && raw[raw.len() - 1] != 0 { return Err(Error.Invalid) }
+  mut output: array_builder<string> := array_builder()
+  mut start := 0
+  mut index := 0
+  loop {
+    if index == raw.len() { break }
+    if raw[index] == 0 {
+      if index == start { return Err(Error.Invalid) }
+      part := raw[start..index]
+      output.push(part.as_str()?.clone())
+      start = index + 1
+    }
+    index = index + 1
+  }
+  return Ok(output.build())
+}
+
+fn admit_path(path: str) -> Result<(), Error> {
+  if path.len() == 0 { return Err(Error.Invalid) }
+  mut start := 0
+  mut index := 0
+  loop {
+    if index == path.len() || path.bytes()[index] == 47 {
+      part := path[start..index]
+      if part.len() == 0 || part == "." || part == ".." { return Err(Error.Invalid) }
+      if index == path.len() { break }
+      start = index + 1
+    }
+    index = index + 1
+  }
+  return Ok(())
+}
+
+fn path_at(paths: slice<string>, index: i64) -> str = paths[index]
+
+fn unique(paths: slice<string>) -> Result<(), Error> {
+  mut positions: array_builder<i64> := array_builder()
+  mut index := 0
+  loop {
+    if index == paths.len() { break }
+    positions.push(index)
+    index = index + 1
+  }
+  indices := positions.build()
+  sorted := indices.sort_by_key(fn position { path_at(paths, position) })
+  index = 1
+  loop {
+    if index >= sorted.len() { break }
+    if paths[sorted[index - 1]] == paths[sorted[index]] { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  return Ok(())
+}
+
+pub fn parse_paths(raw: slice<u8>, truncated: bool) -> Result<array<string>, Error> {
+  paths := records(raw, truncated)?
+  mut index := 0
+  loop {
+    if index == paths.len() { break }
+    admit_path(paths[index])?
+    index = index + 1
+  }
+  unique(paths)?
+  return Ok(paths)
+}
+
+pub fn parse_tree(raw: slice<u8>, truncated: bool) -> Result<array<TreeEntry>, Error> {
+  rows := records(raw, truncated)?
+  mut output: array_builder<TreeEntry> := array_builder()
+  mut paths: array_builder<string> := array_builder()
+  mut index := 0
+  loop {
+    if index == rows.len() { break }
+    row: str := rows[index]
+    if row.len() < 54 || row.bytes()[52] != 9 { return Err(Error.Invalid) }
+    mode := row[0..6]
+    if (mode != "100644" && mode != "100755" && mode != "120000") || row[6..12] != " blob " {
+      return Err(Error.Invalid)
+    }
+    mut digit := 12
+    loop {
+      if digit == 52 { break }
+      byte := row.bytes()[digit]
+      if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return Err(Error.Invalid) }
+      digit = digit + 1
+    }
+    path := row[53..row.len()]
+    admit_path(path)?
+    paths.push(path.clone())
+    output.push(TreeEntry { path: path.clone(), mode: mode.clone(), blob: row[12..52].clone() })
+    index = index + 1
+  }
+  owned_paths := paths.build()
+  unique(owned_paths)?
+  return Ok(output.build())
+}
+
+pub fn validate_index_flags(raw: slice<u8>, truncated: bool) -> Result<(), Error> {
+  rows := records(raw, truncated)?
+  mut paths: array_builder<string> := array_builder()
+  mut index := 0
+  loop {
+    if index == rows.len() { break }
+    row: str := rows[index]
+    if row.len() < 3 || row[0..2] != "H " { return Err(Error.Invalid) }
+    path := row[2..row.len()]
+    admit_path(path)?
+    paths.push(path.clone())
+    index = index + 1
+  }
+  owned_paths := paths.build()
+  unique(owned_paths)?
+  return Ok(())
+}

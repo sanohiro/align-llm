@@ -1,0 +1,22 @@
+module prompt_git_blob_identity
+
+import std.crypto
+import std.encoding
+
+// The caller supplies already-observed bytes and its existing consumer byte cap.
+// This content identity neither observes a path nor encodes executable/symlink mode.
+pub fn identity(data: slice<u8>, maximum: i64) -> Result<string, Error> {
+  if maximum < 0 || data.len() > maximum || data.len() > 9223372036854775782 {
+    return Err(Error.Invalid)
+  }
+  header := builder()
+  header.write("blob ")
+  header.write_int(data.len())
+  header.write("\0")
+  text := header.to_string()
+  mut framed := buffer(text.len() + data.len())
+  framed.append(text)
+  framed.append(data)
+  digest := crypto.sha1(framed.bytes())
+  return Ok(encoding.hex_encode(digest[0..digest.len()]).clone())
+}

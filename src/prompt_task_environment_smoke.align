@@ -1,0 +1,47 @@
+module prompt_task_environment_smoke
+
+import prompt_artifacts
+import prompt_command
+import prompt_task_environment
+
+fn owned(mode: i64) -> Result<array<prompt_command.Environment>, Error> {
+  mut variables: array_builder<prompt_artifacts.EnvironmentVariable> := array_builder()
+  if mode == 3 {
+    variables.push(prompt_artifacts.EnvironmentVariable { name: "KEY".clone(), non_secret_value: "public".clone(), source: "EXPLICIT_POLICY".clone(), precedence: 0 })
+  }
+  variables.push(prompt_artifacts.EnvironmentVariable { name: "LANG".clone(), non_secret_value: "C".clone(), source: "EXPLICIT_POLICY".clone(), precedence: if mode == 3 { 1 } else { 0 } })
+  variables.push(prompt_artifacts.EnvironmentVariable { name: "LC_ALL".clone(), non_secret_value: "C".clone(), source: "EXPLICIT_POLICY".clone(), precedence: if mode == 3 { 2 } else { 1 } })
+  mut paths: array_builder<string> := array_builder()
+  paths.push("/usr/bin/git".clone())
+  policy := prompt_artifacts.EnvironmentPolicy {
+    schema_version: 1, artifact_kind: "ENVIRONMENT_POLICY".clone(), policy_id: "environment".clone(),
+    allowed_variables: variables.build(), executable_paths: paths.build(), locale: "C".clone(), content_sha256: "".clone(),
+  }
+  control := prompt_artifacts.EvaluationProviderControl {
+    schema_version: 1, artifact_kind: "EVALUATION_PROVIDER_CONTROL".clone(), provider_control_id: "control".clone(),
+    provider_kind: (if mode == 4 { "FIXTURE" } else if mode == 2 { "CLOUD_OPENAI" } else { "LOCAL_OPENAI" }).clone(),
+    endpoint: "http://127.0.0.1:1".clone(), endpoint_id: "endpoint".clone(), model: "model".clone(),
+    api_key_env: if mode == 2 || mode == 5 || mode == 6 { None } else { Some("KEY".clone()) },
+    tokenize_endpoint: None,
+    timeout_ns: 1000000000, max_response_bytes: 1000, content_sha256: "".clone(),
+  }
+  return prompt_task_environment.worker(policy, control, if mode == 1 || mode == 2 || mode == 6 { "" } else if mode == 7 { "secret\0value" } else { "secret value" })
+}
+
+pub fn main() -> Result<(), Error> {
+  environment := owned(0)?
+  if environment.len() != 3 || environment[0].name != "LANG" || environment[0].value != "C" ||
+  environment[1].name != "LC_ALL" || environment[1].value != "C" ||
+  environment[2].name != "KEY" || environment[2].value != "secret value" { return Err(Error.Invalid) }
+  public_only := owned(6)?
+  if public_only.len() != 2 { return Err(Error.Invalid) }
+  failures := [1, 2, 3, 4, 5, 7]
+  mut index := 0
+  loop {
+    if index == failures.len() { break }
+    match owned(failures[index]) { Err(_) => {}, Ok(_) => { print(failures[index]); return Err(Error.Invalid) } }
+    index = index + 1
+  }
+  print("task environment: declared credential isolation, malformed/missing refusal and owner expiry PASS")
+  return Ok(())
+}

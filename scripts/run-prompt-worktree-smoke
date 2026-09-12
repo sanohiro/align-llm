@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+trap 'rm -rf "${scratch}"' EXIT
+mkdir -p "${scratch}/root/.git" "${scratch}/root/nested/.git" "${scratch}/root/empty" "${scratch}/decoy" "${scratch}/hard" "${scratch}/fifo" "${scratch}/deep"
+printf 'payload' >"${scratch}/root/a"
+printf 'excluded' >"${scratch}/root/.git/config"
+: >"${scratch}/root/nested/.git/keep"
+ln -s a "${scratch}/root/link"
+ln -s missing "${scratch}/root/dangling"
+printf 'decoy' >"${scratch}/decoy/.git"
+printf 'hard' >"${scratch}/hard/a"
+ln "${scratch}/hard/a" "${scratch}/hard/b"
+mkfifo "${scratch}/fifo/a"
+chmod 750 "${scratch}/root"
+chmod 700 "${scratch}/root/empty"
+chmod 755 "${scratch}/root/nested" "${scratch}/root/nested/.git"
+chmod 640 "${scratch}/root/a"
+chmod 600 "${scratch}/root/nested/.git/keep"
+current="${scratch}/deep"
+for ((depth=0; depth<129; depth++)); do current="${current}/d"; mkdir "${current}"; done
+raw=none
+if [[ "$(uname -s)" == Linux ]]; then
+  mkdir "${scratch}/raw"
+  printf 'raw' >"${scratch}/raw/$(printf '\377')"
+  raw="${scratch}/raw"
+fi
+"${compiler}" check-per-unit "${project_root}/src/prompt_worktree_smoke.align"
+"${compiler}" run "${project_root}/src/prompt_worktree_smoke.align" -- \
+  "${scratch}/root" "${scratch}/retained" "${scratch}/decoy" "${scratch}/hard" "${scratch}/fifo" "${scratch}/deep" "${raw}" >"${scratch}/actual"
+# Byte-for-byte repeated observation proves retained-root identity. Hashes are
+# independently checked against native fixture tools, outside product execution.
+head -n 1 "${scratch}/actual" >"${scratch}/first"
+sed -n '2p' "${scratch}/actual" >"${scratch}/second"
+diff -u "${scratch}/first" "${scratch}/second"
+[[ "$(tail -n 1 "${scratch}/actual")" == 'worktree: PASS' ]]
+for payload in payload a missing ''; do
+  sha="$(printf '%s' "${payload}" | shasum -a 256 | cut -d ' ' -f 1)"
+  blob="$(printf '%s' "${payload}" | git hash-object --stdin)"
+  rg -q --fixed-strings "\"sha256\":\"${sha}\"" "${scratch}/first"
+  rg -q --fixed-strings "\"blob\":\"${blob}\"" "${scratch}/first"
+done
+printf 'prompt worktree smoke: PASS (retained roots, owned output, hashes, caps, kinds and depth; raw names Linux only)\n'

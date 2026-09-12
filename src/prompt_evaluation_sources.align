@@ -1,0 +1,75 @@
+module prompt_evaluation_sources
+
+import prompt_artifacts
+import prompt_git_metadata
+import prompt_source_admission
+import prompt_source_admission_git
+import prompt_source_collection
+import prompt_source_directory
+import prompt_source_git
+import prompt_source_trust
+import prompt_task_inputs
+import std.fs
+import std.process
+
+pub Admission { Ready, Stopped(prompt_source_git.Attempt), Cancelled(process.signal) }
+
+fn declarations(borrow task: prompt_task_inputs.Task) -> prompt_source_collection.TaskSource {
+  mut records: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  mut index := 0
+  loop {
+    if index == task.source.declarations.len() { break }
+    records.push(prompt_artifacts.ArtifactExpectation {
+        path: task.source.declarations[index].path.clone(), kind: task.source.declarations[index].kind.clone(),
+        expected_sha256: task.source.declarations[index].expected_sha256.clone(),
+      })
+    index = index + 1
+  }
+  return prompt_source_collection.TaskSource {
+    manifest: prompt_artifacts.ArtifactDigest { path: task.source.manifest.path.clone(), mode: task.source.manifest.mode.clone(),
+      byte_count: task.source.manifest.byte_count, sha256: task.source.manifest.sha256.clone() },
+    declarations: records.build(),
+  }
+}
+
+// Admit the complete source set before any task begins. An unverified, absent corpus remains
+// ineligible; it cannot turn a present but mismatching corpus into an accepted source set.
+pub fn admit(
+  borrow request: prompt_artifacts.PromptEvaluateRequest, tasks: slice<prompt_task_inputs.Task>,
+  borrow evidence: prompt_source_trust.Evidence, borrow project: fs.directory, borrow image: process.image,
+  borrow mut signals: process.signal_subscription, borrow procfs: fs.directory, deadline: i64,
+) -> Result<Admission, Error> {
+  strict := evidence.trust.corpus_reachability == "VERIFIED"
+  mut declarations_builder: array_builder<prompt_source_collection.TaskSource> := array_builder()
+  mut index := 0
+  loop {
+    if index == tasks.len() { break }
+    declarations_builder.push(declarations(tasks[index]))
+    index = index + 1
+  }
+  records := prompt_source_collection.collect(project, declarations_builder.build(), strict, deadline)?
+  corpus := match prompt_source_directory.resolve("/".bytes(), request.verifier_corpus_source_path.bytes(), deadline) {
+    Ok(value) => value,
+    Err(error) => {
+      if strict { return Err(error) }
+      return match error { NotFound => Ok(Admission.Ready), _ => Err(error) }
+    },
+  }
+  if !strict {
+    prompt_source_admission.compare(project, corpus.directory, records, deadline)?
+    return Ok(Admission.Ready)
+  }
+  if request.verifier_corpus_source_kind == "FILE_SET" {
+    match evidence.file_set {
+      None => { return Err(Error.Invalid) },
+      Some(observation) => prompt_source_admission.file_set(project, corpus.directory, observation,
+        request.verifier_corpus_source_sha256, records, deadline)?,
+    }
+    return Ok(Admission.Ready)
+  }
+  metadata := prompt_git_metadata.admit(request.verifier_corpus_source_path, deadline)?
+  return match prompt_source_admission_git.run(project, metadata, image, request.verifier_corpus_source_sha256,
+    records, signals, procfs, deadline)? {
+    Ready => Ok(Admission.Ready), Stopped(attempt) => Ok(Admission.Stopped(attempt)), Cancelled(signal) => Ok(Admission.Cancelled(signal)),
+  }
+}

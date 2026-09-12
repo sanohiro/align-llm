@@ -1,5 +1,7 @@
 module prompt_model_smoke
 
+import std.process
+
 import core.json
 import prompt_model
 
@@ -40,7 +42,7 @@ fn emit(case_name: str, render: prompt_model.PromptRender) {
     text: text_view,
     sha256: sha256_view,
   }
-  print(json.encode(output))
+  print((match json.encode(output) { Ok(encoded) => encoded, Err(_) => process.abort() }))
 }
 
 fn repeated(value: str, count: i64) -> string {
@@ -74,7 +76,7 @@ fn memory_line(task_id: str, marker: str, schema_version: i64) -> string {
     recommended_tests: marker,
     risky_symbols: marker,
   }
-  return json.encode(event).clone()
+  return (match json.encode(event) { Ok(encoded) => encoded, Err(_) => process.abort() })
 }
 
 fn memory_document() -> string {

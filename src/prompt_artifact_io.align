@@ -1,10 +1,12 @@
 module prompt_artifact_io
 
 import prompt_artifacts
+import prompt_source_directory
 import std.crypto
 import std.encoding
 import std.fs
 import std.path
+import std.time
 
 ARTIFACT_MAX_BYTES := 2097152
 REQUEST_MAX_BYTES := 65536
@@ -296,6 +298,15 @@ fn absent_beneath(root: str, relative: str) -> bool {
       NotFound => true,
       _ => false,
     },
+  }
+}
+
+// Admission probe only: exclusive publication repeats the check and remains the writer authority.
+pub fn output_available(root: str, relative: str) -> bool {
+  parent := prompt_source_directory.resolve(root.bytes(), path.dir(relative).bytes(), time.instant() + 10000000000) else { return false }
+  directory := parent.directory
+  return match directory.metadata_at(path.base(relative).bytes()) {
+    Ok(_) => false, Err(error) => match error { NotFound => true, _ => false },
   }
 }
 

@@ -1,0 +1,45 @@
+module prompt_git_blob_identity_smoke
+
+import prompt_git_blob_identity
+
+fn exact(data: slice<u8>, expected: str) -> Result<(), Error> {
+  actual := prompt_git_blob_identity.identity(data, data.len())?
+  if actual != expected { print(actual); return Err(Error.Invalid) }
+  if prompt_git_blob_identity.identity(data, data.len() + 1)? != expected {
+    return Err(Error.Invalid)
+  }
+  match prompt_git_blob_identity.identity(data, -1) {
+    Err(error) => { if !match error { Invalid => true, _ => false } { return Err(Error.Invalid) } },
+    _ => { return Err(Error.Invalid) },
+  }
+  if data.len() > 0 {
+    match prompt_git_blob_identity.identity(data, data.len() - 1) {
+      Err(error) => { if !match error { Invalid => true, _ => false } { return Err(Error.Invalid) } },
+      _ => { return Err(Error.Invalid) },
+    }
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  sizes := [0, 1, 9, 10, 48, 49, 50, 55, 56, 63, 64, 65, 99, 100, 999, 1000]
+  if args.len() != sizes.len() + 3 { return Err(Error.Invalid) }
+  mut index := 0
+  loop {
+    if index == sizes.len() { break }
+    mut data := buffer(sizes[index])
+    mut count := 0
+    loop {
+      if count == sizes[index] { break }
+      data.append("a")
+      count = count + 1
+    }
+    exact(data.bytes(), args[index + 1])?
+    index = index + 1
+  }
+  binary := [0 as u8, 255 as u8, 128 as u8, 65 as u8, 13 as u8, 10 as u8, 0 as u8]
+  exact(binary[0..binary.len()], args[sizes.len() + 1])?
+  exact("日本語é🙂\0".bytes(), args[sizes.len() + 2])?
+  print("prompt Git blob identity smoke passed")
+  return Ok(())
+}

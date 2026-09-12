@@ -1,0 +1,57 @@
+module prompt_source_admission_smoke
+
+import prompt_artifacts
+import prompt_document_source
+import prompt_file_set_observation
+import prompt_source_admission
+import std.fs
+import std.time
+
+fn manifests(path: str) -> Result<array<prompt_artifacts.ArtifactDigest>, Error> {
+  root := fs.open_directory(path)?
+  mut output: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  first := prompt_document_source.read(root, "one".bytes(), 2097152, time.instant() + 10000000000)?
+  last := prompt_document_source.read(root, "two".bytes(), 2097152, time.instant() + 10000000000)?
+  output.push(prompt_source_admission.manifest("one", first))
+  output.push(prompt_source_admission.manifest("two", last))
+  return Ok(output.build())
+}
+
+fn admitted(result: Result<(), Error>, expected: bool) -> Result<(), Error> {
+  actual := match result { Ok(_) => true, Err(_) => false }
+  if actual != expected { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 7 { return Err(Error.Invalid) }
+  project := fs.open_directory(args[1])?
+  corpus := fs.open_directory(args[2])?
+  root := fs.open_directory(args[3])?
+  observation := prompt_file_set_observation.observe(root, "manifest".bytes(), args[5], corpus, 7, time.instant() + 10000000000)?
+  rows := manifests(args[1])?
+  if rows.len() != 2 || rows[0].path != "one" || rows[1].path != "two" || rows[0].byte_count != 2 || rows[0].mode != "100644" || rows[0].sha256 != args[6] { return Err(Error.Invalid) }
+  deadline := time.instant() + 10000000000
+  admitted(prompt_source_admission.file_set(project, corpus, observation, args[5], rows, deadline), true)?
+  root.remove_file("manifest")?
+  admitted(prompt_source_admission.file_set(project, corpus, observation, args[5], rows, deadline), true)?
+  admitted(prompt_source_admission.file_set(project, corpus, observation, args[6], rows, deadline), false)?
+  admitted(prompt_source_admission.file_set(project, corpus, observation, args[5], rows, 0), false)?
+  corpus.remove_file("two")?
+  changed := corpus.create_new("two")?
+  changed.write("{ }")?
+  changed.set_mode(420 as u32)?
+  admitted(prompt_source_admission.file_set(project, corpus, observation, args[5], rows, deadline), false)?
+  corpus.remove_file("two")?
+  admitted(prompt_source_admission.compare(project, corpus, rows, deadline), false)?
+  mut large: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  mut index := 0
+  loop {
+    if index == 8257 { break }
+    large.push(prompt_artifacts.ArtifactDigest { path: "one".clone(), mode: "100644".clone(), byte_count: 2, sha256: args[6].clone() })
+    index = index + 1
+  }
+  admitted(prompt_source_admission.compare(project, corpus, large.build(), deadline), false)?
+  print("source admission: raw manifest identity/expiry, complete FILE_SET, final mutation/missing, deadline and cap PASS")
+  return Ok(())
+}

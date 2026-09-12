@@ -1,0 +1,62 @@
+module prompt_generation_evidence_smoke
+
+import core.json
+import prompt_artifacts
+import prompt_generation_evidence
+
+// Independent canonical JSON/SHA-256 goldens; optional absent fields are omitted.
+REQUEST := "{\"schema_version\":2,\"artifact_kind\":\"TASK_ADAPTER_REQUEST\",\"evaluation_id\":\"evaluation_id\",\"task_id\":\"task_id\",\"sample_index\":1,\"variant\":\"variant\",\"variant_path\":\"variant_path\",\"variant_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"rendered_prompt_path\":\"rendered_prompt_path\",\"rendered_prompt_sha256\":\"1c4c928d34241761563a0c790e7fb8ae7833d615103a4bd91276f67a24cdb4cf\",\"generation_policy_path\":\"generation_policy_path\",\"generation_policy_sha256\":\"b2be339c14bcb563d416a84656f3ba02e75098c547c9089fd6f651b61526db3c\",\"provider_control_path\":\"provider_control_path\",\"provider_control_sha256\":\"6f9e2a22f41550ccd372c34bb60d685d83286c6bd4dd6ee17a4314a9b60b2614\",\"workspace_path\":\"workspace_path\",\"result_path\":\"result_path\",\"paired_seed\":7,\"environment_policy_sha256\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"task_definition_path\":\"task_definition_path\",\"task_definition_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"task_deadline_ns\":1,\"product_executable_sha256\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"content_sha256\":\"5f178a997cbb953a94ba41ba0eff87703f436da7f6096d51171c5e2c7b031bb1\"}"
+RENDERED := "{\"schema_version\":1,\"artifact_kind\":\"RENDERED_PROMPT_ARTIFACT\",\"task_id\":\"task_id\",\"variant_id\":\"variant_id\",\"variant_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"task_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"context_sources_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"text\":\"owned 日本語\\npatch\",\"content_sha256\":\"1c4c928d34241761563a0c790e7fb8ae7833d615103a4bd91276f67a24cdb4cf\"}"
+POLICY := "{\"schema_version\":1,\"artifact_kind\":\"GENERATION_POLICY\",\"generation_policy_id\":\"generation_policy_id\",\"evaluation_provider_kind\":\"OPENAI\",\"evaluation_provider_endpoint_id\":\"endpoint\",\"evaluation_provider_model\":\"model\",\"provider_control_sha256\":\"6f9e2a22f41550ccd372c34bb60d685d83286c6bd4dd6ee17a4314a9b60b2614\",\"provider_service_revision\":\"provider_service_revision\",\"max_prompt_bytes\":1000,\"max_tokens\":123,\"temperature_micros\":250000,\"seed_mode\":\"PAIRED_FIXED\",\"seed_base\":7,\"content_sha256\":\"b2be339c14bcb563d416a84656f3ba02e75098c547c9089fd6f651b61526db3c\"}"
+CONTROL := "{\"schema_version\":1,\"artifact_kind\":\"EVALUATION_PROVIDER_CONTROL\",\"provider_control_id\":\"provider_control_id\",\"provider_kind\":\"OPENAI\",\"endpoint\":\"https://provider.invalid\",\"endpoint_id\":\"endpoint\",\"model\":\"model\",\"timeout_ns\":1000000000,\"max_response_bytes\":1000,\"content_sha256\":\"6f9e2a22f41550ccd372c34bb60d685d83286c6bd4dd6ee17a4314a9b60b2614\"}"
+RESPONSE_0 := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_RESPONSE\",\"request_id\":\"request\",\"status\":\"GENERATED\",\"error_code\":\"NONE\",\"error\":\"\",\"provider_kind\":\"OPENAI\",\"provider_model\":\"model\",\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seed_result\":\"APPLIED\",\"applied_seed\":7,\"http_status\":200,\"content\":\"patch\",\"dispatch_start_ns\":10,\"dispatch_end_ns\":20,\"content_sha256\":\"80caaa40bc72ecd551916677a024b66d3ee26d129f8c071a3e23af5dcbbef01b\"}"
+ATTESTATION_0 := "{\"schema_version\":1,\"artifact_kind\":\"SEED_CAPABILITY_ATTESTATION\",\"provider_kind\":\"OPENAI\",\"provider_model\":\"model\",\"requested_seed\":7,\"result\":\"APPLIED\",\"applied_seed\":7,\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"content_sha256\":\"fb0c2f5349aa13d1e07c0fed51137fdde312f0a113763e2f61b340e05f8bd64e\"}"
+GENERATION_0 := "{\"schema_version\":1,\"artifact_kind\":\"GENERATION_REQUEST_IDENTITY\",\"rendered_prompt_sha256\":\"1c4c928d34241761563a0c790e7fb8ae7833d615103a4bd91276f67a24cdb4cf\",\"system_text_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"user_text_sha256\":\"271acac6fa2945a3bb19a50f55f6f7d622e464daf74b98c4d4aa856bbd21b147\",\"generation_policy_sha256\":\"b2be339c14bcb563d416a84656f3ba02e75098c547c9089fd6f651b61526db3c\",\"provider_control_sha256\":\"6f9e2a22f41550ccd372c34bb60d685d83286c6bd4dd6ee17a4314a9b60b2614\",\"environment_policy_sha256\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"max_tokens\":123,\"temperature_micros\":250000,\"paired_seed\":7,\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seed_attestation_sha256\":\"fb0c2f5349aa13d1e07c0fed51137fdde312f0a113763e2f61b340e05f8bd64e\",\"content_sha256\":\"b4fdb37ba4a74677ab93d1035ede5a07def4a441220b832a4cd494b92264d8f3\"}"
+RESPONSE_1 := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_RESPONSE\",\"request_id\":\"request\",\"status\":\"GENERATED\",\"error_code\":\"NONE\",\"error\":\"\",\"provider_kind\":\"OPENAI\",\"provider_model\":\"model\",\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seed_result\":\"UNSUPPORTED\",\"http_status\":200,\"content\":\"patch\",\"dispatch_start_ns\":10,\"dispatch_end_ns\":20,\"content_sha256\":\"d9393918811cd2d9154491c71a84bc6e29637bcc7244de2c41d0200b6da67930\"}"
+ATTESTATION_1 := "{\"schema_version\":1,\"artifact_kind\":\"SEED_CAPABILITY_ATTESTATION\",\"provider_kind\":\"OPENAI\",\"provider_model\":\"model\",\"requested_seed\":7,\"result\":\"UNSUPPORTED\",\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"content_sha256\":\"611c1fe93d8ee92bd83a0bf85d76c6079789432c34f7b3c38fe4e2be563c59bf\"}"
+GENERATION_1 := "{\"schema_version\":1,\"artifact_kind\":\"GENERATION_REQUEST_IDENTITY\",\"rendered_prompt_sha256\":\"1c4c928d34241761563a0c790e7fb8ae7833d615103a4bd91276f67a24cdb4cf\",\"system_text_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"user_text_sha256\":\"271acac6fa2945a3bb19a50f55f6f7d622e464daf74b98c4d4aa856bbd21b147\",\"generation_policy_sha256\":\"b2be339c14bcb563d416a84656f3ba02e75098c547c9089fd6f651b61526db3c\",\"provider_control_sha256\":\"6f9e2a22f41550ccd372c34bb60d685d83286c6bd4dd6ee17a4314a9b60b2614\",\"environment_policy_sha256\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"max_tokens\":123,\"temperature_micros\":250000,\"paired_seed\":7,\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seed_attestation_sha256\":\"611c1fe93d8ee92bd83a0bf85d76c6079789432c34f7b3c38fe4e2be563c59bf\",\"content_sha256\":\"281877c691e7a5cf8e7e58e1932a93275ad82c4402730b3f8025ce4ece6c7c62\"}"
+RESPONSE_2 := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_RESPONSE\",\"request_id\":\"request\",\"status\":\"PROVIDER_ERROR\",\"error_code\":\"HTTP_STATUS\",\"error\":\"fixture\",\"provider_kind\":\"OPENAI\",\"provider_model\":\"model\",\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seed_result\":\"REJECTED\",\"http_status\":503,\"dispatch_start_ns\":10,\"dispatch_end_ns\":20,\"content_sha256\":\"a24fc7de2853bc3f72ff1e2521a0876917fe04e858bf205dd6dc0f1fd8651ea6\"}"
+ATTESTATION_2 := "{\"schema_version\":1,\"artifact_kind\":\"SEED_CAPABILITY_ATTESTATION\",\"provider_kind\":\"OPENAI\",\"provider_model\":\"model\",\"requested_seed\":7,\"result\":\"REJECTED\",\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"content_sha256\":\"3fa43102b6de1834d278f19df9b2a1a1f38fec642c6606f010aa0a57e2a635bf\"}"
+GENERATION_2 := "{\"schema_version\":1,\"artifact_kind\":\"GENERATION_REQUEST_IDENTITY\",\"rendered_prompt_sha256\":\"1c4c928d34241761563a0c790e7fb8ae7833d615103a4bd91276f67a24cdb4cf\",\"system_text_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"user_text_sha256\":\"271acac6fa2945a3bb19a50f55f6f7d622e464daf74b98c4d4aa856bbd21b147\",\"generation_policy_sha256\":\"b2be339c14bcb563d416a84656f3ba02e75098c547c9089fd6f651b61526db3c\",\"provider_control_sha256\":\"6f9e2a22f41550ccd372c34bb60d685d83286c6bd4dd6ee17a4314a9b60b2614\",\"environment_policy_sha256\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"max_tokens\":123,\"temperature_micros\":250000,\"paired_seed\":7,\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seed_attestation_sha256\":\"3fa43102b6de1834d278f19df9b2a1a1f38fec642c6606f010aa0a57e2a635bf\",\"content_sha256\":\"4b3b51d5499ca9a40619a92f1211be48d6802b621ad62ca7206ab3ab54b9b914\"}"
+ATTESTATION_3 := "{\"schema_version\":1,\"artifact_kind\":\"SEED_CAPABILITY_ATTESTATION\",\"provider_kind\":\"OPENAI\",\"provider_model\":\"model\",\"requested_seed\":7,\"result\":\"UNSUPPORTED\",\"provider_request_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"content_sha256\":\"b568b2b12dfd7e4868b2e6f1a33c9a0191886053e7f9f7c06d1a760b357a1302\"}"
+GENERATION_3 := "{\"schema_version\":1,\"artifact_kind\":\"GENERATION_REQUEST_IDENTITY\",\"rendered_prompt_sha256\":\"1c4c928d34241761563a0c790e7fb8ae7833d615103a4bd91276f67a24cdb4cf\",\"system_text_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"user_text_sha256\":\"271acac6fa2945a3bb19a50f55f6f7d622e464daf74b98c4d4aa856bbd21b147\",\"generation_policy_sha256\":\"b2be339c14bcb563d416a84656f3ba02e75098c547c9089fd6f651b61526db3c\",\"provider_control_sha256\":\"6f9e2a22f41550ccd372c34bb60d685d83286c6bd4dd6ee17a4314a9b60b2614\",\"environment_policy_sha256\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"max_tokens\":123,\"temperature_micros\":250000,\"paired_seed\":7,\"provider_request_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"seed_attestation_sha256\":\"b568b2b12dfd7e4868b2e6f1a33c9a0191886053e7f9f7c06d1a760b357a1302\",\"content_sha256\":\"74d0f10d96c23380de6af6d52b57ae31c79c9377b273010b13bc4973a6c7053a\"}"
+
+fn owned(index: i64) -> Result<prompt_generation_evidence.Evidence, Error> {
+  request_source := REQUEST.clone()
+  rendered_source := RENDERED.clone()
+  policy_source := POLICY.clone()
+  control_source := CONTROL.clone()
+  request := prompt_artifacts.decode_task_adapter_request(request_source)?
+  rendered := prompt_artifacts.decode_rendered_prompt_artifact(rendered_source)?
+  policy := prompt_artifacts.decode_generation_policy(policy_source)?
+  control := prompt_artifacts.decode_evaluation_provider_control(control_source)?
+  if index == 3 { return prompt_generation_evidence.absent(request, rendered, policy, control) }
+  sources := [RESPONSE_0, RESPONSE_1, RESPONSE_2]
+  response_source := sources[index].clone()
+  response := prompt_artifacts.decode_prompt_generation_response(response_source)?
+  return prompt_generation_evidence.responded(request, rendered, policy, control, response)
+}
+
+fn attestation_text(borrow value: prompt_artifacts.SeedCapabilityAttestation) -> Result<string, Error> {
+  return json.encode_bounded(value, 2097152)
+}
+
+fn generation_text(borrow value: prompt_artifacts.GenerationRequestIdentity) -> Result<string, Error> {
+  return json.encode_bounded(value, 2097152)
+}
+
+pub fn main() -> Result<(), Error> {
+  attestations := [ATTESTATION_0, ATTESTATION_1, ATTESTATION_2, ATTESTATION_3]
+  generations := [GENERATION_0, GENERATION_1, GENERATION_2, GENERATION_3]
+  mut index := 0
+  loop {
+    if index == 4 { break }
+    evidence := owned(index)?
+    attestation := attestation_text(evidence.attestation)?
+    generation := generation_text(evidence.generation)?
+    if attestation != attestations[index] || generation != generations[index] { print(index); return Err(Error.Invalid) }
+    index = index + 1
+  }
+  print("prompt generation evidence smoke passed: four canonical golden pairs and owner expiry")
+  return Ok(())
+}

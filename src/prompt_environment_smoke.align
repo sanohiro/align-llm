@@ -1,0 +1,134 @@
+module prompt_environment_smoke
+
+import core.json
+import prompt_artifacts
+import prompt_environment
+
+REVISION := "0123456789abcdef0123456789abcdef01234567"
+PRODUCT_SHA256 := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+
+// Both caller-owned identities and os.host's frame have expired before encoding the result.
+fn observed(producer: prompt_environment.Producer) -> Result<prompt_artifacts.EnvironmentProbe, Error> {
+  revision := REVISION.clone()
+  product_sha256 := PRODUCT_SHA256.clone()
+  return prompt_environment.observe(producer, revision, product_sha256)
+}
+
+fn expect_invalid(
+  producer: prompt_environment.Producer,
+  revision: str,
+  product_sha256: str,
+) -> Result<(), Error> {
+  result := prompt_environment.observe(producer, revision, product_sha256)
+  match result {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(error) => {
+      match error {
+        Invalid => {},
+        _ => { return Err(Error.Invalid) },
+      }
+    },
+  }
+  return Ok(())
+}
+
+fn reject_both(revision: str, product_sha256: str) -> Result<(), Error> {
+  expect_invalid(prompt_environment.Producer.Snapshot, revision, product_sha256)?
+  expect_invalid(prompt_environment.Producer.Task, revision, product_sha256)?
+  return Ok(())
+}
+
+// The returned core owns all text after its source probe and admitted strings expire.
+fn owned_core() -> Result<prompt_artifacts.EnvironmentIdentityCore, Error> {
+  probe := observed(prompt_environment.Producer.Snapshot)?
+  revision := REVISION.clone()
+  digest := PRODUCT_SHA256.clone()
+  return prompt_environment.identity_core(probe, revision, revision, digest, digest, digest)
+}
+
+fn core_runtime_matches(borrow core: prompt_artifacts.EnvironmentIdentityCore, expected: str) -> bool {
+  return match core.product_runtime { None => false, Some(runtime) => runtime == expected }
+}
+
+fn core_checks(borrow probe: prompt_artifacts.EnvironmentProbe) -> Result<(), Error> {
+  core := prompt_environment.identity_core(probe, REVISION, REVISION, PRODUCT_SHA256, PRODUCT_SHA256, PRODUCT_SHA256)?
+  if core.schema_version != 2 || core.artifact_kind != "ENVIRONMENT_IDENTITY_CORE" ||
+  core.os != probe.os || core.os_release != probe.os_release || core.architecture != probe.architecture ||
+  core.cpu != probe.cpu || core.gpu != probe.gpu || core.align_llm_commit != REVISION ||
+  core.align_revision != REVISION || core.source_verifier_policy_sha256 != PRODUCT_SHA256 ||
+  core.environment_policy_sha256 != PRODUCT_SHA256 { return Err(Error.Invalid) }
+  count_matches := match core.logical_cpu_count {
+    None => match probe.logical_cpu_count { None => true, Some(_) => false },
+    Some(count) => match probe.logical_cpu_count { None => false, Some(expected) => count == expected },
+  }
+  if !count_matches { return Err(Error.Invalid) }
+  runtime_matches := core_runtime_matches(core, probe.runtime_identity)
+  if !runtime_matches { return Err(Error.Invalid) }
+  encoded := prompt_artifacts.encode_environment_identity_core(core)?
+  if encoded.contains("measurement_adapter_runtime") || encoded.contains("snapshot_helper_runtime") ||
+  encoded.contains("source_verifier_runtime") { return Err(Error.Invalid) }
+  decoded := prompt_artifacts.decode_environment_identity_core(encoded)?
+  if prompt_artifacts.encode_environment_identity_core(decoded)? != encoded { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn core_refusals(borrow original: prompt_artifacts.EnvironmentProbe) -> Result<(), Error> {
+  encoded := json.encode(original)?
+  mut index := 0
+  loop {
+    if index == 17 { break }
+    mut probe: prompt_artifacts.EnvironmentProbe := json.decode(encoded)?
+    if index == 5 { probe.schema_version = 1 }
+    if index == 6 { probe.artifact_kind = "OTHER".clone() }
+    if index == 7 { probe.producer = "PYTHON".clone() }
+    if index == 8 { probe.runtime_identity = "ALIGN:mismatch".clone() }
+    if index == 9 { probe.logical_cpu_count = Some(0) }
+    if index == 10 { probe.logical_cpu_count = Some(1_048_577) }
+    if index == 11 { probe.os = "".clone() }
+    if index == 12 { probe.os_release = "bad\0release".clone() }
+    if index == 13 { probe.architecture = "".clone() }
+    if index == 14 { probe.cpu = "".clone() }
+    if index == 15 { probe.gpu = "".clone() }
+    if index == 16 { probe.content_sha256 = "bad".clone() }
+    result := prompt_environment.identity_core(probe,
+      if index == 0 { "bad" } else { REVISION },
+      if index == 1 { "bad" } else { REVISION },
+      if index == 2 { "bad" } else { PRODUCT_SHA256 },
+      if index == 3 { "bad" } else { PRODUCT_SHA256 },
+      if index == 4 { "bad" } else { PRODUCT_SHA256 })
+    match result { Ok(_) => { return Err(Error.Invalid) }, Err(_) => {} }
+    index = index + 1
+  }
+  mut missing_count: prompt_artifacts.EnvironmentProbe := json.decode(encoded)?
+  missing_count.logical_cpu_count = None
+  core_checks(missing_count)?
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 { return Err(Error.Invalid) }
+  snapshot := observed(prompt_environment.Producer.Snapshot)?
+  task := observed(prompt_environment.Producer.Task)?
+  core_checks(snapshot)?
+  core_checks(task)?
+  core_refusals(snapshot)?
+  expired := owned_core()?
+  expired_encoded := prompt_artifacts.encode_environment_identity_core(expired)?
+  expired_decoded := prompt_artifacts.decode_environment_identity_core(expired_encoded)?
+  if expired_decoded.align_revision != REVISION { return Err(Error.Invalid) }
+  print(json.encode(snapshot)?)
+  print(json.encode(task)?)
+
+  reject_both("", PRODUCT_SHA256)?
+  reject_both("0123456789abcdef0123456789abcdef0123456", PRODUCT_SHA256)?
+  reject_both("0123456789abcdef0123456789abcdef012345678", PRODUCT_SHA256)?
+  reject_both("0123456789Abcdef0123456789abcdef01234567", PRODUCT_SHA256)?
+  reject_both("0123456789gbcdef0123456789abcdef01234567", PRODUCT_SHA256)?
+  reject_both(REVISION, "")?
+  reject_both(REVISION, "abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345678")?
+  reject_both(REVISION, "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789e")?
+  reject_both(REVISION, "Abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")?
+  reject_both(REVISION, "gbcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")?
+  print("{\"rejected_cases\":20}")
+  return Ok(())
+}

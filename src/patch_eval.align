@@ -1,6 +1,8 @@
 module patch_eval
 
 import core.json
+import source_file_kind
+import std.process
 import repo_index
 import std.fs
 import std.path
@@ -211,7 +213,7 @@ fn render_document(
     complexity_delta: complexity_delta,
     recommended_test_count: recommended_test_count,
   }
-  meta_json := json.encode(meta)
+  meta_json := match json.encode(meta) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
   b := builder()
   b.write(meta_json[0..meta_json.len() - 1])
   b.write(",\"files\":[")
@@ -331,7 +333,7 @@ fn analyze_segment(segment: str) -> PatchSegment {
   }
   return PatchSegment {
     path: path_name.clone(),
-    file_json: json.encode(file_record).clone(),
+    file_json: match json.encode(file_record) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() },
     symbols_json: symbols_body.to_string(),
     additions: additions,
     deletions: deletions,
@@ -344,7 +346,7 @@ fn analyze_segment(segment: str) -> PatchSegment {
 
 fn symbol_json_for(path_name: str, candidate: SymbolMatch) -> string {
   record := PatchSymbol { path: path_name, name: candidate.name, kind: candidate.kind }
-  return json.encode(record).clone()
+  return match json.encode(record) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
 }
 
 fn count_symbols(symbols_json: str) -> i64 {
@@ -478,14 +480,7 @@ fn path_stem(path_name: str) -> str {
   return base[0..base.len() - extension.len()]
 }
 
-fn is_test_path(path_name: str) -> bool {
-  if path_name.starts_with("test") || path_name.starts_with("tests/") || path_name.starts_with("test/") {
-    return true
-  }
-  if path_name.contains("/tests/") || path_name.contains("/test/") { return true }
-  if path_name.ends_with("_test.align") || path_name.ends_with("_test.py") { return true }
-  return false
-}
+fn is_test_path(path_name: str) -> bool = source_file_kind.is_test(path_name)
 
 fn is_unrelated_path(path_name: str) -> bool {
   if is_test_path(path_name) { return true }

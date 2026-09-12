@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+trap 'rm -rf "${scratch}"' EXIT
+"${compiler}" check-per-unit "${project_root}/src/prompt_product_image_smoke.align"
+(
+  cd "${scratch}"
+  "${compiler}" build "${project_root}/src/prompt_product_image_smoke.align"
+)
+# Independent fixture construction and byte oracle, not product execution policy.
+python3 - "${scratch}" <<'PY'
+import hashlib
+from pathlib import Path
+import os
+import shutil
+import sys
+root = Path(sys.argv[1])
+shutil.copyfile(root / 'prompt_product_image_smoke', root / 'product')
+os.chmod(root / 'product', 0o700)
+shutil.copyfile(root / 'product', root / 'noexec')
+os.chmod(root / 'noexec', 0o600)
+shutil.copyfile(root / 'product', root / 'hardlink')
+os.link(root / 'hardlink', root / 'hardlink-peer')
+os.symlink('product', root / 'symlink')
+(root / 'directory').mkdir()
+(root / 'different').write_bytes(b'different executable bytes')
+os.chmod(root / 'different', 0o700)
+(root / 'digests').write_text(hashlib.sha256((root / 'product').read_bytes()).hexdigest() + '\n' + hashlib.sha256((root / 'different').read_bytes()).hexdigest() + '\n')
+PY
+expected=()
+while IFS= read -r line; do expected+=("${line}"); done < "${scratch}/digests"
+case "$(uname -s)" in
+  Darwin) host=darwin ;;
+  Linux) host=linux ;;
+  *) echo 'product image smoke: unsupported owner host' >&2; exit 1 ;;
+esac
+"${scratch}/prompt_product_image_smoke" "${scratch}" "${expected[0]}" "${host}" \
+  "${scratch}/product" "${scratch}/renamed-product" "${expected[1]}"

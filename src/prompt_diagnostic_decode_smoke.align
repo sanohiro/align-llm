@@ -1,0 +1,124 @@
+module prompt_diagnostic_decode_smoke
+
+import std.encoding
+import prompt_diagnostic_decode
+
+// Exact expected bytes generated independently by CPython UTF-8 errors="replace".
+Case { raw: str, expected: str }
+
+fn expired_source(hex: str) -> Result<string, Error> {
+  raw := encoding.hex_decode(hex)?
+  decoded := arena { prompt_diagnostic_decode.decode(raw.bytes()) }
+  return Ok(decoded)
+}
+
+fn main() -> Result<(), Error> {
+  joined := expired_source("e282ac")?
+  first_chunk := expired_source("e282")?
+  last_chunk := expired_source("ac")?
+  if joined != "€" || first_chunk != "�" || last_chunk != "�" {
+    return Err(Error.Invalid)
+  }
+  cases := [
+    Case { raw: "", expected: "" },
+    Case { raw: "410042", expected: "410042" },
+    Case { raw: "c2a2e282acf09f9880", expected: "c2a2e282acf09f9880" },
+    Case { raw: "80bfc0c1f5ff", expected: "efbfbdefbfbdefbfbdefbfbdefbfbdefbfbd" },
+    Case { raw: "c080e08080f0808080", expected: "efbfbdefbfbdefbfbdefbfbdefbfbdefbfbdefbfbdefbfbdefbfbd" },
+    Case { raw: "eda080edbfbff4908080", expected: "efbfbdefbfbdefbfbdefbfbdefbfbdefbfbdefbfbdefbfbdefbfbdefbfbd" },
+    Case { raw: "c2e282f09f92", expected: "efbfbdefbfbdefbfbd" },
+    Case { raw: "e228a1f09f4162e282ac", expected: "efbfbd28efbfbdefbfbd4162e282ac" },
+    Case { raw: "efbbbf", expected: "efbbbf" },
+    Case { raw: "c2a2", expected: "c2a2" },
+    Case { raw: "c2", expected: "efbfbd" },
+    Case { raw: "a2", expected: "efbfbd" },
+    Case { raw: "e282ac", expected: "e282ac" },
+    Case { raw: "e2", expected: "efbfbd" },
+    Case { raw: "82ac", expected: "efbfbdefbfbd" },
+    Case { raw: "e282", expected: "efbfbd" },
+    Case { raw: "ac", expected: "efbfbd" },
+    Case { raw: "f09f9880", expected: "f09f9880" },
+    Case { raw: "f0", expected: "efbfbd" },
+    Case { raw: "9f9880", expected: "efbfbdefbfbdefbfbd" },
+    Case { raw: "f09f", expected: "efbfbd" },
+    Case { raw: "9880", expected: "efbfbdefbfbd" },
+    Case { raw: "f09f98", expected: "efbfbd" },
+    Case { raw: "80", expected: "efbfbd" },
+    Case { raw: "e28241f09f9280ff", expected: "efbfbd41f09f9280efbfbd" },
+    Case { raw: "8241f09f9280ff", expected: "efbfbd41f09f9280efbfbd" },
+    Case { raw: "41f09f9280ff", expected: "41f09f9280efbfbd" },
+    Case { raw: "e28241", expected: "efbfbd41" },
+    Case { raw: "f09f9280ff", expected: "f09f9280efbfbd" },
+    Case { raw: "e28241f0", expected: "efbfbd41efbfbd" },
+    Case { raw: "9f9280ff", expected: "efbfbdefbfbdefbfbdefbfbd" },
+    Case { raw: "e28241f09f", expected: "efbfbd41efbfbd" },
+    Case { raw: "9280ff", expected: "efbfbdefbfbdefbfbd" },
+    Case { raw: "e28241f09f92", expected: "efbfbd41efbfbd" },
+    Case { raw: "80ff", expected: "efbfbdefbfbd" },
+    Case { raw: "e28241f09f9280", expected: "efbfbd41f09f9280" },
+    Case { raw: "ff", expected: "efbfbd" },
+  ]
+  mut index := 0
+  loop {
+    if index == cases.len() { break }
+    owned := expired_source(cases[index].raw)?
+    if encoding.hex_encode(owned.bytes()) != cases[index].expected { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  raw := encoding.hex_decode("e282acf09f9880ff78787878787878787878787878787878787878787878787878")?
+  decoded := prompt_diagnostic_decode.decode(raw.bytes())
+  result_1 := prompt_diagnostic_decode.bounded_capture(raw.bytes(), 0)?
+  if encoding.hex_encode(result_1.bytes()) != "0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_2 := prompt_diagnostic_decode.bounded_redacted_text(decoded, 0)?
+  if encoding.hex_encode(result_2.bytes()) != "0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_3 := prompt_diagnostic_decode.bounded_capture(raw.bytes(), 17)?
+  if encoding.hex_encode(result_3.bytes()) != "0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_4 := prompt_diagnostic_decode.bounded_redacted_text(decoded, 17)?
+  if encoding.hex_encode(result_4.bytes()) != "0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_5 := prompt_diagnostic_decode.bounded_capture(raw.bytes(), 18)?
+  if encoding.hex_encode(result_5.bytes()) != "0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_6 := prompt_diagnostic_decode.bounded_redacted_text(decoded, 18)?
+  if encoding.hex_encode(result_6.bytes()) != "0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_7 := prompt_diagnostic_decode.bounded_capture(raw.bytes(), 19)?
+  if encoding.hex_encode(result_7.bytes()) != "0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_8 := prompt_diagnostic_decode.bounded_redacted_text(decoded, 19)?
+  if encoding.hex_encode(result_8.bytes()) != "0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_9 := prompt_diagnostic_decode.bounded_capture(raw.bytes(), 20)?
+  if encoding.hex_encode(result_9.bytes()) != "efbfbd0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_10 := prompt_diagnostic_decode.bounded_redacted_text(decoded, 20)?
+  if encoding.hex_encode(result_10.bytes()) != "efbfbd0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_11 := prompt_diagnostic_decode.bounded_capture(raw.bytes(), 21)?
+  if encoding.hex_encode(result_11.bytes()) != "efbfbd0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_12 := prompt_diagnostic_decode.bounded_redacted_text(decoded, 21)?
+  if encoding.hex_encode(result_12.bytes()) != "efbfbd0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_13 := prompt_diagnostic_decode.bounded_capture(raw.bytes(), 22)?
+  if encoding.hex_encode(result_13.bytes()) != "e282ac0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_14 := prompt_diagnostic_decode.bounded_redacted_text(decoded, 22)?
+  if encoding.hex_encode(result_14.bytes()) != "e282ac0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_15 := prompt_diagnostic_decode.bounded_capture(raw.bytes(), 23)?
+  if encoding.hex_encode(result_15.bytes()) != "e282acefbfbd0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_16 := prompt_diagnostic_decode.bounded_redacted_text(decoded, 23)?
+  if encoding.hex_encode(result_16.bytes()) != "e282acefbfbd0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_17 := prompt_diagnostic_decode.bounded_capture(raw.bytes(), 24)?
+  if encoding.hex_encode(result_17.bytes()) != "e282acefbfbd0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_18 := prompt_diagnostic_decode.bounded_redacted_text(decoded, 24)?
+  if encoding.hex_encode(result_18.bytes()) != "e282acefbfbd0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_19 := prompt_diagnostic_decode.bounded_capture(raw.bytes(), 25)?
+  if encoding.hex_encode(result_19.bytes()) != "e282acefbfbd0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_20 := prompt_diagnostic_decode.bounded_redacted_text(decoded, 25)?
+  if encoding.hex_encode(result_20.bytes()) != "e282acefbfbd0a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_21 := prompt_diagnostic_decode.bounded_capture(raw.bytes(), 26)?
+  if encoding.hex_encode(result_21.bytes()) != "e282acf09f98800a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_22 := prompt_diagnostic_decode.bounded_redacted_text(decoded, 26)?
+  if encoding.hex_encode(result_22.bytes()) != "e282acf09f98800a5b6f7574707574207472756e63617465645d" { return Err(Error.Invalid) }
+  result_23 := prompt_diagnostic_decode.bounded_capture(raw.bytes(), 40)?
+  if encoding.hex_encode(result_23.bytes()) != "e282acf09f9880efbfbd78787878787878787878787878787878787878787878787878" { return Err(Error.Invalid) }
+  result_24 := prompt_diagnostic_decode.bounded_redacted_text(decoded, 40)?
+  if encoding.hex_encode(result_24.bytes()) != "e282acf09f9880efbfbd78787878787878787878787878787878787878787878787878" { return Err(Error.Invalid) }
+  match prompt_diagnostic_decode.bounded_capture(raw.bytes(), -1) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(_) => {},
+  }
+  print("diagnostic decoding: CPython replacement and capture/measurement boundary vectors passed")
+  return Ok(())
+}

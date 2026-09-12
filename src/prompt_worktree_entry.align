@@ -1,0 +1,105 @@
+module prompt_worktree_entry
+
+import prompt_git_blob_identity
+import std.crypto
+import std.encoding
+import std.fs
+import std.time
+
+pub Observation {
+  metadata: fs.metadata,
+  payload: array<u8>,
+  sha256: string,
+  git_blob: string,
+}
+
+fn kind(value: fs.entry_kind) -> i64 = match value {
+  Regular => 1, Directory => 2, Symlink => 3, Other => 4,
+}
+
+fn unchanged(before: fs.metadata, after: fs.metadata) -> bool {
+  return kind(before.kind) == kind(after.kind) && before.device == after.device &&
+  before.inode == after.inode && before.links == after.links && before.mode == after.mode &&
+  before.size == after.size && before.modified_seconds == after.modified_seconds &&
+  before.modified_nanoseconds == after.modified_nanoseconds &&
+  before.changed_seconds == after.changed_seconds && before.changed_nanoseconds == after.changed_nanoseconds
+}
+
+fn deadline_check(deadline: i64) -> Result<(), Error> {
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  return Ok(())
+}
+
+fn regular_bytes(borrow root: fs.directory, relative: slice<u8>, before: fs.metadata, maximum: i64, deadline: i64) -> Result<array<u8>, Error> {
+  deadline_check(deadline)?
+  input := root.open_read_single_link(relative)?
+  deadline_check(deadline)?
+  opened := input.metadata()?
+  deadline_check(deadline)?
+  if before.links != 1 || !unchanged(before, opened) || before.size < 0 || before.size > maximum {
+    return Err(Error.Invalid)
+  }
+  mut content := buffer(before.size)
+  mut count := 0
+  loop {
+    deadline_check(deadline)?
+    if count == maximum {
+      mut probe := buffer(1)
+      extra := input.read(probe)?
+      deadline_check(deadline)?
+      if extra != 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := maximum - count
+    mut chunk := buffer(if remaining < 65536 { remaining } else { 65536 })
+    size := input.read(chunk)?
+    deadline_check(deadline)?
+    if size == 0 { break }
+    content.append(chunk.bytes())
+    count = count + size
+  }
+  deadline_check(deadline)?
+  after := input.metadata()?
+  deadline_check(deadline)?
+  if count != before.size || !unchanged(before, after) { return Err(Error.Invalid) }
+  return Ok(content.bytes().to_array())
+}
+
+pub fn observe(borrow root: fs.directory, relative: slice<u8>, maximum: i64) -> Result<Observation, Error> {
+  return observe_until(root, relative, maximum, 9223372036854775807)
+}
+
+// Deadline checks surround each exposed native observation and each bounded read.
+// A single native call is not preempted; expiration cannot publish a success.
+pub fn observe_until(borrow root: fs.directory, relative: slice<u8>, maximum: i64, deadline: i64) -> Result<Observation, Error> {
+  if maximum < 0 || maximum > 67108864 { return Err(Error.Invalid) }
+  deadline_check(deadline)?
+  before := root.metadata_at(relative)?
+  deadline_check(deadline)?
+  payload := match before.kind {
+    Regular => regular_bytes(root, relative, before, maximum, deadline)?,
+    Symlink => root.read_link(relative, maximum)?,
+    _ => { return Err(Error.Invalid) },
+  }
+  deadline_check(deadline)?
+  after := root.metadata_at(relative)?
+  deadline_check(deadline)?
+  if !unchanged(before, after) { return Err(Error.Invalid) }
+  bytes: slice<u8> := payload
+  digest := crypto.sha256(bytes)
+  deadline_check(deadline)?
+  digest_text := encoding.hex_encode(digest[0..digest.len()]).clone()
+  blob := prompt_git_blob_identity.identity(bytes, maximum)?
+  deadline_check(deadline)?
+  return Ok(Observation { metadata: before, payload: payload, sha256: digest_text, git_blob: blob })
+}
+
+pub fn matches_source(borrow entry: Observation, mode: str, blob: str) -> bool {
+  mode_matches := match entry.metadata.kind {
+    Regular => (mode == "100644" && entry.metadata.mode as i64 == 420) ||
+    (mode == "100755" && entry.metadata.mode as i64 == 493),
+    Symlink => mode == "120000",
+    _ => false,
+  }
+  return mode_matches && entry.git_blob == blob
+}

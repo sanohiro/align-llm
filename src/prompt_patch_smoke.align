@@ -1,0 +1,56 @@
+module prompt_patch_smoke
+
+import prompt_patch
+import prompt_edit_admission
+
+Case { name: str, original: Option<str>, replacement: str, expected: str }
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  // Compose the actual parser, admission and patch producer before exercising Git.
+  allowed := ["file.txt"]
+  admitted := prompt_edit_admission.admit("FILE: ./file.txt\n```text\ngamma\n```", allowed)
+  match admitted.status { Complete => {}, _ => { return Err(Error.Invalid) } }
+  if admitted.blocks.len() != 1 { return Err(Error.Invalid) }
+  response_patch := prompt_patch.whole_file_hunk(admitted.blocks[0].path, Some("alpha\nbeta\n"), admitted.blocks[0].body)
+  if response_patch != "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,1 @@\n-alpha\n-beta\n+gamma\n" {
+    return Err(Error.Invalid)
+  }
+  if args.len() == 2 && args[1] == "response" {
+    print(response_patch)
+    return Ok(())
+  }
+  cases := [
+    Case { name: "replace", original: Some("alpha\nbeta\n"), replacement: "gamma\n", expected: "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,1 @@\n-alpha\n-beta\n+gamma\n" },
+    Case { name: "unchanged", original: Some("alpha\nbeta\n"), replacement: "alpha\nbeta\n", expected: "" },
+    Case { name: "reconstructed-lf", original: Some("alpha\nbeta"), replacement: "alpha\nbeta\n", expected: "" },
+    Case { name: "unchanged-no-lf", original: Some("alpha\nbeta"), replacement: "alpha\nbeta", expected: "" },
+    Case { name: "old-no-lf", original: Some("alpha\nbeta"), replacement: "alpha\ngamma\n", expected: "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,2 @@\n-alpha\n-beta\n\\ No newline at end of file\n+alpha\n+gamma\n" },
+    Case { name: "new-no-lf", original: Some("alpha\n"), replacement: "alpha", expected: "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1,1 +1,1 @@\n-alpha\n+alpha\n\\ No newline at end of file\n" },
+    Case { name: "both-no-lf", original: Some("alpha"), replacement: "beta", expected: "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1,1 +1,1 @@\n-alpha\n\\ No newline at end of file\n+beta\n\\ No newline at end of file\n" },
+    Case { name: "create", original: None, replacement: "delta\n", expected: "diff --git a/file.txt b/file.txt\nnew file mode 100644\n--- /dev/null\n+++ b/file.txt\n@@ -0,0 +1,1 @@\n+delta\n" },
+    Case { name: "create-empty", original: None, replacement: "", expected: "diff --git a/file.txt b/file.txt\nnew file mode 100644\n--- /dev/null\n+++ b/file.txt\n" },
+    Case { name: "empty-unchanged", original: Some(""), replacement: "", expected: "" },
+    Case { name: "fill-empty", original: Some(""), replacement: "\n", expected: "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -0,0 +1,1 @@\n+\n" },
+    Case { name: "empty-existing", original: Some("\n"), replacement: "", expected: "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1,1 +0,0 @@\n-\n" },
+    Case { name: "lf-only", original: Some("a\r\n\n"), replacement: "é\u{000c}\u{2028}\n", expected: "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1,2 +1,1 @@\n-a\r\n-\n+é\u{000c}\u{2028}\n" },
+  ]
+  mut index := 0
+  loop {
+    if index == cases.len() { break }
+    row := cases[index]
+    actual := prompt_patch.whole_file_hunk("file.txt", row.original, row.replacement)
+    if actual != row.expected {
+      print(row.name)
+      return Err(Error.Invalid)
+    }
+    // The independent git-apply owner removes exactly the newline appended by print.
+    if args.len() == 2 && args[1] == row.name {
+      print(actual)
+      return Ok(())
+    }
+    index = index + 1
+  }
+  if args.len() != 1 { return Err(Error.Invalid) }
+  print("prompt patch: 13 vectors and response composition passed")
+  return Ok(())
+}

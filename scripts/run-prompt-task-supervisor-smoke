@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+completed=0
+cleanup() {
+  if [[ "${completed}" == 1 ]]; then
+    rm -rf "${scratch}"
+  else
+    printf 'supervisor owner failed; preserving fixture storage: %s\n' "${scratch}" >&2
+  fi
+}
+trap cleanup EXIT
+mkdir "${scratch}/workspace" "${scratch}/missing-procfs" "${scratch}/crowded"
+printf a >"${scratch}/crowded/a"
+printf b >"${scratch}/crowded/b"
+"${compiler}" check-per-unit "${project_root}/src/prompt_task_supervisor_smoke.align"
+(
+  cd "${scratch}"
+  "${compiler}" build "${project_root}/src/prompt_task_supervisor_smoke.align"
+)
+# This shell becomes the owner binary. Its PID is trusted fixture input; the
+# cancellation child additionally verifies that the argument equals its PPID.
+/bin/sh -c 'exec "$1" "$2" "$3" "$4" "$5" "$$"' supervisor-owner \
+  "${scratch}/prompt_task_supervisor_smoke" "$(uname -s)" \
+  "${scratch}/workspace" "${scratch}/missing-procfs" "${scratch}/crowded"
+completed=1

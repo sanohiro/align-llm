@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+complete=0
+trap 'if [[ "${complete}" == 1 ]]; then rm -rf "${scratch}"; else printf "task validation failed; preserved fixture: %s\n" "${scratch}" >&2; fi' EXIT
+mkdir "${scratch}/image"
+platform="$(uname -s)"
+"${compiler}" check-per-unit "${project_root}/src/prompt_task_validation_smoke.align"
+(cd "${scratch}" && "${compiler}" build "${project_root}/src/prompt_task_validation_smoke.align")
+if [[ "${platform}" != Linux ]]; then
+  "${scratch}/prompt_task_validation_smoke" "${platform}" - - - - - - -
+  complete=1
+  exit 0
+fi
+cp "$(command -v git)" "${scratch}/image/git"
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid
+cat >"${scratch}/validation.sh" <<'SH'
+mode=$1
+if [ "$mode" = timeout ]; then printf 'waiting secret\n'; exec sleep 120; fi
+if [ "$(cat a)" = before ]; then
+  printf 'before secret\n'
+  printf 'before err\n' >&2
+  if [ "$mode" = baseline-pass ]; then exit 0; fi
+  if [ "$mode" = pristine ]; then printf 'mutation\n' >a; fi
+  exit 1
+fi
+printf 'after secret\n'
+printf 'after err\n' >&2
+case "$mode" in
+  test-failed) exit 2 ;;
+  mutated) printf 'tampered\n' >a ;;
+  index) git add a ;;
+  untracked) printf extra >u ;;
+esac
+exit 0
+SH
+modes=(passed test-failed baseline-pass pristine rejected disallowed mutated index untracked cancel timeout)
+if [[ "${1:-}" == --race ]]; then
+  for ((repeat=1; repeat<20; repeat++)); do modes+=(passed); done
+elif [[ $# != 0 ]]; then
+  printf 'usage: run-prompt-task-validation-smoke [--race]\n' >&2
+  exit 2
+fi
+case_index=0
+for mode in "${modes[@]}"; do
+  case_index=$((case_index + 1))
+  root="${scratch}/${mode}-${case_index}"
+  mkdir "${root}"
+  git -C "${root}" init -q --initial-branch=main --object-format=sha1
+  git -C "${root}" config core.autocrlf false
+  git -C "${root}" config core.filemode true
+  printf 'before\n' >"${root}/a"
+  printf 'before\n' >"${root}/b"
+  chmod 644 "${root}/a" "${root}/b"
+  git -C "${root}" add --all
+  git -C "${root}" -c commit.gpgSign=false -c core.hooksPath=/dev/null commit -qm baseline
+  revision="$(git -C "${root}" rev-parse HEAD)"
+  target=a
+  if [[ "${mode}" == disallowed ]]; then target=b; fi
+  printf 'after\n' >"${root}/${target}"
+  git -C "${root}" diff --no-ext-diff --binary >"${scratch}/${mode}.patch"
+  git -C "${root}" checkout -- "${target}"
+  if [[ "${mode}" == rejected ]]; then printf 'invalid patch\n' >"${scratch}/${mode}.patch"; fi
+  /bin/sh -c 'exec "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$$"' task-validation-owner \
+    "${scratch}/prompt_task_validation_smoke" "${platform}" "${scratch}/image" "${root}" \
+    "${scratch}/${mode}.patch" "${revision}" "${scratch}/validation.sh" "${mode}" >"${scratch}/actual"
+  printf '%s\n' "${mode}" >"${scratch}/expected"
+  diff -u "${scratch}/expected" "${scratch}/actual"
+done
+if [[ "${1:-}" == --race ]]; then printf 'task validation short-child race: 20 complete before/patch/after flows PASS\n'; fi
+complete=1
+printf 'task validation smoke: before/patch/after outcomes, redacted reports, pristine/policy guards and recoverable cancellation/timeout PASS (trusted fixture commands; no installed sandbox claim)\n'

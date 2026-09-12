@@ -1,0 +1,67 @@
+module prompt_git_member_smoke
+
+import prompt_git_member
+import prompt_git_metadata
+import prompt_tool_image
+import prompt_scope_cleanup
+import std.fs
+import std.process
+import std.time
+
+fn image(path: str, digest: str) -> Result<process.image, Error> {
+  root := fs.open_directory(path)?
+  return prompt_tool_image.admit(root, "git".bytes(), digest, 268435456, time.instant() + 10000000000)
+}
+
+fn inspect(result: Result<prompt_git_member.Readout, Error>, expected: str) -> Result<(), Error> {
+  match result {
+    Err(error) => {
+      if expected == "expired" { if !match error { Timeout => true, _ => false } { return Err(error) } } else if expected != "error" { return Err(error) }
+    },
+    Ok(value) => { match value {
+        Member(member) => { if (expected != "true" && expected != "false") || member != (expected == "true") { print("unexpected membership"); print(member); return Err(Error.Invalid) } },
+        Stopped(attempt) => {
+          mut scope := attempt.scope
+          cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+          if !cleanup.released { return Err(Error.Timeout) }
+          match cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+          if expected != "stopped" && expected != "cap" && expected != "timeout" && expected != "cancel" { print("unexpected stopped transport"); return Err(Error.Invalid) }
+          match attempt.report {
+            None => { return Err(Error.Invalid) },
+            Some(report) => {
+              if !report.cleanup.released { return Err(Error.Invalid) }
+              if expected == "cap" && !report.stdout_truncated { return Err(Error.Invalid) }
+              if expected == "timeout" && !match report.stop { Timeout => true, _ => false } { return Err(Error.Invalid) }
+              if expected == "cancel" && !match report.stop { Cancelled(_) => true, _ => false } { return Err(Error.Invalid) }
+            },
+          }
+        },
+      } },
+  }
+  print(expected)
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 10 { return Err(Error.Invalid) }
+  executable := match image(args[2], args[3]) {
+    Ok(value) => value,
+    Err(error) => { if args[1] == "Darwin" { if match error { Code(code) => code == 45, _ => false } { print("Git membership: Darwin executable memory ENOTSUP 45"); return Ok(()) } }; return Err(error) },
+  }
+  procfs := fs.open_directory("/proc")?
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  metadata := match prompt_git_metadata.admit(args[4], time.instant() + 10000000000) {
+    Ok(value) => value,
+    Err(error) => {
+      signals.close()?
+      if args[9] == "error" && match error { Invalid => true, _ => false } { print("metadata refusal"); return Ok(()) }
+      return Err(error)
+    },
+  }
+  deadline := if args[9] == "expired" { 0 } else { time.instant() + if args[9] == "timeout" { 300000000 } else { 10000000000 } }
+  result := prompt_git_member.observe(executable, metadata, args[6], args[5], args[7], args[8], signals, procfs, deadline)
+  checked := inspect(result, args[9])
+  signals.close()?
+  checked?
+  return Ok(())
+}

@@ -1,0 +1,19 @@
+module array_replacement
+Row { text: string }
+fn inspect(borrow mut values: array<Row>) -> i64 = values.len()
+pub fn main() -> Result<(), Error> {
+  initial: array_builder<Row> := array_builder()
+  mut values := initial.build()
+  mut index := 0
+  loop {
+    if index == 2 { break }
+    if index == 0 {
+      next: array_builder<Row> := array_builder()
+      values = next.build()
+    }
+    count := inspect(values)
+    if count != 0 { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  return Ok(())
+}

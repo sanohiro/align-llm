@@ -1,0 +1,222 @@
+module prompt_task_inputs_smoke
+
+import core.json
+import prompt_task_inputs
+import prompt_artifacts
+import std.fs
+import std.time
+import std.crypto
+import std.encoding
+
+DOC_3 := "{\"schema_version\":2,\"artifact_kind\":\"PROMPT_EVALUATION_TASK\",\"task_id\":\"task\",\"repo_id\":\"repo\",\"repo_revision\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"repo_path\":\"repo\",\"require_clean_repo\":true,\"execution_kind\":\"PROVIDER_EDIT\",\"cwd\":\"repo\",\"timeout_ns\":1000,\"task_prompt_path\":\"prompt.json\",\"context_sources_path\":\"context.json\",\"generation_policy_path\":\"generation.json\",\"provider_control_path\":\"control.json\",\"environment_policy_path\":\"environment.json\",\"task_definition_path\":\"definition.json\",\"task_definition_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"artifacts\":[],\"regression_limits\":{\"maximum_unrelated_diff_count\":0,\"maximum_patch_size_bytes\":1000,\"maximum_public_api_change_count\":0,\"maximum_repair_loops\":0},\"content_sha256\":\"e47591da2c9b65675ffe6e1c5ac14ac489ce2667d2c7bf60d1107712c4eeb9cd\"}"
+DOC_4 := "{\"schema_version\":1,\"artifact_kind\":\"GENERATION_POLICY\",\"generation_policy_id\":\"generation\",\"evaluation_provider_kind\":\"fixture\",\"evaluation_provider_endpoint_id\":\"endpoint\",\"evaluation_provider_model\":\"model\",\"provider_control_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider_service_revision\":\"revision\",\"max_prompt_bytes\":100,\"max_tokens\":10,\"temperature_micros\":0,\"seed_mode\":\"NONE\",\"seed_base\":0,\"content_sha256\":\"8cc0ab0032587413cbeb4ce7321673ef2b18cfe3857df8c6e37500602e85f016\"}"
+DOC_5 := "{\"schema_version\":1,\"artifact_kind\":\"EVALUATION_PROVIDER_CONTROL\",\"provider_control_id\":\"control\",\"provider_kind\":\"fixture\",\"endpoint\":\"http://localhost\",\"endpoint_id\":\"endpoint\",\"model\":\"model\",\"timeout_ns\":1000,\"max_response_bytes\":100,\"content_sha256\":\"d17ca925a02084292496c89e99410e2620486a518c56fc663e94044b69b4cffa\"}"
+DOC_6 := "{\"schema_version\":1,\"artifact_kind\":\"ENVIRONMENT_POLICY\",\"policy_id\":\"environment\",\"allowed_variables\":[],\"executable_paths\":[\"/usr/bin/git\"],\"locale\":\"C\",\"content_sha256\":\"7fa04148333f2eb1f5f2c8e00148d3571ff89bc95ee5768a35f5c46e0ade7625\"}"
+DOC_10 := "{\"schema_version\":1,\"artifact_kind\":\"CONTEXT_SOURCES\",\"task_id\":\"task\",\"patch_evaluation\":{\"schema_version\":1,\"artifact_kind\":\"TASK_PROMPT\",\"artifact_id\":\"task\",\"text\":\"日本語\\nowned\",\"content_sha256\":\"9200a00d438961cb1c1e50cba6bdbea95573b777871db467cdd71f0e96454160\"},\"failure_memory_jsonl\":{\"schema_version\":1,\"artifact_kind\":\"TASK_PROMPT\",\"artifact_id\":\"task\",\"text\":\"日本語\\nowned\",\"content_sha256\":\"9200a00d438961cb1c1e50cba6bdbea95573b777871db467cdd71f0e96454160\"},\"diagnostic_stdout\":{\"schema_version\":1,\"artifact_kind\":\"TASK_PROMPT\",\"artifact_id\":\"task\",\"text\":\"日本語\\nowned\",\"content_sha256\":\"9200a00d438961cb1c1e50cba6bdbea95573b777871db467cdd71f0e96454160\"},\"diagnostic_stderr\":{\"schema_version\":1,\"artifact_kind\":\"TASK_PROMPT\",\"artifact_id\":\"task\",\"text\":\"日本語\\nowned\",\"content_sha256\":\"9200a00d438961cb1c1e50cba6bdbea95573b777871db467cdd71f0e96454160\"},\"content_sha256\":\"9b5cd4254acd6fae88652954e8643b6bdeea4c9f9f4ec81c28da804e791d75cc\"}"
+DOC_11 := "{\"schema_version\":1,\"artifact_kind\":\"TASK_PROMPT\",\"artifact_id\":\"task\",\"text\":\"日本語\\nowned\",\"content_sha256\":\"9200a00d438961cb1c1e50cba6bdbea95573b777871db467cdd71f0e96454160\"}"
+
+fn hash(source: str) -> string {
+  digest := crypto.sha256(source)
+  return encoding.hex_encode(digest[0..digest.len()]).clone()
+}
+
+fn write(borrow root: fs.directory, path: str, source: str) -> Result<(), Error> {
+  output := root.create_new(path.bytes())?
+  output.write(source.bytes())?
+  return Ok(())
+}
+
+fn name(prefix: str, suffix: str) -> string {
+  output := builder()
+  output.write(prefix)
+  output.write(suffix)
+  return output.to_string()
+}
+
+fn definition(id: str, variant: i64) -> string {
+  output := builder()
+  output.write("{\"schema_version\":1,\"id\":\"")
+  output.write(id)
+  output.write("\",\"source_dir\":\"source\",\"source_revision\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"allowed_edits\":")
+  output.write(if variant == 8 { "[\"../escape\"]" } else if variant == 9 { "[\"file\",\"file\"]" } else { "[\"file\"]" })
+  output.write(",\"validation_argv\":[\"/usr/bin/true\"],\"validation_timeout_seconds\":10}")
+  return output.to_string()
+}
+
+fn context(id: str) -> Result<string, Error> {
+  mut value := prompt_artifacts.decode_context_sources(DOC_10)?
+  value.task_id = id.clone()
+  value.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_context_sources_bounded(value, 2097152)?
+  mut final_value := prompt_artifacts.decode_context_sources(canonical)?
+  final_value.content_sha256 = hash(canonical)
+  return prompt_artifacts.encode_context_sources_bounded(final_value, 2097152)
+}
+
+fn generation(altered: bool, control_hash: str) -> Result<string, Error> {
+  mut value := prompt_artifacts.decode_generation_policy(DOC_4)?
+  value.evaluation_provider_kind = "FIXTURE".clone()
+  value.provider_control_sha256 = control_hash.clone()
+  value.seed_mode = "PAIRED_FIXED".clone()
+  if altered { value.max_tokens = value.max_tokens + 1 }
+  value.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_generation_policy_bounded(value, 2097152)?
+  mut final_value := prompt_artifacts.decode_generation_policy(canonical)?
+  final_value.content_sha256 = hash(canonical)
+  return prompt_artifacts.encode_generation_policy_bounded(final_value, 2097152)
+}
+
+fn control() -> Result<string, Error> {
+  mut value := prompt_artifacts.decode_evaluation_provider_control(DOC_5)?
+  value.provider_kind = "FIXTURE".clone()
+  value.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_evaluation_provider_control_bounded(value, 2097152)?
+  mut final_value := prompt_artifacts.decode_evaluation_provider_control(canonical)?
+  final_value.content_sha256 = hash(canonical)
+  return prompt_artifacts.encode_evaluation_provider_control_bounded(final_value, 2097152)
+}
+
+fn environment(variant: i64) -> Result<string, Error> {
+  mut variables: array_builder<prompt_artifacts.EnvironmentVariable> := array_builder()
+  variables.push(prompt_artifacts.EnvironmentVariable { name: "LANG".clone(), non_secret_value: "C".clone(), source: "EXPLICIT_POLICY".clone(), precedence: 0 })
+  variables.push(prompt_artifacts.EnvironmentVariable { name: (if variant == 11 { "LANG" } else { "LC_ALL" }).clone(), non_secret_value: "C".clone(), source: "EXPLICIT_POLICY".clone(), precedence: if variant == 12 { 2 } else { 1 } })
+  mut executables: array_builder<string> := array_builder()
+  executables.push((if variant == 14 { "relative/git" } else { "/usr/bin/git" }).clone())
+  mut value := prompt_artifacts.EnvironmentPolicy {
+    schema_version: 1, artifact_kind: "ENVIRONMENT_POLICY".clone(), policy_id: "environment".clone(), allowed_variables: variables.build(),
+    executable_paths: executables.build(), locale: (if variant == 13 { "wrong" } else { "C" }).clone(), content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(value, 2097152)?
+  value.content_sha256 = hash(canonical)
+  return prompt_artifacts.encode_environment_policy_bounded(value, 2097152)
+}
+
+fn task(borrow root: fs.directory, prefix: str, id: str, variant: i64) -> Result<(), Error> {
+  definition_text := definition(id, variant)
+  definition_path := name(prefix, "-definition")
+  patch_path := name(prefix, "-patch")
+  prompt_path := name(prefix, "-prompt")
+  context_path := name(prefix, "-context")
+  generation_path := name(prefix, "-generation")
+  control_path := name(prefix, "-control")
+  environment_path := name(prefix, "-environment")
+  task_path := name(prefix, "-task")
+  patch_text := "literal patch bytes\n"
+  write(root, definition_path, definition_text)?
+  write(root, patch_path, patch_text)?
+  write(root, prompt_path, DOC_11)?
+  write(root, context_path, context(if variant == 6 { "wrong-id" } else { id })?)?
+  control_text := control()?
+  control_value := prompt_artifacts.decode_evaluation_provider_control(control_text)?
+  write(root, generation_path, generation(variant == 7, control_value.content_sha256)?)?
+  write(root, control_path, control_text)?
+  write(root, environment_path, environment(variant)?)?
+  expected_json := builder()
+  expected_json.write("[")
+  if variant != 5 {
+    expectation := prompt_artifacts.ArtifactExpectation { path: definition_path.clone(), kind: "FILE".clone(), expected_sha256: hash(definition_text) }
+    expected_json.write(prompt_artifacts.encode_artifact_expectation(expectation)?)
+  }
+  if variant != 10 {
+    if variant != 5 { expected_json.write(",") }
+    expectation := prompt_artifacts.ArtifactExpectation { path: patch_path.clone(), kind: "FILE".clone(), expected_sha256: hash(patch_text) }
+    expected_json.write(prompt_artifacts.encode_artifact_expectation(expectation)?)
+  }
+  expected_json.write("]")
+  expected_text := expected_json.to_string()
+  anchor := "\"artifacts\":[]"
+  offset := DOC_3.find(anchor) else { return Err(Error.Invalid) }
+  manifest_builder := builder()
+  manifest_builder.write(DOC_3[0..offset])
+  manifest_builder.write("\"artifacts\":")
+  manifest_builder.write(expected_text)
+  manifest_builder.write(DOC_3[offset + anchor.len()..DOC_3.len()])
+  template_text := manifest_builder.to_string()
+
+  mut manifest := prompt_artifacts.decode_prompt_evaluation_task(template_text)?
+  manifest.task_id = id.clone()
+  manifest.execution_kind = Some("FIXTURE_PATCH".clone())
+  manifest.task_definition_path = definition_path.clone()
+  manifest.task_definition_sha256 = if variant == 3 { "0000000000000000000000000000000000000000000000000000000000000000".clone() } else { hash(definition_text) }
+  manifest.patch_path = Some(patch_path.clone())
+  manifest.patch_sha256 = Some(if variant == 4 { "0000000000000000000000000000000000000000000000000000000000000000".clone() } else { hash(patch_text) })
+  manifest.task_prompt_path = prompt_path
+  manifest.context_sources_path = context_path
+  manifest.generation_policy_path = generation_path
+  manifest.provider_control_path = control_path
+  manifest.environment_policy_path = environment_path
+  manifest.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_prompt_evaluation_task_bounded(manifest, 2097152)?
+  mut final_value := prompt_artifacts.decode_prompt_evaluation_task(canonical)?
+  final_value.content_sha256 = hash(canonical)
+  encoded := prompt_artifacts.encode_prompt_evaluation_task_bounded(final_value, 2097152)?
+  encoded_view: str := encoded
+  return write(root, task_path, if variant == 1 { "{}" } else { encoded_view })
+}
+
+fn paths(first: str, second: str) -> array<string> {
+  mut output: array_builder<string> := array_builder()
+  output.push(first.clone())
+  output.push(second.clone())
+  return output.build()
+}
+
+fn owned(root_path: str) -> Result<array<prompt_task_inputs.Task>, Error> {
+  root := fs.open_directory(root_path)?
+  selected := paths("second-task", "first-task")
+  return prompt_task_inputs.load(root, selected, time.instant() + 10000000000)
+}
+
+fn patch_matches(borrow task: prompt_task_inputs.Task) -> bool {
+  return match task.patch { Some(text) => text == "literal patch bytes\n", None => false }
+}
+
+fn refused(result: Result<array<prompt_task_inputs.Task>, Error>) -> bool {
+  return match result { Ok(_) => false, Err(error) => true }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 { return Err(Error.Invalid) }
+  root := fs.open_directory(args[1])?
+  task(root, "first", "one", 0)?
+  task(root, "second", "two", 0)?
+  accepted := owned(args[1])?
+  if accepted.len() != 2 || accepted[0].path != "second-task" || accepted[0].manifest.task_id != "two" ||
+  accepted[1].definition.id != "one" || accepted[1].prompt.text != "日本語\nowned" { return Err(Error.Invalid) }
+  if !patch_matches(accepted[0]) { return Err(Error.Invalid) }
+  mut variant := 1
+  loop {
+    if variant == 15 { break }
+    prefix_builder := builder()
+    prefix_builder.write("invalid-")
+    prefix_builder.write_int(variant)
+    prefix := prefix_builder.to_string()
+    task(root, prefix, if variant == 2 { "one" } else { "two" }, variant)?
+    last_path := name(prefix, "-task")
+    selected := paths("first-task", last_path)
+    if !refused(prompt_task_inputs.load(root, selected, time.instant() + 10000000000)) { return Err(Error.Invalid) }
+    variant = variant + 1
+  }
+  duplicate := paths("first-task", "first-task")
+  if !refused(prompt_task_inputs.load(root, duplicate, time.instant() + 10000000000)) { return Err(Error.Invalid) }
+  mut empty_builder: array_builder<string> := array_builder()
+  empty := empty_builder.build()
+  if !refused(prompt_task_inputs.load(root, empty, time.instant() + 10000000000)) { return Err(Error.Invalid) }
+  mut large_builder: array_builder<string> := array_builder()
+  variant = 0
+  loop {
+    if variant == 65 { break }
+    large_builder.push("absent".clone())
+    variant = variant + 1
+  }
+  large := large_builder.build()
+  if !refused(prompt_task_inputs.load(root, large, time.instant() + 10000000000)) { return Err(Error.Invalid) }
+  selected := paths("first-task", "second-task")
+  timeout_result := prompt_task_inputs.load(root, selected, 0)
+  match timeout_result {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(error) => { if !match error { Timeout => true, _ => false } { return Err(error) } },
+  }
+  print("prompt task inputs smoke passed")
+  return Ok(())
+}

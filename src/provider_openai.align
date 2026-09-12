@@ -36,7 +36,7 @@ StreamParsed { ok: bool, text: string }
 
 pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
   validate_request_config(config)?
-  body := request_bytes(config.model, request, false)
+  body := request_bytes(config.model, request, false)?
   response := provider_http.post_json(
     config.endpoint,
     config.api_key,
@@ -50,7 +50,7 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
 
 pub fn stream(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
   validate_request_config(config)?
-  body := request_bytes(config.model, request, true)
+  body := request_bytes(config.model, request, true)?
   response := provider_http.post_json(
     config.endpoint,
     config.api_key,
@@ -122,7 +122,7 @@ fn validate_request_config(config: model.ProviderConfig) -> Result<(), Error> {
 
 // The single source of OpenAI-compatible request bytes: the same bytes go on the wire and are the
 // SHA-256 preimage of the recorded provider request digest.
-pub fn request_bytes(model_name: str, request: model.GenerationRequest, streaming: bool) -> string {
+pub fn request_bytes(model_name: str, request: model.GenerationRequest, streaming: bool) -> Result<string, Error> {
   match request.seed {
     Some(seed) => {
       seeded_messages := [
@@ -137,7 +137,7 @@ pub fn request_bytes(model_name: str, request: model.GenerationRequest, streamin
         stream: streaming,
         seed: seed,
       }
-      return json.encode(seeded_payload).clone()
+      return json.encode(seeded_payload)
     },
     None => {},
   }
@@ -152,7 +152,7 @@ pub fn request_bytes(model_name: str, request: model.GenerationRequest, streamin
     temperature: request.temperature,
     stream: streaming,
   }
-  return json.encode(payload).clone()
+  return json.encode(payload)
 }
 
 // The envelope decoder shared by the generate path and every other consumer of a 2xx body. The

@@ -1,0 +1,66 @@
+module prompt_worktree_smoke
+
+import core.json
+import prompt_worktree
+import std.fs
+import std.time
+
+fn check_snapshot(borrow snapshot: prompt_worktree.Snapshot) -> Result<(), Error> {
+  if snapshot.entries.len() != 4 || snapshot.directories.len() != 4 { return Err(Error.Invalid) }
+  if snapshot.entries[0].path != "a" || snapshot.entries[0].mode != 416 || snapshot.entries[0].bytes != 7 || snapshot.entries[0].symlink { return Err(Error.Invalid) }
+  if snapshot.entries[1].path != "dangling" || !snapshot.entries[1].symlink || snapshot.entries[1].bytes != 7 { return Err(Error.Invalid) }
+  if snapshot.entries[2].path != "link" || !snapshot.entries[2].symlink || snapshot.entries[2].bytes != 1 { return Err(Error.Invalid) }
+  if snapshot.entries[3].path != "nested/.git/keep" || snapshot.entries[3].mode != 384 || snapshot.entries[3].bytes != 0 { return Err(Error.Invalid) }
+  if snapshot.directories[0].path != "" || snapshot.directories[0].mode != 488 || snapshot.directories[1].path != "empty" || snapshot.directories[1].mode != 448 || snapshot.directories[2].path != "nested" || snapshot.directories[3].path != "nested/.git" { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn expired(path: str, deadline: i64) -> Result<prompt_worktree.Snapshot, Error> {
+  root := fs.open_directory(path)?
+  return prompt_worktree.observe(root, 7, 7, deadline)
+}
+
+fn invalid(path: str, entries: i64, bytes: i64, deadline: i64) -> Result<(), Error> {
+  root := fs.open_directory(path)?
+  match prompt_worktree.observe(root, entries, bytes, deadline) {
+    Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } },
+    _ => { return Err(Error.Invalid) },
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 8 { return Err(Error.Invalid) }
+  deadline := time.instant() + 10000000000
+  snapshot := expired(args[1], deadline)?
+  check_snapshot(snapshot)?
+  print(json.encode(snapshot)?)
+  root := fs.open_directory(args[1])?
+  fs.rename_no_replace(args[1], args[2])?
+  fs.rename_no_replace(args[3], args[1])?
+  retained := prompt_worktree.observe(root, 7, 7, deadline)?
+  check_snapshot(retained)?
+  print(json.encode(retained)?)
+  invalid(args[2], 6, 7, deadline)?
+  invalid(args[2], 8, 6, deadline)?
+  invalid(args[2], 0, 7, deadline)?
+  invalid(args[2], 8193, 7, deadline)?
+  invalid(args[2], 8, -1, deadline)?
+  invalid(args[2], 8, 67108865, deadline)?
+  invalid(args[4], 8, 7, deadline)?
+  invalid(args[5], 8, 7, deadline)?
+  invalid(args[6], 8192, 7, deadline)?
+  deep := fs.open_directory(args[6])?
+  exact_depth := deep.open_dir("d")?
+  depth_snapshot := prompt_worktree.observe(exact_depth, 128, 0, deadline)?
+  if depth_snapshot.directories.len() != 129 || depth_snapshot.entries.len() != 0 { return Err(Error.Invalid) }
+  match prompt_worktree.observe(root, 7, 7, 0) {
+    Err(error) => { match error { Timeout => {}, _ => { return Err(Error.Invalid) } } },
+    _ => { return Err(Error.Invalid) },
+  }
+  replacement := expired(args[1], deadline)?
+  if replacement.entries.len() != 1 || replacement.entries[0].path != ".git" { return Err(Error.Invalid) }
+  if args[7] != "none" { invalid(args[7], 8, 7, deadline)? }
+  print("worktree: PASS")
+  return Ok(())
+}

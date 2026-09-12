@@ -1,0 +1,41 @@
+module prompt_generation_request
+
+import prompt_artifacts
+
+// Inputs are admitted by the evaluator. This constructor copies only generation
+// fields and a credential environment name; it never resolves the credential.
+pub fn build(
+  borrow request: prompt_artifacts.TaskAdapterRequest,
+  borrow control: prompt_artifacts.EvaluationProviderControl,
+  borrow policy: prompt_artifacts.GenerationPolicy,
+) -> Result<prompt_artifacts.PromptGenerationRequest, Error> {
+  if request.sample_index < 1 { return Err(Error.Invalid) }
+  variant := if request.variant == "PARENT" { "parent" } else if request.variant == "CANDIDATE" { "candidate" } else { return Err(Error.Invalid) }
+  identifier := builder()
+  identifier.write(request.task_id)
+  identifier.write("-s")
+  identifier.write_int(request.sample_index)
+  identifier.write("-")
+  identifier.write(variant)
+  credential: Option<string> := match control.api_key_env { None => None, Some(name) => Some(name.clone()) }
+  mut value := prompt_artifacts.PromptGenerationRequest {
+    schema_version: 1,
+    artifact_kind: "PROMPT_GENERATION_REQUEST".clone(),
+    request_id: identifier.to_string(),
+    provider_kind: control.provider_kind.clone(),
+    endpoint: control.endpoint.clone(),
+    provider_model: control.model.clone(),
+    api_key_env: credential,
+    rendered_prompt_path: request.rendered_prompt_path.clone(),
+    rendered_prompt_sha256: request.rendered_prompt_sha256.clone(),
+    max_tokens: policy.max_tokens,
+    temperature_micros: policy.temperature_micros,
+    paired_seed: request.paired_seed,
+    timeout_ns: control.timeout_ns,
+    max_response_bytes: control.max_response_bytes,
+    content_sha256: "".clone(),
+  }
+  value.content_sha256 = prompt_artifacts.prompt_generation_request_content_digest(value)?
+  if !prompt_artifacts.verify_prompt_generation_request(value) { return Err(Error.Invalid) }
+  return Ok(value)
+}

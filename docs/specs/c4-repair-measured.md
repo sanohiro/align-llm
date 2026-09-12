@@ -1,5 +1,10 @@
 # C4-REPAIR-MEASURED: one bounded model repair attempt in the provider-backed measurement path
 
+Implementation-language correction (2026-09-09): [Align product boundary](align-product-boundary.md)
+owns the planned replacement of this historical Python evaluator/adapter execution path. Its
+explicit versioned deltas supersede the old helper ABI at cutover; all historical evidence,
+quality rules and independent replay remain. No additional product features may be added to Python.
+
 Status: **implemented; measurement recorded in section 10.** This document remains the
 authoritative plan. Section 10 records the ledger-to-diff mapping, the deviations the
 implementation discovered, and the measured gate result. This document is the authoritative plan; the proportional design gate in `CLAUDE.md` triggered on a

@@ -1,19 +1,22 @@
 module prompt_evaluate
 
+import core.json
+import prompt_artifacts
 import prompt_artifact_io
+import prompt_evaluation_inputs
+import prompt_evaluation_invocation
+import prompt_evaluation_native
+import prompt_evaluation_request
+import prompt_evaluation_result
+import prompt_evaluation_runtime
 import prompt_score
+import prompt_scope_cleanup
+import prompt_task_environment
+import prompt_workspace
+import std.env
+import std.fs
 import std.process
-
-EVALUATOR_SOURCE_RELATIVE := "scripts/prompt-evaluate.py"
-EVALUATOR_SOURCE_SHA256 := "dc1c7eec9cbe4d44285ef66bcfc5d843e132245359b492f3b22bc1bedd37b295"
-// C4-REPAIR-MEASURED widened the launch contract from three argument chunks to four. The attempt
-// loop, the repair-prompt assembly, and the version-2 row assembly do not fit the previous
-// 196,608-byte ceiling; `docs/specs/c4-repair-measured.md` section 3.10 records the widening as a
-// deliberate public change to this contract rather than a late patch. Splitting the evaluator into
-// a second file to dodge the window is not acceptable: the pin exists so that exactly one reviewed
-// byte sequence runs, and a helper module beside it would be an unpinned second producer.
-EVALUATOR_BOOTSTRAP := "import sys;exec(compile(sys.argv.pop(1)+sys.argv.pop(1)+sys.argv.pop(1)+sys.argv.pop(1),'<reviewed-prompt-evaluate>','exec'))"
-EVALUATOR_ARG_CHUNK_BYTES := 65536
+import std.time
 
 pub PromptEvaluateStatus { Published, InvalidInput, EvaluationFailed, OutputWrite, CleanupFailed }
 
@@ -22,72 +25,16 @@ fn print_owned_text(borrow value: string) {
   print(view)
 }
 
-fn valid_component(value: str) -> bool {
-  if value.len() <= 0 || value.len() > 255 { return false }
-  bytes := value.bytes()
-  mut index := 0
-  loop {
-    if index >= bytes.len() { break }
-    if bytes[index] == 0 || bytes[index] == 0x2f { return false }
-    index = index + 1
-  }
-  return value != "." && value != ".."
-}
-
-fn valid_relative_path(value: str) -> bool {
-  if value.len() <= 0 || value.len() > 4096 { return false }
-  bytes := value.bytes()
-  if bytes[0] == 0x2f { return false }
-  mut start := 0
-  mut index := 0
-  loop {
-    if index > bytes.len() { break }
-    if index == bytes.len() || bytes[index] == 0x2f {
-      if !valid_component(value[start..index]) { return false }
-      start = index + 1
-    }
-    index = index + 1
-  }
-  return true
-}
-
-EvaluatorOutput {
-  result_source: string,
-  evidence_source: Option<string>,
-}
-
-fn decode_evaluator_output(value: str) -> Result<EvaluatorOutput, Error> {
-  bytes := value.bytes()
-  if bytes.len() < 3 || bytes[1] != 0x0a { return Err(Error.Invalid) }
-  if bytes[0] == 0x31 {
-    return Ok(EvaluatorOutput {
-        result_source: value[2..value.len()].clone(),
-        evidence_source: None,
-      })
-  }
-  if bytes[0] != 0x32 { return Err(Error.Invalid) }
-  mut split := 2
-  loop {
-    if split >= bytes.len() { return Err(Error.Invalid) }
-    if bytes[split] == 0x0a { break }
-    split = split + 1
-  }
-  if split == 2 || split + 1 >= bytes.len() { return Err(Error.Invalid) }
-  return Ok(EvaluatorOutput {
-      result_source: value[2..split].clone(),
-      evidence_source: Some(value[split + 1..value.len()].clone()),
-    })
-}
-
 fn publish_evaluator_output(
-  output: EvaluatorOutput,
+  result_source: str,
+  evidence_source: Option<str>,
   project_root: str,
   result_relative: str,
   evidence_relative: str,
   evaluation_id: str,
 ) -> Result<PromptEvaluateStatus, Error> {
-  result := prompt_artifact_io.decode_prompt_evaluation_result_source(output.result_source)?
-  return match output.evidence_source {
+  result := prompt_artifact_io.decode_prompt_evaluation_result_source(result_source)?
+  return match evidence_source {
     None => {
       if result.status != "INVALID_INPUT" {
         return Err(Error.Invalid)
@@ -115,8 +62,8 @@ fn publish_evaluator_output(
           CleanupFailed => PromptEvaluateStatus.CleanupFailed,
         })
     },
-    Some(evidence_source) => {
-      evidence := prompt_artifact_io.decode_prompt_evaluation_evidence_source(evidence_source)?
+    Some(serialized_evidence) => {
+      evidence := prompt_artifact_io.decode_prompt_evaluation_evidence_source(serialized_evidence)?
       prompt_score.verify_result(result, evidence)?
       complete := result.status == "IMPROVED" ||
       result.status == "NO_IMPROVEMENT" ||
@@ -150,72 +97,108 @@ fn publish_evaluator_output(
   }
 }
 
+fn invalid(borrow request: prompt_artifacts.PromptEvaluateRequest, result_relative: str, code: str, detail: str) -> PromptEvaluateStatus {
+  result := prompt_evaluation_result.invalid(request.evaluation_id, request.sample_count, code, detail) else { return PromptEvaluateStatus.EvaluationFailed }
+  source := json.encode_bounded(result, 268435456) else { return PromptEvaluateStatus.EvaluationFailed }
+  return publish_evaluator_output(source, None, request.project_root, result_relative, request.evaluation_evidence_path,
+    request.evaluation_id) else { return PromptEvaluateStatus.EvaluationFailed }
+}
+
+fn credential(borrow control: prompt_artifacts.EvaluationProviderControl) -> Result<string, Error> {
+  return match control.api_key_env {
+    None => Ok("".clone()),
+    Some(name) => match env.get(name) { None => Err(Error.Denied), Some(value) => Ok(value) },
+  }
+}
+
 pub fn evaluate_file(request_path: str, result_relative: str) -> PromptEvaluateStatus {
-  request := prompt_artifact_io.load_prompt_evaluate_request(request_path) else {
+  request := prompt_artifact_io.load_prompt_evaluate_request(request_path) else { return PromptEvaluateStatus.InvalidInput }
+  if !prompt_evaluation_request.relative(result_relative) || !prompt_artifact_io.output_available(request.project_root, result_relative) {
     return PromptEvaluateStatus.InvalidInput
   }
-  if !valid_relative_path(result_relative) {
-    return PromptEvaluateStatus.InvalidInput
+  if !prompt_evaluation_request.relative(request.evaluation_evidence_path) || result_relative == request.evaluation_evidence_path ||
+  !prompt_artifact_io.output_available(request.project_root, request.evaluation_evidence_path) {
+    return invalid(request, result_relative, "INVALID_PATH", "evaluation evidence path is invalid or occupied")
   }
-
-  evaluator_source := prompt_artifact_io.load_verified_bounded_source(
-    request.project_root,
-    EVALUATOR_SOURCE_RELATIVE,
-    EVALUATOR_SOURCE_SHA256,
-  ) else {
-    return PromptEvaluateStatus.InvalidInput
+  prompt_evaluation_request.validate(request) else { return invalid(request, result_relative, "INVALID_INPUT", "evaluation request is invalid") }
+  roots := prompt_workspace.admit(request.project_root, request.workspace_path, true, time.instant() + 10000000000) else {
+    return invalid(request, result_relative, "INVALID_PATH", "evaluation project or workspace is unavailable")
   }
-  evaluator_view: str := evaluator_source
-  evidence_relative_view: str := request.evaluation_evidence_path
-
-  if evaluator_view.len() <= EVALUATOR_ARG_CHUNK_BYTES * 3 ||
-  evaluator_view.len() > EVALUATOR_ARG_CHUNK_BYTES * 4 {
-    return PromptEvaluateStatus.InvalidInput
+  admitted := prompt_evaluation_inputs.load(roots.project.directory, request, time.instant() + 60000000000) else {
+    return invalid(request, result_relative, "INVALID_INPUT", "evaluation input is invalid")
   }
-  command := process.command(
-    "/usr/bin/python3",
-    [
-      "/usr/bin/python3",
-      "-c",
-      EVALUATOR_BOOTSTRAP,
-      evaluator_view[0..EVALUATOR_ARG_CHUNK_BYTES],
-      evaluator_view[EVALUATOR_ARG_CHUNK_BYTES..EVALUATOR_ARG_CHUNK_BYTES * 2],
-      evaluator_view[EVALUATOR_ARG_CHUNK_BYTES * 2..EVALUATOR_ARG_CHUNK_BYTES * 3],
-      evaluator_view[EVALUATOR_ARG_CHUNK_BYTES * 3..evaluator_view.len()],
-      "--request",
-      request_path,
-      "--final-result-relative",
-      result_relative,
-      "--final-evidence-relative",
-      evidence_relative_view,
-    ].to_array(),
-  )
-  command.cwd(request.project_root)
-  command.max_capture_bytes(276824067)
-  command.env_clear()
-  command.env("LANG", "C")
-  command.env("LC_ALL", "C")
-  command.env("PATH", "/usr/bin:/bin")
-  command.env("PYTHONDONTWRITEBYTECODE", "1")
-  command.env("PYTHONNOUSERSITE", "1")
-  output := command.run() else {
+  secret := credential(admitted.tasks[0].control) else { return invalid(request, result_relative, "INVALID_INPUT", "evaluation credential is unavailable") }
+  declared_environment := prompt_task_environment.worker(admitted.tasks[0].environment, admitted.tasks[0].control, secret) else {
+    return invalid(request, result_relative, "INVALID_INPUT", "evaluation environment is invalid")
+  }
+  runtime := prompt_evaluation_runtime.admit(request, admitted.source_policy, admitted.tasks[0].environment, time.instant() + 10000000000) else {
+    return invalid(request, result_relative, "INVALID_INPUT", "evaluation execution authority is unavailable")
+  }
+  procfs := fs.open_directory("/proc") else { return PromptEvaluateStatus.EvaluationFailed }
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true }) else {
     return PromptEvaluateStatus.EvaluationFailed
   }
-  if output.code() != 0 || output.stdout().len() == 0 || output.stderr().len() != 0 {
-    return PromptEvaluateStatus.EvaluationFailed
+  executed := prompt_evaluation_native.run(request, admitted, roots, runtime, procfs, signals, secret)
+  outcome := match executed {
+    Err(_) => { restored := signals.close(); return PromptEvaluateStatus.EvaluationFailed },
+    Ok(value) => value,
   }
-
-  evaluator_output := decode_evaluator_output(output.stdout()) else {
-    return PromptEvaluateStatus.EvaluationFailed
+  return match outcome {
+    Finished(output) => {
+      signals.close() else { return PromptEvaluateStatus.EvaluationFailed }
+      if output.survivors.len() != 0 {
+        print("recovery paths:")
+        mut index := 0
+        loop { if index == output.survivors.len() { break }; print_owned_text(output.survivors[index]); index = index + 1 }
+      }
+      evidence: str := output.evidence_source
+      publish_evaluator_output(output.result_source, Some(evidence), request.project_root, result_relative,
+        request.evaluation_evidence_path, request.evaluation_id) else { return PromptEvaluateStatus.EvaluationFailed }
+    },
+    SourceStopped(attempt) => {
+      mut scope := attempt.scope
+      cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)
+      restored := signals.close()
+      released := match cleanup { Ok(report) => report.released, Err(_) => false }
+      if !released { return PromptEvaluateStatus.CleanupFailed }
+      PromptEvaluateStatus.EvaluationFailed
+    },
+    TaskStopped(owner) => {
+      storage_path := owner.storage.path.clone()
+      variant_path := owner.names.variant.clone()
+      rendered_path := owner.names.rendered.clone()
+      request_path_owned := owner.names.request.clone()
+      measurement_path := owner.names.measurement.clone()
+      mut scope := owner.scope
+      cleaned := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)
+      restored := signals.close()
+      released := match cleaned { Ok(report) => report.released, Err(_) => false }
+      if !released {
+        print("recovery paths:"); print_owned_text(storage_path)
+        if (owner.owned & 1) != 0 { print_owned_text(variant_path) }
+        if (owner.owned & 2) != 0 { print_owned_text(rendered_path) }
+        if (owner.owned & 4) != 0 { print_owned_text(request_path_owned) }
+        if (owner.owned & 8) != 0 { print_owned_text(measurement_path) }
+        return PromptEvaluateStatus.CleanupFailed
+      }
+      removed := prompt_evaluation_runtime.remove(owner.storage, true, time.instant() + 10000000000)
+      mut owned := owner.owned
+      retired := prompt_evaluation_invocation.retire(roots.workspace.directory, owner.names, owned)
+      if match removed { Ok(_) => false, Err(_) => true } {
+        print("recovery paths:"); print_owned_text(storage_path)
+        return PromptEvaluateStatus.CleanupFailed
+      }
+      if match retired { Ok(_) => false, Err(_) => true } {
+        print("recovery paths:")
+        if (owned & 1) != 0 { print_owned_text(variant_path) }
+        if (owned & 2) != 0 { print_owned_text(rendered_path) }
+        if (owned & 4) != 0 { print_owned_text(request_path_owned) }
+        if (owned & 8) != 0 { print_owned_text(measurement_path) }
+        return PromptEvaluateStatus.CleanupFailed
+      }
+      PromptEvaluateStatus.EvaluationFailed
+    },
   }
-  published := publish_evaluator_output(
-    evaluator_output,
-    request.project_root,
-    result_relative,
-    evidence_relative_view,
-    request.evaluation_id,
-  ) else { return PromptEvaluateStatus.EvaluationFailed }
-  return published
 }
 
 pub fn status_label(status: PromptEvaluateStatus) -> str = match status {

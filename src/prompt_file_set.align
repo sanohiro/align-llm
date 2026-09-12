@@ -1,0 +1,106 @@
+module prompt_file_set
+
+pub Entry { mode: i64, path: array<u8>, sha256: string }
+
+fn separator(raw: slice<u8>, start: i64, byte: u8) -> Result<i64, Error> {
+  mut index := start
+  loop {
+    if index == raw.len() { return Err(Error.Invalid) }
+    if raw[index] == byte { return Ok(index) }
+    index = index + 1
+  }
+}
+
+fn decimal(raw: slice<u8>, maximum_digits: i64) -> Result<i64, Error> {
+  if raw.len() == 0 || raw.len() > maximum_digits || (raw.len() > 1 && raw[0] == 48) { return Err(Error.Invalid) }
+  mut value := 0
+  mut index := 0
+  loop {
+    if index == raw.len() { break }
+    byte := raw[index]
+    if byte < 48 || byte > 57 { return Err(Error.Invalid) }
+    value = value * 10 + byte as i64 - 48
+    index = index + 1
+  }
+  return Ok(value)
+}
+
+fn path_valid(path: slice<u8>) -> bool {
+  if path.len() < 1 || path.len() > 4096 { return false }
+  mut start := 0
+  mut index := 0
+  loop {
+    if index < path.len() && path[index] == 0 { return false }
+    if index == path.len() || path[index] == 47 {
+      length := index - start
+      if length == 0 || (length == 1 && path[start] == 46) ||
+      (length == 2 && path[start] == 46 && path[start + 1] == 46) { return false }
+      start = index + 1
+    }
+    if index == path.len() { break }
+    index = index + 1
+  }
+  return true
+}
+
+fn less(left: slice<u8>, right: slice<u8>) -> bool {
+  mut index := 0
+  loop {
+    if index == left.len() || index == right.len() { return left.len() < right.len() }
+    if left[index] != right[index] { return left[index] < right[index] }
+    index = index + 1
+  }
+}
+
+pub fn parse(raw: slice<u8>) -> Result<array<Entry>, Error> {
+  prefix := "ALIGN-LLM-CORPUS-FILE-SET-V1\n"
+  if raw.len() > 8388608 || raw.len() < prefix.len() { return Err(Error.Invalid) }
+  if raw[0..prefix.len()].as_str()? != prefix { return Err(Error.Invalid) }
+  count_end := separator(raw, prefix.len(), 10 as u8)?
+  count := decimal(raw[prefix.len()..count_end], 7)?
+  if count < 1 || count > 1048576 { return Err(Error.Invalid) }
+  mut position := count_end + 1
+  mut prior_start := 0
+  mut prior_end := 0
+  mut entries: array_builder<Entry> := array_builder()
+  mut index := 0
+  loop {
+    if index == count { break }
+    if raw.len() - position < 6 { return Err(Error.Invalid) }
+    mut mode := 0
+    mut digit := 0
+    loop {
+      if digit == 6 { break }
+      byte := raw[position + digit]
+      if byte < 48 || byte > 55 { return Err(Error.Invalid) }
+      mode = mode * 8 + byte as i64 - 48
+      digit = digit + 1
+    }
+    position = position + 6
+    if position == raw.len() || raw[position] != 32 { return Err(Error.Invalid) }
+    position = position + 1
+    length_end := separator(raw, position, 32 as u8)?
+    length := decimal(raw[position..length_end], 4)?
+    if length < 1 || length > 4096 { return Err(Error.Invalid) }
+    start := length_end + 1
+    if length + 68 > raw.len() - start { return Err(Error.Invalid) }
+    end := start + length
+    path := raw[start..end]
+    if !path_valid(path) || (index > 0 && !less(raw[prior_start..prior_end], path)) { return Err(Error.Invalid) }
+    if raw[end] != 0 || raw[end + 1] != 70 || raw[end + 2] != 32 || raw[end + 67] != 10 { return Err(Error.Invalid) }
+    digit = 0
+    loop {
+      if digit == 64 { break }
+      byte := raw[end + 3 + digit]
+      if !(byte >= 48 && byte <= 57) && !(byte >= 97 && byte <= 102) { return Err(Error.Invalid) }
+      digit = digit + 1
+    }
+    entries.push(Entry { mode: mode, path: path.to_array(), sha256: raw[end + 3..end + 67].as_str()?.clone() })
+    prior_start = start
+    prior_end = end
+    position = end + 68
+    index = index + 1
+  }
+  if position != raw.len() { return Err(Error.Invalid) }
+  return Ok(entries.build())
+}

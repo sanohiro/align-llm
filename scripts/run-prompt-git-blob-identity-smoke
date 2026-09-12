@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+trap 'rm -rf "${scratch}"' EXIT
+# Git is an independent fixture oracle only, with the object format explicit.
+git init -q --object-format=sha1 "${scratch}/oracle"
+expected=()
+for size in 0 1 9 10 48 49 50 55 56 63 64 65 99 100 999 1000; do
+  if [[ "${size}" == 0 ]]; then
+    : > "${scratch}/payload"
+  else
+    head -c "${size}" /dev/zero | LC_ALL=C tr '\000' a > "${scratch}/payload"
+  fi
+  expected+=("$(git -C "${scratch}/oracle" hash-object --stdin < "${scratch}/payload")")
+done
+printf '\000\377\200A\r\n\000' > "${scratch}/payload"
+expected+=("$(git -C "${scratch}/oracle" hash-object --stdin < "${scratch}/payload")")
+printf '日本語é🙂\000' > "${scratch}/payload"
+expected+=("$(git -C "${scratch}/oracle" hash-object --stdin < "${scratch}/payload")")
+"${compiler}" check-per-unit "${project_root}/src/prompt_git_blob_identity_smoke.align"
+"${compiler}" run "${project_root}/src/prompt_git_blob_identity_smoke.align" -- "${expected[@]}"

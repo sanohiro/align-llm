@@ -1,0 +1,116 @@
+module prompt_evaluation_documents_smoke
+
+import prompt_evaluation_documents
+import prompt_artifacts
+
+// Independently bound literal fixtures use declaration-order compact JSON and SHA-256.
+DOC_0 := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_RESULT\",\"status\":\"ERROR\",\"error_code\":\"fixture\",\"error\":\"\",\"proposal_elapsed_ns\":0,\"proposal_summary\":\"\",\"bounded_provider_output\":\"\",\"content_sha256\":\"e2e598c674eec2069eeeca404bed0d34450d93dfb2564425473ca4683dc64c06\"}"
+DOC_1 := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_ACTIVATION_RESULT\",\"status\":\"ERROR\",\"error_code\":\"fixture\",\"error\":\"\",\"content_sha256\":\"26bf4a18b8fef7b716193517e330c4e0887100de2f4b7943c7031510f11e7e89\"}"
+DOC_2 := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATION_CORPUS\",\"corpus_id\":\"corpus\",\"corpus_revision\":{\"schema_version\":1,\"artifact_kind\":\"CORPUS_REVISION\",\"source_kind\":\"fixture\",\"source_repository_id\":\"repo\",\"source_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"37a246e5ce9cfeb0c49c535c8686a8e0a4428b67de83212956ddb1fe73a5e4f2\"},\"task_files\":[\"task.json\"],\"content_sha256\":\"39a73d64ca45f3872192b62e6198746258ee04ccf6b440bf5905583b8609d34d\"}"
+DOC_3 := "{\"schema_version\":2,\"artifact_kind\":\"PROMPT_EVALUATION_TASK\",\"task_id\":\"task\",\"repo_id\":\"repo\",\"repo_revision\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"repo_path\":\"repo\",\"require_clean_repo\":true,\"execution_kind\":\"PROVIDER_EDIT\",\"cwd\":\"repo\",\"timeout_ns\":1000,\"task_prompt_path\":\"prompt.json\",\"context_sources_path\":\"context.json\",\"generation_policy_path\":\"generation.json\",\"provider_control_path\":\"control.json\",\"environment_policy_path\":\"environment.json\",\"task_definition_path\":\"definition.json\",\"task_definition_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"artifacts\":[],\"regression_limits\":{\"maximum_unrelated_diff_count\":0,\"maximum_patch_size_bytes\":1000,\"maximum_public_api_change_count\":0,\"maximum_repair_loops\":0},\"content_sha256\":\"e47591da2c9b65675ffe6e1c5ac14ac489ce2667d2c7bf60d1107712c4eeb9cd\"}"
+DOC_4 := "{\"schema_version\":1,\"artifact_kind\":\"GENERATION_POLICY\",\"generation_policy_id\":\"generation\",\"evaluation_provider_kind\":\"fixture\",\"evaluation_provider_endpoint_id\":\"endpoint\",\"evaluation_provider_model\":\"model\",\"provider_control_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider_service_revision\":\"revision\",\"max_prompt_bytes\":100,\"max_tokens\":10,\"temperature_micros\":0,\"seed_mode\":\"NONE\",\"seed_base\":0,\"content_sha256\":\"8cc0ab0032587413cbeb4ce7321673ef2b18cfe3857df8c6e37500602e85f016\"}"
+DOC_5 := "{\"schema_version\":1,\"artifact_kind\":\"EVALUATION_PROVIDER_CONTROL\",\"provider_control_id\":\"control\",\"provider_kind\":\"fixture\",\"endpoint\":\"http://localhost\",\"endpoint_id\":\"endpoint\",\"model\":\"model\",\"timeout_ns\":1000,\"max_response_bytes\":100,\"content_sha256\":\"d17ca925a02084292496c89e99410e2620486a518c56fc663e94044b69b4cffa\"}"
+DOC_6 := "{\"schema_version\":1,\"artifact_kind\":\"ENVIRONMENT_POLICY\",\"policy_id\":\"environment\",\"allowed_variables\":[],\"executable_paths\":[\"/usr/bin/git\"],\"locale\":\"C\",\"content_sha256\":\"7fa04148333f2eb1f5f2c8e00148d3571ff89bc95ee5768a35f5c46e0ade7625\"}"
+DOC_7 := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_ACCEPTANCE_POLICY\",\"policy_id\":\"acceptance\",\"minimum_task_count\":1,\"minimum_samples_per_variant\":1,\"minimum_completion_gain_count\":0,\"minimum_time_improvement_ppm\":0,\"maximum_time_regression_ppm\":0,\"maximum_repair_loop_regression_count\":0,\"content_sha256\":\"7f6204ca28926bd962520d8002dd1eb204d54712212fb46c828701c06c9b506d\"}"
+DOC_8 := "{\"schema_version\":1,\"artifact_kind\":\"WORKSPACE_PREFLIGHT_REQUEST\",\"evaluation_id\":\"evaluation\",\"project_root\":\"/project\",\"workspace_path\":\"/workspace\",\"content_sha256\":\"a4dd34c7c894c01823c2d2617fc49536d47b834ecbaa349560bd9bc85c68f3bf\"}"
+DOC_9 := "{\"schema_version\":2,\"artifact_kind\":\"PROMPT_SOURCE_VERIFIER_POLICY\",\"policy_id\":\"source\",\"git_executable_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"product_executable_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"content_sha256\":\"ba3b8e0ca1908f01c000fc9ff83119ac4da65df7c09ea5d3434f29bce19e93ca\"}"
+DOC_10 := "{\"schema_version\":1,\"artifact_kind\":\"CONTEXT_SOURCES\",\"task_id\":\"task\",\"patch_evaluation\":{\"schema_version\":1,\"artifact_kind\":\"TASK_PROMPT\",\"artifact_id\":\"task\",\"text\":\"日本語\\nowned\",\"content_sha256\":\"9200a00d438961cb1c1e50cba6bdbea95573b777871db467cdd71f0e96454160\"},\"failure_memory_jsonl\":{\"schema_version\":1,\"artifact_kind\":\"TASK_PROMPT\",\"artifact_id\":\"task\",\"text\":\"日本語\\nowned\",\"content_sha256\":\"9200a00d438961cb1c1e50cba6bdbea95573b777871db467cdd71f0e96454160\"},\"diagnostic_stdout\":{\"schema_version\":1,\"artifact_kind\":\"TASK_PROMPT\",\"artifact_id\":\"task\",\"text\":\"日本語\\nowned\",\"content_sha256\":\"9200a00d438961cb1c1e50cba6bdbea95573b777871db467cdd71f0e96454160\"},\"diagnostic_stderr\":{\"schema_version\":1,\"artifact_kind\":\"TASK_PROMPT\",\"artifact_id\":\"task\",\"text\":\"日本語\\nowned\",\"content_sha256\":\"9200a00d438961cb1c1e50cba6bdbea95573b777871db467cdd71f0e96454160\"},\"content_sha256\":\"9b5cd4254acd6fae88652954e8643b6bdeea4c9f9f4ec81c28da804e791d75cc\"}"
+DOC_11 := "{\"schema_version\":1,\"artifact_kind\":\"TASK_PROMPT\",\"artifact_id\":\"task\",\"text\":\"日本語\\nowned\",\"content_sha256\":\"9200a00d438961cb1c1e50cba6bdbea95573b777871db467cdd71f0e96454160\"}"
+
+fn admitted(index: i64, source: str) -> Result<(), Error> {
+  if index == 0 { prompt_evaluation_documents.experiment(source)?; return Ok(()) }
+  if index == 1 { prompt_evaluation_documents.parent(source)?; return Ok(()) }
+  if index == 2 { prompt_evaluation_documents.corpus(source)?; return Ok(()) }
+  if index == 3 { prompt_evaluation_documents.task(source)?; return Ok(()) }
+  if index == 4 { prompt_evaluation_documents.generation(source)?; return Ok(()) }
+  if index == 5 { prompt_evaluation_documents.control(source)?; return Ok(()) }
+  if index == 6 { prompt_evaluation_documents.environment(source)?; return Ok(()) }
+  if index == 7 { prompt_evaluation_documents.acceptance(source)?; return Ok(()) }
+  if index == 8 { prompt_evaluation_documents.preflight(source)?; return Ok(()) }
+  if index == 9 { prompt_evaluation_documents.source_policy(source)?; return Ok(()) }
+  if index == 10 { prompt_evaluation_documents.context(source)?; return Ok(()) }
+  if index == 11 { prompt_evaluation_documents.task_prompt(source)?; return Ok(()) }
+  return Err(Error.Invalid)
+}
+
+fn rejected(index: i64, source: str) -> Result<(), Error> {
+  match admitted(index, source) {
+    Ok(_) => { print(index); return Err(Error.Invalid) },
+    Err(_) => {},
+  }
+  return Ok(())
+}
+
+fn owned() -> Result<prompt_artifacts.PromptTextArtifact, Error> {
+  source := builder()
+  source.write(" \n\t")
+  source.write(DOC_11)
+  source.write(" \n")
+  text := source.to_string()
+  return prompt_evaluation_documents.task_prompt(text)
+}
+
+pub fn main() -> Result<(), Error> {
+  fixtures := [DOC_0, DOC_1, DOC_2, DOC_3, DOC_4, DOC_5, DOC_6, DOC_7, DOC_8, DOC_9, DOC_10, DOC_11]
+  mut index := 0
+  loop {
+    if index == fixtures.len() { break }
+    source := fixtures[index]
+    admitted(index, source)?
+    changed_digest := builder()
+    changed_digest.write(source[0..source.len() - 66])
+    changed_digest.write("0000000000000000000000000000000000000000000000000000000000000000\"}")
+    changed := changed_digest.to_string()
+    rejected(index, changed)?
+    rejected(index, "{}")?
+    wrong_schema := builder()
+    wrong_schema.write(source[0..18])
+    wrong_schema.write("9")
+    wrong_schema.write(source[19..source.len()])
+    wrong_version := wrong_schema.to_string()
+    rejected(index, wrong_version)?
+    index = index + 1
+  }
+  returned := owned()?
+  if returned.text != "日本語\nowned" || returned.artifact_id != "task" || returned.content_sha256.len() != 64 { return Err(Error.Invalid) }
+  whitespace := builder()
+  whitespace.write(" \n")
+  whitespace.write(DOC_8)
+  whitespace.write("\t ")
+  spaced := whitespace.to_string()
+  admitted(8, spaced)?
+  // Source-policy wire admission is intentionally stricter than the general documents.
+  policy_space := builder()
+  policy_space.write(DOC_9)
+  policy_space.write(" ")
+  policy_text := policy_space.to_string()
+  rejected(9, policy_text)?
+  wrong_kind := builder()
+  wrong_kind.write("{\"schema_version\":1,\"artifact_kind\":\"OTHER\",\"artifact_id\":\"task\",\"text\":\"日本語\\nowned\",\"content_sha256\":\"")
+  wrong_kind.write(returned.content_sha256)
+  wrong_kind.write("\"}")
+  wrong_kind_text := wrong_kind.to_string()
+  rejected(11, wrong_kind_text)?
+  mut cap := builder()
+  cap.write(DOC_11)
+  mut count := DOC_11.len()
+  loop {
+    if count == 2097152 { break }
+    cap.write(" ")
+    count = count + 1
+  }
+  exact_cap := cap.to_string()
+  admitted(11, exact_cap)?
+  over := builder()
+  over.write(exact_cap)
+  over.write(" ")
+  oversized := over.to_string()
+  index = 0
+  loop {
+    if index == fixtures.len() { break }
+    rejected(index, oversized)?
+    index = index + 1
+  }
+  print("prompt evaluation documents smoke passed")
+  return Ok(())
+}

@@ -1,0 +1,94 @@
+module prompt_source_collection_smoke
+
+import prompt_artifacts
+import prompt_document_source
+import prompt_file_set_observation
+import prompt_source_admission
+import prompt_source_collection
+import std.fs
+import std.time
+
+fn task(borrow root: fs.directory, path: str, hash: str, count: i64) -> Result<prompt_source_collection.TaskSource, Error> {
+  document := prompt_document_source.read(root, path.bytes(), 2097152, time.instant() + 10000000000)?
+  mut declarations: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  mut index := 0
+  loop {
+    if index == count { break }
+    declarations.push(prompt_artifacts.ArtifactExpectation { path: "a".clone(), kind: "FILE".clone(), expected_sha256: hash.clone() })
+    index = index + 1
+  }
+  return Ok(prompt_source_collection.TaskSource { manifest: prompt_source_admission.manifest(path, document), declarations: declarations.build() })
+}
+
+fn tasks(borrow root: fs.directory, first: str, last: str, count: i64) -> Result<array<prompt_source_collection.TaskSource>, Error> {
+  mut output: array_builder<prompt_source_collection.TaskSource> := array_builder()
+  output.push(task(root, "one", first, count)?)
+  output.push(task(root, "two", last, count)?)
+  return Ok(output.build())
+}
+
+fn collected(root_path: str, hash: str, strict: bool) -> Result<array<prompt_artifacts.ArtifactDigest>, Error> {
+  root := fs.open_directory(root_path)?
+  selected := tasks(root, hash, hash, 1)?
+  return prompt_source_collection.collect(root, selected, strict, time.instant() + 10000000000)
+}
+
+fn admitted(result: Result<(), Error>, expected: bool) -> Result<(), Error> {
+  actual := match result { Ok(_) => true, Err(_) => false }
+  if actual != expected { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 7 { return Err(Error.Invalid) }
+  project := fs.open_directory(args[1])?
+  corpus := fs.open_directory(args[2])?
+  manifests := fs.open_directory(args[3])?
+  observation := prompt_file_set_observation.observe(manifests, "manifest".bytes(), args[5], corpus, 7, time.instant() + 10000000000)?
+  strict := collected(args[1], args[4], true)?
+  loose := collected(args[1], args[4], false)?
+  if strict.len() != 4 || loose.len() != 2 || strict[0].path != "one" || strict[1].path != "a" || strict[2].path != "two" || strict[3].path != "a" { return Err(Error.Invalid) }
+  if strict[0].byte_count != 2 || strict[0].mode != "100644" || strict[0].sha256 != args[6] { return Err(Error.Invalid) }
+  deadline := time.instant() + 10000000000
+  admitted(prompt_source_admission.file_set(project, corpus, observation, args[5], strict, deadline), true)?
+  admitted(prompt_source_admission.file_set(project, corpus, observation, args[5], loose, deadline), true)?
+  // Retained manifest members survive the original manifest pathname's deletion.
+  manifests.remove_file("manifest")?
+  admitted(prompt_source_admission.file_set(project, corpus, observation, args[5], strict, deadline), true)?
+  // A later task's raw bytes change even though its JSON value remains identical.
+  corpus.remove_file("two")?
+  changed := corpus.create_new("two")?
+  changed.write("{ }")?
+  changed.set_mode(420 as u32)?
+  admitted(prompt_source_admission.file_set(project, corpus, observation, args[5], strict, deadline), false)?
+  admitted(prompt_source_admission.file_set(project, corpus, observation, args[5], loose, deadline), true)?
+  corpus.remove_file("two")?
+  admitted(prompt_source_admission.compare(project, corpus, strict, deadline), false)?
+  admitted(prompt_source_admission.compare(project, corpus, loose, deadline), true)?
+  // A conflicting final declaration must refuse the whole collection.
+  invalid := tasks(project, args[4], "0000000000000000000000000000000000000000000000000000000000000000", 1)?
+  match prompt_source_collection.collect(project, invalid, true, deadline) { Ok(_) => { return Err(Error.Invalid) }, Err(_) => {} }
+  selected := tasks(project, args[4], args[4], 128)?
+  exact := prompt_source_collection.collect(project, selected, true, deadline)?
+  if exact.len() != 258 { return Err(Error.Invalid) }
+  too_many := tasks(project, args[4], args[4], 129)?
+  match prompt_source_collection.collect(project, too_many, true, deadline) { Ok(_) => { return Err(Error.Invalid) }, Err(_) => {} }
+  mut count := 0
+  loop {
+    if count == 66 { break }
+    mut values: array_builder<prompt_source_collection.TaskSource> := array_builder()
+    mut index := 0
+    loop { if index == count { break }; values.push(task(project, "one", args[4], 0)?); index = index + 1 }
+    many := values.build()
+    result := prompt_source_collection.collect(project, many, true, deadline)
+    match result {
+      Ok(rows) => { if count < 1 || count > 64 || rows.len() != count { return Err(Error.Invalid) } },
+      Err(error) => { if count > 0 && count <= 64 { return Err(error) } },
+    }
+    count = if count == 0 { 1 } else if count == 1 { 64 } else { count + 1 }
+  }
+  match prompt_source_collection.collect(project, selected, true, 0) { Ok(_) => { return Err(Error.Invalid) }, Err(error) => { if !match error { Timeout => true, _ => false } { return Err(error) } } }
+  admitted(prompt_source_admission.compare(project, corpus, loose, 0), false)?
+  print("source admission: ordered complete set, strict raw manifests, last refusal, retained ownership and bounds PASS")
+  return Ok(())
+}

@@ -1,0 +1,239 @@
+module prompt_sandbox_plan
+
+import prompt_command
+
+pub Config {
+  fresh: bool, uid: i64, gid: i64, namespace_slot: i64,
+  bwrap_path: string, prlimit_path: string, workspace_path: string,
+  readonly_roots: array<string>, target_argv: array<string>,
+  environment: array<prompt_command.Environment>, timeout_seconds: i64,
+}
+
+fn no_nul(value: str) -> bool {
+  mut index := 0
+  loop {
+    if index == value.len() { break }
+    if value.bytes()[index] == 0 { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn absolute(path: str) -> bool {
+  if path.len() == 0 || path.bytes()[0] != 47 || !no_nul(path) { return false }
+  if path == "/" { return true }
+  mut start := 1
+  mut index := 1
+  loop {
+    if index == path.len() || path.bytes()[index] == 47 {
+      part := path[start..index]
+      if part.len() == 0 || part == "." || part == ".." { return false }
+      if index == path.len() { break }
+      start = index + 1
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn within(path: str, root: str) -> bool {
+  return path == root || root == "/" ||
+  (path.len() > root.len() && path[0..root.len()] == root && path.bytes()[root.len()] == 47)
+}
+
+fn contains(roots: slice<string>, path: str) -> bool {
+  mut index := 0
+  loop {
+    if index == roots.len() { break }
+    if within(path, roots[index]) { return true }
+    index = index + 1
+  }
+  return false
+}
+
+fn total(previous: i64, value: str) -> Result<i64, Error> {
+  if value.len() > 2097152 - previous { return Err(Error.Invalid) }
+  return Ok(previous + value.len())
+}
+
+fn validate(fresh: bool, uid: i64, gid: i64, slot: i64, timeout: i64, bwrap: str, prlimit: str, workspace: str, readonly_roots: slice<string>, target_argv: slice<string>, environment: slice<prompt_command.Environment>) -> Result<(), Error> {
+  if uid < 0 || uid > 4294967295 || gid < 0 || gid > 4294967295 ||
+  timeout < 1 || timeout > 9223372036 ||
+  readonly_roots.len() > 16 || target_argv.len() < 1 || target_argv.len() > 4096 || environment.len() > 256 {
+    return Err(Error.Invalid)
+  }
+  if fresh {
+    if slot < 3 || slot > 1023 || workspace == "/target/tmp" || !within(workspace, "/target/tmp") { return Err(Error.Invalid) }
+  } else if slot != 0 { return Err(Error.Invalid) }
+  if !absolute(bwrap) || !absolute(prlimit) || !absolute(workspace) || workspace == "/" { return Err(Error.Invalid) }
+  mut bytes := total(0, bwrap)?
+  bytes = total(bytes, prlimit)?
+  bytes = total(bytes, workspace)?
+  mut usr := false
+  mut tools := false
+  mut index := 0
+  loop {
+    if index == readonly_roots.len() { break }
+    path: str := readonly_roots[index]
+    if !absolute(path) || within(path, workspace) || within(workspace, path) { return Err(Error.Invalid) }
+    if !fresh && path != "/usr" {
+      reserved := ["/tmp", "/dev", "/proc", "/bin", "/lib", "/lib64", "/sbin"]
+      mut reserved_index := 0
+      loop {
+        if reserved_index == reserved.len() { break }
+        if within(path, reserved[reserved_index]) || within(reserved[reserved_index], path) { return Err(Error.Invalid) }
+        reserved_index = reserved_index + 1
+      }
+    }
+    if fresh && path != "/tools" && path != "/usr" && path != "/bin" && path != "/lib" && path != "/lib64" && path != "/runtime" { return Err(Error.Invalid) }
+    mut previous := 0
+    loop {
+      if previous == index { break }
+      earlier: str := readonly_roots[previous]
+      if within(path, earlier) || within(earlier, path) { return Err(Error.Invalid) }
+      previous = previous + 1
+    }
+    if path == "/usr" { usr = true }
+    if path == "/tools" { tools = true }
+    bytes = total(bytes, path)?
+    index = index + 1
+  }
+  if !usr || (fresh && !tools) || !contains(readonly_roots, prlimit) { return Err(Error.Invalid) }
+  index = 0
+  loop {
+    if index == target_argv.len() { break }
+    value: str := target_argv[index]
+    if !no_nul(value) { return Err(Error.Invalid) }
+    if index == 0 && (!absolute(value) || !contains(readonly_roots, value)) { return Err(Error.Invalid) }
+    bytes = total(bytes, value)?
+    index = index + 1
+  }
+  index = 0
+  loop {
+    if index == environment.len() { break }
+    name: str := environment[index].name
+    value: str := environment[index].value
+    if name.len() == 0 || !no_nul(name) || !no_nul(value) { return Err(Error.Invalid) }
+    mut at := 0
+    loop {
+      if at == name.len() { break }
+      if name.bytes()[at] == 61 { return Err(Error.Invalid) }
+      at = at + 1
+    }
+    bytes = total(bytes, name)?
+    bytes = total(bytes, value)?
+    index = index + 1
+  }
+  return Ok(())
+}
+
+fn append(borrow mut output: array_builder<string>, values: slice<str>, previous: i64) -> Result<i64, Error> {
+  mut bytes := previous
+  mut index := 0
+  loop {
+    if index == values.len() { break }
+    bytes = total(bytes, values[index])?
+    output.push(values[index].clone())
+    index = index + 1
+  }
+  return Ok(bytes)
+}
+
+fn parents(borrow mut output: array_builder<string>, path: str, roots: slice<string>, previous: i64) -> Result<i64, Error> {
+  mut bytes := previous
+  mut index := 1
+  loop {
+    if index == path.len() { break }
+    if path.bytes()[index] == 47 {
+      parent := path[0..index]
+      if !contains(roots, parent) { bytes = append(output, ["--dir", parent], bytes)? }
+    }
+    index = index + 1
+  }
+  return Ok(bytes)
+}
+
+fn decimal(number: i64) -> string {
+  output := builder()
+  output.write_int(number)
+  return output.to_string()
+}
+
+pub fn arguments(config: Config) -> Result<array<string>, Error> {
+  validate(config.fresh, config.uid, config.gid, config.namespace_slot, config.timeout_seconds, config.bwrap_path, config.prlimit_path, config.workspace_path, config.readonly_roots, config.target_argv, config.environment)?
+  mut output: array_builder<string> := array_builder()
+  bwrap: str := config.bwrap_path
+  workspace: str := config.workspace_path
+  prlimit: str := config.prlimit_path
+  uid_text := decimal(config.uid)
+  uid: str := uid_text
+  gid_text := decimal(config.gid)
+  gid: str := gid_text
+  mut bytes := append(output, [bwrap], 0)?
+  if config.fresh {
+    slot_text := decimal(config.namespace_slot)
+    slot: str := slot_text
+    bytes = append(output, ["--clearenv", "--die-with-parent", "--new-session", "--userns", slot, "--unshare-ipc", "--unshare-pid", "--unshare-net", "--unshare-uts", "--uid", uid, "--gid", gid, "--cap-drop", "ALL", "--cap-add", "CAP_SYS_ADMIN", "--cap-add", "CAP_SETFCAP", "--tmpfs", "/", "--size", "67108864", "--tmpfs", "/workspace", "--proc", "/proc", "--dev", "/dev"], bytes)?
+    directories := ["/tools", "/target", "/usr", "/bin", "/lib", "/lib64", "/runtime", "/tmp", "/dev/shm"]
+    mut index := 0
+    loop {
+      if index == directories.len() { break }
+      bytes = append(output, ["--dir", directories[index]], bytes)?
+      index = index + 1
+    }
+    roots := ["/tools", "/usr", "/bin", "/lib", "/lib64", "/runtime"]
+    index = 0
+    loop {
+      if index == roots.len() { break }
+      if contains(config.readonly_roots, roots[index]) { bytes = append(output, ["--ro-bind", roots[index], roots[index]], bytes)? }
+      index = index + 1
+    }
+    bytes = append(output, ["--bind", "/target/tmp", "/target/tmp", "--size", "67108864", "--tmpfs", "/tmp", "--size", "67108864", "--tmpfs", "/dev/shm"], bytes)?
+    index = 0
+    loop {
+      if index == config.environment.len() { break }
+      name: str := config.environment[index].name
+      value: str := config.environment[index].value
+      bytes = append(output, ["--setenv", name, value], bytes)?
+      index = index + 1
+    }
+  } else {
+    bytes = append(output, ["--die-with-parent", "--new-session", "--unshare-all", "--uid", uid, "--gid", gid, "--cap-drop", "ALL", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/sbin", "/sbin", "--proc", "/proc", "--dev", "/dev", "--size", "67108864", "--tmpfs", "/tmp", "--size", "67108864", "--tmpfs", "/dev/shm", "--dir", "/tmp/home"], bytes)?
+    mut index := 0
+    loop {
+      if index == config.readonly_roots.len() { break }
+      path: str := config.readonly_roots[index]
+      if path != "/usr" {
+        bytes = parents(output, path, config.readonly_roots, bytes)?
+        bytes = append(output, ["--ro-bind", path, path], bytes)?
+      }
+      index = index + 1
+    }
+    bytes = parents(output, workspace, config.readonly_roots, bytes)?
+  }
+  git_builder := builder()
+  git_builder.write(workspace)
+  git_builder.write("/.git")
+  git_text := git_builder.to_string()
+  git: str := git_text
+  bytes = append(output, ["--bind", workspace, workspace, "--ro-bind", git, git, "--chdir", workspace, "--"], bytes)?
+  if config.fresh {
+    bytes = append(output, ["/tools/mount-guard", "--no-symlink-follow", "/target/tmp", "/workspace", "/tmp", "/dev/shm", "--tmpfs-inodes", "/", "--tmpfs-inodes", "/workspace", "--tmpfs-inodes", "/tmp", "--tmpfs-inodes", "/dev/shm", "--"], bytes)?
+  }
+  cpu_builder := builder()
+  cpu_builder.write("--cpu=")
+  cpu_builder.write_int(config.timeout_seconds + 1)
+  cpu_text := cpu_builder.to_string()
+  cpu: str := cpu_text
+  bytes = append(output, [prlimit, "--as=536870912", "--fsize=67108864", "--nproc=256", "--nofile=512", cpu, "--"], bytes)?
+  mut index := 0
+  loop {
+    if index == config.target_argv.len() { break }
+    value: str := config.target_argv[index]
+    bytes = append(output, [value], bytes)?
+    index = index + 1
+  }
+  result := output.build()
+  if result.len() > 4096 { return Err(Error.Invalid) }
+  return Ok(result)
+}

@@ -1,0 +1,117 @@
+module prompt_source_membership
+
+import prompt_artifacts
+import prompt_file_set
+import prompt_file_set_observation
+import prompt_source_file
+import std.fs
+import std.time
+
+fn hexadecimal(value: str) -> bool {
+  if value.len() != 64 { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { return true }
+    byte := value.bytes()[index]
+    if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return false }
+    index = index + 1
+  }
+}
+
+fn relative(path: str) -> bool {
+  if path.len() == 0 || path.len() > 4096 { return false }
+  mut start := 0
+  mut index := 0
+  loop {
+    if index < path.len() && path.bytes()[index] == 0 { return false }
+    if index == path.len() || path.bytes()[index] == 47 {
+      part := path[start..index]
+      if part.len() == 0 || part.len() > 255 || part == "." || part == ".." { return false }
+      start = index + 1
+    }
+    if index == path.len() { return true }
+    index = index + 1
+  }
+}
+
+fn mode_value(value: str) -> Result<i64, Error> {
+  if value.len() != 6 || !value.starts_with("10") { return Err(Error.Invalid) }
+  mut result := 0
+  mut index := 0
+  loop {
+    if index == 6 { return Ok(result) }
+    byte := value.bytes()[index]
+    if byte < 48 || byte > 55 { return Err(Error.Invalid) }
+    result = result * 8 + byte as i64 - 48
+    index = index + 1
+  }
+}
+
+fn admitted(borrow row: prompt_artifacts.ArtifactDigest) -> Result<i64, Error> {
+  if !relative(row.path) || !hexadecimal(row.sha256) || row.byte_count < 0 || row.byte_count > 2097152 { return Err(Error.Invalid) }
+  return mode_value(row.mode)
+}
+
+fn compare_file(borrow root: fs.directory, borrow row: prompt_artifacts.ArtifactDigest, mode: i64, deadline: i64) -> Result<(), Error> {
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  file := prompt_source_file.observe(root, row.path.bytes(), row.byte_count)?
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  if file.sha256 != row.sha256 || file.metadata.size != row.byte_count || 32768 + file.metadata.mode as i64 != mode { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+// The caller excludes source writers from declaration expansion through membership.
+pub fn compare(borrow project: fs.directory, borrow corpus: fs.directory, rows: slice<prompt_artifacts.ArtifactDigest>, deadline: i64) -> Result<(), Error> {
+  mut index := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if index == rows.len() { return Ok(()) }
+    mode := admitted(rows[index])?
+    compare_file(project, rows[index], mode, deadline)?
+    compare_file(corpus, rows[index], mode, deadline)?
+    index = index + 1
+  }
+}
+
+fn order(left: slice<u8>, right: slice<u8>) -> i64 {
+  mut index := 0
+  loop {
+    if index == left.len() || index == right.len() {
+      return if left.len() == right.len() { 0 } else if left.len() < right.len() { -1 } else { 1 }
+    }
+    if left[index] != right[index] { return if left[index] < right[index] { -1 } else { 1 } }
+    index = index + 1
+  }
+}
+
+fn member_order(borrow entry: prompt_file_set.Entry, path: str) -> i64 = order(entry.path, path.bytes())
+
+fn member_matches(borrow entry: prompt_file_set.Entry, borrow row: prompt_artifacts.ArtifactDigest, mode: i64) -> bool = entry.mode == mode && entry.sha256 == row.sha256
+
+// Only the owned result of file-set observation is admitted here, not decoded input.
+pub fn file_set(borrow observation: prompt_file_set_observation.Observation, expected_sha256: str, rows: slice<prompt_artifacts.ArtifactDigest>, deadline: i64) -> Result<(), Error> {
+  if !hexadecimal(expected_sha256) || observation.sha256 != expected_sha256 || observation.files != observation.members.len() { return Err(Error.Invalid) }
+  entries: slice<prompt_file_set.Entry> := observation.members
+  mut index := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if index == rows.len() { return Ok(()) }
+    mode := admitted(rows[index])?
+    mut lower := 0
+    mut upper := entries.len()
+    mut found := false
+    loop {
+      if lower == upper { break }
+      middle := lower + (upper - lower) / 2
+      ordering := member_order(entries[middle], rows[index].path)
+      if ordering == 0 {
+        if !member_matches(entries[middle], rows[index], mode) { return Err(Error.Invalid) }
+        found = true
+        break
+      }
+      if ordering < 0 { lower = middle + 1 } else { upper = middle }
+    }
+    if !found { return Err(Error.Invalid) }
+    index = index + 1
+  }
+}

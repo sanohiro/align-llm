@@ -1,6 +1,7 @@
 module prompt_generate
 
 import model
+import prompt_redaction
 import prompt_artifact_io
 import prompt_artifacts
 import provider
@@ -52,29 +53,7 @@ pub fn status_success(value: PromptGenerateStatus) -> bool = match value {
 // provider run. `find` is byte-oriented and UTF-8 is self-synchronizing, so a match offset is always
 // a scalar boundary and the slices below cannot split a multi-byte character.
 pub fn redact_credential(borrow text: str, borrow credential: str) -> string {
-  if credential.len() == 0 {
-    return text.clone()
-  }
-  output := builder()
-  mut cursor := 0
-  loop {
-    if cursor >= text.len() {
-      break
-    }
-    tail := text[cursor..text.len()]
-    match tail.find(credential) {
-      Some(offset) => {
-        output.write(text[cursor..cursor + offset])
-        output.write("[REDACTED]")
-        cursor = cursor + offset + credential.len()
-      },
-      None => {
-        output.write(tail)
-        cursor = text.len()
-      },
-    }
-  }
-  return output.to_string()
+  return prompt_redaction.credential(text, credential)
 }
 
 fn valid_path_component(value: str) -> bool {
@@ -218,11 +197,11 @@ fn provider_request_bytes(
   kind: model.ProviderKind,
   model_name: str,
   request: model.GenerationRequest,
-) -> string = match kind {
+) -> Result<string, Error> = match kind {
   CloudOpenAI => provider_openai.request_bytes(model_name, request, false),
   LocalOpenAI => provider_openai.request_bytes(model_name, request, false),
   LlamaCpp => provider_llama.request_bytes(request, false),
-  AlignRuntime => "".clone(),
+  AlignRuntime => Err(Error.Invalid),
 }
 
 fn provider_decode_content(kind: model.ProviderKind, response: str) -> Result<string, Error> = match kind {
@@ -394,8 +373,12 @@ fn run_generation(
     runtime_cache_budget_bytes: 0,
   }
   info := provider.model_info(capability_config)
-  seeded_body := provider_request_bytes(kind, model_view, seeded_request)
-  unseeded_body := provider_request_bytes(kind, model_view, unseeded_request)
+  seeded_body := provider_request_bytes(kind, model_view, seeded_request) else {
+    return undispatched_failure(PromptGenerateStatus.InvalidInput, "INVALID_INPUT", "INVALID_BOUNDS", "provider request cannot be encoded")
+  }
+  unseeded_body := provider_request_bytes(kind, model_view, unseeded_request) else {
+    return undispatched_failure(PromptGenerateStatus.InvalidInput, "INVALID_INPUT", "INVALID_BOUNDS", "provider request cannot be encoded")
+  }
   seeded_view: str := seeded_body
   unseeded_view: str := unseeded_body
   // `APPLIED` requires both halves of the section 11.3 rule: the selected adapter reports
@@ -557,6 +540,46 @@ fn publish(
   return terminal
 }
 
+fn rendered_valid(borrow rendered: prompt_artifacts.RenderedPromptArtifact, expected: str) -> bool {
+  if rendered.schema_version != 1 || rendered.artifact_kind != "RENDERED_PROMPT" ||
+  rendered.content_sha256 != expected { return false }
+  lengths := [rendered.artifact_kind.len(), rendered.task_id.len(), rendered.variant_id.len(),
+    rendered.variant_sha256.len(), rendered.task_prompt_sha256.len(), rendered.context_sources_sha256.len(), rendered.text.len()]
+  mut remaining := 2097152
+  mut index := 0
+  loop {
+    if index == lengths.len() { break }
+    if lengths[index] > remaining { return false }
+    remaining = remaining - lengths[index]
+    index = index + 1
+  }
+  normalized := prompt_artifacts.RenderedPromptArtifact {
+    schema_version: rendered.schema_version,
+    artifact_kind: rendered.artifact_kind.clone(),
+    task_id: rendered.task_id.clone(),
+    variant_id: rendered.variant_id.clone(),
+    variant_sha256: rendered.variant_sha256.clone(),
+    task_prompt_sha256: rendered.task_prompt_sha256.clone(),
+    context_sources_sha256: rendered.context_sources_sha256.clone(),
+    text: rendered.text.clone(),
+    content_sha256: "".clone(),
+  }
+  canonical := prompt_artifacts.encode_rendered_prompt_artifact_bounded(normalized, 2097152) else { return false }
+  digest := crypto.sha256(canonical)
+  return encoding.hex_encode(digest[0..digest.len()]) == expected
+}
+
+// Response publication remains explicit; the caller finalizes its empty content digest.
+pub fn generate(borrow request: prompt_artifacts.PromptGenerationRequest, borrow rendered: prompt_artifacts.RenderedPromptArtifact) -> Result<prompt_artifacts.PromptGenerationResponse, Error> {
+  if !prompt_artifacts.verify_prompt_generation_request(request) ||
+  !rendered_valid(rendered, request.rendered_prompt_sha256) {
+    return Err(Error.Invalid)
+  }
+  outcome := run_generation(request, rendered)
+  response := build_response(request.request_id.clone(), request.provider_kind.clone(), request.provider_model.clone(), outcome)
+  return Ok(response)
+}
+
 pub fn generate_file(request_path: str, result_path: str) -> PromptGenerateStatus {
   // Step 1: CLI arity is the caller's; decode the declared request. A failure here has no trusted
   // response envelope and therefore produces no response artifact.
@@ -677,11 +700,11 @@ pub fn generate_file(request_path: str, result_path: str) -> PromptGenerateStatu
 
   // Steps 2 (environment-key presence) through 4: the credential-owning stage performs the single
   // provider call and returns only credential-free, redacted, bounded data.
-  outcome := run_generation(request, rendered)
-  terminal := outcome.terminal
-  return publish(
-    output,
-    build_response(request_id, provider_kind, provider_model, outcome),
-    terminal,
-  )
+  generated := generate(request, rendered) else {
+    return publish(output, build_response(request_id, provider_kind, provider_model,
+        undispatched_failure(PromptGenerateStatus.InvalidInput, "INVALID_INPUT", "INVALID_DIGEST",
+          "rendered prompt content does not match the declared identity")), PromptGenerateStatus.InvalidInput)
+  }
+  terminal := if generated.status == "GENERATED" { PromptGenerateStatus.Generated } else if generated.status == "INVALID_INPUT" { PromptGenerateStatus.InvalidInput } else { PromptGenerateStatus.ProviderError }
+  return publish(output, generated, terminal)
 }

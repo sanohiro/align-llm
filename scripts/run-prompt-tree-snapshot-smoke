@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+trap 'rm -rf "${scratch}"' EXIT
+
+# Independent fixture construction and frozen-manifest oracle, never product execution.
+python3 - "${scratch}" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+scratch = Path(sys.argv[1])
+root = scratch / "root"
+root.mkdir()
+(root / "empty").mkdir(mode=0o750)
+tree = root / "tree"
+tree.mkdir()
+os.chmod(tree, 0o751)
+(tree / "a").mkdir()
+os.chmod(tree / "a", 0o710)
+(tree / "z").mkdir()
+os.chmod(tree / "z", 0o700)
+for name, data, mode in (
+    ("b", b"", 0o600),
+    ("a/line\nbreak", b"\x00\xffx", 0o640),
+    ("é", b"utf8\n", 0o755),
+    ("😀", b"\x01\x02\x03\x04", 0o644),
+):
+    (tree / name).write_bytes(data)
+    os.chmod(tree / name, mode)
+for name, count in (("deep128", 128), ("deep129", 129)):
+    cursor = root / name
+    cursor.mkdir()
+    for _ in range(count - 1):
+        cursor = cursor / "d"
+        cursor.mkdir()
+for name in ("symlink", "hardlink", "fifo", "raw"):
+    (root / name).mkdir()
+os.symlink("../tree/b", root / "symlink" / "link")
+os.symlink("tree", root / "linked-root")
+(root / "hardlink" / "first").write_bytes(b"hard")
+os.link(root / "hardlink" / "first", root / "hardlink" / "second")
+os.mkfifo(root / "fifo" / "pipe")
+(root / "root-file").write_bytes(b"file")
+raw = sys.platform.startswith("linux")
+if raw:
+    descriptor = os.open(os.fsencode(root / "raw") + b"/invalid\xff", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(b"raw")
+(scratch / "raw-mode").write_text("raw" if raw else "no-raw")
+decoy = scratch / "decoy"
+(decoy / "tree").mkdir(parents=True)
+(decoy / "tree" / "replacement").write_bytes(b"decoy")
+
+
+def expected_snapshot(parent, relative):
+    paths = [parent / relative, *(parent / relative).rglob("*")]
+    paths.sort(key=lambda path: path.relative_to(parent).as_posix().encode("utf-8"))
+    manifest = bytearray()
+    rows = []
+    byte_count = 0
+    for path in paths:
+        metadata = path.stat(follow_symlinks=False)
+        name = path.relative_to(parent).as_posix()
+        mode = f"{metadata.st_mode:06o}"
+        manifest.extend(mode.encode("ascii") + b" " + name.encode("utf-8") + b"\0")
+        if stat.S_ISDIR(metadata.st_mode):
+            digest, size = None, 0
+            manifest.extend(b"D\n")
+        else:
+            data = path.read_bytes()
+            digest, size = hashlib.sha256(data).hexdigest(), len(data)
+            manifest.extend(b"F " + digest.encode("ascii") + b"\n")
+            byte_count += size
+        rows.append({"path": name, "mode": mode, "byte_count": size, "sha256": digest})
+    tree_hash = hashlib.sha256(manifest).hexdigest()
+    for row in rows:
+        if row["sha256"] is None:
+            row["sha256"] = tree_hash
+    return {"artifact_digests": rows, "sha256": tree_hash, "byte_count": byte_count}
+
+
+tree_expected = expected_snapshot(root, "tree")
+expected = [expected_snapshot(root, "empty"), tree_expected, expected_snapshot(root, "deep128"), tree_expected, expected_snapshot(decoy, "tree")]
+(scratch / "expected.json").write_text(json.dumps(expected, ensure_ascii=False), encoding="utf-8")
+PY
+
+raw_mode="$(cat "${scratch}/raw-mode")"
+"${compiler}" run "${project_root}/src/prompt_tree_snapshot_smoke.align" -- \
+  "${scratch}/root" "${scratch}/retained" "${scratch}/decoy" "${raw_mode}" >"${scratch}/actual"
+
+python3 - "${scratch}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+scratch = Path(sys.argv[1])
+lines = (scratch / "actual").read_text(encoding="utf-8").splitlines()
+if len(lines) != 6 or lines[-1] != "tree-refusals-and-retained-root: PASS":
+    raise SystemExit(f"unexpected snapshot evidence: {lines!r}")
+expected = json.loads((scratch / "expected.json").read_text(encoding="utf-8"))
+for index, (line, oracle) in enumerate(zip(lines[:5], expected)):
+    actual = json.loads(line)
+    if actual != oracle:
+        raise SystemExit(f"snapshot {index} mismatch:\nexpected={oracle!r}\nactual={actual!r}")
+raw = (scratch / "raw-mode").read_text()
+raw_result = "PASS" if raw == "raw" else "N/A (Linux raw-name qualification)"
+print("prompt tree snapshot smoke: manifest/hash oracle, owned ordered rows, modes, Unicode/newline paths, exact bounds, 128-entry depth, unsafe kinds, and retained roots PASS; invalid UTF-8 " + raw_result)
+PY

@@ -1,0 +1,101 @@
+module prompt_repair_assembly
+
+pub Assembly {
+  text: Option<string>,
+  included_sections: array<string>,
+  dropped_sections: array<string>,
+  assembled_bytes: i64,
+}
+
+fn section_name(index: i64) -> str {
+  if index == 0 { return "STATUS" }
+  if index == 1 { return "POLICY" }
+  if index == 2 { return "EDITSET" }
+  if index == 3 { return "SUMMARY" }
+  if index == 4 { return "STDOUT" }
+  return "STDERR"
+}
+
+fn names(selected: slice<bool>) -> array<string> {
+  mut output: array_builder<string> := array_builder()
+  mut index := 0
+  loop {
+    if index == 6 { break }
+    if selected[index] { output.push(section_name(index).clone()) }
+    index = index + 1
+  }
+  return output.build()
+}
+
+fn render(
+  base: str, preamble: str, closing: str,
+  headers: slice<str>, sources: slice<str>, included: slice<bool>,
+) -> string {
+  output := builder()
+  output.write(base)
+  output.write("\n\n")
+  output.write(preamble)
+  mut index := 0
+  loop {
+    if index == 6 { break }
+    if included[index] {
+      output.write("\n\n")
+      output.write(headers[index])
+      output.write("\n")
+      output.write(sources[index])
+    }
+    index = index + 1
+  }
+  output.write("\n\n")
+  output.write(closing)
+  return output.to_string()
+}
+
+// Inputs come from the admitted template and persisted, already-redacted measurement.
+// Six slots use STATUS, POLICY, EDITSET, SUMMARY, STDOUT, STDERR order. An empty header
+// denotes a kind absent from the admitted historical template. Empty sources never drop.
+pub fn assemble(
+  base: str, preamble: str, closing: str,
+  headers: slice<str>, sources: slice<str>, maximum_bytes: i64,
+) -> Result<Assembly, Error> {
+  if headers.len() != 6 || sources.len() != 6 || maximum_bytes < 0 { return Err(Error.Invalid) }
+  mut included := [false, false, false, false, false, false]
+  mut dropped := [false, false, false, false, false, false]
+  mut index := 0
+  loop {
+    if index == 6 { break }
+    included[index] = headers[index].len() > 0 && sources[index].len() > 0
+    index = index + 1
+  }
+  drop_order := [4, 5, 3, 2]
+  loop {
+    text := render(base, preamble, closing, headers, sources, included)
+    size := text.len()
+    if size <= maximum_bytes {
+      return Ok(Assembly {
+          text: Some(text), included_sections: names(included),
+          dropped_sections: names(dropped), assembled_bytes: size,
+        })
+    }
+    mut next := -1
+    index = 0
+    loop {
+      if index == 4 { break }
+      candidate := drop_order[index]
+      if included[candidate] { next = candidate; break }
+      index = index + 1
+    }
+    if next < 0 {
+      return Ok(Assembly {
+          text: None, included_sections: names(included),
+          dropped_sections: names(dropped), assembled_bytes: size,
+        })
+    }
+    included[next] = false
+    dropped[next] = true
+  }
+}
+
+pub fn eligible(cleanup_passed: bool, containment_passed: bool, summary: str, stdout: str, stderr: str) -> bool {
+  return cleanup_passed && containment_passed && (summary.len() > 0 || stdout.len() > 0 || stderr.len() > 0)
+}

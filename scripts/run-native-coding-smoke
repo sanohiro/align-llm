@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $# != 1 ]]; then
+  printf 'usage: %s PREPARED_FIXTURE_DIRECTORY\n' "$0" >&2
+  exit 2
+fi
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root="$(realpath "$1")"
+scratch="$(mktemp -d "$root/coding-owner.XXXXXX")"
+names=(corpus.json scope.json activation.json parent.json experiment.json environment.json
+  task-one.json task-two.json task-one-definition.json task-two-definition.json
+  task-one-patch.txt task-two-patch.txt)
+mkdir "$scratch/originals" "$scratch/source" "$scratch/oracle"
+for name in "${names[@]}"; do cp "$root/$name" "$scratch/originals/$name"; done
+cleanup() {
+  status=$?
+  for name in "${names[@]}"; do cp "$scratch/originals/$name" "$root/$name"; done
+  if [[ $status == 0 ]]; then rm -rf "$scratch";
+  else printf 'Preserved native coding fixture: %s\n' "$scratch" >&2; fi
+}
+trap cleanup EXIT
+cp -R "$project_root/eval/fixtures/python-inclusive-range-v1/repository/." "$scratch/source/"
+cp -R "$scratch/source/." "$scratch/oracle/"
+oracle=(env -i PATH=/usr/bin:/bin HOME=/nonexistent LC_ALL=C GIT_CONFIG_NOSYSTEM=1
+  GIT_CONFIG_GLOBAL=/dev/null 'GIT_AUTHOR_NAME=align-llm fixture' GIT_AUTHOR_EMAIL=fixture@align-llm.invalid
+  GIT_AUTHOR_DATE=2026-01-01T00:00:00Z 'GIT_COMMITTER_NAME=align-llm fixture'
+  GIT_COMMITTER_EMAIL=fixture@align-llm.invalid GIT_COMMITTER_DATE=2026-01-01T00:00:00Z)
+"${oracle[@]}" git -C "$scratch/oracle" -c init.templateDir= init -q --initial-branch=main
+"${oracle[@]}" git -C "$scratch/oracle" add src tests
+"${oracle[@]}" git -C "$scratch/oracle" -c core.hooksPath=/dev/null commit -qm 'Create deterministic evaluation fixture'
+revision="$("${oracle[@]}" git -C "$scratch/oracle" rev-parse HEAD)"
+source_relative="${scratch#"$root/"}/source"
+bind_record() {
+  file="$1"; filter="$2"; shift 2
+  jq -cj "$@" "$filter | .content_sha256=\"\"" "$root/$file" > "$scratch/canonical"
+  digest="$(sha256sum "$scratch/canonical" | cut -d ' ' -f 1)"
+  jq -cj --arg digest "$digest" '.content_sha256=$digest' "$scratch/canonical" > "$root/$file"
+}
+bind_record corpus.json '.corpus_id="coding-v2"'
+bind_record scope.json '.corpus_id="coding-v2"'
+bind_record activation.json '.scope=$scope[0]' --slurpfile scope "$root/scope.json"
+bind_record parent.json '.activation=$activation[0]' --slurpfile activation "$root/activation.json"
+bind_record experiment.json '.scope=$scope[0] | .parent_activation.content_sha256=$parent[0].content_sha256' \
+  --slurpfile scope "$root/scope.json" --slurpfile parent "$root/parent.json"
+bind_record environment.json '.executable_paths=["/usr/bin/python3"]'
+for prefix in task-one task-two; do
+  jq -cj --arg source "$source_relative" --arg revision "$revision" '
+    .source_dir=$source | .source_revision=$revision | .allowed_edits=["src/inclusive_range.py"] |
+    .validation_argv=["/usr/bin/python3","-B","tests/test_inclusive_range.py","-v"]
+  ' "$root/$prefix-definition.json" > "$scratch/definition"
+  cp "$scratch/definition" "$root/$prefix-definition.json"
+  cp "$project_root/eval/baselines/patches/python-inclusive-range.patch" "$root/$prefix-patch.txt"
+  definition_sha="$(sha256sum "$root/$prefix-definition.json" | cut -d ' ' -f 1)"
+  patch_sha="$(sha256sum "$root/$prefix-patch.txt" | cut -d ' ' -f 1)"
+  definition_identity="$(printf '100644 %s-definition.json\0F %s\n' "$prefix" "$definition_sha" | sha256sum | cut -d ' ' -f 1)"
+  patch_identity="$(printf '100644 %s-patch.txt\0F %s\n' "$prefix" "$patch_sha" | sha256sum | cut -d ' ' -f 1)"
+  bind_record "$prefix.json" '
+    .repo_revision=$revision | .repo_path=$source | .cwd=$source |
+    .task_definition_sha256=$definition | .patch_sha256=$patch |
+    .artifacts[0].expected_sha256=$definition_identity | .artifacts[1].expected_sha256=$patch_identity
+  ' --arg revision "$revision" --arg source "$source_relative" --arg definition "$definition_sha" \
+    --arg patch "$patch_sha" --arg definition_identity "$definition_identity" --arg patch_identity "$patch_identity"
+done
+jq -cj --arg evidence "${scratch#"$root/"}/evidence.json" '.evaluation_evidence_path=$evidence' \
+  "$root/canonical-request.json" > "$scratch/request.json"
+"$root/main" prompt evaluate "$scratch/request.json" "${scratch#"$root/"}/result.json" > "$scratch/stdout"
+jq -e '.corpus.corpus_id=="coding-v2" and (.rows|length)==8 and
+  all(.rows[]; .measurement.status=="PASS") and .gate_eligible==false' "$scratch/result.json" >/dev/null
+python3 "$project_root/scripts/check-native-evaluation-fixture" "$scratch/result.json"
+diff -r "$project_root/eval/fixtures/python-inclusive-range-v1/repository" "$scratch/source"
+[[ -z "$(find "$root/workspace" -mindepth 1 -print -quit)" ]]
+printf 'native coding-v2: eight paired inclusive-range fixes, unchanged external Python tests, independent records and cleanup PASS\n'

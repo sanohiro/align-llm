@@ -1,0 +1,51 @@
+module prompt_source_file
+
+import std.crypto
+import std.encoding
+import std.fs
+
+pub FileObservation { metadata: fs.metadata, sha256: string }
+
+fn unchanged(before: fs.metadata, after: fs.metadata) -> bool {
+  regular := match after.kind { Regular => true, _ => false }
+  return regular && before.device == after.device && before.inode == after.inode &&
+  before.links == after.links && before.mode == after.mode && before.size == after.size &&
+  before.modified_seconds == after.modified_seconds &&
+  before.modified_nanoseconds == after.modified_nanoseconds &&
+  before.changed_seconds == after.changed_seconds &&
+  before.changed_nanoseconds == after.changed_nanoseconds
+}
+
+// The result attests observed bytes. It does not authorize reopening this name for execution.
+pub fn observe(
+  borrow root: fs.directory,
+  relative: slice<u8>,
+  maximum: i64,
+) -> Result<FileObservation, Error> {
+  if maximum < 0 || maximum > 2305843009213693951 { return Err(Error.Invalid) }
+  input := root.open_read_single_link(relative)?
+  before := input.metadata()?
+  if before.links != 1 || before.size < 0 || before.size > maximum { return Err(Error.Invalid) }
+  digest := crypto.sha256_stream()
+  mut count := 0
+  loop {
+    if count == maximum {
+      mut probe := buffer(1)
+      if input.read(probe)? != 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := maximum - count
+    mut chunk := buffer(if remaining < 65536 { remaining } else { 65536 })
+    read_count := input.read(chunk)?
+    digest.update(chunk.bytes())
+    if read_count == 0 { break }
+    count = count + read_count
+  }
+  after := input.metadata()?
+  if count != before.size || !unchanged(before, after) { return Err(Error.Invalid) }
+  hash := digest.finish()
+  return Ok(FileObservation {
+      metadata: after,
+      sha256: encoding.hex_encode(hash[0..hash.len()]).clone(),
+    })
+}

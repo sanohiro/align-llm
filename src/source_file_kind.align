@@ -1,0 +1,27 @@
+module source_file_kind
+
+// Pure target-file classification shared by repository indexing and patch analysis.
+
+pub fn language(path_name: str) -> str {
+  if path_name.ends_with(".align") { return "align" }
+  if path_name.ends_with(".py") { return "python" }
+  if path_name.ends_with(".rs") { return "rust" }
+  if path_name.ends_with(".md") { return "markdown" }
+  if path_name.ends_with(".json") { return "json" }
+  if path_name.ends_with(".yml") || path_name.ends_with(".yaml") { return "yaml" }
+  if path_name.ends_with(".sh") { return "shell" }
+  return "unknown"
+}
+
+pub fn is_test(path_name: str) -> bool {
+  if path_name.starts_with("test") || path_name.starts_with("tests/") || path_name.starts_with("test/") {
+    return true
+  }
+  if path_name.contains("/tests/") || path_name.contains("/test/") {
+    return true
+  }
+  if path_name.ends_with("_test.align") || path_name.ends_with("_test.py") {
+    return true
+  }
+  return false
+}

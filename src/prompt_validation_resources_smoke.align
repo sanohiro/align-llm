@@ -1,0 +1,75 @@
+module prompt_validation_resources_smoke
+
+import prompt_validation_resources
+import prompt_validation_budget
+import prompt_scope_cleanup
+import std.process
+import std.fs
+import std.time
+
+fn preflight(borrow workspace: fs.directory) -> Result<(), Error> {
+  mut limits := prompt_validation_budget.defaults()
+  limits.workspace_files = 0
+  match prompt_validation_resources.observe(workspace, workspace, 1, 2, false, limits, time.instant() + 1000000000) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  limits.workspace_files = 8192
+  match prompt_validation_resources.observe(workspace, workspace, 1, 2, false, limits, 0) { Err(error) => { match error { Timeout => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  return Ok(())
+}
+
+fn exercise(borrow mut scope: process.child_scope, borrow workspace: fs.directory, borrow procfs: fs.directory, borrow missing: fs.directory) -> Result<(), Error> {
+  deadline := time.instant() + 10000000000
+  zero: u8 := 0
+  mut byte := [zero]
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    scope.poll(process.readiness { stdout: true, stderr: false, status: false }, 10000000)?
+    match scope.read_stdout(byte)? { Some(count) => { if count == 1 && byte[0] == 82 { break }; if count == 0 { return Err(Error.Invalid) } }, None => {} }
+  }
+  limits := prompt_validation_budget.defaults()
+  usage := prompt_validation_resources.observe(workspace, procfs, scope.id(), scope.owner_id(), false, limits, deadline)?
+  if !usage.complete || usage.processes != 1 || usage.resident_bytes <= 0 || usage.visible_files != 2 || usage.visible_bytes != 5 || usage.deleted_files != 1 || usage.deleted_bytes != 7 { return Err(Error.Invalid) }
+  match prompt_validation_budget.check(limits, usage) { WithinBudget => {}, _ => { return Err(Error.Invalid) } }
+  incomplete := prompt_validation_resources.observe(workspace, missing, scope.id(), scope.owner_id(), false, limits, deadline)?
+  if incomplete.complete || incomplete.processes != 1 || incomplete.visible_files != 2 || incomplete.visible_bytes != 5 || incomplete.deleted_files != 0 || incomplete.deleted_bytes != 0 { return Err(Error.Invalid) }
+  match prompt_validation_budget.check(limits, incomplete) { IncompleteObservation => {}, _ => { return Err(Error.Invalid) } }
+  mut bounded := limits
+  bounded.workspace_files = 3
+  bounded.workspace_bytes = 12
+  exact := prompt_validation_resources.observe(workspace, procfs, scope.id(), scope.owner_id(), false, bounded, deadline)?
+  match prompt_validation_budget.check(bounded, exact) { WithinBudget => {}, _ => { return Err(Error.Invalid) } }
+  bounded.workspace_files = 2
+  match prompt_validation_budget.check(bounded, exact) { FileLimit => {}, _ => { return Err(Error.Invalid) } }
+  bounded.workspace_files = 3
+  bounded.workspace_bytes = 11
+  match prompt_validation_budget.check(bounded, exact) { ByteLimit => {}, _ => { return Err(Error.Invalid) } }
+  bounded.workspace_files = 1
+  match prompt_validation_resources.observe(workspace, procfs, scope.id(), scope.owner_id(), false, bounded, deadline) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  bounded.workspace_files = 3
+  bounded.workspace_bytes = 4
+  match prompt_validation_resources.observe(workspace, procfs, scope.id(), scope.owner_id(), false, bounded, deadline) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match prompt_validation_resources.observe(workspace, procfs, scope.id(), scope.owner_id(), false, limits, 0) { Err(error) => { match error { Timeout => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 6 { return Err(Error.Invalid) }
+  workspace := fs.open_directory(args[2])?
+  preflight(workspace)?
+  command := process.command("/bin/sh", ["/bin/sh", args[4], args[2], args[5]])
+  if args[1] == "Darwin" {
+    match command.start_scope() { Err(error) => { match error { Code(code) => { if code != 45 { return Err(Error.Invalid) } }, _ => { return Err(Error.Invalid) } } }, Ok(_) => { return Err(Error.Invalid) } }
+    print("validation resources smoke: invalid limits, expired deadline and Darwin ENOTSUP 45 PASS; Linux integration not exercised")
+    return Ok(())
+  }
+  if args[1] != "Linux" { return Err(Error.Invalid) }
+  procfs := fs.open_directory("/proc")?
+  missing := fs.open_directory(args[3])?
+  mut scope := command.start_scope()?
+  result := exercise(scope, workspace, procfs, missing)
+  cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+  if !cleanup.released { return Err(Error.Timeout) }
+  match cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+  result?
+  print("validation resources smoke: live scope/RSS, binary workspace, deleted aliases/visible exclusion, incomplete procfs, caps and deadline PASS")
+  return Ok(())
+}

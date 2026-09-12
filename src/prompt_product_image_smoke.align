@@ -1,0 +1,79 @@
+module prompt_product_image_smoke
+
+import prompt_product_image
+import std.fs
+import std.process
+import std.crypto
+import std.encoding
+
+fn refused(borrow root: fs.directory, name: str, digest: str, maximum: i64) -> Result<(), Error> {
+  match prompt_product_image.admit(root, name.bytes(), digest, maximum) {
+    Ok(_) => { print(name); return Err(Error.Invalid) },
+    Err(error) => match error { Invalid => {}, _ => { return Err(error) } },
+  }
+  return Ok(())
+}
+
+// Hash the returned execution authority independently through positional reads.
+fn check_image(borrow image: process.image, expected: str) -> Result<(), Error> {
+  zero: u8 := 0
+  mut chunk := [zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero, zero]
+  digest := crypto.sha256_stream()
+  mut offset := 0
+  loop {
+    count := image.read_at(offset, chunk)?
+    if count == 0 { break }
+    digest.update(chunk[0..count])
+    offset = offset + count
+  }
+  hash := digest.finish()
+  if offset != image.len() || encoding.hex_encode(hash[0..hash.len()]) != expected { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn retained_command(root_path: str, digest: str, old_path: str, renamed_path: str) -> Result<command, Error> {
+  root := fs.open_directory(root_path)?
+  image := prompt_product_image.admit(root, "product".bytes(), digest, 268435456)?
+  check_image(image, digest)?
+  refused(root, "product", digest, image.len() - 1)?
+  exact := prompt_product_image.admit(root, "product".bytes(), digest, image.len())?
+  if exact.len() != image.len() { return Err(Error.Invalid) }
+  fs.rename_no_replace(old_path, renamed_path)?
+  // A path lookup now fails, while the returned command outlives both image and root owners.
+  return process.command_image(image, ["admitted-product", "child"])
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 2 && args[1] == "child" { print("sealed child"); return Ok(()) }
+  if args.len() != 7 { return Err(Error.Invalid) }
+  root := fs.open_directory(args[1])?
+  digest := args[2]
+  refused(root, "product", "bad", 268435456)?
+  refused(root, "product", digest, -1)?
+  refused(root, "product", digest, 2305843009213693952)?
+  refused(root, "product", digest, 0)?
+  refused(root, "noexec", digest, 268435456)?
+  refused(root, "directory", digest, 268435456)?
+  refused(root, "hardlink", digest, 268435456)?
+  refused(root, "symlink", digest, 268435456)?
+  refused(root, "product", "0000000000000000000000000000000000000000000000000000000000000000", 268435456)?
+  if args[3] == "darwin" {
+    match prompt_product_image.admit(root, "product".bytes(), digest, 268435456) {
+      Ok(_) => { return Err(Error.Invalid) },
+      Err(error) => match error { Code(code) => { if code != 45 { return Err(error) } }, _ => { return Err(error) } },
+    }
+    print("product image smoke: admission negatives and native Darwin ENOTSUP 45 PASS; Linux execution not exercised")
+    return Ok(())
+  }
+  if args[3] != "linux" { return Err(Error.Invalid) }
+  // This different file's correct digest cannot authenticate the actual running product.
+  refused(root, "different", args[6], 268435456)?
+  child := retained_command(args[1], digest, args[4], args[5])?
+  child.max_capture_bytes(1024)
+  output := child.run()?
+  if output.stdout() != "sealed child\n" || output.stderr().len() != 0 { return Err(Error.Invalid) }
+  status := output.status()
+  match status.termination { Exited(code) => { if code != 0 { return Err(Error.Invalid) } }, _ => { return Err(Error.Invalid) } }
+  print("product image smoke: retained digest/current image binding, exact cap, sealed hash and execution after path removal/owner expiry PASS")
+  return Ok(())
+}

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+trap 'rm -rf "${scratch}"' EXIT
+mkdir -p "${scratch}/root/directory" "${scratch}/decoy"
+printf 'payload' >"${scratch}/root/file"
+mkfifo "${scratch}/root/fifo"
+"${compiler}" check-per-unit "${project_root}/src/prompt_retained_observation_smoke.align"
+"${compiler}" run "${project_root}/src/prompt_retained_observation_smoke.align" -- \
+  "${scratch}/root" "${scratch}/retained" "${scratch}/decoy" "$(uname -s)" >"${scratch}/actual"
+# Independent native fixture oracle; no product execution is delegated to the shell.
+printf '{"real_uid":%s,"real_gid":%s}\nretained-observation: PASS\n' "$(id -ru)" "$(id -rg)" >"${scratch}/expected"
+diff -u "${scratch}/expected" "${scratch}/actual"
+[[ "$(cat "${scratch}/retained/file")" == payload ]]
+[[ -d "${scratch}/retained/directory" ]]
+[[ "$(readlink "${scratch}/retained/link")" == file ]]
+[[ "$(readlink "${scratch}/retained/dangling")" == missing ]]
+printf 'prompt retained observation smoke: PASS (%s; Linux access positives run only on Linux)\n' "$(uname -s)"

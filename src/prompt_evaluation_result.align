@@ -1,0 +1,166 @@
+module prompt_evaluation_result
+
+import core.json
+import prompt_artifacts
+import prompt_evaluation_request
+import prompt_evaluation_inputs
+import prompt_evaluation_records
+import prompt_score
+import std.crypto
+import std.encoding
+
+fn digest(value: str) -> string {
+  bytes := crypto.sha256(value)
+  return encoding.hex_encode(bytes[0..bytes.len()])
+}
+fn reference(kind: str, path: str, id: str, sha256: str) -> prompt_artifacts.ArtifactReference {
+  return prompt_artifacts.ArtifactReference { artifact_kind: kind.clone(), path: path.clone(), artifact_id: id.clone(), content_sha256: sha256.clone() }
+}
+fn environment_eligible(borrow environment: Option<prompt_artifacts.EnvironmentIdentity>) -> bool {
+  return match environment { None => false, Some(value) => match value.core.logical_cpu_count { None => false, Some(count) => count > 0 } }
+}
+
+pub fn build(
+  borrow request: prompt_artifacts.PromptEvaluateRequest, borrow admitted: prompt_evaluation_inputs.Inputs,
+  borrow trust: prompt_artifacts.PromptVerifierTrust, complete: bool, error_code: str, detail: str,
+  preflight: prompt_artifacts.WorkspacePreflightResult, environment: Option<prompt_artifacts.EnvironmentIdentity>,
+  requests: array<prompt_artifacts.SnapshotRequest>, snapshots: array<prompt_artifacts.SnapshotResult>,
+  inputs: array<prompt_artifacts.TaskInputSnapshot>, attestations: array<prompt_artifacts.RunSnapshotAttestation>,
+  rows: array<prompt_artifacts.PromptTaskRow>,
+) -> Result<prompt_artifacts.PromptEvaluationResult, Error> {
+  if admitted.tasks.len() == 0 { return Err(Error.Invalid) }
+  experiment_id: str := match admitted.experiment.experiment_id { None => { return Err(Error.Invalid) }, Some(value) => value }
+  activation_id: str := match admitted.parent.decision_id { None => { return Err(Error.Invalid) }, Some(value) => value }
+  scope := match admitted.experiment.scope { None => { return Err(Error.Invalid) }, Some(value) => prompt_artifacts.clone_prompt_scope(value) }
+  candidate := match admitted.experiment.candidate_variant { None => { return Err(Error.Invalid) }, Some(value) => prompt_artifacts.clone_prompt_variant(value) }
+  parent := match admitted.parent.activation { None => { return Err(Error.Invalid) }, Some(value) => prompt_artifacts.clone_prompt_variant(value.effective_variant) }
+  mut task_builder: array_builder<prompt_artifacts.PromptEvaluationTask> := array_builder()
+  mut index := 0
+  loop { if index == admitted.tasks.len() { break }; task_builder.push(prompt_evaluation_records.task(admitted.tasks[index].manifest)); index = index + 1 }
+  tasks := task_builder.build()
+  mut aggregates: array_builder<prompt_artifacts.TaskAggregate> := array_builder()
+  mut reasons: array_builder<prompt_artifacts.RegressionReason> := array_builder()
+  mut status := "ERROR".clone()
+  mut eligible := false
+  mut corpus: Option<prompt_artifacts.CorpusAggregate> := None
+  if complete {
+    if error_code != "NONE" || detail.len() != 0 { return Err(Error.Invalid) }
+    summary := prompt_score.produce(rows, tasks, request.evaluation_id, request.sample_count,
+      admitted.tasks[0].generation.max_prompt_bytes, admitted.acceptance, trust, environment_eligible(environment),
+      admitted.tasks[0].control.provider_kind, aggregates, reasons)?
+    status = prompt_score.evaluation_status(summary.status).clone()
+    eligible = summary.gate_eligible
+    corpus = Some(summary.corpus)
+  }
+  mut result := prompt_artifacts.PromptEvaluationResult {
+    schema_version: 2, artifact_kind: "PROMPT_EVALUATION_RESULT".clone(), evaluation_id: Some(request.evaluation_id.clone()),
+    status: status, error_code: error_code.clone(), error: detail.clone(),
+    experiment: Some(reference("PROMPT_EXPERIMENT_RESULT", request.experiment_path, experiment_id, admitted.experiment.content_sha256)),
+    experiment_artifact: Some(prompt_evaluation_records.experiment(admitted.experiment)),
+    parent_activation: Some(reference("PROMPT_ACTIVATION_RESULT", request.parent_activation_path, activation_id, admitted.parent.content_sha256)),
+    parent_activation_artifact: Some(prompt_evaluation_records.activation(admitted.parent)),
+    scope: Some(scope), parent_variant: Some(parent), candidate_variant: Some(candidate),
+    corpus_source: Some(reference("PROMPT_EVALUATION_CORPUS", request.corpus_path, admitted.corpus.corpus_id, admitted.corpus.content_sha256)),
+    corpus: Some(prompt_evaluation_records.corpus(admitted.corpus)), tasks: tasks,
+    acceptance_policy_source: Some(reference("PROMPT_ACCEPTANCE_POLICY", request.acceptance_policy_path, admitted.acceptance.policy_id, admitted.acceptance.content_sha256)),
+    acceptance_policy: Some(prompt_evaluation_records.acceptance(admitted.acceptance)),
+    generation_policy_source: Some(reference("GENERATION_POLICY", admitted.tasks[0].manifest.generation_policy_path,
+        admitted.tasks[0].generation.generation_policy_id, admitted.tasks[0].generation.content_sha256)),
+    generation_policy: Some(prompt_evaluation_records.generation(admitted.tasks[0].generation)),
+    provider_control_source: Some(reference("EVALUATION_PROVIDER_CONTROL", admitted.tasks[0].manifest.provider_control_path,
+        admitted.tasks[0].control.provider_control_id, admitted.tasks[0].control.content_sha256)),
+    provider_control: Some(prompt_evaluation_records.control(admitted.tasks[0].control)),
+    workspace_preflight_source: Some(reference("WORKSPACE_PREFLIGHT_RESULT", request.workspace_preflight_path,
+        request.evaluation_id, preflight.content_sha256)),
+    workspace_preflight_request: Some(prompt_evaluation_records.preflight(admitted.preflight)),
+    workspace_preflight: Some(preflight), environment: environment,
+    snapshot_requests: requests, snapshot_results: snapshots, input_snapshots: inputs, snapshot_attestations: attestations,
+    trace_failure: None, sample_count: request.sample_count, gate_eligible: eligible, rows: rows,
+    task_aggregates: aggregates.build(), corpus_aggregate: corpus, serious_regression_reasons: reasons.build(), content_sha256: "".clone(),
+  }
+  canonical := match json.encode_bounded(result, 268435456) {
+    Ok(value) => value,
+    // This wire contains no floats, and the cap is a positive constant. For this admitted
+    // graph the encoder's Invalid result denotes the canonical size ceiling.
+    Err(error) => match error { Invalid => { return compact(result) }, _ => { return Err(error) } },
+  }
+  result.content_sha256 = digest(canonical)
+  return Ok(result)
+}
+
+pub fn evidence(
+  evaluation_id: str, result_sha256: str, borrow trust: prompt_artifacts.PromptVerifierTrust,
+  expected: array<prompt_artifacts.PromptExpectedInputDigest>,
+) -> Result<prompt_artifacts.PromptEvaluationEvidence, Error> {
+  mut value := prompt_artifacts.PromptEvaluationEvidence {
+    schema_version: 2, artifact_kind: "PROMPT_EVALUATION_EVIDENCE".clone(), evaluation_id: evaluation_id.clone(),
+    evaluation_result_sha256: result_sha256.clone(), trust: prompt_evaluation_records.trust(trust),
+    expected_inputs: expected, content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(value, 8388608)?
+  value.content_sha256 = digest(canonical)
+  return Ok(value)
+}
+
+fn trace_record(borrow mut stream: crypto.digest, borrow mut count: i64, kind: str, sha256: str) -> Result<(), Error> {
+  if count == 16384 { return Err(Error.Invalid) }
+  count = count + 1
+  prefix := builder(); prefix.write_int(count); prefix.write(" ")
+  stream.update(prefix.to_string()); stream.update(kind); stream.update(" "); stream.update(sha256); stream.update("\n")
+  return Ok(())
+}
+
+pub fn compact(borrow original: prompt_artifacts.PromptEvaluationResult) -> Result<prompt_artifacts.PromptEvaluationResult, Error> {
+  mut stream := crypto.sha256_stream()
+  mut count := 0
+  match original.workspace_preflight_request { None => {}, Some(value) => trace_record(stream, count, value.artifact_kind, value.content_sha256)? }
+  match original.workspace_preflight { None => {}, Some(value) => trace_record(stream, count, value.artifact_kind, value.content_sha256)? }
+  mut index := 0
+  loop { if index == original.snapshot_requests.len() { break }; trace_record(stream, count, original.snapshot_requests[index].artifact_kind, original.snapshot_requests[index].content_sha256)?; index = index + 1 }
+  index = 0
+  loop { if index == original.snapshot_results.len() { break }; trace_record(stream, count, original.snapshot_results[index].artifact_kind, original.snapshot_results[index].content_sha256)?; index = index + 1 }
+  index = 0
+  loop { if index == original.input_snapshots.len() { break }; trace_record(stream, count, original.input_snapshots[index].artifact_kind, original.input_snapshots[index].content_sha256)?; index = index + 1 }
+  index = 0
+  loop { if index == original.snapshot_attestations.len() { break }; trace_record(stream, count, original.snapshot_attestations[index].artifact_kind, original.snapshot_attestations[index].content_sha256)?; index = index + 1 }
+  trace_bytes := stream.finish()
+  mut overflow := prompt_artifacts.PromptTraceOverflow {
+    schema_version: 1, artifact_kind: "PROMPT_TRACE_OVERFLOW".clone(), attempted_invocation_count: original.snapshot_attestations.len(),
+    trace_record_count: count, trace_digest_sha256: encoding.hex_encode(trace_bytes[0..trace_bytes.len()]), content_sha256: "".clone(),
+  }
+  overflow.content_sha256 = digest(json.encode_bounded(overflow, 65536)?)
+  scope: Option<prompt_artifacts.PromptScope> := match original.scope { None => None, Some(value) => Some(prompt_artifacts.clone_prompt_scope(value)) }
+  id: Option<string> := match original.evaluation_id { None => None, Some(value) => Some(value.clone()) }
+  return empty(id, original.sample_count, "ERROR", "RESULT_TOO_LARGE",
+    "canonical evaluation result exceeds 268435456 bytes", scope, Some(overflow))
+}
+
+pub fn invalid(evaluation_id: str, sample_count: i64, code: str, detail: str) -> Result<prompt_artifacts.PromptEvaluationResult, Error> {
+  return empty(prompt_evaluation_request.safe_id(evaluation_id), sample_count, "INVALID_INPUT", code, detail, None, None)
+}
+
+fn empty(id: Option<string>, sample_count: i64, status: str, code: str, detail: str,
+  scope: Option<prompt_artifacts.PromptScope>, trace: Option<prompt_artifacts.PromptTraceOverflow>) -> Result<prompt_artifacts.PromptEvaluationResult, Error> {
+  tasks: array_builder<prompt_artifacts.PromptEvaluationTask> := array_builder()
+  requests: array_builder<prompt_artifacts.SnapshotRequest> := array_builder()
+  snapshots: array_builder<prompt_artifacts.SnapshotResult> := array_builder()
+  inputs: array_builder<prompt_artifacts.TaskInputSnapshot> := array_builder()
+  attestations: array_builder<prompt_artifacts.RunSnapshotAttestation> := array_builder()
+  rows: array_builder<prompt_artifacts.PromptTaskRow> := array_builder()
+  aggregates: array_builder<prompt_artifacts.TaskAggregate> := array_builder()
+  reasons: array_builder<prompt_artifacts.RegressionReason> := array_builder()
+  mut result := prompt_artifacts.PromptEvaluationResult {
+    schema_version: 2, artifact_kind: "PROMPT_EVALUATION_RESULT".clone(), evaluation_id: id,
+    status: status.clone(), error_code: code.clone(), error: detail.clone(),
+    experiment: None, experiment_artifact: None, parent_activation: None, parent_activation_artifact: None,
+    scope: scope, parent_variant: None, candidate_variant: None, corpus_source: None, corpus: None, tasks: tasks.build(),
+    acceptance_policy_source: None, acceptance_policy: None, generation_policy_source: None, generation_policy: None,
+    provider_control_source: None, provider_control: None, workspace_preflight_source: None, workspace_preflight_request: None,
+    workspace_preflight: None, environment: None, snapshot_requests: requests.build(), snapshot_results: snapshots.build(),
+    input_snapshots: inputs.build(), snapshot_attestations: attestations.build(), trace_failure: trace,
+    sample_count: sample_count, gate_eligible: false, rows: rows.build(), task_aggregates: aggregates.build(),
+    corpus_aggregate: None, serious_regression_reasons: reasons.build(), content_sha256: "".clone(),
+  }
+  result.content_sha256 = digest(json.encode_bounded(result, 268435456)?)
+  return Ok(result)
+}

@@ -1,0 +1,124 @@
+module prompt_git_metadata
+
+import prompt_git_config
+import prompt_source_directory
+import prompt_worktree_entry
+import std.fs
+import std.time
+
+pub Metadata {
+  repository: prompt_source_directory.Located,
+  git: prompt_source_directory.Located,
+  common: prompt_source_directory.Located,
+}
+
+fn timely(deadline: i64) -> Result<(), Error> {
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  return Ok(())
+}
+
+fn regular(borrow directory: fs.directory, name: slice<u8>, maximum: i64, deadline: i64) -> Result<prompt_worktree_entry.Observation, Error> {
+  timely(deadline)?
+  metadata := directory.metadata_at(name)?
+  if !match metadata.kind { Regular => true, _ => false } { return Err(Error.Invalid) }
+  return prompt_worktree_entry.observe_until(directory, name, maximum, deadline)
+}
+
+fn pointer(borrow entry: prompt_worktree_entry.Observation, prefix: str, base: slice<u8>, deadline: i64) -> Result<prompt_source_directory.Located, Error> {
+  if !match entry.metadata.kind { Regular => true, _ => false } { return Err(Error.Invalid) }
+  raw: slice<u8> := entry.payload
+  if raw.len() <= prefix.len() + 1 || raw[raw.len() - 1] != 10 || raw[0..prefix.len()].as_str()? != prefix { return Err(Error.Invalid) }
+  // Git strips trailing CR as well as LF. Never audit a CR-suffixed decoy directory.
+  if raw[raw.len() - 2] == 13 { return Err(Error.Invalid) }
+  mut index := prefix.len()
+  loop {
+    if index == raw.len() - 1 { break }
+    if raw[index] == 0 || raw[index] == 10 { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  return prompt_source_directory.resolve(base, raw[prefix.len()..raw.len() - 1], deadline)
+}
+
+fn same_directory(borrow located: prompt_source_directory.Located, before: fs.metadata) -> Result<(), Error> {
+  return same_owner(located.directory, before)
+}
+
+fn same_owner(borrow directory: fs.directory, before: fs.metadata) -> Result<(), Error> {
+  after := directory.metadata()?
+  if before.device != after.device || before.inode != after.inode { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn git_location(borrow directory: fs.directory, base: slice<u8>, deadline: i64) -> Result<prompt_source_directory.Located, Error> {
+  timely(deadline)?
+  metadata := directory.metadata_at(".git".bytes())?
+  match metadata.kind {
+    Directory => {
+      found := prompt_source_directory.resolve(base, ".git".bytes(), deadline)?
+      same_directory(found, metadata)?
+      return Ok(found)
+    },
+    Regular => {
+      entry := regular(directory, ".git".bytes(), 4096, deadline)?
+      return pointer(entry, "gitdir: ", base, deadline)
+    },
+    _ => { return Err(Error.Invalid) },
+  }
+}
+
+fn common_location(borrow directory: fs.directory, base: slice<u8>, deadline: i64) -> Result<prompt_source_directory.Located, Error> {
+  timely(deadline)?
+  match directory.metadata_at("commondir".bytes()) {
+    Err(error) => {
+      match error {
+        NotFound => {
+          metadata := directory.metadata()?
+          found := prompt_source_directory.resolve(base, "".bytes(), deadline)?
+          same_directory(found, metadata)?
+          return Ok(found)
+        },
+        _ => { return Err(error) },
+      }
+    },
+    Ok(metadata) => { if !match metadata.kind { Regular => true, _ => false } { return Err(Error.Invalid) } },
+  }
+  entry := regular(directory, "commondir".bytes(), 4096, deadline)?
+  return pointer(entry, "", base, deadline)
+}
+
+fn config_bytes(borrow entry: prompt_worktree_entry.Observation) -> Result<(), Error> {
+  if !match entry.metadata.kind { Regular => true, _ => false } { return Err(Error.Invalid) }
+  raw: slice<u8> := entry.payload
+  return prompt_git_config.check(raw)
+}
+
+fn config(borrow directory: fs.directory, name: slice<u8>, deadline: i64) -> Result<(), Error> {
+  timely(deadline)?
+  match directory.metadata_at(name) {
+    Err(error) => { match error { NotFound => { return Ok(()) }, _ => { return Err(error) } } },
+    Ok(metadata) => { if !match metadata.kind { Regular => true, _ => false } { return Err(Error.Invalid) } },
+  }
+  entry := regular(directory, name, 4194304, deadline)?
+  return config_bytes(entry)
+}
+
+fn absent(borrow directory: fs.directory, name: slice<u8>) -> Result<(), Error> {
+  match directory.metadata_at(name) {
+    Err(error) => { match error { NotFound => { return Ok(()) }, _ => { return Err(error) } } },
+    Ok(_) => { return Err(Error.Invalid) },
+  }
+}
+
+pub fn admit(repository_path: str, deadline: i64) -> Result<Metadata, Error> {
+  if !repository_path.starts_with("/") { return Err(Error.Invalid) }
+  repository := prompt_source_directory.resolve("/".bytes(), repository_path.bytes(), deadline)?
+  git := git_location(repository.directory, repository.path, deadline)?
+  common := common_location(git.directory, git.path, deadline)?
+  config(common.directory, "config".bytes(), deadline)?
+  config(git.directory, "config.worktree".bytes(), deadline)?
+  absent(common.directory, "refs/replace".bytes())?
+  absent(common.directory, "info/grafts".bytes())?
+  absent(common.directory, "objects/info/alternates".bytes())?
+  timely(deadline)?
+  return Ok(Metadata { repository: repository, git: git, common: common })
+}

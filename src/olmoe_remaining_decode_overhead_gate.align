@@ -439,7 +439,7 @@ fn run(
       released_before_owner_scope_end: generated.outcome.released_before_owner_scope_end,
     },
   }
-  encoded := json.encode(record)
+  encoded := json.encode(record)?
   if !detailed {
     print(encoded)
     return Ok(())
@@ -459,7 +459,7 @@ fn run(
     other_ns: pass_residual - direct_subtotal,
   }
   encoded_view: str := encoded
-  detail_json := json.encode(detail)
+  detail_json := json.encode(detail)?
   detail_view: str := detail_json
   document := builder()
   document.write(encoded_view[0..encoded_view.len() - 1])
@@ -477,7 +477,7 @@ fn run(
       layer_step_accounting_ns: generated.outcome.remaining_decode_layer_step_accounting_ns,
       other_ns: detail.other_ns - other_subtotal,
     }
-    other_json := json.encode(other)
+    other_json := json.encode(other)?
     other_view: str := other_json
     document.write(",\"pass_other\":")
     document.write(other_view)
@@ -497,7 +497,7 @@ fn run(
       expert_ns: generated.outcome.remaining_decode_expert_compute_ns,
       head_ns: generated.outcome.remaining_decode_head_compute_ns,
     }
-    compute_json := json.encode(compute)
+    compute_json := json.encode(compute)?
     compute_view: str := compute_json
     document.write(",\"decode_compute\":")
     document.write(compute_view)
@@ -519,7 +519,7 @@ fn run(
       cache_to_claim_copy_ns: generated.outcome.remaining_decode_claim_cache_to_claim_copy_ns,
       other_ns: generated.outcome.remaining_decode_claim_other_io_ns,
     }
-    claim_json := json.encode(claim_io)
+    claim_json := json.encode(claim_io)?
     claim_view: str := claim_json
     document.write(",\"claim_io\":")
     document.write(claim_view)
@@ -542,7 +542,7 @@ fn run(
       priming_ns: priming,
       native_staging_ns: native_staging,
     }
-    upload_json := json.encode(upload)
+    upload_json := json.encode(upload)?
     upload_view: str := upload_json
     document.write(",\"plane_upload\":")
     document.write(upload_view)
@@ -558,7 +558,7 @@ fn run(
       attention_and_residual_ns: generated.outcome.remaining_decode_phase_a_attention_ns,
       router_ns: generated.outcome.remaining_decode_phase_a_router_ns,
     }
-    operation_json := json.encode(operations)
+    operation_json := json.encode(operations)?
     operation_view: str := operation_json
     document.write(",\"phase_a_operations\":")
     document.write(operation_view)
@@ -576,7 +576,7 @@ fn run(
       attention_core_ns: generated.outcome.remaining_decode_attention_core_ns,
       output_residual_ns: generated.outcome.remaining_decode_attention_output_residual_ns,
     }
-    attention_json := json.encode(attention)
+    attention_json := json.encode(attention)?
     attention_view: str := attention_json
     document.write(",\"attention_operations\":")
     document.write(attention_view)
@@ -600,7 +600,7 @@ fn run(
       value_matmul_ns: generated.outcome.remaining_decode_attention_value_matmul_ns,
       output_packing_ns: generated.outcome.remaining_decode_attention_output_packing_ns,
     }
-    core_operation_json := json.encode(core_operations)
+    core_operation_json := json.encode(core_operations)?
     core_operation_view: str := core_operation_json
     document.write(",\"attention_core_operations\":")
     document.write(core_operation_view)
@@ -628,7 +628,7 @@ fn run(
       expert_reduction_ns: generated.outcome.remaining_decode_expert_reduction_ns,
       residual_ns: generated.outcome.remaining_decode_expert_residual_ns,
     }
-    expert_operation_json := json.encode(expert_operations)
+    expert_operation_json := json.encode(expert_operations)?
     expert_operation_view: str := expert_operation_json
     document.write(",\"expert_phase_b_operations\":")
     document.write(expert_operation_view)

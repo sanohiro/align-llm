@@ -1,0 +1,114 @@
+module prompt_file_blocks_smoke
+
+import prompt_file_blocks
+
+Case { name: str, source: str, status: i64, count: i64, path: str, body: str }
+
+fn status_code(status: prompt_file_blocks.ParseStatus) -> i64 = match status {
+  Complete => 0, HeaderWithoutBlock => 1, UnterminatedBlock => 2, TooManyBlocks => 3,
+}
+
+fn single(source: str, path: str, body: str) -> Result<(), Error> {
+  parsed := prompt_file_blocks.parse(source)
+  if status_code(parsed.status) != 0 || parsed.blocks.len() != 1 { return Err(Error.Invalid) }
+  if parsed.blocks[0].path != path || parsed.blocks[0].body != body { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn repeated(count: i64, tail: str) -> string {
+  source := builder()
+  mut index := 0
+  loop {
+    if index == count { break }
+    source.write("FILE: file.txt\n```\nbody\n```\n")
+    index = index + 1
+  }
+  source.write(tail)
+  return source.to_string()
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  cases := [
+    Case { name: "empty", source: "", status: 0, count: 0, path: "", body: "" },
+    Case { name: "prose", source: "No edits.\n```\nnot a file\n```", status: 0, count: 0, path: "", body: "" },
+    Case { name: "single", source: "Prose\nFILE: src/a.py\n```python\nvalue = 1\n```\nAfter", status: 0, count: 1, path: "src/a.py", body: "value = 1\n" },
+    Case { name: "decorated", source: " ** FILE: `\"'src/a.py'\"` ** \nignored\n```lang\nbody\n```", status: 0, count: 1, path: "src/a.py", body: "body\n" },
+    Case { name: "strip-order", source: "FILE: \" ' file ' \"\n```\n```", status: 0, count: 1, path: " ' file ' ", body: "" },
+    Case { name: "empty-path", source: "FILE: ``\n```\n```", status: 0, count: 1, path: "", body: "" },
+    Case { name: "nested", source: "FILE: x\n````md\n```\nnested\n```\n`````", status: 0, count: 1, path: "x", body: "```\nnested\n```\n" },
+    Case { name: "closing-suffix", source: "FILE: x\n```\n```tag\n```", status: 0, count: 1, path: "x", body: "```tag\n" },
+    Case { name: "crlf", source: "FILE: x\r\n```\r\nbody\r\n```\r\n", status: 0, count: 1, path: "x", body: "body\n" },
+    Case { name: "one-cr", source: "FILE: x\n```\na\r\r\n```", status: 0, count: 1, path: "x", body: "a\r\n" },
+    Case { name: "body-separators", source: "FILE: x\n```\na\u{000c}b\u{0085}c\u{2028}d\u{2029}e\n```", status: 0, count: 1, path: "x", body: "a\u{000c}b\u{0085}c\u{2028}d\u{2029}e\n" },
+    Case { name: "missing", source: "FILE: x", status: 1, count: 0, path: "", body: "" },
+    Case { name: "next-header", source: "FILE: x\nFILE: y\n```\nbody\n```", status: 1, count: 0, path: "", body: "" },
+    Case { name: "truncated", source: "FILE: x\n```\nbody\n", status: 2, count: 0, path: "", body: "" },
+    Case { name: "short-opener", source: "FILE: x\n``\nbody", status: 1, count: 0, path: "", body: "" },
+    Case { name: "header-in-body", source: "FILE: x\n```\nFILE: y\n```", status: 0, count: 1, path: "x", body: "FILE: y\n" },
+    Case { name: "nonwhite-bom", source: "\u{feff}FILE: x\n```\nbody\n```", status: 0, count: 0, path: "", body: "" },
+    Case { name: "nonwhite-zero-width", source: "\u{200b}FILE: x\n```\nbody\n```", status: 0, count: 0, path: "", body: "" },
+  ]
+  mut index := 0
+  loop {
+    if index == cases.len() { break }
+    row := cases[index]
+    parsed := prompt_file_blocks.parse(row.source)
+    if status_code(parsed.status) != row.status || parsed.blocks.len() != row.count {
+      print(row.name)
+      return Err(Error.Invalid)
+    }
+    if row.count == 1 {
+      if parsed.blocks[0].path != row.path || parsed.blocks[0].body != row.body {
+        print(row.name)
+        return Err(Error.Invalid)
+      }
+    }
+    index = index + 1
+  }
+
+  // LF itself is a line delimiter, tested above; every other historical strip character
+  // must be accepted around both header and fence without stripping body text.
+  spaces := ["\t", "\u{000b}", "\u{000c}", "\r", "\u{001c}", "\u{001d}", "\u{001e}", "\u{001f}", " ", "\u{0085}", "\u{00a0}", "\u{1680}", "\u{2000}", "\u{2001}", "\u{2002}", "\u{2003}", "\u{2004}", "\u{2005}", "\u{2006}", "\u{2007}", "\u{2008}", "\u{2009}", "\u{200a}", "\u{2028}", "\u{2029}", "\u{202f}", "\u{205f}", "\u{3000}"]
+  index = 0
+  loop {
+    if index == spaces.len() { break }
+    space := spaces[index]
+    source := builder()
+    source.write(space)
+    source.write("FILE: x")
+    source.write(space)
+    source.write("\n")
+    source.write(space)
+    source.write("```lang")
+    source.write(space)
+    source.write("\nbody\n")
+    source.write(space)
+    source.write("```")
+    source.write(space)
+    single(source.to_string(), "x", "body\n")?
+    index = index + 1
+  }
+
+  // Returned paths/bodies survive destruction of the completion owner and retain source order.
+  owned := {
+    source := "FILE: z\n```\nlast\n```\nFILE: a\n```\nfirst\n```".clone()
+    prompt_file_blocks.parse(source)
+  }
+  if status_code(owned.status) != 0 || owned.blocks.len() != 2 { return Err(Error.Invalid) }
+  if owned.blocks[0].path != "z" || owned.blocks[0].body != "last\n"
+    || owned.blocks[1].path != "a" || owned.blocks[1].body != "first\n" { return Err(Error.Invalid) }
+
+  full := prompt_file_blocks.parse(repeated(32, ""))
+  if status_code(full.status) != 0 || full.blocks.len() != 32 { return Err(Error.Invalid) }
+  excess := prompt_file_blocks.parse(repeated(33, ""))
+  if status_code(excess.status) != 3 || excess.blocks.len() != 0 { return Err(Error.Invalid) }
+  late_header := prompt_file_blocks.parse(repeated(1, "FILE: missing"))
+  if status_code(late_header.status) != 1 || late_header.blocks.len() != 0 { return Err(Error.Invalid) }
+  late_truncated := prompt_file_blocks.parse(repeated(1, "FILE: broken\n```\npartial"))
+  if status_code(late_truncated.status) != 2 || late_truncated.blocks.len() != 0 { return Err(Error.Invalid) }
+  // Grammar failure on an unfinished 33rd block precedes the terminated-block count limit.
+  excess_truncated := prompt_file_blocks.parse(repeated(32, "FILE: broken\n```\npartial"))
+  if status_code(excess_truncated.status) != 2 || excess_truncated.blocks.len() != 0 { return Err(Error.Invalid) }
+  print("prompt file blocks: 18 grammar, 28 whitespace, ownership and 5 boundary cases passed")
+  return Ok(())
+}

@@ -1,6 +1,7 @@
 module gguf
 
 import core.json
+import std.process
 import std.fs
 
 // R0-GGUF-INSPECT (`docs/specs/r0-gguf-inspection.md`). Read-only GGUF header, metadata, and
@@ -224,7 +225,7 @@ fn no_fault() -> Fault = fault("", -1)
 // (`docs/specs/r1-qwen-model-ir.md` section 2.5, section 2.7).
 pub fn json_string(value: str) -> string {
   boxed := TextBox { v: value }
-  encoded := json.encode(boxed)
+  encoded := match json.encode(boxed) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
   return encoded[5..encoded.len() - 1].clone()
 }
 

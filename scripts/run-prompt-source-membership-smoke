@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+complete=0
+trap 'if [[ "${complete}" == 1 ]]; then rm -rf "${scratch}"; else printf "membership fixture preserved: %s\n" "${scratch}" >&2; fi' EXIT
+"${compiler}" check-per-unit "${project_root}/src/prompt_source_membership_smoke.align"
+(cd "${scratch}" && "${compiler}" build "${project_root}/src/prompt_source_membership_smoke.align")
+owner="${scratch}/prompt_source_membership_smoke"
+sha() { shasum -a 256 < "$1" | cut -d ' ' -f 1; }
+raw=rawx
+if [[ "$(uname -s)" == Linux ]]; then raw=$'raw\377'; fi
+for mode in base project-hash corpus-hash project-size corpus-size project-mode corpus-mode project-missing corpus-missing owned; do
+  fixture="${scratch}/${mode}"
+  mkdir -p "${fixture}/project" "${fixture}/corpus" "${fixture}/manifests"
+  for root in "${fixture}/project" "${fixture}/corpus"; do
+    for name in a $'line\nname' middle "${raw}" z 界; do printf abc > "${root}/${name}"; done
+    : > "${root}/empty"
+    chmod 644 "${root}/"*
+    chmod 755 "${root}/middle"
+    ln -s a "${root}/symlink"
+    printf abc > "${root}/hardlink"
+    ln "${root}/hardlink" "${root}/hardlink-peer"
+    mkfifo "${root}/fifo"
+    mkdir "${root}/directory"
+  done
+  hash="$(sha "${fixture}/corpus/a")"
+  empty="$(sha "${fixture}/corpus/empty")"
+  {
+    printf 'ALIGN-LLM-CORPUS-FILE-SET-V1\n7\n'
+    printf '100644 1 a\0F %s\n' "${hash}"
+    printf '100644 5 empty\0F %s\n' "${empty}"
+    printf '100644 9 line\nname\0F %s\n' "${hash}"
+    printf '100755 6 middle\0F %s\n' "${hash}"
+    printf '100644 4 %s\0F %s\n' "${raw}" "${hash}"
+    printf '100644 1 z\0F %s\n' "${hash}"
+    printf '100644 3 界\0F %s\n' "${hash}"
+  } > "${fixture}/manifests/manifest"
+  manifest="$(sha "${fixture}/manifests/manifest")"
+  "${owner}" "${fixture}/project" "${fixture}/corpus" "${fixture}/manifests" "${manifest}" "${hash}" "${empty}" "${mode}"
+  if [[ "${mode}" == owned ]]; then test ! -e "${fixture}/manifests/manifest"; fi
+done
+complete=1
+printf 'source membership: %s real roots + independent manifest oracle PASS\n' "$(uname -s)"

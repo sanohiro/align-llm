@@ -1,0 +1,42 @@
+module prompt_edit_plan_smoke
+
+import prompt_artifacts
+import prompt_edit_plan
+import std.fs
+import std.io
+import std.time
+
+fn redacted(borrow block: prompt_artifacts.EditSetBlock) -> bool {
+  return match block.body_text { None => false, Some(text) => text == "new [REDACTED]\n" }
+}
+fn refused(borrow root: fs.directory, text: str, expected: str) -> Result<(), Error> {
+  mut evidence: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+  plan := prompt_edit_plan.build(root, text, ["a", "b", "link", "nested/c"], "secret", evidence, time.instant() + 10000000000)?
+  if plan.refusal != expected || plan.patch.len() != 0 { return Err(Error.Invalid) }
+  if expected == "UNCHANGED_FILES" {
+    blocks := evidence.build()
+    if !plan.include_edits || blocks.len() != 1 || plan.total_edit_bytes != 4 { return Err(Error.Invalid) }
+  } else if plan.include_edits { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 { return Err(Error.Invalid) }
+  root := fs.open_directory(args[1])?
+  mut evidence: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+  plan := prompt_edit_plan.build(root, "FILE: b\n```\nnew secret\n```\nFILE: ./a\n```\nchanged\n```", ["a", "b"], "secret", evidence, time.instant() + 10000000000)?
+  if plan.refusal != "NONE" || !plan.include_edits || plan.total_edit_bytes != 23 { return Err(Error.Invalid) }
+  blocks := evidence.build()
+  if blocks.len() != 2 || blocks[0].path != "a" || blocks[1].path != "b" { return Err(Error.Invalid) }
+  if !redacted(blocks[1]) { return Err(Error.Invalid) }
+  io.stdout.write(plan.patch)?
+  io.stdout.flush()?
+  refused(root, "FILE: a\n```\nold\n```", "UNCHANGED_FILES")?
+  refused(root, "plain prose", "NO_FILE_BLOCK")?
+  refused(root, "FILE: a\n```\nnew\n```\nFILE: ../escape\n```\nnew\n```", "PATH_NOT_EDITABLE")?
+  refused(root, "FILE: a\n```\nnew\n```\nFILE: a\n```\nnew\n```", "DUPLICATE_PATH")?
+  refused(root, "FILE: link\n```\nnew\n```", "PATH_ESCAPES_SOURCE")?
+  mut expired: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+  match prompt_edit_plan.build(root, "", ["a"], "", expired, 0) { Err(Timeout) => {}, _ => { return Err(Error.Invalid) } }
+  return Ok(())
+}

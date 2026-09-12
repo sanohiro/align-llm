@@ -1,0 +1,86 @@
+module prompt_declared_source_smoke
+
+import prompt_declared_source
+import prompt_artifacts
+import std.fs
+import std.time
+
+fn expectation(path: str, kind: str, digest: str) -> prompt_artifacts.ArtifactExpectation {
+  return prompt_artifacts.ArtifactExpectation { path: path.clone(), kind: kind.clone(), expected_sha256: digest.clone() }
+}
+
+fn owned(root_path: str, file_hash: str, tree_hash: str) -> Result<prompt_declared_source.Expansion, Error> {
+  root := fs.open_directory(root_path)?
+  mut items: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  items.push(expectation("a", "FILE", file_hash))
+  items.push(expectation("tree", "TREE", tree_hash))
+  items.push(expectation("a", "FILE", file_hash))
+  values := items.build()
+  return prompt_declared_source.expand(root, values, time.instant() + 10000000000)
+}
+
+fn refused(borrow root: fs.directory, values: slice<prompt_artifacts.ArtifactExpectation>, deadline: i64) -> Result<(), Error> {
+  match prompt_declared_source.expand(root, values, deadline) { Ok(_) => { return Err(Error.Invalid) }, Err(_) => {} }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 8 { return Err(Error.Invalid) }
+  expansion := owned(args[1], args[2], args[3])?
+  files: slice<prompt_artifacts.ArtifactDigest> := expansion.files
+  if expansion.entry_count != 5 || expansion.byte_count != 8 || files.len() != 3 || files[0].path != "a" || files[1].path != "tree/b" || files[2].path != "a" || files[1].mode != "100755" || files[0].sha256 != args[7] { return Err(Error.Invalid) }
+  root := fs.open_directory(args[1])?
+  mut repeated: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  mut index := 0
+  loop {
+    if index == 128 { break }
+    repeated.push(expectation("empty", "FILE", args[4]))
+    index = index + 1
+  }
+  exact := repeated.build()
+  counts := prompt_declared_source.expand(root, exact, time.instant() + 10000000000)?
+  if counts.entry_count != 128 || counts.byte_count != 0 { return Err(Error.Invalid) }
+  mut repeated_over: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  index = 0
+  loop {
+    if index == 129 { break }
+    repeated_over.push(expectation("empty", "FILE", args[4]))
+    index = index + 1
+  }
+  over := repeated_over.build()
+  refused(root, over, time.instant() + 10000000000)?
+  mut large: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  large.push(expectation("big", "FILE", args[5]))
+  large_values := large.build()
+  bytes := prompt_declared_source.expand(root, large_values, time.instant() + 10000000000)?
+  if bytes.byte_count != 2097152 { return Err(Error.Invalid) }
+  mut large_over: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  large_over.push(expectation("big", "FILE", args[5]))
+  large_over.push(expectation("a", "FILE", args[2]))
+  too_large := large_over.build()
+  refused(root, too_large, time.instant() + 10000000000)?
+  mut tree: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  tree.push(expectation("many", "TREE", args[6]))
+  tree_values := tree.build()
+  directories := prompt_declared_source.expand(root, tree_values, time.instant() + 10000000000)?
+  if directories.entry_count != 128 || directories.byte_count != 0 { return Err(Error.Invalid) }
+  mut tree_extra: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  tree_extra.push(expectation("many", "TREE", args[6]))
+  tree_extra.push(expectation("empty", "FILE", args[4]))
+  tree_over := tree_extra.build()
+  refused(root, tree_over, time.instant() + 10000000000)?
+  names := ["a", "tree", "missing", "symlink", "hardlink", "fifo", "../a"]
+  index = 0
+  loop {
+    if index == names.len() { break }
+    mut invalid: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+    invalid.push(expectation("a", "FILE", args[2]))
+    invalid.push(expectation(names[index], if index == 1 { "TREE" } else { "FILE" }, "0000000000000000000000000000000000000000000000000000000000000000"))
+    values := invalid.build()
+    refused(root, values, time.instant() + 10000000000)?
+    index = index + 1
+  }
+  refused(root, exact, 0)?
+  print("prompt declared source smoke passed: mixed/overlap ownership, exact/over entry and byte caps, source refusals")
+  return Ok(())
+}

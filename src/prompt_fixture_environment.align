@@ -1,0 +1,53 @@
+module prompt_fixture_environment
+
+import prompt_command
+
+fn no_nul(value: str) -> bool {
+  mut index := 0
+  loop {
+    if index == value.len() { break }
+    if value.bytes()[index] == 0 { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn add(borrow mut output: array_builder<prompt_command.Environment>, name: str, value: str) {
+  output.push(prompt_command.Environment { name: name.clone(), value: value.clone() })
+}
+
+pub fn values(fresh: bool, library_path: str, ld_library_path: str, pkg_config_path: str, validation: bool) -> Result<array<prompt_command.Environment>, Error> {
+  if fresh && (!no_nul(library_path) || !no_nul(ld_library_path) || !no_nul(pkg_config_path)) { return Err(Error.Invalid) }
+  mut output: array_builder<prompt_command.Environment> := array_builder()
+  add(output, "HOME", if fresh { "/nonexistent" } else { "/tmp/home" })
+  add(output, "PATH", if fresh { "/tools" } else { "/usr/bin:/bin" })
+  add(output, "TMPDIR", if fresh && !validation { "/target/tmp" } else { "/tmp" })
+  if fresh {
+    add(output, "PYTHONHOME", "/usr")
+    add(output, "PYTHONNOUSERSITE", "1")
+    add(output, "PYTHONDONTWRITEBYTECODE", "1")
+    add(output, "LIBRARY_PATH", library_path)
+    add(output, "LD_LIBRARY_PATH", ld_library_path)
+    add(output, "PKG_CONFIG_PATH", pkg_config_path)
+  }
+  add(output, "GIT_AUTHOR_NAME", "align-llm fixture")
+  add(output, "GIT_AUTHOR_EMAIL", "fixture@align-llm.invalid")
+  add(output, "GIT_AUTHOR_DATE", "2026-01-01T00:00:00Z")
+  add(output, "GIT_COMMITTER_NAME", "align-llm fixture")
+  add(output, "GIT_COMMITTER_EMAIL", "fixture@align-llm.invalid")
+  add(output, "GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
+  add(output, "GIT_CONFIG_NOSYSTEM", "1")
+  add(output, "GIT_ATTR_NOSYSTEM", "1")
+  add(output, "GIT_CONFIG_GLOBAL", "/dev/null")
+  add(output, "GIT_NO_REPLACE_OBJECTS", "1")
+  add(output, "LC_ALL", "C")
+  if validation {
+    if fresh {
+      add(output, "ALIGNC_CACHE", "off")
+    } else {
+      add(output, "PYTHONDONTWRITEBYTECODE", "1")
+      add(output, "PYTHONNOUSERSITE", "1")
+    }
+  }
+  return Ok(output.build())
+}

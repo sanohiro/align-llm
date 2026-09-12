@@ -1,0 +1,115 @@
+module prompt_repair_template
+
+import core.json
+import std.crypto
+import std.encoding
+
+pub Profile { Diagnostics, EditSet, Policy }
+
+pub Headers {
+  STATUS: string,
+  POLICY: Option<string>,
+  EDITSET: Option<string>,
+  SUMMARY: string,
+  STDOUT: string,
+  STDERR: string,
+}
+
+pub Template {
+  schema_version: i64,
+  artifact_kind: string,
+  template_id: string,
+  preamble_text: string,
+  section_headers: Headers,
+  closing_text: string,
+  content_sha256: string,
+}
+
+fn text_valid(value: str, maximum: i64) -> bool {
+  if value.len() == 0 || value.len() > maximum { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { break }
+    if value.bytes()[index] == 0 { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn identifier_valid(value: str) -> bool {
+  if value.len() == 0 || value.len() > 128 { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { break }
+    byte := value.bytes()[index]
+    if byte < 32 || byte > 126 { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn keys_equal(document: json.doc, expected: slice<str>) -> bool {
+  match document.kind() { Object => {}, _ => { return false } }
+  if document.len() != expected.len() { return false }
+  mut index := 0
+  loop {
+    if index == expected.len() { break }
+    key := document.key(index) else { return false }
+    if key != expected[index] { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn optional_header_valid(borrow value: Option<string>, required: bool) -> bool {
+  return match value { None => !required, Some(text) => required && text_valid(text, 256) }
+}
+
+// Validate the existing ordered template wire and its own canonical digest. The caller
+// independently binds source bytes to the task's declared file digest and corpus membership.
+pub fn decode(source: str, profile: Profile) -> Result<Template, Error> {
+  arena {
+    document := json.doc(source)?
+    if !keys_equal(document, ["schema_version", "artifact_kind", "template_id", "preamble_text", "section_headers", "closing_text", "content_sha256"]) {
+      return Err(Error.Invalid)
+    }
+    headers := document.get("section_headers")
+    valid := match profile {
+      Diagnostics => keys_equal(headers, ["STATUS", "SUMMARY", "STDOUT", "STDERR"]),
+      EditSet => keys_equal(headers, ["STATUS", "EDITSET", "SUMMARY", "STDOUT", "STDERR"]),
+      Policy => keys_equal(headers, ["STATUS", "POLICY", "EDITSET", "SUMMARY", "STDOUT", "STDERR"]),
+    }
+    if !valid { return Err(Error.Invalid) }
+  }
+  mut value: Template := json.decode(source)?
+  if value.schema_version != 1 || value.artifact_kind != "REPAIR_PROMPT_TEMPLATE" ||
+  !identifier_valid(value.template_id) || !text_valid(value.preamble_text, 16384) ||
+  !text_valid(value.closing_text, 16384) || !text_valid(value.section_headers.STATUS, 256) ||
+  !text_valid(value.section_headers.SUMMARY, 256) || !text_valid(value.section_headers.STDOUT, 256) ||
+  !text_valid(value.section_headers.STDERR, 256) ||
+  !optional_header_valid(value.section_headers.POLICY, match profile { Policy => true, _ => false }) ||
+  !optional_header_valid(value.section_headers.EDITSET, match profile { Diagnostics => false, _ => true }) {
+    return Err(Error.Invalid)
+  }
+  claimed := value.content_sha256.clone()
+  value.content_sha256 = "".clone()
+  canonical := json.encode_bounded(value, 2097152)?
+  digest := crypto.sha256(canonical)
+  if encoding.hex_encode(digest[0..digest.len()]) != claimed { return Err(Error.Invalid) }
+  value.content_sha256 = claimed
+  return Ok(value)
+}
+
+fn header_bytes(borrow value: Option<string>) -> i64 {
+  return match value { None => 0, Some(text) => text.len() + 3 }
+}
+
+// The sealed template must fit its declared fixed text, every header, and 128-byte STATUS
+// allowance before evaluation starts. Actual assembly later retains the original base prompt.
+pub fn fits_policy(borrow value: Template, maximum_bytes: i64) -> bool {
+  fixed := value.preamble_text.len() + value.closing_text.len() +
+  value.section_headers.STATUS.len() + value.section_headers.SUMMARY.len() +
+  value.section_headers.STDOUT.len() + value.section_headers.STDERR.len() + 12 +
+  header_bytes(value.section_headers.POLICY) + header_bytes(value.section_headers.EDITSET)
+  return maximum_bytes >= fixed + 128
+}

@@ -1,0 +1,111 @@
+module prompt_source_git
+
+import prompt_capture
+import prompt_source_command
+import prompt_fixture_setup
+import prompt_git_metadata
+import prompt_task_supervisor
+import prompt_validation_budget
+import std.fs
+import std.process
+import std.time
+
+pub Observation { revision: string, verified: bool }
+pub Attempt { scope: process.child_scope, report: Option<prompt_task_supervisor.Report>, error: Option<Error> }
+pub Readout { Observed(Observation), Stopped(Attempt) }
+
+fn revision(value: str) -> bool {
+  if value.len() != 40 && value.len() != 64 { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { return true }
+    byte := value.bytes()[index]
+    if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return false }
+    index = index + 1
+  }
+}
+
+fn text(raw: slice<u8>) -> Result<string, Error> = Ok(raw.as_str()?.clone())
+
+fn same(borrow left: fs.directory, borrow right: fs.directory) -> Result<(), Error> {
+  before := left.metadata()?
+  after := right.metadata()?
+  if before.device != after.device || before.inode != after.inode { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn readmit(borrow original: prompt_git_metadata.Metadata, path: str, deadline: i64) -> Result<(), Error> {
+  checked := prompt_git_metadata.admit(path, deadline)?
+  same(original.repository.directory, checked.repository.directory)?
+  same(original.git.directory, checked.git.directory)?
+  return same(original.common.directory, checked.common.directory)
+}
+
+fn command(borrow image: process.image, path: str, operation: i64) -> Result<command, Error> {
+  mut arguments: array_builder<string> := array_builder()
+  if operation == 0 {
+    arguments.push("for-each-ref".clone())
+    arguments.push("--format=%(refname)%00".clone())
+    arguments.push("refs/replace/".clone())
+  } else if operation == 1 {
+    arguments.push("rev-parse".clone())
+    arguments.push("--verify".clone())
+    arguments.push("HEAD".clone())
+  } else {
+    arguments.push("status".clone())
+    arguments.push("--porcelain=v1".clone())
+    arguments.push("-z".clone())
+    arguments.push("--untracked-files=all".clone())
+  }
+  return prompt_source_command.prepare(image, path, arguments.build())
+}
+
+// Caller excludes source writers. Re-admission detects observed replacement;
+// the native cwd remains an explicit path, not a retained-directory binding.
+pub fn observe(
+  borrow image: process.image,
+  borrow metadata: prompt_git_metadata.Metadata,
+  expected: str,
+  borrow mut signals: process.signal_subscription,
+  borrow procfs: fs.directory,
+  deadline: i64,
+) -> Result<Readout, Error> {
+  if !revision(expected) { return Err(Error.Invalid) }
+  path := text(metadata.repository.path)?
+  readmit(metadata, path, deadline)?
+  pattern := prompt_capture.pattern("", 262144)?
+  mut observed := "".clone()
+  mut clean := false
+  mut operation := 0
+  loop {
+    if operation == 3 { break }
+    now := time.instant()
+    if now >= deadline { return Err(Error.Timeout) }
+    local := if now > 9223372036854775807 - 10000000000 { deadline } else { now + 10000000000 }
+    query := command(image, path, operation)?
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    mut scope := query.start_scope()?
+    result := prompt_task_supervisor.run(scope, signals, metadata.repository.directory, procfs, pattern,
+      prompt_task_supervisor.Config { deadline: if local < deadline { local } else { deadline }, resources: false, limits: prompt_validation_budget.defaults() })
+    report := match result {
+      Ok(value) => value,
+      Err(error) => { return Ok(Readout.Stopped(Attempt { scope: scope, report: None, error: Some(error) })) },
+    }
+    if !prompt_fixture_setup.accepted(report) { return Ok(Readout.Stopped(Attempt { scope: scope, report: Some(report), error: None })) }
+    if operation == 0 {
+      if report.stdout.len() != 0 { return Err(Error.Invalid) }
+    } else if operation == 1 {
+      raw: slice<u8> := report.stdout
+      if (raw.len() != 41 && raw.len() != 65) || raw[raw.len() - 1] != 10 { return Err(Error.Invalid) }
+      head := raw[0..raw.len() - 1].as_str()?
+      if !revision(head) { return Err(Error.Invalid) }
+      observed = head.clone()
+    } else {
+      clean = report.stdout.len() == 0
+    }
+    operation = operation + 1
+  }
+  readmit(metadata, path, deadline)?
+  matches := observed == expected && clean
+  return Ok(Readout.Observed(Observation { revision: observed, verified: matches }))
+}

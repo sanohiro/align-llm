@@ -1,0 +1,102 @@
+module product_cutover_adoption_smoke
+
+import core.json
+import std.fs
+import std.process
+import std.time
+
+OptionalCommand { selected: Option<command> }
+Record { text: string }
+OptionalRecord { selected: Option<Record> }
+MovedRecord { value: Option<Record>, digest: Option<string> }
+Rows { values: array<Record> }
+
+fn start(borrow value: OptionalCommand) -> Result<process.child_scope, Error> {
+  return match value.selected { None => Err(Error.Invalid), Some(prepared) => prepared.start_scope() }
+}
+
+fn command_owner() -> OptionalCommand {
+  name := "/bin/true".clone()
+  return OptionalCommand { selected: Some(process.command(name, ["true"])) }
+}
+
+fn finish(borrow value: OptionalCommand) -> Result<(), Error> {
+  mut scope := start(value)?
+  deadline := time.instant() + 5000000000
+  loop {
+    scope.reap(16)?
+    if scope.release()? { return Ok(()) }
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+  }
+}
+
+fn encode(borrow value: OptionalRecord, limit: i64) -> Result<string, Error> {
+  return match value.selected { None => Err(Error.Invalid), Some(record) => json.encode_bounded(record, limit) }
+}
+
+fn independent_json() -> Result<string, Error> {
+  value := OptionalRecord { selected: Some(Record { text: "owned".clone() }) }
+  none := OptionalRecord { selected: None }
+  if !match encode(none, 16) { Err(_) => true, Ok(_) => false } { return Err(Error.Invalid) }
+  if !match encode(value, 15) { Err(_) => true, Ok(_) => false } { return Err(Error.Invalid) }
+  return encode(value, 16)
+}
+
+fn move_order() -> MovedRecord {
+  value := Record { text: "owned".clone() }
+  return MovedRecord { digest: Some(value.text.clone()), value: Some(value) }
+}
+
+fn root_rows(count: i64) -> Result<string, Error> {
+  mut builder_rows: array_builder<Record> := array_builder()
+  mut index := 0
+  loop {
+    if index == count { break }
+    builder_rows.push(Record { text: "owned".clone() })
+    index = index + 1
+  }
+  rows := builder_rows.build()
+  encoded := json.encode(rows)?
+  exact := json.encode_bounded(rows, encoded.len())?
+  if exact != encoded { return Err(Error.Invalid) }
+  if !match json.encode_bounded(rows, encoded.len() - 1) { Err(_) => true, Ok(_) => false } { return Err(Error.Invalid) }
+  index = 0
+  loop {
+    if index == rows.len() { break }
+    if rows[index].text != "owned" { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  embedded := Rows { values: rows }
+  envelope := json.encode(embedded)?
+  if envelope[10..envelope.len() - 1] != encoded { return Err(Error.Invalid) }
+  return Ok(encoded)
+}
+
+fn open_owned(path: str) -> Result<reader, Error> {
+  owned := path.clone()
+  return fs.open_regular(owned)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 3 && args[1] == "reader" {
+    input := open_owned(args[2])?
+    metadata := input.metadata()?
+    if !match metadata.kind { Regular => true, _ => false } { return Err(Error.Invalid) }
+    print("regular input admitted")
+    return Ok(())
+  }
+  if args.len() != 2 { return Err(Error.Invalid) }
+  none := OptionalCommand { selected: None }
+  if !match start(none) { Err(_) => true, Ok(_) => false } { return Err(Error.Invalid) }
+  if args[1] == "Linux" {
+    selected := command_owner()
+    finish(selected)?
+    finish(selected)?
+  } else if args[1] != "Darwin" { return Err(Error.Invalid) }
+  if independent_json()? != "{\"text\":\"owned\"}" { return Err(Error.Invalid) }
+  moved := move_order()
+  if json.encode(moved)? != "{\"value\":{\"text\":\"owned\"},\"digest\":\"owned\"}" { return Err(Error.Invalid) }
+  if root_rows(0)? != "[]" || root_rows(2)? != "[{\"text\":\"owned\"},{\"text\":\"owned\"}]" { return Err(Error.Invalid) }
+  print("R84-R87 source expiry, command reuse, initializer order and root-array bounds PASS")
+  return Ok(())
+}

@@ -1,0 +1,28 @@
+module prompt_redaction
+
+// Literal left-to-right UTF-8 replacement. The returned text owns its storage.
+pub fn credential(borrow text: str, borrow credential: str) -> string {
+  if credential.len() == 0 {
+    return text.clone()
+  }
+  output := builder()
+  mut cursor := 0
+  loop {
+    if cursor >= text.len() {
+      break
+    }
+    tail := text[cursor..text.len()]
+    match tail.find(credential) {
+      Some(offset) => {
+        output.write(text[cursor..cursor + offset])
+        output.write("[REDACTED]")
+        cursor = cursor + offset + credential.len()
+      },
+      None => {
+        output.write(tail)
+        cursor = text.len()
+      },
+    }
+  }
+  return output.to_string()
+}

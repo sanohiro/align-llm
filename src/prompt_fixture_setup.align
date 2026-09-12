@@ -1,0 +1,80 @@
+module prompt_fixture_setup
+
+import prompt_capture
+import prompt_fixture_command
+import prompt_task_supervisor
+import prompt_validation_budget
+import std.fs
+import std.process
+import std.time
+
+pub Attempt { operation: i64, scope: process.child_scope, report: Option<prompt_task_supervisor.Report>, error: Option<Error> }
+pub Setup { Ready, Stopped(Attempt) }
+
+fn revision_valid(value: str) -> bool {
+  if value.len() != 40 { return false }
+  mut index := 0
+  loop {
+    if index == 40 { break }
+    byte := value.bytes()[index]
+    if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn operation(index: i64) -> prompt_fixture_command.Operation {
+  if index == 0 { return prompt_fixture_command.Operation.Init }
+  if index == 1 { return prompt_fixture_command.Operation.ConfigureNewlines }
+  if index == 2 { return prompt_fixture_command.Operation.ConfigureModes }
+  if index == 3 { return prompt_fixture_command.Operation.Add }
+  if index == 4 { return prompt_fixture_command.Operation.Commit }
+  if index == 5 { return prompt_fixture_command.Operation.Status }
+  return prompt_fixture_command.Operation.Head
+}
+
+// This check is transport acceptance. Exit zero is not task-validation success.
+pub fn accepted(borrow report: prompt_task_supervisor.Report) -> bool {
+  collected := match report.stop { Collected => true, _ => false }
+  zero := match report.termination { Some(value) => match value { Exited(code) => code == 0, _ => false }, None => false }
+  clean := match report.cleanup.first_error { None => true, Some(_) => false }
+  drained := match report.drain_error { None => true, Some(_) => false }
+  return collected && zero && report.cleanup.released && clean && drained &&
+  !report.stdout_truncated && !report.stderr_truncated
+}
+
+pub fn initialize(
+  borrow image: process.image,
+  borrow mut signals: process.signal_subscription,
+  borrow workspace: fs.directory,
+  borrow procfs: fs.directory,
+  workspace_path: str,
+  expected_revision: str,
+  borrow profile: prompt_fixture_command.Profile,
+  outer_deadline: i64,
+) -> Result<Setup, Error> {
+  if !revision_valid(expected_revision) { return Err(Error.Invalid) }
+  pattern := prompt_capture.pattern("", 65536)?
+  mut index := 0
+  loop {
+    if index == 7 { break }
+    command := prompt_fixture_command.build(image, workspace_path, operation(index), "", profile)?
+    stop_at := prompt_validation_budget.deadline(10000000000, outer_deadline)?
+    mut scope := command.start_scope()?
+    outcome := prompt_task_supervisor.run(scope, signals, workspace, procfs, pattern, prompt_task_supervisor.Config {
+        deadline: stop_at, resources: false, limits: prompt_validation_budget.defaults(),
+      })
+    report := match outcome {
+      Ok(value) => value,
+      Err(error) => { return Ok(Setup.Stopped(Attempt { operation: index, scope: scope, report: None, error: Some(error) })) },
+    }
+    if !accepted(report) { return Ok(Setup.Stopped(Attempt { operation: index, scope: scope, report: Some(report), error: None })) }
+    if index == 5 && report.stdout.len() != 0 { return Err(Error.Invalid) }
+    if index == 6 {
+      bytes: slice<u8> := report.stdout
+      if bytes.len() != 41 || bytes[40] != 10 || bytes[0..40].as_str()? != expected_revision { return Err(Error.Invalid) }
+    }
+    index = index + 1
+  }
+  return Ok(Setup.Ready)
+}

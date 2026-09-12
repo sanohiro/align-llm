@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -671,6 +672,100 @@ def upgrade_to_v2(result: dict[str, Any], evidence: dict[str, Any]) -> None:
     corpus["edit_refusal_count"] = corpus_refusals
 
 
+def upgrade_to_product(result: dict[str, Any], executable_sha256: str, execution_kind: str) -> None:
+    """Independent fixture construction for the v2 task/core and v4 measurement contract."""
+    fixture = execution_kind == "FIXTURE_PATCH"
+    core = result["environment"]["core"]
+    runtime = f"ALIGN:{core['align_revision']}:{executable_sha256}"
+    ordered_core: dict[str, Any] = {}
+    for name, value in core.items():
+        if name == "measurement_adapter_runtime":
+            ordered_core["product_runtime"] = runtime
+        elif name not in ("snapshot_helper_runtime", "source_verifier_runtime"):
+            ordered_core[name] = value
+    ordered_core["schema_version"] = 2
+    result["environment"]["core"] = ordered_core
+    result["environment"]["environment_id"] = hashlib.sha256(canonical_bytes(ordered_core)).hexdigest()
+    bind(result["environment"])
+    removed = {"cmd", "argv", "snapshot_cmd", "snapshot_argv", "measurement_adapter_runtime", "snapshot_helper_runtime", "validation_runner_path", "validation_runner_sha256", "validation_argv"}
+    for task in result["tasks"]:
+        ordered_task: dict[str, Any] = {}
+        for name, value in task.items():
+            if name in removed:
+                continue
+            if name == "edit_policy" and fixture:
+                continue
+            if name in ("patch_path", "patch_sha256"):
+                if fixture:
+                    ordered_task[name] = "fixture.patch" if name == "patch_path" else synthetic_digest("fixture patch")
+                continue
+            if name == "edit_policy" or (name == "content_sha256" and "repair_template_path" not in ordered_task):
+                ordered_task["repair_template_path"] = "repair-template.json"
+                ordered_task["repair_template_sha256"] = synthetic_digest("repair-template")
+            ordered_task[name] = value
+            if name == "require_clean_repo":
+                ordered_task["execution_kind"] = execution_kind
+        ordered_task["schema_version"] = 2
+        task.clear()
+        task.update(ordered_task)
+        bind(task)
+
+    def probe(value: dict[str, Any], role: str) -> None:
+        value["schema_version"] = 2
+        value["producer"] = role
+        value["runtime_identity"] = runtime
+        for name in ("os", "os_release", "architecture", "cpu", "logical_cpu_count", "gpu"):
+            value[name] = core.get(name)
+        bind(value)
+
+    probe(result["workspace_preflight"]["environment_probe"], "ALIGN_SNAPSHOT")
+    for snapshot in result["snapshot_results"]:
+        probe(snapshot["environment_probe"], "ALIGN_SNAPSHOT")
+    for snapshot in result["input_snapshots"]:
+        snapshot["environment_sha256"] = result["environment"]["content_sha256"]
+    for row in result["rows"]:
+        prior_digest = None
+        for attempt in row["attempts"]:
+            if attempt["status"] == "SKIPPED":
+                continue
+            measurement = attempt["measurement"]
+            probe(measurement["environment_probe"], "ALIGN_TASK")
+            ordered_measurement: dict[str, Any] = {}
+            for name, value in measurement.items():
+                if name == "base_adapter_runtime_identity":
+                    ordered_measurement["product_runtime"] = runtime
+                elif fixture and name in ("edit_set", "edit_set_total_bytes", "completion_bytes", "completion_sha256", "completion_text"):
+                    continue
+                else:
+                    ordered_measurement[name] = value
+            ordered_measurement["schema_version"] = 4
+            if fixture:
+                ordered_measurement["edit_refusal"] = "NONE"
+            measurement.clear()
+            measurement.update(ordered_measurement)
+            bind(measurement)
+            source = attempt.get("repair_prompt_source")
+            if source is not None:
+                source["source_measurement_sha256"] = prior_digest
+                if fixture:
+                    for name in ("included_sections", "dropped_sections"):
+                        source[name] = [section for section in source[name] if section not in ("POLICY", "EDITSET")]
+                bind(source)
+            prior_digest = measurement["content_sha256"]
+            attempt["measurement_sha256"] = prior_digest
+            bind(attempt)
+        row["measurement"] = copy.deepcopy(row["attempts"][-1]["measurement"])
+        row["evaluation_input"]["environment_sha256"] = result["environment"]["content_sha256"]
+        bind(row["evaluation_input"])
+        bind(row)
+    if fixture:
+        for aggregate in result["task_aggregates"]:
+            for name in ("parent_repair_editset_attempt_count", "candidate_repair_editset_attempt_count", "parent_edit_refusal_count", "candidate_edit_refusal_count"):
+                aggregate.pop(name, None)
+        for name in ("repair_editset_attempt_count", "edit_refusal_count"):
+            result["corpus_aggregate"].pop(name, None)
+
+
 def sha256_bytes(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -723,8 +818,12 @@ class GateBundle:
         *,
         evaluated_is_ancestor: bool = True,
         schema_version: int = 1,
+        product_execution: str | None = None,
     ) -> None:
-        self.schema_version = schema_version
+        if product_execution not in (None, "PROVIDER_EDIT", "FIXTURE_PATCH"):
+            raise ValueError("unknown fixture execution kind")
+        self.product_execution = product_execution
+        self.schema_version = 2 if product_execution is not None else schema_version
         self.root = root
         self.checkout = root / "ci-checkout"
         self.bundle_root = root / "source-bundle"
@@ -747,7 +846,12 @@ class GateBundle:
         # a source-bundle member: only the explicit per-run pair names it.
         self.generation_child = self.root / GENERATION_CHILD_RELATIVE
         self.generation_child.parent.mkdir(parents=True)
-        self.generation_child.write_text("#!/bin/sh\nexit 0\n")
+        self.product_launch_marker = self.root / "product-was-launched"
+        if self.product_execution:
+            marker = shlex.quote(str(self.product_launch_marker))
+            self.generation_child.write_text(f"#!/bin/sh\nprintf invoked > {marker}\nexit 91\n")
+        else:
+            self.generation_child.write_text("#!/bin/sh\nexit 0\n")
         self.generation_child.chmod(0o755)
         self.generation_child_sha256 = sha256_bytes(self.generation_child)
 
@@ -776,6 +880,15 @@ class GateBundle:
                 "content_sha256": "",
             }
         )
+        if self.product_execution:
+            self.policy = bind({
+                "schema_version": 2,
+                "artifact_kind": "PROMPT_SOURCE_VERIFIER_POLICY",
+                "policy_id": "gate-source-policy-v2",
+                "git_executable_sha256": self.git_sha256,
+                "product_executable_sha256": self.generation_child_sha256,
+                "content_sha256": "",
+            })
         (self.bundle_root / POLICY_RELATIVE).write_bytes(canonical_bytes(self.policy))
 
         self._build_artifacts()
@@ -887,6 +1000,8 @@ class GateBundle:
         # version-1 documents, so the two fixtures differ in the attempt machinery alone.
         if self.schema_version >= 2:
             upgrade_to_v2(result, evidence)
+        if self.product_execution:
+            upgrade_to_product(result, self.generation_child_sha256, self.product_execution)
         bind_declared_inputs(result)
         bind(result)
 
@@ -939,7 +1054,7 @@ class GateBundle:
     # -- serialization -------------------------------------------------------------
 
     def locator(self) -> dict[str, Any]:
-        return bind(
+        value = bind(
             {
                 "schema_version": 1,
                 "artifact_kind": "PROMPT_GATE_SOURCE_LOCATOR",
@@ -960,6 +1075,19 @@ class GateBundle:
                 "content_sha256": "",
             }
         )
+        if self.product_execution:
+            replacements = {
+                "source_verifier_relative_path": "independent_verifier_relative_path",
+                "source_verifier_sha256": "independent_verifier_sha256",
+                "source_verifier_runtime": "independent_verifier_runtime",
+                "source_verifier_interpreter_sha256": "independent_verifier_interpreter_sha256",
+                "generation_child_sha256": "product_executable_sha256",
+            }
+            value = {replacements.get(name, name): item for name, item in value.items()}
+            value["schema_version"] = 2
+            bind(value)
+        return value
+
 
     def manifest(self) -> dict[str, Any]:
         def reference(kind: str, name: str, artifact: Mapping[str, Any], key: str):
@@ -1028,9 +1156,9 @@ class GateBundle:
             str(self.python_executable),
             "--git-executable-path",
             str(self.git_executable),
-            "--generation-child-path",
+            "--product-executable-path" if self.product_execution else "--generation-child-path",
             str(self.generation_child),
-            "--generation-child-sha256",
+            "--product-executable-sha256" if self.product_execution else "--generation-child-sha256",
             self.generation_child_sha256,
             "--gate-manifest",
             str(self.manifest_path),

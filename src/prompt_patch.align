@@ -1,0 +1,93 @@
+module prompt_patch
+
+fn line_count(text: str) -> i64 {
+  mut count := 0
+  mut index := 0
+  loop {
+    if index == text.len() { break }
+    if text.bytes()[index] == 10 { count = count + 1 }
+    index = index + 1
+  }
+  if text.len() > 0 && !text.ends_with("\n") { count = count + 1 }
+  return count
+}
+
+fn without_final_lf(text: str) -> str {
+  return if text.ends_with("\n") { text[0..text.len() - 1] } else { text }
+}
+
+// Inputs have already passed path and source admission. Keep applied bytes unredacted;
+// persisted diagnostic/edit evidence has a separate redaction owner.
+pub fn whole_file_hunk(path: str, original: Option<str>, replacement: str) -> string {
+  old: str := original else ""
+  old_count := line_count(old)
+  new_count := line_count(replacement)
+  exists := match original { Some(_) => true, None => false }
+  old_complete := old.len() == 0 || old.ends_with("\n")
+  new_complete := replacement.len() == 0 || replacement.ends_with("\n")
+  if exists && old_count == new_count
+    && without_final_lf(old) == without_final_lf(replacement)
+    && (old_complete == new_complete || !old_complete) {
+    return "".clone()
+  }
+
+  output := builder()
+  output.write("diff --git a/")
+  output.write(path)
+  output.write(" b/")
+  output.write(path)
+  output.write("\n")
+  if exists {
+    output.write("--- a/")
+    output.write(path)
+    output.write("\n")
+  } else {
+    output.write("new file mode 100644\n--- /dev/null\n")
+  }
+  output.write("+++ b/")
+  output.write(path)
+  output.write("\n")
+  // Git creates an empty file from these headers; a zero-to-zero hunk is corrupt.
+  if !exists && new_count == 0 { return output.to_string() }
+  output.write("@@ -")
+  output.write_int(if old_count == 0 { 0 } else { 1 })
+  output.write(",")
+  output.write_int(old_count)
+  output.write(" +")
+  output.write_int(if new_count == 0 { 0 } else { 1 })
+  output.write(",")
+  output.write_int(new_count)
+  output.write(" @@\n")
+
+  mut cursor := 0
+  loop {
+    if cursor == old.len() { break }
+    mut end := cursor
+    loop {
+      if end == old.len() { break }
+      if old.bytes()[end] == 10 { break }
+      end = end + 1
+    }
+    output.write("-")
+    output.write(old[cursor..end])
+    output.write("\n")
+    cursor = if end < old.len() { end + 1 } else { end }
+  }
+  if old_count > 0 && !old_complete { output.write("\\ No newline at end of file\n") }
+  cursor = 0
+  loop {
+    if cursor == replacement.len() { break }
+    mut end := cursor
+    loop {
+      if end == replacement.len() { break }
+      if replacement.bytes()[end] == 10 { break }
+      end = end + 1
+    }
+    output.write("+")
+    output.write(replacement[cursor..end])
+    output.write("\n")
+    cursor = if end < replacement.len() { end + 1 } else { end }
+  }
+  if new_count > 0 && !new_complete { output.write("\\ No newline at end of file\n") }
+  return output.to_string()
+}

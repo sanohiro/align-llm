@@ -1,0 +1,140 @@
+module prompt_sandbox_smoke
+
+import prompt_sandbox
+import prompt_sandbox_plan
+import prompt_command
+import prompt_fixture_setup
+import prompt_task_supervisor
+import prompt_scope_cleanup
+import std.fs
+import std.process
+import std.time
+
+fn image(root_path: str) -> Result<process.image, Error> {
+  root := fs.open_directory(root_path)?
+  input := root.open_read_single_link("backend")?
+  mut memory := fs.memory_file(fs.memory_kind.Executable, 16777216)?
+  mut count := 0
+  loop {
+    mut chunk := buffer(65536)
+    size := input.read(chunk)?
+    if size == 0 { break }
+    count = count + size
+    if count > 16777216 { return Err(Error.Invalid) }
+    memory.write(chunk.bytes())?
+  }
+  sealed := memory.seal()?
+  return process.executable(sealed)
+}
+
+fn config(fresh: bool, workspace: str, mode: str) -> prompt_sandbox_plan.Config {
+  mut roots: array_builder<string> := array_builder()
+  roots.push("/usr".clone())
+  if fresh { roots.push("/tools".clone()) }
+  mut argv: array_builder<string> := array_builder()
+  argv.push("/usr/bin/printf".clone())
+  argv.push("%s|%s|%s\n".clone())
+  argv.push("literal ;$(notrun)".clone())
+  argv.push("".clone())
+  argv.push("界".clone())
+  mut env: array_builder<prompt_command.Environment> := array_builder()
+  env.push(prompt_command.Environment { name: "OWNER_MODE".clone(), value: mode.clone() })
+  env.push(prompt_command.Environment { name: "EXPECTED_CWD".clone(), value: workspace.clone() })
+  return prompt_sandbox_plan.Config { fresh: fresh, uid: 0, gid: 0, namespace_slot: if fresh { 7 } else { 0 }, bwrap_path: "/usr/bin/bwrap".clone(), prlimit_path: "/usr/bin/prlimit".clone(), workspace_path: workspace.clone(), readonly_roots: roots.build(), target_argv: argv.build(), environment: env.build(), timeout_seconds: 5 }
+}
+
+fn owned(root_path: str, workspace: str, fresh: bool, mode: str) -> Result<prompt_sandbox.Commands, Error> {
+  executable := image(root_path)?
+  if fresh {
+    namespace := process.user_namespace("/proc/self/ns/user")?
+    wrong := config(false, workspace, mode)
+    match prompt_sandbox.fresh(executable, namespace, wrong) { Err(error) => { match error { Invalid => {}, _ => { return Err(error) } } }, Ok(_) => { return Err(Error.Invalid) } }
+    return prompt_sandbox.fresh(executable, namespace, config(true, workspace, mode))
+  }
+  wrong := config(true, "/target/tmp/invalid-owner", mode)
+  match prompt_sandbox.normal(executable, wrong) { Err(error) => { match error { Invalid => {}, _ => { return Err(error) } } }, Ok(_) => { return Err(Error.Invalid) } }
+  return prompt_sandbox.normal(executable, config(false, workspace, mode))
+}
+
+fn bytes_text(bytes: slice<u8>) -> Result<str, Error> = bytes.as_str()
+
+fn unavailable(attempt: prompt_fixture_setup.Attempt, mode: str) -> Result<(), Error> {
+  mut scope := attempt.scope
+  cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+  if !cleanup.released { return Err(Error.Timeout) }
+  match cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+  match attempt.error { None => {}, Some(error) => { return Err(error) } }
+  match attempt.report {
+    None => { return Err(Error.Invalid) },
+    Some(report) => {
+      if !report.cleanup.released { return Err(Error.Invalid) }
+      match report.cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+      match report.drain_error { None => {}, Some(error) => { return Err(error) } }
+      if mode == "actual" { print(bytes_text(report.stderr)?) }
+      match report.stop {
+        Collected => {
+          if mode != "failure" && mode != "actual" { return Err(Error.Invalid) }
+          match report.termination { Some(status) => { match status { Exited(code) => { if (mode == "failure" && code != 23) || code == 0 { return Err(Error.Invalid) } }, _ => { return Err(Error.Invalid) } } }, None => { return Err(Error.Invalid) } }
+        },
+        Timeout => { if mode != "timeout" { return Err(Error.Invalid) } },
+        Cancelled(_) => { if mode != "cancel" { return Err(Error.Invalid) } },
+        _ => { return Err(Error.Invalid) },
+      }
+    },
+  }
+  return Ok(())
+}
+
+fn probe(borrow command: command, borrow mut signals: process.signal_subscription, borrow workspace: fs.directory, borrow procfs: fs.directory, mode: str) -> Result<bool, Error> {
+  result := prompt_sandbox.check(command, signals, workspace, procfs, time.instant() + 60000000000)?
+  return match result {
+    Available(report) => {
+      if mode != "success" && mode != "actual" { return Err(Error.Invalid) }
+      if !prompt_fixture_setup.accepted(report) { return Err(Error.Invalid) }
+      if bytes_text(report.stdout)? != (if mode == "actual" { "" } else { "probe\n" }) || report.stderr.len() != 0 { return Err(Error.Invalid) }
+      Ok(true)
+    },
+    Unavailable(attempt) => { unavailable(attempt, mode)?; Ok(false) },
+  }
+}
+
+fn exercise(commands: prompt_sandbox.Commands, workspace_path: str, mode: str, owner: str) -> Result<(), Error> {
+  workspace := fs.open_directory(workspace_path)?
+  procfs := fs.open_directory("/proc")?
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  if mode == "cancel" {
+    sender := process.command("/bin/sh", ["/bin/sh", "-c", "[ \"$1\" = \"$PPID\" ] || exit 91; kill -TERM \"$1\"", "sandbox-owner-signal", owner])
+    sent := sender.run()
+    match sent { Ok(output) => { status := output.status(); if !match status.termination { Exited(code) => code == 0, _ => false } { signals.close()?; return Err(Error.Invalid) } }, Err(error) => { signals.close()?; return Err(error) } }
+  }
+  checked := probe(commands.probe, signals, workspace, procfs, mode)
+  restored := signals.close()
+  restored?
+  available := checked?
+  if available {
+    validation := commands.validation
+    validation.timeout_ns(5000000000)
+    validation.max_capture_bytes(4096)
+    output := validation.run()?
+    status := output.status()
+    if !match status.termination { Exited(code) => code == 0, _ => false } { return Err(Error.Invalid) }
+    if output.stdout() != "literal ;$(notrun)||界\n" || output.stderr().len() != 0 { return Err(Error.Invalid) }
+  }
+  if mode == "actual" { print(if available { "actual bwrap probe and validation: PASS (not installed A3)" } else { "actual bwrap unavailable: native refusal and cleanup verified" }) }
+  mut again := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  again.close()?
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 7 { return Err(Error.Invalid) }
+  if args[1] == "Darwin" {
+    match fs.memory_file(fs.memory_kind.Executable, 1) { Err(error) => { match error { Code(code) => { if code != 45 { return Err(Error.Invalid) } }, _ => { return Err(error) } } }, Ok(_) => { return Err(Error.Invalid) } }
+    print("sandbox smoke: Darwin sealed-image ENOTSUP 45 PASS; Linux ownership/probe not exercised")
+    return Ok(())
+  }
+  commands := owned(args[2], args[3], args[4] == "fresh", args[5])?
+  exercise(commands, args[3], args[5], args[6])?
+  print("sandbox command ownership/probe: PASS")
+  return Ok(())
+}

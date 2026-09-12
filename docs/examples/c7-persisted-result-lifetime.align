@@ -103,7 +103,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
 
   // Section 4.4: the retained record re-encodes to the exact canonical source bytes, including the
   // escaped quote and backslash, the embedded NUL, and the multibyte emoji.
-  print(json.encode(input))
+  print(json.encode(input)?)
 
   // Section 4.1: `None` is omitted by canonical encoding and `Some("")` is an explicit empty JSON
   // string.

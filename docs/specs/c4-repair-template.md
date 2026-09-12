@@ -1,5 +1,10 @@
 # C4-REPAIR-TEMPLATE: the prompt template and the declared edit policy
 
+Implementation-language correction (2026-09-09): [Align product boundary](align-product-boundary.md)
+owns the planned replacement of this historical Python evaluator/adapter execution path. Its
+explicit versioned deltas supersede the old helper ABI at cutover; all historical evidence,
+quality rules and independent replay remain. No additional product features may be added to Python.
+
 Status: **implemented and measured, then re-scoped by final review; terminal re-scope implementation
 and publication pending.** This document
 is the authoritative plan and result record. The proportional

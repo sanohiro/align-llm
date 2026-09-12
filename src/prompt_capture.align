@@ -1,0 +1,98 @@
+module prompt_capture
+
+pub Pattern { credential: string, prefix: array<i64>, limit: i64 }
+pub Cursor { matched: i64, truncated: bool, closed: bool }
+
+pub fn pattern(credential: str, limit: i64) -> Result<Pattern, Error> {
+  if limit < 0 || limit > 2097152 || credential.len() > 1152921504606846975 { return Err(Error.Invalid) }
+  mut values: array_builder<i64> := array_builder()
+  mut index := 0
+  loop {
+    if index == credential.len() { break }
+    values.push(0)
+    index = index + 1
+  }
+  mut prefix := values.build()
+  bytes := credential.bytes()
+  mut matched := 0
+  index = 1
+  loop {
+    if index >= bytes.len() { break }
+    loop {
+      if matched == 0 || bytes[index] == bytes[matched] { break }
+      matched = prefix[matched - 1]
+    }
+    if bytes[index] == bytes[matched] { matched = matched + 1 }
+    prefix[index] = matched
+    index = index + 1
+  }
+  return Ok(Pattern { credential: credential.clone(), prefix: prefix, limit: limit })
+}
+
+pub fn cursor() -> Cursor = Cursor { matched: 0, truncated: false, closed: false }
+
+fn emit(borrow mut output: buffer, borrow mut state: Cursor, limit: i64, bytes: slice<u8>) {
+  if state.truncated { return }
+  remaining := limit - output.bytes().len()
+  count := if bytes.len() < remaining { bytes.len() } else { remaining }
+  output.append(bytes[0..count])
+  if bytes.len() > remaining { state.truncated = true }
+}
+
+fn valid(borrow config: Pattern, borrow output: buffer, state: Cursor) -> bool {
+  size := config.credential.len()
+  return config.limit >= 0 && config.limit <= 2097152 && output.bytes().len() <= config.limit &&
+  config.prefix.len() == size && state.matched >= 0 &&
+  (if size == 0 { state.matched == 0 } else { state.matched < size })
+}
+
+// Pattern/cursor values come from this module's constructors. Keeping storage a
+// separate owner permits one immutable credential to serve independent streams.
+pub fn append(borrow config: Pattern, borrow mut output: buffer, borrow mut state: Cursor, chunk: slice<u8>) -> Result<(), Error> {
+  if !valid(config, output, state) || state.closed { return Err(Error.Invalid) }
+  if state.truncated { return Ok(()) }
+  text: str := config.credential
+  bytes := text.bytes()
+  if bytes.len() == 0 { emit(output, state, config.limit, chunk); return Ok(()) }
+  mut index := 0
+  loop {
+    if index == chunk.len() || state.truncated { break }
+    value := chunk[index]
+    loop {
+      if state.matched == 0 || value == bytes[state.matched] { break }
+      fallback := config.prefix[state.matched - 1]
+      emit(output, state, config.limit, bytes[0..state.matched - fallback])
+      state.matched = fallback
+    }
+    if value == bytes[state.matched] {
+      state.matched = state.matched + 1
+      if state.matched == bytes.len() {
+        emit(output, state, config.limit, "[REDACTED]".bytes())
+        state.matched = 0
+      }
+    } else {
+      single := [value]
+      emit(output, state, config.limit, single)
+    }
+    index = index + 1
+  }
+  return Ok(())
+}
+
+pub fn finish(borrow config: Pattern, borrow mut output: buffer, borrow mut state: Cursor) -> Result<array<u8>, Error> {
+  if !valid(config, output, state) { return Err(Error.Invalid) }
+  if !state.closed {
+    text: str := config.credential
+    emit(output, state, config.limit, text.bytes()[0..state.matched])
+    state.matched = 0
+    state.closed = true
+  }
+  bytes := output.bytes()
+  if !state.truncated { return Ok(bytes.to_array()) }
+  marker := "\n[output truncated]"
+  prefix := if config.limit > marker.len() { config.limit - marker.len() } else { 0 }
+  mut result := buffer(prefix + marker.len())
+  result.append(bytes[0..prefix])
+  result.append(marker)
+  return Ok(result.bytes().to_array())
+}

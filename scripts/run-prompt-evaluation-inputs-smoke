@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+trap 'rm -rf "${scratch}"' EXIT
+"${compiler}" check-per-unit "${project_root}/src/prompt_evaluation_inputs_smoke.align"
+"${compiler}" run "${project_root}/src/prompt_evaluation_inputs_smoke.align" -- "${scratch}"

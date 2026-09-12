@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+compiler="${ALIGNC:-$root/scripts/alignc}"
+scratch="$(mktemp -d)"
+trap 'status=$?; if [[ $status == 0 ]]; then rm -rf "$scratch"; else echo "Preserved adoption owner: $scratch" >&2; fi' EXIT
+deadline="$(command -v timeout || command -v gtimeout)"
+"$compiler" check "$root/src/product_cutover_adoption_smoke.align"
+"$compiler" check-per-unit "$root/src/product_cutover_adoption_smoke.align"
+"$compiler" run "$root/src/product_cutover_adoption_smoke.align" -- "$(uname -s)"
+(cd "$scratch" && "$compiler" build "$root/src/product_cutover_adoption_smoke.align")
+binary="$scratch/product_cutover_adoption_smoke"
+"$binary" "$(uname -s)"
+printf content > "$scratch/input"
+touch "$scratch/empty"
+chmod 444 "$scratch/input"
+ln -s input "$scratch/link"
+ln -s missing "$scratch/dangling"
+mkfifo "$scratch/fifo"
+for path in "$scratch/input" "$scratch/empty" "$scratch/./link"; do
+  [[ "$("$binary" reader "$path")" == 'regular input admitted' ]]
+done
+for path in "$scratch/fifo" "$scratch/dangling" "$scratch" /dev/null; do
+  set +e
+  "$deadline" 3 "$binary" reader "$path" > "$scratch/out" 2> "$scratch/err"
+  status=$?
+  set -e
+  [[ $status != 0 && $status != 124 && $status != 137 && ! -s "$scratch/out" ]]
+done
+printf 'R88 regular/empty/readonly/dot/symlink admission and nonblocking special-file refusal PASS\n'
+cat > "$scratch/moved.align" <<'ALIGN'
+module moved
+pub Record { text: string }
+pub Outer { digest: string, value: Record }
+pub fn invalid(value: Record) -> Outer {
+  return Outer { value: value, digest: value.text.clone() }
+}
+pub fn main() {}
+ALIGN
+for mode in check check-per-unit; do
+  if "$compiler" "$mode" "$scratch/moved.align" > "$scratch/out" 2> "$scratch/err"; then exit 1; fi
+  grep -q "use of moved value 'value'" "$scratch/err"
+done
+printf 'R86 direct-record use-after-move control refused in source and per-unit checking PASS (optional-payload residual tracked separately)\n'

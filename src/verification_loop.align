@@ -1,6 +1,7 @@
 module verification_loop
 
 import core.json
+import std.process
 import failure_memory
 import patch_eval
 import repo_index
@@ -186,7 +187,7 @@ fn run_command(
     stdout: stdout_view,
     stderr: stderr_view,
   }
-  document := json.encode(record).clone()
+  document := match json.encode(record) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
   return StageOutcome {
     status: status,
     expected_code: expected_code,
@@ -255,7 +256,7 @@ fn repair_prompt(
 
 fn render_attempt(iteration: i64, status: str, prompt: str, stages: str) -> string {
   meta := AttemptMeta { iteration: iteration, status: status, repair_prompt: prompt }
-  meta_json := json.encode(meta)
+  meta_json := match json.encode(meta) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
   b := builder()
   b.write(meta_json[0..meta_json.len() - 1])
   b.write(",\"stages\":[")
@@ -295,7 +296,7 @@ fn render_document(
     repair_count: repair_count,
     evaluation_status: evaluation_status,
   }
-  meta_json := json.encode(meta)
+  meta_json := match json.encode(meta) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
   b := builder()
   b.write(meta_json[0..meta_json.len() - 1])
   b.write(",\"evaluation\":")
@@ -308,7 +309,7 @@ fn render_document(
 
 fn empty_evaluation(status: str, error_code: i64) -> string {
   record := FailureEvaluation { schema_version: 1, status: status, error_code: error_code }
-  return json.encode(record).clone()
+  return match json.encode(record) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
 }
 
 fn invalid_result(task_id: str, error_code: i64) -> VerificationResult {

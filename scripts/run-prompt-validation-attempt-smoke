@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+complete=0
+trap 'if [[ "${complete}" == 1 ]]; then rm -rf "${scratch}"; else printf "validation attempt fixture retained: %s\n" "${scratch}" >&2; fi' EXIT
+"${compiler}" check-per-unit "${project_root}/src/prompt_validation_attempt_smoke.align"
+(cd "${scratch}" && "${compiler}" build "${project_root}/src/prompt_validation_attempt_smoke.align")
+platform="$(uname -s)"
+if [[ "${platform}" != Linux ]]; then
+  "${scratch}/prompt_validation_attempt_smoke" "${platform}" - - - - - - - -
+  complete=1
+  exit 0
+fi
+mkdir "${scratch}/image" "${scratch}/source" "${scratch}/oracle" "${scratch}/source-link"
+cp "$(command -v git)" "${scratch}/image/git"
+git_sha="$(sha256sum "${scratch}/image/git" | cut -d ' ' -f 1)"
+printf 'before\n' >"${scratch}/source/a"
+printf 'before\n' >"${scratch}/source/b"
+chmod 644 "${scratch}/source/"*
+ln -s "${scratch}/source/a" "${scratch}/source-link/a"
+oracle_env=(env -i HOME=/tmp/home PATH=/usr/bin:/bin TMPDIR=/tmp LC_ALL=C
+  GIT_CONFIG_NOSYSTEM=1 GIT_ATTR_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_REPLACE_OBJECTS=1
+  'GIT_AUTHOR_NAME=align-llm fixture' GIT_AUTHOR_EMAIL=fixture@align-llm.invalid GIT_AUTHOR_DATE=2026-01-01T00:00:00Z
+  'GIT_COMMITTER_NAME=align-llm fixture' GIT_COMMITTER_EMAIL=fixture@align-llm.invalid GIT_COMMITTER_DATE=2026-01-01T00:00:00Z)
+"${oracle_env[@]}" git -C "${scratch}/oracle" init -q --initial-branch=main --object-format=sha1
+blob="$(printf 'before\n' | "${oracle_env[@]}" git -C "${scratch}/oracle" hash-object -w --stdin)"
+tree="$(printf '100644 blob %s\ta\n100644 blob %s\tb\n' "${blob}" "${blob}" | "${oracle_env[@]}" git -C "${scratch}/oracle" mktree)"
+revision="$(printf 'Create deterministic evaluation fixture\n' | "${oracle_env[@]}" git -C "${scratch}/oracle" commit-tree "${tree}")"
+for mode in passed test-failed baseline-pass rejected disallowed probe-failed timeout shared-deadline expired wrong-revision source-link; do
+  workspace="${scratch}/${mode}-workspace"
+  mkdir "${workspace}"
+  source="${scratch}/source"
+  expected_revision="${revision}"
+  target=a
+  if [[ "${mode}" == source-link ]]; then source="${scratch}/source-link"; fi
+  if [[ "${mode}" == wrong-revision ]]; then expected_revision=0000000000000000000000000000000000000000; fi
+  if [[ "${mode}" == disallowed ]]; then target=b; fi
+  printf 'diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-before\n+after\n' "${target}" "${target}" "${target}" "${target}" >"${scratch}/patch"
+  if [[ "${mode}" == rejected ]]; then printf 'invalid patch\n' >"${scratch}/patch"; fi
+  "${scratch}/prompt_validation_attempt_smoke" Linux "${scratch}/image" "${git_sha}" "${source}" \
+    "${workspace}" "${scratch}/patch" "${expected_revision}" "${mode}" "${scratch}/marker" >"${scratch}/actual"
+  printf '%s\n' "${mode}" >"${scratch}/expected"
+  diff -u "${scratch}/expected" "${scratch}/actual"
+  [[ ! -e "${workspace}" ]]
+  case "${mode}" in
+    probe-failed|expired|wrong-revision|source-link) [[ ! -e "${scratch}/marker" ]] ;;
+    passed|test-failed) [[ "$(cat "${scratch}/marker")" == invokedinvoked ]] ;;
+    *) [[ "$(cat "${scratch}/marker")" == invoked ]] ;;
+  esac
+  rm -f "${scratch}/marker"
+  [[ "$(cat "${scratch}/source/a")" == before && "$(cat "${scratch}/source/b")" == before ]]
+done
+complete=1
+printf 'validation attempt: copy, deterministic Git, probe, validation and released-scope cleanup PASS (trusted commands; installed containment not qualified)\n'

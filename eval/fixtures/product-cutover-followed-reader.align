@@ -1,0 +1,14 @@
+module product_cutover_followed_reader
+
+import std.fs
+
+// Reduced observation of the ordinary-path admission gap. A FIFO with no writer blocks in
+// fs.open before the caller can inspect metadata and reject its non-regular kind.
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 { return Err(Error.Invalid) }
+  input := fs.open(args[1])?
+  metadata := input.metadata()?
+  if !match metadata.kind { Regular => true, _ => false } { return Err(Error.Invalid) }
+  print("regular input admitted")
+  return Ok(())
+}

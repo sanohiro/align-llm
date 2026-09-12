@@ -28,6 +28,18 @@ This repository implements a local LLM coding system in Align:
 - `align-coder`: repository-aware generation, verification, repair, evaluation, and learning;
 - `align-runtime`: local inference across GPU memory, system memory, and NVMe.
 
+Shipping product logic and normal CLI execution belong in Align. Python is restricted to the
+classified independent validation, fixture, measurement and developer roles in
+`docs/python-boundary-audit.md`; an Align wrapper or shell/service delegation to Python is not
+compliance. C/C++ stays at the thin ABI/backend/kernel boundary. Before adding or changing Python,
+update its classification and run `python3 scripts/check-python-boundary` at the coherent
+checkpoint. Changes to the guard also run `python3 scripts/test-python-boundary`.
+The known product
+violations are frozen during `ALIGN-PRODUCT-CUTOVER`; no new feature may be added to them. A
+temporary bootstrap requires the reason, exact Align blocker, migration item, acceptance command,
+deletion condition and no-growth rule in `docs/specs/align-product-boundary.md`. Final cutover also
+requires the strict check and relocated execution without Python; a static scan alone is not proof.
+
 Deliver `align-coder` against existing providers before making it depend on the custom runtime. The
 primary metric is time to a passing patch. Any optimization claim needs a reproducible baseline and
 measurement against that metric or a named secondary metric.

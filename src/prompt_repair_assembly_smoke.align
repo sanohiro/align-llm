@@ -1,0 +1,119 @@
+module prompt_repair_assembly_smoke
+
+import prompt_repair_assembly
+
+fn names(values: slice<string>) -> string {
+  output := builder()
+  mut index := 0
+  loop {
+    if index == values.len() { break }
+    if index > 0 { output.write(",") }
+    output.write(values[index])
+    index = index + 1
+  }
+  return output.to_string()
+}
+
+fn expect(actual: prompt_repair_assembly.Assembly, present: bool, text: str, size: i64, included: str, dropped: str) -> Result<(), Error> {
+  correct_text := match actual.text {
+    Some(value) => present && value == text,
+    None => !present,
+  }
+  if !correct_text || actual.assembled_bytes != size
+    || names(actual.included_sections) != included || names(actual.dropped_sections) != dropped {
+    print("repair assembly mismatch")
+    print(size)
+    print(actual.assembled_bytes)
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn invalid(headers: slice<str>, sources: slice<str>, limit: i64) -> Result<(), Error> {
+  return match prompt_repair_assembly.assemble("B", "P", "C", headers, sources, limit) {
+    Ok(_) => Err(Error.Invalid),
+    Err(error) => match error { Invalid => Ok(()), _ => Err(Error.Invalid) },
+  }
+}
+
+fn owned_result() -> Result<prompt_repair_assembly.Assembly, Error> {
+  base := "B".clone()
+  preamble := "P".clone()
+  closing := "C".clone()
+  header := "S".clone()
+  source := "s".clone()
+  header_view: str := header
+  source_view: str := source
+  headers := [header_view, "", "", "", "", ""]
+  sources := [source_view, "", "", "", "", ""]
+  return prompt_repair_assembly.assemble(base, preamble, closing, headers, sources, 12)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  headers := ["S", "P", "E", "M", "O", "R"]
+  sources := ["s", "p", "e", "m", "o", "r"]
+  // Independently written byte goldens: fixed framing is seven ASCII bytes and each section five.
+  full := "B\n\nP\n\nS\ns\n\nP\np\n\nE\ne\n\nM\nm\n\nO\no\n\nR\nr\n\nC"
+  without_stdout := "B\n\nP\n\nS\ns\n\nP\np\n\nE\ne\n\nM\nm\n\nR\nr\n\nC"
+  without_streams := "B\n\nP\n\nS\ns\n\nP\np\n\nE\ne\n\nM\nm\n\nC"
+  without_summary := "B\n\nP\n\nS\ns\n\nP\np\n\nE\ne\n\nC"
+  mandatory := "B\n\nP\n\nS\ns\n\nP\np\n\nC"
+  mut limit := 0
+  loop {
+    if limit == 39 { break }
+    actual := prompt_repair_assembly.assemble("B", "P", "C", headers, sources, limit)?
+    if limit >= 37 {
+      expect(actual, true, full, 37, "STATUS,POLICY,EDITSET,SUMMARY,STDOUT,STDERR", "")?
+    } else if limit >= 32 {
+      expect(actual, true, without_stdout, 32, "STATUS,POLICY,EDITSET,SUMMARY,STDERR", "STDOUT")?
+    } else if limit >= 27 {
+      expect(actual, true, without_streams, 27, "STATUS,POLICY,EDITSET,SUMMARY", "STDOUT,STDERR")?
+    } else if limit >= 22 {
+      expect(actual, true, without_summary, 22, "STATUS,POLICY,EDITSET", "SUMMARY,STDOUT,STDERR")?
+    } else {
+      expect(actual, limit >= 17, mandatory, 17, "STATUS,POLICY", "EDITSET,SUMMARY,STDOUT,STDERR")?
+    }
+    limit = limit + 1
+  }
+
+  // U+754C is three UTF-8 bytes: exact-cap inclusion and one-byte-short whole-section removal.
+  unicode_sources := ["s", "p", "e", "m", "界", "r"]
+  unicode_full := "B\n\nP\n\nS\ns\n\nP\np\n\nE\ne\n\nM\nm\n\nO\n界\n\nR\nr\n\nC"
+  expect(prompt_repair_assembly.assemble("B", "P", "C", headers, unicode_sources, 39)?, true, unicode_full, 39, "STATUS,POLICY,EDITSET,SUMMARY,STDOUT,STDERR", "")?
+  expect(prompt_repair_assembly.assemble("B", "P", "C", headers, unicode_sources, 38)?, true, without_stdout, 32, "STATUS,POLICY,EDITSET,SUMMARY,STDERR", "STDOUT")?
+
+  absent_headers := ["S", "", "", "M", "O", "R"]
+  empty_sources := ["s", "p", "e", "", "", "r"]
+  expect(prompt_repair_assembly.assemble("B", "P", "C", absent_headers, empty_sources, 17)?, true, "B\n\nP\n\nS\ns\n\nR\nr\n\nC", 17, "STATUS,STDERR", "")?
+  expect(prompt_repair_assembly.assemble("B", "P", "C", absent_headers, empty_sources, 12)?, true, "B\n\nP\n\nS\ns\n\nC", 12, "STATUS", "STDERR")?
+  empty := ["", "", "", "", "", ""]
+  expect(prompt_repair_assembly.assemble("B", "P", "C", headers, empty, 7)?, true, "B\n\nP\n\nC", 7, "", "")?
+  expect(prompt_repair_assembly.assemble("B", "P", "C", headers, empty, 6)?, false, "", 7, "", "")?
+  expect(owned_result()?, true, "B\n\nP\n\nS\ns\n\nC", 12, "STATUS", "")?
+
+  short := ["S", "P", "E", "M", "O"]
+  long := ["S", "P", "E", "M", "O", "R", "extra"]
+  invalid(short, sources, 100)?
+  invalid(long, sources, 100)?
+  invalid(headers, short, 100)?
+  invalid(headers, long, 100)?
+  invalid(headers, sources, -1)?
+
+  // All four cleanup/containment states crossed with all eight diagnostic-presence states.
+  mut flags := 0
+  loop {
+    if flags == 32 { break }
+    cleanup := flags % 2 == 1
+    containment := flags / 2 % 2 == 1
+    summary := if flags / 4 % 2 == 1 { "s" } else { "" }
+    stdout := if flags / 8 % 2 == 1 { "o" } else { "" }
+    stderr := if flags / 16 % 2 == 1 { "r" } else { "" }
+    expected := cleanup && containment && flags >= 4
+    if prompt_repair_assembly.eligible(cleanup, containment, summary, stdout, stderr) != expected {
+      return Err(Error.Invalid)
+    }
+    flags = flags + 1
+  }
+  print("repair assembly smoke: budget goldens, UTF-8, ownership, malformed shapes and eligibility PASS")
+  return Ok(())
+}

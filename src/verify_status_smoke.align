@@ -1,0 +1,48 @@
+module verify_status_smoke
+
+import verify
+
+fn status_code(status: verify.RunStatus) -> i64 = match status {
+  Completed => 0, TimedOut => 1, SpawnFailed => 2,
+}
+
+fn expect(actual: verify.Captured, status: i64, code: i64, stdout: str, stderr: str) -> Result<(), Error> {
+  // verify.run has already dropped its native output owner before these reads.
+  if status_code(actual.status) != status || actual.code != code
+    || actual.stdout != stdout || actual.stderr != stderr {
+    print("verify status mismatch")
+    print(status_code(actual.status))
+    print(actual.code)
+    print(actual.stdout)
+    print(actual.stderr)
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  success_args := ["/bin/sh", "-c", "printf 'owned stdout'; printf 'owned stderr' >&2"]
+  success := verify.run("/bin/sh", success_args, ".", 5_000_000_000)
+  failure_args := ["/bin/sh", "-c", "printf 'failed stdout'; printf 'failed stderr' >&2; exit 23"]
+  failure := verify.run("/bin/sh", failure_args, ".", 5_000_000_000)
+  // Retain both snapshots across another native output allocation and destruction.
+  expect(success, 0, 0, "owned stdout", "owned stderr")?
+  expect(failure, 0, 23, "failed stdout", "failed stderr")?
+
+  exit127_args := ["/bin/sh", "-c", "exit 127"]
+  expect(verify.run("/bin/sh", exit127_args, ".", 5_000_000_000), 0, 127, "", "")?
+
+  // SIGTERM is 15 on both supported POSIX hosts; preserve the application code 128+15.
+  signal_args := ["/bin/sh", "-c", "printf 'signal stdout'; printf 'signal stderr' >&2; kill -TERM $$"]
+  expect(verify.run("/bin/sh", signal_args, ".", 5_000_000_000), 0, 143, "signal stdout", "signal stderr")?
+
+  // A child cannot be executed below a regular executable file (ENOTDIR).
+  missing_args := ["/bin/sh/verify-status-missing"]
+  expect(verify.run("/bin/sh/verify-status-missing", missing_args, ".", 5_000_000_000), 2, -1, "", "")?
+
+  // Shell builtins create no descendants; synchronous timeout kills and reaps this child.
+  timeout_args := ["/bin/sh", "-c", "printf 'discarded stdout'; printf 'discarded stderr' >&2; while :; do :; done"]
+  expect(verify.run("/bin/sh", timeout_args, ".", 20_000_000), 1, -1, "", "")?
+  print("verify status smoke: six captured outcomes PASS")
+  return Ok(())
+}

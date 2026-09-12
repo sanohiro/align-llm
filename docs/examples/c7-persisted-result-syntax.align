@@ -78,9 +78,9 @@ fn persist_then_verify(input_path: str, output_path: str) -> Result<(), Error> {
 }
 
 // Section 4.4 canonical wire access. The declared-record form is the same context-inferred call the
-// pinned `core.json` surface ships; the encoder view is consumed inside this scope only.
+// pinned `core.json` surface ships; the owned encoder result is consumed inside this scope only.
 fn canonical_bytes(document: str) -> Result<(), Error> {
   input: C7VerificationInput := json.decode(document)?
-  print(json.encode(input))
+  print(json.encode(input)?)
   return Ok(())
 }

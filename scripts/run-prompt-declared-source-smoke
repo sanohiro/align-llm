@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "$scratch" && pwd -P)"
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/root/tree/emptydir" "$scratch/root/many"
+root="$scratch/root"
+printf abc > "$root/a"
+printf xy > "$root/tree/b"
+: > "$root/empty"
+dd if=/dev/zero of="$root/big" bs=2097152 count=1 2>/dev/null
+chmod 644 "$root/a" "$root/empty" "$root/big"
+chmod 755 "$root/tree" "$root/tree/b" "$root/tree/emptydir" "$root/many"
+for n in $(seq 1 127); do name="$(printf '%03d' "$n")"; mkdir "$root/many/$name"; chmod 755 "$root/many/$name"; done
+sha() { shasum -a 256 | cut -d ' ' -f 1; }
+file_hash() { printf '%s %s\0F %s\n' "$1" "$2" "$(sha < "$root/$2")" | sha; }
+a_raw="$(sha < "$root/a")"
+a="$(file_hash 100644 a)"
+empty="$(file_hash 100644 empty)"
+big="$(file_hash 100644 big)"
+tree="$( { printf '040755 tree\0D\n'; printf '100755 tree/b\0F %s\n' "$(sha < "$root/tree/b")"; printf '040755 tree/emptydir\0D\n'; } | sha )"
+many="$( { printf '040755 many\0D\n'; for n in $(seq 1 127); do printf '040755 many/%03d\0D\n' "$n"; done; } | sha )"
+ln -s a "$root/symlink"
+printf abc > "$root/hardlink"
+ln "$root/hardlink" "$root/peer"
+mkfifo "$root/fifo"
+"$compiler" check-per-unit "$project_root/src/prompt_declared_source_smoke.align"
+"$compiler" run "$project_root/src/prompt_declared_source_smoke.align" -- "$root" "$a" "$tree" "$empty" "$big" "$many" "$a_raw"

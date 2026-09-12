@@ -1,0 +1,117 @@
+module prompt_task_definition_smoke
+
+import prompt_task_definition
+import core.json
+
+fn fixture(field: i64, replacement: str, omit: bool, extra: str) -> string {
+  names := ["schema_version", "id", "source_dir", "source_revision", "allowed_edits", "validation_argv", "validation_timeout_seconds"]
+  values := ["1", "\"task\"", "\"../source\"", "\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"", "[\"file.align\"]", "[\"tool\",\"$(touch unwanted); echo x\",\"a b\"]", "7"]
+  output := builder()
+  output.write("{")
+  mut index := 0
+  mut first := true
+  loop {
+    if index == names.len() { break }
+    if index != field || !omit {
+      if !first { output.write(",") }
+      first = false
+      output.write("\"")
+      output.write(names[index])
+      output.write("\":")
+      output.write(if index == field { replacement } else { values[index] })
+    }
+    index = index + 1
+  }
+  output.write(extra)
+  output.write("}")
+  return output.to_string()
+}
+
+fn owned() -> Result<prompt_task_definition.TaskDefinition, Error> {
+  source := fixture(-1, "", false, "")
+  return prompt_task_definition.decode(source)
+}
+
+fn refuse(source: str) -> Result<(), Error> {
+  match prompt_task_definition.decode(source) {
+    Ok(_) => { print(source); return Err(Error.Invalid) },
+    Err(_) => {},
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 { return Err(Error.Invalid) }
+  task := owned()?
+  if task.id != "task" || task.source_dir != "../source" || task.validation_timeout_seconds != 7 ||
+  task.validation_argv.len() != 3 || task.validation_argv[1] != "$(touch unwanted); echo x" ||
+  task.validation_argv[2] != "a b" || task.allowed_edits[0] != "file.align" { return Err(Error.Invalid) }
+  encoded := json.encode(task)?
+  decoded := prompt_task_definition.decode(encoded)?
+  if json.encode(decoded)? != encoded { return Err(Error.Invalid) }
+  mut index := 0
+  loop {
+    if index == 7 { break }
+    missing := fixture(index, "", true, "")
+    refuse(missing)?
+    null_field := fixture(index, "null", false, "")
+    refuse(null_field)?
+    bool_field := fixture(index, "true", false, "")
+    refuse(bool_field)?
+    empty := fixture(index, "\"\"", false, "")
+    refuse(empty)?
+    index = index + 1
+  }
+  bad_schema := ["0", "2", "1.0", "1e0", "\"1\""]
+  index = 0
+  loop {
+    if index == bad_schema.len() { break }
+    source := fixture(0, bad_schema[index], false, "")
+    refuse(source)?
+    index = index + 1
+  }
+  bad_timeout := ["0", "-1", "1.0", "1e0", "\"1\"", "9223372036854775808"]
+  index = 0
+  loop {
+    if index == bad_timeout.len() { break }
+    source := fixture(6, bad_timeout[index], false, "")
+    refuse(source)?
+    index = index + 1
+  }
+  bad_arrays := ["[]", "[\"\"]", "[1]", "[true]", "[null]", "[[]]", "{}", "\"tool\""]
+  index = 0
+  loop {
+    if index == bad_arrays.len() { break }
+    edits := fixture(4, bad_arrays[index], false, "")
+    argv := fixture(5, bad_arrays[index], false, "")
+    refuse(edits)?
+    refuse(argv)?
+    index = index + 1
+  }
+  extra := fixture(-1, "", false, ",\"unknown\":null")
+  duplicate := fixture(-1, "", false, ",\"id\":\"last\"")
+  refuse(extra)?
+  refuse(duplicate)?
+  duplicate_missing := fixture(2, "", true, ",\"id\":\"last\"")
+  refuse(duplicate_missing)?
+  maximum_timeout := fixture(6, "9223372036854775807", false, "")
+  maximum_task := prompt_task_definition.decode(maximum_timeout)?
+  if maximum_task.validation_timeout_seconds != 9223372036854775807 { return Err(Error.Invalid) }
+  // Forty Unicode code points and nonhex ASCII retain the historical loader semantics.
+  unicode := fixture(3, "\"éééééééééééééééééééééééééééééééééééééééé\"", false, "")
+  unicode_task := prompt_task_definition.decode(unicode)?
+  if unicode_task.source_revision.len() != 80 { return Err(Error.Invalid) }
+  short_revision := fixture(3, "\"short\"", false, "")
+  refuse(short_revision)?
+  long_revision := fixture(3, "\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"", false, "")
+  refuse(long_revision)?
+  malformed := ["", "{", "[]", "null", "true", "{} {}"]
+  index = 0
+  loop {
+    if index == malformed.len() { break }
+    refuse(malformed[index])?
+    index = index + 1
+  }
+  print("task definition smoke: owned roundtrip, seven exact fields, required types, Unicode revision length, positive i64 timeout, arrays, duplicate/unknown refusal and literal argv PASS")
+  return Ok(())
+}

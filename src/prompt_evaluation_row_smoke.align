@@ -1,0 +1,95 @@
+module prompt_evaluation_row_smoke
+
+import core.json
+import prompt_artifacts
+import prompt_environment
+import prompt_evaluation_invocation
+import prompt_evaluation_row
+import prompt_evaluation_runtime
+import prompt_generation_worker
+import prompt_invocation_records
+import prompt_scope_cleanup
+import prompt_task_inputs
+import std.fs
+import std.io
+import std.process
+import std.time
+
+Input {
+  evaluation: prompt_artifacts.PromptEvaluateRequest, source_policy: prompt_artifacts.PromptSourceVerifierPolicy,
+  task: prompt_task_inputs.Task, variant: prompt_artifacts.PromptVariant, rendered: prompt_artifacts.RenderedPromptArtifact,
+}
+Output {
+  status: string, error: string, rows: array<prompt_artifacts.PromptTaskRow>,
+  requests: array<prompt_artifacts.SnapshotRequest>, snapshots: array<prompt_artifacts.SnapshotResult>,
+  inputs: array<prompt_artifacts.TaskInputSnapshot>, attestations: array<prompt_artifacts.RunSnapshotAttestation>,
+  expected: array<prompt_artifacts.PromptExpectedInputDigest>, survivors: array<string>,
+}
+
+fn execute(borrow input: Input, mode: str, borrow mut signals: process.signal_subscription) -> Result<Output, Error> {
+  runtime := prompt_evaluation_runtime.admit(input.evaluation, input.source_policy, input.task.environment, time.instant() + 10000000000)?
+  source := prompt_evaluation_runtime.source(input.evaluation.project_root, input.task, time.instant() + 10000000000)?
+  workspace := fs.open_directory(input.evaluation.workspace_path)?
+  procfs := fs.open_directory("/proc")?
+  product: str := match input.evaluation.product_executable_sha256 { None => { return Err(Error.Invalid) }, Some(value) => value }
+  probe := prompt_environment.observe(prompt_environment.Producer.Snapshot, input.evaluation.verifier_align_revision, product)?
+  environment := prompt_invocation_records.environment(probe, input.evaluation, input.task.environment.content_sha256)?
+  row_bindings := prompt_invocation_records.RowBindings {
+    evaluation_id: input.evaluation.evaluation_id.clone(), parent_sha256: input.variant.content_sha256.clone(),
+    candidate_sha256: input.variant.content_sha256.clone(), environment_sha256: environment.environment_id.clone(),
+  }
+  mut rows: array_builder<prompt_artifacts.PromptTaskRow> := array_builder()
+  mut requests: array_builder<prompt_artifacts.SnapshotRequest> := array_builder()
+  mut snapshots: array_builder<prompt_artifacts.SnapshotResult> := array_builder()
+  mut inputs: array_builder<prompt_artifacts.TaskInputSnapshot> := array_builder()
+  mut attestations: array_builder<prompt_artifacts.RunSnapshotAttestation> := array_builder()
+  mut expected: array_builder<prompt_artifacts.PromptExpectedInputDigest> := array_builder()
+  mut survivors: array_builder<string> := array_builder()
+  empty: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  mut baseline := empty.build()
+  mut status := "COMPLETE".clone()
+  mut error := "NONE".clone()
+  mut sample := 1
+  loop {
+    if sample > 2 { break }
+    invocation := prompt_invocation_records.Invocation { task_ordinal: 0, sample_index: sample, attempt_index: 1, candidate: true, paired_seed: 6 + sample }
+    outcome := prompt_evaluation_row.run(input.evaluation, input.task, input.variant, input.rendered, environment,
+      invocation, row_bindings, baseline, runtime, source.directory, workspace, procfs, signals, "",
+      requests, snapshots, inputs, attestations, expected, survivors)?
+    match outcome {
+      Complete(row) => { rows.push(row) },
+      Failed(failure) => { status = "ERROR".clone(); error = failure.code.clone(); break },
+      Stopped(owner) => {
+        io.stderr.write(owner.storage.path)?
+        mut scope := owner.scope
+        released := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+        if !released.released { return Err(Error.Timeout) }
+        prompt_evaluation_runtime.remove(owner.storage, true, time.instant() + 10000000000)?
+        mut owned := owner.owned
+        prompt_evaluation_invocation.retire(workspace, owner.names, owned)?
+        return Err(Error.Invalid)
+      },
+    }
+    if sample == 1 && mode == "drift" {
+      name := builder(); name.write(input.evaluation.project_root); name.write("/experiment")
+      fs.write_file(name.to_string(), "changed")?
+    }
+    sample = sample + 1
+  }
+  return Ok(Output { status: status, error: error, rows: rows.build(), requests: requests.build(), snapshots: snapshots.build(),
+      inputs: inputs.build(), attestations: attestations.build(), expected: expected.build(), survivors: survivors.build() })
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 3 && args[1] == "--prompt-generation-worker" { return prompt_generation_worker.run(args[2]) }
+  if args.len() != 3 { return Err(Error.Invalid) }
+  raw := fs.read_file(args[1])?
+  input: Input := json.decode(raw)?
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  output := execute(input, args[2], signals)
+  restored := signals.close()
+  result := output?
+  restored?
+  io.stdout.write(json.encode_bounded(result, 16777216)?)?
+  return io.stdout.flush()
+}

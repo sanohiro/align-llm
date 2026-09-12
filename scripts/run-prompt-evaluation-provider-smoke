@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Native evaluation owner against an independent deterministic HTTP provider fixture."""
+
+import os
+import hashlib
+import json
+import pathlib
+import subprocess
+import sys
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import prompt_generate_fixture as fixture
+
+if len(sys.argv) not in (2, 5):
+    raise SystemExit('usage: run-prompt-evaluation-provider-smoke PREPARED_FIXTURE_DIRECTORY [RELOCATABLE_BINARY GGML_LIBRARY_DIRECTORY SHIM_DIRECTORY]')
+root = pathlib.Path(sys.argv[1]).resolve()
+names = ['control.json', 'generation.json', 'environment.json', 'scope.json', 'activation.json',
+         'parent.json', 'experiment.json', 'task-one.json', 'task-two.json']
+originals = {name: (root / name).read_bytes() for name in names}
+def canonical(value):
+    return json.dumps(value, separators=(',', ':'), ensure_ascii=False).encode()
+def seal(value):
+    value['content_sha256'] = ''
+    value['content_sha256'] = hashlib.sha256(canonical(value)).hexdigest()
+    return value
+def read(name):
+    return json.loads((root / name).read_bytes())
+def write(name, value):
+    (root / name).write_bytes(canonical(seal(value)))
+    return value
+
+fixture.PATCH_TEXT = 'FILE: a\n```\nafter\n```'
+server, thread = fixture.start_server()
+try:
+    control = read('control.json')
+    control['provider_kind'] = 'LOCAL_OPENAI'
+    control['endpoint'] = server.base + '/openai/ok'
+    control['timeout_ns'] = 10000000000
+    control = write('control.json', control)
+    generation = read('generation.json')
+    generation['evaluation_provider_kind'] = 'LOCAL_OPENAI'
+    generation['provider_control_sha256'] = control['content_sha256']
+    generation = write('generation.json', generation)
+    environment = read('environment.json')
+    environment['allowed_variables'].append({'name':'LD_LIBRARY_PATH',
+        'non_secret_value':os.environ['LD_LIBRARY_PATH'],
+        'source':'EXPLICIT_POLICY','precedence':2})
+    write('environment.json', environment)
+    scope = read('scope.json')
+    scope['generation_policy_sha256'] = generation['content_sha256']
+    scope['evaluation_provider_kind'] = 'LOCAL_OPENAI'
+    scope = write('scope.json', scope)
+    activation = read('activation.json')
+    activation['scope'] = scope
+    activation = write('activation.json', activation)
+    parent = read('parent.json')
+    parent['activation'] = activation
+    parent = write('parent.json', parent)
+    experiment = read('experiment.json')
+    experiment['scope'] = scope
+    experiment['parent_activation']['content_sha256'] = parent['content_sha256']
+    write('experiment.json', experiment)
+    policy = seal({'schema_version':1,'artifact_kind':'EDIT_POLICY','maximum_file_blocks':32,
+                   'maximum_edit_bytes':262144,'refuse_unchanged_files':True,'content_sha256':''})
+    for name in ['task-one.json', 'task-two.json']:
+        task = read(name)
+        task['execution_kind'] = 'PROVIDER_EDIT'
+        del task['patch_path'], task['patch_sha256']
+        task['artifacts'] = task['artifacts'][:1]
+        prompt_path = task['task_prompt_path']
+        prompt_sha = hashlib.sha256((root/prompt_path).read_bytes()).hexdigest()
+        prompt_identity = hashlib.sha256(('100644 '+prompt_path+'\0F '+prompt_sha+'\n').encode()).hexdigest()
+        task['artifacts'].append({'path':prompt_path, 'kind':'FILE', 'expected_sha256':prompt_identity})
+        task = {key: value for key, value in task.items() if key != 'content_sha256'}
+        task['edit_policy'] = policy
+        write(name, task)
+    request = read('canonical-request.json')
+    request['evaluation_evidence_path'] = 'provider-evidence.json'
+    (root / 'provider-request.json').write_bytes(canonical(request))
+    execution = subprocess.run([str(root/'main'), 'prompt', 'evaluate', str(root/'provider-request.json'),
+        'provider-result.json'], capture_output=True, timeout=120)
+    print(execution.returncode, execution.stdout.decode(), execution.stderr.decode(), flush=True)
+    if (root/'provider-result.json').exists():
+        result = read('provider-result.json')
+        print({key:result[key] for key in ('status','error_code','error')}, flush=True)
+        assert execution.returncode == 0
+        assert len(result['rows']) == 8
+        assert all(row['measurement']['status'] == 'PASS' for row in result['rows'])
+        assert all(row['measurement']['seed_attestation']['provider_kind'] == 'LOCAL_OPENAI'
+                   and row['measurement']['edit_set'][0]['body_text'] == 'after\n'
+                   for row in result['rows'])
+        assert len(read('provider-evidence.json')['expected_inputs']) == 8
+        assert len(server.requests) == 8
+        assert not list((root/'workspace').iterdir())
+        assert (root/'source/a').read_bytes() == b'before\n'
+        subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve().parent/'check-native-evaluation-fixture'),
+            str(root/'provider-result.json')], check=True, timeout=30)
+        print('native HTTP provider evaluation: eight real requests and sealed generation workers PASS', flush=True)
+        if len(sys.argv) == 5:
+            subprocess.run(['bash', str(pathlib.Path(__file__).resolve().parent/'run-product-evaluation-no-python'),
+                sys.argv[2], str(root), sys.argv[3], sys.argv[4], 'provider'], check=True, timeout=120)
+            assert len(server.requests) == 16
+            print('relocated HTTP provider evaluation: eight additional real requests with Python absent from product namespace PASS', flush=True)
+    else:
+        raise AssertionError('no published result')
+finally:
+    fixture.stop_server(server, thread)
+    for name, data in originals.items():
+        (root/name).write_bytes(data)

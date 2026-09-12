@@ -1,0 +1,266 @@
+module prompt_evaluation_records
+
+import prompt_artifacts
+
+// The evaluation wire embeds admitted input records while the live evaluator retains its input
+// owners. These explicit field copies preserve those logical records without reopening files.
+
+fn copy_string(borrow value: string) -> string = value.clone()
+
+fn copy_option_string(borrow value: Option<string>) -> Option<string> {
+  return match value { None => None, Some(item) => Some(copy_string(item)) }
+}
+
+fn copy_artifact_reference(borrow value: prompt_artifacts.ArtifactReference) -> prompt_artifacts.ArtifactReference {
+  return prompt_artifacts.ArtifactReference {
+    artifact_kind: value.artifact_kind.clone(),
+    path: value.path.clone(),
+    artifact_id: value.artifact_id.clone(),
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+fn copy_option__artifact_reference(borrow value: Option<prompt_artifacts.ArtifactReference>) -> Option<prompt_artifacts.ArtifactReference> {
+  return match value { None => None, Some(item) => Some(copy_artifact_reference(item)) }
+}
+
+fn copy_option__prompt_scope(borrow value: Option<prompt_artifacts.PromptScope>) -> Option<prompt_artifacts.PromptScope> {
+  return match value { None => None, Some(item) => Some(prompt_artifacts.clone_prompt_scope(item)) }
+}
+
+fn copy_option__prompt_variant(borrow value: Option<prompt_artifacts.PromptVariant>) -> Option<prompt_artifacts.PromptVariant> {
+  return match value { None => None, Some(item) => Some(prompt_artifacts.clone_prompt_variant(item)) }
+}
+
+pub fn experiment(borrow value: prompt_artifacts.PromptExperimentResult) -> prompt_artifacts.PromptExperimentResult {
+  return prompt_artifacts.PromptExperimentResult {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    experiment_id: copy_option_string(value.experiment_id),
+    status: value.status.clone(),
+    error_code: value.error_code.clone(),
+    error: value.error.clone(),
+    parent_activation: copy_option__artifact_reference(value.parent_activation),
+    scope: copy_option__prompt_scope(value.scope),
+    opportunity: copy_option__artifact_reference(value.opportunity),
+    proposal_provider_kind: copy_option_string(value.proposal_provider_kind),
+    proposal_provider_endpoint_id: copy_option_string(value.proposal_provider_endpoint_id),
+    proposal_provider_model: copy_option_string(value.proposal_provider_model),
+    proposal_elapsed_ns: value.proposal_elapsed_ns,
+    proposal_status_code: value.proposal_status_code,
+    proposal_summary: value.proposal_summary.clone(),
+    candidate_variant: copy_option__prompt_variant(value.candidate_variant),
+    bounded_provider_output: value.bounded_provider_output.clone(),
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+fn copy_option__prompt_activation(borrow value: Option<prompt_artifacts.PromptActivation>) -> Option<prompt_artifacts.PromptActivation> {
+  return match value { None => None, Some(item) => Some(prompt_artifacts.clone_prompt_activation(item)) }
+}
+
+pub fn activation(borrow value: prompt_artifacts.PromptActivationResult) -> prompt_artifacts.PromptActivationResult {
+  return prompt_artifacts.PromptActivationResult {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    decision_id: copy_option_string(value.decision_id),
+    status: value.status.clone(),
+    error_code: value.error_code.clone(),
+    error: value.error.clone(),
+    activation: copy_option__prompt_activation(value.activation),
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+fn copy_corpus_revision(borrow value: prompt_artifacts.CorpusRevision) -> prompt_artifacts.CorpusRevision {
+  return prompt_artifacts.CorpusRevision {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    source_kind: value.source_kind.clone(),
+    source_repository_id: value.source_repository_id.clone(),
+    source_sha256: value.source_sha256.clone(),
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+fn copy_array_string(values: slice<string>) -> array<string> {
+  mut output: array_builder<string> := array_builder()
+  mut index := 0
+  loop { if index == values.len() { break }; output.push(values[index].clone()); index = index + 1 }
+  return output.build()
+}
+
+pub fn corpus(borrow value: prompt_artifacts.PromptEvaluationCorpus) -> prompt_artifacts.PromptEvaluationCorpus {
+  return prompt_artifacts.PromptEvaluationCorpus {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    corpus_id: value.corpus_id.clone(),
+    corpus_revision: copy_corpus_revision(value.corpus_revision),
+    task_files: copy_array_string(value.task_files),
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+fn copy_option_array_string(borrow value: Option<array<string>>) -> Option<array<string>> {
+  return match value { None => None, Some(item) => Some(copy_array_string(item)) }
+}
+
+fn copy_artifact_expectation(borrow value: prompt_artifacts.ArtifactExpectation) -> prompt_artifacts.ArtifactExpectation {
+  return prompt_artifacts.ArtifactExpectation {
+    path: value.path.clone(),
+    kind: value.kind.clone(),
+    expected_sha256: value.expected_sha256.clone(),
+  }
+}
+
+fn copy_array__artifact_expectation(values: slice<prompt_artifacts.ArtifactExpectation>) -> array<prompt_artifacts.ArtifactExpectation> {
+  mut output: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  mut index := 0
+  loop { if index == values.len() { break }; output.push(copy_artifact_expectation(values[index])); index = index + 1 }
+  return output.build()
+}
+
+fn copy_regression_limits(borrow value: prompt_artifacts.RegressionLimits) -> prompt_artifacts.RegressionLimits {
+  return prompt_artifacts.RegressionLimits {
+    maximum_unrelated_diff_count: value.maximum_unrelated_diff_count,
+    maximum_patch_size_bytes: value.maximum_patch_size_bytes,
+    maximum_public_api_change_count: value.maximum_public_api_change_count,
+    maximum_repair_loops: value.maximum_repair_loops,
+    maximum_benchmark_regression_ppm: value.maximum_benchmark_regression_ppm,
+  }
+}
+
+fn copy_edit_policy(borrow value: prompt_artifacts.EditPolicy) -> prompt_artifacts.EditPolicy {
+  return prompt_artifacts.EditPolicy {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    maximum_file_blocks: value.maximum_file_blocks,
+    maximum_edit_bytes: value.maximum_edit_bytes,
+    refuse_unchanged_files: value.refuse_unchanged_files,
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+fn copy_option__edit_policy(borrow value: Option<prompt_artifacts.EditPolicy>) -> Option<prompt_artifacts.EditPolicy> {
+  return match value { None => None, Some(item) => Some(copy_edit_policy(item)) }
+}
+
+pub fn task(borrow value: prompt_artifacts.PromptEvaluationTask) -> prompt_artifacts.PromptEvaluationTask {
+  return prompt_artifacts.PromptEvaluationTask {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    task_id: value.task_id.clone(),
+    repo_id: value.repo_id.clone(),
+    repo_revision: value.repo_revision.clone(),
+    repo_path: value.repo_path.clone(),
+    require_clean_repo: value.require_clean_repo,
+    execution_kind: copy_option_string(value.execution_kind),
+    cmd: copy_option_string(value.cmd),
+    argv: copy_option_array_string(value.argv),
+    snapshot_cmd: copy_option_string(value.snapshot_cmd),
+    snapshot_argv: copy_option_array_string(value.snapshot_argv),
+    measurement_adapter_runtime: copy_option_string(value.measurement_adapter_runtime),
+    snapshot_helper_runtime: copy_option_string(value.snapshot_helper_runtime),
+    cwd: value.cwd.clone(),
+    timeout_ns: value.timeout_ns,
+    task_prompt_path: value.task_prompt_path.clone(),
+    context_sources_path: value.context_sources_path.clone(),
+    generation_policy_path: value.generation_policy_path.clone(),
+    provider_control_path: value.provider_control_path.clone(),
+    environment_policy_path: value.environment_policy_path.clone(),
+    validation_runner_path: copy_option_string(value.validation_runner_path),
+    validation_runner_sha256: copy_option_string(value.validation_runner_sha256),
+    task_definition_path: value.task_definition_path.clone(),
+    task_definition_sha256: value.task_definition_sha256.clone(),
+    validation_argv: copy_option_array_string(value.validation_argv),
+    patch_path: copy_option_string(value.patch_path),
+    patch_sha256: copy_option_string(value.patch_sha256),
+    artifacts: copy_array__artifact_expectation(value.artifacts),
+    regression_limits: copy_regression_limits(value.regression_limits),
+    repair_template_path: copy_option_string(value.repair_template_path),
+    repair_template_sha256: copy_option_string(value.repair_template_sha256),
+    edit_policy: copy_option__edit_policy(value.edit_policy),
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+pub fn acceptance(borrow value: prompt_artifacts.PromptAcceptancePolicy) -> prompt_artifacts.PromptAcceptancePolicy {
+  return prompt_artifacts.PromptAcceptancePolicy {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    policy_id: value.policy_id.clone(),
+    minimum_task_count: value.minimum_task_count,
+    minimum_samples_per_variant: value.minimum_samples_per_variant,
+    minimum_completion_gain_count: value.minimum_completion_gain_count,
+    minimum_time_improvement_ppm: value.minimum_time_improvement_ppm,
+    maximum_time_regression_ppm: value.maximum_time_regression_ppm,
+    maximum_repair_loop_regression_count: value.maximum_repair_loop_regression_count,
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+pub fn generation(borrow value: prompt_artifacts.GenerationPolicy) -> prompt_artifacts.GenerationPolicy {
+  return prompt_artifacts.GenerationPolicy {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    generation_policy_id: value.generation_policy_id.clone(),
+    evaluation_provider_kind: value.evaluation_provider_kind.clone(),
+    evaluation_provider_endpoint_id: value.evaluation_provider_endpoint_id.clone(),
+    evaluation_provider_model: value.evaluation_provider_model.clone(),
+    provider_control_sha256: value.provider_control_sha256.clone(),
+    provider_service_revision: value.provider_service_revision.clone(),
+    max_prompt_bytes: value.max_prompt_bytes,
+    max_tokens: value.max_tokens,
+    temperature_micros: value.temperature_micros,
+    seed_mode: value.seed_mode.clone(),
+    seed_base: value.seed_base,
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+pub fn control(borrow value: prompt_artifacts.EvaluationProviderControl) -> prompt_artifacts.EvaluationProviderControl {
+  return prompt_artifacts.EvaluationProviderControl {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    provider_control_id: value.provider_control_id.clone(),
+    provider_kind: value.provider_kind.clone(),
+    endpoint: value.endpoint.clone(),
+    endpoint_id: value.endpoint_id.clone(),
+    model: value.model.clone(),
+    api_key_env: copy_option_string(value.api_key_env),
+    tokenize_endpoint: copy_option_string(value.tokenize_endpoint),
+    timeout_ns: value.timeout_ns,
+    max_response_bytes: value.max_response_bytes,
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+pub fn preflight(borrow value: prompt_artifacts.WorkspacePreflightRequest) -> prompt_artifacts.WorkspacePreflightRequest {
+  return prompt_artifacts.WorkspacePreflightRequest {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    evaluation_id: value.evaluation_id.clone(),
+    project_root: value.project_root.clone(),
+    workspace_path: value.workspace_path.clone(),
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+pub fn trust(borrow value: prompt_artifacts.PromptVerifierTrust) -> prompt_artifacts.PromptVerifierTrust {
+  return prompt_artifacts.PromptVerifierTrust {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    expected_align_llm_commit: value.expected_align_llm_commit.clone(),
+    expected_align_revision: value.expected_align_revision.clone(),
+    expected_corpus_source_kind: value.expected_corpus_source_kind.clone(),
+    expected_corpus_source_repository_id: value.expected_corpus_source_repository_id.clone(),
+    expected_corpus_source_sha256: value.expected_corpus_source_sha256.clone(),
+    align_llm_reachability: value.align_llm_reachability.clone(),
+    align_llm_observed_head: copy_option_string(value.align_llm_observed_head),
+    align_reachability: value.align_reachability.clone(),
+    align_observed_revision: copy_option_string(value.align_observed_revision),
+    corpus_reachability: value.corpus_reachability.clone(),
+    corpus_observed_source_sha256: copy_option_string(value.corpus_observed_source_sha256),
+    content_sha256: value.content_sha256.clone(),
+  }
+}

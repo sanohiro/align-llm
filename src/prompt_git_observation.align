@@ -1,0 +1,83 @@
+module prompt_git_observation
+
+import prompt_capture
+import prompt_fixture_command
+import prompt_fixture_setup
+import prompt_git_records
+import prompt_task_supervisor
+import prompt_validation_budget
+import std.fs
+import std.process
+import std.time
+
+pub Observation {
+  tree: array<prompt_git_records.TreeEntry>,
+  index: array<u8>,
+  staged: array<string>,
+  untracked: array<string>,
+  ignored: array<string>,
+}
+pub Readout { Ready(Observation), Stopped(prompt_fixture_setup.Attempt) }
+
+// The index owns its bytes independently of the per-command capture report.
+fn capture_index(bytes: slice<u8>) -> array<u8> = bytes.to_array()
+
+fn operation(index: i64) -> prompt_fixture_command.Operation {
+  if index == 0 { return prompt_fixture_command.Operation.Head }
+  if index == 1 { return prompt_fixture_command.Operation.Tree }
+  if index == 2 { return prompt_fixture_command.Operation.IndexFlags }
+  if index == 3 { return prompt_fixture_command.Operation.Index }
+  if index == 4 { return prompt_fixture_command.Operation.Staged }
+  if index == 5 { return prompt_fixture_command.Operation.Untracked }
+  return prompt_fixture_command.Operation.Ignored
+}
+
+pub fn observe(
+  borrow image: process.image,
+  borrow mut signals: process.signal_subscription,
+  borrow workspace: fs.directory,
+  borrow procfs: fs.directory,
+  workspace_path: str,
+  expected_revision: str,
+  borrow profile: prompt_fixture_command.Profile,
+  outer_deadline: i64,
+) -> Result<Readout, Error> {
+  // Build validates the revision before any earlier query can launch.
+  admission := prompt_fixture_command.build(image, workspace_path, prompt_fixture_command.Operation.Tree, expected_revision, profile)?
+  pattern := prompt_capture.pattern("", 65536)?
+  empty_tree: array_builder<prompt_git_records.TreeEntry> := array_builder()
+  empty_index: array_builder<u8> := array_builder()
+  empty_staged: array_builder<string> := array_builder()
+  empty_untracked: array_builder<string> := array_builder()
+  empty_ignored: array_builder<string> := array_builder()
+  mut tree := empty_tree.build()
+  mut raw_index := empty_index.build()
+  mut staged := empty_staged.build()
+  mut untracked := empty_untracked.build()
+  mut ignored := empty_ignored.build()
+  mut index := 0
+  loop {
+    if index == 7 { break }
+    operand := if index == 1 || index == 4 { expected_revision } else { "" }
+    command := prompt_fixture_command.build(image, workspace_path, operation(index), operand, profile)?
+    stop_at := prompt_validation_budget.deadline(10000000000, outer_deadline)?
+    mut scope := command.start_scope()?
+    outcome := prompt_task_supervisor.run(scope, signals, workspace, procfs, pattern, prompt_task_supervisor.Config {
+        deadline: stop_at, resources: false, limits: prompt_validation_budget.defaults(),
+      })
+    report := match outcome {
+      Ok(value) => value,
+      Err(error) => { return Ok(Readout.Stopped(prompt_fixture_setup.Attempt { operation: index, scope: scope, report: None, error: Some(error) })) },
+    }
+    if !prompt_fixture_setup.accepted(report) {
+      return Ok(Readout.Stopped(prompt_fixture_setup.Attempt { operation: index, scope: scope, report: Some(report), error: None }))
+    }
+    // Acceptance above includes a kernel release certificate before any parse error.
+    bytes: slice<u8> := report.stdout
+    if index == 0 {
+      if bytes.len() != 41 || bytes[40] != 10 || bytes[0..40].as_str()? != expected_revision { return Err(Error.Invalid) }
+    } else if index == 1 { tree = prompt_git_records.parse_tree(bytes, false)? } else if index == 2 { prompt_git_records.validate_index_flags(bytes, false)? } else if index == 3 { raw_index = capture_index(bytes) } else if index == 4 { staged = prompt_git_records.parse_paths(bytes, false)? } else if index == 5 { untracked = prompt_git_records.parse_paths(bytes, false)? } else { ignored = prompt_git_records.parse_paths(bytes, false)? }
+    index = index + 1
+  }
+  return Ok(Readout.Ready(Observation { tree: tree, index: raw_index, staged: staged, untracked: untracked, ignored: ignored }))
+}

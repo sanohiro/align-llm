@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+trap 'rm -rf "${scratch}"' EXIT
+mkdir "${scratch}/root" "${scratch}/decoy" "${scratch}/root/directory"
+printf '\000\377\200A\r\n\000' > "${scratch}/root/binary"
+cp "${scratch}/root/binary" "${scratch}/root/executable"
+cp "${scratch}/root/binary" "${scratch}/root/unusual"
+cp "${scratch}/root/binary" "${scratch}/root/hardlink"
+ln "${scratch}/root/hardlink" "${scratch}/root/hardlink-peer"
+printf changed > "${scratch}/root/changed"
+printf decoyxx > "${scratch}/decoy/binary"
+: > "${scratch}/root/empty"
+chmod 644 "${scratch}/root/binary" "${scratch}/root/changed" "${scratch}/decoy/binary"
+chmod 755 "${scratch}/root/executable"
+chmod 600 "${scratch}/root/unusual"
+ln -s binary "${scratch}/root/link"
+ln -s $'\377\200A\n' "${scratch}/root/raw"
+ln -s directory "${scratch}/root/linked-directory"
+mkfifo "${scratch}/root/fifo"
+head -c 65537 /dev/zero | LC_ALL=C tr '\000' a > "${scratch}/root/large"
+git init -q --object-format=sha1 "${scratch}/oracle"
+# Independent Git and system SHA-256 oracles hash literal payloads, never link contents.
+expected=()
+for kind in binary link raw empty large; do
+  case "${kind}" in
+    binary) cp "${scratch}/root/binary" "${scratch}/payload" ;;
+    link) printf binary > "${scratch}/payload" ;;
+    raw) printf '\377\200A\n' > "${scratch}/payload" ;;
+    empty) : > "${scratch}/payload" ;;
+    large) cp "${scratch}/root/large" "${scratch}/payload" ;;
+  esac
+  expected+=("$(git -C "${scratch}/oracle" hash-object --stdin < "${scratch}/payload")")
+  digest="$(shasum -a 256 "${scratch}/payload")"
+  expected+=("${digest%% *}")
+done
+"${compiler}" check-per-unit "${project_root}/src/prompt_worktree_entry_smoke.align"
+"${compiler}" run "${project_root}/src/prompt_worktree_entry_smoke.align" -- \
+  "${scratch}/root" "${scratch}/retained" "${scratch}/decoy" "${expected[@]}"

@@ -1,0 +1,99 @@
+module prompt_git_metadata_smoke
+
+import prompt_git_metadata
+import std.fs
+import std.time
+
+fn path(base: str, relative: str) -> string {
+  output := builder()
+  output.write(base)
+  output.write("/")
+  output.write(relative)
+  return output.to_string()
+}
+
+fn inspect(borrow value: prompt_git_metadata.Metadata, repository: str, git: str, common: str) -> Result<(), Error> {
+  repository_path: slice<u8> := value.repository.path
+  git_path: slice<u8> := value.git.path
+  common_path: slice<u8> := value.common.path
+  if repository_path.as_str()? != repository || git_path.as_str()? != git || common_path.as_str()? != common { return Err(Error.Invalid) }
+  repository_metadata := metadata(value.repository.directory)?
+  git_metadata := metadata(value.git.directory)?
+  common_metadata := metadata(value.common.directory)?
+  if !match repository_metadata.kind { Directory => true, _ => false } ||
+  !match git_metadata.kind { Directory => true, _ => false } ||
+  !match common_metadata.kind { Directory => true, _ => false } { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn accepted(base: str, name: str, git: str, common: str) -> Result<(), Error> {
+  repository_path := path(base, name)
+  git_path := path(base, git)
+  common_path := path(base, common)
+  value := prompt_git_metadata.admit(repository_path, time.instant() + 10000000000)?
+  return inspect(value, repository_path, git_path, common_path)
+}
+
+fn refused(base: str, name: str) -> Result<(), Error> {
+  repository := path(base, name)
+  match prompt_git_metadata.admit(repository, time.instant() + 10000000000) {
+    Err(_) => {}, Ok(_) => { print(name); return Err(Error.Invalid) },
+  }
+  return Ok(())
+}
+
+fn expired(base: str) -> Result<prompt_git_metadata.Metadata, Error> {
+  owned_path := path(base, "ordinary")
+  return prompt_git_metadata.admit(owned_path, time.instant() + 10000000000)
+}
+
+fn retained_marker(borrow directory: fs.directory) -> Result<(), Error> {
+  reader := directory.open_read_single_link("marker".bytes())?
+  mut bytes := buffer(16)
+  count := reader.read(bytes)?
+  if count != 8 || bytes.bytes().as_str()? != "original" { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 { return Err(Error.Invalid) }
+  base := args[1]
+  accepted(base, "ordinary", "ordinary/.git", "ordinary/.git")?
+  accepted(base, "linked", "administration/worktrees/linked", "administration")?
+  accepted(base, "absolute", "administration/worktrees/absolute", "administration")?
+  accepted(base, "relative", "relative/admin", "relative/common")?
+  accepted(base, "exact-pointer", "exact-pointer/targetx", "exact-pointer/targetx")?
+  accepted(base, "exact-common", "exact-common/.git", "exact-common/.git/commonx")?
+  accepted(base, "interior-cr", "interior-target\rmiddle", "interior-target\rmiddle")?
+  accepted(base, "spaced", "directory with spaces", "directory with spaces")?
+  rejected := ["gitdir-crlf", "common-crlf", "missing-target", "common-missing-target", "common-extra-newline", "missing", "bad-prefix", "missing-newline", "extra-newline", "nul-pointer", "large-pointer", "pointer-symlink", "pointer-fifo", "pointer-hardlink", "git-symlink", "common-newline", "common-nul", "common-large", "common-symlink", "common-fifo", "common-hardlink", "config-symlink", "config-fifo", "config-hardlink", "common-command", "worktree-command", "worktree-symlink", "worktree-fifo", "worktree-hardlink", "replace-directory", "replace-file", "replace-dangling", "grafts-file", "grafts-dangling", "alternates-file", "alternates-dangling", "large-config"]
+  mut index := 0
+  loop {
+    if index == rejected.len() { break }
+    refused(base, rejected[index])?
+    index = index + 1
+  }
+  match prompt_git_metadata.admit("relative", time.instant() + 10000000000) { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  ordinary := path(base, "ordinary")
+  match prompt_git_metadata.admit(ordinary, 0) { Err(error) => { if !match error { Timeout => true, _ => false } { return Err(Error.Invalid) } }, Ok(_) => { return Err(Error.Invalid) } }
+  value := expired(base)?
+  original := metadata(value.repository.directory)?
+  moved := path(base, "moved")
+  decoy := path(base, "decoy")
+  fs.rename_no_replace(ordinary, moved)?
+  fs.rename_no_replace(decoy, ordinary)?
+  retained := metadata(value.repository.directory)?
+  if retained.device != original.device || retained.inode != original.inode { return Err(Error.Invalid) }
+  retained_marker(value.common.directory)?
+  replacement := prompt_git_metadata.admit(ordinary, time.instant() + 10000000000)?
+  replaced := metadata(replacement.repository.directory)?
+  if replaced.device == original.device && replaced.inode == original.inode { return Err(Error.Invalid) }
+  git := path(base, "ordinary/.git")
+  inspect(value, ordinary, git, git)?
+  refused(base, "empty-pointer")?
+  refused(base, "empty-common")?
+  print("Git metadata: ordinary/linked layouts, unsafe metadata refusal and retained owners passed")
+  return Ok(())
+}
+
+fn metadata(borrow directory: fs.directory) -> Result<fs.metadata, Error> { return directory.metadata() }

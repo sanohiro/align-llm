@@ -1,0 +1,155 @@
+module prompt_worktree_changes
+
+import prompt_git_records
+import prompt_worktree
+
+pub Decision { Untracked, Ignored, NoChange, Disallowed, Allowed }
+pub Admission { decision: Decision, changed: array<string> }
+
+fn string_at(values: slice<string>, index: i64) -> str = values[index]
+
+fn sorted_unique(paths: array<string>) -> array<string> {
+  mut positions: array_builder<i64> := array_builder()
+  mut index := 0
+  loop {
+    if index == paths.len() { break }
+    positions.push(index)
+    index = index + 1
+  }
+  keys := positions.build()
+  view: slice<string> := paths
+  sorted := keys.sort_by_key(fn position { string_at(view, position) })
+  mut output: array_builder<string> := array_builder()
+  index = 0
+  loop {
+    if index == sorted.len() { break }
+    if index == 0 || paths[sorted[index]] != paths[sorted[index - 1]] {
+      output.push(paths[sorted[index]].clone())
+    }
+    index = index + 1
+  }
+  return output.build()
+}
+
+fn observed_index(entries: slice<prompt_worktree.Entry>, path: str) -> Option<i64> {
+  mut low := 0
+  mut high := entries.len()
+  loop {
+    if low == high { break }
+    middle := low + (high - low) / 2
+    if entries[middle].path < path { low = middle + 1 } else { high = middle }
+  }
+  return if low < entries.len() && entries[low].path == path { Some(low) } else { None }
+}
+
+fn matches(borrow expected: prompt_git_records.TreeEntry, borrow observed: prompt_worktree.Entry) -> bool {
+  correct_mode := if observed.symlink { expected.mode == "120000" } else {
+    (expected.mode == "100644" && observed.mode == 420) ||
+    (expected.mode == "100755" && observed.mode == 493)
+  }
+  return correct_mode && expected.blob == observed.blob
+}
+
+pub fn changes(expected: slice<prompt_git_records.TreeEntry>, observed: slice<prompt_worktree.Entry>) -> array<string> {
+  mut output: array_builder<string> := array_builder()
+  mut index := 0
+  loop {
+    if index == observed.len() { break }
+    mut found := false
+    mut prior := 0
+    loop {
+      if prior == expected.len() { break }
+      if expected[prior].path == observed[index].path { found = true; break }
+      prior = prior + 1
+    }
+    if !found { output.push(observed[index].path.clone()) }
+    index = index + 1
+  }
+  index = 0
+  loop {
+    if index == expected.len() { break }
+    path: str := expected[index].path
+    changed := match observed_index(observed, path) {
+      None => true,
+      Some(position) => !matches(expected[index], observed[position]),
+    }
+    if changed { output.push(path.clone()) }
+    index = index + 1
+  }
+  return sorted_unique(output.build())
+}
+
+fn same_bytes(left: slice<u8>, right: slice<u8>) -> bool {
+  if left.len() != right.len() { return false }
+  mut index := 0
+  loop {
+    if index == left.len() { break }
+    if left[index] != right[index] { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn same_entry(borrow left: prompt_worktree.Entry, borrow right: prompt_worktree.Entry) -> bool {
+  if left.path != right.path || left.symlink != right.symlink || left.mode != right.mode { return false }
+  if left.symlink { return same_bytes(left.target, right.target) }
+  return left.bytes == right.bytes && left.sha256 == right.sha256
+}
+
+pub fn same_entries(before: slice<prompt_worktree.Entry>, after: slice<prompt_worktree.Entry>) -> bool {
+  if before.len() != after.len() { return false }
+  mut index := 0
+  loop {
+    if index == before.len() { break }
+    if !same_entry(before[index], after[index]) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+pub fn same_directories(before: slice<prompt_worktree.DirectoryEntry>, after: slice<prompt_worktree.DirectoryEntry>) -> bool {
+  if before.len() != after.len() { return false }
+  mut index := 0
+  loop {
+    if index == before.len() { break }
+    if before[index].path != after[index].path || before[index].mode != after[index].mode { return false }
+    index = index + 1
+  }
+  return true
+}
+
+pub fn admit(actual: slice<string>, staged: slice<string>, untracked: slice<string>, ignored: slice<string>, allowed: slice<str>) -> Admission {
+  mut combined: array_builder<string> := array_builder()
+  mut index := 0
+  loop {
+    if index == actual.len() { break }
+    combined.push(actual[index].clone())
+    index = index + 1
+  }
+  index = 0
+  loop {
+    if index == staged.len() { break }
+    combined.push(staged[index].clone())
+    index = index + 1
+  }
+  changed := sorted_unique(combined.build())
+  mut result := Decision.Allowed
+  if untracked.len() != 0 { result = Decision.Untracked } else if ignored.len() != 0 {
+    result = Decision.Ignored
+  } else if changed.len() == 0 { result = Decision.NoChange } else {
+    index = 0
+    loop {
+      if index == changed.len() { break }
+      mut found := false
+      mut candidate := 0
+      loop {
+        if candidate == allowed.len() { break }
+        if changed[index] == allowed[candidate] { found = true; break }
+        candidate = candidate + 1
+      }
+      if !found { result = Decision.Disallowed; break }
+      index = index + 1
+    }
+  }
+  return Admission { decision: result, changed: changed }
+}

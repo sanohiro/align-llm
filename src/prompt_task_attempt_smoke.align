@@ -1,0 +1,121 @@
+module prompt_task_attempt_smoke
+
+import core.json
+import prompt_artifacts
+import prompt_fixture_command
+import prompt_invocation_records
+import prompt_scope_cleanup
+import prompt_task_attempt
+import prompt_task_inputs
+import prompt_tool_image
+import prompt_workspace_cleanup
+import std.fs
+import std.io
+import std.path
+import std.process
+import std.time
+
+// Test-only admitted documents. Production enters through complete source/document admission.
+Input { task: prompt_task_inputs.Task, request: prompt_artifacts.TaskAdapterRequest, rendered: prompt_artifacts.RenderedPromptArtifact, paths: prompt_task_attempt.Paths }
+
+fn persist(borrow input: Input, measurement: prompt_artifacts.TaskMeasurement, root_path: str, elapsed: i64) -> Result<string, Error> {
+  encoded_measurement := json.encode_bounded(measurement, 262144)?
+  include_skipped := measurement.status == "FAIL"
+  candidate := input.request.variant == "CANDIDATE"
+  invocation := prompt_invocation_records.Invocation { task_ordinal: 0, sample_index: 1, attempt_index: 1, candidate: candidate, paired_seed: 7 }
+  names := prompt_invocation_records.paths(root_path, input.paths.workspace, invocation)?
+  if names.variant_relative != (if candidate { "workspace/t1-s1-candidate-a1-variant.json" } else { "workspace/t1-s1-parent-a1-variant.json" }) { return Err(Error.Invalid) }
+  expected := prompt_invocation_records.expected(input.task, measurement, input.request.content_sha256, invocation)?
+  encoded_expected := json.encode_bounded(expected, 65536)?
+  root := fs.open_directory(root_path)?
+  expected_file := root.create_new("expected_record".bytes())?
+  expected_file.write(encoded_expected)?
+  bindings := prompt_invocation_records.AttemptBindings {
+    snapshot_request_sha256: input.request.content_sha256.clone(), before_sha256: input.request.content_sha256.clone(),
+    after_sha256: input.request.content_sha256.clone(), input_sha256: input.request.content_sha256.clone(),
+    adapter_request_sha256: input.request.content_sha256.clone(), preparation_ns: 0, elapsed_ns: elapsed,
+  }
+  attempt := prompt_invocation_records.attempt(measurement, bindings, invocation, None)?
+  encoded_attempt := json.encode_bounded(attempt, 1048576)?
+  attempt_file := root.create_new("attempt_record".bytes())?
+  attempt_file.write(encoded_attempt)?
+  skipped := prompt_invocation_records.skipped("REPAIR_NOT_ELIGIBLE", None, 5, 7)?
+  encoded_skipped := json.encode_bounded(skipped, 1048576)?
+  skipped_file := root.create_new("skipped_record".bytes())?
+  skipped_file.write(encoded_skipped)?
+  mut records: array_builder<prompt_artifacts.TaskAttemptRecord> := array_builder()
+  records.push(attempt)
+  if include_skipped { records.push(skipped) }
+  row_bindings := prompt_invocation_records.RowBindings {
+    evaluation_id: input.request.evaluation_id.clone(), parent_sha256: input.request.variant_sha256.clone(),
+    candidate_sha256: input.request.variant_sha256.clone(), environment_sha256: input.task.environment.content_sha256.clone(),
+  }
+  row := prompt_invocation_records.row(input.task, row_bindings, bindings, input.rendered, invocation, records.build())?
+  encoded_row := json.encode_bounded(row, 4194304)?
+  row_file := root.create_new("row_record".bytes())?
+  row_file.write(encoded_row)?
+  attestation := prompt_invocation_records.attestation(input.task.manifest.task_id, invocation, bindings)?
+  encoded_attestation := json.encode_bounded(attestation, 65536)?
+  attestation_file := root.create_new("attestation_record".bytes())?
+  attestation_file.write(encoded_attestation)?
+  return Ok(encoded_measurement)
+}
+
+fn execute(borrow input: Input, image_root: str, git_hash: str, source_path: str, patch_root_path: str, response_path: str, mode: str) -> Result<prompt_artifacts.TaskMeasurement, Error> {
+  image_directory := fs.open_directory(image_root)?
+  git := prompt_tool_image.admit(image_directory, "git".bytes(), git_hash, 16777216, time.instant() + 10000000000)?
+  source := fs.open_directory(source_path)?
+  workspace := fs.open_directory(input.paths.workspace)?
+  original := workspace.metadata()?
+  patch_root := fs.open_directory(patch_root_path)?
+  procfs := fs.open_directory("/proc")?
+  probe_path := if mode == "containment" { "/usr/bin/false" } else { "/usr/bin/true" }
+  probe := process.command(probe_path, [probe_path])
+  validation := process.command("/bin/sh", ["/bin/sh", "-c", "if [ \"$1\" = timeout ]; then exec sleep 120; fi; if [ \"$1\" = baseline ]; then exit 0; fi; if [ \"$(cat a)\" = before ]; then exit 1; fi; if [ \"$1\" = testfail ]; then echo secret >&2; exit 2; fi; echo secret; exit 0", "attempt-owner", mode])
+  validation.cwd(input.paths.workspace)
+  worker: Option<command> := if input.task.control.provider_kind == "FIXTURE" { None } else {
+    Some(process.command("/bin/cat", ["/bin/cat", response_path]))
+  }
+  profile := prompt_fixture_command.Profile { fresh: false, library_path: "".clone(), ld_library_path: "".clone(), pkg_config_path: "".clone() }
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  result := prompt_task_attempt.run(input.task, input.request, input.rendered, input.paths, source, workspace,
+    patch_root, procfs, git, probe, validation, worker, signals, profile, "secret", ["a"])
+  measurement := match result {
+    Err(error) => { signals.close()?; return Err(error) },
+    Ok(value) => match value {
+      Finished(measured) => measured,
+      Stopped(stopped) => {
+        mut scope := stopped.scope
+        cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)
+        restored := signals.close()
+        released := cleanup?
+        restored?
+        if !released.released { return Err(Error.Timeout) }
+        return Err(Error.Invalid)
+      },
+    },
+  }
+  signals.close()?
+  parent := fs.open_directory(path.dir(input.paths.workspace))?
+  removed := prompt_workspace_cleanup.remove(parent, path.base(input.paths.workspace).bytes(), workspace,
+    original.device, original.inode, true, 32768, time.instant() + 10000000000)?
+  return prompt_task_attempt.storage_cleanup(measurement, mode != "cleanup")
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 9 { return Err(Error.Invalid) }
+  if args[1] == "Darwin" {
+    match fs.memory_file(fs.memory_kind.Executable, 1) {
+      Err(error) => match error { Code(code) => { if code == 45 { print("task attempt: Darwin ENOTSUP PASS; Linux execution not exercised"); return Ok(()) }; return Err(error) }, _ => { return Err(error) } },
+      _ => { return Err(Error.Invalid) },
+    }
+  }
+  source := fs.read_file(args[2])?
+  input: Input := json.decode(source)?
+  started := time.instant()
+  value := execute(input, args[3], args[4], args[5], args[6], args[7], args[8])?
+  elapsed := time.instant() - started
+  output := persist(input, value, args[6], elapsed)?
+  io.stdout.write(output)?
+  return io.stdout.flush()
+}

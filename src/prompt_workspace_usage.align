@@ -1,0 +1,70 @@
+module prompt_workspace_usage
+
+import prompt_deleted_open_file
+import std.fs
+import std.time
+
+pub Usage { files: i64, bytes: i64, visible: array<prompt_deleted_open_file.Inode> }
+Counts { files: i64, bytes: i64 }
+
+fn check_deadline(deadline: i64) -> Result<(), Error> {
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  return Ok(())
+}
+
+fn git_name(name: slice<u8>) -> bool {
+  return name.len() == 4 && name[0] == 46 && name[1] == 103 && name[2] == 105 && name[3] == 116
+}
+
+fn walk(borrow root: fs.directory, depth: i64, prefix_bytes: i64, max_files: i64, max_bytes: i64, deadline: i64, initial: Counts, borrow mut visible: array_builder<prompt_deleted_open_file.Inode>) -> Result<Counts, Error> {
+  check_deadline(deadline)?
+  cursor := root.cursor()?
+  check_deadline(deadline)?
+  mut counts := initial
+  loop {
+    check_deadline(deadline)?
+    next := cursor.next()?
+    check_deadline(deadline)?
+    entry := next else { break }
+    name: slice<u8> := entry.name
+    if depth == 0 && git_name(name) {} else {
+      if counts.files == max_files { return Err(Error.Invalid) }
+      path_bytes := prefix_bytes + (if depth == 0 { 0 } else { 1 }) + name.len()
+      if path_bytes > 4096 { return Err(Error.Invalid) }
+      check_deadline(deadline)?
+      metadata := root.metadata_at(name)?
+      check_deadline(deadline)?
+      counts.files = counts.files + 1
+      match metadata.kind {
+        Regular => {
+          if metadata.size < 0 || metadata.size > max_bytes - counts.bytes { return Err(Error.Invalid) }
+          counts.bytes = counts.bytes + metadata.size
+          visible.push(prompt_deleted_open_file.Inode { device: metadata.device, inode: metadata.inode })
+        },
+        Directory => {
+          if depth == 128 { return Err(Error.Invalid) }
+          check_deadline(deadline)?
+          child := root.open_dir(name)?
+          check_deadline(deadline)?
+          actual := child.metadata()?
+          check_deadline(deadline)?
+          directory := match actual.kind { Directory => true, _ => false }
+          if !directory || actual.device != metadata.device || actual.inode != metadata.inode { return Err(Error.Invalid) }
+          counts = walk(child, depth + 1, path_bytes, max_files, max_bytes, deadline, counts, visible)?
+        },
+        _ => {},
+      }
+    }
+  }
+  check_deadline(deadline)?
+  return Ok(counts)
+}
+
+pub fn observe(borrow root: fs.directory, max_files: i64, max_bytes: i64, deadline: i64) -> Result<Usage, Error> {
+  if max_files <= 0 || max_files > 8192 || max_bytes <= 0 || max_bytes > 67108864 { return Err(Error.Invalid) }
+  check_deadline(deadline)?
+  mut visible: array_builder<prompt_deleted_open_file.Inode> := array_builder()
+  counts := walk(root, 0, 0, max_files, max_bytes, deadline, Counts { files: 0, bytes: 0 }, visible)?
+  check_deadline(deadline)?
+  return Ok(Usage { files: counts.files, bytes: counts.bytes, visible: visible.build() })
+}

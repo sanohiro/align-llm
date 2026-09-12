@@ -1,0 +1,178 @@
+module prompt_measurement_assembly_smoke
+
+import prompt_measurement_assembly
+import prompt_measurement_outcome
+import prompt_artifacts
+import core.json
+
+GENERATION := "{\"schema_version\":1,\"artifact_kind\":\"GENERATION_REQUEST_IDENTITY\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"system_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"user_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider_control_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":100,\"temperature_micros\":0,\"paired_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"seed_attestation_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\",\"content_sha256\":\"ee92774c1bdd1234465d94f2fec9ce85d14d82c048410713610c30b26f0fc022\"}"
+ATTESTATION := "{\"schema_version\":1,\"artifact_kind\":\"SEED_CAPABILITY_ATTESTATION\",\"provider_kind\":\"LOCAL_OPENAI\",\"provider_model\":\"model\",\"requested_seed\":7,\"result\":\"APPLIED\",\"applied_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\"}"
+PROBE := "{\"schema_version\":2,\"artifact_kind\":\"ENVIRONMENT_PROBE\",\"producer\":\"ALIGN_TASK\",\"os\":\"Linux\",\"os_release\":\"release\",\"architecture\":\"x86_64\",\"cpu\":\"cpu\",\"logical_cpu_count\":2,\"gpu\":\"none\",\"runtime_identity\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"b8aaf2c34ef9ead7be89c0b8f30f4962f837b124f2e027b374a4c6a21c3f24ac\"}"
+RUNTIME := "ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+GOLDEN_0 := "{\"schema_version\":4,\"artifact_kind\":\"TASK_MEASUREMENT\",\"status\":\"PASS\",\"failure_kind\":\"NONE\",\"build_status\":\"PASS\",\"test_status\":\"PASS\",\"repair_loop_count\":0,\"unrelated_diff_count\":0,\"patch_size_bytes\":0,\"public_api_change_count\":0,\"policy_violation_count\":0,\"cleanup_passed\":true,\"containment_passed\":true,\"generation_to_passing_patch_ns\":123,\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_request\":{\"schema_version\":1,\"artifact_kind\":\"GENERATION_REQUEST_IDENTITY\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"system_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"user_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider_control_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":100,\"temperature_micros\":0,\"paired_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"seed_attestation_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\",\"content_sha256\":\"ee92774c1bdd1234465d94f2fec9ce85d14d82c048410713610c30b26f0fc022\"},\"environment_probe\":{\"schema_version\":2,\"artifact_kind\":\"ENVIRONMENT_PROBE\",\"producer\":\"ALIGN_TASK\",\"os\":\"Linux\",\"os_release\":\"release\",\"architecture\":\"x86_64\",\"cpu\":\"cpu\",\"logical_cpu_count\":2,\"gpu\":\"none\",\"runtime_identity\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"b8aaf2c34ef9ead7be89c0b8f30f4962f837b124f2e027b374a4c6a21c3f24ac\"},\"seed_attestation\":{\"schema_version\":1,\"artifact_kind\":\"SEED_CAPABILITY_ATTESTATION\",\"provider_kind\":\"LOCAL_OPENAI\",\"provider_model\":\"model\",\"requested_seed\":7,\"result\":\"APPLIED\",\"applied_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\"},\"diagnostic_summary\":\"summary [REDACTED]\",\"diagnostic_stdout\":\"�[REDACTED]\",\"diagnostic_stderr\":\"stderr π\",\"product_runtime\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"edit_refusal\":\"NONE\",\"completion_bytes\":12,\"completion_sha256\":\"12f37636f33470e2cf5b484dc18f8d32ca9f18438197b3f637a879cdb56398da\",\"content_sha256\":\"9e8f90b7a6148a5760acd8afcf4277580cbc1c0242c40abcb12a5217107a9f2a\"}"
+GOLDEN_1 := "{\"schema_version\":4,\"artifact_kind\":\"TASK_MEASUREMENT\",\"status\":\"FAIL\",\"failure_kind\":\"TEST\",\"build_status\":\"PASS\",\"test_status\":\"FAIL\",\"repair_loop_count\":0,\"unrelated_diff_count\":0,\"patch_size_bytes\":0,\"public_api_change_count\":0,\"policy_violation_count\":0,\"cleanup_passed\":true,\"containment_passed\":true,\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_request\":{\"schema_version\":1,\"artifact_kind\":\"GENERATION_REQUEST_IDENTITY\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"system_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"user_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider_control_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":100,\"temperature_micros\":0,\"paired_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"seed_attestation_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\",\"content_sha256\":\"ee92774c1bdd1234465d94f2fec9ce85d14d82c048410713610c30b26f0fc022\"},\"environment_probe\":{\"schema_version\":2,\"artifact_kind\":\"ENVIRONMENT_PROBE\",\"producer\":\"ALIGN_TASK\",\"os\":\"Linux\",\"os_release\":\"release\",\"architecture\":\"x86_64\",\"cpu\":\"cpu\",\"logical_cpu_count\":2,\"gpu\":\"none\",\"runtime_identity\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"b8aaf2c34ef9ead7be89c0b8f30f4962f837b124f2e027b374a4c6a21c3f24ac\"},\"seed_attestation\":{\"schema_version\":1,\"artifact_kind\":\"SEED_CAPABILITY_ATTESTATION\",\"provider_kind\":\"LOCAL_OPENAI\",\"provider_model\":\"model\",\"requested_seed\":7,\"result\":\"APPLIED\",\"applied_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\"},\"diagnostic_summary\":\"summary [REDACTED]\",\"diagnostic_stdout\":\"�[REDACTED]\",\"diagnostic_stderr\":\"stderr π\",\"product_runtime\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"edit_refusal\":\"NONE\",\"completion_bytes\":12,\"completion_sha256\":\"12f37636f33470e2cf5b484dc18f8d32ca9f18438197b3f637a879cdb56398da\",\"content_sha256\":\"e1af4e67d2929a46e9a7475c83a39ecd58a607c181f4c1f452e022d7595280a0\"}"
+GOLDEN_2 := "{\"schema_version\":4,\"artifact_kind\":\"TASK_MEASUREMENT\",\"status\":\"POLICY_VIOLATION\",\"failure_kind\":\"POLICY\",\"build_status\":\"NOT_RUN\",\"test_status\":\"NOT_RUN\",\"repair_loop_count\":0,\"unrelated_diff_count\":0,\"patch_size_bytes\":0,\"public_api_change_count\":0,\"policy_violation_count\":1,\"cleanup_passed\":true,\"containment_passed\":true,\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_request\":{\"schema_version\":1,\"artifact_kind\":\"GENERATION_REQUEST_IDENTITY\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"system_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"user_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider_control_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":100,\"temperature_micros\":0,\"paired_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"seed_attestation_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\",\"content_sha256\":\"ee92774c1bdd1234465d94f2fec9ce85d14d82c048410713610c30b26f0fc022\"},\"environment_probe\":{\"schema_version\":2,\"artifact_kind\":\"ENVIRONMENT_PROBE\",\"producer\":\"ALIGN_TASK\",\"os\":\"Linux\",\"os_release\":\"release\",\"architecture\":\"x86_64\",\"cpu\":\"cpu\",\"logical_cpu_count\":2,\"gpu\":\"none\",\"runtime_identity\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"b8aaf2c34ef9ead7be89c0b8f30f4962f837b124f2e027b374a4c6a21c3f24ac\"},\"seed_attestation\":{\"schema_version\":1,\"artifact_kind\":\"SEED_CAPABILITY_ATTESTATION\",\"provider_kind\":\"LOCAL_OPENAI\",\"provider_model\":\"model\",\"requested_seed\":7,\"result\":\"APPLIED\",\"applied_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\"},\"diagnostic_summary\":\"summary [REDACTED]\",\"diagnostic_stdout\":\"�[REDACTED]\",\"diagnostic_stderr\":\"stderr π\",\"product_runtime\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"edit_refusal\":\"PATH_NOT_EDITABLE\",\"completion_bytes\":12,\"completion_sha256\":\"12f37636f33470e2cf5b484dc18f8d32ca9f18438197b3f637a879cdb56398da\",\"completion_text\":\"[REDACTED]π\",\"content_sha256\":\"e83319791be458b3a3e70cd83dee754a3dee2f330171aafdbe688c3c069182f3\"}"
+GOLDEN_3 := "{\"schema_version\":4,\"artifact_kind\":\"TASK_MEASUREMENT\",\"status\":\"FAIL\",\"failure_kind\":\"PATCH\",\"build_status\":\"NOT_RUN\",\"test_status\":\"NOT_RUN\",\"repair_loop_count\":0,\"unrelated_diff_count\":0,\"patch_size_bytes\":0,\"public_api_change_count\":0,\"policy_violation_count\":0,\"cleanup_passed\":true,\"containment_passed\":true,\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_request\":{\"schema_version\":1,\"artifact_kind\":\"GENERATION_REQUEST_IDENTITY\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"system_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"user_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider_control_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":100,\"temperature_micros\":0,\"paired_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"seed_attestation_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\",\"content_sha256\":\"ee92774c1bdd1234465d94f2fec9ce85d14d82c048410713610c30b26f0fc022\"},\"environment_probe\":{\"schema_version\":2,\"artifact_kind\":\"ENVIRONMENT_PROBE\",\"producer\":\"ALIGN_TASK\",\"os\":\"Linux\",\"os_release\":\"release\",\"architecture\":\"x86_64\",\"cpu\":\"cpu\",\"logical_cpu_count\":2,\"gpu\":\"none\",\"runtime_identity\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"b8aaf2c34ef9ead7be89c0b8f30f4962f837b124f2e027b374a4c6a21c3f24ac\"},\"seed_attestation\":{\"schema_version\":1,\"artifact_kind\":\"SEED_CAPABILITY_ATTESTATION\",\"provider_kind\":\"LOCAL_OPENAI\",\"provider_model\":\"model\",\"requested_seed\":7,\"result\":\"APPLIED\",\"applied_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\"},\"diagnostic_summary\":\"summary [REDACTED]\",\"diagnostic_stdout\":\"�[REDACTED]\",\"diagnostic_stderr\":\"stderr π\",\"product_runtime\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"edit_refusal\":\"NO_FILE_BLOCK\",\"completion_bytes\":12,\"completion_sha256\":\"12f37636f33470e2cf5b484dc18f8d32ca9f18438197b3f637a879cdb56398da\",\"completion_text\":\"[REDACTED]π\",\"content_sha256\":\"aebb0ba90186d4aa184c8dc79b9dfea8638c58281ddd617c0befdadfadce5e88\"}"
+GOLDEN_4 := "{\"schema_version\":4,\"artifact_kind\":\"TASK_MEASUREMENT\",\"status\":\"ERROR\",\"failure_kind\":\"ADAPTER\",\"build_status\":\"ERROR\",\"test_status\":\"ERROR\",\"repair_loop_count\":0,\"unrelated_diff_count\":0,\"patch_size_bytes\":0,\"public_api_change_count\":0,\"policy_violation_count\":0,\"cleanup_passed\":true,\"containment_passed\":true,\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_request\":{\"schema_version\":1,\"artifact_kind\":\"GENERATION_REQUEST_IDENTITY\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"system_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"user_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider_control_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":100,\"temperature_micros\":0,\"paired_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"seed_attestation_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\",\"content_sha256\":\"ee92774c1bdd1234465d94f2fec9ce85d14d82c048410713610c30b26f0fc022\"},\"environment_probe\":{\"schema_version\":2,\"artifact_kind\":\"ENVIRONMENT_PROBE\",\"producer\":\"ALIGN_TASK\",\"os\":\"Linux\",\"os_release\":\"release\",\"architecture\":\"x86_64\",\"cpu\":\"cpu\",\"logical_cpu_count\":2,\"gpu\":\"none\",\"runtime_identity\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"b8aaf2c34ef9ead7be89c0b8f30f4962f837b124f2e027b374a4c6a21c3f24ac\"},\"seed_attestation\":{\"schema_version\":1,\"artifact_kind\":\"SEED_CAPABILITY_ATTESTATION\",\"provider_kind\":\"LOCAL_OPENAI\",\"provider_model\":\"model\",\"requested_seed\":7,\"result\":\"APPLIED\",\"applied_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\"},\"diagnostic_summary\":\"summary [REDACTED]\",\"diagnostic_stdout\":\"�[REDACTED]\",\"diagnostic_stderr\":\"stderr π\",\"product_runtime\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"edit_refusal\":\"NONE\",\"completion_bytes\":12,\"completion_sha256\":\"12f37636f33470e2cf5b484dc18f8d32ca9f18438197b3f637a879cdb56398da\",\"content_sha256\":\"1d6d7a9927bdc45b02d3a70fc743bb9fa9bc28f0429edddc0aae59fd522e5cce\"}"
+GOLDEN_5 := "{\"schema_version\":4,\"artifact_kind\":\"TASK_MEASUREMENT\",\"status\":\"ERROR\",\"failure_kind\":\"CLEANUP\",\"build_status\":\"PASS\",\"test_status\":\"PASS\",\"repair_loop_count\":0,\"unrelated_diff_count\":0,\"patch_size_bytes\":0,\"public_api_change_count\":0,\"policy_violation_count\":0,\"cleanup_passed\":false,\"containment_passed\":true,\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_request\":{\"schema_version\":1,\"artifact_kind\":\"GENERATION_REQUEST_IDENTITY\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"system_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"user_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider_control_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":100,\"temperature_micros\":0,\"paired_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"seed_attestation_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\",\"content_sha256\":\"ee92774c1bdd1234465d94f2fec9ce85d14d82c048410713610c30b26f0fc022\"},\"environment_probe\":{\"schema_version\":2,\"artifact_kind\":\"ENVIRONMENT_PROBE\",\"producer\":\"ALIGN_TASK\",\"os\":\"Linux\",\"os_release\":\"release\",\"architecture\":\"x86_64\",\"cpu\":\"cpu\",\"logical_cpu_count\":2,\"gpu\":\"none\",\"runtime_identity\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"b8aaf2c34ef9ead7be89c0b8f30f4962f837b124f2e027b374a4c6a21c3f24ac\"},\"seed_attestation\":{\"schema_version\":1,\"artifact_kind\":\"SEED_CAPABILITY_ATTESTATION\",\"provider_kind\":\"LOCAL_OPENAI\",\"provider_model\":\"model\",\"requested_seed\":7,\"result\":\"APPLIED\",\"applied_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\"},\"diagnostic_summary\":\"summary [REDACTED]\",\"diagnostic_stdout\":\"�[REDACTED]\",\"diagnostic_stderr\":\"stderr π\",\"product_runtime\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"edit_refusal\":\"NONE\",\"completion_bytes\":12,\"completion_sha256\":\"12f37636f33470e2cf5b484dc18f8d32ca9f18438197b3f637a879cdb56398da\",\"content_sha256\":\"e1ab196c7af0ec74940c25885ae87f256d435c3987d8e3a5be60317278c2c9b8\"}"
+GOLDEN_6 := "{\"schema_version\":4,\"artifact_kind\":\"TASK_MEASUREMENT\",\"status\":\"ERROR\",\"failure_kind\":\"CONTAINMENT\",\"build_status\":\"PASS\",\"test_status\":\"PASS\",\"repair_loop_count\":0,\"unrelated_diff_count\":0,\"patch_size_bytes\":0,\"public_api_change_count\":0,\"policy_violation_count\":0,\"cleanup_passed\":false,\"containment_passed\":false,\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_request\":{\"schema_version\":1,\"artifact_kind\":\"GENERATION_REQUEST_IDENTITY\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"system_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"user_text_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider_control_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"environment_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":100,\"temperature_micros\":0,\"paired_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"seed_attestation_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\",\"content_sha256\":\"ee92774c1bdd1234465d94f2fec9ce85d14d82c048410713610c30b26f0fc022\"},\"environment_probe\":{\"schema_version\":2,\"artifact_kind\":\"ENVIRONMENT_PROBE\",\"producer\":\"ALIGN_TASK\",\"os\":\"Linux\",\"os_release\":\"release\",\"architecture\":\"x86_64\",\"cpu\":\"cpu\",\"logical_cpu_count\":2,\"gpu\":\"none\",\"runtime_identity\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"b8aaf2c34ef9ead7be89c0b8f30f4962f837b124f2e027b374a4c6a21c3f24ac\"},\"seed_attestation\":{\"schema_version\":1,\"artifact_kind\":\"SEED_CAPABILITY_ATTESTATION\",\"provider_kind\":\"LOCAL_OPENAI\",\"provider_model\":\"model\",\"requested_seed\":7,\"result\":\"APPLIED\",\"applied_seed\":7,\"provider_request_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"987ecdd97cb5c9e4e5210d5502471fda33f9fc9d572d0983150817d3dfd3d4ab\"},\"diagnostic_summary\":\"summary [REDACTED]\",\"diagnostic_stdout\":\"�[REDACTED]\",\"diagnostic_stderr\":\"stderr π\",\"product_runtime\":\"ALIGN:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"edit_refusal\":\"NONE\",\"completion_bytes\":12,\"completion_sha256\":\"12f37636f33470e2cf5b484dc18f8d32ca9f18438197b3f637a879cdb56398da\",\"content_sha256\":\"1a2d232381b40709242fd4d941b0778954e17079387cdd39be71cba0707df7af\"}"
+
+fn observations(index: i64) -> prompt_measurement_assembly.Observations {
+  return prompt_measurement_assembly.Observations {
+    outcome: if index == 1 { prompt_measurement_outcome.Outcome.TestFail } else if index == 2 { prompt_measurement_outcome.Outcome.Policy } else if index == 3 { prompt_measurement_outcome.Outcome.Patch } else if index == 4 { prompt_measurement_outcome.Outcome.AdapterError } else { prompt_measurement_outcome.Outcome.Pass },
+    cleanup_passed: index < 5, containment_passed: index != 6, generation_ns: Some(123), patch_bytes: 0,
+    rendered_prompt_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".clone(),
+    product_runtime: RUNTIME.clone(), edit_refusal: (if index == 2 { "PATH_NOT_EDITABLE" } else if index == 3 { "NO_FILE_BLOCK" } else { "NONE" }).clone(),
+  }
+}
+
+fn fixture(index: i64) -> Result<prompt_artifacts.TaskMeasurement, Error> {
+  generation: prompt_artifacts.GenerationRequestIdentity := json.decode(GENERATION)?
+  attestation: prompt_artifacts.SeedCapabilityAttestation := json.decode(ATTESTATION)?
+  probe: prompt_artifacts.EnvironmentProbe := json.decode(PROBE)?
+  input := observations(index)
+  evidence := prompt_measurement_assembly.Evidence { edit_set_total_bytes: None, patch_sha256: None, completion: Some("[REDACTED]π".clone()) }
+  mut stdout := buffer(0)
+  invalid := [255 as u8]
+  stdout.append(invalid[0..1])
+  stdout.append("REDACTED")
+  diagnostics := prompt_measurement_assembly.Diagnostics { summary: "summary REDACTED".bytes().to_array(), stdout: stdout.bytes().to_array(), stderr: "stderr π".bytes().to_array() }
+  return prompt_measurement_assembly.build(input, generation, attestation, probe, None, evidence, diagnostics, "REDACTED")
+}
+
+pub fn main() -> Result<(), Error> {
+  expected := [GOLDEN_0, GOLDEN_1, GOLDEN_2, GOLDEN_3, GOLDEN_4, GOLDEN_5, GOLDEN_6]
+  mut index := 0
+  loop {
+    if index == expected.len() { break }
+    actual := fixture(index)?
+    if json.encode(actual)? != expected[index] { print(index); return Err(Error.Invalid) }
+    index = index + 1
+  }
+  boundaries()?
+  construction_checks()?
+  unchanged()?
+  print("measurement assembly: seven independent canonical fixtures passed")
+  return Ok(())
+}
+
+fn repeated(text: str, count: i64) -> string {
+  output := builder()
+  mut index := 0
+  loop { if index == count { break }; output.write(text); index = index + 1 }
+  return output.to_string()
+}
+
+fn disclosure(completion: str, summary: str, stdout: str, stderr: str, huge_probe: bool) -> Result<prompt_artifacts.TaskMeasurement, Error> {
+  generation: prompt_artifacts.GenerationRequestIdentity := json.decode(GENERATION)?
+  attestation: prompt_artifacts.SeedCapabilityAttestation := json.decode(ATTESTATION)?
+  mut probe: prompt_artifacts.EnvironmentProbe := json.decode(PROBE)?
+  if huge_probe { probe.cpu = repeated("x", 262144) }
+  input := observations(3)
+  evidence := prompt_measurement_assembly.Evidence { edit_set_total_bytes: None, patch_sha256: None, completion: Some(completion.clone()) }
+  diagnostics := prompt_measurement_assembly.Diagnostics { summary: summary.bytes().to_array(), stdout: stdout.bytes().to_array(), stderr: stderr.bytes().to_array() }
+  return prompt_measurement_assembly.build(input, generation, attestation, probe, None, evidence, diagnostics, "")
+}
+
+fn omitted(borrow value: prompt_artifacts.TaskMeasurement, size: i64) -> bool {
+  return match value.completion_text { None => true, Some(_) => false } &&
+  match value.completion_bytes { Some(count) => count == size, None => false } &&
+  match value.completion_sha256 { Some(hash) => hash.len() == 64, None => false }
+}
+
+fn boundaries() -> Result<(), Error> {
+  summary := repeated("\u{0001}", 4096)
+  stream := repeated("\u{0001}", 16384)
+  completion := repeated("\u{0001}", 32768)
+  // Escaped completion fits alone; diagnostics force whole-field omission.
+  carried := disclosure(completion, "", "", "", false)?
+  if omitted(carried, 32768) { return Err(Error.Invalid) }
+  dropped := disclosure(completion, summary, stream, stream, false)?
+  if !omitted(dropped, 32768) || json.encode(dropped)?.len() > 262144 { return Err(Error.Invalid) }
+  match disclosure("completion", "", "", "", true) { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  nul := disclosure("a\0b", "", "", "", false)?
+  if !omitted(nul, 3) { return Err(Error.Invalid) }
+  // The marker reserves 19 bytes; a split scalar expands by two bytes on decoding.
+  prefix := repeated("x", 32748)
+  completion_builder := builder()
+  completion_builder.write(prefix)
+  completion_builder.write("🌍xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+  split := completion_builder.to_string()
+  unicode := disclosure(split, "", "", "", false)?
+  if !omitted(unicode, split.len()) { return Err(Error.Invalid) }
+  diagnostic_builder := builder()
+  diagnostic_builder.write(repeated("x", 4076))
+  diagnostic_builder.write("🌍xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+  bad_diagnostic := diagnostic_builder.to_string()
+  match disclosure("completion", bad_diagnostic, "", "", false) { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  match disclosure("completion", "\0", "", "", false) { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  return Ok(())
+}
+
+fn construction_case(code: str, index: i64) -> Result<prompt_artifacts.TaskMeasurement, Error> {
+  mut generation: prompt_artifacts.GenerationRequestIdentity := json.decode(GENERATION)?
+  attestation: prompt_artifacts.SeedCapabilityAttestation := json.decode(ATTESTATION)?
+  mut probe: prompt_artifacts.EnvironmentProbe := json.decode(PROBE)?
+  mut input := observations(if code == "PATH_NOT_EDITABLE" || code == "PATH_ESCAPES_SOURCE" { 2 } else { 3 })
+  input.edit_refusal = code.clone()
+  mut evidence := prompt_measurement_assembly.Evidence { edit_set_total_bytes: None, patch_sha256: None, completion: Some("completion".clone()) }
+  if index == 1 { input.patch_bytes = -1 }
+  if index == 2 { input.generation_ns = Some(-1) }
+  if index == 3 { input.product_runtime = "invalid".clone() }
+  if index == 4 { probe.producer = "ALIGN_SNAPSHOT".clone() }
+  if index == 5 { evidence.completion = None }
+  if index == 6 { generation.provider_request_sha256 = "0000000000000000000000000000000000000000000000000000000000000000".clone() }
+  if index == 7 { input.patch_bytes = 1 }
+  if index == 8 { evidence.patch_sha256 = Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".clone()) }
+  if index == 9 { evidence.edit_set_total_bytes = Some(0) }
+  if index == 10 { evidence.completion = Some(repeated("x", 2097153)) }
+  if index == 11 { input.outcome = prompt_measurement_outcome.Outcome.Pass }
+  if index == 12 { input.cleanup_passed = false }
+  if index == 13 { input.containment_passed = false }
+  diagnostics := prompt_measurement_assembly.Diagnostics { summary: "".bytes().to_array(), stdout: "".bytes().to_array(), stderr: "".bytes().to_array() }
+  return prompt_measurement_assembly.build(input, generation, attestation, probe, None, evidence, diagnostics, "")
+}
+
+fn construction_checks() -> Result<(), Error> {
+  codes := ["NO_FILE_BLOCK", "HEADER_WITHOUT_BLOCK", "UNTERMINATED_BLOCK", "TOO_MANY_BLOCKS", "DUPLICATE_PATH", "BODY_TOO_LARGE", "PATH_NOT_EDITABLE", "PATH_ESCAPES_SOURCE"]
+  mut index := 0
+  loop {
+    if index == codes.len() { break }
+    accepted := construction_case(codes[index], 0)?
+    if omitted(accepted, 10) { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  index = 1
+  loop {
+    if index == 12 { break }
+    match construction_case("NO_FILE_BLOCK", index) { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+    index = index + 1
+  }
+  match construction_case("UNKNOWN", 0) { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  match construction_case("UNCHANGED_FILES", 0) { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  cleanup := construction_case("NO_FILE_BLOCK", 12)?
+  containment := construction_case("NO_FILE_BLOCK", 13)?
+  if cleanup.failure_kind != "CLEANUP" || containment.failure_kind != "CONTAINMENT" || !omitted(cleanup, 10) || !omitted(containment, 10) { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn unchanged() -> Result<(), Error> {
+  generation: prompt_artifacts.GenerationRequestIdentity := json.decode(GENERATION)?
+  attestation: prompt_artifacts.SeedCapabilityAttestation := json.decode(ATTESTATION)?
+  probe: prompt_artifacts.EnvironmentProbe := json.decode(PROBE)?
+  mut input := observations(3)
+  input.edit_refusal = "UNCHANGED_FILES".clone()
+  block: prompt_artifacts.EditSetBlock := json.decode("{\"schema_version\":1,\"artifact_kind\":\"EDIT_SET_BLOCK\",\"path\":\"a.txt\",\"body_bytes\":1,\"body_sha256\":\"2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881\",\"body_text\":\"x\",\"content_sha256\":\"5e81d86123431cbd153b6cf89f5c71a2c0c43b6e25e6c19f80c921960b55c5cd\"}")?
+  mut blocks: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+  blocks.push(block)
+  edits: Option<array<prompt_artifacts.EditSetBlock>> := Some(blocks.build())
+  evidence := prompt_measurement_assembly.Evidence { edit_set_total_bytes: Some(1), patch_sha256: None, completion: Some("completion".clone()) }
+  diagnostics := prompt_measurement_assembly.Diagnostics { summary: "".bytes().to_array(), stdout: "".bytes().to_array(), stderr: "".bytes().to_array() }
+  actual := prompt_measurement_assembly.build(input, generation, attestation, probe, edits, evidence, diagnostics, "")?
+  if !omitted(actual, 10) || actual.patch_size_bytes != 0 || !has_one_edit(actual) { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn has_one_edit(borrow value: prompt_artifacts.TaskMeasurement) -> bool {
+  return match value.edit_set { None => false, Some(blocks) => blocks.len() == 1 && blocks[0].path == "a.txt" }
+}

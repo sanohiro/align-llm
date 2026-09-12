@@ -1,0 +1,49 @@
+module prompt_source_admission_git
+
+import prompt_artifacts
+import prompt_source_admission
+import prompt_git_member
+import prompt_git_metadata
+import prompt_source_git
+import std.fs
+import std.process
+import std.time
+
+pub Readout { Ready, Stopped(prompt_source_git.Attempt), Cancelled(process.signal) }
+
+fn revision_valid(value: str) -> bool {
+  if value.len() != 40 && value.len() != 64 { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { return true }
+    byte := value.bytes()[index]
+    if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return false }
+    index = index + 1
+  }
+}
+
+pub fn run(
+  borrow project: fs.directory, borrow metadata: prompt_git_metadata.Metadata,
+  borrow image: process.image, revision: str, rows: slice<prompt_artifacts.ArtifactDigest>,
+  borrow mut signals: process.signal_subscription, borrow procfs: fs.directory, deadline: i64,
+) -> Result<Readout, Error> {
+  if !revision_valid(revision) { return Err(Error.Invalid) }
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  match signals.next()? { Some(signal) => { return Ok(Readout.Cancelled(signal)) }, None => {} }
+  prompt_source_admission.compare(project, metadata.repository.directory, rows, deadline)?
+  mut index := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    match signals.next()? { Some(signal) => { return Ok(Readout.Cancelled(signal)) }, None => {} }
+    if index == rows.len() { return Ok(Readout.Ready) }
+    path: str := rows[index].path
+    mode: str := rows[index].mode
+    hash: str := rows[index].sha256
+    result := prompt_git_member.observe(image, metadata, path, revision, mode, hash, signals, procfs, deadline)?
+    match result {
+      Member(value) => { if !value { return Err(Error.Invalid) } },
+      Stopped(attempt) => { return Ok(Readout.Stopped(attempt)) },
+    }
+    index = index + 1
+  }
+}

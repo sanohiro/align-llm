@@ -1,0 +1,149 @@
+module prompt_task_validation
+
+import prompt_capture
+import prompt_fixture_command
+import prompt_fixture_setup
+import prompt_git_observation
+import prompt_git_records
+import prompt_task_supervisor
+import prompt_validation_budget
+import prompt_worktree
+import prompt_worktree_changes
+import std.fs
+import std.process
+import std.time
+
+pub Outcome { Passed, TestFailed, UnexpectedBaselinePass, PristineChanged, PatchRejected, PolicyViolation }
+pub Completed { outcome: Outcome, before: prompt_task_supervisor.Report, after: Option<prompt_task_supervisor.Report> }
+pub Validation { Finished(Completed), Stopped(prompt_fixture_setup.Attempt) }
+Execution { Complete(prompt_task_supervisor.Report), Stopped(prompt_fixture_setup.Attempt) }
+
+fn transport(borrow report: prompt_task_supervisor.Report) -> bool {
+  collected := match report.stop { Collected => true, _ => false }
+  status := match report.termination { Some(_) => true, None => false }
+  clean := match report.cleanup.first_error { None => true, Some(_) => false }
+  drained := match report.drain_error { None => true, Some(_) => false }
+  return collected && status && report.cleanup.released && clean && drained
+}
+
+fn zero(borrow report: prompt_task_supervisor.Report) -> bool {
+  return match report.termination { Some(value) => match value { Exited(code) => code == 0, _ => false }, None => false }
+}
+
+fn execute(
+  borrow command: command,
+  borrow mut signals: process.signal_subscription,
+  borrow workspace: fs.directory,
+  borrow procfs: fs.directory,
+  borrow pattern: prompt_capture.Pattern,
+  operation: i64,
+  duration: i64,
+  resources: bool,
+  outer_deadline: i64,
+) -> Result<Execution, Error> {
+  stop_at := prompt_validation_budget.deadline(duration, outer_deadline)?
+  mut scope := command.start_scope()?
+  result := prompt_task_supervisor.run(scope, signals, workspace, procfs, pattern, prompt_task_supervisor.Config {
+      deadline: stop_at, resources: resources, limits: prompt_validation_budget.defaults(),
+    })
+  report := match result {
+    Ok(value) => value,
+    Err(error) => { return Ok(Execution.Stopped(prompt_fixture_setup.Attempt { operation: operation, scope: scope, report: None, error: Some(error) })) },
+  }
+  if !transport(report) {
+    return Ok(Execution.Stopped(prompt_fixture_setup.Attempt { operation: operation, scope: scope, report: Some(report), error: None }))
+  }
+  return Ok(Execution.Complete(report))
+}
+
+fn finish(outcome: Outcome, before: prompt_task_supervisor.Report, after: Option<prompt_task_supervisor.Report>) -> Validation {
+  return Validation.Finished(Completed { outcome: outcome, before: before, after: after })
+}
+
+fn pristine(tree: slice<prompt_git_records.TreeEntry>, observed: slice<prompt_worktree.Entry>, original_dirs: slice<prompt_worktree.DirectoryEntry>, observed_dirs: slice<prompt_worktree.DirectoryEntry>, staged: slice<string>, untracked: slice<string>, ignored: slice<string>) -> bool {
+  if !prompt_worktree_changes.same_directories(original_dirs, observed_dirs) { return false }
+  changes := prompt_worktree_changes.changes(tree, observed)
+  return changes.len() == 0 && staged.len() == 0 && untracked.len() == 0 && ignored.len() == 0
+}
+
+fn allowed(tree: slice<prompt_git_records.TreeEntry>, observed: slice<prompt_worktree.Entry>, original_dirs: slice<prompt_worktree.DirectoryEntry>, observed_dirs: slice<prompt_worktree.DirectoryEntry>, staged: slice<string>, untracked: slice<string>, ignored: slice<string>, edits: slice<str>) -> bool {
+  if !prompt_worktree_changes.same_directories(original_dirs, observed_dirs) { return false }
+  changes := prompt_worktree_changes.changes(tree, observed)
+  admission := prompt_worktree_changes.admit(changes, staged, untracked, ignored, edits)
+  return match admission.decision { Allowed => true, _ => false }
+}
+
+fn same_index(left: slice<u8>, right: slice<u8>) -> bool {
+  if left.len() != right.len() { return false }
+  mut index := 0
+  loop { if index == left.len() { break }; if left[index] != right[index] { return false }; index = index + 1 }
+  return true
+}
+
+pub fn run(
+  borrow image: process.image,
+  borrow validation: command,
+  borrow mut signals: process.signal_subscription,
+  borrow workspace: fs.directory,
+  borrow procfs: fs.directory,
+  workspace_path: str,
+  patch_path: str,
+  expected_revision: str,
+  edits: slice<str>,
+  timeout_seconds: i64,
+  borrow profile: prompt_fixture_command.Profile,
+  borrow pattern: prompt_capture.Pattern,
+  outer_deadline: i64,
+) -> Result<Validation, Error> {
+  if timeout_seconds <= 0 || timeout_seconds > 9223372036854775807 / 1000000000 || edits.len() == 0 { return Err(Error.Invalid) }
+  duration := timeout_seconds * 1000000000
+  // Admit both operands before the first validation launch.
+  check := prompt_fixture_command.build(image, workspace_path, prompt_fixture_command.Operation.ApplyCheck, patch_path, profile)?
+  revision_admission := prompt_fixture_command.build(image, workspace_path, prompt_fixture_command.Operation.Tree, expected_revision, profile)?
+  original := prompt_worktree.observe(workspace, 8192, 67108864, prompt_validation_budget.deadline(10000000000, outer_deadline)?)?
+  before := match execute(validation, signals, workspace, procfs, pattern, 0, duration, true, outer_deadline)? {
+    Complete(report) => report,
+    Stopped(attempt) => { return Ok(Validation.Stopped(attempt)) },
+  }
+  if zero(before) { return Ok(finish(Outcome.UnexpectedBaselinePass, before, None)) }
+  baseline_git := match prompt_git_observation.observe(image, signals, workspace, procfs, workspace_path, expected_revision, profile, outer_deadline)? {
+    Ready(value) => value,
+    Stopped(attempt) => { return Ok(Validation.Stopped(attempt)) },
+  }
+  baseline := prompt_worktree.observe(workspace, 8192, 67108864, prompt_validation_budget.deadline(10000000000, outer_deadline)?)?
+  if !pristine(baseline_git.tree, baseline.entries, original.directories, baseline.directories, baseline_git.staged, baseline_git.untracked, baseline_git.ignored) { return Ok(finish(Outcome.PristineChanged, before, None)) }
+  raw := prompt_capture.pattern("", 65536)?
+  checked := match execute(check, signals, workspace, procfs, raw, 1, 10000000000, false, outer_deadline)? {
+    Complete(report) => report,
+    Stopped(attempt) => { return Ok(Validation.Stopped(attempt)) },
+  }
+  if !prompt_fixture_setup.accepted(checked) { return Ok(finish(Outcome.PatchRejected, before, None)) }
+  apply := prompt_fixture_command.build(image, workspace_path, prompt_fixture_command.Operation.Apply, patch_path, profile)?
+  applied := match execute(apply, signals, workspace, procfs, raw, 2, 10000000000, false, outer_deadline)? {
+    Complete(report) => report,
+    Stopped(attempt) => { return Ok(Validation.Stopped(attempt)) },
+  }
+  if !prompt_fixture_setup.accepted(applied) { return Ok(finish(Outcome.PatchRejected, before, None)) }
+  candidate_git := match prompt_git_observation.observe(image, signals, workspace, procfs, workspace_path, expected_revision, profile, outer_deadline)? {
+    Ready(value) => value,
+    Stopped(attempt) => { return Ok(Validation.Stopped(attempt)) },
+  }
+  candidate := prompt_worktree.observe(workspace, 8192, 67108864, prompt_validation_budget.deadline(10000000000, outer_deadline)?)?
+  if !allowed(candidate_git.tree, candidate.entries, original.directories, candidate.directories, candidate_git.staged, candidate_git.untracked, candidate_git.ignored, edits) { return Ok(finish(Outcome.PolicyViolation, before, None)) }
+  after := match execute(validation, signals, workspace, procfs, pattern, 3, duration, true, outer_deadline)? {
+    Complete(report) => report,
+    Stopped(attempt) => { return Ok(Validation.Stopped(attempt)) },
+  }
+  final_git := match prompt_git_observation.observe(image, signals, workspace, procfs, workspace_path, expected_revision, profile, outer_deadline)? {
+    Ready(value) => value,
+    Stopped(attempt) => { return Ok(Validation.Stopped(attempt)) },
+  }
+  final_tree := prompt_worktree.observe(workspace, 8192, 67108864, prompt_validation_budget.deadline(10000000000, outer_deadline)?)?
+  if !allowed(final_git.tree, final_tree.entries, original.directories, final_tree.directories, final_git.staged, final_git.untracked, final_git.ignored, edits) ||
+  !prompt_worktree_changes.same_entries(candidate.entries, final_tree.entries) ||
+  !same_index(candidate_git.index, final_git.index) {
+    return Ok(finish(Outcome.PolicyViolation, before, Some(after)))
+  }
+  outcome := if zero(after) { Outcome.Passed } else { Outcome.TestFailed }
+  return Ok(finish(outcome, before, Some(after)))
+}

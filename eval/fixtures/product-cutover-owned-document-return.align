@@ -1,0 +1,111 @@
+module product_cutover_owned_document_return
+
+// R83 compiler regression fixture, not product code or a validation bypass.
+// Align 6ca79fee6eb221702652c2bb131839708db55eda:
+//   scripts/alignc check FILE                         PASS (5 functions)
+//   scripts/alignc check-per-unit FILE                FAIL in wrap
+// MIR producer return leaf String at [ResultOk, OptionSome, StructField(6)]
+// is not certified by its body. Only shipped standard/core APIs are imported.
+// Direct-call control: copy this file to /tmp and replace the marked bound call
+// with `source := read_document(root, path.bytes(), remaining, deadline)?`.
+// The control passes check-per-unit. It intentionally omits bound's checks and
+// is diagnostic evidence only; it is not an application repair.
+// Template decoding is reduced to json.decode: digest normalization/restoration
+// is unnecessary to trigger the failure. There is no borrowed record array.
+
+import core.json
+import std.crypto
+import std.encoding
+import std.fs
+import std.time
+
+pub Document { text: string, sha256: string, metadata: fs.metadata }
+
+fn same(before: fs.metadata, after: fs.metadata) -> bool {
+  regular := match after.kind { Regular => true, _ => false }
+  return regular && before.device == after.device && before.inode == after.inode &&
+  after.links == 1 && before.mode == after.mode && before.size == after.size &&
+  before.modified_seconds == after.modified_seconds &&
+  before.modified_nanoseconds == after.modified_nanoseconds &&
+  before.changed_seconds == after.changed_seconds &&
+  before.changed_nanoseconds == after.changed_nanoseconds
+}
+
+fn read_document(borrow root: fs.directory, relative: slice<u8>, maximum: i64, deadline: i64) -> Result<Document, Error> {
+  if maximum < 1 || maximum > 2097152 || time.instant() >= deadline { return Err(Error.Invalid) }
+  input := root.open_read_single_link(relative)?
+  before := input.metadata()?
+  if before.links != 1 || before.size < 0 || before.size > maximum { return Err(Error.Invalid) }
+  mut data := buffer(0)
+  mut total := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Invalid) }
+    if total == maximum {
+      mut probe := buffer(1)
+      if input.read(probe)? != 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := maximum - total
+    mut chunk := buffer(if remaining < 65536 { remaining } else { 65536 })
+    count := input.read(chunk)?
+    if count == 0 { break }
+    data.append(chunk.bytes())
+    total = total + count
+  }
+  after := input.metadata()?
+  if time.instant() >= deadline || total != before.size || !same(before, after) { return Err(Error.Invalid) }
+  text := data.bytes().as_str()?.clone()
+  digest := crypto.sha256(text)
+  return Ok(Document {
+      text: text,
+      sha256: encoding.hex_encode(digest[0..digest.len()]).clone(),
+      metadata: after,
+    })
+}
+
+pub Profile { Diagnostics, EditSet, Policy }
+pub Headers {
+  STATUS: string,
+  POLICY: Option<string>,
+  EDITSET: Option<string>,
+  SUMMARY: string,
+  STDOUT: string,
+  STDERR: string,
+}
+
+pub Template {
+  schema_version: i64,
+  artifact_kind: string,
+  template_id: string,
+  preamble_text: string,
+  section_headers: Headers,
+  closing_text: string,
+  content_sha256: string,
+}
+
+fn decode_template(source: str, profile: Profile) -> Result<Template, Error> {
+  return json.decode(source)
+}
+pub Manifest { path: Option<string>, hash: Option<string>, kind: Option<string> }
+fn bound(borrow root: fs.directory, path: str, hash: str, deadline: i64, borrow mut remaining: i64) -> Result<Document, Error> {
+  source := read_document(root, path.bytes(), remaining, deadline)?
+  remaining = remaining - source.metadata.size
+  if source.sha256 != hash { return Err(Error.Invalid) }
+  return Ok(source)
+}
+pub fn wrap(borrow root: fs.directory, borrow manifest: Manifest, deadline: i64, borrow mut remaining: i64) -> Result<Option<Template>, Error> {
+  return match manifest.path {
+    None => Ok(None),
+    Some(path) => {
+      hash: str := match manifest.hash { None => { return Err(Error.Invalid) }, Some(value) => value }
+      // Replace only the following call for the direct-call control.
+      source := bound(root, path, hash, deadline, remaining)?
+      profile := match manifest.kind {
+        Some(kind) => if kind == "PROVIDER_EDIT" { Profile.Policy } else { Profile.Diagnostics },
+        None => { return Err(Error.Invalid) },
+      }
+      value := decode_template(source.text, profile)?
+      return Ok(Some(value))
+    },
+  }
+}

@@ -12,7 +12,7 @@ OwnedTask {
 
 fn use_task(input: str) -> Result<(), Error> {
   task: OwnedTask := json.decode(input)?
-  print(json.encode(task))
+  print(json.encode(task)?)
   return Ok(())
 }
 

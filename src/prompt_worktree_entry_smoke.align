@@ -1,0 +1,84 @@
+module prompt_worktree_entry_smoke
+
+import prompt_worktree_entry
+import std.fs
+import std.encoding
+
+fn refused(borrow root: fs.directory, name: str, cap: i64) -> Result<(), Error> {
+  match prompt_worktree_entry.observe(root, name.bytes(), cap) {
+    Ok(_) => { print(name); return Err(Error.Invalid) },
+    Err(_) => {},
+  }
+  return Ok(())
+}
+
+fn owned(root_path: str) -> Result<prompt_worktree_entry.Observation, Error> {
+  root := fs.open_directory(root_path)?
+  return prompt_worktree_entry.observe(root, "binary".bytes(), 7)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 14 { return Err(Error.Invalid) }
+  root := fs.open_directory(args[1])?
+  match prompt_worktree_entry.observe_until(root, "binary".bytes(), 7, 0) {
+    Err(error) => { match error { Timeout => {}, _ => { return Err(Error.Invalid) } } },
+    Ok(_) => { return Err(Error.Invalid) },
+  }
+  plain := owned(args[1])?
+  if plain.git_blob != args[4] || plain.sha256 != args[5] ||
+  encoding.hex_encode(plain.payload[0..plain.payload.len()]) != "00ff80410d0a00" ||
+  !prompt_worktree_entry.matches_source(plain, "100644", args[4]) ||
+  prompt_worktree_entry.matches_source(plain, "100755", args[4]) ||
+  prompt_worktree_entry.matches_source(plain, "120000", args[4]) ||
+  prompt_worktree_entry.matches_source(plain, "100644", args[6]) { return Err(Error.Invalid) }
+  executable := prompt_worktree_entry.observe(root, "executable".bytes(), 7)?
+  if executable.git_blob != plain.git_blob ||
+  !prompt_worktree_entry.matches_source(executable, "100755", args[4]) ||
+  prompt_worktree_entry.matches_source(executable, "100644", args[4]) { return Err(Error.Invalid) }
+  unusual := prompt_worktree_entry.observe(root, "unusual".bytes(), 7)?
+  if prompt_worktree_entry.matches_source(unusual, "100644", args[4]) ||
+  prompt_worktree_entry.matches_source(unusual, "100600", args[4]) { return Err(Error.Invalid) }
+  changed := prompt_worktree_entry.observe(root, "changed".bytes(), 7)?
+  if prompt_worktree_entry.matches_source(changed, "100644", args[4]) { return Err(Error.Invalid) }
+  link := prompt_worktree_entry.observe(root, "link".bytes(), 6)?
+  if link.git_blob != args[6] || link.sha256 != args[7] ||
+  encoding.hex_encode(link.payload[0..link.payload.len()]) != "62696e617279" ||
+  !prompt_worktree_entry.matches_source(link, "120000", args[6]) ||
+  prompt_worktree_entry.matches_source(link, "100644", args[6]) { return Err(Error.Invalid) }
+  raw := prompt_worktree_entry.observe(root, "raw".bytes(), 4)?
+  if raw.git_blob != args[8] || raw.sha256 != args[9] ||
+  encoding.hex_encode(raw.payload[0..raw.payload.len()]) != "ff80410a" { return Err(Error.Invalid) }
+  empty := prompt_worktree_entry.observe(root, "empty".bytes(), 0)?
+  if empty.git_blob != args[10] || empty.sha256 != args[11] || empty.payload.len() != 0 {
+    return Err(Error.Invalid)
+  }
+  large := prompt_worktree_entry.observe(root, "large".bytes(), 65537)?
+  if large.git_blob != args[12] || large.sha256 != args[13] || large.payload.len() != 65537 {
+    return Err(Error.Invalid)
+  }
+  refused(root, "large", 65536)?
+  refused(root, "binary", 6)?
+  refused(root, "link", 5)?
+  refused(root, "raw", 3)?
+  refused(root, "empty", -1)?
+  refused(root, "empty", 67108865)?
+  names := ["hardlink", "hardlink-peer", "directory", "fifo", "absent", "linked-directory/child", "", "../binary", "/binary", "binary\0tail"]
+  mut index := 0
+  loop {
+    if index == names.len() { break }
+    refused(root, names[index], 64)?
+    index = index + 1
+  }
+  fs.rename_no_replace(args[1], args[2])?
+  fs.rename_no_replace(args[3], args[1])?
+  retained := prompt_worktree_entry.observe(root, "binary".bytes(), 7)?
+  if retained.git_blob != plain.git_blob || retained.metadata.inode != plain.metadata.inode {
+    return Err(Error.Invalid)
+  }
+  retained_link := prompt_worktree_entry.observe(root, "raw".bytes(), 4)?
+  if retained_link.git_blob != raw.git_blob { return Err(Error.Invalid) }
+  replacement := owned(args[1])?
+  if replacement.git_blob == plain.git_blob { return Err(Error.Invalid) }
+  print("prompt worktree entry smoke passed")
+  return Ok(())
+}

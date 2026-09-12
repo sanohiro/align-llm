@@ -1,0 +1,84 @@
+module prompt_edit_plan
+
+import prompt_artifacts
+import prompt_document_source
+import prompt_edit_admission
+import prompt_patch
+import prompt_repair_evidence
+import std.fs
+import std.time
+
+pub Plan { refusal: string, summary: string, patch: string, include_edits: bool, total_edit_bytes: i64 }
+
+fn refused(code: str, path: str) -> Plan = Plan { refusal: code.clone(), summary: summary(code, path), patch: "".clone(), include_edits: false, total_edit_bytes: 0 }
+
+fn summary(code: str, path: str) -> string {
+  if code == "NO_FILE_BLOCK" { return "the response declares no file block".clone() }
+  if code == "HEADER_WITHOUT_BLOCK" { return "a FILE header carries no fenced block".clone() }
+  if code == "UNTERMINATED_BLOCK" { return "a fenced file block is not terminated".clone() }
+  if code == "TOO_MANY_BLOCKS" { return "the response declares too many file blocks".clone() }
+  if code == "UNCHANGED_FILES" { return "the response reproduced the pinned files unchanged".clone() }
+  output := builder()
+  if code == "PATH_NOT_EDITABLE" { output.write("the response edits a file outside the editable set: ") }
+  if code == "DUPLICATE_PATH" { output.write("the response declares ") }
+  if code == "BODY_TOO_LARGE" { output.write("the emitted content for ") }
+  if code == "PATH_ESCAPES_SOURCE" { output.write("the editable path escapes the pinned source: ") }
+  output.write(path)
+  if code == "DUPLICATE_PATH" { output.write(" twice") }
+  if code == "BODY_TOO_LARGE" { output.write(" exceeds its bound") }
+  return output.to_string()
+}
+
+// All FILE paths first pass the declared editable set. Applied patch bytes stay separate from
+// redacted persisted edit evidence. The caller discards its output builder on any error/refusal
+// except UNCHANGED_FILES, whose validated blocks are the evidence for that refusal.
+pub fn build(
+  borrow source: fs.directory,
+  completion: str,
+  allowed: slice<str>,
+  credential: str,
+  borrow mut output: array_builder<prompt_artifacts.EditSetBlock>,
+  deadline: i64,
+) -> Result<Plan, Error> {
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  admitted := prompt_edit_admission.admit(completion, allowed)
+  match admitted.status {
+    Complete => {},
+    NoFileBlock => { return Ok(refused("NO_FILE_BLOCK", "")) },
+    HeaderWithoutBlock => { return Ok(refused("HEADER_WITHOUT_BLOCK", "")) },
+    UnterminatedBlock => { return Ok(refused("UNTERMINATED_BLOCK", "")) },
+    TooManyBlocks => { return Ok(refused("TOO_MANY_BLOCKS", "")) },
+    PathNotEditable => { return Ok(refused("PATH_NOT_EDITABLE", admitted.refusal_path)) },
+    DuplicatePath => { return Ok(refused("DUPLICATE_PATH", admitted.refusal_path)) },
+    BodyTooLarge => { return Ok(refused("BODY_TOO_LARGE", admitted.refusal_path)) },
+  }
+  patch := builder()
+  mut index := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if index == admitted.blocks.len() { break }
+    path: str := admitted.blocks[index].path
+    body: str := admitted.blocks[index].body
+    match source.metadata_at(path.bytes()) {
+      Ok(metadata) => match metadata.kind { Symlink => { return Ok(refused("PATH_ESCAPES_SOURCE", path)) }, _ => {} },
+      Err(error) => match error { NotFound => {}, _ => { return Err(error) } },
+    }
+    original := match prompt_document_source.read(source, path.bytes(), 262144, deadline) {
+      Ok(value) => Some(value.text),
+      Err(error) => match error {
+        NotFound => None,
+        _ => { return Err(error) },
+      },
+    }
+    before: Option<str> := match original { None => None, Some(text) => { view: str := text; Some(view) } }
+    hunk := prompt_patch.whole_file_hunk(path, before, body)
+    patch.write(hunk)
+    index = index + 1
+  }
+  raw := patch.to_string()
+  total := prompt_repair_evidence.append(admitted.blocks, credential, output)?
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  code := if raw.len() == 0 { "UNCHANGED_FILES" } else { "NONE" }
+  return Ok(Plan { refusal: code.clone(), summary: summary(code, ""),
+      patch: raw, include_edits: true, total_edit_bytes: total })
+}

@@ -1,5 +1,12 @@
 # C6 Prompt and Context Optimizer
 
+Implementation-language correction (2026-09-09): the
+[Align product-boundary plan](align-product-boundary.md) supersedes this document's Python
+evaluator/helper execution choices for the next product cutover. The historical wire, evidence,
+containment and independent replay requirements remain in force except for its explicit versioned
+deltas. No further product features may be added to the Python evaluator or adapters. The old
+execution description below is current implementation evidence, not the intended final boundary.
+
 Status: design plan of record; C6-LIFECYCLE and C6-EVALUATION are implemented foundations, including
 artifact codecs, rendering, failure-memory selection, verification, offline activation, deterministic
 contained comparison, and result/evidence publication. C6-MEASURED remains to deliver provider

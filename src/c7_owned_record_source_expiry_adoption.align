@@ -179,24 +179,24 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   print(escaped.lower_bound)
   print(escaped.upper_bound)
   print(escaped.expected)
-  print(json.encode(escaped))
+  print(json.encode(escaped)?)
   print(note_bytes(escaped.note))
 
   // Rows 12-17. Section 6.1 `Some(empty)`, omitted `None`, and `null` `None` after source expiry.
   empty_note := decode_from_owned_document(C7_INPUT_EMPTY_NOTE)?
-  print(json.encode(empty_note))
+  print(json.encode(empty_note)?)
   print(note_bytes(empty_note.note))
   omitted_note := decode_from_owned_document(C7_INPUT_NO_NOTE)?
-  print(json.encode(omitted_note))
+  print(json.encode(omitted_note)?)
   print(note_bytes(omitted_note.note))
   null_note := decode_from_owned_document(C7_INPUT_NULL_NOTE)?
-  print(json.encode(null_note))
+  print(json.encode(null_note)?)
   print(note_bytes(null_note.note))
 
   // Rows 18-24. Request 9 normative owned-path golden pair, bounded encode, and the accepted
   // unsigned/boolean Copy domain.
   task: OwnedTask := json.decode(TASK_INPUT)?
-  canonical := json.encode(task)
+  canonical := json.encode(task)?
   print(canonical)
   bounded := json.encode_bounded(task, canonical.len())?
   print(bounded)
@@ -208,15 +208,15 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   // Row 25. Acceptance item 6: decode -> encode -> decode keeps the semantic owned value while
   // the first record and the reloaded record are independently live.
   reloaded: OwnedTask := json.decode(canonical)?
-  print(json.encode(reloaded))
+  print(json.encode(reloaded)?)
 
   // Rows 26-28. The three normative optional-note states of the owned golden record.
   omitted_task: OwnedTask := json.decode(TASK_INPUT_NO_NOTE)?
-  print(json.encode(omitted_task))
+  print(json.encode(omitted_task)?)
   null_task: OwnedTask := json.decode(TASK_INPUT_NULL_NOTE)?
-  print(json.encode(null_task))
+  print(json.encode(null_task)?)
   empty_task: OwnedTask := json.decode(TASK_INPUT_EMPTY_NOTE)?
-  print(json.encode(empty_task))
+  print(json.encode(empty_task)?)
 
   // Rows 29-31. Request 9 acceptance item 9 direct text-array cleanup: replacement drops the live
   // four-element spine and its elements, move-out transfers them exactly once, and a mid-array
@@ -250,12 +250,12 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   // `escaped.note`, so the record row 10 encoded with its note now encodes without it, and the
   // donor record below encodes with three empty text fields once all four owners are transferred
   // out.
-  print(json.encode(escaped))
+  print(json.encode(escaped)?)
   donor := decode_from_owned_document(C7_INPUT_ESCAPED)?
   print(text_bytes(donor.artifact_kind))
   print(text_bytes(donor.case_id))
   print(text_bytes(donor.algorithm))
   print(note_bytes(donor.note))
-  print(json.encode(donor))
+  print(json.encode(donor)?)
   return Ok(())
 }

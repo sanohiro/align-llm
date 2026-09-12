@@ -1,0 +1,120 @@
+module prompt_task_validation_smoke
+
+import prompt_task_validation
+import prompt_task_supervisor
+import prompt_fixture_setup
+import prompt_fixture_command
+import prompt_scope_cleanup
+import prompt_capture
+import std.fs
+import std.process
+import std.time
+
+fn image(root_path: str) -> Result<process.image, Error> {
+  root := fs.open_directory(root_path)?
+  input := root.open_read_single_link("git")?
+  mut memory := fs.memory_file(fs.memory_kind.Executable, 16777216)?
+  mut count := 0
+  loop {
+    mut chunk := buffer(65536)
+    size := input.read(chunk)?
+    if size == 0 { break }
+    count = count + size
+    if count > 16777216 { return Err(Error.Invalid) }
+    memory.write(chunk.bytes())?
+  }
+  sealed := memory.seal()?
+  return process.executable(sealed)
+}
+
+fn text(bytes: slice<u8>) -> Result<str, Error> = bytes.as_str()
+
+fn report(borrow value: prompt_task_supervisor.Report, code: i64, after: bool) -> Result<(), Error> {
+  if !value.cleanup.released || value.stdout_truncated || value.stderr_truncated { return Err(Error.Invalid) }
+  match value.cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+  match value.drain_error { None => {}, Some(error) => { return Err(error) } }
+  match value.stop { Collected => {}, _ => { return Err(Error.Invalid) } }
+  match value.termination { Some(status) => { match status { Exited(actual) => { if actual != code { return Err(Error.Invalid) } }, _ => { return Err(Error.Invalid) } } }, None => { return Err(Error.Invalid) } }
+  if text(value.stdout)? != (if after { "after [REDACTED]\n" } else { "before [REDACTED]\n" }) || text(value.stderr)? != (if after { "after err\n" } else { "before err\n" }) { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn finished(value: prompt_task_validation.Completed, mode: str) -> Result<(), Error> {
+  report(value.before, if mode == "baseline-pass" { 0 } else { 1 }, false)?
+  match value.outcome {
+    Passed => { if mode != "passed" { return Err(Error.Invalid) } },
+    TestFailed => { if mode != "test-failed" { return Err(Error.Invalid) } },
+    UnexpectedBaselinePass => { if mode != "baseline-pass" { return Err(Error.Invalid) } },
+    PristineChanged => { if mode != "pristine" { return Err(Error.Invalid) } },
+    PatchRejected => { if mode != "rejected" { return Err(Error.Invalid) } },
+    PolicyViolation => { if mode != "disallowed" && mode != "mutated" && mode != "index" && mode != "untracked" { return Err(Error.Invalid) } },
+  }
+  has_after := mode == "passed" || mode == "test-failed" || mode == "mutated" || mode == "index" || mode == "untracked"
+  match value.after {
+    None => { if has_after { return Err(Error.Invalid) } },
+    Some(after_report) => { if !has_after { return Err(Error.Invalid) }; report(after_report, if mode == "test-failed" { 2 } else { 0 }, true)? },
+  }
+  return Ok(())
+}
+
+fn recover(attempt: prompt_fixture_setup.Attempt, mode: str) -> Result<(), Error> {
+  mut scope := attempt.scope
+  cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+  if !cleanup.released { return Err(Error.Timeout) }
+  if attempt.operation != 0 { return Err(Error.Invalid) }
+  match attempt.error { None => {}, Some(error) => { return Err(error) } }
+  match attempt.report {
+    Some(value) => {
+      if mode != "cancel" && mode != "timeout" {
+        print("unexpected stopped validation")
+        print(attempt.operation)
+        match value.stop { Collected => { print("collected") }, Timeout => { print("timeout") }, Cancelled(_) => { print("cancelled") }, Failed(_) => { print("failed") }, Resource(reason) => { match reason { IncompleteObservation => { print("incomplete resource") }, InvalidObservation => { print("invalid resource") }, ProcessLimit => { print("process limit") }, ResidentLimit => { print("resident limit") }, FileLimit => { print("file limit") }, ByteLimit => { print("byte limit") }, WithinBudget => { print("within budget") } } } }
+      }
+      if !value.cleanup.released { return Err(Error.Invalid) }
+      match value.stop { Cancelled(_) => { if mode != "cancel" { return Err(Error.Invalid) } }, Timeout => { if mode != "timeout" { return Err(Error.Invalid) } }, _ => { return Err(Error.Invalid) } }
+      if mode == "timeout" && text(value.stdout)? != "waiting [REDACTED]\n" { return Err(Error.Invalid) }
+    },
+    None => { return Err(Error.Invalid) },
+  }
+  return Ok(())
+}
+
+fn available() -> Result<(), Error> {
+  command := process.command("/bin/sh", ["/bin/sh", "-c", "exec sleep 120"])
+  mut scope := command.start_scope()?
+  cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+  if !cleanup.released { return Err(Error.Timeout) }
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  return signals.close()
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 9 { return Err(Error.Invalid) }
+  if args[1] == "Darwin" {
+    match fs.memory_file(fs.memory_kind.Executable, 1) { Err(error) => { match error { Code(code) => { if code != 45 { return Err(Error.Invalid) } }, _ => { return Err(error) } } }, Ok(_) => { return Err(Error.Invalid) } }
+    print("task validation: Darwin sealed-image ENOTSUP 45 PASS; Linux flow not exercised")
+    return Ok(())
+  }
+  git := image(args[2])?
+  workspace := fs.open_directory(args[3])?
+  procfs := fs.open_directory("/proc")?
+  validation := process.command("/bin/sh", ["/bin/sh", "-c", "exec /bin/sh \"$1\" \"$2\"", "validation-owner", args[6], args[7]])
+  validation.cwd(args[3])
+  pattern := prompt_capture.pattern("secret", 65536)?
+  profile := prompt_fixture_command.Profile { fresh: false, library_path: "".clone(), ld_library_path: "".clone(), pkg_config_path: "".clone() }
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  if args[7] == "cancel" {
+    command := process.command("/bin/sh", ["/bin/sh", "-c", "[ \"$1\" = \"$PPID\" ] || exit 91; kill -TERM \"$1\"", "validation-signal", args[8]])
+    sent := command.run()
+    match sent { Ok(output) => { status := output.status(); if !match status.termination { Exited(code) => code == 0, _ => false } { signals.close()?; return Err(Error.Invalid) } }, Err(error) => { signals.close()?; return Err(error) } }
+  }
+  result := prompt_task_validation.run(git, validation, signals, workspace, procfs, args[3], args[4], args[5], ["a"], if args[7] == "timeout" { 1 } else { 5 }, profile, pattern, time.instant() + 60000000000)
+  restored := signals.close()
+  // Interpret every returned owner even if signal restoration failed.
+  checked: Result<(), Error> := match result { Err(error) => Err(error), Ok(value) => match value { Finished(completed) => finished(completed, args[7]), Stopped(attempt) => recover(attempt, args[7]) } }
+  restored?
+  checked?
+  available()?
+  print(args[7])
+  return Ok(())
+}

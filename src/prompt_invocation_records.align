@@ -1,0 +1,374 @@
+module prompt_invocation_records
+
+import core.json
+import prompt_artifacts
+import prompt_environment
+import prompt_repair_assembly
+import prompt_task_inputs
+import std.crypto
+import std.encoding
+
+pub Invocation { task_ordinal: i64, sample_index: i64, attempt_index: i64, candidate: bool, paired_seed: i64 }
+pub Paths {
+  variant_relative: string, rendered_relative: string, request_relative: string, measurement_relative: string,
+  variant: string, rendered: string, request: string, measurement: string,
+}
+pub AttemptBindings {
+  snapshot_request_sha256: string, before_sha256: string, after_sha256: string, input_sha256: string,
+  adapter_request_sha256: string, preparation_ns: i64, elapsed_ns: i64,
+}
+pub RowBindings {
+  evaluation_id: string, parent_sha256: string, candidate_sha256: string, environment_sha256: string,
+}
+
+fn digest(value: str) -> string {
+  bytes := crypto.sha256(value)
+  return encoding.hex_encode(bytes[0..bytes.len()])
+}
+fn join(root: str, leaf: str) -> string {
+  output := builder(); output.write(root); output.write("/"); output.write(leaf); return output.to_string()
+}
+fn append(left: str, right: str) -> string {
+  output := builder(); output.write(left); output.write(right); return output.to_string()
+}
+fn optional(borrow value: Option<string>) -> Option<string> = match value { None => None, Some(text) => Some(text.clone()) }
+fn strings(values: slice<string>) -> array<string> {
+  mut output: array_builder<string> := array_builder()
+  mut index := 0
+  loop { if index == values.len() { break }; output.push(values[index].clone()); index = index + 1 }
+  return output.build()
+}
+fn artifact_digests(values: slice<prompt_artifacts.ArtifactDigest>) -> array<prompt_artifacts.ArtifactDigest> {
+  mut output: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  mut index := 0
+  loop {
+    if index == values.len() { break }
+    output.push(prompt_artifacts.ArtifactDigest { path: values[index].path.clone(), mode: values[index].mode.clone(), byte_count: values[index].byte_count, sha256: values[index].sha256.clone() })
+    index = index + 1
+  }
+  return output.build()
+}
+
+// Project/workspace have already passed physical retained-directory admission. Fixed bounded
+// ordinals determine the file names; no task, model, or provider output enters a path component.
+pub fn paths(project: str, workspace: str, invocation: Invocation) -> Result<Paths, Error> {
+  if invocation.task_ordinal < 0 || invocation.task_ordinal >= 64 || invocation.sample_index < 1 ||
+  invocation.sample_index > 16 || invocation.attempt_index < 1 || invocation.attempt_index > 2 ||
+  project.len() == 0 || workspace.len() <= project.len() || workspace[0..project.len()] != project ||
+  (project != "/" && workspace.bytes()[project.len()] != 47) { return Err(Error.Invalid) }
+  name := builder()
+  name.write("t"); name.write_int(invocation.task_ordinal + 1)
+  name.write("-s"); name.write_int(invocation.sample_index)
+  name.write(if invocation.candidate { "-candidate-a" } else { "-parent-a" })
+  name.write_int(invocation.attempt_index)
+  prefix := name.to_string()
+  variant := append(prefix, "-variant.json")
+  rendered := append(prefix, "-rendered.json")
+  request := append(prefix, "-request.json")
+  measurement := append(prefix, "-measurement.json")
+  relative_start := if project == "/" { 1 } else { project.len() + 1 }
+  relative := workspace[relative_start..workspace.len()]
+  return Ok(Paths {
+      variant_relative: join(relative, variant), rendered_relative: join(relative, rendered),
+      request_relative: join(relative, request), measurement_relative: join(relative, measurement),
+      variant: join(workspace, variant), rendered: join(workspace, rendered),
+      request: join(workspace, request), measurement: join(workspace, measurement),
+    })
+}
+
+pub fn adapter(
+  borrow evaluation: prompt_artifacts.PromptEvaluateRequest,
+  borrow task: prompt_task_inputs.Task,
+  borrow rendered: prompt_artifacts.RenderedPromptArtifact,
+  borrow paths: Paths,
+  invocation: Invocation,
+) -> Result<prompt_artifacts.TaskAdapterRequest, Error> {
+  mut value := prompt_artifacts.TaskAdapterRequest {
+    schema_version: 2, artifact_kind: "TASK_ADAPTER_REQUEST".clone(), evaluation_id: evaluation.evaluation_id.clone(),
+    task_id: task.manifest.task_id.clone(), sample_index: invocation.sample_index,
+    variant: (if invocation.candidate { "CANDIDATE" } else { "PARENT" }).clone(),
+    variant_path: paths.variant.clone(), variant_sha256: rendered.variant_sha256.clone(),
+    rendered_prompt_path: paths.rendered.clone(), rendered_prompt_sha256: rendered.content_sha256.clone(),
+    generation_policy_path: join(evaluation.project_root, task.manifest.generation_policy_path),
+    generation_policy_sha256: task.generation.content_sha256.clone(),
+    provider_control_path: join(evaluation.project_root, task.manifest.provider_control_path),
+    provider_control_sha256: task.control.content_sha256.clone(), workspace_path: evaluation.workspace_path.clone(),
+    result_path: paths.measurement.clone(), paired_seed: invocation.paired_seed, credential_env_name: optional(task.control.api_key_env),
+    environment_policy_sha256: task.environment.content_sha256.clone(), validation_runner_path: None, validation_runner_sha256: None,
+    task_definition_path: join(evaluation.project_root, task.manifest.task_definition_path),
+    task_definition_sha256: task.manifest.task_definition_sha256.clone(), validation_argv: None,
+    patch_path: match task.manifest.patch_path { None => None, Some(path) => Some(join(evaluation.project_root, path)) },
+    patch_sha256: optional(task.manifest.patch_sha256), generation_child_path: None, generation_child_sha256: None,
+    task_deadline_ns: task.manifest.timeout_ns, product_executable_sha256: optional(evaluation.product_executable_sha256), content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(value, 65536)?
+  value.content_sha256 = digest(canonical)
+  return Ok(value)
+}
+
+pub fn rendered(borrow original: prompt_artifacts.RenderedPromptArtifact, text: str) -> Result<prompt_artifacts.RenderedPromptArtifact, Error> {
+  mut value := prompt_artifacts.RenderedPromptArtifact {
+    schema_version: 1, artifact_kind: "RENDERED_PROMPT".clone(), task_id: original.task_id.clone(),
+    variant_id: original.variant_id.clone(), variant_sha256: original.variant_sha256.clone(),
+    task_prompt_sha256: original.task_prompt_sha256.clone(), context_sources_sha256: original.context_sources_sha256.clone(),
+    text: text.clone(), content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(value, 2097152)?
+  value.content_sha256 = digest(canonical)
+  return Ok(value)
+}
+
+pub fn snapshot_request(borrow evaluation: prompt_artifacts.PromptEvaluateRequest, borrow task: prompt_artifacts.PromptEvaluationTask, additional: array<string>, allowed: array<string>) -> Result<prompt_artifacts.SnapshotRequest, Error> {
+  mut expectations: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  mut index := 0
+  loop {
+    if index == task.artifacts.len() { break }
+    expectations.push(prompt_artifacts.ArtifactExpectation { path: task.artifacts[index].path.clone(), kind: task.artifacts[index].kind.clone(), expected_sha256: task.artifacts[index].expected_sha256.clone() })
+    index = index + 1
+  }
+  mut value := prompt_artifacts.SnapshotRequest {
+    schema_version: 1, artifact_kind: "SNAPSHOT_REQUEST".clone(), task_id: task.task_id.clone(), project_root: evaluation.project_root.clone(),
+    repo_path: task.repo_path.clone(), repo_revision: task.repo_revision.clone(), require_clean_repo: task.require_clean_repo,
+    static_expectations: expectations.build(), additional_files: additional, workspace_path: evaluation.workspace_path.clone(),
+    allowed_workspace_entries: allowed, content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(value, 2097152)?
+  value.content_sha256 = digest(canonical)
+  return Ok(value)
+}
+
+pub fn input_snapshot(borrow task: prompt_artifacts.PromptEvaluationTask, borrow snapshot: prompt_artifacts.SnapshotResult, environment_id: str) -> Result<prompt_artifacts.TaskInputSnapshot, Error> {
+  if snapshot.status != "MATCH" || snapshot.task_id != task.task_id { return Err(Error.Invalid) }
+  mut value := prompt_artifacts.TaskInputSnapshot {
+    schema_version: 1, artifact_kind: "TASK_INPUT_SNAPSHOT".clone(), task_id: task.task_id.clone(),
+    task_manifest_sha256: task.content_sha256.clone(), artifact_digests: artifact_digests(snapshot.artifact_digests),
+    environment_sha256: environment_id.clone(), content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(value, 2097152)?
+  value.content_sha256 = digest(canonical)
+  return Ok(value)
+}
+
+pub fn environment(borrow probe: prompt_artifacts.EnvironmentProbe, borrow evaluation: prompt_artifacts.PromptEvaluateRequest, environment_policy_sha256: str) -> Result<prompt_artifacts.EnvironmentIdentity, Error> {
+  product_sha256: str := match evaluation.product_executable_sha256 { None => { return Err(Error.Invalid) }, Some(value) => value }
+  core := prompt_environment.identity_core(probe, evaluation.verifier_align_llm_commit, evaluation.verifier_align_revision,
+    product_sha256, evaluation.verifier_source_policy_sha256, environment_policy_sha256)?
+  encoded_core := json.encode_bounded(core, 2097152)?
+  mut value := prompt_artifacts.EnvironmentIdentity {
+    schema_version: 1, artifact_kind: "ENVIRONMENT_IDENTITY".clone(), core: core,
+    environment_id: digest(encoded_core), content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(value, 2097152)?
+  value.content_sha256 = digest(canonical)
+  return Ok(value)
+}
+
+pub fn repair_source(template_sha256: str, measurement_sha256: str, borrow assembly: prompt_repair_assembly.Assembly) -> Result<prompt_artifacts.RepairPromptSource, Error> {
+  mut value := prompt_artifacts.RepairPromptSource {
+    schema_version: 1, artifact_kind: "REPAIR_PROMPT_SOURCE".clone(), template_sha256: template_sha256.clone(),
+    source_attempt_index: 1, source_measurement_sha256: measurement_sha256.clone(), included_sections: strings(assembly.included_sections),
+    dropped_sections: strings(assembly.dropped_sections), assembled_bytes: assembly.assembled_bytes, content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(value, 65536)?
+  value.content_sha256 = digest(canonical)
+  return Ok(value)
+}
+
+pub fn skipped(reason: str, source: Option<prompt_artifacts.RepairPromptSource>, preparation_ns: i64, seed: i64) -> Result<prompt_artifacts.TaskAttemptRecord, Error> {
+  if preparation_ns < 0 || preparation_ns > 7200000000000 { return Err(Error.Invalid) }
+  mut value := prompt_artifacts.TaskAttemptRecord {
+    schema_version: 1, artifact_kind: "TASK_ATTEMPT_RECORD".clone(), attempt_index: 2, attempt_kind: "REPAIR".clone(),
+    status: "SKIPPED".clone(), skip_reason: reason.clone(), rendered_prompt_sha256: None, repair_prompt_source: source,
+    adapter_request_sha256: None, snapshot_request_sha256: None, before_snapshot_result_sha256: None, after_snapshot_result_sha256: None,
+    input_snapshot_sha256: None, generation_request: None, seed_attestation: None, paired_seed: seed, measurement: None,
+    repair_preparation_ns: preparation_ns, adapter_elapsed_ns: 0, adapter_overhead_ns: None, measurement_sha256: None, content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(value, 1048576)?
+  value.content_sha256 = digest(canonical)
+  return Ok(value)
+}
+
+fn generation(borrow value: prompt_artifacts.GenerationRequestIdentity) -> prompt_artifacts.GenerationRequestIdentity {
+  return prompt_artifacts.GenerationRequestIdentity {
+    schema_version: value.schema_version, artifact_kind: value.artifact_kind.clone(), rendered_prompt_sha256: value.rendered_prompt_sha256.clone(),
+    system_text_sha256: value.system_text_sha256.clone(), user_text_sha256: value.user_text_sha256.clone(),
+    generation_policy_sha256: value.generation_policy_sha256.clone(), provider_control_sha256: value.provider_control_sha256.clone(),
+    environment_policy_sha256: value.environment_policy_sha256.clone(), max_tokens: value.max_tokens, temperature_micros: value.temperature_micros,
+    paired_seed: value.paired_seed, provider_request_sha256: value.provider_request_sha256.clone(), seed_attestation_sha256: value.seed_attestation_sha256.clone(),
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+fn seed_attestation(borrow value: prompt_artifacts.SeedCapabilityAttestation) -> prompt_artifacts.SeedCapabilityAttestation {
+  return prompt_artifacts.SeedCapabilityAttestation {
+    schema_version: value.schema_version, artifact_kind: value.artifact_kind.clone(), provider_kind: value.provider_kind.clone(), provider_model: value.provider_model.clone(),
+    requested_seed: value.requested_seed, result: value.result.clone(), applied_seed: value.applied_seed,
+    provider_request_sha256: value.provider_request_sha256.clone(), content_sha256: value.content_sha256.clone(),
+  }
+}
+
+// The wire deliberately carries generation and seed records both beside and inside measurement.
+// Copy those small persisted identities while moving the sole measurement owner into this record.
+pub fn attempt(measurement: prompt_artifacts.TaskMeasurement, borrow bindings: AttemptBindings, invocation: Invocation, source: Option<prompt_artifacts.RepairPromptSource>) -> Result<prompt_artifacts.TaskAttemptRecord, Error> {
+  if bindings.elapsed_ns <= 0 || bindings.elapsed_ns > 7200000000000 || bindings.preparation_ns < 0 || bindings.preparation_ns > 7200000000000 { return Err(Error.Invalid) }
+  overhead: Option<i64> := if measurement.status == "PASS" {
+    match measurement.generation_to_passing_patch_ns { None => { return Err(Error.Invalid) }, Some(value) => { if value > bindings.elapsed_ns { return Err(Error.Invalid) }; Some(bindings.elapsed_ns - value) } }
+  } else { None }
+  measurement_sha256 := measurement.content_sha256.clone()
+  mut value := prompt_artifacts.TaskAttemptRecord {
+    schema_version: 1, artifact_kind: "TASK_ATTEMPT_RECORD".clone(), attempt_index: invocation.attempt_index,
+    attempt_kind: (if invocation.attempt_index == 1 { "INITIAL" } else { "REPAIR" }).clone(), status: measurement.status.clone(), skip_reason: "NONE".clone(),
+    rendered_prompt_sha256: Some(measurement.rendered_prompt_sha256.clone()), repair_prompt_source: source,
+    adapter_request_sha256: Some(bindings.adapter_request_sha256.clone()), snapshot_request_sha256: Some(bindings.snapshot_request_sha256.clone()),
+    before_snapshot_result_sha256: Some(bindings.before_sha256.clone()), after_snapshot_result_sha256: Some(bindings.after_sha256.clone()),
+    input_snapshot_sha256: Some(bindings.input_sha256.clone()), generation_request: Some(generation(measurement.generation_request)),
+    seed_attestation: Some(seed_attestation(measurement.seed_attestation)), paired_seed: invocation.paired_seed,
+    measurement: Some(measurement), repair_preparation_ns: bindings.preparation_ns,
+    adapter_elapsed_ns: bindings.elapsed_ns, adapter_overhead_ns: overhead, content_sha256: "".clone(),
+    measurement_sha256: Some(measurement_sha256),
+  }
+  canonical := json.encode_bounded(value, 1048576)?
+  value.content_sha256 = digest(canonical)
+  return Ok(value)
+}
+
+pub fn expected(borrow task: prompt_task_inputs.Task, borrow measurement: prompt_artifacts.TaskMeasurement, adapter_sha256: str, invocation: Invocation) -> Result<prompt_artifacts.PromptExpectedInputDigest, Error> {
+  mut value := prompt_artifacts.PromptExpectedInputDigest {
+    schema_version: 2, artifact_kind: "PROMPT_EXPECTED_INPUT_DIGEST".clone(), task_id: task.manifest.task_id.clone(),
+    sample_index: invocation.sample_index, variant: (if invocation.candidate { "CANDIDATE" } else { "PARENT" }).clone(), attempt_index: Some(invocation.attempt_index),
+    rendered_prompt_sha256: measurement.rendered_prompt_sha256.clone(), context_sources_sha256: task.context.content_sha256.clone(),
+    generation_request_sha256: measurement.generation_request.content_sha256.clone(), adapter_request_sha256: adapter_sha256.clone(),
+    provider_request_sha256: measurement.generation_request.provider_request_sha256.clone(), content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(value, 65536)?
+  value.content_sha256 = digest(canonical)
+  return Ok(value)
+}
+
+fn probe(borrow value: prompt_artifacts.EnvironmentProbe) -> prompt_artifacts.EnvironmentProbe {
+  return prompt_artifacts.EnvironmentProbe {
+    schema_version: value.schema_version, artifact_kind: value.artifact_kind.clone(), producer: value.producer.clone(),
+    os: value.os.clone(), os_release: value.os_release.clone(), architecture: value.architecture.clone(), cpu: value.cpu.clone(),
+    logical_cpu_count: value.logical_cpu_count, gpu: value.gpu.clone(), runtime_identity: value.runtime_identity.clone(),
+    content_sha256: value.content_sha256.clone(),
+  }
+}
+
+fn edit_set(borrow value: Option<array<prompt_artifacts.EditSetBlock>>) -> Option<array<prompt_artifacts.EditSetBlock>> {
+  return match value {
+    None => None,
+    Some(blocks) => {
+      mut output: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+      mut index := 0
+      loop {
+        if index == blocks.len() { break }
+        output.push(prompt_artifacts.EditSetBlock {
+            schema_version: blocks[index].schema_version, artifact_kind: blocks[index].artifact_kind.clone(),
+            path: blocks[index].path.clone(), body_bytes: blocks[index].body_bytes, body_sha256: blocks[index].body_sha256.clone(),
+            body_text: optional(blocks[index].body_text), content_sha256: blocks[index].content_sha256.clone(),
+          })
+        index = index + 1
+      }
+      Some(output.build())
+    },
+  }
+}
+
+// The row intentionally persists the final measurement a second time beside its attempts.
+// Project the complete wire record while the attempt remains its independent evidence owner.
+fn measurement(borrow value: prompt_artifacts.TaskMeasurement) -> prompt_artifacts.TaskMeasurement {
+  return prompt_artifacts.TaskMeasurement {
+    schema_version: value.schema_version, artifact_kind: value.artifact_kind.clone(), status: value.status.clone(),
+    failure_kind: value.failure_kind.clone(), build_status: value.build_status.clone(), test_status: value.test_status.clone(),
+    repair_loop_count: value.repair_loop_count, unrelated_diff_count: value.unrelated_diff_count, patch_size_bytes: value.patch_size_bytes,
+    public_api_change_count: value.public_api_change_count, policy_violation_count: value.policy_violation_count,
+    cleanup_passed: value.cleanup_passed, containment_passed: value.containment_passed, benchmark_regression_ppm: value.benchmark_regression_ppm,
+    generation_to_passing_patch_ns: value.generation_to_passing_patch_ns, rendered_prompt_sha256: value.rendered_prompt_sha256.clone(),
+    generation_request: generation(value.generation_request), environment_probe: probe(value.environment_probe),
+    seed_attestation: seed_attestation(value.seed_attestation), diagnostic_summary: value.diagnostic_summary.clone(),
+    diagnostic_stdout: value.diagnostic_stdout.clone(), diagnostic_stderr: value.diagnostic_stderr.clone(),
+    edit_set: edit_set(value.edit_set), edit_set_total_bytes: value.edit_set_total_bytes, patch_sha256: optional(value.patch_sha256),
+    base_adapter_runtime_identity: optional(value.base_adapter_runtime_identity), product_runtime: optional(value.product_runtime),
+    edit_refusal: optional(value.edit_refusal), completion_bytes: value.completion_bytes, completion_sha256: optional(value.completion_sha256),
+    completion_text: optional(value.completion_text), content_sha256: value.content_sha256.clone(),
+  }
+}
+
+fn selected_measurement(borrow attempt: prompt_artifacts.TaskAttemptRecord) -> Result<prompt_artifacts.TaskMeasurement, Error> {
+  return match attempt.measurement { None => Err(Error.Invalid), Some(value) => Ok(measurement(value)) }
+}
+
+pub fn input(
+  borrow task: prompt_task_inputs.Task, borrow row: RowBindings, borrow invocation: AttemptBindings,
+  borrow value: prompt_artifacts.TaskMeasurement, sample: Invocation,
+) -> Result<prompt_artifacts.EvaluationInputIdentity, Error> {
+  mut output := prompt_artifacts.EvaluationInputIdentity {
+    schema_version: 1, artifact_kind: "EVALUATION_INPUT_IDENTITY".clone(), task_id: task.manifest.task_id.clone(),
+    task_input_snapshot_sha256: invocation.input_sha256.clone(), parent_variant_sha256: row.parent_sha256.clone(),
+    candidate_variant_sha256: row.candidate_sha256.clone(), task_prompt_sha256: task.prompt.content_sha256.clone(),
+    context_sources_sha256: task.context.content_sha256.clone(), generation_policy_sha256: task.generation.content_sha256.clone(),
+    generation_request_sha256: value.generation_request.content_sha256.clone(), adapter_request_sha256: invocation.adapter_request_sha256.clone(),
+    environment_policy_sha256: task.environment.content_sha256.clone(), environment_sha256: row.environment_sha256.clone(),
+    sample_index: sample.sample_index, paired_seed: sample.paired_seed, content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(output, 65536)?
+  output.content_sha256 = digest(canonical)
+  return Ok(output)
+}
+
+pub fn row(
+  borrow task: prompt_task_inputs.Task, borrow bindings: RowBindings, borrow final: AttemptBindings,
+  borrow rendered: prompt_artifacts.RenderedPromptArtifact, invocation: Invocation,
+  attempts: array<prompt_artifacts.TaskAttemptRecord>,
+) -> Result<prompt_artifacts.PromptTaskRow, Error> {
+  if attempts.len() < 1 || attempts.len() > 2 { return Err(Error.Invalid) }
+  mut total := 0
+  mut loops := 0
+  mut selected := 0
+  mut passing: Option<i64> := None
+  mut index := 0
+  loop {
+    if index == attempts.len() { break }
+    if attempts[index].attempt_index != index + 1 || attempts[index].paired_seed != invocation.paired_seed { return Err(Error.Invalid) }
+    match passing { Some(_) => { return Err(Error.Invalid) }, None => {} }
+    if attempts[index].status != "SKIPPED" {
+      selected = index
+      if index == 1 { loops = 1 }
+      total = total.checked_add(attempts[index].adapter_elapsed_ns) else { return Err(Error.Invalid) }
+      total = total.checked_add(attempts[index].repair_preparation_ns) else { return Err(Error.Invalid) }
+      if total <= 0 || total > 7200000000000 { return Err(Error.Invalid) }
+      if attempts[index].status == "PASS" { passing = Some(total) }
+    } else if index == 0 { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  final_measurement := selected_measurement(attempts[selected])?
+  identity := input(task, bindings, final, final_measurement, invocation)?
+  with_preparation: Option<i64> := match passing {
+    None => None,
+    Some(value) => { if value > 7200000000000 - 20000000 { return Err(Error.Invalid) }; Some(value + 20000000) },
+  }
+  mut output := prompt_artifacts.PromptTaskRow {
+    schema_version: 2, artifact_kind: "PROMPT_TASK_ROW".clone(), evaluation_id: bindings.evaluation_id.clone(),
+    task_id: task.manifest.task_id.clone(), sample_index: invocation.sample_index,
+    variant: (if invocation.candidate { "CANDIDATE" } else { "PARENT" }).clone(), variant_id: rendered.variant_id.clone(),
+    variant_sha256: rendered.variant_sha256.clone(), prompt_preparation_ns: 20000000, repair_loop_count: Some(loops),
+    generation_to_passing_patch_ns: passing, time_to_passing_patch_ns: with_preparation, attempts: Some(attempts),
+    evaluation_input: identity, measurement: final_measurement, content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(output, 4194304)?
+  output.content_sha256 = digest(canonical)
+  return Ok(output)
+}
+
+pub fn attestation(task_id: str, invocation: Invocation, borrow bindings: AttemptBindings) -> Result<prompt_artifacts.RunSnapshotAttestation, Error> {
+  mut value := prompt_artifacts.RunSnapshotAttestation {
+    schema_version: 1, artifact_kind: "RUN_SNAPSHOT_ATTESTATION".clone(), task_id: task_id.clone(),
+    sample_index: invocation.sample_index, variant: (if invocation.candidate { "CANDIDATE" } else { "PARENT" }).clone(),
+    status: "COMPLETE".clone(), error_code: "NONE".clone(), error: "".clone(),
+    snapshot_request_sha256: bindings.snapshot_request_sha256.clone(), before_snapshot_result_sha256: bindings.before_sha256.clone(),
+    after_snapshot_result_sha256: Some(bindings.after_sha256.clone()), before_input_snapshot_sha256: Some(bindings.input_sha256.clone()),
+    after_input_snapshot_sha256: Some(bindings.input_sha256.clone()), content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(value, 65536)?
+  value.content_sha256 = digest(canonical)
+  return Ok(value)
+}

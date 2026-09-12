@@ -1,0 +1,126 @@
+module prompt_task_smoke
+
+import core.json
+import prompt_artifacts
+import prompt_task
+import std.crypto
+import std.encoding
+
+fn hash(source: str) -> string {
+  bytes := crypto.sha256(source)
+  return encoding.hex_encode(bytes[0..bytes.len()]).clone()
+}
+
+fn bind_text(kind: str, id: str, text: str) -> Result<prompt_artifacts.PromptTextArtifact, Error> {
+  value := prompt_artifacts.PromptTextArtifact {
+    schema_version: 1, artifact_kind: kind.clone(), artifact_id: id.clone(),
+    text: text.clone(), content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_prompt_text_artifact(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_variant() -> Result<prompt_artifacts.PromptVariant, Error> {
+  value := prompt_artifacts.PromptVariant {
+    schema_version: 1, artifact_kind: "PROMPT_VARIANT".clone(), variant_id: "candidate".clone(),
+    base_prompt: bind_text("BASE_PROMPT", "base", "base prompt")?,
+    repo_prompt: bind_text("REPO_PROMPT", "repo", "repository prompt")?,
+    learned_prompt_append: "learned".clone(),
+    context_policy: prompt_artifacts.ContextPolicy {
+      include_patch_evaluation: true, include_failure_memory: true, include_diagnostics: true,
+      max_patch_evaluation_bytes: 64, max_failure_events: 2, max_failure_context_bytes: 64,
+      max_diagnostic_bytes_per_stream: 64,
+    },
+    candidate_id: "candidate".clone(), content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_prompt_variant(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_context(id: str) -> Result<prompt_artifacts.ContextSources, Error> {
+  value := prompt_artifacts.ContextSources {
+    schema_version: 1, artifact_kind: "CONTEXT_SOURCES".clone(), task_id: id.clone(),
+    patch_evaluation: bind_text("PATCH_EVALUATION", id, "patch")?,
+    failure_memory_jsonl: bind_text("FAILURE_MEMORY_JSONL", id, "")?,
+    diagnostic_stdout: bind_text("DIAGNOSTIC_STDOUT", id, "stdout")?,
+    diagnostic_stderr: bind_text("DIAGNOSTIC_STDERR", id, "stderr")?,
+    content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_context_sources(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_control() -> Result<prompt_artifacts.EvaluationProviderControl, Error> {
+  value := prompt_artifacts.EvaluationProviderControl {
+    schema_version: 1, artifact_kind: "EVALUATION_PROVIDER_CONTROL".clone(), provider_control_id: "control".clone(),
+    provider_kind: "LOCAL_OPENAI".clone(), endpoint: "http://127.0.0.1:8080".clone(), endpoint_id: "local".clone(),
+    model: "fixture-model".clone(), api_key_env: None, tokenize_endpoint: None,
+    timeout_ns: 1_000_000_000, max_response_bytes: 65_536, content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_evaluation_provider_control(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_generation(borrow control: prompt_artifacts.EvaluationProviderControl) -> Result<prompt_artifacts.GenerationPolicy, Error> {
+  value := prompt_artifacts.GenerationPolicy {
+    schema_version: 1, artifact_kind: "GENERATION_POLICY".clone(), generation_policy_id: "generation".clone(),
+    evaluation_provider_kind: control.provider_kind.clone(), evaluation_provider_endpoint_id: control.endpoint_id.clone(),
+    evaluation_provider_model: control.model.clone(), provider_control_sha256: control.content_sha256.clone(),
+    provider_service_revision: "fixture-v1".clone(), max_prompt_bytes: 65_536, max_tokens: 32,
+    temperature_micros: 0, seed_mode: "PAIRED_FIXED".clone(), seed_base: 7, content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_generation_policy(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn main() -> Result<(), Error> {
+  variant := bind_variant()?
+  task_prompt := bind_text("TASK_PROMPT", "task-one", "implement the task")?
+  context := bind_context("task-one")?
+  rendered := prompt_task.render(variant, task_prompt, context, "task-one")?
+  contains_task := match rendered.text.find("implement the task") { None => false, Some(_) => true }
+  if rendered.variant_id != "candidate" || rendered.variant_sha256 != variant.content_sha256 ||
+  rendered.task_prompt_sha256 != task_prompt.content_sha256 || rendered.context_sources_sha256 != context.content_sha256 ||
+  !contains_task || rendered.content_sha256.len() != 64 {
+    return Err(Error.Invalid)
+  }
+  control := bind_control()?
+  generation := bind_generation(control)?
+  request := prompt_task.prepare_generation(generation, control, rendered, "task-one-candidate-1", "rendered/task-one.json", 1, 2)?
+  if !prompt_artifacts.verify_prompt_generation_request(request) || request.paired_seed != 7 ||
+  request.rendered_prompt_sha256 != rendered.content_sha256 || request.provider_kind != "LOCAL_OPENAI" {
+    return Err(Error.Invalid)
+  }
+  mut tampered_rendered := prompt_task.render(variant, task_prompt, context, "task-one")?
+  tampered_rendered.text = "tampered".clone()
+  match prompt_task.prepare_generation(generation, control, tampered_rendered, "task-one-candidate-1", "rendered/task-one.json", 1, 2) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  wrong_context := bind_context("other")?
+  match prompt_task.render(variant, task_prompt, wrong_context, "task-one") { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  mut wrong_variant := bind_variant()?
+  wrong_variant.content_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".clone()
+  match prompt_task.render(wrong_variant, task_prompt, context, "task-one") { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  mut overflow := bind_generation(control)?
+  overflow.seed_base = 9223372036854775807
+  match prompt_task.prepare_generation(overflow, control, rendered, "task-one-candidate-2", "rendered/task-one-2.json", 2, 2) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  mut mismatched_control := control
+  mismatched_control.endpoint_id = "other".clone()
+  match prompt_task.prepare_generation(generation, mismatched_control, rendered, "task-one-candidate-1", "rendered/task-one.json", 1, 2) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  print("prompt task: rendered identity, provider request and refusal PASS")
+  return Ok(())
+}

@@ -1,0 +1,30 @@
+module prompt_generation_collect
+
+import prompt_artifacts
+import prompt_capture
+import prompt_fixture_setup
+import prompt_generation_response
+import prompt_task_supervisor
+import prompt_validation_budget
+import std.fs
+import std.process
+
+pub Readout { Ready(prompt_artifacts.PromptGenerationResponse), Stopped(prompt_task_supervisor.Report) }
+
+// The caller retains the live scope on every path, including supervisor failure.
+pub fn run(
+  borrow mut scope: process.child_scope,
+  borrow mut signals: process.signal_subscription,
+  borrow workspace: fs.directory,
+  borrow procfs: fs.directory,
+  deadline: i64,
+  borrow expected: prompt_generation_response.Expected,
+) -> Result<Readout, Error> {
+  pattern := prompt_capture.pattern("", 2097152)?
+  report := prompt_task_supervisor.run(scope, signals, workspace, procfs, pattern,
+    prompt_task_supervisor.Config { deadline: deadline, resources: false, limits: prompt_validation_budget.defaults() })?
+  if !prompt_fixture_setup.accepted(report) { return Ok(Readout.Stopped(report)) }
+  bytes: slice<u8> := report.stdout
+  response := prompt_generation_response.decode(bytes.as_str()?, expected)?
+  return Ok(Readout.Ready(response))
+}
