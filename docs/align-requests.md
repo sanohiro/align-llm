@@ -13097,15 +13097,15 @@ root-cause scan. Future execution of untested compositions remains separate evid
 ## Request 77 — Indexed owned-string projection passed to a borrowed text parameter
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; repair evidence uses an explicit named str view with no copy.
 Independent work that may continue: all product cutover integration using the ordinary named view.
 Resume condition: the checked slice-field-to-borrowed-text call lowers with valid ownership metadata;
   adopt the corrected compiler and verify the direct composition before simplifying the caller.
-Align commit or pull request: none; reproduced at merged provider pin
-  6ca79fee6eb221702652c2bb131839708db55eda during the combined R69–R76 client adoption.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1027; merged
+  as 1f0627bbb10bd305ecc497d5c21cd25a611c139c on 2026-09-12.
 align-llm verification: direct reproduction fails check-per-unit at body_only_metadata_is_valid;
   named str-view control passes check-per-unit. Repair evidence integration is being owner-tested.
 ```
@@ -13191,14 +13191,15 @@ Include this nonblocking requirement with R77 in the next consolidated compositi
 ## Request 79 — Nested borrowed optional report loses a native signal producer contract
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; an ordinary borrowed Report inspection helper compiles.
 Independent work that may continue: fixture setup, Git observation and the product cutover.
 Resume condition: nested optional report/sum projection reaches native signal_number with its
   declared nominal producer contract intact; verify direct composition before simplifying helpers.
-Align commit or pull request: none; reproduced at 6ca79fee6eb221702652c2bb131839708db55eda.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1027; merged
+  as 1f0627bbb10bd305ecc497d5c21cd25a611c139c on 2026-09-12.
 align-llm verification: direct minimal check-per-unit fails MIR producer certification;
   a separate borrowed Report helper passes check-per-unit and execution.
 ```
@@ -13242,14 +13243,15 @@ nonblocking finding in the next consolidated composition batch with R77/R78.
 ## Request 80 — Fresh scalar array copy retains a loop-local source borrow
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; the Git index capture has an ordinary owned-return helper.
 Independent work that may continue: Git observation, task integration and Python removal.
 Resume condition: a fresh slice.to_array scalar result assigned across a loop iteration is
   independent of the source owner; verify direct composition before simplifying the helper.
-Align commit or pull request: none; reproduced at 6ca79fee6eb221702652c2bb131839708db55eda.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1027; merged
+  as 1f0627bbb10bd305ecc497d5c21cd25a611c139c on 2026-09-12.
 align-llm verification: direct assignment fails lifetime checking; owned-return helper passes
   managed check-per-unit and run across two iterations and source expiry.
 ```
@@ -13299,7 +13301,7 @@ direct-copy adoption. No aggregate is added; consolidate this nonblocking gap wi
 ## Request 81 — Borrowed record-array projection loses provenance across an owned-return call
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: no
 Blocked gate or slice: none; task validation passes narrow slice arguments directly from its
@@ -13308,7 +13310,8 @@ Independent work that may continue: tool/sandbox admission, source cleanup, eval
   owned Git-observation consumers and their focused owners already pass.
 Resume condition: certify the existing borrowed record-array call composition without extending
   source lifetime into the independently owned result; verify the direct task-validation consumer.
-Align commit or pull request: none; reproduced at 6ca79fee6eb221702652c2bb131839708db55eda.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1027; merged
+  as 1f0627bbb10bd305ecc497d5c21cd25a611c139c on 2026-09-12.
 align-llm verification: minimal source checking passes but check-per-unit/run fail resource MIR
   validation; consuming the observation passes. Narrow slice-parameter helpers called directly
   from the owning task function pass managed check-per-unit for the complete18-unit consumer.
@@ -13378,7 +13381,7 @@ that borrowed interface is later adopted.
 ## Request 82 — Shared matching of an optional retained user-namespace owner
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; namespace-bearing command construction can use an explicit shared
@@ -13386,7 +13389,8 @@ Blocked gate or slice: none; namespace-bearing command construction can use an e
 Independent work that may continue: sandbox probing/command integration and the product cutover.
 Resume condition: an existing Option<process.user_namespace> permits shared payload matching
   for the shipped inherit_namespace call, without moving or extracting the owner.
-Align commit or pull request: none; reproduced at 6ca79fee6eb221702652c2bb131839708db55eda.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1027; merged
+  as 1f0627bbb10bd305ecc497d5c21cd25a611c139c on 2026-09-12.
 align-llm verification: minimal source check rejects borrowed optional owner matching;
   direct shared namespace parameters are the shipped plan50 surface.
 ```
@@ -13431,7 +13435,7 @@ is selected. Consolidate this nonblocking requirement with R77–R81; do not sta
 ## Request 83 — Owned document return composition in optional repair admission
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: prompt_task_inputs repair-template admission and therefore complete
@@ -13440,7 +13444,8 @@ Independent work that may continue: direct generation integration, measurement/s
   legacy eval admission, existing primitive owners and consolidated request preparation.
 Resume condition: nested owned document returns compose with typed template decoding and
   optional owned results in the actual consumer, without weakening producer certification.
-Align commit or pull request: none; reproduced at 6ca79fee6eb221702652c2bb131839708db55eda.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1027; merged
+  as 1f0627bbb10bd305ecc497d5c21cd25a611c139c on 2026-09-12.
 align-llm verification: ordinary check passes the reduced case; per-unit producer certification
   rejects it. No full-consumer passing ownership factoring has been found.
 ```
@@ -13605,3 +13610,40 @@ legacy eval retirement remain application implementation work; no hypothetical l
 requested for them. Publish this prerequisite batch together. Require the original per-request
 acceptance plus the R83 real consumer before marking verified, and adopt its merged fixes in one
 pin change. Continue independent application work while the provider implements the batch.
+
+### Align delivery — R77–R83 (2026-09-12)
+
+[PR #1027](https://github.com/sanohiro/align/pull/1027) merged the six selected
+provider repairs as `1f0627bbb10bd305ecc497d5c21cd25a611c139c`. R77/R79/R80/R81/R82/R83
+are `ALIGN_MERGED`; the preceding consumer reproductions remain historical client
+evidence, not verification against this merged provider.
+
+| Request | Shipped provider surface |
+| --- | --- |
+| R77 | Shared indexed owned-string field arguments preserve the physical owner and logical text view through checking and lowering. |
+| R79 | Nested borrowed optional reports retain native Copy signal producer authority without owner transfer. |
+| R80 | Fresh scalar copies and the non-loop owned Option replacement retain independent owned storage and nested members. |
+| R81 | Borrowed record/string/array field forwarding composes with independently owned returns, including Config and task-source collection witnesses. |
+| R82 | Direct and record-contained optional user-namespace owners permit shared payload matching for explicit command inheritance. |
+| R83 | Resource-backed Document/Template and 32-field measurement call/return graphs retain founded owned producer certification. |
+
+There is no new implicit clone, source lifetime extension, ownership cast, runtime
+ABI or interface format. Source owners remain live for shared calls. Explicit
+clone/copy/build/decode operations retain their existing allocation rules. Dynamic
+slice/AoS indexed Move-field calls use checked runtime indices; source-formed
+fixed StructArray Move-field calls require integer-literal indices. Borrowed
+owner extraction and mutable owning-to-view retypes remain rejected.
+
+R78 stays `PROPOSED`: the settled heap-record enum exclusion has not met plan 23's
+mechanical-workaround prerequisite for reopening. Consumer managed-pin adoption,
+original smoke owners, canonical application goldens and A2 remain align-llm-owned.
+Align has not changed or verified the consumer implementation or pin.
+
+Provider acceptance follow-up [PR #1028](https://github.com/sanohiro/align/pull/1028)
+merged as `2e2d8d51b43bc5582fa331880f164af00ae00e99`. R82 now executes direct/record
+Some namespace inheritance, failed-slot recovery, source expiry and FD cleanup;
+R83 executes real Document reads/digests and the 32-field measurement result in
+whole-program, per-unit and ThinLTO modes. The 31 focused provider tests, independent
+review with its fixture-path correction, final preflight and optimized workspace
+build pass. Required Linux x86_64/ARM64 and macOS CI pass. These results do not
+claim the external application owners or managed-pin adoption.
