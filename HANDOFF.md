@@ -112,15 +112,22 @@ into an inference claim. Product source was unchanged during the measurement. Th
 as baseline `product-cutover-fixed-patch-2026-09-13`; future candidates rerun this reference
 on the same host under the documented protocol. The recorded sample JSON is immutable.
 
-The bounded measurement review found two accepted gaps: replay depended on ignored
-local scripts, and shared native dependency identities were absent. The consolidated
-repair preserves portable classified measurement owners and a separate dependency
-supplement without changing the original sample JSON. Fresh-directory old/native replay
-and native-reference/candidate replay each pass all 22 invocations with eight rows;
-existing-directory/result refusals pass. Shared linked libraries resolve to identical
-hashes on both sides. The supplement is explicitly a later capture from retained assets,
-not a contemporaneous attestation. Final review of this executable measurement repair
-and exact-head preflight precede publication.
+The measurement review found missing durable replay and dependency identities; these
+were repaired in `c2e99e0`. Its final review found optimized-Python validation bypass,
+unbound reference substitution, unchecked dependency equality and unbound native source.
+The owner was re-scoped to frozen historical-pair replay: arbitrary reference/candidate
+substitution is removed, both exact source commits and binary hashes are required,
+optimized Python is rejected, and source/dependency maps must match before timing.
+The immutable original sample JSON stays unchanged; the dependency supplement is a
+later capture from retained assets, not a contemporaneous attestation.
+
+Frozen replay passes all 22 invocations with eight rows. Negative owners pass optimized
+mode, wrong native commit/binary, reference substitution, dependency mismatch and existing
+evidence refusals. Replay qualification timings are not a replacement baseline or speed
+claim. Strict boundary passes 272 Python files, 83 embedded hosts, 157 product modules and
+zero debts. The portable scripts require retained or exact-byte rebuilt historical binaries;
+future candidate automation is outside this narrow frozen owner. Final exact-head preflight
+and hosted integration checks remain before merge.
 
 ## Next actions
 

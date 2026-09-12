@@ -140,13 +140,18 @@ product hashes, resolved shared-library/loader hashes and all raw invocations. F
 runs retain evidence and exit nonzero. Dependencies must resolve through `ldd` before
 measurement. Native models are not needed for this fixed-patch workload.
 
-For a future candidate, prepare a second fresh directory with its native source and
-binary in the After inputs. Keep the same historical Before inputs for fixture
-construction, then set `BENCHMARK_REFERENCE_DATA_ROOT` to the first, native-reference
-experiment directory before running the measurement script on the candidate directory.
-This pairs the reference's native product directly against the candidate, with matching
-source-byte checks and the same 2+9 schedule. Use compatible task/request semantics;
-changing those semantics requires an explicit workload review or a new baseline.
+These owners replay only the recorded historical pair. They require exact application
+commits and product SHA-256 values from the immutable sample record, reject optimized
+Python and reject mismatched native dependencies before timing. A rebuilt binary with
+a different hash is not silently treated as the historical executable; retain it as a
+separately identified build for a new comparison. The recorded executables are local
+build artifacts, not committed binaries; exact-byte replay therefore requires retaining
+or reproducing those builds as well as the explicit native dependencies.
+
+Future candidate comparisons must implement the same documented paired protocol with
+the designated native reference and record their own identities. Arbitrary candidate
+substitution is deliberately outside these frozen replay owners. The original baseline
+record remains the comparison reference and must not be overwritten.
 
 Preparation and builds remain outside the clock. Product checkouts are unchanged.
 No new `make ci` or GPU campaign was run.

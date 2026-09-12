@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Reconstruct the independent fixed-patch cutover experiment from pinned fixtures."""
-import importlib.machinery,importlib.util,json,os,shutil,subprocess,textwrap
+import sys
+if sys.flags.optimize:
+ raise RuntimeError('optimized Python is unsupported for measurement verification')
+import hashlib,importlib.machinery,importlib.util,json,os,shutil,subprocess,textwrap
 from pathlib import Path
 def required_path(name):
  value = Path(os.environ[name])
@@ -12,7 +15,17 @@ AFTER=required_path('BENCHMARK_AFTER_SOURCE')
 BEFORE_BINARY=required_path('BENCHMARK_BEFORE_BINARY')
 AFTER_BINARY=required_path('BENCHMARK_AFTER_BINARY')
 expected='9855afe1e3b7e73c758463ed2f32e13bc9b6a550'
-assert subprocess.check_output(['git','-C',str(BEFORE),'rev-parse','HEAD'],text=True).strip()==expected
+if subprocess.check_output(['git','-C',str(BEFORE),'rev-parse','HEAD'],text=True).strip()!=expected:
+ raise ValueError('historical source commit mismatch')
+if subprocess.check_output(['git','-C',str(AFTER),'rev-parse','HEAD'],text=True).strip()!='2f25c3faba4fc12c0035a5c168b38dc3f0ba935d':
+ raise ValueError('native baseline source commit mismatch')
+for repo in (BEFORE,AFTER):
+ if subprocess.check_output(['git','-C',str(repo),'status','--porcelain','--untracked-files=no'],text=True).strip():
+  raise ValueError('baseline source has tracked modifications')
+record=json.loads((Path(__file__).resolve().parent.parent/'eval/benchmarks/product-cutover-2026-09-13.json').read_text())
+for arm,binary in [('before',BEFORE_BINARY),('after',AFTER_BINARY)]:
+ if hashlib.sha256(binary.read_bytes()).hexdigest()!=record['binaries'][arm]:
+  raise ValueError(arm+' baseline binary hash mismatch')
 ROOT=Path(os.environ['BENCHMARK_DATA_ROOT'])
 if not ROOT.is_absolute():
  raise ValueError('BENCHMARK_DATA_ROOT must be absolute')

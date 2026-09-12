@@ -1669,9 +1669,11 @@ baseline. They have no product caller. Their developer inputs are explicit absol
 (exact historical `9855afe` checkout), `BENCHMARK_AFTER_SOURCE` (native checkout),
 `BENCHMARK_BEFORE_BINARY`, and `BENCHMARK_AFTER_BINARY`; source and binary inputs
 must exist before preparation writes its exclusively owned directory. The runner
-accepts `BENCHMARK_DATA_ROOT`; optional `BENCHMARK_REFERENCE_DATA_ROOT` replaces the
-Before arm with a previously prepared native reference for future comparisons. Native
-library resolution uses explicit `LD_LIBRARY_PATH`.
+accepts `BENCHMARK_DATA_ROOT`; reference/candidate substitution is not supported.
+The supplied After source must be exact `2f25c3f`; both binary hashes must match the
+immutable sample record. Optimized Python is rejected before setup or execution.
+Resolved native dependency maps must match before timing. Native library resolution
+uses explicit `LD_LIBRARY_PATH`.
 
 Preparation reconstructs canonical checked-in fixtures and the documented fixed-patch
 adaptation without modifying either checkout. Measurement emits version-1 developer
@@ -1682,7 +1684,8 @@ result filtering or speed floor applies. Ownership/allocation is the external Py
 measurement process; cache/network/publication and shipping schema are N/A. Inputs
 are local trusted developer artifacts, not a product admission boundary. Checks cover
 construction through a fresh-directory replay, eight passing/contained/cleaned rows
-per invocation, unchanged sources, and refusal to overwrite an existing directory.
+per invocation, unchanged sources, and refusal to overwrite an existing directory. This owner only replays the frozen historical pair; it does not
+authorize an arbitrary candidate as the designated reference.
 The existing sample document stays immutable; supplemental dependency identities and
 new replay results are separate records. Metric: external complete-CLI wall time;
 row clocks remain diagnostic. No aggregate membership is added.
