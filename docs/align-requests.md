@@ -13647,3 +13647,292 @@ whole-program, per-unit and ThinLTO modes. The 31 focused provider tests, indepe
 review with its fixture-path correction, final preflight and optimized workspace
 build pass. Required Linux x86_64/ARM64 and macOS CI pass. These results do not
 claim the external application owners or managed-pin adoption.
+
+## Remaining product-cutover requests (2026-09-12)
+
+R84–R88 consolidate the remaining-path observations at Align
+`1f0627bbb10bd305ecc497d5c21cd25a611c139c`. R88 blocks complete legacy command
+admission; R84–R87 are nonblocking. The reduced sources below are self-contained document
+fixtures, not additions to the product graph or a new aggregate. Save a source block under its
+named filename in a scratch directory to reproduce it with that exact compiler. R84 needs only
+source checking. The later sibling commits through `fc5bba10` add provider qualification and
+review tooling; this report makes no fresh execution claim for that newer head.
+
+Provider triage can proceed from this published batch while the separate, uncommitted native
+consumer cutover continues. The lifecycle remains PROPOSED; publication is neither provider
+acceptance nor consumer verification. Historical request delivery and the main toolchain pin
+remain unchanged.
+
+## Request 84 — Shared matching of an optional prepared command
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; the single-attempt owner consumes its optional command once.
+Independent work that may continue: full evaluator/repair, publication and Python retirement.
+Resume condition: an Align release admits shared matching of Option<command> while preserving
+  the original command owner and the documented non-consuming start_scope receiver semantics.
+Align commit or pull request: none; reproduced compiler pin is `1f0627bb`.
+align-llm verification: a focused optional-command consumer with None, Some, input-owner expiry
+  and two sequential released scopes; then the native task-attempt owner. No aggregate is added.
+```
+
+The complete native task-attempt consumer encountered this after the R82 namespace adoption.
+At `1f0627bbb10bd305ecc497d5c21cd25a611c139c`, this faithful reduced consumer fails source checking:
+
+```align
+module borrowed_command
+import std.process
+
+fn start(borrow selected: Option<command>) -> Result<process.child_scope, Error> {
+  return match selected {
+    None => Err(Error.Invalid),
+    Some(prepared) => prepared.start_scope(),
+  }
+}
+```
+
+The diagnostics are `cannot bind an unsupported Move payload through borrowed parameter
+'selected'` and `cannot move borrowed parameter 'selected'`. Provider plan56 deliberately admits
+only `process.user_namespace` through the extended shared-payload grammar; this is an adjacent
+language composition requirement, not an unfulfilled R82 acceptance target. The proposed surface
+uses existing borrow/match/command syntax, adds no clone or hidden allocation, and must not grant
+exclusive command mutation or transfer ownership through a shared match. Product code currently
+transfers its one-use optional command as a whole, a natural ownership choice for one attempt.
+That choice does not close this language gap. Triage this nonblocking item with R85–R88; do not interrupt cutover with a separate pin cycle.
+
+## Request 85 — Owned JSON encoding result from a borrowed optional record
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; the attempt owner encodes each observation before embedding it.
+Independent work that may continue: evaluator records, row/repair integration, publication,
+  deadline propagation and legacy execution retirement.
+Resume condition: certify the independent owned Result<string, Error> returned by JSON encoding
+  a record projected through a shared optional-record match, without retaining a source borrow.
+Align commit or pull request: none; witness observed at merged sibling/managed pin `1f0627bb`.
+align-llm verification: embedded reduced witness under whole/per-unit compilation and execution,
+  source-owner expiry and None/Some cases; then the native task-attempt owner. No aggregate added.
+```
+
+The record-publication consumer exposed this when encoding the measurement inside a borrowed
+`TaskAttemptRecord.measurement`. The reduced fixture
+`product-cutover-borrowed-record-encoding.align` (reproduced below)
+needs only one owned text field, `Option<Record>`, and the shipped bounded JSON encoder.
+At `1f0627bbb10bd305ecc497d5c21cd25a611c139c`, ordinary `alignc check FILE` passes
+(two functions), while `alignc check-per-unit FILE` rejects the encoder's return:
+`producer return leaf String at [ResultOk] is not certified by its body`.
+The full consumer has the same producer diagnostic on macOS and Linux ARM64.
+
+This is a compiler certification gap adjacent to R83, not application ownership or schema policy.
+The proposed surface is the existing borrowed match followed by `json.encode_bounded`; its owned
+result must remain valid after the input owner expires, and malformed producer controls must stay
+rejected. The attempt publication owner serializes the observation's own bytes before moving it
+into the larger persisted record, and its independent checks compare both representations. It
+does not use serialization to transport an owner across the rejected borrow. This nonblocking
+witness belongs to the consolidated R84–R88 provider-triage batch.
+
+
+Reproduction source (`product-cutover-borrowed-record-encoding.align`):
+
+```align
+module borrowed_record_encoding
+
+// R85 compiler witness, not product code or a validation bypass.
+// Align 1f0627bbb10bd305ecc497d5c21cd25a611c139c accepts ordinary source checking,
+// but check-per-unit rejects encode's independently owned ResultOk String producer.
+import core.json
+
+pub Record { text: string }
+pub Optional { record: Option<Record> }
+
+pub fn encode(borrow input: Optional) -> Result<string, Error> {
+  return match input.record {
+    None => Err(Error.Invalid),
+    Some(value) => json.encode_bounded(value, 262144),
+  }
+}
+
+pub fn main() -> Result<(), Error> {
+  value := Optional { record: Some(Record { text: "owned".clone() }) }
+  encoded := encode(value)?
+  print(encoded)
+  return Ok(())
+}
+```
+
+## Request 86 — Record initializer ordering can read an already moved owner
+
+```text
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none; the attempt producer binds its measurement digest before constructing
+  the enclosing record that consumes the measurement.
+Independent work that may continue: evaluator/repair integration, publication and retirement;
+  inspect consuming record initializers as part of the consolidated candidate audit.
+Resume condition: record initializer evaluation and move checking use one consistent order;
+  an accepted clone-before-move initializer must preserve the cloned value, or the source must
+  be rejected under an explicitly documented conflicting evaluation rule.
+Align commit or pull request: none; reproduced compiler pin `1f0627bb`.
+align-llm verification: reduced record/Option witness, source/per-unit/whole-program parity,
+  negative move-after-use controls and actual task-attempt digest/reference owner. No aggregate added.
+```
+
+The native attempt producer initially placed `measurement_sha256: Some(measurement.content_sha256.clone())`
+before `measurement: Some(measurement)` in its initializer. The type declares `measurement` first.
+At `1f0627bbb10bd305ecc497d5c21cd25a611c139c` the code compiles, but the copied digest is empty.
+The independent persisted-reference check caught the mismatch; final JSON digest consistency alone
+would accept that incorrect record. Binding the digest to its own local before construction preserves
+the explicit ownership boundary and makes the intended value independent of initializer reordering.
+
+`product-cutover-record-move-order.align` (reproduced below)
+reduces this to `Outer { digest: Some(value.text.clone()), value: Some(value) }` where `Outer`
+declares `value` before `digest`. Pinned `alignc run FILE` exits0 and prints
+`{"value":{"text":"owned"},"digest":""}`. The accepted source must not silently substitute an
+empty string for the earlier clone. The proposed fix uses consistent eager initializer snapshots
+and existing Move rules; it adds no public API, ownership transfer through a borrow, or hidden copy.
+Keep malformed producer/use-after-move controls fail closed and qualify reordered fields containing
+ordinary records, Option payloads and independently owned strings. Triage this confirmed compiler
+gap with the other requests in this batch.
+
+
+Reproduction source (`product-cutover-record-move-order.align`):
+
+```align
+module record_move_order
+
+// R86 compiler witness, not product code or a validation bypass.
+// Align 1f0627bb accepts this source but prints an empty digest after moving the
+// owner in declaration order despite the clone preceding that move in source.
+import core.json
+
+pub Inner { text: string }
+pub Outer { value: Option<Inner>, digest: Option<string> }
+
+pub fn build(value: Inner) -> Outer {
+  return Outer { digest: Some(value.text.clone()), value: Some(value) }
+}
+
+pub fn main() -> Result<(), Error> {
+  input := Inner { text: "owned".clone() }
+  result := build(input)
+  encoded := json.encode(result)?
+  print(encoded)
+  return Ok(())
+}
+```
+
+## Request 87 — Encode a constructed owned record array as a JSON root
+
+```text
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; native evaluation embeds aggregates in its result record.
+Independent work that may continue: complete ALIGN-PRODUCT-CUTOVER integration and acceptance.
+Resume condition: json.encode and json.encode_bounded borrow a constructed owned array<Record>
+  with the same field grammar, canonical bytes and bounds as the existing embedded array field.
+Align commit or pull request: none; reproduced at merged 1f0627bbb10bd305ecc497d5c21cd25a611c139c.
+align-llm verification: encode the owned aggregate-array witness as a root, compare empty/multiple
+  rows and exact-fit/over-limit bytes with the equivalent result-record field, and retain the
+  original array for subsequent reads and single cleanup.
+```
+
+The score producer's independent oracle attempted to encode its freshly built task aggregate
+array. Pinned `alignc check product-cutover-owned-array-encoding.align`
+rejects the reduced `array<Row>` root with `expects a struct or struct-array, got array<struct#0>`.
+Sibling `docs/impl/core-design/json.md` explicitly retains the bare `array<Move-struct>` encoding
+restriction; `crates/align_sema/src/lib.rs` emits this diagnostic in JSON encode admission.
+This is a compiler/JSON surface gap, not application scoring policy. The proposed surface borrows
+one existing owned array, preserves declaration-order canonical fields and bounded encoding, and
+introduces neither automatic copying nor another owner type. Empty arrays, nested/optional owned
+fields, malformed descriptors, whole/per-unit parity, source expiry and one final Drop belong to
+the provider's acceptance. The application compares individual aggregate records and persists them
+in the actual result envelope; no root-array product format or helper wrapper is introduced.
+Triage this nonblocking observation with the other requests in this batch; do not start a
+separate provider adoption cycle for it.
+
+
+Reproduction source (`product-cutover-owned-array-encoding.align`):
+
+```align
+module product_cutover_owned_array_encoding
+
+import core.json
+
+Row { text: string }
+
+pub fn main() -> Result<(), Error> {
+  mut rows: array_builder<Row> := array_builder()
+  rows.push(Row { text: "owned".clone() })
+  values := rows.build()
+  encoded := json.encode_bounded(values, 1024)?
+  print(encoded)
+  return Ok(())
+}
+```
+
+## Request 88 — Ordinary-path regular-file reader admission
+
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: P8 complete legacy command/script file admission, and therefore final A2/A4/A5 cutover closure.
+Independent work that may continue: Native evaluation, provider/repair owners, other CLI relocation, A1 and installed A3 qualification; retain the eight frozen debts until retirement closes.
+Resume condition: A shipped ordinary-path reader constructor that follows normal path/symlink semantics, rejects non-regular entries without waiting for a FIFO writer, and returns the same retained descriptor whose regular kind was admitted.
+Align commit or pull request: None; observed against merged Align `1f0627bbb10bd305ecc497d5c21cd25a611c139c`.
+align-llm verification: the embedded `product-cutover-followed-reader.align` witness builds at the pin; a regular file and final symlink pass, while a FIFO without a writer is terminated by an external one-second timeout before metadata admission. No proposed API is consumed.
+
+The legacy external-command wire permits normal relative paths, dot components and symlinks.
+P8 must inspect the selected implementation bytes before any task child. The available
+`fs.open(path)` preserves those path semantics, but `align_rt_io_reader_open` in
+`crates/align_runtime/src/lib.rs` calls blocking `std::fs::File::open` before returning a reader.
+Calling `reader.metadata()` and rejecting non-regular kinds is too late for a FIFO without a
+writer. The reduced witness demonstrates this ordering with the actual pinned Linux compiler.
+
+The retained `open_beneath`/directory readers already supply regular-file admission, but their
+no-follow ancestor/final rules and rejection of dot components do not preserve this existing
+external-command boundary. Plan 54's `directory.metadata_follow` supplies an observation only;
+its contract explicitly grants no descriptor or identity-stable pair with another pathname call.
+A stat-then-blocking-open sequence therefore does not implement the required admission.
+
+This is a filesystem standard-library concern, independent of Python and command policy. A
+proposed Align-consistent surface is `fs.open_regular(path: str) -> Result<reader, Error>`:
+ordinary OS path resolution, read-only open, nonblocking special-file admission, descriptor
+`fstat`, `Error.Invalid` for a non-regular object, then a regular reader with normal blocking
+read semantics. It creates or mutates no entry, requests no write access, and owns one descriptor
+closed by existing reader Drop. Ordinary open errors retain the existing error mapping. This
+does not promise interruptibility of arbitrary remote-filesystem operations or a filesystem
+sandbox; selected-command retirement and external task semantics remain application policy.
+
+Provider acceptance must cover regular/empty/read-only files, relative/dot/symlink paths, dangling
+links, directories, devices and FIFOs without writers, final replacement between lookup and open,
+descriptor-kind binding, source lifetime, failure cleanup and native Linux/macOS parity. The P8
+client acceptance remains whole-corpus refusal before any child/result, changed corpus IDs,
+renamed frozen bytes and preserved explicit target Python tests. Reassess the complete P8
+retention/dispatch contract before advancing this request; this constructor alone is not final
+cutover evidence. This request batch publishes the remaining-path findings for provider triage. No proposed API
+is consumed and no new pin adoption cycle has started.
+
+Reproduction source (`product-cutover-followed-reader.align`):
+
+```align
+module product_cutover_followed_reader
+
+import std.fs
+
+// Reduced observation of the ordinary-path admission gap. A FIFO with no writer blocks in
+// fs.open before the caller can inspect metadata and reject its non-regular kind.
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 { return Err(Error.Invalid) }
+  input := fs.open(args[1])?
+  metadata := input.metadata()?
+  if !match metadata.kind { Regular => true, _ => false } { return Err(Error.Invalid) }
+  print("regular input admitted")
+  return Ok(())
+}
+```
