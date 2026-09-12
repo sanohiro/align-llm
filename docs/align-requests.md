@@ -9820,6 +9820,12 @@ Align commit or pull request: partial repair in https://github.com/sanohiro/alig
   No source type, ownership, allocation or ABI change. Align-local owner tests, Linux/macOS CI
   and the merged workspace release build passed; consumer adoption is pending. Ordinary-call
   write provenance and array-field assignment remain outside this repair; Request 46 stays open.
+  Additional local static-origin repair: https://github.com/sanohiro/align/pull/1026,
+  merged as 21b3151e9c53e5320d3698b7e4dbb431c8d7f66a. Compiler-owned descriptor ID and SQL
+  text now retain read-only origins inside the trusted bridge; readers and explicit owned copies
+  remain accepted. No source allocation, ownership, ABI or interface change. Local owners,
+  Linux/macOS CI and the merged workspace release build passed. This does not close ordinary-call
+  provenance or array-field assignment, and requires no consumer adoption change.
 align-llm verification: `src/residency_sim.align`'s `replay` function (`:660-920`) collapses its two
   copies of the eviction-and-insert block (`:772-812` and `:856-908`) into one shared `admit` helper
   taking the per-key tables as `borrow mut array<i64>` parameters, called from both call sites inside
