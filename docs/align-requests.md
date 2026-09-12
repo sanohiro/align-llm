@@ -13658,10 +13658,9 @@ named filename in a scratch directory to reproduce it with that exact compiler. 
 source checking. The later sibling commits through `fc5bba10` add provider qualification and
 review tooling; this report makes no fresh execution claim for that newer head.
 
-Provider triage can proceed from this published batch while the separate, uncommitted native
-consumer cutover continues. The lifecycle remains PROPOSED; publication is neither provider
-acceptance nor consumer verification. Historical request delivery and the main toolchain pin
-remain unchanged.
+Provider delivery for R84–R88 is ALIGN_MERGED, as recorded below. Managed-pin adoption
+and native consumer acceptance remain pending; provider delivery is not consumer verification.
+Historical request delivery and the main toolchain pin remain unchanged.
 
 ## Request 84 — Shared matching of an optional prepared command
 
