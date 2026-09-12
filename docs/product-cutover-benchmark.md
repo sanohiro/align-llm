@@ -6,6 +6,25 @@ CLI elapsed time by **66.42%**, from **2.145870293 s** to **0.720526833 s** (2.9
 All nine measured pairs favored the native product. This is an evaluation-orchestration
 result, not an inference-throughput or sampled-model coding result.
 
+## Baseline designation
+
+Baseline ID: **`product-cutover-fixed-patch-2026-09-13`**. The user designated this
+measurement as the reference on 2026-09-13. The reference product is the **After** arm
+at `2f25c3faba4fc12c0035a5c168b38dc3f0ba935d`: **0.720526833 s** median external
+complete-CLI wall time for eight passing rows. The Before arm remains historical
+comparison evidence. The immutable sample document has SHA-256
+`1d0b1b68e8fca8088b151b5fc774b2d99635f86ccd4c71052953f79e98f622b5`.
+
+Future comparisons must name this baseline, preserve the eight-row fixed-patch workload,
+external target tests, success/cleanup checks, Linux-local storage and external clock,
+and use two warmup pairs followed by nine alternating measured pairs. Rebuild and rerun
+the reference product alongside the candidate on the same host; do not infer a regression
+from historical absolute times on different hardware. Record both application/compiler
+identities and shared native dependencies, retain every sample, and report median wall
+time with passing-row counts. Changed workload or timing boundaries require a separately
+named baseline. This designation introduces no shipping threshold and does not replace
+the sampled-model inference baseline.
+
 ## Inputs and protocol
 
 | Item | Before | After |

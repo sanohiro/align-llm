@@ -10,7 +10,8 @@ Branch: `agent/align-product-cutover`. Candidate `edc9bb9` includes `origin/main
 manifest repository and copied validation source. Normal product execution is in Align,
 including provider generation, edits, validation, repair, scoring, publication,
 acceptance and rollback. There is no active implementation blocker or product Python debt.
-This local capability has not been published or merged to main.
+Publication and merge are now explicitly requested; final preflight and hosted checks
+are the remaining publication work.
 
 The normal external-command evaluator refuses all eight historical implementations by
 supported literal launch descriptor, reserved path and unchanged frozen digest, including
@@ -107,12 +108,14 @@ after, a 66.42% reduction; all nine pairs favor native and all 22 invocations pa
 rows. Native/legacy inputs are controlled semantic counterparts with the same fixed patch
 and external tests. No model generation or repair attempt is measured. Historical OLMoE
 84.062 s versus llama.cpp 14.174 s remains unchanged; do not turn this evaluator result
-into an inference claim. Product source was unchanged during the measurement.
+into an inference claim. Product source was unchanged during the measurement. The user designated the After arm
+as baseline `product-cutover-fixed-patch-2026-09-13`; future candidates rerun this reference
+on the same host under the documented protocol. The recorded sample JSON is immutable.
 
 ## Next actions
 
-No implementation work remains for the requested local cutover. If publication is
-requested, run exact-head `scripts/pre-pr --owner-test LABEL -- COMMAND ...` from a
+No implementation work remains for the requested cutover. Complete the authorized
+publication and merge: run exact-head `scripts/pre-pr --owner-test LABEL -- COMMAND ...` from a
 clean named branch/worktree on the capable Linux host, attach the review envelope and
 repair disposition, and require all selected checks before merge. The earlier `--plan`
 run only identified fresh-image scope; it is not a preflight stamp. Preserve the unrelated
