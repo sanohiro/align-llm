@@ -4,10 +4,30 @@
 This checks score and record closure, not source observation or gate eligibility. The full
 independent gate retains its IMPROVED, source, ancestry and publication requirements.
 """
+import hashlib
+import stat
 import importlib.util
 import json
 from pathlib import Path
 import sys
+
+# Fixture-only tree identity, computed independently from the native observer's output.
+if len(sys.argv) == 4 and sys.argv[1] == "--tree-digest":
+    root = Path(sys.argv[2]).resolve()
+    tree = root / sys.argv[3]
+    rows = sorted([tree, *tree.rglob("*")], key=lambda path: path.relative_to(root).as_posix().encode())
+    digest = hashlib.sha256()
+    for path in rows:
+        mode = path.lstat().st_mode
+        if stat.S_ISDIR(mode):
+            payload = b"D\n"
+        elif stat.S_ISREG(mode):
+            payload = b"F " + hashlib.sha256(path.read_bytes()).hexdigest().encode() + b"\n"
+        else:
+            raise SystemExit("source fixture contains a nonregular entry")
+        digest.update(f"{mode:06o} ".encode() + path.relative_to(root).as_posix().encode() + b"\0" + payload)
+    print(digest.hexdigest())
+    raise SystemExit(0)
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location(

@@ -23,7 +23,7 @@
     "src/prompt_evaluation_invocation.align": "8f9158797bf7cb99632afde0f278f5202b99ac977f30c528e8a193d68725f450",
     "src/prompt_evaluation_native.align": "35eab56342a675c915ad0f6386a5901dfb2ebf8fb44a63de1fb345f0a2f989f1",
     "src/prompt_evaluation_row.align": "ede2701f2ad4e766743a3e855e5ec1907c0a91623f923fe32bcaeab6121fcd52",
-    "src/prompt_evaluation_runtime.align": "a0433d0d4a12f89ccf99a8a4696cbc58391d0ce6766ff308235ec2925eeed071",
+    "src/prompt_evaluation_runtime.align": "56b829de63d2fd00d68e54d6e69c5cd5be6ddde961167d42ea83248b3b3a42b5",
     "src/prompt_evaluation_sources.align": "9173e0889f303b930beecdd37950117ad79bf1115b1a1309ee650807874bf5e0",
     "src/prompt_fixture_command.align": "8e5aead55db91083aa895f69bf5257446ad784d1eafc00992a5142cd0dffcec5",
     "src/prompt_fixture_setup.align": "1deec80ded3327898adf8f4b0cd97e1a98ec15ea4dd5d14929e1d217ce257721",
@@ -48,7 +48,7 @@
     "src/prompt_validation_resources.align": "12bf7cedba014003c354a2c02e6544d5354ad0743cfeec77bc6b36a0a3c7a7d6"
   },
   "data_only_sources": {
-    "src/prompt_score.align": "a83931becb66e7c04c8e2ba460c62c8a270f917c1c51d69a10cc031a7b2b99e3",
+    "src/prompt_score.align": "3c5609a26544bf60c2d28c7a6727ff9fcadda60a61b79a3b830fca63f6aba996",
     "src/prompt_product_wire.align": "9ef6318483d6a9b877ae27b0237100fa5321b96687c76475e11392f0f1c362f2",
     "src/prompt_fixture_environment.align": "98f7bd6834ca709bdc4b6abc7872e4999784082ce898367d755eafbb38a37a57",
     "src/eval_retirement.align": "d3c468491cf4ea78e02a15aa17024867d7aeba56a1abc21e4df6c7fb136a8e13",
@@ -3125,7 +3125,7 @@
     {
       "path": "scripts/run-prompt-gate-validator-smoke",
       "classification": "CI_OR_DEVELOPER_TOOL",
-      "behavior": "Owner smokes for scripts/prompt-gate-validator.py.",
+      "behavior": "Owner smokes for scripts/prompt-gate-validator.py, including native source-tree declaration refusal.",
       "reachability": "No product call: independent developer/test entry or imported support; may launch the product under test.",
       "substitution": "No shipping substitution; exercises or prepares the named owner.",
       "python_reason": "Python is retained as portable developer/test orchestration outside product execution.",
@@ -3580,7 +3580,7 @@
     {
       "path": "scripts/check-native-evaluation-fixture",
       "classification": "INDEPENDENT_ORACLE",
-      "behavior": "Independently recomputes native fixture score and validates environment, snapshot closure, measurements and all attempts using the gate reader; does not confer gate eligibility.",
+      "behavior": "Independent native result verification and source-tree fixture digest construction outside the product process tree.",
       "reachability": "No product call: independent developer/test entry or imported support; may launch the product under test.",
       "substitution": "No shipping substitution; exercises or prepares the named owner.",
       "python_reason": "Independent test oracle intentionally lives outside the Align product implementation.",

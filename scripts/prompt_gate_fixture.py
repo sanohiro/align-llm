@@ -710,6 +710,23 @@ def upgrade_to_product(result: dict[str, Any], executable_sha256: str, execution
         task.update(ordered_task)
         bind(task)
 
+    # Version-2 execution binds the authenticated TREE to the repository it validates.
+    # The legacy placeholder tree deliberately remains unchanged in historical fixtures.
+    for task in result["tasks"]:
+        for expectation in task["artifacts"]:
+            if expectation["kind"] == "TREE" and expectation["path"] == "snapshot":
+                expectation["path"] = task["repo_path"]
+    for request in result["snapshot_requests"]:
+        for expectation in request["static_expectations"]:
+            if expectation["kind"] == "TREE" and expectation["path"] == "snapshot":
+                expectation["path"] = request["repo_path"]
+    for stream in ("input_snapshots", "snapshot_results"):
+        for snapshot in result[stream]:
+            task = next(task for task in result["tasks"] if task["task_id"] == snapshot["task_id"])
+            for entry in snapshot["artifact_digests"]:
+                if entry["path"] == "snapshot":
+                    entry.update(path=task["repo_path"], mode="040755", byte_count=0)
+
     def probe(value: dict[str, Any], role: str) -> None:
         value["schema_version"] = 2
         value["producer"] = role

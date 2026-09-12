@@ -61,6 +61,7 @@ bind_record experiment.json '.scope=$scope[0] | .parent_activation.content_sha25
   {artifact_kind:"OPPORTUNITY",path:"opportunity.json",artifact_id:"opportunity",content_sha256:("a"*64)} as $opportunity |
   del(.opportunity) | to_entries | map(if .key=="scope" then ., {key:"opportunity",value:$opportunity} else . end) | from_entries' \
   --slurpfile scope "$scratch/scope.json" --slurpfile parent "$scratch/parent.json"
+source_identity="$(python3 "$project_root/scripts/check-native-evaluation-fixture" --tree-digest "$scratch" source)"
 for prefix in task-one task-two; do
   jq -cj '.failure_memory_jsonl' "$scratch/$prefix-context.json" > "$scratch/memory.json"
   bind_record memory.json '.text=""'
@@ -79,9 +80,10 @@ for prefix in task-one task-two; do
   bind_record "$prefix.json" '
     .repo_revision=$revision | .repo_path="source" | .cwd="source" | .require_clean_repo=false | .timeout_ns=30000000000 |
     .task_definition_sha256=$definition | .patch_sha256=$patch |
-    .artifacts[0].expected_sha256=$definition_identity | .artifacts[1].expected_sha256=$patch_identity
+    .artifacts[0].expected_sha256=$definition_identity | .artifacts[1].expected_sha256=$patch_identity |
+    .artifacts[2].expected_sha256=$source_identity
   ' --arg revision "$revision" --arg definition "$definition_sha" --arg patch "$patch_sha" \
-    --arg definition_identity "$definition_identity" --arg patch_identity "$patch_identity"
+    --arg definition_identity "$definition_identity" --arg patch_identity "$patch_identity" --arg source_identity "$source_identity"
 done
 printf '%s\n' "$revision_align" > "$scratch/.align-revision"
 jq -cj --arg root "$scratch" --arg product "$product_hash" --arg align "$revision_align" --arg owner "${owner:-prompt_evaluation_native_smoke}" --slurpfile policy "$scratch/source-policy.json" '

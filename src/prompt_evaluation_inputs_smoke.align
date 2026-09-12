@@ -257,9 +257,10 @@ fn task_manifest(id: str, definition_path: str, definition_digest: str, patch_pa
   mut expectations: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
   expectations.push(prompt_artifacts.ArtifactExpectation { path: definition_path.clone(), kind: "FILE".clone(), expected_sha256: definition_digest.clone() })
   expectations.push(prompt_artifacts.ArtifactExpectation { path: patch_path.clone(), kind: "FILE".clone(), expected_sha256: patch_digest.clone() })
+  expectations.push(prompt_artifacts.ArtifactExpectation { path: "source".clone(), kind: "TREE".clone(), expected_sha256: hash("source tree") })
   value := prompt_artifacts.PromptEvaluationTask {
     schema_version: 2, artifact_kind: "PROMPT_EVALUATION_TASK".clone(), task_id: id.clone(), repo_id: "repo".clone(),
-    repo_revision: REPO_REVISION.clone(), repo_path: "repo".clone(), require_clean_repo: true,
+    repo_revision: REPO_REVISION.clone(), repo_path: "source".clone(), require_clean_repo: true,
     execution_kind: Some("FIXTURE_PATCH".clone()), cmd: None, argv: None, snapshot_cmd: None, snapshot_argv: None,
     measurement_adapter_runtime: None, snapshot_helper_runtime: None, cwd: "repo".clone(), timeout_ns: 1000000000,
     task_prompt_path: prompt_path.clone(), context_sources_path: context_path.clone(),

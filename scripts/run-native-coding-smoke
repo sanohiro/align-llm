@@ -43,6 +43,7 @@ bind_record parent.json '.activation=$activation[0]' --slurpfile activation "$ro
 bind_record experiment.json '.scope=$scope[0] | .parent_activation.content_sha256=$parent[0].content_sha256' \
   --slurpfile scope "$root/scope.json" --slurpfile parent "$root/parent.json"
 bind_record environment.json '.executable_paths=["/usr/bin/python3"]'
+source_identity="$(python3 "$project_root/scripts/check-native-evaluation-fixture" --tree-digest "$root" "$source_relative")"
 for prefix in task-one task-two; do
   jq -cj --arg source "$source_relative" --arg revision "$revision" '
     .source_dir=$source | .source_revision=$revision | .allowed_edits=["src/inclusive_range.py"] |
@@ -57,9 +58,10 @@ for prefix in task-one task-two; do
   bind_record "$prefix.json" '
     .repo_revision=$revision | .repo_path=$source | .cwd=$source |
     .task_definition_sha256=$definition | .patch_sha256=$patch |
-    .artifacts[0].expected_sha256=$definition_identity | .artifacts[1].expected_sha256=$patch_identity
+    .artifacts[0].expected_sha256=$definition_identity | .artifacts[1].expected_sha256=$patch_identity |
+    .artifacts[2]={path:$source,kind:"TREE",expected_sha256:$source_identity}
   ' --arg revision "$revision" --arg source "$source_relative" --arg definition "$definition_sha" \
-    --arg patch "$patch_sha" --arg definition_identity "$definition_identity" --arg patch_identity "$patch_identity"
+    --arg patch "$patch_sha" --arg definition_identity "$definition_identity" --arg patch_identity "$patch_identity" --arg source_identity "$source_identity"
 done
 jq -cj --arg evidence "${scratch#"$root/"}/evidence.json" '.evaluation_evidence_path=$evidence' \
   "$root/canonical-request.json" > "$scratch/request.json"

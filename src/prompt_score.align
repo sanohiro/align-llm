@@ -2730,12 +2730,22 @@ fn verifier_snapshot_probe_role(borrow probe: prompt_artifacts.EnvironmentProbe,
   verifier_optional_text_matches(task.snapshot_helper_runtime, probe.runtime_identity)
 }
 
+fn verifier_source_tree_declared(borrow task: prompt_artifacts.PromptEvaluationTask) -> bool {
+  if task.schema_version != 2 { return true }
+  mut index := 0
+  loop {
+    if index == task.artifacts.len() { return false }
+    if task.artifacts[index].kind == "TREE" && task.artifacts[index].path == task.repo_path { return true }
+    index = index + 1
+  }
+}
+
 fn verifier_task_valid(
   borrow task: prompt_artifacts.PromptEvaluationTask,
   require_template: bool,
 ) -> bool {
   limits := task.regression_limits
-  return verifier_task_version_fields(task) &&
+  return verifier_task_version_fields(task) && verifier_source_tree_declared(task) &&
   task.artifact_kind == "PROMPT_EVALUATION_TASK" &&
   verifier_valid_ascii_identifier(task.task_id, 128) &&
   verifier_valid_ascii_identifier(task.repo_id, 128) &&

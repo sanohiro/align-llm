@@ -126,7 +126,7 @@ fn one(borrow root: fs.directory, path: str, deadline: i64, borrow mut remaining
   prompt_score.admit_product_task(manifest)?
   definition_source := bound(root, manifest.artifacts, manifest.task_definition_path, manifest.task_definition_sha256, deadline, remaining)?
   definition := prompt_task_definition.decode(definition_source.text)?
-  if !definition_valid(definition, manifest.task_id) { return Err(Error.Invalid) }
+  if !definition_valid(definition, manifest.task_id) || definition.source_dir != manifest.repo_path { return Err(Error.Invalid) }
   prompt_source := read(root, manifest.task_prompt_path, deadline, remaining)?
   prompt := prompt_evaluation_documents.task_prompt(prompt_source.text)?
   context_source := read(root, manifest.context_sources_path, deadline, remaining)?

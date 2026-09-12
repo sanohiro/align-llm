@@ -13931,7 +13931,7 @@ Historical request delivery and the main toolchain pin remain unchanged.
 ## Request 84 — Shared matching of an optional prepared command
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; the single-attempt owner consumes its optional command once.
@@ -13975,10 +13975,16 @@ shared mutation, consumption and escape remain rejected. No clone or new allocat
 Whole/per-unit owners cover None, retained command/path ownership and two released scopes on
 Linux; macOS runs the portable None owner under the existing process-platform contract.
 
+### align-llm consumer verification (2026-09-13)
+
+Managed `f502fe3` adoption passes `scripts/run-product-cutover-adoption-smoke` on macOS and Linux: None, retained input-owner expiry and two sequential released Linux scopes. The native `scripts/run-prompt-task-attempt-smoke` owner passes its 15 Linux lifecycle cases in A3. No application ownership workaround is required for the shipped shared command match.
+The preceding provider-delivery pending statements describe the historical handoff; this
+checkpoint records the completed client acceptance.
+
 ## Request 85 — Owned JSON encoding result from a borrowed optional record
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; the attempt owner encodes each observation before embedding it.
@@ -14044,6 +14050,12 @@ same authenticated MIR place as ordinary borrowed consumers. Both `json.encode` 
 `json.encode_bounded` return independently owned output. Whole/per-unit owners cover source
 expiry, None/Some and exact-fit/over-limit bounds; malformed or uninitialized producer places
 remain rejected. The JSON field grammar and canonical bytes are unchanged.
+
+### align-llm consumer verification (2026-09-13)
+
+Managed `f502fe3` adoption passes ordinary/per-unit checks and execution of the reduced witness, None/Some, source expiry and bounded owned encoding through `scripts/run-product-cutover-adoption-smoke` on macOS/Linux. The native task-attempt owner and A2/A4 independently verified complete measurement/digest references, including both repair attempts.
+The preceding provider-delivery pending statements describe the historical handoff; this
+checkpoint records the completed client acceptance.
 
 ## Request 86 — Record initializer ordering can read an already moved owner
 
@@ -14152,7 +14164,7 @@ on the positive adoption cases alone; no additional pin cycle is initiated here.
 ## Request 87 — Encode a constructed owned record array as a JSON root
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; native evaluation embeds aggregates in its result record.
@@ -14221,13 +14233,19 @@ live-allocation probes, source replacement during bound evaluation, and malforme
 HIR/MIR producers. Consumer witness execution and managed-pin adoption remain
 align-llm-owned and pending.
 
+### align-llm consumer verification (2026-09-13)
+
+Managed `f502fe3` adoption passes `scripts/run-product-cutover-adoption-smoke` on macOS/Linux: constructed empty/multiple record-array roots, exact-fit/over-limit bounds, embedded-field byte parity and input reuse. The reduced owned-array witness also executes successfully. Product result arrays remain embedded in their existing envelope.
+The preceding provider-delivery pending statements describe the historical handoff; this
+checkpoint records the completed client acceptance.
+
 ## Request 88 — Ordinary-path regular-file reader admission
 
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
-Blocking: yes
-Blocked gate or slice: P8 complete legacy command/script file admission, and therefore final A2/A4/A5 cutover closure.
-Independent work that may continue: Native evaluation, provider/repair owners, other CLI relocation, A1 and installed A3 qualification; retain the eight frozen debts until retirement closes.
+Blocking: no
+Blocked gate or slice: none; P8 and final A2/A4/A5 acceptance pass.
+Independent work that may continue: ordinary product work; retained Python is independent replay/developer tooling.
 Resume condition: A shipped ordinary-path reader constructor that follows normal path/symlink semantics, rejects non-regular entries without waiting for a FIFO writer, and returns the same retained descriptor whose regular kind was admitted.
 Align commit or pull request: https://github.com/sanohiro/align/pull/1033 (merged `65376767f3642323f9043a1c683b03129fd564df`).
 align-llm verification: the embedded `product-cutover-followed-reader.align` witness builds at the pin; a regular file and final symlink pass, while a FIFO without a writer is terminated by an external one-second timeout before metadata admission. No proposed API is consumed.
@@ -14302,3 +14320,18 @@ Provider plan: Align `docs/impl/58-r84-r88-client-batch-plan.md`. PR #1033 merge
 owner/gate/Clippy, native ABI parity, all fourteen local PostgreSQL suites and required CI passed.
 The post-merge `cargo build --release --workspace` passed. No versioned release was requested.
 Managed-pin adoption and consumer acceptance remain pending.
+
+### align-llm consumer verification (2026-09-13)
+
+Managed `f502fe3` adoption passes regular/empty/readonly/dot/symlink reader cases and immediate no-writer FIFO/device/directory refusal on macOS/Linux. P8 retains decoded task inputs across dispatch and inspects the selected direct or literal-interpreter file with this regular descriptor; arbitrary external wrappers retain the explicitly bounded external-command contract. `scripts/run-eval-retirement-smoke` passes whole-corpus refusal before children/results, all eight renamed frozen implementations, alternate corpus IDs, unchanged external Python tests, and admitted-input mutation. Final A2/A4 and A5 strict/independent-validator owners pass. The eight historical implementations are independent replay oracles, with zero remaining product exceptions.
+The preceding provider-delivery pending statements describe the historical handoff; this
+checkpoint records the completed client acceptance.
+
+### Consolidated native cutover integration checkpoint (2026-09-13)
+
+A2 functional, A3 native lifecycle/resource plus actual Linux installed profile, A4 relocated
+Python-free product execution and A5 independent result verification pass at managed `f502fe3`.
+These results supersede historical statements above that final evaluator/repair integration is
+not implemented. Request lifecycle remains individual: R84/R85/R87/R88 are client-verified;
+R86 remains ALIGN_MERGED with its nonblocking optional-move negative. Earlier requests retain
+any separately named owner requirements; these integration results do not silently close them.

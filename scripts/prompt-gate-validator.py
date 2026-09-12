@@ -916,6 +916,11 @@ def validate_task_core(task: Mapping[str, Any], core: Mapping[str, Any], label: 
     require_digest(task["task_definition_sha256"], f"{label} task definition digest")
     if task["execution_kind"] not in ("PROVIDER_EDIT", "FIXTURE_PATCH"):
         raise GateError(f"{label} execution kind is invalid")
+    if not isinstance(task.get("artifacts"), list) or not any(
+        isinstance(row, dict) and row.get("kind") == "TREE" and row.get("path") == task.get("repo_path")
+        for row in task["artifacts"]
+    ):
+        raise GateError(f"{label} does not declare its repository source TREE")
     limits = task.get("regression_limits")
     if not isinstance(limits, dict):
         raise GateError(f"{label} has no regression limits")

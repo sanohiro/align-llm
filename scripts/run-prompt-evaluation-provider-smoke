@@ -66,8 +66,8 @@ try:
     for name in ['task-one.json', 'task-two.json']:
         task = read(name)
         task['execution_kind'] = 'PROVIDER_EDIT'
+        task['artifacts'] = [row for row in task['artifacts'] if row['path'] != task['patch_path']]
         del task['patch_path'], task['patch_sha256']
-        task['artifacts'] = task['artifacts'][:1]
         prompt_path = task['task_prompt_path']
         prompt_sha = hashlib.sha256((root/prompt_path).read_bytes()).hexdigest()
         prompt_identity = hashlib.sha256(('100644 '+prompt_path+'\0F '+prompt_sha+'\n').encode()).hexdigest()

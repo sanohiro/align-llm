@@ -1,7 +1,8 @@
 # Align product implementation boundary and migration
 
-Status: native implementation and functional acceptance pass at the 2026-09-13
-checkpoint; relocated and installed acceptance are being completed before final review.
+Status: native product cutover and A0–A6 acceptance pass at the 2026-09-13 checkpoint.
+One comprehensive review identified two source-binding defects; the consolidated repair enforces
+the existing TREE/source/repository contract and passes affected functional and relocated owners.
 The user requested an audit and settled plan before implementation, with one concentrated
 product cutover. This document owns the migration contract; the
 [architecture](align-llm.md) owns the permanent language boundary and the
@@ -440,7 +441,11 @@ input cap and returned ownership; evaluator admission owns complete cross-record
 before returning an owned array. It uses retained document reads under one caller deadline and
 a128MiB cumulative byte budget. Each task is version2 and passes the scorer's shared task-shape
 admission; each task definition and optional patch is a FILE member with the declared raw digest.
-The task definition ID agrees with its task and editable paths are normalized relative paths,
+The task definition ID agrees with its task. Its normalized `source_dir` must exactly equal
+`repo_path`, and every version-2 task must declare that exact path as a `TREE` expectation.
+Complete source admission verifies this tree before any dispatch; a FILE row or an ancestor/other
+TREE does not substitute for it. Persisted task verification requires the same TREE declaration.
+Editable paths are normalized relative paths,
 unique and bounded before use. Task prompt/context and generation/control/environment documents
 are canonically bound; contexts agree with task IDs and all tasks share exact policy digests.
 Task IDs are unique. Repair templates retain their declared raw digest and existing profile
@@ -449,7 +454,9 @@ task fails. It returns owned decoded records and patch text rather than reopenin
 paths. Source membership snapshots, scope/variant consistency, credential/tool admission and
 rendering remain the evaluator's next admission phase. Owner `prompt_task_inputs_smoke` covers
 complete-list success, final-task failure, duplicate identities, digest/membership/policy
-disagreement, bounds and owner expiry. This changes no persisted schema or acceptance metric.
+disagreement, missing/wrong-kind/wrong-path source TREE, source/repository mismatch, bounds and
+owner expiry. A2 additionally checks malformed final-task refusal before any attempted row and
+changed source bytes against the declared TREE digest. This changes no persisted schema or acceptance metric.
 
 `prompt_evaluation_inputs.load` composes the request's six bound documents and complete task
 inputs from one retained project root. Request version2 and sample count2..16 precede file reads.
@@ -1599,12 +1606,12 @@ small input-fixture owner; neither skips runtime assertions. No aggregate is add
 | ID | Exact command / status at preparation | What it proves |
 | --- | --- | --- |
 | A0 | `python3 scripts/check-python-boundary`; `python3 scripts/test-python-boundary` — implemented as a local checkpoint | Complete inventory, allowed classes, frozen exceptions, process-owner/literal checks; independent mutation tests for missing files, shebangs, new/changed launches, manifest-selected bundled commands and frozen growth. A0 PASS is not Python-free product acceptance. Historical preparation used the audit's static consistency procedure. |
-| A1 | `make prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-state-smoke` — existing owners, must be adapted in cutover | Independent renderer/scorer vectors, evidence, acceptance/rollback. Historical vectors remain separately decodable. |
+| A1 | `make prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-state-smoke` — PASS; state also passes with the relocated native product | Independent renderer/scorer vectors, evidence, acceptance/rollback. Historical vectors remain separately decodable. |
 | A2 | `python3 scripts/run-align-product-cutover --functional --binary "$CUTOVER_BINARY"` — PASS; `make eval-smoke` — existing owner, adapted in cutover | Complete public input/refusal/failure/repair/provider/coding flow, together with the separately named section-4 focused owners; independent Python verification remains outside the product process tree. Includes old `--eval` rejection before any child, preserved external-test execution and the new Align coding corpus. Historical references stay frozen; the independent validator gains the specified new schemas. |
-| A3 | `python3 scripts/run-align-product-cutover --containment --binary "$CUTOVER_BINARY" --align-repo "$PINNED_ALIGN_SOURCE"` — implemented, final run pending | Required Linux installed profile, resource/descendant/tree/integration cases; no Docker skip, ambient endpoint or host-only substitute. Request 53 retains its original layer-forward acceptance in addition to this owner. |
+| A3 | `python3 scripts/run-align-product-cutover --containment --binary "$CUTOVER_BINARY" --align-repo "$PINNED_ALIGN_SOURCE"` — PASS with the actual installed Linux Docker profile | Required Linux installed profile, resource/descendant/tree/integration cases; no Docker skip, ambient endpoint or host-only substitute. Request 53 retains its original layer-forward acceptance in addition to this owner. |
 | A4 | `python3 scripts/run-align-product-cutover --no-python --binary "$CUTOVER_BINARY" --models "$CUTOVER_MODELS" --libraries "$CUTOVER_LIBRARIES" --shim "$CUTOVER_SHIM"` — PASS | Build once with developer tools, relocate declared product outputs/data outside the checkout, run a non-Python coding fixture and all normal command families in an environment where Python binaries and repository scripts cannot be executed. Observe full descendant execution; hiding PATH alone is insufficient. Include P8 old-corpus refusal and Git smoke. Separately run an explicit Python target project with Python available only to its test tool; product decisions remain Align. Real inference uses the explicit real backend build, not the unavailable stub. |
 | A5 | `python3 scripts/check-python-boundary --strict` — PASS with zero product exceptions after runtime retirement; `make prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke` — existing independent owners, adapted in cutover | Zero product violations/bootstrap and no hardcoded Python/local-helper product delegation; historical identity/retirement literals are reviewed data. Independently verify the new corpus, locator v2 and measurements v4, both explicit-input branches, all attempt identities and unchanged legacy bytes. Historical Python adapters cannot be selected by normal requests. |
-| A6 | Native responsibility audit plus existing `make runtime-provider-smoke`; changed native/GPU owner only if touched | No product behavior moved to C; unchanged qualified GPU history is not rerun solely for this plan. |
+| A6 | Native responsibility audit and existing `make runtime-provider-smoke` — PASS (sampler plus 61 CLI assertions); no native ABI change | No product behavior moved to C; unchanged qualified GPU history is not rerun solely for this plan. |
 
 Runtime observation must distinguish host logical CPU count from process-available parallelism;
 Request 66 owns that missing observation, while the shipped `process.cpu_count()` is quota-aware.

@@ -366,6 +366,17 @@ def product_version_rows(root: Path) -> None:
         core = result["environment"]["core"]
         task = result["tasks"][0]
         measurement = result["rows"][-1]["measurement"]
+        for mutation in ("missing", "file", "other"):
+            altered = copy.deepcopy(task)
+            altered["artifacts"] = [row for row in altered["artifacts"]
+                                    if not (row["kind"] == "TREE" and row["path"] == task["repo_path"])]
+            if mutation != "missing":
+                altered["artifacts"].append({"kind": "FILE" if mutation == "file" else "TREE",
+                                             "path": task["repo_path"] if mutation == "file" else "other-source",
+                                             "expected_sha256": "a" * 64})
+            product_rejected(lambda: validator.validate_task_core(altered, core, "source tree"),
+                             f"{kind} {mutation} source tree", "source TREE")
+
         # Missing, explicit null, and legacy keys are distinct wire inputs.
         for label, value, required, forbidden, check in (
             ("task", task, "execution_kind", "cmd", lambda item: validator.validate_task_core(item, core, "task")),

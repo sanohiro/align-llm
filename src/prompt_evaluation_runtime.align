@@ -214,9 +214,8 @@ pub fn commands(borrow runtime: Runtime, borrow task: prompt_task_inputs.Task, w
 }
 
 pub fn source(project: str, borrow task: prompt_task_inputs.Task, deadline: i64) -> Result<prompt_source_directory.Located, Error> {
-  // Snapshot observation and pristine fixture construction can name different directories.
-  // Both must exist during complete-set admission, before any earlier task is dispatched.
-  repository := prompt_source_directory.resolve(project.bytes(), task.manifest.repo_path.bytes(), deadline)?
+  // Snapshot identity and copied validation bytes belong to the same admitted source tree.
+  if task.definition.source_dir != task.manifest.repo_path { return Err(Error.Invalid) }
   admitted := prompt_source_directory.resolve(project.bytes(), task.definition.source_dir.bytes(), deadline)?
   raw: slice<u8> := admitted.path
   if !below(raw.as_str()?, project) { return Err(Error.Invalid) }

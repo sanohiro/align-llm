@@ -15,8 +15,10 @@ three-token local inference. Host Python oracles stay outside the product namesp
 and descendant tree; a separate namespace checks one explicitly permitted Python
 target test. The strict guard keeps its existing process/literal rule: pure target
 filename classification is shared by `source_file_kind`, while JSON renderers keep
-explicit impossible-error aborts. Installed containment and final review are separate
-acceptance evidence, recorded in the current handoff.
+explicit impossible-error aborts. The real installed Linux profile passes. One independent
+comprehensive review found two source-binding defects; the consolidated repair restores
+TREE authentication and repository/source equality, with affected owner evidence recorded
+in the current handoff.
 
 ## Historical preparation audit
 

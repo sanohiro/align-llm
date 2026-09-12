@@ -122,6 +122,14 @@ fn task(borrow root: fs.directory, prefix: str, id: str, variant: i64) -> Result
     expectation := prompt_artifacts.ArtifactExpectation { path: patch_path.clone(), kind: "FILE".clone(), expected_sha256: hash(patch_text) }
     expected_json.write(prompt_artifacts.encode_artifact_expectation(expectation)?)
   }
+  if variant != 15 {
+    expected_json.write(",")
+    expectation := prompt_artifacts.ArtifactExpectation {
+      path: (if variant == 17 || variant == 18 { "other-source" } else { "source" }).clone(),
+      kind: (if variant == 16 { "FILE" } else { "TREE" }).clone(), expected_sha256: hash("source tree"),
+    }
+    expected_json.write(prompt_artifacts.encode_artifact_expectation(expectation)?)
+  }
   expected_json.write("]")
   expected_text := expected_json.to_string()
   anchor := "\"artifacts\":[]"
@@ -135,6 +143,7 @@ fn task(borrow root: fs.directory, prefix: str, id: str, variant: i64) -> Result
 
   mut manifest := prompt_artifacts.decode_prompt_evaluation_task(template_text)?
   manifest.task_id = id.clone()
+  manifest.repo_path = (if variant == 18 { "other-source" } else { "source" }).clone()
   manifest.execution_kind = Some("FIXTURE_PATCH".clone())
   manifest.task_definition_path = definition_path.clone()
   manifest.task_definition_sha256 = if variant == 3 { "0000000000000000000000000000000000000000000000000000000000000000".clone() } else { hash(definition_text) }
@@ -186,7 +195,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   if !patch_matches(accepted[0]) { return Err(Error.Invalid) }
   mut variant := 1
   loop {
-    if variant == 15 { break }
+    if variant == 19 { break }
     prefix_builder := builder()
     prefix_builder.write("invalid-")
     prefix_builder.write_int(variant)
