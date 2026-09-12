@@ -96,6 +96,19 @@ The bounded retrospective found one reusable lesson: keep source declaration, sn
 identity and copied execution input tied at admission. Existing owners now test that
 invariant; no additional process gate or retrospective-only change was added.
 
+## User-requested speed measurement (2026-09-13)
+
+Completed the controlled old/new fixed-patch evaluator comparison after the user asked
+whether cutover improved speed. See `docs/product-cutover-benchmark.md` and
+`eval/benchmarks/product-cutover-2026-09-13.json`. Measured application heads are
+`9855afe` and `2f25c3f`, using their respective exact Align pins. Nine alternating measured
+pairs after two warmup pairs: complete CLI medians 2.145870293 s before and 0.720526833 s
+after, a 66.42% reduction; all nine pairs favor native and all 22 invocations pass eight
+rows. Native/legacy inputs are controlled semantic counterparts with the same fixed patch
+and external tests. No model generation or repair attempt is measured. Historical OLMoE
+84.062 s versus llama.cpp 14.174 s remains unchanged; do not turn this evaluator result
+into an inference claim. Product source was unchanged during the measurement.
+
 ## Next actions
 
 No implementation work remains for the requested local cutover. If publication is
