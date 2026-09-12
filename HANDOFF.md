@@ -64,7 +64,7 @@ model/library/shim operands identify the explicitly prepared native runtime asse
 - `python3 scripts/run-prompt-gate-validator-smoke FAMILY`: validator, product-version,
   source-bundle and source-revalidation PASS; changed product-version owner passes
   again with missing/wrong-kind/wrong-path TREE refusals. Historical v1 bytes stay intact.
-- `python3 scripts/check-python-boundary --strict`: 270 Python files, 83 embedded
+- `python3 scripts/check-python-boundary --strict`: 272 Python files, 83 embedded
   hosts, 157 product modules and zero frozen debts. `python3 scripts/test-python-boundary`:
   all 30 mutation cases PASS. Pure filename policies stay in `source_file_kind` without
   weakening the checker. Final index/selection/patch golden owners PASS.
@@ -111,6 +111,16 @@ and external tests. No model generation or repair attempt is measured. Historica
 into an inference claim. Product source was unchanged during the measurement. The user designated the After arm
 as baseline `product-cutover-fixed-patch-2026-09-13`; future candidates rerun this reference
 on the same host under the documented protocol. The recorded sample JSON is immutable.
+
+The bounded measurement review found two accepted gaps: replay depended on ignored
+local scripts, and shared native dependency identities were absent. The consolidated
+repair preserves portable classified measurement owners and a separate dependency
+supplement without changing the original sample JSON. Fresh-directory old/native replay
+and native-reference/candidate replay each pass all 22 invocations with eight rows;
+existing-directory/result refusals pass. Shared linked libraries resolve to identical
+hashes on both sides. The supplement is explicitly a later capture from retained assets,
+not a contemporaneous attestation. Final review of this executable measurement repair
+and exact-head preflight precede publication.
 
 ## Next actions
 

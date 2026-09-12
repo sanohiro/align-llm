@@ -20,6 +20,12 @@ comprehensive review found two source-binding defects; the consolidated repair r
 TREE authentication and repository/source equality, with affected owner evidence recorded
 in the current handoff.
 
+`scripts/prepare-product-cutover-benchmark` and
+`scripts/measure-product-cutover-benchmark` are `BENCHMARK_OR_MEASUREMENT`.
+They preserve the fixed eight-row experiment outside normal product execution, using
+historical fixtures and externally supplied products. They own only fixture adaptation,
+paired ordering, independent timing and evidence capture; no product imports them.
+
 ## Historical preparation audit
 
 Audit date: 2026-09-09. Application head: `312dd65714036f9587329386b5fdbd65e91b97b9`.

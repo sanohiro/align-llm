@@ -2449,7 +2449,7 @@
     {
       "path": "scripts/run-gpu-session-measurement",
       "classification": "BENCHMARK_OR_MEASUREMENT",
-      "behavior": "Execute the frozen first resident session campaign in gpu-runtime-performance.md §6.1.",
+      "behavior": "Execute the frozen first resident session campaign in gpu-runtime-performance.md \u00a76.1.",
       "reachability": "No product call: independent developer/test entry or imported support; may launch the product under test.",
       "substitution": "Fixed experimental workload/control/reduction only; does not implement a normal product command.",
       "python_reason": "Independent timing, paired ordering and controlled benchmark orchestration remain test-side responsibilities.",
@@ -3600,6 +3600,32 @@
       "target": "A2/A3/A4 cutover acceptance.",
       "migration": "N/A",
       "acceptance": "python3 scripts/run-align-product-cutover --functional; --containment; --no-python",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
+      "path": "scripts/prepare-product-cutover-benchmark",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Reconstruct or time the fixed eight-row cutover experiment; no product caller.",
+      "reachability": "No product call: independent developer/test entry or imported support; may launch the product under test.",
+      "substitution": "Fixed experimental workload/control/reduction only; does not implement a normal product command.",
+      "python_reason": "Independent timing, paired ordering and controlled benchmark orchestration remain test-side responsibilities.",
+      "target": "Retain as measurement only; product retry/session policy must use Align, not import this harness.",
+      "migration": "N/A",
+      "acceptance": "Documented portable baseline replay; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
+      "path": "scripts/measure-product-cutover-benchmark",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Reconstruct or time the fixed eight-row cutover experiment; no product caller.",
+      "reachability": "No product call: independent developer/test entry or imported support; may launch the product under test.",
+      "substitution": "Fixed experimental workload/control/reduction only; does not implement a normal product command.",
+      "python_reason": "Independent timing, paired ordering and controlled benchmark orchestration remain test-side responsibilities.",
+      "target": "Retain as measurement only; product retry/session policy must use Align, not import this harness.",
+      "migration": "N/A",
+      "acceptance": "Documented portable baseline replay; python3 scripts/check-python-boundary --strict",
       "frozen_sha256": null,
       "bootstrap": null
     }

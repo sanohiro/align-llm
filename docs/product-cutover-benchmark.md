@@ -99,25 +99,54 @@ or other task sizes.
 [Machine-readable samples and identities](../eval/benchmarks/product-cutover-2026-09-13.json)
 contain all 22 timings, warmup labels, row outcomes, source-file digests, compiler and
 product identities, the preregistered protocol, and hashes of all raw result documents.
+[Dependency identity supplement](../eval/benchmarks/product-cutover-2026-09-13-dependencies.json)
+records the shim, linked libraries, loader and target interpreter hashes recovered from
+the retained binaries and Linux container after measurement. Both arms resolve identical
+dependencies. This is a later capture, not a contemporaneous dependency attestation;
+the historical sample JSON remains unchanged. Portable replay records these identities
+before timing each new experiment.
+
 The recorded medians were independently recomputed from the nine non-warmup pairs;
 all raw result documents were checked for eight passing, contained and cleaned-up rows.
 
-The local `run/product-cutover-benchmark-20260913/` evidence directory contains the
-preparation/measurement scripts, protocol, logs and all raw results. These are independent,
-environment-specific measurement artifacts in an ignored developer directory, not product
-code. Their hashes are recorded in the machine-readable evidence. The scripts use the
-local prepared compiler/library/source locations and need those bindings restored to replay.
+The original local preparation/measurement scripts and full raw results remain in the
+ignored `run/product-cutover-benchmark-20260913/` evidence directory, with hashes in
+the immutable sample JSON. Portable replay owners are now checked in as
+`scripts/prepare-product-cutover-benchmark` and `scripts/measure-product-cutover-benchmark`.
+They preserve the original fixture transformations, ordering and clock boundary while
+parameterizing local paths; new results do not overwrite the historical measurement.
 
-Build each product with its named release compiler and the shared real shim through
-`scripts/run-main-with-shim "$ALIGNC" build src/main.align`. Then, inside the same capable
-Linux host, with `BENCHMARK_DATA_ROOT` selecting a fresh Linux-local directory and
-`LD_LIBRARY_PATH` selecting the shared native libraries:
+On a capable Linux host, create checkouts of the two application commits in the table.
+Build each with its named release compiler and the shared real shim through
+`scripts/run-main-with-shim "$ALIGNC" build src/main.align`. Supply absolute paths to
+the resulting binaries, checkouts and a **nonexistent Linux-local** experiment directory:
 
 ```sh
-python3 "$EVIDENCE_DIR/prepare.py"
-python3 "$EVIDENCE_DIR/measure.py"
+export BENCHMARK_BEFORE_SOURCE=/absolute/path/to/historical-checkout
+export BENCHMARK_AFTER_SOURCE=/absolute/path/to/native-reference-checkout
+export BENCHMARK_BEFORE_BINARY=/absolute/path/to/historical-binary
+export BENCHMARK_AFTER_BINARY=/absolute/path/to/native-reference-binary
+export BENCHMARK_DATA_ROOT=/absolute/linux-local/path/to/new-experiment
+export LD_LIBRARY_PATH=/absolute/path/to/shared-shim:/absolute/path/to/shared-libraries
+python3 scripts/prepare-product-cutover-benchmark
+python3 scripts/measure-product-cutover-benchmark
 ```
 
-Preparation uses the old checked-in smoke fixture's setup code with compilation excluded
-from the clock, then performs the documented schema/fixture adaptation. The current product
-and original application worktree remain unchanged. No new `make ci` or GPU campaign was run.
+Run these scripts from the checkout containing this report; the supplied reference
+checkout may predate the report. Preparation reconstructs fixtures from exact historical
+commit `9855afe1e3b7e73c758463ed2f32e13bc9b6a550` and refuses an existing experiment
+directory. The runner refuses an existing `results.json`. It records source revisions,
+product hashes, resolved shared-library/loader hashes and all raw invocations. Failed
+runs retain evidence and exit nonzero. Dependencies must resolve through `ldd` before
+measurement. Native models are not needed for this fixed-patch workload.
+
+For a future candidate, prepare a second fresh directory with its native source and
+binary in the After inputs. Keep the same historical Before inputs for fixture
+construction, then set `BENCHMARK_REFERENCE_DATA_ROOT` to the first, native-reference
+experiment directory before running the measurement script on the candidate directory.
+This pairs the reference's native product directly against the candidate, with matching
+source-byte checks and the same 2+9 schedule. Use compatible task/request semantics;
+changing those semantics requires an explicit workload review or a new baseline.
+
+Preparation and builds remain outside the clock. Product checkouts are unchanged.
+No new `make ci` or GPU campaign was run.

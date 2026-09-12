@@ -1659,3 +1659,30 @@ The current local checkpoint adds narrow source/task/evaluation-input and native
 render/request owners without claiming A2/A4 cutover.
 The preparation review covers classification, scope, prerequisites, wire deltas and enforcement
 limits. Review does not advance any Align request or prove a future consumer test has passed.
+
+## Independent fixed-patch baseline replay
+
+The measurement-only owners `scripts/prepare-product-cutover-benchmark` and
+`scripts/measure-product-cutover-benchmark` preserve the user-designated eight-row
+baseline. They have no product caller. Their developer inputs are explicit absolute
+`BENCHMARK_DATA_ROOT` (new Linux-local directory), `BENCHMARK_BEFORE_SOURCE`
+(exact historical `9855afe` checkout), `BENCHMARK_AFTER_SOURCE` (native checkout),
+`BENCHMARK_BEFORE_BINARY`, and `BENCHMARK_AFTER_BINARY`; source and binary inputs
+must exist before preparation writes its exclusively owned directory. The runner
+accepts `BENCHMARK_DATA_ROOT`; optional `BENCHMARK_REFERENCE_DATA_ROOT` replaces the
+Before arm with a previously prepared native reference for future comparisons. Native
+library resolution uses explicit `LD_LIBRARY_PATH`.
+
+Preparation reconstructs canonical checked-in fixtures and the documented fixed-patch
+adaptation without modifying either checkout. Measurement emits version-1 developer
+`results.json` and raw invocation records in that directory, using two warmup pairs
+and nine alternating measured pairs, a 120-second invocation cap and 1,200-second
+measurement cap. Failed assertions or setup exit nonzero and retain evidence; no
+result filtering or speed floor applies. Ownership/allocation is the external Python
+measurement process; cache/network/publication and shipping schema are N/A. Inputs
+are local trusted developer artifacts, not a product admission boundary. Checks cover
+construction through a fresh-directory replay, eight passing/contained/cleaned rows
+per invocation, unchanged sources, and refusal to overwrite an existing directory.
+The existing sample document stays immutable; supplemental dependency identities and
+new replay results are separate records. Metric: external complete-CLI wall time;
+row clocks remain diagnostic. No aggregate membership is added.
