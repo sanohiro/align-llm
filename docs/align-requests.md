@@ -13666,14 +13666,14 @@ remain unchanged.
 ## Request 84 — Shared matching of an optional prepared command
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; the single-attempt owner consumes its optional command once.
 Independent work that may continue: full evaluator/repair, publication and Python retirement.
 Resume condition: an Align release admits shared matching of Option<command> while preserving
   the original command owner and the documented non-consuming start_scope receiver semantics.
-Align commit or pull request: none; reproduced compiler pin is `1f0627bb`.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1033 (merged `65376767f3642323f9043a1c683b03129fd564df`).
 align-llm verification: a focused optional-command consumer with None, Some, input-owner expiry
   and two sequential released scopes; then the native task-attempt owner. No aggregate is added.
 ```
@@ -13702,10 +13702,18 @@ exclusive command mutation or transfer ownership through a shared match. Product
 transfers its one-use optional command as a whole, a natural ownership choice for one attempt.
 That choice does not close this language gap. Triage this nonblocking item with R85–R88; do not interrupt cutover with a separate pin cycle.
 
+### Align provider response (2026-09-12)
+
+Shared matching now admits `command` through the existing recursive payload grammar,
+including `Option<command>` and record carriers. `start_scope` borrows the projected command;
+shared mutation, consumption and escape remain rejected. No clone or new allocation is added.
+Whole/per-unit owners cover None, retained command/path ownership and two released scopes on
+Linux; macOS runs the portable None owner under the existing process-platform contract.
+
 ## Request 85 — Owned JSON encoding result from a borrowed optional record
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; the attempt owner encodes each observation before embedding it.
@@ -13713,7 +13721,7 @@ Independent work that may continue: evaluator records, row/repair integration, p
   deadline propagation and legacy execution retirement.
 Resume condition: certify the independent owned Result<string, Error> returned by JSON encoding
   a record projected through a shared optional-record match, without retaining a source borrow.
-Align commit or pull request: none; witness observed at merged sibling/managed pin `1f0627bb`.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1033 (merged `65376767f3642323f9043a1c683b03129fd564df`).
 align-llm verification: embedded reduced witness under whole/per-unit compilation and execution,
   source-owner expiry and None/Some cases; then the native task-attempt owner. No aggregate added.
 ```
@@ -13764,10 +13772,18 @@ pub fn main() -> Result<(), Error> {
 }
 ```
 
+### Align provider response (2026-09-12)
+
+The existing owned JSON encoder now reads a shared optional-record payload through the
+same authenticated MIR place as ordinary borrowed consumers. Both `json.encode` and
+`json.encode_bounded` return independently owned output. Whole/per-unit owners cover source
+expiry, None/Some and exact-fit/over-limit bounds; malformed or uninitialized producer places
+remain rejected. The JSON field grammar and canonical bytes are unchanged.
+
 ## Request 86 — Record initializer ordering can read an already moved owner
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: no
 Blocked gate or slice: none; the attempt producer binds its measurement digest before constructing
@@ -13777,7 +13793,7 @@ Independent work that may continue: evaluator/repair integration, publication an
 Resume condition: record initializer evaluation and move checking use one consistent order;
   an accepted clone-before-move initializer must preserve the cloned value, or the source must
   be rejected under an explicitly documented conflicting evaluation rule.
-Align commit or pull request: none; reproduced compiler pin `1f0627bb`.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1033 (merged `65376767f3642323f9043a1c683b03129fd564df`).
 align-llm verification: reduced record/Option witness, source/per-unit/whole-program parity,
   negative move-after-use controls and actual task-attempt digest/reference owner. No aggregate added.
 ```
@@ -13826,17 +13842,26 @@ pub fn main() -> Result<(), Error> {
 }
 ```
 
+### Align provider response (2026-09-12)
+
+Record initializer expressions evaluate once in written order, capturing each value before
+the next expression. Layout and JSON output remain declaration-ordered. Ordinary and generic
+constructors use existing local Move/Drop machinery; reading an owner after an earlier move
+rejects. Whole/per-unit owners cover the reduced clone-before-move witness, nested/Copy values,
+effects, early exits and fixed Move-record arrays. Allocation/free counts cover array completion,
+replacement and later-element failure cleanup.
+
 ## Request 87 — Encode a constructed owned record array as a JSON root
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; native evaluation embeds aggregates in its result record.
 Independent work that may continue: complete ALIGN-PRODUCT-CUTOVER integration and acceptance.
 Resume condition: json.encode and json.encode_bounded borrow a constructed owned array<Record>
   with the same field grammar, canonical bytes and bounds as the existing embedded array field.
-Align commit or pull request: none; reproduced at merged 1f0627bbb10bd305ecc497d5c21cd25a611c139c.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1034 (merged `f502fe3da00ce0b39c4eeec40586b11688627fbd`).
 align-llm verification: encode the owned aggregate-array witness as a root, compare empty/multiple
   rows and exact-fit/over-limit bytes with the equivalent result-record field, and retain the
   original array for subsequent reads and single cleanup.
@@ -13876,15 +13901,37 @@ pub fn main() -> Result<(), Error> {
 }
 ```
 
+### Align provider response (2026-09-12)
+
+Merged in https://github.com/sanohiro/align/pull/1034 (`f502fe3da00ce0b39c4eeec40586b11688627fbd`).
+
+The owner explicitly reopened the prior R87 root-position restriction. Both
+`json.encode(values)` and `json.encode_bounded(values, max_bytes)` now borrow
+constructed dynamic arrays with the same supported element grammar and canonical
+bytes as their corresponding JSON record fields. This includes owned record and
+string arrays, supported scalar arrays, and accepted AoS record schemas.
+
+Empty arrays encode as `[]`; exact-fit bounds succeed. Negative/exceeded bounds
+and selected nonfinite floats return `Error.Invalid` without publishing partial
+output. Input remains reusable and drops once; successful output is independently
+owned and can outlive the source or its arena. No implicit clone, wrapper, new
+runtime ABI, unsupported element constructor or decode expansion is introduced.
+
+Provider acceptance covers whole/per-unit byte parity, borrowed optional and
+concrete generic record inputs, source/arena expiry, failure cleanup with positive
+live-allocation probes, source replacement during bound evaluation, and malformed
+HIR/MIR producers. Consumer witness execution and managed-pin adoption remain
+align-llm-owned and pending.
+
 ## Request 88 — Ordinary-path regular-file reader admission
 
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: yes
 Blocked gate or slice: P8 complete legacy command/script file admission, and therefore final A2/A4/A5 cutover closure.
 Independent work that may continue: Native evaluation, provider/repair owners, other CLI relocation, A1 and installed A3 qualification; retain the eight frozen debts until retirement closes.
 Resume condition: A shipped ordinary-path reader constructor that follows normal path/symlink semantics, rejects non-regular entries without waiting for a FIFO writer, and returns the same retained descriptor whose regular kind was admitted.
-Align commit or pull request: None; observed against merged Align `1f0627bbb10bd305ecc497d5c21cd25a611c139c`.
+Align commit or pull request: https://github.com/sanohiro/align/pull/1033 (merged `65376767f3642323f9043a1c683b03129fd564df`).
 align-llm verification: the embedded `product-cutover-followed-reader.align` witness builds at the pin; a regular file and final symlink pass, while a FIFO without a writer is terminated by an external one-second timeout before metadata admission. No proposed API is consumed.
 
 The legacy external-command wire permits normal relative paths, dot components and symlinks.
@@ -13936,3 +13983,24 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   return Ok(())
 }
 ```
+
+### Align provider response (2026-09-12)
+
+Implemented `fs.open_regular(path: str) -> Result<reader, Error>` on Linux/macOS.
+It follows ordinary relative/absolute/dot and symlink resolution, opens read-only with
+`O_NONBLOCK | O_CLOEXEC`, admits the opened descriptor only after `fstat` proves it regular,
+clears nonblocking mode and publishes that same descriptor as the existing owned reader.
+Nonregular objects return `Error.Invalid`; ordinary open errors retain their mapping. UTF-8/NUL
+validation precedes filesystem operations, the reader retains no path lifetime, and existing Drop
+closes its fd. The runtime retries interrupted open/stat/fcntl operations and closes acquired fds
+on failure. Native owners pass on Linux and macOS, including no-writer FIFO rejection, both
+pathname-replacement directions, descriptor binding, flags and injected failure cleanup.
+This resolves the provider constructor gap. It is not P8/A2/A4/A5 cutover evidence: whole-corpus
+refusal before children/results, corpus IDs, renamed frozen bytes and explicit target-Python
+acceptance remain align-llm-owned. Reassess that complete retention/dispatch contract before
+advancing to ALIGN_LLM_VERIFIED or CLOSED.
+
+Provider plan: Align `docs/impl/58-r84-r88-client-batch-plan.md`. PR #1033 merged; local
+owner/gate/Clippy, native ABI parity, all fourteen local PostgreSQL suites and required CI passed.
+The post-merge `cargo build --release --workspace` passed. No versioned release was requested.
+Managed-pin adoption and consumer acceptance remain pending.
