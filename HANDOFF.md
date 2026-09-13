@@ -136,8 +136,91 @@ publication and merge: run exact-head `scripts/pre-pr --owner-test LABEL -- COMM
 clean named branch/worktree on the capable Linux host, attach the review envelope and
 repair disposition, and require all selected checks before merge. The earlier `--plan`
 run only identified fresh-image scope; it is not a preflight stamp. Preserve the unrelated
-Antigravity working files. Do not start GPU campaigns without the next requested scope;
-roadmap follow-on selection is the next eligible capability after cutover publication.
+Antigravity working files. The user has now authorized the MoE GPU follow-on below.
+
+## Active MoE GPU diagnosis (2026-09-13)
+
+Branch `agent/moe-gpu-diagnosis`, starting at `ad94eb5`; isolated from the original cutover and
+Antigravity working files. The user selected the recommended MoE direction. The active-entry
+ledger in `docs/specs/gpu-runtime-performance.md` bounds an unchanged resident OLMoE Metal
+session diagnosis and the selected O1 retained-half KV implementation. The unchanged manifested build,
+four-request host-sampling run and shorter Metal System Trace all PASS; every response passes
+the fixed 128-token/sequence quality check. See `docs/gpu-moe-diagnosis.md` for exact commands,
+identities, sampling counts, artifact digests and limits. The first 60-second device trace remains
+INCOMPLETE after finalization timeout; the separate 10-second trace saved successfully.
+
+Main-thread non-input-wait samples are dominated by backend completion wait (94.82%); topology
+hashing and input update are small. The subsequent counter-enabled trace attributes 46.03% of
+owned shader sample duration to F32-to-F16 conversion (instrumented attribution, not wall-time
+savings). O1 now retains F16 KV only in supported Metal OLMoE sessions, converting new rows.
+Exact backend-aligned allocation preserves the allocator's exact-consumption invariant. Real
+Metal `run-gpu-attention-policy-smoke` passes incremental rounding, overwrite, prefix, padding
+and direct F16 Flash equality; the extended malformed-input and metadata-exhaustion batch PASS.
+`scripts/run-gpu-session-reuse-smoke` and `make fmt` PASS. No new Align gap.
+
+Clean implementation checkpoint: `d60e2b6`. Managed build and unchanged full Metal independent
+session oracle PASS (Qwen2 7/7, OLMoE 9/9 exact outputs/counts). Allocation-count host-capacity
+owner PASS for both models. Five alternating local pairs PASS all 40 quality checks and all
+paired outputs/counts, with median request-wall reductions of 44.00%, 46.00%, 63.33% and 73.82%
+against the clean manifested `ad94eb5` rebuild. Every case is faster in 5/5 pairs; all four
+meet the predeclared 15% local floor. See the diagnostic report for artifact hashes and limits.
+This is not a competitive llama.cpp or CUDA result, or a coding time-to-passing-patch claim.
+
+## Active capped-read loader repair (2026-09-13)
+
+The startup repair is isolated on `agent/capped-read-loader-repair`, based on accepted O1 docs
+checkpoint `30f41c9`; the original C1 worktree remains untouched. `runtime_qwen_load.load_file` and
+`runtime_olmoe_load.load_file` now use lexical capacity epochs at
+`min(staging_bytes, remaining_member_or_piece_bytes)`, including consecutive equal-sized expert
+pieces. Traversal cursors persist outside the epoch loop; its backedge drops the old chunk before
+the next capacity allocation. Plan order, offsets, upload contents and existing fail-closed errors
+remain unchanged. No ABI, pack format, mmap, async I/O or kernel change is present. The settled
+scope, cost ceiling and owner matrix are recorded in
+`docs/specs/gpu-runtime-performance.md` under “Startup capped-read loader repair”.
+
+The Qwen and OLMoE loader smoke commands, including the test-only actual-`pread` observer, compile
+and pass on the managed Align pin `f502fe3da00ce0b39c4eeec40586b11688627fbd`. They cover the
+capacity bounds, payload offsets, repeated equal-sized expert reads, short/zero/error refusal and
+the normal load path. The clean manifested candidate build and required independent session owner
+also pass: all seven Qwen and nine OLMoE requests match exact output and token counts. The bounded
+native startup campaign completed in 272.56 seconds with five alternating pairs per model. Qwen's
+median paired startup reduction is 24.05% (candidate faster 5/5); OLMoE's is 61.58% (candidate
+faster 5/5), meeting the declared OLMoE floor and Qwen guardrail. Receipts and per-arm logs are
+retained outside Git under `capped-read-session-independent-20260913` and
+`capped-read-startup-20260913`; the diagnosis records their clocks, identities and limits.
+
+The comprehensive native review requested from `gpt-6-astra` at `xhigh` reviewed head
+`44aa9af3c3aff16e3a4cf25feec670f1d54c077d` against base tip and merge base
+`30f41c91a2b815f3d1983a182f016bc9bb9721ca` and returned `FINDINGS`. Its two P2 findings were
+both in the test observer: the OLMoE fault threshold could stop in metadata, and the validators
+did not enforce each payload member/piece's exact remaining-byte bound and offset. The committed
+repair `c3a57d578b5f37a41a7cbb3577f9f11abc845480` derives the fixture payload boundary, binds
+faults to payload traversal, validates exact per-read bounds/offsets while advancing by returned
+counts, and covers complete expert-piece traversal. Astra's narrow repair assessment reviewed
+that head against `44aa9af3c3aff16e3a4cf25feec670f1d54c077d` and returned `ADOPT` with no new
+issues. The capped-read capability is COMPLETE and locally ADOPTED; publication and merge remain
+pending the user's publication batch. The bounded lesson is to validate actual payload traversal
+for fault cases so metadata failures cannot masquerade as loader coverage; the existing repair
+covers it without a new gate.
+
+### Historical O1 review (separate from this repair)
+
+One fresh high-effort review by `/root/moe_review` covered the whole diff and final evidence
+documentation. Reviewed head `d60e2b626ae69837d96df1866c728d4c5864ff40`; base tip and merge
+base `ad94eb5a18e49695a0c2321da7c9c37bd7ddd2f7`; verdict FINDINGS. Complete findings:
+P1 control source authentication was insufficient for a dirty build; accepted and repaired by
+strict clean-control rebuild, source/compiler/library verification and a fresh five-pair PASS.
+P2 stale specification claimed no new measurements; accepted and corrected to distinguish local
+O1 evidence from historical/competitive claims. The consolidated repair is the commit containing
+this checkpoint; its evidence/documentation delta was inspected, with no runtime/test changes.
+No valid finding remains unresolved; the narrow repair does not require another full review.
+
+Next: complete applicable publication checks when publishing this capability, then qualify its
+competitive baseline and coding wall-time consumer before claiming superiority to llama.cpp. Keep
+actual CUDA capture/replay separate from Metal observations. Cutover publication remains pending
+independently. Implementation and owner tests are committed in `agent/moe-gpu-diagnosis`;
+the consolidated review repair records the completed local evidence. No PR/preflight/merge is
+claimed for O1 at this checkpoint.
 
 Use `/opt/homebrew/bin/gmake` on macOS and documented Homebrew linker paths. Real ggml
 libraries and a relocated shim are required for inference acceptance; the unavailable

@@ -415,25 +415,42 @@ pub fn load_file(
 ) -> Result<(), Error> {
   if staging_bytes < 1 { return Err(Error.Invalid) }
   validate_plan(plan)?
-  mut chunk := buffer(staging_bytes)
   runtime_weights.begin(owner, plan.count)?
   mut at := 0
+  mut done := 0
+  mut index := -1
   loop {
     if at >= plan.count { break }
-    index := add_at(owner, plan, at)?
-    if index != at { return Err(Error.Invalid) }
-    mut done := 0
+    mut remaining := plan.nbytes[at] - done
+    capacity := if staging_bytes < remaining { staging_bytes } else { remaining }
+    mut chunk := buffer(capacity)
     loop {
-      if done >= plan.nbytes[at] { break }
-      count := pack.pread(chunk, plan.pack_offset[at] + done)?
-      if count < 1 || count > staging_bytes { return Err(Error.Invalid) }
-      take := if count > plan.nbytes[at] - done { plan.nbytes[at] - done } else { count }
-      view := chunk.bytes()
-      piece := view[0..take]
-      runtime_weights.upload(owner, index, done, piece)?
-      done = done + take
+      if at >= plan.count { break }
+      if done >= plan.nbytes[at] {
+        if index < 0 {
+          index = add_at(owner, plan, at)?
+          if index != at { return Err(Error.Invalid) }
+        }
+        at = at + 1
+        done = 0
+        index = -1
+      } else {
+        remaining = plan.nbytes[at] - done
+        window_bytes := if staging_bytes < remaining { staging_bytes } else { remaining }
+        if window_bytes != capacity { break }
+        if index < 0 {
+          index = add_at(owner, plan, at)?
+          if index != at { return Err(Error.Invalid) }
+        }
+        count := pack.pread(chunk, plan.pack_offset[at] + done)?
+        if count < 1 || count > window_bytes { return Err(Error.Invalid) }
+        take := if count > remaining { remaining } else { count }
+        view := chunk.bytes()
+        piece := view[0..take]
+        runtime_weights.upload(owner, index, done, piece)?
+        done = done + take
+      }
     }
-    at = at + 1
   }
   runtime_weights.finish(owner)?
   return Ok(())

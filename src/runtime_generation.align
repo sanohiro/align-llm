@@ -329,6 +329,20 @@ fn admit_olmoe_shapes(
   }
 }
 
+fn olmoe_kv_bytes(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: layer_olmoe.Geometry,
+  capacity: i64,
+  f32_bytes: i64,
+) -> Result<i64, Error> {
+  if !runtime_attention.cached_f16(owner) { return Ok(f32_bytes) }
+  plane := runtime_weights.allocation_bytes(owner, runtime_weights.Shape {
+      ggml_type: 1, n_dims: 3, ne0: g.head_dim, ne1: capacity,
+      ne2: g.n_head_kv, ne3: 1,
+    })?
+  return checked_mul(runtime_olmoe.kv_count(g.n_layer), plane)
+}
+
 fn admit_olmoe_shapes_at(
   borrow owner: ggml_ffi.GpuDevice,
   borrow options: runtime_options.RuntimeOptions,
@@ -345,9 +359,13 @@ fn admit_olmoe_shapes_at(
   legacy_cache_bytes: i64,
 ) -> Result<(), Error> {
   runtime_attention.select(owner, prompt_width, chunk_width, capacity, g.context_length, g.head_dim, g.n_head, g.n_head_kv)?
+  if session_graph && options.backend == "metal" && runtime_attention.fused(owner) {
+    ggml_ffi.gpu_attention_select(owner, 2) else { return Err(Error.Invalid) }
+  }
+  kv_bytes := olmoe_kv_bytes(owner, g, capacity, plan.kv_bytes)?
   runtime_memory.plan_begin(owner)?
   staging := prepare_memory(owner, options, plan.count, plan.weights_bytes,
-    runtime_olmoe.kv_count(g.n_layer), plan.kv_bytes, legacy_cache_bytes,
+    runtime_olmoe.kv_count(g.n_layer), kv_bytes, legacy_cache_bytes,
     graph_capacity, observation_bytes)?
   if staging < 1 { return Err(Error.Invalid) }
   runtime_olmoe_load.define(owner, plan)?
@@ -409,16 +427,17 @@ fn initialize_kv(
   n_head_kv: i64,
 ) -> Result<(), Error> {
   count := checked_mul(n_layer, 2)?
+  storage_type := if runtime_attention.cached_f16(owner) { 1 } else { 0 }
   runtime_kv.begin(owner, count)?
   mut layer := 0
   loop {
     if layer >= n_layer { break }
     k := runtime_kv.add(owner, runtime_kv.Shape {
-        ggml_type: 0, n_dims: 3, ne0: head_dim, ne1: context_length,
+        ggml_type: storage_type, n_dims: 3, ne0: head_dim, ne1: context_length,
         ne2: n_head_kv, ne3: 1,
       })?
     v := runtime_kv.add(owner, runtime_kv.Shape {
-        ggml_type: 0, n_dims: 3,
+        ggml_type: storage_type, n_dims: 3,
         ne0: if runtime_attention.fused(owner) { head_dim } else { context_length },
         ne1: if runtime_attention.fused(owner) { context_length } else { head_dim },
         ne2: n_head_kv, ne3: 1,
@@ -1080,9 +1099,10 @@ fn prepare_session_olmoe(borrow owner: ggml_ffi.GpuDevice,
   chunk_width := admit_olmoe_shapes(owner, options, g, plan, geometry_text, maximum_prompt, false, true, kv_capacity,
     graph_capacity, observation_bytes, legacy_cache_bytes)?
   application_bytes := chunk_application(observation_bytes, chunk_width, mask_bound)?
+  kv_bytes := olmoe_kv_bytes(owner, g, kv_capacity, plan.kv_bytes)?
   staging := prepare_memory(
     owner, options, plan.count, plan.weights_bytes, runtime_olmoe.kv_count(g.n_layer),
-    plan.kv_bytes, legacy_cache_bytes, graph_capacity, application_bytes)?
+    kv_bytes, legacy_cache_bytes, graph_capacity, application_bytes)?
   runtime_olmoe_load.load_file(owner, pack, plan, staging)?
   initialize_kv(owner, g.n_layer, g.head_dim, kv_capacity, g.n_head_kv)?
   mask_capacity := runtime_inputs.attention_width(kv_capacity, g.context_length)?

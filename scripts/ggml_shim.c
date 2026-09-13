@@ -1426,7 +1426,8 @@ int32_t align_gpu_attention_probe(void *owner, int64_t queries, int64_t width,
 
 int32_t align_gpu_attention_select(void *owner, int32_t policy) {
     struct align_gpu_device_state *state = owner;
-    if (state == NULL || state->memory_planned || state->shape_planning || policy < 0 || policy > 1) {
+    if (state == NULL || state->memory_planned || state->shape_planning || policy < 0 || policy > 2
+        || (policy == 2 && state->attention_policy != 1)) {
         return ALIGN_GPU_CONFIG;
     }
     state->attention_policy = policy;
@@ -2294,7 +2295,9 @@ int32_t align_gpu_kv_prefix_slot(
     int sequence_dim = layout == 0 ? 1 : 0;
     if (state == NULL || tensor == NULL || ctx == NULL || state->graph_prepared[kind]
         || (layout != 0 && layout != 1) || valid_width <= 0
-        || valid_width > tensor->ne[sequence_dim] || tensor->type != GGML_TYPE_F32) {
+        || valid_width > tensor->ne[sequence_dim]
+        || (tensor->type != GGML_TYPE_F32
+            && !(state->attention_policy == 2 && layout == 0 && tensor->type == GGML_TYPE_F16))) {
         return ALIGN_GPU_CONFIG;
     }
     view = ggml_view_4d(ctx, tensor,
@@ -2375,7 +2378,9 @@ int32_t align_gpu_kv_write_prefix(
         || width > plane->ne[axis] || position >= width || src->ne[axis] != width - position
         || src->ne[1-axis] != plane->ne[1-axis] || src->ne[2] != plane->ne[2]
         || src->ne[3] != 1 || plane->ne[3] != 1
-        || plane->type != GGML_TYPE_F32 || src->type != GGML_TYPE_F32
+        || (plane->type != GGML_TYPE_F32
+            && !(state->attention_policy == 2 && layout == 0 && plane->type == GGML_TYPE_F16))
+        || src->type != GGML_TYPE_F32
         || !ggml_is_contiguous(plane) || !ggml_is_contiguous(src)
         || plane->nb[1] > INT32_MAX || plane->nb[2] > INT32_MAX || plane->nb[3] > INT32_MAX
         || plane->nb[axis] == 0 || (uint64_t) position > ((1u << 30) - 1) / plane->nb[axis]) {
@@ -2616,7 +2621,9 @@ int32_t align_gpu_kv_write_indexed_prefix(
     if (state == NULL || plane == NULL || src == NULL || ids == NULL || ctx == NULL
         || kind != ALIGN_GPU_GRAPH_DECODE || state->graph_prepared[kind]
         || (layout != 0 && layout != 1) || width <= 0 || width > plane->ne[axis]
-        || plane->type != GGML_TYPE_F32 || src->type != GGML_TYPE_F32
+        || (plane->type != GGML_TYPE_F32
+            && !(state->attention_policy == 2 && layout == 0 && plane->type == GGML_TYPE_F16))
+        || src->type != GGML_TYPE_F32
         || ids->type != GGML_TYPE_I32 || ids->ne[1] != 1 || ids->ne[2] != 1 || ids->ne[3] != 1
         || plane->ne[3] != 1 || src->ne[3] != 1 || src->ne[axis] != 1
         || src->ne[1-axis] != plane->ne[1-axis] || src->ne[2] != plane->ne[2]
@@ -4008,20 +4015,23 @@ int32_t align_ggml_op_flash_attention(void *ctx, void *slots, int64_t out,
     if (ctx == NULL) { return ALIGN_GGML_INIT; }
     if (q == NULL || k == NULL || v == NULL || mask == NULL
         || out < 0 || out >= align_ggml_slot_capacity(slots)) { return ALIGN_GGML_SLOT; }
-    if (q->type != GGML_TYPE_F32 || k->type != GGML_TYPE_F32 || v->type != GGML_TYPE_F32
+    if (q->type != GGML_TYPE_F32
+        || (k->type != GGML_TYPE_F32 && k->type != GGML_TYPE_F16)
+        || (v->type != GGML_TYPE_F32 && v->type != GGML_TYPE_F16)
         || mask->type != GGML_TYPE_F16) { return ALIGN_GGML_TYPE; }
     memcpy(&scale, &scale_bits, sizeof(scale));
     if (!isfinite(scale) || scale <= 0.0f || q->ne[0] != k->ne[0] || k->ne[0] != v->ne[0]
         || k->ne[1] != v->ne[1] || k->ne[2] != v->ne[2] || k->ne[2] < 1
         || q->ne[2] % k->ne[2] != 0 || q->ne[3] != 1 || k->ne[3] != 1 || v->ne[3] != 1
-        || q->nb[0] != sizeof(float) || k->nb[0] != sizeof(float) || v->nb[0] != sizeof(float)
+        || q->nb[0] != sizeof(float) || k->nb[0] != ggml_type_size(k->type)
+        || v->nb[0] != ggml_type_size(v->type)
         || mask->ne[0] != k->ne[1] || mask->ne[1] < q->ne[1]
         || mask->ne[2] != 1 || mask->ne[3] != 1 || !ggml_is_contiguous(mask)
         || q->ne[0] < 1 || q->ne[1] < 1 || q->ne[2] < 1 || k->ne[1] < 1) { return ALIGN_GGML_SHAPE; }
-    /* Match pinned llama-graph.cpp: persistent KV stays F32, while each bounded
-     * attention view is explicitly converted to F16 inside the planned graph. */
-    k = ggml_cast(ctx, k, GGML_TYPE_F16);
-    v = ggml_cast(ctx, v, GGML_TYPE_F16);
+    /* F32 storage converts at the existing attention boundary. Retained F16 rows
+     * already have that representation and must not copy the full history again. */
+    if (k->type == GGML_TYPE_F32) { k = ggml_cast(ctx, k, GGML_TYPE_F16); }
+    if (v->type == GGML_TYPE_F32) { v = ggml_cast(ctx, v, GGML_TYPE_F16); }
     result = ggml_flash_attn_ext(ctx, q, k, v, mask, scale, 0.0f, 0.0f);
     if (result == NULL) { return ALIGN_GGML_INIT; }
     ggml_flash_attn_ext_set_prec(result, GGML_PREC_F32);
@@ -4175,6 +4185,19 @@ int32_t align_ggml_op_pad(void *ctx, void *slots, int64_t out, int64_t a,
     if (p0 > ALIGN_GGML_MAX_PAD || p1 > ALIGN_GGML_MAX_PAD
         || p2 > ALIGN_GGML_MAX_PAD || p3 > ALIGN_GGML_MAX_PAD) {
         return ALIGN_GGML_SHAPE;
+    }
+    if (sa->type == GGML_TYPE_F16) {
+        if (p0 == 0 && p1 == 0 && p2 == 0 && p3 == 0) {
+            return align_ggml_slot_store(slots, out, sa);
+        }
+        /* The pinned Metal PAD shader is F32-only. Padding is needed only for
+         * clipped views; retain half storage and widen this bounded view. */
+        size_t used = ggml_used_mem((struct ggml_context *) ctx);
+        size_t capacity = ggml_get_mem_size((struct ggml_context *) ctx);
+        if (used > capacity || 2 * ggml_tensor_overhead() > capacity - used) {
+            return ALIGN_GGML_INIT;
+        }
+        sa = ggml_cast((struct ggml_context *) ctx, sa, GGML_TYPE_F32);
     }
     result = ggml_pad((struct ggml_context *) ctx, sa, p0, p1, p2, p3);
     if (result == NULL) {

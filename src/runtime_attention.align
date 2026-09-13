@@ -35,9 +35,11 @@ pub fn select(borrow owner: ggml_ffi.GpuDevice, prompt: i64, chunk: i64, capacit
   return Ok(())
 }
 
-pub fn fused(borrow owner: ggml_ffi.GpuDevice) -> bool = ggml_ffi.gpu_attention_policy(owner) == 1
+pub fn cached_f16(borrow owner: ggml_ffi.GpuDevice) -> bool = ggml_ffi.gpu_attention_policy(owner) == 2
 
-pub fn name(borrow owner: ggml_ffi.GpuDevice) -> str = if fused(owner) { "flash_f32" } else { "decomposed" }
+pub fn fused(borrow owner: ggml_ffi.GpuDevice) -> bool = ggml_ffi.gpu_attention_policy(owner) == 1 || cached_f16(owner)
+
+pub fn name(borrow owner: ggml_ffi.GpuDevice) -> str = if cached_f16(owner) { "flash_f16_cached" } else if fused(owner) { "flash_f32" } else { "decomposed" }
 
 pub fn prepare_mask(borrow owner: ggml_ffi.GpuDevice, ctx: raw, borrow slots: slice<u8>, mask: i64) -> Result<(), Error> {
   if fused(owner) {

@@ -1,12 +1,124 @@
 # Runtime foundations and GPU performance plan
 
-Execution priority (2026-09-09): GPU correctness completion is accepted and performance work is
-deferred. [Align product boundary](align-product-boundary.md) is the current preparation priority
-and maps the supplied speed ideas to later measured consumers. Its preparation runs no campaign,
-changes no baseline/floor and makes no new speed or capacity claim.
+Execution priority (2026-09-13): the user authorized resuming GPU performance work and selected
+MoE. Product cutover implementation is complete; its publication remains a separate pending
+checkpoint. The bounded diagnosis below selected O1, which now passes its local paired floor.
+Existing Metal/CUDA correctness and historical negative performance results remain at their
+qualified heads; O1 makes no new competitive llama.cpp or CUDA claim.
 
-Status: design and evidence synthesis, 2026-09-06. No new measurements or GPU speed/capacity
-claims are made here. Historical CPU results below retain their original owners and scopes.
+### Active entry: resident OLMoE diagnosis
+
+The final CUDA campaign in `../gpu-cuda-final-measurement-result.md` completed all 16 comparisons
+with no material win. OLMoE warm cached paired reductions against its frozen newer baseline were
+-39.85% (short) and -64.66% (long). The different producer clock boundaries prevent assigning that
+gap to GPU kernels. Metal also missed all 16 comparisons. Do not restart G1 or rebuild existing
+session/prefix reuse merely because historical delivery prose still says planned.
+
+The initial consumer is an unchanged resident OLMoE session executing the existing four runtime
+requests in section 6.1. Diagnose that execution before selecting a kernel or scheduling change.
+The local retained Metal kit and model are available; historical temporary candidate binaries are
+absent, so rebuild the current exact source with the managed pin and existing manifested builder.
+That is a new diagnostic subject, not a byte-identical historical replay.
+
+| Diagnostic contract | Fixed boundary |
+| --- | --- |
+| Owner / entry | Existing `build-gpu-independent-candidate ... --session`, `gpu_session_client.Session`, and section 6.1 request definitions; macOS `sample` inspects the owned worker. No new product CLI, FFI, persisted schema or Python product driver. |
+| Inputs / defaults | OLMoE from retained admitted Metal kit; resident MTL0, 1 GiB host / 6 GB device ceilings; unchanged system, short/long prompts, greedy selection, 128 output tokens, short/short/long/long order. One fresh session. No implicit alternate model/backend. |
+| Cost ceiling | Build preparation at most 900 seconds; diagnostic execution at most 600 seconds, each request at most 120 seconds. Sample only the owned process, at 1 ms for at most 60 seconds. No competing candidate/baseline GPU arms. |
+| Results / errors | Preserve manifested build/source/compiler/library identities, exact command and requests, complete responses, worker log and profiler output outside Git. Nonzero worker/profiler exit, timeout or invalid response is recorded as incomplete diagnosis; no performance decision. Keep startup separate from request observations. |
+| Ownership / cleanup | The existing serial client owns worker pipes, bounded frames, deadlines and process-group cleanup. The diagnostic caller owns and waits for the sampler, including cancellation. No product allocation or ownership change. |
+| Evidence / acceptance | Require all four responses to pass the existing integer-sequence and 128-token quality checks before using the run to choose a follow-on. Profiler samples locate host stacks; they do not measure kernel duration or CUDA capture/replay. A new runtime/coding comparison must use its own precommitted paired protocol and unchanged 15% floor. |
+| Closure | Construction and early failure use the existing session client's cleanup. Successful execution retains all four responses. Failure retains the completed prefix and fault. Source/input identities are checked before and after execution. No cache/schema migration applies because this step changes no product code. |
+
+Source candidates at `ad94eb5`: `runtime_generation.execute_session` hashes topology identities,
+updates device inputs and reads the full logits per token; `align_gpu_graph_compute` walks the
+graph and checks payload ownership around backend execution. Decode graph reuse already exists.
+Profile before changing any of these, and preserve the session-specific MoE router expansion that
+fixed CUDA fusion semantics. These are application/native integration concerns; no new Align gap
+has been established. CUDA-specific capture/replay remains an actual RTX-host investigation.
+
+The first host sample completed all four quality checks. Its main-thread graph-compute stack
+dominates non-input-wait samples; topology hashing and input update are small by comparison.
+This supports one further diagnostic on the same unchanged binary and four-request sequence:
+use installed `xctrace` / Metal System Trace for at most 60 seconds, with an overall 600-second
+execution ceiling, retaining the trace and exit/log evidence outside Git. It is profiling, not
+a new benchmark or GPU-kernel speed claim. Keep profiler overhead and post-request idle explicit.
+If tracing is unavailable or denied, retain that failure and do not infer per-kernel attribution
+from CPU wait samples. The worker/trace process cleanup and input/build identity checks above
+continue to apply. No kernel or submission intervention is selected from the host sample alone.
+
+### O1: retained F16 attention KV for Metal OLMoE sessions
+
+The subsequent counter-enabled trace in `../gpu-moe-diagnosis.md` identifies F32/F16 conversion
+as the largest sampled shader category. Select this consumer before implementing a custom expert
+kernel. The aim is to retain the representation already consumed by Flash Attention, avoiding
+repeated conversion of the full valid history. Exact output equivalence is an acceptance target,
+not an assumption that changing a storage type is harmless.
+
+| Contract field | O1 decision |
+| --- | --- |
+| Consumer / default | Existing resident Metal OLMoE serial session, when its admitted attention path is Flash. Align selects internal policy 2 after successful policy 1 selection and before shape planning. Other models, CUDA, single-shot and decomposed attention retain their existing policy. No CLI option or response schema is added. |
+| Internal policy / identity | `gpu_attention_select(owner,2)` requires the existing healthy pre-plan state and current policy 1; other invalid policies still refuse before mutation. `runtime_attention.fused` accepts 1/2; policy 2 is named `flash_f16_cached`, binding graph identities separately from `flash_f32`. No persisted device cache or cross-session identity reuse. |
+| Storage / ownership | Policy 2 owns the same two KV planes per layer in the device owner, now F16 with the existing logical capacity and K-style layout for both K/V. Planning and final admission use the backend's exact aligned F16 allocation size, preserving the allocator's exact-consumption invariant and existing budget ceilings; do not claim a capacity increase. Planning, initialization, context reset and final cleanup share this policy. |
+| Writes / reads | Prefill writes graph-produced F32 rows through supported in-place SET conversion into F16. Decode uses supported SET_ROWS with F32 source, I32 position and F16 destination. Only the newly written rows convert. Prefix views use actual element sizes and plane strides. F16 is accepted only for K-style writes; existing F32/transposed-V behavior remains valid. |
+| Flash / padding | Flash accepts F32 or F16 K/V, validates each actual element stride and casts only F32 operands. Q, accumulation and output remain F32. A zero-padding F16 operation returns the existing tensor; positive padding widens to F32 before the pinned F32-only Metal padding kernel, then Flash performs its ordinary F16 conversion. This exceptional padded path is bounded and measured, not an invented F16 pad kernel. |
+| Precision / failure | Preserve the existing rounding boundary at attention input; test actual backend SET/SET_ROWS conversion against full-view casting, including signed zero, finite rounding boundaries and overwritten prefixes. Keep exact serial outputs/counts, seeded behavior and failure poisoning. Unsupported operations fail during pre-upload planning; never switch algorithms after compute failure or relax oracle comparison. |
+| Validation order / limits | Existing owner/state, kind/layout, scalar bounds, tensor types/shapes/strides, metadata capacity and operation support checks precede construction/execution. Extend only the named F16 paths. Preserve malformed-view, out-of-range index and metadata exhaustion refusal. |
+| Owner modules | `runtime_attention`, `runtime_generation`, `runtime_kv` as needed, `ggml_ffi`, real/stub native shim; existing OLMoE builder consumes the typed prefix views. No new Align primitive or Python product execution. |
+| Local acceptance | `run-gpu-attention-policy-smoke` extended with real F16 prefill/decode/padding and negative owners; `run-gpu-session-reuse-smoke` for existing decomposed/Qwen paths; managed real session build and `run-gpu-session-independent` unchanged full Metal sequence; existing host-capacity owner. Retain native real-precision observations rather than treating the deterministic stub as F16 math evidence. |
+| Cost / measurement | Before timing, use a clean manifested build of unchanged `ad94eb5` as the local control and manifest the candidate. Both pass the shipping build verifier; additionally bind control checkout/commit/clean state and full source closure, equal managed pin/compiler, bundle and non-shim libraries before/after timing. The original diagnostic build is superseded after review identified its insufficient dirty-source authentication. Five alternating pairs, each fresh session executing the fixed four section 6.1 requests; require all output-quality checks and pairwise exact outputs/counts. Same model, kit, limits and host, no profiling during timing. Record startup separately and request wall/internal clocks separately. Build/owner preparation ceiling 3600 s per attempt; local paired experiment ceiling 2400 s. |
+| Shipping interpretation | Local intervention target: at least 15% median paired request-wall reduction and four of five pairs faster for a declared case, with every pair retained. This does not claim superiority to llama.cpp or G6 completion. A competitive claim requires its separately declared contemporary baseline and coding wall-time gate. A failed local target remains NOT_MET and leads to the next material hypothesis. |
+
+| Closure cell | Implementation / exact evidence |
+| --- | --- |
+| Construction / planning / success | Policy 1-to-2 before shape planning; matching real F16 KV initialization; real attention owner, then unchanged independent serial session owner. |
+| Prefix reuse / replacement / tail | Real SET/SET_ROWS versus cast owner, including multiple prefill chunks, repeated decode indices and a changed suffix; existing full serial sequence covers caller reuse. |
+| Malformed / early refusal | Real attention owner checks invalid policy transition, non-K F16 layout, wrong source type/stride, out-of-bounds prefix and exhausted graph metadata before execution. |
+| Compute/readback failure / cleanup | Existing injected session reuse owner preserves poisoning and refuses further computation; existing native device owner releases graph/KV resources. No additional owner or background process is introduced. |
+| Capacity / regression boundaries | Retain old reservation ceilings; existing host-capacity owner and real memory accounting. Single-shot G1 and CUDA selection remain policy 0/1; Qwen/decomposed owners prove the selector boundary. |
+
+This O1 ledger is the specific exception to historical F32 session-storage prose in the GPU
+runtime design. Its single-shot G1 numeric/calibration formats remain unchanged. Author
+consistency must map these cells to the final diff and passing evidence before review.
+
+### Startup capped-read loader repair
+
+The retained O1 startup diagnosis found that both resident weight loaders pass a full 16 MiB
+staging buffer to `file.pread` and clip the upload only after the syscall. Align's `pread` uses
+the buffer capacity as its request size, so the loader can fetch bytes beyond the current tensor
+member or OLMoE expert piece. The accepted repair is limited to the two existing loader owners.
+
+| Contract field | Settled decision |
+| --- | --- |
+| Consumer / default | Existing `runtime_qwen_load.load_file` and `runtime_olmoe_load.load_file` startup paths. The caller's `staging_bytes` value remains the only upper bound and default; no CLI, ABI, pack format or memory-policy option changes. |
+| Read window | Keep the traversal cursors outside a capacity-epoch loop. At each epoch, compute `remaining = member_or_piece_bytes - done`, construct one local `chunk := buffer(window_bytes)` for `window_bytes = min(staging_bytes, remaining)`, and pass it directly to `pread`. Reuse it across consecutive reads, members and expert pieces while the capacity is equal; when it changes, finish the epoch so loop backedge cleanup drops the old local before the next epoch allocates its chunk. Preserve the existing pack-piece order, offsets, upload offsets and upload clipping. |
+| Success / errors | Require a positive returned count no greater than `window_bytes`; upload exactly the returned prefix, then continue until the declared member or piece is complete. Preserve `pread` OS errors, zero-count/truncation refusal, upload failures, `runtime_weights` transaction state and cleanup. |
+| Ownership / allocation | The epoch-local Align `buffer` is created inside the loop body and reused for that epoch's equal-capacity reads. Its loop backedge drops the old local before a later epoch constructs a different-capacity chunk; no assignment-based rebind is used. No buffer ABI, native runtime, async I/O, mmap, cache or kernel change is introduced. Capacity-epoch transitions and allocation cost are measured by the startup protocol. |
+| Observer / owner tests | A test-only actual-`pread` observer is tied to the two existing Qwen/OLMoE loader smokes. It checks requested capacities and payload offsets against `min(staging_bytes, remaining)`, records returned counts, and exercises short-read/EOF/error refusal. It is not a generic I/O instrumentation framework; exact output/count equality belongs to the native session owner. |
+| Performance cost ceiling | Reuse the O1 manifested-build discipline: 3,600 s for build/owner preparation per attempt and 900 s for the five-pair alternating startup experiment, with the existing 120 s native-session request deadline. No cache flush, profiler, async upload, mmap prototype or competing GPU arm. |
+| Matched measurement | Use the clean accepted O1 runtime as control and the committed capped-read candidate as the other native Align session, with the same host, model kit, native framed-client options, placement and greedy request settings. Record readiness/startup and first-request/request clocks separately; require fixed exact output/count equality for every pair. |
+| Interpretation | The OLMoE acceptance is at least 15% median per-pair fractional startup reduction with at least four of five candidate-faster pairs. Qwen is a guardrail and must stay within a 5% median regression. This evidence does not claim a llama.cpp comparison, CUDA result, whole-session speedup or time-to-passing-patch improvement. |
+
+| Closure cell | Implementation / exact evidence |
+| --- | --- |
+| Construction / normal Qwen | Capacity epoch in `src/runtime_qwen_load.align`; existing Qwen loader smoke plus the actual-`pread` observer. |
+| Construction / normal OLMoE | Capacity epoch in `src/runtime_olmoe_load.align`; existing OLMoE loader smoke plus the actual-`pread` observer. |
+| Exact bytes / order | Existing pack plans and upload state remain unchanged; the observer checks requested capacities, payload offsets and returned-count ledgers, while the native session owner checks exact output/count equality. |
+| Short read / EOF / error | Existing loader error path remains fail-closed; observer owner exercises short-read/truncated/error fixtures. |
+| Startup / caller regression | Retained native Align startup driver, five alternating pairs per model, one fixed request per launch, exact response/count comparison and separate startup/first-request clocks. |
+
+O1 qualification at `d60e2b6`: real attention owner PASS (including malformed inputs and metadata
+exhaustion); session reuse owner PASS (including injected compute/readback failure); unchanged
+independent Metal sequence PASS all 16 requests; allocation-count session host-capacity owner
+PASS both models. These cover the matrix's construction, prefix replacement, malformed, cleanup
+and capacity cells without changing the single-shot/CUDA selector. All five local pairs preserve
+exact outputs/counts and clear the 15% floor in all four cases. The complete measurement and
+source-bound evidence are in `../gpu-moe-diagnosis.md`; competitive G6 and coding wall-time
+qualification remain separate.
+
+Historical foundation status: design and evidence synthesis, 2026-09-06. The O1 section above
+adds local intervention measurements; it does not establish a competitive llama.cpp, CUDA or
+capacity improvement. Historical CPU results below retain their original owners and scopes.
 
 This is the plan of record for materially exceeding llama.cpp's inference speed on affordable local
 hardware and ultimately running larger models at useful speed under the same resource limits.

@@ -383,38 +383,59 @@ pub fn load_file(
 ) -> Result<(), Error> {
   if staging_bytes < 1 { return Err(Error.Invalid) }
   validate_plan(plan)?
-  mut chunk := buffer(staging_bytes)
   runtime_weights.begin(owner, plan.count)?
   mut at := 0
+  mut piece := 0
+  mut done := 0
+  mut index := -1
   loop {
     if at >= plan.count { break }
-    index := add_at(owner, plan, at)?
-    if index != at { return Err(Error.Invalid) }
-    start := plan.piece_start[at]
-    count := plan.piece_count[at]
+    mut start := plan.piece_start[at]
+    mut count := plan.piece_count[at]
     if start < 0 || count < 1 || start > plan.piece_bytes.len() - count {
       return Err(Error.Invalid)
     }
-    mut piece := 0
+    mut row := start + piece
+    mut remaining := plan.piece_bytes[row] - done
+    capacity := if staging_bytes < remaining { staging_bytes } else { remaining }
+    mut chunk := buffer(capacity)
     loop {
-      if piece >= count { break }
-      row := start + piece
-      mut done := 0
-      loop {
-        if done >= plan.piece_bytes[row] { break }
+      if at >= plan.count { break }
+      start = plan.piece_start[at]
+      count = plan.piece_count[at]
+      if start < 0 || count < 1 || start > plan.piece_bytes.len() - count {
+        return Err(Error.Invalid)
+      }
+      row = start + piece
+      if done >= plan.piece_bytes[row] {
+        if index < 0 {
+          index = add_at(owner, plan, at)?
+          if index != at { return Err(Error.Invalid) }
+        }
+        piece = piece + 1
+        done = 0
+        if piece >= count {
+          at = at + 1
+          piece = 0
+          index = -1
+        }
+      } else {
+        remaining = plan.piece_bytes[row] - done
+        window_bytes := if staging_bytes < remaining { staging_bytes } else { remaining }
+        if window_bytes != capacity { break }
+        if index < 0 {
+          index = add_at(owner, plan, at)?
+          if index != at { return Err(Error.Invalid) }
+        }
         read_count := pack.pread(chunk, plan.piece_pack_offset[row] + done)?
-        if read_count < 1 || read_count > staging_bytes { return Err(Error.Invalid) }
-        take := if read_count > plan.piece_bytes[row] - done {
-          plan.piece_bytes[row] - done
-        } else { read_count }
+        if read_count < 1 || read_count > window_bytes { return Err(Error.Invalid) }
+        take := if read_count > remaining { remaining } else { read_count }
         view := chunk.bytes()
         data := view[0..take]
         runtime_weights.upload(owner, index, plan.piece_tensor_offset[row] + done, data)?
         done = done + take
       }
-      piece = piece + 1
     }
-    at = at + 1
   }
   runtime_weights.finish(owner)?
   return Ok(())
