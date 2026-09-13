@@ -105,7 +105,7 @@ member or OLMoE expert piece. The accepted repair is limited to the two existing
 | Construction / normal OLMoE | Capacity epoch in `src/runtime_olmoe_load.align`; existing OLMoE loader smoke plus the actual-`pread` observer. |
 | Exact bytes / order | Existing pack plans and upload state remain unchanged; the observer checks requested capacities, payload offsets and returned-count ledgers, while the native session owner checks exact output/count equality. |
 | Short read / EOF / error | Existing loader error path remains fail-closed; observer owner exercises short-read/truncated/error fixtures. |
-| Startup / caller regression | Existing O1 session/output driver, five alternating pairs, exact response/count comparison and separate startup/first-request clocks. |
+| Startup / caller regression | Retained native Align startup driver, five alternating pairs per model, one fixed request per launch, exact response/count comparison and separate startup/first-request clocks. |
 
 O1 qualification at `d60e2b6`: real attention owner PASS (including malformed inputs and metadata
 exhaustion); session reuse owner PASS (including injected compute/readback failure); unchanged

@@ -181,12 +181,13 @@ scope, cost ceiling and owner matrix are recorded in
 The Qwen and OLMoE loader smoke commands, including the test-only actual-`pread` observer, compile
 and pass on the managed Align pin `f502fe3da00ce0b39c4eeec40586b11688627fbd`. They cover the
 capacity bounds, payload offsets, repeated equal-sized expert reads, short/zero/error refusal and
-the normal load path. The clean manifested candidate build now passes from this commit. Next: reuse
-the existing native Align session/output driver for five alternating startup pairs with exact
-outputs and separate readiness/startup and first-request clocks. The 900-second experiment must
-show at least 15% median per-pair fractional startup reduction and four of five candidate-faster
-OLMoE pairs; Qwen must stay within a 5% median regression. Retain raw evidence outside Git and
-update the diagnosis section with measured bytes and timings after the candidate run.
+the normal load path. The clean manifested candidate build and required independent session owner
+also pass: all seven Qwen and nine OLMoE requests match exact output and token counts. The bounded
+native startup campaign completed in 272.56 seconds with five alternating pairs per model. Qwen's
+median paired startup reduction is 24.05% (candidate faster 5/5); OLMoE's is 61.58% (candidate
+faster 5/5), meeting the declared OLMoE floor and Qwen guardrail. Receipts and per-arm logs are
+retained outside Git under `capped-read-session-independent-20260913` and
+`capped-read-startup-20260913`; the diagnosis records their clocks, identities and limits.
 
 ### Historical O1 review (separate from this repair)
 

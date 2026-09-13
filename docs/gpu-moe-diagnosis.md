@@ -254,5 +254,32 @@ amplification evidence; it is not a whole-session, llama.cpp or CUDA performance
 
 Probe artifacts are retained outside Git under the retained model-artifact directory
 `o1-capped-read-probe-20260913`: `capped_read_probe.py`, `result.json` and
-`raw.jsonl`. Their result digest and the matched startup/first-request candidate measurements will
-be recorded after the clean committed build and existing O1 output driver complete.
+`raw.jsonl`. The fresh committed candidate also passes the required independent session owner
+(seven Qwen2 and nine OLMoE requests, exact output and token-count equality) in
+`capped-read-session-independent-20260913`.
+
+The bounded startup campaign used the same admitted Metal kit and native Align framed-session
+options for the clean `d60e2b6` control and committed capped-read candidate. It launched one fresh
+process per arm, alternated control/candidate order across five pairs per model, issued one fixed
+greedy 128-token request, and recorded readiness/startup and first-request clocks separately. The
+campaign completed in 272.56 seconds under the 900-second ceiling. Every pair had exact response
+and token-count equality.
+
+| Model | Pairs | Control startup median (s) | Candidate startup median (s) | Median paired startup reduction | Candidate faster | Control first-request median (s) | Candidate first-request median (s) | Guardrail / target |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Qwen2.5-Coder 7B Q4_K_M | 5 | 3.803 | 2.889 | 24.05% | 5/5 | 11.799 | 11.809 | MET, median regression -24.05% |
+| OLMoE 1B-7B Q4_K_M | 5 | 11.688 | 4.481 | 61.58% | 5/5 | 2.732 | 2.709 | MET, >=15% and >=4/5 |
+
+The startup result receipt is retained as `capped-read-startup-20260913/result.json` with SHA-256
+`6a0dc12d5c99262187154cd285093c3caadf8f5d4f2fbbf7316e28837008ea95`; its external driver
+`run.py` has SHA-256 `21f832d9c2a6e4faf3600cc3d77d06846b6d00763cac8de732ff884038d50c57`.
+The session-independent receipt is `capped-read-session-independent-20260913/result.json` with
+SHA-256 `6088e53da7859f3ed986f8278e93ca133d02bb1415100669f385fb2bd4c8c448`.
+
+| Build identity | Source commit | `build.json` SHA-256 | `main` SHA-256 |
+| --- | --- | --- | --- |
+| Clean control | `d60e2b6` | `6d5033beb0b3a884174a5cd744d9e3baae3968245444d39b98b673a8d63483aa` | `c5f833798762c54285e24a47fe2ee358f0c620dd130389ed5bee048fd3b39f7b` |
+| Capped-read candidate | `ebeabac` | `1a4eb31b09a738b2bb24170e07967e2698ca5f5a84e27868c884e3240138cb32` | `e8b8b418804c45f135fb48a208656518756cb32be2e210c0f851c3b4c0e851eb` |
+
+These are native Align startup/read-amplification results. They do not claim a llama.cpp or CUDA
+comparison, a whole-session decode speedup, or a coding wall-time improvement.
