@@ -136,8 +136,35 @@ publication and merge: run exact-head `scripts/pre-pr --owner-test LABEL -- COMM
 clean named branch/worktree on the capable Linux host, attach the review envelope and
 repair disposition, and require all selected checks before merge. The earlier `--plan`
 run only identified fresh-image scope; it is not a preflight stamp. Preserve the unrelated
-Antigravity working files. Do not start GPU campaigns without the next requested scope;
-roadmap follow-on selection is the next eligible capability after cutover publication.
+Antigravity working files. The user has now authorized the MoE GPU follow-on below.
+
+## Active MoE GPU diagnosis (2026-09-13)
+
+Branch `agent/moe-gpu-diagnosis`, starting at `ad94eb5`; isolated from the original cutover and
+Antigravity working files. The user selected the recommended MoE direction. The active-entry
+ledger in `docs/specs/gpu-runtime-performance.md` bounds an unchanged resident OLMoE Metal
+session diagnosis and the selected O1 retained-half KV implementation. The unchanged manifested build,
+four-request host-sampling run and shorter Metal System Trace all PASS; every response passes
+the fixed 128-token/sequence quality check. See `docs/gpu-moe-diagnosis.md` for exact commands,
+identities, sampling counts, artifact digests and limits. The first 60-second device trace remains
+INCOMPLETE after finalization timeout; the separate 10-second trace saved successfully.
+
+Main-thread non-input-wait samples are dominated by backend completion wait (94.82%); topology
+hashing and input update are small. The subsequent counter-enabled trace attributes 46.03% of
+owned shader sample duration to F32-to-F16 conversion (instrumented attribution, not wall-time
+savings). O1 now retains F16 KV only in supported Metal OLMoE sessions, converting new rows.
+Exact backend-aligned allocation preserves the allocator's exact-consumption invariant. Real
+Metal `run-gpu-attention-policy-smoke` passes incremental rounding, overwrite, prefix, padding
+and direct F16 Flash equality; the extended malformed-input and metadata-exhaustion batch PASS.
+`scripts/run-gpu-session-reuse-smoke` and `make fmt` PASS. No speed claim or new Align gap.
+
+Next: manifest a clean local checkpoint (the first dirty candidate is correctly refused by shipping
+acceptance), reuse the completed pinned independent reference build, run the unchanged full
+Metal session oracle and host-capacity owner, then the predeclared five alternating timing pairs
+against the manifested unchanged build. Review only the stable owner-verified candidate. Keep
+actual CUDA capture/replay separate from Metal observations. Cutover publication remains pending
+independently. All O1 source, native tests, plan, diagnostic report and handoff edits are intentional
+uncommitted work in `agent/moe-gpu-diagnosis`.
 
 Use `/opt/homebrew/bin/gmake` on macOS and documented Homebrew linker paths. Real ggml
 libraries and a relocated shim are required for inference acceptance; the unavailable

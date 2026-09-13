@@ -1,6 +1,7 @@
 /* Real pinned-backend attention capability, ownership, mask and Flash arithmetic owner. */
 #include <assert.h>
 #include "ggml_shim.c"
+#include "gpu_kv_f16_smoke.h"
 
 int main(int argc, char **argv) {
     assert(argc == 2);
@@ -25,7 +26,8 @@ int main(int argc, char **argv) {
     assert(align_gpu_attention_probe(&owner, 2, 256, 128, 4, 2) == ALIGN_GPU_CONFIG);
     assert(align_gpu_plan_cancel(&owner) == ALIGN_GPU_OK);
     assert(align_gpu_attention_policy(&owner) == 1);
-    assert(align_gpu_attention_select(&owner, 2) == ALIGN_GPU_CONFIG);
+    assert(align_gpu_attention_select(&owner, 3) == ALIGN_GPU_CONFIG);
+    if (strcmp(ggml_backend_reg_name(registry), "MTL") == 0) { retained_f16_kv(device); }
 
     struct ggml_init_params params = {ggml_tensor_overhead() * 32 + ggml_graph_overhead_custom(32, false), NULL, true};
     struct ggml_context *ctx = ggml_init(params);
@@ -49,8 +51,14 @@ int main(int argc, char **argv) {
     assert(out->src[1]->type == GGML_TYPE_F16 && out->src[1]->op == GGML_OP_CPY);
     assert(out->src[2]->type == GGML_TYPE_F16 && out->src[2]->op == GGML_OP_CPY);
     assert(out->type == GGML_TYPE_F32 && out->ne[0] == 128 && out->ne[1] == 4 && out->ne[2] == 2);
+    assert(align_ggml_slot_store(slots, 6, out->src[1]) == ALIGN_GGML_OK);
+    assert(align_ggml_slot_store(slots, 7, out->src[2]) == ALIGN_GGML_OK);
+    assert(align_ggml_op_flash_attention(ctx, slots, 8, 0, 6, 7, 4, 0x3f800000) == ALIGN_GGML_OK);
+    struct ggml_tensor *half_out = align_ggml_slot_tensor(slots, 8);
+    assert(half_out->src[1] == out->src[1] && half_out->src[2] == out->src[2]);
     struct ggml_cgraph *graph = ggml_new_graph_custom(ctx, 32, false);
     ggml_build_forward_expand(graph, out);
+    ggml_build_forward_expand(graph, half_out);
     ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
     assert(buffer != NULL && ggml_backend_buffer_get_size(buffer) < 4 * 1024 * 1024);
     float zeros[128 * 256 * 2] = {0};
@@ -72,7 +80,10 @@ int main(int argc, char **argv) {
     ggml_backend_tensor_set(mask, masks, 0, ggml_nbytes(mask));
     assert(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
     float result[128 * 4 * 2];
+    float half_result[128 * 4 * 2];
     ggml_backend_tensor_get(out, result, 0, sizeof(result));
+    ggml_backend_tensor_get(half_out, half_result, 0, sizeof(half_result));
+    assert(memcmp(result, half_result, sizeof(result)) == 0);
     for (int row = 0; row < 2; ++row) {
         for (int h = 0; h < 4; ++h) {
             for (int d = 0; d < 128; ++d) {
@@ -89,6 +100,8 @@ int main(int argc, char **argv) {
         ggml_backend_tensor_set(v, values, 0, sizeof(values));
         assert(ggml_backend_graph_compute(backend, graph) == GGML_STATUS_SUCCESS);
         ggml_backend_tensor_get(out, result, 0, sizeof(result));
+        ggml_backend_tensor_get(half_out, half_result, 0, sizeof(half_result));
+        assert(memcmp(result, half_result, sizeof(result)) == 0);
         for (int row = 0; row < 2; ++row) {
             for (int h = 0; h < 4; ++h) {
                 for (int d = 0; d < 128; ++d) {

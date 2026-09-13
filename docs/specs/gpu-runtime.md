@@ -1836,23 +1836,31 @@ The invocation selects one attention policy before shape planning or payload all
 or `flash_f32`. It probes the exact device for every reachable prefill/decode shape at the chosen
 microbatch width. Unsupported fused shapes select decomposed attention before execution; a failed
 compute never retries another algorithm. A capacity retry reselects at the next committed width.
-Both policies retain F32 persistent K/V. The `flash_f32` policy explicitly casts each bounded
+The original two policies retain F32 persistent K/V. The `flash_f32` policy explicitly casts each bounded
 K/V attention view to F16 in the planned graph, matching pinned `llama-graph.cpp`; its output and
 requested accumulation precision remain F32. Flash V uses the K-style `{head_dim, capacity, kv_heads}`
 layout, eliminating a per-step transpose/copy of the past. The policy enters graph identity and
 native observation. A policy cannot change while payload or graph handles are live.
 
+O1 in `gpu-runtime-performance.md` adds the session-only `flash_f16_cached` policy (integer 2)
+for Metal OLMoE after successful Flash selection. It retains F16 K/V, converts newly written F32
+rows and passes half prefixes directly to Flash. Its exact backend-aligned reservation, padding
+fallback, closure matrix and performance acceptance are owned by that ledger. This is an explicit
+exception to the F32 storage descriptions above, including session prefix identity and native KV
+writes; the selected attention name distinguishes graph identities. Existing public single-shot
+observation and independent-corpus schemas retain their original policy values.
+
 | Private surface / owner | Inputs and result | Validation, allocation and failure | Regression |
 | --- | --- | --- | --- |
 | `gpu_attention_probe(owner, query_tokens, kv_width, head_dim, query_heads, kv_heads)` / `ggml_ffi` and native shim | Positive exact dimensions; `Result<bool, Fault>` | Ready owner only, query width 1..128, divisible head grouping; scoped no-payload metadata and exact-device Flash/mask/K/V-cast capability checks; unsupported is `Ok(false)` without changing first fault; native 0/1 are distinct from negative CONFIG/ALLOCATION faults, retained unchanged at the typed boundary | `gpu-attention-policy`: real and stub typed results, malformed/late probes, injected metadata allocation failure, first-fault category/stage and zero-payload state |
-| `gpu_attention_select(owner, policy)` / native owner | Integer 0 decomposed or 1 flash; `Result<(), Fault>` | Ready owner only, no payload/graph references; explicit selection survives planning finalization and capacity cancellation permits reselection | `gpu-attention-policy`: selection lifetime, failed plan and recovery |
+| `gpu_attention_select(owner, policy)` / native owner | Integer 0 decomposed, 1 flash or 2 cached-half Flash; `Result<(), Fault>` | Ready owner only, no payload/graph references; 2 requires prior 1; explicit selection survives planning finalization and capacity cancellation permits reselection | `gpu-attention-policy`: selection lifetime, failed plan and recovery; O1 transition refusal |
 | `gpu_attention_policy(owner)` / native owner | Selected integer or invalid-owner refusal | Borrow only, no allocation; starts at 0 | Native state/observation owner |
 | `op_attention_mask(ctx, slots, out, source)` / native shim | F32 mask to contiguous F16 graph tensor | Validate context/slots/shape before construction; one explicit cast per graph; allocator owns its bytes | `gpu-attention-policy`: dtype, shape, malformed slot |
-| `op_flash_attention(ctx, slots, out, q, k, v, mask, scale_bits)` / native shim | F32 Q/K/V, contiguous F16 mask, finite positive F32 scale; F32 output in `{head_dim, query_heads, query_tokens}` order | Exact compatible dimensions/strides, explicit F16 casts of both bounded K/V views before Flash, no host tensor pointer reads; ordinary graph allocator owns all temporary storage | Real Flash graph comparison and malformed graph owner |
+| `op_flash_attention(ctx, slots, out, q, k, v, mask, scale_bits)` / native shim | F32 Q, F32 or F16 K/V, contiguous F16 mask, finite positive F32 scale; F32 output in `{head_dim, query_heads, query_tokens}` order | Exact compatible dimensions and actual element strides; cast only F32 K/V views before Flash, no host tensor pointer reads; ordinary graph allocator owns temporary storage | Real Flash graph comparison, F16 no-copy equality and malformed graph owner |
 
 Pinned `llama-graph.cpp` explicitly casts F32 K/V views to F16 before Flash. Both backend consumers
 now construct these two visible graph casts, whose allocator charges the bounded temporary payloads
-before upload. Persistent K/V stays F32. Probing checks both casts plus the F16 Flash shape.
+before upload. Persistent K/V stays F32 except for O1. Probing checks both casts plus the F16 Flash shape.
 The same-policy independent upstream
 reference owns numerical acceptance; no cross-policy bitwise equivalence or relaxed tolerance is
 assumed. The decomposed baseline and historical FAILs retain their original source-bound owners.

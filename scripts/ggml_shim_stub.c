@@ -2090,7 +2090,8 @@ int32_t align_gpu_attention_probe(void *owner, int64_t queries, int64_t width,
 }
 int32_t align_gpu_attention_select(void *owner, int32_t policy) {
     struct align_gpu_device_state *state = owner;
-    if (state == NULL || state->memory_planned || state->shape_planning || policy < 0 || policy > 1) {
+    if (state == NULL || state->memory_planned || state->shape_planning || policy < 0 || policy > 2
+        || (policy == 2 && state->attention_policy != 1)) {
         return ALIGN_GPU_CONFIG;
     }
     state->attention_policy = policy;
