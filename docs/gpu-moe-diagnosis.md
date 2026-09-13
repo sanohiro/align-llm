@@ -161,3 +161,68 @@ layout/type/stride/extent and metadata-exhaustion refusal, cleanup and exact Fla
 complete, but shipping session acceptance correctly refuses the first uncommitted candidate.
 A clean committed build and full independent session qualification precede paired measurement.
 No speed improvement is claimed at this checkpoint.
+
+## O1 local paired result
+
+Review found that the original control receipt did not strictly authenticate its dirty source
+state. Preserve this initial run as diagnostic evidence, but do not use it as shipping performance
+acceptance. The completed repair rebuilds the same `ad94eb5` source in a clean checkout and verifies both
+builds, control commit/clean source closure, compiler, pin, bundle and non-shim libraries before
+and after repeating the unchanged five-pair protocol. The results below are from that clean-control
+rerun. No runtime code changes were required.
+
+The clean `d60e2b6` candidate passes the unchanged independent serial oracle: all seven Qwen2
+and nine OLMoE requests match the pinned llama.cpp driver in complete output and exact token
+counts, including seeded OLMoE repeats. The allocation-count session owner passes both models;
+OLMoE observes 237,296,931 requested host bytes within 324,013,024 reserved bytes, with
+17,974,079 native host bytes and a 1,073,741,824-byte host budget.
+
+Five alternating control/candidate pairs on the same Apple M1 16 GiB host and admitted Metal
+kit completed in 364.87 seconds, below the predeclared 2,400-second experiment ceiling. Each
+fresh session executes all four fixed requests with greedy 128-token output. All 40 responses
+pass the fixed quality check and every paired output/count matches exactly. No profiler ran
+during timing. Each row reports the median paired reduction; the displayed times are separate
+arm medians and are not used to calculate that reduction.
+
+| Case | Control wall median (s) | Candidate wall median (s) | Median paired reduction | Faster pairs | Local target |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Cold short | 4.909 | 2.749 | 44.00% | 5/5 | MET |
+| Warm short, cached | 4.637 | 2.463 | 46.00% | 5/5 | MET |
+| Warm long, changed | 12.160 | 4.463 | 63.33% | 5/5 | MET |
+| Warm long, cached | 10.546 | 2.761 | 73.82% | 5/5 | MET |
+
+Startup is separate: control/candidate medians are 12.892/12.876 seconds. Request wall and
+producer internal nanoseconds are both retained in every response record; no startup saving is
+claimed. The control is the clean manifested rebuild of `ad94eb5`, not llama.cpp. Both builds
+pass shipping verification with equal managed compiler, pin, bundle and non-shim libraries;
+the control commit, clean checkout and complete source closure are checked before and after.
+Model, limits and driver are unchanged.
+These results meet O1's local intervention floor. They establish neither superiority to a
+contemporary llama.cpp baseline, a CUDA improvement, nor time to a passing coding patch.
+
+Retained evidence directories are `moe-f16-clean-20260913-build`,
+`moe-reference-20260913-build`, `moe-f16-independent-clean-20260913`,
+`moe-f16-host-capacity-20260913`, `moe-control-clean-20260913-build` and
+`moe-clean-pairs-20260913` in the local model/evidence store.
+The last contains the complete independent measurement script, exact commands, requests,
+responses, all pair orders, startup/internal/wall timings and worker logs. Reproduce the local
+experiment with `python3 "$PAIR_EVIDENCE/run.py"` after explicitly setting its root/build/kit
+locations to the retained immutable artifacts; preserve all build and source verification.
+The superseded original run remains in `moe-local-pairs-20260913` with result digest
+`58a37693b33bc84ad3fae76bdb7affe74fb8482e28ded957d58a31baba1003ad` for audit only.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Clean candidate `build.json` | `6d5033beb0b3a884174a5cd744d9e3baae3968245444d39b98b673a8d63483aa` |
+| Clean control `build.json` | `6e100f35a2e9a0d31f7f0e13707c6a6f8d285c594c34317fa615ff53c6048b09` |
+| Independent reference `build.json` | `798286d19108bec688cc940e771693f92e6f83b813ccfb0c55ac7a83a01ad9fa` |
+| Independent session `result.json` | `f93a68e079a838e16fc31312324450c36b25624786762625dd049d0629e6a420` |
+| Host-capacity `result.json` | `cfa24b62c9c2817c21ce02d3fe9ea64a025c10cc85129abc778e4569fc8fff29` |
+| Clean local pair `run.py` | `b6dccce1efb680b74f3d048f4292f3dbb5f3d5055cd41b109ee06964ee59bd0e` |
+| Clean local pair `result.json` | `8c90e8a564a9164500318a0af3343cf0a149aa4f392ef581b75549607203b369` |
+
+Bounded retrospective: keep exact native allocation accounting when changing storage dtype,
+authenticate both clean executable source closures, validate actual conversion arithmetic before
+whole-model acceptance, and use paired wall time
+to qualify a profiler-selected intervention. Existing owners cover these failure classes; no new
+routine aggregate or publication gate is introduced.

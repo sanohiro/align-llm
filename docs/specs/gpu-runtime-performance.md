@@ -2,8 +2,9 @@
 
 Execution priority (2026-09-13): the user authorized resuming GPU performance work and selected
 MoE. Product cutover implementation is complete; its publication remains a separate pending
-checkpoint. Start with the bounded resident OLMoE diagnosis below. Existing Metal/CUDA correctness
-and negative performance results remain at their qualified heads; no new speed claim is made.
+checkpoint. The bounded diagnosis below selected O1, which now passes its local paired floor.
+Existing Metal/CUDA correctness and historical negative performance results remain at their
+qualified heads; O1 makes no new competitive llama.cpp or CUDA claim.
 
 ### Active entry: resident OLMoE diagnosis
 
@@ -65,7 +66,7 @@ not an assumption that changing a storage type is harmless.
 | Validation order / limits | Existing owner/state, kind/layout, scalar bounds, tensor types/shapes/strides, metadata capacity and operation support checks precede construction/execution. Extend only the named F16 paths. Preserve malformed-view, out-of-range index and metadata exhaustion refusal. |
 | Owner modules | `runtime_attention`, `runtime_generation`, `runtime_kv` as needed, `ggml_ffi`, real/stub native shim; existing OLMoE builder consumes the typed prefix views. No new Align primitive or Python product execution. |
 | Local acceptance | `run-gpu-attention-policy-smoke` extended with real F16 prefill/decode/padding and negative owners; `run-gpu-session-reuse-smoke` for existing decomposed/Qwen paths; managed real session build and `run-gpu-session-independent` unchanged full Metal sequence; existing host-capacity owner. Retain native real-precision observations rather than treating the deterministic stub as F16 math evidence. |
-| Cost / measurement | Before timing, use the manifested unchanged `ad94eb5` diagnostic build as the local control and manifest the candidate. Five alternating pairs, each fresh session executing the fixed four section 6.1 requests; require all output-quality checks and pairwise exact outputs/counts. Same model, kit, limits and host, no profiling during timing. Record startup separately and request wall/internal clocks separately. Build/owner preparation ceiling 3600 s; local paired experiment ceiling 2400 s. |
+| Cost / measurement | Before timing, use a clean manifested build of unchanged `ad94eb5` as the local control and manifest the candidate. Both pass the shipping build verifier; additionally bind control checkout/commit/clean state and full source closure, equal managed pin/compiler, bundle and non-shim libraries before/after timing. The original diagnostic build is superseded after review identified its insufficient dirty-source authentication. Five alternating pairs, each fresh session executing the fixed four section 6.1 requests; require all output-quality checks and pairwise exact outputs/counts. Same model, kit, limits and host, no profiling during timing. Record startup separately and request wall/internal clocks separately. Build/owner preparation ceiling 3600 s per attempt; local paired experiment ceiling 2400 s. |
 | Shipping interpretation | Local intervention target: at least 15% median paired request-wall reduction and four of five pairs faster for a declared case, with every pair retained. This does not claim superiority to llama.cpp or G6 completion. A competitive claim requires its separately declared contemporary baseline and coding wall-time gate. A failed local target remains NOT_MET and leads to the next material hypothesis. |
 
 | Closure cell | Implementation / exact evidence |
@@ -80,8 +81,18 @@ This O1 ledger is the specific exception to historical F32 session-storage prose
 runtime design. Its single-shot G1 numeric/calibration formats remain unchanged. Author
 consistency must map these cells to the final diff and passing evidence before review.
 
-Status: design and evidence synthesis, 2026-09-06. No new measurements or GPU speed/capacity
-claims are made here. Historical CPU results below retain their original owners and scopes.
+O1 qualification at `d60e2b6`: real attention owner PASS (including malformed inputs and metadata
+exhaustion); session reuse owner PASS (including injected compute/readback failure); unchanged
+independent Metal sequence PASS all 16 requests; allocation-count session host-capacity owner
+PASS both models. These cover the matrix's construction, prefix replacement, malformed, cleanup
+and capacity cells without changing the single-shot/CUDA selector. All five local pairs preserve
+exact outputs/counts and clear the 15% floor in all four cases. The complete measurement and
+source-bound evidence are in `../gpu-moe-diagnosis.md`; competitive G6 and coding wall-time
+qualification remain separate.
+
+Historical foundation status: design and evidence synthesis, 2026-09-06. The O1 section above
+adds local intervention measurements; it does not establish a competitive llama.cpp, CUDA or
+capacity improvement. Historical CPU results below retain their original owners and scopes.
 
 This is the plan of record for materially exceeding llama.cpp's inference speed on affordable local
 hardware and ultimately running larger models at useful speed under the same resource limits.

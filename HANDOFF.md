@@ -156,15 +156,32 @@ savings). O1 now retains F16 KV only in supported Metal OLMoE sessions, converti
 Exact backend-aligned allocation preserves the allocator's exact-consumption invariant. Real
 Metal `run-gpu-attention-policy-smoke` passes incremental rounding, overwrite, prefix, padding
 and direct F16 Flash equality; the extended malformed-input and metadata-exhaustion batch PASS.
-`scripts/run-gpu-session-reuse-smoke` and `make fmt` PASS. No speed claim or new Align gap.
+`scripts/run-gpu-session-reuse-smoke` and `make fmt` PASS. No new Align gap.
 
-Next: manifest a clean local checkpoint (the first dirty candidate is correctly refused by shipping
-acceptance), reuse the completed pinned independent reference build, run the unchanged full
-Metal session oracle and host-capacity owner, then the predeclared five alternating timing pairs
-against the manifested unchanged build. Review only the stable owner-verified candidate. Keep
+Clean implementation checkpoint: `d60e2b6`. Managed build and unchanged full Metal independent
+session oracle PASS (Qwen2 7/7, OLMoE 9/9 exact outputs/counts). Allocation-count host-capacity
+owner PASS for both models. Five alternating local pairs PASS all 40 quality checks and all
+paired outputs/counts, with median request-wall reductions of 44.00%, 46.00%, 63.33% and 73.82%
+against the clean manifested `ad94eb5` rebuild. Every case is faster in 5/5 pairs; all four
+meet the predeclared 15% local floor. See the diagnostic report for artifact hashes and limits.
+This is not a competitive llama.cpp or CUDA result, or a coding time-to-passing-patch claim.
+
+One fresh high-effort review by `/root/moe_review` covered the whole diff and final evidence
+documentation. Reviewed head `d60e2b626ae69837d96df1866c728d4c5864ff40`; base tip and merge
+base `ad94eb5a18e49695a0c2321da7c9c37bd7ddd2f7`; verdict FINDINGS. Complete findings:
+P1 control source authentication was insufficient for a dirty build; accepted and repaired by
+strict clean-control rebuild, source/compiler/library verification and a fresh five-pair PASS.
+P2 stale specification claimed no new measurements; accepted and corrected to distinguish local
+O1 evidence from historical/competitive claims. The consolidated repair is the commit containing
+this checkpoint; its evidence/documentation delta was inspected, with no runtime/test changes.
+No valid finding remains unresolved; the narrow repair does not require another full review.
+
+Next: complete applicable publication checks when publishing this capability, then qualify its
+competitive baseline and coding wall-time consumer before claiming superiority to llama.cpp. Keep
 actual CUDA capture/replay separate from Metal observations. Cutover publication remains pending
-independently. All O1 source, native tests, plan, diagnostic report and handoff edits are intentional
-uncommitted work in `agent/moe-gpu-diagnosis`.
+independently. Implementation and owner tests are committed in `agent/moe-gpu-diagnosis`;
+the consolidated review repair records the completed local evidence. No PR/preflight/merge is
+claimed for O1 at this checkpoint.
 
 Use `/opt/homebrew/bin/gmake` on macOS and documented Homebrew linker paths. Real ggml
 libraries and a relocated shim are required for inference acceptance; the unavailable
