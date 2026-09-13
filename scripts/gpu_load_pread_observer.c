@@ -57,25 +57,84 @@ static _Thread_local int align_test_resolving;
 static int align_test_log_fd = -1;
 static char align_test_target[PATH_MAX];
 static off_t align_test_payload_offset;
+static int align_test_payload_offset_valid;
 static enum align_test_mode align_test_fault_mode;
 static atomic_int align_test_fault_used;
+
+static uint32_t align_test_decode_u32(const unsigned char *bytes) {
+    return (uint32_t) bytes[0]
+        | ((uint32_t) bytes[1] << 8)
+        | ((uint32_t) bytes[2] << 16)
+        | ((uint32_t) bytes[3] << 24);
+}
+
+static uint64_t align_test_decode_u64(const unsigned char *bytes) {
+    return (uint64_t) bytes[0]
+        | ((uint64_t) bytes[1] << 8)
+        | ((uint64_t) bytes[2] << 16)
+        | ((uint64_t) bytes[3] << 24)
+        | ((uint64_t) bytes[4] << 32)
+        | ((uint64_t) bytes[5] << 40)
+        | ((uint64_t) bytes[6] << 48)
+        | ((uint64_t) bytes[7] << 56);
+}
+
+static int align_test_read_payload_offset(const char *target, off_t *offset) {
+    unsigned char header[104];
+    size_t have = 0;
+    int fd;
+    struct stat file_status;
+    uint64_t total;
+    uint64_t payload;
+    uint64_t payload_bytes;
+
+    fd = open(target, O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+    if (fstat(fd, &file_status) != 0 || file_status.st_size < 0
+        || (uint64_t) file_status.st_size < sizeof(header)
+        || lseek(fd, 0, SEEK_SET) == (off_t) -1) {
+        (void) close(fd);
+        return 0;
+    }
+    while (have < sizeof(header)) {
+        ssize_t count = read(fd, header + have, sizeof(header) - have);
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+        if (count <= 0) {
+            (void) close(fd);
+            return 0;
+        }
+        have += (size_t) count;
+    }
+    (void) close(fd);
+
+    total = align_test_decode_u64(header + 24);
+    payload = align_test_decode_u64(header + 88);
+    payload_bytes = align_test_decode_u64(header + 96);
+    if (memcmp(header, "ALGP", 4) != 0
+        || align_test_decode_u32(header + 4) != 1
+        || align_test_decode_u32(header + 8) != 128
+        || total != (uint64_t) file_status.st_size
+        || payload > total || payload_bytes != total - payload
+        || payload > (uint64_t) INT64_MAX) {
+        return 0;
+    }
+    *offset = (off_t) payload;
+    return 1;
+}
 
 static void align_test_init(void) {
     const char *target = getenv("ALIGN_GPU_LOAD_PREAD_PATH");
     const char *log_path = getenv("ALIGN_GPU_LOAD_PREAD_LOG");
-    const char *minimum = getenv("ALIGN_GPU_LOAD_PREAD_MIN_OFFSET");
     const char *mode = getenv("ALIGN_GPU_LOAD_PREAD_MODE");
-    char *end = NULL;
-    long long parsed = 0;
 
     if (target != NULL && target[0] != '\0') {
         (void) snprintf(align_test_target, sizeof(align_test_target), "%s", target);
-    }
-    if (minimum != NULL && minimum[0] != '\0') {
-        parsed = strtoll(minimum, &end, 10);
-        if (end != minimum && *end == '\0' && parsed >= 0) {
-            align_test_payload_offset = (off_t) parsed;
-        }
+        align_test_payload_offset_valid = align_test_read_payload_offset(
+            align_test_target, &align_test_payload_offset);
     }
     if (mode != NULL && strcmp(mode, "short") == 0) {
         align_test_fault_mode = ALIGN_TEST_MODE_SHORT;
@@ -161,7 +220,8 @@ static int align_test_path_equal(const char *left, const char *right) {
 
 static int align_test_is_payload_fd(int fd, off_t offset) {
     char path[PATH_MAX];
-    if (align_test_target[0] == '\0' || offset < align_test_payload_offset
+    if (align_test_target[0] == '\0' || !align_test_payload_offset_valid
+        || offset < align_test_payload_offset
         || !align_test_fd_path(fd, path, sizeof(path))) {
         return 0;
     }
