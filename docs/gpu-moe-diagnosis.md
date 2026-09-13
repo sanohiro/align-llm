@@ -283,3 +283,26 @@ SHA-256 `6088e53da7859f3ed986f8278e93ca133d02bb1415100669f385fb2bd4c8c448`.
 
 These are native Align startup/read-amplification results. They do not claim a llama.cpp or CUDA
 comparison, a whole-session decode speedup, or a coding wall-time improvement.
+
+### Final review and adoption
+
+The comprehensive native review was requested from `gpt-6-astra` at `xhigh` and covered the
+candidate at `44aa9af3c3aff16e3a4cf25feec670f1d54c077d` against base tip and merge base
+`30f41c91a2b815f3d1983a182f016bc9bb9721ca`. Its verdict was `FINDINGS`; both findings were
+limited to test-observer evidence and left the production loader unchanged.
+
+| Finding | Disposition in `c3a57d578b5f37a41a7cbb3577f9f11abc845480` |
+| --- | --- |
+| The OLMoE fault-injection threshold included metadata reads, so the short/zero/error cases could stop before the loader payload. | Resolved: the observer derives the payload boundary from the fixture header and binds injected reads to the expected payload traversal; zero/error cases require exactly one terminal payload request. |
+| The smoke checks did not enforce each member/piece's exact remaining-byte bound and offset. | Resolved: the validator compares every request with `min(staging, remaining)` at the expected offset, advances by actual returned counts, and requires complete baseline and short-read traversal, including every OLMoE expert piece. |
+
+The narrow repair assessment reviewed head `c3a57d578b5f37a41a7cbb3577f9f11abc845480` against
+repair base `44aa9af3c3aff16e3a4cf25feec670f1d54c077d` and returned `ADOPT`; it found no new
+issues. The retained test-repair receipt records both observer-backed owners passing and the C
+observer checks passing with `-Werror`. The capped-read capability is therefore complete and
+adopted for the local native Metal startup scope. Publication and merge remain pending the user's
+publication batch.
+
+Bounded lesson: validate actual payload traversal when fault-injecting loader reads so metadata
+failures cannot create a false positive; this is covered by the existing test repair and adds no
+new routine gate.

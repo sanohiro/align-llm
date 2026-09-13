@@ -189,6 +189,20 @@ faster 5/5), meeting the declared OLMoE floor and Qwen guardrail. Receipts and p
 retained outside Git under `capped-read-session-independent-20260913` and
 `capped-read-startup-20260913`; the diagnosis records their clocks, identities and limits.
 
+The comprehensive native review requested from `gpt-6-astra` at `xhigh` reviewed head
+`44aa9af3c3aff16e3a4cf25feec670f1d54c077d` against base tip and merge base
+`30f41c91a2b815f3d1983a182f016bc9bb9721ca` and returned `FINDINGS`. Its two P2 findings were
+both in the test observer: the OLMoE fault threshold could stop in metadata, and the validators
+did not enforce each payload member/piece's exact remaining-byte bound and offset. The committed
+repair `c3a57d578b5f37a41a7cbb3577f9f11abc845480` derives the fixture payload boundary, binds
+faults to payload traversal, validates exact per-read bounds/offsets while advancing by returned
+counts, and covers complete expert-piece traversal. Astra's narrow repair assessment reviewed
+that head against `44aa9af3c3aff16e3a4cf25feec670f1d54c077d` and returned `ADOPT` with no new
+issues. The capped-read capability is COMPLETE and locally ADOPTED; publication and merge remain
+pending the user's publication batch. The bounded lesson is to validate actual payload traversal
+for fault cases so metadata failures cannot masquerade as loader coverage; the existing repair
+covers it without a new gate.
+
 ### Historical O1 review (separate from this repair)
 
 One fresh high-effort review by `/root/moe_review` covered the whole diff and final evidence
