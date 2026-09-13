@@ -81,6 +81,32 @@ This O1 ledger is the specific exception to historical F32 session-storage prose
 runtime design. Its single-shot G1 numeric/calibration formats remain unchanged. Author
 consistency must map these cells to the final diff and passing evidence before review.
 
+### Startup capped-read loader repair
+
+The retained O1 startup diagnosis found that both resident weight loaders pass a full 16 MiB
+staging buffer to `file.pread` and clip the upload only after the syscall. Align's `pread` uses
+the buffer capacity as its request size, so the loader can fetch bytes beyond the current tensor
+member or OLMoE expert piece. The accepted repair is limited to the two existing loader owners.
+
+| Contract field | Settled decision |
+| --- | --- |
+| Consumer / default | Existing `runtime_qwen_load.load_file` and `runtime_olmoe_load.load_file` startup paths. The caller's `staging_bytes` value remains the only upper bound and default; no CLI, ABI, pack format or memory-policy option changes. |
+| Read window | Keep the traversal cursors outside a capacity-epoch loop. At each epoch, compute `remaining = member_or_piece_bytes - done`, construct one local `chunk := buffer(window_bytes)` for `window_bytes = min(staging_bytes, remaining)`, and pass it directly to `pread`. Reuse it across consecutive reads, members and expert pieces while the capacity is equal; when it changes, finish the epoch so loop backedge cleanup drops the old local before the next epoch allocates its chunk. Preserve the existing pack-piece order, offsets, upload offsets and upload clipping. |
+| Success / errors | Require a positive returned count no greater than `window_bytes`; upload exactly the returned prefix, then continue until the declared member or piece is complete. Preserve `pread` OS errors, zero-count/truncation refusal, upload failures, `runtime_weights` transaction state and cleanup. |
+| Ownership / allocation | The epoch-local Align `buffer` is created inside the loop body and reused for that epoch's equal-capacity reads. Its loop backedge drops the old local before a later epoch constructs a different-capacity chunk; no assignment-based rebind is used. No buffer ABI, native runtime, async I/O, mmap, cache or kernel change is introduced. Capacity-epoch transitions and allocation cost are measured by the startup protocol. |
+| Observer / owner tests | A test-only actual-`pread` observer is tied to the two existing Qwen/OLMoE loader smokes. It checks requested capacities and payload offsets against `min(staging_bytes, remaining)`, records returned counts, and exercises short-read/EOF/error refusal. It is not a generic I/O instrumentation framework; exact output/count equality belongs to the native session owner. |
+| Performance cost ceiling | Reuse the O1 manifested-build discipline: 3,600 s for build/owner preparation per attempt and 900 s for the five-pair alternating startup experiment, with the existing 120 s native-session request deadline. No cache flush, profiler, async upload, mmap prototype or competing GPU arm. |
+| Matched measurement | Use the clean accepted O1 runtime as control and the committed capped-read candidate as the other native Align session, with the same host, model kit, native framed-client options, placement and greedy request settings. Record readiness/startup and first-request/request clocks separately; require fixed exact output/count equality for every pair. |
+| Interpretation | The OLMoE acceptance is at least 15% median per-pair fractional startup reduction with at least four of five candidate-faster pairs. Qwen is a guardrail and must stay within a 5% median regression. This evidence does not claim a llama.cpp comparison, CUDA result, whole-session speedup or time-to-passing-patch improvement. |
+
+| Closure cell | Implementation / exact evidence |
+| --- | --- |
+| Construction / normal Qwen | Capacity epoch in `src/runtime_qwen_load.align`; existing Qwen loader smoke plus the actual-`pread` observer. |
+| Construction / normal OLMoE | Capacity epoch in `src/runtime_olmoe_load.align`; existing OLMoE loader smoke plus the actual-`pread` observer. |
+| Exact bytes / order | Existing pack plans and upload state remain unchanged; the observer checks requested capacities, payload offsets and returned-count ledgers, while the native session owner checks exact output/count equality. |
+| Short read / EOF / error | Existing loader error path remains fail-closed; observer owner exercises short-read/truncated/error fixtures. |
+| Startup / caller regression | Existing O1 session/output driver, five alternating pairs, exact response/count comparison and separate startup/first-request clocks. |
+
 O1 qualification at `d60e2b6`: real attention owner PASS (including malformed inputs and metadata
 exhaustion); session reuse owner PASS (including injected compute/readback failure); unchanged
 independent Metal sequence PASS all 16 requests; allocation-count session host-capacity owner

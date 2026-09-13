@@ -166,6 +166,28 @@ against the clean manifested `ad94eb5` rebuild. Every case is faster in 5/5 pair
 meet the predeclared 15% local floor. See the diagnostic report for artifact hashes and limits.
 This is not a competitive llama.cpp or CUDA result, or a coding time-to-passing-patch claim.
 
+## Active capped-read loader repair (2026-09-13)
+
+The startup repair is isolated on `agent/capped-read-loader-repair`, based on accepted O1 docs
+checkpoint `30f41c9`; the original C1 worktree remains untouched. `runtime_qwen_load.load_file` and
+`runtime_olmoe_load.load_file` now use lexical capacity epochs at
+`min(staging_bytes, remaining_member_or_piece_bytes)`, including consecutive equal-sized expert
+pieces. Traversal cursors persist outside the epoch loop; its backedge drops the old chunk before
+the next capacity allocation. Plan order, offsets, upload contents and existing fail-closed errors
+remain unchanged. No ABI, pack format, mmap, async I/O or kernel change is present. The settled
+scope, cost ceiling and owner matrix are recorded in
+`docs/specs/gpu-runtime-performance.md` under “Startup capped-read loader repair”.
+
+The Qwen and OLMoE loader smoke commands, including the test-only actual-`pread` observer, compile
+and pass on the managed Align pin `f502fe3da00ce0b39c4eeec40586b11688627fbd`. They cover the
+capacity bounds, payload offsets, repeated equal-sized expert reads, short/zero/error refusal and
+the normal load path. Next: build a clean manifested candidate, then reuse the existing native
+Align session/output driver for five alternating startup pairs with exact outputs and separate
+readiness/startup and first-request clocks. The 900-second experiment must show at least 15% median
+per-pair fractional startup reduction and four of five candidate-faster OLMoE pairs; Qwen must stay
+within a 5% median regression. Retain raw evidence outside Git and update the diagnosis section with
+measured bytes and timings after the candidate run.
+
 One fresh high-effort review by `/root/moe_review` covered the whole diff and final evidence
 documentation. Reviewed head `d60e2b626ae69837d96df1866c728d4c5864ff40`; base tip and merge
 base `ad94eb5a18e49695a0c2321da7c9c37bd7ddd2f7`; verdict FINDINGS. Complete findings:

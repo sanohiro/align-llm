@@ -226,3 +226,33 @@ authenticate both clean executable source closures, validate actual conversion a
 whole-model acceptance, and use paired wall time
 to qualify a profiler-selected intervention. Existing owners cover these failure classes; no new
 routine aggregate or publication gate is introduced.
+
+## Startup capped-read loader repair
+
+The retained O1 runtime uses a 16 MiB staging limit for both resident loaders. The independent
+payload-only probe at accepted commit `d60e2b626ae69837d96df1866c728d4c5864ff40` replayed the
+exact Qwen and OLMoE pack-piece orders with a reusable libc `pread` buffer. It changed only the
+destination capacity, hashed every consumed prefix and did not load a model, flush caches or run
+the GPU. Three alternating pairs per model completed within the 120-second probe budget; all six
+pairs had equal consumed-byte counts and equal SHA-256 digests.
+
+| Model | Members / `pread` calls | Useful bytes | Current fetched | Capped fetched | Current / capped median wall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Qwen2.5-Coder 7B Q4_K_M | 339 / 565 | 4,677,120,000 | 9,473,210,368 | 4,677,120,000 | 3.456 s / 2.625 s |
+| OLMoE 1B-7B Q4_K_M | 3,219 / 3,227 | 4,211,730,432 | 54,123,923,456 | 4,211,730,432 | 10.196 s / 2.084 s |
+
+The repair on `agent/capped-read-loader-repair` keeps the accepted pack plans and upload state
+unchanged. Each lexical capacity epoch constructs one local buffer at
+`min(staging_bytes, remaining_member_or_piece_bytes)` and reuses it until that capacity changes;
+the loop backedge drops the old epoch local before the next allocation. The syscall therefore
+cannot fetch bytes beyond the current declared payload prefix, while consecutive equal-sized
+expert pieces share the allocation. Existing positive-count, short-read and upload error handling
+remains fail-closed. The two existing loader smokes passed after the source change; the test-only
+observer owner checks requested capacities, payload offsets, returned counts and fault refusal.
+Exact output/count equality is owned by the matched native Align session. This is startup/read-
+amplification evidence; it is not a whole-session, llama.cpp or CUDA performance claim.
+
+Probe artifacts are retained outside Git under the retained model-artifact directory
+`o1-capped-read-probe-20260913`: `capped_read_probe.py`, `result.json` and
+`raw.jsonl`. Their result digest and the matched startup/first-request candidate measurements will
+be recorded after the clean committed build and existing O1 output driver complete.

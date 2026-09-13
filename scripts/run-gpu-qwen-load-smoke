@@ -5,6 +5,8 @@ set -euo pipefail
 # allocation alignment and the same staged upload state machine without requiring GPU hardware.
 
 unset ALIGN_LLM_GGML_INCLUDE ALIGN_LLM_GGML_LIB ALIGN_LLM_GGML_FORCE
+unset ALIGN_GPU_LOAD_PREAD_PATH ALIGN_GPU_LOAD_PREAD_LOG ALIGN_GPU_LOAD_PREAD_MIN_OFFSET
+unset ALIGN_GPU_LOAD_PREAD_MODE DYLD_INSERT_LIBRARIES LD_PRELOAD
 
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 compiler="${ALIGNC:-${root_dir}/scripts/alignc}"
@@ -12,6 +14,7 @@ work_dir=$(mktemp -d)
 work_dir=$(CDPATH= cd -- "${work_dir}" && pwd -P)
 gpu_shim="${work_dir}/gpu-shim"
 executable="${work_dir}/runtime-qwen-load-smoke"
+pread_observer="${work_dir}/gpu-load-pread-observer.dylib"
 
 cleanup() {
   status=$?
@@ -24,6 +27,22 @@ ALIGN_LLM_GGML_FORCE=engine+gpu ALIGN_LLM_GGML_SHIM_DIR="${gpu_shim}" \
   "${root_dir}/scripts/build-ggml-shim" >/dev/null
 python3 "${root_dir}/scripts/layer_forward_fixture.py" "${work_dir}" --model >/dev/null
 
+case "$(uname -s)" in
+  Darwin)
+    cc -dynamiclib -O2 -Wall -Wextra -Werror \
+      "${root_dir}/scripts/gpu_load_pread_observer.c" -o "${pread_observer}"
+    ;;
+  Linux)
+    pread_observer="${work_dir}/gpu-load-pread-observer.so"
+    cc -shared -fPIC -O2 -Wall -Wextra -Werror \
+      "${root_dir}/scripts/gpu_load_pread_observer.c" -ldl -o "${pread_observer}"
+    ;;
+  *)
+    printf '%s\n' "gpu qwen load smoke: FAIL unsupported host: $(uname -s)" >&2
+    exit 1
+    ;;
+esac
+
 (
   cd "${root_dir}"
   export LIBRARY_PATH="${gpu_shim}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
@@ -33,21 +52,92 @@ python3 "${root_dir}/scripts/layer_forward_fixture.py" "${work_dir}" --model >/d
 
 export DYLD_LIBRARY_PATH="${gpu_shim}${DYLD_LIBRARY_PATH:+:${DYLD_LIBRARY_PATH}}"
 export LD_LIBRARY_PATH="${gpu_shim}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-set +e
-output=$("${executable}" \
-  "${work_dir}/model-pack.alignpack" \
-  "${work_dir}/model-pack-member-missing.alignpack" \
-  "${work_dir}/model-pack-shape.alignpack" \
-  "${work_dir}/model-pack-type.alignpack" \
-  "${work_dir}/model-pack-truncated.alignpack")
-status=$?
-set -e
-if [ "${status}" -ne 0 ]; then
-  printf '%s\n' "gpu qwen load smoke: FAIL status: ${status}; output: ${output}" >&2
+
+run_case() {
+  mode=$1
+  log=$2
+  expected_status=$3
+  rm -f "${log}"
+  set +e
+  if [ "$(uname -s)" = "Darwin" ]; then
+    output=$(
+      ALIGN_GPU_LOAD_PREAD_PATH="${work_dir}/model-pack.alignpack" \
+      ALIGN_GPU_LOAD_PREAD_LOG="${log}" \
+      ALIGN_GPU_LOAD_PREAD_MIN_OFFSET=4096 \
+      ALIGN_GPU_LOAD_PREAD_MODE="${mode}" \
+      DYLD_INSERT_LIBRARIES="${pread_observer}" \
+      "${executable}" \
+        "${work_dir}/model-pack.alignpack" \
+        "${work_dir}/model-pack-member-missing.alignpack" \
+        "${work_dir}/model-pack-shape.alignpack" \
+        "${work_dir}/model-pack-type.alignpack" \
+        "${work_dir}/model-pack-truncated.alignpack"
+    )
+  else
+    output=$(
+      ALIGN_GPU_LOAD_PREAD_PATH="${work_dir}/model-pack.alignpack" \
+      ALIGN_GPU_LOAD_PREAD_LOG="${log}" \
+      ALIGN_GPU_LOAD_PREAD_MIN_OFFSET=4096 \
+      ALIGN_GPU_LOAD_PREAD_MODE="${mode}" \
+      LD_PRELOAD="${pread_observer}" \
+      "${executable}" \
+        "${work_dir}/model-pack.alignpack" \
+        "${work_dir}/model-pack-member-missing.alignpack" \
+        "${work_dir}/model-pack-shape.alignpack" \
+        "${work_dir}/model-pack-type.alignpack" \
+        "${work_dir}/model-pack-truncated.alignpack"
+    )
+  fi
+  status=$?
+  set -e
+  if [ "${expected_status}" = "nonzero" ]; then
+    if [ "${status}" -eq 0 ]; then
+      printf '%s\n' "gpu qwen load smoke: FAIL mode=${mode} status=${status}; output: ${output}" >&2
+      exit 1
+    fi
+  elif [ "${status}" -ne "${expected_status}" ]; then
+    printf '%s\n' "gpu qwen load smoke: FAIL mode=${mode} status=${status}; output: ${output}" >&2
+    exit 1
+  fi
+  if [ "${expected_status}" = "0" ] && [ "${output}" != "runtime qwen load smoke: PASS" ]; then
+    printf '%s\n' "gpu qwen load smoke: FAIL mode=${mode} output: ${output}" >&2
+    exit 1
+  fi
+}
+
+validate_log() {
+  log=$1
+  cap=$2
+  minimum=$3
+  if [ ! -s "${log}" ] || ! awk -v cap="${cap}" -v minimum="${minimum}" '
+      NF != 3 || $1 < 1 || $1 > cap || $2 < minimum || $3 > $1 { bad = 1 }
+      $1 == cap { full = 1 }
+      $1 < cap { tail = 1 }
+      END { exit (NR == 0 || bad || !full || !tail) ? 1 : 0 }
+    ' "${log}"; then
+    printf '%s\n' "gpu qwen load smoke: FAIL pread cap/tail log" >&2
+    exit 1
+  fi
+}
+
+run_case none "${work_dir}/qwen-pread-baseline.log" 0
+validate_log "${work_dir}/qwen-pread-baseline.log" 64 4096
+run_case short "${work_dir}/qwen-pread-short.log" 0
+if ! awk 'NF == 3 && $3 > 0 && $3 < $1 { short = 1 } END { exit short ? 0 : 1 }' \
+    "${work_dir}/qwen-pread-short.log"; then
+  printf '%s\n' "gpu qwen load smoke: FAIL positive short-read witness" >&2
   exit 1
 fi
-if [ "${output}" != "runtime qwen load smoke: PASS" ]; then
-  printf '%s\n' "gpu qwen load smoke: FAIL output: ${output}" >&2
+run_case zero "${work_dir}/qwen-pread-zero.log" nonzero
+if ! awk 'NF == 3 && $3 == 0 { zero = 1 } END { exit zero ? 0 : 1 }' \
+    "${work_dir}/qwen-pread-zero.log"; then
+  printf '%s\n' "gpu qwen load smoke: FAIL zero/EOF witness" >&2
+  exit 1
+fi
+run_case error "${work_dir}/qwen-pread-error.log" nonzero
+if ! awk 'NF == 3 && $3 == -1 { error = 1 } END { exit error ? 0 : 1 }' \
+    "${work_dir}/qwen-pread-error.log"; then
+  printf '%s\n' "gpu qwen load smoke: FAIL error witness" >&2
   exit 1
 fi
 
