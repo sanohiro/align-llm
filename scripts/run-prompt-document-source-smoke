@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+trap 'status=$?; if [ "$status" -eq 0 ]; then rm -rf "$scratch"; else echo "Preserved failing fixture: $scratch" >&2; fi' EXIT
+mkdir -p "$scratch/root/nested" "$scratch/decoy"
+: > "$scratch/root/empty"
+printf 'Hello π 🌍' > "$scratch/root/utf8"
+printf 'replacement' > "$scratch/decoy/utf8"
+# The multibyte character straddles the 64 KiB read boundary.
+LC_ALL=C dd if=/dev/zero bs=65535 count=1 2>/dev/null | LC_ALL=C tr '\000' a > "$scratch/root/chunked"
+printf '\360\237\214\215' >> "$scratch/root/chunked"
+dd if=/dev/zero bs=1048576 count=2 2>/dev/null | LC_ALL=C tr '\000' x > "$scratch/root/maximum"
+cp "$scratch/root/maximum" "$scratch/root/overflow"
+printf x >> "$scratch/root/overflow"
+printf 'a\000b' > "$scratch/root/nul"
+printf '\377' > "$scratch/root/malformed"
+printf '\342\202' > "$scratch/root/truncated"
+printf link > "$scratch/root/hardlink"
+ln "$scratch/root/hardlink" "$scratch/root/hardlink-peer"
+ln -s utf8 "$scratch/root/symlink"
+ln -s nested "$scratch/root/linked-directory"
+mkfifo "$scratch/root/fifo"
+digest() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d ' ' -f 1; else shasum -a 256 "$1" | cut -d ' ' -f 1; fi
+}
+"$compiler" check-per-unit "$project_root/src/prompt_document_source_smoke.align"
+"$compiler" run "$project_root/src/prompt_document_source_smoke.align" -- \
+  "$scratch/root" "$scratch/retained" "$scratch/decoy" \
+  "$(digest "$scratch/root/utf8")" "$(digest "$scratch/root/chunked")" \
+  "$(digest "$scratch/root/maximum")" "$(digest "$scratch/root/nul")" "$scratch/retained/utf8"

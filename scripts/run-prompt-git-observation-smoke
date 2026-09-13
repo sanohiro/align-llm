@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+complete=0
+trap 'if [[ "${complete}" == 1 ]]; then rm -rf "${scratch}"; else printf "git observation failed; retained fixture: %s\n" "${scratch}" >&2; fi' EXIT
+mkdir "${scratch}/image"
+platform="$(uname -s)"
+"${compiler}" check-per-unit "${project_root}/src/prompt_git_observation_smoke.align"
+(cd "${scratch}" && "${compiler}" build "${project_root}/src/prompt_git_observation_smoke.align")
+if [[ "${platform}" != Linux ]]; then
+  "${scratch}/prompt_git_observation_smoke" "${platform}" - - - - -
+  complete=1
+  exit 0
+fi
+cp "$(command -v git)" "${scratch}/image/git"
+export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+export GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@example.invalid GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@example.invalid
+for mode in changes paths ignored head flags cancel; do
+  root="${scratch}/${mode}"
+  mkdir "${root}"
+  git -C "${root}" init -q --initial-branch=main --object-format=sha1
+  git -C "${root}" config core.autocrlf false
+  git -C "${root}" config core.filemode true
+  printf 'ignored.tmp\n' >"${root}/.gitignore"
+  printf before >"${root}/a"
+  printf initial >"${root}/b"
+  chmod 644 "${root}/.gitignore" "${root}/a" "${root}/b"
+  git -C "${root}" add --all
+  git -C "${root}" -c commit.gpgSign=false -c core.hooksPath=/dev/null commit -qm baseline
+  revision="$(git -C "${root}" rev-parse HEAD)"
+  printf unstaged >"${root}/a"
+  printf staged >"${root}/b"
+  git -C "${root}" add b
+  if [[ "${mode}" == paths ]]; then printf untracked >"${root}/u"; fi
+  if [[ "${mode}" == paths || "${mode}" == ignored ]]; then printf ignored >"${root}/ignored.tmp"; fi
+  if [[ "${mode}" == head ]]; then git -C "${root}" -c commit.gpgSign=false -c core.hooksPath=/dev/null commit -qm changed; fi
+  if [[ "${mode}" == flags ]]; then git -C "${root}" update-index --assume-unchanged a; fi
+  if [[ "${mode}" == changes || "${mode}" == paths || "${mode}" == ignored ]]; then
+    git -C "${root}" ls-tree -r --format='%(path) %(objectmode) %(objectname)' "${revision}" >"${scratch}/expected"
+    git -C "${root}" ls-files --stage -z | od -An -v -tx1 | tr -d ' \n' >>"${scratch}/expected"
+    printf '\n%s\n' "${mode}" >>"${scratch}/expected"
+  else
+    printf '%s\n' "${mode}" >"${scratch}/expected"
+  fi
+  /bin/sh -c 'exec "$1" "$2" "$3" "$4" "$5" "$6" "$$"' git-observation-owner \
+    "${scratch}/prompt_git_observation_smoke" "${platform}" "${scratch}/image" "${root}" "${revision}" "${mode}" >"${scratch}/actual"
+  diff -u "${scratch}/expected" "${scratch}/actual"
+done
+complete=1
+printf 'git observation smoke: seven real sealed-Git queries, binary oracle, owned results, changes admission, HEAD/flags refusal and cancellation recovery PASS\n'

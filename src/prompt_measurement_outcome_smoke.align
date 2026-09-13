@@ -1,0 +1,106 @@
+module prompt_measurement_outcome_smoke
+
+import prompt_measurement_outcome
+import prompt_score
+
+Expected {
+  outcome: prompt_measurement_outcome.Outcome,
+  status: prompt_score.ScoreStatus,
+  failure: prompt_score.ScoreFailureKind,
+  build: prompt_score.ScoreStage,
+  test: prompt_score.ScoreStage,
+  violations: i64,
+  keeps_duration: bool,
+}
+
+CleanupCase {
+  cleanup: bool,
+  containment: bool,
+  overrides: bool,
+  failure: prompt_score.ScoreFailureKind,
+}
+
+fn same_duration(left: Option<i64>, right: Option<i64>) -> bool {
+  return match left {
+    Some(value) => match right {
+      Some(expected) => value == expected,
+      None => false,
+    },
+    None => match right {
+      Some(_) => false,
+      None => true,
+    },
+  }
+}
+
+fn status_code(value: prompt_score.ScoreStatus) -> i64 = match value {
+  Pass => 0, Fail => 1, PolicyViolation => 2, Error => 3,
+}
+
+fn failure_code(value: prompt_score.ScoreFailureKind) -> i64 = match value {
+  None => 0, Provider => 1, Patch => 2, Build => 3, Test => 4,
+  Policy => 5, Cleanup => 6, Containment => 7, Adapter => 8,
+}
+
+fn stage_code(value: prompt_score.ScoreStage) -> i64 = match value {
+  Pass => 0, Fail => 1, NotRun => 2, StageError => 3,
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  // Independent outcome table: cleanup never rewrites the attempted build/test stages.
+  cases := [
+    Expected { outcome: prompt_measurement_outcome.Outcome.Pass, status: prompt_score.ScoreStatus.Pass, failure: prompt_score.ScoreFailureKind.None, build: prompt_score.ScoreStage.Pass, test: prompt_score.ScoreStage.Pass, violations: 0, keeps_duration: true },
+    Expected { outcome: prompt_measurement_outcome.Outcome.TestFail, status: prompt_score.ScoreStatus.Fail, failure: prompt_score.ScoreFailureKind.Test, build: prompt_score.ScoreStage.Pass, test: prompt_score.ScoreStage.Fail, violations: 0, keeps_duration: false },
+    Expected { outcome: prompt_measurement_outcome.Outcome.Policy, status: prompt_score.ScoreStatus.PolicyViolation, failure: prompt_score.ScoreFailureKind.Policy, build: prompt_score.ScoreStage.NotRun, test: prompt_score.ScoreStage.NotRun, violations: 1, keeps_duration: false },
+    Expected { outcome: prompt_measurement_outcome.Outcome.Patch, status: prompt_score.ScoreStatus.Fail, failure: prompt_score.ScoreFailureKind.Patch, build: prompt_score.ScoreStage.NotRun, test: prompt_score.ScoreStage.NotRun, violations: 0, keeps_duration: false },
+    Expected { outcome: prompt_measurement_outcome.Outcome.AdapterError, status: prompt_score.ScoreStatus.Error, failure: prompt_score.ScoreFailureKind.Adapter, build: prompt_score.ScoreStage.StageError, test: prompt_score.ScoreStage.StageError, violations: 0, keeps_duration: false },
+  ]
+  cleanup_cases := [
+    CleanupCase { cleanup: true, containment: true, overrides: false, failure: prompt_score.ScoreFailureKind.None },
+    CleanupCase { cleanup: false, containment: true, overrides: true, failure: prompt_score.ScoreFailureKind.Cleanup },
+    CleanupCase { cleanup: true, containment: false, overrides: true, failure: prompt_score.ScoreFailureKind.Containment },
+    CleanupCase { cleanup: false, containment: false, overrides: true, failure: prompt_score.ScoreFailureKind.Containment },
+  ]
+  mut count := 0
+  mut outcome_index := 0
+  loop {
+    if outcome_index == cases.len() { break }
+    expected := cases[outcome_index]
+    mut cleanup_index := 0
+    loop {
+      if cleanup_index == cleanup_cases.len() { break }
+      cleanup := cleanup_cases[cleanup_index]
+      mut duration_index := 0
+      loop {
+        if duration_index == 2 { break }
+        duration: Option<i64> := if duration_index == 0 { None } else { Some(731) }
+        actual := prompt_measurement_outcome.assemble(prompt_measurement_outcome.Input {
+            outcome: expected.outcome,
+            cleanup_passed: cleanup.cleanup,
+            containment_passed: cleanup.containment,
+            generation_ns: duration,
+          })
+        status := if cleanup.overrides { prompt_score.ScoreStatus.Error } else { expected.status }
+        failure := if cleanup.overrides { cleanup.failure } else { expected.failure }
+        passing_duration: Option<i64> := if expected.keeps_duration && !cleanup.overrides { duration } else { None }
+        if status_code(actual.status) != status_code(status) || failure_code(actual.failure_kind) != failure_code(failure)
+          || stage_code(actual.build_status) != stage_code(expected.build) || stage_code(actual.test_status) != stage_code(expected.test)
+          || actual.policy_violation_count != expected.violations
+          || !same_duration(actual.generation_to_passing_patch_ns, passing_duration) {
+          print("measurement outcome mismatch")
+          print(count)
+          return Err(Error.Invalid)
+        }
+        count = count + 1
+        duration_index = duration_index + 1
+      }
+      cleanup_index = cleanup_index + 1
+    }
+    outcome_index = outcome_index + 1
+  }
+  if count != 40 {
+    return Err(Error.Invalid)
+  }
+  print("prompt measurement outcome: 40 cases passed")
+  return Ok(())
+}

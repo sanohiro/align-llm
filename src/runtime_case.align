@@ -63,7 +63,7 @@ fn refuse(borrow stream: runtime_numeric_stream.Stream, phase: str) -> Result<Ou
   failed := Failure { schema_version: 1, artifact_kind: "GPU_RUNTIME_CASE_FAILURE".clone(),
     phase: phase.clone(), category: category.clone(), stage: stage.clone(), stream_nonfinite_count: stream.nonfinite_count,
     stream_bytes: stream.written_bytes, stream_records: stream.records }
-  print(json.encode(failed))
+  print(json.encode(failed)?)
   return Err(Error.Invalid)
 }
 
@@ -139,7 +139,7 @@ pub fn load(path: str) -> Result<Input, Error> {
   body_bytes := document[0..total - 1]
   body := body_bytes.as_str()?
   input: Input := json.decode(body)?
-  canonical := json.encode(input)
+  canonical := json.encode(input)?
   if canonical != body { return Err(Error.Invalid) }
   validate(input)?
   return Ok(input)
@@ -198,6 +198,6 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   if args.len() != 2 { return Err(Error.Invalid) }
   input := load(args[1])?
   result := execute(input)?
-  print(json.encode(result))
+  print(json.encode(result)?)
   return Ok(())
 }

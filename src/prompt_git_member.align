@@ -1,0 +1,133 @@
+module prompt_git_member
+
+import prompt_capture
+import prompt_source_command
+import prompt_source_git
+import prompt_fixture_setup
+import prompt_git_metadata
+import prompt_task_supervisor
+import prompt_validation_budget
+import std.fs
+import std.process
+import std.time
+import std.crypto
+import std.encoding
+
+pub Readout { Member(bool), Stopped(prompt_source_git.Attempt) }
+
+fn hex(value: str, sha256: bool) -> bool {
+  if value.len() != 64 && (sha256 || value.len() != 40) { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { return true }
+    byte := value.bytes()[index]
+    if !(byte >= 48 && byte <= 57) && !(byte >= 97 && byte <= 102) { return false }
+    index = index + 1
+  }
+}
+
+fn path_valid(path: str) -> bool {
+  if path.len() == 0 || path.len() > 4096 || path.starts_with("/") { return false }
+  mut start := 0
+  mut index := 0
+  loop {
+    if index > path.len() { break }
+    if index < path.len() && path.bytes()[index] == 0 { return false }
+    if index == path.len() || path.bytes()[index] == 47 {
+      part := path[start..index]
+      if part.len() == 0 || part.len() > 255 || part == "." || part == ".." { return false }
+      start = index + 1
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn mode_valid(mode: str) -> bool {
+  if mode.len() != 6 || !mode.starts_with("10") { return false }
+  mut index := 0
+  loop { if index == mode.len() { return true }; byte := mode.bytes()[index]; if byte < 48 || byte > 55 { return false }; index = index + 1 }
+}
+
+fn same(borrow left: fs.directory, borrow right: fs.directory) -> Result<(), Error> {
+  before := left.metadata()?
+  after := right.metadata()?
+  if before.device != after.device || before.inode != after.inode { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn readmit(borrow original: prompt_git_metadata.Metadata, path: str, deadline: i64) -> Result<(), Error> {
+  checked := prompt_git_metadata.admit(path, deadline)?
+  same(original.repository.directory, checked.repository.directory)?
+  same(original.git.directory, checked.git.directory)?
+  return same(original.common.directory, checked.common.directory)
+}
+
+fn blob(raw: slice<u8>, relative: str, mode: str) -> Result<string, Error> {
+  if raw.len() == 0 { return Ok("".clone()) }
+  suffix := builder()
+  suffix.write("\t")
+  suffix.write(relative)
+  suffix.write("\0")
+  ending := suffix.to_string()
+  if raw.len() <= ending.len() { return Ok("".clone()) }
+  mut index := 0
+  loop { if index == raw.len() - 1 { break }; if raw[index] == 0 { return Ok("".clone()) }; index = index + 1 }
+  text := raw.as_str() else { return Ok("".clone()) }
+  if !text.ends_with(ending) { return Ok("".clone()) }
+  header := text[0..text.len() - ending.len()]
+  if header.len() < 12 || header[0..6] != mode || header[6..12] != " blob " { return Ok("".clone()) }
+  oid := header[12..header.len()]
+  if !hex(oid, false) { return Ok("".clone()) }
+  return Ok(oid.clone())
+}
+
+pub fn observe(
+  borrow image: process.image, borrow metadata: prompt_git_metadata.Metadata,
+  relative: str, revision: str, mode: str, sha256: str,
+  borrow mut signals: process.signal_subscription, borrow procfs: fs.directory, deadline: i64,
+) -> Result<Readout, Error> {
+  if !hex(revision, false) || !hex(sha256, true) || !mode_valid(mode) { return Err(Error.Invalid) }
+  if !path_valid(relative) { return Err(Error.Invalid) }
+  path_bytes: slice<u8> := metadata.repository.path
+  path := path_bytes.as_str()?.clone()
+  readmit(metadata, path, deadline)?
+  mut oid := "".clone()
+  mut operation := 0
+  loop {
+    now := time.instant()
+    if now >= deadline { return Err(Error.Timeout) }
+    local := if now > 9223372036854775807 - 10000000000 { deadline } else { now + 10000000000 }
+    mut tail: array_builder<string> := array_builder()
+    tail.push("-c".clone())
+    tail.push("advice.graftFileDeprecated=false".clone())
+    if operation == 0 {
+      tail.push("ls-tree".clone()); tail.push("-z".clone()); tail.push("--full-tree".clone()); tail.push(revision.clone()); tail.push("--".clone()); tail.push(relative.clone())
+    } else {
+      tail.push("cat-file".clone()); tail.push("blob".clone()); tail.push(oid.clone())
+    }
+    query := prompt_source_command.prepare(image, path, tail.build())?
+    pattern := prompt_capture.pattern("", if operation == 0 { 8192 } else { 2097152 })?
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    mut scope := query.start_scope()?
+    result := prompt_task_supervisor.run(scope, signals, metadata.repository.directory, procfs, pattern,
+      prompt_task_supervisor.Config { deadline: if local < deadline { local } else { deadline }, resources: false, limits: prompt_validation_budget.defaults() })
+    report := match result {
+      Ok(value) => value,
+      Err(error) => { return Ok(Readout.Stopped(prompt_source_git.Attempt { scope: scope, report: None, error: Some(error) })) },
+    }
+    if !prompt_fixture_setup.accepted(report) { return Ok(Readout.Stopped(prompt_source_git.Attempt { scope: scope, report: Some(report), error: None })) }
+    if report.stderr.len() != 0 { return Err(Error.Invalid) }
+    raw: slice<u8> := report.stdout
+    if operation == 0 {
+      oid = blob(raw, relative, mode)?
+      if oid == "" { readmit(metadata, path, deadline)?; return Ok(Readout.Member(false)) }
+    } else {
+      hash := crypto.sha256(raw)
+      actual := encoding.hex_encode(hash[0..hash.len()]).clone()
+      readmit(metadata, path, deadline)?
+      return Ok(Readout.Member(actual == sha256))
+    }
+    operation = operation + 1
+  }
+}

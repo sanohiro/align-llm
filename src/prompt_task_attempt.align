@@ -1,0 +1,306 @@
+module prompt_task_attempt
+
+import core.json
+import prompt_artifacts
+import prompt_capture
+import prompt_edit_plan
+import prompt_environment
+import prompt_fixture_command
+import prompt_fixture_setup
+import prompt_generation_collect
+import prompt_generation_evidence
+import prompt_generation_request
+import prompt_generation_response
+import prompt_measurement_assembly
+import prompt_measurement_outcome
+import prompt_scope_cleanup
+import prompt_task_inputs
+import prompt_task_supervisor
+import prompt_validation_attempt
+import prompt_validation_budget
+import prompt_workspace
+import std.crypto
+import std.encoding
+import std.fs
+import std.process
+import std.time
+
+pub Run { Finished(prompt_artifacts.TaskMeasurement), Stopped(prompt_fixture_setup.Attempt) }
+pub Paths { workspace: string, patch: string, patch_name: string, align_revision: string, product_sha256: string }
+
+fn digest(text: str) -> string {
+  hashed := crypto.sha256(text)
+  return encoding.hex_encode(hashed[0..hashed.len()])
+}
+fn copy(bytes: slice<u8>) -> array<u8> {
+  mut output: array_builder<u8> := array_builder()
+  mut index := 0
+  loop { if index == bytes.len() { break }; output.push(bytes[index]); index = index + 1 }
+  return output.build()
+}
+fn empty() -> array<u8> { mut output: array_builder<u8> := array_builder(); return output.build() }
+
+fn clean_report(borrow input: prompt_fixture_setup.Attempt) -> bool {
+  return match input.report { None => true, Some(report) => match report.cleanup.first_error { None => true, Some(_) => false } }
+}
+
+// A stopped operation still owns its process authority. Successful retry releases that authority;
+// a failed retry returns the entire owner and prevents the caller from removing scratch storage.
+fn release(input: prompt_fixture_setup.Attempt, borrow mut clean: bool) -> Result<Option<prompt_fixture_setup.Attempt>, Error> {
+  if !clean_report(input) { clean = false }
+  mut scope := input.scope
+  match prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192) {
+    Ok(report) => { match report.first_error { None => {}, Some(_) => { clean = false } }; if report.released { return Ok(None) } },
+    Err(_) => {},
+  }
+  return Ok(Some(prompt_fixture_setup.Attempt { scope: scope, operation: input.operation, report: input.report, error: input.error }))
+}
+
+fn response_content(borrow value: prompt_artifacts.PromptGenerationResponse) -> Result<string, Error> {
+  return match value.content { None => Err(Error.Invalid), Some(text) => Ok(text.clone()) }
+}
+
+fn edit(borrow source: fs.directory, borrow completion: Option<string>, allowed: slice<str>, credential: str, borrow mut edits: array_builder<prompt_artifacts.EditSetBlock>, outer_deadline: i64) -> Result<prompt_edit_plan.Plan, Error> {
+  return match completion {
+    None => Err(Error.Invalid),
+    Some(text) => prompt_edit_plan.build(source, text, allowed, credential, edits, prompt_validation_budget.deadline(10000000000, outer_deadline)?),
+  }
+}
+
+fn stopped_diagnostics(borrow stopped: prompt_fixture_setup.Attempt, borrow mut summary: string, borrow mut cleanup: bool, borrow mut stdout: array<u8>, borrow mut stderr: array<u8>) {
+  match stopped.report {
+    None => {},
+    Some(report) => {
+      summary = failure_kind(report).clone()
+      cleanup = match report.cleanup.first_error { None => true, Some(_) => false }
+      stdout = copy(report.stdout)
+      stderr = copy(report.stderr)
+    },
+  }
+}
+
+fn failure_kind(borrow report: prompt_task_supervisor.Report) -> str {
+  return match report.stop {
+    Timeout => "validation deadline expired",
+    Cancelled(_) => "validation cancelled",
+    Resource(_) => "validation resource limit exceeded",
+    Failed(error) => match error {
+      Timeout => "validation observation timed out",
+      NotFound => "validation observation disappeared",
+      Invalid => "validation observation is invalid",
+      Denied => "validation observation was denied",
+      Code(_) => "validation observation returned a native error",
+    },
+    Collected => "validation transport failed",
+  }
+}
+
+// Source, documents, commands and product identity are admitted before this call. The caller owns
+// both directories, the exclusive patch name, and the signal subscription throughout. Only the
+// prepared generation command can carry the credential; validation has its separate cleared env.
+// Finished certifies released process writers, not removed storage. The evaluator removes scratch
+// and applies storage_cleanup before it records or publishes the measurement.
+pub fn run(
+  borrow task: prompt_task_inputs.Task,
+  borrow request: prompt_artifacts.TaskAdapterRequest,
+  borrow rendered: prompt_artifacts.RenderedPromptArtifact,
+  borrow paths: Paths,
+  borrow source: fs.directory,
+  borrow workspace: fs.directory,
+  borrow patch_root: fs.directory,
+  borrow procfs: fs.directory,
+  borrow git: process.image,
+  borrow probe: command,
+  borrow validation: command,
+  worker: Option<command>,
+  borrow mut signals: process.signal_subscription,
+  borrow profile: prompt_fixture_command.Profile,
+  credential: str,
+  allowed_edits: slice<str>,
+) -> Result<Run, Error> {
+  fixture := task.control.provider_kind == "FIXTURE"
+  if fixture != match task.manifest.execution_kind { Some(kind) => kind == "FIXTURE_PATCH", None => { return Err(Error.Invalid) } } {
+    return Err(Error.Invalid)
+  }
+  duration := request.task_deadline_ns.checked_add(if fixture { 0 } else { task.control.timeout_ns }) else { return Err(Error.Invalid) }
+  outer_deadline := prompt_validation_budget.deadline(duration, 9223372036854775807)?
+  probe_record := prompt_environment.observe(prompt_environment.Producer.Task, paths.align_revision, paths.product_sha256)?
+  runtime := probe_record.runtime_identity.clone()
+  mut outcome := prompt_measurement_outcome.Outcome.AdapterError
+  mut summary := "task attempt failed before validation".clone()
+  mut containment := true
+  mut cleanup := true
+  mut response: Option<prompt_artifacts.PromptGenerationResponse> := None
+  mut completion: Option<string> := None
+  mut patch := "".clone()
+  mut refusal := "NONE".clone()
+  mut include_edits := false
+  mut edit_bytes := 0
+  mut edits: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+  mut stdout := empty()
+  mut stderr := empty()
+  mut generation_ns: Option<i64> := None
+  mut started := 0
+  mut patch_owned := false
+  loop {
+    if rendered.text.len() > task.generation.max_prompt_bytes {
+      outcome = prompt_measurement_outcome.Outcome.Policy
+      summary = "prompt exceeds max_prompt_bytes".clone()
+      break
+    }
+    started = time.instant()
+    if fixture {
+      patch = match task.patch { Some(text) => text.clone(), None => { return Err(Error.Invalid) } }
+    } else {
+      generation_request := prompt_generation_request.build(request, task.control, task.generation)?
+      expected := prompt_generation_response.Expected {
+        request_id: generation_request.request_id.clone(), provider_kind: task.control.provider_kind.clone(),
+        provider_model: task.control.model.clone(), paired_seed: request.paired_seed,
+      }
+      started = time.instant()
+      generation_deadline := prompt_validation_budget.deadline(task.control.timeout_ns, outer_deadline)?
+      mut scope := match worker {
+        Some(command) => command.start_scope()?,
+        None => { return Err(Error.Invalid) },
+      }
+      generated := prompt_generation_collect.run(scope, signals, workspace, procfs, generation_deadline, expected)
+      match generated {
+        Err(error) => {
+          stopped := prompt_fixture_setup.Attempt { operation: 0, scope: scope, report: None, error: Some(error) }
+          match release(stopped, cleanup)? { None => {}, Some(held) => { return Ok(Run.Stopped(held)) } }
+          summary = "generation worker response could not be admitted".clone()
+          break
+        },
+        Ok(readout) => match readout {
+          Stopped(report) => {
+            summary = "generation worker did not complete".clone()
+            cleanup = match report.cleanup.first_error { None => true, Some(_) => false }
+            stopped := prompt_fixture_setup.Attempt { operation: 0, scope: scope, report: Some(report), error: None }
+            match release(stopped, cleanup)? { None => {}, Some(held) => { return Ok(Run.Stopped(held)) } }
+            break
+          },
+          Ready(value) => {
+            if value.status != "GENERATED" {
+              summary = value.error.clone()
+              break
+            }
+            completion = Some(response_content(value)?)
+            response = Some(value)
+          },
+        },
+      }
+      plan := match edit(source, completion, allowed_edits, credential, edits, outer_deadline) {
+        Ok(value) => value,
+        Err(_) => { response = None; completion = None; summary = "pinned source is unavailable or invalid".clone(); break },
+      }
+      refusal = plan.refusal.clone()
+      include_edits = plan.include_edits
+      edit_bytes = plan.total_edit_bytes
+      patch = plan.patch
+      if refusal != "NONE" {
+        summary = plan.summary
+        stderr = copy(summary.bytes())
+        outcome = if refusal == "PATH_NOT_EDITABLE" || refusal == "PATH_ESCAPES_SOURCE" {
+          prompt_measurement_outcome.Outcome.Policy
+        } else { prompt_measurement_outcome.Outcome.Patch }
+        break
+      }
+    }
+    if patch.len() == 0 { summary = "declared patch is empty".clone(); break }
+    match prompt_workspace.write(patch_root, paths.patch_name.bytes(), patch) {
+      Err(_) => { summary = "patch storage could not be created".clone(); patch = "".clone(); break },
+      Ok(value) => {
+        patch_owned = true
+        match value { Written => {}, Incomplete(_) => { summary = "patch storage write failed".clone(); patch = "".clone(); break } }
+      },
+    }
+    pattern := prompt_capture.pattern(credential, 16384)?
+    checked := prompt_validation_attempt.run(source, workspace, procfs, git, probe, validation, signals,
+      paths.workspace, paths.patch, task.definition.source_revision, allowed_edits,
+      task.definition.validation_timeout_seconds, profile, pattern, outer_deadline)
+    match checked {
+      Err(_) => { summary = "source or validation setup failed".clone() },
+      Ok(value) => match value {
+        Finished(completed) => {
+          match completed.after {
+            None => { stdout = copy(completed.before.stdout); stderr = copy(completed.before.stderr) },
+            Some(report) => { stdout = copy(report.stdout); stderr = copy(report.stderr) },
+          }
+          outcome = match completed.outcome {
+            Passed => prompt_measurement_outcome.Outcome.Pass,
+            TestFailed => prompt_measurement_outcome.Outcome.TestFail,
+            PristineChanged => prompt_measurement_outcome.Outcome.Policy,
+            PolicyViolation => prompt_measurement_outcome.Outcome.Policy,
+            UnexpectedBaselinePass => prompt_measurement_outcome.Outcome.AdapterError,
+            PatchRejected => prompt_measurement_outcome.Outcome.AdapterError,
+          }
+          summary = (match completed.outcome {
+              Passed => "candidate patch passed validation",
+              TestFailed => "candidate patch failed validation",
+              PristineChanged => "baseline validation changed the pristine fixture",
+              PolicyViolation => "validation changed files outside the declared patch",
+              UnexpectedBaselinePass => "unpatched fixture unexpectedly passed validation",
+              PatchRejected => "candidate patch could not be applied",
+            }).clone()
+          if match outcome { Pass => true, _ => false } {
+            generation_ns = Some(time.instant() - started)
+          }
+        },
+        SetupStopped(stopped) => {
+          summary = "deterministic fixture setup failed".clone()
+          match release(stopped, cleanup)? { None => {}, Some(held) => { return Ok(Run.Stopped(held)) } }
+        },
+        ContainmentStopped(stopped) => {
+          containment = false
+          summary = "task containment is unavailable".clone()
+          match release(stopped, cleanup)? { None => {}, Some(held) => { return Ok(Run.Stopped(held)) } }
+        },
+        ValidationStopped(stopped) => {
+          stopped_diagnostics(stopped, summary, cleanup, stdout, stderr)
+          match release(stopped, cleanup)? { None => {}, Some(held) => { return Ok(Run.Stopped(held)) } }
+        },
+      },
+    }
+    break
+  }
+  if patch_owned { match patch_root.remove_file(paths.patch_name.bytes()) { Ok(_) => {}, Err(_) => { cleanup = false } } }
+  attestation := if fixture {
+    prompt_generation_evidence.fixture_attestation(request, rendered, task.generation, task.control)?
+  } else {
+    match response {
+      None => prompt_generation_evidence.absent_attestation(request, task.control)?,
+      Some(value) => prompt_generation_evidence.responded_attestation(request, value)?,
+    }
+  }
+  identity := prompt_generation_evidence.generation(request, rendered, task.generation, task.control, attestation)?
+  observations := prompt_measurement_assembly.Observations {
+    outcome: outcome, cleanup_passed: cleanup, containment_passed: containment,
+    generation_ns: generation_ns, patch_bytes: patch.len(), rendered_prompt_sha256: rendered.content_sha256.clone(),
+    product_runtime: runtime, edit_refusal: refusal,
+  }
+  evidence := prompt_measurement_assembly.Evidence {
+    edit_set_total_bytes: if include_edits { Some(edit_bytes) } else { None },
+    patch_sha256: if patch.len() > 0 { Some(digest(patch)) } else { None }, completion: completion,
+  }
+  diagnostics := prompt_measurement_assembly.Diagnostics { summary: copy(summary.bytes()), stdout: stdout, stderr: stderr }
+  blocks: Option<array<prompt_artifacts.EditSetBlock>> := if include_edits { Some(edits.build()) } else { None }
+  measured := prompt_measurement_assembly.build(observations, identity, attestation, probe_record, blocks, evidence, diagnostics, credential)?
+  return Ok(Run.Finished(measured))
+}
+
+// Apply the evaluator-owned storage result only after all attempt writers have been released.
+pub fn storage_cleanup(value: prompt_artifacts.TaskMeasurement, removed: bool) -> Result<prompt_artifacts.TaskMeasurement, Error> {
+  mut measurement := value
+  if !removed {
+    measurement.cleanup_passed = false
+    measurement.status = "ERROR".clone()
+    if measurement.containment_passed { measurement.failure_kind = "CLEANUP".clone() }
+    measurement.generation_to_passing_patch_ns = None
+    measurement.edit_refusal = Some("NONE".clone())
+    measurement.completion_text = None
+    measurement.content_sha256 = "".clone()
+    canonical := json.encode_bounded(measurement, 262144)?
+    measurement.content_sha256 = digest(canonical)
+  }
+  return Ok(measurement)
+}

@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Black-box architecture-guard mutations in isolated minimal Git working trees."""
+import hashlib
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+CHECKER = Path(__file__).resolve().with_name('check-python-boundary')
+
+
+def row(path, classification='CI_OR_DEVELOPER_TOOL', digest=None):
+    return dict(path=path, classification=classification, behavior='Test fixture',
+                reachability='Developer fixture only', substitution='None',
+                python_reason='Independent fixture', target='Retain as external test; no migration needed',
+                migration='N/A', acceptance='Independent fixture mutation',
+                frozen_sha256=digest, bootstrap=None)
+
+
+def run_case(name, mutate, expected, diagnostic='', strict=False):
+    with tempfile.TemporaryDirectory(prefix='python-boundary-test-') as directory:
+        root = Path(directory)
+        subprocess.run(['git', 'init', '-q', str(root)], check=True)
+        def put(path, text):
+            file = root / path
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(text)
+        put('src/main.align', 'module main\n')
+        put('src/ggml_spike.align', 'module ggml_spike\n')
+        put('tools/check.py', 'print("fixture")\n')
+        data = dict(schema_version=1, audit_head='1'*40, align_revision='2'*40,
+                    sibling_head='3'*40, files=[row('tools/check.py')], embedded_hosts=[],
+                    launch_sources={}, data_only_sources={}, manifest_sources={}, replay_only_manifests=[])
+        mutate(root, data, put)
+        put('docs/python-boundary-inventory.json', json.dumps(data))
+        before = subprocess.check_output(['git', '-C', str(root), 'status', '--porcelain=v1', '-z'])
+        result = subprocess.run([sys.executable, str(CHECKER), '--root', str(root)] + (['--strict'] if strict else []), capture_output=True, text=True, cwd='/')
+        after = subprocess.check_output(['git', '-C', str(root), 'status', '--porcelain=v1', '-z'])
+        assert before == after, name + ': checker changed Git state'
+        assert result.returncode == expected, (name, result.returncode, result.stdout, result.stderr)
+        assert diagnostic in result.stdout + result.stderr, (name, diagnostic, result.stdout, result.stderr)
+        print('PASS: ' + name)
+
+
+def main():
+    run_case('clean relocated strict root', lambda r, d, p: None, 0, strict=True)
+    run_case('untracked Python', lambda r, d, p: p('new.py', 'pass\n'), 1, 'unclassified files: new.py')
+    run_case('extensionless shebang', lambda r, d, p: p('tools/new', '#!/usr/bin/env python3\npass\n'), 1, 'unclassified files: tools/new')
+    run_case('missing inventoried file', lambda r, d, p: (r/'tools/check.py').unlink(), 1, 'missing/stale files')
+    run_case('untracked embedded host', lambda r, d, p: p('tools/new.sh', '#!/bin/sh\npython3 -c "pass"\n'), 1, 'unclassified embedded_hosts')
+    run_case('duplicate row', lambda r, d, p: d['files'].append(dict(d['files'][0])), 2, 'duplicate path')
+    run_case('bad classification', lambda r, d, p: d['files'][0].update(classification='PRODUCT'), 2, 'invalid classification')
+    run_case('missing bootstrap contract', lambda r, d, p: d['files'][0].update(classification='TEMPORARY_PRODUCT_BOOTSTRAP', frozen_sha256='a'*64), 2, 'invalid bootstrap')
+    def debt(r, d, p):
+        d['files'][0].update(classification='PRODUCT_LOGIC_VIOLATION', migration='CUTOVER', frozen_sha256=hashlib.sha256((r/'tools/check.py').read_bytes()).hexdigest())
+    run_case('explicit frozen debt', debt, 0, 'FROZEN PRODUCT DEBT: tools/check.py')
+    run_case('strict frozen debt refusal', debt, 1, 'strict product debt', strict=True)
+    def growth(r, d, p):
+        debt(r, d, p)
+        p('tools/check.py', 'print("new feature")\n')
+    run_case('frozen growth', growth, 1, 'changed frozen implementation')
+    def nested(r, d, p):
+        p('src/main.align', 'module main\nimport nested.worker\n')
+        p('src/nested/worker.align', 'module nested.worker\nimport std.process\n')
+    run_case('recursive dotted process owner', nested, 1, 'unrecorded process owner: src/nested/worker.align')
+    run_case('missing local import', lambda r, d, p: p('src/main.align', 'module main\nimport missing\n'), 1, 'missing product module')
+    run_case('product literal', lambda r, d, p: p('src/main.align', 'module main\nlet x = "/usr/bin/python3"\n'), 1, 'unrecorded product literal')
+    run_case('comments excluded', lambda r, d, p: p('src/main.align', 'module main\n// import std.process python3\n/* python3 /* nested */ */\n'), 0)
+    def owner(r, d, p):
+        p('src/main.align', 'module main\nimport std.process\n')
+        d['launch_sources']['src/main.align'] = hashlib.sha256((r/'src/main.align').read_bytes()).hexdigest()
+        p('src/main.align', 'module main\nimport std.process\n// changed\n')
+    run_case('changed launch hash', owner, 1, 'changed/stale launch_sources')
+    def manifest(r, d, p):
+        p('eval/tasks/new.json', '{"cmd":"python3","argv":["python3","tools/check.py"]}')
+    run_case('new command manifest', manifest, 1, 'unrecorded command manifest')
+    def classified_manifest(r, d, p):
+        manifest(r, d, p)
+        d['manifest_sources']['eval/tasks/new.json'] = hashlib.sha256((r/'eval/tasks/new.json').read_bytes()).hexdigest()
+    run_case('developer script cannot become product task', classified_manifest, 1, 'bundled Python command')
+    def off_directory_manifest(r, d, p):
+        classified_manifest(r, d, p)
+        destination = r / 'eval/prompt/command.json'
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        (r / 'eval/tasks/new.json').rename(destination)
+        digest = d['manifest_sources'].pop('eval/tasks/new.json')
+        d['manifest_sources']['eval/prompt/command.json'] = digest
+    run_case('recorded off-directory bundled command', off_directory_manifest, 1,
+             'bundled Python command: eval/prompt/command.json')
+    def changed_manifest(r, d, p):
+        classified_manifest(r, d, p)
+        p('eval/tasks/new.json', '{"cmd":"git","argv":["git","status"]}')
+    run_case('changed command manifest', changed_manifest, 1, 'changed/stale command manifest')
+    def external(r, d, p):
+        classified_manifest(r, d, p)
+        d['files'][0]['classification'] = 'EXTERNAL_TEST_ADAPTER'
+    run_case('external Python test allowed', external, 0, strict=True)
+    def mixed(r, d, p):
+        external(r, d, p)
+        p('tools/implementation.py', 'pass\n')
+        d['files'].append(row('tools/implementation.py'))
+        p('eval/tasks/new.json', '{"cmd":"python3","argv":["python3","tools/implementation.py","tools/check.py"]}')
+        d['manifest_sources']['eval/tasks/new.json'] = hashlib.sha256((r/'eval/tasks/new.json').read_bytes()).hexdigest()
+    run_case('external argument cannot hide bundled implementation', mixed, 1, 'bundled Python command')
+    def strict_launch(r, d, p):
+        p('src/main.align', 'module main\nimport std.process\nlet executable = "/usr/bin/python3"\n')
+        d['launch_sources']['src/main.align'] = hashlib.sha256((r/'src/main.align').read_bytes()).hexdigest()
+    run_case('strict recorded Python process owner', strict_launch, 1, 'strict product launch literal', strict=True)
+    def replay(r, d, p):
+        classified_manifest(r, d, p)
+        d['files'][0]['classification'] = 'INDEPENDENT_ORACLE'
+        d['replay_only_manifests'] = ['eval/tasks/new.json']
+    run_case('independent historical replay', replay, 0, strict=True)
+    def unrecorded_replay(r, d, p):
+        d['replay_only_manifests'] = ['eval/tasks/missing.json']
+    run_case('unrecorded replay entry', unrecorded_replay, 2, 'unrecorded replay-only')
+    def missing_replay(r, d, p):
+        replay(r, d, p)
+        (r/'eval/tasks/new.json').unlink()
+    run_case('missing replay manifest', missing_replay, 2, 'missing/stale replay-only')
+    def stale_replay(r, d, p):
+        replay(r, d, p)
+        p('eval/tasks/new.json', '{}')
+    run_case('stale replay manifest', stale_replay, 2, 'missing/stale replay-only')
+    def debt_replay(r, d, p):
+        replay(r, d, p)
+        debt(r, d, p)
+    run_case('replay cannot hide debt in default mode', debt_replay, 1, 'replay selects current product debt')
+    run_case('replay cannot hide debt in strict mode', debt_replay, 1, 'strict product debt', strict=True)
+    def ignored(r, d, p):
+        p('.gitignore','ignored.py\n')
+        p('ignored.py','pass\n')
+    run_case('ignored untracked source excluded', ignored, 0)
+    print('Python boundary mutation suite PASS (30 cases).')
+
+
+if __name__ == '__main__':
+    main()

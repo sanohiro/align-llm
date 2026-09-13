@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "baseline_id": "product-cutover-fixed-patch-2026-09-13",
+  "sample_document_sha256": "1d0b1b68e8fca8088b151b5fc774b2d99635f86ccd4c71052953f79e98f622b5",
+  "capture": "Supplement captured after the original measurement from retained binaries and the same retained Linux container filesystem; not a contemporaneous dependency attestation. The portable replay also captures these identities before timing.",
+  "product_sha256": {
+    "before": "c8c9d15061eb10ad3a6b295864011521c7f6d4ad6a72a8f77967389ec1436726",
+    "after": "b61e4b35d12c1de665921063e7e00f67e2a824239f452dcbbf7114ea8e7d1290"
+  },
+  "resolved_dependencies_sha256": {
+    "before": {
+      "libcrypto.so.3": "6facd87aa596f6d10c2029802756c56cef8761576a3e8894c42a7295a5a89d75",
+      "libssl.so.3": "f734d63976be0201b324adf47914b4ddc719a73f130980490352e9e1478faa74",
+      "libalign_ggml_shim.so": "6a6adfefccb6589b5c804718e07352644ae6feb8d458327f656db64d9e983774",
+      "libm.so.6": "24be585ff27080ba6301d8b3e1c92a54a3832829a9efde744cad4b876a73681a",
+      "libgcc_s.so.1": "f2d3ad2bf0b61f6bc944cc37d7b6ab7f88d2582b41ff989ca164803f56cc5f20",
+      "libc.so.6": "6e3cc56b98887cb3cc2a9fe78b6dd4610184aa27bd05d592cb287db93e82d494",
+      "ld-linux-aarch64.so.1": "49005ef8e9db9a45691ff875e6ca18dd8723c7ec5c1a863a276a1186dbf22774",
+      "libggml.so.0.21.0": "fd79e2ce9f51a8505ad5c704e565dc02811887d69dc5e2648fc298966d0e8695",
+      "libggml-base.so.0.21.0": "6cdb21d9fc65a5980179c06c6bf4aa4c7657480bc2417de31d8a42a79d6458fc",
+      "libggml-cpu.so.0.21.0": "a8cf5ca254a3696e4af5781ba6f329c4f1b8ed4ad22ed7d14edb0d068c7d498c",
+      "libstdc++.so.6.0.33": "6e3112d35cfc86db7ee85b27e1746f67408e2837ff8628b46386c3eabd5682a4"
+    },
+    "after": {
+      "libcrypto.so.3": "6facd87aa596f6d10c2029802756c56cef8761576a3e8894c42a7295a5a89d75",
+      "libssl.so.3": "f734d63976be0201b324adf47914b4ddc719a73f130980490352e9e1478faa74",
+      "libalign_ggml_shim.so": "6a6adfefccb6589b5c804718e07352644ae6feb8d458327f656db64d9e983774",
+      "libm.so.6": "24be585ff27080ba6301d8b3e1c92a54a3832829a9efde744cad4b876a73681a",
+      "libgcc_s.so.1": "f2d3ad2bf0b61f6bc944cc37d7b6ab7f88d2582b41ff989ca164803f56cc5f20",
+      "libc.so.6": "6e3cc56b98887cb3cc2a9fe78b6dd4610184aa27bd05d592cb287db93e82d494",
+      "ld-linux-aarch64.so.1": "49005ef8e9db9a45691ff875e6ca18dd8723c7ec5c1a863a276a1186dbf22774",
+      "libggml.so.0.21.0": "fd79e2ce9f51a8505ad5c704e565dc02811887d69dc5e2648fc298966d0e8695",
+      "libggml-base.so.0.21.0": "6cdb21d9fc65a5980179c06c6bf4aa4c7657480bc2417de31d8a42a79d6458fc",
+      "libggml-cpu.so.0.21.0": "a8cf5ca254a3696e4af5781ba6f329c4f1b8ed4ad22ed7d14edb0d068c7d498c",
+      "libstdc++.so.6.0.33": "6e3112d35cfc86db7ee85b27e1746f67408e2837ff8628b46386c3eabd5682a4"
+    }
+  },
+  "python_sha256": "a7d56a8a764faf7bbf5c164055a48fd072be52287bdeb523a9e07b2042f4e7e1",
+  "resolution": "Both arms use the same explicitly supplied shim and ggml library directories; names and hashes are path-independent. ldd enumerates loader and transitive linked dependencies. No GPU backend is loaded by this fixed-patch workload."
+}

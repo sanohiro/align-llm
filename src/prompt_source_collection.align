@@ -1,0 +1,38 @@
+module prompt_source_collection
+
+import prompt_artifacts
+import prompt_declared_source
+import std.fs
+import std.time
+
+pub TaskSource { manifest: prompt_artifacts.ArtifactDigest, declarations: array<prompt_artifacts.ArtifactExpectation> }
+
+fn append(borrow row: prompt_artifacts.ArtifactDigest, borrow mut output: array_builder<prompt_artifacts.ArtifactDigest>) {
+  output.push(prompt_artifacts.ArtifactDigest { path: row.path.clone(), mode: row.mode.clone(), byte_count: row.byte_count, sha256: row.sha256.clone() })
+}
+
+fn collect_task(borrow project: fs.directory, borrow task: TaskSource, strict: bool, deadline: i64, borrow mut output: array_builder<prompt_artifacts.ArtifactDigest>) -> Result<(), Error> {
+  if strict { append(task.manifest, output) }
+  declarations: slice<prompt_artifacts.ArtifactExpectation> := task.declarations
+  expanded := prompt_declared_source.expand(project, declarations, deadline)?
+  rows: slice<prompt_artifacts.ArtifactDigest> := expanded.files
+  mut row := 0
+  loop {
+    if row == rows.len() { return Ok(()) }
+    append(rows[row], output)
+    row = row + 1
+  }
+}
+
+// Source writers stay excluded from original document admission through final membership.
+pub fn collect(borrow project: fs.directory, tasks: slice<TaskSource>, strict: bool, deadline: i64) -> Result<array<prompt_artifacts.ArtifactDigest>, Error> {
+  if tasks.len() < 1 || tasks.len() > 64 { return Err(Error.Invalid) }
+  mut output: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  mut index := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if index == tasks.len() { return Ok(output.build()) }
+    collect_task(project, tasks[index], strict, deadline, output)?
+    index = index + 1
+  }
+}

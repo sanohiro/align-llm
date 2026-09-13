@@ -1,0 +1,91 @@
+module prompt_sandbox
+
+import prompt_capture
+import prompt_command
+import prompt_fixture_setup
+import prompt_sandbox_plan
+import prompt_task_supervisor
+import prompt_validation_budget
+import std.fs
+import std.process
+import std.time
+
+pub Commands { probe: command, validation: command }
+pub Probe { Available(prompt_task_supervisor.Report), Unavailable(prompt_fixture_setup.Attempt) }
+PreparedArguments { probe: array<string>, validation: array<string>, environment: array<prompt_command.Environment>, cwd: string }
+
+fn copy_strings(values: slice<string>) -> array<string> {
+  mut output: array_builder<string> := array_builder()
+  mut index := 0
+  loop { if index == values.len() { break }; output.push(values[index].clone()); index = index + 1 }
+  return output.build()
+}
+
+fn copy_environment(values: slice<prompt_command.Environment>) -> array<prompt_command.Environment> {
+  mut output: array_builder<prompt_command.Environment> := array_builder()
+  mut index := 0
+  loop {
+    if index == values.len() { break }
+    output.push(prompt_command.Environment { name: values[index].name.clone(), value: values[index].value.clone() })
+    index = index + 1
+  }
+  return output.build()
+}
+
+fn arguments(config: prompt_sandbox_plan.Config) -> Result<PreparedArguments, Error> {
+  mut probe_argv: array_builder<string> := array_builder()
+  probe_argv.push("/usr/bin/true".clone())
+  environment := copy_environment(config.environment)
+  cwd := config.workspace_path.clone()
+  probe_config := prompt_sandbox_plan.Config {
+    fresh: config.fresh, uid: config.uid, gid: config.gid, namespace_slot: config.namespace_slot,
+    bwrap_path: config.bwrap_path.clone(), prlimit_path: config.prlimit_path.clone(), workspace_path: config.workspace_path.clone(),
+    readonly_roots: copy_strings(config.readonly_roots), target_argv: probe_argv.build(),
+    environment: copy_environment(config.environment), timeout_seconds: 2,
+  }
+  probe_arguments := prompt_sandbox_plan.arguments(probe_config)?
+  validation_arguments := prompt_sandbox_plan.arguments(config)?
+  return Ok(PreparedArguments { probe: probe_arguments, validation: validation_arguments, environment: environment, cwd: cwd })
+}
+
+pub fn normal(borrow image: process.image, config: prompt_sandbox_plan.Config) -> Result<Commands, Error> {
+  if config.fresh { return Err(Error.Invalid) }
+  prepared := arguments(config)?
+  probe := prompt_command.prepare(image, prepared.probe, prepared.cwd, prepared.environment)?
+  validation := prompt_command.prepare(image, prepared.validation, prepared.cwd, prepared.environment)?
+  return Ok(Commands { probe: probe, validation: validation })
+}
+
+pub fn fresh(borrow image: process.image, borrow namespace: process.user_namespace, config: prompt_sandbox_plan.Config) -> Result<Commands, Error> {
+  if !config.fresh { return Err(Error.Invalid) }
+  slot := config.namespace_slot
+  prepared := arguments(config)?
+  probe := prompt_command.prepare(image, prepared.probe, prepared.cwd, prepared.environment)?
+  validation := prompt_command.prepare(image, prepared.validation, prepared.cwd, prepared.environment)?
+  probe.inherit_namespace(namespace, slot)?
+  validation.inherit_namespace(namespace, slot)?
+  return Ok(Commands { probe: probe, validation: validation })
+}
+
+pub fn check(
+  borrow probe: command,
+  borrow mut signals: process.signal_subscription,
+  borrow workspace: fs.directory,
+  borrow procfs: fs.directory,
+  outer_deadline: i64,
+) -> Result<Probe, Error> {
+  pattern := prompt_capture.pattern("", 65536)?
+  stop_at := prompt_validation_budget.deadline(2000000000, outer_deadline)?
+  mut scope := probe.start_scope()?
+  result := prompt_task_supervisor.run(scope, signals, workspace, procfs, pattern, prompt_task_supervisor.Config {
+      deadline: stop_at, resources: false, limits: prompt_validation_budget.defaults(),
+    })
+  report := match result {
+    Ok(value) => value,
+    Err(error) => { return Ok(Probe.Unavailable(prompt_fixture_setup.Attempt { operation: 0, scope: scope, report: None, error: Some(error) })) },
+  }
+  if !prompt_fixture_setup.accepted(report) {
+    return Ok(Probe.Unavailable(prompt_fixture_setup.Attempt { operation: 0, scope: scope, report: Some(report), error: None }))
+  }
+  return Ok(Probe.Available(report))
+}

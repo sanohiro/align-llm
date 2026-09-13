@@ -1,0 +1,173 @@
+module prompt_repair_sections_smoke
+
+import prompt_repair_sections
+import prompt_artifacts
+import core.json
+import std.crypto
+import std.encoding
+import prompt_repair
+import prompt_repair_template
+import prompt_repair_assembly
+
+Case { body: str, expected: str }
+BlockWire { edit_set: array<prompt_artifacts.EditSetBlock> }
+
+fn measurement(edits: str) -> Result<prompt_artifacts.TaskMeasurement, Error> {
+  // Unrelated identity fields are inert fixture data: this owner exercises rendering, not admission.
+  source := "{\"schema_version\":3,\"artifact_kind\":\"TASK_MEASUREMENT\",\"status\":\"FAIL\",\"failure_kind\":\"TEST\",\"build_status\":\"PASS\",\"test_status\":\"FAIL\",\"repair_loop_count\":0,\"unrelated_diff_count\":0,\"patch_size_bytes\":0,\"public_api_change_count\":0,\"policy_violation_count\":0,\"cleanup_passed\":true,\"containment_passed\":true,\"rendered_prompt_sha256\":\"\",\"generation_request\":{\"schema_version\":1,\"artifact_kind\":\"\",\"rendered_prompt_sha256\":\"\",\"system_text_sha256\":\"\",\"user_text_sha256\":\"\",\"generation_policy_sha256\":\"\",\"provider_control_sha256\":\"\",\"environment_policy_sha256\":\"\",\"max_tokens\":0,\"temperature_micros\":0,\"paired_seed\":0,\"provider_request_sha256\":\"\",\"seed_attestation_sha256\":\"\",\"content_sha256\":\"\"},\"environment_probe\":{\"schema_version\":1,\"artifact_kind\":\"\",\"producer\":\"\",\"os\":\"\",\"os_release\":\"\",\"architecture\":\"\",\"cpu\":\"\",\"gpu\":\"\",\"runtime_identity\":\"\",\"content_sha256\":\"\"},\"seed_attestation\":{\"schema_version\":1,\"artifact_kind\":\"\",\"provider_kind\":\"\",\"provider_model\":\"\",\"requested_seed\":0,\"result\":\"\",\"provider_request_sha256\":\"\",\"content_sha256\":\"\"},\"diagnostic_summary\":\"  summary\\n\",\"diagnostic_stdout\":\"already [REDACTED]\\r\\n\",\"diagnostic_stderr\":\"stderr\\t界\",\"edit_refusal\":\"MUST_NOT_RENDER_REFUSAL\",\"completion_text\":\"MUST_NOT_RENDER_COMPLETION\",\"content_sha256\":\"\"}".clone()
+  output := builder()
+  output.write(source[0..source.len() - 1])
+  if edits.len() > 0 { output.write(","); output.write(edits[1..edits.len() - 1]) }
+  output.write("}")
+  return json.decode(output.to_string())
+}
+
+fn block(path: str, body: Option<string>, size: i64) -> prompt_artifacts.EditSetBlock {
+  return prompt_artifacts.EditSetBlock {
+    schema_version: 1, artifact_kind: "EDIT_SET_BLOCK".clone(), path: path.clone(),
+    body_bytes: size, body_sha256: "".clone(), body_text: body, content_sha256: "".clone(),
+  }
+}
+
+fn rendered(body: str) -> Result<prompt_repair_sections.Sources, Error> {
+  mut blocks: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+  blocks.push(block("a.txt", Some(body.clone()), body.len()))
+  built := BlockWire { edit_set: blocks.build() }
+  encoded := json.encode(built)?
+  value := measurement(encoded)?
+  absent: Option<prompt_artifacts.EditPolicy> := None
+  allowed := ["unused"]
+  return prompt_repair_sections.render(value, allowed, absent)
+}
+
+fn check(actual: prompt_repair_sections.Sources, edits: str, policy: str) -> Result<(), Error> {
+  // Every input owner has expired; all six output strings must remain independent.
+  if actual.status != "status: FAIL\nfailure_kind: TEST\nbuild_status: PASS\ntest_status: FAIL"
+    || actual.policy != policy || actual.edit_set != edits || actual.summary != "  summary\n"
+    || actual.stdout != "already [REDACTED]\r\n" || actual.stderr != "stderr\t界" {
+    print("repair section mismatch")
+    print(actual.edit_set)
+    print(actual.policy)
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn multiple() -> Result<prompt_repair_sections.Sources, Error> {
+  mut blocks: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+  blocks.push(block("missing.txt", None, 731))
+  blocks.push(block("empty.txt", Some("".clone()), 0))
+  blocks.push(block("last.txt", Some("last".clone()), 4))
+  built := BlockWire { edit_set: blocks.build() }
+  encoded := json.encode(built)?
+  value := measurement(encoded)?
+  absent: Option<prompt_artifacts.EditPolicy> := None
+  allowed := ["unused"]
+  return prompt_repair_sections.render(value, allowed, absent)
+}
+
+fn with_policy(unchanged: bool) -> Result<prompt_repair_sections.Sources, Error> {
+  value := measurement("")?
+  allowed := ["src/a.py", "a space/界.txt"]
+  policy := Some(prompt_artifacts.EditPolicy {
+      schema_version: 1, artifact_kind: "EDIT_POLICY".clone(), maximum_file_blocks: 7,
+      maximum_edit_bytes: 1234, refuse_unchanged_files: unchanged, content_sha256: "".clone(),
+    })
+  return prompt_repair_sections.render(value, allowed, policy)
+}
+
+fn integrated(maximum: i64) -> Result<prompt_repair_assembly.Assembly, Error> {
+  mut fixture_template := prompt_repair_template.Template {
+    schema_version: 1, artifact_kind: "REPAIR_PROMPT_TEMPLATE".clone(), template_id: "small".clone(),
+    preamble_text: "P".clone(), closing_text: "C".clone(), content_sha256: "".clone(),
+    section_headers: prompt_repair_template.Headers {
+      STATUS: "S".clone(), POLICY: Some("P".clone()), EDITSET: Some("E".clone()),
+      SUMMARY: "M".clone(), STDOUT: "O".clone(), STDERR: "R".clone(),
+    },
+  }
+  canonical := json.encode(fixture_template)?
+  digest := crypto.sha256(canonical)
+  fixture_template.content_sha256 = encoding.hex_encode(digest[0..digest.len()])
+  encoded := json.encode(fixture_template)?
+  admitted := prompt_repair_template.decode(encoded, prompt_repair_template.Profile.Policy)?
+  mut value := measurement("{\"edit_set\":[{\"schema_version\":1,\"artifact_kind\":\"EDIT_SET_BLOCK\",\"path\":\"missing.txt\",\"body_bytes\":731,\"body_sha256\":\"\",\"content_sha256\":\"\"}]}")?
+  if !prompt_repair.eligible(value) { return Err(Error.Invalid) }
+  value.cleanup_passed = false
+  if prompt_repair.eligible(value) { return Err(Error.Invalid) }
+  value.cleanup_passed = true
+  value.containment_passed = false
+  if prompt_repair.eligible(value) { return Err(Error.Invalid) }
+  value.containment_passed = true
+  policy := Some(prompt_artifacts.EditPolicy {
+      schema_version: 1, artifact_kind: "EDIT_POLICY".clone(), maximum_file_blocks: 7,
+      maximum_edit_bytes: 1234, refuse_unchanged_files: false, content_sha256: "".clone(),
+    })
+  base := "BASE\n  keep".clone()
+  return prompt_repair.assemble(admitted, value, ["src/a.py"], policy, base, maximum)
+}
+
+fn integration() -> Result<(), Error> {
+  full := "BASE\n  keep\n\nP\n\nS\nstatus: FAIL\nfailure_kind: TEST\nbuild_status: PASS\ntest_status: FAIL\n\nP\neditable paths, spelled exactly:\n  src/a.py\nA FILE: block naming any other path is refused before the tests run.\nAt most 7 FILE: blocks. At most 1234 bytes in any one block.\n\nE\nFILE: missing.txt [omitted for prompt budget: 731 bytes]\n\nM\n  summary\n\n\nO\nalready [REDACTED]\r\n\n\nR\nstderr\t界\n\nC"
+  complete := integrated(full.len())?
+  match complete.text {
+    Some(text) => { if text != full { return Err(Error.Invalid) } },
+    None => { return Err(Error.Invalid) },
+  }
+  if complete.assembled_bytes != full.len() || complete.included_sections.len() != 6 || complete.dropped_sections.len() != 0 {
+    return Err(Error.Invalid)
+  }
+  expected_names := ["STATUS", "POLICY", "EDITSET", "SUMMARY", "STDOUT", "STDERR"]
+  mut index := 0
+  loop {
+    if index == 6 { break }
+    if complete.included_sections[index] != expected_names[index] { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  mandatory := "BASE\n  keep\n\nP\n\nS\nstatus: FAIL\nfailure_kind: TEST\nbuild_status: PASS\ntest_status: FAIL\n\nP\neditable paths, spelled exactly:\n  src/a.py\nA FILE: block naming any other path is refused before the tests run.\nAt most 7 FILE: blocks. At most 1234 bytes in any one block.\n\nC"
+  exhausted := integrated(0)?
+  match exhausted.text { Some(_) => { return Err(Error.Invalid) }, None => {} }
+  if exhausted.assembled_bytes != mandatory.len() || exhausted.included_sections.len() != 2
+    || exhausted.included_sections[0] != "STATUS" || exhausted.included_sections[1] != "POLICY"
+    || exhausted.dropped_sections.len() != 4 { return Err(Error.Invalid) }
+  expected_dropped := ["EDITSET", "SUMMARY", "STDOUT", "STDERR"]
+  index = 0
+  loop {
+    if index == 4 { break }
+    if exhausted.dropped_sections[index] != expected_dropped[index] { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  cases := [
+    Case { body: "", expected: "FILE: a.txt\n```\n```" },
+    Case { body: "body", expected: "FILE: a.txt\n```\nbody\n```" },
+    Case { body: "body\n", expected: "FILE: a.txt\n```\nbody\n```" },
+    Case { body: "body\n\n", expected: "FILE: a.txt\n```\nbody\n\n```" },
+    Case { body: "`\n``", expected: "FILE: a.txt\n```\n`\n``\n```" },
+    Case { body: "```", expected: "FILE: a.txt\n````\n```\n````" },
+    Case { body: "````\n```", expected: "FILE: a.txt\n`````\n````\n```\n`````" },
+    Case { body: " \t````\r\nend", expected: "FILE: a.txt\n`````\n \t````\r\nend\n`````" },
+    Case { body: "　```` \nend", expected: "FILE: a.txt\n`````\n　```` \nend\n`````" },
+    Case { body: "``````python\nx``````\n``` ```", expected: "FILE: a.txt\n```\n``````python\nx``````\n``` ```\n```" },
+  ]
+  mut index := 0
+  loop {
+    if index == cases.len() { break }
+    check(rendered(cases[index].body)?, cases[index].expected, "")?
+    index = index + 1
+  }
+  check(multiple()?, "FILE: missing.txt [omitted for prompt budget: 731 bytes]\n\nFILE: empty.txt\n```\n```\n\nFILE: last.txt\n```\nlast\n```", "")?
+  policy_false := "editable paths, spelled exactly:\n  src/a.py\n  a space/界.txt\nA FILE: block naming any other path is refused before the tests run.\nAt most 7 FILE: blocks. At most 1234 bytes in any one block."
+  policy_true := "editable paths, spelled exactly:\n  src/a.py\n  a space/界.txt\nA FILE: block naming any other path is refused before the tests run.\nA FILE: block whose content is identical to that file's current content is refused before the\ntests run.\nAt most 7 FILE: blocks. At most 1234 bytes in any one block."
+  check(with_policy(false)?, "", policy_false)?
+  check(with_policy(true)?, "", policy_true)?
+  empty_value := measurement("{\"edit_set\":[]}")?
+  no_policy: Option<prompt_artifacts.EditPolicy> := None
+  no_paths := ["unused"]
+  check(prompt_repair_sections.render(empty_value, no_paths, no_policy)?, "", "")?
+  integration()?
+  print("repair sections smoke: status, policy, edit fences, persisted diagnostics and ownership PASS")
+  return Ok(())
+}

@@ -1,0 +1,158 @@
+module prompt_git_records_smoke
+
+import prompt_git_records
+
+HASH := "0123456789abcdef0123456789abcdef01234567"
+
+fn rejected(data: slice<u8>, truncated: bool, kind: i64) -> Result<(), Error> {
+  if kind == 0 {
+    match prompt_git_records.parse_paths(data, truncated) {
+      Ok(_) => { return Err(Error.Invalid) },
+      Err(error) => { if !match error { Invalid => true, _ => false } { return Err(Error.Invalid) } },
+    }
+  } else if kind == 1 {
+    match prompt_git_records.parse_tree(data, truncated) {
+      Ok(_) => { return Err(Error.Invalid) },
+      Err(error) => { if !match error { Invalid => true, _ => false } { return Err(Error.Invalid) } },
+    }
+  } else {
+    match prompt_git_records.validate_index_flags(data, truncated) {
+      Ok(_) => { return Err(Error.Invalid) },
+      Err(error) => { if !match error { Invalid => true, _ => false } { return Err(Error.Invalid) } },
+    }
+  }
+  return Ok(())
+}
+
+fn tree_record(mode: str, hash: str, path: str) -> string {
+  text := builder()
+  text.write(mode)
+  text.write(" blob ")
+  text.write(hash)
+  text.write("\t")
+  text.write(path)
+  text.write("\0")
+  return text.to_string()
+}
+
+fn owned_tree() -> Result<array<prompt_git_records.TreeEntry>, Error> {
+  text := builder()
+  text.write(tree_record("120000", HASH, "z\tname\n"))
+  text.write(tree_record("100755", HASH, "a/日本語"))
+  text.write(tree_record("100644", HASH, "middle"))
+  source := text.to_string()
+  return prompt_git_records.parse_tree(source.bytes(), false)
+}
+
+pub fn main() -> Result<(), Error> {
+  empty := prompt_git_records.parse_paths("".bytes(), false)?
+  empty_tree := prompt_git_records.parse_tree("".bytes(), false)?
+  if empty.len() != 0 || empty_tree.len() != 0 { return Err(Error.Invalid) }
+  prompt_git_records.validate_index_flags("".bytes(), false)?
+  parsed := owned_tree()?
+  if parsed.len() != 3 || parsed[0].path != "z\tname\n" || parsed[1].path != "a/日本語" ||
+  parsed[2].mode != "100644" || parsed[0].blob != HASH { return Err(Error.Invalid) }
+  paths := prompt_git_records.parse_paths("z\ta\n\0a/日本語\0".bytes(), false)?
+  if paths.len() != 2 || paths[0] != "z\ta\n" || paths[1] != "a/日本語" { return Err(Error.Invalid) }
+  prompt_git_records.validate_index_flags("H z\ta\n\0H a/日本語\0".bytes(), false)?
+  invalid_paths := ["", "/absolute", "a/", "a//b", ".", "..", "./a", "a/../b", "a/./b"]
+  mut index := 0
+  loop {
+    if index == invalid_paths.len() { break }
+    path := invalid_paths[index]
+    text := builder()
+    text.write(path)
+    text.write("\0")
+    source := text.to_string()
+    rejected(source.bytes(), false, 0)?
+    tree := tree_record("100644", HASH, path)
+    rejected(tree.bytes(), false, 1)?
+    flag := builder()
+    flag.write("H ")
+    flag.write(source)
+    flagged := flag.to_string()
+    rejected(flagged.bytes(), false, 2)?
+    index = index + 1
+  }
+  duplicates := "a\0b\0a\0"
+  rejected(duplicates.bytes(), false, 0)?
+  duplicate_tree := builder()
+  duplicate_tree.write(tree_record("100644", HASH, "a"))
+  duplicate_tree.write(tree_record("100755", HASH, "a"))
+  repeated := duplicate_tree.to_string()
+  rejected(repeated.bytes(), false, 1)?
+  rejected("H a\0H a\0".bytes(), false, 2)?
+  modes := ["040000", "160000", "100600", "100644 ", "10064"]
+  index = 0
+  loop {
+    if index == modes.len() { break }
+    text := tree_record(modes[index], HASH, "a")
+    rejected(text.bytes(), false, 1)?
+    index = index + 1
+  }
+  hashes := ["0123456789ABCDEF0123456789abcdef01234567", "g123456789abcdef0123456789abcdef01234567", "short", "0123456789abcdef0123456789abcdef012345678"]
+  index = 0
+  loop {
+    if index == hashes.len() { break }
+    text := tree_record("100644", hashes[index], "a")
+    rejected(text.bytes(), false, 1)?
+    index = index + 1
+  }
+  wrong_type := builder()
+  wrong_type.write("100644 tree ")
+  wrong_type.write(HASH)
+  wrong_type.write("\ta\0")
+  wrong_type_text := wrong_type.to_string()
+  rejected(wrong_type_text.bytes(), false, 1)?
+  valid_tree := tree_record("100644", HASH, "a")
+  rejected(valid_tree.bytes()[0..valid_tree.len() - 1], false, 1)?
+  rejected("H a".bytes(), false, 2)?
+  rejected("h a\0".bytes(), false, 2)?
+  rejected("S a\0".bytes(), false, 2)?
+  rejected("H\ta\0".bytes(), false, 2)?
+  bad_utf8 := [255 as u8, 0 as u8]
+  mut kind := 0
+  loop {
+    if kind == 3 { break }
+    rejected("".bytes(), true, kind)?
+    rejected("a".bytes(), false, kind)?
+    rejected("a\0\0".bytes(), false, kind)?
+    rejected(bad_utf8[0..bad_utf8.len()], false, kind)?
+    kind = kind + 1
+  }
+  mut boundary := buffer(65537)
+  index = 0
+  loop {
+    if index == 65535 { break }
+    boundary.append("a")
+    index = index + 1
+  }
+  boundary.append("\0")
+  at_cap := prompt_git_records.parse_paths(boundary.bytes(), false)?
+  if at_cap.len() != 1 || at_cap[0].len() != 65535 { return Err(Error.Invalid) }
+  rejected(boundary.bytes(), true, 0)?
+  mut cap_tree := buffer(65536)
+  cap_tree.append("100644 blob ")
+  cap_tree.append(HASH)
+  cap_tree.append("\t")
+  cap_tree.append(boundary.bytes()[0..65482])
+  cap_tree.append("\0")
+  tree_at_cap := prompt_git_records.parse_tree(cap_tree.bytes(), false)?
+  if tree_at_cap.len() != 1 || tree_at_cap[0].path.len() != 65482 { return Err(Error.Invalid) }
+  rejected(cap_tree.bytes(), true, 1)?
+  mut cap_flags := buffer(65536)
+  cap_flags.append("H ")
+  cap_flags.append(boundary.bytes()[0..65533])
+  cap_flags.append("\0")
+  prompt_git_records.validate_index_flags(cap_flags.bytes(), false)?
+  rejected(cap_flags.bytes(), true, 2)?
+  boundary.append("\0")
+  kind = 0
+  loop {
+    if kind == 3 { break }
+    rejected(boundary.bytes(), false, kind)?
+    kind = kind + 1
+  }
+  print("prompt Git records smoke passed")
+  return Ok(())
+}

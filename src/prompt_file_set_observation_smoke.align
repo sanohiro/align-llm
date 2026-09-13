@@ -1,0 +1,78 @@
+module prompt_file_set_observation_smoke
+
+import prompt_file_set_observation
+import prompt_file_set
+import std.fs
+import std.time
+
+fn accepted(borrow manifests: fs.directory, borrow corpus: fs.directory, digest: str, linux: bool) -> Result<(), Error> {
+  result := prompt_file_set_observation.observe(manifests, "good".bytes(), digest, corpus, 7, time.instant() + 10000000000)?
+  inspect(result, digest, linux)?
+  return Ok(())
+}
+
+fn refused(borrow manifests: fs.directory, borrow corpus: fs.directory, name: str, digest: str, maximum: i64, deadline: i64) -> Result<(), Error> {
+  match prompt_file_set_observation.observe(manifests, name.bytes(), digest, corpus, maximum, deadline) {
+    Ok(_) => { print(name); return Err(Error.Invalid) },
+    Err(_) => {},
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() < 9 || (args.len() - 7) % 2 != 0 { return Err(Error.Invalid) }
+  manifests := fs.open_directory(args[1])?
+  corpus := fs.open_directory(args[2])?
+  accepted(manifests, corpus, args[5], args[6] == "Linux")?
+  refused(manifests, corpus, "good", args[5], 6, time.instant() + 10000000000)?
+  refused(manifests, corpus, "good", args[5], -1, time.instant() + 10000000000)?
+  refused(manifests, corpus, "good", args[5], 7, 0)?
+  refused(manifests, corpus, "good", "0000000000000000000000000000000000000000000000000000000000000000", 7, time.instant() + 10000000000)?
+  mut index := 7
+  loop {
+    if index == args.len() { break }
+    if args[index] == "self" {
+      refused(corpus, corpus, "self", args[index + 1], 8388608, time.instant() + 10000000000)?
+    } else {
+      refused(manifests, corpus, args[index], args[index + 1], 8388608, time.instant() + 10000000000)?
+    }
+    index = index + 2
+  }
+  owned := expired(args[1], args[2], args[5])?
+  inspect(owned, args[5], args[6] == "Linux")?
+  // A retained root continues to identify its original directory after pathname replacement.
+  fs.rename_no_replace(args[2], args[3])?
+  fs.rename_no_replace(args[4], args[2])?
+  accepted(manifests, corpus, args[5], args[6] == "Linux")?
+  replacement := fs.open_directory(args[2])?
+  refused(manifests, replacement, "good", args[5], 7, time.instant() + 10000000000)?
+  inspect(owned, args[5], args[6] == "Linux")?
+  print("prompt file set observation smoke passed: retained roots, raw names, identity/mode/caps and special-file refusals")
+  return Ok(())
+}
+
+fn expired(manifest_path: str, corpus_path: str, digest: str) -> Result<prompt_file_set_observation.Observation, Error> {
+  manifests := fs.open_directory(manifest_path)?
+  corpus := fs.open_directory(corpus_path)?
+  return prompt_file_set_observation.observe(manifests, "good".bytes(), digest, corpus, 7, time.instant() + 10000000000)
+}
+
+fn member(borrow value: prompt_file_set.Entry, expected: slice<u8>, digest: str) -> Result<(), Error> {
+  if value.mode != 33188 || value.sha256 != digest || value.path.len() != expected.len() { return Err(Error.Invalid) }
+  mut index := 0
+  loop {
+    if index == expected.len() { break }
+    if value.path[index] != expected[index] { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  return Ok(())
+}
+
+fn inspect(borrow result: prompt_file_set_observation.Observation, digest: str, linux: bool) -> Result<(), Error> {
+  if result.sha256 != digest || result.files != 3 || result.total_bytes != 7 || result.files != result.members.len() { return Err(Error.Invalid) }
+  member(result.members[0], "a".bytes(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")?
+  member(result.members[1], "line\nname".bytes(), "3608bca1e44ea6c4d268eb6db02260269892c0b42b86bbf1e77a6fa16c3c9282")?
+  raw := [114 as u8, 97 as u8, 119 as u8, if linux { 255 as u8 } else { 120 as u8 }]
+  member(result.members[2], raw[0..4], "8e35c2cd3bf6641bdb0e2050b76932cbb2e6034a0ddacc1d9bea82a6ba57f7cf")?
+  return Ok(())
+}

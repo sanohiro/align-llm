@@ -1,0 +1,85 @@
+module prompt_snapshot_smoke
+
+import prompt_artifacts
+import prompt_scope_cleanup
+import prompt_snapshot
+import prompt_tool_image
+import prompt_workspace
+import core.json
+import std.fs
+import std.process
+import std.time
+
+FileList { files: array<prompt_artifacts.ArtifactDigest> }
+
+fn request(args: slice<str>) -> prompt_artifacts.SnapshotRequest {
+  mut expectations: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  expectations.push(prompt_artifacts.ArtifactExpectation {
+      path: "input".clone(), kind: "FILE".clone(), expected_sha256: args[7].clone(),
+    })
+  mut additional: array_builder<string> := array_builder()
+  additional.push("extra".clone())
+  empty: array_builder<string> := array_builder()
+  return prompt_artifacts.SnapshotRequest {
+    schema_version: 1, artifact_kind: "SNAPSHOT_REQUEST".clone(), task_id: "snapshot-owner".clone(),
+    project_root: args[2].clone(), repo_path: args[4].clone(), repo_revision: args[5].clone(),
+    require_clean_repo: args[6] != "no-git", static_expectations: expectations.build(),
+    additional_files: additional.build(), workspace_path: args[3].clone(),
+    allowed_workspace_entries: empty.build(), content_sha256: "".clone(),
+  }
+}
+
+fn native(args: slice<str>, borrow input: prompt_artifacts.SnapshotRequest) -> Result<(), Error> {
+  image_root := fs.open_directory(args[8])?
+  image := prompt_tool_image.admit(image_root, "git".bytes(), args[9], 16777216, time.instant() + 10000000000)?
+  procfs := fs.open_directory("/proc")?
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  observed := prompt_snapshot.observe(input, image, signals, procfs,
+    "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222",
+    time.instant() + 10000000000)
+  restored := signals.close()
+  match observed {
+    Err(error) => { return Err(error) },
+    Ok(value) => match value {
+      Observed(result) => { restored?; print(json.encode_bounded(result, 1048576)?); return Ok(()) },
+      Stopped(attempt) => {
+        mut scope := attempt.scope
+        cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+        if !cleanup.released { return Err(Error.Timeout) }
+        restored?
+        return Err(Error.Invalid)
+      },
+    },
+  }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 10 { return Err(Error.Invalid) }
+  input := request(args)
+  if args[6] == "preflight" || args[6] == "occupied" || args[6] == "outside" {
+    roots := match prompt_workspace.admit(args[2], args[3], true, time.instant() + 10000000000) {
+      Ok(value) => value,
+      Err(error) => {
+        if args[6] != "occupied" && args[6] != "outside" { return Err(error) }
+        print("REFUSED")
+        return Ok(())
+      },
+    }
+    if args[6] != "preflight" { return Err(Error.Invalid) }
+    result := prompt_workspace.preflight(roots, "snapshot-owner",
+      "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222")?
+    print(json.encode_bounded(result, 1048576)?)
+    return Ok(())
+  }
+  if args[1] == "files" {
+    root := fs.open_directory(args[2])?
+    mut rows: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+    observed := prompt_snapshot.files(root, input, rows, time.instant() + 10000000000)?
+    match observed {
+      Matched => { values := FileList { files: rows.build() }; print(json.encode_bounded(values, 1048576)?) },
+      Mismatch(code) => print(code),
+    }
+    return Ok(())
+  }
+  return native(args, input)
+}

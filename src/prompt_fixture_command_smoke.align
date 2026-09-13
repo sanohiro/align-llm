@@ -1,0 +1,137 @@
+module prompt_fixture_command_smoke
+
+import prompt_fixture_command
+import prompt_git_records
+import std.fs
+import std.process
+
+fn image(root_path: str) -> Result<process.image, Error> {
+  root := fs.open_directory(root_path)?
+  input := root.open_read_single_link("git")?
+  mut memory := fs.memory_file(fs.memory_kind.Executable, 16777216)?
+  mut count := 0
+  loop {
+    mut chunk := buffer(65536)
+    size := input.read(chunk)?
+    if size == 0 { break }
+    count = count + size
+    if count > 16777216 { return Err(Error.Invalid) }
+    memory.write(chunk.bytes())?
+  }
+  sealed := memory.seal()?
+  return process.executable(sealed)
+}
+
+fn run(borrow git: process.image, root: str, operation: prompt_fixture_command.Operation, operand: str, borrow profile: prompt_fixture_command.Profile) -> Result<array<u8>, Error> {
+  command := prompt_fixture_command.build(git, root, operation, operand, profile)?
+  command.timeout_ns(10000000000)
+  command.max_capture_bytes(65536)
+  output := command.run_bytes()?
+  status := output.status()
+  if !match status.termination { Exited(code) => code == 0, _ => false } {
+    print("fixture Git operation failed")
+    return Err(Error.Invalid)
+  }
+  return Ok(output.stdout().to_array())
+}
+
+fn refused(borrow git: process.image, root: str, operation: prompt_fixture_command.Operation, operand: str, borrow profile: prompt_fixture_command.Profile) -> Result<(), Error> {
+  match prompt_fixture_command.build(git, root, operation, operand, profile) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(error) => { if !match error { Invalid => true, _ => false } { return Err(Error.Invalid) } },
+  }
+  return Ok(())
+}
+
+fn retained_head(image_path: str, workspace: str) -> Result<command, Error> {
+  admitted := image(image_path)?
+  profile := prompt_fixture_command.Profile { fresh: false, library_path: "".clone(), ld_library_path: "".clone(), pkg_config_path: "".clone() }
+  return prompt_fixture_command.build(admitted, workspace, prompt_fixture_command.Operation.Head, "", profile)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 6 { return Err(Error.Invalid) }
+  git := image(args[1])?
+  profile := prompt_fixture_command.Profile { fresh: args[5] == "fresh", library_path: "explicit-library".clone(), ld_library_path: "".clone(), pkg_config_path: "explicit-pkg-config".clone() }
+  root := args[2]
+  revision := args[3]
+  patch := args[4]
+  operations := [prompt_fixture_command.Operation.Init, prompt_fixture_command.Operation.ConfigureNewlines, prompt_fixture_command.Operation.ConfigureModes, prompt_fixture_command.Operation.Add, prompt_fixture_command.Operation.Commit]
+  mut index := 0
+  loop {
+    if index == operations.len() { break }
+    run(git, root, operations[index], "", profile)?
+    index = index + 1
+  }
+  head := run(git, root, prompt_fixture_command.Operation.Head, "", profile)?
+  expected_head := builder()
+  expected_head.write(revision)
+  expected_head.write("\n")
+  expected_text := expected_head.to_string()
+  head_view: slice<u8> := head
+  if head_view.as_str()? != expected_text { return Err(Error.Invalid) }
+  retained := retained_head(args[1], root)?
+  retained.timeout_ns(10000000000)
+  retained.max_capture_bytes(65536)
+  retained_output := retained.run_bytes()?
+  retained_status := retained_output.status()
+  retained_bytes := retained_output.stdout()
+  if !match retained_status.termination { Exited(code) => code == 0, _ => false } || retained_bytes.as_str()? != expected_text { return Err(Error.Invalid) }
+  status := run(git, root, prompt_fixture_command.Operation.Status, "", profile)?
+  if status.len() != 0 { return Err(Error.Invalid) }
+  tree := run(git, root, prompt_fixture_command.Operation.Tree, revision, profile)?
+  entries := prompt_git_records.parse_tree(tree, false)?
+  if entries.len() != 3 || entries[0].path != ".gitignore" || entries[1].path != "file" || entries[2].path != "odd\tname\n" { return Err(Error.Invalid) }
+  flags := run(git, root, prompt_fixture_command.Operation.IndexFlags, "", profile)?
+  prompt_git_records.validate_index_flags(flags, false)?
+  before_index := run(git, root, prompt_fixture_command.Operation.Index, "", profile)?
+  if before_index.len() == 0 || before_index[before_index.len() - 1] != 0 { return Err(Error.Invalid) }
+  run(git, root, prompt_fixture_command.Operation.ApplyCheck, patch, profile)?
+  run(git, root, prompt_fixture_command.Operation.Apply, patch, profile)?
+  unstaged := run(git, root, prompt_fixture_command.Operation.Staged, revision, profile)?
+  if unstaged.len() != 0 { return Err(Error.Invalid) }
+  run(git, root, prompt_fixture_command.Operation.Add, "", profile)?
+  staged := run(git, root, prompt_fixture_command.Operation.Staged, revision, profile)?
+  paths := prompt_git_records.parse_paths(staged, false)?
+  if paths.len() != 1 || paths[0] != "file" { return Err(Error.Invalid) }
+  directory := fs.open_directory(root)?
+  untracked_file := directory.create_new("untracked")?
+  untracked_file.write("new")?
+  ignored_file := directory.create_new("ignored")?
+  ignored_file.write("ignored")?
+  untracked := run(git, root, prompt_fixture_command.Operation.Untracked, "", profile)?
+  untracked_paths := prompt_git_records.parse_paths(untracked, false)?
+  ignored := run(git, root, prompt_fixture_command.Operation.Ignored, "", profile)?
+  ignored_paths := prompt_git_records.parse_paths(ignored, false)?
+  if untracked_paths.len() != 1 || untracked_paths[0] != "untracked" || ignored_paths.len() != 1 || ignored_paths[0] != "ignored" { return Err(Error.Invalid) }
+  bad_roots := ["", "relative", "/tmp\0tail"]
+  index = 0
+  loop {
+    if index == bad_roots.len() { break }
+    refused(git, bad_roots[index], prompt_fixture_command.Operation.Head, "", profile)?
+    index = index + 1
+  }
+  refused(git, root, prompt_fixture_command.Operation.Head, "extra", profile)?
+  refused(git, root, prompt_fixture_command.Operation.Tree, "0123456789ABCDEF0123456789abcdef01234567", profile)?
+  refused(git, root, prompt_fixture_command.Operation.Staged, "HEAD", profile)?
+  refused(git, root, prompt_fixture_command.Operation.ApplyCheck, "relative", profile)?
+  refused(git, root, prompt_fixture_command.Operation.Apply, "/tmp\0tail", profile)?
+  index = 0
+  loop {
+    if index == 3 { break }
+    invalid_profile := prompt_fixture_command.Profile {
+      fresh: true,
+      library_path: if index == 0 { "bad\0tail".clone() } else { "".clone() },
+      ld_library_path: if index == 1 { "bad\0tail".clone() } else { "".clone() },
+      pkg_config_path: if index == 2 { "bad\0tail".clone() } else { "".clone() },
+    }
+    refused(git, root, prompt_fixture_command.Operation.Head, "", invalid_profile)?
+    index = index + 1
+  }
+  ignored_profile := prompt_fixture_command.Profile { fresh: false, library_path: "bad\0tail".clone(), ld_library_path: "bad\0tail".clone(), pkg_config_path: "bad\0tail".clone() }
+  ignored_environment := run(git, root, prompt_fixture_command.Operation.Head, "", ignored_profile)?
+  ignored_view: slice<u8> := ignored_environment
+  if ignored_view.as_str()? != expected_text { return Err(Error.Invalid) }
+  print("prompt fixture command smoke passed")
+  return Ok(())
+}

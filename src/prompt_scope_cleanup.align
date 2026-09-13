@@ -1,0 +1,78 @@
+module prompt_scope_cleanup
+
+import std.process
+import std.time
+
+pub Report { released: bool, reaped: i64, first_error: Option<Error> }
+
+fn first(current: Option<Error>, candidate: Error) -> Option<Error> = match current {
+  Some(value) => Some(value), None => Some(candidate),
+}
+
+fn terminate_handle(borrow handle: process.member, signal: i64) -> Result<(), Error> {
+  if handle.finished()? { return Ok(()) }
+  return match handle.kill(signal) {
+    Ok(_) => Ok(()),
+    Err(error) => {
+      gone := match error { Code(code) => code == 3, _ => false }
+      if gone { Ok(()) } else { Err(error) }
+    },
+  }
+}
+
+fn terminate(borrow item: process.member_info, signal: i64) -> Result<(), Error> {
+  return terminate_handle(item.handle, signal)
+}
+
+// Failure never consumes the scope: its caller must keep the owner and workspace
+// alive until a later release succeeds or controlled final shutdown takes over.
+pub fn run(borrow mut scope: process.child_scope, deadline: i64, max_scan: i64, max_events: i64) -> Result<Report, Error> {
+  if max_scan <= 0 || max_scan > 32768 || max_events <= 0 || max_events > 8192 { return Err(Error.Invalid) }
+  mut failure: Option<Error> := None
+  mut reaped := 0
+  signal := process.signal_number(process.signal.Kill)
+  // Even an expired retry can recognize a scope that was already released.
+  match scope.release() {
+    Ok(released) => {
+      if released { return Ok(Report { released: true, reaped: 0, first_error: None }) }
+    },
+    Err(error) => { failure = first(failure, error) },
+  }
+  loop {
+    if time.instant() >= deadline { break }
+    match scope.children(max_scan) {
+      Ok(members) => {
+        mut index := 0
+        loop {
+          if index == members.len() || time.instant() >= deadline { break }
+          match terminate(members[index], signal) {
+            Ok(_) => {},
+            Err(error) => { failure = first(failure, error) },
+          }
+          index = index + 1
+        }
+      },
+      Err(error) => { failure = first(failure, error) },
+    }
+    if time.instant() >= deadline { break }
+    match scope.reap(max_events) {
+      Ok(events) => {
+        if events.len() > 9223372036854775807 - reaped { failure = first(failure, Error.Invalid) } else {
+          reaped = reaped + events.len()
+        }
+      },
+      Err(error) => { failure = first(failure, error) },
+    }
+    if time.instant() >= deadline { break }
+    match scope.release() {
+      Ok(released) => {
+        if released { return Ok(Report { released: true, reaped: reaped, first_error: failure }) }
+      },
+      Err(error) => { failure = first(failure, error) },
+    }
+    remaining := deadline - time.instant()
+    if remaining <= 0 { break }
+    time.sleep(if remaining < 1000000 { remaining } else { 1000000 })
+  }
+  return Ok(Report { released: false, reaped: reaped, first_error: failure })
+}

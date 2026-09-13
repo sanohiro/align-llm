@@ -1,0 +1,151 @@
+module prompt_tree_snapshot
+
+import prompt_artifacts
+import prompt_source_file
+import std.crypto
+import std.encoding
+import std.fs
+
+pub TreeSnapshot { artifact_digests: array<prompt_artifacts.ArtifactDigest>, sha256: string, byte_count: i64 }
+Entry { path: string, mode: string, byte_count: i64, sha256: string, directory: bool }
+Counts { entries: i64, bytes: i64 }
+
+fn kind_number(kind: fs.entry_kind) -> i64 {
+  return match kind { Regular => 1, Directory => 2, Symlink => 3, Other => 4 }
+}
+
+fn same_observation(before: fs.metadata, after: fs.metadata) -> bool {
+  return kind_number(before.kind) == kind_number(after.kind) &&
+  before.device == after.device && before.inode == after.inode &&
+  before.links == after.links && before.mode == after.mode && before.size == after.size &&
+  before.modified_seconds == after.modified_seconds && before.modified_nanoseconds == after.modified_nanoseconds &&
+  before.changed_seconds == after.changed_seconds && before.changed_nanoseconds == after.changed_nanoseconds
+}
+
+fn canonical_mode(metadata: fs.metadata) -> string {
+  kind_bits := match metadata.kind { Regular => 32768, Directory => 16384, _ => 0 }
+  mode := kind_bits + metadata.mode as i64
+  digits := "01234567"
+  output := builder()
+  mut divisor := 32768
+  loop {
+    digit := (mode / divisor) % 8
+    output.write(digits[digit..digit + 1])
+    if divisor == 1 { break }
+    divisor = divisor / 8
+  }
+  return output.to_string()
+}
+
+fn walk(
+  borrow directory: fs.directory,
+  prefix: str,
+  expected: fs.metadata,
+  maximum_entries: i64,
+  maximum_bytes: i64,
+  initial: Counts,
+  borrow mut items: array_builder<Entry>,
+) -> Result<Counts, Error> {
+  before := directory.metadata()?
+  if !same_observation(expected, before) { return Err(Error.Invalid) }
+  items.push(Entry { path: prefix.clone(), mode: canonical_mode(before), byte_count: 0, sha256: "".clone(), directory: true })
+  cursor := directory.cursor()?
+  mut counts := initial
+  loop {
+    entry := cursor.next()? else { break }
+    if counts.entries == maximum_entries { return Err(Error.Invalid) }
+    raw: slice<u8> := entry.name
+    name := raw.as_str()?
+    path_text := builder()
+    path_text.write(prefix)
+    path_text.write("/")
+    path_text.write(name)
+    path := path_text.to_string()
+    if path.len() > 4096 { return Err(Error.Invalid) }
+    metadata := directory.metadata_at(raw)?
+    counts.entries = counts.entries + 1
+    match metadata.kind {
+      Directory => {
+        child := directory.open_dir(raw)?
+        counts = walk(child, path, metadata, maximum_entries, maximum_bytes, counts, items)?
+      },
+      Regular => {
+        observed := prompt_source_file.observe(directory, raw, maximum_bytes - counts.bytes)?
+        if !same_observation(metadata, observed.metadata) { return Err(Error.Invalid) }
+        counts.bytes = counts.bytes + observed.metadata.size
+        items.push(Entry {
+            path: path,
+            mode: canonical_mode(observed.metadata),
+            byte_count: observed.metadata.size,
+            sha256: observed.sha256,
+            directory: false,
+          })
+      },
+      _ => { return Err(Error.Invalid) },
+    }
+  }
+  if !same_observation(before, directory.metadata()?) { return Err(Error.Invalid) }
+  return Ok(counts)
+}
+
+fn entry_path(entries: slice<Entry>, position: i64) -> str = entries[position].path
+
+pub fn observe(
+  borrow root: fs.directory,
+  relative: str,
+  maximum_entries: i64,
+  maximum_bytes: i64,
+) -> Result<TreeSnapshot, Error> {
+  if maximum_entries < 1 || maximum_entries > 128 || maximum_bytes < 0 || maximum_bytes > 1073741824 || relative.len() > 4096 {
+    return Err(Error.Invalid)
+  }
+  directory := root.open_dir(relative.bytes())?
+  metadata := directory.metadata()?
+  mut entries: array_builder<Entry> := array_builder()
+  counts := walk(directory, relative, metadata, maximum_entries, maximum_bytes, Counts { entries: 1, bytes: 0 }, entries)?
+  values := entries.build()
+  mut indices: array_builder<i64> := array_builder()
+  mut index := 0
+  loop {
+    if index == values.len() { break }
+    indices.push(index)
+    index = index + 1
+  }
+  positions := indices.build()
+  view: slice<Entry> := values
+  sorted := positions.sort_by_key(fn position { entry_path(view, position) })
+  digest := crypto.sha256_stream()
+  index = 0
+  loop {
+    if index == sorted.len() { break }
+    position := sorted[index]
+    digest.update(values[position].mode)
+    digest.update(" ")
+    digest.update(values[position].path)
+    digest.update("\0")
+    if values[position].directory {
+      digest.update("D\n")
+    } else {
+      digest.update("F ")
+      digest.update(values[position].sha256)
+      digest.update("\n")
+    }
+    index = index + 1
+  }
+  hash := digest.finish()
+  tree_hash := encoding.hex_encode(hash[0..hash.len()]).clone()
+  mut output: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  index = 0
+  loop {
+    if index == sorted.len() { break }
+    position := sorted[index]
+    output.push(prompt_artifacts.ArtifactDigest {
+        path: values[position].path.clone(),
+        mode: values[position].mode.clone(),
+        byte_count: values[position].byte_count,
+        sha256: if values[position].directory { tree_hash.clone() } else { values[position].sha256.clone() },
+      })
+    index = index + 1
+  }
+  return Ok(TreeSnapshot { artifact_digests: output.build(), sha256: tree_hash, byte_count: counts.bytes })
+}

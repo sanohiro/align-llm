@@ -98,16 +98,21 @@ fn oversized_endpoint() -> string {
   return output.to_string()
 }
 
+fn optional_text_diff(borrow value: Option<string>, expected: str) -> bool {
+  return match value { Some(text) => text != expected, None => true }
+}
+
 fn policy_value(helper: str, runtime: str, interpreter: str, git: str) -> prompt_artifacts.PromptSourceVerifierPolicy {
   return prompt_artifacts.PromptSourceVerifierPolicy {
     schema_version: 1,
     artifact_kind: "PROMPT_SOURCE_VERIFIER_POLICY".clone(),
     policy_id: "policy".clone(),
-    helper_path: "helper.py".clone(),
-    helper_sha256: helper.clone(),
-    helper_runtime: runtime.clone(),
-    interpreter_sha256: interpreter.clone(),
+    helper_path: Some("helper.py".clone()),
+    helper_sha256: Some(helper.clone()),
+    helper_runtime: Some(runtime.clone()),
+    interpreter_sha256: Some(interpreter.clone()),
     git_executable_sha256: git.clone(),
+    product_executable_sha256: None,
     content_sha256: "".clone(),
   }
 }
@@ -116,11 +121,11 @@ fn policy_golden() -> Result<(), Error> {
   expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_SOURCE_VERIFIER_POLICY\",\"policy_id\":\"policy\",\"helper_path\":\"helper.py\",\"helper_sha256\":\"helper\",\"helper_runtime\":\"CPYTHON:python:helper\",\"interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"content_sha256\":\"policy-digest\"}"
   decoded := prompt_artifacts.decode_prompt_source_verifier_policy(expected)?
   if decoded.schema_version != 1 || decoded.artifact_kind != "PROMPT_SOURCE_VERIFIER_POLICY" ||
-  decoded.policy_id != "policy" || decoded.helper_path != "helper.py" ||
-  decoded.helper_sha256 != "helper" || decoded.helper_runtime != "CPYTHON:python:helper" ||
-  decoded.interpreter_sha256 != "python" || decoded.git_executable_sha256 != "git" ||
+  decoded.policy_id != "policy" || optional_text_diff(decoded.helper_path, "helper.py") ||
+  optional_text_diff(decoded.helper_sha256, "helper") || optional_text_diff(decoded.helper_runtime, "CPYTHON:python:helper") ||
+  optional_text_diff(decoded.interpreter_sha256, "python") || decoded.git_executable_sha256 != "git" ||
   decoded.content_sha256 != "policy-digest" ||
-  prompt_artifacts.encode_prompt_source_verifier_policy(decoded) != expected {
+  prompt_artifacts.encode_prompt_source_verifier_policy(decoded)? != expected {
     return Err(Error.Invalid)
   }
   legacy := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_SOURCE_VERIFIER_POLICY\",\"policy_id\":\"policy\",\"helper_path\":\"helper.py\",\"helper_sha256\":\"helper\",\"helper_runtime\":\"PYTHON:helper\",\"git_executable_sha256\":\"git\",\"content_sha256\":\"policy-digest\"}"
@@ -135,16 +140,16 @@ fn policy_golden() -> Result<(), Error> {
 
   base := prompt_artifacts.encode_prompt_source_verifier_policy(
     policy_value("helper", "CPYTHON:python:helper", "python", "git"),
-  )
+  )?
   if base == prompt_artifacts.encode_prompt_source_verifier_policy(
     policy_value("helper-2", "CPYTHON:python:helper", "python", "git"),
-  ) || base == prompt_artifacts.encode_prompt_source_verifier_policy(
+  )? || base == prompt_artifacts.encode_prompt_source_verifier_policy(
     policy_value("helper", "CPYTHON:python-2:helper", "python", "git"),
-  ) || base == prompt_artifacts.encode_prompt_source_verifier_policy(
+  )? || base == prompt_artifacts.encode_prompt_source_verifier_policy(
     policy_value("helper", "CPYTHON:python:helper", "python-2", "git"),
-  ) || base == prompt_artifacts.encode_prompt_source_verifier_policy(
+  )? || base == prompt_artifacts.encode_prompt_source_verifier_policy(
     policy_value("helper", "CPYTHON:python:helper", "python", "git-2"),
-  ) {
+  )? {
     return Err(Error.Invalid)
   }
   return Ok(())
@@ -174,24 +179,26 @@ fn request_value(manifest: Option<string>) -> prompt_artifacts.PromptEvaluateReq
     verifier_corpus_source_sha256: "corpus".clone(),
     verifier_source_policy_path: "source-policy.json".clone(),
     verifier_source_policy_sha256: "policy".clone(),
-    verifier_python_executable_path: "/usr/bin/python3.12".clone(),
+    verifier_python_executable_path: Some("/usr/bin/python3.12".clone()),
     verifier_git_executable_path: "/usr/bin/git".clone(),
     evaluation_evidence_path: "evidence.json".clone(),
-    generation_child_path: "/project/main".clone(),
-    generation_child_sha256: "child".clone(),
+    product_executable_path: None,
+    product_executable_sha256: None,
+    generation_child_path: Some("/project/main".clone()),
+    generation_child_sha256: Some("child".clone()),
   }
 }
 
 fn request_golden() -> Result<(), Error> {
   expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATE_REQUEST\",\"evaluation_id\":\"evaluation\",\"project_root\":\"/project\",\"experiment_path\":\"experiment.json\",\"parent_activation_path\":\"parent.json\",\"corpus_path\":\"corpus.json\",\"sample_count\":2,\"acceptance_policy_path\":\"acceptance.json\",\"workspace_path\":\"/project/workspace\",\"workspace_preflight_path\":\"preflight.json\",\"verifier_align_llm_repository_path\":\"/align-llm\",\"verifier_align_llm_commit\":\"llm\",\"verifier_align_repository_path\":\"/align\",\"verifier_align_revision\":\"align\",\"verifier_corpus_source_path\":\"/corpus\",\"verifier_corpus_source_kind\":\"GIT_COMMIT\",\"verifier_corpus_source_repository_id\":\"repo\",\"verifier_corpus_source_sha256\":\"corpus\",\"verifier_source_policy_path\":\"source-policy.json\",\"verifier_source_policy_sha256\":\"policy\",\"verifier_python_executable_path\":\"/usr/bin/python3.12\",\"verifier_git_executable_path\":\"/usr/bin/git\",\"evaluation_evidence_path\":\"evidence.json\",\"generation_child_path\":\"/project/main\",\"generation_child_sha256\":\"child\"}"
   decoded := prompt_artifacts.decode_prompt_evaluate_request(expected)?
-  if decoded.evaluation_id != "evaluation" || decoded.verifier_python_executable_path != "/usr/bin/python3.12" ||
+  if decoded.evaluation_id != "evaluation" || optional_text_diff(decoded.verifier_python_executable_path, "/usr/bin/python3.12") ||
   decoded.verifier_git_executable_path != "/usr/bin/git" ||
   match decoded.verifier_corpus_file_set_manifest_path { Some(_) => true, None => false } {
     return Err(Error.Invalid)
   }
   encoded_decoded := prompt_artifacts.decode_prompt_evaluate_request(expected)?
-  if prompt_artifacts.encode_prompt_evaluate_request(encoded_decoded) != expected { return Err(Error.Invalid) }
+  if prompt_artifacts.encode_prompt_evaluate_request(encoded_decoded)? != expected { return Err(Error.Invalid) }
   legacy := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATE_REQUEST\",\"evaluation_id\":\"evaluation\"}"
   expect_request_invalid(legacy)?
   duplicate: string := duplicate_first_field(expected)
@@ -214,7 +221,7 @@ fn request_golden() -> Result<(), Error> {
   }
 
   some_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EVALUATE_REQUEST\",\"evaluation_id\":\"evaluation\",\"project_root\":\"/project\",\"experiment_path\":\"experiment.json\",\"parent_activation_path\":\"parent.json\",\"corpus_path\":\"corpus.json\",\"sample_count\":2,\"acceptance_policy_path\":\"acceptance.json\",\"workspace_path\":\"/project/workspace\",\"workspace_preflight_path\":\"preflight.json\",\"verifier_align_llm_repository_path\":\"/align-llm\",\"verifier_align_llm_commit\":\"llm\",\"verifier_align_repository_path\":\"/align\",\"verifier_align_revision\":\"align\",\"verifier_corpus_source_path\":\"/corpus\",\"verifier_corpus_source_kind\":\"GIT_COMMIT\",\"verifier_corpus_file_set_manifest_path\":\"/manifest\",\"verifier_corpus_source_repository_id\":\"repo\",\"verifier_corpus_source_sha256\":\"corpus\",\"verifier_source_policy_path\":\"source-policy.json\",\"verifier_source_policy_sha256\":\"policy\",\"verifier_python_executable_path\":\"/usr/bin/python3.12\",\"verifier_git_executable_path\":\"/usr/bin/git\",\"evaluation_evidence_path\":\"evidence.json\",\"generation_child_path\":\"/project/main\",\"generation_child_sha256\":\"child\"}"
-  if prompt_artifacts.encode_prompt_evaluate_request(request_value(Some("/manifest".clone()))) != some_expected {
+  if prompt_artifacts.encode_prompt_evaluate_request(request_value(Some("/manifest".clone())))? != some_expected {
     return Err(Error.Invalid)
   }
   some_decoded := prompt_artifacts.decode_prompt_evaluate_request(some_expected)?
@@ -235,12 +242,17 @@ fn locator_value(manifest: Option<string>) -> prompt_artifacts.PromptGateSourceL
     corpus_file_set_manifest_relative_path: manifest,
     source_verifier_policy_relative_path: "policy.json".clone(),
     source_verifier_policy_sha256: "policy".clone(),
-    source_verifier_relative_path: "verifier.py".clone(),
-    source_verifier_sha256: "helper".clone(),
-    source_verifier_runtime: "CPYTHON:python:helper".clone(),
-    source_verifier_interpreter_sha256: "python".clone(),
+    source_verifier_relative_path: Some("verifier.py".clone()),
+    source_verifier_sha256: Some("helper".clone()),
+    source_verifier_runtime: Some("CPYTHON:python:helper".clone()),
+    source_verifier_interpreter_sha256: Some("python".clone()),
+    independent_verifier_relative_path: None,
+    independent_verifier_sha256: None,
+    independent_verifier_runtime: None,
+    independent_verifier_interpreter_sha256: None,
     git_executable_sha256: "git".clone(),
-    generation_child_sha256: "child".clone(),
+    generation_child_sha256: Some("child".clone()),
+    product_executable_sha256: None,
     content_sha256: "locator".clone(),
   }
 }
@@ -248,14 +260,14 @@ fn locator_value(manifest: Option<string>) -> prompt_artifacts.PromptGateSourceL
 fn locator_golden() -> Result<(), Error> {
   expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\",\"align_llm_source_relative_path\":\"align-llm\",\"align_source_relative_path\":\"align\",\"corpus_source_relative_path\":\"corpus\",\"source_verifier_policy_relative_path\":\"policy.json\",\"source_verifier_policy_sha256\":\"policy\",\"source_verifier_relative_path\":\"verifier.py\",\"source_verifier_sha256\":\"helper\",\"source_verifier_runtime\":\"CPYTHON:python:helper\",\"source_verifier_interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"generation_child_sha256\":\"child\",\"content_sha256\":\"locator\"}"
   decoded := prompt_artifacts.decode_prompt_gate_source_locator(expected)?
-  if decoded.source_bundle_id != "bundle" || decoded.source_verifier_sha256 != "helper" ||
-  decoded.source_verifier_interpreter_sha256 != "python" || decoded.git_executable_sha256 != "git" ||
-  decoded.generation_child_sha256 != "child" ||
+  if decoded.source_bundle_id != "bundle" || optional_text_diff(decoded.source_verifier_sha256, "helper") ||
+  optional_text_diff(decoded.source_verifier_interpreter_sha256, "python") || decoded.git_executable_sha256 != "git" ||
+  optional_text_diff(decoded.generation_child_sha256, "child") ||
   match decoded.corpus_file_set_manifest_relative_path { Some(_) => true, None => false } {
     return Err(Error.Invalid)
   }
   encoded_decoded := prompt_artifacts.decode_prompt_gate_source_locator(expected)?
-  if prompt_artifacts.encode_prompt_gate_source_locator(encoded_decoded) != expected { return Err(Error.Invalid) }
+  if prompt_artifacts.encode_prompt_gate_source_locator(encoded_decoded)? != expected { return Err(Error.Invalid) }
   legacy := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\"}"
   expect_locator_invalid(legacy)?
   duplicate: string := duplicate_first_field(expected)
@@ -278,7 +290,7 @@ fn locator_golden() -> Result<(), Error> {
   }
 
   some_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GATE_SOURCE_LOCATOR\",\"source_bundle_id\":\"bundle\",\"align_llm_source_relative_path\":\"align-llm\",\"align_source_relative_path\":\"align\",\"corpus_source_relative_path\":\"corpus\",\"corpus_file_set_manifest_relative_path\":\"manifest\",\"source_verifier_policy_relative_path\":\"policy.json\",\"source_verifier_policy_sha256\":\"policy\",\"source_verifier_relative_path\":\"verifier.py\",\"source_verifier_sha256\":\"helper\",\"source_verifier_runtime\":\"CPYTHON:python:helper\",\"source_verifier_interpreter_sha256\":\"python\",\"git_executable_sha256\":\"git\",\"generation_child_sha256\":\"child\",\"content_sha256\":\"locator\"}"
-  if prompt_artifacts.encode_prompt_gate_source_locator(locator_value(Some("manifest".clone()))) != some_expected {
+  if prompt_artifacts.encode_prompt_gate_source_locator(locator_value(Some("manifest".clone())))? != some_expected {
     return Err(Error.Invalid)
   }
   some_decoded := prompt_artifacts.decode_prompt_gate_source_locator(some_expected)?
@@ -458,7 +470,7 @@ fn experiment_request_validation_rows() -> Result<(), Error> {
 
 fn experiment_request_golden() -> Result<(), Error> {
   expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_REQUEST\",\"experiment_id\":\"experiment\",\"project_root\":\"/project\",\"parent_activation_path\":\"parent.json\",\"opportunity_path\":\"opportunity.json\",\"proposal_provider_kind\":\"CLOUD_OPENAI\",\"proposal_provider_endpoint\":\"https://provider.invalid/v1/chat/completions\",\"proposal_provider_endpoint_id\":\"endpoint\",\"proposal_provider_model\":\"model\",\"api_key_env\":\"ALIGN_LLM_API_KEY\",\"timeout_ns\":60000000000,\"max_prompt_bytes\":262144,\"max_tokens\":8192,\"temperature_micros\":0}"
-  if prompt_artifacts.encode_prompt_experiment_request(cloud_experiment_request()) != expected {
+  if prompt_artifacts.encode_prompt_experiment_request(cloud_experiment_request())? != expected {
     return Err(Error.Invalid)
   }
   decoded := prompt_artifacts.decode_prompt_experiment_request(expected)?
@@ -476,7 +488,7 @@ fn experiment_request_golden() -> Result<(), Error> {
   !prompt_artifacts.verify_prompt_experiment_request(decoded) {
     return Err(Error.Invalid)
   }
-  if prompt_artifacts.encode_prompt_experiment_request(decoded) != expected {
+  if prompt_artifacts.encode_prompt_experiment_request(decoded)? != expected {
     return Err(Error.Invalid)
   }
 
@@ -486,7 +498,7 @@ fn experiment_request_golden() -> Result<(), Error> {
   expect_experiment_request_bounded_rejected(cloud_experiment_request(), 16)?
 
   llama_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_REQUEST\",\"experiment_id\":\"experiment\",\"project_root\":\"/project\",\"parent_activation_path\":\"parent.json\",\"opportunity_path\":\"opportunity.json\",\"proposal_provider_kind\":\"LLAMA_CPP\",\"proposal_provider_endpoint\":\"http://127.0.0.1:8080/completion\",\"proposal_provider_endpoint_id\":\"endpoint\",\"proposal_provider_model\":\"model\",\"tokenize_endpoint\":\"http://127.0.0.1:8080/tokenize\",\"timeout_ns\":60000000000,\"max_prompt_bytes\":262144,\"max_tokens\":8192,\"temperature_micros\":0}"
-  if prompt_artifacts.encode_prompt_experiment_request(llama_experiment_request()) != llama_expected {
+  if prompt_artifacts.encode_prompt_experiment_request(llama_experiment_request())? != llama_expected {
     return Err(Error.Invalid)
   }
   llama_decoded := prompt_artifacts.decode_prompt_experiment_request(llama_expected)?
@@ -494,12 +506,12 @@ fn experiment_request_golden() -> Result<(), Error> {
   !prompt_artifacts.verify_prompt_experiment_request(llama_decoded) {
     return Err(Error.Invalid)
   }
-  if prompt_artifacts.encode_prompt_experiment_request(llama_decoded) != llama_expected {
+  if prompt_artifacts.encode_prompt_experiment_request(llama_decoded)? != llama_expected {
     return Err(Error.Invalid)
   }
 
   local_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_EXPERIMENT_REQUEST\",\"experiment_id\":\"experiment\",\"project_root\":\"/project\",\"parent_activation_path\":\"parent.json\",\"opportunity_path\":\"opportunity.json\",\"proposal_provider_kind\":\"LOCAL_OPENAI\",\"proposal_provider_endpoint\":\"http://127.0.0.1:8000/v1/chat/completions\",\"proposal_provider_endpoint_id\":\"endpoint\",\"proposal_provider_model\":\"model\",\"timeout_ns\":60000000000,\"max_prompt_bytes\":262144,\"max_tokens\":8192,\"temperature_micros\":0}"
-  if prompt_artifacts.encode_prompt_experiment_request(local_experiment_request()) != local_expected {
+  if prompt_artifacts.encode_prompt_experiment_request(local_experiment_request())? != local_expected {
     return Err(Error.Invalid)
   }
   local_decoded := prompt_artifacts.decode_prompt_experiment_request(local_expected)?
@@ -750,7 +762,7 @@ fn generation_request_validation_rows() -> Result<(), Error> {
 
 fn generation_request_golden() -> Result<(), Error> {
   expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_REQUEST\",\"request_id\":\"generation\",\"provider_kind\":\"LOCAL_OPENAI\",\"endpoint\":\"http://127.0.0.1:8000/v1/chat/completions\",\"provider_model\":\"model\",\"rendered_prompt_path\":\"rendered.json\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":8192,\"temperature_micros\":0,\"paired_seed\":42,\"timeout_ns\":60000000000,\"max_response_bytes\":262144,\"content_sha256\":\"5e02a38edb741ef65daa65c35c60c6c96ce65e08829d36b9129d8787a40de508\"}"
-  if prompt_artifacts.encode_prompt_generation_request(local_generation_request()) != expected {
+  if prompt_artifacts.encode_prompt_generation_request(local_generation_request())? != expected {
     return Err(Error.Invalid)
   }
   decoded := prompt_artifacts.decode_prompt_generation_request(expected)?
@@ -764,7 +776,7 @@ fn generation_request_golden() -> Result<(), Error> {
   !prompt_artifacts.verify_prompt_generation_request(decoded) {
     return Err(Error.Invalid)
   }
-  if prompt_artifacts.encode_prompt_generation_request(decoded) != expected {
+  if prompt_artifacts.encode_prompt_generation_request(decoded)? != expected {
     return Err(Error.Invalid)
   }
 
@@ -774,7 +786,7 @@ fn generation_request_golden() -> Result<(), Error> {
   expect_generation_request_bounded_rejected(local_generation_request(), 16)?
 
   cloud_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_REQUEST\",\"request_id\":\"generation\",\"provider_kind\":\"CLOUD_OPENAI\",\"endpoint\":\"https://provider.invalid/v1/chat/completions\",\"provider_model\":\"model\",\"api_key_env\":\"ALIGN_LLM_API_KEY\",\"rendered_prompt_path\":\"rendered.json\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":8192,\"temperature_micros\":0,\"paired_seed\":42,\"timeout_ns\":60000000000,\"max_response_bytes\":262144,\"content_sha256\":\"104c8806a24a02ded8ad308fa89eeff6081a2a9e28c181cadbe345197e71b7d3\"}"
-  if prompt_artifacts.encode_prompt_generation_request(cloud_generation_request()) != cloud_expected {
+  if prompt_artifacts.encode_prompt_generation_request(cloud_generation_request())? != cloud_expected {
     return Err(Error.Invalid)
   }
   cloud_decoded := prompt_artifacts.decode_prompt_generation_request(cloud_expected)?
@@ -782,12 +794,12 @@ fn generation_request_golden() -> Result<(), Error> {
   !prompt_artifacts.verify_prompt_generation_request(cloud_decoded) {
     return Err(Error.Invalid)
   }
-  if prompt_artifacts.encode_prompt_generation_request(cloud_decoded) != cloud_expected {
+  if prompt_artifacts.encode_prompt_generation_request(cloud_decoded)? != cloud_expected {
     return Err(Error.Invalid)
   }
 
   llama_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_REQUEST\",\"request_id\":\"generation\",\"provider_kind\":\"LLAMA_CPP\",\"endpoint\":\"http://127.0.0.1:8080/completion\",\"provider_model\":\"model\",\"rendered_prompt_path\":\"rendered.json\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":8192,\"temperature_micros\":0,\"paired_seed\":42,\"timeout_ns\":60000000000,\"max_response_bytes\":262144,\"content_sha256\":\"53a33169529ea4373c134bb7a36b382a2b76384f93421bc379cc6bfff7b612ad\"}"
-  if prompt_artifacts.encode_prompt_generation_request(llama_generation_request()) != llama_expected {
+  if prompt_artifacts.encode_prompt_generation_request(llama_generation_request())? != llama_expected {
     return Err(Error.Invalid)
   }
 
@@ -884,7 +896,7 @@ fn undispatched_response() -> prompt_artifacts.PromptGenerationResponse {
 
 fn generation_response_golden() -> Result<(), Error> {
   expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_RESPONSE\",\"request_id\":\"generation\",\"status\":\"GENERATED\",\"error_code\":\"NONE\",\"error\":\"\",\"provider_kind\":\"LOCAL_OPENAI\",\"provider_model\":\"model\",\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seed_result\":\"APPLIED\",\"applied_seed\":42,\"http_status\":200,\"content\":\"patch text\",\"dispatch_start_ns\":10,\"dispatch_end_ns\":20,\"content_sha256\":\"53fb73003932f7a481d989eefca9db4800399b9c63ffc7dea47e5ddf20693a76\"}"
-  if prompt_artifacts.encode_prompt_generation_response(generated_response()) != expected {
+  if prompt_artifacts.encode_prompt_generation_response(generated_response())? != expected {
     return Err(Error.Invalid)
   }
   decoded := prompt_artifacts.decode_prompt_generation_response(expected)?
@@ -899,7 +911,7 @@ fn generation_response_golden() -> Result<(), Error> {
   }
   if prompt_artifacts.encode_prompt_generation_response(
     prompt_artifacts.clone_prompt_generation_response(decoded),
-  ) != expected {
+  )? != expected {
     return Err(Error.Invalid)
   }
   applied_ok := match decoded.applied_seed { None => false, Some(seed) => seed == 42 }
@@ -910,7 +922,7 @@ fn generation_response_golden() -> Result<(), Error> {
   // The three optional fields are omitted together on every response that never reached a received
   // HTTP response, and `UNSUPPORTED`/`REJECTED` require an absent `applied_seed`.
   sparse_expected := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_RESPONSE\",\"request_id\":\"generation\",\"status\":\"PROVIDER_ERROR\",\"error_code\":\"PROVIDER_TIMEOUT\",\"error\":\"generation provider transport failure\",\"provider_kind\":\"LOCAL_OPENAI\",\"provider_model\":\"model\",\"provider_request_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"seed_result\":\"UNSUPPORTED\",\"dispatch_start_ns\":10,\"dispatch_end_ns\":20,\"content_sha256\":\"90e574f52668e143035e433f48e08b133c70d73717c0758d8547421e273a207c\"}"
-  if prompt_artifacts.encode_prompt_generation_response(undispatched_response()) != sparse_expected {
+  if prompt_artifacts.encode_prompt_generation_response(undispatched_response())? != sparse_expected {
     return Err(Error.Invalid)
   }
   sparse_decoded := prompt_artifacts.decode_prompt_generation_response(sparse_expected)?
@@ -919,7 +931,7 @@ fn generation_response_golden() -> Result<(), Error> {
   }
   if prompt_artifacts.encode_prompt_generation_response(
     prompt_artifacts.clone_prompt_generation_response(sparse_decoded),
-  ) != sparse_expected {
+  )? != sparse_expected {
     return Err(Error.Invalid)
   }
   sparse_applied := match sparse_decoded.applied_seed { None => true, Some(_) => false }
@@ -939,7 +951,7 @@ fn generation_response_golden() -> Result<(), Error> {
   escaped_decoded := prompt_artifacts.decode_prompt_generation_response(escaped)?
   if prompt_artifacts.encode_prompt_generation_response(
     prompt_artifacts.clone_prompt_generation_response(escaped_decoded),
-  ) != escaped {
+  )? != escaped {
     return Err(Error.Invalid)
   }
   escaped_ok := match escaped_decoded.content {

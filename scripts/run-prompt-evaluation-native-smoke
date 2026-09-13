@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+owner=prompt_evaluation_native_smoke
+mode="${1:-native}"
+if [[ "$mode" == cli || "$mode" == coding || "$mode" == cutover || "$mode" == cutover-no-python ]]; then owner=main; elif [[ "$mode" != native ]]; then exit 2; fi
+scratch="$(mktemp -d)"
+scratch="$(cd "$scratch" && pwd -P)"
+trap 'status=$?; if [ "$status" -eq 0 ]; then rm -rf "$scratch"; else echo "Preserved attempt fixture: $scratch" >&2; fi' EXIT
+if [[ "$mode" == coding || "$mode" == cutover || "$mode" == cutover-no-python ]]; then
+  cp "${ALIGN_LLM_BIN:-$project_root/main}" "$scratch/main"
+else
+  "$compiler" check-per-unit "$project_root/src/$owner.align"
+  (cd "$scratch" && "$project_root/scripts/run-main-with-shim" "$compiler" build "$project_root/src/$owner.align")
+fi
+mkdir "$scratch/image" "$scratch/source" "$scratch/oracle" "$scratch/workspace"
+cp "$(command -v git)" "$scratch/image/git"
+git_hash="$(sha256sum "$scratch/image/git" | cut -d ' ' -f 1)"
+printf 'before\n' > "$scratch/source/a"
+chmod 644 "$scratch/source/a"
+oracle_env=(env -i HOME=/tmp/home PATH=/usr/bin:/bin TMPDIR=/tmp LC_ALL=C
+  GIT_CONFIG_NOSYSTEM=1 GIT_ATTR_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_REPLACE_OBJECTS=1
+  'GIT_AUTHOR_NAME=align-llm fixture' GIT_AUTHOR_EMAIL=fixture@align-llm.invalid GIT_AUTHOR_DATE=2026-01-01T00:00:00Z
+  'GIT_COMMITTER_NAME=align-llm fixture' GIT_COMMITTER_EMAIL=fixture@align-llm.invalid GIT_COMMITTER_DATE=2026-01-01T00:00:00Z)
+"${oracle_env[@]}" git -C "$scratch/oracle" init -q --initial-branch=main --object-format=sha1
+blob="$(printf 'before\n' | "${oracle_env[@]}" git -C "$scratch/oracle" hash-object -w --stdin)"
+tree="$(printf '100644 blob %s\ta\n' "$blob" | "${oracle_env[@]}" git -C "$scratch/oracle" mktree)"
+revision="$(printf 'Create deterministic evaluation fixture\n' | "${oracle_env[@]}" git -C "$scratch/oracle" commit-tree "$tree")"
+cat > "$scratch/patch-input" <<'PATCH'
+diff --git a/a b/a
+--- a/a
++++ b/a
+@@ -1 +1 @@
+-before
++after
+PATCH
+hash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+product_hash="$(sha256sum "$scratch/$owner" | cut -d ' ' -f 1)"
+revision_align="$(tr -d '\n' < "$project_root/.align-revision")"
+(cd "$scratch" && "$compiler" build "$project_root/src/prompt_evaluation_inputs_smoke.align")
+"$scratch/prompt_evaluation_inputs_smoke" "$scratch" fixture
+
+# Rebind the independent admission fixture to this actual product, Git image and private source.
+# Each parent digest is reconstructed only after all of its children have their final identity.
+bind_record() {
+  file="$1"; filter="$2"; shift 2
+  jq -cj "$@" "$filter | .content_sha256=\"\"" "$scratch/$file" > "$scratch/canonical"
+  digest="$(sha256sum "$scratch/canonical" | cut -d ' ' -f 1)"
+  jq -cj --arg digest "$digest" '.content_sha256=$digest' "$scratch/canonical" > "$scratch/$file"
+}
+bind_record source-policy.json '.product_executable_sha256=$product | .git_executable_sha256=$git' --arg product "$product_hash" --arg git "$git_hash"
+bind_record preflight.json '.project_root=$root | .workspace_path=($root+"/workspace")' --arg root "$scratch"
+bind_record environment.json '.executable_paths=["/usr/bin/sh"]'
+jq -cj '.activation.scope' "$scratch/parent.json" > "$scratch/scope.json"
+bind_record scope.json '.align_revision=$align' --arg align "$revision_align"
+jq -cj --slurpfile scope "$scratch/scope.json" '.activation | .scope=$scope[0]' "$scratch/parent.json" > "$scratch/activation.json"
+bind_record activation.json '.'
+bind_record parent.json '.activation=$activation[0]' --slurpfile activation "$scratch/activation.json"
+bind_record experiment.json '.scope=$scope[0] | .parent_activation.content_sha256=$parent[0].content_sha256 |
+  {artifact_kind:"OPPORTUNITY",path:"opportunity.json",artifact_id:"opportunity",content_sha256:("a"*64)} as $opportunity |
+  del(.opportunity) | to_entries | map(if .key=="scope" then ., {key:"opportunity",value:$opportunity} else . end) | from_entries' \
+  --slurpfile scope "$scratch/scope.json" --slurpfile parent "$scratch/parent.json"
+source_identity="$(python3 "$project_root/scripts/check-native-evaluation-fixture" --tree-digest "$scratch" source)"
+for prefix in task-one task-two; do
+  jq -cj '.failure_memory_jsonl' "$scratch/$prefix-context.json" > "$scratch/memory.json"
+  bind_record memory.json '.text=""'
+  bind_record "$prefix-context.json" '.failure_memory_jsonl=$memory[0]' --slurpfile memory "$scratch/memory.json"
+  jq -cj --arg revision "$revision" '
+    .source_revision=$revision | .allowed_edits=["a"] |
+    .validation_argv=["/usr/bin/sh","-c","test \"$(cat a)\" = after"]
+  ' "$scratch/$prefix-definition.json" > "$scratch/definition-new"
+  mv "$scratch/definition-new" "$scratch/$prefix-definition.json"
+  cp "$scratch/patch-input" "$scratch/$prefix-patch.txt"
+  chmod 644 "$scratch/$prefix-definition.json" "$scratch/$prefix-patch.txt"
+  definition_sha="$(sha256sum "$scratch/$prefix-definition.json" | cut -d ' ' -f 1)"
+  patch_sha="$(sha256sum "$scratch/$prefix-patch.txt" | cut -d ' ' -f 1)"
+  definition_identity="$(printf '100644 %s-definition.json\0F %s\n' "$prefix" "$definition_sha" | sha256sum | cut -d ' ' -f 1)"
+  patch_identity="$(printf '100644 %s-patch.txt\0F %s\n' "$prefix" "$patch_sha" | sha256sum | cut -d ' ' -f 1)"
+  bind_record "$prefix.json" '
+    .repo_revision=$revision | .repo_path="source" | .cwd="source" | .require_clean_repo=false | .timeout_ns=30000000000 |
+    .task_definition_sha256=$definition | .patch_sha256=$patch |
+    .artifacts[0].expected_sha256=$definition_identity | .artifacts[1].expected_sha256=$patch_identity |
+    .artifacts[2].expected_sha256=$source_identity
+  ' --arg revision "$revision" --arg definition "$definition_sha" --arg patch "$patch_sha" \
+    --arg definition_identity "$definition_identity" --arg patch_identity "$patch_identity" --arg source_identity "$source_identity"
+done
+printf '%s\n' "$revision_align" > "$scratch/.align-revision"
+jq -cj --arg root "$scratch" --arg product "$product_hash" --arg align "$revision_align" --arg owner "${owner:-prompt_evaluation_native_smoke}" --slurpfile policy "$scratch/source-policy.json" '
+  .project_root=$root | .workspace_path=($root+"/workspace") |
+  .verifier_align_llm_repository_path=($root+"/absent-application") | .verifier_align_llm_commit=$align |
+  .verifier_align_repository_path=($root+"/absent-language") | .verifier_align_revision=$align |
+  .verifier_corpus_source_path=($root+"/absent-corpus") |
+  .verifier_corpus_file_set_manifest_path=($root+"/absent-manifest") |
+  .verifier_source_policy_sha256=$policy[0].content_sha256 | .verifier_git_executable_path=($root+"/image/git") |
+  .product_executable_path=($root+"/"+$owner) | .product_executable_sha256=$product
+' "$scratch/request.json" > "$scratch/actual-request.json"
+if [[ "${owner:-prompt_evaluation_native_smoke}" == main ]]; then
+  "$scratch/prompt_evaluation_inputs_smoke" "$scratch/actual-request.json" canonical > "$scratch/canonical-request.json"
+  if [[ "$mode" == coding ]]; then
+    bash "$project_root/scripts/run-native-coding-smoke" "$scratch"
+    exit 0
+  fi
+  "$scratch/main" prompt evaluate "$scratch/canonical-request.json" result.json > "$scratch/cli-output"
+else
+  "$scratch/prompt_evaluation_native_smoke" "$scratch/actual-request.json" > "$scratch/output"
+  jq -er '.result_source' "$scratch/output" > "$scratch/result.json"
+  jq -er '.evidence_source' "$scratch/output" > "$scratch/evidence.json"
+  jq -e '.survivors==[]' "$scratch/output" >/dev/null
+fi
+jq -e '(.status=="NO_IMPROVEMENT" or .status=="IMPROVED" or .status=="SERIOUS_REGRESSION") and .gate_eligible==false and (.rows|length)==8 and
+  all(.rows[]; .measurement.status=="PASS" and .repair_loop_count==0) and
+  [.rows[].variant]==["PARENT","CANDIDATE","CANDIDATE","PARENT","PARENT","CANDIDATE","CANDIDATE","PARENT"] and
+  .corpus_aggregate.task_count==2 and .corpus_aggregate.parent_pass_count==4 and .corpus_aggregate.candidate_pass_count==4
+' "$scratch/result.json" >/dev/null
+[[ -z "$(find "$scratch/workspace" -mindepth 1 -print -quit)" && "$(cat "$scratch/source/a")" == before ]]
+for file in result.json evidence.json; do
+  claimed="$(jq -r .content_sha256 "$scratch/$file")"
+  jq -cj '.content_sha256=""' "$scratch/$file" > "$scratch/canonical"
+  [[ "$(sha256sum "$scratch/canonical" | cut -d ' ' -f 1)" == "$claimed" ]]
+done
+[[ "$(jq -r .evaluation_result_sha256 "$scratch/evidence.json")" == "$(jq -r .content_sha256 "$scratch/result.json")" ]]
+python3 "$project_root/scripts/check-native-evaluation-fixture" "$scratch/result.json"
+if [[ "${owner:-prompt_evaluation_native_smoke}" == main ]]; then
+  result_before="$(sha256sum "$scratch/result.json" | cut -d ' ' -f 1)"
+  evidence_before="$(sha256sum "$scratch/evidence.json" | cut -d ' ' -f 1)"
+  if "$scratch/main" prompt evaluate "$scratch/canonical-request.json" result.json > "$scratch/rejected"; then exit 1; fi
+  if "$scratch/main" prompt evaluate "$scratch/canonical-request.json" occupied-result.json > "$scratch/rejected"; then exit 1; fi
+  jq -e '.status=="INVALID_INPUT" and .error_code=="INVALID_PATH"' "$scratch/occupied-result.json" >/dev/null
+  jq -cj '.sample_count=1 | .evaluation_evidence_path="invalid-sample-evidence.json"' "$scratch/canonical-request.json" > "$scratch/invalid-sample-request.json"
+  if "$scratch/main" prompt evaluate "$scratch/invalid-sample-request.json" invalid-sample-result.json > "$scratch/rejected"; then exit 1; fi
+  jq -e '.status=="INVALID_INPUT" and .error_code=="INVALID_INPUT"' "$scratch/invalid-sample-result.json" >/dev/null
+  [[ ! -e "$scratch/invalid-sample-evidence.json" ]]
+  jq -cj '.evaluation_evidence_path="missing-parent-evidence.json"' "$scratch/canonical-request.json" > "$scratch/missing-parent-request.json"
+  if "$scratch/main" prompt evaluate "$scratch/missing-parent-request.json" missing-parent/result.json > "$scratch/rejected"; then exit 1; fi
+  [[ ! -e "$scratch/missing-parent-evidence.json" && ! -e "$scratch/missing-parent" ]]
+  cp "$scratch/corpus.json" "$scratch/corpus-original"
+  bind_record corpus.json '.task_files[1]="missing-final-task.json"'
+  jq -cj '.evaluation_evidence_path="missing-task-evidence.json"' "$scratch/canonical-request.json" > "$scratch/missing-task-request.json"
+  if "$scratch/main" prompt evaluate "$scratch/missing-task-request.json" missing-task-result.json > "$scratch/rejected"; then exit 1; fi
+  jq -e '.status=="INVALID_INPUT"' "$scratch/missing-task-result.json" >/dev/null
+  mv "$scratch/corpus-original" "$scratch/corpus.json"
+  [[ ! -e "$scratch/missing-task-evidence.json" && -z "$(find "$scratch/workspace" -mindepth 1 -print -quit)" ]]
+  [[ "$(sha256sum "$scratch/result.json" | cut -d ' ' -f 1)" == "$result_before" ]]
+  [[ "$(sha256sum "$scratch/evidence.json" | cut -d ' ' -f 1)" == "$evidence_before" ]]
+  printf 'native CLI: occupied result/evidence preservation, invalid request, missing output parent and invalid final task refusal PASS\n'
+
+  # Exercise persisted repair evidence through the same public command and final verifier.
+  # A deterministic failing validation consumes exactly the single permitted retry.
+  cat > "$scratch/repair-template.json" <<'JSON'
+{"schema_version":1,"artifact_kind":"REPAIR_PROMPT_TEMPLATE","template_id":"repair","preamble_text":"Repair the failed patch.","section_headers":{"STATUS":"Status","SUMMARY":"Summary","STDOUT":"Stdout","STDERR":"Stderr"},"closing_text":"Return corrected FILE blocks.","content_sha256":""}
+JSON
+  bind_record repair-template.json '.'
+  template_sha="$(sha256sum "$scratch/repair-template.json" | cut -d ' ' -f 1)"
+  chmod 644 "$scratch/repair-template.json"
+  template_identity="$(printf '100644 repair-template.json\0F %s\n' "$template_sha" | sha256sum | cut -d ' ' -f 1)"
+  for prefix in task-one task-two; do
+    cp "$scratch/$prefix.json" "$scratch/$prefix-original"
+    cp "$scratch/$prefix-definition.json" "$scratch/$prefix-definition-original"
+    jq -cj '.validation_argv=["/usr/bin/sh","-c","exit 1"]' "$scratch/$prefix-definition.json" > "$scratch/definition-new"
+    mv "$scratch/definition-new" "$scratch/$prefix-definition.json"
+    chmod 644 "$scratch/$prefix-definition.json"
+    definition_sha="$(sha256sum "$scratch/$prefix-definition.json" | cut -d ' ' -f 1)"
+    definition_identity="$(printf '100644 %s-definition.json\0F %s\n' "$prefix" "$definition_sha" | sha256sum | cut -d ' ' -f 1)"
+    bind_record "$prefix.json" '
+      .task_definition_sha256=$definition | .artifacts[0].expected_sha256=$definition_identity |
+      .artifacts += [{path:"repair-template.json",kind:"FILE",expected_sha256:$template_identity}] |
+      .regression_limits.maximum_repair_loops=1 |
+      to_entries | map(if .key=="regression_limits" then .,
+        {key:"repair_template_path",value:"repair-template.json"},
+        {key:"repair_template_sha256",value:$template_sha} else . end) | from_entries
+    ' --arg definition "$definition_sha" --arg definition_identity "$definition_identity" \
+      --arg template_sha "$template_sha" --arg template_identity "$template_identity"
+  done
+  jq -cj '.evaluation_evidence_path="repair-evidence.json"' "$scratch/canonical-request.json" > "$scratch/repair-request.json"
+  "$scratch/main" prompt evaluate "$scratch/repair-request.json" repair-result.json > "$scratch/repair-cli-output"
+  jq -e '(.rows|length)==8 and all(.rows[]; .measurement.status=="FAIL" and .repair_loop_count==1 and
+    (.attempts|length)==2 and .attempts[1].attempt_kind=="REPAIR" and
+    .attempts[1].repair_prompt_source.source_measurement_sha256==.attempts[0].measurement_sha256)' "$scratch/repair-result.json" >/dev/null
+  jq -e '(.expected_inputs|length)==16' "$scratch/repair-evidence.json" >/dev/null
+  python3 "$project_root/scripts/check-native-evaluation-fixture" "$scratch/repair-result.json"
+  if [[ "$mode" == cutover-no-python ]]; then
+    bash "$project_root/scripts/run-product-evaluation-no-python" "$scratch/main" "$scratch" \
+      "${CUTOVER_LIBRARIES:?required}" "${CUTOVER_SHIM:?required}" repair
+  fi
+  for prefix in task-one task-two; do
+    mv "$scratch/$prefix-original" "$scratch/$prefix.json"
+    mv "$scratch/$prefix-definition-original" "$scratch/$prefix-definition.json"
+  done
+  [[ -z "$(find "$scratch/workspace" -mindepth 1 -print -quit)" && "$(cat "$scratch/source/a")" == before ]]
+  printf 'native CLI: eight two-attempt rows, repair-source bindings, sixteen expected inputs and final verifier PASS\n'
+  bash "$project_root/scripts/run-prompt-evaluation-failure-smoke" "$scratch"
+  if [[ "$mode" == cutover-no-python ]]; then
+    bash "$project_root/scripts/run-product-evaluation-no-python" "$scratch/main" "$scratch" \
+      "${CUTOVER_LIBRARIES:?required}" "${CUTOVER_SHIM:?required}"
+    python3 "$project_root/scripts/run-prompt-evaluation-provider-smoke" "$scratch" "$scratch/main" \
+      "$CUTOVER_LIBRARIES" "$CUTOVER_SHIM"
+  else
+    python3 "$project_root/scripts/run-prompt-evaluation-provider-smoke" "$scratch"
+  fi
+  if [[ "$mode" == cutover || "$mode" == cutover-no-python ]]; then
+    bash "$project_root/scripts/run-native-coding-smoke" "$scratch"
+  fi
+fi
+printf 'native evaluator: complete input/source admission, eight paired rows, native score and self-verification, canonical result/evidence and cleanup PASS (unverified fixture source cannot gate)\n'

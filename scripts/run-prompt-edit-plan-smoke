@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "$scratch" && pwd -P)"
+trap 'status=$?; if [ "$status" -eq 0 ]; then rm -rf "$scratch"; else echo "Preserved failing fixture: $scratch" >&2; fi' EXIT
+mkdir "$scratch/source" "$scratch/applied"
+printf 'old\n' > "$scratch/source/a"
+ln -s a "$scratch/source/link"
+cp "$scratch/source/a" "$scratch/applied/a"
+"$compiler" check-per-unit "$project_root/src/prompt_edit_plan_smoke.align"
+(cd "$scratch" && "$compiler" build "$project_root/src/prompt_edit_plan_smoke.align")
+"$scratch/prompt_edit_plan_smoke" "$scratch/source" > "$scratch/actual.patch"
+cat > "$scratch/expected.patch" <<'PATCH'
+diff --git a/a b/a
+--- a/a
++++ b/a
+@@ -1,1 +1,1 @@
+-old
++changed
+diff --git a/b b/b
+new file mode 100644
+--- /dev/null
++++ b/b
+@@ -0,0 +1,1 @@
++new secret
+PATCH
+cmp "$scratch/expected.patch" "$scratch/actual.patch"
+git -C "$scratch/applied" apply "$scratch/actual.patch"
+printf 'changed\n' > "$scratch/a.expected"
+printf 'new secret\n' > "$scratch/b.expected"
+cmp "$scratch/a.expected" "$scratch/applied/a"
+cmp "$scratch/b.expected" "$scratch/applied/b"
+test "$(cat "$scratch/source/a")" = old
+test ! -e "$scratch/source/b"
+echo 'prompt edit plan: admitted edits, literal patch/Git oracle, redaction, refusal and deadline PASS'

@@ -1,5 +1,7 @@
 module prompt_seed_attestation_smoke
 
+import std.process
+
 import core.json
 import std.crypto
 import std.encoding
@@ -68,7 +70,7 @@ fn emit_bytes(case_name: str, bytes: str) {
     request_sha256: digest_view.clone(),
     attestation: "".clone(),
   }
-  print(json.encode(row))
+  print((match json.encode(row) { Ok(encoded_value) => encoded_value, Err(_) => process.abort() }))
 }
 
 fn emit_info(case_name: str, info: model.ModelInfo) {
@@ -80,7 +82,7 @@ fn emit_info(case_name: str, info: model.ModelInfo) {
     request_sha256: "".clone(),
     attestation: "".clone(),
   }
-  print(json.encode(row))
+  print((match json.encode(row) { Ok(encoded_value) => encoded_value, Err(_) => process.abort() }))
 }
 
 fn emit_attestation(
@@ -107,7 +109,7 @@ fn emit_attestation(
     provider_request_sha256: digest_view.clone(),
     content_sha256: placeholder_digest(),
   }
-  encoded := prompt_artifacts.encode_seed_capability_attestation(attestation)
+  encoded := (match prompt_artifacts.encode_seed_capability_attestation(attestation) { Ok(encoded_value) => encoded_value, Err(_) => process.abort() })
   encoded_view: str := encoded
   row := SmokeRow {
     case_name: case_name.clone(),
@@ -117,7 +119,7 @@ fn emit_attestation(
     request_sha256: digest_view.clone(),
     attestation: encoded_view.clone(),
   }
-  print(json.encode(row))
+  print((match json.encode(row) { Ok(encoded_value) => encoded_value, Err(_) => process.abort() }))
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
@@ -125,27 +127,27 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     return Err(Error.Invalid)
   }
 
-  openai_unseeded := provider_openai.request_bytes("smoke-openai", request(None), false)
+  openai_unseeded := provider_openai.request_bytes("smoke-openai", request(None), false)?
   openai_unseeded_view: str := openai_unseeded
   emit_bytes("openai-unseeded", openai_unseeded_view)
 
-  openai_unseeded_stream := provider_openai.request_bytes("smoke-openai", request(None), true)
+  openai_unseeded_stream := provider_openai.request_bytes("smoke-openai", request(None), true)?
   openai_unseeded_stream_view: str := openai_unseeded_stream
   emit_bytes("openai-unseeded-stream", openai_unseeded_stream_view)
 
-  openai_seeded := provider_openai.request_bytes("smoke-openai", request(Some(42)), false)
+  openai_seeded := provider_openai.request_bytes("smoke-openai", request(Some(42)), false)?
   openai_seeded_view: str := openai_seeded
   emit_bytes("openai-seeded", openai_seeded_view)
 
-  llama_unseeded := provider_llama.request_bytes(request(None), false)
+  llama_unseeded := provider_llama.request_bytes(request(None), false)?
   llama_unseeded_view: str := llama_unseeded
   emit_bytes("llama-unseeded", llama_unseeded_view)
 
-  llama_unseeded_stream := provider_llama.request_bytes(request(None), true)
+  llama_unseeded_stream := provider_llama.request_bytes(request(None), true)?
   llama_unseeded_stream_view: str := llama_unseeded_stream
   emit_bytes("llama-unseeded-stream", llama_unseeded_stream_view)
 
-  llama_seeded := provider_llama.request_bytes(request(Some(42)), false)
+  llama_seeded := provider_llama.request_bytes(request(Some(42)), false)?
   llama_seeded_view: str := llama_seeded
   emit_bytes("llama-seeded", llama_seeded_view)
 

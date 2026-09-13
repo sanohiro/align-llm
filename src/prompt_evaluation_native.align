@@ -1,0 +1,184 @@
+module prompt_evaluation_native
+
+import core.json
+import prompt_artifacts
+import prompt_evaluation_invocation
+import prompt_evaluation_inputs
+import prompt_evaluation_result
+import prompt_evaluation_row
+import prompt_evaluation_runtime
+import prompt_evaluation_sources
+import prompt_invocation_records
+import prompt_source_git
+import prompt_source_trust
+import prompt_task
+import prompt_workspace
+import std.crypto
+import std.encoding
+import std.fs
+import std.process
+import std.time
+
+pub Output { result_source: string, evidence_source: string, survivors: array<string> }
+pub Run { Finished(Output), SourceStopped(prompt_source_git.Attempt), TaskStopped(prompt_evaluation_row.Retained) }
+
+fn failed_preflight(evaluation_id: str, detail: str) -> Result<prompt_artifacts.WorkspacePreflightResult, Error> {
+  mut value := prompt_artifacts.WorkspacePreflightResult {
+    schema_version: 1, artifact_kind: "WORKSPACE_PREFLIGHT_RESULT".clone(), evaluation_id: evaluation_id.clone(),
+    status: "ERROR".clone(), error_code: "INTERNAL".clone(), error: detail.clone(),
+    physical_project_root: "".clone(), physical_workspace_path: "".clone(), environment_probe: None, content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(value, 65536)?
+  bytes := crypto.sha256(canonical)
+  value.content_sha256 = encoding.hex_encode(bytes[0..bytes.len()])
+  return Ok(value)
+}
+
+Progress { Complete, Failed(prompt_evaluation_invocation.Failure), Stopped(prompt_evaluation_row.Retained) }
+
+fn diagnostic(value: str) -> string {
+  mut end := value.len()
+  if end > 4096 {
+    end = 4096
+    loop { if end == 0 || value.bytes()[end] < 128 || value.bytes()[end] >= 192 { break }; end = end - 1 }
+  }
+  return value[0..end].clone()
+}
+
+fn environment_identity(
+  borrow preflight: prompt_artifacts.WorkspacePreflightResult, borrow request: prompt_artifacts.PromptEvaluateRequest,
+  policy_sha256: str,
+) -> Result<Option<prompt_artifacts.EnvironmentIdentity>, Error> {
+  return match preflight.environment_probe {
+    None => Ok(None), Some(probe) => Ok(Some(prompt_invocation_records.environment(probe, request, policy_sha256)?)),
+  }
+}
+
+fn run_rows(
+  borrow request: prompt_artifacts.PromptEvaluateRequest, borrow admitted: prompt_evaluation_inputs.Inputs,
+  borrow roots: prompt_workspace.Roots, borrow runtime: prompt_evaluation_runtime.Runtime,
+  borrow procfs: fs.directory, borrow mut signals: process.signal_subscription, credential: str,
+  borrow environment: Option<prompt_artifacts.EnvironmentIdentity>, borrow parent: prompt_artifacts.PromptVariant,
+  borrow candidate: prompt_artifacts.PromptVariant,
+  borrow mut rows: array_builder<prompt_artifacts.PromptTaskRow>, borrow mut requests: array_builder<prompt_artifacts.SnapshotRequest>,
+  borrow mut snapshots: array_builder<prompt_artifacts.SnapshotResult>, borrow mut inputs: array_builder<prompt_artifacts.TaskInputSnapshot>,
+  borrow mut attestations: array_builder<prompt_artifacts.RunSnapshotAttestation>,
+  borrow mut expected: array_builder<prompt_artifacts.PromptExpectedInputDigest>, borrow mut survivors: array_builder<string>,
+) -> Result<Progress, Error> {
+  return match environment {
+    None => Err(Error.Invalid),
+    Some(identity) => {
+      bindings := prompt_invocation_records.RowBindings {
+        evaluation_id: request.evaluation_id.clone(), parent_sha256: parent.content_sha256.clone(),
+        candidate_sha256: candidate.content_sha256.clone(), environment_sha256: identity.environment_id.clone(),
+      }
+      schedule := prompt_evaluation_inputs.schedule(admitted.tasks.len(), request.sample_count, admitted.tasks[0].generation.seed_base)?
+      mut task_index := 0
+      loop {
+        if task_index == admitted.tasks.len() { break }
+        empty: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+        mut baseline := empty.build()
+        mut position := task_index * request.sample_count * 2
+        end := position + request.sample_count * 2
+        loop {
+          if position == end { break }
+          variant := if schedule[position].candidate { prompt_artifacts.clone_prompt_variant(candidate) } else { prompt_artifacts.clone_prompt_variant(parent) }
+          rendered := prompt_task.render(variant, admitted.tasks[task_index].prompt, admitted.tasks[task_index].context,
+            admitted.tasks[task_index].manifest.task_id)?
+          source := prompt_evaluation_runtime.source(request.project_root, admitted.tasks[task_index], time.instant() + 10000000000)?
+          invocation := prompt_invocation_records.Invocation { task_ordinal: task_index, sample_index: schedule[position].sample_index,
+            attempt_index: 1, candidate: schedule[position].candidate, paired_seed: schedule[position].seed }
+          outcome := prompt_evaluation_row.run(request, admitted.tasks[task_index], variant, rendered, identity, invocation,
+            bindings, baseline, runtime, source.directory, roots.workspace.directory, procfs, signals, credential,
+            requests, snapshots, inputs, attestations, expected, survivors)?
+          match outcome {
+            Complete(row) => {
+              if row.measurement.status == "ERROR" {
+                code := if row.measurement.cleanup_passed { "ADAPTER_RESULT" } else { "CLEANUP_FAILED" }
+                detail := diagnostic(row.measurement.diagnostic_summary)
+                rows.push(row)
+                return Ok(Progress.Failed(prompt_evaluation_invocation.Failure { code: code.clone(), detail: detail }))
+              }
+              rows.push(row)
+            },
+            Failed(failure) => { return Ok(Progress.Failed(failure)) },
+            Stopped(owner) => { return Ok(Progress.Stopped(owner)) },
+          }
+          position = position + 1
+        }
+        task_index = task_index + 1
+      }
+      Ok(Progress.Complete)
+    },
+  }
+}
+
+// Admission and signal ownership are held by the outer CLI until this operation returns. A
+// stopped outcome transfers the sole remaining scope/storage owner instead of publishing bytes.
+pub fn run(
+  borrow request: prompt_artifacts.PromptEvaluateRequest, borrow admitted: prompt_evaluation_inputs.Inputs,
+  borrow roots: prompt_workspace.Roots, borrow runtime: prompt_evaluation_runtime.Runtime,
+  borrow procfs: fs.directory, borrow mut signals: process.signal_subscription, credential: str,
+) -> Result<Run, Error> {
+  if admitted.tasks.len() == 0 { return Err(Error.Invalid) }
+  product: str := match request.product_executable_sha256 { None => { return Err(Error.Invalid) }, Some(value) => value }
+  trust := match prompt_source_trust.run(request, runtime.git, signals, procfs, 268435456, time.instant() + 60000000000)? {
+    Ready(value) => value, Stopped(attempt) => { return Ok(Run.SourceStopped(attempt)) }, Cancelled(_) => { return Err(Error.Code(130)) },
+  }
+  mut complete := true
+  mut error_code := "NONE".clone()
+  mut detail := "".clone()
+  match prompt_evaluation_sources.admit(request, admitted.tasks, trust, roots.project.directory, runtime.git,
+    signals, procfs, time.instant() + 60000000000) {
+    Err(_) => { complete = false; error_code = "SNAPSHOT_ERROR".clone(); detail = "reviewed source admission failed".clone() },
+    Ok(value) => match value {
+      Ready => {}, Stopped(attempt) => { return Ok(Run.SourceStopped(attempt)) }, Cancelled(_) => { return Err(Error.Code(130)) },
+    },
+  }
+  // Discover an invalid final source directory before any earlier task is allowed to execute.
+  mut task_index := 0
+  loop {
+    if !complete || task_index == admitted.tasks.len() { break }
+    match prompt_evaluation_runtime.source(request.project_root, admitted.tasks[task_index], time.instant() + 10000000000) {
+      Ok(_) => {}, Err(_) => { complete = false; error_code = "SNAPSHOT_ERROR".clone(); detail = "task source directory admission failed".clone() },
+    }
+    task_index = task_index + 1
+  }
+  preflight := if complete {
+    match prompt_workspace.preflight(roots, request.evaluation_id, request.verifier_align_revision, product) {
+      Ok(value) => value,
+      Err(_) => {
+        complete = false; error_code = "SNAPSHOT_ERROR".clone(); detail = "workspace preflight failed".clone()
+        failed_preflight(request.evaluation_id, detail)?
+      },
+    }
+  } else { failed_preflight(request.evaluation_id, detail)? }
+  environment := environment_identity(preflight, request, admitted.tasks[0].environment.content_sha256)?
+  parent := match admitted.parent.activation { None => { return Err(Error.Invalid) }, Some(value) => prompt_artifacts.clone_prompt_variant(value.effective_variant) }
+  candidate := match admitted.experiment.candidate_variant { None => { return Err(Error.Invalid) }, Some(value) => prompt_artifacts.clone_prompt_variant(value) }
+  mut rows: array_builder<prompt_artifacts.PromptTaskRow> := array_builder()
+  mut requests: array_builder<prompt_artifacts.SnapshotRequest> := array_builder()
+  mut snapshots: array_builder<prompt_artifacts.SnapshotResult> := array_builder()
+  mut inputs: array_builder<prompt_artifacts.TaskInputSnapshot> := array_builder()
+  mut attestations: array_builder<prompt_artifacts.RunSnapshotAttestation> := array_builder()
+  mut expected: array_builder<prompt_artifacts.PromptExpectedInputDigest> := array_builder()
+  mut survivors: array_builder<string> := array_builder()
+  if complete {
+    match run_rows(request, admitted, roots, runtime, procfs, signals, credential, environment, parent, candidate,
+      rows, requests, snapshots, inputs, attestations, expected, survivors)? {
+      Complete => {},
+      Failed(failure) => { complete = false; error_code = failure.code.clone(); detail = failure.detail.clone() },
+      Stopped(owner) => { return Ok(Run.TaskStopped(owner)) },
+    }
+  }
+  result := prompt_evaluation_result.build(request, admitted, trust.trust, complete, error_code, detail,
+    preflight, environment, requests.build(), snapshots.build(), inputs.build(), attestations.build(), rows.build())?
+  evidence := if result.error_code == "RESULT_TOO_LARGE" {
+    empty: array_builder<prompt_artifacts.PromptExpectedInputDigest> := array_builder()
+    prompt_evaluation_result.evidence(request.evaluation_id, result.content_sha256, trust.trust, empty.build())?
+  } else { prompt_evaluation_result.evidence(request.evaluation_id, result.content_sha256, trust.trust, expected.build())? }
+  // The publication boundary validates the completed pair before creating final artifacts.
+  result_source := json.encode_bounded(result, 268435456)?
+  evidence_source := json.encode_bounded(evidence, 8388608)?
+  return Ok(Run.Finished(Output { result_source: result_source, evidence_source: evidence_source, survivors: survivors.build() }))
+}

@@ -1,0 +1,760 @@
+{
+  "plan": {
+    "scope": "controlled cutover evaluator comparison, not inference throughput",
+    "before": "9855afe",
+    "after": "2f25c3f",
+    "compiler": {
+      "before": "305926b423da9be1f13b0129a7232626e6704d95",
+      "after": "f502fe3da00ce0b39c4eeec40586b11688627fbd"
+    },
+    "host": "same Linux ARM64 Docker host; both binaries, inputs and workspaces on container-local filesystem; shared native libraries identical; sequential execution",
+    "workload": "two inclusive-range tasks, two samples, parent/candidate; same already-correct fixed patch and unchanged target tests; no model generation",
+    "fixture_adaptation": "legacy fixture adapter's PARENT patch selector/hash rebound to its existing CANDIDATE patch; native FIXTURE_PATCH uses that identical patch; v2 task-definition ids bound per task and required source TREE declared; legacy positive fixture timing field supplied for either passing variant, preserving its constant80ms (included only in row decomposition; overhead subtraction retains observed adapter elapsed); prompt/context artifact ids are bound to each task on both sides; trial on macOS shared mount produced stale mode observations, excluded in favor of identical Linux-local filesystem",
+    "metrics": [
+      "complete CLI wall ns including publication",
+      "child CPU seconds",
+      "passing row count"
+    ],
+    "schedule": "two warmup pairs then nine measured pairs, alternate before/after order",
+    "ceiling_seconds": 1200,
+    "acceptance": "all eight rows PASS per run, unchanged fixture sources and clean scratch, preserve raw samples even on regression",
+    "limits": "not directly comparable to historical OLMoE sampled-model 84.06s vs llama.cpp14.17s result; no optimization or shipping speed floor asserted; old source fails modern API checking, so each side uses its own exact compiler pin: product-version comparison, not language-only attribution; legacy row prompt_preparation_ns is a fixed20ms, so row clocks are retained diagnostically but excluded from speed comparisons"
+  },
+  "host": {
+    "system": "Linux",
+    "node": "09c3efa89881",
+    "release": "6.11.11-linuxkit",
+    "version": "#1 SMP Wed Oct 22 09:37:46 UTC 2025",
+    "machine": "aarch64",
+    "processor": "aarch64"
+  },
+  "binaries": {
+    "before": "c8c9d15061eb10ad3a6b295864011521c7f6d4ad6a72a8f77967389ec1436726",
+    "after": "b61e4b35d12c1de665921063e7e00f67e2a824239f452dcbbf7114ea8e7d1290"
+  },
+  "sources": {
+    "before": {
+      "src/inclusive_range.py": "c8ca73ca0a72f5535be4b6bc9886ceb4b5be4573cf7b808c7cf1916136d4ae29",
+      "tests/test_inclusive_range.py": "da4177b46f557ebf34febb56645c438d5364ff2e6ebbc41e251bfe690500467a"
+    },
+    "after": {
+      "src/inclusive_range.py": "c8ca73ca0a72f5535be4b6bc9886ceb4b5be4573cf7b808c7cf1916136d4ae29",
+      "tests/test_inclusive_range.py": "da4177b46f557ebf34febb56645c438d5364ff2e6ebbc41e251bfe690500467a"
+    }
+  },
+  "samples": [
+    {
+      "pair": 0,
+      "warmup": true,
+      "arm": "before",
+      "wall_ns": 2171165959,
+      "child_cpu_seconds": 2.182584,
+      "exit_code": 0,
+      "status": "IMPROVED",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        196136000,
+        190078042,
+        187786083,
+        187923250,
+        195373459,
+        187605625,
+        189193917,
+        188507666
+      ]
+    },
+    {
+      "pair": 0,
+      "warmup": true,
+      "arm": "after",
+      "wall_ns": 716777708,
+      "child_cpu_seconds": 0.8088230000000002,
+      "exit_code": 0,
+      "status": "NO_IMPROVEMENT",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        104933958,
+        105394333,
+        102459000,
+        102601250,
+        104791958,
+        104552875,
+        106267458,
+        103782166
+      ]
+    },
+    {
+      "pair": 1,
+      "warmup": true,
+      "arm": "after",
+      "wall_ns": 718954209,
+      "child_cpu_seconds": 0.8144529999999999,
+      "exit_code": 0,
+      "status": "IMPROVED",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        103777917,
+        104696583,
+        103335959,
+        104963833,
+        104978666,
+        104231792,
+        106120084,
+        104591500
+      ]
+    },
+    {
+      "pair": 1,
+      "warmup": true,
+      "arm": "before",
+      "wall_ns": 2169470085,
+      "child_cpu_seconds": 2.1816839999999997,
+      "exit_code": 0,
+      "status": "NO_IMPROVEMENT",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        190284417,
+        191986833,
+        195121542,
+        187698791,
+        189150167,
+        187494292,
+        188389708,
+        187291708
+      ]
+    },
+    {
+      "pair": 2,
+      "warmup": false,
+      "arm": "before",
+      "wall_ns": 2145870293,
+      "child_cpu_seconds": 2.1593090000000004,
+      "exit_code": 0,
+      "status": "NO_IMPROVEMENT",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        187637500,
+        189261334,
+        189142791,
+        188011084,
+        187184333,
+        187688292,
+        187001917,
+        188302042
+      ]
+    },
+    {
+      "pair": 2,
+      "warmup": false,
+      "arm": "after",
+      "wall_ns": 718261542,
+      "child_cpu_seconds": 0.8069860000000002,
+      "exit_code": 0,
+      "status": "NO_IMPROVEMENT",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        103484583,
+        103303375,
+        106360500,
+        104829875,
+        104410542,
+        105059875,
+        105625542,
+        102466500
+      ]
+    },
+    {
+      "pair": 3,
+      "warmup": false,
+      "arm": "after",
+      "wall_ns": 711608292,
+      "child_cpu_seconds": 0.8077130000000001,
+      "exit_code": 0,
+      "status": "NO_IMPROVEMENT",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        103354250,
+        104446958,
+        105576459,
+        101953792,
+        102861834,
+        103730125,
+        103476000,
+        103973750
+      ]
+    },
+    {
+      "pair": 3,
+      "warmup": false,
+      "arm": "before",
+      "wall_ns": 2170887376,
+      "child_cpu_seconds": 2.189243000000001,
+      "exit_code": 0,
+      "status": "NO_IMPROVEMENT",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        187577792,
+        187756167,
+        202357334,
+        196157916,
+        188696292,
+        190315167,
+        189101583,
+        188260125
+      ]
+    },
+    {
+      "pair": 4,
+      "warmup": false,
+      "arm": "before",
+      "wall_ns": 2143373918,
+      "child_cpu_seconds": 2.1601169999999987,
+      "exit_code": 0,
+      "status": "IMPROVED",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        187675250,
+        187153833,
+        187005167,
+        188323792,
+        188836042,
+        187629042,
+        187436375,
+        193438792
+      ]
+    },
+    {
+      "pair": 4,
+      "warmup": false,
+      "arm": "after",
+      "wall_ns": 720245542,
+      "child_cpu_seconds": 0.8144310000000003,
+      "exit_code": 0,
+      "status": "IMPROVED",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        109634959,
+        102481334,
+        105569334,
+        104511667,
+        105812459,
+        104424458,
+        102346500,
+        102972541
+      ]
+    },
+    {
+      "pair": 5,
+      "warmup": false,
+      "arm": "after",
+      "wall_ns": 719345667,
+      "child_cpu_seconds": 0.8076399999999984,
+      "exit_code": 0,
+      "status": "IMPROVED",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        106224458,
+        101950042,
+        104502542,
+        105561833,
+        104539292,
+        105304833,
+        105120375,
+        103147584
+      ]
+    },
+    {
+      "pair": 5,
+      "warmup": false,
+      "arm": "before",
+      "wall_ns": 2152911085,
+      "child_cpu_seconds": 2.1666900000000022,
+      "exit_code": 0,
+      "status": "IMPROVED",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        187029458,
+        186683500,
+        187321042,
+        188562625,
+        200635375,
+        188479584,
+        187674501,
+        187759667
+      ]
+    },
+    {
+      "pair": 6,
+      "warmup": false,
+      "arm": "before",
+      "wall_ns": 2142511126,
+      "child_cpu_seconds": 2.1557109999999975,
+      "exit_code": 0,
+      "status": "IMPROVED",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        187626667,
+        185741416,
+        186684833,
+        188912334,
+        195415084,
+        188870542,
+        186774583,
+        187577084
+      ]
+    },
+    {
+      "pair": 6,
+      "warmup": false,
+      "arm": "after",
+      "wall_ns": 721397667,
+      "child_cpu_seconds": 0.815010000000004,
+      "exit_code": 0,
+      "status": "NO_IMPROVEMENT",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        106196125,
+        104950292,
+        105738292,
+        102657000,
+        106323458,
+        105205000,
+        102855875,
+        102925417
+      ]
+    },
+    {
+      "pair": 7,
+      "warmup": false,
+      "arm": "after",
+      "wall_ns": 720526833,
+      "child_cpu_seconds": 0.8112849999999989,
+      "exit_code": 0,
+      "status": "IMPROVED",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        110486292,
+        103866875,
+        103093584,
+        105660708,
+        104439792,
+        104379667,
+        102640667,
+        102880042
+      ]
+    },
+    {
+      "pair": 7,
+      "warmup": false,
+      "arm": "before",
+      "wall_ns": 2150595085,
+      "child_cpu_seconds": 2.167286999999998,
+      "exit_code": 0,
+      "status": "NO_IMPROVEMENT",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        187165542,
+        187606458,
+        188695542,
+        188521500,
+        187709083,
+        191131083,
+        187133250,
+        188318125
+      ]
+    },
+    {
+      "pair": 8,
+      "warmup": false,
+      "arm": "before",
+      "wall_ns": 2254050334,
+      "child_cpu_seconds": 2.278403000000001,
+      "exit_code": 0,
+      "status": "IMPROVED",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        208227917,
+        191944583,
+        196489625,
+        195341167,
+        188986541,
+        190272125,
+        189471375,
+        187979958
+      ]
+    },
+    {
+      "pair": 8,
+      "warmup": false,
+      "arm": "after",
+      "wall_ns": 743237084,
+      "child_cpu_seconds": 0.8381830000000008,
+      "exit_code": 0,
+      "status": "NO_IMPROVEMENT",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        103829125,
+        109237500,
+        114028541,
+        109874792,
+        105661834,
+        106698667,
+        105744833,
+        104908833
+      ]
+    },
+    {
+      "pair": 9,
+      "warmup": false,
+      "arm": "after",
+      "wall_ns": 734039417,
+      "child_cpu_seconds": 0.8246730000000015,
+      "exit_code": 0,
+      "status": "IMPROVED",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        105979292,
+        104344750,
+        106560208,
+        116643667,
+        104570708,
+        105485541,
+        103135458,
+        105219959
+      ]
+    },
+    {
+      "pair": 9,
+      "warmup": false,
+      "arm": "before",
+      "wall_ns": 2140726084,
+      "child_cpu_seconds": 2.1565879999999984,
+      "exit_code": 0,
+      "status": "NO_IMPROVEMENT",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        187579416,
+        187497166,
+        188067167,
+        186751833,
+        186916167,
+        187160042,
+        186718625,
+        189489875
+      ]
+    },
+    {
+      "pair": 10,
+      "warmup": false,
+      "arm": "before",
+      "wall_ns": 2138149460,
+      "child_cpu_seconds": 2.1530619999999985,
+      "exit_code": 0,
+      "status": "IMPROVED",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        188735542,
+        186249584,
+        186562333,
+        187030500,
+        192127125,
+        189252458,
+        186934333,
+        186974667
+      ]
+    },
+    {
+      "pair": 10,
+      "warmup": false,
+      "arm": "after",
+      "wall_ns": 723281875,
+      "child_cpu_seconds": 0.8158119999999993,
+      "exit_code": 0,
+      "status": "NO_IMPROVEMENT",
+      "row_count": 8,
+      "row_statuses": [
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "row_passing_patch_ns": [
+        103258042,
+        103557958,
+        105147000,
+        104556625,
+        104979500,
+        104934333,
+        111055958,
+        103873500
+      ]
+    }
+  ],
+  "summary": {
+    "before": {
+      "median_wall_ns": 2145870293,
+      "min_wall_ns": 2138149460,
+      "max_wall_ns": 2254050334,
+      "median_cpu_seconds": 2.1601169999999987
+    },
+    "after": {
+      "median_wall_ns": 720526833,
+      "min_wall_ns": 711608292,
+      "max_wall_ns": 743237084,
+      "median_cpu_seconds": 0.8144310000000003
+    },
+    "wall_reduction_fraction": 0.6642262883500387,
+    "faster_pairs": 9
+  },
+  "source_commits": {
+    "before": "9855afe1e3b7e73c758463ed2f32e13bc9b6a550",
+    "after": "2f25c3faba4fc12c0035a5c168b38dc3f0ba935d"
+  },
+  "measurement_artifacts_sha256": {
+    "prepare.py": "2a49358543547c48ab023992a2fda5c62c626962865a99aaae79c95853dfd6a1",
+    "measure.py": "9f37e67f845289468ce3e1057d522066eeb669eca46ae83984f171bab93f9311",
+    "plan.json": "51dd1dc5805c8a5bc568dbd95cc71b561c205e527f71e32951d9b3fb019ac153"
+  },
+  "raw_results_sha256": {
+    "00-after.json": "51c74a391f9d7531d60b0558784a8f570817bf32638fd97d7d80d9ca7762527a",
+    "00-before.json": "dad30fd8c8ed438d881ebb6bf4fecf77e53bda726a069baf3043a0ebaa888f24",
+    "01-after.json": "6448a07b2f9fd0c111f009423e945ddb3343a7be3daa594f0753493dc5ede0db",
+    "01-before.json": "0c5454823b6b4d1ca75320d8fb26e5930358d6432d660ec271cd453d4d7f5bab",
+    "02-after.json": "4d8b5c06bfd9abbd5bbae3c434ad7074036b93f87d422963a9d01c82fce38823",
+    "02-before.json": "7c6756e5f0408e59583773c0de3eed24767f352e75cf81ae458d66a69fa449c4",
+    "03-after.json": "0a51d342404eaaef55f3b47cd8f4099e3844e52a8e1786364e09b0347983f1bc",
+    "03-before.json": "d4da995fa60c80e1b5e4e4ca34e7bb3b23dddfd89442b1368c5f32b3c8934574",
+    "04-after.json": "86c708abb34efdba83ead21773ff6d1fd97894e0ed085280b5d5d17a6e28dcd0",
+    "04-before.json": "f49a08844f71992f4db8f9ff28887a18e75a8c16b034272b4939a192a98c9ac6",
+    "05-after.json": "c65e58eedb93ee8fe65dc18db951c5f8ee23e7a8204c2c5f10966e96a89db73a",
+    "05-before.json": "5648e7e960918f252f6ee7ba783420289a96419f309a5c9d81f8097f0dd5168b",
+    "06-after.json": "e031c9b5443d3ed9751b4e819438eed45b4a299094dc1a8d2e1a322ee7bf0bc3",
+    "06-before.json": "8ea4bb1be4f2de7772155cea4b13cb71906236e4865ca43f403ca40c5038a329",
+    "07-after.json": "2c6e4b7a1a1cced41e72cbe1781be2205cef9362266a96041c51c05af5a103ef",
+    "07-before.json": "abe7a27d4746084afcc68862e194bb1687a9590ef07638a77e801828c80b7241",
+    "08-after.json": "1dda9558d91f8d28d1354c1d60214a2bd243e1576f25536e1a52cdf7d418b871",
+    "08-before.json": "bd5c71d427bcd80de2a6d1bde7bec546e86776fa6aa23be7b2a064da196cce6d",
+    "09-after.json": "05d7a61ee00b4c4eca12a048751fd897dc778ab61b4c433d146ce41ccadac841",
+    "09-before.json": "754c275affaa4bba5fbbce2c50da7d7cb469c83f0f444c4be0a85ce629120c2f",
+    "10-after.json": "b3b8e75b1d8a5373601f04f4c6e6bc19e666c582737af89fb1f18bac8bafd3f2",
+    "10-before.json": "f7cad79a59555419c1ce95c7cc50cf68df0e3116982afb5d18ef227c68f4f3f3"
+  },
+  "compiler_sha256": {
+    "before": "63c89d278f0bcab097fcca1668c97d616dca6e2ca90f50f866c46413a8b2ba16",
+    "after": "b8e1d5dc17ece764fc24d457322f2cbaddf4fc0f205e0030633fa1376154f0b5"
+  }
+}

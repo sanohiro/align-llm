@@ -1,5 +1,27 @@
 # Developing align-llm with Align
 
+The [Align product boundary](specs/align-product-boundary.md) owns normal
+evaluation/edit/repair execution, which now runs in Align. Python remains developer
+compiler/backend preparation, independent qualification, or an explicitly declared
+target-project test. `python3 scripts/check-python-boundary --strict` checks the
+complete inventory with no product exceptions; `python3 scripts/test-python-boundary`
+owns its independent mutation cases. Run the guard when changing Python or launch
+ownership. The Python evaluator/adapter descriptions below are historical replay
+contracts and do not authorize Python product features. The reserved
+`coding-v1` identity is refused before task execution. `make eval-coding` now prepares a private
+`coding-v2` request and runs the native evaluator against the unchanged inclusive-range source
+and patch. Its explicit `/usr/bin/python3 -B` command runs only the target project's tests;
+Align owns preparation, patching, validation supervision, measurement and scoring. The developer
+fixture needs the pinned compiler, Git, jq and a capable Linux containment host. It verifies eight
+paired rows, independent record/score agreement, unchanged source and workspace cleanup.
+Direct/interpreter selection of historical implementations is refused by path and
+retained-file digest, including renamed copies. Independent gate verification supports
+locator-v2/product inputs and preserves the legacy replay pair. The functional and
+relocated no-Python owners cover actual provider edits, repair, publication,
+acceptance/rollback and real inference; installed containment remains a distinct
+qualification. Use `python3 scripts/run-align-product-cutover --help` for the three
+explicit developer qualification modes and their required inputs.
+
 Align is developed in parallel with this project. There is no Align project manifest, package registry, general test runner, or configurable source search path yet. A program starts from one `.align` entry file, and imports resolve to files beneath that entry file's directory.
 
 ## Managed local toolchain
@@ -178,6 +200,15 @@ accepted. The public CLI is:
 ```sh
 ./main --provider align-runtime MODEL.gguf MODEL.alignpack MODEL-IR.json PROMPT RESULT.json [MAX_TOKENS]
 ```
+
+For a movable shared-shim distribution, set `ALIGN_LLM_GGML_SHIM_RELOCATABLE=1` when building
+with the explicit real ggml inputs. The default `0` preserves the absolute development library
+identity. On Linux, supply the relocated shim/backend directories in `LD_LIBRARY_PATH`; on macOS,
+place the shim adjacent to the executable and also supply its backend dependencies. Static stub
+mode rejects this setting. `scripts/run-product-runtime-no-python BINARY MODEL_DIRECTORY
+GGML_LIBRARY_DIRECTORY SHIM_DIRECTORY` is the focused Linux relocation owner for the prepared
+tiny Qwen fixture: real inference, private model copies, and an execution trace in a namespace
+without Python or repository scripts. It does not replace the complete cutover or installed profile.
 
 The default maximum is 64 and the accepted range is 1 through 128. The terminal EOG id is excluded
 from the returned text, while a maximum-terminated id is included. Use `make
@@ -397,7 +428,12 @@ The repair patch is deliberately an input boundary, not a model implementation. 
 can consume `repair_prompt` and return an equivalent patch without changing verification, timeout,
 or result handling.
 
-### Model-driven repair on the measurement path
+### Model-driven repair history and independent replay
+
+The following C4 records describe the frozen Python reference implementation and
+its historical evidence. Current product execution uses `prompt_evaluation_row`,
+`prompt_task_attempt`, and the native repair/validation owners; it never launches
+these historical adapters. The current wire transition is owned by the product-boundary plan.
 
 `docs/specs/c4-repair-measured.md` specifies the first repair loop driven by a real provider. It
 does not change `src/repair.align` or `src/verification_loop.align`; it runs on the C6 evaluation
@@ -480,11 +516,11 @@ Four rules that generalize beyond this capability:
   the repair adapter must declare all five, and one naming the template adapter all six. A template
   is never "upgraded" by inference. The same rule selects the measurement version, three ways.
 
-`scripts/prompt-evaluate.py` is pinned byte-exactly by `src/prompt_evaluate.align` **and** bounded
-by a chunked-argument launch window. That window is now four chunks, 196,609…262,144 bytes, and
-`EVALUATOR_BOOTSTRAP` pops four arguments; the attempt loop did not fit the previous three-chunk
-ceiling. Changing the evaluator means re-pinning `EVALUATOR_SOURCE_SHA256` in the same commit — a
-stale pin is a hard `INVALID_INPUT` at launch, so the two never drift.
+The historical `scripts/prompt-evaluate.py` launch used a byte-exact source pin and
+four argument chunks. That bootstrap, its source chunks and its Python launch have
+been removed from `src/prompt_evaluate.align`; no source re-pinning or fallback
+interpreter remains in the product. Historical files retain their original bytes
+for independent replay only.
 
 The named qualification is `make c4-repair-gate`. It requires a running host `llama-server`, the
 model file, and a Linux aarch64 container with `bwrap` and `socat`, so it is a focused

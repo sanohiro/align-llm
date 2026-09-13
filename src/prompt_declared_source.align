@@ -1,0 +1,77 @@
+module prompt_declared_source
+
+import prompt_artifacts
+import prompt_source_file
+import prompt_tree_snapshot
+import std.fs
+import std.time
+import std.crypto
+import std.encoding
+
+pub Expansion { files: array<prompt_artifacts.ArtifactDigest>, entry_count: i64, byte_count: i64 }
+
+fn mode_text(mode: i64) -> string {
+  output := builder()
+  digits := "01234567"
+  mut divisor := 32768
+  loop {
+    digit := (mode / divisor) % 8
+    output.write(digits[digit..digit + 1])
+    if divisor == 1 { break }
+    divisor = divisor / 8
+  }
+  return output.to_string()
+}
+
+fn append_file(borrow row: prompt_artifacts.ArtifactDigest, borrow mut output: array_builder<prompt_artifacts.ArtifactDigest>) {
+  output.push(prompt_artifacts.ArtifactDigest { path: row.path.clone(), mode: row.mode.clone(), byte_count: row.byte_count, sha256: row.sha256.clone() })
+}
+
+pub fn expand(borrow root: fs.directory, expectations: slice<prompt_artifacts.ArtifactExpectation>, deadline: i64) -> Result<Expansion, Error> {
+  mut files: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  mut entries := 0
+  mut bytes := 0
+  mut index := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if index == expectations.len() { break }
+    if entries == 128 { return Err(Error.Invalid) }
+    path: str := expectations[index].path
+    expected: str := expectations[index].expected_sha256
+    if expectations[index].kind == "FILE" {
+      observed := prompt_source_file.observe(root, path.bytes(), 2097152 - bytes)?
+      if time.instant() >= deadline { return Err(Error.Timeout) }
+      mode := mode_text(32768 + observed.metadata.mode as i64)
+      digest := crypto.sha256_stream()
+      digest.update(mode)
+      digest.update(" ")
+      digest.update(path)
+      digest.update("\0F ")
+      digest.update(observed.sha256)
+      digest.update("\n")
+      hash := digest.finish()
+      actual := encoding.hex_encode(hash[0..hash.len()]).clone()
+      if actual != expected { return Err(Error.Invalid) }
+      files.push(prompt_artifacts.ArtifactDigest { path: path.clone(), mode: mode, byte_count: observed.metadata.size, sha256: observed.sha256.clone() })
+      entries = entries + 1
+      bytes = bytes + observed.metadata.size
+    } else {
+      if expectations[index].kind != "TREE" { return Err(Error.Invalid) }
+      tree := prompt_tree_snapshot.observe(root, path, 128 - entries, 2097152 - bytes)?
+      if time.instant() >= deadline { return Err(Error.Timeout) }
+      if tree.sha256 != expected { return Err(Error.Invalid) }
+      rows: slice<prompt_artifacts.ArtifactDigest> := tree.artifact_digests
+      entries = entries + rows.len()
+      bytes = bytes + tree.byte_count
+      mut row := 0
+      loop {
+        if row == rows.len() { break }
+        mode: str := rows[row].mode
+        if mode.starts_with("10") { append_file(rows[row], files) }
+        row = row + 1
+      }
+    }
+    index = index + 1
+  }
+  return Ok(Expansion { files: files.build(), entry_count: entries, byte_count: bytes })
+}

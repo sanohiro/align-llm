@@ -75,7 +75,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   subsequent := provider_runtime.generate(config, request)?
   subsequent_view: str := subsequent
   if subsequent_view != ordinary_view { return Err(Error.Invalid) }
-  print(json.encode(production))
+  print(json.encode(production)?)
   print("runtime provider trace: PASS")
   return Ok(())
 }

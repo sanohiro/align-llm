@@ -173,6 +173,41 @@ def quiet_input_rows(root: pathlib.Path, server) -> list[str]:
     assert_no_dispatch("substituted-rendered-prompt", response)
     covered.append("substituted-rendered-prompt")
 
+    # The declared identity alone is insufficient: canonical rendered content must bind it.
+    # A missing credential also pins admission before credential resolution and network dispatch.
+    case = prepare(
+        root, "forged-rendered-content", endpoint,
+        provider_kind="LOCAL_OPENAI", api_key_env=CREDENTIAL_VARIABLE,
+    )
+    forged = json.loads(case.rendered_path.read_text(encoding="utf-8"))
+    claimed_identity = forged["content_sha256"]
+    forged["text"] += "\nUnbound replacement text: 日本語"
+    case.rendered_path.write_bytes(canonical(forged))
+    request = json.loads(case.request_path.read_text(encoding="utf-8"))
+    require(
+        forged["content_sha256"] == request["rendered_prompt_sha256"] == claimed_identity,
+        "forged-rendered-content: the fixture must preserve both claimed identities",
+    )
+    completed = case.run()
+    response = assert_response(case, completed, "INVALID_INPUT", "INVALID_DIGEST")
+    assert_no_dispatch("forged-rendered-content", response)
+    covered.append("forged-rendered-content")
+
+    # Rebinding the artifact and request cannot bypass the existing 2 MiB source cap.
+    # The JSON envelope adds bytes beyond this text, so the actual artifact exceeds the cap.
+    case = prepare(
+        root, "rendered-source-over-cap", endpoint, prompt_text="x" * (2 * 1024 * 1024),
+        provider_kind="LOCAL_OPENAI", api_key_env=CREDENTIAL_VARIABLE,
+    )
+    require(
+        case.rendered_path.stat().st_size > 2 * 1024 * 1024,
+        "rendered-source-over-cap: the fixture did not exceed the source cap",
+    )
+    completed = case.run()
+    response = assert_response(case, completed, "INVALID_INPUT", "INPUT_READ")
+    assert_no_dispatch("rendered-source-over-cap", response)
+    covered.append("rendered-source-over-cap")
+
     # The credential is resolved after validation and before the first external call.
     case = prepare(
         root, "missing-credential", endpoint,
@@ -483,7 +518,131 @@ def cli_rows(root: pathlib.Path, server) -> list[str]:
     return covered
 
 
+def worker_main() -> int:
+    """Focused retained worker protocol; this is not installed sandbox qualification."""
+    import os
+    import platform
+    import shutil
+    import signal
+    import subprocess
+    from prompt_generate_fixture import Handler, openai_envelope
+
+    root = pathlib.Path(tempfile.mkdtemp(prefix="prompt-generation-worker-")).resolve()
+    success = False
+    server, thread = start_server()
+    original_dispatch = Handler.dispatch
+    large_content = "worker-owned-response\n" * 5000
+
+    def dispatch(handler, body):
+        if handler.path == "/worker/large":
+            handler.respond(200, openai_envelope(large_content))
+        else:
+            original_dispatch(handler, body)
+
+    Handler.dispatch = dispatch
+    try:
+        compiler = os.environ.get("ALIGNC", str(REPOSITORY / "scripts/alignc"))
+        entry = REPOSITORY / "src/prompt_generation_worker_smoke.align"
+        supplied_binary = os.environ.get("ALIGN_GENERATION_WORKER_BIN")
+        if supplied_binary:
+            binary = pathlib.Path(supplied_binary).resolve()
+            require(binary.is_file(), "worker: explicit smoke binary is missing")
+        else:
+            subprocess.run([compiler, "check-per-unit", str(entry)], check=True, cwd=root)
+            subprocess.run([str(REPOSITORY / "scripts/run-main-with-shim"), compiler,
+                            "build", str(entry)], check=True, cwd=root)
+            binary = root / "prompt_generation_worker_smoke"
+        for mode in ("valid", "large", "provider-failure", "digest", "schema", "malformed", "input", "timeout", "cancel"):
+            endpoint = "/openai/stall" if mode in ("timeout", "cancel") else (
+                "/worker/large" if mode == "large" else
+                "/openai/status-404" if mode == "provider-failure" else "/openai/ok")
+            case = prepare(root, mode, server.base + endpoint,
+                           prompt_text="large worker input " * 5000 if mode == "large" else "Repair duration rounding.")
+            request = json.loads(case.request_path.read_text())
+            rendered = json.loads(case.rendered_path.read_text())
+            if mode == "input":
+                request["content_sha256"] = "0" * 64
+            work = {"schema_version": 2 if mode == "schema" else 1,
+                    "artifact_kind": "PROMPT_GENERATION_WORK", "request": request,
+                    "rendered_prompt": rendered}
+            work_path = case.directory / "work.json"
+            work_path.write_bytes(b"{" if mode == "malformed" else canonical(work))
+            before = server.connections
+            arguments = [str(binary), str(binary), str(work_path), str(root), mode, platform.system()]
+            if mode == "cancel" and platform.system() == "Linux":
+                server.stalled.clear()
+                child = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    require(server.stalled.wait(8), "worker cancel: provider readiness was not observed")
+                    child.send_signal(signal.SIGTERM)
+                    stdout, stderr = child.communicate(timeout=15)
+                    completed = subprocess.CompletedProcess(arguments, child.returncode, stdout, stderr)
+                finally:
+                    if child.poll() is None:
+                        child.send_signal(signal.SIGTERM)
+                        child.communicate(timeout=15)
+            else:
+                child = subprocess.Popen(arguments, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    stdout, stderr = child.communicate(timeout=20)
+                except subprocess.TimeoutExpired:
+                    # Let the Align owner recover its retained child scope before exiting.
+                    child.send_signal(signal.SIGTERM)
+                    stdout, stderr = child.communicate(timeout=15)
+                    raise SystemExit(f"worker {mode}: outer deadline exceeded after cleanup: {stderr}")
+                completed = subprocess.CompletedProcess(arguments, child.returncode, stdout, stderr)
+            require(completed.returncode == 0,
+                    f"worker {mode}: {completed.returncode}: {completed.stderr}")
+            if platform.system() != "Linux":
+                require("ENOTSUP 45" in completed.stdout, "worker: unexpected platform refusal")
+                print(completed.stdout.strip())
+                break
+            if mode in ("digest", "schema", "malformed", "input"):
+                require(server.connections == before, f"worker {mode}: contacted HTTP")
+            if mode in ("digest", "schema", "malformed", "input"):
+                require(completed.stdout.strip() == "refused released", f"worker {mode}: wrong refusal")
+            elif mode in ("timeout", "cancel"):
+                require(server.connections > before, f"worker {mode}: never reached blocked HTTP")
+                require(completed.stdout.strip() == mode + " released", f"worker {mode}: not released")
+            else:
+                response = json.loads(completed.stdout)
+                case.response_path.write_text(completed.stdout)
+                if mode == "provider-failure":
+                    require(response["status"] == "PROVIDER_ERROR" and
+                            response["error_code"] == "PROVIDER_HTTP_STATUS" and
+                            response["http_status"] == 404 and "content" not in response,
+                            "worker provider failure: wrong collected envelope")
+                else:
+                    require(response["status"] == "GENERATED" and response["content"] ==
+                            (large_content if mode == "large" else PATCH_TEXT), f"worker {mode}: content")
+                    require(response["applied_seed"] == 4242 and response["seed_result"] == "APPLIED",
+                            f"worker {mode}: seed")
+                    require(json.loads(server.requests[-1]["body"])["seed"] == 4242,
+                            f"worker {mode}: seed missing on wire")
+                    require(hashlib.sha256(server.requests[-1]["body"]).hexdigest() ==
+                            response["provider_request_sha256"], f"worker {mode}: wire digest")
+                    if mode == "large":
+                        require(len(completed.stdout.encode()) > 65536, "worker large: insufficient bytes")
+                identity = response["content_sha256"]
+                response["content_sha256"] = ""
+                require(hashlib.sha256(canonical(response)).hexdigest() == identity,
+                        f"worker {mode}: response digest")
+            print(f"generation worker {mode}: PASS")
+        success = True
+    finally:
+        Handler.dispatch = original_dispatch
+        stop_server(server, thread)
+        if success:
+            shutil.rmtree(root)
+        else:
+            print(f"generation worker failure workspace preserved: {root}", file=sys.stderr)
+    print("generation worker: PASS (focused worker protocol; no installed containment claim)")
+    return 0
+
+
 def main() -> int:
+    if sys.argv[1:] == ["--worker"]:
+        return worker_main()
     require(
         pathlib.Path(REPOSITORY / "main").exists()
         or "ALIGN_LLM_BIN" in __import__("os").environ,

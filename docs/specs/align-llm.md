@@ -50,6 +50,33 @@ align-coder
 
 両者は連携するが、独立して開発・評価できるようにする。
 
+### Implementation-language boundary
+
+align-llm is a real application for developing and validating Align. All shipping application
+logic and normal CLI execution paths belong in Align: repository indexing, prompt construction,
+evaluation and selection, verification/repair, persisted application state, provider orchestration,
+model loading, inference, scheduling and runtime policy. An Align executable delegating a feature
+to Python, a shell wrapper around Python, or a separately installed Python service does not meet
+this requirement. Build/test tools for the user's target project may use that project's language;
+Align still owns invocation policy, result interpretation and subsequent product decisions.
+
+Python is permitted for independent oracles, fixtures/goldens, differential tests, measurement,
+CI/developer tools and explicitly recorded temporary bootstrap work. Retained Python must not own
+shipping decisions or state transitions. C/C++ is limited to native ABI/backend shims and platform
+kernel boundaries; product logic cannot move there to evade the Align requirement. Thinness is
+about responsibility, not line count. Language statistics are not an acceptance criterion.
+
+Developer compiler/backend preparation may use Python. The resulting executable, native
+dependencies and declared data must support documented normal operations without Python at
+runtime or access to repository-local implementation scripts. Independent validation stays outside
+that product process tree.
+
+The [product-boundary migration](align-product-boundary.md) owns the current violations, ordered
+cutover, versioned record changes, prerequisites, enforcement and Python-free acceptance. Its
+[audit](../python-boundary-audit.md) classifies each current Python file. Existing C6/C4 helper
+contracts describe historical execution and remain replayable; they are not permanent exceptions
+to this boundary. No new product behavior may be added to the frozen Python implementations.
+
 ### 2.1 全体構成
 
 ```text

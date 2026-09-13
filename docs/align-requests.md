@@ -22,6 +22,56 @@ numbers are approximate and may drift — locate by function name.
 
 ## Align audit answer (2026-09-07)
 
+### R77–R83 consolidated provider implementation (2026-09-12)
+
+[Align PR #1027](https://github.com/sanohiro/align/pull/1027) merged into main on
+2026-09-12 at `1f0627bbb10bd305ecc497d5c21cd25a611c139c`, with final provider head
+`7c616a5b9165ff80abea52b7c5cb47d0affe521c`. R77/R79/R80/R81/R82/R83 are ALIGN_MERGED;
+R78 remains PROPOSED under plan 23 row B4. [Plan 56](../../align/docs/impl/56-r77-r83-composition-plan.md)
+owns the consolidated contract and acceptance matrix. The final head has a clean
+independent review, a matching preflight attestation and all required CI checks passing.
+
+After merging, `cargo build --release --workspace` passed on this main commit
+with the host's LLVM 22 and keg-only library paths configured (52.40 seconds).
+
+The 2026-09-12 consumer adoption now pins this merge. Managed compiler/runtime materialization and
+verification pass. Source collection, task inputs, evaluation inputs and measurement assembly pass
+on managed macOS and an exact-source Linux ARM64 build. The native validation-attempt, snapshot
+and task-attempt owners also pass. This removes the active R81/R83 compilation blockers; original
+acceptance targets and final A2 remain required before the request lifecycle advances.
+
+The shipped provider surface keeps physical String/logical Str distinct, admits
+indexed Move fields only at an explicit shared-borrow call boundary, preserves
+read-only caller-owned storage, separates fresh/transferred ownership from view
+roots, certifies nested owned Result/Option return leaves, and admits only
+`process.user_namespace` through the existing recursive shared-payload grammar.
+Dynamic slice/AoS views use checked runtime indices; source-formed fixed
+`StructArray` places admit only an integer-literal Move-field index, while a whole
+fixed Move element remains unavailable. No public signature, interface/cache
+field, runtime ABI, native operation or hidden allocation was added.
+
+The provider evidence includes the 22-case whole/per-unit
+`owned_borrowed_composition` owner, including non-loop Option replacement,
+borrowed Config/task-source forwarding, the resource-backed Document path and
+the 32-field measurement final-digest path. It also includes malformed producer/codegen
+Store/Load rejection owners, existing bounded-gate and owner suites, and an optimized
+`check-per-unit` pass for the 17-unit evaluation-input source (warnings only).
+The faithful seven-field R83 witness is recorded separately and the baseline
+producer rejection is preserved as evidence. Explicit provider-branch source-collection,
+task-input and evaluation-input owners now pass; measurement-assembly per-unit checking also
+passes. Full evaluator/repair execution, final A2 and remaining per-request owners remain
+consumer-owned follow-up. The native task-attempt owner executes measurement construction on Linux,
+and macOS verifies explicit portable refusal; neither is complete cutover acceptance.
+
+The managed-pin `scripts/run-prompt-task-smoke` owner now also passes: native prompt rendering
+binds variant/task/context digests and native generation-request preparation binds the paired seed
+and provider-control identity. This is a pre-orchestration consumer owner; it does not claim
+provider, workspace, validation, repair or publication completion.
+
+This register, the adopted pin and local client owners remain intentional uncommitted work in the
+consumer cutover branch, now integrated with refreshed main. Earlier explicit provider-branch
+overrides remain historical verification evidence.
+
 ### R69–R76 provider delivery (2026-09-11)
 
 [Align PR #1024](https://github.com/sanohiro/align/pull/1024) is merged into main
@@ -6669,6 +6719,13 @@ compatibility layer, but it means a tokenizer that otherwise needs only model by
 serve a model mounted read-only. The eventual adoption owner must include `tokenizer-smoke` and
 `tokenizer-parity` so the snapshot cannot retain a hidden `O_RDWR` requirement.
 
+The product-cutover relocation owner reproduces this same limitation at Align
+`1f0627bbb10bd305ecc497d5c21cd25a611c139c`: native provider generation returns OS error 30 when its
+GGUF/alignpack inputs are mounted read-only. Giving it private writable copies succeeds with the
+real ggml backend, and byte-for-byte comparison proves neither copy changed. This is additional
+Request 21 evidence, not a new capability request or Python-cutover blocker; the source models
+remain outside the namespace. The focused owner is `scripts/run-product-runtime-no-python`.
+
 ### Requested capability
 
 One read-only sibling of the existing `file` constructors, following the established `_rw`/`_ro`
@@ -8501,6 +8558,22 @@ The product cutover also encounters the nested-field move restriction when extra
 `prompt_edit_admission.align` keeps the original record alive and reads fields in place instead.
 This does not close the gap or add a blocker; its focused owner is the edit-admission smoke.
 
+At merged pin `1f0627bb`, native task-attempt integration also rejects moving the nested
+`GenerationRequestIdentity`/`SeedCapabilityAttestation` fields out of `prompt_generation_evidence.Evidence`.
+The producer exposes each identity's natural construction boundary; the measurement owns both
+final records directly. The snapshot caller owns its final digest builder, and validation transfers
+the complete interrupted scope owner. These application ownership choices do not implement or close
+the nested-field language requirement. Task-attempt and snapshot owners pass; this gap remains
+nonblocking and is included in the remaining-path audit rather than a separate adoption cycle.
+
+The native evaluation score producer re-encounters whole-array field replacement at the same
+`1f0627bb` pin: assigning computed `array<TaskAggregate>` and `array<RegressionReason>` into an
+already constructed result is rejected with the existing array-field replacement diagnostic.
+Scoring now accepts admitted rows directly and appends its final records to caller-owned builders;
+the evaluator constructs its final result once. This is the natural publication boundary, not a
+serialization transport or a claim that R36 shipped. The independent verifier fixture owner checks
+the computed task/corpus aggregates against its existing fixed/provider repair expectations.
+
 ```text
 Status: PROPOSED
 Priority: medium
@@ -9787,6 +9860,18 @@ closure is in `../align/docs/impl/25-recursive-owned-json-plan.md` section 14.
 No versioned release or consumer adoption is claimed.
 
 ## Request 46 — `borrow mut` array locals inside loops, and no element assignment through an array field
+
+ALIGN-PRODUCT-CUTOVER adds a reduced whole-array replacement/provenance case at pinned Align
+`1f0627bbb10bd305ecc497d5c21cd25a611c139c`. In
+`eval/fixtures/product-cutover-array-replacement.align`, an owning `array<Row>` receives
+`next.build()` in a conditional within a loop, then passes to `borrow mut array<Row>`. Ordinary
+`scripts/alignc check eval/fixtures/product-cutover-array-replacement.align` rejects that call as
+an invalidated borrow whose builder source `next` was dropped. The documented heap builder
+`build()` transfers its buffer to the owning array; this false retained builder origin is a
+compiler provenance concern, not an application lifetime requirement. The complete evaluator now
+declares its baseline within the owning task loop, which also expresses its task-local lifetime.
+This remains non-blocking and does not close Request 46. Additional acceptance: the reduced
+program checks and executes two iterations without weakening rejection of genuinely expired views.
 
 G1R is another current client: `Session.prefix[index] = token` is rejected as an invalid assignment
 target at Align `305926b4`; borrowing the field as `borrow mut array<i64>` is also rejected as a
@@ -12182,17 +12267,17 @@ Align application identity into a new environment digest, with an independent te
 ## Request 67 — Borrowed slices of owned record collections
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
-Blocked gate or slice: none; product edit admission uses shipped scalar key projection.
+Blocked gate or slice: none; product edit admission uses the shipped borrowed record slice.
 Independent work that may continue: the concentrated Align product cutover.
 Resume condition: a merged surface admits read-only indexed field access through a borrowed slice
   of owned records, preserving the source owner's lifetime without copying or consuming elements.
 Align commit or pull request: https://github.com/sanohiro/align/pull/1013
-  76cdd7aa; merged after local preflight and Linux x86_64/ARM64 and macOS CI passed; consumer adoption pending.
-align-llm verification: replace the temporary key projection only when the real surface supports
-  the consumer; ./scripts/alignc run src/prompt_edit_admission_smoke.align.
+  76cdd7aa; adopted through exact pin f83f5c3c365ac992c6c2dc5a371164c9f7b4339f.
+align-llm verification: ./scripts/alignc run src/prompt_edit_admission_smoke.align — PASS, 15 checks,
+  at pin f83f5c3c365ac992c6c2dc5a371164c9f7b4339f; borrowed record slice replaces copied path keys.
 ```
 
 At pin `305926b4`, `FileBlock { path: string, body: string }` records can be read through direct
@@ -12220,20 +12305,31 @@ no elements. Whole/per-unit, invalidation, malformed HIR/MIR, cleanup negative
 controls and cache owners pass locally. Consumer pin/adoption and the smoke owner
 remain pending and were not modified or run by Align.
 
+Consumer verification (2026-09-11): `prompt_edit_admission.align` now forms
+`slice<prompt_file_blocks.FileBlock>` from `parsed.blocks` and reads path fields
+through the shared `block_path` helper while sorting scalar indices. The copied
+path-key projection is removed. The originally named consumer acceptance command,
+`./scripts/alignc run src/prompt_edit_admission_smoke.align`, passes all 15 checks
+with the managed compiler/runtime at exact pin
+`f83f5c3c365ac992c6c2dc5a371164c9f7b4339f`. This completes this request's named
+client acceptance and advances R67 to ALIGN_LLM_VERIFIED; it does not claim the
+separate product cutover or any unrelated aggregate.
+
 ## Request 68 — Certify owned record returns after captured process status use
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
-Blocking: yes
-Blocked gate or slice: existing verification primitive and ALIGN-PRODUCT-CUTOVER process consumer.
+Blocking: no
+Blocked gate or slice: none; the verification/process producer-certification blocker is discharged.
 Independent work that may continue: retained workspace operations, environment evidence, and pure application modules.
 Resume condition: a merged compiler correction certifies the valid captured-status/owned-record composition;
   adopt its exact managed pin and pass the named consumer owners.
 Align commit or pull request: https://github.com/sanohiro/align/pull/1021
   merged as 177224089629a269bc404f2958b8bfc67b79dcbe.
-align-llm verification: pending consumer pin adoption — ./scripts/alignc check-per-unit src/verify.align;
-  final integration owner: make verify-loop-smoke (build, then ./scripts/run-verification-loop-smoke).
+align-llm verification: PASS at managed pin 177224089629a269bc404f2958b8bfc67b79dcbe —
+  ./scripts/alignc check-per-unit src/verify.align; final integration owner: make verify-loop-smoke
+  (invoked with /opt/homebrew/bin/gmake on this host; build and verification/repair CLI smoke PASS).
 ```
 
 The shipped process contract returns a Copy `process.wait_result` from
@@ -12411,6 +12507,23 @@ Consumer-owned acceptance remains pending: adopt the exact merged compiler pin,
 then run `./scripts/alignc check-per-unit src/verify.align` and
 `make verify-loop-smoke`. Align did not modify the consumer source or pin and did
 not run those application owners.
+
+### align-llm consumer acceptance (2026-09-11)
+
+The active uncommitted cutover capability adopts managed compiler/runtime
+`177224089629a269bc404f2958b8bfc67b79dcbe`. `scripts/align-toolchain verify` and
+`./scripts/alignc check-per-unit src/verify.align` PASS. With the documented local
+linker environment, `/opt/homebrew/bin/gmake verify-loop-smoke` PASS: the normal
+application build and verification/repair CLI exercise schema-v2 Some/None output,
+validation, repair, memory, atomic rollback and unborn-HEAD selection. This is the
+original `make verify-loop-smoke` owner using the host's modern GNU make.
+
+The additional focused `./scripts/alignc run src/verify_status_smoke.align` PASS
+covers exit 0/23/127, SIGTERM mapped to 143, spawn failure, timeout, and owned
+stdout/stderr after native capture destruction. Existing `scripts/run-prompt-verifier-smoke`
+also PASS after the separate artifact admission integration. No fabricated status
+or native application wrapper was introduced. These results discharge R68's named
+acceptance, not the remaining Python product cutover or real-inference qualification.
 
 ## Request 69 — Indexed shared borrowing of retained-directory owner records
 
@@ -12631,7 +12744,7 @@ this generic filesystem request does not add a cross-platform sandbox promise.
 ## Request 71 — Borrowed optional-string payload slicing reaches a codegen mismatch
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; the artifact runtime-identity decoder can pass its borrowed payload
@@ -12643,7 +12756,7 @@ Resume condition: merge a compiler correction for direct slicing of the borrowed
 Align commit or pull request: merged Align PR #1024; main 6ca79fee6eb221702652c2bb131839708db55eda.
   Canonical Str descriptor materialization and narrow borrowed-read certification implemented.
   Original provider reproduction: 177224089629a269bc404f2958b8bfc67b79dcbe.
-  Consumer adoption pending.
+  Consumer adoption verified at the same managed pin.
 align-llm verification at the original consumer pin: direct reproduction passes check-per-unit but fails run at codegen;
   ordinary str-helper control passes both and prints PASS at the same pin. Corrected direct
   whole/per-unit compilation and execution remain pending; final consumer owner is
@@ -12733,6 +12846,13 @@ compiler is pinned and the direct expression is adopted. The current helper path
 may remain in use until that acceptance is complete; no unrelated cutover gate is
 added by this non-blocking compiler correction.
 
+Consumer acceptance at managed pin `6ca79fee6eb221702652c2bb131839708db55eda`:
+the exact reproduction above passes `check-per-unit` and whole-program `run` (PASS).
+`prompt_score.verifier_valid_environment_core` now slices the borrowed optional runtime
+payload directly, removing the temporary str helper. The final named
+`scripts/run-prompt-verifier-smoke` owner PASS, including legacy and product v2/v4 records.
+This discharges R71 only; final main-Python-removal acceptance remains pending.
+
 ## Request 72 — Retained real-credential access observations
 
 ```text
@@ -12751,6 +12871,15 @@ Align commit or pull request: merged Align PR #1024; main 6ca79fee6eb221702652c2
   Consumer adoption pending.
 align-llm verification: pending; proposed prompt_access_smoke and consolidated batch matrix below.
 ```
+
+**Owner-approved platform limit (2026-09-11):** `access_at` preserves its strict
+final-link refusal guarantee. Linux supplies the required native operation;
+macOS returns `Error.Code(ENOTSUP)` after full path/mask validation and before any
+filesystem query or ancestor acquisition. Missing paths and links receive that
+same unsupported error. `directory.access` remains supported on both hosts.
+Useful macOS relative access remains deferred; the cross-platform relative-access
+acceptance requested below is not claimed complete. See the provider handoff
+above and plan 54 §3.3/§10 for the failed native assumption and exact evidence.
 
 Frozen `scripts/prompt-evaluate.py::relative_path` requires both a writable mode bit and
 `os.access(physical_parent, os.W_OK | os.X_OK)` before output work. Frozen
@@ -13104,10 +13233,9 @@ Blocked gate or slice: none; repair evidence uses an explicit named str view wit
 Independent work that may continue: all product cutover integration using the ordinary named view.
 Resume condition: the checked slice-field-to-borrowed-text call lowers with valid ownership metadata;
   adopt the corrected compiler and verify the direct composition before simplifying the caller.
-Align commit or pull request: https://github.com/sanohiro/align/pull/1027; merged
-  as 1f0627bbb10bd305ecc497d5c21cd25a611c139c on 2026-09-12.
-align-llm verification: direct reproduction fails check-per-unit at body_only_metadata_is_valid;
-  named str-view control passes check-per-unit. Repair evidence integration is being owner-tested.
+Align commit or pull request: Align PR #1027 merged into main at `1f0627bbb10bd305ecc497d5c21cd25a611c139c` on 2026-09-12.
+align-llm verification: provider owner target (22 whole/per-unit composition cases) and the
+  optimized 17-unit evaluator-input per-unit check pass; direct consumer smoke remains pending.
 ```
 
 The real `prompt_repair_evidence.build` consumer passes the borrowed body of an admitted
@@ -13142,6 +13270,19 @@ This is retained in the continuing composition audit. Consolidate any further co
 before the next external request handoff; it does not pause unrelated work or start a separate
 pin/materialization cycle.
 
+### Align response (2026-09-12 — provider merge status)
+
+ALIGN_MERGED for canonical physical String/logical Str shared argument formation and checked-HIR replay, with exact source-generation retention and no implicit move/clone.
+
+[Plan 56](../../align/docs/impl/56-r77-r83-composition-plan.md) owns the
+contract and complete acceptance matrix. [Align PR #1027](https://github.com/sanohiro/align/pull/1027)
+merged R77/R79/R80/R81/R82/R83 into main at
+`1f0627bbb10bd305ecc497d5c21cd25a611c139c`; the reviewed final provider head is
+`7c616a5b9165ff80abea52b7c5cb47d0affe521c`. Required CI and the final preflight attestation passed.
+Recorded explicit provider-branch consumer checks remain separate from managed-pin
+adoption and final client acceptance, which are still pending.
+R78 remains PROPOSED under its separately recorded decision prerequisite.
+
 ## Request 78 — Payload-free enum fields in heap-built owned records
 
 ```text
@@ -13152,9 +13293,9 @@ Blocked gate or slice: none; worktree snapshots use the existing symlink boolean
 Independent work that may continue: all worktree, source, task and evaluator integration.
 Resume condition: a reviewed heap-record extension admits payload-free enum fields without
   changing ownership or allocation; verify the actual surface before selecting it in collections.
-Align commit or pull request: none; checked at 6ca79fee6eb221702652c2bb131839708db55eda.
-align-llm verification: minimal heap builder rejected because field kind has excluded enum type;
-  current boolean snapshot representation passes its focused worktree owner.
+Align commit or pull request: merged Align PR #1027 at `1f0627bbb10bd305ecc497d5c21cd25a611c139c` records the consolidated deferral; no R78 implementation.
+align-llm verification: R78 remains PROPOSED; the enum-field rejection and plan 23 row B4
+  reopening prerequisite are unchanged, and the consumer boolean representation remains valid.
 ```
 
 `prompt_worktree.Entry` initially selected `Kind { Regular, Symlink }` alongside owned path/hash
@@ -13188,6 +13329,19 @@ Keep unsupported payload-bearing sums rejected unless separately designed. The c
 currently selected explicit symlink boolean remains valid and does not block Python removal.
 Include this nonblocking requirement with R77 in the next consolidated composition handoff.
 
+### Align response (2026-09-12 — provider merge status)
+
+Remains PROPOSED. The heap-record grammar deliberately excludes enums. Plan 23 row B4 records zero qualifying mechanical occurrences in the supplied report; selecting a boolean representation is a data-layout choice and does not satisfy the reopen protocol. Preserve the current rejection. This disposition assesses R78 in the consolidated batch without authorizing admission; no additional owner instruction overriding the prerequisite has been given.
+
+[Plan 56](../../align/docs/impl/56-r77-r83-composition-plan.md) owns the
+contract and complete acceptance matrix. [Align PR #1027](https://github.com/sanohiro/align/pull/1027)
+merged R77/R79/R80/R81/R82/R83 into main at
+`1f0627bbb10bd305ecc497d5c21cd25a611c139c`; the reviewed final provider head is
+`7c616a5b9165ff80abea52b7c5cb47d0affe521c`. Required CI and the final preflight attestation passed.
+Recorded explicit provider-branch consumer checks remain separate from managed-pin
+adoption and final client acceptance, which are still pending.
+R78 remains PROPOSED under its separately recorded decision prerequisite.
+
 ## Request 79 — Nested borrowed optional report loses a native signal producer contract
 
 ```text
@@ -13198,10 +13352,9 @@ Blocked gate or slice: none; an ordinary borrowed Report inspection helper compi
 Independent work that may continue: fixture setup, Git observation and the product cutover.
 Resume condition: nested optional report/sum projection reaches native signal_number with its
   declared nominal producer contract intact; verify direct composition before simplifying helpers.
-Align commit or pull request: https://github.com/sanohiro/align/pull/1027; merged
-  as 1f0627bbb10bd305ecc497d5c21cd25a611c139c on 2026-09-12.
-align-llm verification: direct minimal check-per-unit fails MIR producer certification;
-  a separate borrowed Report helper passes check-per-unit and execution.
+Align commit or pull request: Align PR #1027 merged into main at `1f0627bbb10bd305ecc497d5c21cd25a611c139c` on 2026-09-12.
+align-llm verification: nested signal owner coverage and existing process owners pass whole/per-unit;
+  actual fixture consumer adoption remains pending.
 ```
 
 The stopped fixture setup owns a scope and an optional supervisor Report. Reading its cancellation
@@ -13240,6 +13393,19 @@ compilation and execution, and invalid nominal native arguments remaining reject
 owner is `src/prompt_fixture_setup_smoke.align` after direct inspection adoption. Keep this
 nonblocking finding in the next consolidated composition batch with R77/R78.
 
+### Align response (2026-09-12 — provider merge status)
+
+ALIGN_MERGED for exact active-path and nominal Copy signal certification through nested borrowed projections. Preserve native input validation and initialization proof.
+
+[Plan 56](../../align/docs/impl/56-r77-r83-composition-plan.md) owns the
+contract and complete acceptance matrix. [Align PR #1027](https://github.com/sanohiro/align/pull/1027)
+merged R77/R79/R80/R81/R82/R83 into main at
+`1f0627bbb10bd305ecc497d5c21cd25a611c139c`; the reviewed final provider head is
+`7c616a5b9165ff80abea52b7c5cb47d0affe521c`. Required CI and the final preflight attestation passed.
+Recorded explicit provider-branch consumer checks remain separate from managed-pin
+adoption and final client acceptance, which are still pending.
+R78 remains PROPOSED under its separately recorded decision prerequisite.
+
 ## Request 80 — Fresh scalar array copy retains a loop-local source borrow
 
 ```text
@@ -13250,10 +13416,9 @@ Blocked gate or slice: none; the Git index capture has an ordinary owned-return 
 Independent work that may continue: Git observation, task integration and Python removal.
 Resume condition: a fresh slice.to_array scalar result assigned across a loop iteration is
   independent of the source owner; verify direct composition before simplifying the helper.
-Align commit or pull request: https://github.com/sanohiro/align/pull/1027; merged
-  as 1f0627bbb10bd305ecc497d5c21cd25a611c139c on 2026-09-12.
-align-llm verification: direct assignment fails lifetime checking; owned-return helper passes
-  managed check-per-unit and run across two iterations and source expiry.
+Align commit or pull request: Align PR #1027 merged into main at `1f0627bbb10bd305ecc497d5c21cd25a611c139c` on 2026-09-12.
+align-llm verification: scalar replacement and existing materialization owners pass whole/per-unit;
+  the FILE_SET consumer witness remains pending.
 ```
 
 `prompt_git_observation` retains raw index bytes after each independently owned command report
@@ -13298,23 +13463,58 @@ branch replacement, source expiry, whole/per-unit checking/run and genuinely bor
 lifetimes remaining enforced. Final client owner: `src/prompt_git_observation_smoke.align` after
 direct-copy adoption. No aggregate is added; consolidate this nonblocking gap with R77–R79.
 
+Additional real-client evidence at the same6ca79fee pin: source-trust composition also rejects
+an owned optional FILE_SET observation assigned inside the successful branch of a Result match:
+
+```align
+mut retained_files: Option<prompt_file_set_observation.Observation> := None
+// In the successful FILE_SET branch:
+identity := value.sha256.clone()
+retained_files = Some(value)
+// After the branch and pure trust construction:
+return Ok(Readout.Ready(Evidence { trust: trust, file_set: retained_files }))
+```
+
+The final transfer reports `use of invalidated borrow 'retained_files': its source 'retained_files'
+was dropped at the end of the loop iteration that declared it`, followed by enclosing-operation
+invalidated-snapshot diagnostics. This function contains no loop. The sample transfers a nested
+owned record/array rather than a scalar copy, so this is grouped as additional R80-family
+branch-replacement evidence, not a proven identical compiler root cause or another request.
+The application now constructs the optional observation once as an immutable if/match result,
+borrows it only to clone the small identity, and moves it into the final Evidence. This natural
+ownership shape passes native compilation and the13-case Linux source-trust owner, preserving
+the exact owned member rows after source expiry. Provider acceptance should include the direct
+branch-assignment form; final additional client owner is `scripts/run-prompt-source-trust-smoke`.
+This remains nonblocking and does not initiate another pin/request publication loop.
+
+### Align response (2026-09-12 — provider merge status)
+
+ALIGN_MERGED for fresh scalar backing and correct owned generation transfer. The non-loop FILE_SET Option/Evidence assignment is a separate required provider witness; passing scalar copying alone does not close it.
+
+[Plan 56](../../align/docs/impl/56-r77-r83-composition-plan.md) owns the
+contract and complete acceptance matrix. [Align PR #1027](https://github.com/sanohiro/align/pull/1027)
+merged R77/R79/R80/R81/R82/R83 into main at
+`1f0627bbb10bd305ecc497d5c21cd25a611c139c`; the reviewed final provider head is
+`7c616a5b9165ff80abea52b7c5cb47d0affe521c`. Required CI and the final preflight attestation passed.
+Recorded explicit provider-branch consumer checks remain separate from managed-pin
+adoption and final client acceptance, which are still pending.
+R78 remains PROPOSED under its separately recorded decision prerequisite.
+
 ## Request 81 — Borrowed record-array projection loses provenance across an owned-return call
 
 ```text
 Status: ALIGN_MERGED
 Priority: high
 Blocking: no
-Blocked gate or slice: none; task validation passes narrow slice arguments directly from its
-  owned observations and retains candidate state for post-validation equality without copying.
-Independent work that may continue: tool/sandbox admission, source cleanup, evaluator assembly;
-  owned Git-observation consumers and their focused owners already pass.
-Resume condition: certify the existing borrowed record-array call composition without extending
-  source lifetime into the independently owned result; verify the direct task-validation consumer.
-Align commit or pull request: https://github.com/sanohiro/align/pull/1027; merged
-  as 1f0627bbb10bd305ecc497d5c21cd25a611c139c on 2026-09-12.
-align-llm verification: minimal source checking passes but check-per-unit/run fail resource MIR
-  validation; consuming the observation passes. Narrow slice-parameter helpers called directly
-  from the owning task function pass managed check-per-unit for the complete18-unit consumer.
+Blocked gate or slice: none after merged-pin source-collection and validation adoption.
+Independent work that may continue: full evaluator, repair, publication and retirement integration.
+Resume condition: fulfilled for application implementation; retain the original named acceptance
+  targets before recording complete client verification.
+Align commit or pull request: Align PR #1027 merged into main at `1f0627bbb10bd305ecc497d5c21cd25a611c139c` on 2026-09-12.
+align-llm verification: `scripts/run-prompt-source-collection-smoke` passes at managed pin `1f0627bb`
+  on macOS and an exact-source Linux ARM64 build. The composed `run-prompt-validation-attempt-smoke`
+  and `run-prompt-task-attempt-smoke` Linux owners exercise actual validation and source-copy paths.
+  Earlier explicit provider-branch checks remain historical evidence.
 ```
 
 The Git observation owner first exposed this when it passed a borrowed owned-record array to an
@@ -13378,6 +13578,31 @@ this adds no deep clone and passes its literal/boundary/ownership owner. Include
 borrowed Config form and `src/prompt_sandbox_plan_smoke.align` in provider/client acceptance if
 that borrowed interface is later adopted.
 
+Resumed cutover client (2026-09-11): `prompt_source_collection.collect_task` borrows TaskSource,
+passes its declarations to `prompt_declared_source.expand`, and appends the independently owned
+file rows into the full evaluation set. Under managed pin `6ca79fee`, source checking passes but
+per-unit certification rejects `collect_task` with the recorded XML-capable call argument
+provenance mismatch. The same natural consumer and
+`scripts/run-prompt-source-collection-smoke` pass with explicit provider commit `651cd0a2`
+(`651cd0a2581b27a5c893c29428ddd706a0ddf232`); no deep-clone or reopen workaround is retained.
+The owner covers multi-task/last-declaration failure, strict original-manifest membership,
+limits and source expiry. Independent complete-set Git and FILE_SET admission consumers remain
+available. This is additional evidence for the already consolidated R77–R83 batch, not a new
+provider request or pin loop.
+
+### Align response (2026-09-12 — provider merge status)
+
+ALIGN_MERGED for shared field/slice arguments with independently owned results. Include original observation, borrowed Config and blocking collect_task expansion/assembly witnesses; named/consuming controls do not discharge those borrowed paths.
+
+[Plan 56](../../align/docs/impl/56-r77-r83-composition-plan.md) owns the
+contract and complete acceptance matrix. [Align PR #1027](https://github.com/sanohiro/align/pull/1027)
+merged R77/R79/R80/R81/R82/R83 into main at
+`1f0627bbb10bd305ecc497d5c21cd25a611c139c`; the reviewed final provider head is
+`7c616a5b9165ff80abea52b7c5cb47d0affe521c`. Required CI and the final preflight attestation passed.
+Recorded explicit provider-branch consumer checks remain separate from managed-pin
+adoption and final client acceptance, which are still pending.
+R78 remains PROPOSED under its separately recorded decision prerequisite.
+
 ## Request 82 — Shared matching of an optional retained user-namespace owner
 
 ```text
@@ -13389,10 +13614,9 @@ Blocked gate or slice: none; namespace-bearing command construction can use an e
 Independent work that may continue: sandbox probing/command integration and the product cutover.
 Resume condition: an existing Option<process.user_namespace> permits shared payload matching
   for the shipped inherit_namespace call, without moving or extracting the owner.
-Align commit or pull request: https://github.com/sanohiro/align/pull/1027; merged
-  as 1f0627bbb10bd305ecc497d5c21cd25a611c139c on 2026-09-12.
-align-llm verification: minimal source check rejects borrowed optional owner matching;
-  direct shared namespace parameters are the shipped plan50 surface.
+Align commit or pull request: Align PR #1027 merged into main at `1f0627bbb10bd305ecc497d5c21cd25a611c139c` on 2026-09-12.
+align-llm verification: the shared namespace carrier owner passes portable None and whole/per-unit checks;
+  Linux Some execution and sandbox consumer adoption remain pending.
 ```
 
 Sandbox configuration has an absent namespace in normal mode and a retained prepared namespace
@@ -13432,22 +13656,35 @@ Linux owns actual namespace inheritance and release; unsupported platforms retai
 launch. Client acceptance is the final sandbox command/probe owner after shared optional matching
 is selected. Consolidate this nonblocking requirement with R77–R81; do not start a per-gap pin loop.
 
+### Align response (2026-09-12 — provider merge status)
+
+ALIGN_MERGED for only ProcessUserNamespace in the existing recursive shared-payload grammar. Matching retains the source; explicit inherit_namespace retains its existing typed-duplication, slot/error and platform contract. No owner extraction or hidden duplication. Linux owns actual Some inheritance; macOS keeps portable None/type/refusal coverage.
+
+[Plan 56](../../align/docs/impl/56-r77-r83-composition-plan.md) owns the
+contract and complete acceptance matrix. [Align PR #1027](https://github.com/sanohiro/align/pull/1027)
+merged R77/R79/R80/R81/R82/R83 into main at
+`1f0627bbb10bd305ecc497d5c21cd25a611c139c`; the reviewed final provider head is
+`7c616a5b9165ff80abea52b7c5cb47d0affe521c`. Required CI and the final preflight attestation passed.
+Recorded explicit provider-branch consumer checks remain separate from managed-pin
+adoption and final client acceptance, which are still pending.
+R78 remains PROPOSED under its separately recorded decision prerequisite.
+
 ## Request 83 — Owned document return composition in optional repair admission
 
 ```text
 Status: ALIGN_MERGED
 Priority: high
-Blocking: yes
-Blocked gate or slice: prompt_task_inputs repair-template admission and therefore complete
-  evaluator document admission; main evaluator Python removal cannot close without this consumer.
-Independent work that may continue: direct generation integration, measurement/source producers,
-  legacy eval admission, existing primitive owners and consolidated request preparation.
-Resume condition: nested owned document returns compose with typed template decoding and
-  optional owned results in the actual consumer, without weakening producer certification.
-Align commit or pull request: https://github.com/sanohiro/align/pull/1027; merged
-  as 1f0627bbb10bd305ecc497d5c21cd25a611c139c on 2026-09-12.
-align-llm verification: ordinary check passes the reduced case; per-unit producer certification
-  rejects it. No full-consumer passing ownership factoring has been found.
+Blocking: no
+Blocked gate or slice: none after merged-pin task/evaluation input and measurement adoption.
+Independent work that may continue: full evaluator/repair integration, legacy eval retirement,
+  publication and final cutover qualification.
+Resume condition: fulfilled for application implementation. Final A2 and every originally named
+  acceptance target remain required for ALIGN_LLM_VERIFIED.
+Align commit or pull request: Align PR #1027 merged into main at `1f0627bbb10bd305ecc497d5c21cd25a611c139c` on 2026-09-12.
+align-llm verification: managed `1f0627bb` compiler/runtime verification, task-input, evaluation-input
+  and measurement-assembly owners PASS on macOS and exact-source Linux ARM64. The native
+  task-attempt owner produces actual version4 measurements in 14 Linux lifecycle cases.
+  Full row/repair execution and final A2 remain pending; source checks alone do not close them.
 ```
 
 The application first admits a retained regular UTF-8 document and its raw digest, then decodes
@@ -13482,6 +13719,21 @@ genuinely escaping views. Client acceptance is `scripts/run-prompt-task-inputs-s
 repair-template success/refusal, `src/prompt_evaluation_inputs_smoke.align`, and the final A2
 functional cutover integration. Consolidate with R77–R82 before external handoff; adopt merged
 prerequisites together, not one pin update per request.
+
+The subsequent real-client measurement producer adds a concrete acceptance target under this
+owned-result certification requirement. `prompt_measurement_assembly.build` creates the existing
+version4 TaskMeasurement, finalizes its canonical content digest and returns the owned record.
+The complete owner passes ordinary source checking (594 functions); managed per-unit compilation
+and native run reject its final digest at `String [ResultOk, StructField(31)]` in `build`, while
+the explicit provider branch passes the per-unit owner. An owned-return finalizer, a
+borrowed-mutating finalizer and natural inline finalization all leave the managed-pin rejection.
+Preserve the inline application source and independent golden owner; do not substitute a missing
+digest, change the schema or relax validation. This expands consumer acceptance to
+`scripts/run-prompt-measurement-assembly-smoke` over
+`src/prompt_measurement_assembly_smoke.align`, including exact canonical goldens,
+cleanup/containment precedence, unchanged edit evidence and completion disclosure bounds. The
+shared diagnostic class does not establish identical compiler root cause to the reduced template
+case; managed-pin provider adoption and final A2 closure remain pending.
 
 Self-contained provider reproduction (save as an Align source file; only core/std imports):
 
@@ -13601,15 +13853,16 @@ pub fn wrap(borrow root: fs.directory, borrow manifest: Manifest, deadline: i64,
 
 ### Consolidated R77–R83 adoption boundary
 
-R77–R82 are recorded nonblocking requirements; R83 currently blocks complete evaluator input
-admission. This batch covers the concrete composition failures found while implementing retained
+R77–R80/R82 are recorded nonblocking requirements. Merged-pin adoption has removed R81's
+task-source collection and R83's input/measurement compilation blockers. This batch covers the concrete composition failures found while implementing retained
 filesystem/process owners, task validation, sandbox command preparation and evaluator document
 admission. It is not a promise that unimplemented measurement/publication code cannot reveal
 further compiler defects. Source trust, provider/repair measurement construction, publication and
 legacy eval retirement remain application implementation work; no hypothetical language API is
-requested for them. Publish this prerequisite batch together. Require the original per-request
-acceptance plus the R83 real consumer before marking verified, and adopt its merged fixes in one
-pin change. Continue independent application work while the provider implements the batch.
+requested for them. Managed-pin macOS and exact-source Linux owners cover source collection, task
+inputs, evaluation inputs and measurement assembly. One pin change adopts the provider wave.
+Require original per-request acceptance plus the R81/R83 final real consumers before marking
+verified; full evaluator/repair and A2 acceptance remain pending.
 
 ### Align delivery — R77–R83 (2026-09-12)
 
@@ -13648,6 +13901,19 @@ review with its fixture-path correction, final preflight and optimized workspace
 build pass. Required Linux x86_64/ARM64 and macOS CI pass. These results do not
 claim the external application owners or managed-pin adoption.
 
+### Align response (2026-09-12 — provider merge status)
+
+ALIGN_MERGED for founded certification of independently owned call/return leaves. Reduced Template field6, full-evaluator Document field1/argument failures and measurement digest field31 require separate faithful provider witnesses. Preserve full consumer checks, canonical goldens and schema.
+
+[Plan 56](../../align/docs/impl/56-r77-r83-composition-plan.md) owns the
+contract and complete acceptance matrix. [Align PR #1027](https://github.com/sanohiro/align/pull/1027)
+merged R77/R79/R80/R81/R82/R83 into main at
+`1f0627bbb10bd305ecc497d5c21cd25a611c139c`; the reviewed final provider head is
+`7c616a5b9165ff80abea52b7c5cb47d0affe521c`. Required CI and the final preflight attestation passed.
+Recorded explicit provider-branch consumer checks remain separate from managed-pin
+adoption and final client acceptance, which are still pending.
+R78 remains PROPOSED under its separately recorded decision prerequisite.
+
 ## Remaining product-cutover requests (2026-09-12)
 
 R84–R88 consolidate the remaining-path observations at Align
@@ -13665,7 +13931,7 @@ Historical request delivery and the main toolchain pin remain unchanged.
 ## Request 84 — Shared matching of an optional prepared command
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; the single-attempt owner consumes its optional command once.
@@ -13709,10 +13975,16 @@ shared mutation, consumption and escape remain rejected. No clone or new allocat
 Whole/per-unit owners cover None, retained command/path ownership and two released scopes on
 Linux; macOS runs the portable None owner under the existing process-platform contract.
 
+### align-llm consumer verification (2026-09-13)
+
+Managed `f502fe3` adoption passes `scripts/run-product-cutover-adoption-smoke` on macOS and Linux: None, retained input-owner expiry and two sequential released Linux scopes. The native `scripts/run-prompt-task-attempt-smoke` owner passes its 15 Linux lifecycle cases in A3. No application ownership workaround is required for the shipped shared command match.
+The preceding provider-delivery pending statements describe the historical handoff; this
+checkpoint records the completed client acceptance.
+
 ## Request 85 — Owned JSON encoding result from a borrowed optional record
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; the attempt owner encodes each observation before embedding it.
@@ -13778,6 +14050,12 @@ same authenticated MIR place as ordinary borrowed consumers. Both `json.encode` 
 `json.encode_bounded` return independently owned output. Whole/per-unit owners cover source
 expiry, None/Some and exact-fit/over-limit bounds; malformed or uninitialized producer places
 remain rejected. The JSON field grammar and canonical bytes are unchanged.
+
+### align-llm consumer verification (2026-09-13)
+
+Managed `f502fe3` adoption passes ordinary/per-unit checks and execution of the reduced witness, None/Some, source expiry and bounded owned encoding through `scripts/run-product-cutover-adoption-smoke` on macOS/Linux. The native task-attempt owner and A2/A4 independently verified complete measurement/digest references, including both repair attempts.
+The preceding provider-delivery pending statements describe the historical handoff; this
+checkpoint records the completed client acceptance.
 
 ## Request 86 — Record initializer ordering can read an already moved owner
 
@@ -13850,10 +14128,43 @@ rejects. Whole/per-unit owners cover the reduced clone-before-move witness, nest
 effects, early exits and fixed Move-record arrays. Allocation/free counts cover array completion,
 replacement and later-element failure cleanup.
 
+### align-llm residual acceptance (2026-09-13)
+
+At shipped sibling/pin `f502fe3da00ce0b39c4eeec40586b11688627fbd`, the valid
+clone-before-move witness now preserves its digest, and the provider's direct-record
+negative is rejected in both check modes. However, the originally requested optional
+payload negative still passes both `check` and `check-per-unit` and executes with
+an empty digest. Reproduction: `eval/fixtures/product-cutover-option-after-move.align`:
+
+```align
+module product_cutover_option_after_move
+import core.json
+Record { text: string }
+Outer { value: Option<Record>, digest: Option<string> }
+pub fn main() -> Result<(), Error> {
+  value := Record { text: "owned".clone() }
+  invalid := Outer { value: Some(value), digest: Some(value.text.clone()) }
+  print(json.encode(invalid)?)
+  return Ok(())
+}
+```
+
+Observed output is `{"value":{"text":"owned"},"digest":""}`. The moved owner
+must be rejected; preserving written evaluation order alone is insufficient.
+This is a remaining compiler Move-check obligation, not an application serialization
+policy. Plan58's `record_initializers_reject_read_after_move` uses a direct record
+field and does not cover this optional carrier. Keep Status `ALIGN_MERGED` and
+Blocking `no`: native attempt construction already binds the digest before moving
+its measurement, and the independent cross-record oracle checks that value.
+Independent cutover work continues. The additional resume condition is rejection of
+this optional-carrier witness in both check modes, with the valid clone-before-move
+and None/Some construction controls unchanged. Do not advance R86 to verified/closed
+on the positive adoption cases alone; no additional pin cycle is initiated here.
+
 ## Request 87 — Encode a constructed owned record array as a JSON root
 
 ```text
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; native evaluation embeds aggregates in its result record.
@@ -13922,13 +14233,19 @@ live-allocation probes, source replacement during bound evaluation, and malforme
 HIR/MIR producers. Consumer witness execution and managed-pin adoption remain
 align-llm-owned and pending.
 
+### align-llm consumer verification (2026-09-13)
+
+Managed `f502fe3` adoption passes `scripts/run-product-cutover-adoption-smoke` on macOS/Linux: constructed empty/multiple record-array roots, exact-fit/over-limit bounds, embedded-field byte parity and input reuse. The reduced owned-array witness also executes successfully. Product result arrays remain embedded in their existing envelope.
+The preceding provider-delivery pending statements describe the historical handoff; this
+checkpoint records the completed client acceptance.
+
 ## Request 88 — Ordinary-path regular-file reader admission
 
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
-Blocking: yes
-Blocked gate or slice: P8 complete legacy command/script file admission, and therefore final A2/A4/A5 cutover closure.
-Independent work that may continue: Native evaluation, provider/repair owners, other CLI relocation, A1 and installed A3 qualification; retain the eight frozen debts until retirement closes.
+Blocking: no
+Blocked gate or slice: none; P8 and final A2/A4/A5 acceptance pass.
+Independent work that may continue: ordinary product work; retained Python is independent replay/developer tooling.
 Resume condition: A shipped ordinary-path reader constructor that follows normal path/symlink semantics, rejects non-regular entries without waiting for a FIFO writer, and returns the same retained descriptor whose regular kind was admitted.
 Align commit or pull request: https://github.com/sanohiro/align/pull/1033 (merged `65376767f3642323f9043a1c683b03129fd564df`).
 align-llm verification: the embedded `product-cutover-followed-reader.align` witness builds at the pin; a regular file and final symlink pass, while a FIFO without a writer is terminated by an external one-second timeout before metadata admission. No proposed API is consumed.
@@ -14003,3 +14320,18 @@ Provider plan: Align `docs/impl/58-r84-r88-client-batch-plan.md`. PR #1033 merge
 owner/gate/Clippy, native ABI parity, all fourteen local PostgreSQL suites and required CI passed.
 The post-merge `cargo build --release --workspace` passed. No versioned release was requested.
 Managed-pin adoption and consumer acceptance remain pending.
+
+### align-llm consumer verification (2026-09-13)
+
+Managed `f502fe3` adoption passes regular/empty/readonly/dot/symlink reader cases and immediate no-writer FIFO/device/directory refusal on macOS/Linux. P8 retains decoded task inputs across dispatch and inspects the selected direct or literal-interpreter file with this regular descriptor; arbitrary external wrappers retain the explicitly bounded external-command contract. `scripts/run-eval-retirement-smoke` passes whole-corpus refusal before children/results, all eight renamed frozen implementations, alternate corpus IDs, unchanged external Python tests, and admitted-input mutation. Final A2/A4 and A5 strict/independent-validator owners pass. The eight historical implementations are independent replay oracles, with zero remaining product exceptions.
+The preceding provider-delivery pending statements describe the historical handoff; this
+checkpoint records the completed client acceptance.
+
+### Consolidated native cutover integration checkpoint (2026-09-13)
+
+A2 functional, A3 native lifecycle/resource plus actual Linux installed profile, A4 relocated
+Python-free product execution and A5 independent result verification pass at managed `f502fe3`.
+These results supersede historical statements above that final evaluator/repair integration is
+not implemented. Request lifecycle remains individual: R84/R85/R87/R88 are client-verified;
+R86 remains ALIGN_MERGED with its nonblocking optional-move negative. Earlier requests retain
+any separately named owner requirements; these integration results do not silently close them.

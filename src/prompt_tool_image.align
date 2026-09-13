@@ -1,0 +1,100 @@
+module prompt_tool_image
+
+import std.fs
+import std.process
+import std.crypto
+import std.encoding
+import std.time
+
+fn timely(deadline: i64) -> Result<(), Error> {
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  return Ok(())
+}
+
+fn digest_shape(value: str) -> bool {
+  if value.len() != 64 { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { break }
+    byte := value.bytes()[index]
+    if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn same(before: fs.metadata, after: fs.metadata) -> bool {
+  return match after.kind { Regular => true, _ => false } &&
+  before.device == after.device && before.inode == after.inode && before.links == after.links &&
+  before.mode == after.mode && before.size == after.size &&
+  before.modified_seconds == after.modified_seconds && before.modified_nanoseconds == after.modified_nanoseconds &&
+  before.changed_seconds == after.changed_seconds && before.changed_nanoseconds == after.changed_nanoseconds
+}
+
+// The returned image binds these observed bytes, not a later pathname lookup.
+// Dynamic libraries and workspace isolation remain separate caller prerequisites.
+pub fn admit(borrow root: fs.directory, relative: slice<u8>, expected_sha256: str, max_bytes: i64, deadline: i64) -> Result<process.image, Error> {
+  if !digest_shape(expected_sha256) || max_bytes < 1 || max_bytes > 268435456 { return Err(Error.Invalid) }
+  timely(deadline)?
+  before_result := root.metadata_at(relative)
+  timely(deadline)?
+  before := before_result?
+  if !match before.kind { Regular => true, _ => false } || before.links != 1 ||
+  before.size < 0 || before.size > max_bytes || (before.mode & 73) == 0 { return Err(Error.Invalid) }
+  input_result := root.open_read_single_link(relative)
+  timely(deadline)?
+  input := input_result?
+  opened_result := input.metadata()
+  timely(deadline)?
+  if !same(before, opened_result?) { return Err(Error.Invalid) }
+  memory_result := fs.memory_file(fs.memory_kind.Executable, max_bytes)
+  timely(deadline)?
+  mut memory := memory_result?
+  digest := crypto.sha256_stream()
+  mut count := 0
+  loop {
+    timely(deadline)?
+    if count == max_bytes {
+      mut probe := buffer(1)
+      read_result := input.read(probe)
+      timely(deadline)?
+      if read_result? != 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := max_bytes - count
+    mut chunk := buffer(if remaining < 65536 { remaining } else { 65536 })
+    read_result := input.read(chunk)
+    timely(deadline)?
+    size := read_result?
+    if size == 0 { break }
+    write_result := memory.write(chunk.bytes())
+    timely(deadline)?
+    write_result?
+    digest.update(chunk.bytes())
+    timely(deadline)?
+    count = count + size
+  }
+  descriptor_result := input.metadata()
+  timely(deadline)?
+  if count != before.size || !same(before, descriptor_result?) { return Err(Error.Invalid) }
+  path_result := root.metadata_at(relative)
+  timely(deadline)?
+  if !same(before, path_result?) { return Err(Error.Invalid) }
+  hash := digest.finish()
+  hash_text := encoding.hex_encode(hash[0..hash.len()])
+  timely(deadline)?
+  if hash_text != expected_sha256 { return Err(Error.Invalid) }
+  seal_result := memory.seal()
+  timely(deadline)?
+  sealed := seal_result?
+  image_result := process.executable(sealed)
+  timely(deadline)?
+  admitted := image_result?
+  final_descriptor := input.metadata()
+  timely(deadline)?
+  if !same(before, final_descriptor?) { return Err(Error.Invalid) }
+  final_path := root.metadata_at(relative)
+  timely(deadline)?
+  if !same(before, final_path?) { return Err(Error.Invalid) }
+  return Ok(admitted)
+}

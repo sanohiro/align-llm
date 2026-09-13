@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""Independent checks for native completed fixtures, including ineligible evaluations.
+
+This checks score and record closure, not source observation or gate eligibility. The full
+independent gate retains its IMPROVED, source, ancestry and publication requirements.
+"""
+import hashlib
+import stat
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+# Fixture-only tree identity, computed independently from the native observer's output.
+if len(sys.argv) == 4 and sys.argv[1] == "--tree-digest":
+    root = Path(sys.argv[2]).resolve()
+    tree = root / sys.argv[3]
+    rows = sorted([tree, *tree.rglob("*")], key=lambda path: path.relative_to(root).as_posix().encode())
+    digest = hashlib.sha256()
+    for path in rows:
+        mode = path.lstat().st_mode
+        if stat.S_ISDIR(mode):
+            payload = b"D\n"
+        elif stat.S_ISREG(mode):
+            payload = b"F " + hashlib.sha256(path.read_bytes()).hexdigest().encode() + b"\n"
+        else:
+            raise SystemExit("source fixture contains a nonregular entry")
+        digest.update(f"{mode:06o} ".encode() + path.relative_to(root).as_posix().encode() + b"\0" + payload)
+    print(digest.hexdigest())
+    raise SystemExit(0)
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location(
+    "gate", Path(__file__).resolve().with_name("prompt-gate-validator.py")
+)
+gate = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gate)
+if len(sys.argv) != 2:
+    raise SystemExit("usage: check-native-evaluation-fixture RESULT")
+result = json.loads(Path(sys.argv[1]).read_bytes())
+assert result["schema_version"] == 2
+policy = gate.validate_acceptance_policy(result["acceptance_policy"])
+status, tasks, corpus, reasons = gate.rescore(result, policy)
+assert status == result["status"]
+assert len(tasks) == len(result["task_aggregates"])
+for computed, persisted, fields in [
+    *((computed, persisted, gate.TASK_AGGREGATE_V2_FIELDS)
+      for computed, persisted in zip(tasks, result["task_aggregates"])),
+    (corpus, result["corpus_aggregate"], gate.CORPUS_AGGREGATE_V2_FIELDS),
+]:
+    gate.exact_record(persisted, fields, "native aggregate", gate.AGGREGATE_OPTIONAL)
+    assert gate.completed_record(computed, fields) == gate.completed_record(persisted, fields)
+assert reasons == result["serious_regression_reasons"]
+core = result["environment"]["core"]
+gate.validate_environment_core(core)
+pools = gate.validate_snapshot_closure(result, result["rows"])
+for index, row in enumerate(result["rows"]):
+    task = next(task for task in result["tasks"] if task["task_id"] == row["task_id"])
+    label = f"native row {index}"
+    gate.validate_task_core(task, core, label)
+    gate.validate_measurement_version(row["measurement"], task, label)
+    gate.validate_measurement_probe(row["measurement"], task, label, core)
+    gate.validate_attempts(row, task, result["generation_policy"], pools, label, core)
+print("independent native score, environment, snapshot, measurement and all-attempt checks PASS")

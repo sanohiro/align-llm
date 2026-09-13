@@ -1,0 +1,92 @@
+module prompt_scope_capture_smoke
+
+import prompt_capture
+import prompt_scope_capture
+import prompt_scope_cleanup
+import std.process
+import std.time
+
+fn exercise(borrow mut scope: process.child_scope, mode: i64, width: i64) -> Result<(), Error> {
+  pattern := prompt_capture.pattern("secret", if mode == 1 { 5 } else { 128 })?
+  mut stdout := buffer(128)
+  mut stderr := buffer(128)
+  mut stdout_cursor := prompt_capture.cursor()
+  mut stderr_cursor := prompt_capture.cursor()
+  mut state := prompt_scope_capture.initial()
+  zero: u8 := 0
+  mut scratch := [zero, zero, zero]
+  deadline := time.instant() + 10000000000
+  // Zero wait is a real nonblocking observation, not a completion assumption.
+  prompt_scope_capture.step(scope, pattern, stdout, stderr, stdout_cursor, stderr_cursor, state, scratch[0..width], 0)?
+  if mode == 2 || mode == 3 {
+    loop {
+      if time.instant() >= deadline { return Err(Error.Timeout) }
+      prompt_scope_capture.step(scope, pattern, stdout, stderr, stdout_cursor, stderr_cursor, state, scratch[0..width], 10000000)?
+      if mode == 2 && state.stdout_eof && state.stderr_eof {
+        match state.termination { None => {}, Some(_) => { return Err(Error.Invalid) } }
+        break
+      }
+      if mode == 3 {
+        exited := match state.termination { Some(_) => true, None => false }
+        if exited { if state.stdout_eof { return Err(Error.Invalid) }; break }
+      }
+    }
+    if prompt_scope_capture.collected(state) { return Err(Error.Invalid) }
+    cleanup := prompt_scope_cleanup.run(scope, deadline, 32768, 8192)?
+    if !cleanup.released { return Err(Error.Timeout) }
+  }
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if prompt_scope_capture.step(scope, pattern, stdout, stderr, stdout_cursor, stderr_cursor, state, scratch[0..width], 10000000)? { break }
+  }
+  if !prompt_scope_capture.collected(state) { return Err(Error.Invalid) }
+  if !prompt_scope_capture.step(scope, pattern, stdout, stderr, stdout_cursor, stderr_cursor, state, scratch[0..width], 0)? { return Err(Error.Invalid) }
+  out := prompt_capture.finish(pattern, stdout, stdout_cursor)?
+  err := prompt_capture.finish(pattern, stderr, stderr_cursor)?
+  expected_out := if mode == 0 { "A[REDACTED]Bsec" } else if mode == 1 { "\n[output truncated]" } else { "" }
+  expected_err := if mode == 0 { "[REDACTED]C" } else { "" }
+  if mode == 4 {
+    if out.len() != 2 || out[0] != 0 || out[1] != 255 || err.len() != 0 { return Err(Error.Invalid) }
+  } else {
+    if out[0..out.len()].as_str()? != expected_out || err[0..err.len()].as_str()? != expected_err { return Err(Error.Invalid) }
+  }
+  if stdout_cursor.truncated != (mode == 1) || stderr_cursor.truncated { return Err(Error.Invalid) }
+  report := prompt_scope_cleanup.run(scope, deadline, 32768, 8192)?
+  if !report.released { return Err(Error.Timeout) }
+  match report.first_error { None => {}, Some(error) => { return Err(error) } }
+  return Ok(())
+}
+
+fn run_case(mode: i64, width: i64) -> Result<(), Error> {
+  script := if mode == 0 { "printf AsecretBsec; printf secretC >&2" } else if mode == 1 { "printf 0123456789" } else if mode == 2 { "exec 1>&- 2>&-; exec sleep 120" } else if mode == 3 { "sleep 120 & exit 0" } else if mode == 4 { "printf '\\000\\377'" } else { "exit 0" }
+  command := process.command("/bin/sh", ["/bin/sh", "-c", script])
+  mut scope := command.start_scope()?
+  result := exercise(scope, mode, width)
+  fallback := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+  if !fallback.released { return Err(Error.Timeout) }
+  return result
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 { return Err(Error.Invalid) }
+  if args[1] == "Darwin" {
+    command := process.command("/bin/sh", ["/bin/sh", "-c", "exit 0"])
+    match command.start_scope() {
+      Err(error) => { match error { Code(code) => { if code != 45 { return Err(Error.Invalid) } }, _ => { return Err(Error.Invalid) } } },
+      Ok(_) => { return Err(Error.Invalid) },
+    }
+    print("scope capture smoke: Darwin ENOTSUP 45 PASS; Linux collection not exercised")
+    return Ok(())
+  }
+  if args[1] != "Linux" { return Err(Error.Invalid) }
+  run_case(0, 1)?
+  run_case(0, 2)?
+  run_case(0, 3)?
+  run_case(1, 2)?
+  run_case(2, 1)?
+  run_case(3, 3)?
+  run_case(4, 1)?
+  run_case(5, 2)?
+  print("scope capture smoke: chunked credentials, separate streams, truncation, EOF/status distinction, cleanup/final drain and repeated collection PASS")
+  return Ok(())
+}

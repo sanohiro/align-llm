@@ -1,0 +1,138 @@
+module prompt_fixture_setup_smoke
+
+import prompt_fixture_setup
+import prompt_task_supervisor
+import prompt_fixture_command
+import prompt_source_copy
+import prompt_scope_cleanup
+import std.fs
+import std.process
+import std.time
+
+fn image(root_path: str) -> Result<process.image, Error> {
+  root := fs.open_directory(root_path)?
+  input := root.open_read_single_link("git")?
+  mut memory := fs.memory_file(fs.memory_kind.Executable, 16777216)?
+  mut count := 0
+  loop {
+    mut chunk := buffer(65536)
+    size := input.read(chunk)?
+    if size == 0 { break }
+    count = count + size
+    if count > 16777216 { return Err(Error.Invalid) }
+    memory.write(chunk.bytes())?
+  }
+  sealed := memory.seal()?
+  return process.executable(sealed)
+}
+
+fn inspect_report(borrow report: prompt_task_supervisor.Report, mode: str) -> Result<(), Error> {
+  if !report.cleanup.released { return Err(Error.Invalid) }
+  match report.cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+  match report.drain_error { None => {}, Some(error) => { return Err(error) } }
+  if prompt_fixture_setup.accepted(report) { return Err(Error.Invalid) }
+  match report.stop {
+    Collected => {
+      if mode != "empty" { return Err(Error.Invalid) }
+      match report.termination { Some(status) => { match status { Exited(code) => { if code != 1 { return Err(Error.Invalid) } }, _ => { return Err(Error.Invalid) } } }, None => { return Err(Error.Invalid) } }
+    },
+    Cancelled(signal) => {
+      if mode != "cancel" || process.signal_number(signal) != process.signal_number(process.signal.Terminate) { return Err(Error.Invalid) }
+    },
+    _ => { return Err(Error.Invalid) },
+  }
+  return Ok(())
+}
+
+fn inspect_stopped(borrow attempt: prompt_fixture_setup.Attempt, mode: str) -> Result<(), Error> {
+  if mode != "empty" && mode != "cancel" { return Err(Error.Invalid) }
+  if attempt.operation != (if mode == "empty" { 4 } else { 0 }) { return Err(Error.Invalid) }
+  match attempt.error { None => {}, Some(error) => { return Err(error) } }
+  return match attempt.report {
+    None => Err(Error.Invalid),
+    Some(report) => inspect_report(report, mode),
+  }
+}
+
+fn release_stopped(attempt: prompt_fixture_setup.Attempt, mode: str) -> Result<(), Error> {
+  checked := inspect_stopped(attempt, mode)
+  mut scope := attempt.scope
+  // No assertion or report failure skips the explicit recovery attempt.
+  cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+  if !cleanup.released { return Err(Error.Timeout) }
+  match cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+  return checked
+}
+
+fn exercise(
+  borrow git: process.image,
+  borrow mut signals: process.signal_subscription,
+  borrow workspace: fs.directory,
+  borrow procfs: fs.directory,
+  path: str,
+  revision: str,
+  mode: str,
+  owner_pid: str,
+) -> Result<(), Error> {
+  if mode == "cancel" {
+    command := process.command("/bin/sh", ["/bin/sh", "-c", "[ \"$1\" = \"$PPID\" ] || exit 91; kill -TERM \"$1\"", "setup-signal-owner", owner_pid])
+    output := command.run()?
+    status := output.status()
+    if !match status.termination { Exited(code) => code == 0, _ => false } { return Err(Error.Invalid) }
+    // The helper has exited before scope admission, while the signal remains pending.
+  }
+  profile := prompt_fixture_command.Profile { fresh: false, library_path: "".clone(), ld_library_path: "".clone(), pkg_config_path: "".clone() }
+  expected := if mode == "wrong" { "0000000000000000000000000000000000000000" } else if mode == "malformed" { "bad" } else { revision }
+  outcome := prompt_fixture_setup.initialize(git, signals, workspace, procfs, path, expected, profile, time.instant() + 60000000000)
+  match outcome {
+    Err(error) => {
+      if mode != "wrong" && mode != "malformed" { return Err(error) }
+      match error { Invalid => {}, _ => { return Err(error) } }
+    },
+    Ok(value) => {
+      match value {
+        Ready => { if mode != "ready" { return Err(Error.Invalid) } },
+        Stopped(attempt) => { release_stopped(attempt, mode)? },
+      }
+    },
+  }
+  return Ok(())
+}
+
+fn prove_scope_available() -> Result<(), Error> {
+  command := process.command("/bin/sh", ["/bin/sh", "-c", "exec sleep 120"])
+  mut scope := command.start_scope()?
+  cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+  if !cleanup.released { return Err(Error.Timeout) }
+  match cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 8 { return Err(Error.Invalid) }
+  if args[1] == "Darwin" {
+    match fs.memory_file(fs.memory_kind.Executable, 1) {
+      Err(error) => { match error { Code(code) => { if code != 45 { return Err(Error.Invalid) } }, _ => { return Err(error) } } },
+      Ok(_) => { return Err(Error.Invalid) },
+    }
+    print("fixture setup: Darwin sealed-image ENOTSUP 45 PASS; Linux setup not exercised")
+    return Ok(())
+  }
+  if args[1] != "Linux" { return Err(Error.Invalid) }
+  git := image(args[2])?
+  source := fs.open_directory(args[3])?
+  destination := fs.open_directory(args[4])?
+  counts := prompt_source_copy.copy(source, destination, 128, 65536, time.instant() + 10000000000)?
+  if counts.entries != (if args[6] == "empty" { 1 } else { 2 }) || counts.bytes != (if args[6] == "empty" { 0 } else { 8 }) { return Err(Error.Invalid) }
+  procfs := fs.open_directory("/proc")?
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  checked := exercise(git, signals, destination, procfs, args[4], args[5], args[6], args[7])
+  restored := signals.close()
+  restored?
+  checked?
+  prove_scope_available()?
+  mut again := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  again.close()?
+  print(args[6])
+  return Ok(())
+}

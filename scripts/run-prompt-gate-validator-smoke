@@ -5,6 +5,7 @@ One family runs per invocation so each Makefile target named by sections 10 and 
 an independent, narrow regression:
 
     validator             gate manifest, chain, and acceptance-policy rejection families
+    product-version       v2/v4 chain, explicit product identity, and retained verifier rows
     source-bundle         the four explicit build inputs, with no ambient fallback
     source-revalidation   locator, policy, helper, interpreter, and Git identity
     git-replacement-graft raw replacement, graft, and alternate metadata rejection
@@ -22,6 +23,7 @@ that happens before the first child, so it runs on any host.
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import importlib.util
 import json
@@ -34,6 +36,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -258,6 +261,222 @@ def descendant_scan_rows() -> None:
         live.wait()
 
 
+def product_rejected(action: Callable[[], Any], label: str, contains: str | None = None) -> None:
+    try:
+        action()
+    except validator.GateError as error:
+        if contains is not None:
+            require(contains in str(error), f"{label}: rejected for another reason: {error}")
+    else:
+        raise SmokeFailure(f"{label}: accepted")
+
+
+def retained_verifier_rows(root: Path, bundle) -> None:
+    script = root / "retained-verifier.py"
+    script.write_bytes(b"print('original')\n")
+    script.chmod(0o644)
+    expected = hashlib.sha256(script.read_bytes()).hexdigest()
+    retained = validator.RetainedVerifier(script)
+    descriptor = retained.descriptor
+    try:
+        replacement = root / "replacement-verifier.py"
+        replacement.write_bytes(b"print('replacement')\n")
+        os.replace(replacement, script)
+        require(retained.sha256() == expected, "retained verifier followed a replaced pathname")
+        retained.verify_unchanged(expected)
+    finally:
+        retained.close()
+    try:
+        os.fstat(descriptor)
+    except OSError as error:
+        require(error.errno == errno.EBADF, "retained verifier close returned another error")
+    else:
+        raise SmokeFailure("retained verifier leaked its descriptor")
+    retained = validator.RetainedVerifier(script)
+    try:
+        before = retained.sha256()
+        script.write_bytes(b"print('changed in place')\n")
+        product_rejected(lambda: retained.verify_unchanged(before), "retained verifier in-place mutation", "changed")
+    finally:
+        retained.close()
+    # The helper owner is created before policy validation; a policy refusal must release it.
+    opened: list[int] = []
+    original_owner = validator.RetainedVerifier
+
+    class TrackedVerifier(original_owner):
+        def __init__(self, path):
+            super().__init__(path)
+            opened.append(self.descriptor)
+
+    locator = bundle.locator()
+    locator["source_verifier_policy_sha256"] = "0" * 64
+    python = validator.RetainedExecutable(bundle.python_executable, "test Python")
+    git = validator.RetainedExecutable(bundle.git_executable, "test Git")
+    try:
+        with mock.patch.object(validator, "RetainedVerifier", TrackedVerifier):
+            product_rejected(lambda: validator.observe_source_bundle(locator, bundle.evidence["trust"], bundle.bundle_root, python, validator.GitTool(git), bundle.checkout, bundle.generation_child_sha256), "source policy failure", "policy digest")
+    finally:
+        git.close()
+        python.close()
+    require(len(opened) == 1, "source policy failure did not admit the retained verifier")
+    try:
+        os.fstat(opened[0])
+    except OSError as error:
+        require(error.errno == errno.EBADF, "source refusal descriptor check returned another error")
+    else:
+        raise SmokeFailure("source policy refusal leaked the retained verifier")
+    product_rejected(lambda: validator.RetainedVerifier(root), "nonregular verifier is bundle error")
+
+
+def product_version_rows(root: Path) -> None:
+    """Pure full-chain checks run on every host; source observation keeps its Linux floor."""
+    for kind in ("PROVIDER_EDIT", "FIXTURE_PATCH"):
+        bundle = case(root, f"product-{kind.lower()}", product_execution=kind)
+        result = bundle.result
+        evidence = bundle.evidence
+        validator.validate_evaluation_pair(result, evidence)
+        locator = validator.validate_locator(bundle.locator())
+        validator.bind_environment_identity(result["environment"]["core"], locator, bundle.environment_policy)
+        validator.validate_source_policy(bundle.bundle_root / fixture.POLICY_RELATIVE, locator)
+        observed, output = invoke(bundle)
+        require(observed == accepted_code(), f"{kind} complete chain: {observed}: {output}")
+        if not LINUX:
+            require("containment is unavailable" in output, f"{kind} did not reach source observation: {output}")
+        # A product launch would leave a marker even if its nonzero exit were ignored.
+        require(not bundle.product_launch_marker.exists(), "the oracle launched the product")
+        for ordinal in (0, 1):
+            changed = copy.deepcopy(result)
+            row = changed["rows"][-1]
+            attempt = row["attempts"][ordinal]
+            identity = f"ALIGN:{bundle.align_revision}:{'4' * 64}"
+            attempt["measurement"]["product_runtime"] = identity
+            attempt["measurement"]["environment_probe"]["runtime_identity"] = identity
+            fixture.bind(attempt["measurement"]["environment_probe"])
+            rebound_measurement(attempt)
+            if ordinal == 0:
+                source = row["attempts"][1]["repair_prompt_source"]
+                source["source_measurement_sha256"] = attempt["measurement_sha256"]
+                fixture.bind(source)
+                fixture.bind(row["attempts"][1])
+            else:
+                row["measurement"] = copy.deepcopy(attempt["measurement"])
+            fixture.bind(row)
+            product_rejected(lambda: validator.validate_evaluation_pair(changed, evidence), f"{kind} attempt {ordinal} coherent foreign runtime", "disagrees with the environment")
+
+        core = result["environment"]["core"]
+        task = result["tasks"][0]
+        measurement = result["rows"][-1]["measurement"]
+        for mutation in ("missing", "file", "other"):
+            altered = copy.deepcopy(task)
+            altered["artifacts"] = [row for row in altered["artifacts"]
+                                    if not (row["kind"] == "TREE" and row["path"] == task["repo_path"])]
+            if mutation != "missing":
+                altered["artifacts"].append({"kind": "FILE" if mutation == "file" else "TREE",
+                                             "path": task["repo_path"] if mutation == "file" else "other-source",
+                                             "expected_sha256": "a" * 64})
+            product_rejected(lambda: validator.validate_task_core(altered, core, "source tree"),
+                             f"{kind} {mutation} source tree", "source TREE")
+
+        # Missing, explicit null, and legacy keys are distinct wire inputs.
+        for label, value, required, forbidden, check in (
+            ("task", task, "execution_kind", "cmd", lambda item: validator.validate_task_core(item, core, "task")),
+            ("core", core, "product_runtime", "source_verifier_runtime", validator.validate_environment_core),
+            ("measurement", measurement, "product_runtime", "base_adapter_runtime_identity", lambda item: validator.validate_measurement_version(item, task, "measurement")),
+            ("locator", locator, "product_executable_sha256", "generation_child_sha256", validator.validate_locator),
+        ):
+            for mode in ("missing", "null", "legacy", "unknown"):
+                value_copy = copy.deepcopy(value)
+                if mode == "missing":
+                    del value_copy[required]
+                elif mode == "null":
+                    value_copy[required] = None
+                else:
+                    value_copy[forbidden if mode == "legacy" else "unknown_product_field"] = None
+                product_rejected(lambda: check(value_copy), f"{kind} {label} {mode}")
+        for role in ("schema_version", "producer", "runtime_identity"):
+            changed = copy.deepcopy(result)
+            attempt = changed["rows"][-1]["attempts"][0]
+            probe = attempt["measurement"]["environment_probe"]
+            probe[role] = 1 if role == "schema_version" else "ALIGN_SNAPSHOT" if role == "producer" else "ALIGN:bad"
+            fixture.bind(probe)
+            rebound_measurement(attempt)
+            product_rejected(lambda: validator.validate_evaluation_pair(changed, evidence), f"{kind} intermediate {role}")
+        for path in ("workspace_preflight", "snapshot_results"):
+            changed = copy.deepcopy(result)
+            record = changed[path][0] if path == "snapshot_results" else changed[path]
+            record["environment_probe"]["runtime_identity"] = f"ALIGN:{bundle.align_revision}:{'5' * 64}"
+            product_rejected(lambda: validator.validate_probe_core(record["environment_probe"], core, "snapshot", path), f"{kind} {path} runtime", "disagrees with the environment")
+        changed_core = copy.deepcopy(core)
+        changed_core["schema_version"] = 1
+        product_rejected(lambda: validator.validate_task_core(task, changed_core, "mixed task/core"), f"{kind} mixed core")
+        other_locator = copy.deepcopy(locator)
+        other_locator["product_executable_sha256"] = "6" * 64
+        product_rejected(lambda: validator.bind_environment_identity(core, other_locator, bundle.environment_policy), f"{kind} product/locator mismatch")
+        other_locator = copy.deepcopy(locator)
+        other_locator["independent_verifier_runtime"] = core["product_runtime"]
+        fixture.bind(other_locator)
+        product_rejected(lambda: validator.validate_locator(other_locator), f"{kind} oracle/product identity confusion")
+
+        original_arguments = bundle.arguments()
+        for omitted in ("--product-executable-path", "--product-executable-sha256"):
+            arguments = list(original_arguments)
+            offset = arguments.index(omitted)
+            del arguments[offset:offset + 2]
+            code, output = invoke(bundle, arguments=arguments)
+            require(code == 1, f"{kind} incomplete product pair: {code}: {output}")
+        arguments = original_arguments + ["--generation-child-path", str(bundle.generation_child), "--generation-child-sha256", bundle.generation_child_sha256]
+        code, output = invoke(bundle, arguments=arguments)
+        require(code == 1, f"{kind} mixed executable pairs: {code}: {output}")
+        arguments = [item.replace("--product-executable-", "--generation-child-") for item in original_arguments]
+        code, output = invoke(bundle, arguments=arguments)
+        require(code == 2 and "locator versions disagree" in output, f"{kind} old pair/new locator: {code}: {output}")
+        arguments = list(original_arguments)
+        arguments[arguments.index("--product-executable-sha256") + 1] = "0" * 64
+        code, output = invoke(bundle, arguments=arguments)
+        require(code == 1, f"{kind} actual product bytes mismatch: {code}: {output}")
+
+        policy_path = bundle.bundle_root / fixture.POLICY_RELATIVE
+        original_policy = policy_path.read_bytes()
+        for mode in ("missing", "null", "legacy", "mismatch"):
+            policy = copy.deepcopy(bundle.policy)
+            if mode == "missing":
+                del policy["product_executable_sha256"]
+            elif mode == "null":
+                policy["product_executable_sha256"] = None
+            elif mode == "legacy":
+                policy["helper_runtime"] = None
+            else:
+                policy["product_executable_sha256"] = "7" * 64
+            fixture.bind(policy)
+            policy_path.write_bytes(fixture.canonical_bytes(policy))
+            paired_locator = copy.deepcopy(locator)
+            paired_locator["source_verifier_policy_sha256"] = policy["content_sha256"]
+            product_rejected(lambda: validator.validate_source_policy(policy_path, paired_locator), f"source policy {mode}")
+        policy_path.write_bytes(original_policy)
+        if kind == "PROVIDER_EDIT":
+            retained_verifier_rows(root, bundle)
+        if kind == "FIXTURE_PATCH":
+            for name, extra in (("completion_bytes", 1), ("completion_sha256", "1" * 64), ("completion_text", "unexpected"), ("edit_set", []), ("edit_set_total_bytes", 0)):
+                changed = copy.deepcopy(measurement)
+                # Insert at the schema position so presence, not order, owns the rejection.
+                changed[name] = extra
+                ordered = validator.MEASUREMENT_BASE_FIELDS + ("edit_set", "edit_set_total_bytes", "patch_sha256", "product_runtime") + validator.TASK_MEASUREMENT_V3_MEMBERS + ("content_sha256",)
+                changed = {field: changed[field] for field in ordered if field in changed}
+                product_rejected(lambda: validator.validate_measurement_version(changed, task, "fixture measurement"), f"fixture {name}", "carries generated evidence")
+            changed = copy.deepcopy(measurement)
+            changed["edit_refusal"] = "UNCHANGED_FILES"
+            product_rejected(lambda: validator.validate_measurement_version(changed, task, "fixture measurement"), "fixture non-NONE refusal", "fixture refusal is invalid")
+        else:
+            changed = copy.deepcopy(result)
+            changed["corpus_aggregate"].pop("edit_refusal_count")
+            product_rejected(lambda: validator.validate_evaluation_pair(changed, evidence), "provider refusal counter absence")
+
+    legacy = case(root, "legacy-with-product-input")
+    arguments = [item.replace("--generation-child-", "--product-executable-") for item in legacy.arguments()]
+    code, output = invoke(legacy, arguments=arguments)
+    require(code == 2 and "locator versions disagree" in output, f"new pair/legacy locator: {code}: {output}")
+
+
 def family_validator(root: Path) -> None:
     if LINUX:
         descendant_scan_rows()
@@ -400,6 +619,7 @@ def family_validator(root: Path) -> None:
         "rollback activation does not restore the baseline variant",
     )
     binding_rows(root)
+    product_version_rows(root)
 
 
 def rebind_chain(bundle, evaluation: dict[str, Any]) -> None:
@@ -2490,6 +2710,7 @@ def family_merge_head_ancestry(root: Path) -> None:
 
 FAMILIES: dict[str, tuple[Callable[[Path], None], bool]] = {
     "validator": (family_validator, False),
+    "product-version": (product_version_rows, False),
     "source-bundle": (family_source_bundle, False),
     "source-revalidation": (family_source_revalidation, False),
     "git-replacement-graft": (family_git_replacement_graft, False),

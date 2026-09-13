@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+"${compiler}" check-per-unit "${project_root}/src/prompt_measurement_assembly_smoke.align"
+"${compiler}" run "${project_root}/src/prompt_measurement_assembly_smoke.align"

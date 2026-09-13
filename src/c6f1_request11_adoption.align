@@ -32,7 +32,9 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     command.env("LANG", "C")
     command.env("LC_ALL", "C")
     output := command.run()?
-    print(output.code())
+    child_status := output.status()
+    code := match child_status.termination { Exited(value) => value, Signaled(signal) => 128 + signal }
+    print(code)
     print(output.stdout())
     print(output.stderr())
     Ok(())

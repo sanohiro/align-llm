@@ -1,0 +1,120 @@
+module prompt_process_usage
+
+import std.process
+import std.time
+
+pub Usage { pids: array<i64>, resident_bytes: i64, complete: bool }
+
+fn initial(rows: slice<process.snapshot>, root: i64, owner: i64) -> Result<array<bool>, Error> {
+  if rows.len() > 32768 || root <= 0 || owner <= 0 || root == owner { return Err(Error.Invalid) }
+  mut flags: array_builder<bool> := array_builder()
+  mut index := 0
+  loop {
+    if index == rows.len() { break }
+    row := rows[index]
+    if row.pid <= 0 || row.parent_pid < 0 || (index > 0 && rows[index - 1].pid >= row.pid) {
+      return Err(Error.Invalid)
+    }
+    match row.rss_bytes {
+      Some(value) => { if value < 0 { return Err(Error.Invalid) } },
+      None => {},
+    }
+    flags.push(false)
+    index = index + 1
+  }
+  return Ok(flags.build())
+}
+
+fn parent_selected(rows: slice<process.snapshot>, flags: slice<bool>, parent: i64) -> bool {
+  mut low := 0
+  mut high := rows.len()
+  loop {
+    if low == high { break }
+    middle := low + (high - low) / 2
+    if rows[middle].pid < parent { low = middle + 1 } else { high = middle }
+  }
+  return low < rows.len() && rows[low].pid == parent && flags[low]
+}
+
+// Each successful pass adds at least one PID. The 256-process ceiling bounds
+// closure to 257 passes, including the final no-change pass.
+fn advance(rows: slice<process.snapshot>, root: i64, owner: i64, borrow mut flags: array<bool>, count: i64) -> Result<i64, Error> {
+  mut selected_count := count
+  mut index := 0
+  loop {
+    if index == rows.len() { break }
+    row := rows[index]
+    if row.pid != owner && !flags[index] {
+      selected := row.pid == root || row.parent_pid == root || row.parent_pid == owner ||
+      parent_selected(rows, flags, row.parent_pid)
+      if selected {
+        if selected_count == 256 { return Err(Error.Invalid) }
+        flags[index] = true
+        selected_count = selected_count + 1
+      }
+    }
+    index = index + 1
+  }
+  return Ok(selected_count)
+}
+
+fn finish(rows: slice<process.snapshot>, flags: slice<bool>, root: i64, root_terminated: bool) -> Usage {
+  mut output: array_builder<i64> := array_builder()
+  mut resident := 0
+  mut complete := true
+  mut root_seen := false
+  mut index := 0
+  loop {
+    if index == rows.len() { break }
+    if rows[index].pid == root { root_seen = true }
+    if flags[index] {
+      output.push(rows[index].pid)
+      match rows[index].rss_bytes {
+        None => { complete = false },
+        Some(value) => {
+          if value > 9223372036854775807 - resident { complete = false } else { resident = resident + value }
+        },
+      }
+    }
+    index = index + 1
+  }
+  complete = complete && (root_seen || root_terminated)
+  return Usage { pids: output.build(), resident_bytes: resident, complete: complete }
+}
+
+pub fn select(rows: slice<process.snapshot>, root: i64, owner: i64, root_terminated: bool) -> Result<Usage, Error> {
+  mut flags := initial(rows, root, owner)?
+  mut count := 0
+  loop {
+    updated := advance(rows, root, owner, flags, count)?
+    if updated == count { break }
+    count = updated
+  }
+  return Ok(finish(rows, flags, root, root_terminated))
+}
+
+fn timely(deadline: i64) -> Result<(), Error> {
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  return Ok(())
+}
+
+pub fn observe(root: i64, owner: i64, root_terminated: bool, deadline: i64) -> Result<Usage, Error> {
+  if root <= 0 || owner <= 0 || root == owner { return Err(Error.Invalid) }
+  timely(deadline)?
+  table_result := process.table(32768)
+  timely(deadline)?
+  rows := table_result?
+  mut flags := initial(rows, root, owner)?
+  mut count := 0
+  timely(deadline)?
+  loop {
+    pass_result := advance(rows, root, owner, flags, count)
+    timely(deadline)?
+    updated := pass_result?
+    if updated == count { break }
+    count = updated
+  }
+  result := finish(rows, flags, root, root_terminated)
+  timely(deadline)?
+  return Ok(result)
+}

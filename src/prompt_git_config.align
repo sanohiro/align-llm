@@ -1,0 +1,137 @@
+module prompt_git_config
+
+import prompt_file_blocks
+
+fn byte_space(value: u8) -> bool = value == 32 || (value >= 9 && value <= 13)
+
+fn trimmed(raw: slice<u8>) -> slice<u8> {
+  mut start := 0
+  mut end := raw.len()
+  loop { if start == end || !byte_space(raw[start]) { break }; start = start + 1 }
+  loop { if start == end || !byte_space(raw[end - 1]) { break }; end = end - 1 }
+  return raw[start..end]
+}
+
+// Only ASCII section/key classifiers and literal dots influence rejection. Kelvin
+// sign is the sole non-ASCII character whose Unicode lowercase is ASCII; preserve
+// that mapping. Other subsection case mappings cannot change dots or ASCII suffixes.
+fn classifier_lower(text: str) -> Result<string, Error> {
+  mut bytes: array_builder<u8> := array_builder()
+  mut index := 0
+  loop {
+    if index == text.len() { break }
+    byte := text.bytes()[index]
+    if index + 3 <= text.len() && text.bytes()[index] == 226 && text.bytes()[index + 1] == 132 && text.bytes()[index + 2] == 170 {
+      bytes.push(107 as u8)
+      index = index + 3
+    } else {
+      bytes.push(if byte >= 65 && byte <= 90 { byte + 32 } else { byte })
+      index = index + 1
+    }
+  }
+  result := bytes.build()
+  view: slice<u8> := result
+  return Ok(view.as_str()?.clone())
+}
+
+fn section(raw: slice<u8>) -> Result<string, Error> {
+  decoded := raw.as_str()?
+  header := classifier_lower(prompt_file_blocks.protocol_trim(decoded))?
+  mut end := 0
+  loop {
+    if end == header.len() { break }
+    byte := header.bytes()[end]
+    if !((byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57) || byte == 45) { break }
+    end = end + 1
+  }
+  if end == 0 { return Err(Error.Invalid) }
+  if end == header.len() { return Ok(header) }
+  remainder := header[end..header.len()]
+  quoted := prompt_file_blocks.protocol_trim(remainder)
+  if quoted.len() == remainder.len() || quoted.len() < 2 || !quoted.starts_with("\"") || !quoted.ends_with("\"") { return Err(Error.Invalid) }
+  mut output: array_builder<u8> := array_builder()
+  mut index := 0
+  loop { if index == end { break }; output.push(header.bytes()[index]); index = index + 1 }
+  output.push(46 as u8)
+  index = 1
+  loop {
+    if index == quoted.len() - 1 { break }
+    byte := quoted.bytes()[index]
+    if byte == 34 { return Err(Error.Invalid) }
+    if byte == 92 {
+      if index + 1 >= quoted.len() - 1 { return Err(Error.Invalid) }
+      following := quoted.bytes()[index + 1]
+      if following == 10 { return Err(Error.Invalid) }
+      if following != 34 { output.push(byte) }
+      output.push(following)
+      index = index + 2
+    } else {
+      output.push(byte)
+      index = index + 1
+    }
+  }
+  result := output.build()
+  view: slice<u8> := result
+  return Ok(view.as_str()?.clone())
+}
+
+fn framed(key: str, prefix: str, suffix: str) -> bool = key.len() >= prefix.len() + suffix.len() && key.starts_with(prefix) && key.ends_with(suffix)
+
+fn rejected(key: str) -> bool {
+  exact := ["core.alternaterefscommand", "core.askpass", "core.attributesfile", "core.editor", "core.excludesfile", "core.fsmonitor", "core.fsmonitorhookversion", "core.gitproxy", "core.hookspath", "core.pager", "core.sshcommand", "core.worktree", "credential.helper", "diff.external", "gpg.program", "sequence.editor", "uploadpack.packobjectshook"]
+  mut index := 0
+  loop { if index == exact.len() { break }; if key == exact[index] { return true }; index = index + 1 }
+  prefixes := ["alias.", "credential.", "include.", "includeif.", "pager."]
+  index = 0
+  loop { if index == prefixes.len() { break }; if key.starts_with(prefixes[index]) { return true }; index = index + 1 }
+  dual := ["browser.", "difftool.", "man.", "mergetool."]
+  index = 0
+  loop { if index == dual.len() { break }; if framed(key, dual[index], ".cmd") || framed(key, dual[index], ".path") { return true }; index = index + 1 }
+  return framed(key, "diff.", ".command") || framed(key, "diff.", ".textconv") ||
+  framed(key, "filter.", ".clean") || framed(key, "filter.", ".smudge") || framed(key, "filter.", ".process") ||
+  framed(key, "gpg.", ".program") || framed(key, "guitool.", ".cmd") || framed(key, "http.", ".proxy") ||
+  framed(key, "remote.", ".promisor") || framed(key, "remote.", ".partialclonefilter") ||
+  framed(key, "remote.", ".proxy") || framed(key, "remote.", ".receivepack") || framed(key, "remote.", ".uploadpack")
+}
+
+fn allowed(key: str) -> bool {
+  prefix := if key.starts_with("remote.") { "remote." } else if key.starts_with("branch.") { "branch." } else { return false }
+  mut end := prefix.len()
+  loop { if end == key.len() || key.bytes()[end] == 46 { break }; end = end + 1 }
+  if end == prefix.len() || end == key.len() { return false }
+  tail := key[end..key.len()]
+  return if prefix == "remote." { tail == ".url" || tail == ".pushurl" || tail == ".fetch" } else { tail == ".remote" || tail == ".merge" }
+}
+
+pub fn check(raw: slice<u8>) -> Result<(), Error> {
+  if raw.len() > 4194304 { return Err(Error.Invalid) }
+  mut index := 0
+  loop { if index == raw.len() { break }; if raw[index] == 0 { return Err(Error.Invalid) }; index = index + 1 }
+  mut current := "".clone()
+  mut start := 0
+  loop {
+    if start >= raw.len() { break }
+    mut end := start
+    loop { if end == raw.len() || raw[end] == 10 || raw[end] == 13 { break }; end = end + 1 }
+    line := trimmed(raw[start..end])
+    if line.len() != 0 && line[0] != 35 && line[0] != 59 {
+      if line[0] == 91 && line[line.len() - 1] == 93 {
+        current = section(line[1..line.len() - 1])?
+      } else {
+        if current.len() == 0 { return Err(Error.Invalid) }
+        mut equals := 0
+        loop { if equals == line.len() || line[equals] == 61 { break }; if line[equals] >= 128 { return Err(Error.Invalid) }; equals = equals + 1 }
+        if equals == line.len() { return Err(Error.Invalid) }
+        key := classifier_lower(prompt_file_blocks.protocol_trim(line[0..equals].as_str()?))?
+        combined := builder()
+        combined.write(current)
+        combined.write(".")
+        combined.write(key)
+        text := combined.to_string()
+        if rejected(text) && !allowed(text) { return Err(Error.Invalid) }
+      }
+    }
+    start = end + 1
+  }
+  return Ok(())
+}

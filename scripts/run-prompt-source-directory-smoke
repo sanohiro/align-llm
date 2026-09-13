@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+complete=0
+trap 'if [[ "${complete}" == 1 ]]; then rm -rf "${scratch}"; else printf "source directory fixture preserved: %s\n" "${scratch}" >&2; fi' EXIT
+mkdir -p "${scratch}/root/a/b" "${scratch}/root/target" "${scratch}/root/decoy"
+ln -s target "${scratch}/root/link"
+printf file > "${scratch}/root/file"
+"${compiler}" check-per-unit "${project_root}/src/prompt_source_directory_smoke.align"
+(cd "${scratch}" && "${compiler}" build "${project_root}/src/prompt_source_directory_smoke.align")
+owner="${scratch}/prompt_source_directory_smoke"
+root="${scratch}/root"
+identity() {
+  if [[ "$(uname -s)" == Darwin ]]; then stat -f $'%d\n%i' "$1"; else stat -c $'%d\n%i' "$1"; fi
+}
+accepted() {
+  local base="$1" pointer="$2" expected="$3"
+  local physical
+  physical="$(cd -- "${expected}" && pwd -P)"
+  identity "${physical}" > "${scratch}/expected"
+  "${owner}" normal "${base}" "${pointer}" "${physical}" > "${scratch}/actual"
+  cmp "${scratch}/expected" "${scratch}/actual"
+}
+accepted "${root}/a/b" ../../target "${root}/target"
+accepted "${root}/a/b" ./.././..//target///. "${root}/target"
+accepted "${root}" "${root}/a/b/../../target" "${root}/target"
+accepted "${root}/a/b" '' "${root}/a/b"
+accepted "${root}" /../.././ /
+accepted / '' /
+accepted "${root}/missing" / /
+for pointer in link/.. missing/.. file/.. a/../../root/link/..; do
+  "${owner}" refuse "${root}" "${pointer}" -
+done
+"${owner}" refuse "${root}/link" .. -
+"${owner}" refuse "${root}/missing" .. -
+"${owner}" bounds - - -
+if [[ "$(uname -s)" == Linux ]]; then
+  mkdir "${root}/"$'raw\xff'
+  identity "${root}/"$'raw\xff' > "${scratch}/expected"
+  "${owner}" raw "${root}" - - > "${scratch}/actual"
+  cmp "${scratch}/expected" "${scratch}/actual"
+fi
+identity "${root}/target" > "${scratch}/expected"
+"${owner}" retained "${root}" target "${root}/target" > "${scratch}/actual"
+cmp "${scratch}/expected" "${scratch}/actual"
+identity "${root}/moved" > "${scratch}/moved"
+cmp "${scratch}/expected" "${scratch}/moved"
+complete=1
+printf 'source directory: %s physical paths, inode oracle, refusal, bounds and retained replacement PASS\n' "$(uname -s)"

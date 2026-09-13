@@ -1,0 +1,69 @@
+module prompt_tool_image_smoke
+
+import prompt_tool_image
+import std.fs
+import std.process
+import std.time
+
+fn invalid(borrow root: fs.directory, path: str, hash: str, cap: i64) -> Result<(), Error> {
+  match prompt_tool_image.admit(root, path.bytes(), hash, cap, time.instant() + 10000000000) {
+    Ok(_) => { print(path); return Err(Error.Invalid) },
+    Err(error) => { if !match error { Invalid => true, _ => false } { print(path); return Err(error) } },
+  }
+  return Ok(())
+}
+
+fn retained(root_path: str, hash: str, cap: i64) -> Result<process.image, Error> {
+  root := fs.open_directory(root_path)?
+  admitted := prompt_tool_image.admit(root, "git".bytes(), hash, cap, time.instant() + 10000000000)?
+  root.remove_file("git")?
+  return Ok(admitted)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 5 { return Err(Error.Invalid) }
+  root := fs.open_directory(args[1])?
+  hash := args[2]
+  text_hash := args[3]
+  metadata := root.metadata_at("git")?
+  invalid(root, "git", "bad", 268435456)?
+  invalid(root, "git", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", 268435456)?
+  invalid(root, "git", hash, 0)?
+  invalid(root, "git", hash, 268435457)?
+  invalid(root, "git", hash, metadata.size - 1)?
+  invalid(root, "noexec", hash, 268435456)?
+  invalid(root, "hardlink", hash, 268435456)?
+  invalid(root, "symlink", hash, 268435456)?
+  invalid(root, "directory", hash, 268435456)?
+  invalid(root, "fifo", hash, 268435456)?
+  invalid(root, "../git", hash, 268435456)?
+  invalid(root, "git\0tail", hash, 268435456)?
+  match prompt_tool_image.admit(root, "git".bytes(), hash, 268435456, 0) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(error) => { if !match error { Timeout => true, _ => false } { return Err(error) } },
+  }
+  if args[4] == "Darwin" {
+    match prompt_tool_image.admit(root, "git".bytes(), hash, 268435456, time.instant() + 10000000000) {
+      Ok(_) => { return Err(Error.Invalid) },
+      Err(error) => { if !match error { Code(code) => code == 45, _ => false } { return Err(error) } },
+    }
+    print("tool image smoke: Darwin explicit ENOTSUP passed; Linux image launch not exercised")
+    return Ok(())
+  }
+  if args[4] != "Linux" { return Err(Error.Invalid) }
+  invalid(root, "git", "0000000000000000000000000000000000000000000000000000000000000000", 268435456)?
+  invalid(root, "text", text_hash, 268435456)?
+  exact := prompt_tool_image.admit(root, "git".bytes(), hash, metadata.size, time.instant() + 10000000000)?
+  if exact.len() != metadata.size { return Err(Error.Invalid) }
+  admitted := retained(args[1], hash, metadata.size)?
+  command := process.command_image(admitted, ["git", "--version"])?
+  command.timeout_ns(10000000000)
+  command.max_capture_bytes(65536)
+  output := command.run()?
+  status := output.status()
+  if !match status.termination { Exited(code) => code == 0, _ => false } { return Err(Error.Invalid) }
+  text := output.stdout()
+  if text.len() < 12 || text[0..12] != "git version " { return Err(Error.Invalid) }
+  print("tool image smoke: digest, refusal, owner expiry and post-unlink Git execution passed")
+  return Ok(())
+}

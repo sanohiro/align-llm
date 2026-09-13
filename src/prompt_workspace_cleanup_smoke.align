@@ -1,0 +1,187 @@
+module prompt_workspace_cleanup_smoke
+
+import prompt_workspace_cleanup
+import prompt_scope_cleanup
+import std.fs
+import std.process
+import std.time
+
+fn path(parent: str, child: str) -> string {
+  output := builder()
+  output.write(parent)
+  output.write("/")
+  output.write(child)
+  return output.to_string()
+}
+
+fn suffix(value: str, ending: str) -> string {
+  output := builder()
+  output.write(value)
+  output.write(ending)
+  return output.to_string()
+}
+
+fn repeated(size: i64) -> string {
+  output := builder()
+  mut index := 0
+  loop { if index == size { break }; output.write("p"); index = index + 1 }
+  return output.to_string()
+}
+
+fn rejected(result: Result<i64, Error>, timeout: bool) -> Result<(), Error> {
+  return match result {
+    Ok(_) => Err(Error.Invalid),
+    Err(error) => match error { Invalid => if timeout { Err(Error.Invalid) } else { Ok(()) }, Timeout => if timeout { Ok(()) } else { Err(Error.Invalid) }, _ => Err(error) },
+  }
+}
+
+fn missing(borrow parent: fs.directory, name: str) -> Result<(), Error> {
+  return match parent.metadata_at(name.bytes()) {
+    Err(error) => match error { NotFound => Ok(()), _ => Err(error) },
+    Ok(_) => Err(Error.Invalid),
+  }
+}
+
+fn payload(borrow root: fs.directory) -> Result<(), Error> {
+  file := root.open_read_single_link("file")?
+  mut bytes := buffer(16)
+  if file.read(bytes)? != 7 || bytes.bytes().as_str()? != "payload" { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn entries(borrow root: fs.directory) -> Result<i64, Error> {
+  cursor := root.cursor()?
+  mut count := 0
+  loop { match cursor.next()? { None => { break }, Some(_) => { count = count + 1 } } }
+  return Ok(count)
+}
+
+fn grow(borrow root: fs.directory, levels: i64, ordinary: str, final_name: str, leaf: bool) -> Result<(), Error> {
+  name := if levels == 1 { final_name } else { ordinary }
+  root.create_dir(name.bytes(), 448 as u32)?
+  child := root.open_dir(name.bytes())?
+  if levels > 1 { grow(child, levels - 1, ordinary, final_name, leaf)? } else if leaf {
+    file := child.create_new("leaf")?
+    file.write("x")?
+  }
+  return Ok(())
+}
+
+fn scoped_exercise(borrow mut scope: process.child_scope, borrow parent: fs.directory, borrow root: fs.directory, metadata: fs.metadata) -> Result<(), Error> {
+  rejected(prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, false, 2, time.instant() + 10000000000), false)?
+  payload(root)?
+  cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+  if !cleanup.released { return Err(Error.Timeout) }
+  match cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+  // The boolean now comes from the successful native scope release, not Drop.
+  removed := prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, cleanup.released, 2, time.instant() + 10000000000)?
+  if removed != 2 { return Err(Error.Invalid) }
+  return missing(parent, "root")
+}
+
+fn scoped(borrow parent: fs.directory, borrow root: fs.directory, metadata: fs.metadata, root_path: str) -> Result<(), Error> {
+  command := process.command("/bin/sh", ["/bin/sh", "-c", "exec sleep 120"])
+  command.cwd(root_path)
+  mut scope := command.start_scope()?
+  checked := scoped_exercise(scope, parent, root, metadata)
+  fallback := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+  if !fallback.released { return Err(Error.Timeout) }
+  match fallback.first_error { None => {}, Some(error) => { return Err(error) } }
+  return checked
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 4 { return Err(Error.Invalid) }
+  mode := args[1]
+  parent := fs.open_directory(args[2])?
+  root := parent.open_dir("root")?
+  metadata := root.metadata()?
+  deadline := time.instant() + 10000000000
+  if mode == "normal" || mode == "empty" || mode == "raw" {
+    maximum := if mode == "normal" { 8 } else if mode == "empty" { 1 } else { 2 }
+    removed := prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, true, maximum, deadline)?
+    if removed != maximum { return Err(Error.Invalid) }
+    missing(parent, "root")?
+  } else if mode == "false" || mode == "deadline" || mode == "identity" || mode == "caps" || mode == "names" || mode == "wrong-root" {
+    if mode == "false" {
+      rejected(prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, false, 8, deadline), false)?
+    } else if mode == "deadline" {
+      rejected(prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, true, 8, 0), true)?
+    } else if mode == "identity" {
+      different := if metadata.inode == 0 as u64 { 1 as u64 } else { 0 as u64 }
+      rejected(prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, different, true, 8, deadline), false)?
+    } else if mode == "caps" {
+      rejected(prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, true, 0, deadline), false)?
+      rejected(prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, true, 32769, deadline), false)?
+    } else if mode == "wrong-root" {
+      other := parent.open_dir("replacement")?
+      rejected(prompt_workspace_cleanup.remove(parent, "root".bytes(), other, metadata.device, metadata.inode, true, 8, deadline), false)?
+    } else {
+      names := ["", ".", "..", "root/file", "root\0tail"]
+      mut index := 0
+      loop {
+        if index == names.len() { break }
+        rejected(prompt_workspace_cleanup.remove(parent, names[index].bytes(), root, metadata.device, metadata.inode, true, 8, deadline), false)?
+        index = index + 1
+      }
+      long := repeated(256)
+      rejected(prompt_workspace_cleanup.remove(parent, long.bytes(), root, metadata.device, metadata.inode, true, 8, deadline), false)?
+    }
+    payload(root)?
+    if entries(root)? != 1 { return Err(Error.Invalid) }
+  } else if mode == "partial" {
+    rejected(prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, true, 2, deadline), false)?
+    if entries(root)? != 2 { return Err(Error.Invalid) }
+    removed := prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, true, 3, deadline)?
+    if removed != 3 { return Err(Error.Invalid) }
+    missing(parent, "root")?
+  } else if mode == "replace-root" || mode == "missing-root" {
+    source := path(args[2], "root")
+    retained := path(args[2], "retained")
+    fs.rename_no_replace(source, retained)?
+    if mode == "replace-root" {
+      replacement := path(args[2], "replacement")
+      fs.rename_no_replace(replacement, source)?
+      rejected(prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, true, 2, deadline), false)?
+    } else {
+      match prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, true, 2, deadline) {
+        Err(error) => { match error { NotFound => {}, _ => { return Err(error) } } }, Ok(_) => { return Err(Error.Invalid) },
+      }
+    }
+    payload(root)?
+    removed := prompt_workspace_cleanup.remove(parent, "retained".bytes(), root, metadata.device, metadata.inode, true, 2, deadline)?
+    if removed != 2 { return Err(Error.Invalid) }
+    missing(parent, "retained")?
+  } else if mode == "replace-parent" {
+    retained := suffix(args[2], ".retained")
+    decoy := suffix(args[2], ".decoy")
+    fs.rename_no_replace(args[2], retained)?
+    fs.rename_no_replace(decoy, args[2])?
+    removed := prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, true, 2, deadline)?
+    if removed != 2 { return Err(Error.Invalid) }
+    missing(parent, "root")?
+  } else if mode == "depth128" || mode == "depth129" || mode == "path4096" || mode == "path4097" {
+    if mode == "depth128" || mode == "depth129" {
+      grow(root, if mode == "depth128" { 128 } else { 129 }, "d", "d", true)?
+    } else {
+      ordinary := repeated(240)
+      last := repeated(if mode == "path4096" { 240 } else { 241 })
+      grow(root, 17, ordinary, last, false)?
+    }
+    if mode == "depth129" || mode == "path4097" {
+      rejected(prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, true, 32768, time.instant() + 10000000000), false)?
+      if entries(root)? != 1 { return Err(Error.Invalid) }
+    } else {
+      maximum := if mode == "depth128" { 130 } else { 18 }
+      removed := prompt_workspace_cleanup.remove(parent, "root".bytes(), root, metadata.device, metadata.inode, true, maximum, time.instant() + 10000000000)?
+      if removed != maximum { return Err(Error.Invalid) }
+      missing(parent, "root")?
+    }
+  } else if mode == "scoped" {
+    if args[3] != "Linux" { return Err(Error.Invalid) }
+    root_path := path(args[2], "root")
+    scoped(parent, root, metadata, root_path)?
+  } else { return Err(Error.Invalid) }
+  print(mode)
+  return Ok(())
+}

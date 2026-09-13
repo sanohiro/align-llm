@@ -11,6 +11,11 @@ Development starts with `align-coder` using existing cloud or local OpenAI-compa
 
 ## Status
 
+Normal prompt evaluation, provider edits, validation, repair, scoring, acceptance and rollback
+execute in Align. Python is used for development and independent checks, or as an explicitly
+declared target-project test. `make eval-coding` exercises the native coding evaluator; the old
+bundled Python coding runner is retained only for historical replay and refused by normal `--eval`.
+
 The C0 evaluation and verification foundation is complete. C1 now has an explicit provider boundary
 with cloud OpenAI-compatible, local OpenAI-compatible, and llama.cpp adapters; generate/stream
 operations; transparent estimated versus exact token counts; and one versioned JSON result format.

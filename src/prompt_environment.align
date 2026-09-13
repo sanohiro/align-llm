@@ -1,0 +1,132 @@
+module prompt_environment
+
+import prompt_artifacts
+import std.crypto
+import std.encoding
+import core.json
+import std.os
+
+pub Producer { Snapshot, Task }
+
+fn hex_identity(value: str, size: i64) -> bool {
+  if value.len() != size { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { break }
+    byte := value.bytes()[index]
+    if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn normalized_identifier(value: str) -> Result<string, Error> {
+  mut output := buffer(0)
+  mut index := 0
+  loop {
+    if index == value.len() { break }
+    byte := value.bytes()[index]
+    if byte >= 128 { return Err(Error.Invalid) }
+    output.put_u8(if byte >= 65 && byte <= 90 { byte + 32 } else { byte })
+    index = index + 1
+  }
+  return Ok(output.bytes().as_str()?.clone())
+}
+
+// Identities have already been authenticated by the caller's retained-image admission.
+// Shape validation here does not authenticate a running executable.
+pub fn observe(
+  producer: Producer,
+  align_revision: str,
+  product_sha256: str,
+) -> Result<prompt_artifacts.EnvironmentProbe, Error> {
+  if !hex_identity(align_revision, 40) || !hex_identity(product_sha256, 64) {
+    return Err(Error.Invalid)
+  }
+  host := os.host()?
+  system := normalized_identifier(host.system)?
+  architecture := normalized_identifier(host.machine)?
+  cpu := match host.cpu { Some(description) => description, None => architecture.clone() }
+  identity := builder()
+  identity.write("ALIGN:")
+  identity.write(align_revision)
+  identity.write(":")
+  identity.write(product_sha256)
+  mut probe := prompt_artifacts.EnvironmentProbe {
+    schema_version: 2,
+    artifact_kind: "ENVIRONMENT_PROBE".clone(),
+    producer: match producer { Snapshot => "ALIGN_SNAPSHOT".clone(), Task => "ALIGN_TASK".clone() },
+    os: system,
+    os_release: host.release,
+    architecture: architecture,
+    cpu: cpu,
+    logical_cpu_count: host.logical_cpu_count,
+    gpu: "none".clone(),
+    runtime_identity: identity.to_string(),
+    content_sha256: "".clone(),
+  }
+  canonical := json.encode_bounded(probe, 2097152)?
+  digest := crypto.sha256(canonical)
+  probe.content_sha256 = encoding.hex_encode(digest[0..digest.len()]).clone()
+  return Ok(probe)
+}
+
+fn host_text(value: str) -> bool {
+  if value.len() == 0 || value.len() > 256 { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { break }
+    if value.bytes()[index] == 0 { return false }
+    index = index + 1
+  }
+  return true
+}
+
+// The caller validates the probe's content digest and authenticates admitted identities.
+// This constructor checks shape and consistency; it does not authenticate host or image claims.
+pub fn identity_core(
+  borrow probe: prompt_artifacts.EnvironmentProbe,
+  align_llm_commit: str,
+  align_revision: str,
+  product_sha256: str,
+  source_policy_sha256: str,
+  environment_policy_sha256: str,
+) -> Result<prompt_artifacts.EnvironmentIdentityCore, Error> {
+  if !hex_identity(align_llm_commit, 40) || !hex_identity(align_revision, 40) ||
+  !hex_identity(product_sha256, 64) || !hex_identity(source_policy_sha256, 64) ||
+  !hex_identity(environment_policy_sha256, 64) || !hex_identity(probe.content_sha256, 64) {
+    return Err(Error.Invalid)
+  }
+  cpu_valid := match probe.logical_cpu_count { None => true, Some(count) => count > 0 && count <= 1_048_576 }
+  if probe.schema_version != 2 || probe.artifact_kind != "ENVIRONMENT_PROBE" ||
+  (probe.producer != "ALIGN_SNAPSHOT" && probe.producer != "ALIGN_TASK") || !cpu_valid ||
+  !host_text(probe.os) || !host_text(probe.os_release) || !host_text(probe.architecture) ||
+  !host_text(probe.cpu) || !host_text(probe.gpu) {
+    return Err(Error.Invalid)
+  }
+  identity := builder()
+  identity.write("ALIGN:")
+  identity.write(align_revision)
+  identity.write(":")
+  identity.write(product_sha256)
+  product_runtime := identity.to_string()
+  if probe.runtime_identity != product_runtime { return Err(Error.Invalid) }
+  return Ok(prompt_artifacts.EnvironmentIdentityCore {
+      schema_version: 2,
+      artifact_kind: "ENVIRONMENT_IDENTITY_CORE".clone(),
+      os: probe.os.clone(),
+      os_release: probe.os_release.clone(),
+      architecture: probe.architecture.clone(),
+      cpu: probe.cpu.clone(),
+      logical_cpu_count: probe.logical_cpu_count,
+      gpu: probe.gpu.clone(),
+      align_llm_commit: align_llm_commit.clone(),
+      align_revision: align_revision.clone(),
+      measurement_adapter_runtime: None,
+      snapshot_helper_runtime: None,
+      source_verifier_runtime: None,
+      product_runtime: Some(product_runtime),
+      source_verifier_policy_sha256: source_policy_sha256.clone(),
+      environment_policy_sha256: environment_policy_sha256.clone(),
+    })
+}

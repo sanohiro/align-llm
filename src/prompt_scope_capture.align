@@ -1,0 +1,57 @@
+module prompt_scope_capture
+
+import prompt_capture
+import std.process
+
+pub State { stdout_eof: bool, stderr_eof: bool, termination: Option<process.termination> }
+
+pub fn initial() -> State = State { stdout_eof: false, stderr_eof: false, termination: None }
+
+fn exited(state: State) -> bool = match state.termination { None => false, Some(_) => true }
+
+pub fn collected(state: State) -> bool = state.stdout_eof && state.stderr_eof && exited(state)
+
+// Collection and cleanup are separate: EOF/root exit never release child ownership.
+pub fn step(
+  borrow mut scope: process.child_scope,
+  borrow pattern: prompt_capture.Pattern,
+  borrow mut stdout: buffer,
+  borrow mut stderr: buffer,
+  borrow mut stdout_cursor: prompt_capture.Cursor,
+  borrow mut stderr_cursor: prompt_capture.Cursor,
+  borrow mut state: State,
+  out scratch: slice<u8>,
+  wait_ns: i64,
+) -> Result<bool, Error> {
+  if wait_ns < 0 || scratch.len() == 0 || scratch.len() > 65536 { return Err(Error.Invalid) }
+  if collected(state) { return Ok(true) }
+  ready := scope.poll(process.readiness {
+      stdout: !state.stdout_eof,
+      stderr: !state.stderr_eof,
+      status: !exited(state),
+    }, wait_ns)?
+  if ready.stdout {
+    match scope.read_stdout(scratch)? {
+      None => {},
+      Some(count) => {
+        if count < 0 || count > scratch.len() { return Err(Error.Invalid) }
+        if count == 0 { state.stdout_eof = true } else {
+          prompt_capture.append(pattern, stdout, stdout_cursor, scratch[0..count])?
+        }
+      },
+    }
+  }
+  if ready.stderr {
+    match scope.read_stderr(scratch)? {
+      None => {},
+      Some(count) => {
+        if count < 0 || count > scratch.len() { return Err(Error.Invalid) }
+        if count == 0 { state.stderr_eof = true } else {
+          prompt_capture.append(pattern, stderr, stderr_cursor, scratch[0..count])?
+        }
+      },
+    }
+  }
+  if ready.status { state.termination = scope.status()? }
+  return Ok(collected(state))
+}

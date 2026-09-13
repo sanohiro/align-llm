@@ -1,0 +1,172 @@
+module prompt_repair_template_smoke
+
+import prompt_repair_template
+import std.fs
+import std.crypto
+import std.encoding
+
+// Construct literal wire fields, independently of the production Template encoder.
+fn wire(field: i64, replacement: str, omit: bool, extra: str, reversed: bool, digest: str) -> string {
+  keys := ["schema_version", "artifact_kind", "template_id", "preamble_text", "section_headers", "closing_text", "content_sha256"]
+  values := ["1", "\"REPAIR_PROMPT_TEMPLATE\"", "\"id\"", "\"P\"", "{\"STATUS\":\"S\",\"POLICY\":\"P\",\"EDITSET\":\"E\",\"SUMMARY\":\"M\",\"STDOUT\":\"O\",\"STDERR\":\"R\"}", "\"C\"", "\"\""]
+  output := builder()
+  output.write("{")
+  mut ordinal := 0
+  mut first := true
+  loop {
+    if ordinal == 7 { break }
+    index := if reversed && ordinal < 2 { 1 - ordinal } else { ordinal }
+    if index != field || !omit {
+      if !first { output.write(",") }
+      first = false
+      output.write("\""); output.write(keys[index]); output.write("\":")
+      if index == field { output.write(replacement) } else if index == 6 { output.write("\""); output.write(digest); output.write("\"") } else { output.write(values[index]) }
+    }
+    ordinal = ordinal + 1
+  }
+  output.write(extra); output.write("}")
+  return output.to_string()
+}
+
+fn sealed(field: i64, replacement: str, omit: bool, extra: str, reversed: bool) -> string {
+  blank := wire(field, replacement, omit, extra, reversed, "")
+  hash := crypto.sha256(blank)
+  digest := encoding.hex_encode(hash[0..hash.len()])
+  return wire(field, replacement, omit, extra, reversed, digest)
+}
+
+fn reject(source: str, profile: prompt_repair_template.Profile) -> Result<(), Error> {
+  return match prompt_repair_template.decode(source, profile) {
+    Ok(_) => { print("unexpected repair template admission"); print(source); Err(Error.Invalid) },
+    Err(_) => Ok(()),
+  }
+}
+
+fn repeated_json(count: i64) -> string {
+  output := builder()
+  output.write("\"")
+  mut index := 0
+  loop { if index == count { break }; output.write("a"); index = index + 1 }
+  output.write("\"")
+  return output.to_string()
+}
+
+fn header_wire(field: i64, replacement: str, omit: bool) -> string {
+  keys := ["STATUS", "POLICY", "EDITSET", "SUMMARY", "STDOUT", "STDERR"]
+  output := builder()
+  output.write("{")
+  mut index := 0
+  mut first := true
+  loop {
+    if index == 6 { break }
+    if index != field || !omit {
+      if !first { output.write(",") }
+      first = false
+      output.write("\""); output.write(keys[index]); output.write("\":")
+      output.write(if index == field { replacement } else { "\"H\"" })
+    }
+    index = index + 1
+  }
+  output.write("}")
+  return output.to_string()
+}
+
+fn owned() -> Result<prompt_repair_template.Template, Error> {
+  source := sealed(-1, "", false, "", false)
+  return prompt_repair_template.decode(source, prompt_repair_template.Profile.Policy)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  profiles := [prompt_repair_template.Profile.Diagnostics, prompt_repair_template.Profile.EditSet, prompt_repair_template.Profile.Policy]
+  paths := ["eval/prompt/canonical-v1r/repair-template.json", "eval/prompt/canonical-v1e/repair-template.json", "eval/prompt/canonical-v1t/repair-template.json", "eval/prompt/canonical-v1u/repair-template.json"]
+  ids := ["prompt-v1r-repair-v1", "prompt-v1e-repair-v1", "prompt-v1t-repair-v1", "prompt-v1u-repair-v1"]
+  digests := ["402285fe7e8ef3cdfa4e1693201d83761f809c4a176c62abc087611bad6e9ff5", "6a6ce31c4d62c757617854fcf57a977afb0982ffabbb42f7226588c42aaaac7f", "9c8bce382b3561058409c3e795347c1c36606c437343dc01f19bfc22abaa6dd0", "c6a4c8c99a277af7e0fad4a83265131b9a75698228bdb9feaa6af21b2d9fcddb"]
+  mut fixture := 0
+  loop {
+    if fixture == 4 { break }
+    source := fs.read_file(paths[fixture])?
+    expected_profile := if fixture < 2 { fixture } else { 2 }
+    value := prompt_repair_template.decode(source, profiles[expected_profile])?
+    if value.template_id != ids[fixture] || value.content_sha256 != digests[fixture]
+      || value.section_headers.STATUS != "--- previous attempt: validation status ---" { return Err(Error.Invalid) }
+    mut profile := 0
+    loop {
+      if profile == 3 { break }
+      if profile != expected_profile { reject(source, profiles[profile])? }
+      profile = profile + 1
+    }
+    fixture = fixture + 1
+  }
+
+  value := owned()?
+  if value.preamble_text != "P" || value.closing_text != "C" || value.section_headers.STDERR != "R" { return Err(Error.Invalid) }
+  // Two fixed bytes + six (one-byte header + three framing bytes) + 128 status bytes = 154.
+  if !prompt_repair_template.fits_policy(value, 154) || prompt_repair_template.fits_policy(value, 153)
+    || prompt_repair_template.fits_policy(value, -1) { return Err(Error.Invalid) }
+
+  diagnostics_headers := "{\"STATUS\":\"S\",\"SUMMARY\":\"M\",\"STDOUT\":\"O\",\"STDERR\":\"R\"}"
+  diagnostics := prompt_repair_template.decode(sealed(4, diagnostics_headers, false, "", false), profiles[0])?
+  if !prompt_repair_template.fits_policy(diagnostics, 146) || prompt_repair_template.fits_policy(diagnostics, 145) { return Err(Error.Invalid) }
+  edit_headers := "{\"STATUS\":\"S\",\"EDITSET\":\"E\",\"SUMMARY\":\"M\",\"STDOUT\":\"O\",\"STDERR\":\"R\"}"
+  edit := prompt_repair_template.decode(sealed(4, edit_headers, false, "", false), profiles[1])?
+  if !prompt_repair_template.fits_policy(edit, 150) || prompt_repair_template.fits_policy(edit, 149) { return Err(Error.Invalid) }
+  unicode := prompt_repair_template.decode(sealed(3, "\"é\"", false, "", false), profiles[2])?
+  if !prompt_repair_template.fits_policy(unicode, 155) || prompt_repair_template.fits_policy(unicode, 154) { return Err(Error.Invalid) }
+
+  mut field := 0
+  loop {
+    if field == 7 { break }
+    reject(sealed(field, "null", false, "", false), profiles[2])?
+    reject(sealed(field, "", true, "", false), profiles[2])?
+    field = field + 1
+  }
+  reject(sealed(-1, "", false, ",\"extra\":1", false), profiles[2])?
+  reject(sealed(-1, "", false, "", true), profiles[2])?
+  reject(sealed(-1, "", false, ",\"template_id\":\"id\"", false), profiles[2])?
+  reject(wire(-1, "", false, "", false, "0000000000000000000000000000000000000000000000000000000000000000"), profiles[2])?
+  reject(sealed(0, "2", false, "", false), profiles[2])?
+  reject(sealed(1, "\"OTHER\"", false, "", false), profiles[2])?
+  reject(sealed(2, "\"é\"", false, "", false), profiles[2])?
+  reject(sealed(2, "\"bad\\nidentifier\"", false, "", false), profiles[2])?
+
+  field = 2
+  loop {
+    if field == 6 { break }
+    if field != 4 {
+      reject(sealed(field, "\"\"", false, "", false), profiles[2])?
+      reject(sealed(field, "\"a\\u0000b\"", false, "", false), profiles[2])?
+      bound := if field == 2 { 128 } else { 16384 }
+      exact := repeated_json(bound)
+      exact_value := prompt_repair_template.decode(sealed(field, exact, false, "", false), profiles[2])?
+      excessive := repeated_json(bound + 1)
+      reject(sealed(field, excessive, false, "", false), profiles[2])?
+    }
+    field = field + 1
+  }
+  field = 0
+  loop {
+    if field == 6 { break }
+    rejected_values := ["null", "\"\"", "\"a\\u0000b\""]
+    mut bad := 0
+    loop {
+      if bad == 3 { break }
+      reject(sealed(4, header_wire(field, rejected_values[bad], false), false, "", false), profiles[2])?
+      bad = bad + 1
+    }
+    reject(sealed(4, header_wire(field, "", true), false, "", false), profiles[2])?
+    exact_header := repeated_json(256)
+    accepted := prompt_repair_template.decode(sealed(4, header_wire(field, exact_header, false), false, "", false), profiles[2])?
+    excessive_header := repeated_json(257)
+    reject(sealed(4, header_wire(field, excessive_header, false), false, "", false), profiles[2])?
+    field = field + 1
+  }
+  reordered := "{\"POLICY\":\"P\",\"STATUS\":\"S\",\"EDITSET\":\"E\",\"SUMMARY\":\"M\",\"STDOUT\":\"O\",\"STDERR\":\"R\"}"
+  reject(sealed(4, reordered, false, "", false), profiles[2])?
+  // Explicit null is not absence for historical profiles.
+  null_policy := "{\"STATUS\":\"S\",\"POLICY\":null,\"SUMMARY\":\"M\",\"STDOUT\":\"O\",\"STDERR\":\"R\"}"
+  reject(sealed(4, null_policy, false, "", false), profiles[0])?
+  null_editset := "{\"STATUS\":\"S\",\"EDITSET\":null,\"SUMMARY\":\"M\",\"STDOUT\":\"O\",\"STDERR\":\"R\"}"
+  reject(sealed(4, null_editset, false, "", false), profiles[0])?
+  print("repair template smoke: frozen profiles, exact wire/digests, bounds, ownership and policy PASS")
+  return Ok(())
+}

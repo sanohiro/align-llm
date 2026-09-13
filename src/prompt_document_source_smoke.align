@@ -1,0 +1,63 @@
+module prompt_document_source_smoke
+
+import prompt_document_source
+import std.fs
+import std.time
+
+fn accepted(borrow root: fs.directory, name: str, maximum: i64, size: i64, digest: str) -> Result<(), Error> {
+  document := prompt_document_source.read(root, name.bytes(), maximum, time.instant() + 10000000000)?
+  if document.text.len() != size || document.sha256 != digest || document.metadata.size != size || document.metadata.links != 1 {
+    print(name)
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn refused(borrow root: fs.directory, name: str, maximum: i64, deadline: i64) -> Result<(), Error> {
+  match prompt_document_source.read(root, name.bytes(), maximum, deadline) {
+    Ok(_) => { print(name); return Err(Error.Invalid) },
+    Err(_) => {},
+  }
+  return Ok(())
+}
+
+fn expired(path: str) -> Result<prompt_document_source.Document, Error> {
+  root := fs.open_directory(path)?
+  return prompt_document_source.read(root, "utf8".bytes(), 100, time.instant() + 10000000000)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 9 { return Err(Error.Invalid) }
+  root := fs.open_directory(args[1])?
+  deadline := time.instant() + 10000000000
+  accepted(root, "empty", 1, 0, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")?
+  accepted(root, "utf8", 100, 13, args[4])?
+  accepted(root, "chunked", 65539, 65539, args[5])?
+  accepted(root, "maximum", 2097152, 2097152, args[6])?
+  accepted(root, "nul", 3, 3, args[7])?
+  refused(root, "maximum", 2097151, deadline)?
+  refused(root, "overflow", 2097152, deadline)?
+  refused(root, "empty", 0, deadline)?
+  refused(root, "empty", -1, deadline)?
+  refused(root, "empty", 2097153, deadline)?
+  refused(root, "empty", 1, 0)?
+  names := ["malformed", "truncated", "", "/utf8", "utf8/", "nested//utf8", ".", "..", "./utf8", "nested/../utf8", "utf8\0suffix", "symlink", "hardlink", "hardlink-peer", "nested", "fifo", "linked-directory/utf8", "utf8/child", "absent"]
+  mut index := 0
+  loop {
+    if index == names.len() { break }
+    refused(root, names[index], 2097152, deadline)?
+    index = index + 1
+  }
+  owned := expired(args[1])?
+  if owned.text != "Hello π 🌍" { return Err(Error.Invalid) }
+  fs.rename_no_replace(args[1], args[2])?
+  fs.rename_no_replace(args[3], args[1])?
+  accepted(root, "utf8", 100, 13, args[4])?
+  replaced := expired(args[1])?
+  if replaced.text != "replacement" || owned.text != "Hello π 🌍" || owned.sha256 != args[4] { return Err(Error.Invalid) }
+  fs.rename_no_replace(args[8], args[3])?
+  // The original name is gone, and both the document's admitting root and input are expired.
+  if owned.text != "Hello π 🌍" || owned.sha256 != args[4] { return Err(Error.Invalid) }
+  print("prompt document source: UTF-8, caps, unsafe inputs and owned lifetime passed")
+  return Ok(())
+}

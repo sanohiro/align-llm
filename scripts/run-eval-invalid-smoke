@@ -5,18 +5,47 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 binary="${ALIGN_LLM_BIN:-${project_root}/main}"
 corpus="${project_root}/eval/tasks/empty-invalid.json"
-output_file="$(mktemp)"
-trap 'rm -f "${output_file}"' EXIT
+scratch="$(mktemp -d /tmp/align-eval-admission.XXXXXXXX)"
+trap 'rm -rf "${scratch}"' EXIT
 
 if [[ ! -x "${binary}" ]]; then
   make -C "${project_root}" build
 fi
 
 cd "${project_root}"
-if "${binary}" --eval "${corpus}" >"${output_file}" 2>&1; then
+if "${binary}" --eval "${corpus}" >"${scratch}/stdout" 2>"${scratch}/stderr"; then
   printf '%s\n' "empty evaluation corpus unexpectedly passed" >&2
-  cat "${output_file}" >&2
+  cat "${scratch}/stdout" "${scratch}/stderr" >&2
   exit 1
 fi
-
+[[ ! -s "${scratch}/stdout" ]]
 printf '%s\n' "empty evaluation corpus: rejected"
+
+# The first task is valid and observable; a later admission failure must prevent it.
+# Use a literal JSON command string; only the controlled absolute marker path varies.
+printf '{"id":"admission-marker","cmd":"/bin/sh","argv":["sh","-c","printf ran > \\"$1\\"","marker","%s"],"cwd":".","timeout_ns":5000000000,"expected_code":0}\n' "${scratch}/marker" >"${scratch}/first.json"
+printf '{"schema_version":1,"corpus_id":"admission-control","task_files":["%s"]}\n' "${scratch}/first.json" >"${scratch}/control.json"
+"${binary}" --eval "${scratch}/control.json" >"${scratch}/stdout" 2>"${scratch}/stderr"
+[[ "$(cat "${scratch}/marker")" == ran ]]
+rm "${scratch}/marker"
+
+# The historical bundled corpus identity is reserved even when relocated or given a harmless task.
+printf '{"schema_version":1,"corpus_id":"coding-v1","task_files":["%s"]}\n' "${scratch}/first.json" >"${scratch}/retired.json"
+if "${binary}" --eval "${scratch}/retired.json" >"${scratch}/stdout" 2>"${scratch}/stderr"; then
+  printf '%s\n' "reserved coding corpus unexpectedly passed" >&2
+  exit 1
+fi
+[[ ! -e "${scratch}/marker" && ! -s "${scratch}/stdout" ]]
+printf '%s\n' "reserved coding corpus: refused before dispatch or result"
+
+printf '{' >"${scratch}/malformed.json"
+for last in malformed missing; do
+  printf '{"schema_version":1,"corpus_id":"admission-%s","task_files":["%s","%s"]}\n' \
+    "${last}" "${scratch}/first.json" "${scratch}/${last}.json" >"${scratch}/corpus.json"
+  if "${binary}" --eval "${scratch}/corpus.json" >"${scratch}/stdout" 2>"${scratch}/stderr"; then
+    printf 'evaluation corpus with %s last task unexpectedly passed\n' "${last}" >&2
+    exit 1
+  fi
+  [[ ! -e "${scratch}/marker" && ! -s "${scratch}/stdout" ]]
+  printf 'evaluation %s last task: refused before first dispatch or result\n' "${last}"
+done

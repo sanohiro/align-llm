@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+output_file="$(mktemp)"
+trap 'rm -f "${output_file}"' EXIT
+
+"${compiler}" run "${project_root}/src/prompt_environment_smoke.align" >"${output_file}"
+
+python3 - "${output_file}" <<'PY'
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+if len(lines) != 3:
+    raise SystemExit(f"expected two probes and rejection evidence, got {len(lines)} lines")
+
+host = os.uname()
+try:
+    online_count = os.sysconf("SC_NPROCESSORS_ONLN")
+except (OSError, ValueError):
+    online_count = None
+if online_count is not None and online_count < 1:
+    online_count = None
+
+revision = "0123456789abcdef0123456789abcdef01234567"
+product_sha256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+
+
+def canonical(record):
+    return json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+
+
+for line, producer in zip(lines[:2], ("ALIGN_SNAPSHOT", "ALIGN_TASK")):
+    expected = {
+        "schema_version": 2,
+        "artifact_kind": "ENVIRONMENT_PROBE",
+        "producer": producer,
+        "os": host.sysname.lower(),
+        "os_release": host.release,
+        "architecture": host.machine.lower(),
+        # The adopted Align host contract currently reports no CPU description.
+        "cpu": host.machine.lower(),
+    }
+    if online_count is not None:
+        expected["logical_cpu_count"] = online_count
+    expected.update({
+        "gpu": "none",
+        "runtime_identity": f"ALIGN:{revision}:{product_sha256}",
+        "content_sha256": "",
+    })
+    expected["content_sha256"] = hashlib.sha256(canonical(expected).encode("utf-8")).hexdigest()
+    if line != canonical(expected):
+        raise SystemExit(f"{producer} canonical probe mismatch:\nexpected={canonical(expected)}\nactual={line}")
+
+if lines[2] != '{"rejected_cases":20}':
+    raise SystemExit(f"unexpected malformed identity evidence: {lines[2]!r}")
+print("prompt environment smoke: both producers, owned host facts, canonical bytes, blank-digest SHA-256, and 20 invalid identities PASS")
+PY

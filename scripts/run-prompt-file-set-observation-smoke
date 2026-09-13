@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+trap 'rm -rf "${scratch}"' EXIT
+mkdir "$scratch/manifests" "$scratch/corpus" "$scratch/decoy"
+corpus="$scratch/corpus"
+manifest="$scratch/manifests"
+printf abc > "$corpus/a"
+printf xyz > "$corpus/line"$'\n'"name"
+raw_name=rawx
+if [[ "$(uname -s)" == Linux ]]; then raw_name=$'raw\377'; fi
+printf q > "$corpus/$raw_name"
+chmod 644 "$corpus/"*
+sha() { shasum -a 256 < "$1" | cut -d ' ' -f 1; }
+a_sha="$(sha "$corpus/a")"
+line_sha="$(sha "$corpus/line"$'\n'"name")"
+raw_sha="$(sha "$corpus/$raw_name")"
+header() { printf 'ALIGN-LLM-CORPUS-FILE-SET-V1\n%s\n' "$1"; }
+entry() { LC_ALL=C printf '%s %s %s\0F %s\n' "$1" "$2" "$3" "$4"; }
+{ header 3; entry 100644 1 a "$a_sha"; entry 100644 9 $'line\nname' "$line_sha"; entry 100644 4 "$raw_name" "$raw_sha"; } > "$manifest/good"
+{ header 1; entry 100755 1 a "$a_sha"; } > "$manifest/mode"
+{ header 1; entry 100644 1 a "$(printf '%064d' 0)"; } > "$manifest/file-digest"
+{ header 2; entry 100644 1 a "$a_sha"; printf broken; } > "$manifest/malformed-last"
+ln -s a "$corpus/symlink"
+printf abc > "$corpus/hardlink"
+ln "$corpus/hardlink" "$corpus/hardlink-peer"
+mkfifo "$corpus/fifo"
+for name in symlink hardlink fifo missing; do
+  { header 1; entry 100644 "${#name}" "$name" "$a_sha"; } > "$manifest/$name"
+done
+# This proves refusal only: the bounded hash may reject before self-membership does.
+{ header 1; entry 100644 4 self "$(printf '%064d' 0)"; } > "$corpus/self"
+cp "$corpus/self" "$manifest/self-content"
+ln -s good "$manifest/manifest-symlink"
+cp "$manifest/good" "$manifest/manifest-hardlink"
+ln "$manifest/manifest-hardlink" "$manifest/manifest-hardlink-peer"
+mkfifo "$manifest/manifest-fifo"
+dd if=/dev/zero of="$manifest/oversized" bs=8388609 count=1 2>/dev/null
+expected="$(sha "$manifest/good")"
+arguments=("self" "$(sha "$corpus/self")")
+for name in mode file-digest malformed-last symlink hardlink fifo missing self-content oversized; do
+  arguments+=("$name" "$(sha "$manifest/$name")")
+done
+for name in manifest-symlink manifest-hardlink manifest-fifo absent; do arguments+=("$name" "$expected"); done
+"$compiler" check-per-unit "$project_root/src/prompt_file_set_observation_smoke.align"
+"$compiler" run "$project_root/src/prompt_file_set_observation_smoke.align" -- "$manifest" "$corpus" "$scratch/retained" "$scratch/decoy" "$expected" "$(uname -s)" "${arguments[@]}"

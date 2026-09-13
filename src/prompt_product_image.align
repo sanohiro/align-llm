@@ -1,0 +1,97 @@
+module prompt_product_image
+
+import std.fs
+import std.process
+import std.crypto
+import std.encoding
+
+fn digest_shape(value: str) -> bool {
+  if value.len() != 64 { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { break }
+    byte := value.bytes()[index]
+    if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn unchanged(before: fs.metadata, after: fs.metadata) -> bool {
+  return match after.kind { Regular => true, _ => false } &&
+  before.device == after.device && before.inode == after.inode && before.links == after.links &&
+  before.mode == after.mode && before.size == after.size &&
+  before.modified_seconds == after.modified_seconds && before.modified_nanoseconds == after.modified_nanoseconds &&
+  before.changed_seconds == after.changed_seconds && before.changed_nanoseconds == after.changed_nanoseconds
+}
+
+fn regular_bounded(value: fs.metadata, maximum: i64) -> bool {
+  return match value.kind { Regular => true, _ => false } && value.size >= 0 && value.size <= maximum
+}
+
+// Bind the declared file and the OS-selected running main image to the same digest.
+// Return immutable executable authority, never permission to reopen the requested path.
+// Libraries, mappings and source provenance are outside this main-image observation.
+pub fn admit(
+  borrow root: fs.directory,
+  relative: slice<u8>,
+  expected_sha256: str,
+  maximum_bytes: i64,
+) -> Result<process.image, Error> {
+  if maximum_bytes < 0 || maximum_bytes > 2305843009213693951 || !digest_shape(expected_sha256) {
+    return Err(Error.Invalid)
+  }
+  requested := root.open_read_single_link(relative)?
+  before := requested.metadata()?
+  if !regular_bounded(before, maximum_bytes) || before.links != 1 || (before.mode & 73) == 0 {
+    return Err(Error.Invalid)
+  }
+  requested_hash := crypto.sha256_stream()
+  mut count := 0
+  loop {
+    if count == maximum_bytes {
+      mut probe := buffer(1)
+      if requested.read(probe)? != 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := maximum_bytes - count
+    mut chunk := buffer(if remaining < 65536 { remaining } else { 65536 })
+    size := requested.read(chunk)?
+    if size == 0 { break }
+    requested_hash.update(chunk.bytes())
+    count = count + size
+  }
+  if count != before.size || !unchanged(before, requested.metadata()?) { return Err(Error.Invalid) }
+  requested_digest := requested_hash.finish()
+  if encoding.hex_encode(requested_digest[0..requested_digest.len()]) != expected_sha256 { return Err(Error.Invalid) }
+  running := process.current_image()?
+  running_before := running.metadata()?
+  if !regular_bounded(running_before, maximum_bytes) { return Err(Error.Invalid) }
+  mut writer := fs.memory_file(fs.memory_kind.Executable, maximum_bytes)?
+  running_hash := crypto.sha256_stream()
+  count = 0
+  loop {
+    if count == maximum_bytes {
+      mut probe := buffer(1)
+      if running.read(probe)? != 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := maximum_bytes - count
+    mut chunk := buffer(if remaining < 65536 { remaining } else { 65536 })
+    size := running.read(chunk)?
+    if size == 0 { break }
+    writer.write(chunk.bytes())?
+    running_hash.update(chunk.bytes())
+    count = count + size
+  }
+  if count != running_before.size || !unchanged(running_before, running.metadata()?) ||
+  !unchanged(before, requested.metadata()?) { return Err(Error.Invalid) }
+  running_digest := running_hash.finish()
+  if encoding.hex_encode(running_digest[0..running_digest.len()]) != expected_sha256 { return Err(Error.Invalid) }
+  sealed := writer.seal()?
+  image := process.executable(sealed)?
+  if !unchanged(before, requested.metadata()?) || !unchanged(running_before, running.metadata()?) {
+    return Err(Error.Invalid)
+  }
+  return Ok(image)
+}

@@ -1,0 +1,71 @@
+module prompt_fixture_environment_smoke
+
+import prompt_fixture_environment
+import prompt_command
+
+COMMON := "GIT_AUTHOR_NAME=align-llm fixture\nGIT_AUTHOR_EMAIL=fixture@align-llm.invalid\nGIT_AUTHOR_DATE=2026-01-01T00:00:00Z\nGIT_COMMITTER_NAME=align-llm fixture\nGIT_COMMITTER_EMAIL=fixture@align-llm.invalid\nGIT_COMMITTER_DATE=2026-01-01T00:00:00Z\nGIT_CONFIG_NOSYSTEM=1\nGIT_ATTR_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_NO_REPLACE_OBJECTS=1\nLC_ALL=C\n"
+NORMAL := "HOME=/tmp/home\nPATH=/usr/bin:/bin\nTMPDIR=/tmp\n"
+FRESH := "HOME=/nonexistent\nPATH=/tools\nTMPDIR=/target/tmp\nPYTHONHOME=/usr\nPYTHONNOUSERSITE=1\nPYTHONDONTWRITEBYTECODE=1\nLIBRARY_PATH=/library/日本語\nLD_LIBRARY_PATH=$HOME: ;\nPKG_CONFIG_PATH=\n"
+VALIDATION := "HOME=/nonexistent\nPATH=/tools\nTMPDIR=/tmp\nPYTHONHOME=/usr\nPYTHONNOUSERSITE=1\nPYTHONDONTWRITEBYTECODE=1\nLIBRARY_PATH=/library/日本語\nLD_LIBRARY_PATH=$HOME: ;\nPKG_CONFIG_PATH=\n"
+
+fn owned(fresh: bool, validation: bool) -> Result<array<prompt_command.Environment>, Error> {
+  library := "/library/日本語".clone()
+  dynamic := "$HOME: ;".clone()
+  package := "".clone()
+  return prompt_fixture_environment.values(fresh, library, dynamic, package, validation)
+}
+
+fn exact(entries: slice<prompt_command.Environment>, prefix: str, suffix: str, count: i64) -> Result<(), Error> {
+  if entries.len() != count { return Err(Error.Invalid) }
+  output := builder()
+  mut index := 0
+  loop {
+    if index == entries.len() { break }
+    mut prior := 0
+    loop {
+      if prior == index { break }
+      if entries[prior].name == entries[index].name { return Err(Error.Invalid) }
+      prior = prior + 1
+    }
+    output.write(entries[index].name)
+    output.write("=")
+    output.write(entries[index].value)
+    output.write("\n")
+    index = index + 1
+  }
+  expected := builder()
+  expected.write(prefix)
+  expected.write(COMMON)
+  expected.write(suffix)
+  if output.to_string() != expected.to_string() { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn main() -> Result<(), Error> {
+  normal := owned(false, false)?
+  exact(normal, NORMAL, "", 14)?
+  fresh := owned(true, false)?
+  exact(fresh, FRESH, "", 20)?
+  validation := owned(false, true)?
+  exact(validation, NORMAL, "PYTHONDONTWRITEBYTECODE=1\nPYTHONNOUSERSITE=1\n", 16)?
+  fresh_validation := owned(true, true)?
+  exact(fresh_validation, VALIDATION, "ALIGNC_CACHE=off\n", 21)?
+  mut index := 0
+  loop {
+    if index == 6 { break }
+    library := if index % 3 == 0 { "bad\0library" } else { "" }
+    dynamic := if index % 3 == 1 { "bad\0dynamic" } else { "" }
+    package := if index % 3 == 2 { "bad\0package" } else { "" }
+    match prompt_fixture_environment.values(true, library, dynamic, package, index >= 3) {
+      Ok(_) => { return Err(Error.Invalid) },
+      Err(error) => { if !match error { Invalid => true, _ => false } { return Err(error) } },
+    }
+    index = index + 1
+  }
+  ignored := prompt_fixture_environment.values(false, "bad\0library", "bad\0dynamic", "bad\0package", false)?
+  exact(ignored, NORMAL, "", 14)?
+  ignored_validation := prompt_fixture_environment.values(false, "bad\0library", "bad\0dynamic", "bad\0package", true)?
+  exact(ignored_validation, NORMAL, "PYTHONDONTWRITEBYTECODE=1\nPYTHONNOUSERSITE=1\n", 16)?
+  print("prompt fixture environment smoke passed")
+  return Ok(())
+}

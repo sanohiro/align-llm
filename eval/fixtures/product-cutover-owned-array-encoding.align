@@ -1,0 +1,14 @@
+module product_cutover_owned_array_encoding
+
+import core.json
+
+Row { text: string }
+
+pub fn main() -> Result<(), Error> {
+  mut rows: array_builder<Row> := array_builder()
+  rows.push(Row { text: "owned".clone() })
+  values := rows.build()
+  encoded := json.encode_bounded(values, 1024)?
+  print(encoded)
+  return Ok(())
+}

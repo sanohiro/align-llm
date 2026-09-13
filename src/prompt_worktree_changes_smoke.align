@@ -1,0 +1,146 @@
+module prompt_worktree_changes_smoke
+
+import prompt_git_records
+import prompt_worktree
+import prompt_worktree_changes
+
+HASH := "0123456789abcdef0123456789abcdef01234567"
+OTHER := "1123456789abcdef0123456789abcdef01234567"
+
+fn entry(path: str, link: bool, mode: i64, bytes: i64, sha: str, blob: str, target: slice<u8>) -> prompt_worktree.Entry {
+  return prompt_worktree.Entry { path: path.clone(), symlink: link, mode: mode, bytes: bytes, sha256: sha.clone(), blob: blob.clone(), target: target.to_array() }
+}
+
+fn paths_equal(actual: slice<string>, expected: str) -> Result<(), Error> {
+  paths := prompt_git_records.parse_paths(expected.bytes(), false)?
+  if actual.len() != paths.len() { return Err(Error.Invalid) }
+  mut index := 0
+  loop {
+    if index == paths.len() { break }
+    if actual[index] != paths[index] { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  return Ok(())
+}
+
+fn code(value: prompt_worktree_changes.Decision) -> i64 = match value {
+  Untracked => 1, Ignored => 2, NoChange => 3, Disallowed => 4, Allowed => 5,
+}
+
+fn decision(actual: str, staged: str, untracked: str, ignored: str, allowed: slice<str>, expected_code: i64, expected_paths: str) -> Result<(), Error> {
+  actual_paths := prompt_git_records.parse_paths(actual.bytes(), false)?
+  staged_paths := prompt_git_records.parse_paths(staged.bytes(), false)?
+  untracked_paths := prompt_git_records.parse_paths(untracked.bytes(), false)?
+  ignored_paths := prompt_git_records.parse_paths(ignored.bytes(), false)?
+  admitted := prompt_worktree_changes.admit(actual_paths, staged_paths, untracked_paths, ignored_paths, allowed)
+  if code(admitted.decision) != expected_code { return Err(Error.Invalid) }
+  return paths_equal(admitted.changed, expected_paths)
+}
+
+fn single(variant: i64, link: bool) -> array<prompt_worktree.Entry> {
+  mut output: array_builder<prompt_worktree.Entry> := array_builder()
+  target := [255 as u8, 65 as u8, 128 as u8]
+  changed_target := [255 as u8, 66 as u8, 128 as u8]
+  bytes: slice<u8> := if variant == 6 { changed_target[0..3] } else { target[0..3] }
+  output.push(entry(
+      if variant == 1 { "other" } else { "a" },
+      if variant == 2 { !link } else { link },
+      if variant == 3 { 493 } else { 420 },
+      if variant == 4 { 4 } else { 3 },
+      if variant == 5 { "changed-sha256" } else { "literal-sha256" },
+      if variant == 7 { OTHER } else { HASH },
+      bytes,
+    ))
+  return output.build()
+}
+
+fn directories(variant: i64) -> array<prompt_worktree.DirectoryEntry> {
+  mut output: array_builder<prompt_worktree.DirectoryEntry> := array_builder()
+  output.push(prompt_worktree.DirectoryEntry { path: "".clone(), mode: if variant == 1 { 448 } else { 493 } })
+  if variant != 2 {
+    output.push(prompt_worktree.DirectoryEntry { path: if variant == 3 { "b".clone() } else { "a".clone() }, mode: 493 })
+  }
+  return output.build()
+}
+
+pub fn main() -> Result<(), Error> {
+  tree := builder()
+  // Deliberately unsorted Git records; retained observations below are sorted.
+  names := ["unchanged", "missing", "mode", "kind", "blob", "link", "executable", "same-link"]
+  mut index := 0
+  loop {
+    if index == names.len() { break }
+    tree.write(if names[index] == "link" || names[index] == "same-link" { "120000" } else if names[index] == "executable" { "100755" } else { "100644" })
+    tree.write(" blob ")
+    tree.write(HASH)
+    tree.write("\t")
+    tree.write(names[index])
+    tree.write("\0")
+    index = index + 1
+  }
+  text := tree.to_string()
+  baseline := prompt_git_records.parse_tree(text.bytes(), false)?
+  mut observed_builder: array_builder<prompt_worktree.Entry> := array_builder()
+  observed_builder.push(entry("added", false, 420, 0, "sha", HASH, "".bytes()))
+  observed_builder.push(entry("blob", false, 420, 0, "sha", OTHER, "".bytes()))
+  observed_builder.push(entry("executable", false, 493, 0, "sha", HASH, "".bytes()))
+  observed_builder.push(entry("kind", true, 420, 0, "sha", HASH, "".bytes()))
+  observed_builder.push(entry("link", false, 420, 0, "sha", HASH, "".bytes()))
+  observed_builder.push(entry("mode", false, 384, 0, "sha", HASH, "".bytes()))
+  observed_builder.push(entry("same-link", true, 511, 3, "sha", HASH, "raw".bytes()))
+  observed_builder.push(entry("unchanged", false, 420, 0, "sha", HASH, "".bytes()))
+  observed := observed_builder.build()
+  actual := prompt_worktree_changes.changes(baseline, observed)
+  paths_equal(actual, "added\0blob\0kind\0link\0missing\0mode\0")?
+  empty_tree := prompt_git_records.parse_tree("".bytes(), false)?
+  mut empty_builder: array_builder<prompt_worktree.Entry> := array_builder()
+  empty_entries := empty_builder.build()
+  all_missing := prompt_worktree_changes.changes(baseline, empty_entries)
+  paths_equal(all_missing, "blob\0executable\0kind\0link\0missing\0mode\0same-link\0unchanged\0")?
+  no_changes := prompt_worktree_changes.changes(empty_tree, empty_entries)
+  paths_equal(no_changes, "")?
+  allowed := ["a", "b", "z"]
+  decision("z\0a\0", "b\0a\0", "", "", allowed, 5, "a\0b\0z\0")?
+  decision("", "b\0", "", "", allowed, 5, "b\0")?
+  decision("", "", "", "", allowed, 3, "")?
+  decision("outside\0", "", "new\0", "ignored\0", allowed, 1, "outside\0")?
+  decision("", "", "new\0", "ignored\0", allowed, 1, "")?
+  decision("outside\0", "", "", "ignored\0", allowed, 2, "outside\0")?
+  decision("", "", "", "ignored\0", allowed, 2, "")?
+  decision("outside\0", "a\0", "", "", allowed, 4, "a\0outside\0")?
+  before := single(0, false)
+  same := single(0, false)
+  if !prompt_worktree_changes.same_entries(before, same) { return Err(Error.Invalid) }
+  index = 1
+  loop {
+    if index == 6 { break }
+    altered := single(index, false)
+    if prompt_worktree_changes.same_entries(before, altered) { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  if prompt_worktree_changes.same_entries(before, empty_entries) { return Err(Error.Invalid) }
+  link_before := single(0, true)
+  link_same := single(0, true)
+  link_changed := single(6, true)
+  if !prompt_worktree_changes.same_entries(link_before, link_same) ||
+  prompt_worktree_changes.same_entries(link_before, link_changed) { return Err(Error.Invalid) }
+  // Snapshot comparison intentionally uses file SHA-256/length and raw targets, not Git IDs.
+  different_blob := single(7, false)
+  if !prompt_worktree_changes.same_entries(before, different_blob) { return Err(Error.Invalid) }
+  dirs := directories(0)
+  same_dirs := directories(0)
+  if !prompt_worktree_changes.same_directories(dirs, same_dirs) { return Err(Error.Invalid) }
+  index = 1
+  loop {
+    if index == 4 { break }
+    altered_dirs := directories(index)
+    if prompt_worktree_changes.same_directories(dirs, altered_dirs) { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  // An allowed path still cannot change during post-repair validation.
+  decision("a\0", "", "", "", allowed, 5, "a\0")?
+  post_validation := single(5, false)
+  if prompt_worktree_changes.same_entries(before, post_validation) { return Err(Error.Invalid) }
+  print("prompt worktree changes smoke passed")
+  return Ok(())
+}

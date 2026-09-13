@@ -1,0 +1,487 @@
+module prompt_evaluation_inputs_smoke
+
+import core.json
+import prompt_artifacts
+import prompt_evaluation_inputs
+import prompt_evaluation_request
+import std.crypto
+import std.encoding
+import std.fs
+import std.io
+import std.path
+import std.time
+
+CORPUS_SOURCE_SHA256 := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+REPO_REVISION := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+PRODUCT_DIGEST := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+fn hash(source: str) -> string {
+  value := crypto.sha256(source)
+  return encoding.hex_encode(value[0..value.len()]).clone()
+}
+
+fn bind_text(kind: str, id: str, text: str) -> Result<prompt_artifacts.PromptTextArtifact, Error> {
+  value := prompt_artifacts.PromptTextArtifact {
+    schema_version: 1, artifact_kind: kind.clone(), artifact_id: id.clone(),
+    text: text.clone(), content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_prompt_text_artifact(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_variant(append: str, id: str) -> Result<prompt_artifacts.PromptVariant, Error> {
+  value := prompt_artifacts.PromptVariant {
+    schema_version: 1, artifact_kind: "PROMPT_VARIANT".clone(), variant_id: id.clone(),
+    base_prompt: bind_text("BASE_PROMPT", "base", "base prompt")?,
+    repo_prompt: bind_text("REPO_PROMPT", "repo", "repository prompt")?,
+    learned_prompt_append: append.clone(),
+    context_policy: prompt_artifacts.ContextPolicy {
+      include_patch_evaluation: false, include_failure_memory: false, include_diagnostics: false,
+      max_patch_evaluation_bytes: 0, max_failure_events: 0, max_failure_context_bytes: 0,
+      max_diagnostic_bytes_per_stream: 0,
+    },
+    candidate_id: id.clone(), content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_prompt_variant(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_revision() -> Result<prompt_artifacts.CorpusRevision, Error> {
+  value := prompt_artifacts.CorpusRevision {
+    schema_version: 1, artifact_kind: "CORPUS_REVISION".clone(), source_kind: "FILE_SET".clone(),
+    source_repository_id: "".clone(), source_sha256: CORPUS_SOURCE_SHA256.clone(),
+    content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_corpus_revision(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_scope(revision: prompt_artifacts.CorpusRevision, generation_digest: str, acceptance_digest: str) -> Result<prompt_artifacts.PromptScope, Error> {
+  parent_variant := bind_variant("", "parent")?
+  value := prompt_artifacts.PromptScope {
+    schema_version: 1, artifact_kind: "PROMPT_SCOPE".clone(), repo_id: "repo".clone(),
+    repo_profile_revision: "prompt-v1-repo-profile-1".clone(),
+    align_revision: "2f33ac5c33a898a7894af58322852632ce6ffe42".clone(),
+    corpus_id: "prompt-v1".clone(), corpus_revision: revision,
+    evaluation_provider_kind: "FIXTURE".clone(), evaluation_provider_model: "fixture-model".clone(),
+    generation_policy_sha256: generation_digest.clone(), acceptance_policy_sha256: acceptance_digest.clone(),
+    base_prompt_sha256: parent_variant.base_prompt.content_sha256.clone(),
+    repo_prompt_sha256: parent_variant.repo_prompt.content_sha256.clone(), content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_prompt_scope(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_activation(scope: prompt_artifacts.PromptScope, variant: prompt_artifacts.PromptVariant) -> Result<prompt_artifacts.PromptActivation, Error> {
+  value := prompt_artifacts.PromptActivation {
+    schema_version: 1, artifact_kind: "PROMPT_ACTIVATION".clone(), activation_id: "parent/activation".clone(),
+    operation: "BASELINE".clone(), scope: scope, parent_activation_id: "".clone(),
+    parent_activation_sha256: "".clone(), effective_variant: variant,
+    accepted_evaluation_id: "".clone(), accepted_evaluation_sha256: "".clone(),
+    rollback_target_activation_id: "".clone(), rollback_target_activation_sha256: "".clone(),
+    decision_reason: "".clone(), content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_prompt_activation(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_parent(scope: prompt_artifacts.PromptScope, variant: prompt_artifacts.PromptVariant) -> Result<prompt_artifacts.PromptActivationResult, Error> {
+  activation := bind_activation(scope, variant)?
+  value := prompt_artifacts.PromptActivationResult {
+    schema_version: 1, artifact_kind: "PROMPT_ACTIVATION_RESULT".clone(), decision_id: Some("parent".clone()),
+    status: "BASELINED".clone(), error_code: "NONE".clone(), error: "".clone(),
+    activation: Some(activation), content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_prompt_activation_result(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_experiment(scope: prompt_artifacts.PromptScope, parent: prompt_artifacts.PromptActivationResult, include_opportunity: bool) -> Result<prompt_artifacts.PromptExperimentResult, Error> {
+  parent_digest := parent.content_sha256.clone()
+  candidate := bind_variant("candidate", "candidate")?
+  value := prompt_artifacts.PromptExperimentResult {
+    schema_version: 1, artifact_kind: "PROMPT_EXPERIMENT_RESULT".clone(), experiment_id: Some("experiment".clone()),
+    status: "PROPOSED".clone(), error_code: "NONE".clone(), error: "".clone(),
+    parent_activation: Some(prompt_artifacts.ArtifactReference {
+        artifact_kind: "PROMPT_ACTIVATION_RESULT".clone(), path: "parent.json".clone(),
+        artifact_id: "parent".clone(), content_sha256: parent_digest,
+      }),
+    scope: Some(scope), opportunity: if include_opportunity { Some(prompt_artifacts.ArtifactReference {
+          artifact_kind: "OPPORTUNITY".clone(), path: "opportunity.json".clone(), artifact_id: "opportunity".clone(), content_sha256: CORPUS_SOURCE_SHA256.clone(),
+        }) } else { None },
+    proposal_provider_kind: Some("LOCAL_OPENAI".clone()), proposal_provider_endpoint_id: Some("fixture".clone()),
+    proposal_provider_model: Some("fixture".clone()), proposal_elapsed_ns: 0, proposal_status_code: None,
+    proposal_summary: "candidate".clone(), candidate_variant: Some(candidate),
+    bounded_provider_output: "".clone(), content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_prompt_experiment_result(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_corpus(revision: prompt_artifacts.CorpusRevision) -> Result<prompt_artifacts.PromptEvaluationCorpus, Error> {
+  mut task_builder: array_builder<string> := array_builder()
+  task_builder.push("task-one.json".clone())
+  task_builder.push("task-two.json".clone())
+  tasks := task_builder.build()
+  value := prompt_artifacts.PromptEvaluationCorpus {
+    schema_version: 1, artifact_kind: "PROMPT_EVALUATION_CORPUS".clone(), corpus_id: "prompt-v1".clone(),
+    corpus_revision: revision, task_files: tasks, content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_prompt_evaluation_corpus(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_acceptance() -> Result<prompt_artifacts.PromptAcceptancePolicy, Error> {
+  value := prompt_artifacts.PromptAcceptancePolicy {
+    schema_version: 1, artifact_kind: "PROMPT_ACCEPTANCE_POLICY".clone(), policy_id: "prompt-acceptance-v1".clone(),
+    minimum_task_count: 2, minimum_samples_per_variant: 2, minimum_completion_gain_count: 1,
+    minimum_time_improvement_ppm: 50000, maximum_time_regression_ppm: 100000,
+    maximum_repair_loop_regression_count: 0, content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_prompt_acceptance_policy(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_preflight() -> Result<prompt_artifacts.WorkspacePreflightRequest, Error> {
+  value := prompt_artifacts.WorkspacePreflightRequest {
+    schema_version: 1, artifact_kind: "WORKSPACE_PREFLIGHT_REQUEST".clone(), evaluation_id: "evaluation".clone(),
+    project_root: "/project".clone(), workspace_path: "/workspace".clone(), content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_workspace_preflight_request(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_source_policy() -> Result<prompt_artifacts.PromptSourceVerifierPolicy, Error> {
+  value := prompt_artifacts.PromptSourceVerifierPolicy {
+    schema_version: 2, artifact_kind: "PROMPT_SOURCE_VERIFIER_POLICY".clone(), policy_id: "source-policy".clone(),
+    helper_path: None, helper_sha256: None, helper_runtime: None, interpreter_sha256: None,
+    git_executable_sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".clone(),
+    product_executable_sha256: Some(PRODUCT_DIGEST.clone()), content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_prompt_source_verifier_policy(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_context(id: str, memory: str) -> Result<prompt_artifacts.ContextSources, Error> {
+  value := prompt_artifacts.ContextSources {
+    schema_version: 1, artifact_kind: "CONTEXT_SOURCES".clone(), task_id: id.clone(),
+    patch_evaluation: bind_text("TASK_PROMPT", id, "patch")?,
+    failure_memory_jsonl: bind_text("TASK_PROMPT", id, memory)?,
+    diagnostic_stdout: bind_text("TASK_PROMPT", id, "stdout")?,
+    diagnostic_stderr: bind_text("TASK_PROMPT", id, "stderr")?, content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_context_sources(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_control() -> Result<prompt_artifacts.EvaluationProviderControl, Error> {
+  value := prompt_artifacts.EvaluationProviderControl {
+    schema_version: 1, artifact_kind: "EVALUATION_PROVIDER_CONTROL".clone(), provider_control_id: "control".clone(),
+    provider_kind: "FIXTURE".clone(), endpoint: "http://fixture.invalid".clone(), endpoint_id: "fixture".clone(),
+    model: "fixture-model".clone(), api_key_env: None, tokenize_endpoint: None,
+    timeout_ns: 1000000000, max_response_bytes: 65536, content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_evaluation_provider_control(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_generation(control_digest: str) -> Result<prompt_artifacts.GenerationPolicy, Error> {
+  value := prompt_artifacts.GenerationPolicy {
+    schema_version: 1, artifact_kind: "GENERATION_POLICY".clone(), generation_policy_id: "generation".clone(),
+    evaluation_provider_kind: "FIXTURE".clone(), evaluation_provider_endpoint_id: "fixture".clone(),
+    evaluation_provider_model: "fixture-model".clone(), provider_control_sha256: control_digest.clone(),
+    provider_service_revision: "fixture-v1".clone(), max_prompt_bytes: 65536, max_tokens: 32,
+    temperature_micros: 0, seed_mode: "PAIRED_FIXED".clone(), seed_base: 7, content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_generation_policy(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn bind_environment() -> Result<prompt_artifacts.EnvironmentPolicy, Error> {
+  mut variables: array_builder<prompt_artifacts.EnvironmentVariable> := array_builder()
+  variables.push(prompt_artifacts.EnvironmentVariable { name: "LANG".clone(), non_secret_value: "C".clone(), source: "EXPLICIT_POLICY".clone(), precedence: 0 })
+  variables.push(prompt_artifacts.EnvironmentVariable { name: "LC_ALL".clone(), non_secret_value: "C".clone(), source: "EXPLICIT_POLICY".clone(), precedence: 1 })
+  mut executables: array_builder<string> := array_builder()
+  executables.push("/usr/bin/true".clone())
+  value := prompt_artifacts.EnvironmentPolicy {
+    schema_version: 1, artifact_kind: "ENVIRONMENT_POLICY".clone(), policy_id: "environment".clone(),
+    allowed_variables: variables.build(), executable_paths: executables.build(), locale: "C".clone(),
+    content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_environment_policy(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn definition_text(id: str) -> string {
+  output := builder()
+  output.write("{\"schema_version\":1,\"id\":\"")
+  output.write(id)
+  output.write("\",\"source_dir\":\"source\",\"source_revision\":\"")
+  output.write(REPO_REVISION)
+  output.write("\",\"allowed_edits\":[\"file\"],\"validation_argv\":[\"/usr/bin/true\"],\"validation_timeout_seconds\":10}")
+  return output.to_string()
+}
+
+fn task_manifest(id: str, definition_path: str, definition_digest: str, patch_path: str, patch_digest: str,
+  prompt_path: str, context_path: str) -> Result<prompt_artifacts.PromptEvaluationTask, Error> {
+  mut expectations: array_builder<prompt_artifacts.ArtifactExpectation> := array_builder()
+  expectations.push(prompt_artifacts.ArtifactExpectation { path: definition_path.clone(), kind: "FILE".clone(), expected_sha256: definition_digest.clone() })
+  expectations.push(prompt_artifacts.ArtifactExpectation { path: patch_path.clone(), kind: "FILE".clone(), expected_sha256: patch_digest.clone() })
+  expectations.push(prompt_artifacts.ArtifactExpectation { path: "source".clone(), kind: "TREE".clone(), expected_sha256: hash("source tree") })
+  value := prompt_artifacts.PromptEvaluationTask {
+    schema_version: 2, artifact_kind: "PROMPT_EVALUATION_TASK".clone(), task_id: id.clone(), repo_id: "repo".clone(),
+    repo_revision: REPO_REVISION.clone(), repo_path: "source".clone(), require_clean_repo: true,
+    execution_kind: Some("FIXTURE_PATCH".clone()), cmd: None, argv: None, snapshot_cmd: None, snapshot_argv: None,
+    measurement_adapter_runtime: None, snapshot_helper_runtime: None, cwd: "repo".clone(), timeout_ns: 1000000000,
+    task_prompt_path: prompt_path.clone(), context_sources_path: context_path.clone(),
+    generation_policy_path: "generation.json".clone(), provider_control_path: "control.json".clone(),
+    environment_policy_path: "environment.json".clone(), validation_runner_path: None, validation_runner_sha256: None,
+    task_definition_path: definition_path.clone(), task_definition_sha256: definition_digest.clone(), validation_argv: None,
+    patch_path: Some(patch_path.clone()), patch_sha256: Some(patch_digest.clone()), artifacts: expectations.build(),
+    regression_limits: prompt_artifacts.RegressionLimits {
+      maximum_unrelated_diff_count: 0, maximum_patch_size_bytes: 4096, maximum_public_api_change_count: 0,
+      maximum_repair_loops: 0, maximum_benchmark_regression_ppm: None,
+    }, repair_template_path: None, repair_template_sha256: None, edit_policy: None, content_sha256: "".clone(),
+  }
+  canonical := json.encode(value)?
+  mut bound := prompt_artifacts.decode_prompt_evaluation_task(canonical)?
+  bound.content_sha256 = hash(canonical)
+  return Ok(bound)
+}
+
+fn write(borrow root: fs.directory, path: str, value: str) -> Result<(), Error> {
+  file := root.create_new(path.bytes())?
+  file.write(value.bytes())?
+  return Ok(())
+}
+
+fn write_task(borrow root: fs.directory, id: str, prefix: str) -> Result<(), Error> {
+  definition_path := builder()
+  definition_path.write(prefix)
+  definition_path.write("-definition.json")
+  definition_file := definition_path.to_string()
+  patch_path := builder()
+  patch_path.write(prefix)
+  patch_path.write("-patch.txt")
+  patch_file := patch_path.to_string()
+  prompt_path := builder()
+  prompt_path.write(prefix)
+  prompt_path.write("-prompt.json")
+  prompt_file := prompt_path.to_string()
+  context_path := builder()
+  context_path.write(prefix)
+  context_path.write("-context.json")
+  context_file := context_path.to_string()
+  definition := definition_text(id)
+  patch := "fixture patch\n"
+  write(root, definition_file, definition)?
+  write(root, patch_file, patch)?
+  prompt := bind_text("TASK_PROMPT", id, "fixture task")?
+  write(root, prompt_file, json.encode(prompt)?)?
+  context := bind_context(id, "")?
+  write(root, context_file, json.encode(context)?)?
+  manifest := task_manifest(id, definition_file, hash(definition), patch_file, hash(patch), prompt_file, context_file)?
+  task_path := builder()
+  task_path.write(prefix)
+  task_path.write(".json")
+  write(root, task_path.to_string(), json.encode(manifest)?)?
+  return Ok(())
+}
+
+fn request(source_policy_sha256: str) -> prompt_artifacts.PromptEvaluateRequest {
+  return prompt_artifacts.PromptEvaluateRequest {
+    schema_version: 2, artifact_kind: "PROMPT_EVALUATE_REQUEST".clone(), evaluation_id: "evaluation".clone(),
+    project_root: "/project".clone(), experiment_path: "experiment.json".clone(), parent_activation_path: "parent.json".clone(),
+    corpus_path: "corpus.json".clone(), sample_count: 2,
+    acceptance_policy_path: "acceptance.json".clone(), workspace_path: "/workspace".clone(),
+    workspace_preflight_path: "preflight.json".clone(), verifier_align_llm_repository_path: "/align-llm".clone(),
+    verifier_align_llm_commit: "llm".clone(), verifier_align_repository_path: "/align".clone(),
+    verifier_align_revision: "2f33ac5c33a898a7894af58322852632ce6ffe42".clone(),
+    verifier_corpus_source_path: "/corpus".clone(), verifier_corpus_source_kind: "FILE_SET".clone(),
+    verifier_corpus_file_set_manifest_path: None, verifier_corpus_source_repository_id: "".clone(),
+    verifier_corpus_source_sha256: CORPUS_SOURCE_SHA256.clone(), verifier_source_policy_path: "source-policy.json".clone(),
+    verifier_source_policy_sha256: source_policy_sha256.clone(), verifier_python_executable_path: None,
+    verifier_git_executable_path: "/usr/bin/git".clone(), evaluation_evidence_path: "evidence.json".clone(),
+    product_executable_path: Some("/product".clone()), product_executable_sha256: Some(PRODUCT_DIGEST.clone()),
+    generation_child_path: None, generation_child_sha256: None,
+  }
+}
+
+fn schedule_checks() -> Result<(), Error> {
+  rows := prompt_evaluation_inputs.schedule(2, 3, 100)?
+  if rows.len() != 12 || rows[0].task_index != 0 || rows[0].sample_index != 1 || rows[0].candidate ||
+  !rows[1].candidate || rows[2].sample_index != 2 || !rows[2].candidate || rows[3].candidate ||
+  rows[4].sample_index != 3 || rows[4].candidate || rows[6].task_index != 1 || rows[6].seed != 100 {
+    return Err(Error.Invalid)
+  }
+  match prompt_evaluation_inputs.schedule(0, 2, 0) { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  match prompt_evaluation_inputs.schedule(1, 1, 0) { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  match prompt_evaluation_inputs.schedule(1, 2, 9223372036854775807) { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 2 && args.len() != 3 { return Err(Error.Invalid) }
+  if args.len() == 3 && (args[2] == "inspect" || args[2] == "canonical") {
+    source := fs.read_file(args[1])?
+    evaluation: prompt_artifacts.PromptEvaluateRequest := json.decode(source)?
+    if args[2] == "canonical" {
+      prompt_evaluation_request.validate(evaluation)?
+      io.stdout.write(json.encode_bounded(evaluation, 65536)?)?
+      return io.stdout.flush()
+    }
+    project := fs.open_directory(evaluation.project_root)?
+    admitted := prompt_evaluation_inputs.load(project, evaluation, time.instant() + 30000000000)?
+    print("evaluation input inspection PASS")
+    return Ok(())
+  }
+  if args.len() == 3 && args[2] != "fixture" { return Err(Error.Invalid) }
+  root := fs.open_directory(args[1])?
+  control := bind_control()?
+  generation := bind_generation(control.content_sha256)?
+  environment := bind_environment()?
+  write(root, "control.json", json.encode(control)?)?
+  write(root, "generation.json", json.encode(generation)?)?
+  write(root, "environment.json", json.encode(environment)?)?
+  write_task(root, "one", "task-one")?
+  write_task(root, "two", "task-two")?
+  corpus := bind_corpus(bind_revision()?)?
+  acceptance := bind_acceptance()?
+  scope := bind_scope(bind_revision()?, generation.content_sha256, acceptance.content_sha256)?
+  parent_variant := bind_variant("", "parent")?
+  parent := bind_parent(prompt_artifacts.clone_prompt_scope(scope), parent_variant)?
+  source_policy := bind_source_policy()?
+  source_policy_digest := source_policy.content_sha256.clone()
+  write(root, "corpus.json", json.encode(corpus)?)?
+  write(root, "parent.json", json.encode(parent)?)?
+  experiment := bind_experiment(prompt_artifacts.clone_prompt_scope(scope), parent, true)?
+  write(root, "experiment.json", json.encode(experiment)?)?
+  write(root, "acceptance.json", json.encode(acceptance)?)?
+  preflight := bind_preflight()?
+  write(root, "preflight.json", json.encode(preflight)?)?
+  write(root, "source-policy.json", json.encode(source_policy)?)?
+  valid_request := request(source_policy_digest)
+  if args.len() == 3 {
+    write(root, "request.json", json.encode(valid_request)?)?
+    return Ok(())
+  }
+  inputs := prompt_evaluation_inputs.load(root, valid_request, time.instant() + 30000000000)?
+  if inputs.tasks.len() != 2 || inputs.corpus.task_files.len() != 2 || inputs.experiment.status != "PROPOSED" ||
+  inputs.parent.status != "BASELINED" || inputs.source_policy.content_sha256 != source_policy_digest {
+    return Err(Error.Invalid)
+  }
+  schedule_checks()?
+  mut invalid := request(source_policy_digest)
+  invalid.sample_count = 1
+  match prompt_evaluation_inputs.load(root, invalid, time.instant() + 30000000000) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  expired := request(source_policy_digest)
+  match prompt_evaluation_inputs.load(root, expired, 0) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  mut mismatched := request(source_policy_digest)
+  mismatched.verifier_align_revision = "cccccccccccccccccccccccccccccccccccccccc".clone()
+  match prompt_evaluation_inputs.load(root, mismatched, time.instant() + 30000000000) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  mut policy_mismatch := request(source_policy_digest)
+  policy_mismatch.verifier_source_policy_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".clone()
+  match prompt_evaluation_inputs.load(root, policy_mismatch, time.instant() + 30000000000) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  mut missing_parent := request(source_policy_digest)
+  missing_parent.parent_activation_path = "missing-parent.json".clone()
+  match prompt_evaluation_inputs.load(root, missing_parent, time.instant() + 30000000000) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  parent_path := path.join(args[1], "parent.json")
+  experiment_path := path.join(args[1], "experiment.json")
+  parent_source := fs.read_file(parent_path)?
+  parent_for_missing := prompt_artifacts.decode_prompt_activation_result(parent_source)?
+  missing_opportunity := bind_experiment(prompt_artifacts.clone_prompt_scope(scope), parent_for_missing, false)?
+  fs.write_file(experiment_path, json.encode(missing_opportunity)?)?
+  match prompt_evaluation_inputs.load(root, valid_request, time.instant() + 30000000000) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  mut mismatched_parent := prompt_artifacts.decode_prompt_activation_result(parent_source)?
+  mismatched_parent.status = "ACCEPTED".clone()
+  mismatched_parent.content_sha256 = "".clone()
+  mismatched_parent.content_sha256 = hash(json.encode(mismatched_parent)?)
+  fs.write_file(parent_path, json.encode(mismatched_parent)?)?
+  invalid_parent_experiment := bind_experiment(prompt_artifacts.clone_prompt_scope(scope), mismatched_parent, true)?
+  fs.write_file(experiment_path, json.encode(invalid_parent_experiment)?)?
+  match prompt_evaluation_inputs.load(root, valid_request, time.instant() + 30000000000) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  fs.write_file(parent_path, parent_source)?
+  fs.write_file(experiment_path, json.encode(experiment)?)?
+  mut scope_defect := 0
+  loop {
+    if scope_defect == 2 { break }
+    mut bad_scope := prompt_artifacts.clone_prompt_scope(scope)
+    if scope_defect == 0 { bad_scope.evaluation_provider_kind = "LLAMA_CPP".clone() } else {
+      bad_scope.evaluation_provider_model = "different-model".clone()
+    }
+    bad_scope.content_sha256 = "".clone()
+    bad_scope.content_sha256 = hash(json.encode(bad_scope)?)
+    bad_parent := bind_parent(prompt_artifacts.clone_prompt_scope(bad_scope), bind_variant("", "parent")?)?
+    fs.write_file(parent_path, json.encode(bad_parent)?)?
+    bad_experiment := bind_experiment(bad_scope, bad_parent, true)?
+    fs.write_file(experiment_path, json.encode(bad_experiment)?)?
+    match prompt_evaluation_inputs.load(root, valid_request, time.instant() + 30000000000) {
+      Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+    }
+    scope_defect = scope_defect + 1
+  }
+  fs.write_file(parent_path, parent_source)?
+  fs.write_file(experiment_path, json.encode(experiment)?)?
+  second_path := path.join(args[1], "task-two.json")
+  second_source := fs.read_file(second_path)?
+  mut inconsistent_cwd := prompt_artifacts.decode_prompt_evaluation_task(second_source)?
+  inconsistent_cwd.cwd = "different-cwd".clone()
+  inconsistent_cwd.content_sha256 = "".clone()
+  inconsistent_cwd.content_sha256 = hash(json.encode(inconsistent_cwd)?)
+  fs.write_file(second_path, json.encode(inconsistent_cwd)?)?
+  match prompt_evaluation_inputs.load(root, valid_request, time.instant() + 30000000000) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  fs.write_file(second_path, second_source)?
+  bad_context := bind_context("two", "not-json")?
+  fs.write_file(path.join(args[1], "task-two-context.json"), json.encode(bad_context)?)?
+  match prompt_evaluation_inputs.load(root, valid_request, time.instant() + 30000000000) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  print("prompt evaluation inputs: complete bundle, identities, schedule and refusal PASS")
+  return Ok(())
+}

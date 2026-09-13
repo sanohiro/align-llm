@@ -1,5 +1,7 @@
 module prompt_verifier_smoke
 
+import core.json
+
 import prompt_artifact_io
 import prompt_artifacts
 import prompt_score
@@ -24,7 +26,7 @@ fn expectations() -> array<prompt_artifacts.ArtifactExpectation> {
       expected_sha256: adapter_expectation_digest(),
     })
   values.push(prompt_artifacts.ArtifactExpectation {
-      path: "snapshot".clone(),
+      path: "repository".clone(),
       kind: "TREE".clone(),
       expected_sha256: digest_b(),
     })
@@ -45,7 +47,7 @@ fn digests() -> array<prompt_artifacts.ArtifactDigest> {
       sha256: digest_a(),
     })
   values.push(prompt_artifacts.ArtifactDigest {
-      path: "snapshot".clone(),
+      path: "repository".clone(),
       mode: "040755".clone(),
       byte_count: 0,
       sha256: digest_b(),
@@ -62,7 +64,7 @@ fn wrong_tree_digests() -> array<prompt_artifacts.ArtifactDigest> {
       sha256: digest_a(),
     })
   values.push(prompt_artifacts.ArtifactDigest {
-      path: "snapshot".clone(),
+      path: "repository".clone(),
       mode: "040755".clone(),
       byte_count: 0,
       sha256: digest_c(),
@@ -123,13 +125,15 @@ fn corpus_revision() -> prompt_artifacts.CorpusRevision {
   }
 }
 
-fn scope(provider_kind: str) -> prompt_artifacts.PromptScope {
+fn scope(provider_kind: str) -> prompt_artifacts.PromptScope = scope_for(provider_kind, 0)
+
+fn scope_for(provider_kind: str, defect: i64) -> prompt_artifacts.PromptScope {
   return prompt_artifacts.PromptScope {
     schema_version: 1,
     artifact_kind: "PROMPT_SCOPE".clone(),
     repo_id: "repo".clone(),
     repo_profile_revision: "profile-v1".clone(),
-    align_revision: digest_a(),
+    align_revision: if product_case(defect) { product_revision() } else { digest_a() },
     corpus_id: "corpus".clone(),
     corpus_revision: corpus_revision(),
     evaluation_provider_kind: provider_kind.clone(),
@@ -151,7 +155,9 @@ fn reference(kind: str, id: str, digest: str) -> prompt_artifacts.ArtifactRefere
   }
 }
 
-fn experiment(provider_kind: str) -> prompt_artifacts.PromptExperimentResult {
+fn experiment(provider_kind: str) -> prompt_artifacts.PromptExperimentResult = experiment_for(provider_kind, 0)
+
+fn experiment_for(provider_kind: str, defect: i64) -> prompt_artifacts.PromptExperimentResult {
   proposal_kind := if provider_kind == "FIXTURE" { "LOCAL_OPENAI".clone() } else { provider_kind.clone() }
   return prompt_artifacts.PromptExperimentResult {
     schema_version: 1,
@@ -161,7 +167,7 @@ fn experiment(provider_kind: str) -> prompt_artifacts.PromptExperimentResult {
     error_code: "NONE".clone(),
     error: "".clone(),
     parent_activation: Some(reference("PROMPT_ACTIVATION_RESULT", "decision", digest_a())),
-    scope: Some(scope(provider_kind)),
+    scope: Some(scope_for(provider_kind, defect)),
     opportunity: Some(reference("OPPORTUNITY", "opportunity", digest_a())),
     proposal_provider_kind: Some(proposal_kind),
     proposal_provider_endpoint_id: Some("endpoint".clone()),
@@ -175,13 +181,15 @@ fn experiment(provider_kind: str) -> prompt_artifacts.PromptExperimentResult {
   }
 }
 
-fn activation(provider_kind: str) -> prompt_artifacts.PromptActivation {
+fn activation(provider_kind: str) -> prompt_artifacts.PromptActivation = activation_for(provider_kind, 0)
+
+fn activation_for(provider_kind: str, defect: i64) -> prompt_artifacts.PromptActivation {
   return prompt_artifacts.PromptActivation {
     schema_version: 1,
     artifact_kind: "PROMPT_ACTIVATION".clone(),
     activation_id: "activation".clone(),
     operation: "BASELINE".clone(),
-    scope: scope(provider_kind),
+    scope: scope_for(provider_kind, defect),
     parent_activation_id: "".clone(),
     parent_activation_sha256: "".clone(),
     effective_variant: variant(true),
@@ -194,7 +202,9 @@ fn activation(provider_kind: str) -> prompt_artifacts.PromptActivation {
   }
 }
 
-fn activation_result(provider_kind: str) -> prompt_artifacts.PromptActivationResult {
+fn activation_result(provider_kind: str) -> prompt_artifacts.PromptActivationResult = activation_result_for(provider_kind, 0)
+
+fn activation_result_for(provider_kind: str, defect: i64) -> prompt_artifacts.PromptActivationResult {
   return prompt_artifacts.PromptActivationResult {
     schema_version: 1,
     artifact_kind: "PROMPT_ACTIVATION_RESULT".clone(),
@@ -202,7 +212,7 @@ fn activation_result(provider_kind: str) -> prompt_artifacts.PromptActivationRes
     status: "BASELINED".clone(),
     error_code: "NONE".clone(),
     error: "".clone(),
-    activation: Some(activation(provider_kind)),
+    activation: Some(activation_for(provider_kind, defect)),
     content_sha256: digest_a(),
   }
 }
@@ -232,25 +242,26 @@ fn task_named(adapter: i64) -> prompt_artifacts.PromptEvaluationTask {
 
 fn task_named_for(adapter: i64, policy_defect: i64) -> prompt_artifacts.PromptEvaluationTask {
   return prompt_artifacts.PromptEvaluationTask {
-    schema_version: 1,
+    schema_version: if product_case(policy_defect) { 2 } else { 1 },
     artifact_kind: "PROMPT_EVALUATION_TASK".clone(),
     task_id: "task".clone(),
     repo_id: "repo".clone(),
     repo_revision: digest_a(),
     repo_path: "repository".clone(),
     require_clean_repo: true,
-    cmd: if adapter == 0 { "adapter".clone() } else { "/usr/bin/python3".clone() },
-    argv: if adapter == 2 {
-      template_adapter_argv()
-    } else if adapter == 1 {
-      repair_adapter_argv()
-    } else {
-      one_string("adapter")
-    },
-    snapshot_cmd: "snapshot".clone(),
-    snapshot_argv: one_string("snapshot"),
-    measurement_adapter_runtime: "runtime".clone(),
-    snapshot_helper_runtime: "snapshot-runtime".clone(),
+    execution_kind: if product_case(policy_defect) && policy_defect != 51 { Some(if fixture_product_case(policy_defect) { "FIXTURE_PATCH".clone() } else { "PROVIDER_EDIT".clone() }) } else { None },
+    cmd: if product_case(policy_defect) && policy_defect != 52 { None } else { Some(if adapter == 0 { "adapter".clone() } else { "/usr/bin/python3".clone() }) },
+    argv: if product_case(policy_defect) { None } else { Some(if adapter == 2 {
+          template_adapter_argv()
+        } else if adapter == 1 {
+          repair_adapter_argv()
+        } else {
+          one_string("adapter")
+        }) },
+    snapshot_cmd: if product_case(policy_defect) { None } else { Some("snapshot".clone()) },
+    snapshot_argv: if product_case(policy_defect) { None } else { Some(one_string("snapshot")) },
+    measurement_adapter_runtime: if product_case(policy_defect) { None } else { Some("runtime".clone()) },
+    snapshot_helper_runtime: if product_case(policy_defect) { None } else { Some("snapshot-runtime".clone()) },
     cwd: "repository".clone(),
     timeout_ns: 1_000_000,
     task_prompt_path: "task-prompt.json".clone(),
@@ -258,13 +269,13 @@ fn task_named_for(adapter: i64, policy_defect: i64) -> prompt_artifacts.PromptEv
     generation_policy_path: "generation.json".clone(),
     provider_control_path: "provider.json".clone(),
     environment_policy_path: "environment.json".clone(),
-    validation_runner_path: "runner.py".clone(),
-    validation_runner_sha256: digest_a(),
+    validation_runner_path: if product_case(policy_defect) { None } else { Some("runner.py".clone()) },
+    validation_runner_sha256: if product_case(policy_defect) { None } else { Some(digest_a()) },
     task_definition_path: "task-definition.json".clone(),
     task_definition_sha256: digest_b(),
-    validation_argv: one_string("--retained-inputs"),
-    patch_path: None,
-    patch_sha256: None,
+    validation_argv: if product_case(policy_defect) { None } else { Some(one_string("--retained-inputs")) },
+    patch_path: if fixture_product_case(policy_defect) { Some("fixture.patch".clone()) } else { None },
+    patch_sha256: if fixture_product_case(policy_defect) { Some(digest_b()) } else { None },
     artifacts: expectations(),
     regression_limits: prompt_artifacts.RegressionLimits {
       maximum_unrelated_diff_count: 10,
@@ -275,7 +286,7 @@ fn task_named_for(adapter: i64, policy_defect: i64) -> prompt_artifacts.PromptEv
     },
     repair_template_path: Some("repair-template.json".clone()),
     repair_template_sha256: Some(digest_a()),
-    edit_policy: if adapter == 2 { edit_policy_for(policy_defect) } else { None },
+    edit_policy: if adapter == 2 && !fixture_product_case(policy_defect) { edit_policy_for(policy_defect) } else { None },
     content_sha256: digest_a(),
   }
 }
@@ -347,12 +358,14 @@ fn probe(producer: str, runtime: str) -> prompt_artifacts.EnvironmentProbe {
   }
 }
 
-fn environment_with_schema(schema_version: i64) -> prompt_artifacts.EnvironmentIdentity {
+fn environment_with_schema(schema_version: i64) -> prompt_artifacts.EnvironmentIdentity = environment_for(schema_version, 0)
+
+fn environment_for(schema_version: i64, defect: i64) -> prompt_artifacts.EnvironmentIdentity {
   return prompt_artifacts.EnvironmentIdentity {
     schema_version: schema_version,
     artifact_kind: "ENVIRONMENT_IDENTITY".clone(),
     core: prompt_artifacts.EnvironmentIdentityCore {
-      schema_version: 1,
+      schema_version: if product_case(defect) { 2 } else { 1 },
       artifact_kind: "ENVIRONMENT_IDENTITY_CORE".clone(),
       os: "linux".clone(),
       os_release: "test".clone(),
@@ -361,10 +374,11 @@ fn environment_with_schema(schema_version: i64) -> prompt_artifacts.EnvironmentI
       logical_cpu_count: Some(4),
       gpu: "none".clone(),
       align_llm_commit: digest_a(),
-      align_revision: digest_a(),
-      measurement_adapter_runtime: "runtime".clone(),
-      snapshot_helper_runtime: "snapshot-runtime".clone(),
-      source_verifier_runtime: "verifier-runtime".clone(),
+      align_revision: if product_case(defect) { product_revision() } else { digest_a() },
+      measurement_adapter_runtime: if product_case(defect) { None } else { Some("runtime".clone()) },
+      snapshot_helper_runtime: if product_case(defect) { None } else { Some("snapshot-runtime".clone()) },
+      source_verifier_runtime: if product_case(defect) { None } else { Some("verifier-runtime".clone()) },
+      product_runtime: if product_case(defect) { Some(product_runtime(false)) } else { None },
       source_verifier_policy_sha256: digest_a(),
       environment_policy_sha256: digest_a(),
     },
@@ -388,7 +402,9 @@ fn workspace_request() -> prompt_artifacts.WorkspacePreflightRequest {
   }
 }
 
-fn workspace_result() -> prompt_artifacts.WorkspacePreflightResult {
+fn workspace_result() -> prompt_artifacts.WorkspacePreflightResult = workspace_result_for(0)
+
+fn workspace_result_for(defect: i64) -> prompt_artifacts.WorkspacePreflightResult {
   return prompt_artifacts.WorkspacePreflightResult {
     schema_version: 1,
     artifact_kind: "WORKSPACE_PREFLIGHT_RESULT".clone(),
@@ -398,7 +414,7 @@ fn workspace_result() -> prompt_artifacts.WorkspacePreflightResult {
     error: "".clone(),
     physical_project_root: "/project".clone(),
     physical_workspace_path: "/project/workspace".clone(),
-    environment_probe: Some(probe("SNAPSHOT_HELPER", "snapshot-runtime")),
+    environment_probe: Some(if product_case(defect) { product_probe("ALIGN_SNAPSHOT", false, false) } else { probe("SNAPSHOT_HELPER", "snapshot-runtime") }),
     content_sha256: digest_a(),
   }
 }
@@ -435,7 +451,9 @@ fn snapshot_request() -> prompt_artifacts.SnapshotRequest {
   }
 }
 
-fn snapshot_result() -> prompt_artifacts.SnapshotResult {
+fn snapshot_result() -> prompt_artifacts.SnapshotResult = snapshot_result_for(0)
+
+fn snapshot_result_for(defect: i64) -> prompt_artifacts.SnapshotResult {
   return prompt_artifacts.SnapshotResult {
     schema_version: 1,
     artifact_kind: "SNAPSHOT_RESULT".clone(),
@@ -443,7 +461,7 @@ fn snapshot_result() -> prompt_artifacts.SnapshotResult {
     status: "MATCH".clone(),
     error_code: "NONE".clone(),
     error: "".clone(),
-    environment_probe: Some(probe("SNAPSHOT_HELPER", "snapshot-runtime")),
+    environment_probe: Some(if product_case(defect) { product_probe("ALIGN_SNAPSHOT", false, false) } else { probe("SNAPSHOT_HELPER", "snapshot-runtime") }),
     artifact_digests: digests(),
     content_sha256: digest_a(),
   }
@@ -555,6 +573,7 @@ fn measurement(passing: bool, provider_kind: str, seed: i64) -> prompt_artifacts
     edit_set_total_bytes: None,
     patch_sha256: None,
     base_adapter_runtime_identity: None,
+    product_runtime: None,
     edit_refusal: None,
     completion_bytes: None,
     completion_sha256: None,
@@ -847,9 +866,11 @@ fn snapshot_requests_array() -> array<prompt_artifacts.SnapshotRequest> {
   return values.build()
 }
 
-fn snapshot_results_array() -> array<prompt_artifacts.SnapshotResult> {
+fn snapshot_results_array() -> array<prompt_artifacts.SnapshotResult> = snapshot_results_for(0)
+
+fn snapshot_results_for(defect: i64) -> array<prompt_artifacts.SnapshotResult> {
   mut values: array_builder<prompt_artifacts.SnapshotResult> := array_builder()
-  values.push(snapshot_result())
+  values.push(snapshot_result_for(defect))
   return values.build()
 }
 
@@ -1274,6 +1295,7 @@ fn terminal_measurement() -> prompt_artifacts.TaskMeasurement {
     edit_set_total_bytes: None,
     patch_sha256: None,
     base_adapter_runtime_identity: None,
+    product_runtime: None,
     edit_refusal: None,
     completion_bytes: None,
     completion_sha256: None,
@@ -1539,6 +1561,7 @@ fn attempt_measurement(passing: bool, window: i64, seed: i64) -> prompt_artifact
     edit_set_total_bytes: None,
     patch_sha256: None,
     base_adapter_runtime_identity: None,
+    product_runtime: None,
     edit_refusal: None,
     completion_bytes: None,
     completion_sha256: None,
@@ -1795,11 +1818,53 @@ fn task_template_adapter_for(defect: i64) -> prompt_artifacts.PromptEvaluationTa
   return task_named_for(2, defect)
 }
 
+// Product cases share the two-attempt provider edit graph without changing historical cases.
+// 50: clean; 51: missing execution kind; 52: retained legacy command; 53: missing runtime;
+// 54: final measurement/probe identity disagrees with the environment; 55: initial pair disagrees;
+// 56: initial probe has the snapshot role; 57: malformed initial identity; 58: legacy base identity.
+// 60: clean fixture patch; 61: completion identity; 62: generated edits; 63: edit refusal.
+fn fixture_product_case(defect: i64) -> bool = defect >= 60 && defect <= 63
+
+fn product_case(defect: i64) -> bool = (defect >= 50 && defect <= 58) || fixture_product_case(defect)
+
+fn product_revision() -> string = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".clone()
+
+fn product_runtime(other: bool) -> string {
+  output := builder()
+  output.write("ALIGN:")
+  revision := product_revision()
+  output.write(revision)
+  output.write(":")
+  digest := if other { digest_b() } else { digest_a() }
+  output.write(digest)
+  return output.to_string()
+}
+
+fn product_wrong_runtime(defect: i64, passing: bool) -> bool {
+  return (defect == 54 && passing) || (defect == 55 && !passing)
+}
+
+fn product_probe(producer: str, other: bool, malformed: bool) -> prompt_artifacts.EnvironmentProbe {
+  runtime := if malformed { "ALIGN:malformed".clone() } else { product_runtime(other) }
+  mut value := probe(producer, runtime)
+  value.schema_version = 2
+  return value
+}
+
+fn trust_for_product(defect: i64) -> prompt_artifacts.PromptVerifierTrust {
+  mut value := trust(true)
+  if product_case(defect) {
+    value.expected_align_revision = product_revision()
+    value.align_observed_revision = Some(product_revision())
+  }
+  return value
+}
+
 // Defect 32 is deliberately a **repair-adapter** corpus: a version-2 measurement carrying a
 // version-3 member. On a template-adapter corpus the version rule would reject it as well, and a
 // case with two possible causes proves neither.
 fn uses_template_adapter(defect: i64) -> bool {
-  return defect >= 31 && defect <= 41 && defect != 32
+  return (defect >= 31 && defect <= 41 && defect != 32) || (product_case(defect) && !fixture_product_case(defect))
 }
 
 // The declared edit policy is `Some` exactly for a template-adapter task and its bounds must equal
@@ -2117,6 +2182,7 @@ fn measurement_v2(
     } else {
       Some("PYTHON:2d3796dbf1159d4a9528a62bbb9af0f36ccc5878b76d83aa65fa0d39cca7b20c".clone())
     },
+    product_runtime: None,
     edit_refusal: None,
     completion_bytes: None,
     completion_sha256: None,
@@ -2166,6 +2232,7 @@ fn measurement_v1_with_v2_member(
     } else {
       None
     },
+    product_runtime: None,
     edit_refusal: None,
     completion_bytes: None,
     completion_sha256: None,
@@ -2178,7 +2245,7 @@ fn measurement_v3(
   passing: bool, window: i64, seed: i64, defect: i64, runtime: str,
 ) -> prompt_artifacts.TaskMeasurement {
   return prompt_artifacts.TaskMeasurement {
-    schema_version: 3,
+    schema_version: if product_case(defect) { 4 } else { 3 },
     artifact_kind: "TASK_MEASUREMENT".clone(),
     status: if passing { "PASS".clone() } else { "FAIL".clone() },
     failure_kind: if passing {
@@ -2211,7 +2278,7 @@ fn measurement_v3(
     generation_to_passing_patch_ns: if passing { Some(window) } else { None },
     rendered_prompt_sha256: digest_a(),
     generation_request: generation_request(seed),
-    environment_probe: probe("MEASUREMENT_ADAPTER", runtime),
+    environment_probe: if product_case(defect) { product_probe(if defect == 56 && !passing { "ALIGN_SNAPSHOT" } else { "ALIGN_TASK" }, product_wrong_runtime(defect, passing), defect == 57 && !passing) } else { probe("MEASUREMENT_ADAPTER", runtime) },
     seed_attestation: seed_attestation("LOCAL_OPENAI", seed),
     diagnostic_summary: if unchanged_refusal(defect, passing) {
       "the response reproduced the pinned files unchanged".clone()
@@ -2222,15 +2289,18 @@ fn measurement_v3(
     diagnostic_stderr: "AssertionError".clone(),
     // Defect 35 discards the blocks its own refusal was computed from, which the widened rule
     // rejects and which no version-2 rule could have seen. Defect 38 keeps them.
-    edit_set: if defect == 35 && !passing { None } else { Some(edit_set_blocks(true, 0)) },
-    edit_set_total_bytes: if defect == 35 && !passing {
+    edit_set: if (defect == 35 && !passing) || (fixture_product_case(defect) && defect != 62) { None } else { Some(edit_set_blocks(true, 0)) },
+    edit_set_total_bytes: if (defect == 35 && !passing) || (fixture_product_case(defect) && defect != 62) {
       None
     } else {
       Some(body_byte_count() + second_body_byte_count())
     },
     patch_sha256: if unchanged_refusal(defect, passing) { None } else { Some(digest_b()) },
-    base_adapter_runtime_identity: Some(base_identity_value()),
-    edit_refusal: if defect == 34 {
+    base_adapter_runtime_identity: if product_case(defect) && defect != 58 { None } else { Some(base_identity_value()) },
+    product_runtime: if product_case(defect) && defect != 53 { Some(if defect == 57 && !passing { "ALIGN:malformed".clone() } else { product_runtime(product_wrong_runtime(defect, passing)) }) } else { None },
+    edit_refusal: if defect == 63 {
+      Some("UNCHANGED_FILES".clone())
+    } else if defect == 34 {
       Some("NO_SUCH_REFUSAL".clone())
     } else if unchanged_refusal(defect, passing) {
       Some("UNCHANGED_FILES".clone())
@@ -2239,8 +2309,8 @@ fn measurement_v3(
     },
     // Defect 41 drops both members after a response. Pairwise presence still agrees, but the
     // generation-request identity proves a provider response was received.
-    completion_bytes: if defect == 41 { None } else { Some(completion_byte_count()) },
-    completion_sha256: if defect == 41 { None } else { Some(completion_digest_value()) },
+    completion_bytes: if defect == 41 || (fixture_product_case(defect) && defect != 61) { None } else { Some(completion_byte_count()) },
+    completion_sha256: if defect == 41 || (fixture_product_case(defect) && defect != 61) { None } else { Some(completion_digest_value()) },
     // Defect 36 persists the excerpt on a code whose edit set already carries the model's bodies.
     completion_text: if defect == 36 { Some(completion_text_value()) } else { None },
     content_sha256: if passing { digest_b() } else { digest_c() },
@@ -2278,6 +2348,7 @@ fn measurement_v2_wrong_identity(seed: i64, defect: i64) -> prompt_artifacts.Tas
 }
 
 fn attempt_measurement_for(passing: bool, window: i64, seed: i64, defect: i64) -> prompt_artifacts.TaskMeasurement {
+  if fixture_product_case(defect) { return measurement_v3(passing, window, seed, defect, "runtime") }
   if measurement_is_version_one_defect(defect) {
     return measurement_v1_with_v2_member(passing, window, seed, defect)
   }
@@ -2409,7 +2480,7 @@ fn editset_drifted_measurement(seed: i64, defect: i64) -> prompt_artifacts.TaskM
 }
 
 fn is_editset_defect(defect: i64) -> bool {
-  return (defect >= 14 && defect <= 30) || defect == 32 || uses_template_adapter(defect)
+  return (defect >= 14 && defect <= 30) || defect == 32 || uses_template_adapter(defect) || fixture_product_case(defect)
 }
 
 fn attempts_for(defect: i64, seed: i64) -> array<prompt_artifacts.TaskAttemptRecord> {
@@ -2539,7 +2610,9 @@ fn task_without_repair() -> prompt_artifacts.PromptEvaluationTask {
 
 fn tasks_array_v2(defect: i64) -> array<prompt_artifacts.PromptEvaluationTask> {
   mut values: array_builder<prompt_artifacts.PromptEvaluationTask> := array_builder()
-  if defect == 10 {
+  if fixture_product_case(defect) {
+    values.push(task_template_adapter_for(defect))
+  } else if defect == 10 {
     values.push(task_with_repair_cap(2))
   } else if defect == 13 {
     values.push(task_without_repair())
@@ -2718,7 +2791,7 @@ fn evidence_v2(defect: i64) -> prompt_artifacts.PromptEvaluationEvidence {
     artifact_kind: "PROMPT_EVALUATION_EVIDENCE".clone(),
     evaluation_id: "evaluation".clone(),
     evaluation_result_sha256: digest_a(),
-    trust: trust(true),
+    trust: trust_for_product(defect),
     expected_inputs: expected_inputs_v2(defect),
     content_sha256: digest_a(),
   }
@@ -2733,10 +2806,10 @@ fn complete_result_v2(defect: i64) -> prompt_artifacts.PromptEvaluationResult {
     error_code: "NONE".clone(),
     error: "".clone(),
     experiment: Some(reference("PROMPT_EXPERIMENT_RESULT", "experiment", digest_a())),
-    experiment_artifact: Some(experiment("LOCAL_OPENAI")),
+    experiment_artifact: Some(experiment_for("LOCAL_OPENAI", defect)),
     parent_activation: Some(reference("PROMPT_ACTIVATION_RESULT", "decision", digest_a())),
-    parent_activation_artifact: Some(activation_result("LOCAL_OPENAI")),
-    scope: Some(scope("LOCAL_OPENAI")),
+    parent_activation_artifact: Some(activation_result_for("LOCAL_OPENAI", defect)),
+    scope: Some(scope_for("LOCAL_OPENAI", defect)),
     parent_variant: Some(variant(true)),
     candidate_variant: Some(variant(false)),
     corpus_source: Some(reference("PROMPT_EVALUATION_CORPUS", "corpus", digest_a())),
@@ -2750,10 +2823,10 @@ fn complete_result_v2(defect: i64) -> prompt_artifacts.PromptEvaluationResult {
     provider_control: Some(provider_control("LOCAL_OPENAI")),
     workspace_preflight_source: Some(reference("WORKSPACE_PREFLIGHT_RESULT", "evaluation", digest_a())),
     workspace_preflight_request: Some(workspace_request()),
-    workspace_preflight: Some(workspace_result()),
-    environment: Some(environment()),
+    workspace_preflight: Some(workspace_result_for(defect)),
+    environment: Some(environment_for(1, defect)),
     snapshot_requests: snapshot_requests_array(),
-    snapshot_results: snapshot_results_array(),
+    snapshot_results: snapshot_results_for(defect),
     input_snapshots: input_snapshots_array_v2(defect),
     snapshot_attestations: attestations(false),
     trace_failure: None,
@@ -2837,6 +2910,38 @@ fn source_admits(value: prompt_artifacts.PromptEvaluationResult) -> Result<i64, 
   // require the recomputed digest to equal the declared one.
   admitted := prompt_artifact_io.decode_prompt_evaluation_result_source(view)?
   return Ok(admitted.rows.len())
+}
+
+// Reproduce independently constructed complete fixture aggregates from their rows alone.
+// The expected aggregate fields and status are never input to the native producer.
+fn same_task_aggregate(borrow left: prompt_artifacts.TaskAggregate, borrow right: prompt_artifacts.TaskAggregate) -> Result<bool, Error> {
+  return Ok(json.encode_bounded(left, 1048576)? == json.encode_bounded(right, 1048576)?)
+}
+
+fn produced_score(defect: i64) -> Result<(), Error> {
+  source := complete_result_v2(defect)
+  source_evidence := evidence_v2(defect)
+  policy := acceptance_policy()
+  mut tasks: array_builder<prompt_artifacts.TaskAggregate> := array_builder()
+  mut reasons: array_builder<prompt_artifacts.RegressionReason> := array_builder()
+  produced := prompt_score.produce(source.rows, source.tasks, "evaluation", 2, 262144, policy, source_evidence.trust, true, "LOCAL_OPENAI", tasks, reasons)?
+  computed_tasks := tasks.build()
+  computed_reasons := reasons.build()
+  expected_tasks := task_aggregates_v2(defect)
+  expected_corpus := corpus_aggregate_v2(defect)
+  computed_corpus := produced.corpus
+  if computed_tasks.len() != expected_tasks.len() { return Err(Error.Invalid) }
+  mut index := 0
+  loop {
+    if index == computed_tasks.len() { break }
+    if !same_task_aggregate(computed_tasks[index], expected_tasks[index])? { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  if json.encode_bounded(computed_corpus, 1048576)? != json.encode_bounded(expected_corpus, 1048576)? ||
+  computed_reasons.len() != 0 || prompt_score.evaluation_status(produced.status) != source.status || produced.gate_eligible != source.gate_eligible {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
@@ -3272,6 +3377,47 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   version_split := complete_result_v2(0)
   version_split_evidence := evidence(true)
   expect_invalid(version_split, version_split_evidence)?
+
+  // Product graph: version-2 task/core/probes, version-4 measurements in both attempts.
+  product_clean := complete_result_v2(50)
+  product_evidence := evidence_v2(50)
+  expect_ok_v2(product_clean, product_evidence)?
+  round_trip_equal(complete_result_v2(50), complete_result_v2(50))?
+  product_sealed := sealed_v2(50)?
+  if source_admits(product_sealed)? != 4 { return Err(Error.Invalid) }
+
+  // Each mutation starts from the complete graph. The runtime swaps retain valid grammar,
+  // and change measurement plus probe together, so environment binding is the rejecting rule.
+  mut product_defect := 51
+  loop {
+    if product_defect > 58 { break }
+    product_invalid := complete_result_v2(product_defect)
+    product_invalid_evidence := evidence_v2(product_defect)
+    expect_invalid(product_invalid, product_invalid_evidence)?
+    product_defect = product_defect + 1
+  }
+
+  // A fixture patch keeps ordinary repair accounting but has no generated edit-set/refusal
+  // counters, no completion identity and no edit policy. Provider-only members are rejected.
+  fixture_product_clean := complete_result_v2(60)
+  fixture_product_evidence := evidence_v2(60)
+  expect_ok_v2(fixture_product_clean, fixture_product_evidence)?
+  round_trip_equal(complete_result_v2(60), complete_result_v2(60))?
+  fixture_product_sealed := sealed_v2(60)?
+  if source_admits(fixture_product_sealed)? != 4 { return Err(Error.Invalid) }
+  mut fixture_defect := 61
+  loop {
+    if fixture_defect > 63 { break }
+    fixture_product_invalid := complete_result_v2(fixture_defect)
+    fixture_product_invalid_evidence := evidence_v2(fixture_defect)
+    expect_invalid(fixture_product_invalid, fixture_product_invalid_evidence)?
+    fixture_defect = fixture_defect + 1
+  }
+
+  produced_score(0)?
+  produced_score(7)?
+  produced_score(50)?
+  produced_score(60)?
 
   print("prompt verifier smoke: complete, incomplete, compact, tamper, and repair-attempt cases PASS")
   return Ok(())

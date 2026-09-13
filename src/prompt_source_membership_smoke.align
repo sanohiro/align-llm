@@ -1,0 +1,109 @@
+module prompt_source_membership_smoke
+
+import prompt_artifacts
+import prompt_source_membership
+import prompt_source_admission
+import prompt_file_set_observation
+import std.fs
+import std.time
+
+fn observed(manifest_path: str, corpus_path: str, digest: str) -> Result<prompt_file_set_observation.Observation, Error> {
+  manifest := fs.open_directory(manifest_path)?
+  corpus := fs.open_directory(corpus_path)?
+  return prompt_file_set_observation.observe(manifest, "manifest".bytes(), digest, corpus, 18, time.instant() + 10000000000)
+}
+
+fn row(path: str, mode: str, size: i64, digest: str) -> prompt_artifacts.ArtifactDigest = prompt_artifacts.ArtifactDigest { path: path.clone(), mode: mode.clone(), byte_count: size, sha256: digest.clone() }
+
+fn check(borrow project: fs.directory, borrow corpus: fs.directory, borrow observation: prompt_file_set_observation.Observation, digest: str, rows: slice<prompt_artifacts.ArtifactDigest>, compare: bool, member: bool, deadline: i64) -> Result<(), Error> {
+  actual_compare := match prompt_source_membership.compare(project, corpus, rows, deadline) { Ok(_) => true, Err(_) => false }
+  actual_member := match prompt_source_membership.file_set(observation, digest, rows, deadline) { Ok(_) => true, Err(_) => false }
+  if actual_compare != compare || actual_member != member { return Err(Error.Invalid) }
+  combined := match prompt_source_admission.file_set(project, corpus, observation, digest, rows, deadline) { Ok(_) => true, Err(_) => false }
+  if combined != (compare && member) { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn single(borrow project: fs.directory, borrow corpus: fs.directory, borrow observation: prompt_file_set_observation.Observation, manifest: str, path: str, mode: str, size: i64, digest: str, compare: bool, member: bool) -> Result<(), Error> {
+  mut rows: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  rows.push(row(path, mode, size, digest))
+  return check(project, corpus, observation, manifest, rows.build(), compare, member, time.instant() + 10000000000)
+}
+
+fn mutate(borrow root: fs.directory, mode: str) -> Result<(), Error> {
+  if mode.ends_with("mode") {
+    file := root.open_read_single_link("a")?
+    file.set_mode(493 as u32)?
+  } else {
+    root.remove_file("a")?
+    if !mode.ends_with("missing") {
+      file := root.create_new("a")?
+      file.write(if mode.ends_with("size") { "ab" } else { "xyz" })?
+      file.set_mode(420 as u32)?
+    }
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 8 { return Err(Error.Invalid) }
+  observation := observed(args[3], args[2], args[4])?
+  project := fs.open_directory(args[1])?
+  corpus := fs.open_directory(args[2])?
+  mode := args[7]
+  if mode.starts_with("project-") || mode.starts_with("corpus-") {
+    if mode.starts_with("project-") { mutate(project, mode)? } else { mutate(corpus, mode)? }
+    single(project, corpus, observation, args[4], "a", "100644", 3, args[5], false, true)?
+    print(mode)
+    return Ok(())
+  }
+  if mode == "owned" {
+    manifest := fs.open_directory(args[3])?
+    manifest.remove_file("manifest")?
+  } else if mode != "base" { return Err(Error.Invalid) }
+  mut values: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  values.push(row("界", "100644", 3, args[5]))
+  values.push(row("z", "100644", 3, args[5]))
+  values.push(row("middle", "100755", 3, args[5]))
+  values.push(row("line\nname", "100644", 3, args[5]))
+  values.push(row("a", "100644", 3, args[5]))
+  values.push(row("empty", "100644", 0, args[6]))
+  rows := values.build()
+  check(project, corpus, observation, args[4], rows, true, true, time.instant() + 10000000000)?
+  check(project, corpus, observation, "0000000000000000000000000000000000000000000000000000000000000000", rows, true, false, time.instant() + 10000000000)?
+  check(project, corpus, observation, args[4], rows, false, false, time.instant() - 1)?
+  mut empty: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  no_rows := empty.build()
+  check(project, corpus, observation, args[4], no_rows, true, true, time.instant() + 10000000000)?
+  check(project, corpus, observation, args[4], no_rows, false, false, time.instant() - 1)?
+  mut duplicates: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  duplicates.push(row("a", "100644", 3, args[5]))
+  duplicates.push(row("a", "100644", 3, args[5]))
+  check(project, corpus, observation, args[4], duplicates.build(), true, true, time.instant() + 10000000000)?
+  mut conflict: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  conflict.push(row("a", "100644", 3, args[5]))
+  conflict.push(row("a", "100755", 3, args[5]))
+  check(project, corpus, observation, args[4], conflict.build(), false, false, time.instant() + 10000000000)?
+  single(project, corpus, observation, args[4], "a", "100755", 3, args[5], false, false)?
+  single(project, corpus, observation, args[4], "a", "100644", 3, "0000000000000000000000000000000000000000000000000000000000000000", false, false)?
+  single(project, corpus, observation, args[4], "a", "100644", 2, args[5], false, true)?
+  single(project, corpus, observation, args[4], "a", "100644", 4, args[5], false, true)?
+  invalid_paths := ["", "/a", "../a", "a/../a", "a//b", "a/", "a\0x", "0", "n", "🙂", "symlink", "hardlink", "fifo", "directory"]
+  mut index := 0
+  loop { if index == invalid_paths.len() { break }; single(project, corpus, observation, args[4], invalid_paths[index], "100644", 3, args[5], false, false)?; index = index + 1 }
+  invalid_modes := ["644", "120000", "040755", "100648", "10064x"]
+  index = 0
+  loop { if index == invalid_modes.len() { break }; single(project, corpus, observation, args[4], "a", invalid_modes[index], 3, args[5], false, false)?; index = index + 1 }
+  single(project, corpus, observation, args[4], "a", "100644", -1, args[5], false, false)?
+  single(project, corpus, observation, args[4], "a", "100644", 2097153, args[5], false, false)?
+  single(project, corpus, observation, args[4], "a", "100644", 3, "ABC", false, false)?
+  single(project, corpus, observation, args[4], "a", "100644", 3, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", false, false)?
+  mut long := buffer(0)
+  index = 0
+  loop { if index == 4097 { break }; long.append("x"); index = index + 1 }
+  long_text := long.bytes().as_str()?
+  single(project, corpus, observation, args[4], long_text[0..256], "100644", 3, args[5], false, false)?
+  single(project, corpus, observation, args[4], long_text, "100644", 3, args[5], false, false)?
+  print("membership: exact/empty/duplicate, first/middle/last/raw lookup, refusal, identity, bounds and owner expiry PASS")
+  return Ok(())
+}

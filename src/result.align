@@ -23,6 +23,6 @@ pub GenerationRecord {
 }
 
 pub fn save(path: str, record: GenerationRecord) -> Result<(), Error> {
-  data := json.encode(record)
+  data := json.encode(record)?
   return fs.write_file(path, data)
 }

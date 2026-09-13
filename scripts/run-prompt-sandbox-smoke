@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+complete=0
+fresh_workspace=""
+cleanup() {
+  if [[ "${complete}" == 1 ]]; then
+    rm -rf "${scratch}"
+    if [[ -n "${fresh_workspace}" ]]; then rm -rf "${fresh_workspace}"; fi
+  else
+    printf 'sandbox owner failed; retained fixtures: %s %s\n' "${scratch}" "${fresh_workspace}" >&2
+  fi
+}
+trap cleanup EXIT
+"${compiler}" check-per-unit "${project_root}/src/prompt_sandbox_smoke.align"
+(cd "${scratch}" && "${compiler}" build "${project_root}/src/prompt_sandbox_smoke.align")
+platform="$(uname -s)"
+if [[ "${platform}" != Linux ]]; then
+  "${scratch}/prompt_sandbox_smoke" "${platform}" - - - - -
+  complete=1
+  exit 0
+fi
+mkdir -p "${scratch}/controlled" "${scratch}/normal/.git" /target/tmp
+fresh_workspace="$(mktemp -d /target/tmp/prompt-sandbox-owner.XXXXXXXX)"
+mkdir "${fresh_workspace}/.git"
+# Independent executable oracle. It validates received argv/env/fd ownership;
+# it deliberately performs no namespace or mount setup and proves no containment.
+cat >"${scratch}/backend.c" <<'C'
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/vfs.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  int fresh = 0;
+  const char *cpu = NULL;
+  for (int i=1;i<argc;i++) {
+    if (!strcmp(argv[i],"--userns")) {
+      if (++i == argc || strcmp(argv[i],"7")) return 81;
+      fresh=1;
+    }
+    if (!strncmp(argv[i],"--cpu=",6)) cpu=argv[i];
+  }
+  if (fresh) {
+    struct statfs state;
+    if (fstatfs(7,&state) || state.f_type != 0x6e736673) return 82;
+  } else {
+    errno=0;
+    if (fcntl(7,F_GETFD) != -1 || errno != EBADF) return 83;
+  }
+  char cwd[4096];
+  const char *expected=getenv("EXPECTED_CWD"), *mode=getenv("OWNER_MODE");
+  if (!expected || !mode || !getcwd(cwd,sizeof cwd) || strcmp(cwd,expected)) return 84;
+  int probe=argc>1 && !strcmp(argv[argc-1],"/usr/bin/true");
+  if (!cpu || strcmp(cpu,probe?"--cpu=3":"--cpu=6")) return 85;
+  if (probe) {
+    if (!strcmp(mode,"failure")) return 23;
+    if (!strcmp(mode,"timeout")) { sleep(120); return 24; }
+    puts("probe");
+    return 0;
+  }
+  if (argc<5 || strcmp(argv[argc-5],"/usr/bin/printf") || strcmp(argv[argc-4],"%s|%s|%s\n") || strcmp(argv[argc-3],"literal ;$(notrun)") || strcmp(argv[argc-2],"") || strcmp(argv[argc-1],"界")) return 86;
+  printf("%s|%s|%s\n",argv[argc-3],argv[argc-2],argv[argc-1]);
+  return 0;
+}
+C
+cc -O2 -Wall -Wextra -Werror "${scratch}/backend.c" -o "${scratch}/controlled/backend"
+for spec in normal:success fresh:success normal:failure fresh:failure normal:timeout normal:cancel; do
+  variant="${spec%%:*}"
+  mode="${spec#*:}"
+  workspace="${scratch}/normal"
+  if [[ "${variant}" == fresh ]]; then workspace="${fresh_workspace}"; fi
+  /bin/sh -c 'exec "$1" "$2" "$3" "$4" "$5" "$6" "$$"' sandbox-owner \
+    "${scratch}/prompt_sandbox_smoke" "${platform}" "${scratch}/controlled" "${workspace}" "${variant}" "${mode}"
+done
+printf 'controlled backend: normal/fresh argv/environment/namespace-fd ownership and probe outcomes PASS; not containment\n'
+if command -v bwrap >/dev/null 2>&1; then
+  mkdir "${scratch}/actual"
+  cp "$(command -v bwrap)" "${scratch}/actual/backend"
+  "${scratch}/prompt_sandbox_smoke" "${platform}" "${scratch}/actual" "${scratch}/normal" normal actual 0
+else
+  printf 'actual bwrap qualification: unavailable executable; not exercised\n'
+fi
+complete=1

@@ -1,0 +1,146 @@
+module prompt_task_supervisor
+
+import prompt_capture
+import prompt_scope_capture
+import prompt_scope_cleanup
+import prompt_validation_budget
+import prompt_validation_resources
+import std.fs
+import std.process
+import std.time
+
+pub Stop { Collected, Timeout, Cancelled(process.signal), Resource(prompt_validation_budget.Decision), Failed(Error) }
+pub Config { deadline: i64, resources: bool, limits: prompt_validation_budget.Limits }
+pub Report {
+  stop: Stop,
+  termination: Option<process.termination>,
+  max_rss_bytes: Option<i64>,
+  stdout: array<u8>,
+  stderr: array<u8>,
+  stdout_truncated: bool,
+  stderr_truncated: bool,
+  cleanup: prompt_scope_cleanup.Report,
+  drain_error: Option<Error>,
+}
+
+fn deadline_after(budget: i64) -> i64 {
+  now := time.instant()
+  return if now > 9223372036854775807 - budget { 9223372036854775807 } else { now + budget }
+}
+
+fn pause(deadline: i64) -> i64 {
+  now := time.instant()
+  if now >= deadline { return 0 }
+  remaining := deadline - now
+  return if remaining < 250000000 { remaining } else { 250000000 }
+}
+
+fn collect(
+  borrow mut scope: process.child_scope,
+  borrow mut signals: process.signal_subscription,
+  borrow workspace: fs.directory,
+  borrow procfs: fs.directory,
+  borrow pattern: prompt_capture.Pattern,
+  config: Config,
+  borrow mut stdout: buffer,
+  borrow mut stderr: buffer,
+  borrow mut stdout_cursor: prompt_capture.Cursor,
+  borrow mut stderr_cursor: prompt_capture.Cursor,
+  borrow mut state: prompt_scope_capture.State,
+  out scratch: slice<u8>,
+) -> Stop {
+  loop {
+    if time.instant() >= config.deadline { return Stop.Timeout }
+    match signals.next() {
+      Err(error) => { return Stop.Failed(error) },
+      Ok(value) => { match value { Some(signal) => { return Stop.Cancelled(signal) }, None => {} } },
+    }
+    if config.resources {
+      terminated := match state.termination { Some(_) => true, None => false }
+      observation := prompt_validation_resources.observe(workspace, procfs, scope.id(), scope.owner_id(), terminated, config.limits, config.deadline)
+      if time.instant() >= config.deadline { return Stop.Timeout }
+      match observation {
+        Err(error) => { return Stop.Failed(error) },
+        Ok(value) => {
+          decision := prompt_validation_budget.check(config.limits, value)
+          match decision { WithinBudget => {}, _ => { return Stop.Resource(decision) } }
+        },
+      }
+    }
+    if prompt_scope_capture.collected(state) { return Stop.Collected }
+    match prompt_scope_capture.step(scope, pattern, stdout, stderr, stdout_cursor, stderr_cursor, state, scratch, pause(config.deadline)) {
+      Ok(_) => {},
+      Err(error) => { return Stop.Failed(error) },
+    }
+  }
+}
+
+fn drain(
+  borrow mut scope: process.child_scope,
+  borrow pattern: prompt_capture.Pattern,
+  borrow mut stdout: buffer,
+  borrow mut stderr: buffer,
+  borrow mut stdout_cursor: prompt_capture.Cursor,
+  borrow mut stderr_cursor: prompt_capture.Cursor,
+  borrow mut state: prompt_scope_capture.State,
+  out scratch: slice<u8>,
+  deadline: i64,
+) -> Result<(), Error> {
+  loop {
+    if prompt_scope_capture.collected(state) { return Ok(()) }
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    prompt_scope_capture.step(scope, pattern, stdout, stderr, stdout_cursor, stderr_cursor, state, scratch, pause(deadline))?
+  }
+}
+
+// Ownership remains outside every fallible phase, including unsuccessful cleanup.
+pub fn run(
+  borrow mut scope: process.child_scope,
+  borrow mut signals: process.signal_subscription,
+  borrow workspace: fs.directory,
+  borrow procfs: fs.directory,
+  borrow pattern: prompt_capture.Pattern,
+  config: Config,
+) -> Result<Report, Error> {
+  mut stdout := buffer(65536)
+  mut stderr := buffer(65536)
+  mut stdout_cursor := prompt_capture.cursor()
+  mut stderr_cursor := prompt_capture.cursor()
+  mut state := prompt_scope_capture.initial()
+  mut storage: array_builder<u8> := array_builder()
+  mut index := 0
+  loop { if index == 65536 { break }; storage.push(0 as u8); index = index + 1 }
+  mut scratch := storage.build()
+  mut stop := collect(scope, signals, workspace, procfs, pattern, config, stdout, stderr, stdout_cursor, stderr_cursor, state, scratch)
+  cleanup := match prompt_scope_cleanup.run(scope, deadline_after(1000000000), 32768, 8192) {
+    Ok(value) => value,
+    Err(error) => prompt_scope_cleanup.Report { released: false, reaped: 0, first_error: Some(error) },
+  }
+  mut drain_error: Option<Error> := match drain(scope, pattern, stdout, stderr, stdout_cursor, stderr_cursor, state, scratch, deadline_after(1000000000)) {
+    Ok(_) => None, Err(error) => Some(error),
+  }
+  mut max_rss_bytes: Option<i64> := None
+  // Only use cached/nonblocking wait; an incomplete cleanup never enters blocking wait.
+  match scope.try_wait() {
+    Ok(value) => { match value { None => {}, Some(status) => { state.termination = Some(status.termination); max_rss_bytes = status.max_rss_bytes } } },
+    Err(error) => { match drain_error { None => { drain_error = Some(error) }, Some(_) => {} } },
+  }
+  // A cancellation arriving during cleanup still prevents successful publication.
+  // An earlier execution failure keeps its original cause.
+  match stop {
+    Collected => {
+      match signals.next() {
+        Ok(value) => { match value { None => {}, Some(signal) => { stop = Stop.Cancelled(signal) } } },
+        Err(error) => { stop = Stop.Failed(error) },
+      }
+    },
+    _ => {},
+  }
+  out := prompt_capture.finish(pattern, stdout, stdout_cursor)?
+  err := prompt_capture.finish(pattern, stderr, stderr_cursor)?
+  return Ok(Report {
+      stop: stop, termination: state.termination, max_rss_bytes: max_rss_bytes,
+      stdout: out, stderr: err, stdout_truncated: stdout_cursor.truncated, stderr_truncated: stderr_cursor.truncated,
+      cleanup: cleanup, drain_error: drain_error,
+    })
+}

@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+binary="${ALIGN_LLM_BIN:-$project_root/main}"
+scratch="$(mktemp -d)"
+trap 'status=$?; if [[ $status == 0 ]]; then rm -rf "$scratch"; else echo "Preserved retirement owner: $scratch" >&2; fi' EXIT
+cd "$project_root"
+interpreter="$(command -v python3)"
+deadline="$(command -v timeout || command -v gtimeout)"
+[[ -n "$deadline" && -x "$binary" ]]
+jq -cn --arg marker "$scratch/marker" '{id:"first",cmd:"/bin/sh",
+  argv:["sh","-c","printf ran > \"$1\"","marker",$marker],cwd:".",timeout_ns:5000000000,expected_code:0}' > "$scratch/first.json"
+task() {
+  jq -cn --arg command "$1" --argjson arguments "$2" --arg cwd "${3:-.}" \
+    '{id:"selected",cmd:$command,argv:$arguments,cwd:$cwd,timeout_ns:5000000000,expected_code:0}' > "$scratch/selected.json"
+  jq -cn --arg first "$scratch/first.json" --arg last "$scratch/selected.json" \
+    '{schema_version:1,corpus_id:"renamed-historical-corpus",task_files:[$first,$last]}' > "$scratch/corpus.json"
+}
+refuse() {
+  rm -f "$scratch/marker"
+  set +e
+  "$deadline" 10 "$binary" --eval "$scratch/corpus.json" > "$scratch/out" 2> "$scratch/err"
+  status=$?
+  set -e
+  [[ $status != 0 && $status != 124 && $status != 137 ]]
+  [[ ! -e "$scratch/marker" && ! -s "$scratch/out" ]]
+  printf 'retirement: %s refused before child/result PASS\n' "$1"
+}
+while IFS= read -r implementation; do
+  name="$(basename "$implementation")"
+  cp "$project_root/$implementation" "$scratch/renamed"
+  chmod +x "$scratch/renamed"
+  task "$scratch/renamed" "$(jq -cn --arg p "$scratch/renamed" '[$p]')"
+  refuse "$name direct renamed bytes"
+  task "$interpreter" "$(jq -cn --arg py "$interpreter" --arg p "$scratch/renamed" '[$py,"-B",$p]')"
+  refuse "$name interpreter renamed bytes"
+  task "$interpreter" "$(jq -cn --arg py "$interpreter" --arg p "$implementation" '[$py,$p]')"
+  refuse "$name original path"
+done < <(jq -r '.files[] | select(.migration=="ALIGN-PRODUCT-CUTOVER") | .path' "$project_root/docs/python-boundary-inventory.json")
+# Symlink/dot paths must be inspected with ordinary resolution, without blocking on a FIFO.
+ln -s "$scratch/renamed" "$scratch/link"
+task "$interpreter" "$(jq -cn --arg py "$interpreter" --arg p "$scratch/./link" '[$py,"-W","ignore","--",$p]')"
+refuse 'symlink and dot path with interpreter options'
+task /usr/bin/env "$(jq -cn --arg py "$interpreter" --arg p "$scratch/renamed" '["env",$py,$p]')"
+refuse 'env interpreter descriptor'
+task "$interpreter" "$(jq -cn --arg py "$interpreter" '[$py,"./renamed"]')" "$scratch"
+refuse 'task-relative cwd'
+mkfifo "$scratch/fifo"
+task "$interpreter" "$(jq -cn --arg py "$interpreter" --arg p "$scratch/fifo" '[$py,$p]')"
+refuse 'FIFO without writer'
+task "$scratch/fifo" "$(jq -cn --arg p "$scratch/fifo" '[$p]')"
+refuse 'direct FIFO without writer'
+# This source is an independent target-project test, not a bundled implementation.
+printf 'print("external-target-test")\n' > "$scratch/target.py"
+ln -s "$scratch/target.py" "$scratch/target-link"
+task "$interpreter" "$(jq -cn --arg py "$interpreter" --arg p "$scratch/target-link" '[$py,"-W","ignore","-B",$p]')"
+"$binary" --eval "$scratch/corpus.json" > "$scratch/out"
+[[ "$(cat "$scratch/marker")" == ran ]]
+tail -n 1 "$scratch/out" | jq -e '.task_count==2 and .pass_count==2 and .fail_count==0' >/dev/null
+sed -n '2p' "$scratch/out" | jq -e '.stdout=="external-target-test\n"' >/dev/null
+printf 'retirement: explicit external Python target and symlink semantics PASS\n'
+task /bin/cat '["cat","scripts/prompt-evaluate.py"]'
+"$binary" --eval "$scratch/corpus.json" > "$scratch/out"
+tail -n 1 "$scratch/out" | jq -e '.task_count==2 and .pass_count==2' >/dev/null
+printf 'retirement: implementation source used as external test data remains allowed PASS\n'
+task "$scratch/missing-program" '["missing-program"]'
+if "$binary" --eval "$scratch/corpus.json" > "$scratch/out"; then exit 1; fi
+sed -n '2p' "$scratch/out" | jq -e '.verdict=="ERROR" and .actual_code == -1' >/dev/null
+task "$interpreter" "$(jq -cn --arg py "$interpreter" --arg p "$scratch/missing-test.py" '[$py,$p]')"
+jq '.expected_code=2' "$scratch/selected.json" > "$scratch/updated"
+mv "$scratch/updated" "$scratch/selected.json"
+"$binary" --eval "$scratch/corpus.json" > "$scratch/out"
+tail -n 1 "$scratch/out" | jq -e '.task_count==2 and .pass_count==2' >/dev/null
+printf 'retirement: ordinary spawn failure and missing external-test exit status preserved PASS\n'
+task "$interpreter" "$(jq -cn --arg py "$interpreter" --arg p "$scratch/target.py" '[$py,$p]')"
+jq -cn --arg manifest "$scratch/selected.json" '{id:"replace-manifest",cmd:"/bin/sh",
+  argv:["sh","-c","printf x > \"$1\"","replace",$manifest],cwd:".",timeout_ns:5000000000,expected_code:0}' > "$scratch/first.json"
+"$binary" --eval "$scratch/corpus.json" > "$scratch/out"
+[[ "$(cat "$scratch/selected.json")" == x ]]
+tail -n 1 "$scratch/out" | jq -e '.task_count==2 and .pass_count==2' >/dev/null
+printf 'retirement: decoded task inputs retained across later manifest replacement PASS\n'

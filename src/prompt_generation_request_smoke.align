@@ -1,0 +1,54 @@
+module prompt_generation_request_smoke
+
+import prompt_generation_request
+import prompt_artifacts
+import core.json
+
+REQUEST := "{\"schema_version\":2,\"artifact_kind\":\"TASK_ADAPTER_REQUEST\",\"evaluation_id\":\"eval\",\"task_id\":\"task\",\"sample_index\":2,\"variant\":\"PARENT\",\"variant_path\":\"/variant\",\"variant_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"rendered_prompt_path\":\"/rendered π.json\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"generation_policy_path\":\"/policy\",\"generation_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider_control_path\":\"/control\",\"provider_control_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"workspace_path\":\"/workspace\",\"result_path\":\"/result\",\"paired_seed\":-7,\"credential_env_name\":\"IGNORED_NAME\",\"environment_policy_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"task_definition_path\":\"/task\",\"task_definition_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"task_deadline_ns\":999,\"product_executable_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"content_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+CONTROL := "{\"schema_version\":1,\"artifact_kind\":\"EVALUATION_PROVIDER_CONTROL\",\"provider_control_id\":\"control\",\"provider_kind\":\"LOCAL_OPENAI\",\"endpoint\":\"http://127.0.0.1:8080/v1\",\"endpoint_id\":\"endpoint\",\"model\":\"model π\",\"timeout_ns\":123456789,\"max_response_bytes\":98765,\"content_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+POLICY := "{\"schema_version\":1,\"artifact_kind\":\"GENERATION_POLICY\",\"generation_policy_id\":\"policy\",\"evaluation_provider_kind\":\"LOCAL_OPENAI\",\"evaluation_provider_endpoint_id\":\"endpoint\",\"evaluation_provider_model\":\"model π\",\"provider_control_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"provider_service_revision\":\"rev\",\"max_prompt_bytes\":10000,\"max_tokens\":321,\"temperature_micros\":123456,\"seed_mode\":\"PAIRED\",\"seed_base\":999,\"content_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+GOLDEN_PARENT := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_REQUEST\",\"request_id\":\"task-s2-parent\",\"provider_kind\":\"LOCAL_OPENAI\",\"endpoint\":\"http://127.0.0.1:8080/v1\",\"provider_model\":\"model π\",\"rendered_prompt_path\":\"/rendered π.json\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":321,\"temperature_micros\":123456,\"paired_seed\":-7,\"timeout_ns\":123456789,\"max_response_bytes\":98765,\"content_sha256\":\"b4f7d02d65a997159ad63cf096e019342ba8ae0cf6564b39eb37d5cd8a2aabdf\"}"
+GOLDEN_CANDIDATE := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_GENERATION_REQUEST\",\"request_id\":\"task-s2-candidate\",\"provider_kind\":\"LOCAL_OPENAI\",\"endpoint\":\"http://127.0.0.1:8080/v1\",\"provider_model\":\"model π\",\"api_key_env\":\"TOKEN_NAME\",\"rendered_prompt_path\":\"/rendered π.json\",\"rendered_prompt_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"max_tokens\":321,\"temperature_micros\":123456,\"paired_seed\":-7,\"timeout_ns\":123456789,\"max_response_bytes\":98765,\"content_sha256\":\"a3acc990f7c3212c426397610efe940095cc0575ebe2d6f6762bf3d148a5c538\"}"
+
+fn expired(candidate: bool) -> Result<prompt_artifacts.PromptGenerationRequest, Error> {
+  mut request: prompt_artifacts.TaskAdapterRequest := json.decode(REQUEST)?
+  mut control: prompt_artifacts.EvaluationProviderControl := json.decode(CONTROL)?
+  policy: prompt_artifacts.GenerationPolicy := json.decode(POLICY)?
+  if candidate {
+    request.variant = "CANDIDATE".clone()
+    control.api_key_env = Some("TOKEN_NAME".clone())
+  }
+  return prompt_generation_request.build(request, control, policy)
+}
+
+fn refusal(variant: str, sample: i64, tokens: i64, credential: bool) -> Result<(), Error> {
+  mut request: prompt_artifacts.TaskAdapterRequest := json.decode(REQUEST)?
+  mut control: prompt_artifacts.EvaluationProviderControl := json.decode(CONTROL)?
+  mut policy: prompt_artifacts.GenerationPolicy := json.decode(POLICY)?
+  request.variant = variant.clone()
+  request.sample_index = sample
+  policy.max_tokens = tokens
+  if credential { control.api_key_env = Some("BAD=NAME".clone()) }
+  match prompt_generation_request.build(request, control, policy) {
+    Err(_) => {}, Ok(_) => { return Err(Error.Invalid) },
+  }
+  return Ok(())
+}
+
+pub fn main() -> Result<(), Error> {
+  parent := expired(false)?
+  if !prompt_artifacts.verify_prompt_generation_request(parent) { return Err(Error.Invalid) }
+  if json.encode(parent)? != GOLDEN_PARENT { return Err(Error.Invalid) }
+  candidate := expired(true)?
+  if !prompt_artifacts.verify_prompt_generation_request(candidate) { return Err(Error.Invalid) }
+  if json.encode(candidate)? != GOLDEN_CANDIDATE { return Err(Error.Invalid) }
+  refusal("parent", 2, 321, false)?
+  refusal("UNKNOWN", 2, 321, false)?
+  refusal("PARENT", 0, 321, false)?
+  refusal("PARENT", -1, 321, false)?
+  refusal("PARENT", 2, 0, false)?
+  refusal("PARENT", 2, 1048577, false)?
+  refusal("PARENT", 2, 321, true)?
+  print("generation request: independent canonical goldens, source expiry and refusal passed")
+  return Ok(())
+}

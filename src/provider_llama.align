@@ -30,7 +30,7 @@ StreamParsed { ok: bool, text: string }
 
 pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
   validate_config(config)?
-  body := request_bytes(request, false)
+  body := request_bytes(request, false)?
   response := provider_http.post_json(
     config.endpoint,
     config.api_key,
@@ -44,7 +44,7 @@ pub fn generate(config: model.ProviderConfig, request: model.GenerationRequest) 
 
 pub fn stream(config: model.ProviderConfig, request: model.GenerationRequest) -> Result<string, Error> {
   validate_config(config)?
-  body := request_bytes(request, true)
+  body := request_bytes(request, true)?
   response := provider_http.post_json(
     config.endpoint,
     config.api_key,
@@ -67,7 +67,7 @@ pub fn count_tokens(config: model.ProviderConfig, text: str) -> Result<model.Tok
     return Ok(model.TokenCount { count: estimate_tokens(text), exact: false })
   }
   payload := LlamaTokenRequest { content: text }
-  body := json.encode(payload)
+  body := json.encode(payload)?
   response := provider_http.post_json(
     config.tokenize_endpoint,
     config.api_key,
@@ -100,7 +100,9 @@ pub fn count_prompt(config: model.ProviderConfig, request: model.GenerationReque
   }
   prompt_view: str := prompt
   payload := LlamaTokenRequest { content: prompt_view }
-  body := json.encode(payload)
+  body := json.encode(payload) else {
+    return model.TokenCount { count: -1, exact: false }
+  }
   response := provider_http.post_json(
     config.tokenize_endpoint,
     config.api_key,
@@ -134,7 +136,7 @@ fn validate_config(config: model.ProviderConfig) -> Result<(), Error> {
 
 // The single source of llama.cpp request bytes: the same bytes go on the wire and are the SHA-256
 // preimage of the recorded provider request digest.
-pub fn request_bytes(request: model.GenerationRequest, streaming: bool) -> string {
+pub fn request_bytes(request: model.GenerationRequest, streaming: bool) -> Result<string, Error> {
   prompt := prompt_text(request)
   prompt_view: str := prompt
   match request.seed {
@@ -146,7 +148,7 @@ pub fn request_bytes(request: model.GenerationRequest, streaming: bool) -> strin
         stream: streaming,
         seed: seed,
       }
-      return json.encode(seeded_payload).clone()
+      return json.encode(seeded_payload)
     },
     None => {},
   }
@@ -156,7 +158,7 @@ pub fn request_bytes(request: model.GenerationRequest, streaming: bool) -> strin
     temperature: request.temperature,
     stream: streaming,
   }
-  return json.encode(payload).clone()
+  return json.encode(payload)
 }
 
 // The envelope decoder shared by the generate path and every other consumer of a 2xx body. The

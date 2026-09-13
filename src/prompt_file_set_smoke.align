@@ -1,0 +1,146 @@
+module prompt_file_set_smoke
+
+import prompt_file_set
+
+// Independently specified wire literals, with byte lengths rather than character counts.
+VALID := "ALIGN-LLM-CORPUS-FILE-SET-V1\n3\n100644 6 a\nname\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n100755 11 a/日本語\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n000007 1 z\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+ONE := "ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+DIGEST := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+fn rejected(raw: slice<u8>, label: str) -> Result<(), Error> {
+  match prompt_file_set.parse(raw) {
+    Ok(_) => { print(label); return Err(Error.Invalid) },
+    Err(_) => {},
+  }
+  return Ok(())
+}
+
+fn owned() -> Result<array<prompt_file_set.Entry>, Error> {
+  source := VALID.clone()
+  return prompt_file_set.parse(source.bytes())
+}
+
+fn bytes_equal(left: slice<u8>, right: slice<u8>) -> bool {
+  if left.len() != right.len() { return false }
+  mut index := 0
+  loop {
+    if index == left.len() { return true }
+    if left[index] != right[index] { return false }
+    index = index + 1
+  }
+}
+
+fn path_matches(borrow entry: prompt_file_set.Entry, expected: slice<u8>) -> bool {
+  path: slice<u8> := entry.path
+  return bytes_equal(path, expected)
+}
+
+fn path_length(borrow entry: prompt_file_set.Entry) -> i64 {
+  path: slice<u8> := entry.path
+  return path.len()
+}
+
+pub fn main() -> Result<(), Error> {
+  entries := owned()?
+  if entries.len() != 3 || entries[0].mode != 33188 || entries[1].mode != 33261 || entries[2].mode != 7 { return Err(Error.Invalid) }
+  if !path_matches(entries[0], "a\nname".bytes()) || !path_matches(entries[1], "a/日本語".bytes()) || entries[2].sha256 != DIGEST { return Err(Error.Invalid) }
+  mut raw := ONE.bytes().to_array()
+  // The single-byte path follows the literal header/count and mode/length prefix.
+  raw[40] = 255 as u8
+  unusual := prompt_file_set.parse(raw)?
+  expected_raw := [255 as u8]
+  if !path_matches(unusual[0], expected_raw) { return Err(Error.Invalid) }
+  rejected("".bytes(), "empty")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n".bytes(), "missing count")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n0\n".bytes(), "zero count")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n01\n100644 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "leading count zero")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1048577\n".bytes(), "count cap")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n10000000\n".bytes(), "count digits")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n-1\n".bytes(), "negative count")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\nx\n".bytes(), "nondigit count")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100648 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "nonoctal mode")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n10064 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "short mode")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n0100644 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "long mode")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 01 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "leading path zero")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 -1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "negative path")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 x a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "nondigit path")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 10000 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "path digits")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 0 \0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "path ''")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 1 /\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "path '/'")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 2 /a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "path '/a'")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 2 a/\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "path 'a/'")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 4 a//b\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "path 'a//b'")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 1 .\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "path '.'")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 2 ..\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "path '..'")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 5 a/./b\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "path 'a/./b'")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 6 a/../b\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "path 'a/../b'")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 3 a\0b\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "path 'a\\x00b'")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n2\n100644 1 b\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n100644 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "unsorted")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n2\n100644 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n100644 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "duplicate")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n2\n100644 2 aa\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n100644 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "prefix unsorted")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 1 a\0D 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "suffix kind")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 1 a F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "suffix nul")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 1 a\0F:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "suffix space")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeG\n".bytes(), "digest uppercase")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n".bytes(), "digest short")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdefx".bytes(), "terminal newline")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nx".bytes(), "trailing bytes")?
+  rejected("ALIGN-LLM-CORPUS-FILE-SET-V2\n1\n100644 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "missing record")?
+  rejected("XLIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 1 a\0F 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n".bytes(), "wrong header")?
+  // Unsigned byte ordering crosses the UTF-8 validity boundary.
+  sorted_raw := builder()
+  sorted_raw.write("ALIGN-LLM-CORPUS-FILE-SET-V1\n2\n")
+  sorted_raw.write(ONE[31..ONE.len()])
+  sorted_raw.write(ONE[31..ONE.len()])
+  sorted_text := sorted_raw.to_string()
+  mut ordered := sorted_text.bytes().to_array()
+  ordered[40] = 127 as u8
+  ordered[118] = 255 as u8
+  prompt_file_set.parse(ordered)?
+  ordered[40] = 255 as u8
+  ordered[118] = 127 as u8
+  rejected(ordered, "unsigned raw order")?
+  mut cut := 0
+  loop {
+    if cut == ONE.len() { break }
+    rejected(ONE.bytes()[0..cut], "truncated prefix")?
+    cut = cut + 1
+  }
+  path := builder()
+  mut count := 0
+  loop {
+    if count == 4096 { break }
+    path.write("a")
+    count = count + 1
+  }
+  path_text := path.to_string()
+  exact := builder()
+  exact.write("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 4096 ")
+  exact.write(path_text)
+  exact.write("\0F ")
+  exact.write(DIGEST)
+  exact.write("\n")
+  exact_source := exact.to_string()
+  exact_entries := prompt_file_set.parse(exact_source.bytes())?
+  if path_length(exact_entries[0]) != 4096 { return Err(Error.Invalid) }
+  over := builder()
+  over.write("ALIGN-LLM-CORPUS-FILE-SET-V1\n1\n100644 4097 ")
+  over.write(path_text)
+  over.write("a\0F ")
+  over.write(DIGEST)
+  over.write("\n")
+  over_source := over.to_string()
+  rejected(over_source.bytes(), "over path cap")?
+  huge := builder()
+  huge.write(ONE)
+  count = ONE.len()
+  loop {
+    if count > 8388608 { break }
+    huge.write("x")
+    count = count + 1
+  }
+  huge_source := huge.to_string()
+  rejected(huge_source.bytes(), "over source cap")?
+  print("prompt file set smoke passed: owned/raw paths, 37 malformed rows, every truncation, path/source caps")
+  return Ok(())
+}

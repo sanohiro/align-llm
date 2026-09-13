@@ -1,0 +1,15 @@
+module product_cutover_option_after_move
+
+// R86 residual compiler witness, not product code. At f502fe3 both check modes
+// accept this invalid read after Some(value) moves value; execution prints an empty digest.
+import core.json
+
+Record { text: string }
+Outer { value: Option<Record>, digest: Option<string> }
+
+pub fn main() -> Result<(), Error> {
+  value := Record { text: "owned".clone() }
+  invalid := Outer { value: Some(value), digest: Some(value.text.clone()) }
+  print(json.encode(invalid)?)
+  return Ok(())
+}

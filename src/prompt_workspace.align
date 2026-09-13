@@ -1,0 +1,69 @@
+module prompt_workspace
+
+import prompt_artifacts
+import prompt_environment
+import prompt_source_directory
+import core.json
+import std.crypto
+import std.encoding
+import std.fs
+
+pub Roots { project: prompt_source_directory.Located, workspace: prompt_source_directory.Located }
+
+fn empty(borrow root: fs.directory) -> Result<(), Error> {
+  cursor := root.cursor()?
+  return match cursor.next()? { None => Ok(()), Some(_) => Err(Error.Invalid) }
+}
+
+pub fn admit(project_path: str, workspace_path: str, require_empty: bool, deadline: i64) -> Result<Roots, Error> {
+  if !project_path.starts_with("/") || !workspace_path.starts_with("/") { return Err(Error.Invalid) }
+  project := prompt_source_directory.resolve("/".bytes(), project_path.bytes(), deadline)?
+  workspace := prompt_source_directory.resolve("/".bytes(), workspace_path.bytes(), deadline)?
+  parent: slice<u8> := project.path
+  child: slice<u8> := workspace.path
+  if child.len() <= parent.len() { return Err(Error.Invalid) }
+  mut index := 0
+  loop {
+    if index == parent.len() { break }
+    if parent[index] != child[index] { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  if parent.len() > 1 && child[parent.len()] != 47 { return Err(Error.Invalid) }
+  if require_empty { empty(workspace.directory)? }
+  return Ok(Roots { project: project, workspace: workspace })
+}
+
+pub fn preflight(
+  borrow roots: Roots,
+  evaluation_id: str,
+  align_revision: str,
+  product_sha256: str,
+) -> Result<prompt_artifacts.WorkspacePreflightResult, Error> {
+  empty(roots.workspace.directory)?
+  probe := prompt_environment.observe(prompt_environment.Producer.Snapshot, align_revision, product_sha256)?
+  project: slice<u8> := roots.project.path
+  workspace: slice<u8> := roots.workspace.path
+  mut result := prompt_artifacts.WorkspacePreflightResult {
+    schema_version: 1, artifact_kind: "WORKSPACE_PREFLIGHT_RESULT".clone(), evaluation_id: evaluation_id.clone(),
+    status: "SAFE".clone(), error_code: "NONE".clone(), error: "".clone(),
+    physical_project_root: project.as_str()?.clone(), physical_workspace_path: workspace.as_str()?.clone(),
+    environment_probe: Some(probe), content_sha256: "".clone(),
+  }
+  encoded := json.encode_bounded(result, 1048576)?
+  digest := crypto.sha256(encoded)
+  result.content_sha256 = encoding.hex_encode(digest[0..digest.len()]).clone()
+  return Ok(result)
+}
+
+// Callers record ownership immediately after successful create. Partial writes remain owned
+// and require explicit cleanup; an existing competing path is never removed here.
+pub Write { Written, Incomplete(Error) }
+
+// Err means creation failed and grants no ownership. Both Ok arms grant ownership;
+// Incomplete preserves a partial file and the first post-create error for explicit removal.
+pub fn write(borrow root: fs.directory, name: slice<u8>, content: str) -> Result<Write, Error> {
+  output := root.create_new(name)?
+  match output.set_mode(384 as u32) { Ok(_) => {}, Err(error) => { return Ok(Write.Incomplete(error)) } }
+  match output.write(content) { Ok(_) => {}, Err(error) => { return Ok(Write.Incomplete(error)) } }
+  return match output.flush() { Ok(_) => Ok(Write.Written), Err(error) => Ok(Write.Incomplete(error)) }
+}

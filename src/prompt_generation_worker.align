@@ -1,0 +1,112 @@
+module prompt_generation_worker
+
+import core.json
+import prompt_artifacts
+import prompt_command
+import prompt_generate
+import std.crypto
+import std.encoding
+import std.fs
+import std.io
+import std.process
+
+pub Work {
+  schema_version: i64,
+  artifact_kind: string,
+  request: prompt_artifacts.PromptGenerationRequest,
+  rendered_prompt: prompt_artifacts.RenderedPromptArtifact,
+}
+
+fn digest(source: str) -> string {
+  bytes := crypto.sha256(source)
+  return encoding.hex_encode(bytes[0..bytes.len()]).clone()
+}
+
+fn digest_valid(value: str) -> bool {
+  if value.len() != 64 { return false }
+  mut index := 0
+  loop {
+    if index == 64 { break }
+    byte := value.bytes()[index]
+    if !(byte >= 48 && byte <= 57) && !(byte >= 97 && byte <= 102) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+pub fn prepare(borrow image: process.image, work: Work, cwd: str, environment: slice<prompt_command.Environment>) -> Result<command, Error> {
+  if work.schema_version != 1 || work.artifact_kind != "PROMPT_GENERATION_WORK" { return Err(Error.Invalid) }
+  encoded := json.encode_bounded(work, 4194304)?
+  identity := digest(encoded)
+  mut storage := fs.memory_file(fs.memory_kind.Data, 4194304)?
+  storage.write(encoded)?
+  input := storage.seal()?
+  mut argument_builder: array_builder<string> := array_builder()
+  argument_builder.push("align-llm".clone())
+  argument_builder.push("--prompt-generation-worker".clone())
+  argument_builder.push(identity)
+  arguments := argument_builder.build()
+  mut command := prompt_command.prepare(image, arguments, cwd, environment)?
+  command.inherit_file(input, 3)?
+  return Ok(command)
+}
+
+// The parent binds this fixed inherited slot to a sealed Data object before launch.
+fn source() -> Result<string, Error> {
+  input := fs.open("/proc/self/fd/3")?
+  metadata := input.metadata()?
+  regular := match metadata.kind { Regular => true, _ => false }
+  if !regular || metadata.size < 1 || metadata.size > 4194304 { return Err(Error.Invalid) }
+  mut output := buffer(0)
+  mut total := 0
+  loop {
+    if total == metadata.size {
+      mut probe := buffer(1)
+      if input.read(probe)? != 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := metadata.size - total
+    mut chunk := buffer(if remaining < 65536 { remaining } else { 65536 })
+    count := input.read(chunk)?
+    if count == 0 { return Err(Error.Invalid) }
+    output.append(chunk.bytes())
+    total = total + count
+  }
+  final := input.metadata()?
+  if final.device != metadata.device || final.inode != metadata.inode || final.size != metadata.size ||
+  final.mode != metadata.mode || final.modified_seconds != metadata.modified_seconds ||
+  final.modified_nanoseconds != metadata.modified_nanoseconds || final.changed_seconds != metadata.changed_seconds ||
+  final.changed_nanoseconds != metadata.changed_nanoseconds { return Err(Error.Invalid) }
+  return Ok(output.bytes().as_str()?.clone())
+}
+
+fn decode(source: str) -> Result<Work, Error> {
+  arena {
+    document := json.doc(source)?
+    match document.kind() { Object => {}, _ => { return Err(Error.Invalid) } }
+    if document.len() != 4 { return Err(Error.Invalid) }
+    mut index := 0
+    loop {
+      if index == 4 { break }
+      key := document.key(index) else { return Err(Error.Invalid) }
+      if key != "schema_version" && key != "artifact_kind" && key != "request" && key != "rendered_prompt" { return Err(Error.Invalid) }
+      index = index + 1
+    }
+  }
+  work: Work := json.decode(source)?
+  if work.schema_version != 1 || work.artifact_kind != "PROMPT_GENERATION_WORK" { return Err(Error.Invalid) }
+  return Ok(work)
+}
+
+pub fn run(expected_sha256: str) -> Result<(), Error> {
+  if !digest_valid(expected_sha256) { return Err(Error.Invalid) }
+  encoded := source()?
+  if digest(encoded) != expected_sha256 { return Err(Error.Invalid) }
+  work := decode(encoded)?
+  mut response := prompt_generate.generate(work.request, work.rendered_prompt)?
+  identity := prompt_artifacts.prompt_generation_response_content_digest(response)?
+  response.content_sha256 = identity
+  output := prompt_artifacts.encode_prompt_generation_response_bounded(response, 2097152)?
+  io.stdout.write(output)?
+  return io.stdout.flush()
+}

@@ -1,0 +1,80 @@
+module prompt_evaluation_runtime_smoke
+
+import core.json
+import prompt_artifacts
+import prompt_evaluation_runtime
+import prompt_generation_worker
+import prompt_scope_cleanup
+import prompt_task_attempt
+import prompt_task_inputs
+import std.fs
+import std.io
+import std.process
+import std.time
+
+Input {
+  evaluation: prompt_artifacts.PromptEvaluateRequest, source_policy: prompt_artifacts.PromptSourceVerifierPolicy,
+  task: prompt_task_inputs.Task, request: prompt_artifacts.TaskAdapterRequest, rendered: prompt_artifacts.RenderedPromptArtifact,
+}
+Output { storage_path: string, measurement: prompt_artifacts.TaskMeasurement }
+
+fn execute(borrow input: Input, borrow runtime: prompt_evaluation_runtime.Runtime, storage: prompt_evaluation_runtime.Storage) -> Result<Output, Error> {
+  source := prompt_evaluation_runtime.source(input.evaluation.project_root, input.task, time.instant() + 10000000000)?
+  procfs := fs.open_directory("/proc")?
+  digest: str := match input.evaluation.product_executable_sha256 { None => { return Err(Error.Invalid) }, Some(value) => value }
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  outcome := prompt_evaluation_runtime.run(runtime, storage, source.directory, procfs, signals, input.task, input.request,
+    input.rendered, input.evaluation.project_root, input.evaluation.verifier_align_revision, digest, "")
+  measurement := match outcome {
+    Err(error) => {
+      restored := signals.close()
+      io.stderr.write(storage.path)?
+      restored?
+      return Err(error)
+    },
+    Ok(value) => match value {
+      Finished(measured) => measured,
+      Stopped(attempt) => {
+        mut scope := attempt.scope
+        cleaned := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)
+        restored := signals.close()
+        cleanup := cleaned?
+        restored?
+        if !cleanup.released { io.stderr.write(storage.path)?; return Err(Error.Timeout) }
+        removed := prompt_evaluation_runtime.remove(storage, true, time.instant() + 10000000000)?
+        return Err(Error.Invalid)
+      },
+    },
+  }
+  signals.close()?
+  removed := prompt_evaluation_runtime.remove(storage, true, time.instant() + 10000000000)?
+  final := prompt_task_attempt.storage_cleanup(measurement, true)?
+  return Ok(Output { storage_path: storage.path.clone(), measurement: final })
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 3 && args[1] == "--prompt-generation-worker" { return prompt_generation_worker.run(args[2]) }
+  if args.len() != 3 { return Err(Error.Invalid) }
+  if args[1] == "Darwin" {
+    match fs.memory_file(fs.memory_kind.Executable, 1) {
+      Err(error) => match error { Code(code) => { if code != 45 { return Err(error) } }, _ => { return Err(error) } },
+      Ok(_) => { return Err(Error.Invalid) },
+    }
+    print("runtime: Darwin ENOTSUP PASS; Linux execution not exercised")
+    return Ok(())
+  }
+  raw := fs.read_file(args[1])?
+  input: Input := json.decode(raw)?
+  runtime := match prompt_evaluation_runtime.admit(input.evaluation, input.source_policy, input.task.environment, time.instant() + 10000000000) {
+    Ok(value) => { if args[2] == "refuse" { return Err(Error.Invalid) }; value },
+    Err(error) => { if args[2] == "refuse" { print("REFUSED"); return Ok(()) }; return Err(error) },
+  }
+  created := prompt_evaluation_runtime.storage(runtime)?
+  output := match created {
+    Ready(storage) => execute(input, runtime, storage)?,
+    Retained(failure) => { io.stderr.write(failure.path)?; return Err(failure.error) },
+  }
+  encoded := json.encode_bounded(output, 1048576)?
+  io.stdout.write(encoded)?
+  return io.stdout.flush()
+}

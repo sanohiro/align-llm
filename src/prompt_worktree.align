@@ -1,0 +1,125 @@
+module prompt_worktree
+
+import prompt_worktree_entry
+import std.fs
+import std.time
+
+pub Entry { path: string, symlink: bool, mode: i64, bytes: i64, sha256: string, blob: string, target: array<u8> }
+pub DirectoryEntry { path: string, mode: i64 }
+pub Snapshot { entries: array<Entry>, directories: array<DirectoryEntry> }
+Counts { entries: i64, bytes: i64 }
+
+fn check_deadline(deadline: i64) -> Result<(), Error> {
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  return Ok(())
+}
+
+fn leaf(borrow directory: fs.directory, raw: slice<u8>, path: str, symlink: bool, maximum: i64, deadline: i64) -> Result<Entry, Error> {
+  check_deadline(deadline)?
+  observed := prompt_worktree_entry.observe_until(directory, raw, if symlink { 4096 } else { maximum }, deadline)?
+  check_deadline(deadline)?
+  correct := match observed.metadata.kind { Regular => !symlink, Symlink => symlink, _ => false }
+  if !correct { return Err(Error.Invalid) }
+  empty: slice<u8> := []
+  target := if symlink { observed.payload[0..observed.payload.len()].to_array() } else { empty.to_array() }
+  return Ok(Entry { path: path.clone(), symlink: symlink, mode: observed.metadata.mode as i64, bytes: observed.payload.len(), sha256: observed.sha256, blob: observed.git_blob, target: target })
+}
+
+fn walk(borrow directory: fs.directory, prefix: str, depth: i64, maximum_entries: i64, maximum_bytes: i64, deadline: i64, initial: Counts, borrow mut entries: array_builder<Entry>, borrow mut directories: array_builder<DirectoryEntry>) -> Result<Counts, Error> {
+  check_deadline(deadline)?
+  metadata := directory.metadata()?
+  check_deadline(deadline)?
+  directories.push(DirectoryEntry { path: prefix.clone(), mode: metadata.mode as i64 })
+  cursor := directory.cursor()?
+  check_deadline(deadline)?
+  mut counts := initial
+  loop {
+    check_deadline(deadline)?
+    next := cursor.next()?
+    check_deadline(deadline)?
+    entry := next else { break }
+    raw: slice<u8> := entry.name
+    name := raw.as_str()?
+    text := builder()
+    text.write(prefix)
+    if prefix.len() != 0 { text.write("/") }
+    text.write(name)
+    path := text.to_string()
+    if path.len() > 4096 { return Err(Error.Invalid) }
+    check_deadline(deadline)?
+    observed := directory.metadata_at(raw)?
+    check_deadline(deadline)?
+    is_directory := match observed.kind { Directory => true, _ => false }
+    if depth == 0 && name == ".git" && is_directory {} else {
+      if counts.entries == maximum_entries { return Err(Error.Invalid) }
+      counts.entries = counts.entries + 1
+      match observed.kind {
+        Directory => {
+          if depth == 128 { return Err(Error.Invalid) }
+          check_deadline(deadline)?
+          child := directory.open_dir(raw)?
+          check_deadline(deadline)?
+          counts = walk(child, path, depth + 1, maximum_entries, maximum_bytes, deadline, counts, entries, directories)?
+        },
+        Regular => {
+          value := leaf(directory, raw, path, false, maximum_bytes - counts.bytes, deadline)?
+          counts.bytes = counts.bytes + value.bytes
+          entries.push(value)
+        },
+        Symlink => { entries.push(leaf(directory, raw, path, true, 4096, deadline)?) },
+        _ => { return Err(Error.Invalid) },
+      }
+    }
+  }
+  check_deadline(deadline)?
+  return Ok(counts)
+}
+
+fn copy_entry(borrow entry: Entry) -> Entry {
+  return Entry { path: entry.path.clone(), symlink: entry.symlink, mode: entry.mode, bytes: entry.bytes, sha256: entry.sha256.clone(), blob: entry.blob.clone(), target: entry.target[0..entry.target.len()].to_array() }
+}
+
+fn entry_path(entries: slice<Entry>, index: i64) -> str = entries[index].path
+fn directory_path(entries: slice<DirectoryEntry>, index: i64) -> str = entries[index].path
+
+pub fn observe(borrow root: fs.directory, maximum_entries: i64, maximum_bytes: i64, deadline: i64) -> Result<Snapshot, Error> {
+  if maximum_entries < 1 || maximum_entries > 8192 || maximum_bytes < 0 || maximum_bytes > 67108864 { return Err(Error.Invalid) }
+  check_deadline(deadline)?
+  mut entries: array_builder<Entry> := array_builder()
+  mut directories: array_builder<DirectoryEntry> := array_builder()
+  counts := walk(root, "", 0, maximum_entries, maximum_bytes, deadline, Counts { entries: 0, bytes: 0 }, entries, directories)?
+  values := entries.build()
+  directory_values := directories.build()
+  mut indices: array_builder<i64> := array_builder()
+  mut index := 0
+  loop { if index == values.len() { break }; indices.push(index); index = index + 1 }
+  positions := indices.build()
+  view: slice<Entry> := values
+  sorted := positions.sort_by_key(fn position { entry_path(view, position) })
+  mut output: array_builder<Entry> := array_builder()
+  index = 0
+  loop {
+    if index == sorted.len() { break }
+    check_deadline(deadline)?
+    position := sorted[index]
+    output.push(copy_entry(values[position]))
+    index = index + 1
+  }
+  mut directory_indices: array_builder<i64> := array_builder()
+  index = 0
+  loop { if index == directory_values.len() { break }; directory_indices.push(index); index = index + 1 }
+  directory_positions := directory_indices.build()
+  directory_view: slice<DirectoryEntry> := directory_values
+  directory_sorted := directory_positions.sort_by_key(fn position { directory_path(directory_view, position) })
+  mut directory_output: array_builder<DirectoryEntry> := array_builder()
+  index = 0
+  loop {
+    if index == directory_sorted.len() { break }
+    check_deadline(deadline)?
+    position := directory_sorted[index]
+    directory_output.push(DirectoryEntry { path: directory_values[position].path.clone(), mode: directory_values[position].mode })
+    index = index + 1
+  }
+  check_deadline(deadline)?
+  return Ok(Snapshot { entries: output.build(), directories: directory_output.build() })
+}

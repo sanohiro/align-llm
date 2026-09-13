@@ -1,0 +1,85 @@
+module prompt_scope_cleanup_smoke
+
+import prompt_scope_cleanup
+import std.process
+import std.time
+
+fn ready(borrow mut scope: process.child_scope, deadline: i64) -> Result<(), Error> {
+  zero: u8 := 0
+  mut bytes := [zero]
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    scope.poll(process.readiness { stdout: true, stderr: false, status: false }, 10000000)?
+    match scope.read_stdout(bytes)? {
+      Some(count) => { if count == 1 && bytes[0] == 82 { return Ok(()) }; if count == 0 { return Err(Error.Invalid) } },
+      None => {},
+    }
+  }
+}
+
+fn exercise(borrow mut scope: process.child_scope, root_exits: bool) -> Result<(), Error> {
+  deadline := time.instant() + 10000000000
+  ready(scope, deadline)?
+  if root_exits {
+    zero: u8 := 0
+    mut bytes := [zero]
+    mut eof := false
+    mut exited := false
+    loop {
+      if time.instant() >= deadline { return Err(Error.Timeout) }
+      match scope.status()? { Some(status) => { match status { Exited(code) => { if code != 0 { return Err(Error.Invalid) }; exited = true }, _ => { return Err(Error.Invalid) } } }, None => {} }
+      match scope.read_stdout(bytes)? { Some(count) => { if count == 0 { eof = true } }, None => {} }
+      if eof && exited { break }
+      scope.poll(process.readiness { stdout: true, stderr: false, status: true }, 10000000)?
+    }
+    // Root completion and output EOF are not descendant absence.
+    if scope.release()? { return Err(Error.Invalid) }
+  }
+  match prompt_scope_cleanup.run(scope, deadline, 0, 1) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match prompt_scope_cleanup.run(scope, deadline, 1, 8193) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match prompt_scope_cleanup.run(scope, deadline, 32769, 1) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match prompt_scope_cleanup.run(scope, deadline, 1, 0) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  expired := prompt_scope_cleanup.run(scope, 0, 32768, 8192)?
+  if expired.released || expired.reaped != 0 { return Err(Error.Invalid) }
+  if !root_exits { match scope.status()? { None => {}, Some(_) => { return Err(Error.Invalid) } } }
+  report := prompt_scope_cleanup.run(scope, deadline, 32768, 8192)?
+  if !report.released || report.reaped < (if root_exits { 2 } else { 1 }) { return Err(Error.Invalid) }
+  match report.first_error { None => {}, Some(error) => { return Err(error) } }
+  status := scope.status()? else { return Err(Error.Invalid) }
+  match status {
+    Exited(code) => { if !root_exits || code != 0 { return Err(Error.Invalid) } },
+    Signaled(signal) => { if root_exits || signal != process.signal_number(process.signal.Kill) { return Err(Error.Invalid) } },
+  }
+  again := prompt_scope_cleanup.run(scope, 0, 1, 1)?
+  if !again.released || again.reaped != 0 { return Err(Error.Invalid) }
+  match again.first_error { None => {}, Some(error) => { return Err(error) } }
+  return Ok(())
+}
+
+fn check_case(path: str, arguments: slice<str>, root_exits: bool) -> Result<(), Error> {
+  command := process.command(path, arguments)
+  mut scope := command.start_scope()?
+  result := exercise(scope, root_exits)
+  // Explicit cleanup also runs when an owner assertion fails.
+  cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+  if !cleanup.released { return Err(Error.Timeout) }
+  return result
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 5 { return Err(Error.Invalid) }
+  if args[1] == "Darwin" {
+    command := process.command("/bin/sh", ["/bin/sh", "-c", "exit 0"])
+    match command.start_scope() {
+      Err(error) => { match error { Code(code) => { if code != 45 { return Err(Error.Invalid) } }, _ => { return Err(Error.Invalid) } } },
+      Ok(_) => { return Err(Error.Invalid) },
+    }
+    print("scope cleanup smoke: Darwin ENOTSUP 45 PASS; Linux scope cleanup not exercised")
+    return Ok(())
+  }
+  if args[1] != "Linux" { return Err(Error.Invalid) }
+  check_case("/bin/sh", ["/bin/sh", args[2], args[3], args[4]], true)?
+  check_case("/bin/sh", ["/bin/sh", "-c", "printf R; exec sleep 120"], false)?
+  print("scope cleanup smoke: nested sessions, root-exit/EOF distinction, expiry/retry, status cache and repeated release PASS")
+  return Ok(())
+}

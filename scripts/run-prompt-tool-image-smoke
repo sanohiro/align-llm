@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+trap 'rm -rf "${scratch}"' EXIT
+mkdir "${scratch}/directory"
+cp "$(command -v git)" "${scratch}/git"
+chmod 755 "${scratch}/git"
+cp "${scratch}/git" "${scratch}/noexec"
+chmod 644 "${scratch}/noexec"
+cp "${scratch}/git" "${scratch}/hardlink"
+ln "${scratch}/hardlink" "${scratch}/peer"
+ln -s git "${scratch}/symlink"
+mkfifo "${scratch}/fifo"
+printf 'ordinary executable text\n' > "${scratch}/text"
+chmod 755 "${scratch}/text"
+git_hash="$(shasum -a 256 "${scratch}/git")"
+text_hash="$(shasum -a 256 "${scratch}/text")"
+"${compiler}" check-per-unit "${project_root}/src/prompt_tool_image_smoke.align"
+"${compiler}" run "${project_root}/src/prompt_tool_image_smoke.align" -- \
+  "${scratch}" "${git_hash%% *}" "${text_hash%% *}" "$(uname -s)"

@@ -1,0 +1,88 @@
+module prompt_source_directory_smoke
+
+import prompt_source_directory
+import std.fs
+import std.time
+
+fn owned(base: str, pointer: str) -> Result<prompt_source_directory.Located, Error> {
+  base_owner := base.clone()
+  pointer_owner := pointer.clone()
+  return prompt_source_directory.resolve(base_owner.bytes(), pointer_owner.bytes(), time.instant() + 10000000000)
+}
+
+fn metadata(borrow directory: fs.directory) -> Result<fs.metadata, Error> = directory.metadata()
+
+fn same(left: slice<u8>, right: slice<u8>) -> bool {
+  if left.len() != right.len() { return false }
+  mut index := 0
+  loop { if index == left.len() { return true }; if left[index] != right[index] { return false }; index = index + 1 }
+}
+
+fn refused(base: slice<u8>, pointer: slice<u8>, deadline: i64) -> Result<(), Error> {
+  match prompt_source_directory.resolve(base, pointer, deadline) { Err(_) => {}, Ok(_) => { return Err(Error.Invalid) } }
+  return Ok(())
+}
+
+fn path(root: str, name: str) -> string {
+  result := builder()
+  result.write(root)
+  result.write("/")
+  result.write(name)
+  return result.to_string()
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 5 { return Err(Error.Invalid) }
+  if args[1] == "refuse" {
+    refused(args[2].bytes(), args[3].bytes(), time.instant() + 10000000000)?
+    print("refused")
+    return Ok(())
+  }
+  if args[1] == "bounds" {
+    deadline := time.instant() + 10000000000
+    refused("relative".bytes(), "/".bytes(), deadline)?
+    refused("".bytes(), "/".bytes(), deadline)?
+    refused("/\0".bytes(), "/".bytes(), deadline)?
+    refused("/".bytes(), "bad\0".bytes(), deadline)?
+    refused("/".bytes(), "/".bytes(), time.instant() - 1)?
+    mut cap := buffer(0)
+    mut index := 0
+    loop { if index == 4096 { break }; cap.append("/"); index = index + 1 }
+    at_pointer := prompt_source_directory.resolve("/".bytes(), cap.bytes(), deadline)?
+    at_base := prompt_source_directory.resolve(cap.bytes(), "".bytes(), deadline)?
+    if !same(at_pointer.path, "/".bytes()) || !same(at_base.path, "/".bytes()) { return Err(Error.Invalid) }
+    cap.append("/")
+    refused("/".bytes(), cap.bytes(), deadline)?
+    refused(cap.bytes(), "/".bytes(), deadline)?
+    print("bounds PASS")
+    return Ok(())
+  }
+  if args[1] == "raw" {
+    mut raw := buffer(0)
+    raw.append(args[2])
+    raw.append("/raw")
+    raw.put_u8(255 as u8)
+    located := prompt_source_directory.resolve("/".bytes(), raw.bytes(), time.instant() + 10000000000)?
+    if !same(located.path, raw.bytes()) { return Err(Error.Invalid) }
+    actual := metadata(located.directory)?
+    print(actual.device)
+    print(actual.inode)
+    return Ok(())
+  }
+  located := owned(args[2], args[3])?
+  if !same(located.path, args[4].bytes()) { return Err(Error.Invalid) }
+  before := metadata(located.directory)?
+  if args[1] == "retained" {
+    moved := path(args[2], "moved")
+    decoy := path(args[2], "decoy")
+    fs.rename_no_replace(args[4], moved)?
+    fs.rename_no_replace(decoy, args[4])?
+    after := metadata(located.directory)?
+    replacement := fs.open_directory(args[4])?
+    changed := replacement.metadata()?
+    if before.device != after.device || before.inode != after.inode || (before.device == changed.device && before.inode == changed.inode) { return Err(Error.Invalid) }
+  } else if args[1] != "normal" { return Err(Error.Invalid) }
+  print(before.device)
+  print(before.inode)
+  return Ok(())
+}

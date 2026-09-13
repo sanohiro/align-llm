@@ -1,0 +1,83 @@
+module prompt_task_environment
+
+import prompt_artifacts
+import prompt_command
+
+fn text(value: str, maximum: i64) -> bool {
+  if value.len() > maximum { return false }
+  mut index := 0
+  loop { if index == value.len() { break }; if value.bytes()[index] == 0 { return false }; index = index + 1 }
+  return true
+}
+fn name(value: str) -> bool {
+  if value.len() == 0 || value.len() > 256 { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { return true }
+    byte := value.bytes()[index]
+    if !((byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte == 95 ||
+      (index > 0 && byte >= 48 && byte <= 57)) { return false }
+    index = index + 1
+  }
+}
+fn credential_name(borrow control: prompt_artifacts.EvaluationProviderControl) -> str {
+  return match control.api_key_env { None => "", Some(value) => { view: str := value; view } }
+}
+
+// Admit all non-secret variables and the credential name before the first task launches.
+// This does not read ambient values or authorize a task command.
+pub fn validate(borrow policy: prompt_artifacts.EnvironmentPolicy, borrow control: prompt_artifacts.EvaluationProviderControl) -> Result<(), Error> {
+  if policy.schema_version != 1 || policy.artifact_kind != "ENVIRONMENT_POLICY" || policy.allowed_variables.len() > 64 ||
+  policy.executable_paths.len() > 32 || policy.locale.len() == 0 || !text(policy.locale, 64) { return Err(Error.Invalid) }
+  credential := credential_name(control)
+  if control.provider_kind == "CLOUD_OPENAI" && credential.len() == 0 { return Err(Error.Invalid) }
+  if credential.len() > 0 && ((!name(credential)) || (control.provider_kind != "CLOUD_OPENAI" && control.provider_kind != "LOCAL_OPENAI")) { return Err(Error.Invalid) }
+  mut executable_bytes := 0
+  mut index := 0
+  loop {
+    if index == policy.executable_paths.len() { break }
+    executable: str := policy.executable_paths[index]
+    if !executable.starts_with("/") || !text(executable, 4096) { return Err(Error.Invalid) }
+    executable_bytes = executable_bytes + executable.len()
+    if executable_bytes > 65536 { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  mut prior: str := ""
+  mut bytes := 0
+  mut lang := false
+  mut locale := false
+  index = 0
+  loop {
+    if index == policy.allowed_variables.len() { break }
+    variable: str := policy.allowed_variables[index].name
+    value: str := policy.allowed_variables[index].non_secret_value
+    if !name(variable) || !text(value, 4096) || policy.allowed_variables[index].source != "EXPLICIT_POLICY" ||
+    policy.allowed_variables[index].precedence != index || variable <= prior || variable == credential { return Err(Error.Invalid) }
+    if variable == "LANG" { lang = value == policy.locale }
+    if variable == "LC_ALL" { locale = value == policy.locale }
+    bytes = bytes + variable.len() + value.len()
+    if bytes > 65536 { return Err(Error.Invalid) }
+    prior = variable
+    index = index + 1
+  }
+  if !lang || !locale { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+// The evaluator supplies the single resolved credential value. Only this independently owned
+// worker environment includes it; sandbox/fixture environments use their separate policy owner.
+pub fn worker(borrow policy: prompt_artifacts.EnvironmentPolicy, borrow control: prompt_artifacts.EvaluationProviderControl, credential: str) -> Result<array<prompt_command.Environment>, Error> {
+  validate(policy, control)?
+  selected := credential_name(control)
+  if selected.len() > 0 && (credential.len() == 0 || !text(credential, 1048576)) { return Err(Error.Invalid) }
+  if selected.len() == 0 && credential.len() != 0 { return Err(Error.Invalid) }
+  mut output: array_builder<prompt_command.Environment> := array_builder()
+  mut index := 0
+  loop {
+    if index == policy.allowed_variables.len() { break }
+    output.push(prompt_command.Environment { name: policy.allowed_variables[index].name.clone(), value: policy.allowed_variables[index].non_secret_value.clone() })
+    index = index + 1
+  }
+  if selected.len() > 0 { output.push(prompt_command.Environment { name: selected.clone(), value: credential.clone() }) }
+  return Ok(output.build())
+}

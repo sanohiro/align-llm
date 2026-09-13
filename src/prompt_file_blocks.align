@@ -1,0 +1,143 @@
+module prompt_file_blocks
+
+pub ParseStatus { Complete, HeaderWithoutBlock, UnterminatedBlock, TooManyBlocks }
+pub FileBlock { path: string, body: string }
+pub ParsedBlocks { status: ParseStatus, blocks: array<FileBlock> }
+
+// Historical response-protocol whitespace: Unicode White_Space plus U+001C..U+001F.
+// Body text is never passed through this header/fence normalization.
+PROTOCOL_SPACE := ["\t", "\n", "\u{000b}", "\u{000c}", "\r", "\u{001c}", "\u{001d}", "\u{001e}", "\u{001f}", " ", "\u{0085}", "\u{00a0}", "\u{1680}", "\u{2000}", "\u{2001}", "\u{2002}", "\u{2003}", "\u{2004}", "\u{2005}", "\u{2006}", "\u{2007}", "\u{2008}", "\u{2009}", "\u{200a}", "\u{2028}", "\u{2029}", "\u{202f}", "\u{205f}", "\u{3000}"]
+
+pub fn protocol_trim(text: str) -> str {
+  mut start := 0
+  mut end := text.len()
+  loop {
+    mut matched := false
+    mut index := 0
+    loop {
+      if index == PROTOCOL_SPACE.len() { break }
+      space := PROTOCOL_SPACE[index]
+      if text[start..end].starts_with(space) {
+        start = start + space.len()
+        matched = true
+        break
+      }
+      index = index + 1
+    }
+    if !matched { break }
+  }
+  loop {
+    mut matched := false
+    mut index := 0
+    loop {
+      if index == PROTOCOL_SPACE.len() { break }
+      space := PROTOCOL_SPACE[index]
+      if text[start..end].ends_with(space) {
+        end = end - space.len()
+        matched = true
+        break
+      }
+      index = index + 1
+    }
+    if !matched { break }
+  }
+  return text[start..end]
+}
+
+fn strip_marker(text: str, marker: str) -> str {
+  mut start := 0
+  mut end := text.len()
+  loop {
+    if !text[start..end].starts_with(marker) { break }
+    start = start + marker.len()
+  }
+  loop {
+    if !text[start..end].ends_with(marker) { break }
+    end = end - marker.len()
+  }
+  return text[start..end]
+}
+
+fn header_text(line: str) -> str = protocol_trim(strip_marker(protocol_trim(line), "*"))
+
+fn declared_path(header: str) -> str {
+  first := protocol_trim(header[5..header.len()])
+  second := protocol_trim(strip_marker(first, "`"))
+  return strip_marker(strip_marker(second, "\""), "'")
+}
+
+fn fence_run(line: str) -> i64 {
+  text := protocol_trim(line)
+  mut count := 0
+  loop {
+    if count == text.len() { break }
+    if text.bytes()[count] != 96 { break }
+    count = count + 1
+  }
+  return if count >= 3 { count } else { 0 }
+}
+
+fn closes(line: str, opening: i64) -> bool {
+  text := protocol_trim(line)
+  return text.len() >= opening && fence_run(text) == text.len()
+}
+
+Line { text: str, next: i64 }
+
+fn response_line(content: str, cursor: i64) -> Line {
+  mut end := cursor
+  loop {
+    if end == content.len() { break }
+    if content.bytes()[end] == 10 { break }
+    end = end + 1
+  }
+  line := content[cursor..end]
+  return Line {
+    text: if line.ends_with("\r") { line[0..line.len() - 1] } else { line },
+    next: end + 1,
+  }
+}
+
+fn failed(status: ParseStatus) -> ParsedBlocks {
+  blocks: array_builder<FileBlock> := array_builder()
+  return ParsedBlocks { status: status, blocks: blocks.build() }
+}
+
+pub fn parse(content: str) -> ParsedBlocks {
+  mut blocks: array_builder<FileBlock> := array_builder()
+  mut count := 0
+  mut cursor := 0
+  loop {
+    if cursor > content.len() { break }
+    line := response_line(content, cursor)
+    cursor = line.next
+    header := header_text(line.text)
+    if header.starts_with("FILE:") {
+      path := declared_path(header)
+      mut opening := 0
+      loop {
+        if cursor > content.len() { return failed(ParseStatus.HeaderWithoutBlock) }
+        candidate := response_line(content, cursor)
+        cursor = candidate.next
+        opening = fence_run(candidate.text)
+        if opening > 0 { break }
+        if header_text(candidate.text).starts_with("FILE:") {
+          return failed(ParseStatus.HeaderWithoutBlock)
+        }
+      }
+      body := builder()
+      loop {
+        if cursor > content.len() { return failed(ParseStatus.UnterminatedBlock) }
+        candidate := response_line(content, cursor)
+        cursor = candidate.next
+        if closes(candidate.text, opening) { break }
+        body.write(candidate.text)
+        body.write("\n")
+      }
+      if count == 32 { return failed(ParseStatus.TooManyBlocks) }
+      blocks.push(FileBlock { path: path.clone(), body: body.to_string() })
+      count = count + 1
+    }
+  }
+  return ParsedBlocks { status: ParseStatus.Complete, blocks: blocks.build() }
+}

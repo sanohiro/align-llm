@@ -1,6 +1,7 @@
 module prompt_experiment
 
 import model
+import prompt_redaction
 import prompt_artifact_io
 import prompt_artifacts
 import provider_http
@@ -50,29 +51,7 @@ pub fn status_success(value: PromptExperimentStatus) -> bool = match value {
 // byte-oriented and UTF-8 is self-synchronizing, so a match offset is always a scalar boundary and
 // the slices below cannot split a multi-byte character.
 pub fn redact_credential(borrow text: str, borrow credential: str) -> string {
-  if credential.len() == 0 {
-    return text.clone()
-  }
-  output := builder()
-  mut cursor := 0
-  loop {
-    if cursor >= text.len() {
-      break
-    }
-    tail := text[cursor..text.len()]
-    match tail.find(credential) {
-      Some(offset) => {
-        output.write(text[cursor..cursor + offset])
-        output.write("[REDACTED]")
-        cursor = cursor + offset + credential.len()
-      },
-      None => {
-        output.write(tail)
-        cursor = text.len()
-      },
-    }
-  }
-  return output.to_string()
+  return prompt_redaction.credential(text, credential)
 }
 
 fn valid_nonempty_text(value: str, maximum: i64) -> bool {
@@ -412,11 +391,11 @@ fn provider_request_bytes(
   kind: model.ProviderKind,
   model_name: str,
   request: model.GenerationRequest,
-) -> string = match kind {
+) -> Result<string, Error> = match kind {
   CloudOpenAI => provider_openai.request_bytes(model_name, request, false),
   LocalOpenAI => provider_openai.request_bytes(model_name, request, false),
   LlamaCpp => provider_llama.request_bytes(request, false),
-  AlignRuntime => "".clone(),
+  AlignRuntime => Err(Error.Invalid),
 }
 
 fn provider_decode_content(kind: model.ProviderKind, response: str) -> Result<string, Error> = match kind {
@@ -481,7 +460,9 @@ fn run_proposal(
     // A proposal call is unseeded and records no seed attestation.
     seed: None,
   }
-  body := provider_request_bytes(kind, request.proposal_provider_model, generation)
+  body := provider_request_bytes(kind, request.proposal_provider_model, generation) else {
+    return proposal_failure(PromptExperimentStatus.InvalidInput, "INVALID_INPUT", "INVALID_BOUNDS", "provider request cannot be encoded", None, 0, "".clone())
+  }
   body_view: str := body
   endpoint: str := request.proposal_provider_endpoint
 

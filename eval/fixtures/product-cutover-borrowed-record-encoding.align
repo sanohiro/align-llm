@@ -1,0 +1,23 @@
+module borrowed_record_encoding
+
+// R85 compiler witness, not product code or a validation bypass.
+// Align 1f0627bbb10bd305ecc497d5c21cd25a611c139c accepts ordinary source checking,
+// but check-per-unit rejects encode's independently owned ResultOk String producer.
+import core.json
+
+pub Record { text: string }
+pub Optional { record: Option<Record> }
+
+pub fn encode(borrow input: Optional) -> Result<string, Error> {
+  return match input.record {
+    None => Err(Error.Invalid),
+    Some(value) => json.encode_bounded(value, 262144),
+  }
+}
+
+pub fn main() -> Result<(), Error> {
+  value := Optional { record: Some(Record { text: "owned".clone() }) }
+  encoded := encode(value)?
+  print(encoded)
+  return Ok(())
+}

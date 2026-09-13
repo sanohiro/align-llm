@@ -13,7 +13,6 @@ override PINNED_ALIGNC := $(abspath $(ALIGN_REPO)/target/release/alignc)
 ENTRY := src/main.align
 GGML_SPIKE_ENTRY := src/ggml_spike.align
 EVAL_CORPUS := eval/tasks/smoke-v1.json
-CODING_CORPUS := eval/tasks/coding-v1.json
 
 override HOSTED_CHECK_TARGETS := gate-topology-check format-check build eval-smoke loop-smoke provider-smoke runtime-provider-smoke index-smoke test-selection-smoke patch-eval-smoke verify-loop-smoke failure-memory-smoke prompt-model-smoke prompt-render-parity-smoke prompt-score-smoke prompt-score-prefix-smoke prompt-verifier-smoke prompt-seed-attestation-smoke prompt-experiment-smoke prompt-generate-smoke prompt-measurement-adapter-smoke prompt-credential-lifetime-smoke prompt-state-smoke prompt-gate-validator-smoke prompt-gate-source-bundle-smoke prompt-gate-source-revalidation-smoke prompt-gate-git-replacement-graft-smoke prompt-gate-local-git-config-smoke prompt-gate-ordinary-clone-config-smoke prompt-gate-replacement-namespace-smoke prompt-gate-ancestry-smoke prompt-gate-merge-head-ancestry-smoke c6e-request2-adoption persisted-result-smoke gguf-smoke model-ir-smoke expert-trace-smoke residency-sim-smoke alignpack-smoke ggml-spike-smoke layer-forward-smoke tokenizer-smoke prompt-smoke
 override CAPABLE_ONLY_CHECK_TARGETS := eval-coding baseline-check c6-evaluation-adoption
@@ -219,10 +218,7 @@ eval-smoke: build
 	./scripts/run-eval-invalid-smoke
 
 eval-coding: build
-	./eval/runners/run-fixed.sh $(CODING_CORPUS)
-	./scripts/run-coding-task-invalid-smoke
-	./scripts/run-coding-task-git-config-smoke
-	./scripts/run-coding-task-timeout-smoke
+	./scripts/run-prompt-evaluation-native-smoke coding
 
 loop-smoke: build
 	./scripts/run-loop-smoke

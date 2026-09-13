@@ -38,9 +38,11 @@ set -euo pipefail
 #
 # The output goes to `build/lib/` by default, which `.gitignore` excludes: no binary is ever
 # committed. The
-# shim's install name / soname is its own absolute path, so an executable linked against it resolves
+# shim's default install name / soname is its own absolute path, so an executable linked against it resolves
 # it at run time without `DYLD_LIBRARY_PATH` or `LD_LIBRARY_PATH` — the two runners set them anyway,
-# because a relocated build directory is a worse failure than a redundant variable.
+# for their explicit native dependencies. Distribution builds select
+# ALIGN_LLM_GGML_SHIM_RELOCATABLE=1: ELF uses the library basename, while Darwin expects the
+# dylib adjacent to its consumer. The distributor also supplies all backend dependencies.
 #
 # It prints one line, the directory the library was written to, so a caller can put it on
 # `LIBRARY_PATH` without knowing this script's layout.
@@ -54,6 +56,19 @@ out_dir="${ALIGN_LLM_GGML_SHIM_DIR:-${root_dir}/build/lib}"
 compiler="${CC:-cc}"
 archiver="${AR:-ar}"
 static_mode="${ALIGN_LLM_GGML_SHIM_STATIC:-0}"
+relocatable="${ALIGN_LLM_GGML_SHIM_RELOCATABLE:-0}"
+
+case "${relocatable}" in
+  0|1) ;;
+  *)
+    printf '%s\n' "build-ggml-shim: ALIGN_LLM_GGML_SHIM_RELOCATABLE must be 0 or 1" >&2
+    exit 1
+    ;;
+esac
+if [ "${static_mode}" = 1 ] && [ "${relocatable}" = 1 ]; then
+  printf '%s\n' "build-ggml-shim: relocatable identity requires a shared library" >&2
+  exit 1
+fi
 
 case "${static_mode}" in
   0|1) ;;
@@ -387,9 +402,16 @@ if [ "${static_mode}" = 1 ]; then
   rm -f "${object}"
   flavour="static-${flavour}"
 else
+  identity="${library}"
+  if [ "${relocatable}" = 1 ]; then
+    case "${OSTYPE:-}" in
+      darwin*) identity="@loader_path/libalign_ggml_shim.${suffix}" ;;
+      *) identity="libalign_ggml_shim.${suffix}" ;;
+    esac
+  fi
   case "${OSTYPE:-}" in
-    darwin*) name_flags=("-install_name" "${library}") ;;
-    *)       name_flags=("-Wl,-soname,${library}") ;;
+    darwin*) name_flags=("-install_name" "${identity}") ;;
+    *)       name_flags=("-Wl,-soname,${identity}") ;;
   esac
   "${compiler}" -O2 -ffp-contract=off -DALIGN_GGML_FP_CONTRACT_OFF=1 \
     -fPIC -shared -Wall -Wextra -Werror \

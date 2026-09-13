@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+complete=0
+trap 'if [[ "${complete}" == 1 ]]; then rm -rf "${scratch}"; else printf "source admission fixture preserved: %s\n" "${scratch}" >&2; fi' EXIT
+mkdir "${scratch}/project" "${scratch}/corpus" "${scratch}/manifests"
+for root in "${scratch}/project" "${scratch}/corpus"; do
+  printf abc > "${root}/a"
+  printf '{}' > "${root}/one"
+  printf '{}' > "${root}/two"
+  chmod 644 "${root}/"*
+done
+sha() { shasum -a 256 | cut -d ' ' -f 1; }
+raw="$(sha < "${scratch}/project/a")"
+document="$(sha < "${scratch}/project/one")"
+expected="$(printf '100644 a\0F %s\n' "${raw}" | sha)"
+{
+  printf 'ALIGN-LLM-CORPUS-FILE-SET-V1\n3\n'
+  printf '100644 1 a\0F %s\n' "${raw}"
+  printf '100644 3 one\0F %s\n' "${document}"
+  printf '100644 3 two\0F %s\n' "${document}"
+} > "${scratch}/manifests/manifest"
+manifest="$(sha < "${scratch}/manifests/manifest")"
+"${compiler}" check-per-unit "${project_root}/src/prompt_source_collection_smoke.align"
+(cd "${scratch}" && "${compiler}" build "${project_root}/src/prompt_source_collection_smoke.align")
+"${scratch}/prompt_source_collection_smoke" "${scratch}/project" "${scratch}/corpus" "${scratch}/manifests" "${expected}" "${manifest}" "${document}"
+complete=1

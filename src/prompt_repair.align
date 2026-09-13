@@ -1,0 +1,45 @@
+module prompt_repair
+
+import prompt_artifacts
+import prompt_repair_template
+import prompt_repair_sections
+import prompt_repair_assembly
+
+fn optional_header(borrow value: Option<string>) -> string {
+  return match value { None => "".clone(), Some(text) => text.clone() }
+}
+
+// Compose the admitted template and persisted failing measurement without recapturing
+// diagnostics, changing the original prompt, or using redacted edits as applied content.
+pub fn assemble(
+  borrow repair_template: prompt_repair_template.Template,
+  borrow measurement: prompt_artifacts.TaskMeasurement,
+  allowed: slice<str>,
+  borrow policy: Option<prompt_artifacts.EditPolicy>,
+  base: str,
+  maximum_bytes: i64,
+) -> Result<prompt_repair_assembly.Assembly, Error> {
+  sources := prompt_repair_sections.render(measurement, allowed, policy)?
+  policy_header := optional_header(repair_template.section_headers.POLICY)
+  edit_set_header := optional_header(repair_template.section_headers.EDITSET)
+  status_header: str := repair_template.section_headers.STATUS
+  policy_header_view: str := policy_header
+  edit_set_header_view: str := edit_set_header
+  summary_header: str := repair_template.section_headers.SUMMARY
+  stdout_header: str := repair_template.section_headers.STDOUT
+  stderr_header: str := repair_template.section_headers.STDERR
+  status: str := sources.status
+  policy_source: str := sources.policy
+  edits: str := sources.edit_set
+  summary: str := sources.summary
+  stdout: str := sources.stdout
+  stderr: str := sources.stderr
+  headers := [status_header, policy_header_view, edit_set_header_view, summary_header, stdout_header, stderr_header]
+  text := [status, policy_source, edits, summary, stdout, stderr]
+  return prompt_repair_assembly.assemble(base, repair_template.preamble_text, repair_template.closing_text, headers, text, maximum_bytes)
+}
+
+pub fn eligible(borrow measurement: prompt_artifacts.TaskMeasurement) -> bool {
+  return prompt_repair_assembly.eligible(measurement.cleanup_passed, measurement.containment_passed,
+    measurement.diagnostic_summary, measurement.diagnostic_stdout, measurement.diagnostic_stderr)
+}

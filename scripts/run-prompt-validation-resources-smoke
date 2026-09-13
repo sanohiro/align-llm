@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+trap 'rm -rf "${scratch}"' EXIT
+mkdir "${scratch}/workspace" "${scratch}/missing"
+printf '\000\377A' >"${scratch}/workspace/visible (deleted)"
+printf xy >"${scratch}/workspace/second"
+printf payload >"${scratch}/deleted"
+cat >"${scratch}/child.sh" <<'SH'
+exec 8<"$1/visible (deleted)"
+exec 9<"$2"
+exec 7<&9
+rm "$2"
+printf R
+exec sleep 120
+SH
+"${compiler}" check-per-unit "${project_root}/src/prompt_validation_resources_smoke.align"
+"${compiler}" run "${project_root}/src/prompt_validation_resources_smoke.align" -- \
+  "$(uname -s)" "${scratch}/workspace" "${scratch}/missing" "${scratch}/child.sh" "${scratch}/deleted"

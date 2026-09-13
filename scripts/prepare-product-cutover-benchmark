@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Reconstruct the independent fixed-patch cutover experiment from pinned fixtures."""
+import sys
+if sys.flags.optimize:
+ raise RuntimeError('optimized Python is unsupported for measurement verification')
+import hashlib,importlib.machinery,importlib.util,json,os,shutil,subprocess,textwrap
+from pathlib import Path
+def required_path(name):
+ value = Path(os.environ[name])
+ if not value.is_absolute():
+  raise ValueError(name + ' must be absolute')
+ return value.resolve(strict=True)
+BEFORE=required_path('BENCHMARK_BEFORE_SOURCE')
+AFTER=required_path('BENCHMARK_AFTER_SOURCE')
+BEFORE_BINARY=required_path('BENCHMARK_BEFORE_BINARY')
+AFTER_BINARY=required_path('BENCHMARK_AFTER_BINARY')
+expected='9855afe1e3b7e73c758463ed2f32e13bc9b6a550'
+if subprocess.check_output(['git','-C',str(BEFORE),'rev-parse','HEAD'],text=True).strip()!=expected:
+ raise ValueError('historical source commit mismatch')
+if subprocess.check_output(['git','-C',str(AFTER),'rev-parse','HEAD'],text=True).strip()!='2f25c3faba4fc12c0035a5c168b38dc3f0ba935d':
+ raise ValueError('native baseline source commit mismatch')
+for repo in (BEFORE,AFTER):
+ if subprocess.check_output(['git','-C',str(repo),'status','--porcelain','--untracked-files=no'],text=True).strip():
+  raise ValueError('baseline source has tracked modifications')
+record=json.loads((Path(__file__).resolve().parent.parent/'eval/benchmarks/product-cutover-2026-09-13.json').read_text())
+for arm,binary in [('before',BEFORE_BINARY),('after',AFTER_BINARY)]:
+ if hashlib.sha256(binary.read_bytes()).hexdigest()!=record['binaries'][arm]:
+  raise ValueError(arm+' baseline binary hash mismatch')
+ROOT=Path(os.environ['BENCHMARK_DATA_ROOT'])
+if not ROOT.is_absolute():
+ raise ValueError('BENCHMARK_DATA_ROOT must be absolute')
+ROOT.mkdir(exist_ok=False)
+os.environ['FIXTURE_BINARY']=str(BEFORE_BINARY)
+loader=importlib.machinery.SourceFileLoader('fixture',str(BEFORE/'scripts/run-prompt-evaluate-smoke'))
+spec=importlib.util.spec_from_loader(loader.name,loader);f=importlib.util.module_from_spec(spec);loader.exec_module(f)
+raw=(BEFORE/'scripts/run-prompt-evaluate-smoke').read_text()
+body=raw.split('    with tempfile.TemporaryDirectory(prefix="prompt-evaluate-") as directory:\n',1)[1].split('        source_child_marker =',1)[0]
+start=body.index('        build_root =');end=body.index('        request = {',start)
+body=body[:start]+'''        build_root = root / "build"
+        build_root.mkdir()
+        shutil.copy2(os.environ.get("FIXTURE_BINARY", str(SOURCE / "main")), build_root / "main")
+
+'''+body[end:]
+root=ROOT/'legacy';root.mkdir()
+f.__dict__['directory']=str(root)
+exec(compile(textwrap.dedent(body),str(BEFORE/'scripts/run-prompt-evaluate-smoke'),'exec'),f.__dict__)
+project=root/'project'
+# Configure only the independent fixture adapter's fixed patch selection, retaining its logic.
+for base in [project,root/'reviewed-source']:
+ p=base/'scripts/prompt-fixed-adapter.py';s=p.read_text().replace('"python-inclusive-range-parent.patch"','"python-inclusive-range.patch"').replace('a2c2aac194d3cdad9808c23923afa64cf8f09909d2b5519ae08c7d94218d1fe3','dd5cc51395782e77775d63d982973458200769318a7c5c94c4a54c4c999824ce').replace('80_000_000 if passed and is_candidate else None','80_000_000 if passed else None');p.write_text(s)
+source='eval/fixtures/python-inclusive-range-v1/repository'
+def read(base,name):return json.loads((base/name).read_bytes())
+def write(base,name,v):f.store(base,name,f.bind(v))
+def tree(base):return subprocess.check_output(['python3',str(AFTER/'scripts/check-native-evaluation-fixture'),'--tree-digest',str(base),source],text=True).strip()
+for name in read(project,'artifacts/corpus.json')['task_files']:
+ t=read(project,name);t['measurement_adapter_runtime']='PYTHON:'+f.raw_digest(project/'scripts/prompt-fixed-adapter.py')
+ for e in t['artifacts']:
+  if e['kind']=='FILE':e['expected_sha256']=f.file_expectation_digest(project,e['path'])
+ t['artifacts'].append({'path':source,'kind':'TREE','expected_sha256':tree(project)})
+ write(project,name,t)
+# Source trust is equally ineligible in both arms; no Git ancestry audit is being timed.
+r=read(project,'evaluate-request.json')
+r['verifier_align_llm_repository_path']=str(ROOT/'absent-application')
+r['verifier_align_repository_path']=str(ROOT/'absent-language')
+r['verifier_corpus_source_path']=str(ROOT/'absent-corpus')
+(project/'evaluate-request.json').write_bytes(f.canonical(r))
+new=ROOT/'native';shutil.copytree(project,new)
+binary=AFTER_BINARY;shutil.copy2(binary,new/'main')
+policy={'schema_version':2,'artifact_kind':'PROMPT_SOURCE_VERIFIER_POLICY','policy_id':'fixture-source','git_executable_sha256':f.raw_digest(f.GIT),'product_executable_sha256':f.raw_digest(new/'main'),'content_sha256':''}
+write(new,'artifacts/source-policy.json',policy)
+pre=read(new,'artifacts/preflight.json');pre['project_root']=str(new);pre['workspace_path']=str(new/'workspace');write(new,'artifacts/preflight.json',pre)
+for name in read(new,'artifacts/corpus.json')['task_files']:
+ old=read(new,name);t={}
+ for k,v in old.items():
+  if k in ['cmd','argv','snapshot_cmd','snapshot_argv','measurement_adapter_runtime','snapshot_helper_runtime','validation_runner_path','validation_runner_sha256','validation_argv']:continue
+  t[k]=v
+  if k=='require_clean_repo':t['execution_kind']='FIXTURE_PATCH'
+ t['schema_version']=2
+ definition=read(new,t['task_definition_path']);definition['id']=t['task_id']
+ defpath='artifacts/'+t['task_id']+'-definition.json';(new/defpath).write_bytes(f.canonical(definition))
+ t['task_definition_path']=defpath;t['task_definition_sha256']=f.raw_digest(new/defpath)
+ t['patch_path']='eval/baselines/patches/python-inclusive-range.patch';t['patch_sha256']=f.raw_digest(new/t['patch_path'])
+ t['artifacts'].append({'path':defpath,'kind':'FILE','expected_sha256':f.file_expectation_digest(new,defpath)})
+ write(new,name,t)
+r['schema_version']=2;r['project_root']=str(new);r['workspace_path']=str(new/'workspace')
+r.pop('verifier_python_executable_path');r.pop('generation_child_path');r.pop('generation_child_sha256')
+r['product_executable_path']=str(new/'main');r['product_executable_sha256']=f.raw_digest(new/'main')
+r['verifier_source_policy_sha256']=policy['content_sha256']
+(new/'evaluate-request.json').write_bytes(f.canonical(r))
+print('Prepared matched fixture inputs',flush=True)
+# Each product keeps its own actual toolchain identity; the workload stays identical.
+revision=(AFTER/'.align-revision').read_text().strip();(new/'.align-revision').write_text(revision+'\n')
+parent=read(new,'artifacts/parent.json');scope=parent['activation']['scope'];scope['align_revision']=revision;f.bind(scope);f.bind(parent['activation']);write(new,'artifacts/parent.json',parent)
+experiment=read(new,'artifacts/experiment.json');experiment['scope']=scope;experiment['parent_activation']['content_sha256']=parent['content_sha256'];write(new,'artifacts/experiment.json',experiment)
+r['verifier_align_revision']=revision;r['verifier_align_llm_commit']=subprocess.check_output(['git','-C',str(AFTER),'rev-parse','HEAD'],text=True).strip()
+(new/'evaluate-request.json').write_bytes(f.canonical(r))
+# Both versions use task-bound prompt/context identifiers required by native admission.
+for base in [project,new]:
+ for name in read(base,'artifacts/corpus.json')['task_files']:
+  t=read(base,name)
+  prompt=read(base,t['task_prompt_path']);prompt['artifact_id']=t['task_id'];write(base,t['task_prompt_path'],prompt)
+  context=read(base,t['context_sources_path'])
+  for field in ['patch_evaluation','failure_memory_jsonl','diagnostic_stdout','diagnostic_stderr']:
+   context[field]['artifact_id']=t['task_id'];f.bind(context[field])
+  write(base,t['context_sources_path'],context)
+
+plan=json.loads((Path(__file__).resolve().parent.parent/'eval/benchmarks/product-cutover-2026-09-13.json').read_text())['plan']
+(ROOT/'plan.json').write_text(json.dumps(plan,indent=2)+'\n')
+identities={arm:{'commit':subprocess.check_output(['git','-C',str(repo),'rev-parse','HEAD'],text=True).strip(), 'align_revision':(repo/'.align-revision').read_text().strip()} for arm,repo in [('before',BEFORE),('after',AFTER)]}
+(ROOT/'source-identities.json').write_text(json.dumps(identities,indent=2)+'\n')

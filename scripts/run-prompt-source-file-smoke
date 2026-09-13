@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+trap 'rm -rf "${scratch}"' EXIT
+
+# Independent fixture bytes and hashlib oracle; no product behavior is delegated.
+python3 - "${scratch}" <<'PY'
+import hashlib
+import os
+from pathlib import Path
+import sys
+
+scratch = Path(sys.argv[1])
+root = scratch / "root"
+root.mkdir()
+(root / "nested").mkdir()
+(root / "empty").write_bytes(b"")
+binary = b"\x00\xff\x80A\r\n\x00"
+chunk = bytes(range(256)) * 256
+multiple = bytes(range(251)) * 783 + bytes(range(92))
+assert len(multiple) == 196625
+for name, data in (("binary", binary), ("chunk", chunk), ("multiple", multiple), ("nested/binary", binary), ("hardlink", binary)):
+    (root / name).write_bytes(data)
+os.link(root / "hardlink", root / "hardlink-peer")
+os.symlink("binary", root / "symlink")
+os.symlink("nested", root / "linked-directory")
+os.mkfifo(root / "fifo")
+raw = sys.platform.startswith("linux")
+if raw:
+    descriptor = os.open(os.fsencode(root) + b"/raw\xff", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(binary)
+decoy = scratch / "decoy"
+decoy.mkdir()
+(decoy / "binary").write_bytes(b"decoy!!")
+(scratch / "arguments").write_text("\n".join(hashlib.sha256(data).hexdigest() for data in (b"", binary, chunk, multiple)) + "\n" + ("raw" if raw else "no-raw") + "\n")
+PY
+
+expected=()
+while IFS= read -r argument; do expected+=("${argument}"); done < "${scratch}/arguments"
+"${compiler}" check-per-unit "${project_root}/src/prompt_source_file_smoke.align"
+"${compiler}" run "${project_root}/src/prompt_source_file_smoke.align" -- \
+  "${scratch}/root" "${scratch}/retained" "${scratch}/decoy" "${expected[@]}"

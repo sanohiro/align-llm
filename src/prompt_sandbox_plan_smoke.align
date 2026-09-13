@@ -1,0 +1,166 @@
+module prompt_sandbox_plan_smoke
+
+import prompt_sandbox_plan
+import prompt_command
+
+fn config(fresh: bool, variant: i64, extra: str) -> prompt_sandbox_plan.Config {
+  mut roots: array_builder<string> := array_builder()
+  if variant != 7 { roots.push("/usr".clone()) }
+  if fresh { roots.push("/tools".clone()) } else { roots.push("/opt/runtime".clone()) }
+  if variant == 24 { roots.push("/opt/second".clone()) }
+  if variant == 25 {
+    roots.push("/runtime".clone())
+    roots.push("/lib64".clone())
+    roots.push("/bin".clone())
+    roots.push("/lib".clone())
+  }
+  if variant == 8 { roots.push(if fresh { "/target/tmp/task".clone() } else { "/work/task".clone() }) }
+  if variant == 9 { roots.push("/usr".clone()) }
+  if variant == 16 { roots.push("/unknown".clone()) }
+  if variant == 17 { roots.push("/tmp/runtime".clone()) }
+  if variant == 23 {
+    mut index := 0
+    loop {
+      if index == 17 { break }
+      roots.push("/other".clone())
+      index = index + 1
+    }
+  }
+  mut argv: array_builder<string> := array_builder()
+  argv.push(if variant == 10 { "/usrx/tool".clone() } else if fresh { "/tools/check".clone() } else { "/opt/runtime/check".clone() })
+  argv.push(if variant == 18 { "bad\0arg".clone() } else { extra.clone() })
+  if variant == 19 {
+    mut index := 0
+    loop {
+      if index == 4094 { break }
+      argv.push("".clone())
+      index = index + 1
+    }
+  }
+  mut environment: array_builder<prompt_command.Environment> := array_builder()
+  environment.push(prompt_command.Environment { name: if variant == 13 { "bad=name".clone() } else { "HOME".clone() }, value: if variant == 14 { "bad\0value".clone() } else { "/tmp/home".clone() } })
+  environment.push(prompt_command.Environment { name: "LITERAL".clone(), value: "$HOME; x".clone() })
+  if variant == 22 {
+    mut index := 0
+    loop {
+      if index == 255 { break }
+      environment.push(prompt_command.Environment { name: "DUPLICATE".clone(), value: "".clone() })
+      index = index + 1
+    }
+  }
+  return prompt_sandbox_plan.Config {
+    fresh: fresh,
+    uid: if variant == 1 { -1 } else if variant == 26 { 4294967295 } else { 1000 },
+    gid: if variant == 2 { 4294967296 } else if variant == 26 { 0 } else { 1001 },
+    namespace_slot: if variant == 5 { if fresh { 2 } else { 3 } } else { if fresh { if variant == 26 { 1023 } else { 7 } } else { 0 } },
+    bwrap_path: if variant == 12 { "/tools/bwrap\0tail".clone() } else { "/tools/bwrap".clone() },
+    prlimit_path: if variant == 11 { "/other/prlimit".clone() } else { "/usr/bin/prlimit".clone() },
+    workspace_path: if variant == 6 { "/work/../task".clone() } else if variant == 15 { "/opt".clone() } else if fresh { "/target/tmp/task".clone() } else { "/work/task".clone() },
+    readonly_roots: roots.build(), target_argv: argv.build(), environment: environment.build(),
+    timeout_seconds: if variant == 3 { 0 } else if variant == 4 { 9223372037 } else if variant == 26 { 9223372036 } else { 9 },
+  }
+}
+
+fn exact(actual: slice<string>, expected: slice<str>) -> Result<(), Error> {
+  if actual.len() != expected.len() { print(actual.len()); print(expected.len()); return Err(Error.Invalid) }
+  mut index := 0
+  loop {
+    if index == actual.len() { break }
+    if actual[index] != expected[index] { print(index); print(actual[index]); return Err(Error.Invalid) }
+    index = index + 1
+  }
+  return Ok(())
+}
+
+fn rejected(fresh: bool, variant: i64, extra: str) -> Result<(), Error> {
+  input := config(fresh, variant, extra)
+  match prompt_sandbox_plan.arguments(input) {
+    Ok(_) => { print(variant); return Err(Error.Invalid) },
+    Err(error) => { if !match error { Invalid => true, _ => false } { return Err(error) } },
+  }
+  return Ok(())
+}
+
+fn owned(fresh: bool) -> Result<array<string>, Error> {
+  input := config(fresh, 0, "x; $(touch never)")
+  return prompt_sandbox_plan.arguments(input)
+}
+
+pub fn main() -> Result<(), Error> {
+  normal := owned(false)?
+  exact(normal, ["/tools/bwrap", "--die-with-parent", "--new-session", "--unshare-all", "--uid", "1000", "--gid", "1001", "--cap-drop", "ALL", "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/sbin", "/sbin", "--proc", "/proc", "--dev", "/dev", "--size", "67108864", "--tmpfs", "/tmp", "--size", "67108864", "--tmpfs", "/dev/shm", "--dir", "/tmp/home", "--dir", "/opt", "--ro-bind", "/opt/runtime", "/opt/runtime", "--dir", "/work", "--bind", "/work/task", "/work/task", "--ro-bind", "/work/task/.git", "/work/task/.git", "--chdir", "/work/task", "--", "/usr/bin/prlimit", "--as=536870912", "--fsize=67108864", "--nproc=256", "--nofile=512", "--cpu=10", "--", "/opt/runtime/check", "x; $(touch never)"])?
+  fresh := owned(true)?
+  exact(fresh, ["/tools/bwrap", "--clearenv", "--die-with-parent", "--new-session", "--userns", "7", "--unshare-ipc", "--unshare-pid", "--unshare-net", "--unshare-uts", "--uid", "1000", "--gid", "1001", "--cap-drop", "ALL", "--cap-add", "CAP_SYS_ADMIN", "--cap-add", "CAP_SETFCAP", "--tmpfs", "/", "--size", "67108864", "--tmpfs", "/workspace", "--proc", "/proc", "--dev", "/dev", "--dir", "/tools", "--dir", "/target", "--dir", "/usr", "--dir", "/bin", "--dir", "/lib", "--dir", "/lib64", "--dir", "/runtime", "--dir", "/tmp", "--dir", "/dev/shm", "--ro-bind", "/tools", "/tools", "--ro-bind", "/usr", "/usr", "--bind", "/target/tmp", "/target/tmp", "--size", "67108864", "--tmpfs", "/tmp", "--size", "67108864", "--tmpfs", "/dev/shm", "--setenv", "HOME", "/tmp/home", "--setenv", "LITERAL", "$HOME; x", "--bind", "/target/tmp/task", "/target/tmp/task", "--ro-bind", "/target/tmp/task/.git", "/target/tmp/task/.git", "--chdir", "/target/tmp/task", "--", "/tools/mount-guard", "--no-symlink-follow", "/target/tmp", "/workspace", "/tmp", "/dev/shm", "--tmpfs-inodes", "/", "--tmpfs-inodes", "/workspace", "--tmpfs-inodes", "/tmp", "--tmpfs-inodes", "/dev/shm", "--", "/usr/bin/prlimit", "--as=536870912", "--fsize=67108864", "--nproc=256", "--nofile=512", "--cpu=10", "--", "/tools/check", "x; $(touch never)"])?
+  variants := [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 22, 23]
+  mut index := 0
+  loop {
+    if index == variants.len() { break }
+    rejected(false, variants[index], "literal")?
+    rejected(true, variants[index], "literal")?
+    index = index + 1
+  }
+  rejected(true, 16, "literal")?
+  shared_parents := prompt_sandbox_plan.arguments(config(false, 24, "literal"))?
+  mut parent_count := 0
+  index = 1
+  loop {
+    if index == shared_parents.len() { break }
+    if shared_parents[index - 1] == "--dir" && shared_parents[index] == "/opt" { parent_count = parent_count + 1 }
+    index = index + 1
+  }
+  if parent_count != 2 { return Err(Error.Invalid) }
+  optional_roots := prompt_sandbox_plan.arguments(config(true, 25, "literal"))?
+  expected_roots := ["/tools", "/usr", "/bin", "/lib", "/lib64", "/runtime", "/target/tmp/task/.git"]
+  mut root_count := 0
+  index = 1
+  loop {
+    if index == optional_roots.len() { break }
+    if optional_roots[index - 1] == "--ro-bind" {
+      if root_count == expected_roots.len() || optional_roots[index] != expected_roots[root_count] { return Err(Error.Invalid) }
+      root_count = root_count + 1
+    }
+    index = index + 1
+  }
+  if root_count != expected_roots.len() { return Err(Error.Invalid) }
+  limits := prompt_sandbox_plan.arguments(config(true, 26, "literal"))?
+  if limits[5] != "1023" || limits[11] != "4294967295" || limits[13] != "0" { return Err(Error.Invalid) }
+  mut cpu_found := false
+  index = 0
+  loop {
+    if index == limits.len() { break }
+    if limits[index] == "--cpu=9223372037" { cpu_found = true }
+    index = index + 1
+  }
+  if !cpu_found { return Err(Error.Invalid) }
+  large := builder()
+  index = 0
+  loop {
+    if index == 2097152 { break }
+    large.write("a")
+    index = index + 1
+  }
+  oversized := large.to_string()
+  rejected(false, 0, oversized)?
+  // Output overhead, not just input payload, owns the 2 MiB boundary.
+  mut baseline_bytes := 0
+  index = 0
+  loop {
+    if index == normal.len() { break }
+    baseline_bytes = baseline_bytes + normal[index].len()
+    index = index + 1
+  }
+  target_size := 2097152 - baseline_bytes + "x; $(touch never)".len()
+  exact_input := config(false, 0, oversized[0..target_size])
+  exact_output := prompt_sandbox_plan.arguments(exact_input)?
+  mut output_bytes := 0
+  index = 0
+  loop {
+    if index == exact_output.len() { break }
+    output_bytes = output_bytes + exact_output[index].len()
+    index = index + 1
+  }
+  if output_bytes != 2097152 { return Err(Error.Invalid) }
+  rejected(false, 0, oversized[0..target_size + 1])?
+  print("prompt sandbox plan smoke passed")
+  return Ok(())
+}

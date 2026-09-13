@@ -1,0 +1,88 @@
+module prompt_verifier_trust_smoke
+
+import core.json
+import prompt_artifacts
+import prompt_verifier_trust
+
+// Canonical goldens independently bound using SHA-256 over the empty-digest preimage.
+REQUEST := "{\"schema_version\":2,\"artifact_kind\":\"PROMPT_EVALUATE_REQUEST\",\"evaluation_id\":\"evaluation_id\",\"project_root\":\"project_root\",\"experiment_path\":\"experiment_path\",\"parent_activation_path\":\"parent_activation_path\",\"corpus_path\":\"corpus_path\",\"sample_count\":1,\"acceptance_policy_path\":\"acceptance_policy_path\",\"workspace_path\":\"workspace_path\",\"workspace_preflight_path\":\"workspace_preflight_path\",\"verifier_align_llm_repository_path\":\"verifier_align_llm_repository_path\",\"verifier_align_llm_commit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"verifier_align_repository_path\":\"verifier_align_repository_path\",\"verifier_align_revision\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"verifier_corpus_source_path\":\"verifier_corpus_source_path\",\"verifier_corpus_source_kind\":\"GIT_COMMIT\",\"verifier_corpus_source_repository_id\":\"repo\",\"verifier_corpus_source_sha256\":\"cccccccccccccccccccccccccccccccccccccccc\",\"verifier_source_policy_path\":\"verifier_source_policy_path\",\"verifier_source_policy_sha256\":\"verifier_source_policy_sha256\",\"verifier_git_executable_path\":\"verifier_git_executable_path\",\"evaluation_evidence_path\":\"evaluation_evidence_path\",\"product_executable_path\":\"/product\",\"product_executable_sha256\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"}"
+GOLDEN_0 := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_VERIFIER_TRUST\",\"expected_align_llm_commit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expected_align_revision\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expected_corpus_source_kind\":\"GIT_COMMIT\",\"expected_corpus_source_repository_id\":\"repo\",\"expected_corpus_source_sha256\":\"cccccccccccccccccccccccccccccccccccccccc\",\"align_llm_reachability\":\"VERIFIED\",\"align_llm_observed_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"align_reachability\":\"VERIFIED\",\"align_observed_revision\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"corpus_reachability\":\"VERIFIED\",\"corpus_observed_source_sha256\":\"cccccccccccccccccccccccccccccccccccccccc\",\"content_sha256\":\"88dca8a3de449da2df842235d01b64715f39f84487556a057363f3fa4c8a2a9d\"}"
+GOLDEN_1 := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_VERIFIER_TRUST\",\"expected_align_llm_commit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expected_align_revision\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expected_corpus_source_kind\":\"GIT_COMMIT\",\"expected_corpus_source_repository_id\":\"repo\",\"expected_corpus_source_sha256\":\"cccccccccccccccccccccccccccccccccccccccc\",\"align_llm_reachability\":\"UNVERIFIED\",\"align_llm_observed_head\":\"dddddddddddddddddddddddddddddddddddddddd\",\"align_reachability\":\"UNVERIFIED\",\"align_observed_revision\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"corpus_reachability\":\"UNVERIFIED\",\"content_sha256\":\"0becb74457e723e6b944e368fff33c61df2b27de08d0c6e03e64834b5c0e49f1\"}"
+GOLDEN_2 := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_VERIFIER_TRUST\",\"expected_align_llm_commit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expected_align_revision\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expected_corpus_source_kind\":\"GIT_COMMIT\",\"expected_corpus_source_repository_id\":\"repo\",\"expected_corpus_source_sha256\":\"cccccccccccccccccccccccccccccccccccccccc\",\"align_llm_reachability\":\"UNVERIFIED\",\"align_reachability\":\"UNVERIFIED\",\"corpus_reachability\":\"UNVERIFIED\",\"content_sha256\":\"ad306eaa253c8b8bd08e318fe823875f89938098fddd8f5e40a4686a632e01ca\"}"
+GOLDEN_3 := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_VERIFIER_TRUST\",\"expected_align_llm_commit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"expected_align_revision\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"expected_corpus_source_kind\":\"FILE_SET\",\"expected_corpus_source_repository_id\":\"\",\"expected_corpus_source_sha256\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"align_llm_reachability\":\"VERIFIED\",\"align_llm_observed_head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"align_reachability\":\"VERIFIED\",\"align_observed_revision\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"corpus_reachability\":\"VERIFIED\",\"corpus_observed_source_sha256\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"content_sha256\":\"18afb7fdd32e927623348b847f8101a3533e72c83326b16bfb7686817aa738ee\"}"
+
+fn observation(text: str, verified: bool) -> prompt_verifier_trust.Observation {
+  return prompt_verifier_trust.Observation { observed: if text == "" { None } else { Some(text.clone()) }, verified: verified }
+}
+
+fn owned(index: i64) -> Result<prompt_artifacts.PromptVerifierTrust, Error> {
+  source := REQUEST.clone()
+  mut request := prompt_artifacts.decode_prompt_evaluate_request(source)?
+  application := observation(if index == 2 { "" } else { if index == 1 { "dddddddddddddddddddddddddddddddddddddddd" } else { "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }, index == 0 || index == 3)
+  language := observation(if index == 2 { "" } else { "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }, index == 0 || index == 3)
+  corpus := observation(if index == 3 { "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" } else { if index == 0 { "cccccccccccccccccccccccccccccccccccccccc" } else { "" } }, index == 0 || index == 3)
+  if index == 3 {
+    request.verifier_corpus_source_kind = "FILE_SET".clone()
+    request.verifier_corpus_source_repository_id = "".clone()
+    request.verifier_corpus_source_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".clone()
+  }
+  return prompt_verifier_trust.build(request, application, language, corpus)
+}
+
+fn refused(index: i64) -> Result<(), Error> {
+  mut request := prompt_artifacts.decode_prompt_evaluate_request(REQUEST)?
+  mut application := observation("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true)
+  language := observation("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", true)
+  mut corpus := observation("cccccccccccccccccccccccccccccccccccccccc", true)
+  if index == 0 { application = observation("", true) }
+  if index == 1 { application = observation("dddddddddddddddddddddddddddddddddddddddd", true) }
+  if index == 2 { application = observation("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", false) }
+  if index == 3 { application = observation("abc", false) }
+  if index == 4 { request.verifier_align_llm_commit = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".clone() }
+  if index == 5 { request.verifier_align_revision = "short".clone() }
+  if index == 6 { request.verifier_corpus_source_kind = "OTHER".clone() }
+  if index == 7 { request.schema_version = 1 }
+  if index == 8 { request.artifact_kind = "OTHER".clone() }
+  if index == 9 { request.verifier_corpus_source_repository_id = "".clone() }
+  if index == 10 { request.verifier_corpus_source_repository_id = "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr".clone() }
+  if index == 11 { request.verifier_corpus_source_kind = "FILE_SET".clone() }
+  if index == 12 { request.verifier_corpus_source_sha256 = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC".clone() }
+  if index == 13 {
+    request.verifier_corpus_source_kind = "FILE_SET".clone()
+    request.verifier_corpus_source_repository_id = "".clone()
+  }
+  if index == 14 {
+    request.verifier_corpus_source_kind = "FILE_SET".clone()
+    request.verifier_corpus_source_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".clone()
+    corpus = observation("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", true)
+  }
+  match prompt_verifier_trust.build(request, application, language, corpus) {
+    Ok(_) => { print(index); return Err(Error.Invalid) },
+    Err(_) => {},
+  }
+  return Ok(())
+}
+
+fn encoded(borrow value: prompt_artifacts.PromptVerifierTrust) -> Result<string, Error> {
+  return json.encode_bounded(value, 262144)
+}
+
+pub fn main() -> Result<(), Error> {
+  goldens := [GOLDEN_0, GOLDEN_1, GOLDEN_2, GOLDEN_3]
+  mut index := 0
+  loop {
+    if index == 4 { break }
+    value := owned(index)?
+    canonical := encoded(value)?
+    if canonical != goldens[index] { print(index); return Err(Error.Invalid) }
+    index = index + 1
+  }
+  index = 0
+  loop {
+    if index == 15 { break }
+    refused(index)?
+    index = index + 1
+  }
+  print("prompt verifier trust smoke passed: four canonical goldens, ownership expiry, fifteen refusals")
+  return Ok(())
+}

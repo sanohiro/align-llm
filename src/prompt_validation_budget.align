@@ -1,0 +1,76 @@
+module prompt_validation_budget
+
+import std.time
+
+pub Limits {
+  processes: i64,
+  resident_bytes: i64,
+  workspace_files: i64,
+  workspace_bytes: i64,
+}
+
+pub Observation {
+  complete: bool,
+  processes: i64,
+  resident_bytes: i64,
+  visible_files: i64,
+  visible_bytes: i64,
+  deleted_files: i64,
+  deleted_bytes: i64,
+}
+
+pub Decision {
+  InvalidObservation,
+  IncompleteObservation,
+  ProcessLimit,
+  ResidentLimit,
+  FileLimit,
+  ByteLimit,
+  WithinBudget,
+}
+
+pub fn defaults() -> Limits {
+  return Limits {
+    processes: 256,
+    resident_bytes: 536870912,
+    workspace_files: 8192,
+    workspace_bytes: 67108864,
+  }
+}
+
+// The observation owner excludes visible identities from deleted-file totals.
+// Missing or denied observations cannot certify a task as within budget.
+pub fn check(limits: Limits, observation: Observation) -> Decision {
+  if limits.processes <= 0 || limits.resident_bytes <= 0 ||
+  limits.workspace_files <= 0 || limits.workspace_bytes <= 0 ||
+  observation.processes < 0 || observation.resident_bytes < 0 ||
+  observation.visible_files < 0 || observation.visible_bytes < 0 ||
+  observation.deleted_files < 0 || observation.deleted_bytes < 0 {
+    return Decision.InvalidObservation
+  }
+  if !observation.complete { return Decision.IncompleteObservation }
+  if observation.processes > limits.processes { return Decision.ProcessLimit }
+  if observation.resident_bytes > limits.resident_bytes { return Decision.ResidentLimit }
+  if observation.visible_files > limits.workspace_files {
+    return Decision.FileLimit
+  }
+  if observation.deleted_files > limits.workspace_files - observation.visible_files {
+    return Decision.FileLimit
+  }
+  if observation.visible_bytes > limits.workspace_bytes {
+    return Decision.ByteLimit
+  }
+  if observation.deleted_bytes > limits.workspace_bytes - observation.visible_bytes {
+    return Decision.ByteLimit
+  }
+  return Decision.WithinBudget
+}
+
+// One enclosing budget survives every sequential child operation. Cleanup has separate owners.
+pub fn deadline(duration: i64, outer: i64) -> Result<i64, Error> {
+  now := time.instant()
+  if duration <= 0 || now > 9223372036854775807 - duration { return Err(Error.Invalid) }
+  if now >= outer { return Err(Error.Timeout) }
+  local := now + duration
+  return Ok(if local < outer { local } else { outer })
+}

@@ -1,0 +1,73 @@
+module prompt_source_file_smoke
+
+import prompt_source_file
+import std.fs
+
+fn accepted(borrow root: fs.directory, name: str, maximum: i64, size: i64, digest: str) -> Result<(), Error> {
+  observation := prompt_source_file.observe(root, name.bytes(), maximum)?
+  regular := match observation.metadata.kind { Regular => true, _ => false }
+  if !regular || observation.metadata.links != 1 || observation.metadata.size != size || observation.sha256 != digest {
+    print(name)
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn refused(borrow root: fs.directory, name: str, maximum: i64, missing: bool) -> Result<(), Error> {
+  match prompt_source_file.observe(root, name.bytes(), maximum) {
+    Ok(_) => { print(name); return Err(Error.Invalid) },
+    Err(error) => {
+      correct := match error { Invalid => !missing, NotFound => missing, _ => false }
+      if !correct { print(name); return Err(Error.Invalid) }
+    },
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 9 { return Err(Error.Invalid) }
+  root := fs.open_directory(args[1])?
+  accepted(root, "empty", 0, 0, args[4])?
+  accepted(root, "empty", 10, 0, args[4])?
+  accepted(root, "binary", 7, 7, args[5])?
+  accepted(root, "binary", 65536, 7, args[5])?
+  accepted(root, "chunk", 65536, 65536, args[6])?
+  accepted(root, "chunk", 65537, 65536, args[6])?
+  accepted(root, "multiple", 196625, 196625, args[7])?
+  accepted(root, "multiple", 262144, 196625, args[7])?
+  accepted(root, "nested/binary", 7, 7, args[5])?
+  refused(root, "binary", 0, false)?
+  refused(root, "binary", 6, false)?
+  refused(root, "chunk", 65535, false)?
+  refused(root, "multiple", 196624, false)?
+  refused(root, "empty", -1, false)?
+  refused(root, "empty", 2305843009213693952, false)?
+  accepted(root, "empty", 2305843009213693951, 0, args[4])?
+  refused(root, "absent", -1, false)?
+  refused(root, "absent", 10, true)?
+  refused(root, "absent/child", 10, true)?
+  names := ["", "/binary", "binary/", "nested//binary", ".", "..", "./binary", "nested/../binary", "binary\0suffix", "symlink", "hardlink", "hardlink-peer", "nested", "fifo", "linked-directory/binary", "binary/child"]
+  mut index := 0
+  loop {
+    if index == names.len() { break }
+    refused(root, names[index], 262144, false)?
+    index = index + 1
+  }
+  if args[8] == "raw" {
+    raw: array<u8> := [114 as u8, 97 as u8, 119 as u8, 255 as u8].to_array()
+    observed_raw := prompt_source_file.observe(root, raw, 7)?
+    if observed_raw.sha256 != args[5] || observed_raw.metadata.size != 7 { return Err(Error.Invalid) }
+  }
+  before := prompt_source_file.observe(root, "binary".bytes(), 7)?
+  fs.rename_no_replace(args[1], args[2])?
+  fs.rename_no_replace(args[3], args[1])?
+  retained := prompt_source_file.observe(root, "binary".bytes(), 7)?
+  if retained.sha256 != before.sha256 || retained.metadata.inode != before.metadata.inode || retained.metadata.device != before.metadata.device {
+    return Err(Error.Invalid)
+  }
+  replacement_root := fs.open_directory(args[1])?
+  replacement := prompt_source_file.observe(replacement_root, "binary".bytes(), 7)?
+  if replacement.sha256 == retained.sha256 { return Err(Error.Invalid) }
+  print("prompt source file: digest, bounds, admission and retained-root cases passed")
+  return Ok(())
+}

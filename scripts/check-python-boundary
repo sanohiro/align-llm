@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Read-only static architecture guard. Runtime/packaging closure requires A4."""
+import argparse
+import hashlib
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath
+
+CLASSES = set('INDEPENDENT_ORACLE FIXTURE_OR_GOLDEN_GENERATOR BENCHMARK_OR_MEASUREMENT CI_OR_DEVELOPER_TOOL EXTERNAL_TEST_ADAPTER TEMPORARY_PRODUCT_BOOTSTRAP PRODUCT_LOGIC_VIOLATION'.split())
+DEBT = {'PRODUCT_LOGIC_VIOLATION', 'TEMPORARY_PRODUCT_BOOTSTRAP'}
+FIELDS = set('path classification behavior reachability substitution python_reason target migration acceptance frozen_sha256 bootstrap'.split())
+REFERENCE = re.compile(r'(?i)python|[\w/-]+\.py\b')
+SHA = re.compile(r'[0-9a-f]{64}\Z')
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def path_ok(value):
+    return isinstance(value, str) and bool(value) and '\x00' not in value and not value.startswith('/') and all(p not in ('', '.', '..') for p in value.split('/'))
+
+
+def inventory(path):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            require(key not in result, 'duplicate JSON key: ' + key)
+            result[key] = value
+        return result
+    data = json.loads(path.read_text(), object_pairs_hook=unique)
+    require(set(data) == set('schema_version audit_head align_revision sibling_head files embedded_hosts launch_sources data_only_sources manifest_sources replay_only_manifests'.split()), 'invalid inventory fields')
+    require(type(data['schema_version']) is int and data['schema_version'] == 1, 'unsupported inventory schema')
+    for key in ('audit_head', 'align_revision', 'sibling_head'):
+        require(isinstance(data[key], str) and re.fullmatch('[0-9a-f]{40}', data[key]), 'invalid ' + key)
+    paths = set()
+    for group in ('files', 'embedded_hosts'):
+        require(isinstance(data[group], list), 'invalid ' + group)
+        for row in data[group]:
+            require(isinstance(row, dict) and set(row) == FIELDS, 'invalid file row fields')
+            p = row['path']
+            require(path_ok(p) and p not in paths, 'invalid or duplicate path: ' + str(p))
+            paths.add(p)
+            require(row['classification'] in CLASSES, 'invalid classification: ' + p)
+            for key in FIELDS - {'frozen_sha256', 'bootstrap'}:
+                require(isinstance(row[key], str) and row[key].strip(), 'empty/non-text ' + key + ': ' + p)
+            frozen = row['frozen_sha256']
+            require((isinstance(frozen, str) and SHA.fullmatch(frozen)) if row['classification'] in DEBT else frozen is None, 'invalid frozen hash: ' + p)
+            if row['classification'] == 'TEMPORARY_PRODUCT_BOOTSTRAP':
+                b = row['bootstrap']
+                require(isinstance(b, dict) and set(b) == set('reason align_blocker migration acceptance deletion_condition no_growth'.split()) and all(isinstance(v, str) and v.strip() for v in b.values()), 'invalid bootstrap: ' + p)
+            else:
+                require(row['bootstrap'] is None, 'unexpected bootstrap: ' + p)
+    for group in ('launch_sources', 'data_only_sources', 'manifest_sources'):
+        require(isinstance(data[group], dict), 'invalid ' + group)
+        for p, digest in data[group].items():
+            require(path_ok(p) and isinstance(digest, str) and SHA.fullmatch(digest), 'invalid source record: ' + str(p))
+    require(not (data['launch_sources'].keys() & data['data_only_sources'].keys()), 'data-only process owner')
+    replay = data['replay_only_manifests']
+    require(isinstance(replay, list) and all(path_ok(p) for p in replay),
+            'invalid replay-only manifests')
+    require(len(set(replay)) == len(replay) and set(replay) <= data['manifest_sources'].keys(),
+            'duplicate or unrecorded replay-only manifest')
+    return data
+
+
+def align_code(source):
+    # Preserve strings while removing line and block comments, including nested blocks.
+    out, i, depth = [], 0, 0
+    while i < len(source):
+        if source.startswith('/*', i):
+            depth += 1
+            i += 2
+        elif depth and source.startswith('*/', i):
+            depth -= 1
+            i += 2
+            out.append(' ')
+        elif depth:
+            i += 1
+        elif source.startswith('//', i):
+            end = source.find('\n', i)
+            i = len(source) if end < 0 else end
+        elif source[i] == '"':
+            start = i
+            i += 1
+            while i < len(source):
+                if source[i] == '\\':
+                    i += 2
+                elif source[i] == '"':
+                    i += 1
+                    break
+                else:
+                    i += 1
+            out.append(source[start:i])
+        else:
+            out.append(source[i])
+            i += 1
+    return ''.join(out)
+
+
+def check(root, strict):
+    data = inventory(root / 'docs/python-boundary-inventory.json')
+    proc = subprocess.run(['git', '-C', str(root), 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], capture_output=True, check=True)
+    names = set(proc.stdout.decode('utf-8').split('\x00')) - {''}
+    contents = {}
+    errors = []
+    for p in sorted(names):
+        file = root / p
+        if file.is_symlink():
+            if file.resolve().is_relative_to(root) and file.is_file():
+                contents[p] = file.read_bytes()
+            else:
+                errors.append('unreadable/outside-root source: ' + p)
+        elif file.is_file():
+            contents[p] = file.read_bytes()
+    python, hosts = set(), set()
+    for p, raw in contents.items():
+        text = raw.decode('utf-8', errors='replace')
+        first = text.split('\n', 1)[0]
+        if p.endswith('.py') or (first.startswith('#!') and REFERENCE.search(first)):
+            python.add(p)
+        elif (first.startswith('#!') or PurePosixPath(p).name in ('Makefile', 'Dockerfile') or PurePosixPath(p).suffix in ('.sh', '.yml', '.yaml', '.c', '.cc', '.cpp', '.mk')) and REFERENCE.search(text):
+            hosts.add(p)
+    for group, actual in [('files', python), ('embedded_hosts', hosts)]:
+        recorded = {r['path'] for r in data[group]}
+        errors.extend('unclassified ' + group + ': ' + p for p in sorted(actual - recorded))
+        errors.extend('missing/stale ' + group + ': ' + p for p in sorted(recorded - actual))
+    rows = {r['path']: r for g in ('files', 'embedded_hosts') for r in data[g]}
+    debts = []
+    for p, row in rows.items():
+        if row['classification'] in DEBT:
+            debts.append(p)
+            if strict:
+                errors.append('strict product debt: ' + p)
+            if p not in contents or hashlib.sha256(contents[p]).hexdigest() != row['frozen_sha256']:
+                errors.append('changed frozen implementation: ' + p)
+    closure, pending, launches, literals = set(), ['src/main.align', 'src/ggml_spike.align'], set(), set()
+    while pending:
+        p = pending.pop()
+        if p in closure:
+            continue
+        closure.add(p)
+        if p not in contents:
+            errors.append('missing product module: ' + p)
+            continue
+        code = align_code(contents[p].decode('utf-8'))
+        imports = re.findall(r'^\s*import\s+([A-Za-z_][\w.]*)', code, re.M)
+        for module in imports:
+            if module == 'std.process':
+                launches.add(p)
+            if not module.startswith(('std.', 'core.')):
+                pending.append('src/' + module.replace('.', '/') + '.align')
+        strings = re.findall(r'"(?:\\.|[^"\\])*"', code)
+        if any(REFERENCE.search(s) or re.search(r'\bscripts/', s) for s in strings):
+            literals.add(p)
+    if launches != set(data['launch_sources']):
+        errors.extend('unrecorded process owner: ' + p for p in sorted(launches - data['launch_sources'].keys()))
+        errors.extend('stale process owner: ' + p for p in sorted(data['launch_sources'].keys() - launches))
+    errors.extend('unrecorded product literal: ' + p for p in sorted(literals - launches - data['data_only_sources'].keys()))
+    if strict:
+        errors.extend('strict product launch literal: ' + p for p in sorted(launches & literals))
+    for group in ('launch_sources', 'data_only_sources'):
+        for p, digest in data[group].items():
+            if p not in closure or p not in contents or hashlib.sha256(contents[p]).hexdigest() != digest:
+                errors.append('changed/stale ' + group + ': ' + p)
+    # Command-bearing JSON is digest-bound independently of current reachability.
+    manifests = {}
+    for p, raw in contents.items():
+        if not p.endswith('.json'):
+            continue
+        try:
+            value = json.loads(raw)
+        except (ValueError, UnicodeError):
+            if p in data['manifest_sources']:
+                errors.append('malformed command manifest: ' + p)
+            continue
+        if isinstance(value, dict) and ('cmd' in value or 'snapshot_cmd' in value):
+            manifests[p] = value
+    require(set(data['replay_only_manifests']) <= manifests.keys(), 'missing/stale replay-only manifest')
+    errors.extend('unrecorded command manifest: ' + p for p in sorted(manifests.keys() - data['manifest_sources'].keys()))
+    for p, digest in data['manifest_sources'].items():
+        if p not in manifests or hashlib.sha256(contents[p]).hexdigest() != digest:
+            errors.append('changed/stale command manifest: ' + p)
+    for p, manifest in manifests.items():
+        for command, argv in [('cmd', 'argv'), ('snapshot_cmd', 'snapshot_argv')]:
+            args = [manifest.get(command)] + manifest.get(argv, [])
+            args = [a.removeprefix('./') for a in args if isinstance(a, str)]
+            targets = [rows[a] for a in args if a in rows]
+            if p in data['replay_only_manifests']:
+                for target in targets:
+                    if target['classification'] in DEBT:
+                        errors.append('replay selects current product debt: ' + p + ' -> ' + target['path'])
+                continue
+            admitted = any(r['classification'] == 'EXTERNAL_TEST_ADAPTER' or (not strict and r['classification'] in DEBT) for r in targets)
+            for arg in args:
+                if arg in python and not (arg in rows and (rows[arg]['classification'] == 'EXTERNAL_TEST_ADAPTER' or (not strict and rows[arg]['classification'] in DEBT))):
+                    errors.append('bundled Python command: ' + p + ' -> ' + arg)
+                elif (arg.endswith('.py') or re.fullmatch(r'(?:.*/)?python(?:[0-9]+(?:\.[0-9]+)*)?', arg)) and not admitted:
+                    errors.append('unclassified Python task command: ' + p + ' -> ' + arg)
+    for p in sorted(debts):
+        print('FROZEN PRODUCT DEBT: ' + p)
+    for error in sorted(set(errors)):
+        print('VIOLATION: ' + error, file=sys.stderr)
+    print(f"Python boundary {'FAIL' if errors else 'PASS'}: {len(python)} Python files, {len(hosts)} embedded hosts, {len(closure)} product modules, {len(debts)} frozen debts. Static checks only; A4 runtime proof remains required.")
+    return 1 if errors else 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--strict', action='store_true')
+    parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parent.parent)
+    args = parser.parse_args()
+    try:
+        return check(args.root.resolve(), args.strict)
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as error:
+        print('ERROR: ' + str(error), file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,5 +1,10 @@
 # Runtime foundations and GPU performance plan
 
+Execution priority (2026-09-09): GPU correctness completion is accepted and performance work is
+deferred. [Align product boundary](align-product-boundary.md) is the current preparation priority
+and maps the supplied speed ideas to later measured consumers. Its preparation runs no campaign,
+changes no baseline/floor and makes no new speed or capacity claim.
+
 Status: design and evidence synthesis, 2026-09-06. No new measurements or GPU speed/capacity
 claims are made here. Historical CPU results below retain their original owners and scopes.
 

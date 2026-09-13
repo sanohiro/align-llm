@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $# == 1 ]]
+root="$(realpath "$1")"
+scratch="$(mktemp -d "$root/failure-owner.XXXXXX")"
+relative="$(basename "$scratch")"
+cp "$root/task-two.json" "$scratch/task-original"
+cp "$root/task-one.json" "$scratch/first-original"
+cp "$root/task-one-definition.json" "$scratch/definition-original"
+cp "$root/source/a" "$scratch/source-a-original"
+cleanup() {
+  status=$?
+  if [[ -d "$scratch/source-preserved" && ! -e "$root/source" ]]; then mv "$scratch/source-preserved" "$root/source"; fi
+  cp "$scratch/source-a-original" "$root/source/a"
+  cp "$scratch/task-original" "$root/task-two.json"
+  cp "$scratch/first-original" "$root/task-one.json"
+  cp "$scratch/definition-original" "$root/task-one-definition.json"
+  if [[ $status == 0 ]]; then rm -rf "$scratch"; else echo "Preserved evaluation failure evidence: $scratch" >&2; fi
+  exit "$status"
+}
+trap cleanup EXIT
+seal() {
+  source="$1"
+  jq -cj '.content_sha256=""' "$source" > "$scratch/canonical"
+  hash="$(sha256sum "$scratch/canonical" | cut -d ' ' -f 1)"
+  jq -cj --arg hash "$hash" '.content_sha256=$hash' "$scratch/canonical" > "$source"
+}
+# The final task cannot hide its execution source from complete-set input admission.
+for refusal in missing-tree file-tree other-tree different-repository; do
+  case "$refusal" in
+    missing-tree) filter='.artifacts |= map(select(.kind != "TREE"))' ;;
+    file-tree) filter='.artifacts |= map(if .kind == "TREE" then .kind="FILE" else . end)' ;;
+    other-tree) filter='.artifacts |= map(if .kind == "TREE" then .path="other-source" else . end)' ;;
+    different-repository) filter='.repo_path="other-source" | .artifacts |= map(if .kind == "TREE" then .path="other-source" else . end)' ;;
+  esac
+  jq -cj "$filter" "$scratch/task-original" > "$root/task-two.json"
+  seal "$root/task-two.json"
+  jq -cj --arg evidence "$relative/$refusal-evidence.json" '.evaluation_evidence_path=$evidence' \
+    "$root/canonical-request.json" > "$scratch/request.json"
+  if "$root/main" prompt evaluate "$scratch/request.json" "$relative/$refusal-result.json" \
+    > "$scratch/stdout" 2> "$scratch/stderr"; then exit 1; fi
+  jq -e '.status=="INVALID_INPUT"' "$scratch/$refusal-result.json" >/dev/null
+  [[ ! -e "$scratch/$refusal-evidence.json" && -z "$(find "$root/workspace" -mindepth 1 -print -quit)" ]]
+done
+cp "$scratch/task-original" "$root/task-two.json"
+
+# Correctly shaped but false source identities fail before the first attempted row.
+for refusal in changed-tree changed-source-bytes missing-tree-directory; do
+  if [[ "$refusal" == changed-tree ]]; then
+    jq -cj '.artifacts |= map(if .kind=="TREE" then .expected_sha256=("0"*64) else . end)' \
+      "$scratch/task-original" > "$root/task-two.json"
+    seal "$root/task-two.json"
+  elif [[ "$refusal" == changed-source-bytes ]]; then
+    printf 'altered untracked source\n' > "$root/source/a"
+  else
+    mv "$root/source" "$scratch/source-preserved"
+  fi
+  jq -cj --arg evidence "$relative/$refusal-evidence.json" '.evaluation_evidence_path=$evidence' \
+    "$root/canonical-request.json" > "$scratch/request.json"
+  if "$root/main" prompt evaluate "$scratch/request.json" "$relative/$refusal-result.json" \
+    > "$scratch/stdout" 2> "$scratch/stderr"; then exit 1; fi
+  jq -e '.status=="ERROR" and .error_code=="SNAPSHOT_ERROR" and .rows==[] and
+    .snapshot_attestations==[] and .workspace_preflight.status=="ERROR"' "$scratch/$refusal-result.json" >/dev/null
+  jq -e '.expected_inputs==[]' "$scratch/$refusal-evidence.json" >/dev/null
+  if [[ "$refusal" == missing-tree-directory ]]; then mv "$scratch/source-preserved" "$root/source"; fi
+  cp "$scratch/source-a-original" "$root/source/a"
+  cp "$scratch/task-original" "$root/task-two.json"
+done
+[[ -z "$(find "$root/workspace" -mindepth 1 -print -quit)" && "$(cat "$root/source/a")" == before ]]
+
+# A validly bound definition can name a baseline that the actual fixture source does not have.
+# That is an attempted-row failure, distinct from an invalid final directory before execution.
+jq -cj '.source_revision=("c"*40)' "$scratch/definition-original" > "$root/task-one-definition.json"
+definition_sha="$(sha256sum "$root/task-one-definition.json" | cut -d ' ' -f 1)"
+definition_identity="$(printf '100644 task-one-definition.json\0F %s\n' "$definition_sha" | sha256sum | cut -d ' ' -f 1)"
+jq -cj --arg hash "$definition_sha" --arg identity "$definition_identity" \
+  '.task_definition_sha256=$hash | .artifacts[0].expected_sha256=$identity' "$scratch/first-original" > "$root/task-one.json"
+seal "$root/task-one.json"
+jq -cj --arg evidence "$relative/baseline-evidence.json" '.evaluation_evidence_path=$evidence' \
+  "$root/canonical-request.json" > "$scratch/baseline-request.json"
+if "$root/main" prompt evaluate "$scratch/baseline-request.json" "$relative/baseline-result.json" \
+  > "$scratch/stdout" 2> "$scratch/stderr"; then exit 1; fi
+jq -e '.status=="ERROR" and .error_code=="ADAPTER_RESULT" and (.rows|length)==1 and
+  .rows[0].measurement.status=="ERROR" and .rows[0].measurement.failure_kind=="ADAPTER" and
+  .rows[0].repair_loop_count==0' "$scratch/baseline-result.json" >/dev/null
+jq -e '(.expected_inputs|length)==1' "$scratch/baseline-evidence.json" >/dev/null
+[[ -z "$(find "$root/workspace" -mindepth 1 -print -quit)" && "$(cat "$root/source/a")" == before ]]
+printf 'native evaluation failure publication: source-tree declaration/identity and repository binding refusal, single-row baseline error prefixes, verified evidence and cleanup PASS\n'

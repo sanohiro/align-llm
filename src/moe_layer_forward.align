@@ -1,6 +1,7 @@
 module moe_layer_forward
 
 import core.json
+import std.process
 import std.crypto
 import std.encoding
 import std.fs
@@ -124,7 +125,7 @@ fn bool_text(value: bool) -> string {
 // the one-field object wrapper the encoder puts around it.
 fn json_string(value: str) -> string {
   boxed := TextBox { v: value }
-  encoded := json.encode(boxed)
+  encoded := match json.encode(boxed) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
   return encoded[5..encoded.len() - 1].clone()
 }
 

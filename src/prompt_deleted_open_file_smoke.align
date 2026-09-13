@@ -1,0 +1,114 @@
+module prompt_deleted_open_file_smoke
+
+import prompt_deleted_open_file
+import prompt_validation_budget
+import prompt_scope_cleanup
+import std.process
+import std.fs
+import std.time
+
+fn decision(usage: prompt_deleted_open_file.Usage, files: i64, bytes: i64) -> prompt_validation_budget.Decision {
+  limits := prompt_validation_budget.Limits { processes: 1, resident_bytes: 1, workspace_files: files, workspace_bytes: bytes }
+  observation := prompt_validation_budget.Observation { complete: usage.complete, processes: 1, resident_bytes: 1, visible_files: 1, visible_bytes: 5, deleted_files: usage.files, deleted_bytes: usage.bytes }
+  return prompt_validation_budget.check(limits, observation)
+}
+
+fn incomplete(path: str, deadline: i64, vanished: bool) -> Result<(), Error> {
+  roots := [prompt_deleted_open_file.DescriptorRoot { directory: fs.open_directory(path)? }]
+  visible: slice<prompt_deleted_open_file.Inode> := []
+  usage := prompt_deleted_open_file.observe(roots, visible, 8, 100, deadline, prompt_deleted_open_file.Context.Stable)?
+  if usage.complete || usage.files != 0 || usage.bytes != 0 { return Err(Error.Invalid) }
+  match decision(usage, 8, 100) { IncompleteObservation => {}, _ => { return Err(Error.Invalid) } }
+  // Synthetic error partition control; real procfs lifetime is checked below.
+  proc := prompt_deleted_open_file.observe(roots, visible, 8, 100, deadline, prompt_deleted_open_file.Context.Procfs)?
+  if proc.complete != vanished || proc.files != 0 || proc.bytes != 0 { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn retained_proc_root(borrow mut scope: process.child_scope) -> Result<fs.directory, Error> {
+  deadline := time.instant() + 10000000000
+  zero: u8 := 0
+  mut byte := [zero]
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    scope.poll(process.readiness { stdout: true, stderr: false, status: false }, 10000000)?
+    match scope.read_stdout(byte)? { Some(count) => { if count == 1 && byte[0] == 82 { break }; if count == 0 { return Err(Error.Invalid) } }, None => {} }
+  }
+  path := builder()
+  path.write("/proc/")
+  path.write_int(scope.id())
+  path.write("/fd")
+  return fs.open_directory(path.to_string())
+}
+
+fn reclaimed() -> Result<(), Error> {
+  command := process.command("/bin/sh", ["/bin/sh", "-c", "printf R; exec sleep 120"])
+  mut scope := command.start_scope()?
+  retained := retained_proc_root(scope)
+  // The kernel release certificate makes disappearance deterministic before observation.
+  cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)?
+  if !cleanup.released { return Err(Error.Timeout) }
+  root := retained?
+  roots := [prompt_deleted_open_file.DescriptorRoot { directory: root }]
+  none: slice<prompt_deleted_open_file.Inode> := []
+  deadline := time.instant() + 10000000000
+  stable := prompt_deleted_open_file.observe(roots, none, 1, 1, deadline, prompt_deleted_open_file.Context.Stable)?
+  proc := prompt_deleted_open_file.observe(roots, none, 1, 1, deadline, prompt_deleted_open_file.Context.Procfs)?
+  if stable.complete || !proc.complete || stable.files != 0 || stable.bytes != 0 || proc.files != 0 || proc.bytes != 0 { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn live(parent: str, child: str) -> Result<(), Error> {
+  deadline := time.instant() + 10000000000
+  roots := [prompt_deleted_open_file.DescriptorRoot { directory: fs.open_directory(parent)? }, prompt_deleted_open_file.DescriptorRoot { directory: fs.open_directory(child)? }]
+  none: slice<prompt_deleted_open_file.Inode> := []
+  usage := prompt_deleted_open_file.observe(roots, none, 1, 7, deadline, prompt_deleted_open_file.Context.Procfs)?
+  if !usage.complete || usage.files != 1 || usage.bytes != 7 { return Err(Error.Invalid) }
+  parent_root := fs.open_directory(parent)?
+  metadata := parent_root.metadata_follow("8")?
+  if metadata.links != 0 || metadata.size != 7 { return Err(Error.Invalid) }
+  visible := [prompt_deleted_open_file.Inode { device: metadata.device, inode: metadata.inode }]
+  excluded := prompt_deleted_open_file.observe(roots, visible, 1, 7, deadline, prompt_deleted_open_file.Context.Procfs)?
+  if !excluded.complete || excluded.files != 0 || excluded.bytes != 0 { return Err(Error.Invalid) }
+  match decision(usage, 2, 12) { WithinBudget => {}, _ => { return Err(Error.Invalid) } }
+  match decision(usage, 1, 12) { FileLimit => {}, _ => { return Err(Error.Invalid) } }
+  match decision(usage, 2, 11) { ByteLimit => {}, _ => { return Err(Error.Invalid) } }
+  match prompt_deleted_open_file.observe(roots, none, 1, 6, deadline, prompt_deleted_open_file.Context.Procfs) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match prompt_deleted_open_file.observe(roots, none, 0, 7, deadline, prompt_deleted_open_file.Context.Procfs) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  reclaimed()?
+  print("deleted-open-file live Linux: PASS")
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 4 && args[1] == "live-linux" { return live(args[2], args[3]) }
+  if args.len() != 8 { return Err(Error.Invalid) }
+  deadline := time.instant() + 10000000000
+  roots := [prompt_deleted_open_file.DescriptorRoot { directory: fs.open_directory(args[1])? }, prompt_deleted_open_file.DescriptorRoot { directory: fs.open_directory(args[2])? }]
+  none: slice<prompt_deleted_open_file.Inode> := []
+  all := prompt_deleted_open_file.observe(roots, none, 2, 12, deadline, prompt_deleted_open_file.Context.Stable)?
+  if !all.complete || all.files != 2 || all.bytes != 12 { return Err(Error.Invalid) }
+  fixture := fs.open_directory(args[3])?
+  excluded := fixture.metadata_at("visible (deleted)")?
+  visible := [prompt_deleted_open_file.Inode { device: excluded.device, inode: excluded.inode }]
+  usage := prompt_deleted_open_file.observe(roots, visible, 1, 7, deadline, prompt_deleted_open_file.Context.Stable)?
+  if !usage.complete || usage.files != 1 || usage.bytes != 7 { return Err(Error.Invalid) }
+  match decision(usage, 2, 12) { WithinBudget => {}, _ => { return Err(Error.Invalid) } }
+  match decision(usage, 1, 12) { FileLimit => {}, _ => { return Err(Error.Invalid) } }
+  match decision(usage, 2, 11) { ByteLimit => {}, _ => { return Err(Error.Invalid) } }
+  match prompt_deleted_open_file.observe(roots, none, 1, 12, deadline, prompt_deleted_open_file.Context.Stable) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match prompt_deleted_open_file.observe(roots, none, 2, 11, deadline, prompt_deleted_open_file.Context.Stable) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match prompt_deleted_open_file.observe(roots, none, 0, 12, deadline, prompt_deleted_open_file.Context.Stable) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match prompt_deleted_open_file.observe(roots, none, 2, 0, deadline, prompt_deleted_open_file.Context.Stable) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match prompt_deleted_open_file.observe(roots, none, 8193, 12, deadline, prompt_deleted_open_file.Context.Stable) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match prompt_deleted_open_file.observe(roots, none, 2, 67108865, deadline, prompt_deleted_open_file.Context.Stable) { Err(error) => { match error { Invalid => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  match prompt_deleted_open_file.observe(roots, none, 2, 12, 0, prompt_deleted_open_file.Context.Stable) { Err(error) => { match error { Timeout => {}, _ => { return Err(Error.Invalid) } } }, _ => { return Err(Error.Invalid) } }
+  incomplete(args[4], deadline, true)?
+  incomplete(args[5], deadline, false)?
+  if args[7] != "none" { incomplete(args[7], deadline, false)? }
+  empty := [prompt_deleted_open_file.DescriptorRoot { directory: fs.open_directory(args[6])? }]
+  zero := prompt_deleted_open_file.observe(empty, none, 1, 1, deadline, prompt_deleted_open_file.Context.Stable)?
+  if !zero.complete || zero.files != 0 || zero.bytes != 0 { return Err(Error.Invalid) }
+  print("deleted-open-file: PASS")
+  return Ok(())
+}

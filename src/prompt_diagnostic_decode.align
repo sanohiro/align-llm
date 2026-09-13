@@ -1,0 +1,32 @@
+module prompt_diagnostic_decode
+
+import std.encoding
+
+// Decode the exact supplied sequence. Callers own capture and redaction order:
+// runner/fixed streams and retained repair bodies arrive already bounded/admitted.
+// This is deliberately stateless; joining chunks before decoding is the caller's job.
+pub fn decode(data: slice<u8>) -> string {
+  return encoding.utf8_decode_lossy(data)
+}
+
+// Finish an already redacted complete capture. A stream capture must instead pass
+// its already finalized bytes to decode: overflow cannot be inferred from a prefix.
+// Preserve the frozen marker even when the requested cap is smaller than it.
+pub fn bounded_capture(data: slice<u8>, limit: i64) -> Result<string, Error> {
+  if limit < 0 { return Err(Error.Invalid) }
+  if data.len() <= limit { return Ok(decode(data)) }
+  marker := "\n[output truncated]"
+  prefix := if limit > marker.len() { limit - marker.len() } else { 0 }
+  head := decode(data[0..prefix])
+  output := builder()
+  output.write(head)
+  output.write(marker)
+  return Ok(output.to_string())
+}
+
+// The measurement caller must first decode(raw), then apply literal credential
+// replacement to that text. Bounding raw input here would change its two-decode
+// contract, especially when replacement expands malformed UTF-8.
+pub fn bounded_redacted_text(text: str, limit: i64) -> Result<string, Error> {
+  return bounded_capture(text.bytes(), limit)
+}

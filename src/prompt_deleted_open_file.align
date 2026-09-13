@@ -1,0 +1,126 @@
+module prompt_deleted_open_file
+
+import std.fs
+import std.time
+
+pub Inode { device: u64, inode: u64 }
+pub DescriptorRoot { directory: fs.directory }
+pub Usage { complete: bool, files: i64, bytes: i64 }
+pub Context { Stable, Procfs }
+State { complete: bool, used: i64, files: i64, bytes: i64 }
+
+fn disappeared(error: Error, context: Context) -> bool {
+  return match context { Stable => false, Procfs => match error { NotFound => true, _ => false } }
+}
+
+fn deadline_check(deadline: i64) -> Result<(), Error> {
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  return Ok(())
+}
+
+fn selected(target: slice<u8>) -> bool {
+  suffix := " (deleted)".bytes()
+  if target.len() < suffix.len() { return false }
+  mut index := 0
+  loop {
+    if index == suffix.len() { break }
+    if target[target.len() - suffix.len() + index] != suffix[index] { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn scan(borrow root: fs.directory, borrow mut devices: array<u64>, borrow mut inodes: array<u64>, initial: State, maximum_files: i64, maximum_bytes: i64, deadline: i64, context: Context) -> Result<State, Error> {
+  mut state := initial
+  deadline_check(deadline)?
+  cursor := match root.cursor() {
+    Ok(value) => value,
+    Err(error) => { if !disappeared(error, context) { state.complete = false }; deadline_check(deadline)?; return Ok(state) },
+  }
+  loop {
+    deadline_check(deadline)?
+    next := cursor.next()
+    deadline_check(deadline)?
+    entry := match next {
+      Ok(value) => value else { break },
+      Err(error) => { if !disappeared(error, context) { state.complete = false }; break },
+    }
+    raw: slice<u8> := entry.name
+    target_result := root.read_link(raw, 4096)
+    deadline_check(deadline)?
+    match target_result {
+      Err(error) => { if !disappeared(error, context) { state.complete = false } },
+      Ok(target) => {
+        if selected(target[0..target.len()]) {
+          metadata_result := root.metadata_follow(raw)
+          deadline_check(deadline)?
+          match metadata_result {
+            Err(error) => { if !disappeared(error, context) { state.complete = false } },
+            Ok(metadata) => {
+              regular := match metadata.kind { Regular => true, _ => false }
+              if regular {
+                mut found := false
+                mut index := 0
+                loop {
+                  if index == state.used { break }
+                  if devices[index] == metadata.device && inodes[index] == metadata.inode { found = true; break }
+                  index = index + 1
+                }
+                if !found {
+                  if metadata.size < 0 || state.files == maximum_files || metadata.size > maximum_bytes - state.bytes {
+                    return Err(Error.Invalid)
+                  }
+                  devices[state.used] = metadata.device
+                  inodes[state.used] = metadata.inode
+                  state.used = state.used + 1
+                  state.files = state.files + 1
+                  state.bytes = state.bytes + metadata.size
+                }
+              }
+            },
+          }
+        }
+      },
+    }
+  }
+  deadline_check(deadline)?
+  return Ok(state)
+}
+
+fn scan_root(borrow root: DescriptorRoot, borrow mut devices: array<u64>, borrow mut inodes: array<u64>, state: State, maximum_files: i64, maximum_bytes: i64, deadline: i64, context: Context) -> Result<State, Error> {
+  return scan(root.directory, devices, inodes, state, maximum_files, maximum_bytes, deadline, context)
+}
+
+pub fn observe(roots: slice<DescriptorRoot>, visible: slice<Inode>, maximum_files: i64, maximum_bytes: i64, deadline: i64, context: Context) -> Result<Usage, Error> {
+  if roots.len() > 256 || visible.len() > 8192 || maximum_files <= 0 || maximum_files > 8192 || maximum_bytes <= 0 || maximum_bytes > 67108864 {
+    return Err(Error.Invalid)
+  }
+  deadline_check(deadline)?
+  mut device_values: array_builder<u64> := array_builder()
+  mut inode_values: array_builder<u64> := array_builder()
+  mut index := 0
+  loop {
+    if index == visible.len() { break }
+    device_values.push(visible[index].device)
+    inode_values.push(visible[index].inode)
+    index = index + 1
+  }
+  index = 0
+  loop {
+    if index == maximum_files { break }
+    device_values.push(0 as u64)
+    inode_values.push(0 as u64)
+    index = index + 1
+  }
+  mut devices := device_values.build()
+  mut inodes := inode_values.build()
+  mut state := State { complete: true, used: visible.len(), files: 0, bytes: 0 }
+  index = 0
+  loop {
+    if index == roots.len() { break }
+    state = scan_root(roots[index], devices, inodes, state, maximum_files, maximum_bytes, deadline, context)?
+    index = index + 1
+  }
+  deadline_check(deadline)?
+  return Ok(Usage { complete: state.complete, files: state.files, bytes: state.bytes })
+}

@@ -16,6 +16,13 @@ sibling-checkout fallback:
     --generation-child-path   absolute physical ``./main`` generation child executable
     --generation-child-sha256 lowercase SHA-256 of that exact executable
 
+Version-2 locators instead require exactly one complete ``--product-executable-path`` /
+``--product-executable-sha256`` pair. Mixing the pairs or using one against the other locator
+version is rejected. The product is observed as bytes and never launched; its identity binds
+the policy and every product environment/probe/measurement. The independent Python verifier
+identity remains separate. Request payloads are not in this bundle: their existing digest
+references are checked, but the oracle cannot reconstruct their unpersisted preimages.
+
 The generation child is the section 11.3 derived-child relaxation: the binary is built, not
 committed, so it is never a corpus member and neither its absolute path nor a machine-specific
 spelling is frozen into ``eval/prompt/canonical-v1/``. Its per-run pair is validated before any
@@ -797,6 +804,63 @@ def load_object(path: Path, limit: int, label: str) -> dict[str, Any]:
     return json_object(read_bounded(path, limit, label), label)
 
 
+
+# Ordered schema alternatives: absence is checked on the wire before optional values collapse.
+LOCATOR_V2_FIELDS = tuple(
+    name.replace("source_verifier_", "independent_verifier_")
+    if name in ("source_verifier_relative_path", "source_verifier_sha256", "source_verifier_runtime", "source_verifier_interpreter_sha256")
+    else "product_executable_sha256" if name == "generation_child_sha256" else name
+    for name in LOCATOR_FIELDS
+)
+SOURCE_POLICY_V2_FIELDS = (
+    "schema_version", "artifact_kind", "policy_id", "git_executable_sha256",
+    "product_executable_sha256", "content_sha256",
+)
+TASK_LEGACY_FIELDS = frozenset((
+    "cmd", "argv", "snapshot_cmd", "snapshot_argv", "measurement_adapter_runtime",
+    "snapshot_helper_runtime", "validation_runner_path", "validation_runner_sha256", "validation_argv",
+))
+TASK_V1_FIELDS = (
+    "schema_version", "artifact_kind", "task_id", "repo_id", "repo_revision", "repo_path",
+    "require_clean_repo", "cmd", "argv", "snapshot_cmd", "snapshot_argv",
+    "measurement_adapter_runtime", "snapshot_helper_runtime", "cwd", "timeout_ns",
+    "task_prompt_path", "context_sources_path", "generation_policy_path", "provider_control_path",
+    "environment_policy_path", "validation_runner_path", "validation_runner_sha256",
+    "task_definition_path", "task_definition_sha256", "validation_argv", "patch_path", "patch_sha256",
+    "artifacts", "regression_limits", "repair_template_path", "repair_template_sha256", "edit_policy", "content_sha256",
+)
+TASK_V2_FIELDS = tuple(
+    member for name in TASK_V1_FIELDS if name not in TASK_LEGACY_FIELDS
+    for member in ((name, "execution_kind") if name == "require_clean_repo" else (name,))
+)
+TASK_OPTIONAL = frozenset(("patch_path", "patch_sha256", "repair_template_path", "repair_template_sha256", "edit_policy"))
+CORE_LEGACY_FIELDS = frozenset(("measurement_adapter_runtime", "snapshot_helper_runtime", "source_verifier_runtime"))
+CORE_V1_FIELDS = (
+    "schema_version", "artifact_kind", "os", "os_release", "architecture", "cpu", "logical_cpu_count", "gpu",
+    "align_llm_commit", "align_revision", "measurement_adapter_runtime", "snapshot_helper_runtime",
+    "source_verifier_runtime", "source_verifier_policy_sha256", "environment_policy_sha256",
+)
+CORE_V2_FIELDS = tuple(
+    "product_runtime" if name == "measurement_adapter_runtime" else name
+    for name in CORE_V1_FIELDS if name not in ("snapshot_helper_runtime", "source_verifier_runtime")
+)
+PROBE_FIELDS = (
+    "schema_version", "artifact_kind", "producer", "os", "os_release", "architecture", "cpu",
+    "logical_cpu_count", "gpu", "runtime_identity", "content_sha256",
+)
+HOST_FIELDS = ("os", "os_release", "architecture", "cpu", "logical_cpu_count", "gpu")
+MEASUREMENT_BASE_FIELDS = (
+    "schema_version", "artifact_kind", "status", "failure_kind", "build_status", "test_status",
+    "repair_loop_count", "unrelated_diff_count", "patch_size_bytes", "public_api_change_count",
+    "policy_violation_count", "cleanup_passed", "containment_passed", "benchmark_regression_ppm",
+    "generation_to_passing_patch_ns", "rendered_prompt_sha256", "generation_request", "environment_probe",
+    "seed_attestation", "diagnostic_summary", "diagnostic_stdout", "diagnostic_stderr",
+)
+MEASUREMENT_OPTIONAL = frozenset((
+    "benchmark_regression_ppm", "generation_to_passing_patch_ns", "edit_set", "edit_set_total_bytes",
+    "patch_sha256", "completion_bytes", "completion_sha256", "completion_text",
+))
+
 # --- shared field and value validation ----------------------------------------------
 
 
@@ -816,6 +880,100 @@ def exact_record(
     if cursor != len(actual):
         raise GateError(f"{label} has the wrong fields or order")
     return value
+
+
+def schema_version(value: Any, admitted: tuple[int, ...], label: str) -> int:
+    if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value["schema_version"] not in admitted:
+        raise GateError(f"{label} header is invalid")
+    return value["schema_version"]
+
+
+def versioned_record(value: Any, fields: Sequence[str], label: str, optional: frozenset[str] = frozenset()) -> dict[str, Any]:
+    record = exact_record(value, fields, label, optional)
+    if any(record.get(name) is None for name in fields if name not in optional):
+        raise GateError(f"{label} has a null required member")
+    return record
+
+
+def product_runtime(value: Any, label: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"ALIGN:[0-9a-f]{40}:[0-9a-f]{64}", value) is None:
+        raise GateError(f"{label} is not an Align product runtime")
+    return value
+
+
+def provider_edit(task: Mapping[str, Any]) -> bool:
+    return task.get("schema_version") == 2 and task.get("execution_kind") == "PROVIDER_EDIT"
+
+
+def validate_task_core(task: Mapping[str, Any], core: Mapping[str, Any], label: str) -> None:
+    version = schema_version(task, (1, 2), label)
+    versioned_record(task, TASK_V1_FIELDS if version == 1 else TASK_V2_FIELDS, label, TASK_OPTIONAL)
+    if task["artifact_kind"] != "PROMPT_EVALUATION_TASK" or version != core["schema_version"]:
+        raise GateError(f"{label} task/core versions disagree")
+    if version == 1:
+        return
+    require_text(task["task_definition_path"], f"{label} task definition path")
+    require_digest(task["task_definition_sha256"], f"{label} task definition digest")
+    if task["execution_kind"] not in ("PROVIDER_EDIT", "FIXTURE_PATCH"):
+        raise GateError(f"{label} execution kind is invalid")
+    if not isinstance(task.get("artifacts"), list) or not any(
+        isinstance(row, dict) and row.get("kind") == "TREE" and row.get("path") == task.get("repo_path")
+        for row in task["artifacts"]
+    ):
+        raise GateError(f"{label} does not declare its repository source TREE")
+    limits = task.get("regression_limits")
+    if not isinstance(limits, dict):
+        raise GateError(f"{label} has no regression limits")
+    repairs = require_integer(limits.get("maximum_repair_loops"), f"{label} repair cap", minimum=0, maximum=64)
+    if (task.get("repair_template_path") is not None) != (repairs > 0) or (task.get("repair_template_sha256") is not None) != (repairs > 0):
+        raise GateError(f"{label} repair template pair disagrees with its repair cap")
+    if repairs > 0:
+        require_text(task["repair_template_path"], f"{label} repair template path")
+        require_digest(task["repair_template_sha256"], f"{label} repair template digest")
+    fixture = task["execution_kind"] == "FIXTURE_PATCH"
+    if (task.get("patch_path") is not None) != fixture or (task.get("patch_sha256") is not None) != fixture:
+        raise GateError(f"{label} patch pair disagrees with its execution kind")
+    if fixture:
+        require_text(task["patch_path"], f"{label} patch path")
+        require_digest(task["patch_sha256"], f"{label} patch digest")
+    policy = task.get("edit_policy")
+    if not fixture:
+        versioned_record(policy, ("schema_version", "artifact_kind", "maximum_file_blocks", "maximum_edit_bytes", "refuse_unchanged_files", "content_sha256"), f"{label} edit policy")
+        if (type(policy["schema_version"]) is not int or policy["schema_version"] != 1
+            or policy["artifact_kind"] != "EDIT_POLICY" or type(policy["maximum_file_blocks"]) is not int
+            or policy["maximum_file_blocks"] != MAXIMUM_FILE_BLOCKS or type(policy["maximum_edit_bytes"]) is not int
+            or policy["maximum_edit_bytes"] != MAXIMUM_EDIT_BYTES or policy["refuse_unchanged_files"] is not True):
+            raise GateError(f"{label} edit policy is invalid")
+        require_own_digest(policy, f"{label} edit policy")
+    elif policy is not None:
+        raise GateError(f"{label} fixture task carries an edit policy")
+
+
+def validate_environment_core(core: Any) -> None:
+    version = schema_version(core, (1, 2), "environment core")
+    versioned_record(core, CORE_V1_FIELDS if version == 1 else CORE_V2_FIELDS, "environment core", frozenset({"logical_cpu_count"}))
+    if core["artifact_kind"] != "ENVIRONMENT_IDENTITY_CORE":
+        raise GateError("environment core kind is invalid")
+    if version == 2:
+        runtime = product_runtime(core["product_runtime"], "environment core runtime")
+        if runtime.split(":")[1] != core["align_revision"]:
+            raise GateError("environment core product revision disagrees with source trust")
+
+
+def validate_probe_core(probe: Any, core: Mapping[str, Any], role: str, label: str) -> None:
+    version = schema_version(probe, (1, 2), label)
+    versioned_record(probe, PROBE_FIELDS, label, frozenset({"logical_cpu_count"}))
+    if probe["artifact_kind"] != "ENVIRONMENT_PROBE" or version != core["schema_version"]:
+        raise GateError(f"{label} probe/core versions disagree")
+    if version == 1:
+        return
+    expected_role = ("ALIGN_TASK" if role == "task" else "ALIGN_SNAPSHOT") if version == 2 else ("MEASUREMENT_ADAPTER" if role == "task" else "SNAPSHOT_HELPER")
+    expected_runtime = core["product_runtime"] if version == 2 else core["measurement_adapter_runtime" if role == "task" else "snapshot_helper_runtime"]
+    if probe["producer"] != expected_role or probe["runtime_identity"] != expected_runtime:
+        raise GateError(f"{label} producer/runtime disagrees with the environment")
+    if any(probe.get(name) != core.get(name) for name in HOST_FIELDS):
+        raise GateError(f"{label} host facts disagree with the environment")
+    require_own_digest(probe, label)
 
 
 def completed_record(value: Mapping[str, Any], fields: Sequence[str]) -> dict[str, Any]:
@@ -896,6 +1054,59 @@ def require_explicit_digest(value: Any, label: str) -> str:
     if HEX64.fullmatch(value) is None:
         raise InputError(f"{label} is not a lowercase SHA-256")
     return value
+
+
+class RetainedVerifier:
+    """A bounded readable script retained across v2 source observation.
+
+    The descriptor survives pathname replacement. Hash/metadata checks detect observed changes;
+    this does not promise that another writer cannot mutate the inode between observations.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.descriptor: int | None = None
+        try:
+            self.descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+            self.identity = self._identity()
+        except (OSError, GateError) as error:
+            self.close()
+            raise GateError(f"independent verifier admission failed: {error}") from None
+
+    def _identity(self) -> tuple[int, int, int, int, int]:
+        metadata = os.fstat(self.descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= EXECUTABLE_LIMIT:
+            raise GateError("independent verifier has an invalid type or size")
+        return metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_size, metadata.st_mtime_ns
+
+    def sha256(self) -> str:
+        if self._identity() != self.identity:
+            raise GateError("independent verifier changed during observation")
+        digest = hashlib.sha256()
+        offset = 0
+        while offset < self.identity[3]:
+            chunk = os.pread(self.descriptor, min(65_536, self.identity[3] - offset), offset)
+            if not chunk:
+                raise GateError("independent verifier changed during observation")
+            digest.update(chunk)
+            offset += len(chunk)
+        if self._identity() != self.identity:
+            raise GateError("independent verifier changed during observation")
+        return digest.hexdigest()
+
+    def verify_unchanged(self, expected: str) -> None:
+        if self.sha256() != expected:
+            raise GateError("independent verifier digest changed during observation")
+
+    def process_path(self) -> Path:
+        path = Path(f"/proc/self/fd/{self.descriptor}")
+        if not path.exists():
+            raise GateError("retained independent verifier observation is unavailable")
+        return path
+
+    def close(self) -> None:
+        if self.descriptor is not None:
+            os.close(self.descriptor)
+            self.descriptor = None
 
 
 class RetainedExecutable:
@@ -1437,8 +1648,10 @@ def validate_manifest(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_locator(value: Any) -> dict[str, Any]:
-    locator = exact_record(value, LOCATOR_FIELDS, "gate source locator", LOCATOR_OPTIONAL)
-    if locator["schema_version"] != 1 or locator["artifact_kind"] != "PROMPT_GATE_SOURCE_LOCATOR":
+    version = schema_version(value, (1, 2), "gate source locator")
+    locator = versioned_record(value, LOCATOR_FIELDS if version == 1 else LOCATOR_V2_FIELDS, "gate source locator", LOCATOR_OPTIONAL)
+    prefix = "source_verifier" if version == 1 else "independent_verifier"
+    if locator["schema_version"] not in (1, 2) or locator["artifact_kind"] != "PROMPT_GATE_SOURCE_LOCATOR":
         raise GateError("gate source locator header is invalid")
     require_identifier(locator["source_bundle_id"], "gate source bundle id")
     for name in (
@@ -1446,7 +1659,7 @@ def validate_locator(value: Any) -> dict[str, Any]:
         "align_source_relative_path",
         "corpus_source_relative_path",
         "source_verifier_policy_relative_path",
-        "source_verifier_relative_path",
+        f"{prefix}_relative_path",
     ):
         require_bundle_relative(locator[name], f"gate locator {name}")
     manifest_relative = locator.get("corpus_file_set_manifest_relative_path")
@@ -1454,16 +1667,16 @@ def validate_locator(value: Any) -> dict[str, Any]:
         require_bundle_relative(manifest_relative, "gate locator corpus file-set manifest path")
     for name in (
         "source_verifier_policy_sha256",
-        "source_verifier_sha256",
-        "source_verifier_interpreter_sha256",
+        f"{prefix}_sha256",
+        f"{prefix}_interpreter_sha256",
         "git_executable_sha256",
-        "generation_child_sha256",
+        "generation_child_sha256" if version == 1 else "product_executable_sha256",
     ):
         require_digest(locator[name], f"gate locator {name}")
     expected_runtime = (
-        f"CPYTHON:{locator['source_verifier_interpreter_sha256']}:{locator['source_verifier_sha256']}"
+        f"CPYTHON:{locator[f'{prefix}_interpreter_sha256']}:{locator[f'{prefix}_sha256']}"
     )
-    if locator["source_verifier_runtime"] != expected_runtime:
+    if locator[f"{prefix}_runtime"] != expected_runtime:
         raise GateError("gate locator source-verifier runtime identity is invalid")
     require_own_digest(locator, "gate source locator")
     return locator
@@ -1647,16 +1860,34 @@ def validate_edit_set_block(value: Any, label: str) -> dict[str, Any]:
 def validate_measurement_version(
     measurement: Mapping[str, Any], task: Mapping[str, Any], label: str,
 ) -> None:
+    version = schema_version(measurement, (1, 2, 3, 4), label)
+    fields = MEASUREMENT_BASE_FIELDS
+    if version >= 2:
+        fields += TASK_MEASUREMENT_V2_MEMBERS if version < 4 else ("edit_set", "edit_set_total_bytes", "patch_sha256", "product_runtime")
+    if version >= 3:
+        fields += TASK_MEASUREMENT_V3_MEMBERS
+    if version == 4:
+        versioned_record(measurement, fields + ("content_sha256",), label, MEASUREMENT_OPTIONAL)
+    validate_measurement_semantics(measurement, task, label)
+    # Preserve historical semantic error precedence, then enforce the ordered record contract.
+    exact_record(measurement, fields + ("content_sha256",), label, MEASUREMENT_OPTIONAL)
+    if measurement["artifact_kind"] != "TASK_MEASUREMENT":
+        raise GateError(f"{label} kind is invalid")
+
+
+def validate_measurement_semantics(
+    measurement: Mapping[str, Any], task: Mapping[str, Any], label: str,
+) -> None:
     """Ladder rows 10 to 17 on one persisted measurement, at whichever version it declares."""
-    version = measurement.get("schema_version")
-    if version not in (1, 2, 3):
+    version = schema_version(measurement, (1, 2, 3, 4), label)
+    if version not in (1, 2, 3, 4):
         raise GateError(f"{label} declares an unknown measurement version")
     # Ladder row 16: the version is a checked function of the corpus, not a producer's choice, now
     # three-way. One reader for the selector, so no rule can disagree about which corpus this is.
     declared = list(task.get("argv") or [])
     adapter = declared[1] if len(declared) == 2 else None
     expected = (
-        3 if adapter == TEMPLATE_ADAPTER_RELATIVE
+        4 if task.get("schema_version") == 2 else 3 if adapter == TEMPLATE_ADAPTER_RELATIVE
         else 2 if adapter == REPAIR_ADAPTER_RELATIVE else 1
     )
     if version != expected:
@@ -1671,8 +1902,15 @@ def validate_measurement_version(
         if present:
             raise GateError(f"{label} carries {present[0]} at version 1")
         return
-    if version == 3:
+    if version == 3 or (version == 4 and provider_edit(task)):
         validate_measurement_version_three(measurement, label)
+    if version == 4:
+        product_runtime(measurement["product_runtime"], f"{label} product runtime")
+        if not provider_edit(task):
+            if task.get("execution_kind") != "FIXTURE_PATCH" or measurement["edit_refusal"] != "NONE":
+                raise GateError(f"{label} fixture refusal is invalid")
+            if any(name in measurement for name in ("edit_set", "edit_set_total_bytes", "completion_bytes", "completion_sha256", "completion_text")):
+                raise GateError(f"{label} fixture measurement carries generated evidence")
     # Ladder row 10 at version 2, read on the **persisted** wire form rather than on the adapter's
     # result file. The two serializations differ and the distinction is load bearing: the adapter
     # writes every key, `null` included, and `scripts/prompt-evaluate.py` holds it to the exact
@@ -1684,9 +1922,10 @@ def validate_measurement_version(
     # edit set — caught by running this validator against the published gate evidence, which is the
     # one thing the fixture could not tell us because the fixture writes its `None`s explicitly.
     identity = measurement.get("base_adapter_runtime_identity")
-    if not isinstance(identity, str) or not identity.startswith("PYTHON:"):
+    if version < 4 and (not isinstance(identity, str) or not identity.startswith("PYTHON:")):
         raise GateError(f"{label} carries no base adapter runtime identity at version 2")
-    require_digest(identity[7:], f"{label} base adapter runtime identity")
+    if version < 4:
+        require_digest(identity[7:], f"{label} base adapter runtime identity")
     # Ladder row 13.
     patch = measurement.get("patch_sha256")
     if (patch is not None) != (measurement["patch_size_bytes"] > 0):
@@ -1791,6 +2030,7 @@ def validate_measurement_version_three(measurement: Mapping[str, Any], label: st
 
 def validate_measurement_probe(
     measurement: Mapping[str, Any], task: Mapping[str, Any], label: str,
+    core: Mapping[str, Any] | None = None,
 ) -> None:
     """Ladder row 12: the section 2.3 gap, closed at attempt level.
 
@@ -1799,10 +2039,19 @@ def validate_measurement_probe(
     literal for both adapters; `runtime_identity` names a file and must not be.
     """
     probe = measurement["environment_probe"]
-    if probe["producer"] != "MEASUREMENT_ADAPTER":
-        raise GateError(f"{label} measurement probe names another producer")
-    if probe["runtime_identity"] != task["measurement_adapter_runtime"]:
-        raise GateError(f"{label} measurement probe names another runtime identity")
+    if task.get("schema_version") == 2:
+        if core is None:
+            raise GateError(f"{label} product measurement has no admitted environment")
+        validate_probe_core(probe, core, "task", label)
+        if measurement.get("product_runtime") != probe["runtime_identity"]:
+            raise GateError(f"{label} product runtime disagrees with its probe")
+    else:
+        if probe["producer"] != "MEASUREMENT_ADAPTER":
+            raise GateError(f"{label} measurement probe names another producer")
+        if probe["runtime_identity"] != task["measurement_adapter_runtime"]:
+            raise GateError(f"{label} measurement probe names another runtime identity")
+        if core is not None:
+            validate_probe_core(probe, core, "task", label)
 
 
 def validate_repair_prompt_source(value: Any, policy: Mapping[str, Any], label: str) -> None:
@@ -1945,6 +2194,7 @@ def validate_attempt_record(
     pools: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]],
     ordinal: int,
     label: str,
+    core: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One attempt: its identity, its per-status presence rule, and its own timing bounds."""
     attempt = exact_record(value, ATTEMPT_RECORD_FIELDS, label, ATTEMPT_RECORD_OPTIONAL)
@@ -2013,7 +2263,7 @@ def validate_attempt_record(
         # Ladder rows 10 to 17 and row 12, on every attempt that ran rather than only on the row's
         # final one. Once a row can run twice, the row-level check binds only the last attempt.
         validate_measurement_version(measurement, task, f"{label} measurement")
-        validate_measurement_probe(measurement, task, label)
+        validate_measurement_probe(measurement, task, label, core)
         # `adapter_overhead_ns` is present exactly on a `PASS` attempt, where the adapter reports
         # its own generation window and the difference against the evaluator-observed span is
         # publishable rather than arguable.
@@ -2038,6 +2288,7 @@ def validate_attempts(
     policy: Mapping[str, Any],
     pools: Mapping[str, Mapping[str, Sequence[Mapping[str, Any]]]],
     label: str,
+    core: Mapping[str, Any] | None = None,
 ) -> None:
     """Section 3.8 rows 16 to 19: attempt order, the repair bound, binding, and timing."""
     attempts = row["attempts"]
@@ -2049,7 +2300,7 @@ def validate_attempts(
         raise GateError(f"{label} carries more attempts than its task admits")
     records = [
         validate_attempt_record(
-            item, row, task, policy, pools, ordinal, f"{label} attempt {ordinal}",
+            item, row, task, policy, pools, ordinal, f"{label} attempt {ordinal}", core,
         )
         for ordinal, item in enumerate(attempts, start=1)
     ]
@@ -2202,11 +2453,11 @@ def rescore(
     corpus_repair_editset = 0
     corpus_edit_refusals = 0
     editset_corpus = any(
-        list(task.get("argv") or [])[1:] in ([REPAIR_ADAPTER_RELATIVE], [TEMPLATE_ADAPTER_RELATIVE])
+        provider_edit(task) or (task.get("schema_version") == 1 and list(task.get("argv") or [])[1:] in ([REPAIR_ADAPTER_RELATIVE], [TEMPLATE_ADAPTER_RELATIVE]))
         for task in tasks
     )
     template_corpus = any(
-        list(task.get("argv") or [])[1:] == [TEMPLATE_ADAPTER_RELATIVE] for task in tasks
+        provider_edit(task) or (task.get("schema_version") == 1 and list(task.get("argv") or [])[1:] == [TEMPLATE_ADAPTER_RELATIVE]) for task in tasks
     )
     parent_passes = 0
     candidate_passes = 0
@@ -2667,6 +2918,7 @@ def validate_snapshot_closure(
         pools[name] = digests
 
     for item in result["snapshot_results"]:
+        validate_probe_core(item["environment_probe"], result["environment"]["core"], "snapshot", "snapshot probe")
         if item["status"] != "MATCH" or item["error_code"] != "NONE" or item["error"] != "":
             raise GateError("a snapshot result is not MATCH")
 
@@ -2734,6 +2986,7 @@ def validate_workspace_preflight(result: Mapping[str, Any], evaluation_id: str) 
         or preflight["error"] != ""
     ):
         raise GateError("gate evaluation workspace preflight is not SAFE")
+    validate_probe_core(preflight["environment_probe"], result["environment"]["core"], "snapshot", "workspace probe")
 
 
 def validate_provider_binding(result: Mapping[str, Any], scope: Mapping[str, Any]) -> None:
@@ -2845,6 +3098,9 @@ def validate_evaluation_pair(
     if not isinstance(environment, dict) or not isinstance(environment.get("core"), dict):
         raise GateError("gate evaluation has no environment identity")
     core = environment["core"]
+    validate_environment_core(core)
+    for ordinal, task in enumerate(result["tasks"]):
+        validate_task_core(task, core, f"evaluation task {ordinal}")
     if (
         core.get("align_llm_commit") != trust["expected_align_llm_commit"]
         or core.get("align_revision") != trust["expected_align_revision"]
@@ -2905,11 +3161,11 @@ def validate_evaluation_pair(
         validate_measurement_version(
             row["measurement"], row_task, f"evaluation row {index} measurement",
         )
-        validate_measurement_probe(row["measurement"], row_task, f"evaluation row {index}")
+        validate_measurement_probe(row["measurement"], row_task, f"evaluation row {index}", core)
         if version >= 2:
             task = row_task
             validate_attempts(
-                row, task, generation_policy, trace_pools, f"evaluation row {index}"
+                row, task, generation_policy, trace_pools, f"evaluation row {index}", core
             )
 
     expected_inputs = evidence["expected_inputs"]
@@ -3091,9 +3347,10 @@ def validate_source_policy(
     path: Path, locator: Mapping[str, Any]
 ) -> dict[str, Any]:
     policy = load_object(path, POLICY_LIMIT, "source verifier policy")
-    exact_record(policy, SOURCE_POLICY_FIELDS, "source verifier policy")
+    version = schema_version(policy, (1, 2), "source verifier policy")
+    versioned_record(policy, SOURCE_POLICY_FIELDS if version == 1 else SOURCE_POLICY_V2_FIELDS, "source verifier policy")
     if (
-        policy["schema_version"] != 1
+        policy["schema_version"] != locator["schema_version"]
         or policy["artifact_kind"] != "PROMPT_SOURCE_VERIFIER_POLICY"
     ):
         raise GateError("source verifier policy header is invalid")
@@ -3101,6 +3358,12 @@ def validate_source_policy(
     claimed = require_own_digest(policy, "source verifier policy")
     if claimed != locator["source_verifier_policy_sha256"]:
         raise GateError("source verifier policy digest does not match the gate locator")
+    if version == 2:
+        for name in ("product_executable_sha256", "git_executable_sha256"):
+            require_digest(policy[name], f"source policy {name}")
+            if policy[name] != locator[name]:
+                raise GateError(f"source policy {name} disagrees with the gate locator")
+        return policy
     if policy["helper_path"] != locator["source_verifier_relative_path"]:
         raise GateError("source verifier policy helper path does not match the gate locator")
     for policy_name, locator_name in (
@@ -3184,9 +3447,11 @@ def observe_source_bundle(
     python: RetainedExecutable,
     git_tool: GitTool,
     checkout: Path,
-    generation_child_sha256: str,
+    admitted_image_sha256: str,
 ) -> None:
     """Revalidate every locator target, then re-observe source identity through the helper."""
+    prefix = "source_verifier" if locator["schema_version"] == 1 else "independent_verifier"
+    image_field = "generation_child_sha256" if locator["schema_version"] == 1 else "product_executable_sha256"
     align_llm_root = physical_directory(
         resolve_beneath(root, Path(locator["align_llm_source_relative_path"]), "align-llm source"),
         "align-llm source",
@@ -3214,94 +3479,105 @@ def observe_source_bundle(
         "source verifier policy",
     )
     helper_path = physical_regular_file(
-        resolve_beneath(root, Path(locator["source_verifier_relative_path"]), "source verifier"),
+        resolve_beneath(root, Path(locator[f"{prefix}_relative_path"]), "source verifier"),
         "source verifier",
     )
-    validate_source_policy(policy_path, locator)
-    if sha256_file(helper_path, "source verifier") != locator["source_verifier_sha256"]:
-        raise GateError("source verifier helper digest does not match the gate locator")
-    if python.sha256() != locator["source_verifier_interpreter_sha256"]:
-        raise GateError("explicit Python executable digest does not match the gate locator")
-    if git_tool.executable.sha256() != locator["git_executable_sha256"]:
-        raise GateError("explicit Git executable digest does not match the gate locator")
-    # The third leg of the derived-child identity: the retained bytes were already proven equal to
-    # the declared input, so binding that input to the checked-in locator rejects a gate run whose
-    # child is a different binary than the reviewed evidence records.
-    if generation_child_sha256 != locator["generation_child_sha256"]:
-        raise GateError("explicit generation child digest does not match the gate locator")
+    retained = RetainedVerifier(helper_path) if locator["schema_version"] == 2 else None
+    try:
+        validate_source_policy(policy_path, locator)
+        observed_helper_digest = retained.sha256() if retained is not None else sha256_file(helper_path, "source verifier")
+        if observed_helper_digest != locator[f"{prefix}_sha256"]:
+            raise GateError("source verifier helper digest does not match the gate locator")
+        if python.sha256() != locator[f"{prefix}_interpreter_sha256"]:
+            raise GateError("explicit Python executable digest does not match the gate locator")
+        if git_tool.executable.sha256() != locator["git_executable_sha256"]:
+            raise GateError("explicit Git executable digest does not match the gate locator")
+        # The third leg of the derived-child identity: the retained bytes were already proven equal to
+        # the declared input, so binding that input to the checked-in locator rejects a gate run whose
+        # child is a different binary than the reviewed evidence records.
+        if admitted_image_sha256 != locator[image_field]:
+            raise GateError("explicit image digest does not match the gate locator")
 
-    # Every Git checkout is raw-scanned before the first Git child runs anywhere.
-    scans: list[tuple[Path, Path, str]] = []
-    for repository_root, label in (
-        (checkout, "CI checkout"),
-        (align_llm_root, "source-bundle align-llm checkout"),
-        (align_root, "source-bundle Align checkout"),
-    ):
-        scans.append((repository_root, scan_local_git_metadata(repository_root, label)[1], label))
-    if trust["expected_corpus_source_kind"] == "GIT_COMMIT":
-        scans.append(
-            (
-                corpus_root,
-                scan_local_git_metadata(corpus_root, "source-bundle corpus checkout")[1],
-                "source-bundle corpus checkout",
+        # Every Git checkout is raw-scanned before the first Git child runs anywhere.
+        scans: list[tuple[Path, Path, str]] = []
+        for repository_root, label in (
+            (checkout, "CI checkout"),
+            (align_llm_root, "source-bundle align-llm checkout"),
+            (align_root, "source-bundle Align checkout"),
+        ):
+            scans.append((repository_root, scan_local_git_metadata(repository_root, label)[1], label))
+        if trust["expected_corpus_source_kind"] == "GIT_COMMIT":
+            scans.append(
+                (
+                    corpus_root,
+                    scan_local_git_metadata(corpus_root, "source-bundle corpus checkout")[1],
+                    "source-bundle corpus checkout",
+                )
             )
+
+        tested_head = derive_tested_head(git_tool, checkout, scans[0][1])
+        for repository_root, raw_common, label in scans[1:]:
+            git_tool.verify_common_directory(repository_root, raw_common, label)
+
+        request = gate_verifier_request(
+            locator, trust, root, tested_head, git_tool.executable.process_path()
         )
+        with tempfile.TemporaryDirectory(prefix="prompt-gate-source-") as directory:
+            workspace = Path(directory)
+            request_path = workspace / "request.json"
+            request_path.write_bytes(canonical_bytes(request))
+            result_path = workspace / "result.json"
+            run_contained(
+                [
+                    str(python.process_path()),
+                    str(retained.process_path() if retained is not None else helper_path),
+                    "--source-verifier-request",
+                    str(request_path),
+                    "--result",
+                    str(result_path),
+                ],
+                checkout,
+                FIXED_GIT_ENVIRONMENT,
+                (python.descriptor, git_tool.executable.descriptor) + ((retained.descriptor,) if retained is not None else ()),
+                VERIFIER_TIMEOUT_SECONDS,
+                "gate source verifier",
+            )
+            if retained is not None:
+                retained.verify_unchanged(locator[f"{prefix}_sha256"])
+            observed = load_object(result_path, POLICY_LIMIT, "source verifier result")
+        exact_record(observed, SOURCE_RESULT_FIELDS, "source verifier result")
+        require_own_digest(observed, "source verifier result")
+        if observed["status"] != "COMPLETE" or observed["error_code"] != "NONE":
+            raise GateError("gate source verification is unavailable")
+        if observed["align_llm_reachability"] != "VERIFIED":
+            raise GateError("source-bundle align-llm checkout is not VERIFIED")
+        if observed["align_llm_observed_head"] != tested_head:
+            raise GateError("source-bundle align-llm head does not equal the derived CI head")
+        if observed["align_reachability"] != "VERIFIED":
+            raise GateError("source-bundle Align checkout is not VERIFIED")
+        if observed["align_observed_revision"] != trust["expected_align_revision"]:
+            raise GateError("source-bundle Align revision disagrees with the evidence")
+        if observed["corpus_reachability"] != "VERIFIED":
+            raise GateError("source-bundle corpus is not VERIFIED")
+        if observed["corpus_observed_source_sha256"] != trust["expected_corpus_source_sha256"]:
+            raise GateError("source-bundle corpus identity disagrees with the evidence")
 
-    tested_head = derive_tested_head(git_tool, checkout, scans[0][1])
-    for repository_root, raw_common, label in scans[1:]:
-        git_tool.verify_common_directory(repository_root, raw_common, label)
-
-    request = gate_verifier_request(
-        locator, trust, root, tested_head, git_tool.executable.process_path()
-    )
-    with tempfile.TemporaryDirectory(prefix="prompt-gate-source-") as directory:
-        workspace = Path(directory)
-        request_path = workspace / "request.json"
-        request_path.write_bytes(canonical_bytes(request))
-        result_path = workspace / "result.json"
-        run_contained(
-            [
-                str(python.process_path()),
-                str(helper_path),
-                "--source-verifier-request",
-                str(request_path),
-                "--result",
-                str(result_path),
-            ],
+        git_tool.run(
             checkout,
-            FIXED_GIT_ENVIRONMENT,
-            (python.descriptor, git_tool.executable.descriptor),
-            VERIFIER_TIMEOUT_SECONDS,
-            "gate source verifier",
+            "merge-base",
+            "--is-ancestor",
+            trust["expected_align_llm_commit"],
+            tested_head,
+            label="evaluated-commit ancestry",
         )
-        observed = load_object(result_path, POLICY_LIMIT, "source verifier result")
-    exact_record(observed, SOURCE_RESULT_FIELDS, "source verifier result")
-    require_own_digest(observed, "source verifier result")
-    if observed["status"] != "COMPLETE" or observed["error_code"] != "NONE":
-        raise GateError("gate source verification is unavailable")
-    if observed["align_llm_reachability"] != "VERIFIED":
-        raise GateError("source-bundle align-llm checkout is not VERIFIED")
-    if observed["align_llm_observed_head"] != tested_head:
-        raise GateError("source-bundle align-llm head does not equal the derived CI head")
-    if observed["align_reachability"] != "VERIFIED":
-        raise GateError("source-bundle Align checkout is not VERIFIED")
-    if observed["align_observed_revision"] != trust["expected_align_revision"]:
-        raise GateError("source-bundle Align revision disagrees with the evidence")
-    if observed["corpus_reachability"] != "VERIFIED":
-        raise GateError("source-bundle corpus is not VERIFIED")
-    if observed["corpus_observed_source_sha256"] != trust["expected_corpus_source_sha256"]:
-        raise GateError("source-bundle corpus identity disagrees with the evidence")
+        python.verify_unchanged(locator[f"{prefix}_interpreter_sha256"])
+        git_tool.executable.verify_unchanged(locator["git_executable_sha256"])
 
-    git_tool.run(
-        checkout,
-        "merge-base",
-        "--is-ancestor",
-        trust["expected_align_llm_commit"],
-        tested_head,
-        label="evaluated-commit ancestry",
-    )
-    python.verify_unchanged(locator["source_verifier_interpreter_sha256"])
-    git_tool.executable.verify_unchanged(locator["git_executable_sha256"])
+        if retained is not None:
+            retained.verify_unchanged(locator[f"{prefix}_sha256"])
+    finally:
+        if retained is not None:
+            retained.close()
 
 
 # --- entry point ---------------------------------------------------------------------
@@ -3317,6 +3593,17 @@ def bind_environment_identity(
     gate inputs, so the gate requires the recorded identity to be the reviewed one rather than an
     unverified claim.
     """
+    if core["schema_version"] != locator["schema_version"]:
+        raise GateError("environment core and locator versions disagree")
+    if locator["schema_version"] == 2:
+        expected = f"ALIGN:{core['align_revision']}:{locator['product_executable_sha256']}"
+        if core["product_runtime"] != expected:
+            raise GateError("environment product runtime disagrees with the gate locator")
+        if core["source_verifier_policy_sha256"] != locator["source_verifier_policy_sha256"]:
+            raise GateError("environment source policy disagrees with the gate locator")
+        if core["environment_policy_sha256"] != environment_policy["content_sha256"]:
+            raise GateError("environment policy disagrees with the checked-in gate policy")
+        return
     for core_name, locator_name in (
         ("source_verifier_runtime", "source_verifier_runtime"),
         ("source_verifier_policy_sha256", "source_verifier_policy_sha256"),
@@ -3332,13 +3619,15 @@ def parse_arguments(arguments: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--source-bundle-root", required=True)
     parser.add_argument("--python-executable-path", required=True)
     parser.add_argument("--git-executable-path", required=True)
-    parser.add_argument("--generation-child-path", required=True)
-    parser.add_argument("--generation-child-sha256", required=True)
+    parser.add_argument("--generation-child-path")
+    parser.add_argument("--generation-child-sha256")
+    parser.add_argument("--product-executable-path")
+    parser.add_argument("--product-executable-sha256")
     parser.add_argument("--gate-manifest", default=None)
     return parser.parse_args(arguments)
 
 
-def admit_generation_child(path: Path, declared: str) -> None:
+def admit_explicit_image(path: Path, declared: str, option: str) -> None:
     """Admit the per-run generation child from its explicit pair alone.
 
     The child binary is built, not committed, so no corpus membership, locator entry, or frozen
@@ -3347,11 +3636,12 @@ def admit_generation_child(path: Path, declared: str) -> None:
     names; the validator never launches the child, so the descriptor is released once the declared
     digest is proven equal.
     """
-    child = RetainedExecutable(path, "explicit generation child")
+    label = "explicit product executable" if option == "product-executable" else "explicit generation child"
+    child = RetainedExecutable(path, label)
     try:
         if child.sha256() != declared:
             raise InputError(
-                "explicit generation child bytes do not match --generation-child-sha256"
+                f"{label} bytes do not match --{option}-sha256"
             )
     finally:
         child.close()
@@ -3369,12 +3659,21 @@ def validate(values: argparse.Namespace) -> None:
         values.python_executable_path, "--python-executable-path"
     )
     git_path = require_explicit_absolute(values.git_executable_path, "--git-executable-path")
-    child_path = require_explicit_absolute(values.generation_child_path, "--generation-child-path")
-    child_digest = require_explicit_digest(
-        values.generation_child_sha256, "--generation-child-sha256"
-    )
-    # The fourth explicit pair is checked before any gate evidence identity is read.
-    admit_generation_child(child_path, child_digest)
+    legacy = (values.generation_child_path, values.generation_child_sha256)
+    product = (values.product_executable_path, values.product_executable_sha256)
+    legacy_present = any(value is not None for value in legacy)
+    product_present = any(value is not None for value in product)
+    legacy_complete = all(value is not None for value in legacy)
+    product_complete = all(value is not None for value in product)
+    if (legacy_present and product_present) or legacy_complete == product_complete:
+        raise InputError("require exactly one complete generation-child or product executable pair")
+    product_input = product_complete
+    pair = product if product_input else legacy
+    option = "product-executable" if product_input else "generation-child"
+    child_path = require_explicit_absolute(pair[0], f"--{option}-path")
+    child_digest = require_explicit_digest(pair[1], f"--{option}-sha256")
+    # Admission observes the explicit image; neither product nor legacy child is launched.
+    admit_explicit_image(child_path, child_digest, option)
     python = RetainedExecutable(python_path, "explicit Python executable")
     try:
         git_executable = RetainedExecutable(git_path, "explicit Git executable")
@@ -3386,6 +3685,8 @@ def validate(values: argparse.Namespace) -> None:
             manifest = validate_manifest(
                 load_object(manifest_path, MANIFEST_LIMIT, "gate manifest")
             )
+            if manifest["source_locator"]["schema_version"] != (2 if product_input else 1):
+                raise GateError("explicit image pair and locator versions disagree")
             directory = manifest_path.parent
             baseline = load_referenced(
                 directory, manifest["baseline_activation"], ACTIVATION_LIMIT, "baseline activation"

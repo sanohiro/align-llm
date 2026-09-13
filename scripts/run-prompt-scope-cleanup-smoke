@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+trap 'rm -rf "${scratch}"' EXIT
+cat >"${scratch}/root.sh" <<'SH'
+/usr/bin/setsid /bin/sh "$1" "$2" &
+exit 0
+SH
+cat >"${scratch}/middle.sh" <<'SH'
+/usr/bin/setsid /bin/sh "$1" &
+exec 1>&- 2>&-
+wait
+SH
+cat >"${scratch}/leaf.sh" <<'SH'
+printf R
+exec 1>&- 2>&-
+exec sleep 120
+SH
+"${compiler}" check-per-unit "${project_root}/src/prompt_scope_cleanup_smoke.align"
+"${compiler}" run "${project_root}/src/prompt_scope_cleanup_smoke.align" -- \
+  "$(uname -s)" "${scratch}/root.sh" "${scratch}/middle.sh" "${scratch}/leaf.sh"

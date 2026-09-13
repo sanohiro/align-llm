@@ -1,6 +1,7 @@
 module residency_sim
 
 import core.json
+import std.process
 import std.fs
 
 // R3-RESIDENCY-SIM (`docs/specs/r3-residency-sim.md`). The offline expert-residency replay
@@ -215,7 +216,7 @@ TextBox { v: str }
 // backslash, or a control byte survives into valid JSON.
 fn json_string(value: str) -> string {
   boxed := TextBox { v: value }
-  encoded := json.encode(boxed)
+  encoded := match json.encode(boxed) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
   return encoded[5..encoded.len() - 1].clone()
 }
 

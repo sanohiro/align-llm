@@ -1,0 +1,79 @@
+module prompt_generation_response
+
+import core.json
+import prompt_artifacts
+
+pub Expected { request_id: string, provider_kind: string, provider_model: string, paired_seed: i64 }
+
+fn wire(source: str) -> Result<(), Error> {
+  if source.len() == 0 || source.len() > 2097152 { return Err(Error.Invalid) }
+  arena {
+    document := json.doc(source)?
+    match document.kind() { Object => {}, _ => { return Err(Error.Invalid) } }
+    names := ["schema_version", "artifact_kind", "request_id", "status", "error_code", "error",
+      "provider_kind", "provider_model", "provider_request_sha256", "seed_result", "applied_seed",
+      "http_status", "content", "dispatch_start_ns", "dispatch_end_ns", "content_sha256"]
+    mut position := 0
+    mut index := 0
+    loop {
+      if index == names.len() { break }
+      optional := index == 10 || index == 11 || index == 12
+      missing := match document.get(names[index]).kind() { Missing => true, _ => false }
+      if missing {
+        if !optional { return Err(Error.Invalid) }
+      } else {
+        key := document.key(position) else { return Err(Error.Invalid) }
+        if key != names[index] { return Err(Error.Invalid) }
+        // The producer omits absent Options; explicit null is not its protocol.
+        match document.get(names[index]).kind() { Null => { return Err(Error.Invalid) }, _ => {} }
+        position = position + 1
+      }
+      index = index + 1
+    }
+    if position != document.len() { return Err(Error.Invalid) }
+  }
+  return Ok(())
+}
+
+fn digest_valid(value: str) -> bool {
+  if value.len() != 64 { return false }
+  mut index := 0
+  loop {
+    if index == value.len() { break }
+    byte := value.bytes()[index]
+    if !(byte >= 48 && byte <= 57) && !(byte >= 97 && byte <= 102) { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn validate(borrow response: prompt_artifacts.PromptGenerationResponse, borrow expected: Expected) -> Result<(), Error> {
+  if !prompt_artifacts.verify_prompt_generation_response_content(response) ||
+  response.request_id != expected.request_id || response.provider_kind != expected.provider_kind ||
+  response.provider_model != expected.provider_model || !digest_valid(response.provider_request_sha256) ||
+  response.dispatch_start_ns < 0 || response.dispatch_end_ns < response.dispatch_start_ns { return Err(Error.Invalid) }
+  if response.seed_result == "APPLIED" {
+    match response.applied_seed { Some(seed) => { if seed != expected.paired_seed { return Err(Error.Invalid) } }, None => { return Err(Error.Invalid) } }
+  } else {
+    if response.seed_result != "UNSUPPORTED" && response.seed_result != "REJECTED" { return Err(Error.Invalid) }
+    match response.applied_seed { Some(_) => { return Err(Error.Invalid) }, None => {} }
+  }
+  if response.status == "GENERATED" {
+    if response.error_code != "NONE" || response.error != "" { return Err(Error.Invalid) }
+    match response.content { Some(content) => { if content.len() == 0 { return Err(Error.Invalid) } }, None => { return Err(Error.Invalid) } }
+    match response.http_status { Some(status) => { if status < 200 || status >= 300 { return Err(Error.Invalid) } }, None => { return Err(Error.Invalid) } }
+  } else {
+    if response.status != "INVALID_INPUT" && response.status != "PROVIDER_ERROR" { return Err(Error.Invalid) }
+    if response.error_code == "" || response.error_code == "NONE" { return Err(Error.Invalid) }
+    match response.content { Some(_) => { return Err(Error.Invalid) }, None => {} }
+  }
+  return Ok(())
+}
+
+// Failed provider envelopes remain data. Transport/release admission belongs to the caller.
+pub fn decode(source: str, borrow expected: Expected) -> Result<prompt_artifacts.PromptGenerationResponse, Error> {
+  wire(source)?
+  response := prompt_artifacts.decode_prompt_generation_response(source)?
+  validate(response, expected)?
+  return Ok(response)
+}

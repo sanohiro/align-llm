@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+completed=0
+cleanup() {
+  if [[ "${completed}" == 1 ]]; then
+    rm -rf "${scratch}"
+  else
+    printf 'command owner failed; preserving storage: %s\n' "${scratch}" >&2
+  fi
+}
+trap cleanup EXIT
+mkdir "${scratch}/image"
+command_cwd="${scratch}/cwd spaces;\$literal"
+mkdir "${command_cwd}"
+platform="$(uname -s)"
+shell_digest=unused
+echo_digest=unused
+if [[ "${platform}" == Linux ]]; then
+  cp /bin/sh "${scratch}/image/shell"
+  cp /bin/echo "${scratch}/image/echo"
+  shell_digest="$(sha256sum "${scratch}/image/shell" | cut -d ' ' -f 1)"
+  echo_digest="$(sha256sum "${scratch}/image/echo" | cut -d ' ' -f 1)"
+fi
+"${compiler}" check-per-unit "${project_root}/src/prompt_command_smoke.align"
+PROMPT_COMMAND_AMBIENT=ambient-value "${compiler}" run "${project_root}/src/prompt_command_smoke.align" -- \
+  "${platform}" "${scratch}/image" "${shell_digest}" "${echo_digest}" "${command_cwd}"
+if [[ "${platform}" == Linux ]]; then
+  [[ ! -e "${scratch}/image/shell" && ! -e "${scratch}/image/echo" ]]
+  [[ ! -e "${command_cwd}/SHOULD_NOT_EXIST" ]]
+fi
+completed=1

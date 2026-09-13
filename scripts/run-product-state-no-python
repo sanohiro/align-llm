@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# != 3 ]]; then
+  printf 'usage: %s BINARY GGML_LIBRARY_DIRECTORY SHIM_DIRECTORY\n' "$0" >&2
+  exit 2
+fi
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+scratch="$(mktemp -d)"
+cleanup() {
+  status=$?
+  if [[ $status == 0 ]]; then rm -rf "$scratch";
+  else printf 'Preserved state relocation evidence: %s\n' "$scratch" >&2; fi
+}
+trap cleanup EXIT
+mkdir "$scratch/fixtures" "$scratch/product" "$scratch/traces"
+cp "$(realpath "$1")" "$scratch/product/main"
+cmp "$1" "$scratch/product/main"
+export STATE_RELOCATION_ROOT="$scratch"
+export STATE_RELOCATION_LIBRARIES="$(realpath "$2")"
+export STATE_RELOCATION_SHIM="$(realpath "$3")"
+cat > "$scratch/launch" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+optional_lib=()
+if [[ -d /lib64 ]]; then optional_lib=(--ro-bind /lib64 /lib64); fi
+network=()
+if [[ ${STATE_RELOCATION_NETWORK:-private} == shared ]]; then network=(--share-net); fi
+exec strace -f -qq -e trace=execve,execveat -o "$STATE_RELOCATION_ROOT/traces/$$" \
+  bwrap --die-with-parent --new-session --unshare-all "${network[@]}" \
+  --ro-bind /lib /lib --ro-bind /usr/lib /usr/lib "${optional_lib[@]}" \
+  --ro-bind "$STATE_RELOCATION_LIBRARIES" /native --ro-bind "$STATE_RELOCATION_SHIM" /shim \
+  --ro-bind "$STATE_RELOCATION_ROOT/product" /product \
+  --tmpfs /tmp --bind "$STATE_RELOCATION_ROOT/fixtures" "$STATE_RELOCATION_ROOT/fixtures" \
+  --proc /proc --dev /dev --clearenv --setenv LD_LIBRARY_PATH /shim:/native \
+  --chdir "$STATE_RELOCATION_ROOT/fixtures" /product/main "$@"
+SH
+chmod +x "$scratch/launch"
+# Existing independent fixture construction and assertions stay outside every product namespace.
+TMPDIR="$scratch/fixtures" ALIGN_LLM_BIN="$scratch/launch" bash "$project_root/scripts/run-prompt-state-smoke"
+TMPDIR="$scratch/fixtures" ALIGN_LLM_BIN="$scratch/launch" STATE_RELOCATION_NETWORK=shared \
+  python3 - "$project_root" <<'PY'
+import pathlib
+import runpy
+import sys
+import tempfile
+
+sys.dont_write_bytecode = True
+owner = runpy.run_path(str(pathlib.Path(sys.argv[1]) / "scripts/run-prompt-experiment-smoke"))
+server, thread = owner["start_server"]()
+try:
+    with tempfile.TemporaryDirectory() as directory:
+        owner["prompt_rows"](pathlib.Path(directory), server)
+finally:
+    owner["stop_server"](server, thread)
+print("prompt experiment relocation: real proposal, golden wire prompt and prompt bounds without Python PASS")
+PY
+if grep -Ei 'execve.*(python|/project/scripts/)' "$scratch/traces/"* >/dev/null; then
+  printf 'Unexpected interpreter/helper execution in product namespace\n' >&2
+  exit 1
+fi
+[[ "$(grep -l 'execve("/product/main"' "$scratch/traces/"* | wc -l)" -gt 2 ]]
+printf 'prompt state relocation: verifier-first acceptance, rollback, refusal and exclusive publication without Python PASS\n'

@@ -30,6 +30,6 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   production := provider_runtime.generate_trace(config, request, 1, no_forcing, stream)?
   if production.observation.available { return Err(Error.Invalid) }
   runtime_numeric_stream.finish(stream)?
-  print(json.encode(production))
+  print(json.encode(production)?)
   return Ok(())
 }

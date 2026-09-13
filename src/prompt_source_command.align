@@ -1,0 +1,24 @@
+module prompt_source_command
+
+import prompt_command
+import std.process
+
+// Internal source owners provide fixed query tails, never task-controlled command selection.
+pub fn prepare(borrow image: process.image, path: str, tail: slice<string>) -> Result<command, Error> {
+  mut arguments: array_builder<string> := array_builder()
+  arguments.push("git".clone())
+  arguments.push("--no-pager".clone())
+  arguments.push("-C".clone())
+  arguments.push(path.clone())
+  overrides := ["core.useReplaceRefs=false", "core.alternateRefsCommand=", "core.fsmonitor=false", "core.hooksPath=/dev/null", "credential.helper=", "diff.external="]
+  mut index := 0
+  loop { if index == overrides.len() { break }; arguments.push("-c".clone()); arguments.push(overrides[index].clone()); index = index + 1 }
+  index = 0
+  loop { if index == tail.len() { break }; arguments.push(tail[index].clone()); index = index + 1 }
+  names := ["LANG", "LC_ALL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_OPTIONAL_LOCKS", "GIT_TERMINAL_PROMPT", "GIT_PAGER", "GIT_NO_REPLACE_OBJECTS", "GIT_GRAFT_FILE", "GIT_NO_LAZY_FETCH"]
+  values := ["C", "C", "1", "/dev/null", "/dev/null", "0", "0", "cat", "1", "/dev/null", "1"]
+  mut environment: array_builder<prompt_command.Environment> := array_builder()
+  index = 0
+  loop { if index == names.len() { break }; environment.push(prompt_command.Environment { name: names[index].clone(), value: values[index].clone() }); index = index + 1 }
+  return prompt_command.prepare(image, arguments.build(), path, environment.build())
+}

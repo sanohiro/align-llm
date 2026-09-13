@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Focused evaluator slice of A4, using the independently prepared native CLI fixture.
+if [[ $# != 4 && $# != 5 ]]; then
+  echo 'usage: run-product-evaluation-no-python BINARY PREPARED_FIXTURE_DIRECTORY GGML_LIBRARY_DIRECTORY SHIM_DIRECTORY [fixture|provider|repair]' >&2
+  exit 2
+fi
+binary="$(realpath "$1")"
+fixture="$(realpath "$2")"
+libraries="$(realpath "$3")"
+shim="$(realpath "$4")"
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+network=(--net)
+case "${5:-fixture}" in
+  fixture|repair) ;;
+  provider) network=() ;;
+  *) exit 2 ;;
+esac
+[[ "$(jq -r .project_root "$fixture/canonical-request.json")" == "$fixture" ]]
+scratch="$(mktemp -d)"
+trap 'status=$?; if [[ $status == 0 ]]; then rm -rf "$scratch"; else echo "Preserved evaluation relocation: $scratch" >&2; fi' EXIT
+mkdir "$scratch/project" "$scratch/project/image" "$scratch/project/workspace" "$scratch/tools"
+cp "$binary" "$scratch/project/main"
+cp "$fixture"/*.json "$scratch/project/"
+cp "$fixture"/*-patch.txt "$scratch/project/"
+cp "$fixture/.align-revision" "$scratch/project/"
+cp "$fixture/image/git" "$scratch/project/image/git"
+cp -R "$fixture/source" "$scratch/project/source"
+product_sha="$(sha256sum "$scratch/project/main" | cut -d ' ' -f 1)"
+jq -cj --arg sha "$product_sha" '.product_executable_sha256=$sha | .content_sha256=""' \
+  "$scratch/project/source-policy.json" > "$scratch/canonical"
+policy_sha="$(sha256sum "$scratch/canonical" | cut -d ' ' -f 1)"
+jq -cj --arg sha "$policy_sha" '.content_sha256=$sha' "$scratch/canonical" > "$scratch/project/source-policy.json"
+if [[ "${5:-fixture}" == provider ]]; then
+  jq -cj '.allowed_variables |= map(if .name=="LD_LIBRARY_PATH" then .non_secret_value="/shim:/native" else . end) |
+    .content_sha256=""' "$scratch/project/environment.json" > "$scratch/canonical"
+  environment_sha="$(sha256sum "$scratch/canonical" | cut -d ' ' -f 1)"
+  jq -cj --arg sha "$environment_sha" '.content_sha256=$sha' "$scratch/canonical" > "$scratch/project/environment.json"
+fi
+jq -cj --arg product "$product_sha" --arg policy "$policy_sha" \
+  '.product_executable_sha256=$product | .verifier_source_policy_sha256=$policy |
+   .evaluation_evidence_path="relocated-evidence.json"' "$fixture/canonical-request.json" > "$scratch/project/relocated-request.json"
+for tool in bwrap prlimit sh cat true git sleep; do
+  cp "$(realpath "$(type -P "$tool")")" "$scratch/tools/$tool"
+done
+mkdir -p "$scratch/project/eval/tasks/smoke-v1"
+cp "$project_root/eval/tasks/smoke-v1.json" "$scratch/project/eval/tasks/"
+cp "$project_root/eval/tasks/smoke-v1/"*.json "$scratch/project/eval/tasks/smoke-v1/"
+printf 'module sample\npub fn value() -> i64 = 1\n' > "$scratch/project/sample.align"
+printf 'module sample_test\nimport sample\nfn test_value() -> bool = sample.value() == 1\n' > "$scratch/project/sample_test.align"
+cat > "$scratch/project/sample.patch" <<'PATCH'
+diff --git a/sample.align b/sample.align
+--- a/sample.align
++++ b/sample.align
+@@ -2 +2 @@
+-pub fn value() -> i64 = 1
++pub fn value() -> i64 = 2
+PATCH
+cat > "$scratch/project/sample-repair.patch" <<'PATCH'
+diff --git a/sample.align b/sample.align
+--- a/sample.align
++++ b/sample.align
+@@ -2 +2 @@
+-pub fn value() -> i64 = 2
++pub fn value() -> i64 = 1
+PATCH
+jq -cn --arg root "$fixture" '{schema_version:2,task_id:"relocated-verification",root:$root,
+  candidate_patch:($root+"/sample.patch"),repair_patch:($root+"/sample-repair.patch"),
+  memory_profile:($root+"/relocated-memory.alignprof"),
+  build:{cmd:"/usr/bin/sh",argv:["sh","-c","test -s sample.align"],expected_code:0},
+  targeted_test:{cmd:"/usr/bin/sh",argv:["sh","-c","case \"$(cat sample.align)\" in *\"= 1\") exit 0;; *) exit 1;; esac"],expected_code:0},
+  full_test:{cmd:"/usr/bin/true",argv:["true"],expected_code:0},timeout_ns:10000000000,max_iterations:3
+}' > "$scratch/project/verification-task.json"
+oracle=(env -i PATH=/usr/bin:/bin LC_ALL=C HOME=/nonexistent GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+  GIT_AUTHOR_NAME=fixture GIT_AUTHOR_EMAIL=fixture@align-llm.invalid GIT_AUTHOR_DATE=2026-01-01T00:00:00Z
+  GIT_COMMITTER_NAME=fixture GIT_COMMITTER_EMAIL=fixture@align-llm.invalid GIT_COMMITTER_DATE=2026-01-01T00:00:00Z)
+"${oracle[@]}" "$scratch/tools/git" -C "$scratch/project" -c init.templateDir= init -q --initial-branch=main
+"${oracle[@]}" "$scratch/tools/git" -C "$scratch/project" add .align-revision sample.align sample_test.align
+"${oracle[@]}" "$scratch/tools/git" -C "$scratch/project" -c core.hooksPath=/dev/null commit -qm 'Create external Git smoke fixture'
+optional_lib=()
+if [[ -d /lib64 ]]; then optional_lib=(--ro-bind /lib64 /lib64); fi
+external_test_mount=()
+# Only these native external test tools are visible. The original checkout and Python executables
+# are absent; the fixture's path remains its declared artifact namespace after physical relocation.
+# Mount a fresh procfs for the outer PID namespace. An outer bwrap --proc overlays proc/sys,
+# which makes the kernel refuse the evaluator's nested procfs mount. Keep uid-map writes available
+# in this test-owned namespace; the product still constructs its complete normal task sandbox.
+run_namespace() {
+  label="$1"
+  shift
+  strace -f -qq -e trace=execve,execveat -o "$scratch/$label.trace" \
+  "$(type -P unshare)" --mount --pid --fork --mount-proc --ipc --uts "${network[@]}" \
+  "$(type -P bwrap)" --die-with-parent --new-session \
+  --ro-bind /lib /lib --ro-bind /usr/lib /usr/lib "${optional_lib[@]}" \
+  --ro-bind /etc /etc --ro-bind "$scratch/tools" /usr/bin --symlink usr/bin /bin \
+  --ro-bind "$libraries" /native --ro-bind "$shim" /shim \
+  "${external_test_mount[@]}" \
+  --tmpfs /tmp --bind "$scratch/project" "$fixture" --bind /proc /proc --dev /dev \
+  --clearenv --setenv LD_LIBRARY_PATH /shim:/native --setenv LC_ALL C --chdir "$fixture" \
+  "$fixture/main" "$@" > "$scratch/$label.stdout" 2> "$scratch/$label.stderr"
+}
+run_namespace evaluation prompt evaluate "$fixture/relocated-request.json" relocated-result.json
+if [[ "${5:-fixture}" == repair ]]; then
+  jq -e '(.rows|length)==8 and all(.rows[]; .measurement.status=="FAIL" and
+    .repair_loop_count==1 and (.attempts|length)==2) and .gate_eligible==false' \
+    "$scratch/project/relocated-result.json" >/dev/null
+else
+  jq -e '(.rows|length)==8 and all(.rows[]; .measurement.status=="PASS") and
+    .gate_eligible==false' "$scratch/project/relocated-result.json" >/dev/null
+fi
+python3 "$project_root/scripts/check-native-evaluation-fixture" "$scratch/project/relocated-result.json"
+[[ "$(jq -r .content_sha256 "$scratch/project/relocated-result.json")" == \
+   "$(jq -r .evaluation_result_sha256 "$scratch/project/relocated-evidence.json")" ]]
+[[ -z "$(find "$scratch/project/workspace" -mindepth 1 -print -quit)" ]]
+cmp "$fixture/source/a" "$scratch/project/source/a"
+run_namespace git-smoke --eval
+jq -se 'last | .corpus_id=="smoke-v1" and .task_count==2 and .pass_count==2 and .fail_count==0' "$scratch/git-smoke.stdout" >/dev/null
+run_namespace index --index "$fixture" "$fixture/relocated-index.json"
+jq -e '.schema_version==3 and .status=="ok" and .file_count==3 and
+  any(.symbols[]; .path=="sample.align" and .name=="value" and .kind=="function")' "$scratch/project/relocated-index.json" >/dev/null
+run_namespace selection --select-tests "$fixture" sample.align "$fixture/relocated-selection.json"
+jq -e '.status=="ok" and .candidate_count==1 and .candidates[0].path=="sample_test.align"' "$scratch/project/relocated-selection.json" >/dev/null
+run_namespace patch --evaluate-patch "$fixture" "$fixture/sample.patch" "$fixture/relocated-patch.json"
+jq -e '.status=="ok" and .touched_file_count==1 and .files[0].additions==1 and
+  .files[0].deletions==1 and .recommended_test_count==1' "$scratch/project/relocated-patch.json" >/dev/null
+[[ "$(tail -n 1 "$scratch/project/sample.align")" == 'pub fn value() -> i64 = 1' ]]
+run_namespace loop --loop
+cmp "$project_root/eval/expected/loop-smoke.txt" "$scratch/loop.stdout"
+run_namespace verification --verify-loop "$fixture/verification-task.json" "$fixture/relocated-verification.json"
+jq -e '.schema_version==2 and .status=="PASS" and .iteration_count==2 and .repair_count==1 and
+  .attempts[0].status=="REPAIRING" and .attempts[1].status=="PASS"' "$scratch/project/relocated-verification.json" >/dev/null
+jq -se 'length==1 and .[0].repair_result=="PASS_AFTER_REPAIR" and
+  .[0].failure_stage=="targeted-test"' "$scratch/project/relocated-memory.alignprof" >/dev/null
+[[ "$(tail -n 1 "$scratch/project/sample.align")" == 'pub fn value() -> i64 = 1' ]]
+jq -cj '.corpus_id="coding-v1"' "$scratch/project/eval/tasks/smoke-v1.json" > "$scratch/project/retired-corpus.json"
+if run_namespace retired --eval "$fixture/retired-corpus.json"; then exit 1; fi
+[[ ! -s "$scratch/retired.stdout" ]]
+if grep -q '"git"' "$scratch/retired.trace"; then exit 1; fi
+# Copy frozen bytes as inert retirement inputs. With no interpreter mounted,
+# rejection still has to precede the first (native) marker task, rather than
+# succeeding accidentally because execution of the retired script would fail.
+jq -cn --arg marker "$fixture/legacy-marker" '{id:"marker",cmd:"/usr/bin/sh",
+  argv:["sh","-c","printf ran > \"$1\"","marker",$marker],cwd:".",timeout_ns:5000000000,expected_code:0}' \
+  > "$scratch/project/legacy-first.json"
+legacy_index=0
+while IFS= read -r implementation; do
+  cp "$project_root/$implementation" "$scratch/project/retired-bytes"
+  chmod 755 "$scratch/project/retired-bytes"
+  jq -cn --arg command "$fixture/retired-bytes" '{id:"legacy",cmd:$command,
+    argv:[$command],cwd:".",timeout_ns:5000000000,expected_code:0}' > "$scratch/project/legacy-last.json"
+  jq -cn '{schema_version:1,corpus_id:"changed-id",task_files:["legacy-first.json","legacy-last.json"]}' \
+    > "$scratch/project/legacy-corpus.json"
+  label="retired-bytes-$legacy_index"
+  if run_namespace "$label" --eval "$fixture/legacy-corpus.json"; then exit 1; fi
+  [[ ! -e "$scratch/project/legacy-marker" && ! -s "$scratch/$label.stdout" ]]
+  [[ "$(grep -c 'execve' "$scratch/$label.trace")" == 3 ]]
+  legacy_index=$((legacy_index + 1))
+done < <(jq -r '.files[] | select(.migration=="ALIGN-PRODUCT-CUTOVER") | .path' "$project_root/docs/python-boundary-inventory.json")
+[[ $legacy_index == 8 ]]
+if grep -Ei 'execve.*(python|/project/scripts/)' "$scratch/"*.trace >/dev/null; then
+  cat "$scratch/"*.trace >&2
+  exit 1
+fi
+mkdir "$scratch/external-python"
+cp "$(realpath /usr/bin/python3)" "$scratch/external-python/python3"
+cat > "$scratch/external-python/test.py" <<'PY'
+assert sum([1, 2, 3]) == 6
+print("external target test passed")
+PY
+cat > "$scratch/project/external-python-task.json" <<'JSON'
+{"id":"external-python-test","cmd":"/target-test/python3","argv":["python3","/target-test/test.py"],"cwd":".","timeout_ns":5000000000,"expected_code":0}
+JSON
+cat > "$scratch/project/external-python-corpus.json" <<'JSON'
+{"schema_version":1,"corpus_id":"external-python-v1","task_files":["external-python-task.json"]}
+JSON
+external_test_mount=(--ro-bind "$scratch/external-python" /target-test)
+run_namespace external-python --eval "$fixture/external-python-corpus.json"
+jq -se '.[0].verdict=="PASS" and .[0].stdout=="external target test passed\n" and
+  .[-1].task_count==1 and .[-1].pass_count==1' "$scratch/external-python.stdout" >/dev/null
+[[ "$(grep -c 'execve("/target-test/python3"' "$scratch/external-python.trace")" == 1 ]]
+printf 'native evaluator relocation (%s): eight verified rows, no Python/helper mounts, traced descendants and cleanup PASS\n' "${5:-fixture}"
+printf 'legacy CLI relocation: default Git corpus and reserved coding identity refusal before task execution PASS\n'
+printf 'legacy CLI relocation: all eight renamed frozen implementations refused before any task child PASS\n'
+printf 'repository CLI relocation: Align symbols, test selection and read-only patch analysis without Python PASS\n'
+printf 'verification CLI relocation: repair state transitions, real patch/validation retry and failure-memory event without Python PASS\n'
+printf 'external Python exception: one declared target test, native task scoring and traced interpreter execution PASS\n'

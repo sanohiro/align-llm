@@ -1,6 +1,7 @@
 module expert_trace
 
 import core.json
+import std.process
 import std.fs
 
 // R2A-EXPERT-TRACE-CAPTURE (`docs/specs/r2a-expert-trace.md`). One llama.cpp eval-callback
@@ -277,7 +278,7 @@ TextBox { v: str }
 // carrying a quote, a backslash, or a control byte survives into valid JSON.
 fn json_string(value: str) -> string {
   boxed := TextBox { v: value }
-  encoded := json.encode(boxed)
+  encoded := match json.encode(boxed) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
   return encoded[5..encoded.len() - 1].clone()
 }
 

@@ -1,6 +1,7 @@
 module failure_memory
 
 import core.json
+import std.process
 import std.fs
 
 // C5 stores one compact, typed event per verification result. The profile is JSONL rather than a
@@ -189,7 +190,7 @@ pub fn load_context(profile_path: str, task_id: str) -> string {
     return "".clone()
   }
   key := MemoryKey { task_id: task_id }
-  key_json := json.encode(key)
+  key_json := match json.encode(key) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
   marker_view: str := key_json[1..key_json.len() - 1]
 
   mut cursor := data.len()
@@ -345,7 +346,7 @@ fn render_event(result: MemoryResult, document: str) -> string {
     recommended_tests: recommended_tests_view,
     risky_symbols: risky_symbols_view,
   }
-  return json.encode(event).clone()
+  return match json.encode(event) { Ok(encoded_text) => encoded_text, Err(_) => process.abort() }
 }
 
 pub fn remember(result_path: str, profile_path: str) -> Result<MemorySummary, Error> {

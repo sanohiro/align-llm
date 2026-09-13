@@ -1,5 +1,7 @@
 module prompt_score_smoke
 
+import std.process
+
 import core.json
 import prompt_score
 
@@ -320,7 +322,7 @@ fn emit_case(
     reason_limit_kinds: reason_limit_kinds.to_array(),
     reason_limit_numbers: reason_limit_numbers.to_array(),
   }
-  print(json.encode(output))
+  print((match json.encode(output) { Ok(encoded) => encoded, Err(_) => process.abort() }))
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {

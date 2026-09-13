@@ -20,6 +20,40 @@ align-runtimeは、重要な技術spikeと小さな実装を並行して進め�
 
 ## 2. Capability delivery model
 
+### Active priority override: Align product ownership (2026-09-09)
+
+The user requested concentrated removal of Python from shipping product execution before more
+roadmap features. [Align product boundary](align-product-boundary.md) is the plan of record. The
+historical delivery list below is not an instruction to resume GPU optimization or earlier gates.
+
+1. **BOUNDARY-PREPARE:** complete the all-file Python audit, record a frozen migration baseline,
+   settle the public-contract/closure ledger, and register missing Align capabilities. This is the
+   completed preparation checkpoint; the user authorized implementation on 2026-09-09.
+2. **ALIGN-PREREQUISITES:** coordinate the streamed digest, retained-tree, directory, contained
+   process and host-observation requirements recorded in Requests 29, 53, 64, 65 and 66. Adopt the
+   needed merged surfaces together, using the exact pin and each named consumer owner. Independent
+   algorithms and oracle preparation can proceed without consuming proposed APIs.
+3. **ALIGN-PRODUCT-CUTOVER:** one end-to-end consumer capability replaces the `prompt evaluate`
+   Python evaluator, adapter chain and its product use of workspace/source/validation helpers.
+   Reuse existing Align modules; align the two repair-policy implementations, record producers,
+   normal CLI examples and new corpus together. Refuse the old manifest-selected `--eval` Python
+   path and version the measurement/gate identities with the rest of the evidence chain.
+   Include the architecture guard, independent
+   verification, Python-free relocated execution, acceptance/rollback and retirement in this same
+   capability. Internal modules and acceptance cells are checkpoints, not separate PRs.
+4. **GPU follow-on selection:** only after cutover, choose a measured consumer from the existing
+   GPU performance plan, considering real-turn prefix/KV reuse, phase-specific placement, MoE
+   capture/submission, expert residency/capacity and prompt-lookup speculation. Preserve the
+   accepted GPU correctness completion and negative performance results; this order authorizes no
+   new campaign during preparation.
+
+Implementation is authorized, starting with the independent architecture guard and the Align
+prerequisite wave. A blocked prerequisite pauses the dependent
+cutover, not the audit, independent verification design or already-supported application work.
+Temporary Python cannot grow while waiting. There is no helper-by-helper publication schedule.
+
+### Historical delivery order
+
 Roadmap gates define acceptance, not pull request count. Deliver work as consumer-complete
 capabilities. Ledger rows, closure-matrix cells, helper layers, and historical slice labels remain
 useful for implementation and test ownership, but they are internal checkpoints unless they have an

@@ -1,0 +1,83 @@
+module prompt_repair_evidence
+
+import prompt_artifacts
+import prompt_file_blocks
+import prompt_redaction
+import prompt_diagnostic_decode
+import core.json
+import std.crypto
+import std.encoding
+
+pub Evidence { blocks: array<prompt_artifacts.EditSetBlock>, total_bytes: i64 }
+
+fn digest(text: str) -> string {
+  hashed := crypto.sha256(text)
+  return encoding.hex_encode(hashed[0..hashed.len()])
+}
+
+// Input is the admitted ascending edit set, before persistence redaction. The
+// caller gates this producer on a nonempty synthesized patch; these records are
+// evidence and must never replace the raw edits applied to the workspace.
+pub fn build(blocks: slice<prompt_file_blocks.FileBlock>, credential: str) -> Result<Evidence, Error> {
+  mut output: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+  total := append(blocks, credential, output)?
+  return Ok(Evidence { blocks: output.build(), total_bytes: total })
+}
+
+// The final measurement owner can build directly into its own initially empty collection.
+// It discards the builder on error; no intermediate collection or implicit deep copy is needed.
+pub fn append(blocks: slice<prompt_file_blocks.FileBlock>, credential: str, borrow mut output: array_builder<prompt_artifacts.EditSetBlock>) -> Result<i64, Error> {
+  if blocks.len() > 32 { return Err(Error.Invalid) }
+  mut index := 0
+  loop {
+    if index == blocks.len() { break }
+    if blocks[index].path.len() == 0 || blocks[index].body.len() > 262144 {
+      return Err(Error.Invalid)
+    }
+    if index > 0 && blocks[index - 1].path >= blocks[index].path { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  mut total := 0
+  mut carried := 0
+  mut overflowed := false
+  index = 0
+  loop {
+    if index == blocks.len() { break }
+    body_view: str := blocks[index].body
+    redacted := prompt_redaction.credential(body_view, credential)
+    length := redacted.len()
+    total = total + length
+    keep := !overflowed && length <= 16384 - carried
+    mut body: Option<string> := None
+    if keep {
+      carried = carried + length
+      body = Some(prompt_diagnostic_decode.decode(redacted.bytes()))
+    } else {
+      overflowed = true
+    }
+    mut block := prompt_artifacts.EditSetBlock {
+      schema_version: 1,
+      artifact_kind: "EDIT_SET_BLOCK".clone(),
+      path: blocks[index].path.clone(),
+      body_bytes: length,
+      body_sha256: digest(redacted),
+      body_text: body,
+      content_sha256: "".clone(),
+    }
+    canonical := json.encode(block)?
+    block.content_sha256 = digest(canonical)
+    output.push(block)
+    index = index + 1
+  }
+  return Ok(total)
+}
+
+// Captures are already finalized by the caller. Measurement diagnostics decode
+// before credential replacement, then encode/bound/decode the resulting text.
+pub fn diagnostic(raw: slice<u8>, credential: str, limit: i64) -> Result<string, Error> {
+  if limit < 0 { return Err(Error.Invalid) }
+  decoded := prompt_diagnostic_decode.decode(raw)
+  decoded_view: str := decoded
+  redacted := prompt_redaction.credential(decoded_view, credential)
+  return prompt_diagnostic_decode.bounded_redacted_text(redacted, limit)
+}

@@ -1,0 +1,209 @@
+module prompt_evaluation_row
+
+import prompt_artifacts
+import prompt_evaluation_invocation
+import prompt_evaluation_runtime
+import prompt_invocation_records
+import prompt_repair
+import prompt_scope_cleanup
+import prompt_task_inputs
+import std.fs
+import std.process
+import std.time
+
+// A failed release transfers both process and storage authority to the evaluator. It must not
+// retire invocation files or publish a complete row while this owner is outstanding.
+pub Retained {
+  scope: process.child_scope, storage: prompt_evaluation_runtime.Storage,
+  names: prompt_invocation_records.Paths, owned: i64,
+}
+pub Run {
+  Complete(prompt_artifacts.PromptTaskRow), Failed(prompt_evaluation_invocation.Failure), Stopped(Retained),
+}
+Attempt {
+  Measured(prompt_artifacts.TaskMeasurement), Failed(prompt_evaluation_invocation.Failure), Stopped(Retained),
+}
+
+fn failure(code: str, detail: str) -> prompt_evaluation_invocation.Failure {
+  return prompt_evaluation_invocation.Failure { code: code.clone(), detail: detail.clone() }
+}
+
+fn invoke(
+  borrow evaluation: prompt_artifacts.PromptEvaluateRequest, borrow task: prompt_task_inputs.Task,
+  borrow variant: prompt_artifacts.PromptVariant, borrow rendered: prompt_artifacts.RenderedPromptArtifact,
+  borrow environment: prompt_artifacts.EnvironmentIdentity, invocation: prompt_invocation_records.Invocation,
+  baseline: slice<prompt_artifacts.ArtifactDigest>, borrow runtime: prompt_evaluation_runtime.Runtime,
+  borrow source: fs.directory, borrow workspace: fs.directory, borrow procfs: fs.directory,
+  borrow mut signals: process.signal_subscription, credential: str,
+  borrow mut initial: array_builder<prompt_artifacts.ArtifactDigest>, borrow mut bindings: prompt_invocation_records.AttemptBindings,
+  borrow mut requests: array_builder<prompt_artifacts.SnapshotRequest>, borrow mut snapshots: array_builder<prompt_artifacts.SnapshotResult>,
+  borrow mut inputs: array_builder<prompt_artifacts.TaskInputSnapshot>, borrow mut attestations: array_builder<prompt_artifacts.RunSnapshotAttestation>,
+  borrow mut survivors: array_builder<string>,
+) -> Result<Attempt, Error> {
+  names := prompt_invocation_records.paths(evaluation.project_root, evaluation.workspace_path, invocation)?
+  created := prompt_evaluation_runtime.storage(runtime)?
+  storage := match created {
+    Ready(value) => value,
+    Retained(value) => {
+      survivors.push(value.path.clone())
+      return Ok(Attempt.Failed(failure("CLEANUP_FAILED", "task scratch construction left owned storage")))
+    },
+  }
+  mut owned := 0
+  mut removed := false
+  outcome := prompt_evaluation_invocation.run(evaluation, task, variant, rendered, environment, names,
+    invocation, baseline, runtime, storage, source, workspace, procfs, signals, credential, initial, bindings,
+    owned, removed, requests, snapshots, inputs, attestations)
+  resolved := match outcome {
+    Err(_) => Attempt.Failed(failure("ADAPTER_RESULT", "native invocation could not construct its evidence")),
+    Ok(value) => match value {
+      Measured(measurement) => Attempt.Measured(measurement),
+      Failed(error) => Attempt.Failed(error),
+      SourceStopped(attempt) => {
+        mut scope := attempt.scope
+        released := match prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192) {
+          Ok(report) => report.released, Err(_) => false,
+        }
+        if !released { return Ok(Attempt.Stopped(Retained { scope: scope, storage: storage, names: names, owned: owned })) }
+        Attempt.Failed(failure("SNAPSHOT_ERROR", "snapshot process did not complete"))
+      },
+      TaskStopped(attempt) => {
+        mut scope := attempt.scope
+        released := match prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192) {
+          Ok(report) => report.released, Err(_) => false,
+        }
+        if !released { return Ok(Attempt.Stopped(Retained { scope: scope, storage: storage, names: names, owned: owned })) }
+        Attempt.Failed(failure("ADAPTER_RESULT", "task process did not complete"))
+      },
+    },
+  }
+  if !removed {
+    removed = match prompt_evaluation_runtime.remove(storage, true, time.instant() + 10000000000) { Ok(_) => true, Err(_) => false }
+  }
+  retired := match prompt_evaluation_invocation.retire(workspace, names, owned) { Ok(_) => true, Err(_) => false }
+  if !removed { survivors.push(storage.path.clone()) }
+  if !retired {
+    if (owned & 1) != 0 { survivors.push(names.variant.clone()) }
+    if (owned & 2) != 0 { survivors.push(names.rendered.clone()) }
+    if (owned & 4) != 0 { survivors.push(names.request.clone()) }
+    if (owned & 8) != 0 { survivors.push(names.measurement.clone()) }
+  }
+  if !removed || !retired { return Ok(Attempt.Failed(failure("CLEANUP_FAILED", "evaluator-owned invocation storage could not be removed"))) }
+  return Ok(resolved)
+}
+
+fn close(
+  borrow task: prompt_task_inputs.Task, borrow row_bindings: prompt_invocation_records.RowBindings,
+  borrow bindings: prompt_invocation_records.AttemptBindings, borrow rendered: prompt_artifacts.RenderedPromptArtifact,
+  invocation: prompt_invocation_records.Invocation, attempts: array_builder<prompt_artifacts.TaskAttemptRecord>,
+  borrow mut attestations: array_builder<prompt_artifacts.RunSnapshotAttestation>,
+  borrow mut expected: array_builder<prompt_artifacts.PromptExpectedInputDigest>,
+) -> Result<Run, Error> {
+  row := prompt_invocation_records.row(task, row_bindings, bindings, rendered, invocation, attempts.build())?
+  complete := prompt_invocation_records.attestation(task.manifest.task_id, invocation, bindings)?
+  append_expected(task, row, invocation, expected)?
+  attestations.push(complete)
+  return Ok(Run.Complete(row))
+}
+
+fn expected_attempt(borrow task: prompt_task_inputs.Task, borrow attempt: prompt_artifacts.TaskAttemptRecord,
+  invocation: prompt_invocation_records.Invocation) -> Result<prompt_artifacts.PromptExpectedInputDigest, Error> {
+  adapter := match attempt.adapter_request_sha256 { None => { return Err(Error.Invalid) }, Some(value) => value.clone() }
+  return match attempt.measurement {
+    None => Err(Error.Invalid), Some(value) => prompt_invocation_records.expected(task, value, adapter, invocation),
+  }
+}
+
+// Only a completed row contributes expected-input records. A failed repair may retain diagnostic
+// snapshot evidence, but cannot append expected inputs for an absent row.
+fn append_expected(borrow task: prompt_task_inputs.Task, borrow row: prompt_artifacts.PromptTaskRow,
+  invocation: prompt_invocation_records.Invocation, borrow mut expected: array_builder<prompt_artifacts.PromptExpectedInputDigest>) -> Result<(), Error> {
+  return match row.attempts {
+    None => Err(Error.Invalid),
+    Some(attempts) => {
+      mut index := 0
+      loop {
+        if index == attempts.len() { break }
+        if attempts[index].status != "SKIPPED" {
+          selected := prompt_invocation_records.Invocation { task_ordinal: invocation.task_ordinal,
+            sample_index: invocation.sample_index, attempt_index: index + 1, candidate: invocation.candidate, paired_seed: invocation.paired_seed }
+          expected.push(expected_attempt(task, attempts[index], selected)?)
+        }
+        index = index + 1
+      }
+      Ok(())
+    },
+  }
+}
+
+pub fn run(
+  borrow evaluation: prompt_artifacts.PromptEvaluateRequest, borrow task: prompt_task_inputs.Task,
+  borrow variant: prompt_artifacts.PromptVariant, borrow rendered: prompt_artifacts.RenderedPromptArtifact,
+  borrow environment: prompt_artifacts.EnvironmentIdentity, invocation: prompt_invocation_records.Invocation,
+  borrow row_bindings: prompt_invocation_records.RowBindings, borrow mut baseline: array<prompt_artifacts.ArtifactDigest>,
+  borrow runtime: prompt_evaluation_runtime.Runtime, borrow source: fs.directory,
+  borrow workspace: fs.directory, borrow procfs: fs.directory, borrow mut signals: process.signal_subscription, credential: str,
+  borrow mut requests: array_builder<prompt_artifacts.SnapshotRequest>, borrow mut snapshots: array_builder<prompt_artifacts.SnapshotResult>,
+  borrow mut inputs: array_builder<prompt_artifacts.TaskInputSnapshot>, borrow mut attestations: array_builder<prompt_artifacts.RunSnapshotAttestation>,
+  borrow mut expected: array_builder<prompt_artifacts.PromptExpectedInputDigest>, borrow mut survivors: array_builder<string>,
+) -> Result<Run, Error> {
+  if invocation.attempt_index != 1 { return Err(Error.Invalid) }
+  mut initial: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  mut bindings := prompt_evaluation_invocation.empty_bindings(0)
+  first := match invoke(evaluation, task, variant, rendered, environment, invocation, baseline, runtime,
+    source, workspace, procfs, signals, credential, initial, bindings, requests, snapshots, inputs, attestations, survivors)? {
+    Measured(value) => value, Failed(error) => { return Ok(Run.Failed(error)) }, Stopped(owner) => { return Ok(Run.Stopped(owner)) },
+  }
+  if baseline.len() == 0 { baseline = initial.build() }
+  mut attempts: array_builder<prompt_artifacts.TaskAttemptRecord> := array_builder()
+  if first.status != "FAIL" || task.manifest.regression_limits.maximum_repair_loops == 0 {
+    attempts.push(prompt_invocation_records.attempt(first, bindings, invocation, None)?)
+    return close(task, row_bindings, bindings, rendered, invocation, attempts, attestations, expected)
+  }
+  started := time.instant()
+  if !prompt_repair.eligible(first) {
+    attempts.push(prompt_invocation_records.attempt(first, bindings, invocation, None)?)
+    attempts.push(prompt_invocation_records.skipped("REPAIR_INPUT_UNAVAILABLE", None, time.instant() - started, invocation.paired_seed)?)
+    return close(task, row_bindings, bindings, rendered, invocation, attempts, attestations, expected)
+  }
+  mut template_sha256 := "".clone()
+  assembly := match task.repair_template {
+    None => {
+      attempts.push(prompt_invocation_records.attempt(first, bindings, invocation, None)?)
+      attempts.push(prompt_invocation_records.skipped("REPAIR_NOT_ELIGIBLE", None, time.instant() - started, invocation.paired_seed)?)
+      return close(task, row_bindings, bindings, rendered, invocation, attempts, attestations, expected)
+    },
+    Some(repair_template) => {
+      template_sha256 = repair_template.content_sha256.clone()
+      arena allowed_region {
+        mut allowed: array_builder<str> := array_builder(allowed_region)
+        mut index := 0
+        loop { if index == task.definition.allowed_edits.len() { break }; allowed.push(task.definition.allowed_edits[index]); index = index + 1 }
+        prompt_repair.assemble(repair_template, first, allowed.build(), task.manifest.edit_policy, rendered.text, task.generation.max_prompt_bytes)
+      }?
+    },
+  }
+  provenance := prompt_invocation_records.repair_source(template_sha256, first.content_sha256, assembly)?
+  repair_rendered := match assembly.text {
+    Some(text) => prompt_invocation_records.rendered(rendered, text)?,
+    None => {
+      attempts.push(prompt_invocation_records.attempt(first, bindings, invocation, None)?)
+      attempts.push(prompt_invocation_records.skipped("REPAIR_PROMPT_BUDGET", Some(provenance), time.instant() - started, invocation.paired_seed)?)
+      return close(task, row_bindings, bindings, rendered, invocation, attempts, attestations, expected)
+    },
+  }
+  attempts.push(prompt_invocation_records.attempt(first, bindings, invocation, None)?)
+  repair_invocation := prompt_invocation_records.Invocation {
+    task_ordinal: invocation.task_ordinal, sample_index: invocation.sample_index, attempt_index: 2,
+    candidate: invocation.candidate, paired_seed: invocation.paired_seed,
+  }
+  mut repair_bindings := prompt_evaluation_invocation.empty_bindings(time.instant() - started)
+  mut unused: array_builder<prompt_artifacts.ArtifactDigest> := array_builder()
+  second := match invoke(evaluation, task, variant, repair_rendered, environment, repair_invocation, baseline,
+    runtime, source, workspace, procfs, signals, credential, unused, repair_bindings,
+    requests, snapshots, inputs, attestations, survivors)? {
+    Measured(value) => value, Failed(error) => { return Ok(Run.Failed(error)) }, Stopped(owner) => { return Ok(Run.Stopped(owner)) },
+  }
+  attempts.push(prompt_invocation_records.attempt(second, repair_bindings, repair_invocation, Some(provenance))?)
+  return close(task, row_bindings, repair_bindings, rendered, repair_invocation, attempts, attestations, expected)
+}

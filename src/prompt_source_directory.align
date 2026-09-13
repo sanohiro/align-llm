@@ -1,0 +1,76 @@
+module prompt_source_directory
+
+import std.fs
+import std.time
+
+pub Located { path: array<u8>, directory: fs.directory }
+
+fn valid(path: slice<u8>) -> bool {
+  if path.len() > 4096 { return false }
+  mut index := 0
+  loop {
+    if index == path.len() { return true }
+    if path[index] == 0 { return false }
+    index = index + 1
+  }
+}
+
+fn joined(base: slice<u8>, pointer: slice<u8>) -> array<u8> {
+  if pointer.len() > 0 && pointer[0] == 47 { return pointer.to_array() }
+  mut output := buffer(0)
+  output.append(base)
+  output.put_u8(47 as u8)
+  output.append(pointer)
+  return output.bytes().to_array()
+}
+
+fn child(parent: slice<u8>, name: slice<u8>) -> array<u8> {
+  mut output := buffer(0)
+  output.append(parent)
+  if parent.len() > 1 { output.put_u8(47 as u8) }
+  output.append(name)
+  return output.bytes().to_array()
+}
+
+fn parent(path: slice<u8>) -> array<u8> {
+  mut end := path.len()
+  loop {
+    if end <= 1 { return "/".bytes().to_array() }
+    end = end - 1
+    if path[end] == 47 { return path[0..if end == 0 { 1 } else { end }].to_array() }
+  }
+}
+
+fn retained(borrow root: fs.directory, path: slice<u8>) -> Result<fs.directory, Error> {
+  if path.len() == 1 { return fs.open_directory("/") }
+  return root.open_dir(path[1..path.len()])
+}
+
+pub fn resolve(base: slice<u8>, pointer: slice<u8>, deadline: i64) -> Result<Located, Error> {
+  if !valid(base) || !valid(pointer) || base.len() == 0 || base[0] != 47 { return Err(Error.Invalid) }
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  root := fs.open_directory("/")?
+  path := joined(base, pointer)
+  mut current := "/".bytes().to_array()
+  mut start := 1
+  mut index := 1
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if index == path.len() || path[index] == 47 {
+      part := path[start..index]
+      if part.len() == 2 && part[0] == 46 && part[1] == 46 {
+        current = parent(current)
+      } else if part.len() > 0 && !(part.len() == 1 && part[0] == 46) {
+        current = child(current, part)
+        if current.len() > 4096 { return Err(Error.Invalid) }
+        visited := retained(root, current)?
+      }
+      start = index + 1
+    }
+    if index == path.len() { break }
+    index = index + 1
+  }
+  directory := retained(root, current)?
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  return Ok(Located { path: current, directory: directory })
+}

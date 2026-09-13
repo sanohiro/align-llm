@@ -1,0 +1,143 @@
+module prompt_task_supervisor_smoke
+
+import prompt_task_supervisor
+import prompt_scope_cleanup
+import prompt_capture
+import prompt_validation_budget
+import std.process
+import std.fs
+import std.time
+
+fn check_report(borrow report: prompt_task_supervisor.Report, mode: i64) -> Result<(), Error> {
+  if !report.cleanup.released { print("supervisor cleanup not released"); return Err(Error.Invalid) }
+  match report.cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+  match report.drain_error { None => {}, Some(error) => { return Err(error) } }
+  match report.stop {
+    Collected => { if mode != 0 && mode != 1 && mode != 4 && mode != 5 && mode != 11 { return Err(Error.Invalid) } },
+    Timeout => { if mode != 2 && mode != 3 && mode != 10 { return Err(Error.Invalid) } },
+    Cancelled(signal) => {
+      expected := if mode == 6 { process.signal.Terminate } else { process.signal.Interrupt }
+      if (mode != 6 && mode != 12) || process.signal_number(signal) != process.signal_number(expected) { return Err(Error.Invalid) }
+    },
+    Resource(decision) => {
+      if mode != 7 { return Err(Error.Invalid) }
+      match decision { IncompleteObservation => {}, _ => { return Err(Error.Invalid) } }
+    },
+    Failed(error) => {
+      if mode != 8 && mode != 9 { return Err(Error.Invalid) }
+      match error { Invalid => {}, _ => { return Err(error) } }
+    },
+  }
+  match report.termination {
+    None => { print("missing final root termination"); return Err(Error.Invalid) },
+    Some(termination) => {
+      match termination {
+        Exited(code) => {
+          expected := if mode == 0 { 7 } else if mode == 5 { 9 } else { 0 }
+          if mode != 0 && mode != 3 && mode != 4 && mode != 5 && mode != 11 { return Err(Error.Invalid) }
+          if code != expected { return Err(Error.Invalid) }
+        },
+        Signaled(signal) => {
+          expected := if mode == 1 { process.signal.Terminate } else { process.signal.Kill }
+          if mode == 0 || mode == 3 || mode == 4 || mode == 5 || mode == 11 { return Err(Error.Invalid) }
+          if signal != process.signal_number(expected) { return Err(Error.Invalid) }
+        },
+      }
+    },
+  }
+  out := report.stdout[0..report.stdout.len()].as_str()?
+  err := report.stderr[0..report.stderr.len()].as_str()?
+  expected_out := if mode == 0 { "A[REDACTED]B" } else if mode == 5 { "012345678901234567890123456789012345678901234\n[output truncated]" } else { "" }
+  expected_err := if mode == 0 { "C[REDACTED]D" } else if mode == 5 { "abcdefghijabcdefghijabcdefghijabcdefghijabcde\n[output truncated]" } else { "" }
+  if out != expected_out || err != expected_err || report.stdout_truncated != (mode == 5) || report.stderr_truncated != (mode == 5) {
+    print("supervisor capture mismatch"); print(out); print(err); return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
+fn exercise(
+  borrow mut scope: process.child_scope,
+  borrow mut signals: process.signal_subscription,
+  borrow workspace: fs.directory,
+  borrow procfs: fs.directory,
+  mode: i64,
+  owner_pid: str,
+) -> Result<(), Error> {
+  identity := builder()
+  identity.write_int(scope.owner_id())
+  if identity.to_string() != owner_pid { return Err(Error.Invalid) }
+  pattern := prompt_capture.pattern("secret", 64)?
+  mut limits := prompt_validation_budget.defaults()
+  if mode == 8 { limits.workspace_files = 1 }
+  if mode == 9 || mode == 10 { limits.processes = 0 }
+  config := prompt_task_supervisor.Config {
+    deadline: if mode == 10 { 0 } else { time.instant() + (if mode == 2 || mode == 3 { 300000000 } else { 10000000000 }) },
+    resources: mode >= 7 && mode <= 11,
+    limits: limits,
+  }
+  report := prompt_task_supervisor.run(scope, signals, workspace, procfs, pattern, config)?
+  // A second lease is forbidden until the caller explicitly closes its lease.
+  match process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true }) {
+    Err(error) => { match error { Invalid => {}, _ => { return Err(error) } } },
+    Ok(value) => { mut unexpected := value; unexpected.close()?; return Err(Error.Invalid) },
+  }
+  check_report(report, mode)?
+  if !scope.release()? { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn run_case(borrow workspace: fs.directory, borrow procfs: fs.directory, mode: i64, owner_pid: str) -> Result<(), Error> {
+  script := if mode == 0 { "printf AsecretB; printf CsecretD >&2; exit 7" } else if mode == 1 { "kill -TERM $$" } else if mode == 2 { "exec 1>&- 2>&-; exec sleep 120" } else if mode == 3 { "sleep 120 & exit 0" } else if mode == 4 { "sleep 120 </dev/null >/dev/null 2>&1 & exit 0" } else if mode == 5 { "i=0; while [ $i -lt 5000 ]; do printf 0123456789; printf abcdefghij >&2; i=$((i+1)); done; exit 9" } else if mode == 6 { "[ \"$1\" = \"$PPID\" ] || exit 91; kill -TERM \"$1\"; exec sleep 120" } else if mode == 12 { "[ \"$1\" = \"$PPID\" ] || exit 91; kill -INT \"$1\"; exec sleep 120" } else if mode == 11 { "sleep 0.05; exit 0" } else { "exec sleep 120" }
+  command := process.command("/bin/sh", ["/bin/sh", "-c", script, "supervisor-owner-child", owner_pid])
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  mut scope := match command.start_scope() {
+    Ok(value) => value,
+    Err(error) => { signals.close()?; return Err(error) },
+  }
+  result := exercise(scope, signals, workspace, procfs, mode, owner_pid)
+  // Keep both owners here: every fallible exercise gets explicit fallback cleanup,
+  // and restoration is attempted before propagating either cleanup or test errors.
+  fallback := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)
+  restored := signals.close()
+  cleanup := fallback?
+  restored?
+  if !cleanup.released { return Err(Error.Timeout) }
+  match cleanup.first_error { None => {}, Some(error) => { return Err(error) } }
+  result?
+  // Successful reacquisition proves the supervisor did not consume the caller's
+  // lease and our explicit close released the process-global reservation.
+  mut again := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  again.close()?
+  print(mode)
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 6 { return Err(Error.Invalid) }
+  if args[1] == "Darwin" {
+    command := process.command("/bin/sh", ["/bin/sh", "-c", "exit 0"])
+    match command.start_scope() {
+      Err(error) => { match error { Code(code) => { if code != 45 { return Err(Error.Invalid) } }, _ => { return Err(Error.Invalid) } } },
+      Ok(value) => { mut unexpected := value
+        cleanup := prompt_scope_cleanup.run(unexpected, time.instant() + 10000000000, 32768, 8192)?
+        if !cleanup.released { return Err(Error.Timeout) }
+        return Err(Error.Invalid)
+      },
+    }
+    print("task supervisor: Darwin ENOTSUP 45 PASS; Linux execution not exercised")
+    return Ok(())
+  }
+  if args[1] != "Linux" { return Err(Error.Invalid) }
+  workspace := fs.open_directory(args[2])?
+  procfs := fs.open_directory("/proc")?
+  missing := fs.open_directory(args[3])?
+  crowded := fs.open_directory(args[4])?
+  mut mode := 0
+  loop {
+    if mode == 13 { break }
+    if mode == 7 { run_case(workspace, missing, mode, args[5])? } else if mode == 8 { run_case(crowded, procfs, mode, args[5])? } else { run_case(workspace, procfs, mode, args[5])? }
+    mode = mode + 1
+  }
+  print("task supervisor: 13 Linux live cases, cleanup/final drain, cancellation, resources and explicit signal restoration PASS")
+  return Ok(())
+}

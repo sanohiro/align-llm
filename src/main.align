@@ -22,6 +22,7 @@ import persisted_result
 import prompt_evaluate
 import prompt_experiment
 import prompt_generate
+import prompt_generation_worker
 import prompt_state
 import verification_loop
 import result
@@ -1379,6 +1380,10 @@ fn runtime_session_command(borrow args: array<str>) -> Result<(), Error> {
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() > 1 && args[1] == "--prompt-generation-worker" {
+    if args.len() != 3 { return Err(Error.Invalid) }
+    return prompt_generation_worker.run(args[2])
+  }
   if args.len() > 1 && args[1] == "--runtime-session" { return runtime_session_command(args) }
   if args.len() == 1 {
     print_help()

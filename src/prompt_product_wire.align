@@ -1,0 +1,106 @@
+module prompt_product_wire
+
+import core.json
+
+fn absent(document: json.doc, names: slice<str>) -> bool {
+  mut index := 0
+  loop {
+    if index == names.len() { break }
+    match document.get(names[index]).kind() {
+      Missing => {},
+      _ => { return false },
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn present(document: json.doc, names: slice<str>) -> bool {
+  mut index := 0
+  loop {
+    if index == names.len() { break }
+    match document.get(names[index]).kind() {
+      Missing => { return false },
+      Null => { return false },
+      _ => {},
+    }
+    index = index + 1
+  }
+  return true
+}
+
+fn version_members(document: json.doc, version: i64, legacy: slice<str>, current: slice<str>, required: bool) -> bool {
+  if version == 1 { return absent(document, current) && (!required || present(document, legacy)) }
+  return absent(document, legacy) && (!required || present(document, current))
+}
+
+fn record_exclusions(document: json.doc, required: bool) -> bool {
+  kind := document.get("artifact_kind").as_str() else { return true }
+  changed := kind == "PROMPT_EVALUATE_REQUEST" || kind == "PROMPT_SOURCE_VERIFIER_POLICY" ||
+  kind == "PROMPT_EVALUATION_TASK" || kind == "ENVIRONMENT_IDENTITY_CORE" ||
+  kind == "TASK_ADAPTER_REQUEST" || kind == "TASK_MEASUREMENT" || kind == "PROMPT_GATE_SOURCE_LOCATOR"
+  if !changed { return true }
+  version := document.get("schema_version").as_i64() else { return false }
+  if kind == "TASK_MEASUREMENT" {
+    if version >= 1 && version <= 3 { return absent(document, ["product_runtime"]) }
+    if version == 4 { return absent(document, ["base_adapter_runtime_identity"]) && (!required || present(document, ["product_runtime"])) }
+    return false
+  }
+  if version != 1 && version != 2 { return false }
+  if kind == "PROMPT_EVALUATE_REQUEST" {
+    return version_members(document, version, ["verifier_python_executable_path", "generation_child_path", "generation_child_sha256"], ["product_executable_path", "product_executable_sha256"], required)
+  }
+  if kind == "PROMPT_SOURCE_VERIFIER_POLICY" {
+    return version_members(document, version, ["helper_path", "helper_sha256", "helper_runtime", "interpreter_sha256"], ["product_executable_sha256"], required)
+  }
+  if kind == "PROMPT_EVALUATION_TASK" {
+    return version_members(document, version, ["cmd", "argv", "snapshot_cmd", "snapshot_argv", "measurement_adapter_runtime", "snapshot_helper_runtime", "validation_runner_path", "validation_runner_sha256", "validation_argv"], ["execution_kind"], required)
+  }
+  if kind == "ENVIRONMENT_IDENTITY_CORE" {
+    return version_members(document, version, ["measurement_adapter_runtime", "snapshot_helper_runtime", "source_verifier_runtime"], ["product_runtime"], required)
+  }
+  if kind == "TASK_ADAPTER_REQUEST" {
+    return version_members(document, version, ["validation_runner_path", "validation_runner_sha256", "validation_argv", "generation_child_path", "generation_child_sha256"], ["product_executable_sha256"], required)
+  }
+  if kind == "PROMPT_GATE_SOURCE_LOCATOR" {
+    return version_members(document, version, ["source_verifier_relative_path", "source_verifier_sha256", "source_verifier_runtime", "source_verifier_interpreter_sha256", "generation_child_sha256"], ["independent_verifier_relative_path", "independent_verifier_sha256", "independent_verifier_runtime", "independent_verifier_interpreter_sha256", "product_executable_sha256"], required)
+  }
+  return false
+}
+
+fn check_node(document: json.doc, required: bool) -> bool {
+  match document.kind() {
+    Object => { if !record_exclusions(document, required) { return false } },
+    Array => {},
+    _ => { return true },
+  }
+  arena {
+    children := document.elems()
+    mut index := 0
+    loop {
+      if index == children.len() { break }
+      if !check_node(children[index], required) { return false }
+      index = index + 1
+    }
+  }
+  return true
+}
+
+// This is a removed-field presence guard, not complete artifact validation.
+pub fn check_removed_fields(source: str) -> Result<(), Error> {
+  arena {
+    document := json.doc(source)?
+    if !check_node(document, false) { return Err(Error.Invalid) }
+  }
+  return Ok(())
+}
+
+// Preserve required schema-specific members despite the shared Option representation.
+// Common required fields and payload types remain the typed decoder's responsibility.
+pub fn check_versioned_fields(source: str) -> Result<(), Error> {
+  arena {
+    document := json.doc(source)?
+    if !check_node(document, true) { return Err(Error.Invalid) }
+  }
+  return Ok(())
+}

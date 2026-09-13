@@ -1,0 +1,242 @@
+module prompt_product_wire_smoke
+
+import core.json
+import prompt_product_wire
+import prompt_artifacts
+import std.encoding
+
+DecodedProjection { schema_version: i64, artifact_kind: string, note: Option<string> }
+
+fn decoder_boundary() -> Result<(), Error> {
+  source := "{\"schema_version\":1,\"artifact_kind\":\"PROMPT_SOURCE_VERIFIER_POLICY\",\"policy_id\":\"policy\",\"helper_path\":\"helper\",\"helper_sha256\":\"digest\",\"helper_runtime\":\"runtime\",\"interpreter_sha256\":\"interpreter\",\"git_executable_sha256\":\"git\",\"content_sha256\":\"content\"}"
+  accepted := prompt_artifacts.decode_prompt_source_verifier_policy(source)?
+  if accepted.policy_id != "policy" { return Err(Error.Invalid) }
+  altered := builder()
+  altered.write(source[0..source.len() - 1])
+  altered.write(",\"product_executable_sha256\":null}")
+  match prompt_artifacts.decode_prompt_source_verifier_policy(altered.to_string()) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(_) => {},
+  }
+  return Ok(())
+}
+
+fn expected(source: str, accepted: bool) -> Result<(), Error> {
+  match prompt_product_wire.check_removed_fields(source) {
+    Ok(_) => { if !accepted { print(source); return Err(Error.Invalid) } },
+    Err(_) => { if accepted { print(source); return Err(Error.Invalid) } },
+  }
+  return Ok(())
+}
+
+fn record(kind: str, version: str, field: str, value: str, escaped: bool) -> string {
+  output := builder()
+  output.write("{\"artifact_kind\":\"")
+  output.write(kind)
+  output.write("\"")
+  if version.len() > 0 {
+    output.write(",\"schema_version\":")
+    output.write(version)
+  }
+  if field.len() > 0 {
+    output.write(",\"")
+    if escaped {
+      output.write("\\u00")
+      output.write(encoding.hex_encode(field.bytes()[0..1]))
+      output.write(field[1..field.len()])
+    } else {
+      output.write(field)
+    }
+    output.write("\":")
+    output.write(value)
+  }
+  output.write("}")
+  return output.to_string()
+}
+
+fn nested(source: str, array_root: bool) -> string {
+  output := builder()
+  output.write(if array_root { "[null,{\"rows\":[{\"attempts\":[{\"measurement\":" } else {
+      "{\"artifact_kind\":\"UNRELATED\",\"rows\":[{\"attempts\":[{\"measurement\":"
+    })
+  output.write(source)
+  output.write(if array_root { "}]}]}]" } else { "}]}]}" })
+  return output.to_string()
+}
+
+// This independent matrix comes from the product-boundary transformation table.
+// Every excluded name is checked as null/scalar, plain/escaped, and at three depths.
+fn fields(kind: str, forbidden_version: str, allowed_version: str, names: slice<str>) -> Result<(), Error> {
+  mut index := 0
+  loop {
+    if index == names.len() { break }
+    values := ["null", "\"PYTHON:forbidden\""]
+    mut value_index := 0
+    loop {
+      if value_index == values.len() { break }
+      mut escape_index := 0
+      loop {
+        if escape_index == 2 { break }
+        source := record(kind, forbidden_version, names[index], values[value_index], escape_index == 1)
+        expected(source, false)?
+        object_nested := nested(source, false)
+        expected(object_nested, false)?
+        array_nested := nested(source, true)
+        expected(array_nested, false)?
+        allowed := record(kind, allowed_version, names[index], values[value_index], escape_index == 1)
+        expected(allowed, true)?
+        allowed_nested := nested(allowed, true)
+        expected(allowed_nested, true)?
+        escape_index = escape_index + 1
+      }
+      value_index = value_index + 1
+    }
+    index = index + 1
+  }
+  return Ok(())
+}
+
+fn expected_required(source: str, accepted: bool) -> Result<(), Error> {
+  match prompt_product_wire.check_versioned_fields(source) {
+    Ok(_) => { if !accepted { print(source); return Err(Error.Invalid) } },
+    Err(_) => { if accepted { print(source); return Err(Error.Invalid) } },
+  }
+  return Ok(())
+}
+
+// Minimal shapes exercise this guard's schema-specific presence contract only;
+// common required fields, string grammar and array element types belong to typed validation.
+fn required_record(kind: str, version: str, names: slice<str>, changed_index: i64, null_value: bool) -> string {
+  prefix := record(kind, version, "", "", false)
+  output := builder()
+  output.write(prefix[0..prefix.len() - 1])
+  mut index := 0
+  loop {
+    if index == names.len() { break }
+    if index != changed_index || null_value {
+      output.write(",\"")
+      output.write(names[index])
+      output.write("\":")
+      if index == changed_index {
+        output.write("null")
+      } else {
+        name := names[index]
+        output.write(if name == "argv" || name == "snapshot_argv" || name == "validation_argv" { "[]" } else { "\"value\"" })
+      }
+    }
+    index = index + 1
+  }
+  output.write("}")
+  return output.to_string()
+}
+
+fn required_fields(kind: str, version: str, names: slice<str>) -> Result<(), Error> {
+  complete := required_record(kind, version, names, -1, false)
+  expected_required(complete, true)?
+  complete_nested := nested(complete, true)
+  expected_required(complete_nested, true)?
+  mut index := 0
+  loop {
+    if index == names.len() { break }
+    missing := required_record(kind, version, names, index, false)
+    nulled := required_record(kind, version, names, index, true)
+    expected_required(missing, false)?
+    expected_required(nulled, false)?
+    missing_nested := nested(missing, false)
+    nulled_nested := nested(nulled, true)
+    expected_required(missing_nested, false)?
+    expected_required(nulled_nested, false)?
+    index = index + 1
+  }
+  return Ok(())
+}
+
+fn family(kind: str, old_version: str, new_version: str, old_fields: slice<str>, new_fields: slice<str>) -> Result<(), Error> {
+  if kind == "TASK_MEASUREMENT" {
+    // Legacy base identity is optional at the wire guard; historical typed rules own it.
+    legacy := record(kind, old_version, "", "", false)
+    expected_required(legacy, true)?
+    legacy_nested := nested(legacy, true)
+    expected_required(legacy_nested, true)?
+  } else {
+    required_fields(kind, old_version, old_fields)?
+  }
+  required_fields(kind, new_version, new_fields)?
+  fields(kind, new_version, old_version, old_fields)?
+  fields(kind, old_version, new_version, new_fields)?
+  old_partial := record(kind, old_version, "", "", false)
+  new_partial := record(kind, new_version, "", "", false)
+  expected(old_partial, true)?
+  expected(new_partial, true)?
+  versions := ["", "0", "-1", "99", "null", "\"2\"", "true"]
+  mut index := 0
+  loop {
+    if index == versions.len() { break }
+    source := record(kind, versions[index], "", "", false)
+    expected(source, false)?
+    wrapped := nested(source, false)
+    expected(wrapped, false)?
+    index = index + 1
+  }
+  unsupported := record(kind, if kind == "TASK_MEASUREMENT" { "5" } else { "3" }, "", "", false)
+  expected(unsupported, false)?
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 1 { return Err(Error.Invalid) }
+  family("PROMPT_EVALUATE_REQUEST", "1", "2",
+    ["verifier_python_executable_path", "generation_child_path", "generation_child_sha256"],
+    ["product_executable_path", "product_executable_sha256"])?
+  family("PROMPT_SOURCE_VERIFIER_POLICY", "1", "2",
+    ["helper_path", "helper_sha256", "helper_runtime", "interpreter_sha256"],
+    ["product_executable_sha256"])?
+  family("PROMPT_EVALUATION_TASK", "1", "2",
+    ["cmd", "argv", "snapshot_cmd", "snapshot_argv", "measurement_adapter_runtime", "snapshot_helper_runtime", "validation_runner_path", "validation_runner_sha256", "validation_argv"],
+    ["execution_kind"])?
+  family("ENVIRONMENT_IDENTITY_CORE", "1", "2",
+    ["measurement_adapter_runtime", "snapshot_helper_runtime", "source_verifier_runtime"],
+    ["product_runtime"])?
+  family("TASK_ADAPTER_REQUEST", "1", "2",
+    ["validation_runner_path", "validation_runner_sha256", "validation_argv", "generation_child_path", "generation_child_sha256"],
+    ["product_executable_sha256"])?
+  versions := ["1", "2", "3"]
+  mut index := 0
+  loop {
+    if index == versions.len() { break }
+    family("TASK_MEASUREMENT", versions[index], "4", ["base_adapter_runtime_identity"], ["product_runtime"])?
+    index = index + 1
+  }
+  family("PROMPT_GATE_SOURCE_LOCATOR", "1", "2",
+    ["source_verifier_relative_path", "source_verifier_sha256", "source_verifier_runtime", "source_verifier_interpreter_sha256", "generation_child_sha256"],
+    ["independent_verifier_relative_path", "independent_verifier_sha256", "independent_verifier_runtime", "independent_verifier_interpreter_sha256", "product_executable_sha256"])?
+
+  malformed := ["", "{", "[1,", "{\"x\":}", "{\"x\":\"\\q\"}", "{} {}", "[01]"]
+  index = 0
+  loop {
+    if index == malformed.len() { break }
+    expected(malformed[index], false)?
+    index = index + 1
+  }
+  unchanged := ["null", "true", "7", "\"text\"", "[]", "{}",
+    "{\"artifact_kind\":\"UNRELATED\",\"schema_version\":999,\"cmd\":null,\"product_runtime\":null}",
+    "{\"artifact_kind\":\"ENVIRONMENT_PROBE\",\"schema_version\":2,\"producer\":\"ALIGN_TASK\"}",
+    "{\"schema_version\":2,\"cmd\":null}",
+    "{\"artifact_kind\":null,\"cmd\":null}"]
+  index = 0
+  loop {
+    if index == unchanged.len() { break }
+    expected(unchanged[index], true)?
+    index = index + 1
+  }
+  // Typed decoding discards the undeclared forbidden key and collapses null to None.
+  original := "{\"schema_version\":2,\"artifact_kind\":\"PROMPT_EVALUATION_TASK\",\"cmd\":null,\"note\":null}"
+  projection: DecodedProjection := json.decode(original)?
+  erased := json.encode(projection)?
+  if match projection.note { Some(_) => true, None => false } { return Err(Error.Invalid) }
+  expected(original, false)?
+  expected(erased, true)?
+  decoder_boundary()?
+  print("prompt product wire smoke: seven families, bidirectional exclusions, measurement versions 1-4, null/scalar/escaped keys, nested rows/attempts, parser refusals, partial exclusion records, required-member missing/null refusal and minimal old/new shapes, typed-decoder information loss and connected decoder PASS")
+  return Ok(())
+}

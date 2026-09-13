@@ -1,0 +1,196 @@
+module eval_retirement
+
+import std.fs
+import std.env
+import std.crypto
+import std.encoding
+
+// Frozen historical implementations are replay data, never evaluator backends.
+RETIRED_PATHS := ["eval/runners/run-coding-task.py", "scripts/prompt-evaluate.py", "scripts/prompt-fixed-adapter.py", "scripts/prompt-measurement-adapter.py", "scripts/prompt-repair-adapter.py", "scripts/prompt-snapshot-helper.py", "scripts/prompt-source-verifier.py", "scripts/prompt-template-adapter.py"]
+RETIRED_HASHES := ["6d6c203be044e993f04a2261e3b03c19aca06ae369e25743d8bed174e7879bcd", "dc1c7eec9cbe4d44285ef66bcfc5d843e132245359b492f3b22bc1bedd37b295", "586ffce5394426786ae6d12c16a6d153ab9dd158ca76f453933619b6cbe4d9a4", "2d3796dbf1159d4a9528a62bbb9af0f36ccc5878b76d83aa65fa0d39cca7b20c", "fa73f9dc20415bfa59b37ad8a86c971e8d0e9dc5ba228812789e7726685283da", "9621307752feed0e18ec185f7c860412365299b1b7a034db118b95ec7b449aa6", "3a2b866ad17f4cf85444418e717831283f0df7680aa3b25cf0fa39767980ba62", "d7db8af661ec4e45353b690be58d0dc932d4bf7527fab8ac7354a2ffe90f9dc2"]
+
+fn join(cwd: str, path: str) -> string {
+  if path.starts_with("/") { return path.clone() }
+  value := builder()
+  value.write(cwd); value.write("/"); value.write(path)
+  return value.to_string()
+}
+
+fn basename(path: str) -> str {
+  mut start := path.len()
+  loop {
+    if start == 0 || path.bytes()[start - 1] == 47 { break }
+    start = start - 1
+  }
+  return path[start..path.len()]
+}
+
+fn retired_path(path: str) -> bool {
+  mut index := 0
+  loop {
+    if index == RETIRED_PATHS.len() { return false }
+    retired := RETIRED_PATHS[index]
+    if path == retired || (path.ends_with(retired) && path.len() > retired.len() &&
+      path.bytes()[path.len() - retired.len() - 1] == 47) { return true }
+    index = index + 1
+  }
+}
+
+fn normalized(path: str) -> string {
+  mut result := "".clone()
+  mut start := 0
+  mut index := 0
+  loop {
+    if index == path.len() || path.bytes()[index] == 47 {
+      part := path[start..index]
+      if part == ".." {
+        mut end := result.len()
+        loop {
+          if end == 0 { break }
+          end = end - 1
+          if result.bytes()[end] == 47 { break }
+        }
+        result = result[0..end].clone()
+      } else if part.len() > 0 && part != "." {
+        next := builder()
+        next.write(result); next.write("/"); next.write(part)
+        result = next.to_string()
+      }
+      start = index + 1
+    }
+    if index == path.len() { break }
+    index = index + 1
+  }
+  return result
+}
+
+fn python(name: str) -> bool {
+  if !name.starts_with("python") { return false }
+  mut index := 6
+  loop {
+    if index == name.len() { return true }
+    byte := name.bytes()[index]
+    if byte != 46 && !(byte >= 48 && byte <= 57) { return false }
+    index = index + 1
+  }
+}
+
+fn same(before: fs.metadata, after: fs.metadata) -> bool {
+  return before.device == after.device && before.inode == after.inode &&
+  before.size == after.size && before.mode == after.mode &&
+  before.modified_seconds == after.modified_seconds && before.modified_nanoseconds == after.modified_nanoseconds &&
+  before.changed_seconds == after.changed_seconds && before.changed_nanoseconds == after.changed_nanoseconds
+}
+
+fn inspect(path: str, required: bool) -> Result<(), Error> {
+  if retired_path(normalized(path)) { return Err(Error.Invalid) }
+  // Ordinary symlink/dot semantics, with regular admission on the opened fd.
+  // In particular, no preliminary stat followed by a blocking FIFO open.
+  input := match fs.open_regular(path) {
+    Ok(value) => value,
+    Err(error) => {
+      // A missing/inaccessible ordinary external program retains its existing
+      // spawn/test failure record. A selected special file is refused here.
+      if match error { NotFound => true, Denied => true, _ => false } { return Ok(()) }
+      if required { return Err(error) }
+      return Ok(())
+    },
+  }
+  before := input.metadata()?
+  mut known := 0
+  loop {
+    if known == RETIRED_PATHS.len() { break }
+    match fs.open_regular(RETIRED_PATHS[known]) {
+      Ok(retired) => {
+        identity := retired.metadata()?
+        if identity.device == before.device && identity.inode == before.inode { return Err(Error.Invalid) }
+      },
+      Err(_) => {},
+    }
+    known = known + 1
+  }
+  // Frozen implementations are all smaller than 1 MiB. Larger ordinary tools
+  // cannot be byte-identical to one of them; do not hash arbitrary model/data files.
+  if before.size > 1048576 { return Ok(()) }
+  if before.size < 0 { return Err(Error.Invalid) }
+  digest := crypto.sha256_stream()
+  mut count := 0
+  loop {
+    mut chunk := buffer(65536)
+    size := input.read(chunk)?
+    if size == 0 { break }
+    if size > 1048576 - count { return Err(Error.Invalid) }
+    digest.update(chunk.bytes())
+    count = count + size
+  }
+  if count != before.size || !same(before, input.metadata()?) { return Err(Error.Invalid) }
+  hash := digest.finish()
+  text := encoding.hex_encode(hash[0..hash.len()])
+  mut index := 0
+  loop {
+    if index == RETIRED_HASHES.len() { return Ok(()) }
+    if text == RETIRED_HASHES[index] { return Err(Error.Invalid) }
+    index = index + 1
+  }
+}
+
+fn inspect_command(cmd: str, cwd: str) -> Result<(), Error> {
+  if cmd.contains("/") { return inspect(join(cwd, cmd), true) }
+  paths := env.get("PATH") else { return Ok(()) }
+  mut start := 0
+  mut index := 0
+  loop {
+    if index == paths.len() || paths.bytes()[index] == 58 {
+      directory := paths[start..index]
+      selected := join(cwd, if directory.len() == 0 { "." } else { directory })
+      candidate := join(selected, cmd)
+      // Inspect every PATH candidate without executing a discovery helper.
+      inspect(candidate, false)?
+      start = index + 1
+    }
+    if index == paths.len() { break }
+    index = index + 1
+  }
+  return Ok(())
+}
+
+pub fn admit(cmd: str, argv: slice<string>, cwd: str) -> Result<(), Error> {
+  if cmd.len() == 0 || cwd.len() == 0 { return Err(Error.Invalid) }
+  inspect_command(cmd, cwd)?
+  mut needs_script := python(basename(cmd))
+  mut environment_dispatch := basename(cmd) == "env"
+  mut index := 1
+  loop {
+    if index >= argv.len() { break }
+    value: str := argv[index]
+    if environment_dispatch {
+      // Split-string wrappers, like shell -c programs, are caller-supplied
+      // programs rather than one of the supported literal launch descriptors.
+      if value == "-S" || value == "--split-string" { break }
+      if !value.starts_with("-") && !value.contains("=") {
+        needs_script = python(basename(value))
+        environment_dispatch = false
+        inspect_command(value, cwd)?
+      }
+      index = index + 1
+    } else if needs_script {
+      if value == "-c" || value == "-m" { break }
+      if value == "-W" || value == "-X" || value == "--check-hash-based-pycs" {
+        index = index + 1
+        if index >= argv.len() { return Err(Error.Invalid) }
+      } else if value == "--" {
+        index = index + 1
+        if index >= argv.len() { return Err(Error.Invalid) }
+        inspect(join(cwd, argv[index]), true)?
+        break
+      } else if !value.starts_with("-") {
+        inspect(join(cwd, value), true)?
+        break
+      }
+      index = index + 1
+    } else {
+      break
+    }
+  }
+  return Ok(())
+}

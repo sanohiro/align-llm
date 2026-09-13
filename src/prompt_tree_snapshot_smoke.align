@@ -1,0 +1,57 @@
+module prompt_tree_snapshot_smoke
+
+import core.json
+import prompt_tree_snapshot
+import std.fs
+
+fn refused(borrow root: fs.directory, relative: str, entries: i64, bytes: i64) -> Result<(), Error> {
+  match prompt_tree_snapshot.observe(root, relative, entries, bytes) {
+    Ok(_) => { print(relative); return Err(Error.Invalid) },
+    Err(error) => {
+      invalid := match error { Invalid => true, _ => false }
+      if !invalid { print(relative); return Err(Error.Invalid) }
+    },
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 5 { return Err(Error.Invalid) }
+  root := fs.open_directory(args[1])?
+  empty := prompt_tree_snapshot.observe(root, "empty", 1, 0)?
+  print(json.encode(empty)?)
+  tree := prompt_tree_snapshot.observe(root, "tree", 7, 12)?
+  print(json.encode(tree)?)
+  roomy := prompt_tree_snapshot.observe(root, "tree", 128, 1073741824)?
+  if roomy.sha256 != tree.sha256 || roomy.byte_count != tree.byte_count { return Err(Error.Invalid) }
+  deep := prompt_tree_snapshot.observe(root, "deep128", 128, 0)?
+  if deep.artifact_digests.len() != 128 { return Err(Error.Invalid) }
+  print(json.encode(deep)?)
+
+  refused(root, "tree", 6, 12)?
+  refused(root, "tree", 7, 11)?
+  refused(root, "deep129", 128, 0)?
+  refused(root, "empty", 0, 0)?
+  refused(root, "empty", -1, 0)?
+  refused(root, "empty", 129, 0)?
+  refused(root, "empty", 1, -1)?
+  refused(root, "empty", 1, 1073741825)?
+  refused(root, "symlink", 128, 100)?
+  refused(root, "linked-root", 128, 100)?
+  refused(root, "hardlink", 128, 100)?
+  refused(root, "fifo", 128, 100)?
+  refused(root, "root-file", 128, 100)?
+  if args[4] == "raw" { refused(root, "raw", 128, 100)? }
+
+  fs.rename_no_replace(args[1], args[2])?
+  fs.rename_no_replace(args[3], args[1])?
+  retained := prompt_tree_snapshot.observe(root, "tree", 7, 12)?
+  if retained.sha256 != tree.sha256 { return Err(Error.Invalid) }
+  print(json.encode(retained)?)
+  replacement_root := fs.open_directory(args[1])?
+  replacement := prompt_tree_snapshot.observe(replacement_root, "tree", 2, 5)?
+  if replacement.sha256 == retained.sha256 { return Err(Error.Invalid) }
+  print(json.encode(replacement)?)
+  print("tree-refusals-and-retained-root: PASS")
+  return Ok(())
+}

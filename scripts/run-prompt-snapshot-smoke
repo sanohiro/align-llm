@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+complete=0
+trap 'if [[ "${complete}" == 1 ]]; then rm -rf "${scratch}"; else printf "snapshot fixture retained: %s\n" "${scratch}" >&2; fi' EXIT
+"${compiler}" check-per-unit "${project_root}/src/prompt_snapshot_smoke.align"
+(cd "${scratch}" && "${compiler}" build "${project_root}/src/prompt_snapshot_smoke.align")
+mkdir "${scratch}/project" "${scratch}/project/workspace" "${scratch}/repository" "${scratch}/image" "${scratch}/outside"
+printf abc >"${scratch}/project/input"
+printf def >"${scratch}/project/extra"
+chmod 644 "${scratch}/project/input" "${scratch}/project/extra"
+sha() { shasum -a 256 | cut -d ' ' -f 1; }
+input_sha="$(sha <"${scratch}/project/input")"
+extra_sha="$(sha <"${scratch}/project/extra")"
+expectation="$(printf '100644 input\0F %s\n' "${input_sha}" | sha)"
+revision=1111111111111111111111111111111111111111
+git_sha=-
+workspace="${scratch}/project/workspace"
+run() {
+  "${scratch}/prompt_snapshot_smoke" "$1" "${scratch}/project" "${workspace}" "${scratch}/repository" \
+    "${revision}" "$2" "${expectation}" "${scratch}/image" "${git_sha}" >"${scratch}/actual"
+}
+bound() {
+  claimed="$(jq -er '.content_sha256' "${scratch}/actual")"
+  canonical="$(jq -c '.content_sha256 = ""' "${scratch}/actual")"
+  [[ "$(printf '%s' "${canonical}" | sha)" == "${claimed}" ]]
+}
+run files match
+printf '{"files":[{"path":"input","mode":"100644","byte_count":3,"sha256":"%s"},{"path":"extra","mode":"100644","byte_count":3,"sha256":"%s"}]}\n' "${input_sha}" "${extra_sha}" >"${scratch}/expected"
+cmp "${scratch}/expected" "${scratch}/actual"
+chmod 755 "${scratch}/project/input"
+run files mode
+[[ "$(cat "${scratch}/actual")" == MODE ]]
+chmod 644 "${scratch}/project/input"
+printf changed >"${scratch}/project/input"
+run files content
+[[ "$(cat "${scratch}/actual")" == CONTENT ]]
+rm "${scratch}/project/input"
+run files missing
+[[ "$(cat "${scratch}/actual")" == PATH ]]
+mkdir "${scratch}/project/input"
+run files directory
+[[ "$(cat "${scratch}/actual")" == TYPE ]]
+rmdir "${scratch}/project/input"
+printf abc >"${scratch}/project/input"
+chmod 644 "${scratch}/project/input"
+rm "${scratch}/project/extra"
+run files missing-last
+[[ "$(cat "${scratch}/actual")" == PATH ]]
+printf def >"${scratch}/project/extra"
+chmod 644 "${scratch}/project/extra"
+run files preflight
+bound
+jq -e '.status == "SAFE" and .environment_probe.schema_version == 2 and .environment_probe.producer == "ALIGN_SNAPSHOT"' "${scratch}/actual" >/dev/null
+touch "${workspace}/occupied"
+run files occupied
+[[ "$(cat "${scratch}/actual")" == REFUSED ]]
+rm "${workspace}/occupied"
+workspace="${scratch}/outside"
+run files outside
+[[ "$(cat "${scratch}/actual")" == REFUSED ]]
+workspace="${scratch}/project/workspace"
+if [[ "$(uname -s)" == Linux ]]; then
+  cp "$(command -v git)" "${scratch}/image/git"
+  git_sha="$(sha <"${scratch}/image/git")"
+  export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
+  git -C "${scratch}/repository" init -q --initial-branch=main
+  printf original >"${scratch}/repository/tracked"
+  git -C "${scratch}/repository" add tracked
+  git -C "${scratch}/repository" -c user.name=fixture -c user.email=fixture@example.invalid -c commit.gpgSign=false -c core.hooksPath=/dev/null commit -qm original
+  revision="$(git -C "${scratch}/repository" rev-parse HEAD)"
+  run native match
+  bound
+  jq -e '.status == "MATCH" and .error_code == "NONE" and (.artifact_digests | length) == 2' "${scratch}/actual" >/dev/null
+  printf changed >"${scratch}/repository/tracked"
+  run native dirty
+  bound
+  jq -e '.status == "MISMATCH" and .error_code == "DIRTY_REPO" and .artifact_digests == []' "${scratch}/actual" >/dev/null
+  run native no-git
+  bound
+  jq -e '.status == "MATCH"' "${scratch}/actual" >/dev/null
+  git -C "${scratch}/repository" checkout -- tracked
+  revision=0000000000000000000000000000000000000000
+  run native revision
+  bound
+  jq -e '.error_code == "REPO_REVISION"' "${scratch}/actual" >/dev/null
+  revision="$(git -C "${scratch}/repository" rev-parse HEAD)"
+  touch "${workspace}/undeclared"
+  run native workspace
+  bound
+  jq -e '.error_code == "PATH" and .artifact_digests == []' "${scratch}/actual" >/dev/null
+fi
+complete=1
+printf 'snapshot: literal file goldens, mismatch precedence and workspace preflight PASS\n'
+if [[ "$(uname -s)" == Linux ]]; then
+  printf 'snapshot: native Git admission and complete result identities PASS (Linux)\n'
+fi

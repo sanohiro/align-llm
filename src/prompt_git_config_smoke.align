@@ -1,0 +1,87 @@
+module prompt_git_config_smoke
+
+import prompt_git_config
+import std.fs
+
+fn expect(raw: slice<u8>, admitted: bool) -> Result<(), Error> {
+  actual := match prompt_git_config.check(raw) { Ok(_) => true, Err(_) => false }
+  if actual != admitted { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn assignment(section: str, key: str, admitted: bool) -> Result<(), Error> {
+  text := builder()
+  text.write("[")
+  text.write(section)
+  text.write("]\n")
+  text.write(key)
+  text.write("=anything\n")
+  value := text.to_string()
+  return expect(value.bytes(), admitted)
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  // Optional raw fixture input is used only by the independent differential oracle.
+  if args.len() == 2 {
+    input := fs.open(args[1])?
+    mut raw := buffer(0)
+    loop {
+      mut chunk := buffer(65536)
+      if input.read(chunk)? == 0 { break }
+      raw.append(chunk.bytes())
+      if raw.len() > 4194304 { break }
+    }
+    print(match prompt_git_config.check(raw.bytes()) { Ok(_) => "accepted", Err(_) => "rejected" })
+    return Ok(())
+  }
+  if args.len() != 1 { return Err(Error.Invalid) }
+  core := ["alternaterefscommand", "askpass", "attributesfile", "editor", "excludesfile", "fsmonitor", "fsmonitorhookversion", "gitproxy", "hookspath", "pager", "sshcommand", "worktree"]
+  mut index := 0
+  loop { if index == core.len() { break }; assignment("core", core[index], false)?; index = index + 1 }
+  assignment("credential", "helper", false)?
+  assignment("diff", "external", false)?
+  assignment("gpg", "program", false)?
+  assignment("sequence", "editor", false)?
+  assignment("uploadpack", "packobjectshook", false)?
+  prefixes := ["alias", "credential", "include", "includeIf", "pager"]
+  index = 0
+  loop { if index == prefixes.len() { break }; assignment(prefixes[index], "anything", false)?; index = index + 1 }
+  dual := ["browser", "difftool", "man", "mergetool"]
+  index = 0
+  loop { if index == dual.len() { break }; assignment(dual[index], "nested.cmd", false)?; assignment(dual[index], "nested.path", false)?; index = index + 1 }
+  assignment("diff \"driver\"", "command", false)?
+  assignment("diff \"driver\"", "textconv", false)?
+  assignment("filter \"driver\"", "clean", false)?
+  assignment("filter \"driver\"", "smudge", false)?
+  assignment("filter \"driver\"", "process", false)?
+  assignment("gpg \"ssh\"", "program", false)?
+  assignment("guitool \"tool\"", "cmd", false)?
+  assignment("http \"https://host\"", "proxy", false)?
+  remote := ["promisor", "partialclonefilter", "proxy", "receivepack", "uploadpack"]
+  index = 0
+  loop { if index == remote.len() { break }; assignment("remote \"origin\"", remote[index], false)?; index = index + 1 }
+  admitted := ["", "# comment\r; comment\r\n", "[core]\nrepositoryformatversion = 0\nfilemode=true\nbare=false\n", "[REMOTE \"origin\"]\nurl=anything\npushurl=anything\nfetch=anything\n[branch \"main\"]\nremote=origin\nmerge=refs/heads/main\n", "[remote \"dot.name\"]\nurl=anything\n", "[core]\n=raw value\n", "[remote \"escaped\\\"name\\x\"]\nurl = raw # ; = value\n", "[\u{2003}core\u{00a0}]\nfilemode=true\n", "[branch\u{2003}\"日本語\"]\nmerge=x\n", "[core]\n\u{001c}filemode\u{001f}=true\n"]
+  index = 0
+  loop { if index == admitted.len() { break }; expect(admitted[index].bytes(), true)?; index = index + 1 }
+  refused := ["key=value", "[core]\nflag\n", "[core] trailing\nkey=x", "[core.foo]\nkey=x", "[core\"sub\"]\nkey=x", "[core \"unterminated]\nkey=x", "[core \"bad\"quote\"]\nkey=x", "[core \"bad\\\"]\nkey=x", "[core]\nnonascii界=x", "[CORE]\nSSHCOMMAND=x", "[uploadpacK]\npackobjectshook=x", "[filter \"a\\\"b\"]\nprocess=x", "[core]\n\u{001c}askpass\u{001f}=x", "# nul\0", "[core]\nfilemode=\0"]
+  index = 0
+  loop { if index == refused.len() { break }; expect(refused[index].bytes(), false)?; index = index + 1 }
+  octet := [255 as u8]
+  mut binary := buffer(0)
+  binary.append("[core]\nfilemode=")
+  binary.append(octet[0..1])
+  expect(binary.bytes(), true)?
+  mut invalid_header := buffer(0)
+  invalid_header.append("[")
+  invalid_header.append(octet[0..1])
+  invalid_header.append("]\nkey=x")
+  expect(invalid_header.bytes(), false)?
+  mut cap := buffer(0)
+  index = 0
+  loop { if index == 4194304 { break }; cap.append(" "); index = index + 1 }
+  expect(cap.bytes(), true)?
+  cap.append(" ")
+  expect(cap.bytes(), false)?
+  print("Git config: exact keys, every pattern, quoted/Unicode syntax, raw values, NUL and caps PASS")
+  return Ok(())
+}

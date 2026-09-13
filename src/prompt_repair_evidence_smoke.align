@@ -1,0 +1,119 @@
+module prompt_repair_evidence_smoke
+
+import prompt_repair_evidence
+import prompt_file_blocks
+import prompt_edit_admission
+import prompt_artifacts
+import prompt_repair_sections
+import core.json
+import std.encoding
+
+Wire { edit_set: array<prompt_artifacts.EditSetBlock> }
+
+fn measurement(edits: str) -> Result<prompt_artifacts.TaskMeasurement, Error> {
+  // Unrelated identity fields are inert fixture data: this owner exercises rendering, not admission.
+  source := "{\"schema_version\":3,\"artifact_kind\":\"TASK_MEASUREMENT\",\"status\":\"FAIL\",\"failure_kind\":\"TEST\",\"build_status\":\"PASS\",\"test_status\":\"FAIL\",\"repair_loop_count\":0,\"unrelated_diff_count\":0,\"patch_size_bytes\":0,\"public_api_change_count\":0,\"policy_violation_count\":0,\"cleanup_passed\":true,\"containment_passed\":true,\"rendered_prompt_sha256\":\"\",\"generation_request\":{\"schema_version\":1,\"artifact_kind\":\"\",\"rendered_prompt_sha256\":\"\",\"system_text_sha256\":\"\",\"user_text_sha256\":\"\",\"generation_policy_sha256\":\"\",\"provider_control_sha256\":\"\",\"environment_policy_sha256\":\"\",\"max_tokens\":0,\"temperature_micros\":0,\"paired_seed\":0,\"provider_request_sha256\":\"\",\"seed_attestation_sha256\":\"\",\"content_sha256\":\"\"},\"environment_probe\":{\"schema_version\":1,\"artifact_kind\":\"\",\"producer\":\"\",\"os\":\"\",\"os_release\":\"\",\"architecture\":\"\",\"cpu\":\"\",\"gpu\":\"\",\"runtime_identity\":\"\",\"content_sha256\":\"\"},\"seed_attestation\":{\"schema_version\":1,\"artifact_kind\":\"\",\"provider_kind\":\"\",\"provider_model\":\"\",\"requested_seed\":0,\"result\":\"\",\"provider_request_sha256\":\"\",\"content_sha256\":\"\"},\"diagnostic_summary\":\"  summary\\n\",\"diagnostic_stdout\":\"already [REDACTED]\\r\\n\",\"diagnostic_stderr\":\"stderr\\t界\",\"edit_refusal\":\"MUST_NOT_RENDER_REFUSAL\",\"completion_text\":\"MUST_NOT_RENDER_COMPLETION\",\"content_sha256\":\"\"}".clone()
+  output := builder()
+  output.write(source[0..source.len() - 1])
+  if edits.len() > 0 { output.write(","); output.write(edits[1..edits.len() - 1]) }
+  output.write("}")
+  return json.decode(output.to_string())
+}
+
+fn repeated(size: i64) -> string {
+  output := builder()
+  mut index := 0
+  loop {
+    if index == size { break }
+    output.write("x")
+    index = index + 1
+  }
+  return output.to_string()
+}
+
+fn small() -> Result<prompt_repair_evidence.Evidence, Error> {
+  admitted := prompt_edit_admission.admit("FILE: a.txt\n```\nbefore SECRET 界\n```\n", ["a.txt"])
+  match admitted.status { Complete => {}, _ => { print("repair evidence assertion 36"); return Err(Error.Invalid) } }
+  return prompt_repair_evidence.build(admitted.blocks, "SECRET")
+}
+
+fn body_length(borrow block: prompt_artifacts.EditSetBlock) -> i64 {
+  return match block.body_text { None => -1, Some(text) => text.len() }
+}
+
+fn body_matches(borrow block: prompt_artifacts.EditSetBlock, expected: str) -> bool {
+  return match block.body_text { None => false, Some(text) => text == expected }
+}
+
+fn copy_block(borrow block: prompt_artifacts.EditSetBlock) -> prompt_artifacts.EditSetBlock {
+  body: Option<string> := match block.body_text { None => None, Some(text) => Some(text.clone()) }
+  return prompt_artifacts.EditSetBlock {
+    schema_version: block.schema_version, artifact_kind: block.artifact_kind.clone(),
+    path: block.path.clone(), body_bytes: block.body_bytes, body_sha256: block.body_sha256.clone(),
+    body_text: body, content_sha256: block.content_sha256.clone(),
+  }
+}
+
+fn main() -> Result<(), Error> {
+  // Hash literals are independently computed with CPython hashlib + canonical JSON.
+  evidence := small()?
+  if evidence.total_bytes != 22 || evidence.blocks.len() != 1 { print("repair evidence assertion 60"); return Err(Error.Invalid) }
+  if evidence.blocks[0].body_sha256 != "f3e3732e159d5b09106d261b77d32d5483ceed105777f2f01e4f3511a6bc6d03"
+    || evidence.blocks[0].content_sha256 != "900e9c502cee209e8015809e280191c74560a8dc5125995bb89943837cfff701" { print("repair evidence assertion 62"); return Err(Error.Invalid) }
+  if !body_matches(evidence.blocks[0], "before [REDACTED] 界\n") { print("repair evidence assertion 63"); return Err(Error.Invalid) }
+  // Exact threshold, then one overflowing block, then an empty block: overflow is sticky.
+  full := repeated(16384)
+  boundary := [prompt_file_blocks.FileBlock { path: "a".clone(), body: full.clone() }, prompt_file_blocks.FileBlock { path: "b".clone(), body: "x".clone() }, prompt_file_blocks.FileBlock { path: "c".clone(), body: "".clone() }]
+  bounded := prompt_repair_evidence.build(boundary, "")?
+  if bounded.total_bytes != 16385 { print("repair evidence assertion 68"); return Err(Error.Invalid) }
+  if body_length(bounded.blocks[0]) != 16384 || body_length(bounded.blocks[1]) != -1
+    || body_length(bounded.blocks[2]) != -1 { print("repair evidence assertion 70"); return Err(Error.Invalid) }
+  if bounded.blocks[0].content_sha256 != "f00798e381dc92cf03c83e0c30e266da66e0db8506955bd79544f13e1c13e031" { print("repair evidence assertion 71"); return Err(Error.Invalid) }
+  if bounded.blocks[1].content_sha256 != "bc922addc12c36fff8e92d82722a8e06b07ce14ab56b8dba77c4f42d98950f62" { print("repair evidence assertion 72"); return Err(Error.Invalid) }
+  if bounded.blocks[2].content_sha256 != "945e7f94ad21c69168ab7099bbe2eaeb49c5708a20110d34de6b7034a604f7b5" { print("repair evidence assertion 73"); return Err(Error.Invalid) }
+  empty: array_builder<prompt_file_blocks.FileBlock> := array_builder()
+  empty_blocks := empty.build()
+  empty_evidence := prompt_repair_evidence.build(empty_blocks, "")?
+  if empty_evidence.blocks.len() != 0 || empty_evidence.total_bytes != 0 { print("repair evidence assertion 77"); return Err(Error.Invalid) }
+  mut many: array_builder<prompt_file_blocks.FileBlock> := array_builder()
+  mut count := 0
+  loop {
+    if count == 33 { break }
+    many.push(prompt_file_blocks.FileBlock { path: "a".clone(), body: "".clone() })
+    count = count + 1
+  }
+  many_blocks := many.build()
+  match prompt_repair_evidence.build(many_blocks, "") { Err(_) => {}, Ok(_) => { print("repair evidence assertion 86"); return Err(Error.Invalid) } }
+  unsorted := [prompt_file_blocks.FileBlock { path: "b".clone(), body: "".clone() }, prompt_file_blocks.FileBlock { path: "a".clone(), body: "".clone() }]
+  match prompt_repair_evidence.build(unsorted, "") { Err(_) => {}, Ok(_) => { print("repair evidence assertion 88"); return Err(Error.Invalid) } }
+  duplicate := [prompt_file_blocks.FileBlock { path: "a".clone(), body: "".clone() }, prompt_file_blocks.FileBlock { path: "a".clone(), body: "".clone() }]
+  match prompt_repair_evidence.build(duplicate, "") { Err(_) => {}, Ok(_) => { print("repair evidence assertion 90"); return Err(Error.Invalid) } }
+  invalid := [prompt_file_blocks.FileBlock { path: "".clone(), body: "".clone() }]
+  match prompt_repair_evidence.build(invalid, "") { Err(_) => {}, Ok(_) => { print("repair evidence assertion 92"); return Err(Error.Invalid) } }
+  too_large := repeated(262145)
+  oversized := [prompt_file_blocks.FileBlock { path: "a".clone(), body: too_large.clone() }]
+  match prompt_repair_evidence.build(oversized, "") { Err(_) => {}, Ok(_) => { print("repair evidence assertion 95"); return Err(Error.Invalid) } }
+  raw := encoding.hex_decode("ff534543524554e282ac7878787878787878787878787878787878787878")?
+  diagnostic := prompt_repair_evidence.diagnostic(raw.bytes(), "SECRET", 33)?
+  if encoding.hex_encode(diagnostic.bytes()) != "efbfbd5b52454441435445445defbfbd0a5b6f7574707574207472756e63617465645d" { print("repair evidence assertion 98"); return Err(Error.Invalid) }
+  malformed := encoding.hex_decode("ff")?
+  decoded_credential := prompt_repair_evidence.diagnostic(malformed.bytes(), "�", 100)?
+  if decoded_credential != "[REDACTED]" { print("decode must precede text redaction"); return Err(Error.Invalid) }
+  expanding_body := repeated(2000)
+  expanding := [prompt_file_blocks.FileBlock { path: "a".clone(), body: expanding_body.clone() }]
+  expanded := prompt_repair_evidence.build(expanding, "x")?
+  if expanded.total_bytes != 20000 || body_length(expanded.blocks[0]) != -1 {
+    print("edit budget must count redacted bytes"); return Err(Error.Invalid)
+  }
+  composed_evidence := small()?
+  mut wire_blocks: array_builder<prompt_artifacts.EditSetBlock> := array_builder()
+  wire_blocks.push(copy_block(composed_evidence.blocks[0]))
+  wire := Wire { edit_set: wire_blocks.build() }
+  encoded := json.encode(wire)?
+  value := measurement(encoded)?
+  absent: Option<prompt_artifacts.EditPolicy> := None
+  rendered := prompt_repair_sections.render(value, ["a.txt"], absent)?
+  if rendered.edit_set != "FILE: a.txt\n```\nbefore [REDACTED] 界\n```" { print("repair evidence assertion 107"); return Err(Error.Invalid) }
+  print("repair evidence: independent hashes, redaction, prefix bounds, rejection, ownership and composed rendering passed")
+  return Ok(())
+}

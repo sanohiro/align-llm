@@ -1,0 +1,76 @@
+module prompt_file_set_observation
+
+import prompt_file_set
+import prompt_source_file
+import std.crypto
+import std.encoding
+import std.fs
+import std.time
+
+pub Observation { sha256: string, files: i64, total_bytes: i64, members: array<prompt_file_set.Entry> }
+
+fn observe_entry(borrow root: fs.directory, borrow entry: prompt_file_set.Entry, maximum: i64) -> Result<prompt_source_file.FileObservation, Error> {
+  path: slice<u8> := entry.path
+  return prompt_source_file.observe(root, path, maximum)
+}
+
+fn unchanged(before: fs.metadata, after: fs.metadata) -> bool {
+  regular := match after.kind { Regular => true, _ => false }
+  return regular && before.device == after.device && before.inode == after.inode &&
+  before.mode == after.mode && after.links == 1 && before.size == after.size &&
+  before.modified_seconds == after.modified_seconds && before.modified_nanoseconds == after.modified_nanoseconds &&
+  before.changed_seconds == after.changed_seconds && before.changed_nanoseconds == after.changed_nanoseconds
+}
+
+pub fn observe(
+  borrow manifest_root: fs.directory,
+  manifest_path: slice<u8>,
+  expected_sha256: str,
+  borrow corpus_root: fs.directory,
+  maximum_file_bytes: i64,
+  deadline: i64,
+) -> Result<Observation, Error> {
+  if maximum_file_bytes < 0 || maximum_file_bytes > 2305843009213693951 || expected_sha256.len() != 64 { return Err(Error.Invalid) }
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  input := manifest_root.open_read_single_link(manifest_path)?
+  before := input.metadata()?
+  if before.size < 1 || before.size > 8388608 || before.links != 1 { return Err(Error.Invalid) }
+  mut raw := buffer(0)
+  mut length := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if length == before.size {
+      mut probe := buffer(1)
+      if input.read(probe)? != 0 { return Err(Error.Invalid) }
+      break
+    }
+    remaining := before.size - length
+    mut chunk := buffer(if remaining < 65536 { remaining } else { 65536 })
+    count := input.read(chunk)?
+    if count == 0 { return Err(Error.Invalid) }
+    raw.append(chunk.bytes())
+    length = length + count
+  }
+  if !unchanged(before, input.metadata()?) { return Err(Error.Invalid) }
+  hasher := crypto.sha256_stream()
+  hasher.update(raw.bytes())
+  bytes := hasher.finish()
+  identity := encoding.hex_encode(bytes[0..bytes.len()]).clone()
+  if identity != expected_sha256 { return Err(Error.Invalid) }
+  entries := prompt_file_set.parse(raw.bytes())?
+  mut total := 0
+  mut index := 0
+  loop {
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if index == entries.len() { break }
+    file := observe_entry(corpus_root, entries[index], maximum_file_bytes - total)?
+    if time.instant() >= deadline { return Err(Error.Timeout) }
+    if 32768 + file.metadata.mode as i64 != entries[index].mode || file.sha256 != entries[index].sha256 ||
+    (file.metadata.device == before.device && file.metadata.inode == before.inode) { return Err(Error.Invalid) }
+    total = total + file.metadata.size
+    index = index + 1
+  }
+  if !unchanged(before, input.metadata()?) { return Err(Error.Invalid) }
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  return Ok(Observation { sha256: identity, files: entries.len(), total_bytes: total, members: entries })
+}

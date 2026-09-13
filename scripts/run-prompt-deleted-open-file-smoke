@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+compiler="${ALIGNC:-${project_root}/scripts/alignc}"
+scratch="$(mktemp -d)"
+scratch="$(cd "${scratch}" && pwd -P)"
+holder=""
+cleanup() {
+  if [[ -n "${holder}" ]]; then
+    kill "${holder}" 2>/dev/null || true
+    wait "${holder}" 2>/dev/null || true
+  fi
+  exec 8<&- 9<&-
+  chmod 700 "${scratch}/denied-target" 2>/dev/null || true
+  rm -rf "${scratch}"
+}
+trap cleanup EXIT
+# Portable proc-like fixtures, intentionally still linked: the historical suffix
+# policy counts regular targets independently of their native link count.
+mkdir "${scratch}/a" "${scratch}/b" "${scratch}/data" "${scratch}/dangling" "${scratch}/unreadable-link" "${scratch}/empty"
+printf 'payload' >"${scratch}/data/kept (deleted)"
+printf 'shown' >"${scratch}/data/visible (deleted)"
+printf 'ignored' >"${scratch}/data/ordinary"
+mkdir "${scratch}/data/directory (deleted)"
+mkfifo "${scratch}/data/fifo (deleted)"
+ln -s '../data/kept (deleted)' "${scratch}/a/1"
+ln -s '../data/kept (deleted)' "${scratch}/a/2"
+ln -s '../data/kept (deleted)' "${scratch}/b/9"
+ln -s '../data/visible (deleted)' "${scratch}/a/3"
+ln -s '../data/ordinary' "${scratch}/a/4"
+ln -s '../data/directory (deleted)' "${scratch}/b/10"
+ln -s '../data/fifo (deleted)' "${scratch}/b/11"
+ln -s '../data/missing (deleted)' "${scratch}/dangling/1"
+printf 'not a symlink' >"${scratch}/unreadable-link/1"
+denied=none
+if [[ "$(id -u)" != 0 ]]; then
+  mkdir "${scratch}/denied-root" "${scratch}/denied-target"
+  printf x >"${scratch}/denied-target/file (deleted)"
+  ln -s '../denied-target/file (deleted)' "${scratch}/denied-root/1"
+  chmod 000 "${scratch}/denied-target"
+  denied="${scratch}/denied-root"
+fi
+"${compiler}" check-per-unit "${project_root}/src/prompt_deleted_open_file_smoke.align"
+"${compiler}" run "${project_root}/src/prompt_deleted_open_file_smoke.align" -- \
+  "${scratch}/a" "${scratch}/b" "${scratch}/data" "${scratch}/dangling" "${scratch}/unreadable-link" "${scratch}/empty" "${denied}" >"${scratch}/actual"
+printf 'deleted-open-file: PASS\n' >"${scratch}/expected"
+diff -u "${scratch}/expected" "${scratch}/actual"
+if [[ "$(uname -s)" == Linux ]]; then
+  (cd "${scratch}" && "${compiler}" build "${project_root}/src/prompt_deleted_open_file_smoke.align")
+  printf 'payload' >"${scratch}/open-file"
+  exec 8<"${scratch}/open-file"
+  exec 9<&8
+  rm "${scratch}/open-file"
+  sleep 120 &
+  holder=$!
+  # Poll the actual inherited descriptors, never infer readiness from elapsed sleep.
+  ready=false
+  for ((attempt=0; attempt<100; attempt++)); do
+    if [[ -L "/proc/${holder}/fd/8" && -L "/proc/${holder}/fd/9" ]]; then ready=true; break; fi
+    kill -0 "${holder}" 2>/dev/null || break
+    sleep 0.01
+  done
+  [[ "${ready}" == true ]]
+  "${scratch}/prompt_deleted_open_file_smoke" live-linux "/proc/$$/fd" "/proc/${holder}/fd" >"${scratch}/live-actual"
+  printf 'deleted-open-file live Linux: PASS\n' >"${scratch}/live-expected"
+  diff -u "${scratch}/live-expected" "${scratch}/live-actual"
+  printf 'prompt deleted-open-file smoke: PASS (portable fixtures and live Linux open-unlinked cross-process descriptor aliases)\n'
+else
+  printf 'prompt deleted-open-file smoke: PASS (portable retained descriptor fixtures; live Linux procfs not exercised)\n'
+fi

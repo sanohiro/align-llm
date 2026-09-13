@@ -1,0 +1,157 @@
+module prompt_process_usage_smoke
+
+import prompt_process_usage
+import std.process
+import std.time
+
+fn row(pid: i64, parent: i64, rss: Option<i64>) -> process.snapshot {
+  return process.snapshot { pid: pid, parent_pid: parent, rss_bytes: rss, cpu_ns: None, threads: None }
+}
+
+fn check(rows: slice<process.snapshot>, root: i64, owner: i64, terminated: bool, expected: slice<i64>, rss: i64, complete: bool) -> Result<(), Error> {
+  usage := prompt_process_usage.select(rows, root, owner, terminated)?
+  if usage.resident_bytes != rss || usage.complete != complete || usage.pids.len() != expected.len() {
+    return Err(Error.Invalid)
+  }
+  mut index := 0
+  loop {
+    if index == expected.len() { break }
+    if usage.pids[index] != expected[index] { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  return Ok(())
+}
+
+fn reject(rows: slice<process.snapshot>, root: i64, owner: i64) -> Result<(), Error> {
+  match prompt_process_usage.select(rows, root, owner, false) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(error) => { if !match error { Invalid => true, _ => false } { return Err(Error.Invalid) } },
+  }
+  return Ok(())
+}
+
+fn malformed(kind: i64) -> array<process.snapshot> {
+  mut rows: array_builder<process.snapshot> := array_builder()
+  rows.push(row(if kind == 0 { 0 } else { 10 }, if kind == 1 { -1 } else { 1 }, Some(if kind == 2 { -1 } else { 0 })))
+  if kind == 3 { rows.push(row(10, 1, Some(0))) }
+  if kind == 4 { rows.push(row(9, 1, Some(0))) }
+  return rows.build()
+}
+
+fn live(root: i64) -> Result<(), Error> {
+  rows := match process.table(32768) { Ok(value) => value, Err(error) => { print("initial live process table failed"); return Err(error) } }
+  mut owner := 0
+  mut index := 0
+  loop {
+    if index == rows.len() { break }
+    if rows[index].pid == root { owner = rows[index].parent_pid }
+    index = index + 1
+  }
+  if owner <= 0 { return Err(Error.Invalid) }
+  usage := match prompt_process_usage.observe(root, owner, false, time.instant() + 1000000000) { Ok(value) => value, Err(error) => { print("live process usage observation failed"); return Err(error) } }
+  if !usage.complete { return Err(Error.Invalid) }
+  mut found := false
+  index = 0
+  loop {
+    if index == usage.pids.len() { break }
+    if usage.pids[index] == root { found = true }
+    if usage.pids[index] == owner { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  if !found { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  mut tree: array_builder<process.snapshot> := array_builder()
+  tree.push(row(10, 20, Some(1)))
+  tree.push(row(20, 30, Some(2)))
+  tree.push(row(30, 90, Some(3)))
+  tree.push(row(40, 80, Some(4)))
+  tree.push(row(50, 40, Some(5)))
+  tree.push(row(60, 1, None))
+  tree.push(row(80, 1, Some(1000)))
+  tree.push(row(90, 80, Some(6)))
+  rows := tree.build()
+  check(rows, 90, 80, false, [10, 20, 30, 40, 50, 90], 21, true)?
+  // Root ancestry does not authorize counting ancestors, unrelated rows, or the owner.
+  check(rows, 30, 99, false, [10, 20, 30], 6, true)?
+  mut missing: array_builder<process.snapshot> := array_builder()
+  missing.push(row(10, 90, Some(3)))
+  missing.push(row(20, 80, Some(4)))
+  missing_rows := missing.build()
+  check(missing_rows, 90, 80, false, [10, 20], 7, false)?
+  check(missing_rows, 90, 80, true, [10, 20], 7, true)?
+  mut unknown: array_builder<process.snapshot> := array_builder()
+  unknown.push(row(10, 1, None))
+  unknown_rows := unknown.build()
+  check(unknown_rows, 10, 80, false, [10], 0, false)?
+  mut overflow: array_builder<process.snapshot> := array_builder()
+  overflow.push(row(10, 1, Some(9223372036854775807)))
+  overflow.push(row(20, 10, Some(1)))
+  overflow_rows := overflow.build()
+  check(overflow_rows, 10, 80, false, [10, 20], 9223372036854775807, false)?
+  mut empty: array_builder<process.snapshot> := array_builder()
+  empty_rows := empty.build()
+  check(empty_rows, 10, 80, true, [], 0, true)?
+  check(empty_rows, 10, 80, false, [], 0, false)?
+  reject(empty_rows, 0, 80)?
+  reject(empty_rows, 10, -1)?
+  reject(empty_rows, 10, 10)?
+  mut kind := 0
+  loop {
+    if kind == 5 { break }
+    invalid_rows := malformed(kind)
+    reject(invalid_rows, 10, 80)?
+    kind = kind + 1
+  }
+  mut chain: array_builder<process.snapshot> := array_builder()
+  mut index := 1
+  loop {
+    if index == 257 { break }
+    chain.push(row(index, if index == 256 { 1000 } else { index + 1 }, Some(1)))
+    index = index + 1
+  }
+  chain_rows := chain.build()
+  selected := prompt_process_usage.select(chain_rows, 256, 1000, false)?
+  if selected.pids.len() != 256 || selected.resident_bytes != 256 || !selected.complete { return Err(Error.Invalid) }
+  mut excess: array_builder<process.snapshot> := array_builder()
+  index = 0
+  loop {
+    if index == chain_rows.len() { break }
+    excess.push(chain_rows[index])
+    index = index + 1
+  }
+  excess.push(row(257, 1000, Some(1)))
+  excess_rows := excess.build()
+  reject(excess_rows, 256, 1000)?
+  mut maximum: array_builder<process.snapshot> := array_builder()
+  index = 1
+  loop {
+    if index == 32770 { break }
+    maximum.push(row(index, 0, Some(0)))
+    index = index + 1
+  }
+  maximum_rows := maximum.build()
+  check(maximum_rows[0..32768], 1, 40000, false, [1], 0, true)?
+  reject(maximum_rows, 1, 40000)?
+  match prompt_process_usage.observe(10, 80, false, 0) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(error) => { if !match error { Timeout => true, _ => false } { return Err(Error.Invalid) } },
+  }
+  if args.len() == 2 && args[1] == "live" {
+    command := process.command("/bin/sleep", ["/bin/sleep", "10"])
+    child := match command.start() { Ok(value) => value, Err(error) => { print("live child launch failed"); return Err(error) } }
+    result := live(child.id())
+    match child.kill(process.signal_number(process.signal.Kill)) { Ok(_) => {}, Err(error) => { print("live child kill failed"); return Err(error) } }
+    reap_deadline := time.instant() + 1000000000
+    loop {
+      if time.instant() >= reap_deadline { return Err(Error.Timeout) }
+      match child.try_wait()? { Some(_) => { break }, None => {} }
+      time.sleep(1000000)
+    }
+    result?
+  } else if args.len() != 1 { return Err(Error.Invalid) }
+  print("prompt process usage smoke passed")
+  return Ok(())
+}

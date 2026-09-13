@@ -1,0 +1,61 @@
+module prompt_validation_attempt
+
+import prompt_capture
+import prompt_fixture_command
+import prompt_fixture_setup
+import prompt_sandbox
+import prompt_source_copy
+import prompt_task_validation
+import prompt_validation_budget
+import std.fs
+import std.process
+import std.time
+
+pub Attempt {
+  Finished(prompt_task_validation.Completed),
+  SetupStopped(prompt_fixture_setup.Attempt),
+  ContainmentStopped(prompt_fixture_setup.Attempt),
+  ValidationStopped(prompt_fixture_setup.Attempt),
+}
+
+// The evaluator owns the private workspace and patch throughout this call. Every returned
+// interrupted scope must be released before the evaluator can remove either owned path.
+// Probe and validation commands are prepared from the same admitted sandbox configuration.
+pub fn run(
+  borrow source: fs.directory,
+  borrow workspace: fs.directory,
+  borrow procfs: fs.directory,
+  borrow git: process.image,
+  borrow probe: command,
+  borrow validation: command,
+  borrow mut signals: process.signal_subscription,
+  workspace_path: str,
+  patch_path: str,
+  revision: str,
+  allowed_edits: slice<str>,
+  timeout_seconds: i64,
+  borrow profile: prompt_fixture_command.Profile,
+  borrow pattern: prompt_capture.Pattern,
+  outer_deadline: i64,
+) -> Result<Attempt, Error> {
+  if timeout_seconds <= 0 ||
+  timeout_seconds > 7200 || allowed_edits.len() == 0 || allowed_edits.len() > 128 {
+    return Err(Error.Invalid)
+  }
+  copied := prompt_source_copy.copy(source, workspace, 128, 67108864, prompt_validation_budget.deadline(10000000000, outer_deadline)?)?
+  match prompt_fixture_setup.initialize(git, signals, workspace, procfs, workspace_path, revision, profile, outer_deadline)? {
+    Ready => {},
+    Stopped(attempt) => { return Ok(Attempt.SetupStopped(attempt)) },
+  }
+  match prompt_sandbox.check(probe, signals, workspace, procfs, outer_deadline)? {
+    Available(_) => {},
+    Unavailable(attempt) => { return Ok(Attempt.ContainmentStopped(attempt)) },
+  }
+  return match prompt_task_validation.run(
+    git, validation, signals, workspace, procfs, workspace_path, patch_path, revision,
+    allowed_edits, timeout_seconds, profile, pattern, outer_deadline,
+  )? {
+    Finished(completed) => Ok(Attempt.Finished(completed)),
+    Stopped(attempt) => Ok(Attempt.ValidationStopped(attempt)),
+  }
+}

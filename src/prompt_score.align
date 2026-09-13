@@ -1907,7 +1907,8 @@ fn verifier_pair_identity_valid(
   !verifier_valid_ascii_identifier(evidence.evaluation_id, 128) ||
   !verifier_valid_digest(evidence.evaluation_result_sha256) ||
   !verifier_valid_digest(evidence.content_sha256) ||
-  evidence.expected_inputs.len() > 2_048 ||
+  // V2 carries one record per attempted invocation: 64 tasks × 16 samples × 2 variants × 2 attempts.
+  evidence.expected_inputs.len() > (if evidence.schema_version == 1 { 2_048 } else { 4_096 }) ||
   evidence.evaluation_result_sha256 != result.content_sha256 ||
   !verifier_trust_valid(evidence.trust) {
     return false
@@ -2201,11 +2202,7 @@ fn verifier_result_parent_matches(
   }
 }
 
-fn verifier_experiment_artifact_valid(
-  borrow artifact: prompt_artifacts.PromptExperimentResult,
-  borrow reference: prompt_artifacts.ArtifactReference,
-  borrow result: prompt_artifacts.PromptEvaluationResult,
-) -> bool {
+fn verifier_experiment_header_valid(borrow artifact: prompt_artifacts.PromptExperimentResult) -> bool {
   if artifact.schema_version != 1 ||
   artifact.artifact_kind != "PROMPT_EXPERIMENT_RESULT" ||
   artifact.status != "PROPOSED" ||
@@ -2216,6 +2213,48 @@ fn verifier_experiment_artifact_valid(
   !verifier_valid_digest(artifact.content_sha256) {
     return false
   }
+  opportunity_valid := match artifact.opportunity {
+    None => false,
+    Some(opportunity) => opportunity.artifact_kind == "OPPORTUNITY" &&
+    verifier_valid_text(opportunity.path, 4_096) &&
+    verifier_valid_text(opportunity.artifact_id, 256) &&
+    verifier_valid_digest(opportunity.content_sha256),
+  }
+  provider_valid := match artifact.proposal_provider_kind {
+    None => false,
+    Some(kind) => (kind == "CLOUD_OPENAI" || kind == "LOCAL_OPENAI" || kind == "LLAMA_CPP") &&
+    match artifact.proposal_provider_endpoint_id {
+      None => false,
+      Some(endpoint_id) => verifier_valid_text(endpoint_id, 256),
+    } &&
+    match artifact.proposal_provider_model {
+      None => false,
+      Some(model) => verifier_valid_text(model, 256),
+    },
+  }
+  status_code_absent := match artifact.proposal_status_code { None => true, Some(_) => false }
+  if !opportunity_valid || !provider_valid || !status_code_absent { return false }
+  return true
+}
+
+pub fn admit_evaluation_experiment(borrow artifact: prompt_artifacts.PromptExperimentResult) -> bool {
+  if !verifier_experiment_header_valid(artifact) { return false }
+  id_valid := match artifact.experiment_id { None => false, Some(id) => verifier_valid_ascii_identifier(id, 96) }
+  if !id_valid { return false }
+  return match artifact.scope {
+    None => false,
+    Some(scope) => verifier_scope_valid(scope) && match artifact.candidate_variant {
+      None => false, Some(candidate) => verifier_variant_scope_valid(candidate, scope),
+    },
+  }
+}
+
+fn verifier_experiment_artifact_valid(
+  borrow artifact: prompt_artifacts.PromptExperimentResult,
+  borrow reference: prompt_artifacts.ArtifactReference,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if !verifier_experiment_header_valid(artifact) { return false }
   id_valid := match artifact.experiment_id {
     None => false,
     Some(id) => verifier_valid_ascii_identifier(id, 96) &&
@@ -2239,27 +2278,6 @@ fn verifier_experiment_artifact_valid(
     },
   }
   if !parent_valid { return false }
-  opportunity_valid := match artifact.opportunity {
-    None => false,
-    Some(opportunity) => opportunity.artifact_kind == "OPPORTUNITY" &&
-    verifier_valid_text(opportunity.path, 4_096) &&
-    verifier_valid_text(opportunity.artifact_id, 256) &&
-    verifier_valid_digest(opportunity.content_sha256),
-  }
-  provider_valid := match artifact.proposal_provider_kind {
-    None => false,
-    Some(kind) => (kind == "CLOUD_OPENAI" || kind == "LOCAL_OPENAI" || kind == "LLAMA_CPP") &&
-    match artifact.proposal_provider_endpoint_id {
-      None => false,
-      Some(endpoint_id) => verifier_valid_text(endpoint_id, 256),
-    } &&
-    match artifact.proposal_provider_model {
-      None => false,
-      Some(model) => verifier_valid_text(model, 256),
-    },
-  }
-  status_code_absent := match artifact.proposal_status_code { None => true, Some(_) => false }
-  if !opportunity_valid || !provider_valid || !status_code_absent { return false }
   return match artifact.candidate_variant {
     None => false,
     Some(candidate) => verifier_result_candidate_matches(candidate, result) &&
@@ -2289,17 +2307,12 @@ fn verifier_experiment_pair_valid(borrow result: prompt_artifacts.PromptEvaluati
   }
 }
 
-fn verifier_activation_valid(
-  borrow activation: prompt_artifacts.PromptActivation,
-  borrow result: prompt_artifacts.PromptEvaluationResult,
-) -> bool {
+fn verifier_activation_core_valid(borrow activation: prompt_artifacts.PromptActivation) -> bool {
   if activation.schema_version != 1 || activation.artifact_kind != "PROMPT_ACTIVATION" {
     return false
   }
   if !verifier_valid_ascii_identifier(activation.activation_id, 128) ||
-  !verifier_valid_digest(activation.content_sha256) ||
-  !verifier_result_scope_matches(activation.scope, result) ||
-  !verifier_result_parent_matches(activation.effective_variant, result) {
+  !verifier_valid_digest(activation.content_sha256) {
     return false
   }
   parent_empty := activation.parent_activation_id.len() == 0 && activation.parent_activation_sha256.len() == 0
@@ -2325,19 +2338,32 @@ fn verifier_activation_valid(
   return false
 }
 
+pub fn admit_evaluation_parent(borrow artifact: prompt_artifacts.PromptActivationResult) -> bool {
+  if artifact.schema_version != 1 || artifact.artifact_kind != "PROMPT_ACTIVATION_RESULT" ||
+  !verifier_valid_digest(artifact.content_sha256) || artifact.error_code != "NONE" || artifact.error.len() != 0 { return false }
+  id_valid := match artifact.decision_id { None => false, Some(id) => verifier_valid_ascii_identifier(id, 96) }
+  if !id_valid { return false }
+  return match artifact.activation {
+    None => false,
+    Some(value) => verifier_activation_core_valid(value) && verifier_scope_valid(value.scope) &&
+    verifier_variant_scope_valid(value.effective_variant, value.scope) &&
+    ((artifact.status == "BASELINED" && value.operation == "BASELINE") ||
+      (artifact.status == "ACCEPTED" && value.operation == "ACCEPT") ||
+      (artifact.status == "ROLLED_BACK" && value.operation == "ROLLBACK")),
+  }
+}
+
+fn verifier_activation_valid(borrow activation: prompt_artifacts.PromptActivation, borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
+  return verifier_activation_core_valid(activation) && verifier_result_scope_matches(activation.scope, result) &&
+  verifier_result_parent_matches(activation.effective_variant, result)
+}
+
 fn verifier_activation_artifact_valid(
   borrow artifact: prompt_artifacts.PromptActivationResult,
   borrow reference: prompt_artifacts.ArtifactReference,
   borrow result: prompt_artifacts.PromptEvaluationResult,
 ) -> bool {
-  if artifact.schema_version != 1 ||
-  artifact.artifact_kind != "PROMPT_ACTIVATION_RESULT" ||
-  !verifier_valid_digest(artifact.content_sha256) ||
-  !(artifact.status == "BASELINED" || artifact.status == "ACCEPTED" || artifact.status == "ROLLED_BACK") ||
-  artifact.error_code != "NONE" ||
-  artifact.error.len() != 0 {
-    return false
-  }
+  if !admit_evaluation_parent(artifact) { return false }
   id_valid := match artifact.decision_id {
     None => false,
     Some(id) => verifier_valid_ascii_identifier(id, 96) &&
@@ -2413,9 +2439,8 @@ fn verifier_corpus_pair_valid(borrow result: prompt_artifacts.PromptEvaluationRe
   }
 }
 
-fn verifier_acceptance_policy_embedded_valid(
+pub fn acceptance_policy_valid(
   borrow policy: prompt_artifacts.PromptAcceptancePolicy,
-  borrow result: prompt_artifacts.PromptEvaluationResult,
 ) -> bool {
   if policy.schema_version != 1 ||
   policy.artifact_kind != "PROMPT_ACCEPTANCE_POLICY" ||
@@ -2430,6 +2455,14 @@ fn verifier_acceptance_policy_embedded_valid(
   !verifier_valid_digest(policy.content_sha256) {
     return false
   }
+  return true
+}
+
+fn verifier_acceptance_policy_embedded_valid(
+  borrow policy: prompt_artifacts.PromptAcceptancePolicy,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if !acceptance_policy_valid(policy) { return false }
   return match result.acceptance_policy_source {
     None => false,
     Some(reference) => verifier_reference_valid(
@@ -2448,11 +2481,11 @@ fn verifier_acceptance_policy_pair_valid(borrow result: prompt_artifacts.PromptE
   }
 }
 
-fn verifier_generation_policy_embedded_valid(
+pub fn generation_policy_valid(
   borrow policy: prompt_artifacts.GenerationPolicy,
-  borrow result: prompt_artifacts.PromptEvaluationResult,
+  sample_count: i64,
 ) -> bool {
-  seed_end_valid := match policy.seed_base.checked_add(result.sample_count - 1) {
+  seed_end_valid := match policy.seed_base.checked_add(sample_count - 1) {
     None => false,
     Some(_) => true,
   }
@@ -2472,6 +2505,14 @@ fn verifier_generation_policy_embedded_valid(
   !verifier_valid_digest(policy.content_sha256) {
     return false
   }
+  return true
+}
+
+fn verifier_generation_policy_embedded_valid(
+  borrow policy: prompt_artifacts.GenerationPolicy,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if !generation_policy_valid(policy, result.sample_count) { return false }
   return match result.generation_policy_source {
     None => false,
     Some(reference) => verifier_reference_valid(
@@ -2490,9 +2531,8 @@ fn verifier_generation_policy_pair_valid(borrow result: prompt_artifacts.PromptE
   }
 }
 
-fn verifier_provider_control_embedded_valid(
+pub fn provider_control_valid(
   borrow control: prompt_artifacts.EvaluationProviderControl,
-  borrow result: prompt_artifacts.PromptEvaluationResult,
 ) -> bool {
   provider_kind_valid := control.provider_kind == "CLOUD_OPENAI" ||
   control.provider_kind == "LOCAL_OPENAI" ||
@@ -2519,7 +2559,14 @@ fn verifier_provider_control_embedded_valid(
     None => true,
     Some(endpoint) => verifier_valid_text(endpoint, 4_096),
   }
-  if !api_key_valid || !tokenize_valid { return false }
+  return api_key_valid && tokenize_valid
+}
+
+fn verifier_provider_control_embedded_valid(
+  borrow control: prompt_artifacts.EvaluationProviderControl,
+  borrow result: prompt_artifacts.PromptEvaluationResult,
+) -> bool {
+  if !provider_control_valid(control) { return false }
   return match result.provider_control_source {
     None => false,
     Some(reference) => verifier_reference_valid(
@@ -2598,10 +2645,98 @@ fn verifier_edit_policy_record_valid(borrow policy: prompt_artifacts.EditPolicy)
 }
 
 fn verifier_edit_policy_valid(borrow task: prompt_artifacts.PromptEvaluationTask) -> bool {
-  expects := verifier_task_expects_measurement_version_three(task)
+  expects := verifier_task_expects_measurement_version_three(task) || verifier_provider_edit_task(task)
   return match task.edit_policy {
     None => !expects,
     Some(policy) => expects && verifier_edit_policy_record_valid(policy),
+  }
+}
+
+fn verifier_present_text(borrow value: Option<string>, maximum: i64) -> bool {
+  return match value { None => false, Some(text) => verifier_valid_text(text, maximum) }
+}
+
+fn verifier_text_present(borrow value: Option<string>) -> bool {
+  return match value { None => false, Some(_) => true }
+}
+
+fn verifier_optional_text_matches(borrow value: Option<string>, text: str) -> bool {
+  return match value { None => false, Some(actual) => actual == text }
+}
+
+fn verifier_optional_arrays_equal(borrow left: Option<array<string>>, borrow right: Option<array<string>>) -> bool {
+  return match left {
+    None => match right { None => true, Some(_) => false },
+    Some(a) => match right { None => false, Some(b) => verifier_string_arrays_equal(a, b) },
+  }
+}
+
+fn verifier_legacy_command(borrow command: Option<string>, borrow arguments: Option<array<string>>) -> bool {
+  return match command {
+    None => false,
+    Some(text) => match arguments { None => false, Some(values) => verifier_command_array_valid(text, values) },
+  }
+}
+
+fn verifier_provider_edit_task(borrow task: prompt_artifacts.PromptEvaluationTask) -> bool {
+  return task.schema_version == 2 && verifier_optional_text_matches(task.execution_kind, "PROVIDER_EDIT")
+}
+
+fn verifier_task_version_fields(borrow task: prompt_artifacts.PromptEvaluationTask) -> bool {
+  if task.schema_version == 1 {
+    return verifier_optional_digest_absent(task.execution_kind) &&
+    verifier_present_text(task.cmd, 4096) && verifier_present_text(task.snapshot_cmd, 4096) &&
+    verifier_present_text(task.measurement_adapter_runtime, 256) && verifier_present_text(task.snapshot_helper_runtime, 256) &&
+    verifier_text_present(task.validation_runner_path) && verifier_text_present(task.validation_runner_sha256) &&
+    match task.validation_argv { None => false, Some(_) => true } &&
+    verifier_legacy_command(task.cmd, task.argv) && verifier_legacy_command(task.snapshot_cmd, task.snapshot_argv)
+  }
+  if task.schema_version != 2 { return false }
+  no_legacy := verifier_optional_digest_absent(task.cmd) && verifier_optional_digest_absent(task.snapshot_cmd) &&
+  verifier_optional_digest_absent(task.measurement_adapter_runtime) && verifier_optional_digest_absent(task.snapshot_helper_runtime) &&
+  verifier_optional_digest_absent(task.validation_runner_path) && verifier_optional_digest_absent(task.validation_runner_sha256) &&
+  match task.argv { None => true, Some(_) => false } && match task.snapshot_argv { None => true, Some(_) => false } &&
+  match task.validation_argv { None => true, Some(_) => false }
+  fixture := verifier_optional_text_matches(task.execution_kind, "FIXTURE_PATCH")
+  patch_valid := if fixture {
+    verifier_present_text(task.patch_path, 4096) && verifier_valid_optional_digest_present(task.patch_sha256)
+  } else {
+    verifier_provider_edit_task(task) && verifier_optional_digest_absent(task.patch_path) && verifier_optional_digest_absent(task.patch_sha256)
+  }
+  return no_legacy && patch_valid && verifier_valid_text(task.task_definition_path, 4096) && verifier_valid_digest(task.task_definition_sha256)
+}
+
+fn verifier_product_runtime(value: str) -> bool {
+  bytes := value.bytes()
+  return value.len() == 111 && value.starts_with("ALIGN:") && bytes[46] == 58 &&
+  verifier_valid_source_revision(value[6..46]) && verifier_valid_digest(value[47..111])
+}
+
+fn verifier_measurement_probe_role(borrow measurement: prompt_artifacts.TaskMeasurement, borrow task: prompt_artifacts.PromptEvaluationTask) -> bool {
+  if task.schema_version == 2 {
+    return measurement.environment_probe.schema_version == 2 && measurement.environment_probe.producer == "ALIGN_TASK" &&
+    verifier_optional_text_matches(measurement.product_runtime, measurement.environment_probe.runtime_identity)
+  }
+  return task.schema_version == 1 && measurement.environment_probe.schema_version == 1 &&
+  measurement.environment_probe.producer == "MEASUREMENT_ADAPTER" &&
+  verifier_optional_text_matches(task.measurement_adapter_runtime, measurement.environment_probe.runtime_identity)
+}
+
+fn verifier_snapshot_probe_role(borrow probe: prompt_artifacts.EnvironmentProbe, borrow task: prompt_artifacts.PromptEvaluationTask) -> bool {
+  if task.schema_version == 2 {
+    return probe.schema_version == 2 && probe.producer == "ALIGN_SNAPSHOT" && verifier_product_runtime(probe.runtime_identity)
+  }
+  return task.schema_version == 1 && probe.schema_version == 1 && probe.producer == "SNAPSHOT_HELPER" &&
+  verifier_optional_text_matches(task.snapshot_helper_runtime, probe.runtime_identity)
+}
+
+fn verifier_source_tree_declared(borrow task: prompt_artifacts.PromptEvaluationTask) -> bool {
+  if task.schema_version != 2 { return true }
+  mut index := 0
+  loop {
+    if index == task.artifacts.len() { return false }
+    if task.artifacts[index].kind == "TREE" && task.artifacts[index].path == task.repo_path { return true }
+    index = index + 1
   }
 }
 
@@ -2610,16 +2745,12 @@ fn verifier_task_valid(
   require_template: bool,
 ) -> bool {
   limits := task.regression_limits
-  return task.schema_version == 1 &&
+  return verifier_task_version_fields(task) && verifier_source_tree_declared(task) &&
   task.artifact_kind == "PROMPT_EVALUATION_TASK" &&
   verifier_valid_ascii_identifier(task.task_id, 128) &&
   verifier_valid_ascii_identifier(task.repo_id, 128) &&
   verifier_valid_source_revision(task.repo_revision) &&
   verifier_valid_text(task.repo_path, 4_096) &&
-  verifier_valid_text(task.cmd, 4_096) &&
-  verifier_valid_text(task.snapshot_cmd, 4_096) &&
-  verifier_valid_text(task.measurement_adapter_runtime, 256) &&
-  verifier_valid_text(task.snapshot_helper_runtime, 256) &&
   verifier_valid_text(task.cwd, 4_096) &&
   task.timeout_ns > 0 && task.timeout_ns <= 7_200_000_000_000 &&
   verifier_valid_text(task.task_prompt_path, 4_096) &&
@@ -2644,9 +2775,14 @@ fn verifier_task_valid(
     Some(value) => value >= 0 && value <= 1_000_000,
   } &&
   verifier_valid_digest(task.content_sha256) &&
-  verifier_command_array_valid(task.cmd, task.argv) &&
-  verifier_command_array_valid(task.snapshot_cmd, task.snapshot_argv) &&
   verifier_expectation_array_valid(task.artifacts, 4_096)
+}
+
+// Product admission and persisted verification share the same task shape contract.
+// Filesystem membership, source bytes and cross-task identities remain caller-owned.
+pub fn admit_product_task(borrow task: prompt_artifacts.PromptEvaluationTask) -> Result<(), Error> {
+  if task.schema_version != 2 || !verifier_task_valid(task, true) { return Err(Error.Invalid) }
+  return Ok(())
 }
 
 fn verifier_command_array_valid(command: str, borrow values: array<string>) -> bool {
@@ -2787,7 +2923,11 @@ fn verifier_environment_probe_valid(borrow probe: prompt_artifacts.EnvironmentPr
     None => true,
     Some(value) => value > 0 && value <= 1_048_576,
   }
-  return probe.schema_version == 1 &&
+  version_valid := if probe.schema_version == 1 { true } else {
+    probe.schema_version == 2 && (probe.producer == "ALIGN_TASK" || probe.producer == "ALIGN_SNAPSHOT") &&
+    verifier_product_runtime(probe.runtime_identity)
+  }
+  return version_valid &&
   probe.artifact_kind == "ENVIRONMENT_PROBE" &&
   verifier_valid_text(probe.producer, 256) &&
   verifier_valid_text(probe.os, 256) &&
@@ -2877,15 +3017,21 @@ fn verifier_string_equals(borrow value: string, expected: str) -> bool {
 fn verifier_task_expects_measurement_version_two(
   borrow task: prompt_artifacts.PromptEvaluationTask,
 ) -> bool {
-  if task.argv.len() != 2 { return false }
-  return verifier_string_equals(task.argv[1], "scripts/prompt-repair-adapter.py")
+  if task.schema_version != 1 { return false }
+  return match task.argv {
+    None => false,
+    Some(arguments) => arguments.len() == 2 && verifier_string_equals(arguments[1], "scripts/prompt-repair-adapter.py"),
+  }
 }
 
 fn verifier_task_expects_measurement_version_three(
   borrow task: prompt_artifacts.PromptEvaluationTask,
 ) -> bool {
-  if task.argv.len() != 2 { return false }
-  return verifier_string_equals(task.argv[1], "scripts/prompt-template-adapter.py")
+  if task.schema_version != 1 { return false }
+  return match task.argv {
+    None => false,
+    Some(arguments) => arguments.len() == 2 && verifier_string_equals(arguments[1], "scripts/prompt-template-adapter.py"),
+  }
 }
 
 // Ladder row 16, three-way. The corpus names the adapter and the adapter fixes the version, so the
@@ -2893,6 +3039,7 @@ fn verifier_task_expects_measurement_version_three(
 fn verifier_task_expected_measurement_version(
   borrow task: prompt_artifacts.PromptEvaluationTask,
 ) -> i64 {
+  if task.schema_version == 2 { return 4 }
   if verifier_task_expects_measurement_version_three(task) { return 3 }
   if verifier_task_expects_measurement_version_two(task) { return 2 }
   return 1
@@ -2914,7 +3061,7 @@ fn verifier_result_uses_repair_adapter(
     // C4-REPAIR-TEMPLATE: the six-kind template declares `EDITSET` too, so a version-3 corpus
     // defines the denominator exactly as a version-2 one does. Only a corpus whose template
     // declares no `EDITSET` kind at all leaves it undefined.
-    if verifier_task_expects_measurement_version_two(result.tasks[index]) ||
+    if verifier_provider_edit_task(result.tasks[index]) || verifier_task_expects_measurement_version_two(result.tasks[index]) ||
     verifier_task_expects_measurement_version_three(result.tasks[index]) { return true }
     index = index + 1
   }
@@ -3118,6 +3265,10 @@ fn verifier_measurement_version_two_shape(
     None => false,
     Some(identity) => verifier_valid_runtime_identity(identity),
   }
+  return base_valid && verifier_measurement_patch_shape(measurement)
+}
+
+fn verifier_measurement_patch_shape(borrow measurement: prompt_artifacts.TaskMeasurement) -> bool {
   // Row 13: a patch digest exists exactly when a patch reached the validation runner, which
   // `patch_size_bytes` already records. A digest without bytes, or bytes without a digest, is a
   // producer defect rather than a permitted shape.
@@ -3133,7 +3284,7 @@ fn verifier_measurement_version_two_shape(
       Some(total) => total >= 0 && verifier_edit_set_valid(blocks, total),
     },
   }
-  return base_valid && patch_valid && set_valid
+  return patch_valid && set_valid
 }
 
 // Version 3 shares every version-2 member and rule, so the version-2 shape is required unchanged
@@ -3145,6 +3296,26 @@ fn verifier_measurement_version_three_full_shape(
 ) -> bool {
   return verifier_measurement_version_two_shape(measurement) &&
   verifier_measurement_version_three_shape(measurement)
+}
+
+fn verifier_measurement_version_four_shape(
+  borrow measurement: prompt_artifacts.TaskMeasurement,
+  borrow task: prompt_artifacts.PromptEvaluationTask,
+) -> bool {
+  identity_valid := match measurement.product_runtime {
+    None => false,
+    Some(value) => verifier_product_runtime(value),
+  }
+  if !identity_valid || !verifier_optional_digest_absent(measurement.base_adapter_runtime_identity) ||
+  !verifier_measurement_probe_role(measurement, task) || !verifier_measurement_patch_shape(measurement) { return false }
+  if verifier_provider_edit_task(task) { return verifier_measurement_version_three_shape(measurement) }
+  return verifier_optional_text_matches(task.execution_kind, "FIXTURE_PATCH") &&
+  match measurement.edit_set { None => true, Some(_) => false } &&
+  verifier_optional_i64_absent(measurement.edit_set_total_bytes) &&
+  verifier_optional_text_matches(measurement.edit_refusal, "NONE") &&
+  verifier_optional_i64_absent(measurement.completion_bytes) &&
+  verifier_optional_digest_absent(measurement.completion_sha256) &&
+  verifier_optional_digest_absent(measurement.completion_text)
 }
 
 fn verifier_measurement_valid(
@@ -3175,11 +3346,14 @@ fn verifier_measurement_valid(
     verifier_measurement_version_three_absent(measurement)
   } else if measurement.schema_version == 3 {
     verifier_measurement_version_three_full_shape(measurement)
+  } else if measurement.schema_version == 4 {
+    verifier_measurement_version_four_shape(measurement, task)
   } else {
     false
   }
   return measurement.schema_version == verifier_task_expected_measurement_version(task) &&
   version_shape &&
+  (measurement.schema_version == 4 || verifier_optional_digest_absent(measurement.product_runtime)) &&
   measurement.artifact_kind == "TASK_MEASUREMENT" &&
   measurement.repair_loop_count >= 0 && measurement.repair_loop_count <= 64 &&
   measurement.unrelated_diff_count >= 0 && measurement.unrelated_diff_count <= 1_048_576 &&
@@ -3349,6 +3523,7 @@ fn verifier_measurement_equal(
   verifier_optional_string_equal(
     left.base_adapter_runtime_identity, right.base_adapter_runtime_identity,
   ) &&
+  verifier_optional_string_equal(left.product_runtime, right.product_runtime) &&
   // The four version-3 members, here for the identical reason the version-2 four are: omitting
   // them would fail nothing. Ladder row 26's "`row.measurement` is byte-equal to the final attempt
   // that ran" would still pass while comparing 27 of 31 fields, and a row whose persisted
@@ -3424,8 +3599,7 @@ fn verifier_ran_attempt_valid(
     // carry any probe at all. `producer` names a role and is the same literal for both adapters;
     // `runtime_identity` names a file, and binding it here makes every ran attempt's probe carry
     // the digest of the code that actually produced it.
-    measurement.environment_probe.producer == "MEASUREMENT_ADAPTER" &&
-    measurement.environment_probe.runtime_identity == task.measurement_adapter_runtime &&
+    verifier_measurement_probe_role(measurement, task) &&
     // Each adapter invocation is single-attempt by construction, so a non-zero count here would
     // double-count against the evaluator-owned row total. The rule therefore binds exactly where
     // double-counting is possible — a task that offers a repair attempt — and not everywhere.
@@ -3756,7 +3930,22 @@ fn verifier_environment_core_valid(borrow core: prompt_artifacts.EnvironmentIden
     None => true,
     Some(value) => value > 0 && value <= 1_048_576,
   }
-  return core.schema_version == 1 &&
+  version_valid := if core.schema_version == 1 {
+    verifier_optional_digest_absent(core.product_runtime) &&
+    verifier_present_text(core.measurement_adapter_runtime, 256) &&
+    verifier_present_text(core.snapshot_helper_runtime, 256) &&
+    verifier_present_text(core.source_verifier_runtime, 256)
+  } else {
+    core.schema_version == 2 &&
+    verifier_optional_digest_absent(core.measurement_adapter_runtime) &&
+    verifier_optional_digest_absent(core.snapshot_helper_runtime) &&
+    verifier_optional_digest_absent(core.source_verifier_runtime) &&
+    match core.product_runtime {
+      None => false,
+      Some(value) => verifier_product_runtime(value) && value[6..46] == core.align_revision,
+    }
+  }
+  return version_valid &&
   core.artifact_kind == "ENVIRONMENT_IDENTITY_CORE" &&
   verifier_valid_text(core.os, 256) &&
   verifier_valid_text(core.os_release, 256) &&
@@ -3766,9 +3955,6 @@ fn verifier_environment_core_valid(borrow core: prompt_artifacts.EnvironmentIden
   verifier_valid_text(core.gpu, 256) &&
   verifier_valid_source_revision(core.align_llm_commit) &&
   verifier_valid_source_revision(core.align_revision) &&
-  verifier_valid_text(core.measurement_adapter_runtime, 256) &&
-  verifier_valid_text(core.snapshot_helper_runtime, 256) &&
-  verifier_valid_text(core.source_verifier_runtime, 256) &&
   verifier_valid_digest(core.source_verifier_policy_sha256) &&
   verifier_valid_digest(core.environment_policy_sha256)
 }
@@ -3787,12 +3973,18 @@ fn verifier_probe_matches_environment(
 ) -> bool {
   return verifier_environment_probe_valid(probe) &&
   verifier_environment_valid(environment) &&
+  probe.schema_version == environment.core.schema_version &&
+  (probe.schema_version == 1 || verifier_optional_text_matches(environment.core.product_runtime, probe.runtime_identity)) &&
   probe.os == environment.core.os &&
   probe.os_release == environment.core.os_release &&
   probe.architecture == environment.core.architecture &&
   probe.cpu == environment.core.cpu &&
   verifier_optional_i64_equal(probe.logical_cpu_count, environment.core.logical_cpu_count) &&
   probe.gpu == environment.core.gpu
+}
+
+pub fn probe_matches_environment(borrow probe: prompt_artifacts.EnvironmentProbe, borrow environment: prompt_artifacts.EnvironmentIdentity) -> bool {
+  return verifier_probe_matches_environment(probe, environment)
 }
 
 fn verifier_result_environment_matches_probe(
@@ -3864,8 +4056,13 @@ fn verifier_task_context_valid(
   }
   environment_valid := match result.environment {
     None => true,
-    Some(environment) => task.measurement_adapter_runtime == environment.core.measurement_adapter_runtime &&
-    task.snapshot_helper_runtime == environment.core.snapshot_helper_runtime,
+    Some(environment) => if task.schema_version == 2 {
+      environment.core.schema_version == 2
+    } else {
+      environment.core.schema_version == 1 &&
+      verifier_optional_string_equal(task.measurement_adapter_runtime, environment.core.measurement_adapter_runtime) &&
+      verifier_optional_string_equal(task.snapshot_helper_runtime, environment.core.snapshot_helper_runtime)
+    },
   }
   return scope_valid && environment_valid
 }
@@ -3874,10 +4071,10 @@ fn verifier_snapshot_helper_equal(
   borrow first: prompt_artifacts.PromptEvaluationTask,
   borrow current: prompt_artifacts.PromptEvaluationTask,
 ) -> bool {
-  return first.snapshot_cmd == current.snapshot_cmd &&
-  first.cwd == current.cwd &&
-  first.snapshot_helper_runtime == current.snapshot_helper_runtime &&
-  verifier_string_arrays_equal(first.snapshot_argv, current.snapshot_argv)
+  return first.schema_version == current.schema_version &&
+  verifier_optional_string_equal(first.snapshot_cmd, current.snapshot_cmd) && first.cwd == current.cwd &&
+  verifier_optional_string_equal(first.snapshot_helper_runtime, current.snapshot_helper_runtime) &&
+  verifier_optional_arrays_equal(first.snapshot_argv, current.snapshot_argv)
 }
 
 fn verifier_string_arrays_equal(borrow left: array<string>, borrow right: array<string>) -> bool {
@@ -4110,8 +4307,7 @@ fn verifier_snapshot_result_environment_valid(
   return match snapshot.environment_probe {
     None => snapshot.status == "ERROR",
     Some(probe) => {
-      if probe.producer != "SNAPSHOT_HELPER" ||
-      probe.runtime_identity != result.tasks[task_ordinal].snapshot_helper_runtime {
+      if !verifier_snapshot_probe_role(probe, result.tasks[task_ordinal]) {
         false
       } else {
         match result.environment {
@@ -4694,9 +4890,7 @@ fn verifier_preflight_probe_valid(
   borrow probe: prompt_artifacts.EnvironmentProbe,
   borrow result: prompt_artifacts.PromptEvaluationResult,
 ) -> bool {
-  if result.tasks.len() == 0 ||
-  probe.producer != "SNAPSHOT_HELPER" ||
-  probe.runtime_identity != result.tasks[0].snapshot_helper_runtime {
+  if result.tasks.len() == 0 || !verifier_snapshot_probe_role(probe, result.tasks[0]) {
     return false
   }
   return match result.environment {
@@ -5179,8 +5373,7 @@ fn verifier_row_cross_identity_valid(
   row.evaluation_input.generation_request_sha256 == row.measurement.generation_request.content_sha256 &&
   row.measurement.generation_request.seed_attestation_sha256 == row.measurement.seed_attestation.content_sha256
   return variant_valid && variants_bound && policy_bound && seed_schedule_bound && control_bound && environment_bound && seed_bound &&
-  row.measurement.environment_probe.producer == "MEASUREMENT_ADAPTER" &&
-  row.measurement.environment_probe.runtime_identity == task.measurement_adapter_runtime
+  verifier_measurement_probe_role(row.measurement, task)
 }
 
 fn verifier_complete_attestation_cross_valid(
@@ -5288,6 +5481,11 @@ fn verifier_attempt_trace_cross_valid(
   // A skipped repair made no invocation. `verifier_skipped_attempt_valid` already requires all
   // four digests to be absent, so there is nothing here to resolve.
   if verifier_attempt_is_status(attempt, "SKIPPED") { return true }
+  measurement_environment_valid := match attempt.measurement {
+    None => false,
+    Some(measurement) => verifier_result_environment_matches_probe(measurement.environment_probe, result),
+  }
+  if !measurement_environment_valid { return false }
   request_index := verifier_resolve_snapshot_request(
     attempt.snapshot_request_sha256,
     result,
@@ -5879,12 +6077,12 @@ fn verifier_row_repair_editset_attempts(borrow row: prompt_artifacts.PromptTaskR
   }
 }
 
-fn verifier_variant_repair_aggregate(
-  borrow result: prompt_artifacts.PromptEvaluationResult,
+fn variant_repair_aggregate(
+  rows: slice<prompt_artifacts.PromptTaskRow>,
+  sample_count: i64,
   task: i64,
   parent: bool,
 ) -> RepairAggregate {
-  sample_count := result.sample_count
   mut attempted := 0
   mut recovered := 0
   mut editset := 0
@@ -5895,14 +6093,14 @@ fn verifier_variant_repair_aggregate(
     if sample > sample_count { break }
     base := pair_start(task, sample, sample_count)
     index := if parent { parent_index(base, sample) } else { candidate_index(base, sample) }
-    if verifier_row_repair_attempted(result.rows[index]) { attempted = attempted + 1 }
-    if verifier_row_repair_recovered(result.rows[index]) {
+    if verifier_row_repair_attempted(rows[index]) { attempted = attempted + 1 }
+    if verifier_row_repair_recovered(rows[index]) {
       recovered = recovered + 1
     } else {
       every = false
     }
-    editset = editset + verifier_row_repair_editset_attempts(result.rows[index])
-    refusals = refusals + verifier_row_edit_refusals(result.rows[index])
+    editset = editset + verifier_row_repair_editset_attempts(rows[index])
+    refusals = refusals + verifier_row_edit_refusals(rows[index])
     sample = sample + 1
   }
   return RepairAggregate {
@@ -5916,6 +6114,10 @@ fn verifier_variant_repair_aggregate(
   }
 }
 
+fn verifier_variant_repair_aggregate(borrow result: prompt_artifacts.PromptEvaluationResult, task: i64, parent: bool) -> RepairAggregate {
+  return variant_repair_aggregate(result.rows, result.sample_count, task, parent)
+}
+
 // The refusal counter exists only for a corpus whose adapter persists `edit_refusal`, on the rule
 // `verifier_result_uses_repair_adapter` already applies one level down: presence follows the
 // corpus's adapter rather than the container's version, so the three merged chains below version 3
@@ -5926,7 +6128,8 @@ fn verifier_result_uses_template_adapter(
   mut index := 0
   loop {
     if index >= result.tasks.len() { break }
-    if verifier_task_expects_measurement_version_three(result.tasks[index]) { return true }
+    if verifier_task_expects_measurement_version_three(result.tasks[index]) ||
+    verifier_provider_edit_task(result.tasks[index]) { return true }
     index = index + 1
   }
   return false
@@ -6334,14 +6537,11 @@ fn verifier_task_completion_not_lower(borrow aggregate_value: prompt_artifacts.T
   return aggregate_value.candidate_pass_count >= aggregate_value.parent_pass_count
 }
 
-fn verifier_status_matches_policy(
+fn complete_improvement(
   borrow result: prompt_artifacts.PromptEvaluationResult,
   corpus: ScoreCorpusAggregate,
   borrow policy: prompt_artifacts.PromptAcceptancePolicy,
 ) -> bool {
-  if result.serious_regression_reasons.len() > 0 {
-    return result.status == "SERIOUS_REGRESSION"
-  }
   completion_improved := corpus.completion_gain_count >= policy.minimum_completion_gain_count
   time_improved := if corpus.candidate_pass_count == corpus.parent_pass_count &&
   verifier_all_task_completion_not_lower(result) &&
@@ -6353,12 +6553,15 @@ fn verifier_status_matches_policy(
   } else {
     false
   }
-  expected_improved := completion_improved || time_improved
-  return if expected_improved {
-    result.status == "IMPROVED"
-  } else {
-    result.status == "NO_IMPROVEMENT"
-  }
+  return completion_improved || time_improved
+}
+
+fn verifier_status_matches_policy(
+  borrow result: prompt_artifacts.PromptEvaluationResult, corpus: ScoreCorpusAggregate,
+  borrow policy: prompt_artifacts.PromptAcceptancePolicy,
+) -> bool {
+  if result.serious_regression_reasons.len() > 0 { return result.status == "SERIOUS_REGRESSION" }
+  return result.status == (if complete_improvement(result, corpus, policy) { "IMPROVED" } else { "NO_IMPROVEMENT" })
 }
 
 fn verifier_status_matches(
@@ -6410,20 +6613,24 @@ fn verifier_gate_policy_minima(borrow result: prompt_artifacts.PromptEvaluationR
   }
 }
 
-fn verifier_gate_computed(
+fn gate_from_trust(
   borrow result: prompt_artifacts.PromptEvaluationResult,
-  borrow evidence: prompt_artifacts.PromptEvaluationEvidence,
+  borrow trust: prompt_artifacts.PromptVerifierTrust,
 ) -> bool {
   return result.status == "IMPROVED" &&
   result.serious_regression_reasons.len() == 0 &&
-  evidence.trust.align_llm_reachability == "VERIFIED" &&
-  evidence.trust.align_reachability == "VERIFIED" &&
-  evidence.trust.corpus_reachability == "VERIFIED" &&
+  trust.align_llm_reachability == "VERIFIED" &&
+  trust.align_reachability == "VERIFIED" &&
+  trust.corpus_reachability == "VERIFIED" &&
   verifier_gate_environment_eligible(result) &&
   verifier_gate_provider_eligible(result) &&
   verifier_gate_policy_minima(result) &&
   verifier_all_seeds_applied(result)
 }
+
+fn verifier_gate_computed(
+  borrow result: prompt_artifacts.PromptEvaluationResult, borrow evidence: prompt_artifacts.PromptEvaluationEvidence,
+) -> bool = gate_from_trust(result, evidence.trust)
 
 fn verifier_complete_environment_valid(borrow result: prompt_artifacts.PromptEvaluationResult) -> bool {
   return match result.environment {
@@ -6548,5 +6755,222 @@ pub fn verify_result(
   if !verifier_complete_environment_valid(result) { return Err(Error.Invalid) }
   return arena out {
     verifier_complete_score(out, result, evidence)
+  }
+}
+
+fn produced_value(kind: i64, number: i64) -> Result<string, Error> {
+  if kind == 0 { return Ok("NONE".clone()) }
+  if kind == 1 { return Ok("PASS".clone()) }
+  if kind == 2 { return Ok("FAIL".clone()) }
+  if kind == 3 { return Ok("POLICY_VIOLATION".clone()) }
+  if kind == 4 { return Ok("ERROR".clone()) }
+  if kind != 5 || number < 0 { return Err(Error.Invalid) }
+  output := builder(); output.write_int(number); return Ok(output.to_string())
+}
+
+fn produced_reason(code: i64) -> Result<string, Error> {
+  names := ["PASS_TO_FAIL", "BUILD", "TEST", "POLICY", "UNRELATED_DIFF", "PUBLIC_API", "PATCH_SIZE", "REPAIR_LOOPS", "BENCHMARK", "TIME"]
+  if code < 0 || code >= names.len() { return Err(Error.Invalid) }
+  return Ok(names[code].clone())
+}
+
+pub EvaluationStatus { Improved, NoImprovement, SeriousRegression }
+pub EvaluationSummary { status: EvaluationStatus, gate_eligible: bool, corpus: prompt_artifacts.CorpusAggregate }
+
+pub fn evaluation_status(value: EvaluationStatus) -> str = match value {
+  Improved => "IMPROVED", NoImprovement => "NO_IMPROVEMENT", SeriousRegression => "SERIOUS_REGRESSION",
+}
+
+fn produce_rows(
+  rows: slice<ScoreRow>, limits: slice<ScoreTaskLimit>, persisted_rows: slice<prompt_artifacts.PromptTaskRow>,
+  persisted_tasks: slice<prompt_artifacts.PromptEvaluationTask>, sample_count: i64,
+  borrow policy: prompt_artifacts.PromptAcceptancePolicy, borrow trust: prompt_artifacts.PromptVerifierTrust,
+  environment_eligible: bool, provider_kind: str,
+  borrow mut tasks: array_builder<prompt_artifacts.TaskAggregate>, borrow mut reasons: array_builder<prompt_artifacts.RegressionReason>,
+) -> Result<EvaluationSummary, Error> {
+  task_count := persisted_tasks.len()
+  reason_capacity := verifier_reason_capacity(task_count, sample_count)?
+  mut task_ordinal := verifier_i64_array(task_count)
+  mut parent_pass := verifier_i64_array(task_count)
+  mut candidate_pass := verifier_i64_array(task_count)
+  mut parent_repairs := verifier_i64_array(task_count)
+  mut candidate_repairs := verifier_i64_array(task_count)
+  mut paired_pass := verifier_i64_array(task_count)
+  mut parent_median_present := verifier_bool_array(task_count)
+  mut parent_median := verifier_i64_array(task_count)
+  mut candidate_median_present := verifier_bool_array(task_count)
+  mut candidate_median := verifier_i64_array(task_count)
+  mut improvement_present := verifier_bool_array(task_count)
+  mut improvement := verifier_i64_array(task_count)
+  mut regression_present := verifier_bool_array(task_count)
+  mut regression := verifier_i64_array(task_count)
+
+  mut reason_task := verifier_i64_array(reason_capacity)
+  mut reason_sample := verifier_i64_array(reason_capacity)
+  mut reason_code := verifier_i64_array(reason_capacity)
+  mut parent_kind := verifier_i64_array(reason_capacity)
+  mut parent_number := verifier_i64_array(reason_capacity)
+  mut candidate_kind := verifier_i64_array(reason_capacity)
+  mut candidate_number := verifier_i64_array(reason_capacity)
+  mut limit_kind := verifier_i64_array(reason_capacity)
+  mut limit_number := verifier_i64_array(reason_capacity)
+
+  policy_limit := ScorePolicyLimit { maximum_time_regression_ppm: policy.maximum_time_regression_ppm, maximum_repair_loop_regression_count: policy.maximum_repair_loop_regression_count }
+  scored := aggregate(
+    rows,
+    limits,
+    policy_limit,
+    sample_count,
+    task_ordinal,
+    parent_pass,
+    candidate_pass,
+    parent_repairs,
+    candidate_repairs,
+    paired_pass,
+    parent_median_present,
+    parent_median,
+    candidate_median_present,
+    candidate_median,
+    improvement_present,
+    improvement,
+    regression_present,
+    regression,
+    reason_task,
+    reason_sample,
+    reason_code,
+    parent_kind,
+    parent_number,
+    candidate_kind,
+    candidate_number,
+    limit_kind,
+    limit_number,
+  )
+  if !match scored.status { Complete => true, _ => false } || scored.error_code != 0 || scored.error_index != -1 ||
+  scored.reason_count < 0 || scored.reason_count > reason_capacity { return Err(Error.Invalid) }
+  mut includes_edits := false
+  mut includes_refusals := false
+  mut declaration := 0
+  loop {
+    if declaration == task_count { break }
+    if verifier_task_expects_measurement_version_two(persisted_tasks[declaration]) || verifier_task_expects_measurement_version_three(persisted_tasks[declaration]) || verifier_provider_edit_task(persisted_tasks[declaration]) { includes_edits = true }
+    if verifier_task_expects_measurement_version_three(persisted_tasks[declaration]) || verifier_provider_edit_task(persisted_tasks[declaration]) { includes_refusals = true }
+    declaration = declaration + 1
+  }
+  mut all_completion_not_lower := true
+  mut attempted := 0
+  mut recovered := 0
+  mut recovery_pairs := 0
+  mut editsets := 0
+  mut refusals := 0
+  mut index := 0
+  loop {
+    if index == task_count { break }
+    parent := variant_repair_aggregate(persisted_rows, sample_count, index, true)
+    candidate := variant_repair_aggregate(persisted_rows, sample_count, index, false)
+    attempted = attempted + parent.attempted + candidate.attempted
+    recovered = recovered + parent.recovered + candidate.recovered
+    editsets = editsets + parent.editset + candidate.editset
+    refusals = refusals + parent.refusals + candidate.refusals
+    if parent.paired { recovery_pairs = recovery_pairs + 1 }
+    if candidate.paired { recovery_pairs = recovery_pairs + 1 }
+    if candidate_pass[index] < parent_pass[index] { all_completion_not_lower = false }
+    tasks.push(prompt_artifacts.TaskAggregate {
+        task_id: persisted_tasks[index].task_id.clone(), parent_pass_count: parent_pass[index], candidate_pass_count: candidate_pass[index],
+        parent_repair_loop_count: parent_repairs[index], candidate_repair_loop_count: candidate_repairs[index], paired_pass_count: paired_pass[index],
+        parent_paired_median_time_ns: if parent_median_present[index] { Some(parent_median[index]) } else { None },
+        candidate_paired_median_time_ns: if candidate_median_present[index] { Some(candidate_median[index]) } else { None },
+        time_improvement_ppm: if improvement_present[index] { Some(improvement[index]) } else { None },
+        time_regression_ppm: if regression_present[index] { Some(regression[index]) } else { None },
+        parent_repair_attempt_count: Some(parent.attempted), candidate_repair_attempt_count: Some(candidate.attempted),
+        parent_repair_recovery_count: Some(parent.recovered), candidate_repair_recovery_count: Some(candidate.recovered),
+        repair_recovery_paired: Some(parent.paired || candidate.paired),
+        parent_repair_editset_attempt_count: if includes_edits { Some(parent.editset) } else { None },
+        candidate_repair_editset_attempt_count: if includes_edits { Some(candidate.editset) } else { None },
+        parent_edit_refusal_count: if includes_refusals { Some(parent.refusals) } else { None },
+        candidate_edit_refusal_count: if includes_refusals { Some(candidate.refusals) } else { None },
+      })
+    index = index + 1
+  }
+  index = 0
+  loop {
+    if index == scored.reason_count { break }
+    ordinal := reason_task[index]
+    if ordinal < -1 || ordinal >= task_count { return Err(Error.Invalid) }
+    reasons.push(prompt_artifacts.RegressionReason {
+        task_id: if ordinal == -1 { "CORPUS".clone() } else { persisted_tasks[ordinal].task_id.clone() },
+        sample_index: reason_sample[index], code: produced_reason(reason_code[index])?,
+        parent_value: produced_value(parent_kind[index], parent_number[index])?,
+        candidate_value: produced_value(candidate_kind[index], candidate_number[index])?,
+        limit: produced_value(limit_kind[index], limit_number[index])?,
+      })
+    index = index + 1
+  }
+  corpus := scored.corpus
+  persisted_corpus := prompt_artifacts.CorpusAggregate {
+    task_count: corpus.task_count, sample_count: corpus.sample_count, parent_pass_count: corpus.parent_pass_count,
+    candidate_pass_count: corpus.candidate_pass_count, parent_repair_loop_count: corpus.parent_repair_loop_count,
+    candidate_repair_loop_count: corpus.candidate_repair_loop_count, paired_pass_count: corpus.paired_pass_count,
+    parent_paired_median_time_ns: corpus.parent_paired_median_time_ns, candidate_paired_median_time_ns: corpus.candidate_paired_median_time_ns,
+    completion_gain_count: corpus.completion_gain_count, time_improvement_ppm: corpus.time_improvement_ppm,
+    time_regression_ppm: corpus.time_regression_ppm, repair_loop_regression_count: corpus.repair_loop_regression_count,
+    repair_attempt_count: Some(attempted), repair_recovery_count: Some(recovered), repair_recovery_paired_count: Some(recovery_pairs),
+    repair_editset_attempt_count: if includes_edits { Some(editsets) } else { None },
+    edit_refusal_count: if includes_refusals { Some(refusals) } else { None },
+  }
+  completion_improved := corpus.completion_gain_count >= policy.minimum_completion_gain_count
+  time_improved := if corpus.candidate_pass_count == corpus.parent_pass_count && all_completion_not_lower &&
+  corpus.candidate_repair_loop_count <= corpus.parent_repair_loop_count {
+    match corpus.time_improvement_ppm { None => false, Some(value) => value >= policy.minimum_time_improvement_ppm }
+  } else { false }
+  status := if scored.reason_count > 0 { EvaluationStatus.SeriousRegression } else if completion_improved || time_improved {
+    EvaluationStatus.Improved
+  } else { EvaluationStatus.NoImprovement }
+  mut seeds_applied := true
+  mut sample := 0
+  loop {
+    if sample == persisted_rows.len() { break }
+    if !verifier_row_seed_applied(persisted_rows[sample]) { seeds_applied = false }
+    sample = sample + 1
+  }
+  eligible := match status { Improved => true, _ => false } &&
+  trust.align_llm_reachability == "VERIFIED" && trust.align_reachability == "VERIFIED" && trust.corpus_reachability == "VERIFIED" &&
+  environment_eligible && provider_kind != "FIXTURE" && seeds_applied &&
+  task_count >= policy.minimum_task_count && sample_count >= policy.minimum_samples_per_variant
+  return Ok(EvaluationSummary { status: status, gate_eligible: eligible, corpus: persisted_corpus })
+}
+
+// Score complete admitted rows directly, before the final result owns its arrays. Caller-owned
+// output builders are discarded on failure; no partial aggregate authorizes publication.
+pub fn produce(
+  persisted_rows: slice<prompt_artifacts.PromptTaskRow>, persisted_tasks: slice<prompt_artifacts.PromptEvaluationTask>,
+  evaluation_id: str, sample_count: i64, max_prompt_bytes: i64,
+  borrow policy: prompt_artifacts.PromptAcceptancePolicy, borrow trust: prompt_artifacts.PromptVerifierTrust,
+  environment_eligible: bool, provider_kind: str,
+  borrow mut tasks: array_builder<prompt_artifacts.TaskAggregate>, borrow mut reasons: array_builder<prompt_artifacts.RegressionReason>,
+) -> Result<EvaluationSummary, Error> {
+  if persisted_tasks.len() < 1 || persisted_tasks.len() > 64 || sample_count < 2 || sample_count > 16 ||
+  persisted_rows.len() != persisted_tasks.len() * sample_count * 2 || !acceptance_policy_valid(policy) { return Err(Error.Invalid) }
+  return arena out {
+    mut row_builder: array_builder<ScoreRow> := array_builder(out)
+    mut limit_builder: array_builder<ScoreTaskLimit> := array_builder(out)
+    mut index := 0
+    loop {
+      if index == persisted_rows.len() { break }
+      (ordinal, _, _) := verifier_expected_schedule(index, sample_count)
+      row_builder.push(verifier_score_row(persisted_rows[index], persisted_tasks[ordinal], evaluation_id, ordinal, max_prompt_bytes)?)
+      index = index + 1
+    }
+    index = 0
+    loop {
+      if index == persisted_tasks.len() { break }
+      limit_builder.push(verifier_task_limit(persisted_tasks[index]))
+      index = index + 1
+    }
+    rows := row_builder.build()
+    limits := limit_builder.build()
+    prefix := validate_prefix(rows, limits, sample_count)
+    if !match prefix.status { ValidPrefix => true, _ => false } || prefix.error_code != 0 ||
+    prefix.error_index != -1 || prefix.row_count != persisted_rows.len() { return Err(Error.Invalid) }
+    produce_rows(rows, limits, persisted_rows, persisted_tasks, sample_count, policy, trust, environment_eligible, provider_kind, tasks, reasons)
   }
 }

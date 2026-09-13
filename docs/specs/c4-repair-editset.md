@@ -1,5 +1,10 @@
 # C4-REPAIR-EDITSET: the failing edit set in the repair prompt, via a second adapter
 
+Implementation-language correction (2026-09-09): [Align product boundary](align-product-boundary.md)
+owns the planned replacement of this historical Python evaluator/adapter execution path. Its
+explicit versioned deltas supersede the old helper ABI at cutover; all historical evidence,
+quality rules and independent replay remain. No additional product features may be added to Python.
+
 Status: **implemented and measured.** Section 11 carries the implementation record, the
 ledger-to-diff mapping, the recorded deviations, and the gate result. This document is the
 authoritative plan. The proportional

@@ -1,5 +1,7 @@
 module prompt_artifacts_smoke
 
+import std.process
+
 import prompt_artifacts
 
 fn sample() -> string {
@@ -11,7 +13,7 @@ fn sample() -> string {
   if !prompt_artifacts.verify_prompt_variant_content(decoded) {
     return "verify-error".clone()
   }
-  return prompt_artifacts.encode_prompt_variant(decoded)
+  return (match prompt_artifacts.encode_prompt_variant(decoded) { Ok(encoded) => encoded, Err(_) => process.abort() })
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {

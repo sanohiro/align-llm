@@ -1,0 +1,127 @@
+module prompt_generation_worker_smoke
+
+import core.json
+import prompt_generation_worker
+import prompt_generation_collect
+import prompt_generation_response
+import prompt_artifacts
+import prompt_command
+import prompt_capture
+import prompt_scope_cleanup
+import prompt_task_supervisor
+import prompt_validation_budget
+import std.crypto
+import std.encoding
+import std.fs
+import std.io
+import std.process
+import std.time
+
+fn owned(image_path: str, input_path: str, cwd: str, mode: str) -> Result<command, Error> {
+  input := fs.open(image_path)?
+  mut memory := fs.memory_file(fs.memory_kind.Executable, 67108864)?
+  loop {
+    mut chunk := buffer(65536)
+    if input.read(chunk)? == 0 { break }
+    memory.write(chunk.bytes())?
+  }
+  sealed := memory.seal()?
+  image := process.executable(sealed)?
+  encoded := fs.read_file(input_path)?
+  mut environment: array_builder<prompt_command.Environment> := array_builder()
+  if mode != "digest" && mode != "schema" && mode != "malformed" {
+    work: prompt_generation_worker.Work := json.decode(encoded)?
+    return prompt_generation_worker.prepare(image, work, cwd, environment.build())
+  }
+  mut storage := fs.memory_file(fs.memory_kind.Data, 4194304)?
+  storage.write(encoded)?
+  data := storage.seal()?
+  hash := crypto.sha256(encoded)
+  identity := if mode == "digest" { "0000000000000000000000000000000000000000000000000000000000000000".clone() } else { encoding.hex_encode(hash[0..hash.len()]).clone() }
+  mut arguments: array_builder<string> := array_builder()
+  arguments.push("align-llm".clone())
+  arguments.push("--prompt-generation-worker".clone())
+  arguments.push(identity)
+  mut command := prompt_command.prepare(image, arguments.build(), cwd, environment.build())?
+  command.inherit_file(data, 3)?
+  return Ok(command)
+}
+
+fn exercise(borrow mut scope: process.child_scope, borrow mut signals: process.signal_subscription, borrow workspace: fs.directory, borrow procfs: fs.directory, mode: str) -> Result<(), Error> {
+  pattern := prompt_capture.pattern("", 2097152)?
+  limits := prompt_validation_budget.Limits { processes: 1, resident_bytes: 1, workspace_files: 1, workspace_bytes: 1 }
+  config := prompt_task_supervisor.Config { deadline: time.instant() + if mode == "timeout" { 500000000 } else { 10000000000 }, resources: false, limits: limits }
+  report := prompt_task_supervisor.run(scope, signals, workspace, procfs, pattern, config)?
+  if !report.cleanup.released || report.stdout_truncated || report.stderr_truncated { return Err(Error.Invalid) }
+  match report.cleanup.first_error { Some(error) => { return Err(error) }, None => {} }
+  match report.drain_error { Some(error) => { return Err(error) }, None => {} }
+  match report.stop {
+    Timeout => { if mode != "timeout" { return Err(Error.Invalid) }; print("timeout released"); return Ok(()) },
+    Cancelled(_) => { if mode != "cancel" { return Err(Error.Invalid) }; print("cancel released"); return Ok(()) },
+    Collected => {},
+    _ => { return Err(Error.Invalid) },
+  }
+  bad := mode == "digest" || mode == "schema" || mode == "malformed" || mode == "input"
+  match report.termination { Some(status) => { match status { Exited(code) => { if (bad && code == 0) || (!bad && code != 0) { return Err(Error.Invalid) } }, _ => { return Err(Error.Invalid) } } }, None => { return Err(Error.Invalid) } }
+  if bad { if report.stdout.len() != 0 { return Err(Error.Invalid) }; print("refused released"); return Ok(()) }
+  bytes: slice<u8> := report.stdout
+  io.stdout.write(bytes)?
+  return io.stdout.flush()
+}
+
+fn expected(input_path: str) -> Result<prompt_generation_response.Expected, Error> {
+  encoded := fs.read_file(input_path)?
+  work: prompt_generation_worker.Work := json.decode(encoded)?
+  return Ok(prompt_generation_response.Expected { request_id: work.request.request_id.clone(), provider_kind: work.request.provider_kind.clone(), provider_model: work.request.provider_model.clone(), paired_seed: work.request.paired_seed })
+}
+
+fn collected(borrow mut scope: process.child_scope, borrow mut signals: process.signal_subscription, borrow workspace: fs.directory, borrow procfs: fs.directory, mode: str, borrow expected: prompt_generation_response.Expected) -> Result<(), Error> {
+  deadline := time.instant() + if mode == "timeout" { 500000000 } else { 10000000000 }
+  result := prompt_generation_collect.run(scope, signals, workspace, procfs, deadline, expected)?
+  if !scope.release()? { return Err(Error.Invalid) }
+  match result {
+    Ready(response) => {
+      if mode == "timeout" || mode == "cancel" { return Err(Error.Invalid) }
+      output := prompt_artifacts.encode_prompt_generation_response_bounded(response, 2097152)?
+      io.stdout.write(output)?
+      io.stdout.flush()?
+    },
+    Stopped(report) => {
+      if !report.cleanup.released || report.stdout_truncated || report.stderr_truncated { return Err(Error.Invalid) }
+      match report.cleanup.first_error { Some(error) => { return Err(error) }, None => {} }
+      match report.drain_error { Some(error) => { return Err(error) }, None => {} }
+      match report.stop {
+        Timeout => { if mode != "timeout" { return Err(Error.Invalid) }; print("timeout released") },
+        Cancelled(_) => { if mode != "cancel" { return Err(Error.Invalid) }; print("cancel released") },
+        _ => { return Err(Error.Invalid) },
+      }
+    },
+  }
+  return Ok(())
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() == 3 && args[1] == "--prompt-generation-worker" { return prompt_generation_worker.run(args[2]) }
+  if args.len() != 6 { return Err(Error.Invalid) }
+  command := match owned(args[1], args[2], args[3], args[4]) {
+    Ok(value) => value,
+    Err(error) => { if args[5] == "Darwin" { match error { Code(code) => { if code == 45 { print("worker: Darwin executable memory ENOTSUP 45"); return Ok(()) } }, _ => {} } }; return Err(error) },
+  }
+  workspace := fs.open_directory(args[3])?
+  procfs := fs.open_directory("/proc")?
+  mut signals := process.signals(process.signal_set { hangup: false, interrupt: true, quit: false, terminate: true })?
+  mut scope := match command.start_scope() { Ok(value) => value, Err(error) => { signals.close()?; return Err(error) } }
+  result := if args[4] == "digest" || args[4] == "schema" || args[4] == "malformed" || args[4] == "input" {
+    exercise(scope, signals, workspace, procfs, args[4])
+  } else {
+    expectation := expected(args[2])
+    match expectation { Ok(value) => collected(scope, signals, workspace, procfs, args[4], value), Err(error) => Err(error) }
+  }
+  cleanup := prompt_scope_cleanup.run(scope, time.instant() + 10000000000, 32768, 8192)
+  restored := signals.close()
+  released := cleanup?
+  if !released.released { return Err(Error.Timeout) }
+  restored?
+  result?
+  return Ok(())
+}

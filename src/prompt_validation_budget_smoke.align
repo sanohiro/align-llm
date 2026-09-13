@@ -1,0 +1,82 @@
+module prompt_validation_budget_smoke
+
+import prompt_validation_budget
+
+fn main() -> i32 {
+  limits := prompt_validation_budget.defaults()
+  mut observation := prompt_validation_budget.Observation {
+    complete: true,
+    processes: 256,
+    resident_bytes: 536870912,
+    visible_files: 8191,
+    visible_bytes: 67108863,
+    deleted_files: 1,
+    deleted_bytes: 1,
+  }
+  match prompt_validation_budget.check(limits, observation) {
+    WithinBudget => {}
+    _ => { return 1 }
+  }
+  observation.deleted_bytes = 2
+  match prompt_validation_budget.check(limits, observation) {
+    ByteLimit => {}
+    _ => { return 2 }
+  }
+  observation.deleted_files = 2
+  match prompt_validation_budget.check(limits, observation) {
+    FileLimit => {}
+    _ => { return 3 }
+  }
+  observation.resident_bytes = 536870913
+  match prompt_validation_budget.check(limits, observation) {
+    ResidentLimit => {}
+    _ => { return 4 }
+  }
+  observation.processes = 257
+  match prompt_validation_budget.check(limits, observation) {
+    ProcessLimit => {}
+    _ => { return 5 }
+  }
+  observation.complete = false
+  match prompt_validation_budget.check(limits, observation) {
+    IncompleteObservation => {}
+    _ => { return 6 }
+  }
+  observation.deleted_bytes = -1
+  match prompt_validation_budget.check(limits, observation) {
+    InvalidObservation => {}
+    _ => { return 7 }
+  }
+  observation.complete = true
+  observation.processes = 0
+  observation.resident_bytes = 0
+  observation.visible_files = 0
+  observation.deleted_files = 0
+  observation.visible_bytes = 9223372036854775807
+  observation.deleted_bytes = 9223372036854775807
+  mut large := limits
+  large.workspace_bytes = 9223372036854775807
+  match prompt_validation_budget.check(large, observation) {
+    ByteLimit => {}
+    _ => { return 8 }
+  }
+  observation.deleted_bytes = 0
+  match prompt_validation_budget.check(large, observation) {
+    WithinBudget => {}
+    _ => { return 9 }
+  }
+  observation.visible_files = 9223372036854775807
+  observation.deleted_files = 1
+  large.workspace_files = 9223372036854775807
+  match prompt_validation_budget.check(large, observation) {
+    FileLimit => {}
+    _ => { return 10 }
+  }
+  large.processes = 0
+  match prompt_validation_budget.check(large, observation) {
+    InvalidObservation => {}
+    _ => { return 11 }
+  }
+  print("validation budget: 11 cases passed")
+  return 0
+}

@@ -2,6 +2,13 @@ module verify
 
 import std.process
 
+fn exit_code(result: process.wait_result) -> i64 {
+  return match result.termination {
+    Exited(code) => code,
+    Signaled(signal) => 128 + signal,
+  }
+}
+
 // align-llm's foundational verification primitive: run a build/test/lint command,
 // capture its stdout/stderr as strings, and read the exit code — the core of the
 // verify/repair loop. Backed by std.process `process.command` (Align Request 1,
@@ -20,7 +27,7 @@ pub fn run_captured(cmd: str, argv: array<str>, cwd: str, timeout_ns: i64) -> Re
       print(out.stdout())
       print("stderr:")
       print(out.stderr())
-      return Ok(out.code())
+      return Ok(exit_code(out.status()))
     }
     Err(e) => {
       // A hung command is distinguishable from a nonzero exit or a transport error.
@@ -38,11 +45,9 @@ pub RunStatus { Completed, TimedOut, SpawnFailed }
 
 // A fully-owned snapshot of a captured run, handed back to the caller — unlike `run_captured`,
 // which prints and drops the views at the call site. A repair loop needs the diagnostics as owned
-// values to feed a provider, so `stdout`/`stderr` are `.clone()`d off the region-bound `run_output`
-// views into owned `string`s. The outcome is folded into `status` rather than returned as a
-// `Result`: a Move struct that owns heap `string` fields cannot yet be a `Result` Ok payload in
-// Align, while a bare Move-struct return is supported — so the failure categories live in the
-// struct. See docs/align-requests.md ("Result Ok payload cannot be a Move struct").
+// values to feed a provider, so the captured views are explicitly cloned into owned strings.
+// Failure categories remain in the record to preserve the verification loop's public outcome
+// contract; this representation is not a restriction of Align's current Result support.
 pub Captured { status: RunStatus, code: i64, stdout: string, stderr: string }
 
 // Run a command captured and timeout-bounded, returning the owned outcome. Never fails outward:
@@ -55,7 +60,7 @@ pub fn run(cmd: str, argv: slice<str>, cwd: str, timeout_ns: i64) -> Captured {
   return match c.run() {
     Ok(out) => Captured {
       status: RunStatus.Completed,
-      code: out.code(),
+      code: exit_code(out.status()),
       stdout: out.stdout().clone(),
       stderr: out.stderr().clone(),
     },

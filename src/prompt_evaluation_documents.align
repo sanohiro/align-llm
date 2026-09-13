@@ -1,0 +1,145 @@
+module prompt_evaluation_documents
+
+import prompt_artifacts
+import std.crypto
+import std.encoding
+
+fn digest(value: str) -> string {
+  hash := crypto.sha256(value)
+  return encoding.hex_encode(hash[0..hash.len()]).clone()
+}
+
+// Existing bounded encoders consume their record. Decode the original again only
+// after checking the normalized canonical digest, preserving every owned field.
+
+pub fn experiment(source: str) -> Result<prompt_artifacts.PromptExperimentResult, Error> {
+  if source.len() > 2097152 { return Err(Error.Invalid) }
+  mut normalized := prompt_artifacts.decode_prompt_experiment_result(source)?
+  if normalized.schema_version != 1 || normalized.artifact_kind != "PROMPT_EXPERIMENT_RESULT" { return Err(Error.Invalid) }
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_prompt_experiment_result_bounded(normalized, 2097152)?
+  if digest(canonical) != claimed { return Err(Error.Invalid) }
+  return prompt_artifacts.decode_prompt_experiment_result(source)
+}
+
+pub fn parent(source: str) -> Result<prompt_artifacts.PromptActivationResult, Error> {
+  if source.len() > 2097152 { return Err(Error.Invalid) }
+  mut normalized := prompt_artifacts.decode_prompt_activation_result(source)?
+  if normalized.schema_version != 1 || normalized.artifact_kind != "PROMPT_ACTIVATION_RESULT" { return Err(Error.Invalid) }
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_prompt_activation_result_bounded(normalized, 2097152)?
+  if digest(canonical) != claimed { return Err(Error.Invalid) }
+  return prompt_artifacts.decode_prompt_activation_result(source)
+}
+
+pub fn corpus(source: str) -> Result<prompt_artifacts.PromptEvaluationCorpus, Error> {
+  if source.len() > 2097152 { return Err(Error.Invalid) }
+  mut normalized := prompt_artifacts.decode_prompt_evaluation_corpus(source)?
+  if normalized.schema_version != 1 || normalized.artifact_kind != "PROMPT_EVALUATION_CORPUS" { return Err(Error.Invalid) }
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_prompt_evaluation_corpus_bounded(normalized, 2097152)?
+  if digest(canonical) != claimed { return Err(Error.Invalid) }
+  return prompt_artifacts.decode_prompt_evaluation_corpus(source)
+}
+
+pub fn task(source: str) -> Result<prompt_artifacts.PromptEvaluationTask, Error> {
+  if source.len() > 2097152 { return Err(Error.Invalid) }
+  mut normalized := prompt_artifacts.decode_prompt_evaluation_task(source)?
+  if normalized.schema_version != 2 || normalized.artifact_kind != "PROMPT_EVALUATION_TASK" { return Err(Error.Invalid) }
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_prompt_evaluation_task_bounded(normalized, 2097152)?
+  if digest(canonical) != claimed { return Err(Error.Invalid) }
+  return prompt_artifacts.decode_prompt_evaluation_task(source)
+}
+
+pub fn generation(source: str) -> Result<prompt_artifacts.GenerationPolicy, Error> {
+  if source.len() > 2097152 { return Err(Error.Invalid) }
+  mut normalized := prompt_artifacts.decode_generation_policy(source)?
+  if normalized.schema_version != 1 || normalized.artifact_kind != "GENERATION_POLICY" { return Err(Error.Invalid) }
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_generation_policy_bounded(normalized, 2097152)?
+  if digest(canonical) != claimed { return Err(Error.Invalid) }
+  return prompt_artifacts.decode_generation_policy(source)
+}
+
+pub fn control(source: str) -> Result<prompt_artifacts.EvaluationProviderControl, Error> {
+  if source.len() > 2097152 { return Err(Error.Invalid) }
+  mut normalized := prompt_artifacts.decode_evaluation_provider_control(source)?
+  if normalized.schema_version != 1 || normalized.artifact_kind != "EVALUATION_PROVIDER_CONTROL" { return Err(Error.Invalid) }
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_evaluation_provider_control_bounded(normalized, 2097152)?
+  if digest(canonical) != claimed { return Err(Error.Invalid) }
+  return prompt_artifacts.decode_evaluation_provider_control(source)
+}
+
+pub fn environment(source: str) -> Result<prompt_artifacts.EnvironmentPolicy, Error> {
+  if source.len() > 2097152 { return Err(Error.Invalid) }
+  mut normalized := prompt_artifacts.decode_environment_policy(source)?
+  if normalized.schema_version != 1 || normalized.artifact_kind != "ENVIRONMENT_POLICY" { return Err(Error.Invalid) }
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_environment_policy_bounded(normalized, 2097152)?
+  if digest(canonical) != claimed { return Err(Error.Invalid) }
+  return prompt_artifacts.decode_environment_policy(source)
+}
+
+pub fn acceptance(source: str) -> Result<prompt_artifacts.PromptAcceptancePolicy, Error> {
+  if source.len() > 2097152 { return Err(Error.Invalid) }
+  mut normalized := prompt_artifacts.decode_prompt_acceptance_policy(source)?
+  if normalized.schema_version != 1 || normalized.artifact_kind != "PROMPT_ACCEPTANCE_POLICY" { return Err(Error.Invalid) }
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_prompt_acceptance_policy_bounded(normalized, 2097152)?
+  if digest(canonical) != claimed { return Err(Error.Invalid) }
+  return prompt_artifacts.decode_prompt_acceptance_policy(source)
+}
+
+pub fn preflight(source: str) -> Result<prompt_artifacts.WorkspacePreflightRequest, Error> {
+  if source.len() > 2097152 { return Err(Error.Invalid) }
+  mut normalized := prompt_artifacts.decode_workspace_preflight_request(source)?
+  if normalized.schema_version != 1 || normalized.artifact_kind != "WORKSPACE_PREFLIGHT_REQUEST" { return Err(Error.Invalid) }
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_workspace_preflight_request_bounded(normalized, 2097152)?
+  if digest(canonical) != claimed { return Err(Error.Invalid) }
+  return prompt_artifacts.decode_workspace_preflight_request(source)
+}
+
+pub fn source_policy(source: str) -> Result<prompt_artifacts.PromptSourceVerifierPolicy, Error> {
+  if source.len() > 2097152 { return Err(Error.Invalid) }
+  mut normalized := prompt_artifacts.decode_prompt_source_verifier_policy(source)?
+  if normalized.schema_version != 2 || normalized.artifact_kind != "PROMPT_SOURCE_VERIFIER_POLICY" { return Err(Error.Invalid) }
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_prompt_source_verifier_policy_bounded(normalized, 2097152)?
+  if digest(canonical) != claimed { return Err(Error.Invalid) }
+  return prompt_artifacts.decode_prompt_source_verifier_policy(source)
+}
+
+pub fn context(source: str) -> Result<prompt_artifacts.ContextSources, Error> {
+  if source.len() > 2097152 { return Err(Error.Invalid) }
+  mut normalized := prompt_artifacts.decode_context_sources(source)?
+  if normalized.schema_version != 1 || normalized.artifact_kind != "CONTEXT_SOURCES" { return Err(Error.Invalid) }
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_context_sources_bounded(normalized, 2097152)?
+  if digest(canonical) != claimed { return Err(Error.Invalid) }
+  return prompt_artifacts.decode_context_sources(source)
+}
+
+pub fn task_prompt(source: str) -> Result<prompt_artifacts.PromptTextArtifact, Error> {
+  if source.len() > 2097152 { return Err(Error.Invalid) }
+  mut normalized := prompt_artifacts.decode_prompt_text_artifact(source)?
+  if normalized.schema_version != 1 || normalized.artifact_kind != "TASK_PROMPT" { return Err(Error.Invalid) }
+  claimed := normalized.content_sha256.clone()
+  normalized.content_sha256 = "".clone()
+  canonical := prompt_artifacts.encode_prompt_text_artifact_bounded(normalized, 2097152)?
+  if digest(canonical) != claimed { return Err(Error.Invalid) }
+  return prompt_artifacts.decode_prompt_text_artifact(source)
+}

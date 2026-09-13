@@ -1,0 +1,91 @@
+module prompt_workspace_cleanup
+
+import std.fs
+import std.time
+
+fn timely(deadline: i64) -> Result<(), Error> {
+  if time.instant() >= deadline { return Err(Error.Timeout) }
+  return Ok(())
+}
+
+fn component(name: slice<u8>) -> bool {
+  if name.len() == 0 || name.len() > 255 { return false }
+  if name.len() == 1 && name[0] == 46 { return false }
+  if name.len() == 2 && name[0] == 46 && name[1] == 46 { return false }
+  mut index := 0
+  loop {
+    if index == name.len() { break }
+    if name[index] == 0 || name[index] == 47 { return false }
+    index = index + 1
+  }
+  return true
+}
+
+fn matches(metadata: fs.metadata, device: u64, inode: u64) -> bool {
+  return match metadata.kind { Directory => true, _ => false } && metadata.device == device && metadata.inode == inode
+}
+
+fn clear(borrow root: fs.directory, depth: i64, prefix: i64, initial: i64, maximum: i64, deadline: i64) -> Result<i64, Error> {
+  timely(deadline)?
+  cursor := root.cursor()?
+  timely(deadline)?
+  mut removed := initial
+  loop {
+    timely(deadline)?
+    next := cursor.next()?
+    timely(deadline)?
+    entry := next else { break }
+    name: slice<u8> := entry.name
+    if !component(name) || removed == maximum { return Err(Error.Invalid) }
+    length := prefix + (if depth == 0 { 0 } else { 1 }) + name.len()
+    if length > 4096 { return Err(Error.Invalid) }
+    metadata := root.metadata_at(name)?
+    timely(deadline)?
+    match metadata.kind {
+      Directory => {
+        if depth == 128 { return Err(Error.Invalid) }
+        child := root.open_dir(name)?
+        timely(deadline)?
+        actual := child.metadata()?
+        timely(deadline)?
+        if !matches(actual, metadata.device, metadata.inode) { return Err(Error.Invalid) }
+        removed = clear(child, depth + 1, length, removed, maximum, deadline)?
+        if removed == maximum { return Err(Error.Invalid) }
+        observed := root.metadata_at(name)?
+        timely(deadline)?
+        if !matches(observed, metadata.device, metadata.inode) { return Err(Error.Invalid) }
+        root.remove_dir(name)?
+      },
+      _ => { root.remove_file(name)? },
+    }
+    timely(deadline)?
+    removed = removed + 1
+  }
+  return Ok(removed)
+}
+
+pub fn remove(
+  borrow parent: fs.directory,
+  name: slice<u8>,
+  borrow root: fs.directory,
+  device: u64,
+  inode: u64,
+  writers_absent: bool,
+  maximum_entries: i64,
+  deadline: i64,
+) -> Result<i64, Error> {
+  if !writers_absent || !component(name) || maximum_entries < 1 || maximum_entries > 32768 { return Err(Error.Invalid) }
+  timely(deadline)?
+  retained := root.metadata()?
+  timely(deadline)?
+  named := parent.metadata_at(name)?
+  timely(deadline)?
+  if !matches(retained, device, inode) || !matches(named, device, inode) { return Err(Error.Invalid) }
+  removed := clear(root, 0, 0, 0, maximum_entries - 1, deadline)?
+  observed := parent.metadata_at(name)?
+  timely(deadline)?
+  if !matches(observed, device, inode) { return Err(Error.Invalid) }
+  parent.remove_dir(name)?
+  timely(deadline)?
+  return Ok(removed + 1)
+}

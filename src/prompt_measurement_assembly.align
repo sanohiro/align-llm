@@ -1,0 +1,194 @@
+module prompt_measurement_assembly
+
+import prompt_artifacts
+import prompt_measurement_outcome
+import prompt_repair_evidence
+import prompt_diagnostic_decode
+import core.json
+import std.crypto
+import std.encoding
+
+pub Observations {
+  outcome: prompt_measurement_outcome.Outcome,
+  cleanup_passed: bool,
+  containment_passed: bool,
+  generation_ns: Option<i64>,
+  patch_bytes: i64,
+  rendered_prompt_sha256: string,
+  product_runtime: string,
+  edit_refusal: string,
+}
+pub Diagnostics { summary: array<u8>, stdout: array<u8>, stderr: array<u8> }
+pub Evidence {
+  edit_set_total_bytes: Option<i64>,
+  patch_sha256: Option<string>,
+  // Fully redacted text, never passed through credential replacement again.
+  completion: Option<string>,
+}
+
+fn hex(value: str, length: i64) -> bool {
+  if value.len() != length { return false }
+  mut index := 0
+  loop {
+    if index == length { return true }
+    byte := value.bytes()[index]
+    if !((byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)) { return false }
+    index = index + 1
+  }
+}
+fn digest(value: str) -> string {
+  bytes := crypto.sha256(value)
+  return encoding.hex_encode(bytes[0..bytes.len()]).clone()
+}
+fn optional_text(borrow value: Option<string>) -> Option<string> = match value { None => None, Some(text) => Some(text.clone()) }
+fn refusal_kind(value: str) -> i64 {
+  if value == "NONE" { return 0 }
+  if value == "PATH_NOT_EDITABLE" || value == "PATH_ESCAPES_SOURCE" { return 2 }
+  if value == "NO_FILE_BLOCK" || value == "HEADER_WITHOUT_BLOCK" || value == "UNTERMINATED_BLOCK" ||
+  value == "TOO_MANY_BLOCKS" || value == "DUPLICATE_PATH" || value == "BODY_TOO_LARGE" || value == "UNCHANGED_FILES" { return 1 }
+  return -1
+}
+
+// Identity admission, process authority and edit eligibility are caller-owned.
+// Owned identities/edit storage transfer into the finalized measurement.
+pub fn build(
+  borrow input: Observations,
+  generation: prompt_artifacts.GenerationRequestIdentity,
+  attestation: prompt_artifacts.SeedCapabilityAttestation,
+  probe: prompt_artifacts.EnvironmentProbe,
+  edits: Option<array<prompt_artifacts.EditSetBlock>>,
+  borrow evidence: Evidence,
+  borrow diagnostics: Diagnostics,
+  credential: str,
+) -> Result<prompt_artifacts.TaskMeasurement, Error> {
+  runtime: str := input.product_runtime
+  if runtime.len() != 111 || !runtime.starts_with("ALIGN:") || runtime.bytes()[46] != 58 ||
+  !hex(runtime[6..46], 40) || !hex(runtime[47..111], 64) ||
+  probe.schema_version != 2 || probe.artifact_kind != "ENVIRONMENT_PROBE" || probe.producer != "ALIGN_TASK" || probe.runtime_identity != runtime ||
+  generation.schema_version != 1 || generation.artifact_kind != "GENERATION_REQUEST_IDENTITY" ||
+  attestation.schema_version != 1 || attestation.artifact_kind != "SEED_CAPABILITY_ATTESTATION" ||
+  input.patch_bytes < 0 || !hex(input.rendered_prompt_sha256, 64) { return Err(Error.Invalid) }
+  response := generation.provider_request_sha256 != "0000000000000000000000000000000000000000000000000000000000000000"
+  fixture := attestation.provider_kind == "FIXTURE"
+  match evidence.completion {
+    None => { if response && !fixture { return Err(Error.Invalid) } },
+    Some(text) => { if fixture || !response || text.len() > 2097152 { return Err(Error.Invalid) } },
+  }
+  if fixture {
+    match edits { None => {}, Some(_) => { return Err(Error.Invalid) } }
+    match evidence.edit_set_total_bytes { None => {}, Some(_) => { return Err(Error.Invalid) } }
+    if input.edit_refusal != "NONE" { return Err(Error.Invalid) }
+  }
+  match input.generation_ns { None => {}, Some(value) => { if value <= 0 || value > 7200000000000 { return Err(Error.Invalid) } } }
+  code := refusal_kind(input.edit_refusal)
+  if code < 0 || (code == 1 && input.patch_bytes != 0) { return Err(Error.Invalid) }
+  if input.cleanup_passed && input.containment_passed {
+    if (code == 1) != (match input.outcome { Patch => true, _ => false }) { return Err(Error.Invalid) }
+    if code == 2 && !(match input.outcome { Policy => true, _ => false }) { return Err(Error.Invalid) }
+  }
+  match evidence.patch_sha256 {
+    None => { if input.patch_bytes != 0 { return Err(Error.Invalid) } },
+    Some(hash) => { if input.patch_bytes == 0 || !hex(hash, 64) { return Err(Error.Invalid) } },
+  }
+  validate_edits(edits, evidence, input, code)?
+  result := prompt_measurement_outcome.assemble(prompt_measurement_outcome.Input {
+      outcome: input.outcome, cleanup_passed: input.cleanup_passed,
+      containment_passed: input.containment_passed, generation_ns: input.generation_ns,
+    })
+  refusal := if input.cleanup_passed && input.containment_passed { input.edit_refusal.clone() } else { "NONE".clone() }
+  mut completion_bytes: Option<i64> := None
+  mut completion_sha256: Option<string> := None
+  mut completion_text: Option<string> := None
+  match evidence.completion {
+    None => {},
+    Some(text) => {
+      completion_bytes = Some(text.len())
+      completion_sha256 = Some(digest(text))
+      if refusal != "NONE" && refusal != "UNCHANGED_FILES" {
+        bounded := prompt_diagnostic_decode.bounded_redacted_text(text, 32768)?
+        if text_valid(bounded, 32768) { completion_text = Some(bounded) }
+      }
+    },
+  }
+  mut value := prompt_artifacts.TaskMeasurement {
+    schema_version: 4, artifact_kind: "TASK_MEASUREMENT".clone(),
+    status: (match result.status { Pass => "PASS", Fail => "FAIL", PolicyViolation => "POLICY_VIOLATION", Error => "ERROR" }).clone(),
+    failure_kind: (match result.failure_kind { None => "NONE", Provider => "PROVIDER", Patch => "PATCH", Build => "BUILD", Test => "TEST", Policy => "POLICY", Cleanup => "CLEANUP", Containment => "CONTAINMENT", Adapter => "ADAPTER" }).clone(),
+    build_status: (match result.build_status { Pass => "PASS", Fail => "FAIL", NotRun => "NOT_RUN", StageError => "ERROR" }).clone(),
+    test_status: (match result.test_status { Pass => "PASS", Fail => "FAIL", NotRun => "NOT_RUN", StageError => "ERROR" }).clone(),
+    repair_loop_count: 0, unrelated_diff_count: 0, patch_size_bytes: input.patch_bytes,
+    public_api_change_count: 0, policy_violation_count: result.policy_violation_count,
+    cleanup_passed: input.cleanup_passed, containment_passed: input.containment_passed,
+    benchmark_regression_ppm: None, generation_to_passing_patch_ns: result.generation_to_passing_patch_ns,
+    rendered_prompt_sha256: input.rendered_prompt_sha256.clone(), generation_request: generation,
+    environment_probe: probe, seed_attestation: attestation,
+    diagnostic_summary: prompt_repair_evidence.diagnostic(diagnostics.summary, credential, 4096)?,
+    diagnostic_stdout: prompt_repair_evidence.diagnostic(diagnostics.stdout, credential, 16384)?,
+    diagnostic_stderr: prompt_repair_evidence.diagnostic(diagnostics.stderr, credential, 16384)?,
+    edit_set: edits, edit_set_total_bytes: evidence.edit_set_total_bytes,
+    patch_sha256: optional_text(evidence.patch_sha256), base_adapter_runtime_identity: None,
+    product_runtime: Some(input.product_runtime.clone()), edit_refusal: Some(refusal),
+    completion_bytes: completion_bytes, completion_sha256: completion_sha256,
+    completion_text: completion_text, content_sha256: "".clone(),
+  }
+  if !text_valid(value.diagnostic_summary, 4096) || !text_valid(value.diagnostic_stdout, 16384) || !text_valid(value.diagnostic_stderr, 16384) { return Err(Error.Invalid) }
+  // Reserve the entire final digest before deciding whether completion text fits.
+  value.content_sha256 = "0000000000000000000000000000000000000000000000000000000000000000".clone()
+  match json.encode_bounded(value, 262144) {
+    Ok(_) => {},
+    Err(error) => {
+      if !text_present(value.completion_text) { return Err(error) }
+      value.completion_text = None
+      bounded := json.encode_bounded(value, 262144)?
+    },
+  }
+  value.content_sha256 = "".clone()
+  canonical := json.encode_bounded(value, 262144)?
+  value.content_sha256 = digest(canonical)
+  return Ok(value)
+}
+
+fn carried_bytes(borrow block: prompt_artifacts.EditSetBlock) -> i64 {
+  return match block.body_text { None => 0, Some(text) => text.len() }
+}
+
+fn text_present(borrow value: Option<string>) -> bool = match value { None => false, Some(_) => true }
+
+fn validate_edits(borrow edits: Option<array<prompt_artifacts.EditSetBlock>>, borrow evidence: Evidence, borrow input: Observations, code: i64) -> Result<(), Error> {
+  match edits {
+    None => { if input.edit_refusal == "UNCHANGED_FILES" { return Err(Error.Invalid) }; match evidence.edit_set_total_bytes { None => {}, Some(_) => { return Err(Error.Invalid) } } },
+    Some(blocks) => {
+      if blocks.len() < 1 || blocks.len() > 32 { return Err(Error.Invalid) }
+      total := match evidence.edit_set_total_bytes { None => { return Err(Error.Invalid) }, Some(value) => value }
+      mut sum := 0
+      mut carried := 0
+      mut index := 0
+      loop {
+        if index == blocks.len() { break }
+        if blocks[index].schema_version != 1 || blocks[index].artifact_kind != "EDIT_SET_BLOCK" || blocks[index].body_bytes < 0 || blocks[index].body_bytes > 262144 ||
+        !hex(blocks[index].body_sha256, 64) || !hex(blocks[index].content_sha256, 64) || !body_text_valid(blocks[index]) { return Err(Error.Invalid) }
+        if index > 0 && blocks[index - 1].path >= blocks[index].path { return Err(Error.Invalid) }
+        sum = sum + blocks[index].body_bytes
+        carried = carried + carried_bytes(blocks[index])
+        index = index + 1
+      }
+      if total != sum || carried > 16384 { return Err(Error.Invalid) }
+      if code != 0 && input.edit_refusal != "UNCHANGED_FILES" { return Err(Error.Invalid) }
+    },
+  }
+  return Ok(())
+}
+
+fn text_valid(text: str, maximum: i64) -> bool {
+  if text.len() > maximum { return false }
+  mut index := 0
+  loop {
+    if index == text.len() { return true }
+    if text.bytes()[index] == 0 { return false }
+    index = index + 1
+  }
+}
+
+fn body_text_valid(borrow block: prompt_artifacts.EditSetBlock) -> bool {
+  return match block.body_text { None => true, Some(text) => text.len() == block.body_bytes && text.len() <= 16384 }
+}

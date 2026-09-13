@@ -1,0 +1,186 @@
+module prompt_task
+
+import prompt_artifacts
+import prompt_model
+import prompt_score
+import std.crypto
+import std.encoding
+
+fn digest(value: str) -> string {
+  bytes := crypto.sha256(value)
+  return encoding.hex_encode(bytes[0..bytes.len()]).clone()
+}
+
+fn context_copy_without_digest(borrow value: prompt_artifacts.ContextSources) -> prompt_artifacts.ContextSources {
+  return prompt_artifacts.ContextSources {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    task_id: value.task_id.clone(),
+    patch_evaluation: prompt_artifacts.PromptTextArtifact {
+      schema_version: value.patch_evaluation.schema_version,
+      artifact_kind: value.patch_evaluation.artifact_kind.clone(),
+      artifact_id: value.patch_evaluation.artifact_id.clone(),
+      text: value.patch_evaluation.text.clone(),
+      content_sha256: value.patch_evaluation.content_sha256.clone(),
+    },
+    failure_memory_jsonl: prompt_artifacts.PromptTextArtifact {
+      schema_version: value.failure_memory_jsonl.schema_version,
+      artifact_kind: value.failure_memory_jsonl.artifact_kind.clone(),
+      artifact_id: value.failure_memory_jsonl.artifact_id.clone(),
+      text: value.failure_memory_jsonl.text.clone(),
+      content_sha256: value.failure_memory_jsonl.content_sha256.clone(),
+    },
+    diagnostic_stdout: prompt_artifacts.PromptTextArtifact {
+      schema_version: value.diagnostic_stdout.schema_version,
+      artifact_kind: value.diagnostic_stdout.artifact_kind.clone(),
+      artifact_id: value.diagnostic_stdout.artifact_id.clone(),
+      text: value.diagnostic_stdout.text.clone(),
+      content_sha256: value.diagnostic_stdout.content_sha256.clone(),
+    },
+    diagnostic_stderr: prompt_artifacts.PromptTextArtifact {
+      schema_version: value.diagnostic_stderr.schema_version,
+      artifact_kind: value.diagnostic_stderr.artifact_kind.clone(),
+      artifact_id: value.diagnostic_stderr.artifact_id.clone(),
+      text: value.diagnostic_stderr.text.clone(),
+      content_sha256: value.diagnostic_stderr.content_sha256.clone(),
+    },
+    content_sha256: "".clone(),
+  }
+}
+
+fn context_valid(borrow value: prompt_artifacts.ContextSources, task_id: str) -> bool {
+  if value.schema_version != 1 || value.artifact_kind != "CONTEXT_SOURCES" || value.task_id != task_id ||
+  value.patch_evaluation.artifact_id != task_id || value.failure_memory_jsonl.artifact_id != task_id ||
+  value.diagnostic_stdout.artifact_id != task_id || value.diagnostic_stderr.artifact_id != task_id ||
+  !prompt_artifacts.verify_prompt_text_content(value.patch_evaluation) ||
+  !prompt_artifacts.verify_prompt_text_content(value.failure_memory_jsonl) ||
+  !prompt_artifacts.verify_prompt_text_content(value.diagnostic_stdout) ||
+  !prompt_artifacts.verify_prompt_text_content(value.diagnostic_stderr) {
+    return false
+  }
+  normalized := context_copy_without_digest(value)
+  canonical := prompt_artifacts.encode_context_sources_bounded(normalized, 2097152) else { return false }
+  return digest(canonical) == value.content_sha256
+}
+
+fn rendered_digest(borrow value: prompt_artifacts.RenderedPromptArtifact) -> Result<string, Error> {
+  normalized := prompt_artifacts.RenderedPromptArtifact {
+    schema_version: value.schema_version,
+    artifact_kind: value.artifact_kind.clone(),
+    task_id: value.task_id.clone(),
+    variant_id: value.variant_id.clone(),
+    variant_sha256: value.variant_sha256.clone(),
+    task_prompt_sha256: value.task_prompt_sha256.clone(),
+    context_sources_sha256: value.context_sources_sha256.clone(),
+    text: value.text.clone(),
+    content_sha256: "".clone(),
+  }
+  canonical := prompt_artifacts.encode_rendered_prompt_artifact_bounded(normalized, 2097152)?
+  return Ok(digest(canonical))
+}
+
+fn render_policy(borrow value: prompt_artifacts.ContextPolicy) -> prompt_model.ContextPolicy {
+  return prompt_model.ContextPolicy {
+    include_patch_evaluation: value.include_patch_evaluation,
+    include_failure_memory: value.include_failure_memory,
+    include_diagnostics: value.include_diagnostics,
+    max_patch_evaluation_bytes: value.max_patch_evaluation_bytes,
+    max_failure_events: value.max_failure_events,
+    max_failure_context_bytes: value.max_failure_context_bytes,
+    max_diagnostic_bytes_per_stream: value.max_diagnostic_bytes_per_stream,
+  }
+}
+
+// Render owns the product prompt hierarchy and records the exact input identities consumed by it.
+// It has no provider or workspace side effect; a caller may therefore refuse or release the
+// retained source bundle before constructing a generation request.
+pub fn render(
+  borrow variant: prompt_artifacts.PromptVariant,
+  borrow task_prompt: prompt_artifacts.PromptTextArtifact,
+  borrow context: prompt_artifacts.ContextSources,
+  task_id: str,
+) -> Result<prompt_artifacts.RenderedPromptArtifact, Error> {
+  if task_id.len() == 0 || task_prompt.artifact_id != task_id ||
+  !prompt_artifacts.verify_prompt_variant_content(variant) ||
+  task_prompt.artifact_kind != "TASK_PROMPT" || !prompt_artifacts.verify_prompt_text_content(task_prompt) ||
+  !context_valid(context, task_id) {
+    return Err(Error.Invalid)
+  }
+  rendered := prompt_model.render(
+    variant.base_prompt.text,
+    variant.repo_prompt.text,
+    task_prompt.text,
+    variant.learned_prompt_append,
+    task_id,
+    context.failure_memory_jsonl.text,
+    render_policy(variant.context_policy),
+    context.patch_evaluation.text,
+    context.diagnostic_stdout.text,
+    context.diagnostic_stderr.text,
+  )
+  match rendered.status {
+    InvalidInput => { return Err(Error.Invalid) },
+    InvalidFailureMemory => { return Err(Error.Invalid) },
+    Valid => {},
+  }
+  mut value := prompt_artifacts.RenderedPromptArtifact {
+    schema_version: 1,
+    artifact_kind: "RENDERED_PROMPT".clone(),
+    task_id: task_id.clone(),
+    variant_id: variant.variant_id.clone(),
+    variant_sha256: variant.content_sha256.clone(),
+    task_prompt_sha256: task_prompt.content_sha256.clone(),
+    context_sources_sha256: context.content_sha256.clone(),
+    text: rendered.text,
+    content_sha256: "".clone(),
+  }
+  value.content_sha256 = rendered_digest(value)?
+  return Ok(value)
+}
+
+// Prepare one provider request from the declared task policies. The provider is not called here;
+// `prompt_generate.generate` remains the sole request/response producer once workspace and source
+// admission have completed.
+pub fn prepare_generation(
+  borrow generation: prompt_artifacts.GenerationPolicy,
+  borrow control: prompt_artifacts.EvaluationProviderControl,
+  borrow rendered: prompt_artifacts.RenderedPromptArtifact,
+  request_id: str,
+  rendered_path: str,
+  sample_index: i64,
+  sample_count: i64,
+) -> Result<prompt_artifacts.PromptGenerationRequest, Error> {
+  if sample_count < 2 || sample_count > 16 || sample_index < 1 || sample_index > sample_count ||
+  !prompt_score.generation_policy_valid(generation, sample_count) ||
+  !prompt_score.provider_control_valid(control) || generation.evaluation_provider_kind != control.provider_kind ||
+  generation.evaluation_provider_endpoint_id != control.endpoint_id || generation.evaluation_provider_model != control.model ||
+  generation.provider_control_sha256 != control.content_sha256 ||
+  control.provider_kind == "FIXTURE" || rendered.schema_version != 1 ||
+  rendered.artifact_kind != "RENDERED_PROMPT" || rendered.text.len() > generation.max_prompt_bytes {
+    return Err(Error.Invalid)
+  }
+  rendered_identity := rendered_digest(rendered) else { return Err(Error.Invalid) }
+  if rendered_identity != rendered.content_sha256 { return Err(Error.Invalid) }
+  paired_seed := generation.seed_base.checked_add(sample_index - 1) else { return Err(Error.Invalid) }
+  request := prompt_artifacts.PromptGenerationRequest {
+    schema_version: 1,
+    artifact_kind: "PROMPT_GENERATION_REQUEST".clone(),
+    request_id: request_id.clone(),
+    provider_kind: control.provider_kind.clone(),
+    endpoint: control.endpoint.clone(),
+    provider_model: control.model.clone(),
+    api_key_env: match control.api_key_env { None => None, Some(name) => Some(name.clone()) },
+    rendered_prompt_path: rendered_path.clone(),
+    rendered_prompt_sha256: rendered.content_sha256.clone(),
+    max_tokens: generation.max_tokens,
+    temperature_micros: generation.temperature_micros,
+    paired_seed: paired_seed,
+    timeout_ns: control.timeout_ns,
+    max_response_bytes: control.max_response_bytes,
+    content_sha256: "".clone(),
+  }
+  mut bound := request
+  bound.content_sha256 = prompt_artifacts.prompt_generation_request_content_digest(bound)?
+  if !prompt_artifacts.verify_prompt_generation_request(bound) { return Err(Error.Invalid) }
+  return Ok(bound)
+}
