@@ -567,11 +567,11 @@ fn update_prompt(
   }
   row_stride := checked_mul(width, 4)?
   mut row := 0
+  mut row_offset := 0
   loop {
     if row >= tokens { break }
     split := position + row + 1
     limit := if split < width { split } else { width }
-    row_offset := checked_mul(row, row_stride)?
     mut col := 0
     mut col_offset := row_offset
     loop {
@@ -586,6 +586,7 @@ fn update_prompt(
       col_offset = col_offset + 4
       col = col + 1
     }
+    row_offset = row_offset + row_stride
     row = row + 1
   }
   write_u32_le(scalar_slot, 0, (tokens - 1) as u32)
@@ -621,14 +622,18 @@ fn update_decode(
   write_u32_le(scalar_slot, 0, n_past as u32)
   runtime_inputs.update(owner, 4, 0, scalar_slot)?
   if !runtime_attention.fused(owner) {
+    if v_lanes > 0 {
+      max_index := checked_add(checked_mul(v_lanes - 1, capacity)?, n_past)?
+      if max_index > 2147483647 { return Err(Error.Invalid) }
+    }
     mut lane := 0
     mut v_offset := 0
+    mut lane_base := n_past
     loop {
       if lane >= v_lanes { break }
-      index := checked_add(checked_mul(lane, capacity)?, n_past)?
-      if index > 2147483647 { return Err(Error.Invalid) }
-      write_u32_le(v_slot, v_offset, index as u32)
+      write_u32_le(v_slot, v_offset, lane_base as u32)
       v_offset = v_offset + 4
+      lane_base = lane_base + capacity
       lane = lane + 1
     }
     runtime_inputs.update(owner, 7, 0, v_slot)?
@@ -694,9 +699,9 @@ pub fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
     }
   }
   mut i := 1
+  mut offset := 4
   loop {
     if i >= n_vocab { break }
-    offset := i * 4
     bits := logits.u32_le(offset)
     if (bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
     value := logits.f32_le(offset)
@@ -706,6 +711,7 @@ pub fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
     } else if i < best && value == best_value {
       best = i
     }
+    offset = offset + 4
     i = i + 1
   }
   return Ok(best)

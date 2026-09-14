@@ -4,23 +4,23 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `agent/fast-sampling-filter-opt` (based on `main` at `fc5b648`).
-Active capability: Fast Sampling Single-Precision Filter & Decode Prefix / Input Staging Optimization.
+Active branch: `agent/greedy-decode-sampler-pipeline-opt` (based on `main` at `9c9ebe2`).
+Active capability: Greedy Decode Loop & Sampler Pipeline Optimization.
 
 Active work:
-- Converted `runtime_sampler.select` candidate values storage from `array<f64>` to `array<f32>` and threshold to `f32`, eliminating 152,064 float conversions (`f32 -> f64`) per vocabulary step; measured standalone speedup from 553 us down to 246 us per call (2.25x faster).
-- Optimized `update_decode` lane and mask column loop offsets using sequential addition (`v_offset = v_offset + 4`, `col_offset = col_offset + 4`) rather than per-iteration multiplication.
-- Hoisted index comparison before float equality in `greedy` tie-breaker (`i < best && value == best_value`) to skip redundant float comparisons on 99.99% of iterations.
-- Optimized `prefix_length` using sequential byte offsets (`offset = offset + 8`).
-- Split `publish_prefix` single loop into two branchless sequential loops (prompt loop + generated loop) with sequential `offset = offset + 8` writes.
-- Filed upstream Issue #1052 on `sanohiro/align` for float inspection and bitcast intrinsics (`f32.to_bits`, `f64.to_bits`, `f32.is_finite`, `f32.is_nan`), registered Request 69 in `docs/align-requests.md`.
+- Optimized `runtime_sampler.select` vocabulary scan loop using sequential offset induction (`offset = offset + 4`), eliminating 152,064 multiplications per token.
+- Replaced dynamic heap-reallocating `array_builder` instances in `runtime_sampler.select` for softmax and min-p calculation with bounded buffers (`buffer(320)`), eliminating multiple heap reallocations per token; measured standalone sampler latency reduction from 469 us down to 329 us (30% speedup).
+- Optimized `runtime_generation.greedy` using sequential offset induction (`offset = offset + 4`), reducing per-call latency from 565 us down to 527 us.
+- Optimized `update_decode` non-fused attention branch by hoisting bounds check and sequentially inducing `lane_base` (`lane_base = lane_base + capacity`) and `v_offset` (`v_offset = v_offset + 4`), eliminating 256 `checked_mul` and `checked_add` calls per decode token.
+- Optimized `update_prompt` row offset induction (`row_offset = row_offset + row_stride`), eliminating per-row multiplications.
+- Filed upstream Issue #1053 on `sanohiro/align` for `array_builder` capacity constructor and bulk array initialization primitive, registered Request 70 in `docs/align-requests.md`.
 - Verified 100% bit-for-bit SHA-256 output parity on Apple Silicon Metal GPU.
 
 Next actions in priority order:
-1. Commit candidate on branch `agent/fast-sampling-filter-opt`.
+1. Commit candidate on branch `agent/greedy-decode-sampler-pipeline-opt`.
 2. Run independent adversarial review: `scripts/review-agy --base origin/main`.
 3. Preflight with `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
-4. Push branch `agent/fast-sampling-filter-opt`, publish PR and merge.
+4. Push branch `agent/greedy-decode-sampler-pipeline-opt`, publish PR and merge.
 5. Continue autonomous roadmap cycle for next optimization capability.
 
 Latest durable verification:
@@ -29,14 +29,14 @@ Latest durable verification:
 - `scripts/run-runtime-provider-smoke`: PASS.
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
 - Apple Silicon Metal GPU verification (`python3 /Users/hiro/models/measure_qwen_f16.py`): PASS.
-  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match)
-  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.33 ms/tok)
-  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match)
-  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 77.11 ms/tok)
+  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1707.7 ms)
+  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match)
+  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5350.2 ms)
+  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 76.96 ms/tok)
 
 Blockers, constraints, decisions:
 - 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks.
-- Candidate storage in `runtime_sampler.select` kept in `f32` during candidate top-k insertion; only top-k candidates are converted to `f64` for softmax and min-p filtering.
+- Softmax and min-p calculations in `runtime_sampler.select` use pre-sized 320-byte buffers (`TOP_K * 8`) with little-endian float/int views, avoiding dynamic array resizing overhead.
 
 
 ## Completed capability: latest merged Align adoption
