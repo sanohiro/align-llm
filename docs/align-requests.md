@@ -132,6 +132,27 @@ Proposed resolution:
 - When both `argument_place` and `place(peer)` are `Some((root, path))` with the same root, rely on `overlaps(left, right)` (prefix disjointness) to permit disjoint field borrows without falling back to the broad `storage_roots` collision check.
 - Track borrow invalidation per field path rather than invalidating the entire aggregate root on single-field assignment.
 
+### Request 68: bulk buffer/slice initialization and copy primitives (buffer.zeroed, buffer.fill, slice.copy_from, slice.fill) (2026-09-15)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; application uses userland exponential doubling helper `filled_buffer_u32`
+Independent work that may continue: runtime generation, memory planning, benchmark suites
+Resume condition: upstream design closure and implementation on issue
+Align commit or pull request: [sanohiro/align#1051](https://github.com/sanohiro/align/issues/1051)
+align-llm verification: scripts/run-gpu-session-reuse-smoke, python3 /Users/hiro/models/measure_qwen_f16.py
+
+Discovered during Fast Buffer Initialization Optimization (`filled_buffer_u32`):
+1. `buffer(capacity)` only reserves capacity; `b.len` is 0.
+2. Align lacks bulk buffer/slice initialization and copy primitives. Initializing a buffer with uniform bytes (e.g. 607 KB for vocabulary logits, 128 KB for mask storage, 64 KB for KV slots) requires O(N) element-by-element loop iterations via `put_u32_le` across the runtime FFI boundary.
+3. Userland exponential doubling (`b.append(b.bytes()[0..step])`) reduces iteration count to O(log N), but triggers buffer overlap detection in `align_rt_buffer_append` (`crates/align_runtime/src/lib.rs:11532`), causing intermediate heap `Vec` allocations on every doubling step.
+4. Proposed native primitives:
+   - `buffer.zeroed(len: i64) -> Result<buffer, Error>`: instant O(1) zeroed buffer (backed by `vec![0u8; len]` / `calloc`).
+   - `buffer.filled(count: i64, byte: u8) -> Result<buffer, Error>`: buffer pre-filled with byte via `memset`.
+   - `slice<u8>.fill(byte: u8)`: in-place fill of an existing mutable slice via `memset`.
+   - `slice<u8>.copy_from(borrow src: slice<u8>) -> Result<(), Error>`: in-place slice copy via `llvm.memcpy` / `copy_from_slice`.
+
 ### Issue 1043 composed-loop follow-up design (2026-09-14)
 
 Status: IMPLEMENTING; design recorded here now has provider implementation
