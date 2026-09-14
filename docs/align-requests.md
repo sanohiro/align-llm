@@ -39,6 +39,15 @@ Discovered during native Mac decode performance qualification and sampler profil
 3. `BuildTarget::Baseline` defaults AArch64 to `generic` instead of `native` for local execution.
 4. Separate per-unit compilation without ThinLTO prevents inlining of cross-module leaf utilities.
 
+### Post-merge binary inspection of PR #1044 / #1045 compiler output (2026-09-14)
+
+Inspection of the compiled Mach-O 64-bit ARM64 release binary at `6cd95b15` revealed:
+1. `align_mir::byte_ranges` loop range proofs: `Facts::new` aborted because the enclosing function `runtime_sampler.select` contains non-trivial Rvalues (`array_builder`, math, RNG) outside the loop, retaining full bounds checks inside the 151,936-iteration token loop (`cmp offset+4, len; b.gt trap`). Proposed fix: scope range proof to natural loop basic block subgraphs.
+2. `align_codegen_llvm` invariant hoisting: slice view pointer and length are repeatedly reloaded from memory (`[x27]`) on every iteration inside the hot token loop due to lack of `noalias` / `readonly` annotations on `ParamMode::Borrow` slice arguments.
+3. `align_mir::byte_storage` small buffer promotion: `update_decode` continues to allocate 4-byte scalar buffers on the heap (`_align_rt_buffer_new(4)`) on every token because foreign FFI calls (`runtime_inputs.update` -> C ABI) are conservatively treated as escaping sinks. Proposed fix: certify call-scoped non-escaping borrow contracts for foreign functions returning scalar/Unit with no out-pointers.
+4. Native vectorization: loops over primitive slices remain scalar; AArch64 baseline NEON vectorization is not emitted.
+Full machine code trace and analysis published on [sanohiro/align#1043](https://github.com/sanohiro/align/issues/1043#issuecomment-5663319777).
+
 ### Decode optimization provider implementation (2026-09-14)
 
 Status: ALIGN_MERGED. [Align PR #1042](https://github.com/sanohiro/align/pull/1042)
