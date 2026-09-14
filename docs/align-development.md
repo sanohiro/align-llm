@@ -138,8 +138,12 @@ complete aggregate; each native profile still runs the worker's compiler-only `b
 The hosted and capable aggregates use their shared `build` prerequisite as the complete parser,
 per-unit interface/import, semantic, lowering, code-generation, and link boundary; they do not also
 rerun the uncached `make check`. That public target remains the narrow local implementation check.
-Every current required GitHub job has a 15-minute timeout. Roughly 15 minutes is the operating
-target and a reason to inspect ownership and cost, not a universal correctness constant. A focused
+The hosted compiler/check job has a 30-minute timeout; installed-profile jobs retain
+their 15-minute timeout. The hosted allowance includes compiler materialization and
+the complete serial functional graph. Repeated 15-minute cancellations on unchanged
+main and client PRs justified this bounded capacity correction without removing checks.
+Roughly 15 minutes remains the operating target and a reason to inspect ownership
+and cost, not a universal correctness constant. A focused
 target is diagnostic evidence for that surface, not evidence that either aggregate completed.
 
 Resource-limit, race, security, fuzz, stress, platform, mutation, and benchmark qualification run

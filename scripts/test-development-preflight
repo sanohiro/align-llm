@@ -2498,9 +2498,12 @@ def test_workflow_topology() -> None:
         "CI does not use the required installed-only mode",
     )
     require(
-        workflow.count("timeout-minutes: 15") == 2
+        workflow.count("timeout-minutes: 30") == 1
+        and workflow.count("timeout-minutes: 15") == 1
+        and "timeout-minutes: 30" in workflow[:workflow.index("  fresh-image-profile:")]
+        and "timeout-minutes: 15" in workflow[workflow.index("  fresh-image-profile:") :]
         and "timeout-minutes: 60" not in workflow,
-        "required CI jobs do not enforce the 15-minute ceiling",
+        "required CI jobs do not enforce their hosted and installed ceilings",
     )
     require(
         "--complete-aggregate" not in workflow,

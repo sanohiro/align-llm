@@ -1,8 +1,8 @@
 # CUDA optimization enablement
 
 Status: CUDA-KV-F16 correctness and local performance qualified, 2026-09-14.
-Required hosted CI and PR merge remain active. The user also requested a new Q/K/V
-parallelism investigation after this independent KV qualification. The user has requested implementation,
+PR publication and merge remain active. The renewed Q/K/V lifetime experiment is
+complete and NOT_MET; the qualified shipping scope remains F16 KV only. The user has requested implementation,
 verification, PR publication and merge following the completed design inspection.
 Inspection base: `4bf8011` (including dispatch optimization `5efd7a0`).
 [GPU performance](gpu-runtime-performance.md) owns the performance floors and historical evidence;
@@ -384,5 +384,68 @@ remain intact under `gpu-cuda-enablement-20260914/paired-settling` and
 contribute no rows to the accepted result.
 
 The new settling admission was designed before this complete run. It has immediate
-quiet, transient-reset, permanent-busy and cancellation owners. A fresh comprehensive
-review of this redesigned measurement candidate is required before publication.
+quiet, transient-reset, permanent-busy and cancellation owners. The fresh comprehensive
+review of `3549a20` is complete; its sole portable-path finding is repaired in `4a4f39a`.
+
+### Renewed QKV lifetime experiment (local checkpoint)
+
+The user requested another concurrency attempt after F16 qualification. Test the
+hypothesis that round-robin branch ordering still permits allocator reuse across
+asynchronous branches of unequal length. In the restored experimental CUDA path only,
+temporarily retain all decode graph tensors through graph allocation using the shipped
+OUTPUT lifetime flag, restoring every original flag before backend evaluation/fusion.
+No extra tensor output is exposed or read back. Apply the same lifetime rule to size
+measurement, reserve and allocation; keep prefill and Metal allocation unchanged.
+A bounded native scratch vector of original flags is freed on every return; its cost
+is four bytes per graph node per allocator call and must fit the existing host owner.
+
+This diagnostic checkpoint is not shipping acceptance. First run the native graph
+lifecycle owner, then a source-bound real model trace to distinguish actual parallel
+kernels from optimizer log intent. If it works, qualify allocation ceilings, all
+independent outputs and the existing graph performance floor before adoption; if it
+does not, retain the exact witness and redesign rather than widening a flag alone.
+
+The retained-lifetime checkpoint `dc13908` passes all 16 independent requests and
+both host-capacity owners. Production traces execute Q/K/V on streams 15/16/17.
+Qwen has 454 cross-stream overlapping kernel pairs; OLMoE has zero in its captured
+workload. Both retain ordinary graph capture/replay. This proves the old allocation
+rejection can be removed; it does not establish a speed win for either model.
+
+For the isolated incremental experiment, freeze the measurement control to accepted
+F16 source `48f249b` and its `settling-session` build. The experimental measurement
+command's CONTROL constant nominates only that exact source; retain all other fixed
+workload, quality, pairing, idle/observer and 15% primary / 5% guardrail decisions.
+The shipping F16 command remains nominated to `4bf8011`. The graph-specific complete
+campaign is retained even if it fails; no partial result establishes adoption.
+
+### Renewed QKV result and shipping decision
+
+The complete quiet campaign on `16a7a1e` against accepted F16 `48f249b` is **NOT_MET**.
+All 80 outputs and token counts match exactly. The declared OLMoE long-cached primary
+has 1.32% median paired reduction and only three of five faster pairs; it fails the
+unchanged 15% and four-of-five floor. All seven <=5% regression guardrails pass.
+The external observer records no foreign CPU/CUDA interference. Its combined `valid`
+field is false because the measurement command exits 1 for the unmet performance
+floor, not because this final campaign has contaminated timing.
+
+[Portable complete rows](../../eval/benchmarks/cuda-qkv-lifetime-2026-09-14.json)
+retain the source/compiler/backend identities, all comparisons, exact outputs and
+clocks, admission observations and raw receipt hashes. The first `paired-lifetime`
+campaign is excluded in its entirety: four author `gh` CI-status calls exceeded the
+predeclared external CPU threshold. The final `paired-lifetime-quiet` run uses the
+same clean source, inputs, protocol and unchanged thresholds with those calls stopped.
+No request or pair is removed or combined across campaigns.
+
+Qwen's trace proves actual concurrent kernels; OLMoE's multiple streams do not prove
+kernel overlap. Neither is a material request-time win. Keep CUDA-GRAPH-ENABLE
+**deferred**, preserving the existing shipping graph defaults and allocator behavior.
+The experimental source is retained as an ancestry-only merge whose tree remains the
+qualified F16 tree. Publish this capability with a merge commit (no squash/rebase),
+and verify both measured commits are ancestors of the exact merging head.
+Future concurrency work needs a new cost-reduction hypothesis and its own predeclared
+qualification; do not lower the shipping floor to admit this result.
+
+Bounded retrospective: the measurement observer correctly rejected even short author
+CI calls. Keep such calls outside future timing windows; no new permanent repository
+gate is needed. Native optimizer eligibility, actual kernel overlap and useful request
+latency are separate pieces of evidence and must remain separately reported.

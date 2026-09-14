@@ -2,47 +2,41 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active capability: CUDA F16 KV enablement and renewed concurrency investigation
+## Active capability: qualified CUDA F16 KV publication
 
-Branch `agent/cuda-optimization-enablement`, PR #243, base `4bf8011`, managed Align
-pin `f502fe3da00ce0b39c4eeec40586b11688627fbd`. The user renewed implementation and
-merge authorization and requested another Q/K/V parallelism attempt. Other development
-is stopped for timing. The original checkout's dirty `docs/align-requests.md` is unrelated.
+Branch `agent/cuda-optimization-enablement`, PR #243. CI prerequisite #244 is merged
+at `810a456`; its hosted and both installed-profile checks pass. Managed Align pin
+remains `f502fe3da00ce0b39c4eeec40586b11688627fbd` for this CUDA qualification.
+The original checkout's dirty `docs/align-requests.md` is unrelated and untouched.
 
-CUDA OLMoE resident F16 KV implementation is complete. Exact native F16/Flash, malformed
-prefill wrapper, session reuse, device/recipe, independent 7 Qwen / 9 OLMoE requests
-and host-capacity owners PASS. Product/runtime sources are unchanged since repaired
-`be7b1f2`; subsequent changes concern measurement ownership/admission and documentation.
+CUDA OLMoE resident F16 KV is qualified: native F16/Flash, explicit prefill interval,
+session reuse, 7 Qwen / 9 OLMoE independent requests and both host-capacity owners
+PASS. Runtime sources are unchanged since repaired `be7b1f2`. The complete clean
+`48f249b` versus `4bf8011` campaign has 80 exact responses, no external interference,
+and 27.47% OLMoE long-cached median paired reduction, faster 5/5; all seven guardrails
+pass. Portable evidence is `eval/benchmarks/cuda-kv-f16-2026-09-14.json`.
 
-The full clean `48f249b` settled campaign PASS against `4bf8011`: all 80 responses
-match exactly; OLMoE long cached median paired reduction is 27.47%, faster 5/5;
-all other cells satisfy the <=5% regression guardrail. Continuous external observation
-records no foreign CPU/CUDA interference. Portable rows are retained in
-`eval/benchmarks/cuda-kv-f16-2026-09-14.json`; original receipts remain outside Git
-under `gpu-cuda-enablement-20260914`. All earlier partial campaigns remain FAIL and
-are excluded. Settling retains up to ten unmeasured samples and requires three
-consecutive unchanged quiet observations; known external interference still invalidates
-the whole campaign. No source inspection/builds ran during accepted timing.
+Fresh settled-candidate comprehensive review of `3549a20` found one P3 portable-path
+issue, repaired in `4a4f39a`; no runtime or measurement correctness finding remains.
+The exact-head hosted preflight on `4a4f39a` passed. Final integrated-head preflight
+and required GitHub checks remain before merge; review/check metadata belongs in PR #243.
 
-Initial comprehensive review `1342274` had three accepted P2 findings, consolidated
-in `be7b1f2`: explicit prefill interval, source closure and cancellation ownership.
-Conditional final review `cb59980` found first-signal interruption of normal shutdown;
-`29ee334` redesigns delivery to remain blocked through reaping. Positive and negative
-shutdown owners PASS. The new user-requested continuation redesigned boundary settling;
-a fresh comprehensive review of this settled measurement candidate remains required.
+The user-requested QKV retry is complete and NOT_MET. Experimental `16a7a1e` retains
+decode tensors only during allocation and restores original flags before evaluation.
+Native lifecycle, independent responses and host ceilings pass. Production traces show
+454 cross-stream overlapping kernel pairs for Qwen, zero for OLMoE. A full quiet
+five-pair campaign against F16 `48f249b` gives only 1.32% OLMoE long-cached reduction,
+faster 3/5, below the unchanged 15% / 4-of-5 floor. All 80 responses match and all
+seven guardrails pass; there is no external interference. The earlier campaign is
+invalid because author CI-status calls exceeded the predeclared CPU threshold.
+`eval/benchmarks/cuda-qkv-lifetime-2026-09-14.json` preserves the final negative result.
+An ancestry-only merge retains the experimental sources without adopting their tree.
+Ship F16 only; resume concurrency with a material new hypothesis, not a default toggle.
 
-Required GitHub hosted CI on PR #243 and exact base main both timed out at 15 minutes.
-The PR's last source-bundle owner passes locally; main reached a later alignpack owner.
-Logs and exact integration evidence are in the PR. Do not waive or blindly retry it:
-resolve capacity/owner cost and require a passing hosted run before merge.
-
-Next actions: record/review the qualified F16 candidate and run its final exact-head
-preflight; resolve hosted CI; retry Q/K/V allocation/lifetime in an isolated local
-checkpoint and qualify actual production concurrency before claiming enablement.
-The existing `2f1b69c` / `ae6eac7` graph checkpoints pass independent outputs but their
-production traces are single-stream because the backend rejects overlapping writes.
-Their defaults/tagging/snapshots are absent from the shipping KV diff. Keep the native
-minimal witness separate from real-model proof, and merge only qualified behavior.
+Next: finish exact-head preflight, required CI and merge PR #243. Then perform the
+user-requested update to the latest merged Align revision as a separate adoption,
+with managed materialization, relevant request owners, review and PR merge. Do not
+mix that new compiler into the accepted old-pin CUDA performance evidence.
 
 ## Completed capability: ALIGN-PRODUCT-CUTOVER
 
