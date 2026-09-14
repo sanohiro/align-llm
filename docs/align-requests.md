@@ -96,7 +96,7 @@ Blocking: no
 Blocked gate or slice: none; application code works around using zero-based induction scaling and inlined bitcasts
 Independent work that may continue: attention tile alignment, memory reservation optimization
 Resume condition: upstream design closure and implementation on issue
-Align commit or pull request: pending issue
+Align commit or pull request: [sanohiro/align#1049](https://github.com/sanohiro/align/issues/1049)
 align-llm verification: native Apple Silicon / Metal benchmark suite, runtime session reuse smoke, and bench-runtime-greedy
 
 Discovered during Decode Loop Allocation & Branchless Greedy Argmax optimization:
@@ -104,6 +104,7 @@ Discovered during Decode Loop Allocation & Branchless Greedy Argmax optimization
 2. In-loop fallible checks break dominance proofs: in `align_mir::byte_ranges.rs:427`, `arm_dominates(header.id, take_true, block)` fails whenever the loop body contains an early exit or fallible return statement (such as NaN validation `if (bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }`). Safe reads following the check cannot have their range checks eliminated, retaining dead error branches and disabling loop auto-vectorization.
 3. Untracked separate induction variables: idiomatic code incrementing a byte offset alongside the loop counter (`mut offset := 4; offset = offset + 4`) is not recognized as a scaled recurrence of the primary induction variable, forcing independent bounds checks and preventing LLVM from coalescing multiple typed reads (`u32_le` and `f32_le`) at the same memory location into a single load and bitcast.
 4. Lossy conversion warnings on masked byte casts: Align emits `warning: lossy conversion: u32 as u8 truncates the high bits` on expressions like `(val & 255) as u8` because `& 255` retains type `u32`, despite the upper 24 bits being provably zero.
+Full compiler analysis and reproduction recorded on [sanohiro/align#1049](https://github.com/sanohiro/align/issues/1049).
 
 ### Issue 1043 composed-loop follow-up design (2026-09-14)
 

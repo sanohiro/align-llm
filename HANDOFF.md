@@ -4,45 +4,38 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `agent/decode-loop-alloc-and-greedy-branchless-opt` (based on `main` at `cbf767e`).
-Active capability: Decode Loop Zero-Allocation Staging and Branchless Greedy Argmax Optimization.
+Active branch: `main` (commit `9643d52`).
+Active capability: Transitioning to next roadmap optimization capability.
 
-Complete work:
+Completed capability: Decode Loop Zero-Allocation Staging and Branchless Greedy Argmax Optimization:
+- PR #251 merged into `main` at `9643d52`.
 - Eliminated per-step heap buffer allocations in `update_decode` by passing a preallocated 4-byte scalar staging view (`scalar_slot: slice<u8>`) with in-place unrolled `write_u32_le`.
 - Replaced branched per-element `if col <= limit` evaluations in `update_prompt` and `update_decode` attention mask filling with split tight loops (`0..limit` for zero and `limit..width` for `-inf`).
 - Optimized `greedy` argmax loop in `src/runtime_generation.align`:
   - Replaced separate induction variable `mut offset := 4; offset = offset + 4` with direct scaled index `i * 4` bounded by `logits.len() / 4`, enabling LLVM to coalesce `u32_le` and `f32_le` loads into a single 32-bit load with `bitcast i32 to float`.
   - Restructured tie-breaking logic into branchless conditional selection (`value > best_value` vs `else if value == best_value && i < best`), reducing microbenchmark runtime on 151,936 logits by 84.8% (from 1,287 µs down to 196 µs per call).
-- Identified and analyzed four concrete Align language/compiler bottlenecks:
-  1. `align_mir::byte_ranges.rs:278` enforces `literal(op, 0)`: induction variables starting at 1 (or any offset > 0) cause the pass to abort and fail bounds-check elimination.
-  2. Fallible in-loop checks (e.g. `if !finite_f32(...) return Err(...)`) break `arm_dominates` in `byte_ranges.rs:427`, completely disabling bounds check elimination for subsequent reads in the loop body.
-  3. Separate induction variables (`mut offset := 4; offset = offset + 4`) are not recognized as scaled recurrences of the loop counter, preventing load merging and retaining redundant range checks.
-  4. Lossy conversion warnings on masked byte casts: `(val & 255) as u8` generates spurious compiler warnings because `& 255` is typed as `u32`.
-- Registered Request 66 in `docs/align-requests.md` with complete metadata.
+- Identified and filed upstream compiler optimization issue on `sanohiro/align#1049` (Request 66):
+  1. `align_mir::byte_ranges.rs:278` enforces `literal(op, 0)`: induction variables starting at non-zero offsets fail bounds-check elimination.
+  2. Fallible in-loop checks break dominance proofs in `byte_ranges.rs:427`.
+  3. Untracked separate induction variables prevent load coalescing and vectorization.
+  4. Lossy conversion warnings on masked byte casts `(val & 255) as u8`.
 - Verified 100% bit-for-bit SHA-256 parity on Metal GPU:
   - OLMoE prefill: `6b86b273ff34`
   - OLMoE decode 128: `109a6553d0bd`
   - Qwen2 prefill: `6b86b273ff34`
   - Qwen2 decode 128: `7913883c0e74`
 - Hardware measurement on Apple Silicon: Qwen2 decode median wall time dropped from 9923 ms to 9863 ms (76.64 ms/tok).
-- Independent adversarial review completed via `scripts/review-agy --base origin/main` (verdict FINDINGS, exit 2).
-- Resolved all 5 review findings:
-  1. Finding 1 [CRITICAL]: Fixed `scalar_slot.len() != 4` strict length validation in `update_decode` to prevent memory/mask corruption.
-  2. Finding 2 [MEDIUM]: Added reproducible benchmark harness `src/runtime_greedy_bench.align` and `scripts/bench-runtime-greedy`.
-  3. Finding 3 [MEDIUM]: Registered Request 66 in `docs/align-requests.md`.
-  4. Finding 4 [LOW]: Removed dead private `finite_f32` from `src/runtime_generation.align`.
-  5. Finding 5 [LOW]: Added little-endian unit tests for `write_u32_le` in `src/runtime_session_reuse_smoke.align`.
+- Independent adversarial review completed via `scripts/review-agy --base origin/main` (verdict FINDINGS, 5 findings resolved in `2c1f69d`).
+- Preflight (`scripts/pre-pr`) passed on `2c1f69d`.
 
 Active work:
-- Final preflight (`scripts/pre-pr`), PR publication & merge, upstream issue filing on `sanohiro/align`, and moving to next optimization.
+- Select and initiate next recommended roadmap runtime optimization capability.
 
 Next actions in priority order:
-1. Commit consolidated repairs.
-2. Run preflight: `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
-3. Push branch and publish PR with review envelope and verification evidence.
-4. Merge PR into `main`.
-5. File upstream issue on `sanohiro/align` for Request 66.
-6. Advance to the next recommended roadmap optimization capability.
+1. Review roadmap and candidate runtime performance opportunities.
+2. Select next consumer-complete capability.
+3. Formulate branch and design/ledger entry.
+4. Implement, verify parity, audit compiler behavior, review, and merge.
 
 Latest durable verification:
 - `scripts/run-gpu-session-reuse-smoke`: PASS (including `test_candidate_selection` and `test_write_u32_le`).
