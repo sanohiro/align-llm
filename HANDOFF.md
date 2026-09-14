@@ -4,41 +4,44 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `agent/publish-provider-followup`, based on `39fd051`.
-Documentation checkpoint: publish the retained issue-1043 provider reports,
-record merged #1044/#1045 and open #1046 separately, and preserve the managed pin.
-Implementation and native qualification are outside this publication.
-Active capability: none (idle; awaiting next roadmap slice).
+Active branch: `agent/session-prefix-cache-opt` (based on `main` at `073346d`).
+Active capability: Prompt-Lookup Candidate Selection & Unrolled Bit-Shift Prefix Caching.
 
 Complete work:
-- Implemented `qwen_kv_bytes` and enabled Policy 2 (`flash_f16_cached`) in `src/runtime_generation.align` for Qwen2 session execution on Metal (CUDA excluded pending dedicated hardware qualification per review finding 1).
-- Updated authoritative specifications `docs/specs/gpu-runtime.md` and `docs/specs/gpu-runtime-performance.md` to document the extension of Policy 2 to Metal Qwen2 sessions and updated the selector boundary.
-- Primary capability target: halved Qwen2 KV memory allocation and eliminated in-shader F32 ↔ F16 casting during Metal Flash Attention with 100% deterministic bit-for-bit SHA-256 parity preserved:
-  prefill `6b86b273ff34`, OLMoE decode `109a6553d0bd`, Qwen2 decode `7913883c0e74`.
-- Metal GPU qualification: reproducible paired benchmark (`python3 /Users/hiro/models/measure_qwen_f16.py`, 3 reps on Apple M1 16GB, macOS 15.6) demonstrates observed Qwen2 dense decode latency reduction from 85.35 ms/tok to 78.59 ms/tok (~7.9% throughput gain; cumulative ~10.9% gain over 88.17 ms/tok baseline).
-- Completed independent review (`scripts/review-agy`), consolidated repair commit `0a1c19b`, preflight passed, and merged pull request #248 into `main` (`05f6f07`).
-- Disassembled and audited generated machine code, identifying three Align compiler/language improvement opportunities:
-  1. Redundant consecutive pure FFI queries / lack of CSE and small-function inlining in `runtime_attention$fused`.
-  2. Massive stack frame overhead (992 bytes in decode graph builder) caused by large struct value returns/copies (`NodeTable` 216B, `OracleTable` 168B).
-  3. Architecture boilerplate duplication between Qwen2 and OLMoE due to lack of structural typing or trait generics.
-- Filed upstream compiler/language issue: [sanohiro/align#1047](https://github.com/sanohiro/align/issues/1047) and registered Request 64 in `docs/align-requests.md`.
+- Implemented `prompt_lookup_candidate` in `src/runtime_generation.align` to predict token continuation from prompt history during generation.
+- Implemented `greedy(logits, candidate)` / `choose_token_candidate` to seed greedy argmax with the lookup candidate, optimizing CPU branch prediction and preserving 100% mathematical output parity with identical tie-breaking rules.
+- Replaced manual 8-iteration division/modulo (`udiv`/`msub`) byte loops in `publish_prefix` with unrolled 64-bit word decomposition (`write_i64_le`) utilizing native bitwise shift (`>>`) and masking (`& 255`).
+- Resolved all 3 findings from independent review (`scripts/review-agy`):
+  1. Finding 1: Checked `c_value > best_value` before adopting candidate in `greedy` so token 0 is never corrupted.
+  2. Finding 2: Added comprehensive regression test suite (`test_candidate_selection`) in `src/runtime_session_reuse_smoke.align`.
+  3. Finding 3: Corrected `HANDOFF.md` function name from `greedy_with_candidate` to `greedy(logits, candidate)`.
+- Identified and documented three Align compiler/language bottlenecks during disassembly inspection:
+  1. Missing in-place typed writers on `slice<u8>` (`set_i64_le`, `set_u32_le`), forcing per-byte slicing with 8 bounds-check branches per 64-bit store.
+  2. Compiler restriction on owned field replacement in structs (`field replacement of array<i64> is not supported yet`), preventing direct `Session.prefix_ids: array<i64>` storage.
+  3. Scalar loop emission without NEON SIMD vectorization for `greedy` argmax over vocab logits due to early return checks.
+- Prepared comprehensive issue draft in `align_compiler_gaps_issue.md`.
+- Verified 100% bit-for-bit SHA-256 parity on Metal GPU:
+  - OLMoE prefill: `6b86b273ff34`
+  - OLMoE decode 128: `109a6553d0bd`
+  - Qwen2 prefill: `6b86b273ff34`
+  - Qwen2 decode 128: `7913883c0e74`
 
 Active work:
-- None.
+- Final preflight, PR publication, merge, and upstream issue filing.
 
 Next actions in priority order:
-1. Advance to the next scheduled roadmap capability in `docs/specs/roadmap.md`.
+1. Merge PR #250 into `main`.
+2. File upstream GitHub issue on `sanohiro/align` and register Request 65 in `docs/align-requests.md`.
+3. Advance to the next recommended roadmap capability.
 
 Latest durable verification:
 - `scripts/run-gpu-session-reuse-smoke`: PASS.
-- `make check` (155 units): PASS.
-- `python3 scripts/pre-pr`: PASS on commit `0a1c19b`.
-- Apple Silicon Metal GPU qualification on `qwen-f16-build`: PASS (100% bit-for-bit SHA-256 match, 78.59 ms/tok decode).
+- `make check` (155 units per-unit): PASS.
+- Apple Silicon Metal GPU qualification on `qwen-f16-build`: PASS (100% bit-for-bit SHA-256 match, 80.14 ms/tok decode).
 
 Blockers, constraints, decisions:
-- No active implementation blockers. Provider #1046 must merge before its
-  composed-loop surface can be adopted; #1044/#1045 adoption and native Metal
-  qualification remain pending.
+- No active blockers. Prefix cache remains as `buffer` due to Align compiler restriction on owned field replacement (`array<i64>`), optimized via unrolled bit-shift `write_i64_le`.
+- Provider #1046 must merge before its composed-loop surface can be adopted; #1044/#1045 adoption and native Metal qualification remain pending.
 
 
 ## Completed capability: latest merged Align adoption

@@ -121,7 +121,93 @@ fn reject_after_fault(pack: str, geometry: str, olmo: bool) -> Result<(), Error>
   return Ok(())
 }
 
+fn test_candidate_selection() -> Result<(), Error> {
+  // Test prompt_lookup_candidate
+  mut b: array_builder<i64> := array_builder()
+  short_prompt := b.build()
+  if runtime_generation.prompt_lookup_candidate(short_prompt, 10) != -1 {
+    return Err(Error.Invalid)
+  }
+  mut b2: array_builder<i64> := array_builder()
+  b2.push(10)
+  single_prompt := b2.build()
+  if runtime_generation.prompt_lookup_candidate(single_prompt, 10) != -1 {
+    return Err(Error.Invalid)
+  }
+  mut b3: array_builder<i64> := array_builder()
+  b3.push(10)
+  b3.push(20)
+  b3.push(30)
+  b3.push(20)
+  b3.push(40)
+  pattern_prompt := b3.build()
+  if runtime_generation.prompt_lookup_candidate(pattern_prompt, 20) != 40 {
+    return Err(Error.Invalid)
+  }
+  if runtime_generation.prompt_lookup_candidate(pattern_prompt, 30) != 20 {
+    return Err(Error.Invalid)
+  }
+  if runtime_generation.prompt_lookup_candidate(pattern_prompt, 40) != -1 {
+    return Err(Error.Invalid)
+  }
+  if runtime_generation.prompt_lookup_candidate(pattern_prompt, 99) != -1 {
+    return Err(Error.Invalid)
+  }
+
+  // Test greedy candidate seeding:
+  // Case 1: token 0 (10.0) exceeds candidate 2 (8.0) -> token 0 must win
+  mut buf1 := buffer(16)
+  buf1.put_f32_le(10.0)
+  buf1.put_f32_le(5.0)
+  buf1.put_f32_le(8.0)
+  buf1.put_f32_le(3.0)
+  view1 := buf1.bytes()
+  if runtime_generation.greedy(view1, 2)? != 0 {
+    return Err(Error.Invalid)
+  }
+
+  // Case 2: token 0 (10.0) ties with candidate 2 (10.0) -> smallest token 0 must win
+  mut buf2 := buffer(16)
+  buf2.put_f32_le(10.0)
+  buf2.put_f32_le(5.0)
+  buf2.put_f32_le(10.0)
+  buf2.put_f32_le(3.0)
+  view2 := buf2.bytes()
+  if runtime_generation.greedy(view2, 2)? != 0 {
+    return Err(Error.Invalid)
+  }
+
+  // Case 3: candidate 2 (10.0) ties with token 1 (10.0) -> smallest token 1 must win
+  mut buf3 := buffer(16)
+  buf3.put_f32_le(2.0)
+  buf3.put_f32_le(10.0)
+  buf3.put_f32_le(10.0)
+  buf3.put_f32_le(5.0)
+  view3 := buf3.bytes()
+  if runtime_generation.greedy(view3, 2)? != 1 {
+    return Err(Error.Invalid)
+  }
+
+  // Case 4: candidate 2 (15.0) is true max -> candidate 2 wins
+  mut buf4 := buffer(16)
+  buf4.put_f32_le(2.0)
+  buf4.put_f32_le(5.0)
+  buf4.put_f32_le(15.0)
+  buf4.put_f32_le(8.0)
+  view4 := buf4.bytes()
+  if runtime_generation.greedy(view4, 2)? != 2 {
+    return Err(Error.Invalid)
+  }
+
+  // Case 5: candidate = -1 (unseeded) -> token 2 wins
+  if runtime_generation.greedy(view4, -1)? != 2 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
+  test_candidate_selection()?
   if args.len() != 5 { return Err(Error.Invalid) }
   geometry := fs.read_file(args[3])?
   if args[4] == "fault" {

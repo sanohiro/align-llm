@@ -638,13 +638,36 @@ fn finite_f32(borrow logits: slice<u8>, offset: i64) -> bool {
   return (bits & 2139095040) != 2139095040
 }
 
-fn greedy(borrow logits: slice<u8>) -> Result<i64, Error> {
+pub fn prompt_lookup_candidate(borrow prompt_ids: array<i64>, current_token: i64) -> i64 {
+  mut pat := prompt_ids.len() - 2
+  loop {
+    if pat < 0 { break }
+    if prompt_ids[pat] == current_token {
+      return prompt_ids[pat + 1]
+    }
+    pat = pat - 1
+  }
+  return -1
+}
+
+pub fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
   if logits.len() < 4 || logits.len() % 4 != 0 { return Err(Error.Invalid) }
   first_bits := logits.u32_le(0)
   if (first_bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
   n_vocab := logits.len() / 4
   mut best := 0
   mut best_value := logits.f32_le(0)
+  if candidate > 0 && candidate < n_vocab {
+    c_offset := candidate * 4
+    c_bits := logits.u32_le(c_offset)
+    if (c_bits & 2139095040) != 2139095040 {
+      c_value := logits.f32_le(c_offset)
+      if c_value > best_value {
+        best = candidate
+        best_value = c_value
+      }
+    }
+  }
   mut token := 1
   mut offset := 4
   loop {
@@ -652,7 +675,7 @@ fn greedy(borrow logits: slice<u8>) -> Result<i64, Error> {
     bits := logits.u32_le(offset)
     if (bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
     value := logits.f32_le(offset)
-    if value > best_value {
+    if value > best_value || (value == best_value && token < best) {
       best = token
       best_value = value
     }
@@ -665,11 +688,17 @@ fn greedy(borrow logits: slice<u8>) -> Result<i64, Error> {
 fn choose_token(
   borrow logits: slice<u8>, sampled: bool, borrow mut random: rng,
 ) -> Result<i64, Error> {
+  return choose_token_candidate(logits, sampled, random, -1)
+}
+
+fn choose_token_candidate(
+  borrow logits: slice<u8>, sampled: bool, borrow mut random: rng, candidate: i64,
+) -> Result<i64, Error> {
   if sampled {
     selected := runtime_sampler.select(logits, random)?
     return Ok(selected.token_id)
   }
-  return greedy(logits)
+  return greedy(logits, candidate)
 }
 
 fn contains(borrow ids: array<i64>, value: i64) -> bool {
@@ -1296,7 +1325,8 @@ fn execute_session(borrow mut session: Session, borrow prompt_ids: array<i64>,
     logits_view.len(), "session_prefill_logits") else { return Err(Error.Invalid) }
   sampled := session.olmoe && match seed { Some(_) => true, None => false }
   mut random := rand.seed_with(match seed { Some(value) => value, None => 0 })
-  mut token := choose_token(logits_view, sampled, random)?
+  prefill_candidate := prompt_lookup_candidate(prompt_ids, prompt_ids[prompt_ids.len() - 1])
+  mut token := choose_token_candidate(logits_view, sampled, random, prefill_candidate)?
   mut generated: array_builder<i64> := array_builder()
   generated.push(token)
   mut count := 1
@@ -1339,7 +1369,8 @@ fn execute_session(borrow mut session: Session, borrow prompt_ids: array<i64>,
     runtime_execution.compute(session.owner, ggml_ffi.GPU_GRAPH_DECODE, current_decode_key, current_decode_graph)?
     ggml_ffi.gpu_slot_get(session.owner, decode_view, output_slot, logits_view, 0,
       logits_view.len(), "session_decode_logits") else { return Err(Error.Invalid) }
-    token = choose_token(logits_view, sampled, random)?
+    decode_candidate := prompt_lookup_candidate(prompt_ids, token)
+    token = choose_token_candidate(logits_view, sampled, random, decode_candidate)?
     generated.push(token)
     count = count + 1
     n_past = n_past + 1
@@ -1350,6 +1381,17 @@ fn execute_session(borrow mut session: Session, borrow prompt_ids: array<i64>,
   return Ok(ids)
 }
 
+fn write_i64_le(borrow mut dest: slice<u8>, base: i64, value: i64) {
+  dest[base] = (value & 255) as u8
+  dest[base + 1] = ((value >> 8) & 255) as u8
+  dest[base + 2] = ((value >> 16) & 255) as u8
+  dest[base + 3] = ((value >> 24) & 255) as u8
+  dest[base + 4] = ((value >> 32) & 255) as u8
+  dest[base + 5] = ((value >> 40) & 255) as u8
+  dest[base + 6] = ((value >> 48) & 255) as u8
+  dest[base + 7] = ((value >> 56) & 255) as u8
+}
+
 fn publish_prefix(borrow mut session: Session, borrow prompt_ids: array<i64>,
   borrow ids: array<i64>) {
   mut destination := session.prefix.bytes()
@@ -1357,14 +1399,8 @@ fn publish_prefix(borrow mut session: Session, borrow prompt_ids: array<i64>,
   mut at := 0
   loop {
     if at >= total { break }
-    mut value := if at < prompt_ids.len() { prompt_ids[at] } else { ids[at - prompt_ids.len()] }
-    mut byte := 0
-    loop {
-      if byte >= 8 { break }
-      destination[at * 8 + byte] = (value % 256) as u8
-      value = value / 256
-      byte = byte + 1
-    }
+    value := if at < prompt_ids.len() { prompt_ids[at] } else { ids[at - prompt_ids.len()] }
+    write_i64_le(destination, at * 8, value)
     at = at + 1
   }
   session.prefix_count = total
