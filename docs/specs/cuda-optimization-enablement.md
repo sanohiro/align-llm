@@ -377,7 +377,8 @@ The reduction column is the median of the five paired ratios, not the ratio of
 independently computed medians. [Retained portable measurements](../../eval/benchmarks/cuda-kv-f16-2026-09-14.json)
 include each arm, output, clock, every idle observation, source/compiler/bundle/tool/plan
 identities and SHA-256 links to the original local receipt and external observer receipt.
-Only machine-specific launch paths are omitted from this report; original receipts
+Machine-specific launch paths are omitted and each response model path is normalized
+to its arm model identifier; outputs, counts, clocks and comparisons are unchanged. Original receipts
 remain intact under `gpu-cuda-enablement-20260914/paired-settling` and
 `settling-external-load-result.json`. Earlier failed campaigns remain separate and
 contribute no rows to the accepted result.
