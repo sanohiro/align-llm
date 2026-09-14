@@ -20,7 +20,7 @@ pub Selection {
 
 fn finite_f32(borrow logits: slice<u8>, offset: i64) -> bool {
   bits := logits.u32_le(offset)
-  return (bits / 8388608) % 256 != 255
+  return (bits & 2139095040) != 2139095040
 }
 
 // Stable descending insertion keeps candidate identity paired with its F32 logit. Equal logits are

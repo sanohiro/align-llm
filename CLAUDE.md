@@ -1,8 +1,8 @@
 # CLAUDE.md
 
-This is the canonical repository guide for Claude Code and Codex. `AGENTS.md` is a compatibility
-symlink. Keep shared project rules here and tool-specific permissions, hooks, skills, and plugins in
-their native configuration.
+This is the canonical repository guide for Claude Code, Codex, and Antigravity (agy).
+`AGENTS.md` is a compatibility symlink. Keep shared project rules here and tool-specific
+permissions, hooks, skills, and plugins in their native configuration.
 
 ## Start here
 
@@ -303,3 +303,18 @@ explicit translations and intentionally bilingual end-user documentation.
   `codex review --commit <sha>`.
 - Autonomous work uses one host-native review or one fresh independent adversarial reviewer; it
   does not pretend to invoke a user-only composer command.
+
+### Antigravity development and review adapter
+
+- Start development from the repository root with
+  `agy --add-dir "$PWD" --model gemini-3.8-flash-medium`. Use
+  `gemini-3.8-flash-high` for high-effort work. `AGENTS.md` supplies this canonical guide;
+  read `HANDOFF.md` before resuming. Existing compiler, owner-test and publication rules apply.
+- Run `scripts/review-agy --base origin/main` for one fresh independent high-effort review of a
+  clean candidate. Its native `align-llm-reviewer` agent has only inspection tools. Do not use
+  `--continue`, a resumed author conversation, or unrestricted permissions for that review.
+- Preserve the generated review directory. Exit 0 means completed CLEAN; exit 2 means completed
+  FINDINGS. Failed, denied, malformed or timed-out runs remain INCOMPLETE, even if agy itself
+  reports success. Resolve findings and publish the full review envelope under the rules above;
+  the local log is not a preflight stamp or merge approval.
+- See `docs/agy-development.md` for operation and `docs/specs/agy-development.md` for the contract.

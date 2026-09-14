@@ -1072,6 +1072,7 @@ struct align_gpu_device_state {
     size_t input_offset;
     int inputs_finished;
     int inputs_failed;
+    struct ggml_tensor *input_tensors[64];
     struct ggml_cgraph *workspace_graphs[ALIGN_GPU_GRAPH_KINDS];
     char graph_keys[ALIGN_GPU_GRAPH_KINDS][65];
     int graph_prepared[ALIGN_GPU_GRAPH_KINDS];
@@ -1080,6 +1081,11 @@ struct align_gpu_device_state {
     int64_t graph_current_execution_count[ALIGN_GPU_GRAPH_KINDS];
     int64_t graph_reuse_count[ALIGN_GPU_GRAPH_KINDS];
     int64_t graph_invalidation_count[ALIGN_GPU_GRAPH_KINDS];
+    int64_t graph_cached_nodes[ALIGN_GPU_GRAPH_KINDS];
+    int64_t graph_cached_ops[ALIGN_GPU_GRAPH_KINDS];
+    int64_t graph_cached_layers[ALIGN_GPU_GRAPH_KINDS];
+    int64_t graph_cached_experts[ALIGN_GPU_GRAPH_KINDS];
+    struct ggml_tensor *last_slot_get_tensor;
     int staging_consumed;
     int staging_path_valid;
     int64_t observation_nodes;
@@ -2571,6 +2577,9 @@ int32_t align_gpu_inputs_finish(void *owner) {
             || ggml_tallocr_alloc(&state->input_allocator, tensor) != GGML_STATUS_SUCCESS) {
             goto fail;
         }
+        if (index < 64) {
+            state->input_tensors[index] = tensor;
+        }
         tensor = ggml_get_next_tensor(state->metadata_ctx, tensor);
     }
     if (state->input_allocator.offset != state->input_offset) {
@@ -2593,6 +2602,9 @@ static struct ggml_tensor *align_gpu_input_at(
     if (state == NULL || !state->inputs_finished || index < 0
         || index >= state->inputs_expected) {
         return NULL;
+    }
+    if (index < 64 && state->input_tensors[index] != NULL) {
+        return state->input_tensors[index];
     }
     target = state->weights_expected + state->kv_expected + index;
     tensor = ggml_get_first_tensor(state->metadata_ctx);
@@ -2712,16 +2724,13 @@ int32_t align_gpu_input_update(
     }
     if (!align_gpu_row_input_check(state, index, offset, data, length)) { return ALIGN_GPU_CONFIG; }
     staging = (size_t) state->staging_bytes;
-    align_gpu_synchronize(state);
     while (at < (size_t) length) {
         size_t chunk = (size_t) length - at;
         if (chunk > staging) {
             chunk = staging;
         }
-        memcpy(state->staging, source + at, chunk);
-        ggml_backend_tensor_set_async(
-            state->backend, tensor, state->staging, (size_t) offset + at, chunk);
-        align_gpu_synchronize(state);
+        ggml_backend_tensor_set(
+            tensor, source + at, (size_t) offset + at, chunk);
         at += chunk;
     }
     align_gpu_row_input_accept(state, index, data);
@@ -2825,6 +2834,41 @@ static void align_gpu_workspace_context_reset(
     }
 }
 
+struct align_ggml_backend_i {
+    const char * (*get_name)(ggml_backend_t backend);
+    void (*free)(ggml_backend_t backend);
+    void (*set_tensor_async)(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size);
+    void (*get_tensor_async)(ggml_backend_t backend, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size);
+    void (*set_tensor_2d_async)(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data);
+    void (*get_tensor_2d_async)(ggml_backend_t backend, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data);
+    bool (*cpy_tensor_async)(ggml_backend_t backend_src, ggml_backend_t backend_dst, const struct ggml_tensor * src, struct ggml_tensor * dst);
+    void (*synchronize)(ggml_backend_t backend);
+    void * (*graph_plan_create)(ggml_backend_t backend, const struct ggml_cgraph * cgraph);
+    void (*graph_plan_free)(ggml_backend_t backend, void * plan);
+    void (*graph_plan_update)(ggml_backend_t backend, void * plan, const struct ggml_cgraph * cgraph);
+    int (*graph_plan_compute)(ggml_backend_t backend, void * plan);
+    int (*graph_compute)(ggml_backend_t backend, struct ggml_cgraph * cgraph);
+    void (*event_record)(ggml_backend_t backend, void * event);
+    void (*event_wait)(ggml_backend_t backend, void * event);
+    void (*graph_optimize)(ggml_backend_t backend, struct ggml_cgraph * cgraph);
+};
+
+struct align_ggml_backend {
+    uint8_t * guid;
+    struct align_ggml_backend_i iface;
+    void * device;
+    void * context;
+};
+
+static void align_gpu_graph_optimize(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
+    if (backend != NULL && cgraph != NULL) {
+        struct align_ggml_backend * b = (struct align_ggml_backend *) backend;
+        if (b->iface.graph_optimize != NULL) {
+            b->iface.graph_optimize(backend, cgraph);
+        }
+    }
+}
+
 /* The two graphs execute serially and share one reservation sized for the larger live topology.
  * Rebuilding either slot first drains and discards the previous allocator, then assigns both live
  * graphs again so no tensor retains a pointer into released workspace. */
@@ -2903,6 +2947,10 @@ static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state)
 #define ALIGN_GPU_FORCE_UNSUPPORTED_OP 0
 #endif
 
+static int align_gpu_count_model_node(struct align_gpu_device_state *state,
+                                      struct ggml_tensor *tensor,
+                                      int64_t *operations, int64_t *layers, int64_t *experts);
+
 static int align_gpu_graph_supported(struct align_gpu_device_state *state, struct ggml_cgraph *graph) {
     int i;
     ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(state->backend);
@@ -2919,6 +2967,11 @@ int32_t align_gpu_graph_prepare(
         void *owner, int32_t kind, const void *key, int64_t key_length, void *graph) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     int32_t status = ALIGN_GPU_OK;
+    int64_t observed_nodes = 0;
+    int64_t observed_ops = 0;
+    int64_t observed_layers = 0;
+    int64_t observed_experts = 0;
+    int node = 0;
     if (state == NULL || graph == NULL || !state->weights_finished || !state->kv_finished
         || !state->inputs_finished || state->workspace_failed
         || state->input_buffer == NULL || !align_gpu_graph_kind_ok(kind)
@@ -2932,6 +2985,21 @@ int32_t align_gpu_graph_prepare(
         return ALIGN_GPU_UNSUPPORTED;
     }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
+    align_gpu_graph_optimize(state->backend, (struct ggml_cgraph *) graph);
+    for (node = 0; node < ggml_graph_n_nodes((struct ggml_cgraph *) graph); node++) {
+        if (ggml_graph_node((struct ggml_cgraph *) graph, node)->op != GGML_OP_NONE) {
+            observed_nodes += 1;
+        }
+        if (!align_gpu_count_model_node(state, ggml_graph_node((struct ggml_cgraph *) graph, node),
+                                         &observed_ops, &observed_layers, &observed_experts)) {
+            state->observation_failed = 1;
+            return ALIGN_GPU_CONFIG;
+        }
+    }
+    state->graph_cached_nodes[kind] = observed_nodes;
+    state->graph_cached_ops[kind] = observed_ops;
+    state->graph_cached_layers[kind] = observed_layers;
+    state->graph_cached_experts[kind] = observed_experts;
     state->workspace_graphs[kind] = (struct ggml_cgraph *) graph;
     memcpy(state->graph_keys[kind], key, 64);
     state->graph_keys[kind][64] = '\0';
@@ -2959,6 +3027,7 @@ int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
     state->workspace_graphs[kind] = NULL;
     state->graph_keys[kind][0] = '\0';
     state->graph_current_execution_count[kind] = 0;
+    state->last_slot_get_tensor = NULL;
     status = align_gpu_workspace_rebuild(state);
     if (status != ALIGN_GPU_OK) {
         state->workspace_failed = 1;
@@ -3011,7 +3080,6 @@ int32_t align_gpu_graph_compute(
     int64_t observed_ops = 0;
     int64_t observed_layers = 0;
     int64_t observed_experts = 0;
-    int node = 0;
     if (state == NULL || graph == NULL || !align_gpu_graph_kind_ok(kind)
         || !state->workspace_prepared || state->workspace_failed || !state->graph_prepared[kind]
         || state->workspace_graphs[kind] != (struct ggml_cgraph *) graph
@@ -3029,16 +3097,10 @@ int32_t align_gpu_graph_compute(
             && state->graph_reuse_count[kind] == INT64_MAX)) {
         return ALIGN_GPU_CONFIG;
     }
-    for (node = 0; node < ggml_graph_n_nodes((struct ggml_cgraph *) graph); node++) {
-        if (ggml_graph_node((struct ggml_cgraph *) graph, node)->op != GGML_OP_NONE) {
-            observed_nodes += 1;
-        }
-        if (!align_gpu_count_model_node(state, ggml_graph_node((struct ggml_cgraph *) graph, node),
-                                         &observed_ops, &observed_layers, &observed_experts)) {
-            state->observation_failed = 1;
-            return ALIGN_GPU_CONFIG;
-        }
-    }
+    observed_nodes = state->graph_cached_nodes[kind];
+    observed_ops = state->graph_cached_ops[kind];
+    observed_layers = state->graph_cached_layers[kind];
+    observed_experts = state->graph_cached_experts[kind];
     if (state->observation_failed || state->observation_nodes > INT64_MAX - observed_nodes
         || state->observation_model_ops > INT64_MAX - observed_ops
         || state->observation_layers > INT64_MAX - observed_layers
@@ -3868,14 +3930,23 @@ int32_t align_gpu_slot_get(void *owner, void *slots, int64_t index,
         || state->observation_read_calls == INT64_MAX) {
         return ALIGN_GGML_INIT;
     }
-    for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; kind++) {
-        if (!state->graph_prepared[kind] || state->graph_current_execution_count[kind] < 1) {
-            continue;
-        }
-        struct ggml_cgraph *graph = state->workspace_graphs[kind];
-        if (graph == NULL) { continue; }
-        for (node = 0; node < ggml_graph_n_nodes(graph); node++) {
-            if (ggml_graph_node(graph, node) == tensor) { found = 1; }
+    if (state->last_slot_get_tensor != NULL && state->last_slot_get_tensor == tensor) {
+        found = 1;
+    } else {
+        for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; kind++) {
+            if (!state->graph_prepared[kind] || state->graph_current_execution_count[kind] < 1) {
+                continue;
+            }
+            struct ggml_cgraph *graph = state->workspace_graphs[kind];
+            if (graph == NULL) { continue; }
+            for (node = 0; node < ggml_graph_n_nodes(graph); node++) {
+                if (ggml_graph_node(graph, node) == tensor) {
+                    found = 1;
+                    state->last_slot_get_tensor = tensor;
+                    break;
+                }
+            }
+            if (found) { break; }
         }
     }
     if (!found) { return ALIGN_GGML_SLOT; }

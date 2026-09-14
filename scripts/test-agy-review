@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# Focused developer-tool owner. --live additionally qualifies the authenticated provider.
+set -euo pipefail
+source_root=$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+live=false
+case "${1:-}" in --live) live=true ;; '') ;; *) echo 'Usage: scripts/test-agy-review [--live]' >&2; exit 1 ;; esac
+real_agy=$(command -v agy || true)
+real_git=$(command -v git)
+tmp=$(mktemp -d)
+tmp=$(cd -P "$tmp" && pwd)
+completed=false
+wrapper_pid=
+cleanup() {
+  local status=$?
+  [[ -z "$wrapper_pid" ]] || { kill -TERM "$wrapper_pid" 2>/dev/null || true; wait "$wrapper_pid" 2>/dev/null || true; }
+  [[ "$completed" == true ]] || status=1
+  if [[ $status == 0 ]]; then rm -rf "$tmp"; else echo "Failed fixture retained: $tmp" >&2; fi
+  exit "$status"
+}
+trap cleanup EXIT
+mkdir -p "$tmp/repo/scripts" "$tmp/repo/.agents/agents/align-llm-reviewer" "$tmp/repo/docs" "$tmp/bin"
+cp "$source_root/scripts/review-agy" "$source_root/scripts/agy-review-result.jq" "$tmp/repo/scripts/"
+cp "$source_root/.agents/agents/align-llm-reviewer/agent.md" "$tmp/repo/.agents/agents/align-llm-reviewer/"
+cat >"$tmp/repo/CLAUDE.md" <<'EOF'
+# Fixture repository
+Read AGENTS.md as the shared repository guide. Use inspection only for review.
+units.js converts dollar amounts to integer cents. One dollar must produce 100 cents.
+Report concrete functional defects. Do not execute code or modify files.
+EOF
+ln -s CLAUDE.md "$tmp/repo/AGENTS.md"
+echo 'Review concrete correctness regressions in the supplied diff.' >"$tmp/repo/docs/review-checklist.md"
+echo 'export function cents(dollars) { return Math.round(dollars * 100); }' >"$tmp/repo/units.js"
+cd "$tmp/repo"
+git init -q
+git config user.name 'Review fixture'
+git config user.email 'review-fixture@example.invalid'
+git add .
+git commit -qm baseline
+base=$(git rev-parse HEAD)
+echo 'export function cents(dollars) { return Math.round(dollars * 1000); }' >units.js
+git commit -qam 'Introduce a conversion regression'
+head_sha=$(git rev-parse HEAD)
+
+cat >"$tmp/bin/agy" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo invoked >>"$AGY_FAKE_CALLS"
+model=
+agent=
+while (($#)); do
+  case "$1" in
+    --model) model=$2; shift 2 ;;
+    --agent) agent=$2; shift 2 ;;
+    --add-dir|--print|--print-timeout) shift 2 ;;
+    --output-format) [[ "$2" == stream-json ]]; shift 2 ;;
+    *) exit 91 ;;
+  esac
+done
+[[ "$model" == gemini-3.8-flash-high && "$agent" == align-llm-reviewer ]] || exit 92
+scenario=$AGY_FAKE_CASE
+if [[ "$scenario" == terminate || "$scenario" == timeout-expiry ]]; then
+  sleep 60 &
+  echo "$!" >"$AGY_FAKE_CHILD"
+  wait
+  exit
+fi
+[[ "$scenario" != malformed ]] || { echo '{bad'; exit; }
+[[ "$scenario" != provider-exit ]] || exit 7
+[[ "$scenario" != wrong-model ]] || model=other-model
+[[ "$scenario" != wrong-agent ]] || agent=other-agent
+status=SUCCESS
+response=$'No actionable issues.\nALIGN_REVIEW_VERDICT=CLEAN\n'
+case "$scenario" in
+  findings) response=$'[P1] units.js:1 multiplies by 1000 rather than 100.\nALIGN_REVIEW_VERDICT=FINDINGS\n' ;;
+  error-status) status=ERROR ;;
+  empty-response) response= ;;
+  missing-verdict) response='No actionable issues.' ;;
+  duplicate-verdict) response=$'ALIGN_REVIEW_VERDICT=CLEAN\nALIGN_REVIEW_VERDICT=CLEAN\n' ;;
+  open-backtick-fence) response=$'Unfinished review; example:\n```text\nALIGN_REVIEW_VERDICT=CLEAN\n' ;;
+  open-tilde-fence) response=$'Unfinished review; example:\n~~~text\nALIGN_REVIEW_VERDICT=CLEAN\n' ;;
+  short-closing-fence) response=$'````text\nexample\n```\nALIGN_REVIEW_VERDICT=CLEAN\n' ;;
+  closed-fences) response=$'Example:\n````text\n```\n````\n~~~text\nexample\n~~~\nALIGN_REVIEW_VERDICT=CLEAN\n' ;;
+  timeout-warning) echo '[agy] print timeout; returning partial output' >&2 ;;
+  changed-source) echo 'mutation' >>units.js ;;
+  final-status-error|final-head-error) touch "$AGY_FAKE_STATUS_ERROR" ;;
+esac
+cwd=$PWD
+[[ "$scenario" != wrong-cwd ]] || cwd=/wrong-workspace
+jq -cn --arg model "$model" --arg agent "$agent" --arg cwd "$cwd" \
+  '{event:"init",conversation_id:"fixture-id",init:{model:$model,agent:$agent,cwd:$cwd}}'
+if [[ "$scenario" == forbidden-tool ]]; then
+  jq -cn '{event:"step_update",step_update:{conversation_id:"fixture-id",step_type:"tool",tool_name:"run_command"}}'
+fi
+result=$(jq -cn --arg status "$status" --arg response "$response" --arg scenario "$scenario" \
+  '{event:"result",result:{conversation_id:(if $scenario == "wrong-conversation" then "other-id" else "fixture-id" end),status:$status,response:$response,num_turns:1,
+    denied_actions:(if $scenario == "denied" then [{action:"read_file"}] else [] end)}}')
+echo "$result"
+[[ "$scenario" != duplicate-result ]] || echo "$result"
+[[ "$scenario" != trailing-event ]] || echo '{"event":"step_update"}'
+exit 0
+EOF
+cat >"$tmp/bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${AGY_FAKE_CASE:-}" == initial-status-error && "$1" == status ]]; then exit 7; fi
+if [[ "${AGY_FAKE_CASE:-}" == initial-common-error && "$1" == rev-parse && "${2:-}" == --git-common-dir ]]; then exit 7; fi
+if [[ -f "$AGY_FAKE_STATUS_ERROR" ]]; then
+  if [[ "${AGY_FAKE_CASE:-}" == final-status-error && "$1" == status ]]; then exit 7; fi
+  if [[ "${AGY_FAKE_CASE:-}" == final-head-error && "$1" == rev-parse ]]; then exit 7; fi
+fi
+exec "$AGY_REAL_GIT" "$@"
+EOF
+chmod +x "$tmp/bin/agy" "$tmp/bin/git"
+export PATH="$tmp/bin:$PATH"
+export AGY_FAKE_CALLS="$tmp/calls" AGY_FAKE_CHILD="$tmp/child" AGY_FAKE_STATUS_ERROR="$tmp/status-error" AGY_REAL_GIT="$real_git"
+touch "$AGY_FAKE_CALLS"
+
+check() {
+  local name=$1 expected=$2
+  shift 2
+  local status=0
+  rm -f "$AGY_FAKE_STATUS_ERROR"
+  AGY_FAKE_CASE="$name" bash scripts/review-agy --base "$base" --output "$tmp/$name" "$@" >"$tmp/$name.stdout" 2>"$tmp/$name.stderr" || status=$?
+  [[ $status == "$expected" ]] || { cat "$tmp/$name.stderr" >&2; echo "$name: expected $expected, got $status" >&2; exit 1; }
+  if [[ $expected == 3 ]]; then
+    [[ $(tail -1 "$tmp/$name/review.log") == ALIGN_REVIEW_VERDICT=INCOMPLETE ]]
+  fi
+  echo "PASS $name"
+}
+check clean 0
+grep -Fx "ALIGN_REVIEW_HEAD=$head_sha" "$tmp/clean/review.log" >/dev/null
+grep -Fx "ALIGN_REVIEW_BASE=$base" "$tmp/clean/review.log" >/dev/null
+grep -Fx "ALIGN_REVIEW_BASE_TIP=$base" "$tmp/clean/review.log" >/dev/null
+[[ $(tail -1 "$tmp/clean/review.log") == ALIGN_REVIEW_VERDICT=CLEAN ]]
+check findings 2
+[[ $(tail -1 "$tmp/findings/review.log") == ALIGN_REVIEW_VERDICT=FINDINGS ]]
+check closed-fences 0
+for scenario in malformed provider-exit error-status empty-response missing-verdict duplicate-verdict duplicate-result wrong-model wrong-agent wrong-cwd wrong-conversation denied timeout-warning forbidden-tool trailing-event open-backtick-fence open-tilde-fence short-closing-fence final-status-error final-head-error changed-source; do
+  check "$scenario" 3
+done
+rm -f "$AGY_FAKE_STATUS_ERROR"
+git restore units.js
+
+calls_before=$(wc -l <"$AGY_FAKE_CALLS")
+echo dirty >>units.js
+check dirty 1
+git restore units.js
+check empty 1 --base HEAD
+printf '\0binary\n' >binary.dat
+git add binary.dat
+git commit -qm 'Binary fixture'
+check binary 1
+git reset -q --hard "$head_sha"
+check existing-output 1 --output "$tmp/clean"
+check worktree-output 1 --output "$tmp/repo/evidence"
+AGY_REVIEW_TIMEOUT_SECONDS=0 check invalid-timeout 1
+check initial-status-error 1
+check initial-common-error 1
+check invalid-base 1 --base does-not-exist
+[[ $(wc -l <"$AGY_FAKE_CALLS") == "$calls_before" ]]
+
+git worktree add -q --detach "$tmp/linked" HEAD
+(
+  cd "$tmp/linked"
+  AGY_FAKE_CASE=clean bash scripts/review-agy --base "$base" >"$tmp/linked.stdout" 2>"$tmp/linked.stderr"
+)
+[[ -f "$tmp/repo/.git/agy-reviews/$head_sha-$base/review.log" ]]
+[[ -z $(git status --porcelain) ]]
+echo 'PASS linked-worktree'
+git worktree remove "$tmp/linked"
+
+AGY_REVIEW_TIMEOUT_SECONDS=1 check timeout-expiry 3
+[[ -f "$tmp/timeout-expiry/timed-out" ]]
+rm "$AGY_FAKE_CHILD"
+
+AGY_FAKE_CASE=terminate bash scripts/review-agy --base "$base" --output "$tmp/terminate" >"$tmp/terminate.stdout" 2>"$tmp/terminate.stderr" &
+wrapper_pid=$!
+for ((attempt=0; attempt<100; attempt++)); do
+  [[ ! -f "$AGY_FAKE_CHILD" ]] || break
+  sleep 0.05
+done
+[[ -f "$AGY_FAKE_CHILD" ]]
+kill -TERM "$wrapper_pid"
+status=0
+wait "$wrapper_pid" || status=$?
+wrapper_pid=
+[[ $status == 143 ]]
+[[ $(tail -1 "$tmp/terminate/review.log") == ALIGN_REVIEW_VERDICT=INCOMPLETE ]]
+child_state=$(ps -o stat= -p "$(cat "$AGY_FAKE_CHILD")" || true)
+[[ -z "$child_state" || "$child_state" == Z* ]]
+echo 'PASS terminate'
+
+if [[ "$live" == true ]]; then
+  [[ -n "$real_agy" ]] || { echo 'agy is required for --live' >&2; exit 1; }
+  rm "$tmp/bin/agy"
+  ln -s "$real_agy" "$tmp/bin/agy"
+  native_output="$tmp/repo/.git/agy-reviews/$head_sha-$base"
+  # Replace this test's synthetic evidence with an actual default-path qualification.
+  rm -rf "$native_output"
+  status=0
+  AGY_REVIEW_TIMEOUT_SECONDS=180 bash scripts/review-agy --base "$base" >"$tmp/live.stdout" 2>"$tmp/live.stderr" || status=$?
+  [[ $status == 2 ]] || { cat "$tmp/live.stderr" "$tmp/live.stdout" >&2; echo "live: expected FINDINGS, got $status" >&2; exit 1; }
+  grep -F 'units.js' "$native_output/review.log" >/dev/null
+  [[ -z $(git status --porcelain) ]]
+  cat "$native_output/review.log"
+  echo 'PASS live: exact model, native context, read-only review, real regression found'
+fi
+completed=true
+echo 'All agy review owner checks passed.'

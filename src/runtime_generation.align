@@ -60,11 +60,11 @@ fn signature(model_id: str, kind: i64, width: i64, height: i64) -> string {
   return digest(out.to_string())
 }
 
-fn topology(
+fn topology_fast(
   borrow options: runtime_options.RuntimeOptions,
   bundle_id: str,
   model_id: str,
-  geometry: str,
+  layout_sha256: str,
   attention_policy: str,
   kind: i64,
   width: i64,
@@ -77,7 +77,7 @@ fn topology(
     backend: options.backend.clone(),
     bundle_id: bundle_id.clone(),
     model_id: model_id.clone(),
-    model_layout_sha256: digest(geometry),
+    model_layout_sha256: layout_sha256.clone(),
     tensor_shape_stride_sha256: signature(shape_base, kind, valid, height),
     attention_policy: attention_policy.clone(),
   }
@@ -91,6 +91,22 @@ fn topology(
     output_selection_sha256: signature("output", kind, output_tokens, height),
   }
   return runtime_execution.topology_key(identity, invocation)
+}
+
+fn topology(
+  borrow options: runtime_options.RuntimeOptions,
+  bundle_id: str,
+  model_id: str,
+  geometry: str,
+  attention_policy: str,
+  kind: i64,
+  width: i64,
+  height: i64,
+  valid: i64,
+  output_tokens: i64,
+) -> Result<string, Error> {
+  return topology_fast(options, bundle_id, model_id, digest(geometry),
+    attention_policy, kind, width, height, valid, output_tokens)
 }
 
 // Graph contexts retain every tensor created while the per-layer slot window is reused. The
@@ -547,63 +563,82 @@ fn update_decode(
   context_length: i64,
   capacity: i64,
   v_lanes: i64,
+  update_output: bool,
+  width_changed: bool,
 ) -> Result<(), Error> {
   mut token_image := buffer(4)
   token_image.put_u32_le(token as u32)
   mut position_image := buffer(4)
   position_image.put_u32_le(n_past as u32)
-  mut mask_image := buffer(checked_mul(context_length, 4)?)
-  mut col := 0
-  loop {
-    if col >= context_length { break }
-    mask_image.put_u32_le(if col <= n_past { 0 } else { MASK_NEG_INFINITY_BITS as u32 })
-    col = col + 1
-  }
-  mut output_image := buffer(4)
-  output_image.put_u32_le(0)
-  mut v_image := buffer(checked_mul(v_lanes, 4)?)
-  mut lane := 0
-  loop {
-    if lane >= v_lanes { break }
-    index := checked_add(checked_mul(lane, capacity)?, n_past)?
-    if index > 2147483647 { return Err(Error.Invalid) }
-    v_image.put_u32_le(index as u32)
-    lane = lane + 1
-  }
-  v_view := v_image.bytes()
   token_view := token_image.bytes()
   position_view := position_image.bytes()
-  mask_view := mask_image.bytes()
-  output_view := output_image.bytes()
   runtime_inputs.update(owner, 3, 0, token_view)?
   runtime_inputs.update(owner, 4, 0, position_view)?
-  runtime_inputs.update(owner, 7, 0, v_view)?
-  runtime_inputs.update(owner, 5, 0, mask_view)?
-  return runtime_inputs.update(owner, 6, 0, output_view)
+  if !runtime_attention.fused(owner) {
+    mut v_image := buffer(checked_mul(v_lanes, 4)?)
+    mut lane := 0
+    loop {
+      if lane >= v_lanes { break }
+      index := checked_add(checked_mul(lane, capacity)?, n_past)?
+      if index > 2147483647 { return Err(Error.Invalid) }
+      v_image.put_u32_le(index as u32)
+      lane = lane + 1
+    }
+    v_view := v_image.bytes()
+    runtime_inputs.update(owner, 7, 0, v_view)?
+  }
+  if width_changed {
+    mut mask_image := buffer(checked_mul(context_length, 4)?)
+    mut col := 0
+    loop {
+      if col >= context_length { break }
+      mask_image.put_u32_le(if col <= n_past { 0 } else { MASK_NEG_INFINITY_BITS as u32 })
+      col = col + 1
+    }
+    mask_view := mask_image.bytes()
+    runtime_inputs.update(owner, 5, 0, mask_view)?
+  } else {
+    mut zero_slot := buffer(4)
+    zero_slot.put_u32_le(0)
+    zero_view := zero_slot.bytes()
+    mask_offset := checked_mul(n_past, 4)?
+    runtime_inputs.update(owner, 5, mask_offset, zero_view)?
+  }
+  if update_output {
+    mut output_image := buffer(4)
+    output_image.put_u32_le(0)
+    output_view := output_image.bytes()
+    runtime_inputs.update(owner, 6, 0, output_view)?
+  }
+  return Ok(())
 }
 
 fn finite_f32(borrow logits: slice<u8>, offset: i64) -> bool {
   bits := logits.u32_le(offset)
-  return (bits / 8388608) % 256 != 255
+  return (bits & 2139095040) != 2139095040
 }
 
 fn greedy(borrow logits: slice<u8>) -> Result<i64, Error> {
   if logits.len() < 4 || logits.len() % 4 != 0 { return Err(Error.Invalid) }
-  mut best := -1
-  mut best_value := 0.0 as f32
-  mut token := 0
+  first_bits := logits.u32_le(0)
+  if (first_bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
+  n_vocab := logits.len() / 4
+  mut best := 0
+  mut best_value := logits.f32_le(0)
+  mut token := 1
+  mut offset := 4
   loop {
-    if token >= logits.len() / 4 { break }
-    offset := token * 4
-    if !finite_f32(logits, offset) { return Err(Error.Invalid) }
+    if token >= n_vocab { break }
+    bits := logits.u32_le(offset)
+    if (bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
     value := logits.f32_le(offset)
-    if best < 0 || value > best_value {
+    if value > best_value {
       best = token
       best_value = value
     }
     token = token + 1
+    offset = offset + 4
   }
-  if best < 0 { return Err(Error.Invalid) }
   return Ok(best)
 }
 
@@ -793,7 +828,8 @@ fn generate_qwen_mode(
       if count >= max_tokens || contains(eog_ids, token) { break }
     }
     current_width := runtime_inputs.attention_width(n_past + 1, g.context_length)?
-    if current_width != decode_width {
+    width_changed := current_width != decode_width
+    if width_changed {
       if decode_width > 0 { runtime_execution.invalidate(owner, ggml_ffi.GPU_GRAPH_DECODE)? }
       decode_graph = ggml_ffi.graph_new(decode_ctx)
       if ggml_ffi.handle_absent(decode_graph) { return Err(Error.Invalid) }
@@ -805,7 +841,7 @@ fn generate_qwen_mode(
       decode_width = current_width
     }
     input_token := if forced { forced_ids[count - 1] } else { token }
-    update_decode(owner, input_token, n_past, current_width, kv_capacity, v_lanes)?
+    update_decode(owner, input_token, n_past, current_width, kv_capacity, v_lanes, count == 1, width_changed)?
     runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
     ggml_ffi.gpu_slot_get(
       owner, slot_view, runtime_qwen.output_slot(), logits_view, 0, logits_view.len(), "qwen_logits",
@@ -987,7 +1023,8 @@ fn generate_olmoe_mode(
       if count >= max_tokens || contains(eog_ids, token) { break }
     }
     current_width := runtime_inputs.attention_width(n_past + 1, g.context_length)?
-    if current_width != decode_width {
+    width_changed := current_width != decode_width
+    if width_changed {
       if decode_width > 0 { runtime_execution.invalidate(owner, ggml_ffi.GPU_GRAPH_DECODE)? }
       decode_graph = ggml_ffi.graph_new(decode_ctx)
       if ggml_ffi.handle_absent(decode_graph) { return Err(Error.Invalid) }
@@ -999,7 +1036,7 @@ fn generate_olmoe_mode(
       decode_width = current_width
     }
     input_token := if forced { forced_ids[count - 1] } else { token }
-    update_decode(owner, input_token, n_past, current_width, kv_capacity, v_lanes)?
+    update_decode(owner, input_token, n_past, current_width, kv_capacity, v_lanes, count == 1, width_changed)?
     runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
     ggml_ffi.gpu_slot_get(
       owner, slot_view, runtime_olmoe.output_slot(), logits_view, 0, logits_view.len(), "olmoe_logits",
@@ -1021,6 +1058,7 @@ pub Session {
   owner: ggml_ffi.GpuDevice,
   options: runtime_options.RuntimeOptions,
   geometry_text: string,
+  geometry_sha256: string,
   qwen: layer_qwen2.Geometry,
   olmo: layer_olmoe.Geometry,
   olmoe: bool,
@@ -1141,6 +1179,7 @@ pub fn create_session(owner: ggml_ffi.GpuDevice, options: runtime_options.Runtim
     at = at + 1
   }
   return Ok(Session { owner: owner, options: options, geometry_text: geometry_text.clone(),
+      geometry_sha256: digest(geometry_text),
       qwen: qwen, olmo: olmo, olmoe: olmoe, kv_capacity: plan.kv_capacity,
       chunk_width: plan.chunk_width, graph_bytes: plan.graph_bytes,
       prefill_slots: slot_buffer(), decode_slots: slot_buffer(),
@@ -1203,7 +1242,7 @@ fn execute_session(borrow mut session: Session, borrow prompt_ids: array<i64>,
     } else { session.chunk_width }
     final_chunk := prompt_offset + count == prompt_ids.len()
     width := runtime_inputs.attention_width(prompt_offset + count, context_length)?
-    key := topology(session.options, bundle_id, model_id, session.geometry_text,
+    key := topology_fast(session.options, bundle_id, model_id, session.geometry_sha256,
       runtime_attention.name(session.owner), ggml_ffi.GPU_GRAPH_PREFILL, width, count,
       prompt_offset + count, if final_chunk { 1 } else { 0 })?
     mut graph := ggml_ffi.gpu_graph_lookup(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, key)
@@ -1241,33 +1280,42 @@ fn execute_session(borrow mut session: Session, borrow prompt_ids: array<i64>,
   generated.push(token)
   mut count := 1
   mut n_past := prompt_ids.len()
+  mut last_decode_width := -1
+  mut current_decode_key := "".clone()
+  mut current_decode_graph := ggml_ffi.null_handle()
   loop {
     if count >= max_tokens || contains(eog_ids, token) { break }
     width := runtime_inputs.attention_width(n_past + 1, context_length)?
-    key := topology(session.options, bundle_id, model_id, session.geometry_text,
-      runtime_attention.name(session.owner), ggml_ffi.GPU_GRAPH_DECODE, width, 1,
-      if width < session.kv_capacity { width } else { session.kv_capacity }, 1)?
-    mut graph := ggml_ffi.gpu_graph_lookup(session.owner, ggml_ffi.GPU_GRAPH_DECODE, key)
-    if ggml_ffi.handle_absent(graph) {
-      if session.decode_key.len() > 0 {
-        runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_DECODE)?
+    width_changed := width != last_decode_width
+    if width_changed {
+      key := topology_fast(session.options, bundle_id, model_id, session.geometry_sha256,
+        runtime_attention.name(session.owner), ggml_ffi.GPU_GRAPH_DECODE, width, 1,
+        if width < session.kv_capacity { width } else { session.kv_capacity }, 1)?
+      mut graph := ggml_ffi.gpu_graph_lookup(session.owner, ggml_ffi.GPU_GRAPH_DECODE, key)
+      if ggml_ffi.handle_absent(graph) {
+        if session.decode_key.len() > 0 {
+          runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_DECODE)?
+        }
+        context := ggml_ffi.gpu_graph_context_lookup(session.owner, ggml_ffi.GPU_GRAPH_DECODE)
+        if ggml_ffi.handle_absent(context) { return Err(Error.Invalid) }
+        graph = ggml_ffi.graph_new(context)
+        if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
+        if session.olmoe {
+          runtime_olmoe.build_decode_diagnostic(session.owner, session.olmo, n_past,
+            session.kv_capacity, context, graph, decode_view, true, capture)?
+        } else {
+          runtime_qwen.build_decode_diagnostic(session.owner, session.qwen, n_past,
+            session.kv_capacity, context, graph, decode_view, capture)?
+        }
+        runtime_execution.prepare(session.owner, ggml_ffi.GPU_GRAPH_DECODE, key, graph)?
+        session.decode_key = key.clone()
       }
-      context := ggml_ffi.gpu_graph_context_lookup(session.owner, ggml_ffi.GPU_GRAPH_DECODE)
-      if ggml_ffi.handle_absent(context) { return Err(Error.Invalid) }
-      graph = ggml_ffi.graph_new(context)
-      if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
-      if session.olmoe {
-        runtime_olmoe.build_decode_diagnostic(session.owner, session.olmo, n_past,
-          session.kv_capacity, context, graph, decode_view, true, capture)?
-      } else {
-        runtime_qwen.build_decode_diagnostic(session.owner, session.qwen, n_past,
-          session.kv_capacity, context, graph, decode_view, capture)?
-      }
-      runtime_execution.prepare(session.owner, ggml_ffi.GPU_GRAPH_DECODE, key, graph)?
-      session.decode_key = key.clone()
+      last_decode_width = width
+      current_decode_key = key
+      current_decode_graph = graph
     }
-    update_decode(session.owner, token, n_past, width, session.kv_capacity, v_lanes)?
-    runtime_execution.compute(session.owner, ggml_ffi.GPU_GRAPH_DECODE, key, graph)?
+    update_decode(session.owner, token, n_past, width, session.kv_capacity, v_lanes, count == 1, width_changed)?
+    runtime_execution.compute(session.owner, ggml_ffi.GPU_GRAPH_DECODE, current_decode_key, current_decode_graph)?
     ggml_ffi.gpu_slot_get(session.owner, decode_view, output_slot, logits_view, 0,
       logits_view.len(), "session_decode_logits") else { return Err(Error.Invalid) }
     token = choose_token(logits_view, sampled, random)?
