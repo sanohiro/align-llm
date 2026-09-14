@@ -2,6 +2,16 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Active capability: hosted CI completion budget
+
+Branch `agent/hosted-ci-budget`, base `4bf8011`. Required hosted CI repeatedly
+reaches its 15-minute job timeout on main and the CUDA consumer PR #243. Retained
+logs show the serial graph still running, not a reported assertion failure. Raise
+only this job ceiling to 30 minutes; installed profiles and all owners remain intact.
+Run `python3 scripts/test-development-preflight`, exact-head fresh-image preflight,
+one comprehensive review and hosted CI before merge. Return to CUDA PR #243 after
+this independent publication blocker is resolved. CI incident details belong in GitHub.
+
 ## Completed capability: ALIGN-PRODUCT-CUTOVER
 
 The user requested completion of normal-product Python removal on 2026-09-13.
