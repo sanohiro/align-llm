@@ -153,27 +153,6 @@ Discovered during Fast Buffer Initialization Optimization (`filled_buffer_u32`):
    - `slice<u8>.fill(byte: u8)`: in-place fill of an existing mutable slice via `memset`.
    - `slice<u8>.copy_from(borrow src: slice<u8>) -> Result<(), Error>`: in-place slice copy via `llvm.memcpy` / `copy_from_slice`.
 
-### Request 70: array_builder capacity constructor and array repeat primitive (2026-09-15)
-
-Status: PROPOSED
-Priority: medium
-Blocking: no
-Blocked gate or slice: none; application works around missing capacity by manual byte buffer offsets or loop pushing
-Independent work that may continue: runtime generation, sampling, model IR, benchmarks
-Resume condition: upstream design closure and implementation on issue
-Align commit or pull request: [sanohiro/align#1053](https://github.com/sanohiro/align/issues/1053)
-align-llm verification: scripts/run-runtime-provider-smoke, python3 /Users/hiro/models/measure_qwen_f16.py
-
-Discovered during Greedy Decode and Sampler Pipeline Optimization:
-1. In Align, `core.array_builder` currently provides only `array_builder<T>()` and `array_builder<T>(out: region)`. Both start with a default capacity of 4.
-2. When constructing an `array<T>` of known size $N$ (e.g., $N=40$ for top-k candidates, $N=128$ for token chunk generation), calling `b.push()` repeatedly triggers repeated doubling reallocations (`4 -> 8 -> 16 -> 32 -> 64 -> ...`).
-3. Unlike `buffer(bytes: i64)` which supports preallocating a specific byte size upfront, `array_builder<T>` lacks a capacity constructor (`array_builder<T>(capacity: i64)` or `array_builder.with_capacity(capacity: i64)`).
-4. There is also no bulk initialization or repeat primitive for typed arrays, such as `array.repeat(element: T, count: i64) -> array<T>`.
-5. As a result, performance-critical code in `align-llm` is forced to either loop $N$ times pushing dummy values into an `array_builder`, or drop down to raw untyped `buffer` with manual little-endian arithmetic (`put_f64_le`, `put_i64_le`, `bytes().f64_le(offset)`), bypassing type safety.
-6. Proposed native primitives:
-   - `array_builder<T>(capacity: i64)` / `array_builder.with_capacity(capacity: i64) -> array_builder<T>`: preallocates backing storage for at least `capacity` elements without intermediate reallocations.
-   - `array.repeat(value: T, count: i64) -> array<T>` for `Copy` types: directly creates an owned, initialized `array<T>` of length `count`.
-
 ### Request 69: IEEE 754 float inspection and bitcast intrinsics (f32.to_bits, f64.to_bits, f32.is_finite, f32.is_nan) (2026-09-15)
 
 Status: PROPOSED
@@ -183,7 +162,7 @@ Blocked gate or slice: none; application works around missing bitcast/classifica
 Independent work that may continue: runtime generation, sampling, model IR, benchmarks
 Resume condition: upstream design closure and implementation on issue
 Align commit or pull request: [sanohiro/align#1052](https://github.com/sanohiro/align/issues/1052)
-align-llm verification: scripts/run-runtime-provider-smoke, python3 /Users/hiro/models/measure_qwen_f16.py
+align-llm verification: scripts/run-runtime-provider-smoke, python3 "$MODEL_DIR/measure_qwen_f16.py"
 
 Discovered during Fast Sampling Single-Precision Filter Optimization:
 1. Align language and standard library lack methods or intrinsics to inspect floating-point numbers:
@@ -196,6 +175,52 @@ Discovered during Fast Sampling Single-Precision Filter Optimization:
    - `f32.is_finite() -> bool` / `f64.is_finite() -> bool`: LLVM `llvm.is.fpclass` or inline bitmask test.
    - `f32.is_nan() -> bool` / `f64.is_nan() -> bool`.
    - `f32.is_infinite() -> bool` / `f64.is_infinite() -> bool`.
+
+### Request 70: array_builder capacity constructor and array repeat primitive (2026-09-15)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; application works around missing capacity by manual byte buffer offsets or loop pushing
+Independent work that may continue: runtime generation, sampling, model IR, benchmarks
+Resume condition: upstream design closure and implementation on issue
+Align commit or pull request: [sanohiro/align#1053](https://github.com/sanohiro/align/issues/1053)
+align-llm verification: scripts/run-runtime-provider-smoke, python3 "$MODEL_DIR/measure_qwen_f16.py"
+
+Discovered during Greedy Decode and Sampler Pipeline Optimization:
+1. In Align, `core.array_builder` currently provides only `array_builder<T>()` and `array_builder<T>(out: region)`. Both start with a default capacity of 4.
+2. When constructing an `array<T>` of known size $N$ (e.g., $N=40$ for top-k candidates, $N=128$ for token chunk generation), calling `b.push()` repeatedly triggers repeated doubling reallocations (`4 -> 8 -> 16 -> 32 -> 64 -> ...`).
+3. Unlike `buffer(bytes: i64)` which supports preallocating a specific byte size upfront, `array_builder<T>` lacks a capacity constructor (`array_builder<T>(capacity: i64)` or `array_builder.with_capacity(capacity: i64)`).
+4. There is also no bulk initialization or repeat primitive for typed arrays, such as `array.repeat(element: T, count: i64) -> array<T>`.
+5. As a result, performance-critical code in `align-llm` is forced to either loop $N$ times pushing dummy values into an `array_builder`, or drop down to raw untyped `buffer` with manual little-endian arithmetic (`put_f64_le`, `put_i64_le`, `bytes().f64_le(offset)`), bypassing type safety.
+6. Proposed native primitives:
+   - `array_builder<T>(capacity: i64)` / `array_builder.with_capacity(capacity: i64) -> array_builder<T>`: preallocates backing storage for at least `capacity` elements without intermediate reallocations.
+   - `array.repeat(value: T, count: i64) -> array<T>` for `Copy` types: directly creates an owned, initialized `array<T>` of length `count`.
+
+### Request 89: in-place array.truncate(len) and bulk-copy slice.to_array (2026-09-15)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; application uses `ids[0..count].to_array()` or manual `array_builder` loops
+Independent work that may continue: runtime generation, sampling, model IR, benchmarks
+Resume condition: upstream design closure and implementation on issue
+Align commit or pull request: [sanohiro/align#1054](https://github.com/sanohiro/align/issues/1054)
+align-llm verification: scripts/run-runtime-provider-smoke, python3 "$MODEL_DIR/measure_qwen_f16.py"
+
+Discovered during BPE Tokenizer Fast Path & Worker Completion Reuse optimization:
+1. In `align-llm` generation pipelines (`src/provider_runtime.align`), autoregressive token sequences are produced into an `array<i64>` up to `max_tokens` (e.g. 128 tokens).
+2. When generation terminates early on an End-of-Generation (EOG) token, the trailing token must be excluded (`count = ids.len() - 1`).
+3. While `slice<T>.to_array()` is supported in Align (`crates/align_sema/src/lib.rs:51929` via terminal lowering in `align_mir`), converting a sub-slice `ids[0..count].to_array()` allocates a new heap `array<T>` and copies all elements.
+4. `array<T>` currently lacks an in-place length truncation method (`arr.truncate(new_len: i64)`). Sibling compiler inspection confirms that `Ty::DynArray` and `Ty::Array` support length query and indexing, but no length adjustment primitive exists in `crates/align_sema/src/lib.rs` or `crates/align_runtime/src/lib.rs`.
+5. Move semantics interaction: in-place `mut ids.truncate(count)` would allow mutating the generated token sequence directly without creating secondary bindings or moving ownership across branches, avoiding the borrow-checker friction of conditional reassignments.
+6. Proposed native primitives & optimizations:
+   - `array<T>.truncate(new_len: i64)`: for `mut arr: array<T>`, in-place $O(1)$ length adjustment on the existing heap allocation without reallocations or element copying when `T: Copy`.
+   - `slice<T>.to_array()` bulk-copy optimization: for `Copy` types, lower the conversion via a single `llvm.memcpy` rather than iterative element transfers.
+7. Acceptance criteria:
+   - Precondition: `0 <= new_len <= arr.len()`. Out-of-bounds `new_len` triggers a deterministic runtime bounds trap matching slice bounds failure.
+   - For `Copy` types (`i64`, `f32`, `u8`, etc.), `arr.truncate(new_len)` updates the length field in-place without re-allocating or modifying backing capacity.
+   - For `Move` types with custom Drop, elements from `new_len` to `old_len` are dropped, or semantic check rejects truncation if non-trivial drop is not yet supported.
 
 ### Issue 1043 composed-loop implementation (2026-09-14)
 
