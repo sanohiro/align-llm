@@ -4,18 +4,39 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/publish-composed-loop-merged`, based on `main` at `2dd60ea`.
-The prior sampler optimization is merged in that base. This documentation capability
-records upstream Align #1046 as merged at `da20aefe1e4054cd132fbbf852217d5ee2c240ac`,
-with final implementation `cbe1dd72240fa18fe8e100e39be281a0d49ed3f8`.
-The request register distinguishes provider evidence from pending consumer adoption
-and native Metal qualification. The managed pin remains unchanged.
+Active branch: `agent/bpe-tokenizer-fast-path-opt` (based on `main` at `943fb1b`).
+Active capability: BPE Tokenizer Fast Path & Worker Completion Reuse.
 
-Next: finish this documentation publication. No implementation is authorized in this
-batch; subsequent provider adoption must use the request's original acceptance owners.
-Verification: upstream PR merge identity and final plan checked; `git diff --check`
-passes. Exact-head publication checks and review evidence belong in the pull request.
-No implementation blocker or intentional uncommitted file belongs to this capability.
+Active work:
+- Implemented single-byte (`count == 1`) fast path in `bpe_piece_append`: direct byte token lookup bypassing all 9 heap array allocations and priority queue operations.
+- Implemented two-byte (`count == 2`) fast path in `bpe_piece_append`: single pair lookup bypassing all 9 heap array allocations and priority queue operations.
+- Replaced intermediate `bpe_piece` allocations in `encode_raw` and `encode_text` with direct accumulation via `encode_raw_append` and `bpe_piece_append`, eliminating piecewise vector allocations and intermediate copy loops.
+- Optimized `worker_generate` in `src/provider_runtime.align` using conditional move expression `if stopped { truncate_ids(ids, count) } else { ids }`, reusing `ids` directly when generation does not terminate at an EOG token.
+- Verified 100% bit-for-bit SHA-256 output parity on Apple Silicon Metal GPU.
+- Local Metal GPU benchmark run completed cleanly with full 100% SHA-256 output parity (Qwen2 decode: 76.57 ms/tok; OLMoE decode: 16.59 ms/tok).
+
+Next actions in priority order:
+1. Commit candidate on branch `agent/bpe-tokenizer-fast-path-opt`.
+2. Run independent adversarial review: `scripts/review-agy --base origin/main`.
+3. Preflight with `python3 scripts/pre-pr --owner-test tokenizer-smoke -- ./scripts/run-tokenizer-smoke`.
+4. Push branch `agent/bpe-tokenizer-fast-path-opt`, update PR and merge.
+5. Continue autonomous roadmap cycle for next optimization capability.
+
+Latest durable verification:
+- `alignc check src/main.align`: PASS (checked 3123 functions).
+- `make fmt`: PASS.
+- `scripts/run-tokenizer-smoke`: PASS (13 text cases, 4 ordinary specials, 256-special accepted boundary, 23 model failures, 6 operation boundaries, 6 generation EOG cases, 2 one-shot reader passes, 1 replacement snapshot).
+- `scripts/run-runtime-provider-smoke`: PASS.
+- `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
+- Apple Silicon Metal GPU verification (`python3 "$MODEL_DIR/measure_qwen_f16.py"`): PASS.
+  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1724.2 ms)
+  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.59 ms/tok)
+  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5352.6 ms)
+  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 76.57 ms/tok)
+
+Blockers, constraints, decisions:
+- 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks.
+- Single-byte and two-byte BPE pieces mathematically reduce to direct token / pair lookup results and do not require priority queue allocation.
 
 ## Completed capability: latest merged Align adoption
 

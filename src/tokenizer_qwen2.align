@@ -1103,9 +1103,27 @@ fn enqueue_pair(
   )
 }
 
-fn bpe_piece(borrow t: Tokenizer, piece: str) -> array<i64> {
+fn bpe_piece_append(borrow t: Tokenizer, piece: str, borrow mut output: array_builder<i64>) {
   count := piece.len()
-  if count == 0 { return empty_i64() }
+  if count == 0 { return }
+  if count == 1 {
+    raw := piece.bytes()
+    output.push(t.byte_tokens[raw.u8(0) as i64])
+    return
+  }
+  if count == 2 {
+    raw := piece.bytes()
+    id0 := t.byte_tokens[raw.u8(0) as i64]
+    id1 := t.byte_tokens[raw.u8(1) as i64]
+    found := pair_lookup(t, id0, id1)
+    if found.rank >= 0 {
+      output.push(found.result)
+    } else {
+      output.push(id0)
+      output.push(id1)
+    }
+    return
+  }
   mut ids := filled_i64(count, -1)
   mut lengths := filled_i64(count, 1)
   mut prev := filled_i64(count, -1)
@@ -1120,7 +1138,7 @@ fn bpe_piece(borrow t: Tokenizer, piece: str) -> array<i64> {
     at = at + 1
   }
 
-  capacity := if count <= 1 { 1 } else { count * 3 }
+  capacity := count * 3
   mut heap_rank := filled_i64(capacity, -1)
   mut heap_left := filled_i64(capacity, -1)
   mut heap_right := filled_i64(capacity, -1)
@@ -1168,13 +1186,17 @@ fn bpe_piece(borrow t: Tokenizer, piece: str) -> array<i64> {
     }
   }
 
-  mut output: array_builder<i64> := array_builder()
   at = 0
   loop {
     if at < 0 || at >= count { break }
     if lengths[at] > 0 { output.push(ids[at]) }
     at = next[at]
   }
+}
+
+fn bpe_piece(borrow t: Tokenizer, piece: str) -> array<i64> {
+  mut output: array_builder<i64> := array_builder()
+  bpe_piece_append(t, piece, output)
   return output.build()
 }
 
@@ -1440,6 +1462,27 @@ fn olmo_pieces(
   return pieces.build()
 }
 
+fn encode_raw_append(
+  borrow t: Tokenizer,
+  raw: str,
+  borrow letter: regex,
+  borrow number: regex,
+  borrow space: regex,
+  borrow mut output: array_builder<i64>,
+) {
+  pieces := if t.olmo {
+    olmo_pieces(raw, letter, number, space)
+  } else {
+    qwen_pieces(raw, letter, number, space)
+  }
+  mut at := 0
+  loop {
+    if at >= pieces.len() { break }
+    bpe_piece_append(t, pieces[at], output)
+    at = at + 1
+  }
+}
+
 fn encode_raw(
   borrow t: Tokenizer,
   raw: str,
@@ -1447,24 +1490,8 @@ fn encode_raw(
   borrow number: regex,
   borrow space: regex,
 ) -> array<i64> {
-  pieces := if t.olmo {
-    olmo_pieces(raw, letter, number, space)
-  } else {
-    qwen_pieces(raw, letter, number, space)
-  }
   mut output: array_builder<i64> := array_builder()
-  mut at := 0
-  loop {
-    if at >= pieces.len() { break }
-    ids := bpe_piece(t, pieces[at])
-    mut id_at := 0
-    loop {
-      if id_at >= ids.len() { break }
-      output.push(ids[id_at])
-      id_at = id_at + 1
-    }
-    at = at + 1
-  }
+  encode_raw_append(t, raw, letter, number, space, output)
   return output.build()
 }
 
@@ -1507,13 +1534,7 @@ fn encode_text(
     }
     if best_id >= 0 {
       if raw_start < at {
-        raw_ids := encode_raw(t, text[raw_start..at], letter, number, space)
-        mut id_at := 0
-        loop {
-          if id_at >= raw_ids.len() { break }
-          output.push(raw_ids[id_at])
-          id_at = id_at + 1
-        }
+        encode_raw_append(t, text[raw_start..at], letter, number, space, output)
       }
       output.push(best_id)
       at = best_end
@@ -1523,13 +1544,7 @@ fn encode_text(
     }
   }
   if raw_start < text.len() {
-    raw_ids := encode_raw(t, text[raw_start..text.len()], letter, number, space)
-    mut id_at := 0
-    loop {
-      if id_at >= raw_ids.len() { break }
-      output.push(raw_ids[id_at])
-      id_at = id_at + 1
-    }
+    encode_raw_append(t, text[raw_start..text.len()], letter, number, space, output)
   }
   return output.build()
 }
