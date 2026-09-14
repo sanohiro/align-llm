@@ -424,6 +424,17 @@ fn session_host_reservation(borrow snapshot: gguf.GgufSnapshot, limit: i64) -> R
   return Ok(67108864 + row_bytes + snapshot.table.data_offset * 32)
 }
 
+fn truncate_ids(borrow ids: array<i64>, count: i64) -> array<i64> {
+  mut completion: array_builder<i64> := array_builder()
+  mut at := 0
+  loop {
+    if at >= count { break }
+    completion.push(ids[at])
+    at = at + 1
+  }
+  return completion.build()
+}
+
 fn worker_generate(borrow mut generation: runtime_generation.Session,
   borrow tokenizer: tokenizer_qwen2.GenerationTokenizer,
   borrow prepared: tokenizer_qwen2.GenerationPromptResult,
@@ -435,14 +446,7 @@ fn worker_generate(borrow mut generation: runtime_generation.Session,
   stopped := contains_id(prepared.eog_token_ids, ids[ids.len() - 1])
   if !stopped && ids.len() != request.max_tokens { return Err(Error.Invalid) }
   count := ids.len() - if stopped { 1 } else { 0 }
-  mut completion: array_builder<i64> := array_builder()
-  mut at := 0
-  loop {
-    if at >= count { break }
-    completion.push(ids[at])
-    at = at + 1
-  }
-  completion_ids := completion.build()
+  completion_ids := if stopped { truncate_ids(ids, count) } else { ids }
   decoded := tokenizer_qwen2.decode_retained(tokenizer, completion_ids,
     tokenizer_qwen2.DecodeSpecials.SkipControl)?
   if !tokenizer_ok(decoded.status) || decoded.text.len() > 262144 { return Err(Error.Invalid) }
