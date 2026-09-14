@@ -153,6 +153,27 @@ Discovered during Fast Buffer Initialization Optimization (`filled_buffer_u32`):
    - `slice<u8>.fill(byte: u8)`: in-place fill of an existing mutable slice via `memset`.
    - `slice<u8>.copy_from(borrow src: slice<u8>) -> Result<(), Error>`: in-place slice copy via `llvm.memcpy` / `copy_from_slice`.
 
+### Request 70: array_builder capacity constructor and array repeat primitive (2026-09-15)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; application works around missing capacity by manual byte buffer offsets or loop pushing
+Independent work that may continue: runtime generation, sampling, model IR, benchmarks
+Resume condition: upstream design closure and implementation on issue
+Align commit or pull request: [sanohiro/align#1053](https://github.com/sanohiro/align/issues/1053)
+align-llm verification: scripts/run-runtime-provider-smoke, python3 /Users/hiro/models/measure_qwen_f16.py
+
+Discovered during Greedy Decode and Sampler Pipeline Optimization:
+1. In Align, `core.array_builder` currently provides only `array_builder<T>()` and `array_builder<T>(out: region)`. Both start with a default capacity of 4.
+2. When constructing an `array<T>` of known size $N$ (e.g., $N=40$ for top-k candidates, $N=128$ for token chunk generation), calling `b.push()` repeatedly triggers repeated doubling reallocations (`4 -> 8 -> 16 -> 32 -> 64 -> ...`).
+3. Unlike `buffer(bytes: i64)` which supports preallocating a specific byte size upfront, `array_builder<T>` lacks a capacity constructor (`array_builder<T>(capacity: i64)` or `array_builder.with_capacity(capacity: i64)`).
+4. There is also no bulk initialization or repeat primitive for typed arrays, such as `array.repeat(element: T, count: i64) -> array<T>`.
+5. As a result, performance-critical code in `align-llm` is forced to either loop $N$ times pushing dummy values into an `array_builder`, or drop down to raw untyped `buffer` with manual little-endian arithmetic (`put_f64_le`, `put_i64_le`, `bytes().f64_le(offset)`), bypassing type safety.
+6. Proposed native primitives:
+   - `array_builder<T>(capacity: i64)` / `array_builder.with_capacity(capacity: i64) -> array_builder<T>`: preallocates backing storage for at least `capacity` elements without intermediate reallocations.
+   - `array.repeat(value: T, count: i64) -> array<T>` for `Copy` types: directly creates an owned, initialized `array<T>` of length `count`.
+
 ### Request 69: IEEE 754 float inspection and bitcast intrinsics (f32.to_bits, f64.to_bits, f32.is_finite, f32.is_nan) (2026-09-15)
 
 Status: PROPOSED
