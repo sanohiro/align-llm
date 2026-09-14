@@ -206,8 +206,41 @@ fn test_candidate_selection() -> Result<(), Error> {
   return Ok(())
 }
 
+fn test_write_u32_le() -> Result<(), Error> {
+  mut buf := buffer(8)
+  buf.put_u32_le(0)
+  buf.put_u32_le(0)
+  mut view := buf.bytes()
+
+  // Test 1: Little-endian byte ordering of 0x12345678 at offset 0
+  runtime_generation.write_u32_le(view, 0, 305419896 as u32)
+  if view[0] != 120 as u8 || view[1] != 86 as u8 || view[2] != 52 as u8 || view[3] != 18 as u8 {
+    return Err(Error.Invalid)
+  }
+  if view.u32_le(0) != 305419896 as u32 {
+    return Err(Error.Invalid)
+  }
+
+  // Test 2: Maximum u32 value (0xFFFFFFFF) at offset 4
+  runtime_generation.write_u32_le(view, 4, 4294967295 as u32)
+  if view[4] != 255 as u8 || view[5] != 255 as u8 || view[6] != 255 as u8 || view[7] != 255 as u8 {
+    return Err(Error.Invalid)
+  }
+  if view.u32_le(4) != 4294967295 as u32 {
+    return Err(Error.Invalid)
+  }
+
+  // Test 3: Zero value overwrite
+  runtime_generation.write_u32_le(view, 0, 0 as u32)
+  if view[0] != 0 as u8 || view[1] != 0 as u8 || view[2] != 0 as u8 || view[3] != 0 as u8 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
   test_candidate_selection()?
+  test_write_u32_le()?
   if args.len() != 5 { return Err(Error.Invalid) }
   geometry := fs.read_file(args[3])?
   if args[4] == "fault" {

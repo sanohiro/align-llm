@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+brew_libs="/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/zstd/lib"
+export LIBRARY_PATH="${brew_libs}${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+exec "${project_root}/scripts/run-main-with-shim" "${project_root}/scripts/alignc" run "${project_root}/src/runtime_greedy_bench.align"
