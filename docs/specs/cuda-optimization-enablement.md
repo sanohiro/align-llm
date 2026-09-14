@@ -404,3 +404,16 @@ lifecycle owner, then a source-bound real model trace to distinguish actual para
 kernels from optimizer log intent. If it works, qualify allocation ceilings, all
 independent outputs and the existing graph performance floor before adoption; if it
 does not, retain the exact witness and redesign rather than widening a flag alone.
+
+The retained-lifetime checkpoint `dc13908` passes all 16 independent requests and
+both host-capacity owners. Production traces execute Q/K/V on streams 15/16/17.
+Qwen has 454 cross-stream overlapping kernel pairs; OLMoE has zero in its captured
+workload. Both retain ordinary graph capture/replay. This proves the old allocation
+rejection can be removed; it does not establish a speed win for either model.
+
+For the isolated incremental experiment, freeze the measurement control to accepted
+F16 source `48f249b` and its `settling-session` build. The experimental measurement
+command's CONTROL constant nominates only that exact source; retain all other fixed
+workload, quality, pairing, idle/observer and 15% primary / 5% guardrail decisions.
+The shipping F16 command remains nominated to `4bf8011`. The graph-specific complete
+campaign is retained even if it fails; no partial result establishes adoption.

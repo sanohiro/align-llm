@@ -18,7 +18,7 @@ from gpu_qualification_input import admit
 from gpu_session_client import Session as BaseSession, qualification_environment
 
 ROOT = Path(__file__).resolve().parent.parent
-CONTROL = '4bf801112a03521bf9a1ed9a47cc45cd613cebd3'
+CONTROL = '48f249bdd742792aba619198a9ff780a48a1d2af'
 SYSTEM = 'You are a helpful assistant. Follow the output format exactly.'
 SHORT = 'List the integers from 1 through 500 in ascending order, separated by single spaces. Output only the integers.'
 LONG = 'Repository context (irrelevant to this formatting task):\n' + 'alpha beta gamma delta\n' * 128 + '\n' + SHORT
