@@ -2,57 +2,47 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active capability: CUDA F16 KV enablement (2026-09-14)
+## Active capability: CUDA F16 KV enablement and renewed concurrency investigation
 
-Branch `agent/cuda-optimization-enablement`, main base `4bf8011`. The user authorized
-implementation, verification, PR publication and merge. Work is isolated in the CUDA
-worktree; the original checkout's concurrent `docs/align-requests.md` assessment is
-unrelated. The managed pin is `f502fe3da00ce0b39c4eeec40586b11688627fbd`.
-The authoritative plan is `docs/specs/cuda-optimization-enablement.md`.
+Branch `agent/cuda-optimization-enablement`, PR #243, base `4bf8011`, managed Align
+pin `f502fe3da00ce0b39c4eeec40586b11688627fbd`. The user renewed implementation and
+merge authorization and requested another Q/K/V parallelism attempt. Other development
+is stopped for timing. The original checkout's dirty `docs/align-requests.md` is unrelated.
 
-Graph-only checkpoint `2f1b69c` and graph+KV checkpoint `ae6eac7` both PASS the complete
-independent session owner (7 Qwen / 9 OLMoE rows). Production nsys traces prove CUDA
-Graph capture/replay but no Q/K/V stream concurrency: the pinned backend reports
-`Writes overlap` and clears its concurrent events. Graph defaults/tagging/snapshots
-are removed from the shipping diff; the plan records the evidence and resume condition.
-The minimal native three-stream witness does not establish production feasibility.
+CUDA OLMoE resident F16 KV implementation is complete. Exact native F16/Flash, malformed
+prefill wrapper, session reuse, device/recipe, independent 7 Qwen / 9 OLMoE requests
+and host-capacity owners PASS. Product/runtime sources are unchanged since repaired
+`be7b1f2`; subsequent changes concern measurement ownership/admission and documentation.
 
-The active shipping candidate is CUDA OLMoE session F16 KV with bounded SET_ROWS
-prefill, exact contiguous-index validation and stale-input refusal. Native F16 and
-Flash owner, typed probe, generation per-unit check, session reuse, device and backend
-recipe owners PASS. The unchanged control also fails the previous Metal analytic
-Flash tolerance; a CUDA-only fixed-fixture bound is documented while all old/new
-F16 bytes and actual model output comparisons remain exact.
-KV-only independent sessions PASS all 16 requests; repaired `be7b1f2` independent
-sessions and host capacity also PASS. `cb59980` exact-head hosted preflight PASS.
+The full clean `48f249b` settled campaign PASS against `4bf8011`: all 80 responses
+match exactly; OLMoE long cached median paired reduction is 27.47%, faster 5/5;
+all other cells satisfy the <=5% regression guardrail. Continuous external observation
+records no foreign CPU/CUDA interference. Portable rows are retained in
+`eval/benchmarks/cuda-kv-f16-2026-09-14.json`; original receipts remain outside Git
+under `gpu-cuda-enablement-20260914`. All earlier partial campaigns remain FAIL and
+are excluded. Settling retains up to ten unmeasured samples and requires three
+consecutive unchanged quiet observations; known external interference still invalidates
+the whole campaign. No source inspection/builds ran during accepted timing.
 
-The user renewed the merge request, asked to retry Q/K/V parallelism, and confirmed
-other development is stopped. Timing uses the revised bounded settling protocol:
-three consecutive unchanged quiet observations within ten attempts, every observation
-retained, fixed cooldown and continuous foreign-process monitoring. All earlier partial
-campaigns remain FAIL. The author suspends source inspection/builds during timing.
-First finish the F16 paired gate; then retry the deferred graph allocation/lifetime
-cause in a separate local checkpoint. PR #243 is Draft; its required hosted job and
-exact base main both timed out at 15 minutes. GitHub owns their log/evidence records.
+Initial comprehensive review `1342274` had three accepted P2 findings, consolidated
+in `be7b1f2`: explicit prefill interval, source closure and cancellation ownership.
+Conditional final review `cb59980` found first-signal interruption of normal shutdown;
+`29ee334` redesigns delivery to remain blocked through reaping. Positive and negative
+shutdown owners PASS. The new user-requested continuation redesigned boundary settling;
+a fresh comprehensive review of this settled measurement candidate remains required.
 
-The comprehensive review of `1342274` found three P2 issues, consolidated in `be7b1f2`:
-explicit prefill-position admission, executed helper source closure, and cancellation
-cleanup. Their regressions PASS. The conditional final review of `cb59980` found one
-P2: a first cancellation during normal shutdown could interrupt reaping after process
-handle release. The plan now redesigns local measurement cancellation delivery to
-remain blocked throughout inherited shutdown, including generation-error cleanup.
-Shared helpers and runtime behavior remain unchanged; the new regression signals an
-actual shutdown wait and requires worker reaping plus a failure receipt.
+Required GitHub hosted CI on PR #243 and exact base main both timed out at 15 minutes.
+The PR's last source-bundle owner passes locally; main reached a later alignpack owner.
+Logs and exact integration evidence are in the PR. Do not waive or blindly retry it:
+resolve capacity/owner cost and require a passing hosted run before merge.
 
-Current clean executable checkpoint `69dcadf` has a manifested build, passing
-measurement owner and exact-head hosted preflight. The documented fixed cooldown
-is outside timing and leaves all admission/quality/performance predicates unchanged.
-Next: publish a draft PR with verification and both review envelopes; while timing
-is blocked, do not mark it ready or merge. On a coordinated quiet window, run the
-entire campaign from frozen `69dcadf` with `cooldown-session`, require the fixed 15%
-primary floor and every guardrail plus no observed interference, record final evidence,
-run exact-head preflight and required hosted checks, then merge. QKV concurrency
-remains deferred. No unrelated original-worktree files are included.
+Next actions: record/review the qualified F16 candidate and run its final exact-head
+preflight; resolve hosted CI; retry Q/K/V allocation/lifetime in an isolated local
+checkpoint and qualify actual production concurrency before claiming enablement.
+The existing `2f1b69c` / `ae6eac7` graph checkpoints pass independent outputs but their
+production traces are single-stream because the backend rejects overlapping writes.
+Their defaults/tagging/snapshots are absent from the shipping KV diff. Keep the native
+minimal witness separate from real-model proof, and merge only qualified behavior.
 
 ## Completed capability: ALIGN-PRODUCT-CUTOVER
 

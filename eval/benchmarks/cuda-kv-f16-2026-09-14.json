@@ -1,0 +1,3357 @@
+{
+  "schema_version": 1,
+  "kind": "cuda-kv-f16-local-paired-result",
+  "date": "2026-09-14",
+  "control_commit": "4bf801112a03521bf9a1ed9a47cc45cd613cebd3",
+  "candidate_commit": "48f249bdd742792aba619198a9ff780a48a1d2af",
+  "compiler_sha256": "637644037b4d939bdd483ed3240aded64211f6ca63609f6b4eca1488650bcc8c",
+  "align_revision": "f502fe3da00ce0b39c4eeec40586b11688627fbd",
+  "bundle_id": "61d557b528275397c81f7a528140199977aa7ef4982d6ae09a90e5f67ace5965",
+  "profile_sha256": "d602f7e339f254df2c06ce6730a78439fad7a6f98c03562bcb3ad40c86a23af9",
+  "tool_sha256": "dbd9c9bb1c0e3f2f660ebc49f07e7a605c1777555cc21ea005ad5d343af71608",
+  "plan_sha256": "04f6050c76212c8158cd765816ec8a6f83e9511e967d5b6bdc6af657ff0b3957",
+  "gpu": "NVIDIA GeForce RTX 4070 Ti, GPU-89438e76-a35d-3084-f5df-ca518ef88c78, 610.62, 12282 MiB",
+  "raw_receipt_sha256": "122927b62e08f2f95dc329907ab6980b7dab6ebd1914216bacfb42f45f6c7045",
+  "external_observer_receipt_sha256": "0d41bb14030e50defc68032d492d617e97e2b138083fdceec91dd22456b9c162",
+  "external_interference": false,
+  "status": "PASS",
+  "comparisons": [
+    {
+      "model": "qwen2",
+      "case": "cold-short",
+      "paired_reductions": [
+        0.007356988040933928,
+        0.008335426027016752,
+        0.015585378373853175,
+        0.011119665486301604,
+        -0.02782701552990397
+      ],
+      "median_reduction": 0.008335426027016752,
+      "passed": true
+    },
+    {
+      "model": "qwen2",
+      "case": "warm-short-cached",
+      "paired_reductions": [
+        -0.0037868517122321265,
+        -0.0003622026745882916,
+        -0.0003760480999825986,
+        0.0051381841721902565,
+        0.004465273067919054
+      ],
+      "median_reduction": -0.0003622026745882916,
+      "passed": true
+    },
+    {
+      "model": "qwen2",
+      "case": "warm-long-changed",
+      "paired_reductions": [
+        -0.013232558309047947,
+        0.0016235778218359992,
+        0.0015145782809693536,
+        -0.00770175501753521,
+        -0.0036899552140515035
+      ],
+      "median_reduction": -0.0036899552140515035,
+      "passed": true
+    },
+    {
+      "model": "qwen2",
+      "case": "warm-long-cached",
+      "paired_reductions": [
+        -0.0018966120301252881,
+        0.00048033888720125834,
+        -0.0075144464526952824,
+        -0.002411120252295152,
+        0.0046844461777480716
+      ],
+      "median_reduction": -0.0018966120301252881,
+      "passed": true
+    },
+    {
+      "model": "olmoe",
+      "case": "cold-short",
+      "paired_reductions": [
+        0.1282701641562767,
+        0.07462242514106554,
+        0.03166111632248028,
+        0.02797789700941525,
+        0.053788921626723975
+      ],
+      "median_reduction": 0.053788921626723975,
+      "passed": true
+    },
+    {
+      "model": "olmoe",
+      "case": "warm-short-cached",
+      "paired_reductions": [
+        0.12111962652590076,
+        0.07838388447206827,
+        0.1280858124783687,
+        0.10852685351150795,
+        0.10202322997652674
+      ],
+      "median_reduction": 0.10852685351150795,
+      "passed": true
+    },
+    {
+      "model": "olmoe",
+      "case": "warm-long-changed",
+      "paired_reductions": [
+        0.2265332705477485,
+        0.1971606936841565,
+        0.2580009875993569,
+        0.17760318054346286,
+        0.24187312653465026
+      ],
+      "median_reduction": 0.2265332705477485,
+      "passed": true
+    },
+    {
+      "model": "olmoe",
+      "case": "warm-long-cached",
+      "paired_reductions": [
+        0.2775205948655622,
+        0.2524634934286288,
+        0.2746505035860021,
+        0.29385431583620925,
+        0.27059288309465174
+      ],
+      "median_reduction": 0.2746505035860021,
+      "passed": true
+    }
+  ],
+  "arms": [
+    {
+      "model": "qwen2",
+      "pair": 0,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1514705738,
+          "worker_ns": 1514319920,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1514319920,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1428869259,
+          "worker_ns": 1428562211,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1428562211,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1678954098,
+          "worker_ns": 1678570555,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1678570555,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1531071170,
+          "worker_ns": 1530729390,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1530729390,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.1549685743877707,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16996716310889076,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.13497838058023054,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1549685743877707,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2242467737,
+      "host_after": {
+        "busy_cpu_cores": 0.1249764751157515,
+        "iowait_cores": 0.0,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.2699548963409748,
+            "iowait_cores": 0.004999164747055089,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1349757743455839,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1249764751157515,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 0,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1503562066,
+          "worker_ns": 1503195174,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1503195174,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1434280175,
+          "worker_ns": 1433968835,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1433968835,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1701170956,
+          "worker_ns": 1700826399,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1700826399,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1533975018,
+          "worker_ns": 1533621108,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1533621108,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.1999726576386478,
+        "iowait_cores": 0.0,
+        "gpu": "6, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.15997724083779227,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.6498849836806063,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": false
+          },
+          {
+            "busy_cpu_cores": 0.14497726401309538,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.19496942625933986,
+            "iowait_cores": 0.004999216057931791,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1999726576386478,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2037421422,
+      "host_after": {
+        "busy_cpu_cores": 0.17997381812876226,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1299770009596112,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16996824831658244,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.17997381812876226,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 1,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1491955728,
+          "worker_ns": 1491584151,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1491584151,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1434153075,
+          "worker_ns": 1433836186,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1433836186,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1685792931,
+          "worker_ns": 1685445694,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1685445694,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1529819637,
+          "worker_ns": 1529401962,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1529401962,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.13998159417015657,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.18496935473968149,
+            "iowait_cores": 0.004999171749721121,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.18496939440900317,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.13998159417015657,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2022323300,
+      "host_after": {
+        "busy_cpu_cores": 0.17997215092952293,
+        "iowait_cores": 0.00499922641470897,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1349727108798436,
+            "iowait_cores": 0.004998989291846059,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1849696508270179,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.17997215092952293,
+            "iowait_cores": 0.00499922641470897,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 1,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1504496346,
+          "worker_ns": 1504176260,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1504176260,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1433633809,
+          "worker_ns": 1433309641,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1433309641,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1688534398,
+          "worker_ns": 1688159515,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1688159515,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1530554822,
+          "worker_ns": 1530218713,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1530218713,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.16997745283089893,
+        "iowait_cores": 0.0,
+        "gpu": "6, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.14497593008125964,
+            "iowait_cores": 0.004999170002802058,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.2149592916541332,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16997745283089893,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2043251893,
+      "host_after": {
+        "busy_cpu_cores": 0.18496608554330293,
+        "iowait_cores": 0.0,
+        "gpu": "6, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.14997947643348578,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.13997264213712468,
+            "iowait_cores": 0.004999022933468739,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.18496608554330293,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 2,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1504934525,
+          "worker_ns": 1504535877,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1504535877,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1440384887,
+          "worker_ns": 1440011064,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1440011064,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1683816566,
+          "worker_ns": 1683368081,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1683368081,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1529952748,
+          "worker_ns": 1529588763,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1529588763,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.19996412603586933,
+        "iowait_cores": 0.004999103150896733,
+        "gpu": "6, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.13497428692597752,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1449778149148938,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.19996412603586933,
+            "iowait_cores": 0.004999103150896733,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2039122170,
+      "host_after": {
+        "busy_cpu_cores": 0.15495600256741562,
+        "iowait_cores": 0.0,
+        "gpu": "6, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.169977449346667,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.149975601294347,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15495600256741562,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 2,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1481479551,
+          "worker_ns": 1481137856,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1481137856,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1440926541,
+          "worker_ns": 1440612941,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1440612941,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1681266294,
+          "worker_ns": 1680878447,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1680878447,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1541449496,
+          "worker_ns": 1541101220,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1541101220,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.16497326971105905,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.12996009991003832,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.13496741677364196,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16497326971105905,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2051587184,
+      "host_after": {
+        "busy_cpu_cores": 0.12497984949883646,
+        "iowait_cores": 0.0049991939799534585,
+        "gpu": "6, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.2049630557165844,
+            "iowait_cores": 0.0,
+            "gpu": "5, 1575, 330, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.20496617658384794,
+            "iowait_cores": 0.004999175038630438,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.12497984949883646,
+            "iowait_cores": 0.0049991939799534585,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 3,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1499923588,
+          "worker_ns": 1499604762,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1499604762,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1439688288,
+          "worker_ns": 1439292614,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1439292614,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1687139778,
+          "worker_ns": 1686796335,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1686796335,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1531171684,
+          "worker_ns": 1530856170,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1530856170,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.15497205776313153,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16497630288641027,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.13997774248900344,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15497205776313153,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2099361586,
+      "host_after": {
+        "busy_cpu_cores": 0.16497533330057412,
+        "iowait_cores": 0.004999252524259822,
+        "gpu": "6, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16497357626472622,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.17997452901477376,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16497533330057412,
+            "iowait_cores": 0.004999252524259822,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 3,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1516789783,
+          "worker_ns": 1516481875,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1516481875,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1447123877,
+          "worker_ns": 1446802380,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1446802380,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1674245152,
+          "worker_ns": 1673875142,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1673875142,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1527488725,
+          "worker_ns": 1527186346,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1527186346,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.1999644534188758,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1799731875943986,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.65990494927102,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": false
+          },
+          {
+            "busy_cpu_cores": 0.14997586243475977,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1549699781310627,
+            "iowait_cores": 0.0,
+            "gpu": "5, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1999644534188758,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2127130552,
+      "host_after": {
+        "busy_cpu_cores": 0.12997839733035485,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16997263542553265,
+            "iowait_cores": 0.00499919515957449,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1949697686700132,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.12997839733035485,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 4,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1493312711,
+          "worker_ns": 1492952809,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1492952809,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1435791474,
+          "worker_ns": 1435402410,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1435402410,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1694629511,
+          "worker_ns": 1694280314,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1694280314,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1540964871,
+          "worker_ns": 1540659275,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1540659275,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.14496984156152834,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.17997150223254216,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.14497808786681296,
+            "iowait_cores": 0.004999244409200448,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.14496984156152834,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1945351637,
+      "host_after": {
+        "busy_cpu_cores": 0.1449768395874755,
+        "iowait_cores": 0.004999201365085362,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16997196805308215,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16997789547945133,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1449768395874755,
+            "iowait_cores": 0.004999201365085362,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 4,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1534867147,
+          "worker_ns": 1534534231,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1534534231,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1429380273,
+          "worker_ns": 1429046351,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1429046351,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1700882618,
+          "worker_ns": 1700536903,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1700536903,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1533746304,
+          "worker_ns": 1533289419,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/qwen2.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1533289419,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.14497443259896972,
+        "iowait_cores": 0.0,
+        "gpu": "6, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1649667213457736,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15497865881879297,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.14497443259896972,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2071093756,
+      "host_after": {
+        "busy_cpu_cores": 0.19497016732231962,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.15996138564141757,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.5449236755380402,
+            "iowait_cores": 0.00499929977557835,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": false
+          },
+          {
+            "busy_cpu_cores": 0.11997850417119997,
+            "iowait_cores": 0.0,
+            "gpu": "3, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1549730016884864,
+            "iowait_cores": 0.0,
+            "gpu": "4, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.19497016732231962,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 0,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 571810362,
+          "worker_ns": 571425787,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 571425787,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 392826170,
+          "worker_ns": 392503511,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 392503511,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 626697993,
+          "worker_ns": 626413349,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 626413349,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 528190872,
+          "worker_ns": 527899605,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 527899605,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.16997146170660293,
+        "iowait_cores": 0.0049991606384294975,
+        "gpu": "2, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.13997621846041533,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.12997958020791667,
+            "iowait_cores": 0.0,
+            "gpu": "4, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16997146170660293,
+            "iowait_cores": 0.0049991606384294975,
+            "gpu": "2, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1623517358,
+      "host_after": {
+        "busy_cpu_cores": 0.14497784231155353,
+        "iowait_cores": 0.0,
+        "gpu": "0, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.15497159835517263,
+            "iowait_cores": 0.0,
+            "gpu": "2, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.18994226923158222,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.14497784231155353,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 0,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 498464153,
+          "worker_ns": 498161224,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 498161224,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 345247211,
+          "worker_ns": 344945431,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 344945431,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 484730047,
+          "worker_ns": 484405706,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 484405706,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 381607027,
+          "worker_ns": 381303990,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 381303990,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.12497908856136913,
+        "iowait_cores": 0.004999163542454766,
+        "gpu": "1, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.564910461974359,
+            "iowait_cores": 0.004999207628091673,
+            "gpu": "0, 1575, 225, 405",
+            "compute_processes": "",
+            "quiet": false
+          },
+          {
+            "busy_cpu_cores": 0.15997992795834284,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.11998178082656386,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.12497908856136913,
+            "iowait_cores": 0.004999163542454766,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1578814567,
+      "host_after": {
+        "busy_cpu_cores": 0.14498069719746867,
+        "iowait_cores": 0.0,
+        "gpu": "1, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1599760721388437,
+            "iowait_cores": 0.004999252254338866,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1499736673234933,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.14498069719746867,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 1,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 465606998,
+          "worker_ns": 465284447,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 465284447,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 356855638,
+          "worker_ns": 356549088,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 356549088,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 497822940,
+          "worker_ns": 497415955,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 497415955,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 403576267,
+          "worker_ns": 403272579,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 403272579,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.2949584441895936,
+        "iowait_cores": 0.0,
+        "gpu": "2, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1449730569749203,
+            "iowait_cores": 0.004999070930169666,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.18997348207662976,
+            "iowait_cores": 0.0,
+            "gpu": "2, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.2949584441895936,
+            "iowait_cores": 0.0,
+            "gpu": "2, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1674094759,
+      "host_after": {
+        "busy_cpu_cores": 0.12997964843656012,
+        "iowait_cores": 0.0,
+        "gpu": "0, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.6099023717077121,
+            "iowait_cores": 0.014997599304288001,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": false
+          },
+          {
+            "busy_cpu_cores": 0.16497262955610092,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1849730412890163,
+            "iowait_cores": 0.00499927138618963,
+            "gpu": "2, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.12997964843656012,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 1,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 503153535,
+          "worker_ns": 502814458,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 502814458,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 387206378,
+          "worker_ns": 386886679,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 386886679,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 620077936,
+          "worker_ns": 619777645,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 619777645,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 539874994,
+          "worker_ns": 539573764,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 539573764,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.12997485993763286,
+        "iowait_cores": 0.0,
+        "gpu": "0, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16497567813081246,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.17497009865997823,
+            "iowait_cores": 0.004999145675999379,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.12997485993763286,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1666687325,
+      "host_after": {
+        "busy_cpu_cores": 0.14498111947119893,
+        "iowait_cores": 0.0049993489472827226,
+        "gpu": "0, 1575, 240, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16497544546712015,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15995770638263548,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.14498111947119893,
+            "iowait_cores": 0.0049993489472827226,
+            "gpu": "0, 1575, 240, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 2,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 509491827,
+          "worker_ns": 509176415,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 509176415,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 401322426,
+          "worker_ns": 401011682,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 401011682,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 652529789,
+          "worker_ns": 652205290,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 652205290,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 533348820,
+          "worker_ns": 533047607,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 533047607,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.1599724703375831,
+        "iowait_cores": 0.0,
+        "gpu": "0, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1749732189490102,
+            "iowait_cores": 0.0,
+            "gpu": "2, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.6399013361730699,
+            "iowait_cores": 0.0,
+            "gpu": "2, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": false
+          },
+          {
+            "busy_cpu_cores": 0.12498262072916355,
+            "iowait_cores": 0.004999304829166542,
+            "gpu": "0, 1575, 255, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.174968298806281,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1599724703375831,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1602621881,
+      "host_after": {
+        "busy_cpu_cores": 0.1199837564191279,
+        "iowait_cores": 0.0,
+        "gpu": "0, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16997322581740854,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.19996647542041263,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1199837564191279,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 2,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 493360747,
+          "worker_ns": 493029940,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 493029940,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 349918717,
+          "worker_ns": 349593772,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 349593772,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 484176459,
+          "worker_ns": 483879789,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 483879789,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 386864298,
+          "worker_ns": 386568193,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 386568193,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.12997788315840583,
+        "iowait_cores": 0.0,
+        "gpu": "0, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.14497560937603246,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15997537834951098,
+            "iowait_cores": 0.0,
+            "gpu": "2, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.12997788315840583,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1669999403,
+      "host_after": {
+        "busy_cpu_cores": 0.16497782351606277,
+        "iowait_cores": 0.0,
+        "gpu": "0, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16497048908909576,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.17497468754934575,
+            "iowait_cores": 0.0,
+            "gpu": "2, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16497782351606277,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 3,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 499531356,
+          "worker_ns": 499227405,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 499227405,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 347802770,
+          "worker_ns": 347501880,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 347501880,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 516461765,
+          "worker_ns": 516145975,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 516145975,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 380845823,
+          "worker_ns": 380513771,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 380513771,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.11498322900614809,
+        "iowait_cores": 0.0,
+        "gpu": "1, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.14997476142229157,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.18497230354200003,
+            "iowait_cores": 0.004999251447081082,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.11498322900614809,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1555817038,
+      "host_after": {
+        "busy_cpu_cores": 0.129975123996054,
+        "iowait_cores": 0.0,
+        "gpu": "0, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.17997093793294774,
+            "iowait_cores": 0.00499919272035966,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16497811301360052,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.129975123996054,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 3,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 513909462,
+          "worker_ns": 513593093,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 513593093,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 390143855,
+          "worker_ns": 389836009,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 389836009,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 627995820,
+          "worker_ns": 627686270,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 627686270,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 539330384,
+          "worker_ns": 538983898,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 538983898,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.16497750078088982,
+        "iowait_cores": 0.0,
+        "gpu": "1, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1899681983737595,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.6549084889820814,
+            "iowait_cores": 0.009998602885222616,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": false
+          },
+          {
+            "busy_cpu_cores": 0.1549786027241518,
+            "iowait_cores": 0.0,
+            "gpu": "11, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": false
+          },
+          {
+            "busy_cpu_cores": 0.14997743372046726,
+            "iowait_cores": 0.004999247790682243,
+            "gpu": "1, 1575, 255, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.2049640930578704,
+            "iowait_cores": 0.004999124220923668,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16497750078088982,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1630660403,
+      "host_after": {
+        "busy_cpu_cores": 0.11498111573159005,
+        "iowait_cores": 0.0,
+        "gpu": "0, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.17997485760232218,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.11997887022116871,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.11498111573159005,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 4,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 521626836,
+          "worker_ns": 521275833,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 521275833,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 391899492,
+          "worker_ns": 391608422,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 391608422,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 633929859,
+          "worker_ns": 633623239,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 633623239,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 533573065,
+          "worker_ns": 533274075,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 533274075,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.12498162888787016,
+        "iowait_cores": 0.0,
+        "gpu": "1, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16997243021690545,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.12997856016653703,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.12498162888787016,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1577383348,
+      "host_after": {
+        "busy_cpu_cores": 0.14997293011101245,
+        "iowait_cores": 0.004999097670367081,
+        "gpu": "1, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.18997019833004186,
+            "iowait_cores": 0.004999215745527417,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1549761445221954,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.14997293011101245,
+            "iowait_cores": 0.004999097670367081,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 4,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 493569091,
+          "worker_ns": 493201318,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 493201318,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 351916640,
+          "worker_ns": 351597318,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 351597318,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 480599262,
+          "worker_ns": 480267980,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 480267980,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 389191991,
+          "worker_ns": 388874009,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "/home/hiro/.cache/align-llm/cuda-kit-28a6fe3/inputs/olmoe.gguf",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 388874009,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.13497718608852885,
+        "iowait_cores": 0.0,
+        "gpu": "0, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.15996895386526197,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16497917979247642,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 300, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.13497718608852885,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1564254245,
+      "host_after": {
+        "busy_cpu_cores": 0.1499727507759595,
+        "iowait_cores": 0.0,
+        "gpu": "0, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.15997435954953038,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.13998145196767553,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1499727507759595,
+            "iowait_cores": 0.0,
+            "gpu": "0, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    }
+  ]
+}

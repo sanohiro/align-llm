@@ -1,11 +1,13 @@
 # CUDA optimization enablement
 
-Status: implementation and correctness qualified; performance acceptance pending a quiet
-shared-host window, 2026-09-14. The user has requested implementation,
+Status: CUDA-KV-F16 correctness and local performance qualified, 2026-09-14.
+Required hosted CI and PR merge remain active. The user also requested a new Q/K/V
+parallelism investigation after this independent KV qualification. The user has requested implementation,
 verification, PR publication and merge following the completed design inspection.
 Inspection base: `4bf8011` (including dispatch optimization `5efd7a0`).
 [GPU performance](gpu-runtime-performance.md) owns the performance floors and historical evidence;
-this document owns the proposed CUDA enablement contract. No speed improvement is claimed.
+this document owns the CUDA enablement contract. The qualified local KV result is
+recorded below; it is separate from the deferred graph-concurrency experiment.
 
 ## Shipping scope after native production qualification
 
@@ -348,3 +350,38 @@ a request retry, filtered pair or changed performance floor. The continuous obse
 still invalidates the whole campaign on known foreign CPU/CUDA interference, and
 the author performs no builds/source inspection during timing. The owner self-test
 checks immediate readiness, reset after a transient, and permanent-busy exhaustion.
+
+### Accepted local F16 KV measurement
+
+The complete settled campaign on clean `48f249b` PASS against unchanged `4bf8011`.
+All 80 responses satisfy fixed quality and pairwise exact outputs/counts. The OLMoE
+long cached primary is faster in 5/5 pairs; its median paired reduction is **27.47%**,
+above the predeclared 15% floor. Every other model/case satisfies the 5% regression
+guardrail. The continuously observed campaign records no foreign CPU/CUDA interference.
+The user confirmed competing development was stopped. This remains a local WSL2
+measurement, not proof that unobservable Windows activity was absent or a competitive
+llama.cpp/coding time-to-passing-patch result.
+
+| Model / request | Control median seconds | Candidate median seconds | Median paired reduction |
+| --- | ---: | ---: | ---: |
+| Qwen / cold short | 1.504935 | 1.499924 | 0.83% |
+| Qwen / warm short cached | 1.435791 | 1.434280 | -0.04% |
+| Qwen / warm long changed | 1.683817 | 1.687140 | -0.37% |
+| Qwen / warm long cached | 1.530555 | 1.533746 | -0.19% |
+| OLMoE / cold short | 0.513909 | 0.493569 | 5.38% |
+| OLMoE / warm short cached | 0.391899 | 0.349919 | 10.85% |
+| OLMoE / warm long changed | 0.627996 | 0.484730 | 22.65% |
+| OLMoE / warm long cached | 0.533573 | 0.386864 | 27.47% |
+
+The reduction column is the median of the five paired ratios, not the ratio of
+independently computed medians. [Retained portable measurements](../../eval/benchmarks/cuda-kv-f16-2026-09-14.json)
+include each arm, output, clock, every idle observation, source/compiler/bundle/tool/plan
+identities and SHA-256 links to the original local receipt and external observer receipt.
+Only machine-specific launch paths are omitted from this report; original receipts
+remain intact under `gpu-cuda-enablement-20260914/paired-settling` and
+`settling-external-load-result.json`. Earlier failed campaigns remain separate and
+contribute no rows to the accepted result.
+
+The new settling admission was designed before this complete run. It has immediate
+quiet, transient-reset, permanent-busy and cancellation owners. A fresh comprehensive
+review of this redesigned measurement candidate is required before publication.
