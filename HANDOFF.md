@@ -4,34 +4,34 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `agent/session-persistent-buffers-zero-alloc` (based on `main` at `599296d`).
-Active capability: Decode Loop Zero-Allocation Staging & Prompt Slot Optimization.
+Active branch: `agent/buffer-fast-exponential-init-opt` (based on `main` at `b85c513`).
+Active capability: Logits and Staging Buffer Exponential Doubling Fast Initialization (`filled_buffer_u32`).
 
 Active work:
-- Preallocate and retain staging buffers (`scalar_storage`, `mask_storage`, `v_storage`) outside prefill and decode loops across `generate_qwen_mode`, `generate_olmoe_mode`, and `execute_session`.
-- Eliminate heap allocations inside `update_prompt` (pre-allocated `scalar_slot` replaces `output_image := buffer(4)`) and `update_decode` (pre-allocated `mask_slot` and `v_slot` updated in place via `write_u32_le` and sliced to `[0..mask_bytes]`, replacing heap allocations on width changes and non-fused attention).
-- Documented key Align compiler limitation: `check_call_borrow_aliases` in `crates/align_sema/src/lib.rs:35422` defeats disjoint field borrowing when fields share a struct root (`|| roots.iter().any(|root| peer_roots.contains(root))`). Slices borrowed mutably from struct fields cannot coexist with immutable struct field borrows in the same call. Staging buffers are held at the function frame to maintain disjoint roots.
+- Implemented `filled_buffer_u32(count, value)` using logarithmic exponential doubling via native `b.append(b.bytes()[0..step])` `memcpy` operations.
+- Replaced linear element-by-element zeroing/filling loops in `logits_buffer` (151,936 iterations down to 12 iterations), `create_session` empty prefix (8,192 iterations down to 6 iterations), and prefill/decode `mask_storage` and `v_storage` initializations across `generate_qwen_mode`, `generate_olmoe_mode`, and `execute_session`.
+- Added unit test `test_filled_buffer_u32` covering empty, small, doubled, and large sizes in `src/runtime_session_reuse_smoke.align`.
 - Verified 100% bit-for-bit SHA-256 output parity on Apple Silicon Metal GPU.
-- Measured latency improvements on Apple Silicon (OLMoE decode down to 16.48 ms/tok, Qwen2 decode down to 75.91 ms/tok).
-- Registered Request 67 in `docs/align-requests.md` capturing disjoint struct field borrowing aliasing conflict and aggregate slice view invalidation.
+- Measured latency improvements on Apple Silicon (OLMoE decode 16.44 ms/tok, Qwen2 decode 75.86 ms/tok).
 
 Next actions in priority order:
-1. Run publication preflight: `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
-2. Push branch `agent/session-persistent-buffers-zero-alloc`, publish English PR with review envelope and verification evidence, and merge after CI checks pass.
-3. File upstream issue on `sanohiro/align` for Request 67.
-4. Refresh `main` and start next optimization capability.
+1. Commit candidate on branch `agent/buffer-fast-exponential-init-opt`.
+2. Run independent adversarial review: `scripts/review-agy --base origin/main`.
+3. Preflight with `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
+4. Push branch `agent/buffer-fast-exponential-init-opt`, publish PR and merge.
+5. Identify next optimization capability and continue autonomous roadmap cycle.
 
 Latest durable verification:
-- `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
+- `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code, verified candidate selection, write_u32_le, and filled_buffer_u32).
 - Apple Silicon Metal GPU verification (`python3 /Users/hiro/models/measure_qwen_f16.py`): PASS.
   - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match)
-  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.48 ms/tok)
+  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.44 ms/tok)
   - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match)
-  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 75.91 ms/tok)
+  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 75.86 ms/tok)
 
 Blockers, constraints, decisions:
 - 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks.
-- Compiler root aliasing restricts struct field mutable borrowing; staging buffers cleanly decoupled to frame scope.
+- `b.append(b.bytes())` relies on `align_runtime` internal address-overlap detection to double buffer contents safely without reallocation hazards.
 
 
 ## Completed capability: latest merged Align adoption
