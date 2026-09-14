@@ -4,48 +4,35 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `main` (commit `9643d52`).
-Active capability: Transitioning to next roadmap optimization capability.
-
-Completed capability: Decode Loop Zero-Allocation Staging and Branchless Greedy Argmax Optimization:
-- PR #251 merged into `main` at `9643d52`.
-- Eliminated per-step heap buffer allocations in `update_decode` by passing a preallocated 4-byte scalar staging view (`scalar_slot: slice<u8>`) with in-place unrolled `write_u32_le`.
-- Replaced branched per-element `if col <= limit` evaluations in `update_prompt` and `update_decode` attention mask filling with split tight loops (`0..limit` for zero and `limit..width` for `-inf`).
-- Optimized `greedy` argmax loop in `src/runtime_generation.align`:
-  - Replaced separate induction variable `mut offset := 4; offset = offset + 4` with direct scaled index `i * 4` bounded by `logits.len() / 4`, enabling LLVM to coalesce `u32_le` and `f32_le` loads into a single 32-bit load with `bitcast i32 to float`.
-  - Restructured tie-breaking logic into branchless conditional selection (`value > best_value` vs `else if value == best_value && i < best`), reducing microbenchmark runtime on 151,936 logits by 84.8% (from 1,287 µs down to 196 µs per call).
-- Identified and filed upstream compiler optimization issue on `sanohiro/align#1049` (Request 66):
-  1. `align_mir::byte_ranges.rs:278` enforces `literal(op, 0)`: induction variables starting at non-zero offsets fail bounds-check elimination.
-  2. Fallible in-loop checks break dominance proofs in `byte_ranges.rs:427`.
-  3. Untracked separate induction variables prevent load coalescing and vectorization.
-  4. Lossy conversion warnings on masked byte casts `(val & 255) as u8`.
-- Verified 100% bit-for-bit SHA-256 parity on Metal GPU:
-  - OLMoE prefill: `6b86b273ff34`
-  - OLMoE decode 128: `109a6553d0bd`
-  - Qwen2 prefill: `6b86b273ff34`
-  - Qwen2 decode 128: `7913883c0e74`
-- Hardware measurement on Apple Silicon: Qwen2 decode median wall time dropped from 9923 ms to 9863 ms (76.64 ms/tok).
-- Independent adversarial review completed via `scripts/review-agy --base origin/main` (verdict FINDINGS, 5 findings resolved in `2c1f69d`).
-- Preflight (`scripts/pre-pr`) passed on `2c1f69d`.
+Active branch: `agent/session-persistent-buffers-zero-alloc` (based on `main` at `599296d`).
+Active capability: Decode Loop Zero-Allocation Staging & Prompt Slot Optimization.
 
 Active work:
-- Select and initiate next recommended roadmap runtime optimization capability.
+- Preallocate and retain staging buffers (`scalar_storage`, `mask_storage`, `v_storage`) outside prefill and decode loops across `generate_qwen_mode`, `generate_olmoe_mode`, and `execute_session`.
+- Eliminate heap allocations inside `update_prompt` (pre-allocated `scalar_slot` replaces `output_image := buffer(4)`) and `update_decode` (pre-allocated `mask_slot` and `v_slot` updated in place via `write_u32_le` and sliced to `[0..mask_bytes]`, replacing heap allocations on width changes and non-fused attention).
+- Documented key Align compiler limitation: `check_call_borrow_aliases` in `crates/align_sema/src/lib.rs:35422` defeats disjoint field borrowing when fields share a struct root (`|| roots.iter().any(|root| peer_roots.contains(root))`). Slices borrowed mutably from struct fields cannot coexist with immutable struct field borrows in the same call. Staging buffers are held at the function frame to maintain disjoint roots.
+- Verified 100% bit-for-bit SHA-256 output parity on Apple Silicon Metal GPU.
+- Measured latency improvements on Apple Silicon (OLMoE decode down to 16.48 ms/tok, Qwen2 decode down to 75.91 ms/tok).
 
 Next actions in priority order:
-1. Review roadmap and candidate runtime performance opportunities.
-2. Select next consumer-complete capability.
-3. Formulate branch and design/ledger entry.
-4. Implement, verify parity, audit compiler behavior, review, and merge.
+1. Commit candidate on branch `agent/session-persistent-buffers-zero-alloc`.
+2. Run independent adversarial review: `scripts/review-agy --base origin/main`.
+3. Preflight with `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
+4. Push, publish PR and merge.
+5. File upstream issue on `sanohiro/align` for disjoint field borrowing aliasing conflict and register Request in `docs/align-requests.md`.
+6. Proceed to next optimization capability.
 
 Latest durable verification:
-- `scripts/run-gpu-session-reuse-smoke`: PASS (including `test_candidate_selection` and `test_write_u32_le`).
-- `./scripts/bench-runtime-greedy`: PASS (~426 µs/call for 151.9k vocab).
-- `make check` (155 units per-unit): PASS.
-- Apple Silicon Metal GPU qualification on `qwen-f16-build`: PASS (100% bit-for-bit SHA-256 match, 76.64 ms/tok decode).
+- `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
+- Apple Silicon Metal GPU verification (`python3 /Users/hiro/models/measure_qwen_f16.py`): PASS.
+  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match)
+  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.48 ms/tok)
+  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match)
+  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 75.91 ms/tok)
 
 Blockers, constraints, decisions:
-- Worktree clean on `agent/decode-loop-alloc-and-greedy-branchless-opt`.
 - 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks.
+- Compiler root aliasing restricts struct field mutable borrowing; staging buffers cleanly decoupled to frame scope.
 
 
 ## Completed capability: latest merged Align adoption
