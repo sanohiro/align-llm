@@ -1,0 +1,41 @@
+module runtime_greedy_bench
+
+import runtime_generation
+import std.time
+
+fn main() -> Result<(), Error> {
+  n_vocab := 151936
+  mut buf := buffer(n_vocab * 4)
+  mut i := 0
+  loop {
+    if i >= n_vocab { break }
+    val := ((i * 17) % 1000) as f32 / 100.0
+    buf.put_f32_le(val)
+    i = i + 1
+  }
+  view := buf.bytes()
+
+  // Warmup
+  mut w := 0
+  loop {
+    if w >= 5 { break }
+    runtime_generation.greedy(view, -1)?
+    w = w + 1
+  }
+
+  // Measure 50 iterations
+  iterations := 50
+  start := time.instant()
+  mut rep := 0
+  loop {
+    if rep >= iterations { break }
+    runtime_generation.greedy(view, -1)?
+    rep = rep + 1
+  }
+  elapsed_ns := time.instant() - start
+  us_per_call := elapsed_ns / (iterations * 1000)
+  print("runtime_generation::greedy 151.9k vocab: ")
+  print(us_per_call)
+  print(" us/call")
+  return Ok(())
+}

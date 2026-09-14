@@ -88,6 +88,23 @@ Discovered during Prompt-Lookup Candidate Selection & Prefix Caching optimizatio
 4. Absence of SIMD auto-vectorization on argmax loops over vocab logits due to early return checks.
 Full disassembly trace and proposed lowerings published on [sanohiro/align#1048](https://github.com/sanohiro/align/issues/1048).
 
+### Request 66: induction variable recurrence flexibility and fallible loop dominance in byte_ranges (2026-09-14)
+
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none; application code works around using zero-based induction scaling and inlined bitcasts
+Independent work that may continue: attention tile alignment, memory reservation optimization
+Resume condition: upstream design closure and implementation on issue
+Align commit or pull request: pending issue
+align-llm verification: native Apple Silicon / Metal benchmark suite, runtime session reuse smoke, and bench-runtime-greedy
+
+Discovered during Decode Loop Allocation & Branchless Greedy Argmax optimization:
+1. Hardcoded zero-based induction requirement in `align_mir::byte_ranges.rs:278`: the loop recurrence analysis enforces `literal(op, 0)`. Loops with induction variables starting at non-zero offsets (such as `mut token := 1` or `mut i := start`) fail the check, causing the compiler to abort bounds check elimination and emit runtime bounds checking branches (`align_rt_range_fail`) for every iteration.
+2. In-loop fallible checks break dominance proofs: in `align_mir::byte_ranges.rs:427`, `arm_dominates(header.id, take_true, block)` fails whenever the loop body contains an early exit or fallible return statement (such as NaN validation `if (bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }`). Safe reads following the check cannot have their range checks eliminated, retaining dead error branches and disabling loop auto-vectorization.
+3. Untracked separate induction variables: idiomatic code incrementing a byte offset alongside the loop counter (`mut offset := 4; offset = offset + 4`) is not recognized as a scaled recurrence of the primary induction variable, forcing independent bounds checks and preventing LLVM from coalescing multiple typed reads (`u32_le` and `f32_le`) at the same memory location into a single load and bitcast.
+4. Lossy conversion warnings on masked byte casts: Align emits `warning: lossy conversion: u32 as u8 truncates the high bits` on expressions like `(val & 255) as u8` because `& 255` retains type `u32`, despite the upper 24 bits being provably zero.
+
 ### Issue 1043 composed-loop follow-up design (2026-09-14)
 
 Status: IMPLEMENTING; design recorded here now has provider implementation

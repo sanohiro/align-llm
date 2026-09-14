@@ -583,7 +583,7 @@ fn update_prompt(
   return runtime_inputs.update(owner, 6, 0, output_view)
 }
 
-fn write_u32_le(borrow mut dest: slice<u8>, base: i64, value: u32) {
+pub fn write_u32_le(borrow mut dest: slice<u8>, base: i64, value: u32) {
   dest[base] = (value & 255) as u8
   dest[base + 1] = ((value >> 8) & 255) as u8
   dest[base + 2] = ((value >> 16) & 255) as u8
@@ -601,7 +601,7 @@ fn update_decode(
   width_changed: bool,
   borrow mut scalar_slot: slice<u8>,
 ) -> Result<(), Error> {
-  if scalar_slot.len() < 4 { return Err(Error.Invalid) }
+  if scalar_slot.len() != 4 { return Err(Error.Invalid) }
   write_u32_le(scalar_slot, 0, token as u32)
   runtime_inputs.update(owner, 3, 0, scalar_slot)?
   write_u32_le(scalar_slot, 0, n_past as u32)
@@ -645,11 +645,6 @@ fn update_decode(
     runtime_inputs.update(owner, 6, 0, scalar_slot)?
   }
   return Ok(())
-}
-
-fn finite_f32(borrow logits: slice<u8>, offset: i64) -> bool {
-  bits := logits.u32_le(offset)
-  return (bits & 2139095040) != 2139095040
 }
 
 pub fn prompt_lookup_candidate(borrow prompt_ids: array<i64>, current_token: i64) -> i64 {

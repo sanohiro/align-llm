@@ -18,24 +18,35 @@ Complete work:
   2. Fallible in-loop checks (e.g. `if !finite_f32(...) return Err(...)`) break `arm_dominates` in `byte_ranges.rs:427`, completely disabling bounds check elimination for subsequent reads in the loop body.
   3. Separate induction variables (`mut offset := 4; offset = offset + 4`) are not recognized as scaled recurrences of the loop counter, preventing load merging and retaining redundant range checks.
   4. Lossy conversion warnings on masked byte casts: `(val & 255) as u8` generates spurious compiler warnings because `& 255` is typed as `u32`.
+- Registered Request 66 in `docs/align-requests.md` with complete metadata.
 - Verified 100% bit-for-bit SHA-256 parity on Metal GPU:
   - OLMoE prefill: `6b86b273ff34`
   - OLMoE decode 128: `109a6553d0bd`
   - Qwen2 prefill: `6b86b273ff34`
   - Qwen2 decode 128: `7913883c0e74`
 - Hardware measurement on Apple Silicon: Qwen2 decode median wall time dropped from 9923 ms to 9863 ms (76.64 ms/tok).
+- Independent adversarial review completed via `scripts/review-agy --base origin/main` (verdict FINDINGS, exit 2).
+- Resolved all 5 review findings:
+  1. Finding 1 [CRITICAL]: Fixed `scalar_slot.len() != 4` strict length validation in `update_decode` to prevent memory/mask corruption.
+  2. Finding 2 [MEDIUM]: Added reproducible benchmark harness `src/runtime_greedy_bench.align` and `scripts/bench-runtime-greedy`.
+  3. Finding 3 [MEDIUM]: Registered Request 66 in `docs/align-requests.md`.
+  4. Finding 4 [LOW]: Removed dead private `finite_f32` from `src/runtime_generation.align`.
+  5. Finding 5 [LOW]: Added little-endian unit tests for `write_u32_le` in `src/runtime_session_reuse_smoke.align`.
 
 Active work:
-- Preflight (`scripts/pre-pr`), independent review (`scripts/review-agy`), PR publication & merge, and upstream issue filing on `sanohiro/align`.
+- Final preflight (`scripts/pre-pr`), PR publication & merge, upstream issue filing on `sanohiro/align`, and moving to next optimization.
 
 Next actions in priority order:
-1. Run preflight: `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
-2. Run independent adversarial review: `scripts/review-agy --base origin/main`.
-3. Resolve review findings, commit repairs, publish PR and merge.
-4. File upstream issue on `sanohiro/align` and register Request 66 in `docs/align-requests.md`.
+1. Commit consolidated repairs.
+2. Run preflight: `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
+3. Push branch and publish PR with review envelope and verification evidence.
+4. Merge PR into `main`.
+5. File upstream issue on `sanohiro/align` for Request 66.
+6. Advance to the next recommended roadmap optimization capability.
 
 Latest durable verification:
-- `scripts/run-gpu-session-reuse-smoke`: PASS (including 5 unit/regression cases in `test_candidate_selection`).
+- `scripts/run-gpu-session-reuse-smoke`: PASS (including `test_candidate_selection` and `test_write_u32_le`).
+- `./scripts/bench-runtime-greedy`: PASS (~426 µs/call for 151.9k vocab).
 - `make check` (155 units per-unit): PASS.
 - Apple Silicon Metal GPU qualification on `qwen-f16-build`: PASS (100% bit-for-bit SHA-256 match, 76.64 ms/tok decode).
 
