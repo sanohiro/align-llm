@@ -30,25 +30,25 @@ pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Select
   if logits.len() < 4 || logits.len() % 4 != 0 { return Err(Error.Invalid) }
   token_count := logits.len() / 4
   mut ids_builder: array_builder<i64> := array_builder()
-  mut values_builder: array_builder<f64> := array_builder()
+  mut values_builder: array_builder<f32> := array_builder()
   mut slot := 0
   loop {
     if slot >= TOP_K { break }
     ids_builder.push(-1)
-    values_builder.push(0.0)
+    values_builder.push(0.0 as f32)
     slot = slot + 1
   }
   mut ids := ids_builder.build()
   mut values := values_builder.build()
   mut count := 0
   mut token := 0
-  mut threshold := -1.0e38
+  mut threshold := -1.0e38 as f32
   mut threshold_id := 9223372036854775807
   loop {
     if token >= token_count { break }
     offset := token * 4
     if !finite_f32(logits, offset) { return Err(Error.Invalid) }
-    value := logits.f32_le(offset) as f64
+    value := logits.f32_le(offset)
     admit := count < TOP_K || value > threshold || (value == threshold && token < threshold_id)
     if admit {
       mut insertion := count
@@ -82,13 +82,13 @@ pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Select
   }
   if count < 1 { return Err(Error.Invalid) }
 
-  maximum := values[0]
+  maximum := values[0] as f64
   mut raw_builder: array_builder<f64> := array_builder()
   mut raw_total := 0.0
   mut raw_at := 0
   loop {
     if raw_at >= count { break }
-    weight := E.pow(values[raw_at] - maximum)
+    weight := E.pow((values[raw_at] as f64) - maximum)
     raw_builder.push(weight)
     raw_total = raw_total + weight
     raw_at = raw_at + 1
@@ -123,7 +123,7 @@ pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Select
   mut weight_at := 0
   loop {
     if weight_at >= min_p_count { break }
-    relative := E.pow((values[weight_at] - maximum) / TEMPERATURE)
+    relative := E.pow(((values[weight_at] as f64) - maximum) / TEMPERATURE)
     quantized := (relative * (WEIGHT_SCALE as f64)).round() as i64
     if quantized < 1 { return Err(Error.Invalid) }
     quantized_builder.push(quantized)

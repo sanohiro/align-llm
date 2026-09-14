@@ -4,35 +4,39 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `agent/prompt-staging-zero-alloc-opt` (based on `main` at `40c80d1`).
-Active capability: Prompt Chunk Zero-Allocation Staging & Greedy Loop Bound Optimization.
+Active branch: `agent/fast-sampling-filter-opt` (based on `main` at `fc5b648`).
+Active capability: Fast Sampling Single-Precision Filter & Decode Prefix / Input Staging Optimization.
 
 Active work:
-- Converted `update_prompt` to use borrowed preallocated staging buffers (`token_slot`, `position_slot`, `mask_slot`, `scalar_slot`), completely eliminating all per-chunk heap buffer allocations during prompt prefill across `generate_qwen_mode`, `generate_olmoe_mode`, and `execute_session`.
-- Optimized `update_prompt` row/column offsets to sequentially increment column byte offsets (`col_offset = col_offset + 4`) and write little-endian values in-place via `write_u32_le`, eliminating 262,144 integer multiplications per 128-token chunk.
-- Updated `slot_buffer()` to initialize with `filled_buffer_u32(SLOT_BYTES / 4, 0 as u32)` rather than element-by-element loops.
-- Optimized `greedy` loop termination to evaluate against precomputed `n_vocab` instead of repeating `logits.len() / 4` 151,936 times, and hoisted `offset := i * 4`.
+- Converted `runtime_sampler.select` candidate values storage from `array<f64>` to `array<f32>` and threshold to `f32`, eliminating 152,064 float conversions (`f32 -> f64`) per vocabulary step; measured standalone speedup from 553 us down to 246 us per call (2.25x faster).
+- Optimized `update_decode` lane and mask column loop offsets using sequential addition (`v_offset = v_offset + 4`, `col_offset = col_offset + 4`) rather than per-iteration multiplication.
+- Hoisted index comparison before float equality in `greedy` tie-breaker (`i < best && value == best_value`) to skip redundant float comparisons on 99.99% of iterations.
+- Optimized `prefix_length` using sequential byte offsets (`offset = offset + 8`).
+- Split `publish_prefix` single loop into two branchless sequential loops (prompt loop + generated loop) with sequential `offset = offset + 8` writes.
+- Filed upstream Issue #1052 on `sanohiro/align` for float inspection and bitcast intrinsics (`f32.to_bits`, `f64.to_bits`, `f32.is_finite`, `f32.is_nan`), registered Request 69 in `docs/align-requests.md`.
 - Verified 100% bit-for-bit SHA-256 output parity on Apple Silicon Metal GPU.
 
 Next actions in priority order:
-1. Run `make fmt` on modified Align source.
-2. Commit candidate on branch `agent/prompt-staging-zero-alloc-opt`.
-3. Run independent adversarial review: `scripts/review-agy --base origin/main`.
-4. Preflight with `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
-5. Push branch `agent/prompt-staging-zero-alloc-opt`, publish PR and merge.
-6. Continue autonomous roadmap cycle for next optimization capability.
+1. Commit candidate on branch `agent/fast-sampling-filter-opt`.
+2. Run independent adversarial review: `scripts/review-agy --base origin/main`.
+3. Preflight with `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
+4. Push branch `agent/fast-sampling-filter-opt`, publish PR and merge.
+5. Continue autonomous roadmap cycle for next optimization capability.
 
 Latest durable verification:
+- `make check`: PASS (155 units per-unit).
+- `make fmt`: PASS.
+- `scripts/run-runtime-provider-smoke`: PASS.
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
 - Apple Silicon Metal GPU verification (`python3 /Users/hiro/models/measure_qwen_f16.py`): PASS.
   - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match)
-  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match)
+  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.33 ms/tok)
   - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match)
-  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match)
+  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 77.11 ms/tok)
 
 Blockers, constraints, decisions:
 - 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks.
-- Prompt chunk staging buffers are sized to `chunk_width` (tokens/positions) and `chunk_width * context_length * 4` (causal mask) and preallocated at frame level to avoid compiler borrow aliasing hazards.
+- Candidate storage in `runtime_sampler.select` kept in `f32` during candidate top-k insertion; only top-k candidates are converted to `f64` for softmax and min-p filtering.
 
 
 ## Completed capability: latest merged Align adoption
