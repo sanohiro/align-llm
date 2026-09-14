@@ -57,6 +57,27 @@ pub fn main() -> Result<(), Error> {
     return Err(Error.Invalid)
   }
 
+  // Eviction and replacement test: 80 tokens with strictly ascending logits.
+  // Tokens 0..39 (logits 0..39) initially fill top-k.
+  // Tokens 40..79 (logits 40..79) sequentially exceed threshold and evict tokens 0..39.
+  // Final retained top-40 must be exactly tokens 40..79, with top token 79.
+  mut ascending_builder: array_builder<f64> := array_builder()
+  mut asc_i := 0
+  loop {
+    if asc_i >= 80 { break }
+    ascending_builder.push(asc_i as f64)
+    asc_i = asc_i + 1
+  }
+  ascending_values := ascending_builder.build()
+  ascending_values_view := ascending_values[0..ascending_values.len()]
+  ascending_logits := logits(ascending_values_view)
+  ascending_view := ascending_logits.bytes()
+  mut asc_rng := rand.seed_with(3)
+  asc_sel := runtime_sampler.select(ascending_view, asc_rng)?
+  if asc_sel.top_k_count != 40 || asc_sel.top_token_id != 79 || asc_sel.token_id < 40 {
+    return Err(Error.Invalid)
+  }
+
   mut twenty_builder: array_builder<f64> := array_builder()
   mut equal_at := 0
   loop {
