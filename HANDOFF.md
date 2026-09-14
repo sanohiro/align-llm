@@ -4,34 +4,35 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `agent/buffer-fast-exponential-init-opt` (based on `main` at `b85c513`).
-Active capability: Logits and Staging Buffer Exponential Doubling Fast Initialization (`filled_buffer_u32`).
+Active branch: `agent/prompt-staging-zero-alloc-opt` (based on `main` at `40c80d1`).
+Active capability: Prompt Chunk Zero-Allocation Staging & Greedy Loop Bound Optimization.
 
 Active work:
-- Implemented `filled_buffer_u32(count, value)` using logarithmic exponential doubling via native `b.append(b.bytes()[0..step])` `memcpy` operations.
-- Replaced linear element-by-element zeroing/filling loops in `logits_buffer` (151,936 iterations down to 12 iterations), `create_session` empty prefix (8,192 iterations down to 6 iterations), and prefill/decode `mask_storage` and `v_storage` initializations across `generate_qwen_mode`, `generate_olmoe_mode`, and `execute_session`.
-- Added unit test `test_filled_buffer_u32` covering empty, small, doubled, and large sizes in `src/runtime_session_reuse_smoke.align`.
+- Converted `update_prompt` to use borrowed preallocated staging buffers (`token_slot`, `position_slot`, `mask_slot`, `scalar_slot`), completely eliminating all per-chunk heap buffer allocations during prompt prefill across `generate_qwen_mode`, `generate_olmoe_mode`, and `execute_session`.
+- Optimized `update_prompt` row/column offsets to sequentially increment column byte offsets (`col_offset = col_offset + 4`) and write little-endian values in-place via `write_u32_le`, eliminating 262,144 integer multiplications per 128-token chunk.
+- Updated `slot_buffer()` to initialize with `filled_buffer_u32(SLOT_BYTES / 4, 0 as u32)` rather than element-by-element loops.
+- Optimized `greedy` loop termination to evaluate against precomputed `n_vocab` instead of repeating `logits.len() / 4` 151,936 times, and hoisted `offset := i * 4`.
 - Verified 100% bit-for-bit SHA-256 output parity on Apple Silicon Metal GPU.
-- Measured latency improvements on Apple Silicon (OLMoE decode 16.44 ms/tok, Qwen2 decode 75.86 ms/tok).
 
 Next actions in priority order:
-1. Commit candidate on branch `agent/buffer-fast-exponential-init-opt`.
-2. Run independent adversarial review: `scripts/review-agy --base origin/main`.
-3. Preflight with `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
-4. Push branch `agent/buffer-fast-exponential-init-opt`, publish PR and merge.
-5. Identify next optimization capability and continue autonomous roadmap cycle.
+1. Run `make fmt` on modified Align source.
+2. Commit candidate on branch `agent/prompt-staging-zero-alloc-opt`.
+3. Run independent adversarial review: `scripts/review-agy --base origin/main`.
+4. Preflight with `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
+5. Push branch `agent/prompt-staging-zero-alloc-opt`, publish PR and merge.
+6. Continue autonomous roadmap cycle for next optimization capability.
 
 Latest durable verification:
-- `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code, verified candidate selection, write_u32_le, and filled_buffer_u32).
+- `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
 - Apple Silicon Metal GPU verification (`python3 /Users/hiro/models/measure_qwen_f16.py`): PASS.
   - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match)
-  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.44 ms/tok)
+  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match)
   - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match)
-  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 75.86 ms/tok)
+  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match)
 
 Blockers, constraints, decisions:
 - 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks.
-- `b.append(b.bytes())` relies on `align_runtime` internal address-overlap detection to double buffer contents safely without reallocation hazards.
+- Prompt chunk staging buffers are sized to `chunk_width` (tokens/positions) and `chunk_width * context_length * 4` (causal mask) and preallocated at frame level to avoid compiler borrow aliasing hazards.
 
 
 ## Completed capability: latest merged Align adoption
