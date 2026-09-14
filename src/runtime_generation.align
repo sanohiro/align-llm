@@ -622,11 +622,13 @@ fn update_decode(
   runtime_inputs.update(owner, 4, 0, scalar_slot)?
   if !runtime_attention.fused(owner) {
     mut lane := 0
+    mut v_offset := 0
     loop {
       if lane >= v_lanes { break }
       index := checked_add(checked_mul(lane, capacity)?, n_past)?
       if index > 2147483647 { return Err(Error.Invalid) }
-      write_u32_le(v_slot, lane * 4, index as u32)
+      write_u32_le(v_slot, v_offset, index as u32)
+      v_offset = v_offset + 4
       lane = lane + 1
     }
     runtime_inputs.update(owner, 7, 0, v_slot)?
@@ -634,14 +636,17 @@ fn update_decode(
   if width_changed {
     limit := if n_past + 1 < current_width { n_past + 1 } else { current_width }
     mut col := 0
+    mut col_offset := 0
     loop {
       if col >= limit { break }
-      write_u32_le(mask_slot, col * 4, 0 as u32)
+      write_u32_le(mask_slot, col_offset, 0 as u32)
+      col_offset = col_offset + 4
       col = col + 1
     }
     loop {
       if col >= current_width { break }
-      write_u32_le(mask_slot, col * 4, MASK_NEG_INFINITY_BITS as u32)
+      write_u32_le(mask_slot, col_offset, MASK_NEG_INFINITY_BITS as u32)
+      col_offset = col_offset + 4
       col = col + 1
     }
     mask_view := mask_slot[0..mask_bytes]
@@ -698,7 +703,7 @@ pub fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
     if value > best_value {
       best = i
       best_value = value
-    } else if value == best_value && i < best {
+    } else if i < best && value == best_value {
       best = i
     }
     i = i + 1
@@ -1294,9 +1299,11 @@ pub fn create_session(owner: ggml_ffi.GpuDevice, options: runtime_options.Runtim
 fn prefix_length(borrow session: Session, borrow prompt: array<i64>) -> i64 {
   old := session.prefix.bytes()
   mut count := 0
+  mut offset := 0
   loop {
     if count >= session.prefix_count || count >= prompt.len() - 1 { break }
-    if old.i64_le(count * 8) != prompt[count] { break }
+    if old.i64_le(offset) != prompt[count] { break }
+    offset = offset + 8
     count = count + 1
   }
   return count
@@ -1467,13 +1474,21 @@ fn write_i64_le(borrow mut dest: slice<u8>, base: i64, value: i64) {
 fn publish_prefix(borrow mut session: Session, borrow prompt_ids: array<i64>,
   borrow ids: array<i64>) {
   mut destination := session.prefix.bytes()
-  total := prompt_ids.len() + ids.len() - 1
+  mut offset := 0
   mut at := 0
   loop {
-    if at >= total { break }
-    value := if at < prompt_ids.len() { prompt_ids[at] } else { ids[at - prompt_ids.len()] }
-    write_i64_le(destination, at * 8, value)
+    if at >= prompt_ids.len() { break }
+    write_i64_le(destination, offset, prompt_ids[at])
+    offset = offset + 8
     at = at + 1
   }
-  session.prefix_count = total
+  mut gen_at := 0
+  gen_limit := ids.len() - 1
+  loop {
+    if gen_at >= gen_limit { break }
+    write_i64_le(destination, offset, ids[gen_at])
+    offset = offset + 8
+    gen_at = gen_at + 1
+  }
+  session.prefix_count = prompt_ids.len() + gen_limit
 }

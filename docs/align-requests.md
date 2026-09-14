@@ -153,6 +153,29 @@ Discovered during Fast Buffer Initialization Optimization (`filled_buffer_u32`):
    - `slice<u8>.fill(byte: u8)`: in-place fill of an existing mutable slice via `memset`.
    - `slice<u8>.copy_from(borrow src: slice<u8>) -> Result<(), Error>`: in-place slice copy via `llvm.memcpy` / `copy_from_slice`.
 
+### Request 69: IEEE 754 float inspection and bitcast intrinsics (f32.to_bits, f64.to_bits, f32.is_finite, f32.is_nan) (2026-09-15)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; application works around missing bitcast/classification via manual byte slice reading
+Independent work that may continue: runtime generation, sampling, model IR, benchmarks
+Resume condition: upstream design closure and implementation on issue
+Align commit or pull request: [sanohiro/align#1052](https://github.com/sanohiro/align/issues/1052)
+align-llm verification: scripts/run-runtime-provider-smoke, python3 /Users/hiro/models/measure_qwen_f16.py
+
+Discovered during Fast Sampling Single-Precision Filter Optimization:
+1. Align language and standard library lack methods or intrinsics to inspect floating-point numbers:
+   - No `x.to_bits() -> u32` or `x.to_bits() -> u64`
+   - No `x.is_finite() -> bool`, `x.is_nan() -> bool`, `x.is_infinite() -> bool`
+2. In `align_codegen_llvm/src/runtime_abi.rs` (lines 2339-2350) and `align_runtime/src/lib.rs` (lines 191-205), `align_rt_f32_to_bits` and `align_rt_f64_to_bits` are defined in the runtime C ABI, but are never registered in `align_sema` as language methods on `f32` / `f64`.
+3. Because floats cannot be bitcast or checked for finiteness in registers, client code in `align-llm` (`src/runtime_generation.align`, `src/runtime_sampler.align`) must read the same 4-byte memory location from a `slice<u8>` twice: once via `u32_le` to mask against `0x7f800000`, and once via `f32_le` to obtain the float, issuing 304,128 unaligned loads per 152k vocabulary step.
+4. Proposed native primitives:
+   - `f32.to_bits() -> u32` / `f64.to_bits() -> u64`: zero-cost LLVM `bitcast float %val to i32`.
+   - `f32.is_finite() -> bool` / `f64.is_finite() -> bool`: LLVM `llvm.is.fpclass` or inline bitmask test.
+   - `f32.is_nan() -> bool` / `f64.is_nan() -> bool`.
+   - `f32.is_infinite() -> bool` / `f64.is_infinite() -> bool`.
+
 ### Issue 1043 composed-loop follow-up design (2026-09-14)
 
 Status: IMPLEMENTING; design recorded here now has provider implementation
