@@ -2,7 +2,28 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active capability: qualified CUDA F16 KV publication
+## Active capability: latest merged Align adoption
+
+Branch `agent/align-latest-adoption`, initially based on CUDA candidate `eaff971`.
+The user requested the latest Align pin after CUDA completion. CUDA PR #243 remains
+under required hosted checks; publish this follow-up only after its merge.
+
+Adopt merged Align `21d0cf27fb92166370b2705d5c366c2b269d17a3` (#1042), replacing
+`f502fe3da00ce0b39c4eeec40586b11688627fbd`. The source delta includes bounded byte
+storage / direct sequential chunks, writable/native byte-view fixes, codec and SSE
+view invalidation, computed fixed-array field borrows and active-checkout runtime
+build inputs. It introduces no new client API. Managed release materialization PASS.
+Keep the original checkout's unrelated `docs/align-requests.md` and sibling Align's
+unrelated deleted `.codex/config.toml` untouched.
+
+Next: product source check, existing cutover adoption owner, freshly manifested CUDA
+session build and independent 7 Qwen / 9 OLMoE outputs; then one comprehensive review,
+pin-scope exact-head preflight, required hosted CI and merge. No new performance claim
+or native platform qualification is selected by this pin alone. The old-pin CUDA
+27.47% measurement remains historical; this adoption must establish its own correctness.
+R86's optional move-after-use residual remains recorded and is not closed by a pin update.
+
+## CUDA F16 KV checkpoint
 
 Branch `agent/cuda-optimization-enablement`, PR #243. CI prerequisite #244 is merged
 at `810a456`; its hosted and both installed-profile checks pass. Managed Align pin
