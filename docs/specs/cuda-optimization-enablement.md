@@ -1,6 +1,7 @@
 # CUDA optimization enablement
 
-Status: implementation authorized, 2026-09-14. The user has requested implementation,
+Status: implementation and correctness qualified; performance acceptance pending a quiet
+shared-host window, 2026-09-14. The user has requested implementation,
 verification, PR publication and merge following the completed design inspection.
 Inspection base: `4bf8011` (including dispatch optimization `5efd7a0`).
 [GPU performance](gpu-runtime-performance.md) owns the performance floors and historical evidence;
@@ -194,8 +195,8 @@ measurement role only, with the required boundary-audit update/check if changed.
 
 This local test establishes neither a competitive llama.cpp win nor time to a passing patch.
 Those require separately frozen baselines and the performance plan's coding-quality gate.
-At this checkpoint, all implementation, trace and runtime/performance acceptance cells are
-NOT_RUN. The next action is the clean CUDA control qualification, not an environment-only release.
+The original design checkpoint marked acceptance NOT_RUN. The current evidence and
+remaining performance gate are recorded below; design intent alone is not acceptance.
 
 ### Local paired measurement owner
 
@@ -287,3 +288,44 @@ every two-second boundary observation, both before and after every arm. Cooldown
 outside all measured clocks and identical for both arms/models. Keep idle predicates,
 workload, paired order, floors and exact-output checks unchanged; no selective retry
 of an arm or timing-based sample deletion is allowed.
+
+### Qualified implementation and pending timing checkpoint
+
+The final product/runtime source is unchanged since `be7b1f2`. Exact manifested
+source maps for that independently qualified build and `69dcadf` differ only in
+`scripts/measure-cuda-optimization`; compiler identity is identical. Later changes
+are confined to measurement cancellation/admission/cooldown and documentation.
+
+| Applicable closure / owner command | Evidence / disposition |
+| --- | --- |
+| Real CUDA F16 writes, rounding, prefix/tail/padding, malformed/stale inputs, metadata exhaustion; `scripts/run-gpu-attention-policy-smoke GGML_SOURCE CORE_LIB BACKEND_PLUGIN` | PASS; native retained-half and typed supported/allocation/stub probe owners. The fixed CUDA analytic envelope above does not weaken old/new byte equality. |
+| Explicit prefill interval; `scripts/run-cuda-kv-prefill-smoke` | PASS; removing wrapper admission makes the malformed-position regression fail. |
+| Serial success/failure/reuse; `scripts/run-gpu-session-reuse-smoke` | PASS. |
+| Exact independent outputs/counts; `scripts/run-gpu-session-independent --profile PROFILE --runtime SESSION/main --reference REFERENCE/session-reference --output NEW_DIRECTORY` | PASS on repaired `be7b1f2`: 7 Qwen and 9 OLMoE requests, including changed/cached prefixes and seeded repeat. |
+| Allocation/cleanup/budget; `scripts/run-gpu-session-host-capacity --profile PROFILE --candidate SESSION --align-source PINNED_ALIGN_SOURCE --output NEW_DIRECTORY` | PASS on repaired `be7b1f2`; Qwen reserved 371,563,528 plus native peak 18,247,871 bytes; OLMoE reserved 324,012,896 plus native peak 17,974,079 bytes. Both sums fit the 1 GiB timing host limit. |
+| Unchanged device/recipe seam; `scripts/run-gpu-device-smoke` and `scripts/run-gpu-backend-recipe-smoke` with their documented operands | PASS; no backend bundle or compiler pin change. |
+| Source/refusal/cancellation and paired decisions; `scripts/measure-cuda-optimization --self-test` | PASS, including cancellation during generation, log ownership and actual shutdown wait. Removing shutdown deferral fails with a live worker; fixture cleanup then terminates it. |
+| Python classification; `python3 scripts/check-python-boundary --strict` | PASS: 273 Python files, 83 embedded hosts, 157 product modules, zero frozen debts. |
+| Publication; `python3 scripts/pre-pr --owner-test cuda-measurement -- scripts/measure-cuda-optimization --self-test` | PASS on `69dcadf` (hosted scope); every later HEAD requires its own final stamp. |
+| Performance / shared host | INCOMPLETE. Both partial campaigns are FAIL and unusable for a speed claim. |
+| Graph-specific shared-path, events/streams and Metal qualification | Deferred with graph enablement; final KV-only scope does not change those owners. |
+
+The cooldown campaign stopped before Qwen pair 5 with GPU utilization 22%, memory
+1699 MiB and clocks 210/405 MHz. No foreign Linux CPU/CUDA process was observed, but
+this does not exclude Windows host graphics activity. Keep the idle gate unchanged.
+Resume only in a coordinated quiet window; rerun the entire fixed campaign, require
+all paired comparisons plus continuous external observation, then decide shipping.
+No merge or speed improvement is established at this checkpoint.
+
+Retained evidence root is `gpu-cuda-enablement-20260914` outside Git. SHA-256 receipts:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `final-v2-independent/result.json` | `508ce283fd00596073edf77edc3321fcbe2f50f239161f21e5964f469798952d` |
+| `final-v2-host/result.json` | `90830d8dbac6ecedd4af01a711a5058b7a19c6c349e740b93a1a64b33c5e3b24` |
+| `paired-clock-aware/result.json` (FAIL) | `c0b179877fe34c17f91956dc8efeae47b66d6764de2090de1e1cd91aa31f8a27` |
+| `paired-cooldown/result.json` (FAIL) | `fc8ecfc0d5f0ba42e5cedca64a5a137fb4f05fe9294484d703428b07f2ec7a59` |
+
+Bounded retrospective: native minimal concurrency is not production feasibility,
+and cancellation tests must reach the shutdown ownership transition. The production
+trace and focused shutdown regression cover those lessons without a new process gate.

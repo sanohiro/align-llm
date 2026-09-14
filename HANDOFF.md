@@ -26,14 +26,12 @@ F16 bytes and actual model output comparisons remain exact.
 KV-only independent sessions PASS all 16 requests; repaired `be7b1f2` independent
 sessions and host capacity also PASS. `cb59980` exact-head hosted preflight PASS.
 
-Timing is INCOMPLETE: the first clock-aware campaign stopped before OLMoE pair 2
-when memory clocks remained outside the idle envelope; no foreign interference was
-observed. Preserve the whole failed campaign. Fixed 10-second cooldown now precedes
-every unchanged boundary check; rerun all pairs. The earlier utilization-only refusal
-occurred before any worker/request. Calibration established 5-7% at 210/405 MHz without compute
-processes; the bounded clock-aware admission is documented before generated timing.
-The shared host requires 60 quiet seconds and continuous foreign-process observation;
-any interference invalidates the whole campaign. No unrelated temporary files were removed.
+Timing is BLOCKED on a coordinated shared-host quiet window. The first clock-aware
+campaign stopped before OLMoE pair 2 on unsettled memory clocks; the fixed-cooldown
+campaign stopped before Qwen pair 5 at 22% GPU utilization / 1699 MiB. Neither observer
+found foreign Linux CPU/CUDA processes; Windows host activity remains possible.
+Preserve both complete failed campaigns and rerun all pairs without relaxing gates.
+The user was asked for a roughly 15-minute quiet window. No speed claim or merge yet.
 Evidence is retained outside Git under `gpu-cuda-enablement-20260914`.
 
 The comprehensive review of `1342274` found three P2 issues, consolidated in `be7b1f2`:
@@ -45,12 +43,15 @@ remain blocked throughout inherited shutdown, including generation-error cleanup
 Shared helpers and runtime behavior remain unchanged; the new regression signals an
 actual shutdown wait and requires worker reaping plus a failure receipt.
 
-Next: verify/commit the shutdown delivery redesign, build the exact candidate, run
-exact-head preflight, then measure only after the continuous observer admits a quiet
-window. Retain F16 enablement only if the fixed 15% primary floor and all guardrails
-pass. Publish the English PR with both review envelopes and all finding dispositions,
-wait for required checks and merge. QKV concurrency remains explicitly deferred;
-Metal's shared callback/planner/topology and prefill writer are unchanged.
+Current clean executable checkpoint `69dcadf` has a manifested build, passing
+measurement owner and exact-head hosted preflight. The documented fixed cooldown
+is outside timing and leaves all admission/quality/performance predicates unchanged.
+Next: publish a draft PR with verification and both review envelopes; while timing
+is blocked, do not mark it ready or merge. On a coordinated quiet window, run the
+entire campaign from frozen `69dcadf` with `cooldown-session`, require the fixed 15%
+primary floor and every guardrail plus no observed interference, record final evidence,
+run exact-head preflight and required hosted checks, then merge. QKV concurrency
+remains deferred. No unrelated original-worktree files are included.
 
 ## Completed capability: ALIGN-PRODUCT-CUTOVER
 
