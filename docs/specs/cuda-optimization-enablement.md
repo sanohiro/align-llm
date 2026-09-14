@@ -385,3 +385,21 @@ contribute no rows to the accepted result.
 The new settling admission was designed before this complete run. It has immediate
 quiet, transient-reset, permanent-busy and cancellation owners. A fresh comprehensive
 review of this redesigned measurement candidate is required before publication.
+
+### Renewed QKV lifetime experiment (local checkpoint)
+
+The user requested another concurrency attempt after F16 qualification. Test the
+hypothesis that round-robin branch ordering still permits allocator reuse across
+asynchronous branches of unequal length. In the restored experimental CUDA path only,
+temporarily retain all decode graph tensors through graph allocation using the shipped
+OUTPUT lifetime flag, restoring every original flag before backend evaluation/fusion.
+No extra tensor output is exposed or read back. Apply the same lifetime rule to size
+measurement, reserve and allocation; keep prefill and Metal allocation unchanged.
+A bounded native scratch vector of original flags is freed on every return; its cost
+is four bytes per graph node per allocator call and must fit the existing host owner.
+
+This diagnostic checkpoint is not shipping acceptance. First run the native graph
+lifecycle owner, then a source-bound real model trace to distinguish actual parallel
+kernels from optimizer log intent. If it works, qualify allocation ceilings, all
+independent outputs and the existing graph performance floor before adoption; if it
+does not, retain the exact witness and redesign rather than widening a flag alone.

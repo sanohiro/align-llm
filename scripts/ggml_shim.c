@@ -43,6 +43,7 @@
 #include "ggml.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
+#include "../src/ggml-backend-impl.h"
 
 /* G1 linked-core observation. The executable owns immutable installed cores; the
  * plugin bundle is admitted only after Align verifies these actual loaded paths. */
@@ -1048,6 +1049,7 @@ struct align_gpu_device_state {
     int64_t staging_bytes;
     int64_t legacy_cache_bytes;
     int attention_policy;
+    int cuda_graph_optimization;
     int shape_planning;
     int64_t shape_workspace_peak;
     int memory_planned;
@@ -1074,6 +1076,8 @@ struct align_gpu_device_state {
     int inputs_failed;
     struct ggml_tensor *input_tensors[64];
     struct ggml_cgraph *workspace_graphs[ALIGN_GPU_GRAPH_KINDS];
+    struct ggml_cgraph *canonical_graphs[ALIGN_GPU_GRAPH_KINDS];
+    struct ggml_cgraph *optimized_graph;
     char graph_keys[ALIGN_GPU_GRAPH_KINDS][65];
     int graph_prepared[ALIGN_GPU_GRAPH_KINDS];
     int64_t graph_prepare_count[ALIGN_GPU_GRAPH_KINDS];
@@ -1181,6 +1185,17 @@ static void align_gpu_synchronize(struct align_gpu_device_state *state) {
 }
 
 static atomic_int align_gpu_busy = 0;
+static int align_gpu_cuda_policy = -1;
+
+/* ggml reads its opt-in once. The admitted process policy outlives individual devices. */
+static int align_gpu_cuda_policy_admit(void) {
+    const char *value = getenv("GGML_CUDA_GRAPH_OPT");
+    int mode = value == NULL ? 1 : strcmp(value, "0") == 0 ? 0 : strcmp(value, "1") == 0 ? 1 : -1;
+    if (mode < 0 || (align_gpu_cuda_policy >= 0 && mode != align_gpu_cuda_policy)) { return -1; }
+    if (value == NULL && setenv("GGML_CUDA_GRAPH_OPT", "1", 1) != 0) { return -1; }
+    align_gpu_cuda_policy = mode;
+    return mode;
+}
 static atomic_int align_gpu_registry_state = 0;
 static char align_gpu_bundle_id[65];
 static ggml_backend_reg_t align_gpu_registry = NULL;
@@ -1288,6 +1303,7 @@ int32_t align_gpu_device_open(
     size_t i = 0;
     int expected = 0;
     int registry_state = 0;
+    int cuda_policy = 0;
 
     if (output == NULL) {
         return ALIGN_GPU_CONFIG;
@@ -1318,6 +1334,13 @@ int32_t align_gpu_device_open(
     if (registry_state > 0 && memcmp(align_gpu_bundle_id, bundle_id, 65) != 0) {
         atomic_store(&align_gpu_busy, 0);
         return ALIGN_GPU_BUNDLE_SWITCH;
+    }
+    if (strcmp(backend_name, "cuda") == 0) {
+        cuda_policy = align_gpu_cuda_policy_admit();
+        if (cuda_policy < 0) {
+            atomic_store(&align_gpu_busy, 0);
+            return ALIGN_GPU_CONFIG;
+        }
     }
     if (registry_state == 0) {
         selected_registry = ggml_backend_load(backend_path);
@@ -1356,6 +1379,7 @@ int32_t align_gpu_device_open(
         return ALIGN_GPU_ALLOCATION;
     }
     state->device = selected_device;
+    state->cuda_graph_optimization = cuda_policy;
     state->backend = ggml_backend_dev_init(selected_device, NULL);
     memcpy(state->bundle_id, bundle_id, 65);
     state->host_budget_bytes = host_budget_bytes;
@@ -1576,6 +1600,8 @@ static void align_gpu_memory_release(struct align_gpu_device_state *state) {
     state->metadata_base = NULL;
     state->metadata_capacity = 0;
     state->graph_metadata_offset = 0;
+    memset(state->canonical_graphs, 0, sizeof(state->canonical_graphs));
+    state->optimized_graph = NULL;
     state->memory_allocated = 0;
 }
 
@@ -1596,6 +1622,7 @@ int32_t align_gpu_plan_finish(void *owner) {
         return ALIGN_GPU_CONFIG;
     }
     initial.attention_policy = state->attention_policy;
+    initial.cuda_graph_optimization = state->cuda_graph_optimization;
     initial.device = state->device;
     initial.backend = state->backend;
     memcpy(initial.bundle_id, state->bundle_id, sizeof(initial.bundle_id));
@@ -1617,6 +1644,7 @@ int32_t align_gpu_plan_cancel(void *owner) {
         return ALIGN_GPU_CONFIG;
     }
     initial.attention_policy = state->attention_policy;
+    initial.cuda_graph_optimization = state->cuda_graph_optimization;
     initial.device = state->device;
     initial.backend = state->backend;
     memcpy(initial.bundle_id, state->bundle_id, sizeof(initial.bundle_id));
@@ -2834,8 +2862,43 @@ static int align_gpu_topology_key_ok(const void *key, int64_t length) {
     return 1;
 }
 
+/* Decode concurrency needs disjoint live temporaries even for unequal branch lengths.
+ * Retain allocator lifetimes only; restore flags before backend fusion/evaluation. */
+static int align_gpu_graph_retain(struct ggml_cgraph *graph, int retain, int32_t **saved) {
+    int n = ggml_graph_n_nodes(graph);
+    *saved = NULL;
+    if (!retain || n == 0) { return 1; }
+    if (n < 0 || (size_t) n > SIZE_MAX / sizeof(**saved)) { return 0; }
+    *saved = malloc((size_t) n * sizeof(**saved));
+    if (*saved == NULL) { return 0; }
+    for (int i = 0; i < n; ++i) {
+        struct ggml_tensor *node = ggml_graph_node(graph, i);
+        (*saved)[i] = node->flags;
+        ggml_set_output(node);
+    }
+    return 1;
+}
+
+static void align_gpu_graph_release(struct ggml_cgraph *graph, int32_t *saved) {
+    if (saved == NULL) { return; }
+    for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
+        ggml_graph_node(graph, i)->flags = saved[i];
+    }
+    free(saved);
+}
+
+static int align_gpu_graph_allocate(ggml_gallocr_t allocator, struct ggml_cgraph *graph,
+                                    int retain, int reserve) {
+    int32_t *saved = NULL;
+    int ok = 0;
+    if (!align_gpu_graph_retain(graph, retain, &saved)) { return 0; }
+    ok = reserve ? ggml_gallocr_reserve(allocator, graph) : ggml_gallocr_alloc_graph(allocator, graph);
+    align_gpu_graph_release(graph, saved);
+    return ok;
+}
+
 static int align_gpu_graph_required(
-        ggml_backend_buffer_type_t buft, struct ggml_cgraph *graph, size_t *required) {
+        ggml_backend_buffer_type_t buft, struct ggml_cgraph *graph, size_t *required, int retain) {
     ggml_gallocr_t measure = NULL;
     if (buft == NULL || graph == NULL || required == NULL) {
         return 0;
@@ -2844,9 +2907,15 @@ static int align_gpu_graph_required(
     if (measure == NULL) {
         return 0;
     }
+    int32_t *saved = NULL;
+    if (!align_gpu_graph_retain(graph, retain, &saved)) {
+        ggml_gallocr_free(measure);
+        return 0;
+    }
     *required = 0;
     ggml_gallocr_reserve_n_size(measure, graph, NULL, NULL, required);
     ggml_gallocr_free(measure);
+    align_gpu_graph_release(graph, saved);
     return 1;
 }
 
@@ -2875,39 +2944,56 @@ static void align_gpu_workspace_context_reset(
     }
 }
 
-struct align_ggml_backend_i {
-    const char * (*get_name)(ggml_backend_t backend);
-    void (*free)(ggml_backend_t backend);
-    void (*set_tensor_async)(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size);
-    void (*get_tensor_async)(ggml_backend_t backend, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size);
-    void (*set_tensor_2d_async)(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data);
-    void (*get_tensor_2d_async)(ggml_backend_t backend, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data);
-    bool (*cpy_tensor_async)(ggml_backend_t backend_src, ggml_backend_t backend_dst, const struct ggml_tensor * src, struct ggml_tensor * dst);
-    void (*synchronize)(ggml_backend_t backend);
-    void * (*graph_plan_create)(ggml_backend_t backend, const struct ggml_cgraph * cgraph);
-    void (*graph_plan_free)(ggml_backend_t backend, void * plan);
-    void (*graph_plan_update)(ggml_backend_t backend, void * plan, const struct ggml_cgraph * cgraph);
-    int (*graph_plan_compute)(ggml_backend_t backend, void * plan);
-    int (*graph_compute)(ggml_backend_t backend, struct ggml_cgraph * cgraph);
-    void (*event_record)(ggml_backend_t backend, void * event);
-    void (*event_wait)(ggml_backend_t backend, void * event);
-    void (*graph_optimize)(ggml_backend_t backend, struct ggml_cgraph * cgraph);
-};
+static void align_gpu_graph_optimize(ggml_backend_t backend, struct ggml_cgraph *graph) {
+    if (backend != NULL && graph != NULL && backend->iface.graph_optimize != NULL) {
+        backend->iface.graph_optimize(backend, graph);
+    }
+}
 
-struct align_ggml_backend {
-    uint8_t * guid;
-    struct align_ggml_backend_i iface;
-    void * device;
-    void * context;
-};
+static int align_gpu_graph_activate(struct align_gpu_device_state *state, int kind) {
+    struct ggml_cgraph *graph = state->workspace_graphs[kind];
+    struct ggml_cgraph *canonical = state->canonical_graphs[kind];
+    int count;
+    if (!state->cuda_graph_optimization || state->optimized_graph == graph) { return 1; }
+    if (graph == NULL || canonical == NULL) { return 0; }
+    count = ggml_graph_n_nodes(graph);
+    if (count != ggml_graph_n_nodes(canonical)) { return 0; }
+    memcpy(ggml_graph_nodes(graph), ggml_graph_nodes(canonical),
+           (size_t) count * sizeof(struct ggml_tensor *));
+    align_gpu_graph_optimize(state->backend, graph);
+    state->optimized_graph = graph;
+    return 1;
+}
 
-static void align_gpu_graph_optimize(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
-    if (backend != NULL && cgraph != NULL) {
-        struct align_ggml_backend * b = (struct align_ggml_backend *) backend;
-        if (b->iface.graph_optimize != NULL) {
-            b->iface.graph_optimize(backend, cgraph);
+int32_t align_gpu_graph_optimization(void *owner) {
+    struct align_gpu_device_state *state = owner;
+    return state == NULL ? -1 : state->cuda_graph_optimization;
+}
+
+int64_t align_ggml_graph_context_bytes(int64_t node_capacity);
+int64_t align_gpu_graph_context_bytes(void *owner, int64_t node_capacity) {
+    struct align_gpu_device_state *state = owner;
+    int64_t base = align_ggml_graph_context_bytes(node_capacity);
+    if (state == NULL || base < 1) { return -1; }
+    return base + (state->cuda_graph_optimization ? (int64_t) ggml_graph_overhead() : 0);
+}
+
+int32_t align_gpu_tag_attention_norm(void *owner, int32_t kind, void *slots, int64_t index) {
+    struct align_gpu_device_state *state = owner;
+    struct ggml_tensor *tensor = align_ggml_slot_load(slots, index);
+    struct ggml_tensor *at;
+    if (state == NULL || kind != ALIGN_GPU_GRAPH_DECODE || state->workspace_failed
+        || state->graph_contexts[kind] == NULL || state->graph_prepared[kind] || tensor == NULL) {
+        return ALIGN_GPU_CONFIG;
+    }
+    for (at = ggml_get_first_tensor(state->graph_contexts[kind]); at != NULL;
+         at = ggml_get_next_tensor(state->graph_contexts[kind], at)) {
+        if (at == tensor) {
+            if (state->cuda_graph_optimization) { ggml_set_name(tensor, "attn_norm"); }
+            return ALIGN_GPU_OK;
         }
     }
+    return ALIGN_GPU_CONFIG;
 }
 
 /* The two graphs execute serially and share one reservation sized for the larger live topology.
@@ -2932,6 +3018,7 @@ static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state)
         state->workspace_allocator = NULL;
     }
     state->workspace_prepared = 0;
+    state->optimized_graph = NULL;
     buft = ggml_backend_get_default_buffer_type(state->backend);
     if (buft == NULL) {
         return ALIGN_GPU_ALLOCATION;
@@ -2941,7 +3028,9 @@ static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state)
         if (!state->graph_prepared[kind]) {
             continue;
         }
-        if (!align_gpu_graph_required(buft, state->workspace_graphs[kind], &required)) {
+        if (!align_gpu_graph_activate(state, kind)) { return ALIGN_GPU_CONFIG; }
+        if (!align_gpu_graph_required(buft, state->workspace_graphs[kind], &required,
+                state->cuda_graph_optimization && kind == ALIGN_GPU_GRAPH_DECODE)) {
             return ALIGN_GPU_ALLOCATION;
         }
         if (largest == NULL || required > largest_bytes) {
@@ -2965,13 +3054,15 @@ static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state)
     if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX == 5) { return ALIGN_GPU_ALLOCATION; }
     state->workspace_allocator = ggml_gallocr_new(buft);
     if (state->workspace_allocator == NULL
-        || !ggml_gallocr_reserve(state->workspace_allocator, largest)) {
+        || !align_gpu_graph_allocate(state->workspace_allocator, largest,
+                state->cuda_graph_optimization && largest == state->workspace_graphs[ALIGN_GPU_GRAPH_DECODE], 1)) {
         return ALIGN_GPU_ALLOCATION;
     }
     for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; ++kind) {
         if (state->graph_prepared[kind]
-            && !ggml_gallocr_alloc_graph(
-                state->workspace_allocator, state->workspace_graphs[kind])) {
+            && !align_gpu_graph_allocate(
+                state->workspace_allocator, state->workspace_graphs[kind],
+                state->cuda_graph_optimization && kind == ALIGN_GPU_GRAPH_DECODE, 0)) {
             return ALIGN_GPU_ALLOCATION;
         }
     }
@@ -3026,7 +3117,17 @@ int32_t align_gpu_graph_prepare(
         return ALIGN_GPU_UNSUPPORTED;
     }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
-    align_gpu_graph_optimize(state->backend, (struct ggml_cgraph *) graph);
+    if (state->cuda_graph_optimization) {
+        struct ggml_context *ctx = state->graph_contexts[kind];
+        size_t used = ggml_used_mem(ctx);
+        size_t bytes = ggml_graph_overhead_custom((size_t) ggml_graph_size(graph), false);
+        if (used > ggml_get_mem_size(ctx) || bytes > ggml_get_mem_size(ctx) - used) {
+            return ALIGN_GPU_ALLOCATION;
+        }
+        state->canonical_graphs[kind] = ggml_graph_dup(ctx, graph, false);
+    } else {
+        align_gpu_graph_optimize(state->backend, graph);
+    }
     for (node = 0; node < ggml_graph_n_nodes((struct ggml_cgraph *) graph); node++) {
         if (ggml_graph_node((struct ggml_cgraph *) graph, node)->op != GGML_OP_NONE) {
             observed_nodes += 1;
@@ -3067,6 +3168,8 @@ int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
     if (kind == ALIGN_GPU_GRAPH_PREFILL) { state->prefill_rows_registered = 0; state->prefill_rows_valid = 0; }
     state->graph_prepared[kind] = 0;
     state->workspace_graphs[kind] = NULL;
+    state->canonical_graphs[kind] = NULL;
+    state->optimized_graph = NULL;
     state->graph_keys[kind][0] = '\0';
     state->graph_current_execution_count[kind] = 0;
     state->last_slot_get_tensor = NULL;
@@ -3153,6 +3256,13 @@ int32_t align_gpu_graph_compute(
         || state->observation_experts > INT64_MAX - observed_experts) {
         state->observation_failed = 1;
         return ALIGN_GPU_CONFIG;
+    }
+    if (state->cuda_graph_optimization && state->optimized_graph != state->workspace_graphs[kind]) {
+        align_gpu_synchronize(state);
+        if (!align_gpu_graph_activate(state, kind)) {
+            state->workspace_failed = 1;
+            return ALIGN_GPU_CONFIG;
+        }
     }
     status = ggml_backend_graph_compute(state->backend, state->workspace_graphs[kind]);
     if (status != GGML_STATUS_SUCCESS) {
