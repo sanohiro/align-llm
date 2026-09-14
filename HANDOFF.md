@@ -4,7 +4,10 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `main` (commit `05f6f07`).
+Active branch: `agent/publish-provider-followup`, based on `39fd051`.
+Documentation checkpoint: publish the retained issue-1043 provider reports,
+record merged #1044/#1045 and open #1046 separately, and preserve the managed pin.
+Implementation and native qualification are outside this publication.
 Active capability: none (idle; awaiting next roadmap slice).
 
 Complete work:
@@ -33,7 +36,9 @@ Latest durable verification:
 - Apple Silicon Metal GPU qualification on `qwen-f16-build`: PASS (100% bit-for-bit SHA-256 match, 78.59 ms/tok decode).
 
 Blockers, constraints, decisions:
-- No active blockers. Worktree clean on `main`.
+- No active implementation blockers. Provider #1046 must merge before its
+  composed-loop surface can be adopted; #1044/#1045 adoption and native Metal
+  qualification remain pending.
 
 
 ## Completed capability: latest merged Align adoption
