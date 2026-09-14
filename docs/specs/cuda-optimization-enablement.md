@@ -1,7 +1,7 @@
 # CUDA optimization enablement
 
-Status: design only, 2026-09-14. The user requested investigation and design; implementation,
-GPU execution, performance measurement and publication are not part of this checkpoint.
+Status: implementation authorized, 2026-09-14. The user has requested implementation,
+verification, PR publication and merge following the completed design inspection.
 Inspection base: `4bf8011` (including dispatch optimization `5efd7a0`).
 [GPU performance](gpu-runtime-performance.md) owns the performance floors and historical evidence;
 this document owns the proposed CUDA enablement contract. No speed improvement is claimed.
@@ -57,6 +57,19 @@ during implementation in `../align-requests.md` before consuming a workaround or
 ## 3. Proposed contract ledger
 
 These are target decisions for the implementation owner, not descriptions of shipped behavior.
+
+Implementation detail settled before coding: canonical order is retained with shipped
+`ggml_graph_dup` in the graph's admitted metadata context, never in separately uncharged storage.
+New `gpu_graph_context_bytes(borrow owner: GpuDevice, node_capacity: i64) -> i64` returns the
+existing context size plus one graph snapshot's metadata only for enabled CUDA owners; invalid
+owner/capacity returns -1. New `gpu_graph_optimization(borrow owner: GpuDevice) -> i64` returns
+0/1 (invalid owner -1), without allocation. The native signatures use an opaque owner and i64
+capacity/result. Both have real/stub counterparts. The mode is preserved through plan finish
+and cancellation. A native topology key remains associated with that immutable owner mode;
+the Align topology's shape digest also includes the mode/revision through its caller. These
+additions are internal FFI, not product CLI or persisted schema changes. The private header is
+included from the supplied pinned `ggml/include` tree via its sibling `src` directory; manifested
+builders already require that exact clean source closure.
 
 | Field | CUDA-GRAPH-ENABLE |
 | --- | --- |
@@ -145,3 +158,19 @@ This local test establishes neither a competitive llama.cpp win nor time to a pa
 Those require separately frozen baselines and the performance plan's coding-quality gate.
 At this checkpoint, all implementation, trace and runtime/performance acceptance cells are
 NOT_RUN. The next action is the clean CUDA control qualification, not an environment-only release.
+
+### Local paired measurement owner
+
+`scripts/measure-cuda-optimization --profile PROFILE --control-source CHECKOUT
+--control BUILD --candidate-source CHECKOUT --candidate BUILD --output NEW_DIRECTORY`
+executes only the fixed local protocol above. The control must be clean `4bf8011`;
+both builds and their complete source closures are verified before and after the run,
+with identical Align/compiler/bundle and non-shim libraries. The admitted profile owns
+model/tokenizer/options; input identities are rechecked. The caller owns the fresh output
+directory. `result.json` schema 1 retains identities, every arm, startup/client/worker
+clocks, full outputs/counts, comparison reductions and PASS/FAIL, including partial
+failure evidence. Worker logs are bounded to 16 MiB per arm; workers are serial and
+closed on failure. No product imports this measurement tool. Exit 0 requires quality,
+exact paired outputs/counts, the primary floor and every guardrail; other results exit 1.
+`--self-test` checks reduction decisions, missing pairs, output mismatch and quality
+refusal without models. The tool and this plan are digest-bound in the receipt.

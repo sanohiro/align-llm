@@ -2,37 +2,40 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Current checkpoint: CUDA optimization design (2026-09-14)
+## Active capability: CUDA optimization enablement (2026-09-14)
 
-Branch `agent/cuda-optimization-design`, based on main `4bf8011` (merged PR #242).
-The user requested current-state investigation and a plan/design, with implementation assigned
-separately. The intentional uncommitted changes are this handoff, the performance-plan pointer
-and `docs/specs/cuda-optimization-enablement.md`. A concurrent provider assessment in
-`docs/align-requests.md` belongs to separate work and is preserved. No runtime, build, environment setting or pin
-has been changed. Older active/publication notes below are historical to their named branches;
-they do not authorize resuming implementation in this design-only task.
+Branch `agent/cuda-optimization-enablement`, based on main `4bf8011` and design checkpoint
+`0b7f7b9`. The user authorized implementation, verification, PR publication and merge.
+Implementation is isolated in the CUDA worktree; the original checkout's concurrent
+`docs/align-requests.md` provider assessment is separate and must not enter this capability.
+Older active/publication notes below are historical to their named branches.
 
-Completed: source/retained-bundle and hardware inspection. CUDA GRAPHS/FA build flags are already
-ON; the shared callback and dispatch optimizations already reach CUDA. Q/K/V graph optimization
-is OFF in the controlled environment, additionally lacking native `attn_norm` tensor names.
-F16 KV remains Metal OLMoE-only; the pinned CUDA SET cannot implement that F16 prefill write.
-The plan specifies supported SET_ROWS adoption and separates its precision/storage risk from
-graph/stream optimization. No new Align gap is established.
+The authoritative contract is `docs/specs/cuda-optimization-enablement.md`. Build GRAPHS/FA
+were already ON; this capability enables the Q/K/V optimizer and native tensor naming,
+then independently adopts CUDA OLMoE F16 KV through supported SET_ROWS. No new Align gap.
+The managed pin remains `f502fe3da00ce0b39c4eeec40586b11688627fbd`.
 
-Next actions for the implementation owner, in order: qualify a clean manifested CUDA control
-from `4bf8011`; close the graph optimizer's two-graph lifetime witness before enabling its
-default; qualify and measure CUDA-GRAPH-ENABLE; adopt/qualify CUDA-KV-F16 independently; qualify
-the combination and coding caller. If backend event rebinding cannot safely use shipped APIs,
-record the exact ggml blocker and continue the independent KV capability. All new runtime and
-measurement evidence is NOT_RUN. Source facts are not proof of active CUDA capture or speedup.
+Local implementation checkpoint: CUDA mode admission, exact private backend header access,
+bounded canonical graph snapshots, active-graph refresh and Align tensor tagging are implemented.
+`check-per-unit src/runtime_generation.align` PASS (25 units). Real native
+`run-cuda-graph-optimization-smoke` PASS for absent/0/1/malformed policy; each valid mode runs
+30 exact computations across two retained graphs, switches and shared-workspace rebuilds.
+The enabled backend reports three concurrent streams and capture warmup; the required
+manifested production trace and performance comparison remain NOT_RUN.
 
-Design verification: `git diff --check`, new-file whitespace/fence/relative-link checks and
-`python3 scripts/gpu_backend_recipe.py --backend cuda --print-plan` PASS. A fresh comprehensive
-high-effort inspection by `/root/cuda_design_review` reviewed the three design files against
-HEAD/base tip/merge base `4bf801112a03521bf9a1ed9a47cc45cd613cebd3`: CLEAN, complete findings none.
-The new specification SHA256 is `9b2be409049a7d385c20c437bbfb8769cb5fc426007a3fe8d5a107ccd01c182f`.
-This subsequent handoff metadata records the result; runtime feasibility and speed are unverified.
-No publication or exact-head preflight stamp is claimed.
+A clean `4bf8011` control session was built with the managed toolchain and retained CUDA kit.
+Its full independent serial owner PASS (7 Qwen and 9 OLMoE rows); the changed stub session
+owner PASS. The paired measurement self-test and strict Python boundary guard PASS. A premature
+control-owner invocation before the build completed refused the missing executable; the actual
+owner was started only after successful build completion, with its diagnostic log preserved.
+Evidence is retained outside Git under `gpu-cuda-enablement-20260914`.
+
+Next: finish baseline/session owners; commit a coherent graph candidate, build and qualify it;
+measure the declared local graph intervention before retaining performance-only complexity;
+implement/qualify CUDA-KV-F16 independently; qualify the combination and coding caller; complete
+one fresh implementation review, exact-head preflight, hosted checks and PR merge. The earlier
+CLEAN design review covers only design checkpoint `0b7f7b9`, not implementation. No publication,
+preflight stamp or speed improvement is claimed yet.
 
 ## Completed capability: ALIGN-PRODUCT-CUTOVER
 

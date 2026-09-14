@@ -2761,6 +2761,24 @@ void *align_gpu_graph_context_open(void *owner, int32_t kind, int64_t metadata_b
     return ctx;
 }
 
+int64_t align_ggml_graph_context_bytes(int64_t node_capacity);
+int64_t align_gpu_graph_context_bytes(void *owner, int64_t node_capacity) {
+    return owner == NULL ? -1 : align_ggml_graph_context_bytes(node_capacity);
+}
+
+int32_t align_gpu_graph_optimization(void *owner) { return owner == NULL ? -1 : 0; }
+
+int32_t align_gpu_tag_attention_norm(void *owner, int32_t kind, void *slots, int64_t index) {
+    struct align_gpu_device_state *state = owner;
+    align_stub_tensor *tensor = align_ggml_slot_load(slots, index);
+    if (state == NULL || kind != ALIGN_GPU_GRAPH_DECODE || state->workspace_failed
+        || state->graph_contexts[kind] == NULL || state->graph_prepared[kind] || tensor == NULL
+        || tensor->context != align_stub_context_index(state->graph_contexts[kind])) {
+        return ALIGN_GPU_CONFIG;
+    }
+    return ALIGN_GPU_OK;
+}
+
 int32_t align_gpu_kv_prefix_slot(
         void *owner, int64_t index, int32_t kind, int32_t layout, int64_t valid_width,
         void *slots, int64_t out) {

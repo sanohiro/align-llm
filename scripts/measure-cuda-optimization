@@ -1,0 +1,198 @@
+#!/usr/bin/env python3
+"""Source-bound paired CUDA intervention measurement; never a product entrypoint."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import statistics
+import subprocess
+import time
+
+from gpu_independent_acceptance import verify_build, source_files
+from gpu_qualification_input import admit
+from gpu_session_client import Session, qualification_environment
+
+ROOT = Path(__file__).resolve().parent.parent
+CONTROL = '4bf801112a03521bf9a1ed9a47cc45cd613cebd3'
+SYSTEM = 'You are a helpful assistant. Follow the output format exactly.'
+SHORT = 'List the integers from 1 through 500 in ascending order, separated by single spaces. Output only the integers.'
+LONG = 'Repository context (irrelevant to this formatting task):\n' + 'alpha beta gamma delta\n' * 128 + '\n' + SHORT
+CASES = [('cold-short', SHORT), ('warm-short-cached', SHORT), ('warm-long-changed', LONG), ('warm-long-cached', LONG)]
+COUNTS = ('output', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'token_count_exact')
+
+
+def digest(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def remaining(deadline):
+    value = min(300, deadline - time.monotonic())
+    if value <= 0:
+        raise TimeoutError('model campaign deadline exhausted')
+    return value
+
+
+def quality(result):
+    if result['completion_tokens'] != 128:
+        return False
+    values = result['output'].strip().split()
+    if values and values[-1] != str(len(values)) and str(len(values)).startswith(values[-1]):
+        values.pop()
+    return len(values) >= 16 and all(value == str(index) for index, value in enumerate(values, 1))
+
+
+def reductions(arms, model, case):
+    result = []
+    for pair in range(5):
+        selected = [a for a in arms if a['model'] == model and a['pair'] == pair]
+        if len(selected) != 2 or {a['arm'] for a in selected} != {'control', 'candidate'}:
+            raise ValueError('missing or duplicate paired arm')
+        rows = {}
+        for arm in selected:
+            matching = [r for r in arm['requests'] if r['case'] == case]
+            if arm['status'] != 'PASS' or len(matching) != 1 or not matching[0]['quality']:
+                raise ValueError('incomplete or failed quality arm')
+            rows[arm['arm']] = matching[0]
+        a, b = rows['control'], rows['candidate']
+        if any(a['result'][k] != b['result'][k] for k in COUNTS):
+            raise ValueError('paired output or token-count mismatch')
+        if min(a['client_ns'], b['client_ns']) <= 0:
+            raise ValueError('invalid client clock')
+        result.append((a['client_ns'] - b['client_ns']) / a['client_ns'])
+    median = statistics.median(result)
+    primary = model == 'olmoe' and case == 'warm-long-cached'
+    passed = median >= .15 and sum(r > 0 for r in result) >= 4 if primary else median >= -.05
+    return dict(paired_reductions=result, median_reduction=median, passed=passed)
+
+
+def identity(source, build):
+    record = verify_build(build, True, session=True)
+    head = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+    if subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain']):
+        raise ValueError('source checkout is dirty')
+    if head != record['source_commit'] or source_files(source) != record['source_files']:
+        raise ValueError('source checkout differs from build closure')
+    return record
+
+
+def run(args):
+    destination = args.output.absolute()
+    destination.mkdir(mode=0o700)
+    record = dict(schema_version=1, status='FAIL', arms=[], comparisons=[])
+    try:
+        admitted = admit(args.profile.resolve(strict=True))
+        profile = admitted.records['profile']
+        if len(profile['models']) != 2 or {m['model_id'] for m in profile['models']} != {'qwen2', 'olmoe'} or len(profile['runtime_options']) != 1:
+            raise ValueError('campaign requires both models and one resident CUDA option')
+        option = {k: v for k, v in profile['runtime_options'][0].items() if k != 'option_id'}
+        if option['backend'] != 'cuda' or option['placement'] != 'resident' or option['prefetch'] != 'off':
+            raise ValueError('campaign requires resident CUDA without prefetch')
+        if option['host_budget_bytes'] < 1073741824 or option['device_budget_bytes'] < 6000000000 or any(m['runtime_cache_budget_bytes'] > 1073741824 for m in profile['models']):
+            raise ValueError('campaign budget cannot be admitted')
+        option.update(host_budget_bytes=1073741824, device_budget_bytes=6000000000)
+        builds = {name: getattr(args, name).resolve(strict=True) for name in ('control', 'candidate')}
+        sources = {name: getattr(args, name + '_source').resolve(strict=True) for name in builds}
+        identities = {name: identity(sources[name], builds[name]) for name in builds}
+        a, b = identities['control'], identities['candidate']
+        if a['source_commit'] != CONTROL or any(a[k] != b[k] for k in ('align_revision', 'compiler_sha256', 'bundle_id')) or b['bundle_id'] != admitted.records['bundle']['bundle_id']:
+            raise ValueError('campaign control, compiler or bundle mismatch')
+        stable_libs = lambda i: {k: v for k, v in i['libraries'].items() if 'shim' not in k}
+        if stable_libs(a) != stable_libs(b):
+            raise ValueError('non-shim libraries differ')
+        record['identities'] = dict(builds=identities, profile_sha256=digest(args.profile),
+            inputs={k: v.sha256 for k, v in admitted.files.items()}, options=option,
+            tool_sha256=digest(Path(__file__)), plan_sha256=digest(ROOT / 'docs/specs/cuda-optimization-enablement.md'),
+            gpu=subprocess.check_output(['nvidia-smi', '--query-gpu=name,uuid,driver_version,memory.total', '--format=csv,noheader'], text=True, timeout=30).strip())
+        options_path = destination / 'options.json'
+        options_path.write_text(json.dumps(option, separators=(',', ':')) + '\n')
+        models = {m['model_id']: m for m in profile['models']}
+        for model_name in ('qwen2', 'olmoe'):
+            deadline = time.monotonic() + 2400
+            model = models[model_name]
+            for pair in range(5):
+                for name in (('control', 'candidate') if pair % 2 == 0 else ('candidate', 'control')):
+                    row = dict(model=model_name, pair=pair, arm=name, status='FAIL', requests=[])
+                    record['arms'].append(row)
+                    work = destination / f'{model_name}-{pair}-{name}'
+                    work.mkdir()
+                    command = [str(builds[name] / 'main'), '--runtime-session',
+                        *(str((admitted.root / model[k]).resolve(strict=True)) for k in ('model_path', 'pack_path', 'geometry_path')),
+                        str(options_path), str(model['runtime_cache_budget_bytes'])]
+                    row['command'] = command
+                    print(work.name + ': start', flush=True)
+                    started = time.monotonic_ns()
+                    worker = Session(command, timeout=remaining(deadline), env=qualification_environment(work))
+                    row['startup_ns'] = time.monotonic_ns() - started
+                    retained = os.fdopen(os.dup(worker.log.fileno()), 'rb')
+                    normal = False
+                    try:
+                        for case, prompt in CASES:
+                            worker.timeout = remaining(deadline)
+                            before = time.monotonic_ns()
+                            result = worker.generate(dict(schema_version=1, system=SYSTEM, user=prompt, max_tokens=128, temperature=0.0, seed=None))
+                            elapsed = time.monotonic_ns() - before
+                            row['requests'].append(dict(case=case, client_ns=elapsed, worker_ns=result['elapsed_ns'], quality=quality(result), result=result))
+                            print(f'{work.name} {case}: {elapsed / 1e9:.3f}s quality={quality(result)}', flush=True)
+                        normal = True
+                    finally:
+                        try:
+                            worker.close(check=normal)
+                        finally:
+                            with retained:
+                                retained.seek(0)
+                                log = retained.read(16 * 1024 * 1024 + 1)
+                            (work / 'worker.log').write_bytes(log[:16 * 1024 * 1024])
+                            if len(log) > 16 * 1024 * 1024:
+                                raise ValueError('worker log exceeds bound')
+                    row['status'] = 'PASS'
+                    (destination / 'result.json').write_text(json.dumps(record, indent=2) + '\n')
+            for case, _ in CASES:
+                record['comparisons'].append(dict(model=model_name, case=case, **reductions(record['arms'], model_name, case)))
+        admitted.recheck()
+        if {name: identity(sources[name], builds[name]) for name in builds} != identities:
+            raise ValueError('build identity changed during campaign')
+        if not all(row['passed'] for row in record['comparisons']):
+            raise ValueError('performance floor or guardrail not met')
+        record['status'] = 'PASS'
+    except Exception as error:
+        record['error'] = str(error)
+        print('FAIL: ' + str(error), flush=True)
+    finally:
+        (destination / 'result.json').write_text(json.dumps(record, indent=2) + '\n')
+    return 0 if record['status'] == 'PASS' else 1
+
+
+def self_test():
+    result = dict(output=' '.join(map(str, range(1, 40))), prompt_tokens=42, completion_tokens=128, total_tokens=170, token_count_exact=True)
+    assert quality(result) and not quality(dict(result, output='wrong'))
+    arms = [dict(model='olmoe', pair=i, arm=name, status='PASS', requests=[dict(case='warm-long-cached', client_ns=100 if name == 'control' else 80, quality=True, result=dict(result))]) for i in range(5) for name in ('control', 'candidate')]
+    assert reductions(arms, 'olmoe', 'warm-long-cached')['passed']
+    arms[-1]['requests'][0]['client_ns'] = 200
+    arms[-3]['requests'][0]['client_ns'] = 200
+    assert not reductions(arms, 'olmoe', 'warm-long-cached')['passed']
+    for bad in (arms[:-1], json.loads(json.dumps(arms))):
+        if len(bad) == 10:
+            bad[-1]['requests'][0]['result']['output'] = 'different'
+        try:
+            reductions(bad, 'olmoe', 'warm-long-cached')
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('invalid evidence accepted')
+    print('CUDA measurement self-test PASS')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--self-test', action='store_true')
+    for name in ('profile', 'control-source', 'control', 'candidate-source', 'candidate', 'output'):
+        parser.add_argument('--' + name, type=Path)
+    args = parser.parse_args()
+    if args.self_test:
+        self_test()
+    else:
+        if any(getattr(args, name) is None for name in ('profile', 'control_source', 'control', 'candidate_source', 'candidate', 'output')):
+            parser.error('all campaign operands are required')
+        raise SystemExit(run(args))

@@ -369,6 +369,9 @@ pub fn build_decode_diagnostic(
     olmoe_nodes.build_range(ctx, slots, a_nodes, last, false, true, 0, 17) else {
       return Err(Error.Invalid)
     }
+    ggml_ffi.gpu_tag_attention_norm(owner, ggml_ffi.GPU_GRAPH_DECODE, slots, a_nodes.out[1]) else {
+      return Err(Error.Invalid)
+    }
     runtime_kv.write_indexed_prefix(
       owner, 2 * layer, ggml_ffi.GPU_GRAPH_DECODE, ggml_ffi.GPU_KV_LAYOUT_K,
       INPUT_DECODE_POSITION, view_width, slots, layer_olmoe.MM_A_NODE_BASE + 17, DECODE_K_SOURCE,
