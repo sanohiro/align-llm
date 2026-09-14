@@ -9,8 +9,12 @@ Active capability: Prompt-Lookup Candidate Selection & Unrolled Bit-Shift Prefix
 
 Complete work:
 - Implemented `prompt_lookup_candidate` in `src/runtime_generation.align` to predict token continuation from prompt history during generation.
-- Implemented `greedy_with_candidate` / `choose_token_candidate` to seed greedy argmax with the lookup candidate, optimizing CPU branch prediction and preserving 100% mathematical output parity with identical tie-breaking rules.
+- Implemented `greedy(logits, candidate)` / `choose_token_candidate` to seed greedy argmax with the lookup candidate, optimizing CPU branch prediction and preserving 100% mathematical output parity with identical tie-breaking rules.
 - Replaced manual 8-iteration division/modulo (`udiv`/`msub`) byte loops in `publish_prefix` with unrolled 64-bit word decomposition (`write_i64_le`) utilizing native bitwise shift (`>>`) and masking (`& 255`).
+- Resolved all 3 findings from independent review (`scripts/review-agy`):
+  1. Finding 1: Checked `c_value > best_value` before adopting candidate in `greedy` so token 0 is never corrupted.
+  2. Finding 2: Added comprehensive regression test suite (`test_candidate_selection`) in `src/runtime_session_reuse_smoke.align`.
+  3. Finding 3: Corrected `HANDOFF.md` function name from `greedy_with_candidate` to `greedy(logits, candidate)`.
 - Identified and documented three Align compiler/language bottlenecks during disassembly inspection:
   1. Missing in-place typed writers on `slice<u8>` (`set_i64_le`, `set_u32_le`), forcing per-byte slicing with 8 bounds-check branches per 64-bit store.
   2. Compiler restriction on owned field replacement in structs (`field replacement of array<i64> is not supported yet`), preventing direct `Session.prefix_ids: array<i64>` storage.

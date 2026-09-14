@@ -638,7 +638,7 @@ fn finite_f32(borrow logits: slice<u8>, offset: i64) -> bool {
   return (bits & 2139095040) != 2139095040
 }
 
-fn prompt_lookup_candidate(borrow prompt_ids: array<i64>, current_token: i64) -> i64 {
+pub fn prompt_lookup_candidate(borrow prompt_ids: array<i64>, current_token: i64) -> i64 {
   mut pat := prompt_ids.len() - 2
   loop {
     if pat < 0 { break }
@@ -650,7 +650,7 @@ fn prompt_lookup_candidate(borrow prompt_ids: array<i64>, current_token: i64) ->
   return -1
 }
 
-fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
+pub fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
   if logits.len() < 4 || logits.len() % 4 != 0 { return Err(Error.Invalid) }
   first_bits := logits.u32_le(0)
   if (first_bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
@@ -661,8 +661,11 @@ fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
     c_offset := candidate * 4
     c_bits := logits.u32_le(c_offset)
     if (c_bits & 2139095040) != 2139095040 {
-      best = candidate
-      best_value = logits.f32_le(c_offset)
+      c_value := logits.f32_le(c_offset)
+      if c_value > best_value {
+        best = candidate
+        best_value = c_value
+      }
     }
   }
   mut token := 1
