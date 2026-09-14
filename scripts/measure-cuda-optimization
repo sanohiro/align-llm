@@ -100,6 +100,15 @@ def identity(source, build):
     return record
 
 
+def idle_gpu(observation):
+    for row in observation.splitlines():
+        utilization, _memory, graphics, memory_clock = map(int, row.split(','))
+        # The observed Windows display baseline is 5-7% at the 210/405 MHz idle clocks.
+        if utilization > 5 and not (utilization <= 10 and graphics <= 300 and memory_clock <= 500):
+            return False
+    return bool(observation.strip())
+
+
 def quiet_host():
     # Timing is valid only in a coordinated quiet window on this shared WSL host.
     def cpu():
@@ -112,12 +121,12 @@ def quiet_host():
     delta = [b - a for a, b in zip(before, after)]
     busy = sum(delta[i] for i in (0, 1, 2, 5, 6, 7)) / os.sysconf('SC_CLK_TCK') / elapsed
     wait = delta[4] / os.sysconf('SC_CLK_TCK') / elapsed
-    gpu = subprocess.check_output(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used',
+    gpu = subprocess.check_output(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,clocks.gr,clocks.mem',
         '--format=csv,noheader,nounits'], text=True, timeout=30).strip()
     processes = subprocess.check_output(['nvidia-smi', '--query-compute-apps=pid,process_name',
         '--format=csv,noheader'], text=True, timeout=30).strip()
     return dict(busy_cpu_cores=busy, iowait_cores=wait, gpu=gpu, compute_processes=processes,
-        quiet=busy < .5 and wait < .2 and not processes and all(int(row.split(',')[0]) <= 5 for row in gpu.splitlines()))
+        quiet=busy < .5 and wait < .2 and not processes and idle_gpu(gpu))
 
 
 def run(args):
@@ -305,6 +314,8 @@ with m.cancellation_scope():
 
 
 def self_test():
+    assert idle_gpu('7, 1516, 210, 405') and idle_gpu('0, 1516, 2790, 10501')
+    assert not idle_gpu('7, 1516, 2790, 10501') and not idle_gpu('80, 1516, 210, 405')
     result = dict(output=' '.join(map(str, range(1, 40))), prompt_tokens=42, completion_tokens=128, total_tokens=170, token_count_exact=True)
     assert quality(result) and not quality(dict(result, output='wrong'))
     arms = [dict(model='olmoe', pair=i, arm=name, status='PASS', requests=[dict(case='warm-long-cached', client_ns=100 if name == 'control' else 80, quality=True, result=dict(result))]) for i in range(5) for name in ('control', 'candidate')]

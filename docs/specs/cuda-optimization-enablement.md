@@ -230,8 +230,13 @@ user-supplied pause window, independently observe at least 60 seconds of low loa
 before launch and continue observing throughout the campaign; neither our other
 owners nor foreign development/CUDA work may overlap measured arms. The measurement owner records two-second `/proc/stat`
 samples and GPU utilization/compute-process observations before and after each arm.
-It refuses >=0.5 busy CPU cores, >=0.2 I/O-wait cores, GPU utilization >5%, or any
-compute process while the arm is stopped. These are idle admission checks, not proof
+It refuses >=0.5 busy CPU cores, >=0.2 I/O-wait cores, GPU utilization >5% outside the calibrated low-clock display envelope, or any
+compute process while the arm is stopped. The display envelope is utilization <=10%,
+graphics clock <=300 MHz and memory clock <=500 MHz. Before the first generated
+benchmark request, idle calibration showed 5-7% at 210/405 MHz with no compute
+process; the original utilization-only check refused admission (zero measured
+requests). Preserve that refusal/calibration evidence. This clock-aware admission
+correction does not change the workload, timing floor, guardrails or output checks. These are idle admission checks, not proof
 that Windows host activity stayed absent; retain external load observations and
 invalidate the entire campaign on any known interference (never drop a slow pair).
 The external observer retains its invocation and source hash plus 0.5-second process
