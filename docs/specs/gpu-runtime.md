@@ -1843,7 +1843,7 @@ layout, eliminating a per-step transpose/copy of the past. The policy enters gra
 native observation. A policy cannot change while payload or graph handles are live.
 
 O1 in `gpu-runtime-performance.md` adds the session-only `flash_f16_cached` policy (integer 2)
-for Metal OLMoE after successful Flash selection. It retains F16 K/V, converts newly written F32
+for Metal OLMoE and Qwen2 after successful Flash selection. It retains F16 K/V, converts newly written F32
 rows and passes half prefixes directly to Flash. Its exact backend-aligned reservation, padding
 fallback, closure matrix and performance acceptance are owned by that ledger. This is an explicit
 exception to the F32 storage descriptions above, including session prefix identity and native KV
