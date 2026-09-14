@@ -26,13 +26,14 @@ F16 bytes and actual model output comparisons remain exact.
 KV-only independent sessions PASS all 16 requests; repaired `be7b1f2` independent
 sessions and host capacity also PASS. `cb59980` exact-head hosted preflight PASS.
 
-Timing is BLOCKED on a coordinated shared-host quiet window. The first clock-aware
-campaign stopped before OLMoE pair 2 on unsettled memory clocks; the fixed-cooldown
-campaign stopped before Qwen pair 5 at 22% GPU utilization / 1699 MiB. Neither observer
-found foreign Linux CPU/CUDA processes; Windows host activity remains possible.
-Preserve both complete failed campaigns and rerun all pairs without relaxing gates.
-The user was asked for a roughly 15-minute quiet window. No speed claim or merge yet.
-Evidence is retained outside Git under `gpu-cuda-enablement-20260914`.
+The user renewed the merge request, asked to retry Q/K/V parallelism, and confirmed
+other development is stopped. Timing uses the revised bounded settling protocol:
+three consecutive unchanged quiet observations within ten attempts, every observation
+retained, fixed cooldown and continuous foreign-process monitoring. All earlier partial
+campaigns remain FAIL. The author suspends source inspection/builds during timing.
+First finish the F16 paired gate; then retry the deferred graph allocation/lifetime
+cause in a separate local checkpoint. PR #243 is Draft; its required hosted job and
+exact base main both timed out at 15 minutes. GitHub owns their log/evidence records.
 
 The comprehensive review of `1342274` found three P2 issues, consolidated in `be7b1f2`:
 explicit prefill-position admission, executed helper source closure, and cancellation

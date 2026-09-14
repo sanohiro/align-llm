@@ -119,9 +119,7 @@ def idle_gpu(observation):
     return bool(observation.strip())
 
 
-def quiet_host():
-    # Fixed unmeasured cooldown lets device clocks settle after every serial arm.
-    time.sleep(10)
+def host_observation():
     # Timing is valid only in a coordinated quiet window on this shared WSL host.
     def cpu():
         return list(map(int, Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
@@ -139,6 +137,24 @@ def quiet_host():
         '--format=csv,noheader'], text=True, timeout=30).strip()
     return dict(busy_cpu_cores=busy, iowait_cores=wait, gpu=gpu, compute_processes=processes,
         quiet=busy < .5 and wait < .2 and not processes and idle_gpu(gpu))
+
+
+def settled_host(observe):
+    observations = []
+    streak = 0
+    for _ in range(10):
+        row = observe()
+        observations.append(row)
+        streak = streak + 1 if row['quiet'] else 0
+        if streak == 3:
+            return dict(row, quiet=True, observations=observations)
+    return dict(observations[-1], quiet=False, observations=observations)
+
+
+def quiet_host():
+    # Settling is outside every measured clock and retains all busy observations.
+    time.sleep(10)
+    return settled_host(host_observation)
 
 
 def run(args):
@@ -340,6 +356,13 @@ with m.cancellation_scope():
 def self_test():
     assert idle_gpu('7, 1516, 210, 405') and idle_gpu('0, 1516, 2790, 10501')
     assert not idle_gpu('7, 1516, 2790, 10501') and not idle_gpu('80, 1516, 210, 405')
+    ready = settled_host(lambda: dict(quiet=True))
+    assert ready['quiet'] and len(ready['observations']) == 3
+    transient = iter([True, True, False, True, True, True])
+    ready = settled_host(lambda: dict(quiet=next(transient)))
+    assert ready['quiet'] and len(ready['observations']) == 6
+    busy = settled_host(lambda: dict(quiet=False))
+    assert not busy['quiet'] and len(busy['observations']) == 10
     result = dict(output=' '.join(map(str, range(1, 40))), prompt_tokens=42, completion_tokens=128, total_tokens=170, token_count_exact=True)
     assert quality(result) and not quality(dict(result, output='wrong'))
     arms = [dict(model='olmoe', pair=i, arm=name, status='PASS', requests=[dict(case='warm-long-cached', client_ns=100 if name == 'control' else 80, quality=True, result=dict(result))]) for i in range(5) for name in ('control', 'candidate')]

@@ -329,3 +329,22 @@ Retained evidence root is `gpu-cuda-enablement-20260914` outside Git. SHA-256 re
 Bounded retrospective: native minimal concurrency is not production feasibility,
 and cancellation tests must reach the shutdown ownership transition. The production
 trace and focused shutdown regression cover those lessons without a new process gate.
+
+### Coordinated idle settling protocol
+
+The user confirmed other development stopped. Two further whole campaigns remain
+FAIL: one boundary exceeded 0.5 CPU cores while the author was inspecting source,
+and one observed 22% GPU utilization at idle 210/405 MHz with no compute process.
+Single instantaneous boundary admission does not distinguish transient host display
+activity from an unsettled interval. No partial timing is reused.
+
+Keep every CPU/I/O/GPU/compute-process predicate unchanged. After the fixed cooldown,
+collect up to ten consecutive two-second observations and require three consecutive
+quiet observations before returning ready; a busy observation resets that streak.
+Retain all observations, including busy ones, in each existing `host_before` and
+`host_after` receipt as `observations`, plus the final sample and ready decision.
+Exhaustion refuses the entire campaign. This is bounded unmeasured settling, never
+a request retry, filtered pair or changed performance floor. The continuous observer
+still invalidates the whole campaign on known foreign CPU/CUDA interference, and
+the author performs no builds/source inspection during timing. The owner self-test
+checks immediate readiness, reset after a transient, and permanent-busy exhaustion.
