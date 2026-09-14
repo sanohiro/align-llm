@@ -4,40 +4,44 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `main` (commit `0c9235d`).
-Active capability: none (idle; awaiting next roadmap slice).
+Active branch: `agent/decode-loop-alloc-and-greedy-branchless-opt` (based on `main` at `cbf767e`).
+Active capability: Decode Loop Zero-Allocation Staging and Branchless Greedy Argmax Optimization.
 
 Complete work:
-- Implemented `prompt_lookup_candidate` in `src/runtime_generation.align` to predict token continuation from prompt history during generation.
-- Implemented `greedy(logits, candidate)` / `choose_token_candidate` to seed greedy argmax with the lookup candidate, optimizing CPU branch prediction and preserving 100% mathematical output parity with identical tie-breaking rules.
-- Replaced manual 8-iteration division/modulo (`udiv`/`msub`) byte loops in `publish_prefix` with unrolled 64-bit word decomposition (`write_i64_le`) utilizing native bitwise shift (`>>`) and masking (`& 255`).
-- Resolved all 3 findings from independent review (`scripts/review-agy`):
-  1. Finding 1: Checked `c_value > best_value` before adopting candidate in `greedy` so token 0 is never corrupted.
-  2. Finding 2: Added comprehensive regression test suite (`test_candidate_selection`) in `src/runtime_session_reuse_smoke.align`.
-  3. Finding 3: Corrected `HANDOFF.md` function name to `greedy(logits, candidate)`.
+- Eliminated per-step heap buffer allocations in `update_decode` by passing a preallocated 4-byte scalar staging view (`scalar_slot: slice<u8>`) with in-place unrolled `write_u32_le`.
+- Replaced branched per-element `if col <= limit` evaluations in `update_prompt` and `update_decode` attention mask filling with split tight loops (`0..limit` for zero and `limit..width` for `-inf`).
+- Optimized `greedy` argmax loop in `src/runtime_generation.align`:
+  - Replaced separate induction variable `mut offset := 4; offset = offset + 4` with direct scaled index `i * 4` bounded by `logits.len() / 4`, enabling LLVM to coalesce `u32_le` and `f32_le` loads into a single 32-bit load with `bitcast i32 to float`.
+  - Restructured tie-breaking logic into branchless conditional selection (`value > best_value` vs `else if value == best_value && i < best`), reducing microbenchmark runtime on 151,936 logits by 84.8% (from 1,287 µs down to 196 µs per call).
+- Identified and analyzed four concrete Align language/compiler bottlenecks:
+  1. `align_mir::byte_ranges.rs:278` enforces `literal(op, 0)`: induction variables starting at 1 (or any offset > 0) cause the pass to abort and fail bounds-check elimination.
+  2. Fallible in-loop checks (e.g. `if !finite_f32(...) return Err(...)`) break `arm_dominates` in `byte_ranges.rs:427`, completely disabling bounds check elimination for subsequent reads in the loop body.
+  3. Separate induction variables (`mut offset := 4; offset = offset + 4`) are not recognized as scaled recurrences of the loop counter, preventing load merging and retaining redundant range checks.
+  4. Lossy conversion warnings on masked byte casts: `(val & 255) as u8` generates spurious compiler warnings because `& 255` is typed as `u32`.
 - Verified 100% bit-for-bit SHA-256 parity on Metal GPU:
   - OLMoE prefill: `6b86b273ff34`
   - OLMoE decode 128: `109a6553d0bd`
   - Qwen2 prefill: `6b86b273ff34`
   - Qwen2 decode 128: `7913883c0e74`
-- Completed preflight (`scripts/pre-pr`), independent review (`scripts/review-agy`), passed CI, and merged pull request #250 into `main` (`0c9235d`).
-- Filed upstream compiler/language issue: [sanohiro/align#1048](https://github.com/sanohiro/align/issues/1048) covering in-place typed multi-byte writers on `slice<u8>`, owned field replacement in structs, and SIMD vectorization limitations. Registered Request 65 in `docs/align-requests.md`.
+- Hardware measurement on Apple Silicon: Qwen2 decode median wall time dropped from 9923 ms to 9863 ms (76.64 ms/tok).
 
 Active work:
-- None.
+- Preflight (`scripts/pre-pr`), independent review (`scripts/review-agy`), PR publication & merge, and upstream issue filing on `sanohiro/align`.
 
 Next actions in priority order:
-1. Advance to the next recommended roadmap optimization capability (Flash Attention tile-width/KV alignment tuning or memory reservation overhead reduction).
+1. Run preflight: `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
+2. Run independent adversarial review: `scripts/review-agy --base origin/main`.
+3. Resolve review findings, commit repairs, publish PR and merge.
+4. File upstream issue on `sanohiro/align` and register Request 66 in `docs/align-requests.md`.
 
 Latest durable verification:
 - `scripts/run-gpu-session-reuse-smoke`: PASS (including 5 unit/regression cases in `test_candidate_selection`).
 - `make check` (155 units per-unit): PASS.
-- `python3 scripts/pre-pr`: PASS on commit `5eee04c`.
-- Apple Silicon Metal GPU qualification on `qwen-f16-build`: PASS (100% bit-for-bit SHA-256 match, 80.14 ms/tok decode).
+- Apple Silicon Metal GPU qualification on `qwen-f16-build`: PASS (100% bit-for-bit SHA-256 match, 76.64 ms/tok decode).
 
 Blockers, constraints, decisions:
-- Worktree clean on `main`. Prefix cache remains as `buffer` due to Align compiler restriction on owned field replacement (`array<i64>`), optimized via unrolled bit-shift `write_i64_le`.
-- Provider #1046 must merge before its composed-loop surface can be adopted; #1044/#1045 adoption and native Metal qualification remain pending.
+- Worktree clean on `agent/decode-loop-alloc-and-greedy-branchless-opt`.
+- 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks.
 
 
 ## Completed capability: latest merged Align adoption
