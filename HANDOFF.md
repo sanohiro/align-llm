@@ -4,14 +4,40 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active capability: `agent/runtime-sampler-topk-threshold`.
-Implemented scalar thresholding in `src/runtime_sampler.align` (Plan 62 algorithm 1)
-to discard >99.9% of non-candidate tokens in 1 comparison during Top-K selection.
-Microbenchmark shows 47x speedup (9,982 us -> 210 us per call on 152k vocabulary).
-100% deterministic output parity and SHA-256 matching.
-Owner tests pass: `scripts/alignc run src/runtime_sampler_smoke.align`,
-`scripts/check-format`, and `scripts/run-gpu-session-reuse-smoke`.
-Filed upstream compiler improvement issue: sanohiro/align#1043.
+Active branch: `agent/runtime-sampler-topk-threshold` (head commit 2d80cc6 plus review repairs).
+Active capability: `R8-RUNTIME-SAMPLER-TOPK-THRESHOLD`.
+
+Complete work:
+- Implemented scalar thresholding in `src/runtime_sampler.align` (Plan 62 algorithm 1)
+  to discard >99.9% of non-candidate tokens in 1 comparison during Top-K selection.
+- Added candidate eviction and replacement regression tests in `src/runtime_sampler_smoke.align`.
+- Added reproducible microbenchmark in `src/runtime_sampler_bench.align` and `scripts/bench-runtime-sampler`.
+  Measurement shows ~278 us/call mean across 50 reps on Apple Silicon M3 (baseline naive loop: 9,982 us/call, 35-47x speedup).
+- 100% deterministic output parity and SHA-256 matching on Apple Silicon Metal GPU:
+  prefill `6b86b273ff34`, OLMoE decode `109a6553d0bd`, Qwen2 decode `7913883c0e74`.
+- Filed upstream compiler improvement issue: [sanohiro/align#1043](https://github.com/sanohiro/align/issues/1043).
+- Registered Request 63 in `docs/align-requests.md`.
+- Addressed all 4 findings from independent review.
+
+Active work:
+- Consolidating review repair commit and executing final publication preflight.
+
+Next actions in priority order:
+1. Run publication preflight: `python3 scripts/pre-pr --owner-test runtime-sampler-smoke -- ./scripts/alignc run src/runtime_sampler_smoke.align`.
+2. Push branch `agent/runtime-sampler-topk-threshold` and create pull request.
+3. Merge pull request into `main`.
+
+Latest durable verification:
+- `scripts/alignc run src/runtime_sampler_smoke.align`: PASS.
+- `scripts/bench-runtime-sampler`: PASS.
+- `scripts/run-gpu-session-reuse-smoke`: PASS.
+- `scripts/check-format`: PASS.
+- `scripts/pre-pr`: PASS on commit 2d80cc6 (hosted-checks 40+ targets passing).
+
+Blockers, constraints, decisions:
+- No functional blockers or external dependencies.
+- Worktree clean before final preflight.
+
 
 ## Completed capability: latest merged Align adoption
 

@@ -22,6 +22,23 @@ numbers are approximate and may drift — locate by function name.
 
 ## Align audit answer (2026-09-07)
 
+### Request 63: compiler & language optimizations for idiomatic code execution speed (2026-09-14)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; application-level scalar thresholding operates around current loop limits
+Independent work that may continue: runtime generation, sampling, and provider evaluation
+Resume condition: upstream review and design closure on issue #1043
+Align commit or pull request: [sanohiro/align#1043](https://github.com/sanohiro/align/issues/1043)
+align-llm verification: native Apple Silicon / Metal benchmark suite and runtime_sampler_bench
+
+Discovered during native Mac decode performance qualification and sampler profiling:
+1. `byte_storage.rs` unconditionally disqualifies local `buffer(N)` stack promotion upon `Rvalue::Call`, even when the slice view is passed to a non-escaping `borrow` parameter.
+2. Unstructured `loop` without canonical induction variable representation blocks LLVM Scalar Evolution (SCEV) and bounds check elimination.
+3. `BuildTarget::Baseline` defaults AArch64 to `generic` instead of `native` for local execution.
+4. Separate per-unit compilation without ThinLTO prevents inlining of cross-module leaf utilities.
+
 ### Decode optimization provider implementation (2026-09-14)
 
 Status: ALIGN_MERGED. [Align PR #1042](https://github.com/sanohiro/align/pull/1042)

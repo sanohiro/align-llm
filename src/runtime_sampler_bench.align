@@ -1,0 +1,43 @@
+module runtime_sampler_bench
+
+import runtime_sampler
+import std.rand
+import std.time
+
+fn main() -> Result<(), Error> {
+  n_vocab := 152064
+  mut buf := buffer(n_vocab * 4)
+  mut i := 0
+  loop {
+    if i >= n_vocab { break }
+    val := ((i * 17) % 1000) as f32 / 100.0
+    buf.put_f32_le(val)
+    i = i + 1
+  }
+  view := buf.bytes()
+
+  // Warmup
+  mut rng := rand.seed_with(42)
+  mut w := 0
+  loop {
+    if w >= 5 { break }
+    runtime_sampler.select(view, rng)?
+    w = w + 1
+  }
+
+  // Measure 50 iterations
+  iterations := 50
+  start := time.instant()
+  mut rep := 0
+  loop {
+    if rep >= iterations { break }
+    runtime_sampler.select(view, rng)?
+    rep = rep + 1
+  }
+  elapsed_ns := time.instant() - start
+  us_per_call := elapsed_ns / (iterations * 1000)
+  print("runtime_sampler::select 152k vocab: ")
+  print(us_per_call)
+  print(" us/call")
+  return Ok(())
+}
