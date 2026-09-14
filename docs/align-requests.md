@@ -24,16 +24,18 @@ numbers are approximate and may drift — locate by function name.
 
 ### Request 63: compiler & language optimizations for idiomatic code execution speed (2026-09-14)
 
-Status: PROPOSED
+Status: ALIGN_MERGED for the plan-63 subset (#1044/#1045); follow-up #1046 is IMPLEMENTING
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; application-level scalar thresholding operates around current loop limits
 Independent work that may continue: runtime generation, sampling, and provider evaluation
-Resume condition: upstream review and design closure on issue #1043
+Resume condition: adopt the merged plan-63 provider surface and qualify native Metal;
+consume composed-loop follow-up only after #1046 merges
 Align commit or pull request: [sanohiro/align#1043](https://github.com/sanohiro/align/issues/1043)
 align-llm verification: native Apple Silicon / Metal benchmark suite and runtime_sampler_bench
 
-Discovered during native Mac decode performance qualification and sampler profiling:
+Original observations during native Mac decode performance qualification and sampler profiling
+(before the provider responses below; these are not current compiler guarantees):
 1. `byte_storage.rs` unconditionally disqualifies local `buffer(N)` stack promotion upon `Rvalue::Call`, even when the slice view is passed to a non-escaping `borrow` parameter.
 2. Unstructured `loop` without canonical induction variable representation blocks LLVM Scalar Evolution (SCEV) and bounds check elimination.
 3. `BuildTarget::Baseline` defaults AArch64 to `generic` instead of `native` for local execution.
@@ -41,7 +43,10 @@ Discovered during native Mac decode performance qualification and sampler profil
 
 ### Post-merge binary inspection of PR #1044 / #1045 compiler output (2026-09-14)
 
-Inspection of the compiled Mach-O 64-bit ARM64 release binary at `6cd95b15` revealed:
+The original report attributed its Mach-O 64-bit ARM64 binary to `6cd95b15`;
+complete compiler commands and artifact identity remain unverified. Its observations
+and proposed causes below are historical; the provider follow-up corrects the
+attribute and baseline-NEON explanations:
 1. `align_mir::byte_ranges` loop range proofs: `Facts::new` aborted because the enclosing function `runtime_sampler.select` contains non-trivial Rvalues (`array_builder`, math, RNG) outside the loop, retaining full bounds checks inside the 151,936-iteration token loop (`cmp offset+4, len; b.gt trap`). Proposed fix: scope range proof to natural loop basic block subgraphs.
 2. `align_codegen_llvm` invariant hoisting: slice view pointer and length are repeatedly reloaded from memory (`[x27]`) on every iteration inside the hot token loop due to lack of `noalias` / `readonly` annotations on `ParamMode::Borrow` slice arguments.
 3. `align_mir::byte_storage` small buffer promotion: `update_decode` continues to allocate 4-byte scalar buffers on the heap (`_align_rt_buffer_new(4)`) on every token because foreign FFI calls (`runtime_inputs.update` -> C ABI) are conservatively treated as escaping sinks. Proposed fix: certify call-scoped non-escaping borrow contracts for foreign functions returning scalar/Unit with no out-pointers.
@@ -64,6 +69,123 @@ Discovered during Qwen2 Attention KV F16 enablement (PR #248):
 2. Stack frame bloat from large struct returns: returning definitions (`NodeTable` 216B, `OracleTable` 168B) copies structs by value using unrolled NEON stores, allocating up to 992 bytes on the stack frame. Return Value Optimization (RVO / `sret`) or `borrow` returns needed.
 3. Structural subtyping / generic traits: nominal type separation forces duplication of identical layer logic across architectures (`qwen_kv_bytes` vs `olmoe_kv_bytes`, `admit_*_shapes`, `prepare_session_*`).
 Full disassembly trace and proposed lowerings published on [sanohiro/align#1047](https://github.com/sanohiro/align/issues/1047).
+
+### Issue 1043 composed-loop follow-up design (2026-09-14)
+
+Status: IMPLEMENTING; design recorded here now has provider implementation
+`c805104976dda6c59889f5f97f13be5496f8405f` in open [PR #1046](https://github.com/sanohiro/align/pull/1046).
+It is not yet merged or available for managed consumer adoption. This does not
+change the ALIGN_MERGED status of #1044/#1045 or certify consumer adoption.
+Input: [native retention clarification](https://github.com/sanohiro/align/issues/1043#issuecomment-5662787330)
+and [ARM binary inspection](https://github.com/sanohiro/align/issues/1043#issuecomment-5663319777).
+Plan: [Align plan 64](https://github.com/sanohiro/align/blob/c805104976dda6c59889f5f97f13be5496f8405f/docs/impl/64-composed-byte-optimization-plan.md).
+
+The investigation at provider `6cd95b15` reproduced three independent range-proof blockers:
+post-loop construction, an unrelated mutable parameter, and a named loop bound.
+The source snapshot at `8a890d169f40fe030c05635a280d3c52fdbf6370` also needs its
+local `finite_f32` read guard and nested candidate-array writes handled. The
+follow-up capability combines root-specific loop proofs, reaching definitions,
+stable descriptor snapshots and restricted local read-leaf exposure, with the
+actual PR-247 sampler shape as the acceptance owner. No source rewrite or new
+loop syntax is required. F64 policy and precise failures remain unchanged.
+
+Raw LLVM already contains readonly/captures attributes on the borrowed descriptor.
+The repeated loads are reproducible, but blanket noalias is not the correction.
+A diagnostic local descriptor copy removes those loads while retaining the range
+trap, demonstrating the separate proof requirements.
+
+Native source inspection at ggml `bb4caa7540188872173c44d161602d9271386413`
+supports call-scoped source consumption: shared Metal copies bytes, private Metal
+waits for transfer completion, and CUDA synchronizes its copy stream. Private
+Metal has additional no-copy pointer/region requirements; actual placement and
+build/environment overrides must be recorded. The native declaration uses an
+ordinary slice data pointer; borrow modes exist on the Align wrappers. Lifetime
+information is now supplied, while explicit native certification and authenticated
+cross-unit proof transport remain design prerequisites. No symbol whitelist or
+new foreign annotation is adopted by this follow-up.
+
+Precision-preserving comparison and ordered SIMD filtering follow the scalar
+proof, with exact sampling/RNG/tie/nonfinite oracles and native timing rather than
+a claimed 3x speedup. The reported 85.38 ms/token and 0.278 ms sampling are consumer
+evidence, not provider measurements. Full compiler/client commands and artifact
+hash remain needed: the inspected source's managed pin still names `21d0cf27`,
+which does not rule out an independently built compiler at `6cd95b15`.
+
+One independent design review completed; its scope/cache finding was corrected
+by preparing owned MIR after emission-scope selection and testing same-process
+Whole-to-Function reuse without changing memoized original MIR.
+
+This publication changes only documentation. Consumer source, tests, fixtures,
+build setup and the managed pin remain unchanged.
+
+### Issue 1043 provider implementation (2026-09-14)
+
+Status: ALIGN_MERGED; [PR #1044](https://github.com/sanohiro/align/pull/1044)
+and [PR #1045](https://github.com/sanohiro/align/pull/1045) are merged.
+Provider merge checkpoint: `6cd95b15`; final implementation: `3fb6b00a`.
+Linux x86, Linux ARM and macOS Apple Silicon CI, including all required database
+checks, passed. Final main passed `cargo build --release --workspace`; no versioned
+release or tag was published. Consumer adoption and native Metal performance verification remain
+pending; this does not mark the full issue closed.
+Request: [Align #1043](https://github.com/sanohiro/align/issues/1043).
+Plan of record: [Align plan 63](https://github.com/sanohiro/align/blob/6cd95b159d77a762c1b213417493708787cc1590/docs/impl/63-codegen-performance-audit.md).
+Primary qualification: native Apple Silicon / Metal; Linux CPU/CUDA is separate.
+
+**Provider changes:** CPU choices reject missing/empty/unknown/wrong-architecture
+values before LLVM emission; optimized IR and remarks honor the selected profile.
+Partitioned ThinLTO now produces the required C wrapper for Unit, Result and argv
+entry points, with whole/partitioned and cold/warm cache controls.
+
+Bounded byte promotion admits concrete local readers through a body-derived
+backing-storage confinement proof, including forwarding, recursion and concrete
+generics. Unrelated slice indexing no longer disqualifies a candidate. The
+existing 64-byte object/1024-byte function budgets and initialized-extent rules
+remain. Buffers remain Move, views remain Copy with their source lifetime, and
+returned/retained views or opaque calls keep ordinary allocation. No source
+allocation guarantee or runtime ABI change is introduced.
+
+The existing `loop` syntax gains a narrow byte-range proof: a stable incoming
+byte view, zero-based single-step induction, `i < len/width` admission (or the
+matching exit guard), and matching scalar read widths. The exact admitting
+branch arm must dominate both read and increment. Signed/unsigned integer and
+float widths, endian, empty/short/partial/unaligned inputs, and invalidated CFG
+proofs have owners. Unknown effects, aliases or other recurrences retain reached
+traps. No speculative read, new unchecked API or IEEE reassociation is added.
+
+**Evidence:** local CPU/profile/ThinLTO/byte owners, bounded gate, Clippy and the
+14-suite disposable PostgreSQL gate pass. The shared owner script now runs on
+Linux x86/ARM and macOS Apple Silicon CI. Native ARM instruction checks complement
+x86 feature inclusion/exclusion controls. Cross-target assembly contains NEON;
+this is distinct from native Metal performance evidence.
+
+Provider-recorded Linux x86-64 / Ryzen 9 5950X / LLVM 22.1.8 measurements use
+reference `0e236129`, baseline/release, runtime LTO off and five CPU-0-pinned
+fresh processes per point in shuffled order (plan 63, section 11). Three local-reader calls change from
+6 allocations and 6 frees to zero; the 65-byte control remains allocated. Kernel
+medians are about 23.6 ns -> 1.3 ns for the local reader and 10.9 us -> 1.8 us for
+a guarded 50,000-word byte sum. An adverse typed-control measurement was traced
+to unchanged instructions with different placement; separately emitted control
+objects are byte-identical. Plan 63 records both the adverse result and pinned
+layout follow-up. These are not native Mac or end-to-end speedup claims.
+
+**Open boundaries:** `borrow` alone is not a backing-storage noescape certificate;
+a callee can return a borrowed view. Imported/foreign `runtime_inputs.update`
+needs authenticated effect transport and its actual copy/retention/completion
+contract before its buffer can be promoted. Other ThinLTO partitions cannot
+supply private proof absent cache dependencies. General recurrence shapes and
+automatic Top-K threshold synthesis remain outside this capability.
+
+A separate existing macOS SIGPIPE process-owner failure surfaced during native
+qualification and is recorded in [the issue comment](https://github.com/sanohiro/align/issues/1043#issuecomment-5662477076).
+It remains unresolved; the performance script now selects its actual CPU unit
+owner explicitly and does not alter or ignore existing signal tests.
+
+Baseline remains the portable default and includes NEON on AArch64. For local
+qualification use `--profile release --target-cpu native`; measure `fast` and
+`--thin-lto` separately. Additional CPU features and scheduling are not a universal
+speedup guarantee. Native Mac fixed-input phase timings, output parity and
+compiler-pin adoption remain consumer-owned work. This publication records the
+provider report without adopting a new compiler or changing consumer execution.
 
 ### Decode optimization provider implementation (2026-09-14)
 

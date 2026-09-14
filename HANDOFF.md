@@ -4,7 +4,7 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `agent/session-prefix-cache-opt` (based on `main` at `39fd051`).
+Active branch: `agent/session-prefix-cache-opt` (based on `main` at `073346d`).
 Active capability: Prompt-Lookup Candidate Selection & Unrolled Bit-Shift Prefix Caching.
 
 Complete work:
@@ -27,13 +27,12 @@ Complete work:
   - Qwen2 decode 128: `7913883c0e74`
 
 Active work:
-- Final preflight, independent adversarial review (`scripts/review-agy`), PR publication, and upstream issue filing.
+- Final preflight, PR publication, merge, and upstream issue filing.
 
 Next actions in priority order:
-1. Run preflight (`scripts/pre-pr`).
-2. Run independent adversarial review (`scripts/review-agy --base origin/main`).
-3. Commit, push branch, open PR, and merge into `main`.
-4. File upstream GitHub issue on `sanohiro/align` and register Request 65 in `docs/align-requests.md`.
+1. Merge PR #250 into `main`.
+2. File upstream GitHub issue on `sanohiro/align` and register Request 65 in `docs/align-requests.md`.
+3. Advance to the next recommended roadmap capability.
 
 Latest durable verification:
 - `scripts/run-gpu-session-reuse-smoke`: PASS.
@@ -42,6 +41,7 @@ Latest durable verification:
 
 Blockers, constraints, decisions:
 - No active blockers. Prefix cache remains as `buffer` due to Align compiler restriction on owned field replacement (`array<i64>`), optimized via unrolled bit-shift `write_i64_le`.
+- Provider #1046 must merge before its composed-loop surface can be adopted; #1044/#1045 adoption and native Metal qualification remain pending.
 
 
 ## Completed capability: latest merged Align adoption
