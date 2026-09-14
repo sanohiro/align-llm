@@ -15,7 +15,7 @@ import time
 
 from gpu_independent_acceptance import verify_build, source_files
 from gpu_qualification_input import admit
-from gpu_session_client import Session, qualification_environment
+from gpu_session_client import Session as BaseSession, qualification_environment
 
 ROOT = Path(__file__).resolve().parent.parent
 CONTROL = '4bf801112a03521bf9a1ed9a47cc45cd613cebd3'
@@ -28,6 +28,16 @@ COUNTS = ('output', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'token
 
 class Cancelled(RuntimeError):
     pass
+
+
+class Session(BaseSession):
+    def close(self, *, check=True):
+        # Keep first cancellation pending while the shared helper owns shutdown.
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+        try:
+            return super().close(check=check)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 @contextmanager
@@ -235,7 +245,7 @@ def run(args):
     return 0 if record['status'] == 'PASS' else 1
 
 
-def cancellation_test(*, construction=False):
+def cancellation_test(*, construction=False, shutdown=False):
     with tempfile.TemporaryDirectory(prefix='cuda-measure-cancel-') as temporary:
         work = Path(temporary)
         (work / 'profile.json').write_text('{}')
@@ -266,9 +276,16 @@ m.admit=lambda path:admitted
 m.identity=lambda source,build:dict(source_commit=m.CONTROL,align_revision='pin',
  compiler_sha256='compiler',bundle_id='fixture',libraries={})
 m.quiet_host=lambda:dict(quiet=True)
-if len(sys.argv)>3:
+if len(sys.argv)>3 and sys.argv[3]=='construction':
  def fail_dup(fd): raise m.Cancelled('measurement cancelled by signal at log ownership')
  m.os.dup=fail_dup
+if len(sys.argv)>3 and sys.argv[3]=='shutdown':
+ m.CASES=[]
+ original_wait=m.subprocess.Popen.wait
+ def observed_wait(process, *a, **k):
+  (w/'shutdown.wait').write_text(str(process.pid))
+  return original_wait(process,*a,**k)
+ m.subprocess.Popen.wait=observed_wait
 m.subprocess.check_output=lambda *a,**k:'fixture GPU'
 args=SimpleNamespace(output=w/'result',profile=w/'profile.json',control=w,candidate=w,
  control_source=source,candidate_source=source)
@@ -279,7 +296,7 @@ assert not (w/'worker.pid').exists()
 with m.cancellation_scope():
  raise SystemExit(m.run(args))
 """
-        child = subprocess.Popen([sys.executable, '-c', child_code, str(ROOT / 'scripts'), str(work), *(['construction'] if construction else [])],
+        child = subprocess.Popen([sys.executable, '-c', child_code, str(ROOT / 'scripts'), str(work), *(['construction'] if construction else ['shutdown'] if shutdown else [])],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
         pid = None
         try:
@@ -289,6 +306,11 @@ with m.cancellation_scope():
                     raise AssertionError('cancellation fixture did not start: ' + child.communicate(timeout=2)[1].decode())
                 time.sleep(.02)
             pid = int((work / 'worker.pid').read_text())
+            if shutdown:
+                while not (work / 'shutdown.wait').exists():
+                    if child.poll() is not None or time.monotonic() >= deadline:
+                        raise AssertionError('worker never entered shutdown wait')
+                    time.sleep(.02)
             if not construction:
                 child.send_signal(signal.SIGTERM)
             _, error = child.communicate(timeout=25)
@@ -334,6 +356,7 @@ def self_test():
             raise AssertionError('invalid evidence accepted')
     cancellation_test()
     cancellation_test(construction=True)
+    cancellation_test(shutdown=True)
     print('CUDA measurement self-test PASS (paired decisions and SIGTERM worker cleanup)')
 
 

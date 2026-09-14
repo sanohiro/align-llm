@@ -262,3 +262,17 @@ cancellation exception and flow through worker closure; repeated cancellation is
 ignored during cleanup. `--self-test` includes a real separate-process worker and
 SIGTERM cancellation/cleanup witness. These repairs do not alter the workload,
 performance floor, exact output checks or permitted measurement role.
+
+### Final-review shutdown ownership decision
+
+The conditional final review of `cb59980` found a remaining first-signal window
+during normal `Session.close`: the shared helper relinquishes its process handle
+before waiting. Redesign cancellation delivery at this Linux measurement boundary:
+a measurement-local Session subclass blocks SIGTERM/SIGINT for the entire inherited
+close operation, restoring the previous mask only after owned shutdown/reaping.
+This also covers close invoked internally by generation failure; shared product and
+qualification helpers remain unchanged. A pending first cancellation is then delivered
+and recorded as failure. The focused regression signals the actual shutdown wait and
+requires both a failure receipt and a reaped worker. This closes the same accepted
+ownership requirement without another comprehensive repair/review cycle or changing
+timing acceptance.

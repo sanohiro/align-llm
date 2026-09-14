@@ -23,32 +23,31 @@ Flash owner, typed probe, generation per-unit check, session reuse, device and b
 recipe owners PASS. The unchanged control also fails the previous Metal analytic
 Flash tolerance; a CUDA-only fixed-fixture bound is documented while all old/new
 F16 bytes and actual model output comparisons remain exact.
-Graph checkpoint host-capacity owner PASS; KV-only checkpoint `1342274` also PASS
-all 16 independent session requests. Final repair build and host capacity remain next.
+KV-only independent sessions PASS all 16 requests; repaired `be7b1f2` independent
+sessions and host capacity also PASS. `cb59980` exact-head hosted preflight PASS.
 
-Timing is NOT_STARTED. The user reports another Codex on this machine. The optional
-pause-window question is unanswered; proceed only after our owners finish and an
-external observer establishes 60 quiet seconds, and retain its continuous interference
-observations throughout all five pairs. Any interference invalidates the whole campaign.
-The measurement owner also records/refuses busy host boundaries. Disk space recovered to
-26 GiB; only this task's regenerable 75 MiB host-test build cache was removed here.
-No old unrelated temporary area was removed. Evidence is retained outside Git under
-`gpu-cuda-enablement-20260914`; no speed improvement or preflight stamp is claimed.
+Timing is NOT_STARTED: the initial admission refused idle display utilization before
+any worker/request. Calibration established 5-7% at 210/405 MHz without compute
+processes; the bounded clock-aware admission is documented before generated timing.
+The shared host requires 60 quiet seconds and continuous foreign-process observation;
+any interference invalidates the whole campaign. No unrelated temporary files were removed.
+Evidence is retained outside Git under `gpu-cuda-enablement-20260914`.
 
-One fresh comprehensive review of `1342274` found three P2 issues. Consolidated repairs
-validate the explicit prefill position, bind the executing measurement source/helpers
-to the candidate, and route SIGTERM/SIGINT through worker cleanup/failure receipts.
-The malformed-position regression PASS and fails on the unfixed wrapper; measurement
-source-refusal and real SIGTERM worker-cleanup self-tests PASS. `make fmt` PASS.
-A preflight invocation on `1342274` completed, but repairs began before its completion;
-do not use that stamp as final evidence. Run preflight anew after the repair commit.
+The comprehensive review of `1342274` found three P2 issues, consolidated in `be7b1f2`:
+explicit prefill-position admission, executed helper source closure, and cancellation
+cleanup. Their regressions PASS. The conditional final review of `cb59980` found one
+P2: a first cancellation during normal shutdown could interrupt reaping after process
+handle release. The plan now redesigns local measurement cancellation delivery to
+remain blocked throughout inherited shutdown, including generation-error cleanup.
+Shared helpers and runtime behavior remain unchanged; the new regression signals an
+actual shutdown wait and requires worker reaping plus a failure receipt.
 
-Next: commit/build the repaired KV-only candidate; run independent sessions and host capacity;
-measure in a coordinated quiet window and retain the change only if the declared floor
-and guardrails pass. Finish one fresh comprehensive implementation review, exact-head
-preflight, English PR and required hosted checks, then merge. Metal's shared callback,
-planner, metadata sizing, topology and prefill writer now remain unchanged; its earlier
-shared-planner qualification trigger was removed with graph enablement.
+Next: verify/commit the shutdown delivery redesign, build the exact candidate, run
+exact-head preflight, then measure only after the continuous observer admits a quiet
+window. Retain F16 enablement only if the fixed 15% primary floor and all guardrails
+pass. Publish the English PR with both review envelopes and all finding dispositions,
+wait for required checks and merge. QKV concurrency remains explicitly deferred;
+Metal's shared callback/planner/topology and prefill writer are unchanged.
 
 ## Completed capability: ALIGN-PRODUCT-CUTOVER
 
