@@ -23,16 +23,27 @@ Flash owner, typed probe, generation per-unit check, session reuse, device and b
 recipe owners PASS. The unchanged control also fails the previous Metal analytic
 Flash tolerance; a CUDA-only fixed-fixture bound is documented while all old/new
 F16 bytes and actual model output comparisons remain exact.
-Graph checkpoint host-capacity owner PASS; KV-only build/owners remain next.
+Graph checkpoint host-capacity owner PASS; KV-only checkpoint `1342274` also PASS
+all 16 independent session requests. Final repair build and host capacity remain next.
 
-Timing is NOT_STARTED. The user reports another Codex on this machine: wait for
-quiet-window coordination, then run the five paired KV-only/control campaign. The
-measurement owner records/refuses busy host boundaries. Disk space recovered to
+Timing is NOT_STARTED. The user reports another Codex on this machine. The optional
+pause-window question is unanswered; proceed only after our owners finish and an
+external observer establishes 60 quiet seconds, and retain its continuous interference
+observations throughout all five pairs. Any interference invalidates the whole campaign.
+The measurement owner also records/refuses busy host boundaries. Disk space recovered to
 26 GiB; only this task's regenerable 75 MiB host-test build cache was removed here.
 No old unrelated temporary area was removed. Evidence is retained outside Git under
 `gpu-cuda-enablement-20260914`; no speed improvement or preflight stamp is claimed.
 
-Next: commit/build the KV-only candidate; run independent sessions and host capacity;
+One fresh comprehensive review of `1342274` found three P2 issues. Consolidated repairs
+validate the explicit prefill position, bind the executing measurement source/helpers
+to the candidate, and route SIGTERM/SIGINT through worker cleanup/failure receipts.
+The malformed-position regression PASS and fails on the unfixed wrapper; measurement
+source-refusal and real SIGTERM worker-cleanup self-tests PASS. `make fmt` PASS.
+A preflight invocation on `1342274` completed, but repairs began before its completion;
+do not use that stamp as final evidence. Run preflight anew after the repair commit.
+
+Next: commit/build the repaired KV-only candidate; run independent sessions and host capacity;
 measure in a coordinated quiet window and retain the change only if the declared floor
 and guardrails pass. Finish one fresh comprehensive implementation review, exact-head
 preflight, English PR and required hosted checks, then merge. Metal's shared callback,

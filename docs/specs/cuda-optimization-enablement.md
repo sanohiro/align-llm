@@ -225,11 +225,35 @@ CUDA oracle coverage repair, not a relaxation of the F16 adoption comparison.
 
 ### Shared-host measurement constraint
 
-The user reports another Codex on this machine. Timing waits for an explicitly
-coordinated quiet window; neither our builds/owners nor the other developer's work
-may overlap measured arms. The measurement owner records two-second `/proc/stat`
+The user reports another Codex on this machine. Timing uses an announced quiet window after our builds/owners finish. Without a
+user-supplied pause window, independently observe at least 60 seconds of low load
+before launch and continue observing throughout the campaign; neither our other
+owners nor foreign development/CUDA work may overlap measured arms. The measurement owner records two-second `/proc/stat`
 samples and GPU utilization/compute-process observations before and after each arm.
 It refuses >=0.5 busy CPU cores, >=0.2 I/O-wait cores, GPU utilization >5%, or any
 compute process while the arm is stopped. These are idle admission checks, not proof
 that Windows host activity stayed absent; retain external load observations and
-invalidate any known interrupted campaign. Tool/plan digests are rechecked at completion.
+invalidate the entire campaign on any known interference (never drop a slow pair).
+The external observer retains its invocation and source hash plus 0.5-second process
+CPU samples and foreign CUDA-library presence; reject any foreign process above
+0.1 CPU cores or any foreign CUDA process. This supplements the built-in boundary
+checks; it does not establish isolation from unobservable Windows host activity.
+Tool/plan digests are rechecked at completion.
+
+### Consolidated review repairs
+
+The comprehensive review of `1342274` found three P2 issues: explicit prefill position
+was not checked in the indexed wrapper; measurement helpers were not source-bound;
+and SIGTERM bypassed cleanup. Preserve the prefill API by checking nonnegative start,
+positive extent and the source's actual row count before either backend dispatch.
+`scripts/run-cuda-kv-prefill-smoke` uses an accepting indexed test boundary so that
+negative and mismatched positions fail in the real Align wrapper, with valid controls.
+It is a focused owner and is not added to an aggregate.
+
+The measurement command must execute from its exact clean `--candidate-source` tree;
+its complete existing source closure (including imported helpers) must match the
+candidate manifest before and after execution. SIGTERM/SIGINT become a recorded
+cancellation exception and flow through worker closure; repeated cancellation is
+ignored during cleanup. `--self-test` includes a real separate-process worker and
+SIGTERM cancellation/cleanup witness. These repairs do not alter the workload,
+performance floor, exact output checks or permitted measurement role.

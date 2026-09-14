@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+work_dir=$(mktemp -d)
+trap 'rm -r -- "$work_dir"' EXIT
+suffix=so
+if [ "$(uname -s)" = Darwin ]; then suffix=dylib; fi
+"${CC:-cc}" -std=c11 -O2 -ffp-contract=off -DALIGN_GGML_FP_CONTRACT_OFF=1 -Wall -Wextra -Werror -fPIC -shared \
+  "$root_dir/scripts/gpu_kv_prefill_stub.c" -lm -o "$work_dir/libalign_ggml_shim.$suffix"
+(
+  cd "$work_dir"
+  LIBRARY_PATH="$work_dir${LIBRARY_PATH:+:$LIBRARY_PATH}" \
+    "${ALIGNC:-$root_dir/scripts/alignc}" build "$root_dir/src/runtime_kv_prefill_smoke.align" >/dev/null
+)
+LD_LIBRARY_PATH="$work_dir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+DYLD_LIBRARY_PATH="$work_dir${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
+  "$work_dir/runtime_kv_prefill_smoke"

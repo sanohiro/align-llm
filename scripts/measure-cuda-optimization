@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Source-bound paired CUDA intervention measurement; never a product entrypoint."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
 from pathlib import Path
 import statistics
+import signal
+import sys
+import tempfile
 import subprocess
 import time
 
@@ -20,6 +24,25 @@ SHORT = 'List the integers from 1 through 500 in ascending order, separated by s
 LONG = 'Repository context (irrelevant to this formatting task):\n' + 'alpha beta gamma delta\n' * 128 + '\n' + SHORT
 CASES = [('cold-short', SHORT), ('warm-short-cached', SHORT), ('warm-long-changed', LONG), ('warm-long-cached', LONG)]
 COUNTS = ('output', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'token_count_exact')
+
+
+class Cancelled(RuntimeError):
+    pass
+
+
+@contextmanager
+def cancellation_scope():
+    def cancel(number, _frame):
+        # A second interrupt must not interrupt owned-worker cleanup.
+        for item in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(item, signal.SIG_IGN)
+        raise Cancelled('measurement cancelled by signal ' + str(number))
+    previous = {number: signal.signal(number, cancel) for number in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
 
 
 def digest(path):
@@ -101,6 +124,7 @@ def run(args):
     destination = args.output.absolute()
     destination.mkdir(mode=0o700)
     record = dict(schema_version=1, status='FAIL', arms=[], comparisons=[])
+    worker = None
     try:
         admitted = admit(args.profile.resolve(strict=True))
         profile = admitted.records['profile']
@@ -115,6 +139,8 @@ def run(args):
         option["backend_bundle"] = str((admitted.root / option["backend_bundle"]).resolve(strict=True))
         builds = {name: getattr(args, name).resolve(strict=True) for name in ('control', 'candidate')}
         sources = {name: getattr(args, name + '_source').resolve(strict=True) for name in builds}
+        if sources['candidate'] != ROOT:
+            raise ValueError('measurement must execute from its exact candidate source tree')
         identities = {name: identity(sources[name], builds[name]) for name in builds}
         a, b = identities['control'], identities['candidate']
         if a['source_commit'] != CONTROL or any(a[k] != b[k] for k in ('align_revision', 'compiler_sha256', 'bundle_id')) or b['bundle_id'] != admitted.records['bundle']['bundle_id']:
@@ -189,8 +215,93 @@ def run(args):
         record['error'] = str(error)
         print('FAIL: ' + str(error), flush=True)
     finally:
+        # Covers failures between successful construction and the per-arm cleanup scope.
+        if worker is not None:
+            try:
+                worker.close(check=False)
+            except Exception as error:
+                record['status'] = 'FAIL'
+                record['error'] = 'worker cleanup failed: ' + str(error)
         (destination / 'result.json').write_text(json.dumps(record, indent=2) + '\n')
     return 0 if record['status'] == 'PASS' else 1
+
+
+def cancellation_test(*, construction=False):
+    with tempfile.TemporaryDirectory(prefix='cuda-measure-cancel-') as temporary:
+        work = Path(temporary)
+        (work / 'profile.json').write_text('{}')
+        worker_code = ("import os,struct,time\nfrom pathlib import Path\n"
+            "import sys\nraw=b'{\"schema_version\":1,\"status\":\"ready\"}'\n"
+            "sys.stdout.buffer.write(struct.pack('<I',len(raw))+raw);sys.stdout.buffer.flush()\n"
+            + "Path(" + repr(str(work / 'worker.pid')) + ").write_text(str(os.getpid()))\n"
+            + "time.sleep(60)\n")
+        (work / 'main').write_text('#!' + sys.executable + '\n' + worker_code)
+        (work / 'main').chmod(0o700)
+        child_code = r"""
+import sys, importlib.util
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+from types import SimpleNamespace
+sys.path.insert(0,sys.argv[1])
+loader=SourceFileLoader('measured',str(Path(sys.argv[1])/'measure-cuda-optimization'))
+spec=importlib.util.spec_from_loader(loader.name,loader)
+m=importlib.util.module_from_spec(spec);loader.exec_module(m)
+w=Path(sys.argv[2]); source=m.ROOT
+models=[dict(model_id=name, model_path='profile.json', pack_path='profile.json',
+ geometry_path='profile.json', runtime_cache_budget_bytes=0) for name in ('qwen2','olmoe')]
+option=dict(backend='cuda',placement='resident',prefetch='off',backend_bundle='profile.json',
+ host_budget_bytes=1073741824,device_budget_bytes=6000000000)
+admitted=SimpleNamespace(root=w, files={}, recheck=lambda:None, records=dict(
+ profile=dict(models=models,runtime_options=[option]), bundle=dict(bundle_id='fixture')))
+m.admit=lambda path:admitted
+m.identity=lambda source,build:dict(source_commit=m.CONTROL,align_revision='pin',
+ compiler_sha256='compiler',bundle_id='fixture',libraries={})
+m.quiet_host=lambda:dict(quiet=True)
+if len(sys.argv)>3:
+ def fail_dup(fd): raise m.Cancelled('measurement cancelled by signal at log ownership')
+ m.os.dup=fail_dup
+m.subprocess.check_output=lambda *a,**k:'fixture GPU'
+args=SimpleNamespace(output=w/'result',profile=w/'profile.json',control=w,candidate=w,
+ control_source=source,candidate_source=source)
+bad=SimpleNamespace(**vars(args)); bad.candidate_source=w; bad.output=w/'wrong-source'
+assert m.run(bad)==1
+assert 'exact candidate source tree' in m.json.loads((bad.output/'result.json').read_text())['error']
+assert not (w/'worker.pid').exists()
+with m.cancellation_scope():
+ raise SystemExit(m.run(args))
+"""
+        child = subprocess.Popen([sys.executable, '-c', child_code, str(ROOT / 'scripts'), str(work), *(['construction'] if construction else [])],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
+        pid = None
+        try:
+            deadline = time.monotonic() + 15
+            while not (work / 'worker.pid').exists():
+                if child.poll() is not None or time.monotonic() >= deadline:
+                    raise AssertionError('cancellation fixture did not start: ' + child.communicate(timeout=2)[1].decode())
+                time.sleep(.02)
+            pid = int((work / 'worker.pid').read_text())
+            if not construction:
+                child.send_signal(signal.SIGTERM)
+            _, error = child.communicate(timeout=25)
+            assert child.returncode == 1, error.decode()
+            record = json.loads((work / 'result/result.json').read_text())
+            assert record['status'] == 'FAIL' and 'cancelled by signal' in record['error']
+            assert record['arms'][0]['status'] == 'FAIL'
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                raise AssertionError('cancelled measurement left a worker alive')
+        finally:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+                child.communicate(timeout=5)
+            if pid is not None:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
 
 def self_test():
@@ -210,7 +321,9 @@ def self_test():
             pass
         else:
             raise AssertionError('invalid evidence accepted')
-    print('CUDA measurement self-test PASS')
+    cancellation_test()
+    cancellation_test(construction=True)
+    print('CUDA measurement self-test PASS (paired decisions and SIGTERM worker cleanup)')
 
 
 if __name__ == '__main__':
@@ -224,4 +337,5 @@ if __name__ == '__main__':
     else:
         if any(getattr(args, name) is None for name in ('profile', 'control_source', 'control', 'candidate_source', 'candidate', 'output')):
             parser.error('all campaign operands are required')
-        raise SystemExit(run(args))
+        with cancellation_scope():
+            raise SystemExit(run(args))

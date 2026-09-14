@@ -1,0 +1,49 @@
+module runtime_kv_prefill_smoke
+
+import ggml_ffi
+import runtime_kv
+
+fn check(borrow owner: ggml_ffi.GpuDevice, ctx: raw, borrow slots: slice<u8>,
+  position: i64, valid: i64, accepted: bool) -> Result<(), Error> {
+  observed := match runtime_kv.prefill_chunk(owner, 0, ggml_ffi.GPU_KV_LAYOUT_K,
+    position, valid, valid, 1, ctx, slots, 1, 0) {
+    Ok(_) => true,
+    Err(_) => false,
+  }
+  if observed != accepted { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+fn run(borrow owner: ggml_ffi.GpuDevice, ctx: raw) -> Result<(), Error> {
+  mut storage := buffer(256)
+  mut at := 0
+  loop {
+    if at >= 64 { break }
+    storage.put_u32_le(0)
+    at = at + 1
+  }
+  slots := storage.bytes()
+  ggml_ffi.slots_init(slots, slots.len(), "prefill_fixture") else { return Err(Error.Invalid) }
+  ggml_ffi.slot_new_tensor_2d(ctx, slots, 0, 0, 4, 2, "two_rows") else { return Err(Error.Invalid) }
+  check(owner, ctx, slots, 0, 2, true)?
+  check(owner, ctx, slots, 3, 5, true)?
+  check(owner, ctx, slots, -1, 2, false)?
+  check(owner, ctx, slots, 1, 2, false)?
+  check(owner, ctx, slots, 3, 2, false)?
+  check(owner, ctx, slots, 2, 2, false)?
+  return Ok(())
+}
+
+pub fn main() -> Result<(), Error> {
+  owner := ggml_ffi.gpu_device_open("cuda", "stub-gpu", "fixture-plugin",
+    "1111111111111111111111111111111111111111111111111111111111111111",
+    1048576, 1048576) else { return Err(Error.Invalid) }
+  if !ggml_ffi.gpu_kv_prefill_indexed(owner) { return Err(Error.Invalid) }
+  ctx := ggml_ffi.context_open(65536)
+  if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
+  result := run(owner, ctx)
+  ggml_ffi.context_close(ctx)
+  result?
+  print("CUDA prefill interval: PASS")
+  return Ok(())
+}

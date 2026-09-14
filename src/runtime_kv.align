@@ -102,7 +102,11 @@ pub fn write_prefix(borrow owner: ggml_ffi.GpuDevice, index: i64, kind: i64,
 pub fn prefill_chunk(borrow owner: ggml_ffi.GpuDevice, index: i64, layout: i64,
   position: i64, valid: i64, width: i64, position_input: i64, ctx: raw, borrow slots: slice<u8>,
   out: i64, source: i64) -> Result<(), Error> {
-  if width < valid { return Err(Error.Invalid) }
+  if position < 0 || valid <= position || width < valid
+    || (layout != ggml_ffi.GPU_KV_LAYOUT_K && layout != ggml_ffi.GPU_KV_LAYOUT_V)
+    || ggml_ffi.slot_ne(slots, source, if layout == ggml_ffi.GPU_KV_LAYOUT_K { 1 } else { 0 }) != valid - position {
+    return Err(Error.Invalid)
+  }
   if ggml_ffi.gpu_kv_prefill_indexed(owner) {
     write_indexed_prefix(owner, index, ggml_ffi.GPU_GRAPH_PREFILL, layout, position_input, valid, slots, out, source)?
   } else {
