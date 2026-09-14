@@ -106,6 +106,32 @@ Discovered during Decode Loop Allocation & Branchless Greedy Argmax optimization
 4. Lossy conversion warnings on masked byte casts: Align emits `warning: lossy conversion: u32 as u8 truncates the high bits` on expressions like `(val & 255) as u8` because `& 255` retains type `u32`, despite the upper 24 bits being provably zero.
 Full compiler analysis and reproduction recorded on [sanohiro/align#1049](https://github.com/sanohiro/align/issues/1049).
 
+### Request 67: disjoint field borrowing aliasing and struct-rooted slice views in check_call_borrow_aliases (2026-09-14)
+
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none; application code decouples staging buffers to the caller function frame rather than holding them in `Session`
+Independent work that may continue: runtime generation, memory planning, benchmark suites
+Resume condition: upstream design closure and implementation on issue
+Align commit or pull request: to be filed on sanohiro/align
+align-llm verification: scripts/run-gpu-session-reuse-smoke, python3 /Users/hiro/models/measure_qwen_f16.py
+
+Discovered during Decode Loop Zero-Allocation Staging and Session Buffer Optimization:
+1. Disjoint struct field borrowing defeated by shared storage roots in `align_sema::lib.rs:35422`:
+   In `check_call_borrow_aliases`, the compiler checks:
+   `if direct_overlap || roots.iter().any(|root| peer_roots.contains(root))`
+   For struct field accesses, `argument_place` and `place(peer)` correctly compute field paths (`ExprKind::Field { root, path }`) and `overlaps(left, right)` confirms field disjointness (e.g. `session.owner` at path `[0]` and `session.scalar_slot` at path `[12]`). However, because both field expressions share the enclosing root variable (`session`), `roots.iter().any(|root| peer_roots.contains(root))` evaluates to `true`.
+   Consequently, when one field is passed as `ParamMode::BorrowMut` (or a slice view borrowed mutably from that field) and another disjoint field is passed as `ParamMode::Borrow`, the call is rejected with:
+   `borrowed argument X to 'foo' aliases argument Y, whose mode may invalidate the same owner`.
+2. Struct field mutation invalidates unrelated immutable field slice views:
+   Mutating a field of an aggregate (`session.decode_key = key.clone()`) causes the borrow checker to invalidate all active borrows rooted in `session` (such as `decode_view := session.decode_slots.bytes()`), emitting `use of invalidated borrow 'decode_view': its external provenance ended unexpectedly`, even though the modified field is completely disjoint from the borrowed field.
+3. Inability to express persistent staging buffers inside resource-owning state structs:
+   Because of (1) and (2), persistent staging buffers cannot be stored inside the `Session` struct alongside `owner: GpuDevice` if those buffers need to be updated via `write_u32_le` or passed as `borrow mut slice<u8>` into functions alongside `session.owner`. The application must allocate staging buffers at the caller frame.
+Proposed resolution:
+- When both `argument_place` and `place(peer)` are `Some((root, path))` with the same root, rely on `overlaps(left, right)` (prefix disjointness) to permit disjoint field borrows without falling back to the broad `storage_roots` collision check.
+- Track borrow invalidation per field path rather than invalidating the entire aggregate root on single-field assignment.
+
 ### Issue 1043 composed-loop follow-up design (2026-09-14)
 
 Status: IMPLEMENTING; design recorded here now has provider implementation

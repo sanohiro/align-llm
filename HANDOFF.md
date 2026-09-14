@@ -13,14 +13,13 @@ Active work:
 - Documented key Align compiler limitation: `check_call_borrow_aliases` in `crates/align_sema/src/lib.rs:35422` defeats disjoint field borrowing when fields share a struct root (`|| roots.iter().any(|root| peer_roots.contains(root))`). Slices borrowed mutably from struct fields cannot coexist with immutable struct field borrows in the same call. Staging buffers are held at the function frame to maintain disjoint roots.
 - Verified 100% bit-for-bit SHA-256 output parity on Apple Silicon Metal GPU.
 - Measured latency improvements on Apple Silicon (OLMoE decode down to 16.48 ms/tok, Qwen2 decode down to 75.91 ms/tok).
+- Registered Request 67 in `docs/align-requests.md` capturing disjoint struct field borrowing aliasing conflict and aggregate slice view invalidation.
 
 Next actions in priority order:
-1. Commit candidate on branch `agent/session-persistent-buffers-zero-alloc`.
-2. Run independent adversarial review: `scripts/review-agy --base origin/main`.
-3. Preflight with `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
-4. Push, publish PR and merge.
-5. File upstream issue on `sanohiro/align` for disjoint field borrowing aliasing conflict and register Request in `docs/align-requests.md`.
-6. Proceed to next optimization capability.
+1. Run publication preflight: `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
+2. Push branch `agent/session-persistent-buffers-zero-alloc`, publish English PR with review envelope and verification evidence, and merge after CI checks pass.
+3. File upstream issue on `sanohiro/align` for Request 67.
+4. Refresh `main` and start next optimization capability.
 
 Latest durable verification:
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
