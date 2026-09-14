@@ -2,6 +2,38 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Current checkpoint: CUDA optimization design (2026-09-14)
+
+Branch `agent/cuda-optimization-design`, based on main `4bf8011` (merged PR #242).
+The user requested current-state investigation and a plan/design, with implementation assigned
+separately. The intentional uncommitted changes are this handoff, the performance-plan pointer
+and `docs/specs/cuda-optimization-enablement.md`. A concurrent provider assessment in
+`docs/align-requests.md` belongs to separate work and is preserved. No runtime, build, environment setting or pin
+has been changed. Older active/publication notes below are historical to their named branches;
+they do not authorize resuming implementation in this design-only task.
+
+Completed: source/retained-bundle and hardware inspection. CUDA GRAPHS/FA build flags are already
+ON; the shared callback and dispatch optimizations already reach CUDA. Q/K/V graph optimization
+is OFF in the controlled environment, additionally lacking native `attn_norm` tensor names.
+F16 KV remains Metal OLMoE-only; the pinned CUDA SET cannot implement that F16 prefill write.
+The plan specifies supported SET_ROWS adoption and separates its precision/storage risk from
+graph/stream optimization. No new Align gap is established.
+
+Next actions for the implementation owner, in order: qualify a clean manifested CUDA control
+from `4bf8011`; close the graph optimizer's two-graph lifetime witness before enabling its
+default; qualify and measure CUDA-GRAPH-ENABLE; adopt/qualify CUDA-KV-F16 independently; qualify
+the combination and coding caller. If backend event rebinding cannot safely use shipped APIs,
+record the exact ggml blocker and continue the independent KV capability. All new runtime and
+measurement evidence is NOT_RUN. Source facts are not proof of active CUDA capture or speedup.
+
+Design verification: `git diff --check`, new-file whitespace/fence/relative-link checks and
+`python3 scripts/gpu_backend_recipe.py --backend cuda --print-plan` PASS. A fresh comprehensive
+high-effort inspection by `/root/cuda_design_review` reviewed the three design files against
+HEAD/base tip/merge base `4bf801112a03521bf9a1ed9a47cc45cd613cebd3`: CLEAN, complete findings none.
+The new specification SHA256 is `9b2be409049a7d385c20c437bbfb8769cb5fc426007a3fe8d5a107ccd01c182f`.
+This subsequent handoff metadata records the result; runtime feasibility and speed are unverified.
+No publication or exact-head preflight stamp is claimed.
+
 ## Completed capability: ALIGN-PRODUCT-CUTOVER
 
 The user requested completion of normal-product Python removal on 2026-09-13.
