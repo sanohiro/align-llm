@@ -2,12 +2,19 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active capability: latest merged Align adoption publication
+## Current checkpoint
+
+The user requested publication of the remaining decode-optimization provider note in
+`docs/align-requests.md`. Branch `agent/decode-request-record` contains that documentation
+and synchronizes its adoption status. No implementation or benchmark work is active.
+Next eligible follow-up is native Mac decode/sampling performance qualification from
+Align plan 62; it is pending and is not started by this documentation publication.
+
+## Completed capability: latest merged Align adoption
 
 Branch `agent/align-latest-adoption`, based on merged CUDA F16 PR #243
-(`4fbc7d2d989fbf1f185db410b8a8e1d8a5234957`). The user requested this follow-up
-and PR merge. Implementation and consumer verification are complete; exact-head
-preflight and required GitHub checks remain before publication/merge.
+(`4fbc7d2d989fbf1f185db410b8a8e1d8a5234957`). PR #245 merged at `40f0bbf5a64b7d826c6871b93b7f0c43b6b21d1b`. Implementation,
+consumer verification, exact-head preflight and required GitHub checks are complete.
 
 The managed pin advances from `f502fe3da00ce0b39c4eeec40586b11688627fbd` to latest
 merged Align `21d0cf27fb92166370b2705d5c366c2b269d17a3` (#1042). It includes bounded
@@ -32,13 +39,12 @@ metadata and final integration evidence belong in the adoption pull request.
 
 R86's optional-carrier negative still passes both check modes at this new pin.
 It remains a recorded nonblocking compiler residual, not verified/closed by adoption.
-The original checkout's unrelated dirty `docs/align-requests.md` and sibling Align's
-unrelated deleted `.codex/config.toml` remain untouched. No new platform qualification,
+The user now authorized publication of the previously preserved request note. Sibling
+Align's unrelated deleted `.codex/config.toml` remains untouched. No new platform qualification,
 aggregate audit or compiler-specific performance claim is selected by this pure pin.
 
-Next: run `python3 scripts/pre-pr --owner-test product-cutover-adoption --
-scripts/run-product-cutover-adoption-smoke`, publish the adoption PR, require hosted
-CI and merge. No additional roadmap capability is authorized by this bounded request.
+The active worktree uses the adopted pin. Further implementation is outside this
+request-note publication; native Mac performance remains explicitly pending.
 
 ## Completed CUDA F16 KV capability and concurrency retry
 

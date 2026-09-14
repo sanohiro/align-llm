@@ -22,6 +22,71 @@ numbers are approximate and may drift — locate by function name.
 
 ## Align audit answer (2026-09-07)
 
+### Decode optimization provider implementation (2026-09-14)
+
+Status: ALIGN_MERGED. [Align PR #1042](https://github.com/sanohiro/align/pull/1042)
+merged at `21d0cf27fb92166370b2705d5c366c2b269d17a3`; final implementation head
+`3e9ad92d169a167043faf63634bba6444b6b808f`.
+Priority: medium; follow-up consumer performance qualification.
+Primary target: Apple Silicon / AArch64 with Metal.
+Blocking: no reported functional blocker. Consumer performance verification is pending.
+Blocked gate or slice: no new API dependency; existing code can be rebuilt with the new compiler.
+Independent work that may continue: existing runtime and sampling work using shipped APIs.
+Resume condition: unchanged-output profiling on the Mac; managed pin adoption is complete.
+align-llm verification: [PR #245](https://github.com/sanohiro/align-llm/pull/245) merged
+at `40f0bbf5a64b7d826c6871b93b7f0c43b6b21d1b`, adopting the exact provider revision.
+Managed release materialization/verification, 155-unit source checking, the existing
+cutover adoption owner and all 7 Qwen / 9 OLMoE independent CUDA responses/counts pass.
+This is Linux CUDA correctness evidence, not the pending native Mac performance owner.
+Design and proof closure: [Align plan 62](https://github.com/sanohiro/align/blob/21d0cf27fb92166370b2705d5c366c2b269d17a3/docs/impl/62-decode-optimization-plan.md).
+
+**Shipped:** compiler-proven bounded, nonescaping local byte objects use fixed local
+storage. For a scalar helper containing `buffer(4)`, `put_f32_le(x)` and
+`bytes().u32_le(0)`, optimized LLVM is a bitcast; Apple M1 backend inspection emits
+`fmov w0, s0; ret`. Both shell and payload allocations disappear for this selected
+helper. This is not general SSO or a promise that every small buffer selects it:
+capacity must be compiler-known within the budget, initialized extent must remain
+known and at most 64 bytes, selected storage totals at most 1,024 bytes per function,
+and escaping handles/views, variable extents and unaudited uses retain the runtime
+path. No Buffer ABI or source ownership rule changed. Inspect the actual
+`update_decode` helper before claiming all per-token allocations disappeared.
+
+**Shipped:** direct synchronous `raw.chunks(4).map(fn word { word.f32_le(0) }).max()`
+derives borrowed chunk views in the consumer loop without allocating chunk headers.
+At 50,000 floats this removes 800,000 metadata bytes. Stored/bound chunks still
+materialize, and collecting outputs still allocate their own storage. Source owners,
+byte order, alignment-1 reads, reached partial-tail traps and full-fold any/all
+predicate evaluation remain. A where/boolean condition that skips a read still skips
+its failure. The per-read range check is retained; no general LICM pass was added.
+
+Validation: independent design/code reviews and finding closure, focused byte/chunk,
+ownership, SIMD and parallel owners, the bounded compiler gate and workspace Clippy
+passed locally. Required CI passed on Linux x86-64, Linux ARM64 and macOS Apple
+Silicon, including the ARM release builds and packaged execution checks. Native Mac
+sampling/Metal performance was not measured by those checks.
+
+Reference **Linux x86-64** microbenchmarks, same production runtime with timing and
+allocation instrumentation separated: four-byte conversion 26.351 → 1.439 ns and
+2 → 0 allocation events; 50,000-value byte max 59.503 → 14.784 us and 1 → 0 events.
+The forced heap and typed-max controls remain. The final safety fix emits the same
+benchmark object bytes. These ratios are not Mac or end-to-end speedup claims.
+Reproduction: [decode storage benchmark](https://github.com/sanohiro/align/blob/21d0cf27fb92166370b2705d5c366c2b269d17a3/bench/decode_storage/README.md).
+
+No `as_f32_le`, byte-specific SIMD method or Top-K terminal is introduced. Existing
+resource-owned native typed views still require correct ownership, access authority,
+alignment and Metal synchronization; plan 61's broader access qualification remains
+separate. The fixed-threshold witnesses already benefited from LLVM's existing
+optimization, so lack of LICM was not established as the original regression cause.
+Top-K algorithm qualification remains the separate indexed/oracle experiment in plan 62.
+
+**Implementer next step:** rebuild the already-adopted compiler pin on the Mac.
+Compare identical logits, model, vocabulary/k and seed with unchanged sampling/RNG
+policy. Measure Metal completion/readback, decode update, selection/normalization and
+output publication separately and end-to-end; capture actual allocation counts and
+optimized loops. The original before/after client revisions, slowdown cause and
+claimed 500+ allocation events per token remain unverified here. Provider delivery
+must not advance this entry to ALIGN_LLM_VERIFIED without that consumer evidence.
+
 ### R77–R83 consolidated provider implementation (2026-09-12)
 
 [Align PR #1027](https://github.com/sanohiro/align/pull/1027) merged into main on
