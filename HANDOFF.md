@@ -4,8 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `agent/runtime-sampler-topk-threshold` (head commit 2d80cc6 plus review repairs).
-Active capability: `R8-RUNTIME-SAMPLER-TOPK-THRESHOLD`.
+Active branch: `main` (commit `800d7a3`).
+Active capability: none (idle; awaiting next roadmap slice).
 
 Complete work:
 - Implemented scalar thresholding in `src/runtime_sampler.align` (Plan 62 algorithm 1)
@@ -17,26 +17,29 @@ Complete work:
   prefill `6b86b273ff34`, OLMoE decode `109a6553d0bd`, Qwen2 decode `7913883c0e74`.
 - Filed upstream compiler improvement issue: [sanohiro/align#1043](https://github.com/sanohiro/align/issues/1043).
 - Registered Request 63 in `docs/align-requests.md`.
-- Addressed all 4 findings from independent review.
+- Completed independent review (`scripts/review-agy`), consolidated repair commit `fa996c7`,
+  preflight passed, and merged pull request #247 into `main` (`800d7a3`).
+- Validated upstream Align PR #1044 and PR #1045 (merged at `6cd95b15`) on Apple Silicon Metal GPU:
+  Qwen2 dense decode improved from 88.17 ms/tok to 85.38 ms/tok (~3.2% throughput gain),
+  100% bit-for-bit SHA-256 parity preserved, and published qualification results on #1043.
 
 Active work:
-- Consolidating review repair commit and executing final publication preflight.
+- None.
 
 Next actions in priority order:
-1. Run publication preflight: `python3 scripts/pre-pr --owner-test runtime-sampler-smoke -- ./scripts/alignc run src/runtime_sampler_smoke.align`.
-2. Push branch `agent/runtime-sampler-topk-threshold` and create pull request.
-3. Merge pull request into `main`.
+1. When a new Align pin release is tagged/promoted, adopt `6cd95b15` or latest release toolchain.
+2. Advance to the next scheduled roadmap capability in `docs/specs/roadmap.md`.
 
 Latest durable verification:
 - `scripts/alignc run src/runtime_sampler_smoke.align`: PASS.
-- `scripts/bench-runtime-sampler`: PASS.
+- `scripts/bench-runtime-sampler`: PASS (~278 us/call).
 - `scripts/run-gpu-session-reuse-smoke`: PASS.
 - `scripts/check-format`: PASS.
-- `scripts/pre-pr`: PASS on commit 2d80cc6 (hosted-checks 40+ targets passing).
+- `python3 scripts/pre-pr`: PASS on commit `fa996c7`.
+- Apple Silicon Metal GPU qualification on PR #1045: PASS (all SHAs identical, Qwen2 decode 85.38 ms/tok).
 
 Blockers, constraints, decisions:
-- No functional blockers or external dependencies.
-- Worktree clean before final preflight.
+- No active blockers. Worktree clean on `main`.
 
 
 ## Completed capability: latest merged Align adoption
