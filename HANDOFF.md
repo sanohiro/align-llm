@@ -2,62 +2,63 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active capability: latest merged Align adoption
+## Active capability: latest merged Align adoption publication
 
-Branch `agent/align-latest-adoption`, initially based on CUDA candidate `eaff971`.
-The user requested the latest Align pin after CUDA completion. CUDA PR #243 remains
-under required hosted checks; publish this follow-up only after its merge.
+Branch `agent/align-latest-adoption`, based on merged CUDA F16 PR #243
+(`4fbc7d2d989fbf1f185db410b8a8e1d8a5234957`). The user requested this follow-up
+and PR merge. Implementation and consumer verification are complete; exact-head
+preflight and required GitHub checks remain before publication/merge.
 
-Adopt merged Align `21d0cf27fb92166370b2705d5c366c2b269d17a3` (#1042), replacing
-`f502fe3da00ce0b39c4eeec40586b11688627fbd`. The source delta includes bounded byte
-storage / direct sequential chunks, writable/native byte-view fixes, codec and SSE
+The managed pin advances from `f502fe3da00ce0b39c4eeec40586b11688627fbd` to latest
+merged Align `21d0cf27fb92166370b2705d5c366c2b269d17a3` (#1042). It includes bounded
+byte storage / direct sequential chunks, writable/native byte-view fixes, codec/SSE
 view invalidation, computed fixed-array field borrows and active-checkout runtime
-build inputs. It introduces no new client API. Managed release materialization PASS.
-Keep the original checkout's unrelated `docs/align-requests.md` and sibling Align's
-unrelated deleted `.codex/config.toml` untouched.
+build inputs. No client source or public API changes are required.
 
-Next: product source check, existing cutover adoption owner, freshly manifested CUDA
-session build and independent 7 Qwen / 9 OLMoE outputs; then one comprehensive review,
-pin-scope exact-head preflight, required hosted CI and merge. No new performance claim
-or native platform qualification is selected by this pin alone. The old-pin CUDA
-27.47% measurement remains historical; this adoption must establish its own correctness.
-R86's optional move-after-use residual remains recorded and is not closed by a pin update.
+PASS: `scripts/align-toolchain ensure compiler`, `scripts/align-toolchain verify`,
+`make check` (155 units), and `scripts/run-product-cutover-adoption-smoke`. The clean
+manifested `46aea33` CUDA session build uses compiler SHA-256
+`042e772d0cf3002e852a33dd3463c62386c17ce853c4c7e7d4883bac73db0524`.
+`scripts/run-gpu-session-independent` passes all 7 Qwen / 9 OLMoE exact responses
+and counts; result SHA-256
+`e2fdd1619ad26bed2bd0dc862e4c25c333dc22458a7f60062b947b79a54a981f`.
+Retained local receipts are under `gpu-cuda-enablement-20260914/latest-align-*`.
 
-## CUDA F16 KV checkpoint
+One fresh comprehensive review by `/root/latest_align_adoption_review` covers
+`46aea33db0fb13fcf5e815d05c743d350d395ac8` against base/merge base `eaff971`:
+CLEAN, no findings. Following changes integrate the same CUDA tree and refresh
+this durable checkpoint; the pin and client source remain unchanged. Review/check
+metadata and final integration evidence belong in the adoption pull request.
 
-Branch `agent/cuda-optimization-enablement`, PR #243. CI prerequisite #244 is merged
-at `810a456`; its hosted and both installed-profile checks pass. Managed Align pin
-remains `f502fe3da00ce0b39c4eeec40586b11688627fbd` for this CUDA qualification.
-The original checkout's dirty `docs/align-requests.md` is unrelated and untouched.
+R86's optional-carrier negative still passes both check modes at this new pin.
+It remains a recorded nonblocking compiler residual, not verified/closed by adoption.
+The original checkout's unrelated dirty `docs/align-requests.md` and sibling Align's
+unrelated deleted `.codex/config.toml` remain untouched. No new platform qualification,
+aggregate audit or compiler-specific performance claim is selected by this pure pin.
 
-CUDA OLMoE resident F16 KV is qualified: native F16/Flash, explicit prefill interval,
-session reuse, 7 Qwen / 9 OLMoE independent requests and both host-capacity owners
-PASS. Runtime sources are unchanged since repaired `be7b1f2`. The complete clean
-`48f249b` versus `4bf8011` campaign has 80 exact responses, no external interference,
-and 27.47% OLMoE long-cached median paired reduction, faster 5/5; all seven guardrails
-pass. Portable evidence is `eval/benchmarks/cuda-kv-f16-2026-09-14.json`.
+Next: run `python3 scripts/pre-pr --owner-test product-cutover-adoption --
+scripts/run-product-cutover-adoption-smoke`, publish the adoption PR, require hosted
+CI and merge. No additional roadmap capability is authorized by this bounded request.
 
-Fresh settled-candidate comprehensive review of `3549a20` found one P3 portable-path
-issue, repaired in `4a4f39a`; no runtime or measurement correctness finding remains.
-The exact-head hosted preflight on `4a4f39a` passed. Final integrated-head preflight
-and required GitHub checks remain before merge; review/check metadata belongs in PR #243.
+## Completed CUDA F16 KV capability and concurrency retry
 
-The user-requested QKV retry is complete and NOT_MET. Experimental `16a7a1e` retains
-decode tensors only during allocation and restores original flags before evaluation.
-Native lifecycle, independent responses and host ceilings pass. Production traces show
-454 cross-stream overlapping kernel pairs for Qwen, zero for OLMoE. A full quiet
-five-pair campaign against F16 `48f249b` gives only 1.32% OLMoE long-cached reduction,
-faster 3/5, below the unchanged 15% / 4-of-5 floor. All 80 responses match and all
-seven guardrails pass; there is no external interference. The earlier campaign is
-invalid because author CI-status calls exceeded the predeclared CPU threshold.
-`eval/benchmarks/cuda-qkv-lifetime-2026-09-14.json` preserves the final negative result.
-An ancestry-only merge retains the experimental sources without adopting their tree.
-Ship F16 only; resume concurrency with a material new hypothesis, not a default toggle.
+PR #243 is merged at `4fbc7d2`; CI budget prerequisite #244 merged at `810a456`.
+Native F16/Flash, explicit prefill interval, session reuse, 16 independent requests
+and both host-capacity owners PASS. On historical compiler `f502fe3d`, the complete
+clean `48f249b` versus `4bf8011` campaign has 80 exact responses, no external
+interference and 27.47% OLMoE long-cached median paired reduction, faster 5/5;
+all seven guardrails pass. The accepted portable report is
+`eval/benchmarks/cuda-kv-f16-2026-09-14.json`. This old-pin measurement is not a
+performance result for the new Align compiler.
 
-Next: finish exact-head preflight, required CI and merge PR #243. Then perform the
-user-requested update to the latest merged Align revision as a separate adoption,
-with managed materialization, relevant request owners, review and PR merge. Do not
-mix that new compiler into the accepted old-pin CUDA performance evidence.
+The renewed QKV lifetime experiment `16a7a1e` is NOT_MET: the final quiet incremental
+campaign gives 1.32% primary reduction, faster 3/5, below the fixed 15% / 4-of-5 floor.
+All 80 responses match and all seven guardrails pass. Qwen traces show 454 overlapping
+kernel pairs; OLMoE shows none. The first campaign was invalidated by author CI-status
+CPU activity and wholly rerun with those calls stopped. Complete negative evidence is
+`eval/benchmarks/cuda-qkv-lifetime-2026-09-14.json`. An ancestry-only merge preserves
+the experiment without shipping its graph defaults, tagging or allocator changes.
+Future QKV work needs a new material hypothesis; no such follow-up is active.
 
 ## Completed capability: ALIGN-PRODUCT-CUTOVER
 
