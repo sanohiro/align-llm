@@ -3628,6 +3628,19 @@
       "acceptance": "Documented portable baseline replay; python3 scripts/check-python-boundary --strict",
       "frozen_sha256": null,
       "bootstrap": null
+    },
+    {
+      "path": "scripts/measure-cuda-optimization",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Measure the fixed source-bound CUDA enablement intervention with paired external workers.",
+      "reachability": "No product call: independent developer/test entry or imported support; may launch the product under test.",
+      "substitution": "Fixed experimental workload/control/reduction only; does not implement a normal product command.",
+      "python_reason": "Independent timing, paired ordering and controlled benchmark orchestration remain test-side responsibilities.",
+      "target": "Retain as measurement only; product retry/session policy must use Align, not import this harness.",
+      "migration": "N/A",
+      "acceptance": "scripts/measure-cuda-optimization --self-test; strict boundary guard; real paired CUDA campaign.",
+      "frozen_sha256": null,
+      "bootstrap": null
     }
   ],
   "embedded_hosts": [

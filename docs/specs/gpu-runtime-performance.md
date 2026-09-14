@@ -1,5 +1,11 @@
 # Runtime foundations and GPU performance plan
 
+Current request (2026-09-14): investigate and design CUDA optimization enablement, without
+implementation. [CUDA enablement](cuda-optimization-enablement.md) records the current ON/OFF
+inventory, the missing Q/K/V optimizer opt-in and tensor names, the CUDA F16 prefill limitation,
+and the proposed capability/qualification sequence. It owns that extension's contract; the
+historical O1 scope and measurements below remain unchanged until actual CUDA acceptance.
+
 Execution priority (2026-09-13): the user authorized resuming GPU performance work and selected
 MoE. Product cutover implementation is complete; its publication remains a separate pending
 checkpoint. The bounded diagnosis below selected O1, which now passes its local paired floor.

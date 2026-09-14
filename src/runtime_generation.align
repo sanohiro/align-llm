@@ -375,7 +375,7 @@ fn admit_olmoe_shapes_at(
   legacy_cache_bytes: i64,
 ) -> Result<(), Error> {
   runtime_attention.select(owner, prompt_width, chunk_width, capacity, g.context_length, g.head_dim, g.n_head, g.n_head_kv)?
-  if session_graph && options.backend == "metal" && runtime_attention.fused(owner) {
+  if session_graph && (options.backend == "metal" || options.backend == "cuda") && runtime_attention.fused(owner) {
     ggml_ffi.gpu_attention_select(owner, 2) else { return Err(Error.Invalid) }
   }
   kv_bytes := olmoe_kv_bytes(owner, g, capacity, plan.kv_bytes)?

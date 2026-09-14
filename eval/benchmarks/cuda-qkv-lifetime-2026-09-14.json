@@ -1,0 +1,3322 @@
+{
+  "schema_version": 1,
+  "kind": "cuda-qkv-lifetime-local-paired-result",
+  "date": "2026-09-14",
+  "control_commit": "48f249bdd742792aba619198a9ff780a48a1d2af",
+  "candidate_commit": "16a7a1e3f20eb0c444f9e9c9f86bbd0680463663",
+  "compiler_sha256": "637644037b4d939bdd483ed3240aded64211f6ca63609f6b4eca1488650bcc8c",
+  "align_revision": "f502fe3da00ce0b39c4eeec40586b11688627fbd",
+  "bundle_id": "61d557b528275397c81f7a528140199977aa7ef4982d6ae09a90e5f67ace5965",
+  "profile_sha256": "d602f7e339f254df2c06ce6730a78439fad7a6f98c03562bcb3ad40c86a23af9",
+  "tool_sha256": "465ec9a8ecb73ef4aaf3e0d01ea5d97dc87b647c757b2c26c66427bb339b93fd",
+  "plan_sha256": "5cfee6fa96b3689b2bfe1d5db85e4f7b831d69f249e26dc3ae73dc4efc066c6e",
+  "gpu": "NVIDIA GeForce RTX 4070 Ti, GPU-89438e76-a35d-3084-f5df-ca518ef88c78, 610.62, 12282 MiB",
+  "raw_receipt_sha256": "bb6a745a305b941e903f6fb3594547b1c55ca4be32ee1baddccf7e791b3abdc0",
+  "external_observer_receipt_sha256": "57aa24c8e435819ac5a5dea17c11f4a3b03a5f24692ee57f0acb98fd44baa4a7",
+  "external_observer_source_sha256": "c856e20aa4dbdc00e77412c1f858ba24cd7a757af8b006a714d8cc7c8f07de92",
+  "external_observations_sha256": "a4535415d0747f3cacfecb68167e15caf2c8fe8cbe504129185fe8e4fdadd3e9",
+  "external_interference": false,
+  "status": "NOT_MET",
+  "measurement_status": "FAIL",
+  "error": "performance floor or guardrail not met",
+  "comparisons": [
+    {
+      "model": "qwen2",
+      "case": "cold-short",
+      "paired_reductions": [
+        0.006450550904580952,
+        0.018439091019360337,
+        -0.0020441646370734827,
+        0.008810384778745874,
+        0.010730456651252206
+      ],
+      "median_reduction": 0.008810384778745874,
+      "passed": true
+    },
+    {
+      "model": "qwen2",
+      "case": "warm-short-cached",
+      "paired_reductions": [
+        0.0033255045121829917,
+        0.009221171584895979,
+        0.009632575664275686,
+        0.009301114292512028,
+        0.008059452740130927
+      ],
+      "median_reduction": 0.009221171584895979,
+      "passed": true
+    },
+    {
+      "model": "qwen2",
+      "case": "warm-long-changed",
+      "paired_reductions": [
+        -0.012236852905744035,
+        0.004184620176989287,
+        -0.013546959307886183,
+        -0.019363168719292792,
+        -0.008788618547922176
+      ],
+      "median_reduction": -0.012236852905744035,
+      "passed": true
+    },
+    {
+      "model": "qwen2",
+      "case": "warm-long-cached",
+      "paired_reductions": [
+        -0.009635959284211506,
+        -0.005159726540497428,
+        -0.008980163017379597,
+        -0.008034403761525163,
+        -0.013908167084063578
+      ],
+      "median_reduction": -0.008980163017379597,
+      "passed": true
+    },
+    {
+      "model": "olmoe",
+      "case": "cold-short",
+      "paired_reductions": [
+        0.01658529569315717,
+        -0.0065181628209186795,
+        0.045115240751097706,
+        -0.002778394773135023,
+        0.029186010967299995
+      ],
+      "median_reduction": 0.01658529569315717,
+      "passed": true
+    },
+    {
+      "model": "olmoe",
+      "case": "warm-short-cached",
+      "paired_reductions": [
+        0.04385942932002871,
+        1.9923018300121278e-05,
+        -0.003008765378883937,
+        -0.018366036997072618,
+        0.04319813970830341
+      ],
+      "median_reduction": 1.9923018300121278e-05,
+      "passed": true
+    },
+    {
+      "model": "olmoe",
+      "case": "warm-long-changed",
+      "paired_reductions": [
+        0.014946452375255676,
+        -0.010816189177149299,
+        -0.009785554232218564,
+        0.014920317519745785,
+        -0.016533414501756515
+      ],
+      "median_reduction": -0.009785554232218564,
+      "passed": true
+    },
+    {
+      "model": "olmoe",
+      "case": "warm-long-cached",
+      "paired_reductions": [
+        -0.0041228535687973826,
+        0.02502610276046797,
+        -0.0010595405273498809,
+        0.01316957341423541,
+        0.04129278906492281
+      ],
+      "median_reduction": 0.01316957341423541,
+      "passed": false
+    }
+  ],
+  "arms": [
+    {
+      "model": "qwen2",
+      "pair": 0,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1507389081,
+          "worker_ns": 1507012951,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1507012951,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1455164166,
+          "worker_ns": 1454789367,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1454789367,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1698401473,
+          "worker_ns": 1698086800,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1698086800,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1546489515,
+          "worker_ns": 1546161098,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1546161098,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.19996776769553593,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.2049604464254582,
+            "iowait_cores": 0.0,
+            "gpu": "75, 1575, 2640, 10501",
+            "compute_processes": "",
+            "quiet": false
+          },
+          {
+            "busy_cpu_cores": 0.16996464947741768,
+            "iowait_cores": 0.0,
+            "gpu": "3, 1575, 570, 810",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16996679945017915,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 225, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.19996776769553593,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2235783461,
+      "host_after": {
+        "busy_cpu_cores": 0.15996725982084278,
+        "iowait_cores": 0.0,
+        "gpu": "9, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.17996211356597047,
+            "iowait_cores": 0.004998947599054736,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.26496476008441056,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15996725982084278,
+            "iowait_cores": 0.0,
+            "gpu": "9, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 0,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1497665591,
+          "worker_ns": 1497313454,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1497313454,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1450325011,
+          "worker_ns": 1449941552,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1449941552,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1719184562,
+          "worker_ns": 1718834607,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1718834607,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1561391425,
+          "worker_ns": 1561080464,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1561080464,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.16496836954209612,
+        "iowait_cores": 0.0,
+        "gpu": "6, 1576, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1449728167995684,
+            "iowait_cores": 0.00499906264826098,
+            "gpu": "9, 1576, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.21496699880382314,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1576, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16496836954209612,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1576, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2049133649,
+      "host_after": {
+        "busy_cpu_cores": 0.19996671893920243,
+        "iowait_cores": 0.00499916797348006,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.15997589003367443,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16497199270480564,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.19996671893920243,
+            "iowait_cores": 0.00499916797348006,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 1,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1473421212,
+          "worker_ns": 1473084074,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1473084074,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1435373493,
+          "worker_ns": 1434987151,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1434987151,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1712791577,
+          "worker_ns": 1712426624,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1712426624,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1561962686,
+          "worker_ns": 1561611666,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1561611666,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.2349465188890319,
+        "iowait_cores": 0.004998862104021956,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.2049689133897557,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.2099656673590281,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.2349465188890319,
+            "iowait_cores": 0.004998862104021956,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2035140985,
+      "host_after": {
+        "busy_cpu_cores": 0.16497252959918865,
+        "iowait_cores": 0.0,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1999637452733888,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1499728051312301,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16497252959918865,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 1,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1501100134,
+          "worker_ns": 1500793278,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1500793278,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1448732504,
+          "worker_ns": 1448375473,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1448375473,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1719989078,
+          "worker_ns": 1719527838,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1719527838,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1553944756,
+          "worker_ns": 1553550453,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1553550453,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.14996943532937382,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.19996966660124005,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15997268106538887,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.14996943532937382,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2073425415,
+      "host_after": {
+        "busy_cpu_cores": 0.19995968212938472,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.20496476850335782,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.204961646961796,
+            "iowait_cores": 0.004999064560043806,
+            "gpu": "48, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": false
+          },
+          {
+            "busy_cpu_cores": 0.17496502300473704,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16497243021996097,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.19995968212938472,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 2,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1498523624,
+          "worker_ns": 1498134322,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1498134322,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1452709274,
+          "worker_ns": 1452254272,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1452254272,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1699804471,
+          "worker_ns": 1699436281,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1699436281,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1547742950,
+          "worker_ns": 1547331847,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1547331847,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.2299551971392796,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16497598675534575,
+            "iowait_cores": 0.0,
+            "gpu": "9, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15997600191996958,
+            "iowait_cores": 0.0,
+            "gpu": "9, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.2299551971392796,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2130720085,
+      "host_after": {
+        "busy_cpu_cores": 0.1649662748721309,
+        "iowait_cores": 0.004998978026428208,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.23496025987894809,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15995989269620436,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1649662748721309,
+            "iowait_cores": 0.004998978026428208,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 2,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1501586853,
+          "worker_ns": 1501250827,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1501250827,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1438715942,
+          "worker_ns": 1438323958,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1438323958,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1722831653,
+          "worker_ns": 1722464743,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1722464743,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1561641934,
+          "worker_ns": 1561045834,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1561045834,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.18996719779410765,
+        "iowait_cores": 0.004999136784055464,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.2399554222815675,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1749764109926439,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.18996719779410765,
+            "iowait_cores": 0.004999136784055464,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2098687004,
+      "host_after": {
+        "busy_cpu_cores": 0.17997392069903645,
+        "iowait_cores": 0.0,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16997476605626763,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.20996563576427066,
+            "iowait_cores": 0.004999181803911207,
+            "gpu": "9, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.17997392069903645,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 3,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1485440450,
+          "worker_ns": 1485131547,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1485131547,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1437748550,
+          "worker_ns": 1437373727,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1437373727,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1737840283,
+          "worker_ns": 1737481990,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1737481990,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1569965925,
+          "worker_ns": 1569607552,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1569607552,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.17497083629848673,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.18496786886154484,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.21995973911916478,
+            "iowait_cores": 0.004999084979981017,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.17497083629848673,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2077472075,
+      "host_after": {
+        "busy_cpu_cores": 0.21496600892979323,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16997524123641927,
+            "iowait_cores": 0.0,
+            "gpu": "9, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1549736557957729,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.21496600892979323,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 3,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1498644081,
+          "worker_ns": 1498280224,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1498280224,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1451246762,
+          "worker_ns": 1450939058,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1450939058,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1704829384,
+          "worker_ns": 1704305233,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1704305233,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1557452721,
+          "worker_ns": 1556964756,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1556964756,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.18996072675950215,
+        "iowait_cores": 0.0,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.18997574104780027,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.18495075399506689,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.18996072675950215,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2079085960,
+      "host_after": {
+        "busy_cpu_cores": 0.1799479276583312,
+        "iowait_cores": 0.004998553546064756,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.20995585814552162,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16997377381148449,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1799479276583312,
+            "iowait_cores": 0.004998553546064756,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 4,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1497990768,
+          "worker_ns": 1497571463,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1497571463,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1448357398,
+          "worker_ns": 1448003784,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1448003784,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1704846435,
+          "worker_ns": 1704536615,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1704536615,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1539300245,
+          "worker_ns": 1538932342,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1538932342,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.16997195496730627,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.18997119656717706,
+            "iowait_cores": 0.004999242014925713,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.18497241561866273,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16997195496730627,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2033172124,
+      "host_after": {
+        "busy_cpu_cores": 0.1649742875200618,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1699600955791244,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.20495992326376924,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1649742875200618,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "qwen2",
+      "pair": 4,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 1481916643,
+          "worker_ns": 1481546965,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1481546965,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 1436684430,
+          "worker_ns": 1436314540,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 50,
+            "completion_tokens": 128,
+            "total_tokens": 178,
+            "token_count_exact": true,
+            "elapsed_ns": 1436314540,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 1719829680,
+          "worker_ns": 1719440713,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1719440713,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 1560709090,
+          "worker_ns": 1560294378,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "qwen2",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46",
+            "prompt_tokens": 700,
+            "completion_tokens": 128,
+            "total_tokens": 828,
+            "token_count_exact": true,
+            "elapsed_ns": 1560294378,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.27994001571311156,
+        "iowait_cores": 0.0,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.17997299658161686,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.18996760681867125,
+            "iowait_cores": 0.0049991475478597695,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.18996692191472817,
+            "iowait_cores": 0.0,
+            "gpu": "55, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": false
+          },
+          {
+            "busy_cpu_cores": 0.18996858432537697,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.23495802874236713,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.27994001571311156,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 2161165582,
+      "host_after": {
+        "busy_cpu_cores": 0.20496171520120865,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.18497239194564077,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.14997271861282493,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.20496171520120865,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 0,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 480542774,
+          "worker_ns": 480179213,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 480179213,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 366037868,
+          "worker_ns": 365517071,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 365517071,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 503210649,
+          "worker_ns": 502753435,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 502753435,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 401604125,
+          "worker_ns": 401227941,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 401227941,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.20996063668466566,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.18996624527782915,
+            "iowait_cores": 0.004999111717837609,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1399778835643136,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.20996063668466566,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1673518028,
+      "host_after": {
+        "busy_cpu_cores": 0.20493209155032932,
+        "iowait_cores": 0.0,
+        "gpu": "9, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.26996013714622397,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.14497487737601614,
+            "iowait_cores": 0.004999133702621247,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.20493209155032932,
+            "iowait_cores": 0.0,
+            "gpu": "9, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 0,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 472572830,
+          "worker_ns": 472115513,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 472115513,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 349983656,
+          "worker_ns": 349585352,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 349585352,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 495689435,
+          "worker_ns": 495278931,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 495278931,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 403259880,
+          "worker_ns": 402858987,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 402858987,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.2299583646581776,
+        "iowait_cores": 0.0,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1949726902727504,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15996724382741542,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.2299583646581776,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1618501323,
+      "host_after": {
+        "busy_cpu_cores": 0.20497053989175582,
+        "iowait_cores": 0.0,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1749704644607359,
+            "iowait_cores": 0.0,
+            "gpu": "9, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16496425018502697,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.20497053989175582,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 1,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 495443487,
+          "worker_ns": 495087800,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 495087800,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 360681134,
+          "worker_ns": 360333854,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 360333854,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 516308795,
+          "worker_ns": 515819903,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 515819903,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 389662578,
+          "worker_ns": 389258835,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 389258835,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.22495775405860485,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.19497458837697004,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1749526013163509,
+            "iowait_cores": 0.0049986457518957405,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.22495775405860485,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1642266654,
+      "host_after": {
+        "busy_cpu_cores": 0.22496131272819966,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.20997376356815423,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16497185307977508,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.22496131272819966,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 1,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 492235019,
+          "worker_ns": 491869709,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 491869709,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 360688320,
+          "worker_ns": 360366022,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 360366022,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 510784058,
+          "worker_ns": 510417848,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 510417848,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 399664626,
+          "worker_ns": 399348196,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 399348196,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.18995878777612527,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.19995941423752667,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.17495220664362063,
+            "iowait_cores": 0.0,
+            "gpu": "5, 1575, 300, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.18995878777612527,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1664016240,
+      "host_after": {
+        "busy_cpu_cores": 0.20496662948560432,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.19496504393737515,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15497261734580917,
+            "iowait_cores": 0.0,
+            "gpu": "9, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.20496662948560432,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 2,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 488563546,
+          "worker_ns": 488232054,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 488232054,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 356883261,
+          "worker_ns": 356553180,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 356553180,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 502493153,
+          "worker_ns": 502173843,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 502173843,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 398457623,
+          "worker_ns": 398127814,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 398127814,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.15997219835174195,
+        "iowait_cores": 0.004999131198491936,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.21495836729334802,
+            "iowait_cores": 0.004999031797519722,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.2699421543654879,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15997219835174195,
+            "iowait_cores": 0.004999131198491936,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1681620319,
+      "host_after": {
+        "busy_cpu_cores": 0.17995830204175298,
+        "iowait_cores": 0.0,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.18995765558929167,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.21496506688675904,
+            "iowait_cores": 0.004999187602017652,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.17995830204175298,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 2,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 466521884,
+          "worker_ns": 466204728,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 466204728,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 357957039,
+          "worker_ns": 357550792,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 357550792,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 507410327,
+          "worker_ns": 507075890,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 507075890,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 398879805,
+          "worker_ns": 398492846,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 398492846,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.16496921649674945,
+        "iowait_cores": 0.0,
+        "gpu": "1, 1575, 2640, 10501",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16497034723997195,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.20495172792432056,
+            "iowait_cores": 0.004998822632300502,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.16496921649674945,
+            "iowait_cores": 0.0,
+            "gpu": "1, 1575, 2640, 10501",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1703308907,
+      "host_after": {
+        "busy_cpu_cores": 0.24496509504610858,
+        "iowait_cores": 0.004999287654002216,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.16496593799814685,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.20496434389024154,
+            "iowait_cores": 0.004999130338786379,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.24496509504610858,
+            "iowait_cores": 0.004999287654002216,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 3,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 486819798,
+          "worker_ns": 486425645,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 486425645,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 375052710,
+          "worker_ns": 374699362,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 374699362,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 509822950,
+          "worker_ns": 509501536,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 509501536,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 408039799,
+          "worker_ns": 407699616,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 407699616,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.22496537186759982,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.15996882391584133,
+            "iowait_cores": 0.0049990257473700415,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.20996485083415523,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.22496537186759982,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1769460131,
+      "host_after": {
+        "busy_cpu_cores": 0.21494473201327785,
+        "iowait_cores": 0.0,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.24496580632528944,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15497360412087824,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.21494473201327785,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 3,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 485470968,
+          "worker_ns": 485065776,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 485065776,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 368288706,
+          "worker_ns": 367954719,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 367954719,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 517544884,
+          "worker_ns": 517169663,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 517169663,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 413485223,
+          "worker_ns": 413102786,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 413102786,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.23995999303007443,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.2149733348151444,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15497440946324584,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.23995999303007443,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1704537124,
+      "host_after": {
+        "busy_cpu_cores": 0.19496944945708727,
+        "iowait_cores": 0.004999216652745827,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.20996663409729266,
+            "iowait_cores": 0.0,
+            "gpu": "9, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.21496363707353694,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.19496944945708727,
+            "iowait_cores": 0.004999216652745827,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 4,
+      "arm": "control",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 500645738,
+          "worker_ns": 500309106,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 500309106,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 357278163,
+          "worker_ns": 356973262,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 356973262,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 510635356,
+          "worker_ns": 510275591,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 510275591,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 418816321,
+          "worker_ns": 418492206,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 418492206,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.23496270143348996,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.19997045006672962,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.149972999535996,
+            "iowait_cores": 0.0,
+            "gpu": "9, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.23496270143348996,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1716457972,
+      "host_after": {
+        "busy_cpu_cores": 0.26495416743347355,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.1799735804183845,
+            "iowait_cores": 0.0,
+            "gpu": "9, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.15497015724194455,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.26495416743347355,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    },
+    {
+      "model": "olmoe",
+      "pair": 4,
+      "arm": "candidate",
+      "status": "PASS",
+      "requests": [
+        {
+          "case": "cold-short",
+          "client_ns": 486033886,
+          "worker_ns": 485671453,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 485671453,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-short-cached",
+          "client_ns": 341844411,
+          "worker_ns": 341526998,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 52,
+            "completion_tokens": 128,
+            "total_tokens": 180,
+            "token_count_exact": true,
+            "elapsed_ns": 341526998,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-changed",
+          "client_ns": 519077902,
+          "worker_ns": 518656829,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 518656829,
+            "error": "",
+            "error_code": -1
+          }
+        },
+        {
+          "case": "warm-long-cached",
+          "client_ns": 401522227,
+          "worker_ns": 401184756,
+          "quality": true,
+          "result": {
+            "schema_version": 2,
+            "operation": "generate",
+            "provider": "align-runtime",
+            "model": "olmoe",
+            "endpoint": "",
+            "status": "ok",
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 96 97 98 99 100 101 102 103 104 105 106 107 108 109 110 111 112 113 114 115 116 117 118 119 120 121 122 123 124 125 126 127 128",
+            "prompt_tokens": 704,
+            "completion_tokens": 128,
+            "total_tokens": 832,
+            "token_count_exact": true,
+            "elapsed_ns": 401184756,
+            "error": "",
+            "error_code": -1
+          }
+        }
+      ],
+      "host_before": {
+        "busy_cpu_cores": 0.18995962911483535,
+        "iowait_cores": 0.0,
+        "gpu": "7, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.21996794495114788,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1799625206456274,
+            "iowait_cores": 0.004998958906822983,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.18995962911483535,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      },
+      "startup_ns": 1667621400,
+      "host_after": {
+        "busy_cpu_cores": 0.14997028563750558,
+        "iowait_cores": 0.0,
+        "gpu": "8, 1575, 210, 405",
+        "compute_processes": "",
+        "quiet": true,
+        "observations": [
+          {
+            "busy_cpu_cores": 0.19996699314826016,
+            "iowait_cores": 0.0,
+            "gpu": "6, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.1699723301193383,
+            "iowait_cores": 0.0,
+            "gpu": "7, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          },
+          {
+            "busy_cpu_cores": 0.14997028563750558,
+            "iowait_cores": 0.0,
+            "gpu": "8, 1575, 210, 405",
+            "compute_processes": "",
+            "quiet": true
+          }
+        ]
+      }
+    }
+  ],
+  "report_transformations": [
+    "Omit machine-specific arm command paths.",
+    "Normalize each result.model metadata field to its arm model identifier; raw receipts and hashes are preserved."
+  ],
+  "excluded_campaign": {
+    "name": "paired-lifetime",
+    "reason": "Four CI-status gh processes exceeded the predeclared foreign CPU threshold; entire campaign invalidated.",
+    "raw_receipt_sha256": "dfdfd8d3d9abbed483f8668f0f1c8779a0217f6c3d348255fe8d70ce2fc4dac0",
+    "observer_receipt_sha256": "a5f7f0e14f8301477300d130929a7ec43255252987842e79e02521dcf0ff960e"
+  }
+}

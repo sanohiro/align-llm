@@ -30,6 +30,10 @@ They preserve the fixed eight-row experiment outside normal product execution, u
 historical fixtures and externally supplied products. They own only fixture adaptation,
 paired ordering, independent timing and evidence capture; no product imports them.
 
+`scripts/measure-cuda-optimization` is `BENCHMARK_OR_MEASUREMENT`: it owns only
+fixed paired timing, source/build identity checks and independent result comparison.
+It launches external native workers and is never imported by normal product execution.
+
 ## Historical preparation audit
 
 Audit date: 2026-09-09. Application head: `312dd65714036f9587329386b5fdbd65e91b97b9`.

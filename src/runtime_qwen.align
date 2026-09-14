@@ -235,7 +235,7 @@ pub fn build_prefill_chunk(
       return Err(Error.Invalid)
     }
     runtime_kv.prefill_chunk(owner, 2 * layer, ggml_ffi.GPU_KV_LAYOUT_K,
-      position, position + tokens, width, ctx, slots, 32, 31)?
+      position, position + tokens, width, INPUT_PREFILL_POSITIONS, ctx, slots, 32, 31)?
     if use_flash {
       runtime_attention.values(ctx, slots, 26, 35, 36, g.head_dim, tokens, g.n_head_kv)?
     } else {
@@ -244,7 +244,7 @@ pub fn build_prefill_chunk(
       }
     }
     runtime_kv.prefill_chunk(owner, 2 * layer + 1, if use_flash { ggml_ffi.GPU_KV_LAYOUT_K } else { ggml_ffi.GPU_KV_LAYOUT_V },
-      position, position + tokens, width, ctx, slots, 37, 36)?
+      position, position + tokens, width, INPUT_PREFILL_POSITIONS, ctx, slots, 37, 36)?
     expand(graph, slots, 32, "qwen_prefill_k")?
     expand(graph, slots, 37, "qwen_prefill_v")?
     if last && !final_chunk { return Ok(()) }

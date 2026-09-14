@@ -1,0 +1,400 @@
+#!/usr/bin/env python3
+"""Source-bound paired CUDA intervention measurement; never a product entrypoint."""
+import argparse
+from contextlib import contextmanager
+import hashlib
+import json
+import os
+from pathlib import Path
+import statistics
+import signal
+import sys
+import tempfile
+import subprocess
+import time
+
+from gpu_independent_acceptance import verify_build, source_files
+from gpu_qualification_input import admit
+from gpu_session_client import Session as BaseSession, qualification_environment
+
+ROOT = Path(__file__).resolve().parent.parent
+CONTROL = '4bf801112a03521bf9a1ed9a47cc45cd613cebd3'
+SYSTEM = 'You are a helpful assistant. Follow the output format exactly.'
+SHORT = 'List the integers from 1 through 500 in ascending order, separated by single spaces. Output only the integers.'
+LONG = 'Repository context (irrelevant to this formatting task):\n' + 'alpha beta gamma delta\n' * 128 + '\n' + SHORT
+CASES = [('cold-short', SHORT), ('warm-short-cached', SHORT), ('warm-long-changed', LONG), ('warm-long-cached', LONG)]
+COUNTS = ('output', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'token_count_exact')
+
+
+class Cancelled(RuntimeError):
+    pass
+
+
+class Session(BaseSession):
+    def close(self, *, check=True):
+        # Keep first cancellation pending while the shared helper owns shutdown.
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+        try:
+            return super().close(check=check)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
+@contextmanager
+def cancellation_scope():
+    def cancel(number, _frame):
+        # A second interrupt must not interrupt owned-worker cleanup.
+        for item in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(item, signal.SIG_IGN)
+        raise Cancelled('measurement cancelled by signal ' + str(number))
+    previous = {number: signal.signal(number, cancel) for number in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        yield
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def digest(path):
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def remaining(deadline):
+    value = min(300, deadline - time.monotonic())
+    if value <= 0:
+        raise TimeoutError('model campaign deadline exhausted')
+    return value
+
+
+def quality(result):
+    if result['completion_tokens'] != 128:
+        return False
+    values = result['output'].strip().split()
+    if values and values[-1] != str(len(values)) and str(len(values)).startswith(values[-1]):
+        values.pop()
+    return len(values) >= 16 and all(value == str(index) for index, value in enumerate(values, 1))
+
+
+def reductions(arms, model, case):
+    result = []
+    for pair in range(5):
+        selected = [a for a in arms if a['model'] == model and a['pair'] == pair]
+        if len(selected) != 2 or {a['arm'] for a in selected} != {'control', 'candidate'}:
+            raise ValueError('missing or duplicate paired arm')
+        rows = {}
+        for arm in selected:
+            matching = [r for r in arm['requests'] if r['case'] == case]
+            if arm['status'] != 'PASS' or len(matching) != 1 or not matching[0]['quality']:
+                raise ValueError('incomplete or failed quality arm')
+            rows[arm['arm']] = matching[0]
+        a, b = rows['control'], rows['candidate']
+        if any(a['result'][k] != b['result'][k] for k in COUNTS):
+            raise ValueError('paired output or token-count mismatch')
+        if min(a['client_ns'], b['client_ns']) <= 0:
+            raise ValueError('invalid client clock')
+        result.append((a['client_ns'] - b['client_ns']) / a['client_ns'])
+    median = statistics.median(result)
+    primary = model == 'olmoe' and case == 'warm-long-cached'
+    passed = median >= .15 and sum(r > 0 for r in result) >= 4 if primary else median >= -.05
+    return dict(paired_reductions=result, median_reduction=median, passed=passed)
+
+
+def identity(source, build):
+    record = verify_build(build, True, session=True)
+    head = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+    if subprocess.check_output(['git', '-C', str(source), 'status', '--porcelain']):
+        raise ValueError('source checkout is dirty')
+    if head != record['source_commit'] or source_files(source) != record['source_files']:
+        raise ValueError('source checkout differs from build closure')
+    return record
+
+
+def idle_gpu(observation):
+    for row in observation.splitlines():
+        utilization, _memory, graphics, memory_clock = map(int, row.split(','))
+        # The observed Windows display baseline is 5-7% at the 210/405 MHz idle clocks.
+        if utilization > 5 and not (utilization <= 10 and graphics <= 300 and memory_clock <= 500):
+            return False
+    return bool(observation.strip())
+
+
+def host_observation():
+    # Timing is valid only in a coordinated quiet window on this shared WSL host.
+    def cpu():
+        return list(map(int, Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
+    before = cpu()
+    started = time.monotonic()
+    time.sleep(2)
+    after = cpu()
+    elapsed = time.monotonic() - started
+    delta = [b - a for a, b in zip(before, after)]
+    busy = sum(delta[i] for i in (0, 1, 2, 5, 6, 7)) / os.sysconf('SC_CLK_TCK') / elapsed
+    wait = delta[4] / os.sysconf('SC_CLK_TCK') / elapsed
+    gpu = subprocess.check_output(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,clocks.gr,clocks.mem',
+        '--format=csv,noheader,nounits'], text=True, timeout=30).strip()
+    processes = subprocess.check_output(['nvidia-smi', '--query-compute-apps=pid,process_name',
+        '--format=csv,noheader'], text=True, timeout=30).strip()
+    return dict(busy_cpu_cores=busy, iowait_cores=wait, gpu=gpu, compute_processes=processes,
+        quiet=busy < .5 and wait < .2 and not processes and idle_gpu(gpu))
+
+
+def settled_host(observe):
+    observations = []
+    streak = 0
+    for _ in range(10):
+        row = observe()
+        observations.append(row)
+        streak = streak + 1 if row['quiet'] else 0
+        if streak == 3:
+            return dict(row, quiet=True, observations=observations)
+    return dict(observations[-1], quiet=False, observations=observations)
+
+
+def quiet_host():
+    # Settling is outside every measured clock and retains all busy observations.
+    time.sleep(10)
+    return settled_host(host_observation)
+
+
+def run(args):
+    destination = args.output.absolute()
+    destination.mkdir(mode=0o700)
+    record = dict(schema_version=1, status='FAIL', arms=[], comparisons=[])
+    worker = None
+    try:
+        admitted = admit(args.profile.resolve(strict=True))
+        profile = admitted.records['profile']
+        if len(profile['models']) != 2 or {m['model_id'] for m in profile['models']} != {'qwen2', 'olmoe'} or len(profile['runtime_options']) != 1:
+            raise ValueError('campaign requires both models and one resident CUDA option')
+        option = {k: v for k, v in profile['runtime_options'][0].items() if k != 'option_id'}
+        if option['backend'] != 'cuda' or option['placement'] != 'resident' or option['prefetch'] != 'off':
+            raise ValueError('campaign requires resident CUDA without prefetch')
+        if option['host_budget_bytes'] < 1073741824 or option['device_budget_bytes'] < 6000000000 or any(m['runtime_cache_budget_bytes'] > 1073741824 for m in profile['models']):
+            raise ValueError('campaign budget cannot be admitted')
+        option.update(host_budget_bytes=1073741824, device_budget_bytes=6000000000)
+        option["backend_bundle"] = str((admitted.root / option["backend_bundle"]).resolve(strict=True))
+        builds = {name: getattr(args, name).resolve(strict=True) for name in ('control', 'candidate')}
+        sources = {name: getattr(args, name + '_source').resolve(strict=True) for name in builds}
+        if sources['candidate'] != ROOT:
+            raise ValueError('measurement must execute from its exact candidate source tree')
+        identities = {name: identity(sources[name], builds[name]) for name in builds}
+        a, b = identities['control'], identities['candidate']
+        if a['source_commit'] != CONTROL or any(a[k] != b[k] for k in ('align_revision', 'compiler_sha256', 'bundle_id')) or b['bundle_id'] != admitted.records['bundle']['bundle_id']:
+            raise ValueError('campaign control, compiler or bundle mismatch')
+        stable_libs = lambda i: {k: v for k, v in i['libraries'].items() if 'shim' not in k}
+        if stable_libs(a) != stable_libs(b):
+            raise ValueError('non-shim libraries differ')
+        record['identities'] = dict(builds=identities, profile_sha256=digest(args.profile),
+            inputs={k: v.sha256 for k, v in admitted.files.items()}, options=option,
+            tool_sha256=digest(Path(__file__)), plan_sha256=digest(ROOT / 'docs/specs/cuda-optimization-enablement.md'),
+            gpu=subprocess.check_output(['nvidia-smi', '--query-gpu=name,uuid,driver_version,memory.total', '--format=csv,noheader'], text=True, timeout=30).strip())
+        options_path = destination / 'options.json'
+        options_path.write_text(json.dumps(option, separators=(',', ':')) + '\n')
+        models = {m['model_id']: m for m in profile['models']}
+        for model_name in ('qwen2', 'olmoe'):
+            deadline = time.monotonic() + 2400
+            model = models[model_name]
+            for pair in range(5):
+                for name in (('control', 'candidate') if pair % 2 == 0 else ('candidate', 'control')):
+                    row = dict(model=model_name, pair=pair, arm=name, status='FAIL', requests=[])
+                    record['arms'].append(row)
+                    work = destination / f'{model_name}-{pair}-{name}'
+                    work.mkdir()
+                    command = [str(builds[name] / 'main'), '--runtime-session',
+                        *(str((admitted.root / model[k]).resolve(strict=True)) for k in ('model_path', 'pack_path', 'geometry_path')),
+                        str(options_path), str(model['runtime_cache_budget_bytes'])]
+                    row['command'] = command
+                    row['host_before'] = quiet_host()
+                    if not row['host_before']['quiet']:
+                        raise ValueError('shared host is busy before arm; coordinate a quiet window')
+                    print(work.name + ': start', flush=True)
+                    started = time.monotonic_ns()
+                    worker = Session(command, timeout=remaining(deadline), env=qualification_environment(work))
+                    row['startup_ns'] = time.monotonic_ns() - started
+                    retained = os.fdopen(os.dup(worker.log.fileno()), 'rb')
+                    normal = False
+                    try:
+                        for case, prompt in CASES:
+                            worker.timeout = remaining(deadline)
+                            before = time.monotonic_ns()
+                            result = worker.generate(dict(schema_version=1, system=SYSTEM, user=prompt, max_tokens=128, temperature=0.0, seed=None))
+                            elapsed = time.monotonic_ns() - before
+                            row['requests'].append(dict(case=case, client_ns=elapsed, worker_ns=result['elapsed_ns'], quality=quality(result), result=result))
+                            print(f'{work.name} {case}: {elapsed / 1e9:.3f}s quality={quality(result)}', flush=True)
+                        normal = True
+                    finally:
+                        try:
+                            worker.close(check=normal)
+                        finally:
+                            with retained:
+                                retained.seek(0)
+                                log = retained.read(16 * 1024 * 1024 + 1)
+                            (work / 'worker.log').write_bytes(log[:16 * 1024 * 1024])
+                            if len(log) > 16 * 1024 * 1024:
+                                raise ValueError('worker log exceeds bound')
+                    row['host_after'] = quiet_host()
+                    if not row['host_after']['quiet']:
+                        raise ValueError('shared host is busy after arm; timing is invalid')
+                    row['status'] = 'PASS'
+                    (destination / 'result.json').write_text(json.dumps(record, indent=2) + '\n')
+            for case, _ in CASES:
+                record['comparisons'].append(dict(model=model_name, case=case, **reductions(record['arms'], model_name, case)))
+        admitted.recheck()
+        if digest(Path(__file__)) != record['identities']['tool_sha256'] or digest(ROOT / 'docs/specs/cuda-optimization-enablement.md') != record['identities']['plan_sha256']:
+            raise ValueError('measurement tool or plan changed during campaign')
+        if {name: identity(sources[name], builds[name]) for name in builds} != identities:
+            raise ValueError('build identity changed during campaign')
+        if not all(row['passed'] for row in record['comparisons']):
+            raise ValueError('performance floor or guardrail not met')
+        record['status'] = 'PASS'
+    except Exception as error:
+        record['error'] = str(error)
+        print('FAIL: ' + str(error), flush=True)
+    finally:
+        # Covers failures between successful construction and the per-arm cleanup scope.
+        if worker is not None:
+            try:
+                worker.close(check=False)
+            except Exception as error:
+                record['status'] = 'FAIL'
+                record['error'] = 'worker cleanup failed: ' + str(error)
+        (destination / 'result.json').write_text(json.dumps(record, indent=2) + '\n')
+    return 0 if record['status'] == 'PASS' else 1
+
+
+def cancellation_test(*, construction=False, shutdown=False):
+    with tempfile.TemporaryDirectory(prefix='cuda-measure-cancel-') as temporary:
+        work = Path(temporary)
+        (work / 'profile.json').write_text('{}')
+        worker_code = ("import os,struct,time\nfrom pathlib import Path\n"
+            "import sys\nraw=b'{\"schema_version\":1,\"status\":\"ready\"}'\n"
+            "sys.stdout.buffer.write(struct.pack('<I',len(raw))+raw);sys.stdout.buffer.flush()\n"
+            + "Path(" + repr(str(work / 'worker.pid')) + ").write_text(str(os.getpid()))\n"
+            + "time.sleep(60)\n")
+        (work / 'main').write_text('#!' + sys.executable + '\n' + worker_code)
+        (work / 'main').chmod(0o700)
+        child_code = r"""
+import sys, importlib.util
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+from types import SimpleNamespace
+sys.path.insert(0,sys.argv[1])
+loader=SourceFileLoader('measured',str(Path(sys.argv[1])/'measure-cuda-optimization'))
+spec=importlib.util.spec_from_loader(loader.name,loader)
+m=importlib.util.module_from_spec(spec);loader.exec_module(m)
+w=Path(sys.argv[2]); source=m.ROOT
+models=[dict(model_id=name, model_path='profile.json', pack_path='profile.json',
+ geometry_path='profile.json', runtime_cache_budget_bytes=0) for name in ('qwen2','olmoe')]
+option=dict(backend='cuda',placement='resident',prefetch='off',backend_bundle='profile.json',
+ host_budget_bytes=1073741824,device_budget_bytes=6000000000)
+admitted=SimpleNamespace(root=w, files={}, recheck=lambda:None, records=dict(
+ profile=dict(models=models,runtime_options=[option]), bundle=dict(bundle_id='fixture')))
+m.admit=lambda path:admitted
+m.identity=lambda source,build:dict(source_commit=m.CONTROL,align_revision='pin',
+ compiler_sha256='compiler',bundle_id='fixture',libraries={})
+m.quiet_host=lambda:dict(quiet=True)
+if len(sys.argv)>3 and sys.argv[3]=='construction':
+ def fail_dup(fd): raise m.Cancelled('measurement cancelled by signal at log ownership')
+ m.os.dup=fail_dup
+if len(sys.argv)>3 and sys.argv[3]=='shutdown':
+ m.CASES=[]
+ original_wait=m.subprocess.Popen.wait
+ def observed_wait(process, *a, **k):
+  (w/'shutdown.wait').write_text(str(process.pid))
+  return original_wait(process,*a,**k)
+ m.subprocess.Popen.wait=observed_wait
+m.subprocess.check_output=lambda *a,**k:'fixture GPU'
+args=SimpleNamespace(output=w/'result',profile=w/'profile.json',control=w,candidate=w,
+ control_source=source,candidate_source=source)
+bad=SimpleNamespace(**vars(args)); bad.candidate_source=w; bad.output=w/'wrong-source'
+assert m.run(bad)==1
+assert 'exact candidate source tree' in m.json.loads((bad.output/'result.json').read_text())['error']
+assert not (w/'worker.pid').exists()
+with m.cancellation_scope():
+ raise SystemExit(m.run(args))
+"""
+        child = subprocess.Popen([sys.executable, '-c', child_code, str(ROOT / 'scripts'), str(work), *(['construction'] if construction else ['shutdown'] if shutdown else [])],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
+        pid = None
+        try:
+            deadline = time.monotonic() + 15
+            while not (work / 'worker.pid').exists():
+                if child.poll() is not None or time.monotonic() >= deadline:
+                    raise AssertionError('cancellation fixture did not start: ' + child.communicate(timeout=2)[1].decode())
+                time.sleep(.02)
+            pid = int((work / 'worker.pid').read_text())
+            if shutdown:
+                while not (work / 'shutdown.wait').exists():
+                    if child.poll() is not None or time.monotonic() >= deadline:
+                        raise AssertionError('worker never entered shutdown wait')
+                    time.sleep(.02)
+            if not construction:
+                child.send_signal(signal.SIGTERM)
+            _, error = child.communicate(timeout=25)
+            assert child.returncode == 1, error.decode()
+            record = json.loads((work / 'result/result.json').read_text())
+            assert record['status'] == 'FAIL' and 'cancelled by signal' in record['error']
+            assert record['arms'][0]['status'] == 'FAIL'
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                raise AssertionError('cancelled measurement left a worker alive')
+        finally:
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGKILL)
+                child.communicate(timeout=5)
+            if pid is not None:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+
+def self_test():
+    assert idle_gpu('7, 1516, 210, 405') and idle_gpu('0, 1516, 2790, 10501')
+    assert not idle_gpu('7, 1516, 2790, 10501') and not idle_gpu('80, 1516, 210, 405')
+    ready = settled_host(lambda: dict(quiet=True))
+    assert ready['quiet'] and len(ready['observations']) == 3
+    transient = iter([True, True, False, True, True, True])
+    ready = settled_host(lambda: dict(quiet=next(transient)))
+    assert ready['quiet'] and len(ready['observations']) == 6
+    busy = settled_host(lambda: dict(quiet=False))
+    assert not busy['quiet'] and len(busy['observations']) == 10
+    result = dict(output=' '.join(map(str, range(1, 40))), prompt_tokens=42, completion_tokens=128, total_tokens=170, token_count_exact=True)
+    assert quality(result) and not quality(dict(result, output='wrong'))
+    arms = [dict(model='olmoe', pair=i, arm=name, status='PASS', requests=[dict(case='warm-long-cached', client_ns=100 if name == 'control' else 80, quality=True, result=dict(result))]) for i in range(5) for name in ('control', 'candidate')]
+    assert reductions(arms, 'olmoe', 'warm-long-cached')['passed']
+    arms[-1]['requests'][0]['client_ns'] = 200
+    arms[-3]['requests'][0]['client_ns'] = 200
+    assert not reductions(arms, 'olmoe', 'warm-long-cached')['passed']
+    for bad in (arms[:-1], json.loads(json.dumps(arms))):
+        if len(bad) == 10:
+            bad[-1]['requests'][0]['result']['output'] = 'different'
+        try:
+            reductions(bad, 'olmoe', 'warm-long-cached')
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('invalid evidence accepted')
+    cancellation_test()
+    cancellation_test(construction=True)
+    cancellation_test(shutdown=True)
+    print('CUDA measurement self-test PASS (paired decisions and SIGTERM worker cleanup)')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--self-test', action='store_true')
+    for name in ('profile', 'control-source', 'control', 'candidate-source', 'candidate', 'output'):
+        parser.add_argument('--' + name, type=Path)
+    args = parser.parse_args()
+    if args.self_test:
+        self_test()
+    else:
+        if any(getattr(args, name) is None for name in ('profile', 'control_source', 'control', 'candidate_source', 'candidate', 'output')):
+            parser.error('all campaign operands are required')
+        with cancellation_scope():
+            raise SystemExit(run(args))
