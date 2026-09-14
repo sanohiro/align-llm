@@ -70,6 +70,24 @@ Discovered during Qwen2 Attention KV F16 enablement (PR #248):
 3. Structural subtyping / generic traits: nominal type separation forces duplication of identical layer logic across architectures (`qwen_kv_bytes` vs `olmoe_kv_bytes`, `admit_*_shapes`, `prepare_session_*`).
 Full disassembly trace and proposed lowerings published on [sanohiro/align#1047](https://github.com/sanohiro/align/issues/1047).
 
+### Request 65: in-place typed multi-byte writers on slice<u8> and owned field replacement (2026-09-14)
+
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none; application code works around using unrolled bit shifts over single-byte assignments
+Independent work that may continue: Flash Attention tiling, memory reservation optimization, speculative decoding
+Resume condition: upstream design closure and implementation on issue #1048
+Align commit or pull request: [sanohiro/align#1048](https://github.com/sanohiro/align/issues/1048)
+align-llm verification: native Apple Silicon / Metal benchmark suite and runtime session reuse smoke
+
+Discovered during Prompt-Lookup Candidate Selection & Prefix Caching optimization (PR #250):
+1. Missing in-place typed writers on `slice<u8>`: `slice<u8>` has binary readers (`u32_le`, `i64_le`, etc.) but zero in-place typed writers (`set_i64_le`, `set_u32_le`). `buffer.put_*` is append-only.
+2. LLVM Store Merging blocked by per-byte bounds checks: decomposing 64-bit integers into 8 single-byte stores (`dest[base + i] = ...`) generates 60+ ARM64 instructions with 8 bounds check branches (`b.hs align_rt_bounds_fail`), completely disabling LLVM's store coalescing into a single `str xN` instruction.
+3. Restriction on owned field replacement in structs: attempting `session.prefix_ids: array<i64>` reassignment via `session.prefix_ids = builder.build()` is rejected by the compiler (`field replacement of array<i64> is not supported yet`), forcing stateful objects to use `buffer` and fall into the 60-instruction per-word trap.
+4. Absence of SIMD auto-vectorization on argmax loops over vocab logits due to early return checks.
+Full disassembly trace and proposed lowerings published on [sanohiro/align#1048](https://github.com/sanohiro/align/issues/1048).
+
 ### Issue 1043 composed-loop follow-up design (2026-09-14)
 
 Status: IMPLEMENTING; design recorded here now has provider implementation

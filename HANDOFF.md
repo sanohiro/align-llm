@@ -4,8 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `agent/session-prefix-cache-opt` (based on `main` at `073346d`).
-Active capability: Prompt-Lookup Candidate Selection & Unrolled Bit-Shift Prefix Caching.
+Active branch: `main` (commit `0c9235d`).
+Active capability: none (idle; awaiting next roadmap slice).
 
 Complete work:
 - Implemented `prompt_lookup_candidate` in `src/runtime_generation.align` to predict token continuation from prompt history during generation.
@@ -14,33 +14,29 @@ Complete work:
 - Resolved all 3 findings from independent review (`scripts/review-agy`):
   1. Finding 1: Checked `c_value > best_value` before adopting candidate in `greedy` so token 0 is never corrupted.
   2. Finding 2: Added comprehensive regression test suite (`test_candidate_selection`) in `src/runtime_session_reuse_smoke.align`.
-  3. Finding 3: Corrected `HANDOFF.md` function name from `greedy_with_candidate` to `greedy(logits, candidate)`.
-- Identified and documented three Align compiler/language bottlenecks during disassembly inspection:
-  1. Missing in-place typed writers on `slice<u8>` (`set_i64_le`, `set_u32_le`), forcing per-byte slicing with 8 bounds-check branches per 64-bit store.
-  2. Compiler restriction on owned field replacement in structs (`field replacement of array<i64> is not supported yet`), preventing direct `Session.prefix_ids: array<i64>` storage.
-  3. Scalar loop emission without NEON SIMD vectorization for `greedy` argmax over vocab logits due to early return checks.
-- Prepared comprehensive issue draft in `align_compiler_gaps_issue.md`.
+  3. Finding 3: Corrected `HANDOFF.md` function name to `greedy(logits, candidate)`.
 - Verified 100% bit-for-bit SHA-256 parity on Metal GPU:
   - OLMoE prefill: `6b86b273ff34`
   - OLMoE decode 128: `109a6553d0bd`
   - Qwen2 prefill: `6b86b273ff34`
   - Qwen2 decode 128: `7913883c0e74`
+- Completed preflight (`scripts/pre-pr`), independent review (`scripts/review-agy`), passed CI, and merged pull request #250 into `main` (`0c9235d`).
+- Filed upstream compiler/language issue: [sanohiro/align#1048](https://github.com/sanohiro/align/issues/1048) covering in-place typed multi-byte writers on `slice<u8>`, owned field replacement in structs, and SIMD vectorization limitations. Registered Request 65 in `docs/align-requests.md`.
 
 Active work:
-- Final preflight, PR publication, merge, and upstream issue filing.
+- None.
 
 Next actions in priority order:
-1. Merge PR #250 into `main`.
-2. File upstream GitHub issue on `sanohiro/align` and register Request 65 in `docs/align-requests.md`.
-3. Advance to the next recommended roadmap capability.
+1. Advance to the next recommended roadmap optimization capability (Flash Attention tile-width/KV alignment tuning or memory reservation overhead reduction).
 
 Latest durable verification:
-- `scripts/run-gpu-session-reuse-smoke`: PASS.
+- `scripts/run-gpu-session-reuse-smoke`: PASS (including 5 unit/regression cases in `test_candidate_selection`).
 - `make check` (155 units per-unit): PASS.
+- `python3 scripts/pre-pr`: PASS on commit `5eee04c`.
 - Apple Silicon Metal GPU qualification on `qwen-f16-build`: PASS (100% bit-for-bit SHA-256 match, 80.14 ms/tok decode).
 
 Blockers, constraints, decisions:
-- No active blockers. Prefix cache remains as `buffer` due to Align compiler restriction on owned field replacement (`array<i64>`), optimized via unrolled bit-shift `write_i64_le`.
+- Worktree clean on `main`. Prefix cache remains as `buffer` due to Align compiler restriction on owned field replacement (`array<i64>`), optimized via unrolled bit-shift `write_i64_le`.
 - Provider #1046 must merge before its composed-loop surface can be adopted; #1044/#1045 adoption and native Metal qualification remain pending.
 
 
