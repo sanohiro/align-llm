@@ -26,8 +26,11 @@ F16 bytes and actual model output comparisons remain exact.
 KV-only independent sessions PASS all 16 requests; repaired `be7b1f2` independent
 sessions and host capacity also PASS. `cb59980` exact-head hosted preflight PASS.
 
-Timing is NOT_STARTED: the initial admission refused idle display utilization before
-any worker/request. Calibration established 5-7% at 210/405 MHz without compute
+Timing is INCOMPLETE: the first clock-aware campaign stopped before OLMoE pair 2
+when memory clocks remained outside the idle envelope; no foreign interference was
+observed. Preserve the whole failed campaign. Fixed 10-second cooldown now precedes
+every unchanged boundary check; rerun all pairs. The earlier utilization-only refusal
+occurred before any worker/request. Calibration established 5-7% at 210/405 MHz without compute
 processes; the bounded clock-aware admission is documented before generated timing.
 The shared host requires 60 quiet seconds and continuous foreign-process observation;
 any interference invalidates the whole campaign. No unrelated temporary files were removed.

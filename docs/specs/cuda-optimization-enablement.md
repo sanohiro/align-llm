@@ -276,3 +276,14 @@ and recorded as failure. The focused regression signals the actual shutdown wait
 requires both a failure receipt and a reaped worker. This closes the same accepted
 ownership requirement without another comprehensive repair/review cycle or changing
 timing acceptance.
+
+### Fixed inter-arm cooldown
+
+The first clock-aware campaign stopped before OLMoE pair 2: GPU utilization was 6%,
+graphics 270 MHz and memory 5001 MHz, outside the declared idle envelope. Its external
+observer found no foreign-process interference; the entire partial campaign remains
+FAIL and is not combined with later pairs. Add a fixed 10-second cooldown before
+every two-second boundary observation, both before and after every arm. Cooldown is
+outside all measured clocks and identical for both arms/models. Keep idle predicates,
+workload, paired order, floors and exact-output checks unchanged; no selective retry
+of an arm or timing-based sample deletion is allowed.

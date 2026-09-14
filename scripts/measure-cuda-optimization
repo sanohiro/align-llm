@@ -120,6 +120,8 @@ def idle_gpu(observation):
 
 
 def quiet_host():
+    # Fixed unmeasured cooldown lets device clocks settle after every serial arm.
+    time.sleep(10)
     # Timing is valid only in a coordinated quiet window on this shared WSL host.
     def cpu():
         return list(map(int, Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
