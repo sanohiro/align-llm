@@ -1,5 +1,9 @@
 # Python execution-boundary audit
 
+`scripts/test-development-preflight` remains `BUILD_OR_DEVELOPER_TOOL`; its hosted
+30-minute and installed-profile 15-minute timeout assertions validate publication
+automation and do not enter normal product execution.
+
 ## Current cutover checkpoint (2026-09-13)
 
 The shipping evaluator, edit/repair chain, snapshots, source checks and validation

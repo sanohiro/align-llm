@@ -24,7 +24,7 @@ jobs:
   check:
     name: Pinned Align compiler and supported checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       ALIGN_APT_PACKAGES: >-
         llvm-22-dev clang-22 libclang-rt-22-dev lld-22
