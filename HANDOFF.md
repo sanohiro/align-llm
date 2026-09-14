@@ -2,51 +2,42 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active capability: CUDA optimization enablement (2026-09-14)
+## Active capability: CUDA F16 KV enablement (2026-09-14)
 
-Branch `agent/cuda-optimization-enablement`, based on main `4bf8011` and design checkpoint
-`0b7f7b9`. The user authorized implementation, verification, PR publication and merge.
-Implementation is isolated in the CUDA worktree; the original checkout's concurrent
-`docs/align-requests.md` provider assessment is separate and must not enter this capability.
-Older active/publication notes below are historical to their named branches.
+Branch `agent/cuda-optimization-enablement`, main base `4bf8011`. The user authorized
+implementation, verification, PR publication and merge. Work is isolated in the CUDA
+worktree; the original checkout's concurrent `docs/align-requests.md` assessment is
+unrelated. The managed pin is `f502fe3da00ce0b39c4eeec40586b11688627fbd`.
+The authoritative plan is `docs/specs/cuda-optimization-enablement.md`.
 
-The authoritative contract is `docs/specs/cuda-optimization-enablement.md`. Build GRAPHS/FA
-were already ON; this capability enables the Q/K/V optimizer and native tensor naming,
-then independently adopts CUDA OLMoE F16 KV through supported SET_ROWS. No new Align gap.
-The managed pin remains `f502fe3da00ce0b39c4eeec40586b11688627fbd`.
+Graph-only checkpoint `2f1b69c` and graph+KV checkpoint `ae6eac7` both PASS the complete
+independent session owner (7 Qwen / 9 OLMoE rows). Production nsys traces prove CUDA
+Graph capture/replay but no Q/K/V stream concurrency: the pinned backend reports
+`Writes overlap` and clears its concurrent events. Graph defaults/tagging/snapshots
+are removed from the shipping diff; the plan records the evidence and resume condition.
+The minimal native three-stream witness does not establish production feasibility.
 
-Local implementation checkpoint: CUDA mode admission, exact private backend header access,
-bounded canonical graph snapshots, active-graph refresh and Align tensor tagging are implemented.
-`check-per-unit src/runtime_generation.align` PASS (25 units). Real native
-`run-cuda-graph-optimization-smoke` PASS for absent/0/1/malformed policy; each valid mode runs
-30 exact computations across two retained graphs, switches and shared-workspace rebuilds.
-The enabled backend reports three concurrent streams and capture warmup; the required
-manifested production trace and performance comparison remain NOT_RUN.
+The active shipping candidate is CUDA OLMoE session F16 KV with bounded SET_ROWS
+prefill, exact contiguous-index validation and stale-input refusal. Native F16 and
+Flash owner, typed probe, generation per-unit check, session reuse, device and backend
+recipe owners PASS. The unchanged control also fails the previous Metal analytic
+Flash tolerance; a CUDA-only fixed-fixture bound is documented while all old/new
+F16 bytes and actual model output comparisons remain exact.
+Graph checkpoint host-capacity owner PASS; KV-only build/owners remain next.
 
-A clean `4bf8011` control session was built with the managed toolchain and retained CUDA kit.
-Its full independent serial owner PASS (7 Qwen and 9 OLMoE rows); the changed stub session
-owner PASS. The paired measurement self-test and strict Python boundary guard PASS. A premature
-control-owner invocation before the build completed refused the missing executable; the actual
-owner was started only after successful build completion, with its diagnostic log preserved.
-Evidence is retained outside Git under `gpu-cuda-enablement-20260914`.
+Timing is NOT_STARTED. The user reports another Codex on this machine: wait for
+quiet-window coordination, then run the five paired KV-only/control campaign. The
+measurement owner records/refuses busy host boundaries. Disk space recovered to
+26 GiB; only this task's regenerable 75 MiB host-test build cache was removed here.
+No old unrelated temporary area was removed. Evidence is retained outside Git under
+`gpu-cuda-enablement-20260914`; no speed improvement or preflight stamp is claimed.
 
-Graph checkpoint `2f1b69c` is built and its independent session owner PASS (all 16 rows).
-CUDA F16 prefill now uses registered, bounded SET_ROWS; the native retained-half owner
-PASS (exact rounding/bytes, chunks, overwrite, malformed and stale indices), and typed
-probe, per-unit generation check and session reuse owner PASS. An existing CUDA analytic
-Flash fixture tolerance failed unchanged control too; its CUDA-only bound is repaired,
-with bit-exact F16 comparisons retained. Details are in the authoritative plan.
-
-The machine is shared with another Codex. Timing has NOT_STARTED; wait for the user's
-quiet-window coordination before timing. Functional owners may continue. Metal access
-has been requested for the shared-boundary regression qualification.
-
-Next: commit/build the KV candidate and run independent correctness;
-measure the declared local graph intervention before retaining performance-only complexity;
-implement/qualify CUDA-KV-F16 independently; qualify the combination and coding caller; complete
-one fresh implementation review, exact-head preflight, hosted checks and PR merge. The earlier
-CLEAN design review covers only design checkpoint `0b7f7b9`, not implementation. No publication,
-preflight stamp or speed improvement is claimed yet.
+Next: commit/build the KV-only candidate; run independent sessions and host capacity;
+measure in a coordinated quiet window and retain the change only if the declared floor
+and guardrails pass. Finish one fresh comprehensive implementation review, exact-head
+preflight, English PR and required hosted checks, then merge. Metal's shared callback,
+planner, metadata sizing, topology and prefill writer now remain unchanged; its earlier
+shared-planner qualification trigger was removed with graph enablement.
 
 ## Completed capability: ALIGN-PRODUCT-CUTOVER
 

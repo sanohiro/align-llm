@@ -6,6 +6,36 @@ Inspection base: `4bf8011` (including dispatch optimization `5efd7a0`).
 [GPU performance](gpu-runtime-performance.md) owns the performance floors and historical evidence;
 this document owns the proposed CUDA enablement contract. No speed improvement is claimed.
 
+## Shipping scope after native production qualification
+
+**CUDA-KV-F16 is the active shipping candidate. CUDA-GRAPH-ENABLE is deferred.**
+The implementation checkpoints `2f1b69c` (graph only) and `ae6eac7` (graph plus KV)
+pass all 7 Qwen and 9 OLMoE independent session requests. A manifested Qwen trace
+on `2f1b69c` records 431 CUDA Graph launches, 6 begin/end captures and one
+instantiation; a manifested OLMoE trace on `ae6eac7` records 502 launches and
+6 captures. Both execute kernels on a single CUDA stream. The pinned concurrency
+validator reports `Writes overlap` for the reshaped/permuted/contiguous branch
+and clears the proposed concurrent event map. The minimal native witness's three
+streams are therefore insufficient production evidence.
+
+Do not ship the graph environment default, tensor tagging, canonical snapshots,
+mode identity or extra metadata reservations. Their experimental code remains
+reproducible at the named commits; the final implementation preserves the existing
+shared callback and allocator behavior. Resume Q/K/V concurrency only with a
+source-bound production allocation/lifetime solution and actual concurrent kernels,
+then repeat its declared correctness and performance gates. This is a ggml/backend
+allocation concern, not an Align language or standard-library gap.
+
+The sections below retain the graph contract as deferred design. Its proposed FFI
+queries and native smoke are not present in the shipping source. The local paired
+measurement now compares **KV-only** against the unchanged `4bf8011` control;
+there is no accepted graph candidate and no combined speed claim. Graph-specific
+single-shot, CUDA event/stream allocation and Metal shared-planner qualifications
+are not shipping requirements after removing that shared behavior change. The
+session independent, real F16/attention, host-capacity and paired-performance
+owners remain required for KV. Metal retains the original prefill writer, attention
+selector, graph callback, graph metadata sizing and topology identity.
+
 ## 1. Current state
 
 | Mechanism | State at the inspection base | Consequence |
@@ -192,3 +222,14 @@ zero-query fixture. Metal retains its previous bound. The two actual Flash stora
 paths remain byte-exact, as do incremental half rounding, all retained KV bytes,
 independent model tokens/counts and paired measurement outputs. This is an existing
 CUDA oracle coverage repair, not a relaxation of the F16 adoption comparison.
+
+### Shared-host measurement constraint
+
+The user reports another Codex on this machine. Timing waits for an explicitly
+coordinated quiet window; neither our builds/owners nor the other developer's work
+may overlap measured arms. The measurement owner records two-second `/proc/stat`
+samples and GPU utilization/compute-process observations before and after each arm.
+It refuses >=0.5 busy CPU cores, >=0.2 I/O-wait cores, GPU utilization >5%, or any
+compute process while the arm is stopped. These are idle admission checks, not proof
+that Windows host activity stayed absent; retain external load observations and
+invalidate any known interrupted campaign. Tool/plan digests are rechecked at completion.

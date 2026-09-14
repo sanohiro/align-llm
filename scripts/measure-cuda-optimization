@@ -77,6 +77,26 @@ def identity(source, build):
     return record
 
 
+def quiet_host():
+    # Timing is valid only in a coordinated quiet window on this shared WSL host.
+    def cpu():
+        return list(map(int, Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
+    before = cpu()
+    started = time.monotonic()
+    time.sleep(2)
+    after = cpu()
+    elapsed = time.monotonic() - started
+    delta = [b - a for a, b in zip(before, after)]
+    busy = sum(delta[i] for i in (0, 1, 2, 5, 6, 7)) / os.sysconf('SC_CLK_TCK') / elapsed
+    wait = delta[4] / os.sysconf('SC_CLK_TCK') / elapsed
+    gpu = subprocess.check_output(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used',
+        '--format=csv,noheader,nounits'], text=True, timeout=30).strip()
+    processes = subprocess.check_output(['nvidia-smi', '--query-compute-apps=pid,process_name',
+        '--format=csv,noheader'], text=True, timeout=30).strip()
+    return dict(busy_cpu_cores=busy, iowait_cores=wait, gpu=gpu, compute_processes=processes,
+        quiet=busy < .5 and wait < .2 and not processes and all(int(row.split(',')[0]) <= 5 for row in gpu.splitlines()))
+
+
 def run(args):
     destination = args.output.absolute()
     destination.mkdir(mode=0o700)
@@ -92,6 +112,7 @@ def run(args):
         if option['host_budget_bytes'] < 1073741824 or option['device_budget_bytes'] < 6000000000 or any(m['runtime_cache_budget_bytes'] > 1073741824 for m in profile['models']):
             raise ValueError('campaign budget cannot be admitted')
         option.update(host_budget_bytes=1073741824, device_budget_bytes=6000000000)
+        option["backend_bundle"] = str((admitted.root / option["backend_bundle"]).resolve(strict=True))
         builds = {name: getattr(args, name).resolve(strict=True) for name in ('control', 'candidate')}
         sources = {name: getattr(args, name + '_source').resolve(strict=True) for name in builds}
         identities = {name: identity(sources[name], builds[name]) for name in builds}
@@ -121,6 +142,9 @@ def run(args):
                         *(str((admitted.root / model[k]).resolve(strict=True)) for k in ('model_path', 'pack_path', 'geometry_path')),
                         str(options_path), str(model['runtime_cache_budget_bytes'])]
                     row['command'] = command
+                    row['host_before'] = quiet_host()
+                    if not row['host_before']['quiet']:
+                        raise ValueError('shared host is busy before arm; coordinate a quiet window')
                     print(work.name + ': start', flush=True)
                     started = time.monotonic_ns()
                     worker = Session(command, timeout=remaining(deadline), env=qualification_environment(work))
@@ -146,11 +170,16 @@ def run(args):
                             (work / 'worker.log').write_bytes(log[:16 * 1024 * 1024])
                             if len(log) > 16 * 1024 * 1024:
                                 raise ValueError('worker log exceeds bound')
+                    row['host_after'] = quiet_host()
+                    if not row['host_after']['quiet']:
+                        raise ValueError('shared host is busy after arm; timing is invalid')
                     row['status'] = 'PASS'
                     (destination / 'result.json').write_text(json.dumps(record, indent=2) + '\n')
             for case, _ in CASES:
                 record['comparisons'].append(dict(model=model_name, case=case, **reductions(record['arms'], model_name, case)))
         admitted.recheck()
+        if digest(Path(__file__)) != record['identities']['tool_sha256'] or digest(ROOT / 'docs/specs/cuda-optimization-enablement.md') != record['identities']['plan_sha256']:
+            raise ValueError('measurement tool or plan changed during campaign')
         if {name: identity(sources[name], builds[name]) for name in builds} != identities:
             raise ValueError('build identity changed during campaign')
         if not all(row['passed'] for row in record['comparisons']):
