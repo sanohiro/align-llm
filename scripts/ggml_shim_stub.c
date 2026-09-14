@@ -3030,6 +3030,8 @@ static align_stub_tensor *align_gpu_stub_input_at(
     return NULL;
 }
 
+int32_t align_gpu_kv_prefill_indexed(void *owner) { (void) owner; return 0; }
+
 int32_t align_gpu_kv_write_indexed_prefix(
         void *owner, int64_t index, int32_t kind, int32_t layout, int64_t indices,
         int64_t width, void *slots, int64_t out, int64_t source) {

@@ -97,6 +97,14 @@ builders already require that exact clean source closure.
 | Ownership / identity | Existing GpuDevice owns both KV planes; graph views borrow them. Policy 2 is part of topology identity. Input, graph and KV reset/invalidation stay coordinated across `runtime_generation`, `runtime_olmoe`, `runtime_kv`, `runtime_attention` and real/stub FFI. Product options, responses, model/pack and cache schemas are unchanged; no new persisted artifact. |
 | Bounds / independence | Retain 1 GiB host / 6,000,000,000-byte device campaign limits and existing admission reservations. Prove exact aligned F16 consumption and no accumulation across repeated requests. Qualify this capability with graph optimization fixed to a declared mode, then qualify the combined accepted modes separately. |
 
+The internal query `gpu_kv_prefill_indexed(borrow owner: GpuDevice) -> bool` selects
+only policy 2 on a CUDA device (native i32 0/1, no allocation, invalid owner false).
+`runtime_kv::prefill_chunk` takes the owning caller's existing position-input index;
+Qwen and Metal retain the original prefix writer. In the indexed branch, `width` is
+the valid prefix end, so the source row count determines the exact start. Registration
+is shared across layers of the current prefill graph, cleared on graph invalidation,
+and made stale after each compute. Input bytes must be accepted again before reuse.
+
 ## 4. Closure and acceptance
 
 The following new test names are planned owners, not existing commands or passing evidence.
@@ -174,3 +182,13 @@ closed on failure. No product imports this measurement tool. Exit 0 requires qua
 exact paired outputs/counts, the primary floor and every guardrail; other results exit 1.
 `--self-test` checks reduction decisions, missing pairs, output mismatch and quality
 refusal without models. The tool and this plan are digest-bound in the receipt.
+
+### CUDA attention analytic oracle qualification
+
+The unchanged `4bf8011` CUDA attention owner fails its Metal analytic absolute
+`1e-4` comparison: row 0/head 0/dimension 2 is `0.749894`, expected `0.75`.
+The CUDA-only analytic bound is `2.5e-4 * max(1, abs(expected))` for this fixed
+zero-query fixture. Metal retains its previous bound. The two actual Flash storage
+paths remain byte-exact, as do incremental half rounding, all retained KV bytes,
+independent model tokens/counts and paired measurement outputs. This is an existing
+CUDA oracle coverage repair, not a relaxation of the F16 adoption comparison.

@@ -1104,6 +1104,12 @@ struct align_gpu_device_state {
     int64_t observation_layers;
     int64_t observation_experts;
     int observation_failed;
+    int prefill_rows_registered;
+    int prefill_rows_valid;
+    int64_t prefill_rows_input;
+    int64_t prefill_rows_start;
+    int64_t prefill_rows_count;
+    int64_t prefill_rows_capacity;
     int row_registered[2];
     int64_t row_input[2];
     int64_t row_capacity;
@@ -1132,6 +1138,13 @@ static int align_gpu_row_inputs_register(struct align_gpu_device_state *state,
 static int align_gpu_row_input_check(struct align_gpu_device_state *state,
         int64_t index, int64_t offset, const void *data, int64_t length) {
     int32_t value;
+    if (state->prefill_rows_registered && index == state->prefill_rows_input) {
+        if (offset != 0 || length != state->prefill_rows_count * 4) { return 0; }
+        for (int64_t row = 0; row < state->prefill_rows_count; ++row) {
+            memcpy(&value, (const unsigned char *) data + row * 4, 4);
+            if (value != state->prefill_rows_start + row) { return 0; }
+        }
+    }
     if (state->row_registered[0] && index == state->row_input[0]) {
         if (offset != 0 || length != 4) { return 0; }
         memcpy(&value, data, 4);
@@ -1150,6 +1163,7 @@ static int align_gpu_row_input_check(struct align_gpu_device_state *state,
 
 static void align_gpu_row_input_accept(struct align_gpu_device_state *state,
         int64_t index, const void *data) {
+    if (state->prefill_rows_registered && index == state->prefill_rows_input) { state->prefill_rows_valid = 1; }
     if (state->row_registered[0] && index == state->row_input[0]) {
         int32_t value;
         memcpy(&value, data, 4);
@@ -2643,6 +2657,12 @@ static struct ggml_tensor *align_gpu_input_at(
     return tensor;
 }
 
+int32_t align_gpu_kv_prefill_indexed(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    return state != NULL && state->attention_policy == 2 && state->device != NULL
+        && strcmp(ggml_backend_reg_name(ggml_backend_dev_backend_reg(state->device)), "CUDA") == 0;
+}
+
 /* A device row update and its dependent resident prefix, with host-validated mutable indices. */
 int32_t align_gpu_kv_write_indexed_prefix(
         void *owner, int64_t index, int32_t kind, int32_t layout, int64_t indices,
@@ -2655,28 +2675,49 @@ int32_t align_gpu_kv_write_indexed_prefix(
     struct ggml_tensor *write;
     struct ggml_tensor *view;
     int axis = layout == 0 ? 1 : 0;
+    int prefill = kind == ALIGN_GPU_GRAPH_PREFILL;
+    int64_t count = src == NULL ? 0 : src->ne[axis];
     int64_t capacity;
     int64_t lanes;
     size_t used;
     if (state == NULL || plane == NULL || src == NULL || ids == NULL || ctx == NULL
-        || kind != ALIGN_GPU_GRAPH_DECODE || state->graph_prepared[kind]
+        || !align_gpu_graph_kind_ok(kind) || state->graph_prepared[kind]
+        || (prefill && (!align_gpu_kv_prefill_indexed(owner) || layout != 0))
         || (layout != 0 && layout != 1) || width <= 0 || width > plane->ne[axis]
         || (plane->type != GGML_TYPE_F32
             && !(state->attention_policy == 2 && layout == 0 && plane->type == GGML_TYPE_F16))
         || src->type != GGML_TYPE_F32
         || ids->type != GGML_TYPE_I32 || ids->ne[1] != 1 || ids->ne[2] != 1 || ids->ne[3] != 1
-        || plane->ne[3] != 1 || src->ne[3] != 1 || src->ne[axis] != 1
+        || plane->ne[3] != 1 || src->ne[3] != 1 || count < 1 || count > width
+        || (!prefill && count != 1)
         || src->ne[1-axis] != plane->ne[1-axis] || src->ne[2] != plane->ne[2]
         || !ggml_is_contiguous(src) || !ggml_is_contiguous(plane)) { return ALIGN_GPU_CONFIG; }
     capacity = plane->ne[axis];
     if (plane->ne[2] <= 0 || plane->ne[1-axis] > INT32_MAX / plane->ne[2]) { return ALIGN_GPU_CONFIG; }
     lanes = plane->ne[1-axis] * plane->ne[2];
-    if (ids->ne[0] != (layout == 0 ? 1 : lanes)) { return ALIGN_GPU_CONFIG; }
+    if ((prefill && (ids->ne[0] < count || !ggml_is_contiguous(ids)))
+        || (!prefill && ids->ne[0] != (layout == 0 ? 1 : lanes))) { return ALIGN_GPU_CONFIG; }
     used = ggml_used_mem(ctx);
     if (used > ggml_get_mem_size(ctx) || 7 * ggml_tensor_overhead() > ggml_get_mem_size(ctx) - used) {
         return ALIGN_GPU_ALLOCATION;
     }
-    if (!align_gpu_row_inputs_register(state, layout, indices, capacity, lanes)) { return ALIGN_GPU_CONFIG; }
+    if (prefill) {
+        if ((state->row_registered[0] && indices == state->row_input[0])
+            || (state->row_registered[1] && indices == state->row_input[1])
+            || (state->prefill_rows_registered
+                && (state->prefill_rows_input != indices || state->prefill_rows_start != width - count
+                    || state->prefill_rows_count != count || state->prefill_rows_capacity != capacity))) {
+            return ALIGN_GPU_CONFIG;
+        }
+        if (!state->prefill_rows_registered) { state->prefill_rows_valid = 0; }
+        state->prefill_rows_registered = 1;
+        state->prefill_rows_input = indices;
+        state->prefill_rows_start = width - count;
+        state->prefill_rows_count = count;
+        state->prefill_rows_capacity = capacity;
+        ids = ggml_view_1d(ctx, ids, count, 0);
+    } else if ((state->prefill_rows_registered && indices == state->prefill_rows_input)
+        || !align_gpu_row_inputs_register(state, layout, indices, capacity, lanes)) { return ALIGN_GPU_CONFIG; }
     if (layout == 0) {
         write = ggml_set_rows(ctx, plane, src, ids);
     } else {
@@ -3080,6 +3121,7 @@ int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
     }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     align_gpu_synchronize(state);
+    if (kind == ALIGN_GPU_GRAPH_PREFILL) { state->prefill_rows_registered = 0; state->prefill_rows_valid = 0; }
     state->graph_prepared[kind] = 0;
     state->workspace_graphs[kind] = NULL;
     state->canonical_graphs[kind] = NULL;
@@ -3145,6 +3187,10 @@ int32_t align_gpu_graph_compute(
         || !align_gpu_topology_key_ok(key, key_length)
         || memcmp(state->graph_keys[kind], key, 64) != 0) {
         return ALIGN_GPU_CONFIG;
+    }
+    if (kind == ALIGN_GPU_GRAPH_PREFILL && state->prefill_rows_registered) {
+        if (!state->prefill_rows_valid) { return ALIGN_GPU_CONFIG; }
+        state->prefill_rows_valid = 0;
     }
     if (kind == ALIGN_GPU_GRAPH_DECODE
         && ((state->row_registered[0] && !state->row_position_valid)

@@ -30,7 +30,18 @@ control-owner invocation before the build completed refused the missing executab
 owner was started only after successful build completion, with its diagnostic log preserved.
 Evidence is retained outside Git under `gpu-cuda-enablement-20260914`.
 
-Next: finish baseline/session owners; commit a coherent graph candidate, build and qualify it;
+Graph checkpoint `2f1b69c` is built and its independent session owner PASS (all 16 rows).
+CUDA F16 prefill now uses registered, bounded SET_ROWS; the native retained-half owner
+PASS (exact rounding/bytes, chunks, overwrite, malformed and stale indices), and typed
+probe, per-unit generation check and session reuse owner PASS. An existing CUDA analytic
+Flash fixture tolerance failed unchanged control too; its CUDA-only bound is repaired,
+with bit-exact F16 comparisons retained. Details are in the authoritative plan.
+
+The machine is shared with another Codex. Timing has NOT_STARTED; wait for the user's
+quiet-window coordination before timing. Functional owners may continue. Metal access
+has been requested for the shared-boundary regression qualification.
+
+Next: commit/build the KV candidate and run independent correctness;
 measure the declared local graph intervention before retaining performance-only complexity;
 implement/qualify CUDA-KV-F16 independently; qualify the combination and coding caller; complete
 one fresh implementation review, exact-head preflight, hosted checks and PR merge. The earlier
