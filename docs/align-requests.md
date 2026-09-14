@@ -197,53 +197,49 @@ Discovered during Fast Sampling Single-Precision Filter Optimization:
    - `f32.is_nan() -> bool` / `f64.is_nan() -> bool`.
    - `f32.is_infinite() -> bool` / `f64.is_infinite() -> bool`.
 
-### Issue 1043 composed-loop follow-up design (2026-09-14)
+### Issue 1043 composed-loop implementation (2026-09-14)
 
-Status: IMPLEMENTING; design recorded here now has provider implementation
-`c805104976dda6c59889f5f97f13be5496f8405f` in open [PR #1046](https://github.com/sanohiro/align/pull/1046).
-It is not yet merged or available for managed consumer adoption. This does not
-change the ALIGN_MERGED status of #1044/#1045 or certify consumer adoption.
+Status: ALIGN_MERGED; [PR #1046](https://github.com/sanohiro/align/pull/1046).
+Provider main: `da20aefe1e4054cd132fbbf852217d5ee2c240ac`;
+final implementation: `cbe1dd72240fa18fe8e100e39be281a0d49ed3f8`.
+Plan: [Align plan 64](https://github.com/sanohiro/align/blob/cbe1dd72240fa18fe8e100e39be281a0d49ed3f8/docs/impl/64-composed-byte-optimization-plan.md).
 Input: [native retention clarification](https://github.com/sanohiro/align/issues/1043#issuecomment-5662787330)
 and [ARM binary inspection](https://github.com/sanohiro/align/issues/1043#issuecomment-5663319777).
-Plan: [Align plan 64](https://github.com/sanohiro/align/blob/c805104976dda6c59889f5f97f13be5496f8405f/docs/impl/64-composed-byte-optimization-plan.md).
 
-The investigation at provider `6cd95b15` reproduced three independent range-proof blockers:
-post-loop construction, an unrelated mutable parameter, and a named loop bound.
-The source snapshot at `8a890d169f40fe030c05635a280d3c52fdbf6370` also needs its
-local `finite_f32` read guard and nested candidate-array writes handled. The
-follow-up capability combines root-specific loop proofs, reaching definitions,
-stable descriptor snapshots and restricted local read-leaf exposure, with the
-actual PR-247 sampler shape as the acceptance owner. No source rewrite or new
-loop syntax is required. F64 policy and precise failures remain unchanged.
+One capability combines composed byte-loop range proofs, stable borrowed descriptor
+snapshots and bounded local scalar byte-reader exposure. The frozen PR-247 sampler
+at `8a890d169f40fe030c05635a280d3c52fdbf6370` is the acceptance fixture: both the
+local finite check's byte guard and caller f32 read guard disappear, and the source
+descriptor is read once. Named bounds/offsets, unrelated mutable RNG state, nested
+candidate-array insertion and later builders compose with the proof. Candidate-array
+bounds, f64 arithmetic, nonfinite errors, ties and RNG advancement remain unchanged.
+No sampler source rewrite or new loop syntax is required for ordinary per-unit builds.
 
-Raw LLVM already contains readonly/captures attributes on the borrowed descriptor.
-The repeated loads are reproducible, but blanket noalias is not the correction.
-A diagnostic local descriptor copy removes those loads while retaining the range
-trap, demonstrating the separate proof requirements.
+Preparation uses an owned emission-scoped MIR view; original cached MIR remains
+unchanged. Function ThinLTO partitions keep peer bodies opaque. Native/indirect/unknown
+effects and unproved aliases retain checks. Buffers remain Move, views remain Copy
+with their source lifetime; there is no new allocation guarantee, runtime ABI,
+unchecked API, blanket noalias or persisted certificate.
 
-Native source inspection at ggml `bb4caa7540188872173c44d161602d9271386413`
-supports call-scoped source consumption: shared Metal copies bytes, private Metal
-waits for transfer completion, and CUDA synchronizes its copy stream. Private
-Metal has additional no-copy pointer/region requirements; actual placement and
-build/environment overrides must be recorded. The native declaration uses an
-ordinary slice data pointer; borrow modes exist on the Align wrappers. Lifetime
-information is now supplied, while explicit native certification and authenticated
-cross-unit proof transport remain design prerequisites. No symbol whitelist or
-new foreign annotation is adopted by this follow-up.
+Linux x86, Linux ARM and macOS Apple Silicon CI passed, including native CPU/object
+owners. Local owner tests, the bounded gate, Clippy and independent review passed
+with one CI-discovered Mach-O test-parser correction. Exact Selection/RNG comparison
+covers 869 cases, with whole/per-unit/ThinLTO and cold/warm/body-edit cache controls.
+Local Linux x86 CPU sampler measurement (50,000 logits, 2,000 samples, release/baseline,
+runtime LTO off, five fresh runs) improved median 120.006 ms to 99.022 ms (17.5%),
+with identical output and RNG. This is not native Mac+Metal inference throughput.
 
-Precision-preserving comparison and ordered SIMD filtering follow the scalar
-proof, with exact sampling/RNG/tie/nonfinite oracles and native timing rather than
-a claimed 3x speedup. The reported 85.38 ms/token and 0.278 ms sampling are consumer
-evidence, not provider measurements. Full compiler/client commands and artifact
-hash remain needed: the inspected source's managed pin still names `21d0cf27`,
-which does not rule out an independently built compiler at `6cd95b15`.
+Provider main passed `cargo build --release --workspace`; no versioned release or tag
+was published. Consumer adoption and original Mac ARM+Metal workload qualification remain pending.
+Record the compiler artifact, CPU/profile and runtime-LTO/ThinLTO flags when adopting.
+Native backing-storage certification across the FFI wrapper chain and authenticated
+cross-unit proof transport remain separate plan-64 prerequisites. Precision-preserving
+SIMD/Top-K work is also deferred; this PR does not eliminate foreign-update allocation
+or change f64 policy. The earlier native inspection supports call-scoped consumption,
+but Metal placement and native build/environment overrides still need qualification.
 
-One independent design review completed; its scope/cache finding was corrected
-by preparing owned MIR after emission-scope selection and testing same-process
-Whole-to-Function reuse without changing memoized original MIR.
-
-This publication changes only documentation. Consumer source, tests, fixtures,
-build setup and the managed pin remain unchanged.
+No consumer source, tests, fixtures, build setup, branch or pin was modified.
+This records provider delivery only; the full issue is not marked closed.
 
 ### Issue 1043 provider implementation (2026-09-14)
 
