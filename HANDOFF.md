@@ -4,40 +4,18 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `agent/greedy-decode-sampler-pipeline-opt` (based on `main` at `9c9ebe2`).
-Active capability: Greedy Decode Loop & Sampler Pipeline Optimization.
+Branch: `agent/publish-composed-loop-merged`, based on `main` at `2dd60ea`.
+The prior sampler optimization is merged in that base. This documentation capability
+records upstream Align #1046 as merged at `da20aefe1e4054cd132fbbf852217d5ee2c240ac`,
+with final implementation `cbe1dd72240fa18fe8e100e39be281a0d49ed3f8`.
+The request register distinguishes provider evidence from pending consumer adoption
+and native Metal qualification. The managed pin remains unchanged.
 
-Active work:
-- Optimized `runtime_sampler.select` vocabulary scan loop using sequential offset induction (`offset = offset + 4`), eliminating 152,064 multiplications per token.
-- Replaced dynamic heap-reallocating `array_builder` instances in `runtime_sampler.select` for softmax and min-p calculation with bounded buffers (`buffer(320)`), eliminating multiple heap reallocations per token; measured standalone sampler latency reduction from 469 us down to 329 us (30% speedup).
-- Optimized `runtime_generation.greedy` using sequential offset induction (`offset = offset + 4`), reducing per-call latency from 565 us down to 527 us.
-- Optimized `update_decode` non-fused attention branch by hoisting bounds check and sequentially inducing `lane_base` (`lane_base = lane_base + capacity`) and `v_offset` (`v_offset = v_offset + 4`), eliminating 256 `checked_mul` and `checked_add` calls per decode token.
-- Optimized `update_prompt` row offset induction (`row_offset = row_offset + row_stride`), eliminating per-row multiplications.
-- Filed upstream Issue #1053 on `sanohiro/align` for `array_builder` capacity constructor and bulk array initialization primitive, registered Request 70 in `docs/align-requests.md`.
-- Verified 100% bit-for-bit SHA-256 output parity on Apple Silicon Metal GPU.
-
-Next actions in priority order:
-1. Commit candidate on branch `agent/greedy-decode-sampler-pipeline-opt`.
-2. Run independent adversarial review: `scripts/review-agy --base origin/main`.
-3. Preflight with `python3 scripts/pre-pr --owner-test session-reuse -- ./scripts/run-gpu-session-reuse-smoke`.
-4. Push branch `agent/greedy-decode-sampler-pipeline-opt`, publish PR and merge.
-5. Continue autonomous roadmap cycle for next optimization capability.
-
-Latest durable verification:
-- `make check`: PASS (155 units per-unit).
-- `make fmt`: PASS.
-- `scripts/run-runtime-provider-smoke`: PASS.
-- `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
-- Apple Silicon Metal GPU verification (`python3 /Users/hiro/models/measure_qwen_f16.py`): PASS.
-  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1707.7 ms)
-  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match)
-  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5350.2 ms)
-  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 76.96 ms/tok)
-
-Blockers, constraints, decisions:
-- 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks.
-- Softmax and min-p calculations in `runtime_sampler.select` use pre-sized 320-byte buffers (`TOP_K * 8`) with little-endian float/int views, avoiding dynamic array resizing overhead.
-
+Next: finish this documentation publication. No implementation is authorized in this
+batch; subsequent provider adoption must use the request's original acceptance owners.
+Verification: upstream PR merge identity and final plan checked; `git diff --check`
+passes. Exact-head publication checks and review evidence belong in the pull request.
+No implementation blocker or intentional uncommitted file belongs to this capability.
 
 ## Completed capability: latest merged Align adoption
 
