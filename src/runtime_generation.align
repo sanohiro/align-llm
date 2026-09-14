@@ -199,6 +199,20 @@ fn prepare_memory(
   return Ok(staging_bytes)
 }
 
+fn qwen_kv_bytes(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: layer_qwen2.Geometry,
+  capacity: i64,
+  f32_bytes: i64,
+) -> Result<i64, Error> {
+  if !runtime_attention.cached_f16(owner) { return Ok(f32_bytes) }
+  plane := runtime_weights.allocation_bytes(owner, runtime_weights.Shape {
+      ggml_type: 1, n_dims: 3, ne0: g.head_dim, ne1: capacity,
+      ne2: g.n_head_kv, ne3: 1,
+    })?
+  return checked_mul(runtime_qwen.kv_count(g.n_layer), plane)
+}
+
 fn admit_qwen_shapes(
   borrow owner: ggml_ffi.GpuDevice,
   borrow options: runtime_options.RuntimeOptions,
@@ -207,6 +221,7 @@ fn admit_qwen_shapes(
   geometry_text: str,
   prompt_width: i64,
   diagnostic: bool,
+  session_graph: bool,
   capacity: i64,
   graph_capacity: i64,
   observation_bytes: i64,
@@ -217,7 +232,7 @@ fn admit_qwen_shapes(
   loop {
     application := chunk_application(observation_bytes, width, mask_width)?
     result := admit_qwen_shapes_at(owner, options, g, plan, geometry_text, prompt_width,
-      width, diagnostic, capacity, graph_capacity, application, legacy_cache_bytes)
+      width, diagnostic, session_graph, capacity, graph_capacity, application, legacy_cache_bytes)
     match result {
       Ok(_) => { return Ok(width) },
       Err(_) => {},
@@ -245,15 +260,20 @@ fn admit_qwen_shapes_at(
   prompt_width: i64,
   chunk_width: i64,
   diagnostic: bool,
+  session_graph: bool,
   capacity: i64,
   graph_capacity: i64,
   observation_bytes: i64,
   legacy_cache_bytes: i64,
 ) -> Result<(), Error> {
   runtime_attention.select(owner, prompt_width, chunk_width, capacity, g.context_length, g.head_dim, g.n_head, g.n_head_kv)?
+  if session_graph && options.backend == "metal" && runtime_attention.fused(owner) {
+    ggml_ffi.gpu_attention_select(owner, 2) else { return Err(Error.Invalid) }
+  }
+  kv_bytes := qwen_kv_bytes(owner, g, capacity, plan.kv_bytes)?
   runtime_memory.plan_begin(owner)?
   staging := prepare_memory(owner, options, plan.count, plan.weights_bytes,
-    runtime_qwen.kv_count(g.n_layer), plan.kv_bytes, legacy_cache_bytes,
+    runtime_qwen.kv_count(g.n_layer), kv_bytes, legacy_cache_bytes,
     graph_capacity, observation_bytes)?
   if staging < 1 { return Err(Error.Invalid) }
   runtime_qwen_load.define(owner, plan)?
@@ -766,7 +786,7 @@ fn generate_qwen_mode(
   pack := fs.open_rw(pack_path)?
   runtime_pack_identity.verify_file_bounded(pack, source_identity, maximum_blocks)?
   plan := runtime_qwen_load.build_plan_file_capacity_bounded(owner, pack, g, kv_capacity, maximum_blocks)?
-  chunk_width := admit_qwen_shapes(owner, options, g, plan, geometry_text, prompt_ids.len(), diagnostic, kv_capacity,
+  chunk_width := admit_qwen_shapes(owner, options, g, plan, geometry_text, prompt_ids.len(), diagnostic, false, kv_capacity,
     graph_capacity, observation_bytes, 0)?
   application_bytes := chunk_application(observation_bytes, chunk_width, mask_bound)?
   staging := prepare_memory(
@@ -1098,12 +1118,13 @@ fn prepare_session_qwen(borrow owner: ggml_ffi.GpuDevice,
   pack := fs.open_rw(pack_path)?
   runtime_pack_identity.verify_file_bounded(pack, source_identity, maximum_blocks)?
   plan := runtime_qwen_load.build_plan_file_capacity_bounded(owner, pack, g, kv_capacity, maximum_blocks)?
-  chunk_width := admit_qwen_shapes(owner, options, g, plan, geometry_text, maximum_prompt, false, kv_capacity,
+  chunk_width := admit_qwen_shapes(owner, options, g, plan, geometry_text, maximum_prompt, false, true, kv_capacity,
     graph_capacity, observation_bytes, 0)?
   application_bytes := chunk_application(observation_bytes, chunk_width, mask_bound)?
+  kv_bytes := qwen_kv_bytes(owner, g, kv_capacity, plan.kv_bytes)?
   staging := prepare_memory(
     owner, options, plan.count, plan.weights_bytes, runtime_qwen.kv_count(g.n_layer),
-    plan.kv_bytes, 0, graph_capacity, application_bytes)?
+    kv_bytes, 0, graph_capacity, application_bytes)?
   runtime_qwen_load.load_file(owner, pack, plan, staging)?
   initialize_kv(owner, g.n_layer, g.head_dim, kv_capacity, g.n_head_kv)?
   mask_capacity := runtime_inputs.attention_width(kv_capacity, g.context_length)?

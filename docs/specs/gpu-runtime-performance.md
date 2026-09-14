@@ -63,7 +63,7 @@ not an assumption that changing a storage type is harmless.
 
 | Contract field | O1 decision |
 | --- | --- |
-| Consumer / default | Existing resident Metal OLMoE serial session, when its admitted attention path is Flash. Align selects internal policy 2 after successful policy 1 selection and before shape planning. Other models, CUDA, single-shot and decomposed attention retain their existing policy. No CLI option or response schema is added. |
+| Consumer / default | Existing resident Metal OLMoE and Qwen2 serial sessions, when their admitted attention path is Flash. Align selects internal policy 2 after successful policy 1 selection and before shape planning. CUDA Qwen, single-shot, and decomposed attention retain their existing policy. No CLI option or response schema is added. |
 | Internal policy / identity | `gpu_attention_select(owner,2)` requires the existing healthy pre-plan state and current policy 1; other invalid policies still refuse before mutation. `runtime_attention.fused` accepts 1/2; policy 2 is named `flash_f16_cached`, binding graph identities separately from `flash_f32`. No persisted device cache or cross-session identity reuse. |
 | Storage / ownership | Policy 2 owns the same two KV planes per layer in the device owner, now F16 with the existing logical capacity and K-style layout for both K/V. Planning and final admission use the backend's exact aligned F16 allocation size, preserving the allocator's exact-consumption invariant and existing budget ceilings; do not claim a capacity increase. Planning, initialization, context reset and final cleanup share this policy. |
 | Writes / reads | Prefill writes graph-produced F32 rows through supported in-place SET conversion into F16. Decode uses supported SET_ROWS with F32 source, I32 position and F16 destination. Only the newly written rows convert. Prefix views use actual element sizes and plane strides. F16 is accepted only for K-style writes; existing F32/transposed-V behavior remains valid. |
@@ -81,7 +81,7 @@ not an assumption that changing a storage type is harmless.
 | Prefix reuse / replacement / tail | Real SET/SET_ROWS versus cast owner, including multiple prefill chunks, repeated decode indices and a changed suffix; existing full serial sequence covers caller reuse. |
 | Malformed / early refusal | Real attention owner checks invalid policy transition, non-K F16 layout, wrong source type/stride, out-of-bounds prefix and exhausted graph metadata before execution. |
 | Compute/readback failure / cleanup | Existing injected session reuse owner preserves poisoning and refuses further computation; existing native device owner releases graph/KV resources. No additional owner or background process is introduced. |
-| Capacity / regression boundaries | Retain old reservation ceilings; existing host-capacity owner and real memory accounting. Single-shot G1 and CUDA selection remain policy 0/1; Qwen/decomposed owners prove the selector boundary. |
+| Capacity / regression boundaries | Retain old reservation ceilings; existing host-capacity owner and real memory accounting. Single-shot G1 and CUDA Qwen selection remain policy 0/1; decomposed owners prove the selector boundary. |
 
 This O1 ledger is the specific exception to historical F32 session-storage prose in the GPU
 runtime design. Its single-shot G1 numeric/calibration formats remain unchanged. Author

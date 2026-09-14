@@ -4,42 +4,35 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `main` (commit `800d7a3`).
-Active capability: none (idle; awaiting next roadmap slice).
+Active branch: `agent/qwen2-attention-f16-kv`.
+Active capability: Qwen2 Attention KV F16 Optimization (`flash_f16_cached` Policy 2).
 
 Complete work:
-- Implemented scalar thresholding in `src/runtime_sampler.align` (Plan 62 algorithm 1)
-  to discard >99.9% of non-candidate tokens in 1 comparison during Top-K selection.
-- Added candidate eviction and replacement regression tests in `src/runtime_sampler_smoke.align`.
-- Added reproducible microbenchmark in `src/runtime_sampler_bench.align` and `scripts/bench-runtime-sampler`.
-  Measurement shows ~278 us/call mean across 50 reps on Apple Silicon M3 (baseline naive loop: 9,982 us/call, 35-47x speedup).
-- 100% deterministic output parity and SHA-256 matching on Apple Silicon Metal GPU:
+- Implemented `qwen_kv_bytes` and enabled Policy 2 (`flash_f16_cached`) in `src/runtime_generation.align` for Qwen2 session execution on Metal (CUDA excluded pending dedicated hardware qualification per review finding 1).
+- Updated authoritative specifications `docs/specs/gpu-runtime.md` and `docs/specs/gpu-runtime-performance.md` to document the extension of Policy 2 to Metal Qwen2 sessions and updated the selector boundary (review finding 2).
+- Primary capability target: halved Qwen2 KV memory allocation and eliminated in-shader F32 ↔ F16 casting during Metal Flash Attention with 100% deterministic bit-for-bit SHA-256 parity preserved:
   prefill `6b86b273ff34`, OLMoE decode `109a6553d0bd`, Qwen2 decode `7913883c0e74`.
-- Filed upstream compiler improvement issue: [sanohiro/align#1043](https://github.com/sanohiro/align/issues/1043).
-- Registered Request 63 in `docs/align-requests.md`.
-- Completed independent review (`scripts/review-agy`), consolidated repair commit `fa996c7`,
-  preflight passed, and merged pull request #247 into `main` (`800d7a3`).
-- Validated upstream Align PR #1044 and PR #1045 (merged at `6cd95b15`) on Apple Silicon Metal GPU:
-  Qwen2 dense decode improved from 88.17 ms/tok to 85.38 ms/tok (~3.2% throughput gain),
-  100% bit-for-bit SHA-256 parity preserved, and published qualification results on #1043.
+- Metal GPU qualification: reproducible paired benchmark (`python3 /Users/hiro/models/measure_qwen_f16.py`, 3 reps on Apple M1 16GB, macOS 15.6) demonstrates observed Qwen2 dense decode latency reduction from 85.35 ms/tok to 78.59 ms/tok (~7.9% throughput gain; cumulative ~10.9% gain over 88.17 ms/tok baseline). Primary capability rationale is exact-parity memory reduction, with latency reported as observed secondary metric (review finding 3).
+- Disassembled and audited generated machine code, identifying three Align compiler/language improvement opportunities:
+  1. Redundant consecutive pure FFI queries / lack of CSE and small-function inlining in `runtime_attention$fused`.
+  2. Massive stack frame overhead (992 bytes in decode graph builder) caused by large struct value returns/copies (`NodeTable` 216B, `OracleTable` 168B).
+  3. Architecture boilerplate duplication between Qwen2 and OLMoE due to lack of structural typing or trait generics.
+- Resolved all 3 review findings from `scripts/review-agy` with a consolidated repair commit.
 
 Active work:
-- None.
+- Review and publication of Qwen2 KV F16 optimization.
 
 Next actions in priority order:
-1. When a new Align pin release is tagged/promoted, adopt `6cd95b15` or latest release toolchain.
+1. Re-run preflight (`python3 scripts/pre-pr`), confirm review envelope, and publish pull request.
 2. Advance to the next scheduled roadmap capability in `docs/specs/roadmap.md`.
 
 Latest durable verification:
-- `scripts/alignc run src/runtime_sampler_smoke.align`: PASS.
-- `scripts/bench-runtime-sampler`: PASS (~278 us/call).
 - `scripts/run-gpu-session-reuse-smoke`: PASS.
-- `scripts/check-format`: PASS.
-- `python3 scripts/pre-pr`: PASS on commit `fa996c7`.
-- Apple Silicon Metal GPU qualification on PR #1045: PASS (all SHAs identical, Qwen2 decode 85.38 ms/tok).
+- `make check` (155 units): PASS.
+- Apple Silicon Metal GPU qualification on `qwen-f16-build`: PASS (100% bit-for-bit SHA-256 match, 78.59 ms/tok decode).
 
 Blockers, constraints, decisions:
-- No active blockers. Worktree clean on `main`.
+- No active blockers. Worktree on `agent/qwen2-attention-f16-kv`.
 
 
 ## Completed capability: latest merged Align adoption
