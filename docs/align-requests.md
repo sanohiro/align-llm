@@ -48,6 +48,23 @@ Inspection of the compiled Mach-O 64-bit ARM64 release binary at `6cd95b15` reve
 4. Native vectorization: loops over primitive slices remain scalar; AArch64 baseline NEON vectorization is not emitted.
 Full machine code trace and analysis published on [sanohiro/align#1043](https://github.com/sanohiro/align/issues/1043#issuecomment-5663319777).
 
+### Request 64: pure query CSE/inlining, struct RVO, and structural subtyping (2026-09-14)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; application code duplicates records across architectures and works around call overhead
+Independent work that may continue: runtime generation, prompt caching, speculative decoding
+Resume condition: upstream review and design closure on issue #1047
+Align commit or pull request: [sanohiro/align#1047](https://github.com/sanohiro/align/issues/1047)
+align-llm verification: native Apple Silicon / Metal benchmark suite and runtime session reuse smoke
+
+Discovered during Qwen2 Attention KV F16 enablement (PR #248):
+1. Pure FFI queries & small function inlining: `runtime_attention$fused` issues two consecutive `bl` calls to `gpu_attention_policy(owner)` due to lack of CSE across short-circuiting branches and missing cross-module inlining for one-line functions (`pub fn ... = expr`).
+2. Stack frame bloat from large struct returns: returning definitions (`NodeTable` 216B, `OracleTable` 168B) copies structs by value using unrolled NEON stores, allocating up to 992 bytes on the stack frame. Return Value Optimization (RVO / `sret`) or `borrow` returns needed.
+3. Structural subtyping / generic traits: nominal type separation forces duplication of identical layer logic across architectures (`qwen_kv_bytes` vs `olmoe_kv_bytes`, `admit_*_shapes`, `prepare_session_*`).
+Full disassembly trace and proposed lowerings published on [sanohiro/align#1047](https://github.com/sanohiro/align/issues/1047).
+
 ### Decode optimization provider implementation (2026-09-14)
 
 Status: ALIGN_MERGED. [Align PR #1042](https://github.com/sanohiro/align/pull/1042)
