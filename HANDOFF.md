@@ -4,11 +4,14 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-The user requested publication of the remaining decode-optimization provider note in
-`docs/align-requests.md`. Branch `agent/decode-request-record` contains that documentation
-and synchronizes its adoption status. No implementation or benchmark work is active.
-Next eligible follow-up is native Mac decode/sampling performance qualification from
-Align plan 62; it is pending and is not started by this documentation publication.
+Active capability: `agent/runtime-sampler-topk-threshold`.
+Implemented scalar thresholding in `src/runtime_sampler.align` (Plan 62 algorithm 1)
+to discard >99.9% of non-candidate tokens in 1 comparison during Top-K selection.
+Microbenchmark shows 47x speedup (9,982 us -> 210 us per call on 152k vocabulary).
+100% deterministic output parity and SHA-256 matching.
+Owner tests pass: `scripts/alignc run src/runtime_sampler_smoke.align`,
+`scripts/check-format`, and `scripts/run-gpu-session-reuse-smoke`.
+Filed upstream compiler improvement issue: sanohiro/align#1043.
 
 ## Completed capability: latest merged Align adoption
 
