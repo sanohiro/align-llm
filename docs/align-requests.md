@@ -114,7 +114,7 @@ Blocking: no
 Blocked gate or slice: none; application code decouples staging buffers to the caller function frame rather than holding them in `Session`
 Independent work that may continue: runtime generation, memory planning, benchmark suites
 Resume condition: upstream design closure and implementation on issue
-Align commit or pull request: to be filed on sanohiro/align
+Align commit or pull request: [sanohiro/align#1050](https://github.com/sanohiro/align/issues/1050)
 align-llm verification: scripts/run-gpu-session-reuse-smoke, python3 /Users/hiro/models/measure_qwen_f16.py
 
 Discovered during Decode Loop Zero-Allocation Staging and Session Buffer Optimization:
