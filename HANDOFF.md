@@ -4,8 +4,10 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `main` at `ef9b469`.
-Active capability: none active; ready for next capability.
+Branch: `agent/publish-caller-result-provider`, based on `main` at `11a9b69`.
+Active capability: publish the merged caller-result provider delivery record.
+Align #1059 is merged at `ec091852b95cef49b288e970dc32c92a6e9da6ce`; consumer
+adoption and native client qualification remain pending. The managed pin is unchanged.
 Capability 13 is merged in PR #269. Capability 12 is merged in PR #267. Request 91 registration merged in PR #266.
 Align #1058 is merged at `241035ba97b2a679ce6589f2df66630cdcc2c691`; consumer adoption remains pending.
 
