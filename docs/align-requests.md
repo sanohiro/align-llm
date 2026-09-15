@@ -73,6 +73,64 @@ subtyping/traits and native/ThinLTO defaults are not selected. Native Metal/CUDA
 qualification and pin adoption remain consumer-owned. No consumer code,
 fixtures, build machinery or managed pin are changed by this publication.
 
+### Issue 1047 caller-result follow-up (2026-09-15)
+
+Status: provider design candidate, not implemented. The added Apple call-site
+assembly distinguishes caller copies from constructor writes. A provider-owned
+216-byte two-record witness at Align `241035ba` reproduces two 216-byte copies
+on x86-64 and in retargeted apple-m1 assembly. Explicit result pointers plus
+full-size memcpy expose LLVM call-slot forwarding; a result-pointer-only
+aggregate load/store control still copies. The proposed plan 67 requires exact
+LLVM target return classification, implicit/explicit native ABI equivalence,
+all applicable call/return edges, cleanup preservation and cache/partition
+coverage before implementation. No source API, foreign purity contract or
+runtime allocation is added. Retargeted assembly is not native Mac timing;
+original client build identity and IR remain requested on issue 1047. FFI
+query CSE and imported helper exposure remain separate plan 65 boundaries.
+
+### Additional issue design answer (2026-09-15; issues 1054, 1055, 1057)
+
+Provider design: [Align plan 66](https://github.com/sanohiro/align/blob/241035ba97b2a679ce6589f2df66630cdcc2c691/docs/impl/66-array-prefix-and-text-boundary-plan.md),
+after reviewing all 11 open issues against provider `61b2de79` and consumer
+`b00d3fa9`. One independent design review found two P2 and one P3; all three
+are corrected in the public ledger and owner matrix. The text predicate is now
+ALIGN_MERGED in PR [1058](https://github.com/sanohiro/align/pull/1058), merge
+`241035ba97b2a679ce6589f2df66630cdcc2c691`. Array truncation remains pending;
+provider delivery does not establish consumer acceptance.
+
+- **1057 — ALIGN_MERGED (#1058):** `str.is_char_boundary(index: i64) -> bool`, including
+  existing shared borrowing of an owned string receiver. Negative/too-large
+  offsets return false, endpoints return true, interior offsets inspect one
+  continuation-byte mask after range guards. No allocation or new runtime
+  export. Existing `starts_with`/`ends_with` already compare bounded bytes
+  without interior slicing; their usage is documented. No new fallible slice
+  method or byte-array equality is selected.
+- **1054 / Request 89 — ACCEPTED:** exclusive dynamic `array<T>.truncate(i64)`
+  retains its backing pointer and prefix, validates the range before mutation,
+  and runs complete existing Drop for removed owned elements. Numeric Copy
+  truncation takes O(1) work without allocation/copy. Heap, arena and stack keep
+  their distinct release owners. Explicit `borrow mut` input mutation remains
+  Pure absent other Impure operations. This joins the complete plan 61 + plan
+  65 mutable-storage capability; it is not a numeric-only early implementation.
+  The local release/no-runtime-LTO `slice<i64>.to_array()` witness already lowers
+  to `llvm.memcpy`; there is no universal Copy-layout optimization claim.
+- **1055 / Request 90 — provider syntax disposition REFUSED under the current
+  plan 23 rule; administrative request status remains PROPOSED.** The inspected
+  tokenizer has two mechanical dispatch sites in one program, below the reopen
+  threshold; explicit new pattern syntax also fails the compiler-derived widening
+  shape independently of the count. Existing if code already optimizes to
+  inlined interval comparisons and a select. Further compiler optimization
+  research is separate and requires a measured remaining cost.
+
+The independent text predicate/documentation is merged. Its seven owner tests
+cover whole/per-unit Unicode and range behavior, evaluation order, temporary
+allocation/cleanup, source observation expiry and control-flow composition. The
+independent code review/fix cycle, bounded gate, Clippy and all required CI checks
+passed, including Linux x86_64, Linux ARM64 and macOS Apple Silicon.
+The complete safe-storage capability including truncate remains in implementation.
+Consumer code, managed-pin adoption and smoke/benchmark verification remain
+consumer-owned; no versioned release was requested.
+
 ### First capability implementation (2026-09-15)
 
 PR [1056](https://github.com/sanohiro/align/pull/1056) implements F/B/C/L/K:
@@ -267,12 +325,12 @@ Discovered during Greedy Decode and Sampler Pipeline Optimization:
 
 ### Request 89: in-place array.truncate(len) and bulk-copy slice.to_array (2026-09-15)
 
-Status: PROPOSED
+Status: ACCEPTED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; application uses `ids[0..count].to_array()` or manual `array_builder` loops
 Independent work that may continue: runtime generation, sampling, model IR, benchmarks
-Resume condition: upstream design closure and implementation on issue
+Resume condition: complete plan 61 / plan 65 / plan 66 truncate implementation with whole/per-unit and native cleanup owners; then consumer verification
 Align commit or pull request: [sanohiro/align#1054](https://github.com/sanohiro/align/issues/1054)
 align-llm verification: scripts/run-runtime-provider-smoke, python3 "$MODEL_DIR/measure_qwen_f16.py"
 
@@ -297,7 +355,7 @@ Priority: medium
 Blocking: no
 Blocked gate or slice: none; application code works around using cascading `if ... else if` branches
 Independent work that may continue: runtime generation, sampling, tokenizer, benchmarks
-Resume condition: upstream design closure and implementation on issue
+Resume condition: no syntax implementation scheduled under the current plan 23 protocol; provider refusal and independent compiler optimization research are recorded above
 Align commit or pull request: [sanohiro/align#1055](https://github.com/sanohiro/align/issues/1055)
 align-llm verification: scripts/run-tokenizer-smoke, scripts/run-runtime-provider-smoke
 
@@ -319,13 +377,13 @@ Discovered during tokenizer byte mapping and greedy logit selection optimization
 
 ### Request 91: expose str.is_char_boundary(index) and document safe prefix/suffix primitives (2026-09-15)
 
-Status: PROPOSED
+Status: ALIGN_MERGED for the predicate and prefix/suffix documentation in PR #1058; consumer verification pending
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; application code uses starts_with/ends_with or manual bytes inspection
 Independent work that may continue: tokenizer optimizations, sampling, generation, KV cache
-Resume condition: upstream design closure and implementation on issue
-Align commit or pull request: [sanohiro/align#1057](https://github.com/sanohiro/align/issues/1057)
+Resume condition: adopt merged PR #1058 through the managed pin and run the named consumer acceptance owners
+Align commit or pull request: [PR #1058](https://github.com/sanohiro/align/pull/1058), merge `241035ba97b2a679ce6589f2df66630cdcc2c691`; original issue #1057
 align-llm verification: scripts/run-tokenizer-smoke, scripts/run-runtime-provider-smoke
 
 Discovered during tokenizer candidate matching and joined token optimizations:
