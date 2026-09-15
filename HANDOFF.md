@@ -4,8 +4,11 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `main` at `7bca00f`.
-Active capability: none active; ready for next capability.
+Branch: `agent/publish-text-boundary-provider`, based on `main` at `98ca019`.
+Active capability: publish the retained provider design and text-boundary delivery notes.
+Align #1058 is merged at `241035ba97b2a679ce6589f2df66630cdcc2c691`; consumer
+adoption remains pending. Array truncation and caller-result placement are not shipped.
+This documentation batch leaves the managed pin unchanged.
 Capability 12 is merged in PR #267. Request 91 registration merged in PR #266.
 
 Completed work:
