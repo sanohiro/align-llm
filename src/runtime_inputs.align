@@ -16,7 +16,7 @@ pub fn attention_width(valid: i64, context: i64) -> Result<i64, Error> {
   if valid < 1 || context < valid || valid > 9223372036854775552 {
     return Err(Error.Invalid)
   }
-  rounded := ((valid + 255) / 256) * 256
+  rounded := (valid + 255) & -256
   return Ok(if rounded < context { rounded } else { context })
 }
 

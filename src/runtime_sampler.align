@@ -82,17 +82,17 @@ pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Select
   if count < 1 { return Err(Error.Invalid) }
 
   maximum := values[0] as f64
-  mut raw_buf := buffer(320)
+  mut raw_weights: array_builder<f64> := array_builder()
   mut raw_total := 0.0
   mut raw_at := 0
   loop {
     if raw_at >= count { break }
     weight := E.pow((values[raw_at] as f64) - maximum)
-    raw_buf.put_f64_le(weight)
+    raw_weights.push(weight)
     raw_total = raw_total + weight
     raw_at = raw_at + 1
   }
-  raw := raw_buf.bytes()
+  weights_f64 := raw_weights.build()
   if raw_total <= 0.0 { return Err(Error.Invalid) }
 
   mut top_p_count := count
@@ -100,7 +100,7 @@ pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Select
   mut p_at := 0
   loop {
     if p_at >= count { break }
-    weight_val := raw.f64_le(p_at * 8)
+    weight_val := weights_f64[p_at]
     cumulative = cumulative + weight_val
     if cumulative >= raw_total * TOP_P {
       top_p_count = p_at + 1
@@ -111,15 +111,15 @@ pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Select
 
   mut min_p_count := 1
   mut min_at := 1
-  first_weight := raw.f64_le(0)
+  first_weight := weights_f64[0]
   loop {
     if min_at >= top_p_count { break }
-    if raw.f64_le(min_at * 8) < first_weight * MIN_P { break }
+    if weights_f64[min_at] < first_weight * MIN_P { break }
     min_p_count = min_p_count + 1
     min_at = min_at + 1
   }
 
-  mut weights_buf := buffer(320)
+  mut quantized_builder: array_builder<i64> := array_builder()
   mut total_weight := 0
   mut weight_at := 0
   loop {
@@ -127,11 +127,11 @@ pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Select
     relative := E.pow(((values[weight_at] as f64) - maximum) / TEMPERATURE)
     quantized := (relative * (WEIGHT_SCALE as f64)).round() as i64
     if quantized < 1 { return Err(Error.Invalid) }
-    weights_buf.put_i64_le(quantized)
+    quantized_builder.push(quantized)
     total_weight = total_weight + quantized
     weight_at = weight_at + 1
   }
-  weights := weights_buf.bytes()
+  quantized_weights := quantized_builder.build()
   if total_weight < 1 { return Err(Error.Invalid) }
 
   draw := random.range(0, total_weight)
@@ -140,7 +140,7 @@ pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Select
   mut draw_at := 0
   loop {
     if draw_at >= min_p_count { break }
-    drawn_weight = drawn_weight + weights.i64_le(draw_at * 8)
+    drawn_weight = drawn_weight + quantized_weights[draw_at]
     if draw < drawn_weight {
       selected = ids[draw_at]
       break
