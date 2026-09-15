@@ -222,6 +222,33 @@ Discovered during BPE Tokenizer Fast Path & Worker Completion Reuse optimization
    - For `Copy` types (`i64`, `f32`, `u8`, etc.), `arr.truncate(new_len)` updates the length field in-place without re-allocating or modifying backing capacity.
    - For `Move` types with custom Drop, elements from `new_len` to `old_len` are dropped, or semantic check rejects truncation if non-trivial drop is not yet supported.
 
+### Request 90: integer literal and range patterns in match expressions (2026-09-15)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; application code works around using cascading `if ... else if` branches
+Independent work that may continue: runtime generation, sampling, tokenizer, benchmarks
+Resume condition: upstream design closure and implementation on issue
+Align commit or pull request: [sanohiro/align#1055](https://github.com/sanohiro/align/issues/1055)
+align-llm verification: scripts/run-tokenizer-smoke, scripts/run-runtime-provider-smoke
+
+Discovered during tokenizer byte mapping and greedy logit selection optimizations:
+1. In `align-llm` systems code (such as `src/tokenizer_qwen2.align`'s `byte_scalar` and `scalar_byte`), developers frequently map byte and integer values across discrete intervals.
+2. Align's `match` expression AST (`align_ast::MatchPattern`) and sema currently only support enum variants (`Variant`), bare variant or-patterns (`Or`), and wildcards (`Wildcard`). Primitive integer/char literals and integer range patterns (`min..=max`) are not permitted.
+3. This forces developers to write verbose and fragile chains of `if ... else if ... else if` conditionals with manual range comparisons (`if val <= 32 ... else if val <= 160 ...`).
+4. Compilers cannot easily lower sequential `if/else` ladders into optimal jump tables (`switch` instructions) or balanced binary decision trees in LLVM IR. For dense byte dispatches handling large vocabularies (such as tokenizers processing 151,936 tokens), this incurs branch misprediction penalties and dispatch overhead.
+5. Proposed Align surface:
+   - Allow integer literals (`0`, `42`, etc.) and char literals as match patterns.
+   - Allow inclusive range patterns (`min..=max`) in match arms.
+   - Allow or-patterns of integer literals and ranges (`1 | 2 | 5..=10 => ...`).
+   - Lower dense integer match arms to LLVM `switch` instructions to enable automatic jump table generation in LLVM backends.
+6. Acceptance criteria:
+   - AST / Parser: `MatchPattern` supports integer literal and inclusive range patterns.
+   - Sema: Type-checking validates that the pattern expressions match the scrutinee type (`i64`, `i32`, `u8`, `char`, etc.) and that ranges satisfy `min <= max`.
+   - Exhaustiveness / Reachability: Compiler detects overlapping unreachable arms and warns or requires a wildcard (`_`) arm when patterns do not span the entire integer domain.
+   - Codegen: Contiguous or dense range patterns lower to LLVM `switch` with default targets.
+
 ### Issue 1043 composed-loop implementation (2026-09-14)
 
 Status: ALIGN_MERGED; [PR #1046](https://github.com/sanohiro/align/pull/1046).
