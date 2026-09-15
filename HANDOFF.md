@@ -4,26 +4,31 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/publish-plan65-provider`, based on `main` at `386c447`.
-Active capability: publish the plan-65 provider delivery record. Capability 9 is merged in PR #262.
-Align #1056 is merged at `61b2de79576fde043d5f310c1300370c02250fc3`;
-consumer adoption and native qualification remain pending. The managed pin is unchanged.
+Branch: `main` at `9695349`.
+Active capability: none (Capability 10 merged in PR #264).
+Upstream Align:
+- Issue #1047 answered with concrete aarch64 assembly evidence proving caller-side 216-byte intermediate stack copy.
+- Issue #1057 filed for `str.is_char_boundary(index)` and safe prefix/suffix primitives.
+- Align #1056 merged in PR #263.
 
 Completed work:
 - PR #258 (Capability 7): BPE Tokenizer single-byte / two-byte fast path and worker completion buffer reuse merged into `main`.
 - Upstream Align Issue #1054: Reported `[Standard Library] Add in-place array.truncate(len) and bulk-copy slice.to_array`.
-- PR #259: Registered Request 89 in `docs/align-requests.md` for in-place `array.truncate(len)` and `slice.to_array()`.
+- PR #259: Registered Request 89 in `docs/align-requests.md`.
 - PR #260 (Capability 8): Accelerated greedy logit selection via negative logit pruning (`1,071 μs -> 261 μs/call`), closed-form O(1) `byte_scalar` / `scalar_byte` in `tokenizer_qwen2`, output buffer preallocation in `decode_loaded`, and direct `ids[0..count].to_array()` in `truncate_ids`.
 - Upstream Align Issue #1055: Reported `[Language RFC] Support integer literal and range patterns in match expressions`.
-- PR #261: Registered Request 90 in `docs/align-requests.md` for `match` integer literal and range patterns.
+- PR #261: Registered Request 90 in `docs/align-requests.md`.
 - PR #262 (Capability 9): 3-byte BPE fast path (CJK / UTF-8 characters) bypassing all 9 heap array allocations and priority queues; sampler sign-bit negative logit pruning in `runtime_sampler::select`.
+- PR #263: Recorded plan-65 provider capability delivery in `docs/align-requests.md`.
+- PR #264 (Capability 10): Unrolled `fnv_u64` into 8-stage constant shifts and masks; accelerated `joined_equal` using native `starts_with` and `ends_with` `memcmp` primitives, eliminating intermediate slice UTF-8 panic risks and bounds checking.
+- Upstream Align Issue #1057: Reported `[Language/Stdlib RFC] Expose str.is_char_boundary(index) -> bool and document safe prefix/suffix primitives`.
+- Upstream Align Issue #1047: Detailed audit and aarch64-apple-darwin disassembly posted clarifying caller-side copy mechanism.
 
 Next actions in priority order:
-1. Finish the documentation publication with its docs preflight and independent review.
-   This batch authorizes no implementation; subsequent work may assess provider adoption or the next runtime optimization.
-2. Formulate consumer capability on new branch, run owner tests and Metal GPU verification.
-3. Perform independent adversarial review (`scripts/review-agy --base origin/main`), preflight (`scripts/pre-pr`), create PR, and merge to `main`.
-4. Report any discovered Align language/compiler/standard library gaps upstream as issues.
+1. Register Request 91 in `docs/align-requests.md` for Issue #1057.
+2. Select next consumer optimization capability (e.g. KV cache / attention steering / decode step).
+3. Implement on new branch, run owner tests and Metal GPU verification.
+4. Independent review (`scripts/review-agy`), preflight (`scripts/pre-pr`), PR and merge.
 
 Latest durable verification:
 - `alignc check src/main.align`: PASS (checked 3122 functions).
@@ -32,14 +37,14 @@ Latest durable verification:
 - `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
 - Apple Silicon Metal GPU verification (`python3 "$MODEL_DIR/measure_qwen_f16.py"`): PASS.
-  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1712.2 ms)
-  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.61 ms/tok)
-  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5355.1 ms)
-  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 76.65 ms/tok)
+  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1745.5 ms)
+  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.93 ms/tok)
+  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5389.5 ms)
+  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 77.81 ms/tok)
 
 Blockers, constraints, decisions:
 - 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks on Apple Silicon Metal GPU.
-- Upstream Align issues #1054 and #1055 tracked in `docs/align-requests.md` as Requests 89 and 90.
+- Upstream Align issues #1047, #1054, #1055, and #1057 actively tracked.
 
 ## Completed capability: latest merged Align adoption
 
