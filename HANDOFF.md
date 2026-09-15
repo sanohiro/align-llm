@@ -4,9 +4,9 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/register-align-request-91`, based on `main` at `8550858`.
-Active capability: register Request 91 in `docs/align-requests.md` for upstream Issue #1057.
-Capability 11 is merged in PR #265.
+Branch: `main` at `7bca00f`.
+Active capability: none active; ready for next capability.
+Capability 12 is merged in PR #267. Request 91 registration merged in PR #266.
 
 Completed work:
 - PR #258 (Capability 7): BPE Tokenizer single-byte / two-byte fast path and worker completion buffer reuse merged into `main`.
@@ -21,25 +21,25 @@ Completed work:
 - Upstream Align Issue #1057: Reported `[Language/Stdlib RFC] Expose str.is_char_boundary(index) -> bool and document safe prefix/suffix primitives`.
 - Upstream Align Issue #1047: Detailed audit and aarch64-apple-darwin disassembly posted clarifying caller-side copy mechanism.
 - PR #265 (Capability 11): De-duplicated attention FFI queries (`fused` and `name`), bitmasked attention width (`(valid + 255) & -256`), and eliminated temporary buffer serialization in `runtime_sampler::select`.
-  - Achieved new repository record: OLMoE decode 128 at **16.21 ms/tok (2,074.6 ms)** on Apple Silicon Metal GPU with 100% bit-exact SHA-256 parity.
+- PR #266: Registered Request 91 in `docs/align-requests.md`.
+- PR #267 (Capability 12): Accelerated `greedy` logit selection by exploiting IEEE 754 positive single-precision float monotonic bit ordering; eliminated `f32_le` loads and floating-point comparisons for >99.9% of tokens in vocabulary scan.
+  - Achieved new repository record: OLMoE decode 128 at **16.09 ms/tok (2,059.7 ms)** on Apple Silicon Metal GPU with 100% bit-exact SHA-256 parity.
 
 Next actions in priority order:
-1. Merge Request 91 documentation PR to `main`.
-2. Implement decode loop GPU transfer minimization & logit buffer zero-allocation (Capability 12).
-3. Run owner tests, verify on Apple Silicon Metal GPU with bit-exact determinism.
-4. Independent adversarial review (`scripts/review-agy`), preflight (`scripts/pre-pr`), create PR and merge.
+1. Identify and implement next capability (Capability 13) for further runtime/model acceleration.
+2. Verify with narrow owner tests and Apple Silicon Metal GPU benchmark with bit-exact determinism.
+3. Conduct independent adversarial review (`scripts/review-agy`), preflight (`scripts/pre-pr`), create PR and merge.
 
 Latest durable verification:
 - `alignc check src/main.align`: PASS (checked 3122 functions).
 - `make fmt`: PASS.
-- `scripts/run-tokenizer-smoke`: PASS.
 - `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
 - Apple Silicon Metal GPU verification (`python3 "$MODEL_DIR/measure_qwen_f16.py"`): PASS.
-  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1721.0 ms)
-  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.21 ms/tok)
-  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5356.6 ms)
-  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 77.77 ms/tok)
+  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1723.2 ms)
+  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.09 ms/tok / 2,059.7 ms)
+  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5374.8 ms)
+  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 77.90 ms/tok / 9,971.3 ms)
 
 Blockers, constraints, decisions:
 - 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks on Apple Silicon Metal GPU.
