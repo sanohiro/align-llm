@@ -18,11 +18,6 @@ pub Selection {
   top_token_id: i64,
 }
 
-fn finite_f32(borrow logits: slice<u8>, offset: i64) -> bool {
-  bits := logits.u32_le(offset)
-  return (bits & 2139095040) != 2139095040
-}
-
 // Stable descending insertion keeps candidate identity paired with its F32 logit. Equal logits are
 // ordered by ascending token id so neither the target nor the categorical intervals depend on an
 // implementation-specific sort.
@@ -47,34 +42,37 @@ pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Select
   mut threshold_id := 9223372036854775807
   loop {
     if token >= token_count { break }
-    if !finite_f32(logits, offset) { return Err(Error.Invalid) }
-    value := logits.f32_le(offset)
-    admit := count < TOP_K || value > threshold || (value == threshold && token < threshold_id)
-    if admit {
-      mut insertion := count
-      mut at := 0
-      loop {
-        if at >= count { break }
-        if value > values[at] || (value == values[at] && token < ids[at]) {
-          insertion = at
-          break
-        }
-        at = at + 1
-      }
-      if insertion < TOP_K {
-        if count < TOP_K { count = count + 1 }
-        mut move_at := count - 1
+    bits := logits.u32_le(offset)
+    if (bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
+    if count < TOP_K || threshold <= 0.0 || (bits & 2147483648) == 0 {
+      value := logits.f32_le(offset)
+      admit := count < TOP_K || value > threshold || (value == threshold && token < threshold_id)
+      if admit {
+        mut insertion := count
+        mut at := 0
         loop {
-          if move_at <= insertion { break }
-          ids[move_at] = ids[move_at - 1]
-          values[move_at] = values[move_at - 1]
-          move_at = move_at - 1
+          if at >= count { break }
+          if value > values[at] || (value == values[at] && token < ids[at]) {
+            insertion = at
+            break
+          }
+          at = at + 1
         }
-        ids[insertion] = token
-        values[insertion] = value
-        if count == TOP_K {
-          threshold = values[TOP_K - 1]
-          threshold_id = ids[TOP_K - 1]
+        if insertion < TOP_K {
+          if count < TOP_K { count = count + 1 }
+          mut move_at := count - 1
+          loop {
+            if move_at <= insertion { break }
+            ids[move_at] = ids[move_at - 1]
+            values[move_at] = values[move_at - 1]
+            move_at = move_at - 1
+          }
+          ids[insertion] = token
+          values[insertion] = value
+          if count == TOP_K {
+            threshold = values[TOP_K - 1]
+            threshold_id = ids[TOP_K - 1]
+          }
         }
       }
     }
