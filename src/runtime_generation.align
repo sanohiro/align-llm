@@ -704,12 +704,14 @@ pub fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
     if i >= n_vocab { break }
     bits := logits.u32_le(offset)
     if (bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
-    value := logits.f32_le(offset)
-    if value > best_value {
-      best = i
-      best_value = value
-    } else if i < best && value == best_value {
-      best = i
+    if best_value <= 0.0 || (bits & 2147483648) == 0 {
+      value := logits.f32_le(offset)
+      if value > best_value {
+        best = i
+        best_value = value
+      } else if i < best && value == best_value {
+        best = i
+      }
     }
     offset = offset + 4
     i = i + 1
