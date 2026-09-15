@@ -1113,6 +1113,40 @@ fn bpe_piece_append(borrow t: Tokenizer, piece: str, borrow mut output: array_bu
     }
     return
   }
+  if count == 3 {
+    raw := piece.bytes()
+    id0 := t.byte_tokens[raw.u8(0) as i64]
+    id1 := t.byte_tokens[raw.u8(1) as i64]
+    id2 := t.byte_tokens[raw.u8(2) as i64]
+    pair01 := pair_lookup(t, id0, id1)
+    pair12 := pair_lookup(t, id1, id2)
+    if pair01.rank < 0 && pair12.rank < 0 {
+      output.push(id0)
+      output.push(id1)
+      output.push(id2)
+      return
+    }
+    merge_01_first := (pair01.rank >= 0 && pair12.rank < 0)
+      || (pair01.rank >= 0 && pair12.rank >= 0 && pair01.rank <= pair12.rank)
+    if merge_01_first {
+      pair_final := pair_lookup(t, pair01.result, id2)
+      if pair_final.rank >= 0 {
+        output.push(pair_final.result)
+      } else {
+        output.push(pair01.result)
+        output.push(id2)
+      }
+    } else {
+      pair_final := pair_lookup(t, id0, pair12.result)
+      if pair_final.rank >= 0 {
+        output.push(pair_final.result)
+      } else {
+        output.push(id0)
+        output.push(pair12.result)
+      }
+    }
+    return
+  }
   mut ids := filled_i64(count, -1)
   mut lengths := filled_i64(count, 1)
   mut prev := filled_i64(count, -1)
