@@ -425,14 +425,7 @@ fn session_host_reservation(borrow snapshot: gguf.GgufSnapshot, limit: i64) -> R
 }
 
 fn truncate_ids(borrow ids: array<i64>, count: i64) -> array<i64> {
-  mut completion: array_builder<i64> := array_builder()
-  mut at := 0
-  loop {
-    if at >= count { break }
-    completion.push(ids[at])
-    at = at + 1
-  }
-  return completion.build()
+  return ids[0..count].to_array()
 }
 
 fn worker_generate(borrow mut generation: runtime_generation.Session,

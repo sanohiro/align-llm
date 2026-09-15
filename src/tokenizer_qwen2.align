@@ -417,30 +417,19 @@ fn direct_byte(value: i64) -> bool {
 
 fn byte_scalar(value: i64) -> i64 {
   if direct_byte(value) { return value }
-  mut rank := 0
-  mut at := 0
-  loop {
-    if at >= value { break }
-    if !direct_byte(at) { rank = rank + 1 }
-    at = at + 1
-  }
-  return 256 + rank
+  if value <= 32 { return 256 + value }
+  if value <= 160 { return 162 + value }
+  if value == 173 { return 323 }
+  return 256
 }
 
 fn scalar_byte(value: i64) -> i64 {
   if direct_byte(value) { return value }
   if value < 256 || value > 323 { return -1 }
   target := value - 256
-  mut rank := 0
-  mut at := 0
-  loop {
-    if at >= 256 { break }
-    if !direct_byte(at) {
-      if rank == target { return at }
-      rank = rank + 1
-    }
-    at = at + 1
-  }
+  if target <= 32 { return target }
+  if target <= 66 { return 127 + (target - 33) }
+  if target == 67 { return 173 }
   return -1
 }
 
@@ -2131,7 +2120,8 @@ fn decode_loaded(borrow loaded: LoadResult, borrow token_ids: array<i64>,
     at = at + 1
   }
 
-  mut output := buffer(0)
+  initial_cap := if token_count * 4 < MAX_OPERATION_OUTPUT_BYTES { token_count * 4 } else { MAX_OPERATION_OUTPUT_BYTES }
+  mut output := buffer(initial_cap)
   mut output_bytes := 0
   at = 0
   loop {
@@ -2156,10 +2146,26 @@ fn decode_loaded(borrow loaded: LoadResult, borrow token_ids: array<i64>,
       output.append(token.bytes())
       output_bytes = attempted
     } else if token_type == 1 {
+      raw := token.bytes()
       mut token_at := 0
       loop {
-        if token_at >= token.len() { break }
-        code := scalar_code(token, token_at)
+        if token_at >= raw.len() { break }
+        first := raw.u8(token_at) as i64
+        width := scalar_width(first)
+        code := if width == 1 {
+          first
+        } else if width == 2 {
+          ((first & 31) << 6) | ((raw.u8(token_at + 1) as i64) & 63)
+        } else if width == 3 {
+          ((first & 15) << 12)
+            | (((raw.u8(token_at + 1) as i64) & 63) << 6)
+            | ((raw.u8(token_at + 2) as i64) & 63)
+        } else {
+          ((first & 7) << 18)
+            | (((raw.u8(token_at + 1) as i64) & 63) << 12)
+            | (((raw.u8(token_at + 2) as i64) & 63) << 6)
+            | ((raw.u8(token_at + 3) as i64) & 63)
+        }
         byte := scalar_byte(code)
         attempted := output_bytes + 1
         if attempted > MAX_OPERATION_OUTPUT_BYTES {
@@ -2174,7 +2180,7 @@ fn decode_loaded(borrow loaded: LoadResult, borrow token_ids: array<i64>,
         }
         output.put_u8(byte as u8)
         output_bytes = attempted
-        token_at = token_at + scalar_width(token.bytes().u8(token_at) as i64)
+        token_at = token_at + width
       }
     } else if token_type == 6 {
       attempted := output_bytes + 1
