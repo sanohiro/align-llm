@@ -317,6 +317,31 @@ Discovered during tokenizer byte mapping and greedy logit selection optimization
    - Exhaustiveness / Reachability: Compiler detects overlapping unreachable arms and warns or requires a wildcard (`_`) arm when patterns do not span the entire integer domain.
    - Codegen: Contiguous or dense range patterns lower to LLVM `switch` with default targets.
 
+### Request 91: expose str.is_char_boundary(index) and document safe prefix/suffix primitives (2026-09-15)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none; application code uses starts_with/ends_with or manual bytes inspection
+Independent work that may continue: tokenizer optimizations, sampling, generation, KV cache
+Resume condition: upstream design closure and implementation on issue
+Align commit or pull request: [sanohiro/align#1057](https://github.com/sanohiro/align/issues/1057)
+align-llm verification: scripts/run-tokenizer-smoke, scripts/run-runtime-provider-smoke
+
+Discovered during tokenizer candidate matching and joined token optimizations:
+1. In `align-llm` (e.g. `src/tokenizer_qwen2.align`), tokenizer merge resolution frequently validates whether candidate tokens equal the concatenation of two constituent tokens (`candidate == left + right`).
+2. Attempting to use string slicing (`candidate[0..left_len] == left`) generates inline runtime UTF-8 boundary checks (`emit_utf8_boundary_check`). On hash collisions across multi-byte UTF-8 sequences (such as CJK, Cyrillic, emoji, or byte-level BPE mapped Unicode scalars), if `left_len` falls on a continuation byte (`0x80 <= b <= 0xBF`), the runtime calls `align_rt_utf8_boundary_fail` and aborts the entire process via `std::process::abort()`.
+3. While `candidate.starts_with(left)` and `candidate.ends_with(right)` safely perform bounded `memcmp` without UTF-8 boundary checks, Align currently lacks:
+   - A predicate to query whether a byte index is a valid character boundary (e.g. `str.is_char_boundary(index: i64) -> bool`).
+   - Fallible slicing methods or safe raw byte slice equality (`a.bytes()[start..end] == b.bytes()`).
+4. Proposed Align surface:
+   - Add `str.is_char_boundary(index: i64) -> bool` to `core.string`.
+   - Document `starts_with` and `ends_with` as zero-allocation, boundary-check-free byte-prefix/suffix comparisons in standard library documentation.
+   - Consider admitting fallible slicing or subslice byte equality.
+5. Acceptance criteria:
+   - `str.is_char_boundary` returns true at index 0, length, or when the byte at `index` is not a UTF-8 continuation byte (`(b & 0xC0) != 0x80`).
+   - Standard library documentation notes that `starts_with` and `ends_with` are safe on arbitrary multi-byte boundaries.
+
 ### Issue 1043 composed-loop implementation (2026-09-14)
 
 Status: ALIGN_MERGED; [PR #1046](https://github.com/sanohiro/align/pull/1046).
