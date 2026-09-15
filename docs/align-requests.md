@@ -123,13 +123,12 @@ provider delivery does not establish consumer acceptance.
   65 mutable-storage capability; it is not a numeric-only early implementation.
   The local release/no-runtime-LTO `slice<i64>.to_array()` witness already lowers
   to `llvm.memcpy`; there is no universal Copy-layout optimization claim.
-- **1055 / Request 90 — provider syntax disposition REFUSED under the current
-  plan 23 rule; administrative request status remains PROPOSED.** The inspected
-  tokenizer has two mechanical dispatch sites in one program, below the reopen
-  threshold; explicit new pattern syntax also fails the compiler-derived widening
-  shape independently of the count. Existing if code already optimizes to
-  inlined interval comparisons and a select. Further compiler optimization
-  research is separate and requires a measured remaining cost.
+- **1055 / Request 90 — ALIGN_MERGED (PR #1060):** integer literals, negative integers,
+  `char` literals, inclusive ranges (`min..=max`), and value/range or-patterns (`A | B | ...`)
+  in `match` expressions. Validates interval ordering (`min <= max`), detects duplicate/overlapping
+  patterns, and enforces exhaustiveness across the integer domain or requires a `_` wildcard
+  arm (`char` matching requires `_`). Unconstrained integer literals (`Ty::IntVar`) resolve to `i64`.
+  Lowers to sequential interval checks with direct branch targets in MIR.
 
 The independent text predicate/documentation is merged. Its seven owner tests
 cover whole/per-unit Unicode and range behavior, evaluation order, temporary
@@ -359,13 +358,13 @@ Discovered during BPE Tokenizer Fast Path & Worker Completion Reuse optimization
 
 ### Request 90: integer literal and range patterns in match expressions (2026-09-15)
 
-Status: PROPOSED
+Status: ALIGN_MERGED in [PR #1060](https://github.com/sanohiro/align/pull/1060); consumer verification pending
 Priority: medium
 Blocking: no
-Blocked gate or slice: none; application code works around using cascading `if ... else if` branches
+Blocked gate or slice: none; application code can now migrate from cascading `if ... else if` branches to `match`
 Independent work that may continue: runtime generation, sampling, tokenizer, benchmarks
-Resume condition: no syntax implementation scheduled under the current plan 23 protocol; provider refusal and independent compiler optimization research are recorded above
-Align commit or pull request: [sanohiro/align#1055](https://github.com/sanohiro/align/issues/1055)
+Resume condition: adopt merged PR #1060 through the managed pin and verify tokenizer byte scalar mapping
+Align commit or pull request: [PR #1060](https://github.com/sanohiro/align/pull/1060), merge `5f9c31ac62b54dacf3ef8462adb2ea04768f1211`; original issue [sanohiro/align#1055](https://github.com/sanohiro/align/issues/1055)
 align-llm verification: scripts/run-tokenizer-smoke, scripts/run-runtime-provider-smoke
 
 Discovered during tokenizer byte mapping and greedy logit selection optimizations:
