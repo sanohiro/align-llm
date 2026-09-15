@@ -4,39 +4,38 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `agent/bpe-tokenizer-fast-path-opt` (based on `main` at `943fb1b`).
-Active capability: BPE Tokenizer Fast Path & Worker Completion Reuse.
+Active branch: `main` at `df67b5d`.
+Active capability: none (Capability 8 merged in PR #260; Request 90 registered in PR #261).
 
-Active work:
-- Implemented single-byte (`count == 1`) fast path in `bpe_piece_append`: direct byte token lookup bypassing all 9 heap array allocations and priority queue operations.
-- Implemented two-byte (`count == 2`) fast path in `bpe_piece_append`: single pair lookup bypassing all 9 heap array allocations and priority queue operations.
-- Replaced intermediate `bpe_piece` allocations in `encode_raw` and `encode_text` with direct accumulation via `encode_raw_append` and `bpe_piece_append`, eliminating piecewise vector allocations and intermediate copy loops.
-- Optimized `worker_generate` in `src/provider_runtime.align` using conditional move expression `if stopped { truncate_ids(ids, count) } else { ids }`, reusing `ids` directly when generation does not terminate at an EOG token.
-- Verified 100% bit-for-bit SHA-256 output parity on Apple Silicon Metal GPU.
-- Local Metal GPU benchmark run completed cleanly with full 100% SHA-256 output parity (Qwen2 decode: 76.57 ms/tok; OLMoE decode: 16.59 ms/tok).
+Completed work:
+- PR #258 (Capability 7): BPE Tokenizer single-byte / two-byte fast path and worker completion buffer reuse merged into `main`.
+- Upstream Align Issue #1054: Reported `[Standard Library] Add in-place array.truncate(len) and bulk-copy slice.to_array`.
+- PR #259: Registered Request 89 in `docs/align-requests.md` for in-place `array.truncate(len)` and `slice.to_array()`.
+- PR #260 (Capability 8): Accelerated greedy logit selection via negative logit pruning (`1,071 μs -> 261 μs/call`), closed-form O(1) `byte_scalar` / `scalar_byte` in `tokenizer_qwen2`, output buffer preallocation in `decode_loaded`, and direct `ids[0..count].to_array()` in `truncate_ids`.
+- Upstream Align Issue #1055: Reported `[Language RFC] Support integer literal and range patterns in match expressions`.
+- PR #261: Registered Request 90 in `docs/align-requests.md` for `match` integer literal and range patterns.
 
 Next actions in priority order:
-1. Commit candidate on branch `agent/bpe-tokenizer-fast-path-opt`.
-2. Run independent adversarial review: `scripts/review-agy --base origin/main`.
-3. Preflight with `python3 scripts/pre-pr --owner-test tokenizer-smoke -- ./scripts/run-tokenizer-smoke`.
-4. Push branch `agent/bpe-tokenizer-fast-path-opt`, update PR and merge.
-5. Continue autonomous roadmap cycle for next optimization capability.
+1. Identify next high-impact runtime / KV-cache / attention steering optimization capability.
+2. Formulate consumer capability on new branch, run owner tests and Metal GPU verification.
+3. Perform independent adversarial review (`scripts/review-agy --base origin/main`), preflight (`scripts/pre-pr`), create PR, and merge to `main`.
+4. Report any discovered Align language/compiler/standard library gaps upstream as issues.
 
 Latest durable verification:
 - `alignc check src/main.align`: PASS (checked 3123 functions).
 - `make fmt`: PASS.
 - `scripts/run-tokenizer-smoke`: PASS (13 text cases, 4 ordinary specials, 256-special accepted boundary, 23 model failures, 6 operation boundaries, 6 generation EOG cases, 2 one-shot reader passes, 1 replacement snapshot).
-- `scripts/run-runtime-provider-smoke`: PASS.
+- `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
 - Apple Silicon Metal GPU verification (`python3 "$MODEL_DIR/measure_qwen_f16.py"`): PASS.
-  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1724.2 ms)
-  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.59 ms/tok)
-  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5352.6 ms)
-  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 76.57 ms/tok)
+  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1719.3 ms)
+  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.28 ms/tok)
+  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5402.1 ms)
+  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 78.05 ms/tok)
 
 Blockers, constraints, decisions:
-- 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks.
-- Single-byte and two-byte BPE pieces mathematically reduce to direct token / pair lookup results and do not require priority queue allocation.
+- 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks on Apple Silicon Metal GPU.
+- Upstream Align issues #1054 and #1055 tracked in `docs/align-requests.md` as Requests 89 and 90.
 
 ## Completed capability: latest merged Align adoption
 
