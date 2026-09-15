@@ -203,6 +203,28 @@ fn test_candidate_selection() -> Result<(), Error> {
   if runtime_generation.greedy(view4, -1)? != 2 {
     return Err(Error.Invalid)
   }
+
+  // Case 6: all negative logits -> largest negative token 1 (-5.0) wins
+  mut buf5 := buffer(16)
+  buf5.put_f32_le(-10.0)
+  buf5.put_f32_le(-5.0)
+  buf5.put_f32_le(-8.0)
+  buf5.put_f32_le(-20.0)
+  view5 := buf5.bytes()
+  if runtime_generation.greedy(view5, -1)? != 1 {
+    return Err(Error.Invalid)
+  }
+
+  // Case 7: token 0 negative (-10.0), token 2 positive (4.0) -> token 2 wins via transition
+  mut buf6 := buffer(16)
+  buf6.put_f32_le(-10.0)
+  buf6.put_f32_le(-5.0)
+  buf6.put_f32_le(4.0)
+  buf6.put_f32_le(2.0)
+  view6 := buf6.bytes()
+  if runtime_generation.greedy(view6, -1)? != 2 {
+    return Err(Error.Invalid)
+  }
   return Ok(())
 }
 

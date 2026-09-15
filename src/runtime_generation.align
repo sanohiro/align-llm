@@ -686,6 +686,7 @@ pub fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
   if (first_bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
   n_vocab := logits.len() / 4
   mut best := 0
+  mut best_bits := first_bits
   mut best_value := logits.f32_le(0)
   if candidate > 0 && candidate < n_vocab {
     c_offset := candidate * 4
@@ -694,6 +695,7 @@ pub fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
       c_value := logits.f32_le(c_offset)
       if c_value > best_value {
         best = candidate
+        best_bits = c_bits
         best_value = c_value
       }
     }
@@ -704,10 +706,21 @@ pub fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
     if i >= n_vocab { break }
     bits := logits.u32_le(offset)
     if (bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
-    if best_value <= 0.0 || (bits & 2147483648) == 0 {
+    if best_value > 0.0 {
+      if (bits & 2147483648) == 0 {
+        if bits > best_bits {
+          best = i
+          best_bits = bits
+          best_value = logits.f32_le(offset)
+        } else if bits == best_bits && i < best {
+          best = i
+        }
+      }
+    } else {
       value := logits.f32_le(offset)
       if value > best_value {
         best = i
+        best_bits = bits
         best_value = value
       } else if i < best && value == best_value {
         best = i
