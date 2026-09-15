@@ -4,8 +4,10 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `main` at `e66c3d5`.
-Active capability: none (Capability 9 merged in PR #262).
+Branch: `agent/publish-plan65-provider`, based on `main` at `386c447`.
+Active capability: publish the plan-65 provider delivery record. Capability 9 is merged in PR #262.
+Align #1056 is merged at `61b2de79576fde043d5f310c1300370c02250fc3`;
+consumer adoption and native qualification remain pending. The managed pin is unchanged.
 
 Completed work:
 - PR #258 (Capability 7): BPE Tokenizer single-byte / two-byte fast path and worker completion buffer reuse merged into `main`.
@@ -17,7 +19,8 @@ Completed work:
 - PR #262 (Capability 9): 3-byte BPE fast path (CJK / UTF-8 characters) bypassing all 9 heap array allocations and priority queues; sampler sign-bit negative logit pruning in `runtime_sampler::select`.
 
 Next actions in priority order:
-1. Identify next high-impact runtime / KV-cache / attention steering optimization capability.
+1. Finish the documentation publication with its docs preflight and independent review.
+   This batch authorizes no implementation; subsequent work may assess provider adoption or the next runtime optimization.
 2. Formulate consumer capability on new branch, run owner tests and Metal GPU verification.
 3. Perform independent adversarial review (`scripts/review-agy --base origin/main`), preflight (`scripts/pre-pr`), create PR, and merge to `main`.
 4. Report any discovered Align language/compiler/standard library gaps upstream as issues.

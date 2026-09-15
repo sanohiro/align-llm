@@ -22,15 +22,83 @@ numbers are approximate and may drift — locate by function name.
 
 ## Align audit answer (2026-09-07)
 
+### Open-issue batch design answer (2026-09-15; issues 1043, 1047–1053)
+
+Status: first capability ALIGN_MERGED in PR [1056](https://github.com/sanohiro/align/pull/1056), merge `61b2de79576fde043d5f310c1300370c02250fc3`. Safe mutable storage implementation and consumer adoption remain pending.
+Provider baseline: `da20aefe1e4054cd132fbbf852217d5ee2c240ac`, including merged
+PRs [1044](https://github.com/sanohiro/align/pull/1044),
+[1045](https://github.com/sanohiro/align/pull/1045) and
+[1046](https://github.com/sanohiro/align/pull/1046).
+Plan of record: [Align plan 65](https://github.com/sanohiro/align/blob/61b2de79576fde043d5f310c1300370c02250fc3/docs/impl/65-open-issue-batch-plan.md).
+The September Request 63–70 headings below reuse earlier request numbers;
+this answer is keyed by issue number and date.
+
+The provider audit inspected all eight then-open issues and their comments
+against the named provider baseline. The proposed batch has two useful implementation boundaries:
+
+- Scalar/allocation/loop: f32/f64 exact-bit and classification methods, one
+  initialized `buffer.filled` constructor, heap/region array-builder capacity,
+  nonzero/paired byte recurrences, and proved-lossless masked-cast diagnostics.
+- Safe mutable storage: the complete existing plan 61 access analysis,
+  disjoint owned-field call borrowing, typed Drop-based replacement of already
+  admitted owning fields, endian slice setters, byte fill/copy and typed pattern
+  fill. The mutation APIs depend on complete cross-call writable/readonly and
+  generation tracking; a local method exception does not close that boundary.
+
+The first-capability surfaces are shipped by PR 1056; safe mutable-storage surfaces remain proposed. Existing
+ownership remains: buffers/builders/arrays are Move owners; slices borrow
+backing storage; initialized constructors allocate explicitly; slice mutation
+does not allocate or transfer ownership. Proposed invalid count/range and
+allocation failures use core terminal failures, not the suggested new Result
+allocator model. `copy_from` requires equal lengths and proved nonoverlap;
+there is no implicit snapshot. Region builders retain their existing final
+contiguous materialization. The exact ledger, acceptance tests and limitations
+are in plan 65.
+
+Probes at that pre-implementation baseline corrected several causal claims: a zero-based `i * 4` loop
+already eliminates its byte guards with an in-loop nonfinite error return;
+nonzero starts and a separately incremented offset still retain guards. The
+1050 issue's `raw` field is independently illegal, but replacing it with a
+scalar preserves the disjoint-field alias failure. Sibling string replacement
+alone, and after a simple local mutable-view helper, do not reproduce stale
+view invalidation. Builder headers start at capacity zero; first growth has a
+minimum of four. A local x86 216-byte record constructor already writes into
+the ABI result destination without a temporary stack copy.
+
+1043's local-reader/composed-loop work is already merged. Foreign GPU backing
+certification and foreign-query CSE need artifact-bound native effects beyond
+`borrow` or plan 61's access facts. Ordered SIMD, the specific Mac large-frame
+case and the existing Mac SIGPIPE owner remain explicitly open. Structural
+subtyping/traits and native/ThinLTO defaults are not selected. Native Metal/CUDA
+qualification and pin adoption remain consumer-owned. No consumer code,
+fixtures, build machinery or managed pin are changed by this publication.
+
+### First capability implementation (2026-09-15)
+
+PR [1056](https://github.com/sanohiro/align/pull/1056) implements F/B/C/L/K:
+`f32`/`f64` `to_bits`, `is_finite`, `is_nan`, `is_infinite`;
+`buffer.filled(length: i64, value: u8)`; capacity arguments for existing
+heap/region `array_builder<T>` constructors; nonnegative constant-start and
+paired-offset byte-loop proofs; and finalized known-bits lossless-cast diagnostics.
+The source ownership, explicit allocation and terminal-failure rules above apply.
+Reserved builder capacity does not initialize elements; filled buffers initialize
+the requested length. Region freeze retains its existing materialization.
+There is no new runtime float export or source buffer-capacity getter.
+Local owner tests, the bounded gate, Clippy and runtime ABI matrix pass. One
+independent inference finding is fixed with whole-program/per-unit regression
+coverage. Linux x86_64, Linux ARM64 and macOS Apple Silicon CI passed and PR 1056 merged.
+The post-merge `cargo build --release --workspace` passed. Managed-pin adoption
+and consumer benchmark acceptance remain consumer-owned. A/O/W/M/P and complete
+plan 61 remain pending, as do the explicit deferrals above.
+
 ### Request 63: compiler & language optimizations for idiomatic code execution speed (2026-09-14)
 
-Status: ALIGN_MERGED for the plan-63 subset (#1044/#1045); follow-up #1046 is IMPLEMENTING
+Status: ALIGN_MERGED for the plan-63 subset (#1044/#1045) and composed-loop follow-up #1046
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; application-level scalar thresholding operates around current loop limits
 Independent work that may continue: runtime generation, sampling, and provider evaluation
-Resume condition: adopt the merged plan-63 provider surface and qualify native Metal;
-consume composed-loop follow-up only after #1046 merges
+Resume condition: adopt the merged plan-63/64 provider surface and qualify native Metal
 Align commit or pull request: [sanohiro/align#1043](https://github.com/sanohiro/align/issues/1043)
 align-llm verification: native Apple Silicon / Metal benchmark suite and runtime_sampler_bench
 
@@ -90,13 +158,13 @@ Full disassembly trace and proposed lowerings published on [sanohiro/align#1048]
 
 ### Request 66: induction variable recurrence flexibility and fallible loop dominance in byte_ranges (2026-09-14)
 
-Status: PROPOSED
+Status: ALIGN_MERGED for the plan-65 selected capability; consumer verification pending
 Priority: high
 Blocking: no
 Blocked gate or slice: none; application code works around using zero-based induction scaling and inlined bitcasts
 Independent work that may continue: attention tile alignment, memory reservation optimization
-Resume condition: upstream design closure and implementation on issue
-Align commit or pull request: [sanohiro/align#1049](https://github.com/sanohiro/align/issues/1049)
+Resume condition: adopt merged PR #1056 through the managed pin and run the named consumer acceptance owners
+Align commit or pull request: [PR #1056](https://github.com/sanohiro/align/pull/1056), merge `61b2de79576fde043d5f310c1300370c02250fc3`; original issue #1049
 align-llm verification: native Apple Silicon / Metal benchmark suite, runtime session reuse smoke, and bench-runtime-greedy
 
 Discovered during Decode Loop Allocation & Branchless Greedy Argmax optimization:
@@ -134,7 +202,7 @@ Proposed resolution:
 
 ### Request 68: bulk buffer/slice initialization and copy primitives (buffer.zeroed, buffer.fill, slice.copy_from, slice.fill) (2026-09-15)
 
-Status: PROPOSED
+Status: ALIGN_MERGED for buffer.filled in PR #1056; byte copy/fill and typed pattern fill remain PROPOSED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; application uses userland exponential doubling helper `filled_buffer_u32`
@@ -155,13 +223,13 @@ Discovered during Fast Buffer Initialization Optimization (`filled_buffer_u32`):
 
 ### Request 69: IEEE 754 float inspection and bitcast intrinsics (f32.to_bits, f64.to_bits, f32.is_finite, f32.is_nan) (2026-09-15)
 
-Status: PROPOSED
+Status: ALIGN_MERGED for the plan-65 selected capability; consumer verification pending
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; application works around missing bitcast/classification via manual byte slice reading
 Independent work that may continue: runtime generation, sampling, model IR, benchmarks
-Resume condition: upstream design closure and implementation on issue
-Align commit or pull request: [sanohiro/align#1052](https://github.com/sanohiro/align/issues/1052)
+Resume condition: adopt merged PR #1056 through the managed pin and run the named consumer acceptance owners
+Align commit or pull request: [PR #1056](https://github.com/sanohiro/align/pull/1056), merge `61b2de79576fde043d5f310c1300370c02250fc3`; original issue #1052
 align-llm verification: scripts/run-runtime-provider-smoke, python3 "$MODEL_DIR/measure_qwen_f16.py"
 
 Discovered during Fast Sampling Single-Precision Filter Optimization:
@@ -178,13 +246,13 @@ Discovered during Fast Sampling Single-Precision Filter Optimization:
 
 ### Request 70: array_builder capacity constructor and array repeat primitive (2026-09-15)
 
-Status: PROPOSED
+Status: ALIGN_MERGED for the plan-65 selected capability; consumer verification pending
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; application works around missing capacity by manual byte buffer offsets or loop pushing
 Independent work that may continue: runtime generation, sampling, model IR, benchmarks
-Resume condition: upstream design closure and implementation on issue
-Align commit or pull request: [sanohiro/align#1053](https://github.com/sanohiro/align/issues/1053)
+Resume condition: adopt merged PR #1056 through the managed pin and run the named consumer acceptance owners
+Align commit or pull request: [PR #1056](https://github.com/sanohiro/align/pull/1056), merge `61b2de79576fde043d5f310c1300370c02250fc3`; original issue #1053
 align-llm verification: scripts/run-runtime-provider-smoke, python3 "$MODEL_DIR/measure_qwen_f16.py"
 
 Discovered during Greedy Decode and Sampler Pipeline Optimization:
