@@ -75,18 +75,27 @@ fixtures, build machinery or managed pin are changed by this publication.
 
 ### Issue 1047 caller-result follow-up (2026-09-15)
 
-Status: provider design candidate, not implemented. The added Apple call-site
-assembly distinguishes caller copies from constructor writes. A provider-owned
-216-byte two-record witness at Align `241035ba` reproduces two 216-byte copies
-on x86-64 and in retargeted apple-m1 assembly. Explicit result pointers plus
-full-size memcpy expose LLVM call-slot forwarding; a result-pointer-only
-aggregate load/store control still copies. The proposed plan 67 requires exact
-LLVM target return classification, implicit/explicit native ABI equivalence,
-all applicable call/return edges, cleanup preservation and cache/partition
-coverage before implementation. No source API, foreign purity contract or
-runtime allocation is added. Retargeted assembly is not native Mac timing;
-original client build identity and IR remain requested on issue 1047. FFI
-query CSE and imported helper exposure remain separate plan 65 boundaries.
+Status: ALIGN_MERGED in [PR 1059](https://github.com/sanohiro/align/pull/1059),
+merge `ec091852b95cef49b288e970dc32c92a6e9da6ce`.
+[Plan 67](https://github.com/sanohiro/align/blob/ec091852b95cef49b288e970dc32c92a6e9da6ce/docs/impl/67-caller-result-placement-plan.md) exposes LLVM 22's
+target-selected indirect return buffer so LLVM's alias-aware optimizer can
+forward an eligible final local to the constructor. The provider-owned
+216-byte two-record witness retains both constructors and both borrowed
+consumers while removing two 216-byte post-call transfers and reducing four
+aggregate regions to two. Source value semantics, ownership, cleanup and
+allocation behavior are unchanged. General consumers and observable aliases
+retain their required temporary; native descriptor calls gain no purity,
+capture or shortened-lifetime assumption.
+
+The independent-object implicit/explicit ABI cross-link matrix and the other
+return-transport owners passed on Linux x86-64, Linux ARM64 and native Apple
+Silicon through the shared codegen performance script. Local PostgreSQL/pgvector
+verification, the bounded gate, Clippy and the release workspace build passed.
+This is provider delivery, not original Metal client timing or a guarantee about
+its exact 992-byte frame. Issue 1047 remains open for client build/IR and native
+workload qualification, foreign-query repeatability/effect certification, and
+imported-helper exposure. Consumer adoption and verification remain pending;
+no consumer code, fixtures, build machinery or managed pin are changed.
 
 ### Additional issue design answer (2026-09-15; issues 1054, 1055, 1057)
 
