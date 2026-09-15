@@ -4,12 +4,10 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/publish-text-boundary-provider`, based on `main` at `98ca019`.
-Active capability: publish the retained provider design and text-boundary delivery notes.
-Align #1058 is merged at `241035ba97b2a679ce6589f2df66630cdcc2c691`; consumer
-adoption remains pending. Array truncation and caller-result placement are not shipped.
-This documentation batch leaves the managed pin unchanged.
-Capability 12 is merged in PR #267. Request 91 registration merged in PR #266.
+Branch: `main` at `ef9b469`.
+Active capability: none active; ready for next capability.
+Capability 13 is merged in PR #269. Capability 12 is merged in PR #267. Request 91 registration merged in PR #266.
+Align #1058 is merged at `241035ba97b2a679ce6589f2df66630cdcc2c691`; consumer adoption remains pending.
 
 Completed work:
 - PR #258 (Capability 7): BPE Tokenizer single-byte / two-byte fast path and worker completion buffer reuse merged into `main`.
@@ -27,9 +25,12 @@ Completed work:
 - PR #266: Registered Request 91 in `docs/align-requests.md`.
 - PR #267 (Capability 12): Accelerated `greedy` logit selection by exploiting IEEE 754 positive single-precision float monotonic bit ordering; eliminated `f32_le` loads and floating-point comparisons for >99.9% of tokens in vocabulary scan.
   - Achieved new repository record: OLMoE decode 128 at **16.09 ms/tok (2,059.7 ms)** on Apple Silicon Metal GPU with 100% bit-exact SHA-256 parity.
+- PR #268: Published text-boundary provider delivery and design dispositions.
+- PR #269 (Capability 13): Hoisted loop-invariant attention queries (`fused`, `name`), output slot lookups, and precomputed geometry digests (`topology_fast`) out of prefill/decode loops, eliminating 128 per-token FFI queries per sequence.
+  - Achieved new Qwen2 record: Qwen2 decode 128 at **77.10 ms/tok (9,868.5 ms)** on Apple Silicon Metal GPU with 100% bit-exact SHA-256 parity.
 
 Next actions in priority order:
-1. Identify and implement next capability (Capability 13) for further runtime/model acceleration.
+1. Align #1058 adoption (pin update) or continue next runtime/model capability.
 2. Verify with narrow owner tests and Apple Silicon Metal GPU benchmark with bit-exact determinism.
 3. Conduct independent adversarial review (`scripts/review-agy`), preflight (`scripts/pre-pr`), create PR and merge.
 
@@ -39,10 +40,10 @@ Latest durable verification:
 - `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
 - Apple Silicon Metal GPU verification (`python3 "$MODEL_DIR/measure_qwen_f16.py"`): PASS.
-  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1723.2 ms)
-  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.09 ms/tok / 2,059.7 ms)
-  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5374.8 ms)
-  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 77.90 ms/tok / 9,971.3 ms)
+  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1715.8 ms)
+  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 17.37 ms/tok)
+  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5361.8 ms)
+  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 77.10 ms/tok / 9,868.5 ms)
 
 Blockers, constraints, decisions:
 - 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks on Apple Silicon Metal GPU.
