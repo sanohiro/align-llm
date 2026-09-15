@@ -4,8 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Active branch: `main` at `df67b5d`.
-Active capability: none (Capability 8 merged in PR #260; Request 90 registered in PR #261).
+Active branch: `main` at `e66c3d5`.
+Active capability: none (Capability 9 merged in PR #262).
 
 Completed work:
 - PR #258 (Capability 7): BPE Tokenizer single-byte / two-byte fast path and worker completion buffer reuse merged into `main`.
@@ -14,6 +14,7 @@ Completed work:
 - PR #260 (Capability 8): Accelerated greedy logit selection via negative logit pruning (`1,071 μs -> 261 μs/call`), closed-form O(1) `byte_scalar` / `scalar_byte` in `tokenizer_qwen2`, output buffer preallocation in `decode_loaded`, and direct `ids[0..count].to_array()` in `truncate_ids`.
 - Upstream Align Issue #1055: Reported `[Language RFC] Support integer literal and range patterns in match expressions`.
 - PR #261: Registered Request 90 in `docs/align-requests.md` for `match` integer literal and range patterns.
+- PR #262 (Capability 9): 3-byte BPE fast path (CJK / UTF-8 characters) bypassing all 9 heap array allocations and priority queues; sampler sign-bit negative logit pruning in `runtime_sampler::select`.
 
 Next actions in priority order:
 1. Identify next high-impact runtime / KV-cache / attention steering optimization capability.
@@ -22,16 +23,16 @@ Next actions in priority order:
 4. Report any discovered Align language/compiler/standard library gaps upstream as issues.
 
 Latest durable verification:
-- `alignc check src/main.align`: PASS (checked 3123 functions).
+- `alignc check src/main.align`: PASS (checked 3122 functions).
 - `make fmt`: PASS.
 - `scripts/run-tokenizer-smoke`: PASS (13 text cases, 4 ordinary specials, 256-special accepted boundary, 23 model failures, 6 operation boundaries, 6 generation EOG cases, 2 one-shot reader passes, 1 replacement snapshot).
 - `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
 - Apple Silicon Metal GPU verification (`python3 "$MODEL_DIR/measure_qwen_f16.py"`): PASS.
-  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1719.3 ms)
-  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.28 ms/tok)
-  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5402.1 ms)
-  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 78.05 ms/tok)
+  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1712.2 ms)
+  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 16.61 ms/tok)
+  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5355.1 ms)
+  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 76.65 ms/tok)
 
 Blockers, constraints, decisions:
 - 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks on Apple Silicon Metal GPU.
