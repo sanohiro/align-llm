@@ -4,12 +4,13 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/publish-caller-result-provider`, based on `main` at `11a9b69`.
-Active capability: publish the merged caller-result provider delivery record.
-Align #1059 is merged at `ec091852b95cef49b288e970dc32c92a6e9da6ce`; consumer
-adoption and native client qualification remain pending. The managed pin is unchanged.
-Capability 13 is merged in PR #269. Capability 12 is merged in PR #267. Request 91 registration merged in PR #266.
+Branch: `agent/publish-request-90-merged`, based on `main` at `5290c5d`.
+Active capability: publish the merged integer/char match pattern delivery record (Request 90).
+Align #1060 is merged at `5f9c31ac62b54dacf3ef8462adb2ea04768f1211`; consumer adoption remains pending.
+Align #1059 is merged at `ec091852b95cef49b288e970dc32c92a6e9da6ce`; consumer adoption remains pending.
 Align #1058 is merged at `241035ba97b2a679ce6589f2df66630cdcc2c691`; consumer adoption remains pending.
+The managed pin is unchanged.
+Caller-result provider record is merged in PR #270. Capability 13 is merged in PR #269. Capability 12 is merged in PR #267. Request 91 registration merged in PR #266.
 
 Completed work:
 - PR #258 (Capability 7): BPE Tokenizer single-byte / two-byte fast path and worker completion buffer reuse merged into `main`.
@@ -30,11 +31,13 @@ Completed work:
 - PR #268: Published text-boundary provider delivery and design dispositions.
 - PR #269 (Capability 13): Hoisted loop-invariant attention queries (`fused`, `name`), output slot lookups, and precomputed geometry digests (`topology_fast`) out of prefill/decode loops, eliminating 128 per-token FFI queries per sequence.
   - Achieved new Qwen2 record: Qwen2 decode 128 at **77.10 ms/tok (9,868.5 ms)** on Apple Silicon Metal GPU with 100% bit-exact SHA-256 parity.
+- PR #270: Published merged caller-result provider implementation record in `docs/align-requests.md`.
 
 Next actions in priority order:
-1. Align #1058 adoption (pin update) or continue next runtime/model capability.
-2. Verify with narrow owner tests and Apple Silicon Metal GPU benchmark with bit-exact determinism.
-3. Conduct independent adversarial review (`scripts/review-agy`), preflight (`scripts/pre-pr`), create PR and merge.
+1. Publish and merge Request 90 delivery record PR to `main`.
+2. Align #1058/#1059/#1060 adoption (pin update) or continue next runtime/model capability.
+3. Verify with narrow owner tests and Apple Silicon Metal GPU benchmark with bit-exact determinism.
+4. Independent adversarial review (`scripts/review-agy`), preflight (`scripts/pre-pr`), create PR and merge.
 
 Latest durable verification:
 - `alignc check src/main.align`: PASS (checked 3122 functions).
