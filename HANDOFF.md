@@ -4,8 +4,9 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/adopt-latest-align`, based on `main` at `684b8b70`.
-Active capability: adopt latest Align compiler and runtime (`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`), qualify on Apple Silicon Metal GPU, and record Request 63 verification, Request 89 merge adoption, and Issue 1043 evidence.
+Branch: `main` at `82733d17`.
+Active capability: none active; ready for next capability.
+PR #272 merged at `82733d17`: adopted latest Align compiler and runtime (`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`), qualified on Apple Silicon Metal GPU, verified Request 63, Request 89 merge adoption, and published Issue 1043 evidence.
 Align #1061 is merged at `400137f30f5155c1601cdd6e3f1b0aa318fb8d72` (`array.truncate`, typed slice writers, bulk fill, owned field replacement).
 Align #1060 is merged at `5f9c31ac62b54dacf3ef8462adb2ea04768f1211` (match range patterns).
 Align #1059 is merged at `ec091852b95cef49b288e970dc32c92a6e9da6ce` (caller-result copy elimination).
@@ -16,6 +17,7 @@ The managed pin is updated to `400137f30f5155c1601cdd6e3f1b0aa318fb8d72`.
 Issue #1043 qualification report published: https://github.com/sanohiro/align/issues/1043#issuecomment-5699061463 .
 
 Completed work:
+- PR #272: Adopted latest Align toolchain (`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`), qualified on Apple Silicon Metal GPU, verified Request 63 (`ALIGN_LLM_VERIFIED`), Request 89 merge adoption (`ALIGN_MERGED`), and published qualification evidence to sanohiro/align#1043.
 - PR #271: Published Request 90 delivery record to `main`.
 - Adopted latest Align toolchain (`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`).
 - Compiler artifact SHA-256: `ceed013b54bb3eefe886938025f94f8f85f17b4fdcfd9f921ed5dab16cf84c54` (`alignc 0.7.5`).
@@ -36,8 +38,9 @@ Completed work:
 - Updated `docs/align-requests.md` recording Request 63 as `ALIGN_LLM_VERIFIED` and Request 89 as `ALIGN_MERGED`.
 
 Next actions in priority order:
-1. Run preflight (`scripts/pre-pr`), independent adversarial review (`scripts/review-agy`), create PR and merge.
-2. Consume `array.truncate` (Request 89) and match range patterns (Request 90) in runtime/tokenizer code.
+1. Consume `array.truncate` (Request 89) in provider runtime (`src/provider_runtime.align`).
+2. Adopt pattern match range/or-patterns (Request 90) in runtime/tokenizer code.
+3. Verify with narrow owner tests and Apple Silicon Metal GPU benchmark with bit-exact determinism.
 
 Latest durable verification:
 - `alignc check-per-unit src/main.align`: PASS (checked 155 unit(s) per-unit).
