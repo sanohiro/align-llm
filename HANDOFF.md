@@ -4,55 +4,55 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/publish-request-90-merged`, based on `main` at `5290c5d`.
-Active capability: publish the merged integer/char match pattern delivery record (Request 90).
-Align #1060 is merged at `5f9c31ac62b54dacf3ef8462adb2ea04768f1211`; consumer adoption remains pending.
-Align #1059 is merged at `ec091852b95cef49b288e970dc32c92a6e9da6ce`; consumer adoption remains pending.
-Align #1058 is merged at `241035ba97b2a679ce6589f2df66630cdcc2c691`; consumer adoption remains pending.
-The managed pin is unchanged.
-Caller-result provider record is merged in PR #270. Capability 13 is merged in PR #269. Capability 12 is merged in PR #267. Request 91 registration merged in PR #266.
+Branch: `agent/adopt-latest-align`, based on `main` at `684b8b70`.
+Active capability: adopt latest Align compiler and runtime (`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`), qualify on Apple Silicon Metal GPU, and record Request 63/89/90/91 verification and Issue 1043 evidence.
+Align #1061 is merged at `400137f30f5155c1601cdd6e3f1b0aa318fb8d72` (`array.truncate`, typed slice writers, bulk fill, owned field replacement).
+Align #1060 is merged at `5f9c31ac62b54dacf3ef8462adb2ea04768f1211` (match range patterns).
+Align #1059 is merged at `ec091852b95cef49b288e970dc32c92a6e9da6ce` (caller-result copy elimination).
+Align #1058 is merged at `241035ba97b2a679ce6589f2df66630cdcc2c691` (`str.is_char_boundary`).
+Align #1056 is merged at `61b2de79576fde043d5f310c1300370c02250fc3` (plan 65: float inspection, filled buffers, builder capacity).
+Align #1046 is merged at `da20aefe1e4054cd132fbbf852217d5ee2c240ac` (plan 64: composed byte-loop proofs, stable descriptor snapshots).
+The managed pin is updated to `400137f30f5155c1601cdd6e3f1b0aa318fb8d72`.
+Issue #1043 qualification report published: https://github.com/sanohiro/align/issues/1043#issuecomment-5699061463 .
 
 Completed work:
-- PR #258 (Capability 7): BPE Tokenizer single-byte / two-byte fast path and worker completion buffer reuse merged into `main`.
-- Upstream Align Issue #1054: Reported `[Standard Library] Add in-place array.truncate(len) and bulk-copy slice.to_array`.
-- PR #259: Registered Request 89 in `docs/align-requests.md`.
-- PR #260 (Capability 8): Accelerated greedy logit selection via negative logit pruning (`1,071 μs -> 261 μs/call`), closed-form O(1) `byte_scalar` / `scalar_byte` in `tokenizer_qwen2`, output buffer preallocation in `decode_loaded`, and direct `ids[0..count].to_array()` in `truncate_ids`.
-- Upstream Align Issue #1055: Reported `[Language RFC] Support integer literal and range patterns in match expressions`.
-- PR #261: Registered Request 90 in `docs/align-requests.md`.
-- PR #262 (Capability 9): 3-byte BPE fast path (CJK / UTF-8 characters) bypassing all 9 heap array allocations and priority queues; sampler sign-bit negative logit pruning in `runtime_sampler::select`.
-- PR #263: Recorded plan-65 provider capability delivery in `docs/align-requests.md`.
-- PR #264 (Capability 10): Unrolled `fnv_u64` into 8-stage constant shifts and masks; accelerated `joined_equal` using native `starts_with` and `ends_with` `memcmp` primitives, eliminating intermediate slice UTF-8 panic risks and bounds checking.
-- Upstream Align Issue #1057: Reported `[Language/Stdlib RFC] Expose str.is_char_boundary(index) -> bool and document safe prefix/suffix primitives`.
-- Upstream Align Issue #1047: Detailed audit and aarch64-apple-darwin disassembly posted clarifying caller-side copy mechanism.
-- PR #265 (Capability 11): De-duplicated attention FFI queries (`fused` and `name`), bitmasked attention width (`(valid + 255) & -256`), and eliminated temporary buffer serialization in `runtime_sampler::select`.
-- PR #266: Registered Request 91 in `docs/align-requests.md`.
-- PR #267 (Capability 12): Accelerated `greedy` logit selection by exploiting IEEE 754 positive single-precision float monotonic bit ordering; eliminated `f32_le` loads and floating-point comparisons for >99.9% of tokens in vocabulary scan.
-  - Achieved new repository record: OLMoE decode 128 at **16.09 ms/tok (2,059.7 ms)** on Apple Silicon Metal GPU with 100% bit-exact SHA-256 parity.
-- PR #268: Published text-boundary provider delivery and design dispositions.
-- PR #269 (Capability 13): Hoisted loop-invariant attention queries (`fused`, `name`), output slot lookups, and precomputed geometry digests (`topology_fast`) out of prefill/decode loops, eliminating 128 per-token FFI queries per sequence.
-  - Achieved new Qwen2 record: Qwen2 decode 128 at **77.10 ms/tok (9,868.5 ms)** on Apple Silicon Metal GPU with 100% bit-exact SHA-256 parity.
-- PR #270: Published merged caller-result provider implementation record in `docs/align-requests.md`.
+- PR #271: Published Request 90 delivery record to `main`.
+- Adopted latest Align toolchain (`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`).
+- Compiler artifact SHA-256: `ceed013b54bb3eefe886938025f94f8f85f17b4fdcfd9f921ed5dab16cf84c54` (`alignc 0.7.5`).
+- Runtime library SHA-256: `6446ab8a8b8834257b2569de0bc29c223fd10955c48fb8a945fed97daf28956a`.
+- Candidate binary SHA-256: `736021ddc13aab90f19dbfab8156874bf7698ff4f237a92b7a8a1060f82c4dfd` (`qwen-f16-build/main`).
+- Verified all 155 units with `alignc check-per-unit src/main.align` (PASS).
+- Verified whole-program with `alignc check src/main.align` (checked 3122 functions, PASS).
+- Verified formatting with `./scripts/check-format` (PASS).
+- Verified runtime smoke with `scripts/run-runtime-provider-smoke` (PASS).
+- Verified GPU session reuse with `scripts/run-gpu-session-reuse-smoke` (PASS).
+- Verified Apple Silicon Metal GPU benchmark (`measure_qwen_f16.py`):
+  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, warm median 1730.6 ms)
+  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, median 17.46 ms/tok / 2235.3 ms)
+  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, warm median 5391.6 ms)
+  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, median 79.91 ms/tok / 10228.7 ms)
+- Replied to GitHub Issue #1043 with complete consumer adoption evidence: https://github.com/sanohiro/align/issues/1043#issuecomment-5699061463 .
+- Updated `docs/align-requests.md` recording Request 63 as `ALIGN_LLM_VERIFIED` and Request 89 as `ALIGN_MERGED`.
 
 Next actions in priority order:
-1. Publish and merge Request 90 delivery record PR to `main`.
-2. Align #1058/#1059/#1060 adoption (pin update) or continue next runtime/model capability.
-3. Verify with narrow owner tests and Apple Silicon Metal GPU benchmark with bit-exact determinism.
-4. Independent adversarial review (`scripts/review-agy`), preflight (`scripts/pre-pr`), create PR and merge.
+1. Run preflight (`scripts/pre-pr`), independent adversarial review (`scripts/review-agy`), create PR and merge.
+2. Consume `array.truncate` (Request 89) and match range patterns (Request 90) in runtime/tokenizer code.
 
 Latest durable verification:
+- `alignc check-per-unit src/main.align`: PASS (checked 155 unit(s) per-unit).
 - `alignc check src/main.align`: PASS (checked 3122 functions).
-- `make fmt`: PASS.
+- `./scripts/check-format`: PASS.
 - `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
 - Apple Silicon Metal GPU verification (`python3 "$MODEL_DIR/measure_qwen_f16.py"`): PASS.
-  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, 1715.8 ms)
-  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, 17.37 ms/tok)
-  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, 5361.8 ms)
-  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, 77.10 ms/tok / 9,868.5 ms)
+  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, warm median 1730.6 ms)
+  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, median 17.46 ms/tok / 2235.3 ms)
+  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, warm median 5391.6 ms)
+  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, median 79.91 ms/tok / 10228.7 ms)
 
 Blockers, constraints, decisions:
 - 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks on Apple Silicon Metal GPU.
-- Upstream Align issues #1047, #1054, #1055, and #1057 actively tracked.
+- Upstream Align issues #1047, #1054, #1055, and #1057 adopted at `400137f3`.
 
 ## Completed capability: latest merged Align adoption
 
