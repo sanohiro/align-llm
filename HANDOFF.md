@@ -5,7 +5,7 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 ## Current checkpoint
 
 Branch: `agent/adopt-latest-align`, based on `main` at `684b8b70`.
-Active capability: adopt latest Align compiler and runtime (`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`), qualify on Apple Silicon Metal GPU, and record Request 63/89/90/91 verification and Issue 1043 evidence.
+Active capability: adopt latest Align compiler and runtime (`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`), qualify on Apple Silicon Metal GPU, and record Request 63 verification, Request 89 merge adoption, and Issue 1043 evidence.
 Align #1061 is merged at `400137f30f5155c1601cdd6e3f1b0aa318fb8d72` (`array.truncate`, typed slice writers, bulk fill, owned field replacement).
 Align #1060 is merged at `5f9c31ac62b54dacf3ef8462adb2ea04768f1211` (match range patterns).
 Align #1059 is merged at `ec091852b95cef49b288e970dc32c92a6e9da6ce` (caller-result copy elimination).
@@ -26,6 +26,7 @@ Completed work:
 - Verified formatting with `./scripts/check-format` (PASS).
 - Verified runtime smoke with `scripts/run-runtime-provider-smoke` (PASS).
 - Verified GPU session reuse with `scripts/run-gpu-session-reuse-smoke` (PASS).
+- Verified runtime sampler benchmark with `scripts/bench-runtime-sampler` (PASS; 223 us/call).
 - Verified Apple Silicon Metal GPU benchmark (`measure_qwen_f16.py`):
   - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, warm median 1730.6 ms)
   - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, median 17.46 ms/tok / 2235.3 ms)
@@ -44,6 +45,7 @@ Latest durable verification:
 - `./scripts/check-format`: PASS.
 - `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
+- `scripts/bench-runtime-sampler`: PASS (`runtime_sampler::select` 152k vocab: 223 us/call).
 - Apple Silicon Metal GPU verification (`python3 "$MODEL_DIR/measure_qwen_f16.py"`): PASS.
   - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, warm median 1730.6 ms)
   - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, median 17.46 ms/tok / 2235.3 ms)

@@ -102,10 +102,11 @@ no consumer code, fixtures, build machinery or managed pin are changed.
 Provider design: [Align plan 66](https://github.com/sanohiro/align/blob/241035ba97b2a679ce6589f2df66630cdcc2c691/docs/impl/66-array-prefix-and-text-boundary-plan.md),
 after reviewing all 11 open issues against provider `61b2de79` and consumer
 `b00d3fa9`. One independent design review found two P2 and one P3; all three
-are corrected in the public ledger and owner matrix. The text predicate is now
+are corrected in the public ledger and owner matrix. The text predicate is
 ALIGN_MERGED in PR [1058](https://github.com/sanohiro/align/pull/1058), merge
-`241035ba97b2a679ce6589f2df66630cdcc2c691`. Array truncation remains pending;
-provider delivery does not establish consumer acceptance.
+`241035ba97b2a679ce6589f2df66630cdcc2c691`. Array truncation is ALIGN_MERGED
+in PR [1061](https://github.com/sanohiro/align/pull/1061), merge
+`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`; toolchain is pinned, consumer code adoption remains pending.
 
 - **1057 — ALIGN_MERGED (#1058):** `str.is_char_boundary(index: i64) -> bool`, including
   existing shared borrowing of an owned string receiver. Negative/too-large
@@ -120,7 +121,7 @@ provider delivery does not establish consumer acceptance.
   truncation takes O(1) work without allocation/copy. Heap, arena and stack keep
   their distinct release owners. Explicit `borrow mut` input mutation remains
   Pure absent other Impure operations. Shipped in PR #1061 (`400137f3`) along with
-  typed slice writers, bulk fill and owned field replacement. Adopted in align-llm.
+  typed slice writers, bulk fill and owned field replacement. Toolchain pinned in align-llm; consumer code adoption remains pending.
 - **1055 / Request 90 — ALIGN_MERGED (PR #1060):** integer literals, negative integers,
   `char` literals, inclusive ranges (`min..=max`), and value/range or-patterns (`A | B | ...`)
   in `match` expressions. Validates interval ordering (`min <= max`), detects duplicate/overlapping
@@ -133,8 +134,8 @@ cover whole/per-unit Unicode and range behavior, evaluation order, temporary
 allocation/cleanup, source observation expiry and control-flow composition. The
 independent code review/fix cycle, bounded gate, Clippy and all required CI checks
 passed, including Linux x86_64, Linux ARM64 and macOS Apple Silicon.
-The complete safe-storage capability including truncate remains in implementation.
-Consumer code, managed-pin adoption and smoke/benchmark verification remain
+The complete safe-storage capability including truncate has merged upstream in PR #1061.
+Consumer code adoption and dedicated truncate verification remain
 consumer-owned; no versioned release was requested.
 
 ### First capability implementation (2026-09-15)
@@ -164,7 +165,7 @@ Blocked gate or slice: none; application-level scalar thresholding operates arou
 Independent work that may continue: runtime generation, sampling, and provider evaluation
 Resume condition: adopt the merged plan-63/64 provider surface and qualify native Metal
 Align commit or pull request: [sanohiro/align#1043](https://github.com/sanohiro/align/issues/1043)
-align-llm verification: native Apple Silicon / Metal benchmark suite and runtime_sampler_bench (verified with adopted pin `400137f30f5155c1601cdd6e3f1b0aa318fb8d72`; 155 unit checks pass, OLMoE and Qwen2 prefill/decode pass on Apple Silicon Metal GPU with 100% bit-exact SHA-256 output parity; evidence recorded in https://github.com/sanohiro/align/issues/1043#issuecomment-5699061463)
+align-llm verification: native Apple Silicon / Metal benchmark suite and runtime_sampler_bench (verified with adopted pin `400137f30f5155c1601cdd6e3f1b0aa318fb8d72`; 155 unit checks pass, OLMoE and Qwen2 prefill/decode pass on Apple Silicon Metal GPU with 100% bit-exact SHA-256 output parity, and `scripts/bench-runtime-sampler` passes at 223 us/call; evidence recorded in https://github.com/sanohiro/align/issues/1043#issuecomment-5699061463)
 
 Original observations during native Mac decode performance qualification and sampler profiling
 (before the provider responses below; these are not current compiler guarantees):
@@ -331,7 +332,7 @@ Discovered during Greedy Decode and Sampler Pipeline Optimization:
 
 ### Request 89: in-place array.truncate(len) and bulk-copy slice.to_array (2026-09-15)
 
-Status: ALIGN_MERGED in [PR #1061](https://github.com/sanohiro/align/pull/1061), merge `400137f30f5155c1601cdd6e3f1b0aa318fb8d72`; adopted in align-llm
+Status: ALIGN_MERGED in [PR #1061](https://github.com/sanohiro/align/pull/1061), merge `400137f30f5155c1601cdd6e3f1b0aa318fb8d72`; toolchain pinned in align-llm, consumer code adoption pending
 Priority: medium
 Blocking: no
 Blocked gate or slice: none; application uses `ids[0..count].to_array()` or manual `array_builder` loops
@@ -423,6 +424,7 @@ Consumer verification passed:
 - `scripts/check-format`: PASS.
 - `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
+- `scripts/bench-runtime-sampler`: PASS (`runtime_sampler::select` 152k vocab: 223 us/call).
 - Apple Silicon Metal GPU benchmark (`measure_qwen_f16.py`):
   - OLMoE prefill (704 tokens): warm median 1,730.6 ms (1,724.4 ms / 1,736.9 ms), output SHA-256 `6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b` (100% bit-exact match).
   - OLMoE decode 128 tokens: median 17.46 ms/tok / 2,235.3 ms (2,195.7 ms / 2,251.1 ms / 2,235.3 ms), output SHA-256 `109a6553d0bd3290a66c55e1806fee9f39d2200d3fd3568bd86d2669a1fc7fab` (100% bit-exact match).
