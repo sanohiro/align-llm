@@ -42,10 +42,10 @@ pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Select
   mut threshold_id := 9223372036854775807
   loop {
     if token >= token_count { break }
-    bits := logits.u32_le(offset)
+    value := logits.f32_le(offset)
+    bits := value.to_bits()
     if (bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
     if count < TOP_K || threshold <= 0.0 || (bits & 2147483648) == 0 {
-      value := logits.f32_le(offset)
       admit := count < TOP_K || value > threshold || (value == threshold && token < threshold_id)
       if admit {
         mut insertion := count
