@@ -409,7 +409,7 @@ Discovered during tokenizer candidate matching and joined token optimizations:
    - `str.is_char_boundary` returns true at index 0, length, or when the byte at `index` is not a UTF-8 continuation byte (`(b & 0xC0) != 0x80`).
    - Standard library documentation notes that `starts_with` and `ends_with` are safe on arbitrary multi-byte boundaries.
 
-### Request 92: x.exp() scalar & vector math intrinsic in core.math (lowering to llvm.exp) (2026-09-17)
+### Request 92: elementary exponential and logarithmic math intrinsics in core.math (exp, exp2, log, log2, log10) (2026-09-17)
 
 Status: PROPOSED
 Priority: high
@@ -423,19 +423,19 @@ align-llm verification: scripts/bench-runtime-sampler, scripts/run-runtime-provi
 Discovered during Softmax and Sampler performance optimization (src/runtime_sampler.align:90):
 1. In autoregressive sampling softmax, candidate token weights are computed via:
    `weight := E.pow((values[raw_at] as f64) - maximum)`
-2. Sibling compiler inspection (crates/align_sema/src/hir.rs:36-64) reveals that MathFn supports `Pow`, but lacks `Exp`.
+2. Sibling compiler inspection (crates/align_sema/src/hir.rs:36-64) reveals that MathFn supports `Pow`, but lacks `Exp`, `Log`, and sibling transcendental functions.
 3. MathFn::Pow lowers in align_codegen_llvm to `self.call_intrinsic("llvm.pow", ...)`. On both Linux x86-64 and macOS Darwin ARM64, LLVM lowers `llvm.pow.f64` to a dynamic library call to libc `pow` via the GOT table (`callq *pow@GLIBC` or `bl _pow`).
 4. Generic `pow(2.718281828459045, x)` evaluates $e^{x \ln 2.71828...}$, requiring polynomial log/exp decomposition costing 50-80 cycles per call and disabling vectorization, whereas dedicated `exp(x)` executes in 10-15 cycles or vector instructions (ARM64 NEON / x86 AVX2).
-5. Proposed Align surface:
-   - Add `Exp` to `align_sema::hir::MathFn`.
-   - Expose `x.exp()` on `f32` and `f64` scalars and vectors in `core.math`.
-   - Lower `MathFn::Exp` in `align_codegen_llvm` to LLVM intrinsic `llvm.exp`.
+5. Rather than an ad-hoc single-function addition, Align standardizes the complete family of elementary exponential and logarithmic functions together:
+   - Add `Exp`, `Exp2`, `Log`, `Log2`, `Log10` to `align_sema::hir::MathFn`.
+   - Expose `x.exp()`, `x.exp2()`, `x.log()`, `x.log2()`, `x.log10()` on `f32` and `f64` scalars and numeric vectors in `core.math`.
+   - Lower to direct LLVM intrinsics: `@llvm.exp.*`, `@llvm.exp2.*`, `@llvm.log.*`, `@llvm.log2.*`, `@llvm.log10.*`.
 6. Acceptance criteria:
-   - `x.exp()` type-checks on `f32` and `f64` scalars and numeric vectors.
-   - LLVM backend lowers `x.exp()` directly to `call @llvm.exp.f32` / `@llvm.exp.f64`.
-   - `runtime_sampler.align` consumes `delta.exp()` in place of `E.pow(delta)`.
+   - All 5 methods type-check on `f32` and `f64` scalars and numeric vectors.
+   - LLVM backend lowers directly to `@llvm.<fn>.*` with zero dynamic libc trampoline overhead.
+   - `runtime_sampler.align` consumes `delta.exp()` in place of `E.pow(delta)` and enables loop vectorization.
 
-### Request 93: SIMD slice argmax and aligned typed float slice views (2026-09-17)
+### Request 93: safe typed slice reinterpretations (as_f32_slice) for SIMD vectorization (2026-09-17)
 
 Status: PROPOSED
 Priority: high
@@ -452,13 +452,14 @@ Discovered during Logits selection SIMD analysis (src/runtime_generation.align:6
    - In-loop early exit NaN/Inf checks (`if (bits & 0x7f800000) == 0x7f800000 { return Err(Error.Invalid) }`), triggering `Auto-vectorization of loops with potentially faulting load is not supported`.
    - Paired argmax state tracking `(best_val, best_idx)` in scalar control flow, triggering `a value carried between iterations wasn't recognized as a reduction`.
    - Logits stored in `buffer.bytes()` as `slice<u8>` and accessed via `f32_le(offset)` with dual induction variables (`offset = offset + 4`, `i = i + 1`), preventing typed SIMD vector loads.
-3. Experimental verification confirmed that rewriting the reduction as `best_val = best_val.max(val)` over an aligned `slice<f32>` allows LLVM to immediately auto-vectorize into 4x unrolled 256-bit AVX2 SIMD (`vmaxps`, 32 floats per iteration) and ARM64 NEON SIMD (`fmaxnm`, 16 floats per iteration).
+3. Architectural Decision: Reject Option B (ad-hoc `argmax()` primitive) in favor of Option A (safe typed slice views), adhering to Align's Data-Oriented Core design principle.
 4. Proposed Align surface:
-   - Provide safe typed buffer reinterpretation: `slice<u8>.as_f32_slice() -> Result<slice<f32>, Error>` (validating 4-byte pointer alignment and `len % 4 == 0`).
-   - Or provide an intrinsic/primitive reduction: `slice<f32>.argmax() -> i64` or `slice<u8>.argmax_f32_le() -> Result<i64, Error>`.
+   - Provide safe checked buffer reinterpretation: `slice<u8>.as_f32_slice() -> Result<slice<f32>, Error>` (validating 4-byte pointer alignment and `len % 4 == 0`). Sibling accessors for `as_i32_slice`, `as_f64_slice`, `as_i64_slice`.
+   - The resulting typed slice borrows the backing storage of the source slice without allocation or copying.
 5. Acceptance criteria:
-   - Typed float slice access or primitive argmax auto-vectorizes with AVX2 on x86-64 and NEON on ARM64.
-   - `runtime_greedy_bench` latency drops from 111 us to <= 25 us/call.
+   - `slice<u8>.as_f32_slice()` validates pointer alignment and byte length, returning `Result<slice<f32>, Error>`.
+   - Clean loops over the resulting `slice<f32>` auto-vectorize with AVX2 on x86-64 and NEON on ARM64.
+   - `runtime_greedy_bench` latency drops from 111 us to <= 25 us/call without ad-hoc algorithm intrinsics.
 
 ### Request 94: fixed-size inline arrays in structs ([T; N]) to eliminate decode-step heap allocations (2026-09-17)
 
@@ -506,14 +507,19 @@ Discovered during Cross-module function call disassembly (runtime_attention.cach
 
 ### Request 96: fix invalid empty !dbg metadata attachment in align_codegen_llvm dropdeep loop (2026-09-17)
 
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: application code inspection
 Resume condition: upstream bugfix on issue #1067
-Align commit or pull request: [sanohiro/align#1067](https://github.com/sanohiro/align/issues/1067)
-align-llm verification: alignc explain-opt src/decode_step.align
+Align commit or pull request: [sanohiro/align#1068](https://github.com/sanohiro/align/pull/1068) (merge commit `25391cde`), fixing [sanohiro/align#1067](https://github.com/sanohiro/align/issues/1067)
+align-llm verification: alignc explain-opt src/decode_step.align (verified in Align tree, consumer adoption pending)
+
+Shipped surface:
+- In `crates/align_codegen_llvm`, replaced Inkwell 0.9's deprecated `LLVMGetCurrentDebugLocation` with direct `LLVMGetCurrentDebugLocation2` and `LLVMSetCurrentDebugLocation2`. Unset debug location returns null instead of wrapping an empty `MDTuple` (`!{}`).
+- Preserved builder active debug location across `alloca_at_entry` and `drop_struct_fields`.
+- Added regression test `drop_struct_helper_with_debug_info_does_not_emit_empty_dbg_metadata`.
 
 Discovered during Optimization explain pass on decode_step (alignc explain-opt src/decode_step.align):
 1. The compiler aborts with:
