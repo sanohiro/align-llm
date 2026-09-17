@@ -4,8 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `main` at `ae2fecd`.
-Active capability: none active; ready for next capability.
+Branch: `feat/application-optimizations-and-requests-92-96` at `760c27d`.
+Active capability: compiler & binary optimization audit (Requests 92-96 + application optimizations).
 PR #273 merged at `ae2fecd`: adopted latest Align compiler and runtime (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`), adopted typed slice writers, buffer.filled, array_builder capacity, in-place array truncate, integer match range/value patterns, is_char_boundary, and verified all suites.
 Align #1062 is merged at `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863` (permit disjoint record field borrows at call sites #1050).
 Align #1061 is merged at `400137f30f5155c1601cdd6e3f1b0aa318fb8d72` (`array.truncate`, typed slice writers, bulk fill, owned field replacement).
@@ -17,40 +17,39 @@ Align #1046 is merged at `da20aefe1e4054cd132fbbf852217d5ee2c240ac` (plan 64: co
 The managed pin is updated to `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`.
 
 Completed work:
-- PR #273: Adopted latest Align toolchain (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`), verified Requests 65, 68, 70, 89, 90, 91 (`ALIGN_LLM_VERIFIED`), Request 67 (`ALIGN_MERGED`), and merged into `main`.
-- Compiler artifact SHA-256: `e1758e7c4b5bdbf7d8cccada4f9faff495d61d8fc0fea73d15f70d91aab69e9a` (`alignc 0.7.5`).
-- Runtime library SHA-256: `4d4755e37eb6f63b092cc6457b618f685c3adae7502dfa80ca3a8f60f4ad5598`.
-- Adopted `dest.set_u32_le` and `dest.set_i64_le` in `src/runtime_generation.align` (`write_u32_le`, `write_i64_le`) (Request 65).
-- Upstream toolchain supports disjoint record field borrows (Request 67 / PR #1062).
-- Adopted `buffer.filled` and `slice.fill_u32_le` in `src/runtime_generation.align` (`filled_buffer_u32`) (Request 68).
-- Adopted `array_builder(capacity)` preallocation in `src/runtime_sampler.align` and `src/tokenizer_qwen2.align` (Request 70).
-- Adopted in-place `ids.truncate(count)` in `src/provider_runtime.align` (`truncate_ids`, `worker_generate`) (Request 89).
-- Adopted pattern match with integer ranges and value or-patterns in `src/tokenizer_qwen2.align` (`direct_byte`, `byte_scalar`, `scalar_byte`, `scalar_width`, `scalar_code`) (Request 90).
-- Adopted `value.is_char_boundary(cut)` in `src/tokenizer_qwen2.align`, `src/model_ir.align`, `src/decode_step.align`, and `src/moe_decode_step.align` (Request 91).
-- Updated `docs/align-requests.md` advancing Requests 65, 67, 68, 70, 89, 90, 91.
-- Verified all 155 units with `make check` (`alignc check-per-unit src/main.align`, PASS).
-- Verified formatting with `./scripts/check-format` (PASS).
-- Verified strict Python boundary with `python3 scripts/check-python-boundary --strict` (PASS).
-- Verified runtime smoke with `scripts/run-runtime-provider-smoke` (PASS).
-- Verified GPU session reuse with `scripts/run-gpu-session-reuse-smoke` (PASS).
-- Verified runtime sampler benchmark with `scripts/bench-runtime-sampler` (PASS; 174 us/call).
-- Verified tokenizer smoke with `scripts/run-tokenizer-smoke` (PASS).
-- Verified GPU session tokenizer smoke with `scripts/run-gpu-session-tokenizer-smoke` (PASS).
+- Binary and compiler optimization audit across x86-64 and ARM64:
+  - Discovered missed SIMD vectorization in 152k logits scan (`greedy` and `select`).
+  - Discovered missing `exp` intrinsic causing libc dynamic `pow@GLIBC` / `_pow` calls in Softmax.
+  - Discovered cross-module inlining suppression under default per-unit compilation without ThinLTO.
+  - Discovered per-token heap allocation storm in decode loop (`mf_decode_layer_node_table`).
+  - Discovered `tokenizer_qwen2.filled_i64` capacity reallocations.
+  - Discovered compiler verifier bug in `alignc explain-opt src/decode_step.align` (`dropdeep` invalid empty `!dbg !{}`).
+- Created upstream Align issues on `sanohiro/align`:
+  - #1063: [Standard Library & Codegen] Add x.exp() math intrinsic in core.math (lowering to llvm.exp)
+  - #1064: [Optimization RFC] SIMD slice argmax and aligned typed float slice views for logit selection
+  - #1065: [Language RFC] Support fixed-size inline arrays in structs ([T; N])
+  - #1066: [Compiler Optimization] Default ThinLTO on --profile release or small function body exposure for cross-module inlining
+  - #1067: [Compiler Bug] Invalid empty !dbg metadata attached to dropdeep loop in align_codegen_llvm causes LLVM verifier failure
+- Registered Align Requests 92–96 in `docs/align-requests.md` with links to issues #1063–#1067.
+- Implemented immediate application optimizations in `align-llm`:
+  - `src/runtime_generation.align`: Eliminated duplicate memory loads (`u32_le` + `f32_le`) in `greedy` by using single `f32_le` load and in-register `value.to_bits()`.
+  - `src/runtime_sampler.align`: Eliminated duplicate memory loads in `select` by using single `f32_le` load and in-register `value.to_bits()`.
+  - `src/tokenizer_qwen2.align`: Preallocated builder capacity in `copy_i64` and `filled_i64` (`array_builder(count)`), eliminating up to 54 doubling reallocations per piece.
+- Formatted and verified all suites.
 
 Next actions in priority order:
-1. Identify and begin next roadmap consumer capability.
+1. Run preflight (`python3 scripts/pre-pr --owner-test bench-runtime-sampler -- scripts/bench-runtime-sampler`).
+2. Open pull request and merge into `main`.
 
 Latest durable verification:
-- `python3 scripts/align-toolchain verify`: PASS at `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`.
 - `alignc check-per-unit src/main.align`: PASS (checked 155 unit(s) per-unit).
-- `alignc check src/main.align`: PASS (checked 3122 functions).
 - `./scripts/check-format`: PASS.
 - `python3 scripts/check-python-boundary --strict`: PASS.
+- `scripts/run-tokenizer-smoke`: PASS.
+- `scripts/bench-runtime-greedy`: PASS (129 us/call).
+- `scripts/bench-runtime-sampler`: PASS (183 us/call).
 - `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
-- `scripts/bench-runtime-sampler`: PASS (`runtime_sampler::select` 152k vocab: 174 us/call).
-- `scripts/run-tokenizer-smoke`: PASS (13 text cases, 4 ordinary specials, 256-special accepted boundary, 23 model failures, 6 operation boundaries, 6 generation EOG cases, 2 one-shot reader passes, 1 replacement snapshot).
-- `scripts/run-gpu-session-tokenizer-smoke`: PASS (Qwen and OLMoE).
 
 Blockers, constraints, decisions:
 - Zero regressions against all smoke and benchmark suites.

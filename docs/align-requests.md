@@ -409,6 +409,122 @@ Discovered during tokenizer candidate matching and joined token optimizations:
    - `str.is_char_boundary` returns true at index 0, length, or when the byte at `index` is not a UTF-8 continuation byte (`(b & 0xC0) != 0x80`).
    - Standard library documentation notes that `starts_with` and `ends_with` are safe on arbitrary multi-byte boundaries.
 
+### Request 92: x.exp() scalar & vector math intrinsic in core.math (lowering to llvm.exp) (2026-09-17)
+
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none
+Independent work that may continue: sampling algorithms, tokenizer, KV cache
+Resume condition: upstream design closure and implementation on issue #1063
+Align commit or pull request: [sanohiro/align#1063](https://github.com/sanohiro/align/issues/1063)
+align-llm verification: scripts/bench-runtime-sampler, scripts/run-runtime-provider-smoke
+
+Discovered during Softmax and Sampler performance optimization (src/runtime_sampler.align:90):
+1. In autoregressive sampling softmax, candidate token weights are computed via:
+   `weight := E.pow((values[raw_at] as f64) - maximum)`
+2. Sibling compiler inspection (crates/align_sema/src/hir.rs:36-64) reveals that MathFn supports `Pow`, but lacks `Exp`.
+3. MathFn::Pow lowers in align_codegen_llvm to `self.call_intrinsic("llvm.pow", ...)`. On both Linux x86-64 and macOS Darwin ARM64, LLVM lowers `llvm.pow.f64` to a dynamic library call to libc `pow` via the GOT table (`callq *pow@GLIBC` or `bl _pow`).
+4. Generic `pow(2.718281828459045, x)` evaluates $e^{x \ln 2.71828...}$, requiring polynomial log/exp decomposition costing 50-80 cycles per call and disabling vectorization, whereas dedicated `exp(x)` executes in 10-15 cycles or vector instructions (ARM64 NEON / x86 AVX2).
+5. Proposed Align surface:
+   - Add `Exp` to `align_sema::hir::MathFn`.
+   - Expose `x.exp()` on `f32` and `f64` scalars and vectors in `core.math`.
+   - Lower `MathFn::Exp` in `align_codegen_llvm` to LLVM intrinsic `llvm.exp`.
+6. Acceptance criteria:
+   - `x.exp()` type-checks on `f32` and `f64` scalars and numeric vectors.
+   - LLVM backend lowers `x.exp()` directly to `call @llvm.exp.f32` / `@llvm.exp.f64`.
+   - `runtime_sampler.align` consumes `delta.exp()` in place of `E.pow(delta)`.
+
+### Request 93: SIMD slice argmax and aligned typed float slice views (2026-09-17)
+
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none
+Independent work that may continue: greedy decode, sampler, prompt evaluation
+Resume condition: upstream design closure and implementation on issue #1064
+Align commit or pull request: [sanohiro/align#1064](https://github.com/sanohiro/align/issues/1064)
+align-llm verification: scripts/bench-runtime-greedy, scripts/bench-runtime-sampler
+
+Discovered during Logits selection SIMD analysis (src/runtime_generation.align:681, src/runtime_sampler.align:37):
+1. In autoregressive token selection, scanning 151,936 floats (607 KB) in `greedy` takes 111 us per token because the loop runs 100% scalar on both x86-64 and ARM64 (Apple Silicon).
+2. Compiler optimization remarks (`alignc explain-opt`) show LLVM rejects loop vectorization due to:
+   - In-loop early exit NaN/Inf checks (`if (bits & 0x7f800000) == 0x7f800000 { return Err(Error.Invalid) }`), triggering `Auto-vectorization of loops with potentially faulting load is not supported`.
+   - Paired argmax state tracking `(best_val, best_idx)` in scalar control flow, triggering `a value carried between iterations wasn't recognized as a reduction`.
+   - Logits stored in `buffer.bytes()` as `slice<u8>` and accessed via `f32_le(offset)` with dual induction variables (`offset = offset + 4`, `i = i + 1`), preventing typed SIMD vector loads.
+3. Experimental verification confirmed that rewriting the reduction as `best_val = best_val.max(val)` over an aligned `slice<f32>` allows LLVM to immediately auto-vectorize into 4x unrolled 256-bit AVX2 SIMD (`vmaxps`, 32 floats per iteration) and ARM64 NEON SIMD (`fmaxnm`, 16 floats per iteration).
+4. Proposed Align surface:
+   - Provide safe typed buffer reinterpretation: `slice<u8>.as_f32_slice() -> Result<slice<f32>, Error>` (validating 4-byte pointer alignment and `len % 4 == 0`).
+   - Or provide an intrinsic/primitive reduction: `slice<f32>.argmax() -> i64` or `slice<u8>.argmax_f32_le() -> Result<i64, Error>`.
+5. Acceptance criteria:
+   - Typed float slice access or primitive argmax auto-vectorizes with AVX2 on x86-64 and NEON on ARM64.
+   - `runtime_greedy_bench` latency drops from 111 us to <= 25 us/call.
+
+### Request 94: fixed-size inline arrays in structs ([T; N]) to eliminate decode-step heap allocations (2026-09-17)
+
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none
+Independent work that may continue: model IR, prompt evaluation
+Resume condition: upstream design closure and implementation on issue #1065
+Align commit or pull request: [sanohiro/align#1065](https://github.com/sanohiro/align/issues/1065)
+align-llm verification: scripts/run-decode-step, scripts/run-gpu-session-reuse-smoke
+
+Discovered during Autoregressive decode step allocation profiling (src/decode_step.align:2457, src/layer_qwen2.align:1851, src/layer_olmoe.align:2250):
+1. On every single generated token, `mf_decode_layer_node_table` constructs 13 `array_builder<i64>`s, issues 416 `align_rt_array_builder_push` calls, and builds 13 heap-allocated `array<i64>`s for a 32-row table.
+2. Across 128 decode tokens, this creates 53,248 FFI push calls and 1,664 heap allocations and deallocations for tables where rows 0..14 and 24..31 are completely invariant across steps.
+3. In Align, structs cannot embed fixed-size inline arrays (`[i64; 32]`); fields containing multiple elements are forced to be dynamic heap `array<T>`. On ARM64 (Apple Silicon), this additionally causes large stack frame copying.
+4. Proposed Align surface:
+   - Allow fixed-size inline array types as struct fields: `[T; N]` (e.g. `op: [i64; 32]`).
+   - Make structs with fixed-size arrays pure value types without heap allocations or runtime builder overhead.
+5. Acceptance criteria:
+   - Structs with `[T; N]` fields allocate inline inside the struct memory layout.
+   - `mf_decode_layer_node_table` allocates zero heap arrays during decode token generation.
+
+### Request 95: default ThinLTO on --profile release or cross-module function inlining (2026-09-17)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none
+Independent work that may continue: provider runtime, benchmarks
+Resume condition: upstream design closure and implementation on issue #1066
+Align commit or pull request: [sanohiro/align#1066](https://github.com/sanohiro/align/issues/1066)
+align-llm verification: scripts/bench-runtime-sampler, scripts/bench-runtime-greedy, disassembly inspection
+
+Discovered during Cross-module function call disassembly (runtime_attention.cached_f16, runtime_attention.fused, ggml_ffi.handle_absent):
+1. Under per-unit compilation, 1-instruction public functions (`pub fn is_fast(x: i64) -> bool = x > 10`) emit full function call instructions (`callq` on x86-64, `bl` on ARM64) when invoked across module boundaries.
+2. Compiling with `--thin-lto` enables LLVM ThinLTO cross-module inlining and constant propagation, completely eliminating the call overhead.
+3. However, `--thin-lto` is currently off by default for release executables.
+4. Proposed Align surface:
+   - Enable ThinLTO by default for `alignc build --profile release`.
+   - Or embed small function bodies/IR in `.align-interface` summaries to permit inlining during per-unit codegen without requiring full ThinLTO link overhead.
+5. Acceptance criteria:
+   - 1-expression public functions are inlined across units in release builds.
+   - `cached_f16` and `handle_absent` call sites compile to inline instructions rather than call instructions.
+
+### Request 96: fix invalid empty !dbg metadata attachment in align_codegen_llvm dropdeep loop (2026-09-17)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: none
+Independent work that may continue: application code inspection
+Resume condition: upstream bugfix on issue #1067
+Align commit or pull request: [sanohiro/align#1067](https://github.com/sanohiro/align/issues/1067)
+align-llm verification: alignc explain-opt src/decode_step.align
+
+Discovered during Optimization explain pass on decode_step (alignc explain-opt src/decode_step.align):
+1. The compiler aborts with:
+   `alignc: lowering failed: generated module failed verification: "invalid !dbg metadata attachment\n call void @"__align_drop_struct$9"(ptr %dropdeep.ep247), !dbg !891\n!891 = !{}"`
+2. In `crates/align_codegen_llvm/src/drop_codegen.rs`, the synthetic `dropdeep` cleanup loop for arrays of structs creates an empty metadata node `!891 = !{}` and attaches it to the call instruction.
+3. LLVM strictly rejects instructions carrying empty debug metadata as invalid LLVM IR.
+4. Proposed fix:
+   Omit debuginfo attachment or attach a valid `DILocation` when emitting synthetic runtime drop thunk calls.
+5. Acceptance criteria:
+   `alignc explain-opt src/decode_step.align` completes successfully without LLVM module verification failure.
+
 ### Latest Align toolchain and language feature adoption (2026-09-17)
 
 Status: ALIGN_LLM_VERIFIED

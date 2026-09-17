@@ -141,7 +141,7 @@ fn empty_string() -> array<string> {
 }
 
 fn copy_i64(borrow source: array<i64>) -> array<i64> {
-  mut values: array_builder<i64> := array_builder()
+  mut values: array_builder<i64> := array_builder(source.len())
   mut at := 0
   loop {
     if at >= source.len() { break }
@@ -152,7 +152,7 @@ fn copy_i64(borrow source: array<i64>) -> array<i64> {
 }
 
 fn filled_i64(count: i64, value: i64) -> array<i64> {
-  mut values: array_builder<i64> := array_builder()
+  mut values: array_builder<i64> := array_builder(count)
   mut at := 0
   loop {
     if at >= count { break }

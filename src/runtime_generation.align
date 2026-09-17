@@ -680,17 +680,18 @@ pub fn prompt_lookup_candidate(borrow prompt_ids: array<i64>, current_token: i64
 
 pub fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
   if logits.len() < 4 || logits.len() % 4 != 0 { return Err(Error.Invalid) }
-  first_bits := logits.u32_le(0)
+  first_value := logits.f32_le(0)
+  first_bits := first_value.to_bits()
   if (first_bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
   n_vocab := logits.len() / 4
   mut best := 0
   mut best_bits := first_bits
-  mut best_value := logits.f32_le(0)
+  mut best_value := first_value
   if candidate > 0 && candidate < n_vocab {
     c_offset := candidate * 4
-    c_bits := logits.u32_le(c_offset)
+    c_value := logits.f32_le(c_offset)
+    c_bits := c_value.to_bits()
     if (c_bits & 2139095040) != 2139095040 {
-      c_value := logits.f32_le(c_offset)
       if c_value > best_value {
         best = candidate
         best_bits = c_bits
@@ -702,20 +703,20 @@ pub fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
   mut offset := 4
   loop {
     if i >= n_vocab { break }
-    bits := logits.u32_le(offset)
+    value := logits.f32_le(offset)
+    bits := value.to_bits()
     if (bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
     if best_value > 0.0 {
       if (bits & 2147483648) == 0 {
         if bits > best_bits {
           best = i
           best_bits = bits
-          best_value = logits.f32_le(offset)
+          best_value = value
         } else if bits == best_bits && i < best {
           best = i
         }
       }
     } else {
-      value := logits.f32_le(offset)
       if value > best_value {
         best = i
         best_bits = bits
