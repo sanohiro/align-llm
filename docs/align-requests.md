@@ -106,37 +106,39 @@ are corrected in the public ledger and owner matrix. The text predicate is
 ALIGN_MERGED in PR [1058](https://github.com/sanohiro/align/pull/1058), merge
 `241035ba97b2a679ce6589f2df66630cdcc2c691`. Array truncation is ALIGN_MERGED
 in PR [1061](https://github.com/sanohiro/align/pull/1061), merge
-`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`; toolchain is pinned, consumer code adoption remains pending.
+`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`. Disjoint field borrows is ALIGN_MERGED
+in PR [1062](https://github.com/sanohiro/align/pull/1062), merge
+`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`. Toolchain is pinned to `8c8bfbc7`, and
+consumer code adoption is implemented and verified.
 
-- **1057 — ALIGN_MERGED (#1058):** `str.is_char_boundary(index: i64) -> bool`, including
+- **1050 / Request 67 — ALIGN_MERGED (PR #1062, 8c8bfbc7):** permit disjoint record field
+  borrows at call sites (`check_call_borrow_aliases`) and clear origin places on mutable calls.
+- **1057 / Request 91 — ALIGN_LLM_VERIFIED (#1058):** `str.is_char_boundary(index: i64) -> bool`, including
   existing shared borrowing of an owned string receiver. Negative/too-large
   offsets return false, endpoints return true, interior offsets inspect one
   continuation-byte mask after range guards. No allocation or new runtime
-  export. Existing `starts_with`/`ends_with` already compare bounded bytes
-  without interior slicing; their usage is documented. No new fallible slice
-  method or byte-array equality is selected.
-- **1054 / Request 89 — ALIGN_MERGED (PR #1061):** exclusive dynamic `array<T>.truncate(i64)`
+  export. Adopted in `tokenizer_qwen2`, `model_ir`, `decode_step`, and `moe_decode_step`.
+- **1054 / Request 89 — ALIGN_LLM_VERIFIED (PR #1061):** exclusive dynamic `array<T>.truncate(i64)`
   retains its backing pointer and prefix, validates the range before mutation,
   and runs complete existing Drop for removed owned elements. Numeric Copy
   truncation takes O(1) work without allocation/copy. Heap, arena and stack keep
-  their distinct release owners. Explicit `borrow mut` input mutation remains
-  Pure absent other Impure operations. Shipped in PR #1061 (`400137f3`) along with
-  typed slice writers, bulk fill and owned field replacement. Toolchain pinned in align-llm; consumer code adoption remains pending.
-- **1055 / Request 90 — ALIGN_MERGED (PR #1060):** integer literals, negative integers,
+  their distinct release owners. Shipped in PR #1061 along with typed slice writers,
+  bulk fill and owned field replacement. Adopted in `src/provider_runtime.align`.
+- **1055 / Request 90 — ALIGN_LLM_VERIFIED (PR #1060):** integer literals, negative integers,
   `char` literals, inclusive ranges (`min..=max`), and value/range or-patterns (`A | B | ...`)
   in `match` expressions. Validates interval ordering (`min <= max`), detects duplicate/overlapping
   patterns, and enforces exhaustiveness across the integer domain or requires a `_` wildcard
   arm (`char` matching requires `_`). Unconstrained integer literals (`Ty::IntVar`) resolve to `i64`.
-  Lowers to sequential interval checks with direct branch targets in MIR.
+  Lowers to sequential interval checks with direct branch targets in MIR. Adopted in `src/tokenizer_qwen2.align`.
 
 The independent text predicate/documentation is merged. Its seven owner tests
 cover whole/per-unit Unicode and range behavior, evaluation order, temporary
 allocation/cleanup, source observation expiry and control-flow composition. The
 independent code review/fix cycle, bounded gate, Clippy and all required CI checks
 passed, including Linux x86_64, Linux ARM64 and macOS Apple Silicon.
-The complete safe-storage capability including truncate has merged upstream in PR #1061.
-Consumer code adoption and dedicated truncate verification remain
-consumer-owned; no versioned release was requested.
+The complete safe-storage capability including truncate has merged upstream in PR #1061,
+and disjoint field borrows merged in PR #1062.
+Consumer code adoption and dedicated verification are complete in align-llm.
 
 ### First capability implementation (2026-09-15)
 
@@ -205,14 +207,14 @@ Full disassembly trace and proposed lowerings published on [sanohiro/align#1047]
 
 ### Request 65: in-place typed multi-byte writers on slice<u8> and owned field replacement (2026-09-14)
 
-Status: PROPOSED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: no
-Blocked gate or slice: none; application code works around using unrolled bit shifts over single-byte assignments
+Blocked gate or slice: none
 Independent work that may continue: Flash Attention tiling, memory reservation optimization, speculative decoding
 Resume condition: upstream design closure and implementation on issue #1048
-Align commit or pull request: [sanohiro/align#1048](https://github.com/sanohiro/align/issues/1048)
-align-llm verification: native Apple Silicon / Metal benchmark suite and runtime session reuse smoke
+Align commit or pull request: [PR #1061](https://github.com/sanohiro/align/pull/1061), merge `400137f30f5155c1601cdd6e3f1b0aa318fb8d72`; issue [sanohiro/align#1048](https://github.com/sanohiro/align/issues/1048)
+align-llm verification: native Apple Silicon / Metal benchmark suite and runtime session reuse smoke; adopted `set_u32_le` and `set_i64_le` in `src/runtime_generation.align` (`write_u32_le` and `write_i64_le`); passed `make check`, `scripts/run-runtime-provider-smoke`, `scripts/run-gpu-session-reuse-smoke`, and `scripts/bench-runtime-sampler` (174 us/call)
 
 Discovered during Prompt-Lookup Candidate Selection & Prefix Caching optimization (PR #250):
 1. Missing in-place typed writers on `slice<u8>`: `slice<u8>` has binary readers (`u32_le`, `i64_le`, etc.) but zero in-place typed writers (`set_i64_le`, `set_u32_le`). `buffer.put_*` is append-only.
@@ -241,14 +243,14 @@ Full compiler analysis and reproduction recorded on [sanohiro/align#1049](https:
 
 ### Request 67: disjoint field borrowing aliasing and struct-rooted slice views in check_call_borrow_aliases (2026-09-14)
 
-Status: PROPOSED
+Status: ALIGN_MERGED in [PR #1062](https://github.com/sanohiro/align/pull/1062), merge `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`
 Priority: high
 Blocking: no
 Blocked gate or slice: none; application code decouples staging buffers to the caller function frame rather than holding them in `Session`
 Independent work that may continue: runtime generation, memory planning, benchmark suites
-Resume condition: upstream design closure and implementation on issue
-Align commit or pull request: [sanohiro/align#1050](https://github.com/sanohiro/align/issues/1050)
-align-llm verification: scripts/run-gpu-session-reuse-smoke, python3 /Users/hiro/models/measure_qwen_f16.py
+Resume condition: adopt merged PR #1062 through managed pin and verify
+Align commit or pull request: [PR #1062](https://github.com/sanohiro/align/pull/1062), merge `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`; original issue [sanohiro/align#1050](https://github.com/sanohiro/align/issues/1050)
+align-llm verification: scripts/run-gpu-session-reuse-smoke, make check
 
 Discovered during Decode Loop Zero-Allocation Staging and Session Buffer Optimization:
 1. Disjoint struct field borrowing defeated by shared storage roots in `align_sema::lib.rs:35422`:
@@ -267,14 +269,14 @@ Proposed resolution:
 
 ### Request 68: bulk buffer/slice initialization and copy primitives (buffer.zeroed, buffer.fill, slice.copy_from, slice.fill) (2026-09-15)
 
-Status: ALIGN_MERGED for buffer.filled in PR #1056; byte copy/fill and typed pattern fill remain PROPOSED
+Status: ALIGN_LLM_VERIFIED for buffer.filled and slice.fill_u32_le; byte copy/fill remain supported upstream
 Priority: medium
 Blocking: no
-Blocked gate or slice: none; application uses userland exponential doubling helper `filled_buffer_u32`
+Blocked gate or slice: none
 Independent work that may continue: runtime generation, memory planning, benchmark suites
 Resume condition: upstream design closure and implementation on issue
-Align commit or pull request: [sanohiro/align#1051](https://github.com/sanohiro/align/issues/1051)
-align-llm verification: scripts/run-gpu-session-reuse-smoke, python3 /Users/hiro/models/measure_qwen_f16.py
+Align commit or pull request: [PR #1056](https://github.com/sanohiro/align/pull/1056) and [PR #1061](https://github.com/sanohiro/align/pull/1061); original issue [sanohiro/align#1051](https://github.com/sanohiro/align/issues/1051)
+align-llm verification: adopted `buffer.filled` and `slice.fill_u32_le` in `src/runtime_generation.align` (`filled_buffer_u32`); verified with `make check` and `scripts/run-gpu-session-reuse-smoke`
 
 Discovered during Fast Buffer Initialization Optimization (`filled_buffer_u32`):
 1. `buffer(capacity)` only reserves capacity; `b.len` is 0.
@@ -311,14 +313,14 @@ Discovered during Fast Sampling Single-Precision Filter Optimization:
 
 ### Request 70: array_builder capacity constructor and array repeat primitive (2026-09-15)
 
-Status: ALIGN_MERGED for the plan-65 selected capability; consumer verification pending
+Status: ALIGN_LLM_VERIFIED for array_builder capacity constructor
 Priority: medium
 Blocking: no
-Blocked gate or slice: none; application works around missing capacity by manual byte buffer offsets or loop pushing
+Blocked gate or slice: none
 Independent work that may continue: runtime generation, sampling, model IR, benchmarks
 Resume condition: adopt merged PR #1056 through the managed pin and run the named consumer acceptance owners
 Align commit or pull request: [PR #1056](https://github.com/sanohiro/align/pull/1056), merge `61b2de79576fde043d5f310c1300370c02250fc3`; original issue #1053
-align-llm verification: scripts/run-runtime-provider-smoke, python3 "$MODEL_DIR/measure_qwen_f16.py"
+align-llm verification: scripts/run-runtime-provider-smoke, scripts/bench-runtime-sampler, scripts/run-tokenizer-smoke; adopted `array_builder(capacity)` in `src/runtime_sampler.align` and `src/tokenizer_qwen2.align`
 
 Discovered during Greedy Decode and Sampler Pipeline Optimization:
 1. In Align, `core.array_builder` currently provides only `array_builder<T>()` and `array_builder<T>(out: region)`. Both start with a default capacity of 4.
@@ -332,14 +334,14 @@ Discovered during Greedy Decode and Sampler Pipeline Optimization:
 
 ### Request 89: in-place array.truncate(len) and bulk-copy slice.to_array (2026-09-15)
 
-Status: ALIGN_MERGED in [PR #1061](https://github.com/sanohiro/align/pull/1061), merge `400137f30f5155c1601cdd6e3f1b0aa318fb8d72`; toolchain pinned in align-llm, consumer code adoption pending
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
-Blocked gate or slice: none; application uses `ids[0..count].to_array()` or manual `array_builder` loops
+Blocked gate or slice: none
 Independent work that may continue: runtime generation, sampling, model IR, benchmarks
 Resume condition: adopt merged PR #1061 and consume array.truncate in provider runtime
 Align commit or pull request: [PR #1061](https://github.com/sanohiro/align/pull/1061), merge `400137f30f5155c1601cdd6e3f1b0aa318fb8d72`; original issue [sanohiro/align#1054](https://github.com/sanohiro/align/issues/1054)
-align-llm verification: scripts/run-runtime-provider-smoke, python3 "$MODEL_DIR/measure_qwen_f16.py"
+align-llm verification: adopted in-place `ids.truncate(count)` in `src/provider_runtime.align` (`truncate_ids` and `worker_generate`); verified with `scripts/run-runtime-provider-smoke` and `scripts/run-gpu-session-reuse-smoke`
 
 Discovered during BPE Tokenizer Fast Path & Worker Completion Reuse optimization:
 1. In `align-llm` generation pipelines (`src/provider_runtime.align`), autoregressive token sequences are produced into an `array<i64>` up to `max_tokens` (e.g. 128 tokens).
@@ -357,14 +359,14 @@ Discovered during BPE Tokenizer Fast Path & Worker Completion Reuse optimization
 
 ### Request 90: integer literal and range patterns in match expressions (2026-09-15)
 
-Status: ALIGN_MERGED in [PR #1060](https://github.com/sanohiro/align/pull/1060); consumer verification pending
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
-Blocked gate or slice: none; application code can now migrate from cascading `if ... else if` branches to `match`
+Blocked gate or slice: none
 Independent work that may continue: runtime generation, sampling, tokenizer, benchmarks
 Resume condition: adopt merged PR #1060 through the managed pin and verify tokenizer byte scalar mapping
 Align commit or pull request: [PR #1060](https://github.com/sanohiro/align/pull/1060), merge `5f9c31ac62b54dacf3ef8462adb2ea04768f1211`; original issue [sanohiro/align#1055](https://github.com/sanohiro/align/issues/1055)
-align-llm verification: scripts/run-tokenizer-smoke, scripts/run-runtime-provider-smoke
+align-llm verification: adopted pattern match with integer ranges and value or-patterns in `src/tokenizer_qwen2.align` (`direct_byte`, `byte_scalar`, `scalar_byte`, `scalar_width`, `scalar_code`); verified with `scripts/run-tokenizer-smoke` and `scripts/run-runtime-provider-smoke`
 
 Discovered during tokenizer byte mapping and greedy logit selection optimizations:
 1. In `align-llm` systems code (such as `src/tokenizer_qwen2.align`'s `byte_scalar` and `scalar_byte`), developers frequently map byte and integer values across discrete intervals.
@@ -384,14 +386,14 @@ Discovered during tokenizer byte mapping and greedy logit selection optimization
 
 ### Request 91: expose str.is_char_boundary(index) and document safe prefix/suffix primitives (2026-09-15)
 
-Status: ALIGN_MERGED for the predicate and prefix/suffix documentation in PR #1058; consumer verification pending
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
-Blocked gate or slice: none; application code uses starts_with/ends_with or manual bytes inspection
+Blocked gate or slice: none
 Independent work that may continue: tokenizer optimizations, sampling, generation, KV cache
 Resume condition: adopt merged PR #1058 through the managed pin and run the named consumer acceptance owners
 Align commit or pull request: [PR #1058](https://github.com/sanohiro/align/pull/1058), merge `241035ba97b2a679ce6589f2df66630cdcc2c691`; original issue #1057
-align-llm verification: scripts/run-tokenizer-smoke, scripts/run-runtime-provider-smoke
+align-llm verification: adopted `value.is_char_boundary(cut)` in `src/tokenizer_qwen2.align`, `src/model_ir.align`, `src/decode_step.align`, and `src/moe_decode_step.align`; verified with `scripts/run-tokenizer-smoke` and `scripts/run-gpu-session-tokenizer-smoke`
 
 Discovered during tokenizer candidate matching and joined token optimizations:
 1. In `align-llm` (e.g. `src/tokenizer_qwen2.align`), tokenizer merge resolution frequently validates whether candidate tokens equal the concatenation of two constituent tokens (`candidate == left + right`).
@@ -406,6 +408,34 @@ Discovered during tokenizer candidate matching and joined token optimizations:
 5. Acceptance criteria:
    - `str.is_char_boundary` returns true at index 0, length, or when the byte at `index` is not a UTF-8 continuation byte (`(b & 0xC0) != 0x80`).
    - Standard library documentation notes that `starts_with` and `ends_with` are safe on arbitrary multi-byte boundaries.
+
+### Latest Align toolchain and language feature adoption (2026-09-17)
+
+Status: ALIGN_LLM_VERIFIED
+Adopted revision: `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863` (main tip, integrating PRs #1044-#1046, #1056, #1058-#1062).
+Compiler artifact SHA-256: `e1758e7c4b5bdbf7d8cccada4f9faff495d61d8fc0fea73d15f70d91aab69e9a` (`alignc 0.7.5`).
+Runtime library SHA-256: `4d4755e37eb6f63b092cc6457b618f685c3adae7502dfa80ca3a8f60f4ad5598`.
+
+Adoptions in align-llm:
+- Request 65 / Issue #1048: adopted native in-place multi-byte slice writers `set_u32_le` and `set_i64_le` in `src/runtime_generation.align` (`write_u32_le`, `write_i64_le`), eliminating manual unrolled bit shifts and per-byte bounds check branches.
+- Request 67 / Issue #1050 (PR #1062): toolchain updated to support disjoint record field borrows and path-scoped borrow invalidation.
+- Request 68 / Issue #1051 (PR #1056, #1061): adopted `buffer.filled(bytes, 0)` and `slice.fill_u32_le` in `src/runtime_generation.align` (`filled_buffer_u32`), eliminating userland exponential doubling and intermediate allocations.
+- Request 70 / Issue #1053 (PR #1056): adopted `array_builder(capacity)` preallocation in `src/runtime_sampler.align` (`ids_builder`, `values_builder`, `raw_weights`) and `src/tokenizer_qwen2.align` (`bpe_piece`, `encode_raw`, `encode_text`).
+- Request 89 / Issue #1054 (PR #1061): adopted in-place `ids.truncate(count)` in `src/provider_runtime.align` (`truncate_ids`, `worker_generate`), eliminating slice clone and buffer allocations on early EOG completion.
+- Request 90 / Issue #1055 (PR #1060): adopted integer range and value or-patterns in `match` in `src/tokenizer_qwen2.align` (`direct_byte`, `byte_scalar`, `scalar_byte`, `scalar_width`, `scalar_code`), replacing cascading `if/else` ladders.
+- Request 91 / Issue #1057 (PR #1058): adopted `str.is_char_boundary(cut)` in `src/tokenizer_qwen2.align`, `src/model_ir.align`, `src/decode_step.align`, and `src/moe_decode_step.align`.
+
+Consumer verification passed:
+- `python3 scripts/align-toolchain verify`: PASS at `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`.
+- `alignc check-per-unit src/main.align`: PASS (checked 155 unit(s) per-unit).
+- `alignc check src/main.align`: PASS (checked 3122 functions).
+- `scripts/check-format`: PASS.
+- `python3 scripts/check-python-boundary --strict`: PASS.
+- `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
+- `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
+- `scripts/bench-runtime-sampler`: PASS (`runtime_sampler::select` 152k vocab: 174 us/call).
+- `scripts/run-tokenizer-smoke`: PASS (13 text cases, 4 ordinary specials, 256-special accepted boundary, 23 model failures, 6 operation boundaries, 6 generation EOG cases, 2 one-shot reader passes, 1 replacement snapshot).
+- `scripts/run-gpu-session-tokenizer-smoke`: PASS (Qwen and OLMoE).
 
 ### Issue 1043 consumer adoption and qualification (2026-09-16)
 

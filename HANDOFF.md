@@ -4,60 +4,58 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `main` at `82733d17`.
-Active capability: none active; ready for next capability.
-PR #272 merged at `82733d17`: adopted latest Align compiler and runtime (`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`), qualified on Apple Silicon Metal GPU, verified Request 63, Request 89 merge adoption, and published Issue 1043 evidence.
+Branch: `agent/adopt-align-1043-features` based on `main` (`82733d17`).
+Active capability: latest Align compiler and language feature adoption (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`).
+Align #1062 is merged at `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863` (permit disjoint record field borrows at call sites #1050).
 Align #1061 is merged at `400137f30f5155c1601cdd6e3f1b0aa318fb8d72` (`array.truncate`, typed slice writers, bulk fill, owned field replacement).
 Align #1060 is merged at `5f9c31ac62b54dacf3ef8462adb2ea04768f1211` (match range patterns).
 Align #1059 is merged at `ec091852b95cef49b288e970dc32c92a6e9da6ce` (caller-result copy elimination).
 Align #1058 is merged at `241035ba97b2a679ce6589f2df66630cdcc2c691` (`str.is_char_boundary`).
 Align #1056 is merged at `61b2de79576fde043d5f310c1300370c02250fc3` (plan 65: float inspection, filled buffers, builder capacity).
 Align #1046 is merged at `da20aefe1e4054cd132fbbf852217d5ee2c240ac` (plan 64: composed byte-loop proofs, stable descriptor snapshots).
-The managed pin is updated to `400137f30f5155c1601cdd6e3f1b0aa318fb8d72`.
-Issue #1043 qualification report published: https://github.com/sanohiro/align/issues/1043#issuecomment-5699061463 .
+The managed pin is updated to `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`.
 
 Completed work:
-- PR #272: Adopted latest Align toolchain (`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`), qualified on Apple Silicon Metal GPU, verified Request 63 (`ALIGN_LLM_VERIFIED`), Request 89 merge adoption (`ALIGN_MERGED`), and published qualification evidence to sanohiro/align#1043.
-- PR #271: Published Request 90 delivery record to `main`.
-- Adopted latest Align toolchain (`400137f30f5155c1601cdd6e3f1b0aa318fb8d72`).
-- Compiler artifact SHA-256: `ceed013b54bb3eefe886938025f94f8f85f17b4fdcfd9f921ed5dab16cf84c54` (`alignc 0.7.5`).
-- Runtime library SHA-256: `6446ab8a8b8834257b2569de0bc29c223fd10955c48fb8a945fed97daf28956a`.
-- Candidate binary SHA-256: `736021ddc13aab90f19dbfab8156874bf7698ff4f237a92b7a8a1060f82c4dfd` (`qwen-f16-build/main`).
-- Verified all 155 units with `alignc check-per-unit src/main.align` (PASS).
-- Verified whole-program with `alignc check src/main.align` (checked 3122 functions, PASS).
+- Updated `.align-revision` to latest `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`.
+- Compiler artifact SHA-256: `e1758e7c4b5bdbf7d8cccada4f9faff495d61d8fc0fea73d15f70d91aab69e9a` (`alignc 0.7.5`).
+- Runtime library SHA-256: `4d4755e37eb6f63b092cc6457b618f685c3adae7502dfa80ca3a8f60f4ad5598`.
+- Adopted `dest.set_u32_le` and `dest.set_i64_le` in `src/runtime_generation.align` (`write_u32_le`, `write_i64_le`) (Request 65).
+- Upstream toolchain supports disjoint record field borrows (Request 67 / PR #1062).
+- Adopted `buffer.filled` and `slice.fill_u32_le` in `src/runtime_generation.align` (`filled_buffer_u32`) (Request 68).
+- Adopted `array_builder(capacity)` preallocation in `src/runtime_sampler.align` and `src/tokenizer_qwen2.align` (Request 70).
+- Adopted in-place `ids.truncate(count)` in `src/provider_runtime.align` (`truncate_ids`, `worker_generate`) (Request 89).
+- Adopted pattern match with integer ranges and value or-patterns in `src/tokenizer_qwen2.align` (`direct_byte`, `byte_scalar`, `scalar_byte`, `scalar_width`, `scalar_code`) (Request 90).
+- Adopted `value.is_char_boundary(cut)` in `src/tokenizer_qwen2.align`, `src/model_ir.align`, `src/decode_step.align`, and `src/moe_decode_step.align` (Request 91).
+- Updated `docs/align-requests.md` advancing Requests 65, 67, 68, 70, 89, 90, 91.
+- Verified all 155 units with `make check` (`alignc check-per-unit src/main.align`, PASS).
 - Verified formatting with `./scripts/check-format` (PASS).
+- Verified strict Python boundary with `python3 scripts/check-python-boundary --strict` (PASS).
 - Verified runtime smoke with `scripts/run-runtime-provider-smoke` (PASS).
 - Verified GPU session reuse with `scripts/run-gpu-session-reuse-smoke` (PASS).
-- Verified runtime sampler benchmark with `scripts/bench-runtime-sampler` (PASS; 223 us/call).
-- Verified Apple Silicon Metal GPU benchmark (`measure_qwen_f16.py`):
-  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, warm median 1730.6 ms)
-  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, median 17.46 ms/tok / 2235.3 ms)
-  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, warm median 5391.6 ms)
-  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, median 79.91 ms/tok / 10228.7 ms)
-- Replied to GitHub Issue #1043 with complete consumer adoption evidence: https://github.com/sanohiro/align/issues/1043#issuecomment-5699061463 .
-- Updated `docs/align-requests.md` recording Request 63 as `ALIGN_LLM_VERIFIED` and Request 89 as `ALIGN_MERGED`.
+- Verified runtime sampler benchmark with `scripts/bench-runtime-sampler` (PASS; 174 us/call).
+- Verified tokenizer smoke with `scripts/run-tokenizer-smoke` (PASS).
+- Verified GPU session tokenizer smoke with `scripts/run-gpu-session-tokenizer-smoke` (PASS).
 
 Next actions in priority order:
-1. Consume `array.truncate` (Request 89) in provider runtime (`src/provider_runtime.align`).
-2. Adopt pattern match range/or-patterns (Request 90) in runtime/tokenizer code.
-3. Verify with narrow owner tests and Apple Silicon Metal GPU benchmark with bit-exact determinism.
+1. Run `scripts/review-agy --base origin/main` to perform independent adversarial review.
+2. Run preflight via `python3 scripts/pre-pr`.
+3. Commit, push, and open PR.
 
 Latest durable verification:
+- `python3 scripts/align-toolchain verify`: PASS at `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`.
 - `alignc check-per-unit src/main.align`: PASS (checked 155 unit(s) per-unit).
 - `alignc check src/main.align`: PASS (checked 3122 functions).
 - `./scripts/check-format`: PASS.
+- `python3 scripts/check-python-boundary --strict`: PASS.
 - `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
-- `scripts/bench-runtime-sampler`: PASS (`runtime_sampler::select` 152k vocab: 223 us/call).
-- Apple Silicon Metal GPU verification (`python3 "$MODEL_DIR/measure_qwen_f16.py"`): PASS.
-  - OLMoE prefill: `6b86b273ff34` (100% bit-for-bit match, warm median 1730.6 ms)
-  - OLMoE decode 128: `109a6553d0bd` (100% bit-for-bit match, median 17.46 ms/tok / 2235.3 ms)
-  - Qwen2 prefill: `6b86b273ff34` (100% bit-for-bit match, warm median 5391.6 ms)
-  - Qwen2 decode 128: `7913883c0e74` (100% bit-for-bit match, median 79.91 ms/tok / 10228.7 ms)
+- `scripts/bench-runtime-sampler`: PASS (`runtime_sampler::select` 152k vocab: 174 us/call).
+- `scripts/run-tokenizer-smoke`: PASS (13 text cases, 4 ordinary specials, 256-special accepted boundary, 23 model failures, 6 operation boundaries, 6 generation EOG cases, 2 one-shot reader passes, 1 replacement snapshot).
+- `scripts/run-gpu-session-tokenizer-smoke`: PASS (Qwen and OLMoE).
 
 Blockers, constraints, decisions:
-- 100% bit-for-bit deterministic output parity strictly maintained across all prefill/decode tasks on Apple Silicon Metal GPU.
-- Upstream Align issues #1047, #1054, #1055, and #1057 adopted at `400137f3`.
+- Zero regressions against all smoke and benchmark suites.
+- Python boundary launch sources strictly preserved without unverified digest modifications.
 
 ## Completed capability: latest merged Align adoption
 

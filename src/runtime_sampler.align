@@ -24,8 +24,8 @@ pub Selection {
 pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Selection, Error> {
   if logits.len() < 4 || logits.len() % 4 != 0 { return Err(Error.Invalid) }
   token_count := logits.len() / 4
-  mut ids_builder: array_builder<i64> := array_builder()
-  mut values_builder: array_builder<f32> := array_builder()
+  mut ids_builder: array_builder<i64> := array_builder(TOP_K)
+  mut values_builder: array_builder<f32> := array_builder(TOP_K)
   mut slot := 0
   loop {
     if slot >= TOP_K { break }
@@ -82,7 +82,7 @@ pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Select
   if count < 1 { return Err(Error.Invalid) }
 
   maximum := values[0] as f64
-  mut raw_weights: array_builder<f64> := array_builder()
+  mut raw_weights: array_builder<f64> := array_builder(count)
   mut raw_total := 0.0
   mut raw_at := 0
   loop {
