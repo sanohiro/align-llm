@@ -4,8 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `main` at `f8a4095`.
-Active capability: none active; ready for next capability.
+Branch: `agent/binary-optimization-audit-requests`, based on `origin/main` `f002d9fe`.
+Active capability: none active; this branch is a classifier-eligible Markdown registration of a completed audit.
 PR #274 merged at `f8a4095`: optimized hot logits loops in `greedy` and `select` (`f32.to_bits()`), preallocated builder capacity in `tokenizer_qwen2` (`array_builder(count)`), registered Align Requests 92–96 in `docs/align-requests.md`, and filed upstream Align issues #1063–#1067.
 PR #273 merged at `ae2fecd`: adopted latest Align compiler and runtime (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`), adopted typed slice writers, buffer.filled, array_builder capacity, in-place array truncate, integer match range/value patterns, is_char_boundary, and verified all suites.
 Align #1062 is merged at `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863` (permit disjoint record field borrows at call sites #1050).
@@ -37,12 +37,39 @@ Completed work:
   - `src/runtime_sampler.align`: Eliminated duplicate memory loads in `select` by using single `f32_le` load and in-register `value.to_bits()`.
   - `src/tokenizer_qwen2.align`: Preallocated builder capacity in `copy_i64` and `filled_i64` (`array_builder(count)`), eliminating up to 54 doubling reallocations per piece.
 - Formatted and verified all suites.
+- Mac-native binary optimization audit of the `--profile release` image at Align pin `8c8bfbc7` (alignc 0.7.5, LLVM 22.1.8), Apple M1 / macOS 27.0, on align-llm `b72b0b48`. Measured, not inferred:
+  - Zero-FP-SIMD census: the 5.3 MB release image contains zero floating-point SIMD instructions in any Align-generated function, in all three of `--profile release`, `--target-cpu native` and `--profile fast`; only 73 `vector.body` across 2,108 defined Align functions.
+  - `--rt-lto` does not inline at the default `--target-cpu baseline` on aarch64: 1,523 / 162 / 42 `str_eq` / `starts_with` / `ends_with` call sites at the default target against 445 / 0 / 7 at `--target-cpu native`, plus 81 duplicate internal bodies; `--profile fast` is worse (1,580 / 171 / 53).
+  - `alignc build src/main.align --thin-lto` is a hard failure (ThinLTO prelink provenance rejection), so there is no working cross-boundary inlining mechanism at default settings today.
+  - `alignc explain-opt` crashed on 7 hot modules (`decode_step`, `moe_decode_step`, `gguf`, `tokenizer_qwen2`, `alignpack`, `model_ir`, `main`) at that pin; this is Align #1067, now fixed upstream by PR #1068 (merge `25391cde`). A separate root-model defect leaves a further 4 modules reporting an empty module.
+  - Real Metal generation profile (Qwen2.5-Coder-7B Q4_K_M, 128 tokens, ~8.0 tok/s on M1): Align-compiled code is about 0.1% of sampled CPU; the run is GPU-bound in Metal completion waits, and load and prefill are ggml-dominated.
+  - Real tokenizer profile (same vocabulary, 55 KB mixed input, 120 repetitions, 161,237 tokens/s): 74.5% of leaf samples are Align-compiled code, with `array_builder_push` plus `ArrayBuilder::reserve` at 14.1% and `align_rt_str_eq` at 4.5%.
+  - Audit baselines for the Align-owned CPU kernels on this Mac: greedy 242 us/call over 151,936 logits and sampler 267 us/call over 152,064.
+  - Audit artifacts live in the session scratchpad (disposable); nothing is retained in Git.
+- Filed the audit results upstream on `sanohiro/align`: issues #1069–#1087 (19 issues), the umbrella design issue #1088 ("[Design] Vectorization contract"), and review comments on #1063, #1064 (two comments), #1066 and #1067.
+- Registered Align Requests 97–116 in `docs/align-requests.md` (one per issue #1069–#1087 in issue-number order, plus Request 116 for umbrella #1088), all PROPOSED and non-blocking, and recorded the design-review conclusions for #1063 and #1064 under Requests 92 and 93.
 
 Next actions in priority order:
-1. Identify and begin next roadmap consumer capability.
-2. Monitor upstream Align responses to issues #1063–#1067.
+1. Adopt the Align pin containing PR #1068: update `.align-revision`, materialize and verify the managed toolchain, and confirm `alignc explain-opt` now reports on the 7 modules that crashed at `8c8bfbc7` (Request 96 moves toward ALIGN_LLM_VERIFIED).
+2. Application-side improvements available today at the current compiler, ranked by measured effect:
+   - Replace the `prime_window` per-byte zero fill with `buffer.filled` (`src/moe_decode_step.align:3238`, `src/moe_model_forward.align:394-415`); 1,048,576 opaque runtime calls per generated token on the 16-layer OLMoE path.
+   - Use `ggml_ffi.stage_kv` on the Qwen2 path instead of `stage_past_k`/`stage_past_v` (`src/decode_step.align:2214-2219`).
+   - Build the 13 member columns once for all layers instead of per layer per token (`src/model_forward.align:1610`, `src/moe_model_forward.align:1940`).
+   - Gate `digest_region`'s SHA-256 behind the oracle flag (`src/decode_step.align:2298`).
+   - Replace `ggml_ffi.null_handle()` calls with a `pub` const (512 calls per token at 16 layers).
+   - Add length pre-checks before string-literal `==` chains (`src/tokenizer_qwen2.align:1754-1767`, `build_eog_set`).
+   - Give hot `array_builder()` calls their known capacity.
+   - Split `model_forward$Outcome` into a hot per-step record and a cold per-run diagnostics record.
+   - Use `best.max(x)` instead of `if x > best` in the greedy, top-k and sampler selection loops (16x measured on the max reduction: 190.7 to 12.0 us/call on 152,064 f32).
+   - Recommend `--target-cpu native` for align-llm's own release builds in `docs/align-development.md` (removes 1,275 call sites and 41 duplicate bodies; the portable compiler default stays settled upstream).
+3. Monitor upstream Align responses to issues #1069–#1088 and to the comments on #1063, #1064, #1066 and #1067.
 
 Latest durable verification:
+- `git diff --check`: PASS (no whitespace errors).
+- `python3 scripts/pre-pr --plan`: selected the `docs` classifier row.
+- `python3 scripts/pre-pr`: PASS at the exact branch head.
+
+Retained from the PR #274 checkpoint (source unchanged on this branch):
 - `alignc check-per-unit src/main.align`: PASS (checked 155 unit(s) per-unit).
 - `./scripts/check-format`: PASS.
 - `python3 scripts/check-python-boundary --strict`: PASS.
@@ -55,6 +82,9 @@ Latest durable verification:
 Blockers, constraints, decisions:
 - Zero regressions against all smoke and benchmark suites.
 - Python boundary launch sources strictly preserved without unverified digest modifications.
+- No Align capability request is blocking: Requests 92–95 and 97–116 are all `Blocking: no`, so every application-side item above may proceed. Do not consume any proposed Align surface while those requests are PROPOSED.
+- Align #1070 (Request 98) means `--thin-lto` cannot be used on align-llm at all today, and Align #1069 (Request 97) means the default `--target-cpu` loses the `--rt-lto` inline on aarch64; choosing `--target-cpu native` for align-llm's own builds is the only available mitigation.
+- The audit's own artifacts are in the session scratchpad (disposable). Re-derive them rather than citing a local path.
 
 ## Completed capability: latest merged Align adoption
 
