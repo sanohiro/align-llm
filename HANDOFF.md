@@ -4,8 +4,9 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/adopt-align-1043-features` based on `main` (`82733d17`).
-Active capability: latest Align compiler and language feature adoption (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`).
+Branch: `main` at `ae2fecd`.
+Active capability: none active; ready for next capability.
+PR #273 merged at `ae2fecd`: adopted latest Align compiler and runtime (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`), adopted typed slice writers, buffer.filled, array_builder capacity, in-place array truncate, integer match range/value patterns, is_char_boundary, and verified all suites.
 Align #1062 is merged at `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863` (permit disjoint record field borrows at call sites #1050).
 Align #1061 is merged at `400137f30f5155c1601cdd6e3f1b0aa318fb8d72` (`array.truncate`, typed slice writers, bulk fill, owned field replacement).
 Align #1060 is merged at `5f9c31ac62b54dacf3ef8462adb2ea04768f1211` (match range patterns).
@@ -16,7 +17,7 @@ Align #1046 is merged at `da20aefe1e4054cd132fbbf852217d5ee2c240ac` (plan 64: co
 The managed pin is updated to `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`.
 
 Completed work:
-- Updated `.align-revision` to latest `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`.
+- PR #273: Adopted latest Align toolchain (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`), verified Requests 65, 68, 70, 89, 90, 91 (`ALIGN_LLM_VERIFIED`), Request 67 (`ALIGN_MERGED`), and merged into `main`.
 - Compiler artifact SHA-256: `e1758e7c4b5bdbf7d8cccada4f9faff495d61d8fc0fea73d15f70d91aab69e9a` (`alignc 0.7.5`).
 - Runtime library SHA-256: `4d4755e37eb6f63b092cc6457b618f685c3adae7502dfa80ca3a8f60f4ad5598`.
 - Adopted `dest.set_u32_le` and `dest.set_i64_le` in `src/runtime_generation.align` (`write_u32_le`, `write_i64_le`) (Request 65).
@@ -37,9 +38,7 @@ Completed work:
 - Verified GPU session tokenizer smoke with `scripts/run-gpu-session-tokenizer-smoke` (PASS).
 
 Next actions in priority order:
-1. Run `scripts/review-agy --base origin/main` to perform independent adversarial review.
-2. Run preflight via `python3 scripts/pre-pr`.
-3. Commit, push, and open PR.
+1. Identify and begin next roadmap consumer capability.
 
 Latest durable verification:
 - `python3 scripts/align-toolchain verify`: PASS at `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`.
