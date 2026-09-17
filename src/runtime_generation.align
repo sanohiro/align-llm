@@ -530,10 +530,7 @@ fn slot_buffer() -> buffer {
 }
 
 pub fn write_u32_le(borrow mut dest: slice<u8>, base: i64, value: u32) {
-  dest[base] = (value & 255) as u8
-  dest[base + 1] = ((value >> 8) & 255) as u8
-  dest[base + 2] = ((value >> 16) & 255) as u8
-  dest[base + 3] = ((value >> 24) & 255) as u8
+  dest.set_u32_le(base, value)
 }
 
 fn update_prompt(
@@ -762,21 +759,10 @@ fn contains(borrow ids: array<i64>, value: i64) -> bool {
 pub fn filled_buffer_u32(count: i64, value: u32) -> Result<buffer, Error> {
   if count < 0 { return Err(Error.Invalid) }
   bytes := checked_mul(count, 4)?
-  mut b := buffer(bytes)
-  if count == 0 { return Ok(b) }
-  initial_count := if count < 64 { count } else { 64 }
-  mut at := 0
-  loop {
-    if at >= initial_count { break }
-    b.put_u32_le(value)
-    at = at + 1
-  }
-  loop {
-    if b.bytes().len() >= bytes { break }
-    remaining := bytes - b.bytes().len()
-    current_len := b.bytes().len()
-    step := if remaining < current_len { remaining } else { current_len }
-    b.append(b.bytes()[0..step])
+  mut b := buffer.filled(bytes, 0)
+  if count > 0 && value != (0 as u32) {
+    mut sl := b.bytes()
+    sl.fill_u32_le(value)
   }
   return Ok(b)
 }
@@ -1493,14 +1479,7 @@ fn execute_session(borrow mut session: Session, borrow prompt_ids: array<i64>,
 }
 
 fn write_i64_le(borrow mut dest: slice<u8>, base: i64, value: i64) {
-  dest[base] = (value & 255) as u8
-  dest[base + 1] = ((value >> 8) & 255) as u8
-  dest[base + 2] = ((value >> 16) & 255) as u8
-  dest[base + 3] = ((value >> 24) & 255) as u8
-  dest[base + 4] = ((value >> 32) & 255) as u8
-  dest[base + 5] = ((value >> 40) & 255) as u8
-  dest[base + 6] = ((value >> 48) & 255) as u8
-  dest[base + 7] = ((value >> 56) & 255) as u8
+  dest.set_i64_le(base, value)
 }
 
 fn publish_prefix(borrow mut session: Session, borrow prompt_ids: array<i64>,

@@ -274,15 +274,13 @@ pub fn empty_decode() -> Decode = Decode {
 // module through `resident_detail` and `suffix_detail`. `docs/specs/r6-moe-resident-dense.md`
 // section 13 item 15 records the repair. This is `src/model_ir.align`'s form, adopted verbatim.
 fn bounded_detail(value: str) -> string {
-  view := value.bytes()
-  if view.len() <= MAX_DETAIL_BYTES {
+  if value.len() <= MAX_DETAIL_BYTES {
     return value.clone()
   }
   mut cut := MAX_DETAIL_BYTES
   loop {
     if cut <= 0 { break }
-    byte := view.u8(cut) as i64
-    if byte < 128 || byte >= 192 { break }
+    if value.is_char_boundary(cut) { break }
     cut = cut - 1
   }
   return value[0..cut].clone()
