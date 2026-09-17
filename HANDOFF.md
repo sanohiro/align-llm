@@ -4,8 +4,9 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `feat/application-optimizations-and-requests-92-96` at `760c27d`.
-Active capability: compiler & binary optimization audit (Requests 92-96 + application optimizations).
+Branch: `main` at `f8a4095`.
+Active capability: none active; ready for next capability.
+PR #274 merged at `f8a4095`: optimized hot logits loops in `greedy` and `select` (`f32.to_bits()`), preallocated builder capacity in `tokenizer_qwen2` (`array_builder(count)`), registered Align Requests 92–96 in `docs/align-requests.md`, and filed upstream Align issues #1063–#1067.
 PR #273 merged at `ae2fecd`: adopted latest Align compiler and runtime (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`), adopted typed slice writers, buffer.filled, array_builder capacity, in-place array truncate, integer match range/value patterns, is_char_boundary, and verified all suites.
 Align #1062 is merged at `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863` (permit disjoint record field borrows at call sites #1050).
 Align #1061 is merged at `400137f30f5155c1601cdd6e3f1b0aa318fb8d72` (`array.truncate`, typed slice writers, bulk fill, owned field replacement).
@@ -38,8 +39,8 @@ Completed work:
 - Formatted and verified all suites.
 
 Next actions in priority order:
-1. Run preflight (`python3 scripts/pre-pr --owner-test bench-runtime-sampler -- scripts/bench-runtime-sampler`).
-2. Open pull request and merge into `main`.
+1. Identify and begin next roadmap consumer capability.
+2. Monitor upstream Align responses to issues #1063–#1067.
 
 Latest durable verification:
 - `alignc check-per-unit src/main.align`: PASS (checked 155 unit(s) per-unit).
