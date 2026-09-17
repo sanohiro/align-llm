@@ -4,7 +4,7 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `feat/application-optimizations-and-requests-92-96`.
+Branch: `feat/application-optimizations-and-requests-92-96` at `760c27d`.
 Active capability: compiler & binary optimization audit (Requests 92-96 + application optimizations).
 PR #273 merged at `ae2fecd`: adopted latest Align compiler and runtime (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`), adopted typed slice writers, buffer.filled, array_builder capacity, in-place array truncate, integer match range/value patterns, is_char_boundary, and verified all suites.
 Align #1062 is merged at `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863` (permit disjoint record field borrows at call sites #1050).
@@ -38,9 +38,8 @@ Completed work:
 - Formatted and verified all suites.
 
 Next actions in priority order:
-1. Run preflight (`python3 scripts/pre-pr`).
-2. Run candidate review with `scripts/review-agy`.
-3. Open pull request and merge into `main`.
+1. Run preflight (`python3 scripts/pre-pr --owner-test bench-runtime-sampler -- scripts/bench-runtime-sampler`).
+2. Open pull request and merge into `main`.
 
 Latest durable verification:
 - `alignc check-per-unit src/main.align`: PASS (checked 155 unit(s) per-unit).
@@ -51,14 +50,6 @@ Latest durable verification:
 - `scripts/bench-runtime-sampler`: PASS (183 us/call).
 - `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
 - `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
-- `alignc check src/main.align`: PASS (checked 3122 functions).
-- `./scripts/check-format`: PASS.
-- `python3 scripts/check-python-boundary --strict`: PASS.
-- `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
-- `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
-- `scripts/bench-runtime-sampler`: PASS (`runtime_sampler::select` 152k vocab: 174 us/call).
-- `scripts/run-tokenizer-smoke`: PASS (13 text cases, 4 ordinary specials, 256-special accepted boundary, 23 model failures, 6 operation boundaries, 6 generation EOG cases, 2 one-shot reader passes, 1 replacement snapshot).
-- `scripts/run-gpu-session-tokenizer-smoke`: PASS (Qwen and OLMoE).
 
 Blockers, constraints, decisions:
 - Zero regressions against all smoke and benchmark suites.
