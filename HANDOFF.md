@@ -4,8 +4,9 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/binary-optimization-audit-requests`, based on `origin/main` `f002d9fe`.
-Active capability: none active; this branch is a classifier-eligible Markdown registration of a completed audit.
+Branch: `agent/record-align-merges-batch`, based on `origin/main` `251d52b8`.
+Active capability: none active; this branch is a classifier-eligible Markdown update recording upstream Align responses, design ledgers, and merges for requests 64, 95, 97–102, 107, 108, 110, 111, and 114–116.
+PR #275 merged at `251d52b8`: registered binary optimization audit requests 97–116 in `docs/align-requests.md` and recorded Align issues #1069–#1088.
 PR #274 merged at `f8a4095`: optimized hot logits loops in `greedy` and `select` (`f32.to_bits()`), preallocated builder capacity in `tokenizer_qwen2` (`array_builder(count)`), registered Align Requests 92–96 in `docs/align-requests.md`, and filed upstream Align issues #1063–#1067.
 PR #273 merged at `ae2fecd`: adopted latest Align compiler and runtime (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`), adopted typed slice writers, buffer.filled, array_builder capacity, in-place array truncate, integer match range/value patterns, is_char_boundary, and verified all suites.
 Align #1062 is merged at `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863` (permit disjoint record field borrows at call sites #1050).
