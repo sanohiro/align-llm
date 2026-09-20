@@ -8,6 +8,14 @@ This owner reproduces item 69's sampled-portfolio protocol byte-for-byte where t
 what makes two runs comparable, and replaces only host-binding identity with a checked-in
 platform-profile table. It is a baseline: it has no gate, and its numbers are comparable only
 against another run of the same profile on the same host.
+
+  ALIGN_LLM_GGML_CPU_THREADS  optional; register item C1 (`docs/specs/cpu-baseline-linux.md`
+                              section 8). A decimal integer in 1..1024 that the shim gives the
+                              runtime arm's ggml CPU backend. Unset is ggml's own
+                              `GGML_DEFAULT_N_THREADS` of 4 and leaves the arm byte-for-byte the
+                              measurement section 6 already recorded. The resolved value is
+                              recorded as `baseline.effective_ggml_threads`; a malformed value is
+                              refused before the run starts.
 """
 
 from __future__ import annotations
@@ -67,9 +75,21 @@ TEMPERATURE_MICROS = 300_000
 SEEDS = (1, 2, 3, 4, 5, 6, 7, 8)
 MAX_TOKENS = 128
 SERVER_THREADS = 4
-# ggml's own default, `GGML_DEFAULT_N_THREADS` in the pinned ggml's `ggml/include/ggml.h`. The
-# shim never calls `ggml_graph_plan`/`n_threads`, so the runtime arm runs at this value.
-EFFECTIVE_GGML_THREADS = 4
+# ggml's own default, `GGML_DEFAULT_N_THREADS` in the pinned ggml's `ggml/include/ggml.h`.
+DEFAULT_EFFECTIVE_GGML_THREADS = 4
+# Register item C1 (`docs/specs/cpu-baseline-linux.md` section 8). The shim now honours one
+# environment variable at CPU backend creation. It is read from `os.environ` here, recorded in the
+# receipt, and handed only to the runtime arm's helper; the local arm's `llama-server` keeps its own
+# `-t 4`. When it is unset the shim makes no thread-count call at all, which is the state every run
+# recorded in section 6 of that document was measured in, so an unset run stays comparable with
+# them. A thread count is therefore no longer a fixed constant of this owner: it is a recorded input
+# with a default. Nothing else about the workload changes.
+GGML_CPU_THREADS_ENV = "ALIGN_LLM_GGML_CPU_THREADS"
+GGML_CPU_THREADS_MAX = 1024
+GGML_CPU_THREADS_DIGITS = 4
+# Resolved once in `main()`, before any measurement, and recorded as
+# `baseline.effective_ggml_threads`.
+EFFECTIVE_GGML_THREADS = DEFAULT_EFFECTIVE_GGML_THREADS
 
 # The inherited llama-server launch line is part of the fixed workload: `-t 4` and `-c 512` decide
 # how fast the local arm can answer, `-np 1` its concurrency, `-ngl 0` that nothing leaves the
@@ -974,8 +994,39 @@ def self_test() -> int:
         raise BaselineError("balanced pair schedule drifted")
     if SEEDS != tuple(range(1, 9)) or TEMPERATURE_MICROS != 300_000 or MAX_TOKENS != 128:
         raise BaselineError("sampling policy drifted")
-    if EFFECTIVE_GGML_THREADS != 4 or SERVER_THREADS != 4:
+    if DEFAULT_EFFECTIVE_GGML_THREADS != 4 or SERVER_THREADS != 4:
         raise BaselineError("thread contract drifted")
+
+    # Register item C1. The resolver must agree with `scripts/ggml_shim.c` on every case, because
+    # the receipt's `effective_ggml_threads` is only true if it does.
+    for value in (None, ""):
+        if parse_ggml_cpu_threads(value) != DEFAULT_EFFECTIVE_GGML_THREADS:
+            raise BaselineError("an unset thread count did not resolve to the ggml default")
+    for value, expected in (("1", 1), ("4", 4), ("16", 16), ("32", 32), ("1024", 1024)):
+        if parse_ggml_cpu_threads(value) != expected:
+            raise BaselineError(f"thread count {value} did not resolve to {expected}")
+    for value in ("0", "1025", "9999", "00016", "abc", " 16", "16 ", "+16", "-4", "16x", "1e3"):
+        expect_error(
+            lambda value=value: parse_ggml_cpu_threads(value),
+            f"malformed thread count {value!r} was accepted",
+        )
+    # The variable reaches the runtime arm and nothing else, and only when it moves the run off the
+    # ggml default. The baseline metadata records whatever was resolved.
+    with mock.patch.dict(os.environ, {GGML_CPU_THREADS_ENV: "16"}), \
+            mock.patch.object(sampled, "validate_linker_search", lambda _env: ""):
+        if GGML_CPU_THREADS_ENV in prepared_environment()[0]:
+            raise BaselineError("the thread-count input leaked into the general environment")
+    if runtime_measurement_env({"HOME": "/x"}) != {"HOME": "/x"}:
+        raise BaselineError("an unset thread count changed the runtime arm environment")
+    saved_threads = EFFECTIVE_GGML_THREADS
+    try:
+        globals()["EFFECTIVE_GGML_THREADS"] = 16
+        if runtime_measurement_env({"HOME": "/x"}) != {"HOME": "/x", GGML_CPU_THREADS_ENV: "16"}:
+            raise BaselineError("the runtime arm did not receive the resolved thread count")
+        if baseline_metadata(PROFILES["linux-x86_64-v1"])["effective_ggml_threads"] != 16:
+            raise BaselineError("the receipt did not record the resolved thread count")
+    finally:
+        globals()["EFFECTIVE_GGML_THREADS"] = saved_threads
 
     # Profile selection.
     for name in sorted(PROFILES):
@@ -1171,20 +1222,60 @@ def parse_arguments(argv: list[str]) -> tuple[str, bool]:
     return profile_name, print_identity
 
 
+def parse_ggml_cpu_threads(value: str | None) -> int:
+    """Resolve `ALIGN_LLM_GGML_CPU_THREADS` exactly as `scripts/ggml_shim.c` does.
+
+    Digits only, in 1..1024, so no sign, no surrounding space, and no other base. Unset or empty is
+    the ggml default. A malformed value is refused here rather than passed on, because the shim's
+    own refusal reaches this owner only as a null backend handle that it cannot tell apart from a
+    device failure, and because a receipt that records a thread count the run did not use would be
+    worse than no receipt at all.
+    """
+    if value is None or value == "":
+        return DEFAULT_EFFECTIVE_GGML_THREADS
+    if (
+        len(value) > GGML_CPU_THREADS_DIGITS
+        or not all(character in "0123456789" for character in value)
+    ):
+        raise BaselineError(f"{GGML_CPU_THREADS_ENV} is not a decimal integer: {value!r}")
+    threads = int(value)
+    if threads < 1 or threads > GGML_CPU_THREADS_MAX:
+        raise BaselineError(
+            f"{GGML_CPU_THREADS_ENV} must be between 1 and {GGML_CPU_THREADS_MAX}: {value!r}"
+        )
+    return threads
+
+
 def prepared_environment() -> tuple[dict[str, str], str]:
     clean_env = sampled.decision_environment()
     linker_search = sampled.validate_linker_search(clean_env)
     if linker_search:
         clean_env["LIBRARY_PATH"] = linker_search
+    # `sampled.decision_environment()` is a denylist over `os.environ`, so this variable would
+    # otherwise reach every subprocess this owner launches, including `git`, the validator and
+    # `llama-server`. Only the runtime arm's helper may see it, and `runtime_measurement_env` below
+    # is the one place that puts it back.
+    clean_env.pop(GGML_CPU_THREADS_ENV, None)
     return clean_env, linker_search
 
 
+def runtime_measurement_env(runtime_env: dict[str, str]) -> dict[str, str]:
+    """The runtime arm's environment, with the resolved thread count and nothing inherited."""
+    measurement = dict(runtime_env)
+    measurement.pop(GGML_CPU_THREADS_ENV, None)
+    if EFFECTIVE_GGML_THREADS != DEFAULT_EFFECTIVE_GGML_THREADS:
+        measurement[GGML_CPU_THREADS_ENV] = str(EFFECTIVE_GGML_THREADS)
+    return measurement
+
+
 def main() -> int:
+    global EFFECTIVE_GGML_THREADS
     if sys.argv[1:] == ["--self-test"]:
         return self_test()
     profile_name, print_identity = parse_arguments(sys.argv[1:])
     profile = select_profile(profile_name)
     validate_imported_contract()
+    EFFECTIVE_GGML_THREADS = parse_ggml_cpu_threads(os.environ.get(GGML_CPU_THREADS_ENV))
     required = prerequisites()
     if required is None:
         return 0
@@ -1248,6 +1339,10 @@ def main() -> int:
                 or built["c_compiler_version_sha256"] != profile["c_compiler_version_sha256"]
             ):
                 raise BaselineError("built toolchain identity left the platform profile")
+            # The local arm keeps the helper environment exactly as the predecessor builds it: its
+            # candidates talk to `llama-server` over HTTP and never open a ggml CPU backend, so the
+            # thread-count input has nothing to act on there and is deliberately not present.
+            runtime_arm_env = runtime_measurement_env(built["runtime_env"])
             samples = []
             for pair_index, order in enumerate(ORDERS, start=1):
                 pair: dict[str, Any] = {"pair_index": pair_index, "order": list(order)}
@@ -1269,7 +1364,7 @@ def main() -> int:
                             server, model, clean_env, deadline,
                             lambda pair_index=pair_index: measure_portfolio(
                                 "runtime", pair_index, built["helper"], "in-process", model,
-                                pack, geometry, prompt, work, built["runtime_env"], deadline,
+                                pack, geometry, prompt, work, runtime_arm_env, deadline,
                                 validator, clean_env,
                             ),
                         )

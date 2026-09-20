@@ -3465,11 +3465,115 @@ void *align_ggml_device_open(void) {
     return (void *) align_ggml_cpu_device();
 }
 
+/* Register item C1 (`docs/specs/cpu-baseline-linux.md` section 8). The legacy CPU path never set a
+ * thread count, so `ggml_backend_graph_compute` planned every CPU graph at ggml's own
+ * `GGML_DEFAULT_N_THREADS`, which the pinned ggml defines as 4 in `ggml/include/ggml.h`. That is
+ * four of this host's thirty-two hardware threads.
+ *
+ * The opt-in is one environment variable, read once, and it is an opt-in precisely because the same
+ * legacy path is G1's zero-bit numeric reference arm: unset means **no call is made at all**, which
+ * is the only provably unchanged form. An empty value is unset, which is the existing precedent of
+ * `ALIGN_GGML_BACKEND_DIR` above. Anything else must be digits only, with a value in 1..1024; a
+ * malformed value is refused rather than rounded, defaulted, or ignored.
+ *
+ * `ggml_backend_cpu_set_n_threads` is deliberately not called and `ggml-cpu.h` deliberately not
+ * included: section 2.1 above records that the CPU backend is a `dlopen`ed plugin on this pin and
+ * the shim links only `-lggml -lggml-base`, so that symbol is not linkable. The registry's own
+ * `ggml_backend_set_n_threads` proc address is the backend-agnostic route and is what llama.cpp
+ * itself uses.
+ *
+ * `ALIGN_GGML_STATIC_CPU_ONLY` compiles the whole resolver out. That define is set by exactly one
+ * build, `scripts/gpu_cpu_reference/CMakeLists.txt`, which produces G1's CPU reference executable,
+ * and `docs/specs/gpu-runtime.md` section 3 already promises that that registry opener "performs no
+ * plugin-directory or environment search". The reference arm therefore cannot honour this input by
+ * construction, at compile time, rather than by a runtime convention a caller could forget.
+ */
+#ifndef ALIGN_GGML_STATIC_CPU_ONLY
+#define ALIGN_GGML_CPU_THREADS_ENV     "ALIGN_LLM_GGML_CPU_THREADS"
+#define ALIGN_GGML_CPU_THREADS_MAX     1024
+#define ALIGN_GGML_CPU_THREADS_DIGITS  4
+#define ALIGN_GGML_CPU_THREADS_UNSET   0
+#define ALIGN_GGML_CPU_THREADS_INVALID (-1)
+
+/* Digits only, so no sign, no leading or trailing space, no other base, and no locale involvement.
+ * `strtol` would accept `" +16 "` and a partial parse; this rejects both.
+ */
+static int align_ggml_cpu_threads_parse(const char *value) {
+    long total = 0;
+    size_t index = 0;
+    if (value == NULL || value[0] == '\0') {
+        return ALIGN_GGML_CPU_THREADS_UNSET;
+    }
+    for (index = 0; value[index] != '\0'; ++index) {
+        if (value[index] < '0' || value[index] > '9') {
+            return ALIGN_GGML_CPU_THREADS_INVALID;
+        }
+        if (index >= (size_t) ALIGN_GGML_CPU_THREADS_DIGITS) {
+            return ALIGN_GGML_CPU_THREADS_INVALID;
+        }
+        total = total * 10 + (long) (value[index] - '0');
+    }
+    if (total < 1 || total > ALIGN_GGML_CPU_THREADS_MAX) {
+        return ALIGN_GGML_CPU_THREADS_INVALID;
+    }
+    return (int) total;
+}
+
+/* Read once per process, like the registry loader above: a configuration input that changed part
+ * way through a measured run would make the measurement meaningless. */
+static int align_ggml_cpu_threads(void) {
+    static int resolved = 0;
+    static int read_once = 0;
+    if (!read_once) {
+        resolved = align_ggml_cpu_threads_parse(getenv(ALIGN_GGML_CPU_THREADS_ENV));
+        read_once = 1;
+    }
+    return resolved;
+}
+#endif
+
 void *align_ggml_backend_open(void *device) {
+    ggml_backend_t backend = NULL;
+#ifndef ALIGN_GGML_STATIC_CPU_ONLY
+    int threads = ALIGN_GGML_CPU_THREADS_UNSET;
+    int cpu = 0;
+#endif
     if (device == NULL) {
         return NULL;
     }
-    return (void *) ggml_backend_dev_init((ggml_backend_dev_t) device, NULL);
+#ifndef ALIGN_GGML_STATIC_CPU_ONLY
+    /* Not CPU-only: `src/layer_forward.align` and the R5C Metal arm hand this the GPU device from
+     * `device_by_kind`. A thread count is a CPU-backend property, so a **valid** value must leave
+     * every other device kind exactly as it was. A **malformed** value is a configuration fault
+     * rather than a device property, so it refuses whatever kind was asked for: silently ignoring
+     * a typo on a run that happens to open no CPU backend is the failure this item exists to
+     * remove. Refused before anything is constructed, so there is nothing to free; the caller sees
+     * the null handle every constructor at this boundary reports failure with. */
+    threads = align_ggml_cpu_threads();
+    if (threads == ALIGN_GGML_CPU_THREADS_INVALID) {
+        return NULL;
+    }
+    cpu = ggml_backend_dev_type((ggml_backend_dev_t) device) == GGML_BACKEND_DEVICE_TYPE_CPU;
+#endif
+    backend = ggml_backend_dev_init((ggml_backend_dev_t) device, NULL);
+#ifndef ALIGN_GGML_STATIC_CPU_ONLY
+    if (backend != NULL && cpu && threads > 0) {
+        ggml_backend_reg_t registry = ggml_backend_dev_backend_reg((ggml_backend_dev_t) device);
+        ggml_backend_set_n_threads_t set_n_threads =
+            registry == NULL
+                ? NULL
+                : (ggml_backend_set_n_threads_t) ggml_backend_reg_get_proc_address(
+                      registry, "ggml_backend_set_n_threads");
+        if (set_n_threads == NULL) {
+            /* The caller asked for a thread count this backend cannot accept. Honouring the request
+             * silently at the default would report a measurement that never happened. */
+            ggml_backend_free(backend);
+            return NULL;
+        }
+        set_n_threads(backend, threads);
+    }
+#endif
+    return (void *) backend;
 }
 
 /* The backend's own name, copied into a caller-owned byte range. A `const char *` cannot become an
