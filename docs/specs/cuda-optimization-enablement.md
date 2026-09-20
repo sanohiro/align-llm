@@ -506,3 +506,41 @@ Interpretation: a PASS is a local intervention result on this WSL2 CUDA host onl
 not a competitive llama.cpp claim and not a time-to-passing-patch result; those need
 separately frozen baselines and the performance plan's coding-quality gate. A guardrail
 failure or an unmet primary floor is recorded in full, with no pair dropped or combined.
+
+### Result (2026-09-20)
+
+The campaign ran twice against clean control `0457a7d` on the current pin `8c8bfbc7`,
+candidate build source `82dab13` (`eff8d5e`, `source_dirty` false). Both runs pass all
+seven guardrails and all paired exact outputs/counts; the primary floor is NOT_MET both
+times.
+
+| Case | Run 1 median | Run 2 median | Faster pairs (primary) |
+| --- | ---: | ---: | --- |
+| qwen2 cold-short | +1.91% | +4.40% | |
+| qwen2 warm-short-cached | +2.39% | +2.55% | |
+| qwen2 warm-long-changed | +6.72% | +6.37% | |
+| qwen2 warm-long-cached (primary) | +6.71% | +6.69% | 5/5 both runs |
+| olmoe cold-short | +3.00% | +7.25% | |
+| olmoe warm-short-cached | -3.00% | +4.24% | |
+| olmoe warm-long-changed | +1.21% | -1.62% | |
+| olmoe warm-long-cached | +0.29% | +0.97% | |
+
+Verdict: **NOT_MET** in both runs. The primary row (`qwen2 warm-long-cached`) reaches
+about 6.7% median paired reduction with 5/5 candidate-faster pairs, below the
+predeclared 15% floor. Startup medians were unaffected by the intervention (both arms
+post capped-read): qwen2 control 1.799 s / candidate 1.846 s; olmoe 1.559 s / 1.573 s.
+Each run spanned about 13 minutes.
+
+The external clock-aware load observer (the retained 2026-09-14 observer, receipts under
+`gpu-cuda-parity-20260920/` and `gpu-cuda-parity-20260920/p1-run2/` in the local evidence
+store, outside Git) marked both receipts `valid: false`: the Claude Code CLI process
+itself showed 0.14-0.35 CPU cores at a few samples (and `exim4` once), above the
+0.1-core foreign threshold. A valid receipt requires running from a terminal with no
+Claude Code session. The two consistent runs bound the expected effect at about 6.7% on
+the long-context Qwen cases, so a valid rerun is not expected to reach the floor.
+
+Interpretation: the intervention is retained as backend parity and correctness, not as a
+shipping performance claim. Qwen now matches OLMoE's F16 KV policy 2 on CUDA (fewer
+retained KV bytes, eliminated per-layer casts, and a real memory reduction), but the
+measured local speed effect on this host stays well under the 15% floor that would make
+it a shipping performance claim.
