@@ -3050,7 +3050,7 @@ target forward pass. Settled decisions:
   `chunk_width`, not the prompt length.** `initialize_inputs` names its second parameter
   `prompt_count` (`src/runtime_generation.align:489`), which is where a "`prompt_count >= 129`"
   reading comes from, but every caller passes `chunk_width`
-  (`src/runtime_generation.align:283,411,875,1086`). Inputs 0 and 1 are `[chunk_width]` I32 and
+  (`src/runtime_generation.align:283,411,875,1086,1243,1280`). Inputs 0 and 1 are `[chunk_width]` I32 and
   input 2 is `[mask_capacity, chunk_width]` F32 (`:494-502`). `chunk_width` is
   `min(prompt_width, PREFILL_MICROBATCH)` with `PREFILL_MICROBATCH = 128` (`:30,231,345`), and
   `admit_qwen_shapes` / `admit_olmoe_shapes` halve it down the committed powers of two — 128, 64,
@@ -3201,8 +3201,9 @@ targets, not passing evidence.
 
 - Unchanged with `"speculation":"off"`: `scripts/run-gpu-session-independent` (7 Qwen, 9 OLMoE,
   exact match), `scripts/run-gpu-independent-acceptance` (19 cases per model),
-  `scripts/run-gpu-session-host-capacity`, `scripts/run-gpu-session-reuse-smoke`. These prove no
-  regression on the existing path and are the gate before any speculative run.
+  `scripts/run-gpu-session-host-capacity`, `scripts/run-gpu-session-reuse-smoke`,
+  `make gpu-config-smoke`, `scripts/run-gpu-device-smoke`, `scripts/run-gpu-profile-assembly-smoke`.
+  These prove no regression on the existing path and are the gate before any speculative run.
 - New `scripts/run-gpu-speculation-independent`, with `eval/gpu/session-reference.cpp` extended to
   perform the *same* batched `k + 1` verification and the same acceptance rule. Comparing the
   speculative arm against the width-1 arm is not a valid exact-equality owner, for the reduction
@@ -3239,7 +3240,8 @@ targets, not passing evidence.
    `runtime_options.decode`'s `options.schema_version != 1` (`:138`) becomes `!= 2` and gains the
    `off|lookup` value check; `scripts/gpu_qualification_records.py`'s
    `validate_runtime_option` (`:162-170`) gains `"speculation"` in its exact key tuple
-   (`:164-167`) and widens `bounded_i64(result["schema_version"], 1, 1, ...)` (`:170`) to admit 2;
+   (`:164-167`) and changes `bounded_i64(result["schema_version"], 1, 1, ...)` (`:170`) to
+   `2, 2` so exactly schema 2 is admitted, per the ledger's control-commit floor;
    and every checked-in profile row that embeds a runtime option is regenerated to match. The
    Eight in-tree `RuntimeOptions` struct literals also gain the field and will not compile without
    it, and they do **not** all take the same value. `src/provider_runtime.align:242`
@@ -3256,14 +3258,19 @@ targets, not passing evidence.
    `gpu_qualification_input.admit` (`scripts/gpu_qualification_input.py:280`), which reaches
    `validate_runtime_option` at `scripts/gpu_qualification_records.py:487` and `:522`, so a schema 2
    document is refused by that owner before the worker ever starts. Owner: `make check`,
-   `scripts/run-gpu-session-reuse-smoke`, then `scripts/run-gpu-session-independent` to prove the
+   `make gpu-config-smoke`, `scripts/run-gpu-session-reuse-smoke`,
+   `scripts/run-gpu-profile-assembly-smoke`, then `scripts/run-gpu-session-independent` to prove the
    existing path is byte-unchanged.
 2. Enlarge input 6 to `ne0 = 1 + SPECULATION_K` and add the `ne0 = 1` view in both heads. Owner:
    `make check`, `make fmt`, `scripts/run-gpu-session-reuse-smoke`.
 3. Add `GPU_GRAPH_VERIFY` to `ggml_ffi`, the shim graph-slot table and `topology_key` admission.
-   Owner: `make check`, `scripts/run-gpu-session-reuse-smoke`.
+   This step also widens `runtime_kv.prefill_chunk`'s `graph_kind` parameter and the two `ggml_ffi`
+   KV write admissions it forwards to: `gpu_kv_write_prefix` (`src/ggml_ffi.align:~1054`,
+   PREFILL-only today) and `gpu_kv_write_indexed_prefix` (`:~1074`, PREFILL/DECODE today) both admit
+   the new `VERIFY` kind. Owner: `make check`, `scripts/run-gpu-device-smoke`,
+   `scripts/run-gpu-session-reuse-smoke`.
 4. Build the verify graph in `runtime_qwen` from the prefill body at query width `1 + K`, with the
-   existing indexed KV write. Owner: `scripts/run-gpu-session-reuse-smoke`.
+   widened indexed KV write from step 3. Owner: `scripts/run-gpu-session-reuse-smoke`.
 5. Generalize `prompt_lookup_candidate` into `prompt_lookup_draft` and keep the existing 1-gram
    behaviour reachable. Owner: `make check`, the existing `runtime_session_reuse_smoke` cases at
    `src/runtime_session_reuse_smoke.align:125-153`.
