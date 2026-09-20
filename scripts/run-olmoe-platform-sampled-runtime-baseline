@@ -20,6 +20,8 @@ against another run of the same profile on the same host.
 
 from __future__ import annotations
 
+import ast
+import builtins
 import contextlib
 import importlib.util
 from importlib.machinery import SourceFileLoader
@@ -27,6 +29,7 @@ import inspect
 import io
 import json
 import os
+import pathlib
 import platform
 import re
 import shutil
@@ -964,6 +967,133 @@ def synthetic_result(profile_name: str) -> dict[str, Any]:
     }
 
 
+def unresolved_global_names(source: str) -> list[str]:
+    """Static unresolved-global-name scan of ``source`` using only the standard-library ``ast``.
+
+    Collects every name that a module-level or nested definition binds -- function and class
+    names, import and import-from names, assignment/augmented-assignment/annotated-assignment
+    targets, ``for``/``async for``/``with``/``async with``/comprehension/``except``/walrus/
+    ``global``/``nonlocal`` targets, and function and lambda arguments -- together with every name
+    in ``dir(builtins)`` and ``__file__``. It then reports every ``ast.Name`` load in ``source``
+    whose id is not in that set. This is a flat, whole-file scan, not a scope-aware one: a name
+    bound anywhere in the file satisfies a load anywhere else in it. That coarseness is enough to
+    catch a call to a name nothing in the file ever binds, such as a bare `validate_patch(...)`
+    left behind when its owner moved behind a `coding.` namespace.
+    """
+    tree = ast.parse(source)
+    defined: set[str] = set(dir(builtins))
+    defined.add("__file__")
+
+    def collect_target(target: ast.expr) -> None:
+        if isinstance(target, ast.Name):
+            defined.add(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                collect_target(element)
+        elif isinstance(target, ast.Starred):
+            collect_target(target.value)
+        # ast.Attribute and ast.Subscript targets (e.g. `obj.field = ...`) bind no new name.
+
+    def collect_arguments(args: ast.arguments) -> None:
+        for arg in (
+            list(args.posonlyargs)
+            + list(args.args)
+            + list(args.kwonlyargs)
+            + ([args.vararg] if args.vararg else [])
+            + ([args.kwarg] if args.kwarg else [])
+        ):
+            defined.add(arg.arg)
+
+    class Collector(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            defined.add(node.name)
+            collect_arguments(node.args)
+            self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            defined.add(node.name)
+            collect_arguments(node.args)
+            self.generic_visit(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            defined.add(node.name)
+            self.generic_visit(node)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            collect_arguments(node.args)
+            self.generic_visit(node)
+
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                defined.add((alias.asname or alias.name).split(".")[0])
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            for alias in node.names:
+                defined.add(alias.asname or alias.name)
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            for target in node.targets:
+                collect_target(target)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            collect_target(node.target)
+            self.generic_visit(node)
+
+        def visit_AugAssign(self, node: ast.AugAssign) -> None:
+            collect_target(node.target)
+            self.generic_visit(node)
+
+        def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+            collect_target(node.target)
+            self.generic_visit(node)
+
+        def visit_For(self, node: ast.For) -> None:
+            collect_target(node.target)
+            self.generic_visit(node)
+
+        def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+            collect_target(node.target)
+            self.generic_visit(node)
+
+        def visit_With(self, node: ast.With) -> None:
+            for item in node.items:
+                if item.optional_vars is not None:
+                    collect_target(item.optional_vars)
+            self.generic_visit(node)
+
+        def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+            for item in node.items:
+                if item.optional_vars is not None:
+                    collect_target(item.optional_vars)
+            self.generic_visit(node)
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.name:
+                defined.add(node.name)
+            self.generic_visit(node)
+
+        def visit_comprehension(self, node: ast.comprehension) -> None:
+            collect_target(node.target)
+            self.generic_visit(node)
+
+        def visit_Global(self, node: ast.Global) -> None:
+            defined.update(node.names)
+
+        def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+            defined.update(node.names)
+
+    Collector().visit(tree)
+
+    return [
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id not in defined
+    ]
+
+
 def self_test() -> int:
     validate_imported_contract()
     with mock.patch.object(sampled, "MAX_TOKENS", MAX_TOKENS + 1):
@@ -1190,6 +1320,16 @@ def self_test() -> int:
     if captured.getvalue() != f"{LABEL}: N/A (ALIGN_LLM_OLMOE_MODEL unset)\n":
         raise BaselineError("missing prerequisite result drifted")
 
+    # Unresolved-global-name regression guard: a fixture with a defined parameter but no
+    # definition of `validate_patch` must report exactly that one name.
+    fixture = "def f(x):\n    passed, _ = validate_patch(x)\n"
+    if unresolved_global_names(fixture) != ["validate_patch"]:
+        raise BaselineError("the unresolved-name scan did not catch an undefined call")
+    own_unresolved = sorted(set(unresolved_global_names(pathlib.Path(__file__).read_text())))
+    if own_unresolved:
+        print(f"{LABEL}: unresolved global names {own_unresolved}", file=sys.stderr)
+        raise BaselineError(f"this script has unresolved global names: {own_unresolved}")
+
     print(f"{LABEL} self-test: PASS")
     return 0
 
@@ -1313,7 +1453,7 @@ def main() -> int:
 
         control = work / "known-good.patch"
         control.write_text(sampled.KNOWN_GOOD_PATCH, encoding="utf-8")
-        passed, _ = validate_patch(control, work, deadline, validator, clean_env)
+        passed, _ = coding.validate_patch(control, work, deadline, validator, env=clean_env)
         if not passed:
             raise BaselineError("known-good validator control did not pass")
 
