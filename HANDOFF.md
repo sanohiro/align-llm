@@ -4,8 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/backend-parity-ledger`, based on `origin/main` `0457a7d`.
-Active capability: backend parity register and rule (governance and specification Markdown): new `docs/backend-parity.md`, the "Backend parity" paragraph in `CLAUDE.md`, one `docs/review-checklist.md` bullet, dated status notes in `docs/specs/gpu-runtime.md` and `docs/specs/cuda-optimization-enablement.md`, and the next actions below. PR #276 merged at `0457a7d` (requests 64, 95, 97–116 responses and merges).
+Branch: `agent/cuda-qwen-f16-kv`, stacked on `agent/backend-parity-ledger` (`02e1fc7`), based on `origin/main` `0457a7d`.
+Active capability: P1 Qwen F16 KV policy 2 on CUDA (executable consumer capability): code `ba9ea4f`, measurement contract `f874c10`, dedicated CUDA qualification PASS, paired campaign NOT_MET (+6.7% on the primary, 5/5 faster, below the 15% floor). The parity register branch `agent/backend-parity-ledger` (`02e1fc7`) is a separate docs candidate with its own preflight stamp. PR #276 merged at `0457a7d` (requests 64, 95, 97–116 responses and merges).
 PR #275 merged at `251d52b8`: registered binary optimization audit requests 97–116 in `docs/align-requests.md` and recorded Align issues #1069–#1088.
 PR #274 merged at `f8a4095`: optimized hot logits loops in `greedy` and `select` (`f32.to_bits()`), preallocated builder capacity in `tokenizer_qwen2` (`array_builder(count)`), registered Align Requests 92–96 in `docs/align-requests.md`, and filed upstream Align issues #1063–#1067.
 PR #273 merged at `ae2fecd`: adopted latest Align compiler and runtime (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`), adopted typed slice writers, buffer.filled, array_builder capacity, in-place array truncate, integer match range/value patterns, is_char_boundary, and verified all suites.
@@ -51,7 +51,7 @@ Completed work:
 - Registered Align Requests 97–116 in `docs/align-requests.md` (one per issue #1069–#1087 in issue-number order, plus Request 116 for umbrella #1088), all PROPOSED and non-blocking, and recorded the design-review conclusions for #1063 and #1064 under Requests 92 and 93.
 
 Next actions in priority order (backend parity items lead; register: `docs/backend-parity.md` sections 5 and 6):
-1. P1: select F16 KV policy 2 for Qwen sessions on CUDA (`src/runtime_generation.align:270`); owners: attention policy smoke, session reuse smoke, independent session 7/7, then a paired local campaign. Commit `0a1c19b` excluded CUDA pending dedicated qualification, so the independent session run is required, not optional.
+1. P1: done. F16 KV policy 2 selected for Qwen sessions on CUDA (`ba9ea4f`); dedicated CUDA qualification PASS; paired local campaign result NOT_MET (+6.7% on the primary, below the 15% floor). Receipts are observer-invalid (Claude Code CLI CPU); no rerun scheduled, see the register's P1 deferral.
 2. P2: measure capped-read loader startup on CUDA (five alternating pairs per model, startup and first-request clocks separate).
 3. C0: re-establish the CPU baseline at current main with the item-69 fixed-request protocol.
 4. P3: re-run the `llama-server` paired campaigns at current main, CUDA first, then Metal, with a fresh precommitted ledger; both existing results predate O1, PR #243, capped-read and `5efd7a0`.
@@ -81,6 +81,18 @@ Latest durable verification:
 - `git diff --check`: PASS.
 - `python3 scripts/pre-pr --plan`: selects the `docs` classifier row (diff-check, markdown-fences).
 - `python3 scripts/pre-pr`: PASS at the exact branch head after the review repair (rerun after the final commit).
+- P1 Qwen F16 KV CUDA qualification (2026-09-20, candidate `f874c10`/`ba9ea4f`, `source_dirty` false):
+- `scripts/run-cuda-kv-prefill-smoke`: PASS.
+- `scripts/run-gpu-session-reuse-smoke` (deterministic GPU stub, no hardware): PASS.
+- `scripts/run-gpu-attention-policy-smoke` (CUDA0): PASS.
+- `scripts/run-gpu-session-independent`: PASS, 7/7 Qwen and 9/9 OLMoE exact outputs and token counts.
+- `scripts/run-gpu-session-host-capacity`: PASS both models.
+- `make check`: PASS, 155 units.
+- `python3 scripts/check-python-boundary --strict`: PASS.
+- `scripts/measure-cuda-optimization --self-test`: PASS.
+- `python3 scripts/pre-pr --base 02e1fc7 --owner-test cuda-measurement -- scripts/measure-cuda-optimization --self-test`: PASS at the repaired branch head (hosted; owner cuda-measurement), rerun after the review repair.
+- `scripts/measure-cuda-optimization` paired campaign (control `0457a7d`, candidate `f874c10`, run 1): primary `qwen2 warm-long-cached` +6.71%, 5/5 faster; NOT_MET (below 15% floor); all guardrails pass.
+- `scripts/measure-cuda-optimization` paired campaign (run 2, repeat): primary `qwen2 warm-long-cached` +6.69%, 5/5 faster; NOT_MET; all guardrails pass.
 
 Retained from the PR #274 checkpoint (source unchanged on this branch):
 - `alignc check-per-unit src/main.align`: PASS (checked 155 unit(s) per-unit).

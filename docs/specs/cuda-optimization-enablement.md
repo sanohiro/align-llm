@@ -170,7 +170,8 @@ hide production fusion differences. No tolerance or failed request is removed to
 ## 5. Cost and measurement decision
 
 Before implementation, fix this local intervention protocol: the unchanged manifested `4bf8011`
-control, same host/model/tokenizer/quantization/bundle/compiler, greedy 128-token output, and the
+control, or the control commit a dated campaign paragraph below nominates instead,
+same host/model/tokenizer/quantization/bundle/compiler, greedy 128-token output, and the
 exact system/short/long prompts and short/short/long/long request sequence from
 `gpu-runtime-performance.md` §6.1. Run Qwen then OLMoE. Each arm is a fresh resident session under
 1 GiB host and 6,000,000,000-byte device limits. Use five pairs with arm order control/candidate,
@@ -185,8 +186,10 @@ is at most 60 seconds, within a 600-second process deadline. Each paired model c
 Preserve useful output and resume unfinished owner phases rather than repeating complete owners
 after a timeout. A timed-out or incomplete pair does not produce a passing performance decision.
 
-Primary local target is the OLMoE long cached request's client wall time: median per-pair reduction
-at least 15% and candidate faster in at least four of five pairs. All 40 responses per model must
+Primary local target for the shipping F16 campaign is the OLMoE long cached request's client wall
+time: median per-pair reduction at least 15% and candidate faster in at least four of five pairs.
+A dated campaign paragraph below may nominate one different model/case as its primary row under the
+same thresholds; every other row stays a guardrail. All 40 responses per model must
 pass the existing fixed-output quality check and pairwise exact outputs/counts. Other request
 cases on both models are guardrails: no greater than 5% median per-pair regression. Record every
 startup, request wall time, worker elapsed time and token count separately. Preserve all pairs,
@@ -209,8 +212,17 @@ remaining performance gate are recorded below; design intent alone is not accept
 
 `scripts/measure-cuda-optimization --profile PROFILE --control-source CHECKOUT
 --control BUILD --candidate-source CHECKOUT --candidate BUILD --output NEW_DIRECTORY`
-executes only the fixed local protocol above. The control must be clean `4bf8011`;
-both builds and their complete source closures are verified before and after the run,
+executes only the fixed local protocol above. The control must be the clean commit
+nominated by `--control-commit SHA` (default the full 40-character lowercase hex of
+`4bf8011`; short forms are refused), and `--primary MODEL:CASE`
+selects the one primary row (default `olmoe:warm-long-cached`); every other model/case
+stays a guardrail. Both values must already be settled by a dated campaign paragraph in
+this section before a campaign runs, and both are recorded as `policy.control_commit`
+and `policy.primary` in the receipt, and each `comparisons[]` row carries a `primary`
+boolean. These options replace the earlier practice of
+editing the tool's `CONTROL` constant on an experimental branch; the schema is unchanged
+because no consumer parses this receipt. Both builds and their complete source closures
+are verified before and after the run,
 with identical Align/compiler/bundle and non-shim libraries. The admitted profile owns
 model/tokenizer/options; input identities are rechecked. The caller owns the fresh output
 directory. `result.json` schema 1 retains identities, every arm, startup/client/worker
@@ -218,8 +230,10 @@ clocks, full outputs/counts, comparison reductions and PASS/FAIL, including part
 failure evidence. Worker logs are bounded to 16 MiB per arm; workers are serial and
 closed on failure. No product imports this measurement tool. Exit 0 requires quality,
 exact paired outputs/counts, the primary floor and every guardrail; other results exit 1.
-`--self-test` checks reduction decisions, missing pairs, output mismatch and quality
-refusal without models. The tool and this plan are digest-bound in the receipt.
+`--self-test` checks reduction decisions, missing pairs, output mismatch, quality
+refusal, a selected non-default primary row and refusal of a control build that is not
+the nominated commit, all without models. The tool and this plan are digest-bound in
+the receipt.
 
 ### CUDA attention analytic oracle qualification
 
@@ -454,3 +468,87 @@ Bounded retrospective: the measurement observer correctly rejected even short au
 CI calls. Keep such calls outside future timing windows; no new permanent repository
 gate is needed. Native optimizer eligibility, actual kernel overlap and useful request
 latency are separate pieces of evidence and must remain separately reported.
+
+### Qwen F16 KV CUDA campaign (2026-09-20)
+
+Settled before implementation of its measurement run. The intervention under test is the
+retained F16 KV policy 2 for Qwen sessions on CUDA (`ba9ea4f` on `agent/cuda-qwen-f16-kv`
+and its committed successor); the mechanism is fewer retained KV bytes and eliminated
+per-layer casts, so the primary row moves to the request where retained KV dominates.
+
+- CONTROL: clean `0457a7d4d4645bb733b4cbf96126c5d79c4da31d` (`main`), built on the current
+  Align pin `8c8bfbc7` and already carrying the shipped OLMoE F16 policy 2 on CUDA. It is the
+  merge base of this branch with `main`; the intervening commits `27d13fd` and `02e1fc7`
+  change only documentation (`git diff --stat 0457a7d 02e1fc7 -- src scripts eval
+  .align-revision Makefile` is empty), outside the measured source closure (`src/`,
+  `scripts/`, `eval/`, `.align-revision`, `Makefile`), so the pair isolates the Qwen
+  selection alone.
+- CANDIDATE: the clean committed head of this branch, rebuilt after any source edit so its
+  closure matches `build.json`.
+- PRIMARY: `qwen2` `warm-long-cached`, the 700-token cached prompt where retained KV bytes
+  are largest. Target: median paired reduction at least 15% and candidate faster in at
+  least four of five pairs.
+- GUARDRAILS: the other seven model/case rows, each at no greater than 5% median per-pair
+  regression, exactly as today. `olmoe warm-long-cached` is a guardrail in this campaign.
+- PROTOCOL: unchanged. Five pairs alternating control/candidate, the four fixed cases,
+  greedy 128 tokens, fixed-output quality and pairwise exact outputs/counts, 2400 seconds
+  per model campaign, 300 seconds per construction/request, fixed inter-arm cooldown and
+  coordinated idle settling, 1 GiB host and 6,000,000,000-byte device budgets, no
+  concurrent GPU arms and no profiler during timing.
+- INVOCATION: the owner above with `--control-commit 0457a7d4d4645bb733b4cbf96126c5d79c4da31d
+  --primary qwen2:warm-long-cached`.
+
+The shipping F16 default `4bf8011` cannot serve as this campaign's control: that commit
+pins Align `f502fe3d` in its own `.align-revision`, while the current pin is `8c8bfbc7`.
+The owner requires the control and candidate builds to share `align_revision`,
+`compiler_sha256` and `bundle_id`, so a `4bf8011` build can never pair with a
+current-pin candidate. Rebuilding `4bf8011` sources against `8c8bfbc7` would not be that
+commit and would confound the compiler change with the intervention. `0457a7d` is the
+nearest clean ancestor on the current pin and is therefore the correct control.
+
+Interpretation: a PASS is a local intervention result on this WSL2 CUDA host only. It is
+not a competitive llama.cpp claim and not a time-to-passing-patch result; those need
+separately frozen baselines and the performance plan's coding-quality gate. A guardrail
+failure or an unmet primary floor is recorded in full, with no pair dropped or combined.
+
+### Result (2026-09-20)
+
+The campaign ran twice against clean control `0457a7d` on the current pin `8c8bfbc7`,
+candidate build `source_commit` `82dab13`, the pre-rebase form of `f874c10` with an
+identical measured closure (`git diff --stat 82dab13 e2f4d15 -- src scripts eval
+.align-revision Makefile` is empty); `source_dirty` false. Both runs pass all seven
+guardrails and all paired exact outputs/counts; the primary floor is NOT_MET both times.
+
+| Case | Run 1 median | Run 2 median | Faster pairs (primary) |
+| --- | ---: | ---: | --- |
+| qwen2 cold-short | +1.91% | +4.40% | |
+| qwen2 warm-short-cached | +2.39% | +2.55% | |
+| qwen2 warm-long-changed | +6.72% | +6.37% | |
+| qwen2 warm-long-cached (primary) | +6.71% | +6.69% | 5/5 both runs |
+| olmoe cold-short | +3.00% | +7.25% | |
+| olmoe warm-short-cached | -3.00% | +4.24% | |
+| olmoe warm-long-changed | +1.21% | -1.62% | |
+| olmoe warm-long-cached | +0.29% | +0.97% | |
+
+Verdict: **NOT_MET** in both runs. The primary row (`qwen2 warm-long-cached`) reaches
+about 6.7% median paired reduction with 5/5 candidate-faster pairs, below the
+predeclared 15% floor. Startup medians were unaffected by the intervention (both arms
+post capped-read). Run 1: qwen2 control 1.799 s / candidate 1.846 s, olmoe 1.559 s /
+1.573 s; run 2: qwen2 1.847 s / 1.832 s, olmoe 1.634 s / 1.598 s. Each run spanned about
+13 minutes.
+
+The external clock-aware load observer (the retained 2026-09-14 observer, receipts under
+`gpu-cuda-parity-20260920/` and `gpu-cuda-parity-20260920/p1-run2/` in the local evidence
+store, outside Git) marked both receipts `valid: false`: the Claude Code CLI process
+itself showed 0.14-0.35 CPU cores at a few samples (and `exim4` once), above the
+0.1-core foreign threshold. A valid receipt requires running from a terminal with no
+Claude Code session. The two consistent runs bound the expected effect at about 6.7% on
+the long-context Qwen cases, so a valid rerun is not expected to reach the floor.
+
+Interpretation: the intervention is retained as backend parity and correctness, not as a
+shipping performance claim. Qwen now matches OLMoE's F16 KV policy 2 on CUDA (fewer
+retained KV bytes, eliminated per-layer casts, and a real memory reduction), but the
+measured local speed effect on this host stays well under the 15% floor that would make
+it a shipping performance claim. Coverage note: no owner exercises seeded, non-greedy
+Qwen sampling under policy 2 (the reuse smoke seeds OLMoE only, the oracle's Qwen
+requests are greedy); the change is retained as parity, not as a numeric claim.
