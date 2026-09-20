@@ -144,3 +144,32 @@ broad `make ci`, or unrelated benchmark is selected.
 | 2026-09-20 | `linux-x86_64-v1` | `02e1fc7` + this capability | `--print-identity` `MATCH`; `--self-test` PASS; bounded smoke leg: one local candidate 4.36 s (`INVALID_PATCH`, 52 completion tokens), one runtime candidate 15.95 s (`PASS`, 81 completion tokens, patch SHA-256 `5d6b107e…`, native validation 0.345 s), page-cache preload 4.11 s. Timed baseline not yet run |
 | 2026-09-06 | `darwin-aarch64-v1` | item 78 | 84.062 s runtime vs 14.174 s local; carried, not re-verified here |
 | 2026-09-05 | `darwin-aarch64-v1` | item 69 | 91.4 s runtime vs 14.0 s local; carried, not re-verified here |
+
+## 7. Result (2026-09-20)
+
+WSL2, Ryzen 9 5950X (32 threads), 62 GB, Align pin `8c8bfbc7`, committed head `465957d`, run via
+`scripts/run-olmoe-platform-sampled-runtime-baseline --platform-profile linux-x86_64-v1`.
+`--print-identity --platform-profile linux-x86_64-v1` returned `MATCH` (exit code 0) immediately
+before the timed run. Result `C0_OLMOE_PLATFORM_SAMPLED_RUNTIME_BASELINE`, status `COMPLETE`,
+elapsed 145.24 s of the 25-minute ceiling. Validator kind `native`; `comparable_across_hosts`
+`false`; `effective_ggml_threads` 4 on both arms. The receipt is kept outside Git, in the local
+evidence store at `gpu-cuda-parity-20260920/c0-run1/result.json`.
+
+| Arm | Pass count | Selected seed | Per-pair times | Median |
+| --- | --- | --- | --- | --- |
+| Local `llama-server` (CPU-only shared build `bb4caa754`, GCC 14.2.0, `-ngl 0 -t 4 -c 512 -np 1`) | 4/4 | 5 | 11.85 s, 11.06 s, 11.20 s, 11.38 s | 11.291 s (11,291,128,206 ns) |
+| Runtime (legacy per-layer CPU path) | 4/4 | 1 | 18.55 s, 16.82 s, 17.44 s, 17.64 s | 17.543 s (17,543,227,406 ns) |
+
+Aggregate: local 4/4, runtime 4/4, gain −553,718 ppm, runtime faster in every pair false; gate none
+(baseline). The ratio of runtime median to local median is 1.55x.
+
+Per-candidate note: the runtime arm passed with one 81-completion-token candidate costing about
+17.5 s, while the local arm needed five candidates at about 2.3 s each to reach its passing seed, so
+the per-candidate cost ratio is roughly 7x. The time-to-passing-patch ratio is smaller only because
+the runtime happens to pass at seed 1 on this host while the local arm needs five candidates.
+Platform floating-point divergence changes which seed passes, which is why this result is not
+comparable to the Darwin M1 result (item 78: 84.06 s vs 14.17 s).
+
+Limits: this is a baseline only, with no `MET`/`NOT_MET` decision, and it is not comparable across
+hosts. C1 (thread-count) and C2 (application-item) changes must be paired against this baseline
+with the same owner, on the same `linux-x86_64-v1` profile.
