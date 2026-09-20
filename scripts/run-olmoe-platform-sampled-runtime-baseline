@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 from importlib.machinery import SourceFileLoader
+import inspect
 import io
 import json
 import os
@@ -69,6 +70,21 @@ SERVER_THREADS = 4
 # ggml's own default, `GGML_DEFAULT_N_THREADS` in the pinned ggml's `ggml/include/ggml.h`. The
 # shim never calls `ggml_graph_plan`/`n_threads`, so the runtime arm runs at this value.
 EFFECTIVE_GGML_THREADS = 4
+
+# The inherited llama-server launch line is part of the fixed workload: `-t 4` and `-c 512` decide
+# how fast the local arm can answer, `-np 1` its concurrency, `-ngl 0` that nothing leaves the
+# CPU, `--jinja` the prompt template and `--no-warmup` what the first request pays. The tokens
+# below are matched against the source of `isolated.measure_local_isolated`, the function that
+# builds that argv, so an edit there cannot silently change what this baseline measures. They are
+# written in that source's exact literal style.
+SERVER_ARGV_TOKENS = (
+    '"-t", "4"',
+    '"-c", "512"',
+    '"-np", "1"',
+    '"-ngl", "0"',
+    '"--jinja"',
+    '"--no-warmup"',
+)
 
 EXPECTED_WORKLOAD = (
     MODEL_BYTES,
@@ -317,6 +333,14 @@ def validate_imported_contract() -> None:
         raise BaselineError("inherited fixed-input identity drifted")
     if isolated.CEILING_SECONDS != CEILING_SECONDS:
         raise BaselineError("inherited cost ceiling drifted")
+    source = inspect.getsource(isolated.measure_local_isolated)
+    missing = [token for token in SERVER_ARGV_TOKENS if token not in source]
+    if missing:
+        raise BaselineError(
+            "inherited llama-server launch line drifted: "
+            + ", ".join(missing)
+            + " no longer appears in isolated.measure_local_isolated"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +419,21 @@ def page_cache_observation(clean_env: dict[str, str]) -> dict[str, Any]:
             # `free` reports buff/cache as Buffers + Cached + SReclaimable.
             row["buff_cache_gib"] = (buffers + cached + reclaimable) // (1024**3)
     return row
+
+
+def usable_cpu_count() -> int | None:
+    """The CPUs this process may actually run on, not every CPU the machine reports.
+
+    `os.sched_getaffinity` exists only on some platforms and can fail under a restricted
+    sandbox, so fall back to `os.cpu_count()`, which is itself allowed to return `None`.
+    """
+    affinity = getattr(os, "sched_getaffinity", None)
+    if affinity is not None:
+        try:
+            return len(affinity(0))
+        except OSError:
+            pass
+    return os.cpu_count()
 
 
 def total_memory_bytes() -> int | None:
@@ -527,22 +566,9 @@ def prerequisites() -> tuple[Path, ...] | None:
 # `sampled.decision_environment()` and that function scrubs `ALIGN_LLM_TEMP_ROOT`. On Linux the
 # validator resolves as `native` and refuses an external patch without an owned temporary root
 # ("candidate patch escapes the project and temporary roots"). The two functions below are the
-# predecessor's loop with validation routed through `coding.validate_patch_details`, which owns
-# that root. Candidate/portfolio shape validation is still the predecessor's.
+# predecessor's loop with validation routed through `coding.validate_patch`, whose `env=` keyword
+# carries the owned root. Candidate/portfolio shape validation is still the predecessor's.
 # ---------------------------------------------------------------------------
-def validate_patch(
-    patch: Path,
-    work: Path,
-    deadline: float,
-    validator: dict[str, Any],
-    clean_env: dict[str, str],
-) -> tuple[bool, int]:
-    passed, elapsed_ns, _diagnostic = coding.validate_patch_details(
-        patch, work, deadline, validator, env=clean_env
-    )
-    return passed, elapsed_ns
-
-
 def measure_candidate(
     arm: str,
     pair_index: int,
@@ -594,8 +620,8 @@ def measure_candidate(
         patch = work / f"pair-{pair_index}-{arm}-candidate-{index}.patch"
         patch.write_text(patch_text, encoding="utf-8")
         patch_sha256 = coding.file_sha256(patch)
-        passed, validation_elapsed_ns = validate_patch(
-            patch, work, deadline, validator, clean_env
+        passed, validation_elapsed_ns = coding.validate_patch(
+            patch, work, deadline, validator, env=clean_env
         )
         status = "PASS" if passed else "FAILING_PATCH"
     candidate = {
@@ -780,20 +806,19 @@ def validate_result(result: dict[str, Any], profile_name: str) -> None:
         or environment["architecture"] != profile["architecture"]
         or not isinstance(environment["release"], str)
         or not environment["release"]
-        or isinstance(environment["cpu_count"], bool)
-        or not isinstance(environment["cpu_count"], int)
-        or environment["cpu_count"] <= 0
         or environment["c_compiler_sha256"] != profile["c_compiler_sha256"]
         or environment["c_compiler_version_sha256"] != profile["c_compiler_version_sha256"]
         or environment["linker_search_sha256"] != profile["linker_search_sha256"]
     ):
         raise BaselineError("result environment identity drifted")
-    if environment["memory_bytes"] is not None and (
-        isinstance(environment["memory_bytes"], bool)
-        or not isinstance(environment["memory_bytes"], int)
-        or environment["memory_bytes"] <= 0
-    ):
-        raise BaselineError("result environment memory observation is malformed")
+    # Both host observations may be unavailable: `/proc/meminfo` need not exist and the CPU
+    # affinity/count query is allowed to answer `None`.
+    for name, label in (("cpu_count", "CPU"), ("memory_bytes", "memory")):
+        value = environment[name]
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        ):
+            raise BaselineError(f"result environment {label} observation is malformed")
     samples = result["samples"]
     if not isinstance(samples, list) or len(samples) != len(ORDERS):
         raise BaselineError("result samples were malformed")
@@ -925,6 +950,18 @@ def self_test() -> int:
         expect_error(validate_imported_contract, "drifted inherited workload was accepted")
     with mock.patch.object(isolated, "EXPECTED_PACK_SHA256", "0" * 64):
         expect_error(validate_imported_contract, "drifted inherited pack identity was accepted")
+    # Every token of the inherited llama-server launch line is load-bearing: drop one at a time
+    # from the observed source and the contract must refuse.
+    launch_source = inspect.getsource(isolated.measure_local_isolated)
+    for token in SERVER_ARGV_TOKENS:
+        if launch_source.count(token) != 1:
+            raise BaselineError(f"inherited launch-line token {token} is not uniquely locatable")
+        mutated_source = launch_source.replace(token, '"--drifted"')
+        with mock.patch.object(inspect, "getsource", lambda _obj, t=mutated_source: t):
+            expect_error(
+                validate_imported_contract,
+                f"a launch line without {token} was accepted",
+            )
 
     with contextlib.redirect_stdout(io.StringIO()):
         if isolated.self_test() != 0:
@@ -1030,6 +1067,8 @@ def self_test() -> int:
             ("platform_profile_schema_version", PROFILE_SCHEMA_VERSION + 1),
             ("page_cache_preload_ns", -1),
             ("status", "PARTIAL"),
+            ("environment", {**result["environment"], "cpu_count": 0}),
+            ("environment", {**result["environment"], "memory_bytes": 0}),
         ):
             mutated = {**result, field: value}
             expect_error(
@@ -1037,6 +1076,12 @@ def self_test() -> int:
                     mutated, profile_name
                 ),
                 f"mutated {field} was accepted",
+            )
+        # An unavailable host observation is data, not drift.
+        for absent in ("cpu_count", "memory_bytes"):
+            validate_result(
+                {**result, "environment": {**result["environment"], absent: None}},
+                profile_name,
             )
         extra = {**result, "unexpected": True}
         expect_error(
@@ -1315,7 +1360,7 @@ def main() -> int:
                     "os": platform.system(),
                     "release": platform.release(),
                     "architecture": platform.machine(),
-                    "cpu_count": os.cpu_count(),
+                    "cpu_count": usable_cpu_count(),
                     "memory_bytes": total_memory_bytes(),
                     "c_compiler_sha256": built["c_compiler_sha256"],
                     "c_compiler_version_sha256": built["c_compiler_version_sha256"],

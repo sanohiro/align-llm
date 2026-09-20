@@ -1,6 +1,6 @@
 # CPU inference baseline on a named platform profile
 
-Status: contract settled, baseline not yet run
+Status: contract settled; baseline recorded 2026-09-20 on `linux-x86_64-v1` (section 7).
 
 Register owner: `docs/backend-parity.md` section 6, item C0
 
@@ -42,7 +42,7 @@ of the *same* profile on the *same* host are comparable quantities.
 | Identity split, protocol-essential | model bytes/SHA-256, pack SHA-256, task SHA-256, prompt SHA-256, known-good patch SHA-256, budget, alias, pair orders, seeds, temperature, maximum tokens, thread counts, and the 25-minute ceiling are fixed constants of this owner and identical on every profile |
 | Identity split, profile-keyed | `os`, `architecture`, `align_revision`, `compiler_sha256`, `c_compiler_sha256`, `c_compiler_version_sha256`, `linker_search_sha256`, `ggml_libraries`, `geometry_sha256`, `server_sha256`, `server_version`, `validator_kind`, `validator_image_id`, `validator_interpreter_sha256`, `validator_interpreter_version_sha256` |
 | Persisted identity | the `PROFILES` table checked into the owner is the persisted identity; its schema version is `PROFILE_SCHEMA_VERSION` = 1, recorded in the result as `platform_profile_schema_version` and in the identity document as `schema_version`. The table is committed **before** a timed run; the owner never self-pins at run time. Adding or removing an identity field is a schema-version change |
-| Inherited-contract validation | semantic, not a byte pin on the predecessor files: the owner re-derives the eleven-element workload tuple from the imported modules and refuses any drift. Byte-pinning the chain is deliberately not repeated, because that is exactly what made the item 69 owner unrunnable at current `main` while its workload was unchanged |
+| Inherited-contract validation | semantic, not a byte pin on the predecessor files: the owner re-derives the eleven-element workload tuple from the imported modules, and asserts that the source of `isolated.measure_local_isolated`, which builds the server argv, still carries `-t 4`, `-c 512`, `-np 1`, `-ngl 0`, `--jinja` and `--no-warmup`. Any drift is refused by name. Byte-pinning the chain is deliberately not repeated, because that is exactly what made the item 69 owner unrunnable at current `main` while its workload was unchanged |
 | Result | one exact-key schema-1 `C0_OLMOE_PLATFORM_SAMPLED_RUNTIME_BASELINE` document on stdout and one concise stderr summary; no partial JSON on failure. It is item 69's schema plus `gate`, `platform_profile`, `platform_profile_schema_version`, `comparable_across_hosts`, `page_cache_preload_ns`, a per-sample `page_cache` block, `baseline.server_threads` and `baseline.effective_ggml_threads` in place of `baseline.threads`, `environment.memory_bytes`, and a four-field `validator` that records the native interpreter identity |
 | Validation order | arguments and required profile; profile selection; inherited workload contract; prerequisites (six environment variables, else `N/A`); clean worktree and evaluated head; observed identity against the committed profile; validator resolution; known-good validator control; zero matching processes; model, pack, task and prompt identity; page-cache preload; helper/shim build and built-toolchain identity against the profile; four isolated pairs with per-pair schema, isolation, page-cache and determinism validation; zero matching processes; unchanged head and clean worktree; file identity re-verification; observed identity re-checked against the profile; ceiling; result schema; publication |
 | Failure | nonzero exit and no complete document for a missing or unknown profile, invalid arguments, missing/unusable inputs, inherited-contract drift, profile identity drift, unclean or changed worktree, validator or provider failure, process/lifetime failure, malformed schema, nondeterministic portfolio, timeout, signal, or ceiling excess. `--print-identity` exits 3 on mismatch after printing the observed table. `NO_PASSING_PATCH` remains measured data |
@@ -95,8 +95,8 @@ result. `server_version` there is recorded as the carried `build 10566, commit b
 | Arguments | `--platform-profile` is required and has no default | the named profile is selected | missing, unknown, empty or unexpected argument rejects | no side effect | `--self-test` command-surface cases |
 | Profile table | exactly the 15 identity fields per profile | selection returns the row | a profile with drifted fields rejects | N/A | `--self-test` profile-selection cases |
 | Identity | observe the host, compare field by field | zero mismatched fields | any single-field drift rejects and is named | no measurement starts | `--self-test` drift matrix over library digest, compiler digest, Align pin, geometry sha, server version string, server digest, C compiler digest, validator kind, interpreter digest and OS |
-| `--print-identity` | same prerequisites, no build and no model run | observed table on stdout, `MATCH` on stderr, exit 0 | `MISMATCH (fields)` on stderr, exit 3, table still printed | no processes started | `--self-test` document-shape case; host run recorded in section 6 |
-| Inherited contract | re-derive the workload tuple from the imported owners | tuple equals the committed contract | any element drift rejects | N/A | `--self-test` mutation of `sampled.MAX_TOKENS` and of the inherited pack digest |
+| `--print-identity` | same prerequisites, no build and no model run | observed table on stdout, `MATCH` on stderr, exit 0 | `MISMATCH (fields)` on stderr, exit 3, table still printed | no server or model run started (it invokes `scripts/align-toolchain ensure compiler`, `cc --version`, `llama-server --version` and `python -VV` only) | `--self-test` document-shape case; host run recorded in section 6 |
+| Inherited contract | re-derive the workload tuple from the imported owners and read back the server launch line | tuple equals the committed contract and every launch-line token is present | any element or launch-line token drift rejects and is named | N/A | `--self-test` mutation of `sampled.MAX_TOKENS`, of the inherited pack digest, and of each of the six launch-line tokens in the observed `measure_local_isolated` source |
 | Local leg | zero matching processes, one fresh pinned server | ready, solely owned, alive, terminated, reaped, zero matches after | any lifetime or process-pressure failure rejects | inherited `stop_process` and after-check run in `finally` | inherited item 69 isolation self-test plus the real run |
 | Runtime leg | zero matching processes | portfolio measured in-process | any provider or validator failure rejects | after-check runs in `finally` | inherited item 69 isolation self-test plus the real run |
 | Validation | native validator with an owned `ALIGN_LLM_TEMP_ROOT` | known-good control passes, candidates classified | an infrastructure exit other than 0/4 rejects | Docker cid cleanup retained for the Darwin profile | control patch in the real run; smoke leg |
@@ -124,10 +124,10 @@ than imported. They call the module-global `sampled.validate_patch`, which runs 
 `sampled.decision_environment()`, and that function scrubs `ALIGN_LLM_TEMP_ROOT`. On Linux the
 validator resolves as `native` and refuses an external patch without an owned temporary root
 ("candidate patch escapes the project and temporary roots"), so validation is routed through
-`coding.validate_patch_details`, which owns that root and also retains Docker container cleanup for
-the Darwin profile. Everything else is imported: `isolated.measure_local_isolated`,
-`isolated.measure_runtime_isolated`, `isolated.validate_isolation`,
-`isolated.require_no_matching_process`, `isolated.verify_identities`,
+`coding.validate_patch`, whose `env=` keyword carries the owned root and which also retains Docker
+container cleanup for the Darwin profile. Everything else is imported:
+`isolated.measure_local_isolated`, `isolated.measure_runtime_isolated`,
+`isolated.validate_isolation`, `isolated.require_no_matching_process`, `isolated.verify_identities`,
 `isolated.stop_owned_processes`, `sampled.built_helper`, `sampled.decision_environment`,
 `sampled.validate_linker_search`, `sampled.run_process`, `sampled.candidate_command`,
 `sampled.validate_candidate`, `sampled.validate_portfolio`, `sampled.validate_repeatability`,
@@ -141,7 +141,8 @@ broad `make ci`, or unrelated benchmark is selected.
 
 | Date | Profile | Head | Result |
 | --- | --- | --- | --- |
-| 2026-09-20 | `linux-x86_64-v1` | `02e1fc7` + this capability | `--print-identity` `MATCH`; `--self-test` PASS; bounded smoke leg: one local candidate 4.36 s (`INVALID_PATCH`, 52 completion tokens), one runtime candidate 15.95 s (`PASS`, 81 completion tokens, patch SHA-256 `5d6b107e…`, native validation 0.345 s), page-cache preload 4.11 s. Timed baseline not yet run |
+| 2026-09-20 | `linux-x86_64-v1` | `465957d` | Timed baseline `COMPLETE` in 145.24 s of the 25-minute ceiling: local median 11.291 s, runtime median 17.543 s, 4/4 passing in both arms, gain −553,718 ppm, gate `none`. Portable receipt `eval/benchmarks/cpu-baseline-linux-2026-09-20.json`; section 7 |
+| 2026-09-20 | `linux-x86_64-v1` | `02e1fc7` + this capability | `--print-identity` `MATCH`; `--self-test` PASS; bounded smoke leg: one local candidate 4.36 s (`INVALID_PATCH`, 52 completion tokens), one runtime candidate 15.95 s (`PASS`, 81 completion tokens, patch SHA-256 `5d6b107e…`, native validation 0.345 s), page-cache preload 4.11 s |
 | 2026-09-06 | `darwin-aarch64-v1` | item 78 | 84.062 s runtime vs 14.174 s local; carried, not re-verified here |
 | 2026-09-05 | `darwin-aarch64-v1` | item 69 | 91.4 s runtime vs 14.0 s local; carried, not re-verified here |
 
@@ -152,8 +153,9 @@ WSL2, Ryzen 9 5950X (32 threads), 62 GB, Align pin `8c8bfbc7`, committed head `4
 `--print-identity --platform-profile linux-x86_64-v1` returned `MATCH` (exit code 0) immediately
 before the timed run. Result `C0_OLMOE_PLATFORM_SAMPLED_RUNTIME_BASELINE`, status `COMPLETE`,
 elapsed 145.24 s of the 25-minute ceiling. Validator kind `native`; `comparable_across_hosts`
-`false`; `effective_ggml_threads` 4 on both arms. The receipt is kept outside Git, in the local
-evidence store at `gpu-cuda-parity-20260920/c0-run1/result.json`.
+`false`; `effective_ggml_threads` 4 on both arms. The portable receipt is
+`eval/benchmarks/cpu-baseline-linux-2026-09-20.json`: every measured value of the run, with the
+digest of the raw receipt, which is retained outside Git.
 
 | Arm | Pass count | Selected seed | Per-pair times | Median |
 | --- | --- | --- | --- | --- |
@@ -163,12 +165,14 @@ evidence store at `gpu-cuda-parity-20260920/c0-run1/result.json`.
 Aggregate: local 4/4, runtime 4/4, gain −553,718 ppm, runtime faster in every pair false; gate none
 (baseline). The ratio of runtime median to local median is 1.55x.
 
-Per-candidate note: the runtime arm passed with one 81-completion-token candidate costing about
-17.5 s, while the local arm needed five candidates at about 2.3 s each to reach its passing seed, so
-the per-candidate cost ratio is roughly 7x. The time-to-passing-patch ratio is smaller only because
-the runtime happens to pass at seed 1 on this host while the local arm needs five candidates.
-Platform floating-point divergence changes which seed passes, which is why this result is not
-comparable to the Darwin M1 result (item 78: 84.06 s vs 14.17 s).
+Per-candidate note: the runtime arm passed with one 81-completion-token candidate, while the local
+arm needed five candidates to reach its passing seed. Over the four pairs the runtime arm's single
+candidate cost a mean 17.30 s of command wall against the local arm's mean 2.08 s per candidate, so
+the cost is about 8x per candidate (8.3x on this receipt; about 5.6x per completion token, since the
+arms emit 52–55 versus 81 tokens). The time-to-passing-patch ratio is smaller only because the
+runtime happens to pass at seed 1 on this host while the local arm needs five candidates. Platform
+floating-point divergence changes which seed passes, which is why this result is not comparable to
+the Darwin M1 result (item 78: 84.06 s vs 14.17 s).
 
 Limits: this is a baseline only, with no `MET`/`NOT_MET` decision, and it is not comparable across
 hosts. C1 (thread-count) and C2 (application-item) changes must be paired against this baseline
