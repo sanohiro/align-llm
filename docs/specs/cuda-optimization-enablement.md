@@ -180,6 +180,10 @@ Freeze each implementation candidate's clean commit and source hashes before its
 graph enablement first; use the accepted graph candidate as a second control for KV attribution
 only if it shipped, and retain the original-control comparison for the combined result.
 
+A dated subsection below may settle one additional protocol with its own case list,
+metrics and budget; `request` remains the default and its measured workload, ordering,
+clocks and decisions are unchanged by that addition.
+
 Preparation/owner execution ceiling is 3600 seconds per bounded invocation. One diagnostic trace
 is at most 60 seconds, within a 600-second process deadline. Each paired model campaign is at most
 2400 seconds and each construction/request at most 300 seconds. No profiler runs during timing.
@@ -212,28 +216,39 @@ remaining performance gate are recorded below; design intent alone is not accept
 
 `scripts/measure-cuda-optimization --profile PROFILE --control-source CHECKOUT
 --control BUILD --candidate-source CHECKOUT --candidate BUILD --output NEW_DIRECTORY`
-executes only the fixed local protocol above. The control must be the clean commit
-nominated by `--control-commit SHA` (default the full 40-character lowercase hex of
-`4bf8011`; short forms are refused), and `--primary MODEL:CASE`
-selects the one primary row (default `olmoe:warm-long-cached`); every other model/case
-stays a guardrail. Both values must already be settled by a dated campaign paragraph in
-this section before a campaign runs, and both are recorded as `policy.control_commit`
-and `policy.primary` in the receipt, and each `comparisons[]` row carries a `primary`
-boolean. These options replace the earlier practice of
-editing the tool's `CONTROL` constant on an experimental branch; the schema is unchanged
-because no consumer parses this receipt. Both builds and their complete source closures
-are verified before and after the run,
-with identical Align/compiler/bundle and non-shim libraries. The admitted profile owns
-model/tokenizer/options; input identities are rechecked. The caller owns the fresh output
-directory. `result.json` schema 1 retains identities, every arm, startup/client/worker
-clocks, full outputs/counts, comparison reductions and PASS/FAIL, including partial
-failure evidence. Worker logs are bounded to 16 MiB per arm; workers are serial and
-closed on failure. No product imports this measurement tool. Exit 0 requires quality,
-exact paired outputs/counts, the primary floor and every guardrail; other results exit 1.
-`--self-test` checks reduction decisions, missing pairs, output mismatch, quality
-refusal, a selected non-default primary row and refusal of a control build that is not
-the nominated commit, all without models. The tool and this plan are digest-bound in
-the receipt.
+executes only a measurement protocol settled in this section. `--protocol
+{request,startup}` selects it and defaults to `request`, the four-case sequence of the
+lead paragraph above compared on request client wall time; `startup` is the one-request
+loader protocol settled in its own dated subsection below. The protocol owns the case
+list, the compared metrics, the default primary row and the measured-clock budget. The
+control must be the clean commit nominated by `--control-commit SHA` (default the full
+40-character lowercase hex of `4bf8011`; short forms are refused), and `--primary
+MODEL:CASE` selects the one primary row within the selected protocol's cases,
+defaulting to that protocol's settled row (`olmoe:warm-long-cached` for `request`,
+`olmoe:cold-short` for `startup`); every other model/case/metric stays a guardrail. All
+three values must already be settled by a dated campaign paragraph in this section
+before a campaign runs, and all three are recorded as `policy.protocol`,
+`policy.control_commit` and `policy.primary` in the receipt; `policy.primary` itself
+carries `model`, `case` and `metric`, and each `comparisons[]` row carries `metric` and
+a `primary` boolean. These options replace the earlier practice of editing the tool's
+`CONTROL` constant on an experimental branch. Both builds and their complete source
+closures are verified before and after the run, with identical Align/compiler/bundle
+and non-shim libraries. The admitted profile owns model/tokenizer/options; input
+identities are rechecked. The caller owns the fresh output directory. `result.json`
+`schema_version` 2 adds a required `protocol` field and retains identities, every arm,
+startup/client/worker clocks, per-arm worker `rchar`/`read_bytes`, host `/proc/meminfo`
+state, the model directory filesystem types, full outputs/counts, per-metric comparison
+reductions and PASS/FAIL, including partial failure evidence. No consumer in
+`scripts/` or `eval/` parses receipts, which is why the bump is additive-but-required;
+schema 1 receipts remain valid historical evidence. Worker logs are bounded to 16 MiB
+per arm; workers are serial and closed on failure. No product imports this measurement
+tool. Exit 0 requires quality, exact paired outputs/counts, the primary floor and every
+guardrail; other results exit 1. `--self-test` checks reduction decisions on both
+metrics, missing pairs, missing clocks, output mismatch, quality refusal, a selected
+non-default primary row, the `/proc/io`, `/proc/meminfo` and `/proc/mounts` parsers
+against fixture text, refusal of an unknown protocol or of a primary case outside the
+selected protocol, and refusal of a control build that is not the nominated commit, all
+without models. The tool and this plan are digest-bound in the receipt.
 
 ### CUDA attention analytic oracle qualification
 
@@ -552,3 +567,112 @@ measured local speed effect on this host stays well under the 15% floor that wou
 it a shipping performance claim. Coverage note: no owner exercises seeded, non-greedy
 Qwen sampling under policy 2 (the reuse smoke seeds OLMoE only, the oracle's Qwen
 requests are greedy); the change is retained as parity, not as a numeric claim.
+
+### Capped-read loader startup measurement on CUDA (2026-09-20)
+
+Settled before implementation of its measurement run. It closes backend-parity register item P2:
+the capped-read resident loaders shipped with a Metal startup campaign only
+(`docs/gpu-moe-diagnosis.md:264-286`, Qwen 24.05% and OLMoE 61.58% median paired startup
+reduction, 5/5), and their CUDA behaviour is `unmeasured`. The intervention under test is the
+capped-read loader change to `src/runtime_qwen_load.align` and `src/runtime_olmoe_load.align`
+alone; the mechanism is a staging buffer capped at the declared payload prefix, so the primary
+row is session construction, not generation.
+
+| Field | Settled value |
+| --- | --- |
+| Consumer | `--protocol startup` on the local paired measurement owner above; `--protocol request` stays the default, with its workload, ordering, metric and decisions unchanged (see the readiness-clock note below). |
+| Composition | The protocol selects the case list, the compared metrics and the default primary row; `--control-commit` and `--primary` then override the control commit and primary row. |
+| CONTROL | `5fbecf176f9488eecad32c90f394d5da48b58a1c`, a synthetic non-ancestor commit at the current pin: the P1 branch head `82dab13` with only `src/runtime_olmoe_load.align` and `src/runtime_qwen_load.align` restored to their `594981c^` (`30f41c91`) content (2 files, 30 insertions, 68 deletions). Built from worktree `/home/hiro/prj/align-llm-prefix`, branch `agent/p2-synthetic-control`. |
+| CANDIDATE | The clean committed head of `agent/cuda-startup-measurement`, rebuilt after any source edit so its closure matches `build.json`. |
+| INPUTS | One fixed request per arm: the existing `cold-short` case, the unchanged SYSTEM and SHORT prompts, greedy 128 tokens, unchanged `quality()` and pairwise exact outputs/counts. |
+| CLOCKS | Startup is monotonic nanoseconds from immediately before `Session` construction to the `ready` frame (`startup_ns`). First request is the single request's `client_ns`; `worker_ns` is retained and never mixed with a client clock. |
+| PAIRING | Five pairs per model, Qwen then OLMoE, alternating control/candidate from pair 0, one fresh worker per arm, no concurrent GPU arms. Fixed inter-arm cooldown and coordinated idle settling are unchanged. |
+| CEILINGS | The measured clocks (every `startup_ns` plus every request `client_ns`) sum to at most 900 seconds, checked after every arm. The existing 2400-second per-model and 300-second per-construction/request process ceilings remain. Settling, cooldown and host observation stay outside every clock. |
+| PRIMARY | `olmoe:cold-short` on `startup_ns`: median paired reduction at least 15% and candidate faster in at least four of five pairs. |
+| GUARDRAILS | `qwen2 cold-short` on `startup_ns`, and both models' `cold-short` on `client_ns`, each at no greater than 5% median per-pair regression. The primary model/case on the guardrail metric is a guardrail, not a second primary. |
+| BUDGETS | 1 GiB host and 6,000,000,000-byte device limits, resident CUDA placement without prefetch, no profiler during timing, exactly as the `request` protocol. |
+| INVOCATION | The owner above with `--protocol startup --control-commit 5fbecf176f9488eecad32c90f394d5da48b58a1c`. |
+
+Receipt schema 2 adds the required `protocol` field and, per arm, `worker_io` (`rchar` and
+`read_bytes` from `/proc/<pid>/io`, read after the request and before `worker.close()`). Every
+host observation adds `memory` (`MemTotal`, `MemAvailable`, `Cached`, `Buffers` from
+`/proc/meminfo`). `identities` adds `filesystems`, the model directory filesystem type per model
+resolved from `/proc/mounts`. Each comparison row carries `metric`, `paired_reductions`,
+`median_reduction`, `passed` and `primary`. Startup measurement moved environment preparation
+(`qualification_environment`) and the deadline arithmetic out of the timed window for both
+protocols; `startup_ns` therefore no longer includes owned-scratch creation. That is the only
+behavioural difference the `request` protocol sees, and it removes work that was never part of
+the runtime under test.
+
+The campaign does not drop page caches: this is a shared WSL2 host and a cache drop would perturb
+the co-resident work the shared-host constraint above already protects. Only pair 0's first arm is
+cold-cache; alternating arm order from pair 0 and reporting medians over five pairs absorb it, and
+the recorded `/proc/meminfo` state plus per-arm `rchar`/`read_bytes` make the cache condition of
+every arm auditable rather than assumed.
+
+Validation order is fixed: policy, then profile admission, then build and source closures, then
+identities and filesystem types, then per-arm quiet-window admission, then construction, then the
+single request, then `worker_io`, then worker close, then the post-arm quiet window, then the
+measured-clock budget, then the per-metric comparisons, then the tool/plan digest and build
+identity recheck, and only then the primary floor and guardrails. Preserve all pairs, failed
+outputs and raw identities; a timed-out, refused or incomplete pair does not produce a passing
+decision and is never dropped, combined or retried into a passing one.
+
+The shipping `4bf8011` default and the capped-read merge base cannot serve as this campaign's
+control. `594981c^` (`30f41c91`) pins Align `f502fe3d` in its own `.align-revision` while the
+current pin is `8c8bfbc7`, and the owner requires the control and candidate builds to share
+`align_revision`, `compiler_sha256` and `bundle_id`. A true ancestor control therefore cannot
+share the current pin, and rebuilding an old tree against `8c8bfbc7` would confound the compiler
+change with the intervention. The synthetic control is the current head with only the two loader
+files reverted, so the pair isolates the loader hunks alone at one compiler. It is deliberately
+not an ancestor of the candidate; it exists only to be built and measured, and nothing is merged
+from it.
+
+Interpretation: CUDA session construction includes the PCIe host-to-device upload that Metal's
+unified memory does not perform, so a smaller startup fraction than Metal's 24.05% and 61.58% is
+predeclared here rather than explained afterwards. OLMoE is the target: its 3,219 members and
+54.1 GB of fetched bytes against 4.2 GB useful are where capping can pay. NOT_MET is a valid
+recorded outcome and is not a defect in the shipped loaders, whose correctness is owned by their
+existing smokes and session oracles. A PASS is a local startup intervention result on this WSL2
+CUDA host only: it is not a llama.cpp comparison, not a whole-session or decode speedup, and not
+a time-to-passing-patch result.
+
+`scripts/measure-cuda-optimization` keeps its `BENCHMARK_OR_MEASUREMENT` classification in
+`docs/python-boundary-audit.md`; the startup protocol adds no product surface, and the audit entry
+names it explicitly.
+
+#### Result (2026-09-20)
+
+Measured on RTX 4070 Ti under WSL2 at Align pin `8c8bfbc7`, candidate `aad5553` (`source_dirty`
+false), control `5fbecf17`, 5 alternating pairs per model, one fresh worker per arm, one
+`cold-short` greedy 128-token request, receipt
+`gpu-cuda-parity-20260920/p2-run1/p2-startup/result.json` in the local evidence store, outside
+Git (schema 2), status PASS.
+
+| Model | Control `startup_ns` median | Candidate `startup_ns` median | Median paired reduction | Faster pairs | `rchar` control -> candidate |
+| --- | --- | --- | --- | --- | --- |
+| olmoe (primary) | 17.125 s (16.669-17.623) | 1.669 s (1.664-1.714) | 90.25% | 5/5 | 54.48 GB -> 4.57 GB |
+| qwen2 (guardrail) | 2.777 s | 1.921 s | 30.66% | 5/5 | 9.84 GB -> 5.05 GB |
+
+`client_ns` first-request guardrails: qwen2 +0.76% (a regression within the 5% guardrail); olmoe
+−37.1% (an improvement) (paired 0.429, 0.075, 0.44, 0.325, 0.371). The olmoe first request also
+benefits because the worker's page-cache footprint shrinks; this is a side effect of the shared
+clock budget, not a decode or whole-session claim. All exact outputs and token counts matched per
+pair.
+
+Verdict: MET against the predeclared local intervention target (primary at least 15% median
+reduction and candidate faster in at least 4/5 pairs; both exceeded on the primary and the
+guardrail model).
+
+The external load observer recorded `valid: false`: the Claude Code CLI process itself exceeded
+the 0.1-core threshold at 4 campaign samples, with no other foreign process detected. This is the
+same deferral recorded for P1: a valid receipt requires running from a terminal without a Claude
+Code session attached. The measured effect (90.25%) is far above the PRIMARY floor, so the
+deferred observer validity does not put the verdict in doubt.
+
+This result explains the 2026-09-09 CUDA campaign's OLMoE startup of 16,483 ms against
+llama-server's 913 ms: that runtime (`688232c`) predates the capped-read fix `594981c`.
+
+Limits: this is a local startup intervention result on this WSL2 CUDA host only. It is not a
+llama.cpp comparison, not a whole-session or decode speedup claim, and not a time-to-passing-patch
+result.

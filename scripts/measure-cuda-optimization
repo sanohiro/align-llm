@@ -25,6 +25,16 @@ LONG = 'Repository context (irrelevant to this formatting task):\n' + 'alpha bet
 CASES = [('cold-short', SHORT), ('warm-short-cached', SHORT), ('warm-long-changed', LONG), ('warm-long-cached', LONG)]
 CASE_NAMES = tuple(name for name, _ in CASES)
 COUNTS = ('output', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'token_count_exact')
+# A protocol names its case list, its compared metrics (the first is the primary metric),
+# its default primary row and the measured-clock budget the plan settles for it.
+PROTOCOLS = {name: dict(table, case_names=tuple(case for case, _ in table['cases'])) for name, table in {
+    'request': dict(cases=list(CASES), metrics=('client_ns',), primary='olmoe:warm-long-cached', measured_budget_ns=None),
+    'startup': dict(cases=list(CASES[:1]), metrics=('startup_ns', 'client_ns'), primary='olmoe:cold-short',
+        measured_budget_ns=900000000000),
+}.items()}
+ARM_METRICS = ('startup_ns',)
+IO_FIELDS = ('rchar', 'read_bytes')
+MEMINFO_FIELDS = ('MemTotal', 'MemAvailable', 'Cached', 'Buffers')
 
 
 class Cancelled(RuntimeError):
@@ -77,16 +87,91 @@ def quality(result):
     return len(values) >= 16 and all(value == str(index) for index, value in enumerate(values, 1))
 
 
-def campaign_policy(control_commit, primary):
+def campaign_policy(protocol, control_commit, primary):
+    if protocol not in PROTOCOLS:
+        raise ValueError('protocol must name a measurement protocol settled by the plan')
+    table = PROTOCOLS[protocol]
+    names = table['case_names']
+    primary = table['primary'] if primary is None else primary
     if len(control_commit) != 40 or control_commit.strip('0123456789abcdef'):
         raise ValueError('control commit must be a full lowercase hexadecimal commit')
     model, separator, case = primary.partition(':')
-    if not separator or model not in ('qwen2', 'olmoe') or case not in CASE_NAMES:
+    if not separator or model not in ('qwen2', 'olmoe') or case not in names:
         raise ValueError('primary must be MODEL:CASE naming a measured model and request case')
-    return dict(control_commit=control_commit, primary=dict(model=model, case=case))
+    return dict(protocol=protocol, control_commit=control_commit,
+        primary=dict(model=model, case=case, metric=table['metrics'][0]))
 
 
-def reductions(arms, model, case, primary=('olmoe', 'warm-long-cached')):
+def parse_proc_io(text):
+    # Read amplification is the loader hypothesis; keep the raw counters, not a derived claim.
+    values = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition(':')
+        if separator and key.strip() in IO_FIELDS:
+            values[key.strip()] = int(value.strip())
+    if len(values) != len(IO_FIELDS):
+        raise ValueError('worker I/O accounting is incomplete')
+    return values
+
+
+def parse_meminfo(text):
+    values = {}
+    for line in text.splitlines():
+        key, separator, value = line.partition(':')
+        if separator and key.strip() in MEMINFO_FIELDS:
+            parts = value.split()
+            if len(parts) != 2 or parts[1] != 'kB':
+                raise ValueError('unexpected /proc/meminfo unit')
+            values[key.strip()] = int(parts[0])
+    if len(values) != len(MEMINFO_FIELDS):
+        raise ValueError('/proc/meminfo is incomplete')
+    return values
+
+
+def unescape_mount(field):
+    result = bytearray()
+    index = 0
+    while index < len(field):
+        tail = field[index + 1:index + 4]
+        if field[index] == '\\' and len(tail) == 3 and all(c in '01234567' for c in tail):
+            result.append(int(tail, 8))
+            index += 4
+        else:
+            result.extend(field[index].encode())
+            index += 1
+    return result.decode('utf-8', 'replace')
+
+
+def filesystem_type(mounts, path):
+    # Startup time depends on the model directory's filesystem; record it, do not infer it.
+    best = None
+    for line in mounts.splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        point = unescape_mount(fields[1])
+        if (path == point or path.startswith(point.rstrip('/') + '/')) and (best is None or len(point) > len(best[0])):
+            best = (point, unescape_mount(fields[2]))
+    if best is None:
+        raise ValueError('no mount point covers ' + path)
+    return best[1]
+
+
+def measured_ns(arms):
+    total = 0
+    for arm in arms:
+        total += arm.get('startup_ns', 0)
+        total += sum(request.get('client_ns', 0) for request in arm.get('requests', []))
+    return total
+
+
+def reductions(arms, model, case, metric='client_ns', primary=('olmoe', 'warm-long-cached', 'client_ns')):
+    # startup_ns is an arm clock and client_ns a request clock; both pair on the same request row.
+    def clock(arm, request):
+        value = (arm if metric in ARM_METRICS else request).get(metric)
+        if type(value) is not int or value <= 0:
+            raise ValueError('missing or invalid paired ' + metric + ' clock')
+        return value
     result = []
     for pair in range(5):
         selected = [a for a in arms if a['model'] == model and a['pair'] == pair]
@@ -97,17 +182,16 @@ def reductions(arms, model, case, primary=('olmoe', 'warm-long-cached')):
             matching = [r for r in arm['requests'] if r['case'] == case]
             if arm['status'] != 'PASS' or len(matching) != 1 or not matching[0]['quality']:
                 raise ValueError('incomplete or failed quality arm')
-            rows[arm['arm']] = matching[0]
+            rows[arm['arm']] = (arm, matching[0])
         a, b = rows['control'], rows['candidate']
-        if any(a['result'][k] != b['result'][k] for k in COUNTS):
+        if any(a[1]['result'][k] != b[1]['result'][k] for k in COUNTS):
             raise ValueError('paired output or token-count mismatch')
-        if min(a['client_ns'], b['client_ns']) <= 0:
-            raise ValueError('invalid client clock')
-        result.append((a['client_ns'] - b['client_ns']) / a['client_ns'])
+        control_clock, candidate_clock = clock(*a), clock(*b)
+        result.append((control_clock - candidate_clock) / control_clock)
     median = statistics.median(result)
-    selected = (model, case) == tuple(primary)
+    selected = (model, case, metric) == tuple(primary)
     passed = median >= .15 and sum(r > 0 for r in result) >= 4 if selected else median >= -.05
-    return dict(primary=selected, paired_reductions=result, median_reduction=median, passed=passed)
+    return dict(metric=metric, primary=selected, paired_reductions=result, median_reduction=median, passed=passed)
 
 
 def identity(source, build):
@@ -146,6 +230,7 @@ def host_observation():
     processes = subprocess.check_output(['nvidia-smi', '--query-compute-apps=pid,process_name',
         '--format=csv,noheader'], text=True, timeout=30).strip()
     return dict(busy_cpu_cores=busy, iowait_cores=wait, gpu=gpu, compute_processes=processes,
+        memory=parse_meminfo(Path('/proc/meminfo').read_text()),
         quiet=busy < .5 and wait < .2 and not processes and idle_gpu(gpu))
 
 
@@ -170,11 +255,13 @@ def quiet_host():
 def run(args):
     destination = args.output.absolute()
     destination.mkdir(mode=0o700)
-    record = dict(schema_version=1, status='FAIL', arms=[], comparisons=[])
+    record = dict(schema_version=2, protocol=args.protocol, status='FAIL', arms=[], comparisons=[])
     worker = None
     try:
         # The campaign policy is settled in the plan; the receipt records the exact values used.
-        record['policy'] = campaign_policy(args.control_commit, args.primary)
+        record['policy'] = campaign_policy(args.protocol, args.control_commit, args.primary)
+        protocol = PROTOCOLS[record['policy']['protocol']]
+        cases = protocol['cases']
         admitted = admit(args.profile.resolve(strict=True))
         profile = admitted.records['profile']
         if len(profile['models']) != 2 or {m['model_id'] for m in profile['models']} != {'qwen2', 'olmoe'} or len(profile['runtime_options']) != 1:
@@ -199,13 +286,16 @@ def run(args):
         stable_libs = lambda i: {k: v for k, v in i['libraries'].items() if 'shim' not in k}
         if stable_libs(a) != stable_libs(b):
             raise ValueError('non-shim libraries differ')
-        record['identities'] = dict(builds=identities, profile_sha256=digest(args.profile),
+        models = {m['model_id']: m for m in profile['models']}
+        mounts = Path('/proc/mounts').read_text()
+        filesystems = {name: filesystem_type(mounts, str((admitted.root / model['model_path']).resolve(strict=True).parent))
+            for name, model in models.items()}
+        record['identities'] = dict(builds=identities, filesystems=filesystems, profile_sha256=digest(args.profile),
             inputs={k: v.sha256 for k, v in admitted.files.items()}, options=option,
             tool_sha256=digest(Path(__file__)), plan_sha256=digest(ROOT / 'docs/specs/cuda-optimization-enablement.md'),
             gpu=subprocess.check_output(['nvidia-smi', '--query-gpu=name,uuid,driver_version,memory.total', '--format=csv,noheader'], text=True, timeout=30).strip())
         options_path = destination / 'options.json'
         options_path.write_text(json.dumps(option, separators=(',', ':')) + '\n')
-        models = {m['model_id']: m for m in profile['models']}
         for model_name in ('qwen2', 'olmoe'):
             deadline = time.monotonic() + 2400
             model = models[model_name]
@@ -222,20 +312,24 @@ def run(args):
                     row['host_before'] = quiet_host()
                     if not row['host_before']['quiet']:
                         raise ValueError('shared host is busy before arm; coordinate a quiet window')
+                    # Scratch preparation and deadline arithmetic stay outside the readiness clock.
+                    env = qualification_environment(work)
+                    timeout = remaining(deadline)
                     print(work.name + ': start', flush=True)
                     started = time.monotonic_ns()
-                    worker = Session(command, timeout=remaining(deadline), env=qualification_environment(work))
+                    worker = Session(command, timeout=timeout, env=env)
                     row['startup_ns'] = time.monotonic_ns() - started
                     retained = os.fdopen(os.dup(worker.log.fileno()), 'rb')
                     normal = False
                     try:
-                        for case, prompt in CASES:
+                        for case, prompt in cases:
                             worker.timeout = remaining(deadline)
                             before = time.monotonic_ns()
                             result = worker.generate(dict(schema_version=1, system=SYSTEM, user=prompt, max_tokens=128, temperature=0.0, seed=None))
                             elapsed = time.monotonic_ns() - before
                             row['requests'].append(dict(case=case, client_ns=elapsed, worker_ns=result['elapsed_ns'], quality=quality(result), result=result))
                             print(f'{work.name} {case}: {elapsed / 1e9:.3f}s quality={quality(result)}', flush=True)
+                        row['worker_io'] = parse_proc_io(Path(f'/proc/{worker.process.pid}/io').read_text())
                         normal = True
                     finally:
                         try:
@@ -252,9 +346,14 @@ def run(args):
                         raise ValueError('shared host is busy after arm; timing is invalid')
                     row['status'] = 'PASS'
                     (destination / 'result.json').write_text(json.dumps(record, indent=2) + '\n')
-            for case, _ in CASES:
-                record['comparisons'].append(dict(model=model_name, case=case, **reductions(record['arms'], model_name, case,
-                    primary=(record['policy']['primary']['model'], record['policy']['primary']['case']))))
+                    budget = protocol['measured_budget_ns']
+                    if budget is not None and measured_ns(record['arms']) > budget:
+                        raise ValueError('measured clocks exceed the protocol budget')
+            primary = record['policy']['primary']
+            for metric in protocol['metrics']:
+                for case, _ in cases:
+                    record['comparisons'].append(dict(model=model_name, case=case, **reductions(record['arms'], model_name,
+                        case, metric, primary=(primary['model'], primary['case'], primary['metric']))))
         admitted.recheck()
         if digest(Path(__file__)) != record['identities']['tool_sha256'] or digest(ROOT / 'docs/specs/cuda-optimization-enablement.md') != record['identities']['plan_sha256']:
             raise ValueError('measurement tool or plan changed during campaign')
@@ -278,7 +377,7 @@ def run(args):
     return 0 if record['status'] == 'PASS' else 1
 
 
-def cancellation_test(*, construction=False, shutdown=False):
+def cancellation_test(*, construction=False, shutdown=False, protocol='request'):
     with tempfile.TemporaryDirectory(prefix='cuda-measure-cancel-') as temporary:
         work = Path(temporary)
         (work / 'profile.json').write_text('{}')
@@ -310,20 +409,13 @@ nominated='0457a7d4d4645bb733b4cbf96126c5d79c4da31d'
 m.identity=lambda source,build:dict(source_commit=nominated,align_revision='pin',
  compiler_sha256='compiler',bundle_id='fixture',libraries={})
 m.quiet_host=lambda:dict(quiet=True)
-if len(sys.argv)>3 and sys.argv[3]=='construction':
+if sys.argv[3]=='construction':
  def fail_dup(fd): raise m.Cancelled('measurement cancelled by signal at log ownership')
  m.os.dup=fail_dup
-if len(sys.argv)>3 and sys.argv[3]=='shutdown':
- m.CASES=[]
- original_wait=m.subprocess.Popen.wait
- def observed_wait(process, *a, **k):
-  (w/'shutdown.wait').write_text(str(process.pid))
-  return original_wait(process,*a,**k)
- m.subprocess.Popen.wait=observed_wait
 m.subprocess.check_output=lambda *a,**k:'fixture GPU'
 args=SimpleNamespace(output=w/'result',profile=w/'profile.json',control=w,candidate=w,
  control_source=source,candidate_source=source,control_commit=nominated,
- primary='qwen2:warm-long-cached')
+ protocol=sys.argv[4],primary=None)
 bad=SimpleNamespace(**vars(args)); bad.candidate_source=w; bad.output=w/'wrong-source'
 assert m.run(bad)==1
 assert 'exact candidate source tree' in m.json.loads((bad.output/'result.json').read_text())['error']
@@ -335,12 +427,26 @@ assert 'nominated control commit' in stale_record['error']
 assert stale_record['policy']['control_commit']==m.CONTROL
 bogus=SimpleNamespace(**vars(args)); bogus.primary='olmoe:nonexistent'; bogus.output=w/'wrong-primary'
 assert m.run(bogus)==1
-assert 'MODEL:CASE' in m.json.loads((bogus.output/'result.json').read_text())['error']
+bogus_record=m.json.loads((bogus.output/'result.json').read_text())
+assert 'MODEL:CASE' in bogus_record['error']
+# Schema 2 names the protocol even when the policy itself is refused.
+assert bogus_record['schema_version']==2 and bogus_record['protocol']==sys.argv[4]
+unknown=SimpleNamespace(**vars(args)); unknown.protocol='no-such-protocol'; unknown.output=w/'wrong-protocol'
+assert m.run(unknown)==1
+assert 'settled by the plan' in m.json.loads((unknown.output/'result.json').read_text())['error']
 assert not (w/'worker.pid').exists()
+if sys.argv[3]=='shutdown':
+ for table in m.PROTOCOLS.values(): table['cases']=[]
+ original_wait=m.subprocess.Popen.wait
+ def observed_wait(process, *a, **k):
+  (w/'shutdown.wait').write_text(str(process.pid))
+  return original_wait(process,*a,**k)
+ m.subprocess.Popen.wait=observed_wait
 with m.cancellation_scope():
  raise SystemExit(m.run(args))
 """
-        child = subprocess.Popen([sys.executable, '-c', child_code, str(ROOT / 'scripts'), str(work), *(['construction'] if construction else ['shutdown'] if shutdown else [])],
+        child = subprocess.Popen([sys.executable, '-c', child_code, str(ROOT / 'scripts'), str(work),
+            'construction' if construction else 'shutdown' if shutdown else 'plain', protocol],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
         pid = None
         try:
@@ -398,19 +504,82 @@ def self_test():
     assert not reductions(arms, 'olmoe', 'warm-long-cached')['passed']
     qwen = [dict(model='qwen2', pair=i, arm=name, status='PASS', requests=[dict(case='warm-long-cached',
         client_ns=100 if name == 'control' else 80, quality=True, result=dict(result))]) for i in range(5) for name in ('control', 'candidate')]
-    selected = reductions(qwen, 'qwen2', 'warm-long-cached', primary=('qwen2', 'warm-long-cached'))
+    selected = reductions(qwen, 'qwen2', 'warm-long-cached', primary=('qwen2', 'warm-long-cached', 'client_ns'))
     assert selected['primary'] and selected['passed'] and not reductions(qwen, 'qwen2', 'warm-long-cached')['primary']
     qwen[-1]['requests'][0]['client_ns'] = 200
     qwen[-3]['requests'][0]['client_ns'] = 200
     # Three of five faster fails the selected primary and still clears the same row as a guardrail.
-    assert not reductions(qwen, 'qwen2', 'warm-long-cached', primary=('qwen2', 'warm-long-cached'))['passed']
+    assert not reductions(qwen, 'qwen2', 'warm-long-cached', primary=('qwen2', 'warm-long-cached', 'client_ns'))['passed']
     assert reductions(qwen, 'qwen2', 'warm-long-cached')['passed']
-    assert campaign_policy('0457a7d4d4645bb733b4cbf96126c5d79c4da31d', 'qwen2:warm-long-cached') == dict(
-        control_commit='0457a7d4d4645bb733b4cbf96126c5d79c4da31d', primary=dict(model='qwen2', case='warm-long-cached'))
-    assert campaign_policy(CONTROL, 'olmoe:warm-long-cached')['primary'] == dict(model='olmoe', case='warm-long-cached')
-    for invalid in (('0457a7d', 'qwen2:warm-long-cached'), (CONTROL.upper(), 'qwen2:warm-long-cached'),
-            ('z' * 40, 'qwen2:warm-long-cached'), (CONTROL, 'qwen2'), (CONTROL, 'llama:warm-long-cached'),
-            (CONTROL, 'qwen2:no-such-case'), (CONTROL, ':warm-long-cached')):
+    startup = [dict(model='olmoe', pair=i, arm=name, status='PASS', startup_ns=100 if name == 'control' else 80,
+        requests=[dict(case='cold-short', client_ns=100, quality=True, result=dict(result))])
+        for i in range(5) for name in ('control', 'candidate')]
+    assert all(t['case_names'] == tuple(c for c, _ in t['cases']) for t in PROTOCOLS.values())
+    target = ('olmoe', 'cold-short', 'startup_ns')
+    row = reductions(startup, 'olmoe', 'cold-short', 'startup_ns', primary=target)
+    assert row['primary'] and row['passed'] and row['metric'] == 'startup_ns'
+    # The same model/case on the guardrail metric is never the primary row of a startup campaign.
+    guard = reductions(startup, 'olmoe', 'cold-short', 'client_ns', primary=target)
+    assert not guard['primary'] and guard['passed'] and guard['median_reduction'] == 0
+    startup[-1]['startup_ns'] = 200
+    startup[-3]['startup_ns'] = 200
+    assert not reductions(startup, 'olmoe', 'cold-short', 'startup_ns', primary=target)['passed']
+    assert reductions(startup, 'olmoe', 'cold-short', 'startup_ns')['passed']
+    for missing in ('startup_ns', 'client_ns'):
+        absent = json.loads(json.dumps(startup))
+        (absent[0] if missing == 'startup_ns' else absent[0]['requests'][0]).pop(missing)
+        try:
+            reductions(absent, 'olmoe', 'cold-short', missing, primary=target)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('missing paired clock accepted')
+    assert measured_ns(startup) == sum(a['startup_ns'] for a in startup) + 1000
+    assert measured_ns([dict(requests=[]), dict(startup_ns=7, requests=[dict(client_ns=3)])]) == 10
+    assert parse_proc_io('rchar: 12\nwchar: 5\nsyscr: 3\nread_bytes: 4096\nwrite_bytes: 0\n') == dict(rchar=12, read_bytes=4096)
+    assert parse_meminfo('MemTotal:  65799856 kB\nMemFree: 37055868 kB\nMemAvailable: 63585416 kB\n'
+        'Buffers: 74056 kB\nCached: 26915484 kB\nSwapCached: 0 kB\n') == dict(
+        MemTotal=65799856, MemAvailable=63585416, Cached=26915484, Buffers=74056)
+    for broken in ('rchar: 12\n', 'MemTotal: 1 kB\n'):
+        for parser in (parse_proc_io, parse_meminfo):
+            try:
+                parser(broken)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('incomplete /proc text accepted')
+    try:
+        parse_meminfo('MemTotal: 1\nMemAvailable: 1 kB\nCached: 1 kB\nBuffers: 1 kB\n')
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('/proc/meminfo without its unit accepted')
+    mounts = ('/dev/sdc / ext4 rw 0 0\nnone /mnt/wsl tmpfs rw 0 0\n'
+        'C:\\134 /mnt/c 9p rw 0 0\n/dev/sdd /home/hiro/models\\040cache ext4 rw 0 0\n')
+    assert filesystem_type(mounts, '/home/hiro/.cache/align-llm/cuda-kit/inputs') == 'ext4'
+    assert filesystem_type(mounts, '/mnt/c/models') == '9p' and filesystem_type(mounts, '/mnt/wsl') == 'tmpfs'
+    assert filesystem_type(mounts, '/home/hiro/models cache/inputs') == 'ext4'
+    assert filesystem_type(Path('/proc/mounts').read_text(), str(ROOT))
+    try:
+        filesystem_type('none /mnt/wsl tmpfs rw 0 0\n', '/home/hiro')
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('uncovered path accepted')
+    assert campaign_policy('request', '0457a7d4d4645bb733b4cbf96126c5d79c4da31d', 'qwen2:warm-long-cached') == dict(
+        protocol='request', control_commit='0457a7d4d4645bb733b4cbf96126c5d79c4da31d',
+        primary=dict(model='qwen2', case='warm-long-cached', metric='client_ns'))
+    assert campaign_policy('request', CONTROL, 'olmoe:warm-long-cached')['primary'] == dict(
+        model='olmoe', case='warm-long-cached', metric='client_ns')
+    # Each protocol resolves its own settled default primary row and metric.
+    assert campaign_policy('request', CONTROL, None)['primary'] == dict(model='olmoe', case='warm-long-cached', metric='client_ns')
+    assert campaign_policy('startup', CONTROL, None)['primary'] == dict(model='olmoe', case='cold-short', metric='startup_ns')
+    assert campaign_policy('startup', CONTROL, 'qwen2:cold-short')['primary']['model'] == 'qwen2'
+    for invalid in (('request', '0457a7d', 'qwen2:warm-long-cached'), ('request', CONTROL.upper(), 'qwen2:warm-long-cached'),
+            ('request', 'z' * 40, 'qwen2:warm-long-cached'), ('request', CONTROL, 'qwen2'),
+            ('request', CONTROL, 'llama:warm-long-cached'), ('request', CONTROL, 'qwen2:no-such-case'),
+            ('request', CONTROL, ':warm-long-cached'), ('no-such-protocol', CONTROL, 'qwen2:warm-long-cached'),
+            ('startup', CONTROL, 'qwen2:warm-long-cached'), ('startup', CONTROL, 'olmoe:warm-long-changed')):
         try:
             campaign_policy(*invalid)
         except ValueError:
@@ -429,7 +598,8 @@ def self_test():
     cancellation_test()
     cancellation_test(construction=True)
     cancellation_test(shutdown=True)
-    print('CUDA measurement self-test PASS (campaign policy, paired decisions and SIGTERM worker cleanup)')
+    cancellation_test(protocol='startup')
+    print('CUDA measurement self-test PASS (protocol policy, paired decisions, /proc parsers and SIGTERM worker cleanup)')
 
 
 if __name__ == '__main__':
@@ -437,8 +607,9 @@ if __name__ == '__main__':
     parser.add_argument('--self-test', action='store_true')
     for name in ('profile', 'control-source', 'control', 'candidate-source', 'candidate', 'output'):
         parser.add_argument('--' + name, type=Path)
+    parser.add_argument('--protocol', choices=sorted(PROTOCOLS), default='request')
     parser.add_argument('--control-commit', default=CONTROL)
-    parser.add_argument('--primary', default='olmoe:warm-long-cached')
+    parser.add_argument('--primary', default=None)
     args = parser.parse_args()
     if args.self_test:
         self_test()
