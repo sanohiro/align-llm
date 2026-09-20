@@ -116,6 +116,15 @@ Keep modules explicit and data-oriented. One `.align` file is one module, import
 graph, public APIs use `pub`, fallible work returns `Result`, and allocation and ownership remain
 visible. Keep provider-specific behavior behind explicit data and dispatch boundaries.
 
+Backend parity: `docs/backend-parity.md` registers every CPU/Metal/CUDA difference. A change that
+adds or modifies a backend gate (`options.backend ==`, a backend-name comparison in the shim,
+`device_by_kind`, a platform gate in `scripts/gpu_backend_recipe.py` or `src/runtime_bundle.align`),
+or that records a measurement or qualification from one host only, adds or updates its register row
+before publication. The row states the reason for the difference and a status per backend from
+`inherent`, `leftover`, `unmeasured`, `done`, `n/a`; every `leftover` or `unmeasured` cell names a
+`HANDOFF.md` next action or an explicit deferral reason. "Unmeasured on the other backend" is a
+recorded status, not an omission, and review treats an unregistered backend gate as a finding.
+
 Do not commit weights, generated binaries, credentials, local profiles, or machine-specific paths.
 Do not assume `.git` is a directory: repository-internal refs and namespaces must use one resolved
 Git common directory and cover ordinary clones, linked worktrees, and abnormal cleanup. A persisted
