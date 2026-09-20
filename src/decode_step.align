@@ -625,66 +625,19 @@ fn plane_column_bytes(borrow g: layer_qwen2.Geometry) -> i64 = g.n_head_kv * g.h
 // contiguous readback is the only crossing that cannot reorder anything. The decode graph wants a
 // different order on each tensor: K's past operand is `{head_dim, n_past, n_head_kv}` and V's is
 // `{n_past, head_dim, n_head_kv}`, because row 15's and row 21's `CONT_3D`s materialize different
-// permutations. The two loops below are that difference, written out once each.
+// permutations.
 //
-// They are the reason oracle B exists. A transposed plane, an off-by-one stride, or a K/V swap is
-// numerically plausible and would survive oracle A's four printed decimals; it does not survive a
-// byte comparison of what the graph actually consumed against what the prefill actually wrote.
+// That difference is now one bounded native transpose, `ggml_ffi.stage_kv`
+// (R8-OLMOE-KV-PLANE-STAGING-TRANSFER section 2), which `decode_pass` calls once per layer and
+// which the OLMoE legacy path already uses. It writes exactly the two images the Align
+// `stage_past_k`/`stage_past_v` loops appended: K in `[head][column][lane]` order at
+// `[0 .. past_bytes)` and V in `[head][lane][column]` order at `[past_bytes .. 2 * past_bytes)`.
+//
+// Oracle B below is unchanged and is the reason it can be replaced at all. A transposed plane, an
+// off-by-one stride, or a K/V swap is numerically plausible and would survive oracle A's four
+// printed decimals; it does not survive a byte comparison of what the graph actually consumed
+// against what the prefill actually wrote.
 // ---------------------------------------------------------------------------------------------
-
-fn stage_past_k(
-  borrow mut stage: buffer,
-  borrow plane: slice<u8>,
-  base: i64,
-  head_dim: i64,
-  n_head_kv: i64,
-  n_past: i64,
-) {
-  mut head := 0
-  loop {
-    if head >= n_head_kv { break }
-    mut column := 0
-    loop {
-      if column >= n_past { break }
-      mut lane := 0
-      loop {
-        if lane >= head_dim { break }
-        at := base + (lane + head_dim * (head + n_head_kv * column)) * 4
-        stage.put_u32_le(plane.u32_le(at))
-        lane = lane + 1
-      }
-      column = column + 1
-    }
-    head = head + 1
-  }
-}
-
-fn stage_past_v(
-  borrow mut stage: buffer,
-  borrow plane: slice<u8>,
-  base: i64,
-  head_dim: i64,
-  n_head_kv: i64,
-  n_past: i64,
-) {
-  mut head := 0
-  loop {
-    if head >= n_head_kv { break }
-    mut lane := 0
-    loop {
-      if lane >= head_dim { break }
-      mut column := 0
-      loop {
-        if column >= n_past { break }
-        at := base + (lane + head_dim * (head + n_head_kv * column)) * 4
-        stage.put_u32_le(plane.u32_le(at))
-        column = column + 1
-      }
-      lane = lane + 1
-    }
-    head = head + 1
-  }
-}
 
 // Oracle B on one layer's K. `consumed` is the concatenated operand the decode graph actually
 // reduced over, read back after compute; its first `n_past` columns must be the plane's bytes.
@@ -2213,16 +2166,24 @@ fn decode_pass(
     o.pread_ns = o.pread_ns + (time.instant() - read_started)
     o.window_reuse_count = o.window_reuse_count + 1
     if o.code.len() > 0 { break }
-    mut stage_k: buffer := buffer(past_bytes)
-    mut stage_v: buffer := buffer(past_bytes)
+    // R8-OLMOE-KV-PLANE-STAGING-TRANSFER section 2's bounded native transpose, adopted here so the
+    // Qwen legacy path stages the same K/V image the OLMoE legacy path already stages
+    // (`src/moe_decode_step.align`). `stage_kv` writes K at `[0 .. past_bytes)` in
+    // `[head][column][lane]` order and V at `[past_bytes .. 2 * past_bytes)` in
+    // `[head][lane][column]` order — byte for byte what the two Align loops appended.
+    mut stage: buffer := buffer.filled(past_bytes * 2, 0 as u8)
     upload_started := time.instant()
-    stage_past_k(
-      stage_k, plane_view, plane_k_offset(stride, layer), g.head_dim, g.n_head_kv, n_past)
-    stage_past_v(
-      stage_v, plane_view, plane_v_offset(stride, layer), g.head_dim, g.n_head_kv, n_past)
+    stage_view := stage.bytes()
+    match ggml_ffi.stage_kv(
+      plane_view, plane_k_offset(stride, layer), plane_v_offset(stride, layer), stage_view,
+      g.head_dim, g.n_head_kv, n_past, "kv_plane_stage") {
+      Ok(_) => {},
+      Err(_) => { fail(o, CODE_PLANE_UNAVAILABLE, plane_detail(layer, "stage")) },
+    }
     state.upload_ns = state.upload_ns + (time.instant() - upload_started)
-    past_k_view := stage_k.bytes()
-    past_v_view := stage_v.bytes()
+    if o.code.len() > 0 { break }
+    past_k_view := stage_view[0..past_bytes]
+    past_v_view := stage_view[past_bytes..past_bytes * 2]
     if past_k_view.len() != past_bytes || past_v_view.len() != past_bytes {
       fail(o, CODE_PLANE_UNAVAILABLE, plane_detail(layer, "stage"))
       break

@@ -2464,8 +2464,7 @@ pub CHUNK_BYTES := 1048576
 // language wants; appending a 64 KiB zero block is one `memcpy` per round and stays inside the
 // reservation, so the base pointer never moves.
 pub fn prime_window(borrow mut window: buffer, bytes: i64) {
-  mut chunk: buffer := buffer(65536)
-  fill_zero(chunk, 65536)
+  mut chunk: buffer := buffer.filled(65536, 0 as u8)
   view := chunk.bytes()
   mut remaining := bytes
   loop {
@@ -2659,10 +2658,13 @@ pub fn digest_region(borrow region: slice<u8>) -> Digest {
   mut element := 0
   loop {
     if element >= count { break }
-    bits := region.u32_le(element * 4) as i64
+    // One load per element: `f32_le` then `to_bits`, which is the same reinterpretation
+    // `u32_le` performed and therefore the same `u32`, sign bit, exponent field and NaN payload
+    // included. `as i64` zero-extends, so `bit_sum` and the exponent test are unchanged.
+    value := region.f32_le(element * 4)
+    bits := value.to_bits() as i64
     bits_total = bits_total + bits
     if (bits / 8388608) % 256 == 255 { nonfinite_count = nonfinite_count + 1 }
-    value := region.f32_le(element * 4)
     accumulator = accumulator + value
     if element == 0 || value > best_value {
       best = element
