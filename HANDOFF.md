@@ -4,8 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/cuda-qwen-f16-kv`, stacked on `agent/backend-parity-ledger` (`02e1fc7`), based on `origin/main` `0457a7d`.
-Active capability: P1 Qwen F16 KV policy 2 on CUDA (executable consumer capability): code `ba9ea4f`, measurement contract `f874c10`, dedicated CUDA qualification PASS, paired campaign NOT_MET (+6.7% on the primary, 5/5 faster, below the 15% floor). The parity register branch `agent/backend-parity-ledger` (`02e1fc7`) is a separate docs candidate with its own preflight stamp. PR #276 merged at `0457a7d` (requests 64, 95, 97–116 responses and merges).
+Branch: `agent/cuda-startup-measurement`, stacked on `agent/cuda-qwen-f16-kv` (`0d77097`) and `agent/backend-parity-ledger` (`02e1fc7`), based on `origin/main` `0457a7d`.
+Active capability: P2 capped-read loader startup measurement on CUDA (executable consumer capability): `--protocol startup` in `scripts/measure-cuda-optimization` (schema 2 receipt), settled in the enablement specification, measured MET: OLMoE startup −90.25%, Qwen −30.66%, 5/5. Stacked below it: P1 (`0d77097`, preflight PASS, review repaired) and the parity register (`02e1fc7`, preflight PASS).
 PR #275 merged at `251d52b8`: registered binary optimization audit requests 97–116 in `docs/align-requests.md` and recorded Align issues #1069–#1088.
 PR #274 merged at `f8a4095`: optimized hot logits loops in `greedy` and `select` (`f32.to_bits()`), preallocated builder capacity in `tokenizer_qwen2` (`array_builder(count)`), registered Align Requests 92–96 in `docs/align-requests.md`, and filed upstream Align issues #1063–#1067.
 PR #273 merged at `ae2fecd`: adopted latest Align compiler and runtime (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`), adopted typed slice writers, buffer.filled, array_builder capacity, in-place array truncate, integer match range/value patterns, is_char_boundary, and verified all suites.
@@ -52,7 +52,7 @@ Completed work:
 
 Next actions in priority order (backend parity items lead; register: `docs/backend-parity.md` sections 5 and 6):
 1. P1: done. F16 KV policy 2 selected for Qwen sessions on CUDA (`ba9ea4f`); dedicated CUDA qualification PASS; paired local campaign result NOT_MET (+6.7% on the primary, below the 15% floor). Receipts are observer-invalid (Claude Code CLI CPU); no rerun scheduled, see the register's P1 deferral.
-2. P2: measure capped-read loader startup on CUDA (five alternating pairs per model, startup and first-request clocks separate).
+2. P2: done. Capped-read loader startup measured on CUDA against synthetic control `5fbecf17`: OLMoE 17.125 s → 1.669 s (−90.25%), Qwen −30.66%, 5/5; receipt observer-invalid (Claude Code CLI CPU), same deferral as P1.
 3. C0: re-establish the CPU baseline at current main with the item-69 fixed-request protocol.
 4. P3: re-run the `llama-server` paired campaigns at current main, CUDA first, then Metal, with a fresh precommitted ledger; both existing results predate O1, PR #243, capped-read and `5efd7a0`.
 5. C1: set the ggml CPU thread count (default versus option decision; keep the CPU reference arm deterministic).
@@ -93,6 +93,7 @@ Latest durable verification:
 - `python3 scripts/pre-pr --base 02e1fc7 --owner-test cuda-measurement -- scripts/measure-cuda-optimization --self-test`: PASS at the repaired branch head (hosted; owner cuda-measurement), rerun after the review repair.
 - `scripts/measure-cuda-optimization` paired campaign (control `0457a7d`, candidate `f874c10`, run 1): primary `qwen2 warm-long-cached` +6.71%, 5/5 faster; NOT_MET (below 15% floor); all guardrails pass.
 - `scripts/measure-cuda-optimization` paired campaign (run 2, repeat): primary `qwen2 warm-long-cached` +6.69%, 5/5 faster; NOT_MET; all guardrails pass.
+- P2 (2026-09-20, candidate `aad5553`): `scripts/measure-cuda-optimization --self-test`: PASS; `python3 scripts/check-python-boundary --strict`: PASS; `scripts/measure-cuda-optimization --protocol startup` (control `5fbecf17`, candidate `aad5553`): PASS, OLMoE startup −90.25% 5/5, Qwen −30.66% 5/5, all guardrails pass.
 
 Retained from the PR #274 checkpoint (source unchanged on this branch):
 - `alignc check-per-unit src/main.align`: PASS (checked 155 unit(s) per-unit).

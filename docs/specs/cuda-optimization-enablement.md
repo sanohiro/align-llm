@@ -650,3 +650,37 @@ a time-to-passing-patch result.
 `scripts/measure-cuda-optimization` keeps its `BENCHMARK_OR_MEASUREMENT` classification in
 `docs/python-boundary-audit.md`; the startup protocol adds no product surface, and the audit entry
 names it explicitly.
+
+#### Result (2026-09-20)
+
+Measured on RTX 4070 Ti under WSL2 at Align pin `8c8bfbc7`, candidate `aad5553` (`source_dirty`
+false), control `5fbecf17`, 5 alternating pairs per model, one fresh worker per arm, one
+`cold-short` greedy 128-token request, receipt `p2-run1/p2-startup/result.json` (schema 2),
+status PASS.
+
+| Model | Control `startup_ns` median | Candidate `startup_ns` median | Median paired reduction | Faster pairs | `rchar` control -> candidate |
+| --- | --- | --- | --- | --- | --- |
+| olmoe (primary) | 17.125 s (16.669-17.623) | 1.669 s (1.664-1.714) | 90.25% | 5/5 | 54.48 GB -> 4.57 GB |
+| qwen2 (guardrail) | 2.777 s | 1.921 s | 30.66% | 5/5 | 9.84 GB -> 5.05 GB |
+
+`client_ns` first-request guardrails: qwen2 -0.76% (within the 5% ceiling); olmoe +37.1% (paired
+0.429, 0.075, 0.44, 0.325, 0.371). The olmoe first request also benefits because the worker's
+page-cache footprint shrinks; this is a side effect of the shared clock budget, not a decode or
+whole-session claim. All exact outputs and token counts matched per pair.
+
+Verdict: MET against the predeclared local intervention target (primary at least 15% median
+reduction and candidate faster in at least 4/5 pairs; both exceeded on the primary and the
+guardrail model).
+
+The external load observer recorded `valid: false`: the Claude Code CLI process itself exceeded
+the 0.1-core threshold at 4 campaign samples, with no other foreign process detected. This is the
+same deferral recorded for P1: a valid receipt requires running from a terminal without a Claude
+Code session attached. The measured effect (90.25%) is far above the PRIMARY floor, so the
+deferred observer validity does not put the verdict in doubt.
+
+This result explains the 2026-09-09 CUDA campaign's OLMoE startup of 16,483 ms against
+llama-server's 913 ms: that runtime (`688232c`) predates the capped-read fix `594981c`.
+
+Limits: this is a local startup intervention result on this WSL2 CUDA host only. It is not a
+llama.cpp comparison, not a whole-session or decode speedup claim, and not a time-to-passing-patch
+result.
