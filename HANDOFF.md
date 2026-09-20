@@ -91,6 +91,7 @@ Latest durable verification:
 - `python3 scripts/check-python-boundary --strict`: PASS.
 - `scripts/measure-cuda-optimization --self-test`: PASS.
 - `python3 scripts/pre-pr --base 02e1fc7 --owner-test cuda-measurement -- scripts/measure-cuda-optimization --self-test`: PASS at the repaired branch head (hosted; owner cuda-measurement), rerun after the review repair.
+- `python3 scripts/pre-pr --base 0d77097 --owner-test cuda-measurement -- scripts/measure-cuda-optimization --self-test`: PASS at the repaired branch head (hosted; owner cuda-measurement), rerun after the review repair.
 - `scripts/measure-cuda-optimization` paired campaign (control `0457a7d`, candidate `f874c10`, run 1): primary `qwen2 warm-long-cached` +6.71%, 5/5 faster; NOT_MET (below 15% floor); all guardrails pass.
 - `scripts/measure-cuda-optimization` paired campaign (run 2, repeat): primary `qwen2 warm-long-cached` +6.69%, 5/5 faster; NOT_MET; all guardrails pass.
 - P2 (2026-09-20, candidate `aad5553`): `scripts/measure-cuda-optimization --self-test`: PASS; `python3 scripts/check-python-boundary --strict`: PASS; `scripts/measure-cuda-optimization --protocol startup` (control `5fbecf17`, candidate `aad5553`): PASS, OLMoE startup −90.25% 5/5, Qwen −30.66% 5/5, all guardrails pass.
