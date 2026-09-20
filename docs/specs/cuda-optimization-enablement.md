@@ -213,11 +213,13 @@ remaining performance gate are recorded below; design intent alone is not accept
 `scripts/measure-cuda-optimization --profile PROFILE --control-source CHECKOUT
 --control BUILD --candidate-source CHECKOUT --candidate BUILD --output NEW_DIRECTORY`
 executes only the fixed local protocol above. The control must be the clean commit
-nominated by `--control-commit SHA` (default `4bf8011`), and `--primary MODEL:CASE`
+nominated by `--control-commit SHA` (default the full 40-character lowercase hex of
+`4bf8011`; short forms are refused), and `--primary MODEL:CASE`
 selects the one primary row (default `olmoe:warm-long-cached`); every other model/case
 stays a guardrail. Both values must already be settled by a dated campaign paragraph in
 this section before a campaign runs, and both are recorded as `policy.control_commit`
-and `policy.primary` in the receipt. These options replace the earlier practice of
+and `policy.primary` in the receipt, and each `comparisons[]` row carries a `primary`
+boolean. These options replace the earlier practice of
 editing the tool's `CONTROL` constant on an experimental branch; the schema is unchanged
 because no consumer parses this receipt. Both builds and their complete source closures
 are verified before and after the run,
@@ -470,15 +472,17 @@ latency are separate pieces of evidence and must remain separately reported.
 ### Qwen F16 KV CUDA campaign (2026-09-20)
 
 Settled before implementation of its measurement run. The intervention under test is the
-retained F16 KV policy 2 for Qwen sessions on CUDA (`eff8d5e` on `agent/cuda-qwen-f16-kv`
+retained F16 KV policy 2 for Qwen sessions on CUDA (`ba9ea4f` on `agent/cuda-qwen-f16-kv`
 and its committed successor); the mechanism is fewer retained KV bytes and eliminated
 per-layer casts, so the primary row moves to the request where retained KV dominates.
 
 - CONTROL: clean `0457a7d4d4645bb733b4cbf96126c5d79c4da31d` (`main`), built on the current
   Align pin `8c8bfbc7` and already carrying the shipped OLMoE F16 policy 2 on CUDA. It is the
-  merge base of this branch with `main`; the one intervening commit `27d13fd` changes only
-  documentation, outside the measured source closure (`src/`, `scripts/`, `eval/`,
-  `.align-revision`, `Makefile`), so the pair isolates the Qwen selection alone.
+  merge base of this branch with `main`; the intervening commits `27d13fd` and `02e1fc7`
+  change only documentation (`git diff --stat 0457a7d 02e1fc7 -- src scripts eval
+  .align-revision Makefile` is empty), outside the measured source closure (`src/`,
+  `scripts/`, `eval/`, `.align-revision`, `Makefile`), so the pair isolates the Qwen
+  selection alone.
 - CANDIDATE: the clean committed head of this branch, rebuilt after any source edit so its
   closure matches `build.json`.
 - PRIMARY: `qwen2` `warm-long-cached`, the 700-token cached prompt where retained KV bytes
@@ -510,9 +514,10 @@ failure or an unmet primary floor is recorded in full, with no pair dropped or c
 ### Result (2026-09-20)
 
 The campaign ran twice against clean control `0457a7d` on the current pin `8c8bfbc7`,
-candidate build source `82dab13` (`eff8d5e`, `source_dirty` false). Both runs pass all
-seven guardrails and all paired exact outputs/counts; the primary floor is NOT_MET both
-times.
+candidate build `source_commit` `82dab13`, the pre-rebase form of `f874c10` with an
+identical measured closure (`git diff --stat 82dab13 e2f4d15 -- src scripts eval
+.align-revision Makefile` is empty); `source_dirty` false. Both runs pass all seven
+guardrails and all paired exact outputs/counts; the primary floor is NOT_MET both times.
 
 | Case | Run 1 median | Run 2 median | Faster pairs (primary) |
 | --- | ---: | ---: | --- |
@@ -528,8 +533,9 @@ times.
 Verdict: **NOT_MET** in both runs. The primary row (`qwen2 warm-long-cached`) reaches
 about 6.7% median paired reduction with 5/5 candidate-faster pairs, below the
 predeclared 15% floor. Startup medians were unaffected by the intervention (both arms
-post capped-read): qwen2 control 1.799 s / candidate 1.846 s; olmoe 1.559 s / 1.573 s.
-Each run spanned about 13 minutes.
+post capped-read). Run 1: qwen2 control 1.799 s / candidate 1.846 s, olmoe 1.559 s /
+1.573 s; run 2: qwen2 1.847 s / 1.832 s, olmoe 1.634 s / 1.598 s. Each run spanned about
+13 minutes.
 
 The external clock-aware load observer (the retained 2026-09-14 observer, receipts under
 `gpu-cuda-parity-20260920/` and `gpu-cuda-parity-20260920/p1-run2/` in the local evidence
@@ -543,4 +549,6 @@ Interpretation: the intervention is retained as backend parity and correctness, 
 shipping performance claim. Qwen now matches OLMoE's F16 KV policy 2 on CUDA (fewer
 retained KV bytes, eliminated per-layer casts, and a real memory reduction), but the
 measured local speed effect on this host stays well under the 15% floor that would make
-it a shipping performance claim.
+it a shipping performance claim. Coverage note: no owner exercises seeded, non-greedy
+Qwen sampling under policy 2 (the reuse smoke seeds OLMoE only, the oracle's Qwen
+requests are greedy); the change is retained as parity, not as a numeric claim.
