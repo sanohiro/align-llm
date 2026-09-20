@@ -98,6 +98,14 @@ path. `src/patch_eval.align` also joins the data-only source records for target-
 recognition. The table below preserves the preparation baseline; current developer-tool count
 is 169 and the eight product violations remain unchanged.
 
+As of 2026-09-20 `scripts/check-python-boundary` reports **274 Python files** and
+**83 embedded hosts**. The newest row is the register item C0 owner
+`scripts/run-olmoe-platform-sampled-runtime-baseline`
+(`docs/specs/cpu-baseline-linux.md`), classified `BENCHMARK_OR_MEASUREMENT`: it owns a fixed
+paired experiment with a committed platform-profile identity table and no product caller.
+That classification's current count is 48 against the 44 preparation baseline recorded in the
+table below; the table is the frozen preparation baseline and is not restated per capability.
+
 | Classification | Files | Meaning in this audit |
 | --- | ---: | --- |
 | `INDEPENDENT_ORACLE` | 13 | Independently verifies bytes, records or results; no shipping decision authority. |

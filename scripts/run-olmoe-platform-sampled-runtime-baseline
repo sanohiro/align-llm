@@ -1,0 +1,1365 @@
+#!/usr/bin/env python3
+"""Re-establish the OLMoE legacy-path CPU inference baseline on one named platform profile.
+
+Register item C0 of `docs/backend-parity.md`. The measurement contract is
+`docs/specs/cpu-baseline-linux.md`.
+
+This owner reproduces item 69's sampled-portfolio protocol byte-for-byte where the protocol is
+what makes two runs comparable, and replaces only host-binding identity with a checked-in
+platform-profile table. It is a baseline: it has no gate, and its numbers are comparable only
+against another run of the same profile on the same host.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import importlib.util
+from importlib.machinery import SourceFileLoader
+import io
+import json
+import os
+import platform
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+ISOLATED_RELATIVE = "scripts/run-olmoe-isolated-sampled-runtime-decision"
+LOADER = SourceFileLoader("olmoe_isolated_for_platform_baseline", str(ROOT / ISOLATED_RELATIVE))
+SPEC = importlib.util.spec_from_loader(LOADER.name, LOADER)
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError("cannot load the isolated sampled runtime owner")
+isolated = importlib.util.module_from_spec(SPEC)
+sys.modules[LOADER.name] = isolated
+SPEC.loader.exec_module(isolated)
+sampled = isolated.previous
+coding = sampled.base
+
+LABEL = "C0-OLMOE-PLATFORM-SAMPLED-RUNTIME-BASELINE"
+KIND = "C0_OLMOE_PLATFORM_SAMPLED_RUNTIME_BASELINE"
+CEILING_SECONDS = 25 * 60
+PROFILE_SCHEMA_VERSION = 1
+
+# ---------------------------------------------------------------------------
+# Protocol-essential workload. Inherited from item 69 byte-for-byte: changing any of it would
+# make this baseline incomparable with the measurement it re-establishes.
+# ---------------------------------------------------------------------------
+MODEL_BYTES = 4_213_512_192
+MODEL_SHA256 = "4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f"
+PACK_SHA256 = "20423ebf5a9080eacb11c12b9107b52912b6c7ad4d45a94f92a7cead6c7df6ae"
+TASK_SHA256 = "1884f01a329752c1383081342c65d062241aefaefff2f206f6604008bde74940"
+PROMPT_SHA256 = "0b3b037f2063731dec7c5ea0c8acd8b2ffeff4b940a6b32716ac91207c9e284b"
+KNOWN_GOOD_PATCH_SHA256 = "5d6b107e706a5a55c945bc0b41296e255013a1516e0a6211ccc9da65001252dc"
+BUDGET = 975_175_680
+ALIAS = "olmoe"
+TASK = ROOT / "eval/tasks/coding-v1/python-inclusive-range/task.json"
+ORDERS = (("local", "runtime"), ("runtime", "local"), ("runtime", "local"), ("local", "runtime"))
+TEMPERATURE_MICROS = 300_000
+SEEDS = (1, 2, 3, 4, 5, 6, 7, 8)
+MAX_TOKENS = 128
+SERVER_THREADS = 4
+# ggml's own default, `GGML_DEFAULT_N_THREADS` in the pinned ggml's `ggml/include/ggml.h`. The
+# shim never calls `ggml_graph_plan`/`n_threads`, so the runtime arm runs at this value.
+EFFECTIVE_GGML_THREADS = 4
+
+EXPECTED_WORKLOAD = (
+    MODEL_BYTES,
+    MODEL_SHA256,
+    BUDGET,
+    ALIAS,
+    TASK,
+    PROMPT_SHA256,
+    KNOWN_GOOD_PATCH_SHA256,
+    ORDERS,
+    TEMPERATURE_MICROS,
+    SEEDS,
+    MAX_TOKENS,
+)
+
+PREREQUISITE_NAMES = (
+    "ALIGN_LLM_OLMOE_MODEL",
+    "ALIGN_LLM_MOE_ALIGNPACK",
+    "ALIGN_LLM_MOE_GEOMETRY",
+    "ALIGN_LLM_GGML_INCLUDE",
+    "ALIGN_LLM_GGML_LIB",
+    "ALIGN_LLM_LLAMA_SERVER",
+)
+
+# ---------------------------------------------------------------------------
+# Profile-keyed identity. One row per host class, committed before a timed run. The order of
+# IDENTITY_FIELDS is the order `--print-identity` prints and the order drift is reported in.
+# ---------------------------------------------------------------------------
+IDENTITY_FIELDS = (
+    "os",
+    "architecture",
+    "align_revision",
+    "compiler_sha256",
+    "c_compiler_sha256",
+    "c_compiler_version_sha256",
+    "linker_search_sha256",
+    "ggml_libraries",
+    "geometry_sha256",
+    "server_sha256",
+    "server_version",
+    "validator_kind",
+    "validator_image_id",
+    "validator_interpreter_sha256",
+    "validator_interpreter_version_sha256",
+)
+
+PROFILES: dict[str, dict[str, Any]] = {
+    # Carried from the item 69 / item 78 owners so the table is complete. These values were NOT
+    # re-observed by this owner; they belong to Align pin `8cefc803` and will refuse under this
+    # owner's `8c8bfbc7` pin until somebody re-runs `--print-identity` on that host.
+    "darwin-aarch64-v1": {
+        "os": "Darwin",
+        "architecture": "arm64",
+        "align_revision": "8cefc803d5c7f883a8db5b67250ed4ed069b43a4",
+        "compiler_sha256": "f972b4a196ed5608a0c52cc02dbf8267cfc236065359315a572d601aa04ea541",
+        "c_compiler_sha256": "179301dcb41ea78accc3fa0048a7e6f6710d891945a751a34addd622020c1818",
+        "c_compiler_version_sha256": (
+            "ea3037e0630fa16798079372fdc24f6542d021dadda4915cc979799682d78295"
+        ),
+        "linker_search_sha256": "5cb52d849e4b5dd2e0380c9fd272279c8b3e572dc563691f60fc8ecbf72d92cf",
+        "ggml_libraries": [
+            {
+                "name": "libggml-base.0.21.0.dylib",
+                "bytes": 506_160,
+                "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574",
+            },
+            {
+                "name": "libggml-base.0.dylib",
+                "bytes": 506_160,
+                "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574",
+            },
+            {
+                "name": "libggml-base.dylib",
+                "bytes": 506_160,
+                "sha256": "5d193ff57adff4912c686903b38a2802a716639d2240cebd4275faeee4d94574",
+            },
+            {
+                "name": "libggml.0.21.0.dylib",
+                "bytes": 60_272,
+                "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734",
+            },
+            {
+                "name": "libggml.0.dylib",
+                "bytes": 60_272,
+                "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734",
+            },
+            {
+                "name": "libggml.dylib",
+                "bytes": 60_272,
+                "sha256": "c3d660fbd37d5bae33e68371d27aab78b9875ccb5676532d3f1cfe1cea6f8734",
+            },
+        ],
+        "geometry_sha256": "1f828d2c601e62311a4d7e5cd6b9f5cd9295fd1513b9b4c35f0119ad82d11ada",
+        "server_sha256": "98c3c05a1c2689295335b4cd01364fb2f3f7c6956c051b0dfaa5e52812fdf72c",
+        "server_version": "build 10566, commit bb4caa754",
+        "validator_kind": "docker",
+        "validator_image_id": (
+            "sha256:33fa9e4446ab1a5ca849c57ea49e2e2e4585488aa1cd4d7b2940801bad84cb54"
+        ),
+        "validator_interpreter_sha256": None,
+        "validator_interpreter_version_sha256": None,
+    },
+    # Observed on this repository's Linux host with `--print-identity` and committed before any
+    # timed run (WSL2, Ryzen 9 5950X, 32 logical CPUs, 62 GiB). The llama.cpp worktree carries no
+    # tags, so its `--version` line reports `build 1` rather than the upstream build number; the
+    # commit `bb4caa754` is the same source revision the Darwin profile pins.
+    "linux-x86_64-v1": {
+        "os": "Linux",
+        "architecture": "x86_64",
+        "align_revision": "8c8bfbc7a3169e84ecc8415f5149ab8c61afe863",
+        "compiler_sha256": "e1758e7c4b5bdbf7d8cccada4f9faff495d61d8fc0fea73d15f70d91aab69e9a",
+        "c_compiler_sha256": "a23ecab8ff08f09ad8c80602c2c5df7f49e09c25905cb8975902e101bf72635f",
+        "c_compiler_version_sha256": (
+            "2ae7618a3dfad6644f70dbf191f205882a96d3aac6350978839c4c19389f95a5"
+        ),
+        "linker_search_sha256": None,
+        "ggml_libraries": [
+            {
+                "name": "libggml-base.so",
+                "bytes": 882_000,
+                "sha256": "7702aad7e1b40b58859ebefa83c3b1752519b48e99e366b0114b3ceb31e667d5",
+            },
+            {
+                "name": "libggml-base.so.0",
+                "bytes": 882_000,
+                "sha256": "7702aad7e1b40b58859ebefa83c3b1752519b48e99e366b0114b3ceb31e667d5",
+            },
+            {
+                "name": "libggml-base.so.0.21.0",
+                "bytes": 882_000,
+                "sha256": "7702aad7e1b40b58859ebefa83c3b1752519b48e99e366b0114b3ceb31e667d5",
+            },
+            {
+                "name": "libggml-cpu.so",
+                "bytes": 1_139_368,
+                "sha256": "514acab0676fa6e2ca905a0effd9945e723256a92a7e7715094bbe7ec0879bf8",
+            },
+            {
+                "name": "libggml-cpu.so.0",
+                "bytes": 1_139_368,
+                "sha256": "514acab0676fa6e2ca905a0effd9945e723256a92a7e7715094bbe7ec0879bf8",
+            },
+            {
+                "name": "libggml-cpu.so.0.21.0",
+                "bytes": 1_139_368,
+                "sha256": "514acab0676fa6e2ca905a0effd9945e723256a92a7e7715094bbe7ec0879bf8",
+            },
+            {
+                "name": "libggml.so",
+                "bytes": 55_768,
+                "sha256": "eaba5044d34e4257ac6ac8cad0305ca26303be9a713c246ec501d75e1a0d129b",
+            },
+            {
+                "name": "libggml.so.0",
+                "bytes": 55_768,
+                "sha256": "eaba5044d34e4257ac6ac8cad0305ca26303be9a713c246ec501d75e1a0d129b",
+            },
+            {
+                "name": "libggml.so.0.21.0",
+                "bytes": 55_768,
+                "sha256": "eaba5044d34e4257ac6ac8cad0305ca26303be9a713c246ec501d75e1a0d129b",
+            },
+        ],
+        "geometry_sha256": "1b7da1528dfabd152bf69e319c1053ed3da781423bcf971478fcd465be9e5f4f",
+        "server_sha256": "df7d658d3b97ce9763d079c6b82f8764c997fb8f220a44bed0a3f5fb3b44d0b1",
+        "server_version": "version: 0.2.0-dev (build 1, commit bb4caa754)",
+        "validator_kind": "native",
+        "validator_image_id": None,
+        "validator_interpreter_sha256": (
+            "b11789749a0e6ef66b7a47b2983adfe6524bd49e7c1d0353495f4711e5dec6db"
+        ),
+        "validator_interpreter_version_sha256": (
+            "a3e9367eea0cc3baa121a71c0c1db876e7f7803b23ff894399e25bde02fa67fb"
+        ),
+    },
+}
+
+TOP_KEYS = {
+    "schema_version", "artifact_kind", "status", "gate", "platform_profile",
+    "platform_profile_schema_version", "comparable_across_hosts", "model", "baseline",
+    "candidate", "task", "sampling", "validator", "environment", "page_cache_preload_ns",
+    "samples", "aggregate", "elapsed_ns",
+}
+BASELINE_KEYS = {
+    "provider", "runtime_identity", "server_sha256", "server_threads",
+    "effective_ggml_threads", "context", "warmup", "server_scope", "server_instances",
+    "startup_in_primary_metric", "teardown_in_primary_metric",
+}
+CANDIDATE_KEYS = {
+    "provider", "align_llm_head", "align_revision", "compiler_sha256", "helper_sha256",
+    "shim_sha256", "ggml_libraries", "pack_sha256", "geometry_sha256", "cache_budget_bytes",
+}
+TASK_KEYS = {"task_id", "task_sha256", "prompt_sha256", "maximum_completion_tokens"}
+SAMPLING_KEYS = {"temperature_micros", "ordered_seeds", "maximum_candidates", "stop_on_first_pass"}
+VALIDATOR_KEYS = {
+    "kind", "image_id", "interpreter_sha256", "interpreter_version_sha256",
+}
+ENVIRONMENT_KEYS = {
+    "os", "release", "architecture", "cpu_count", "memory_bytes", "c_compiler_sha256",
+    "c_compiler_version_sha256", "linker_search_sha256",
+}
+SAMPLE_KEYS = {"pair_index", "order", "local", "runtime", "isolation", "page_cache"}
+PAGE_CACHE_KEYS = {"local_before", "local_after", "runtime_before", "runtime_after"}
+PAGE_CACHE_ROW_KEYS = {
+    "buffers_bytes", "cached_bytes", "reclaimable_bytes", "buff_cache_gib", "free_g_mem_line",
+}
+
+
+class BaselineError(RuntimeError):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Inherited contract
+# ---------------------------------------------------------------------------
+def imported_workload() -> tuple[Any, ...]:
+    return (
+        sampled.MODEL_BYTES,
+        sampled.MODEL_SHA256,
+        sampled.BUDGET,
+        sampled.ALIAS,
+        sampled.TASK.resolve(),
+        coding.bytes_sha256(sampled.PROMPT_TEXT.encode("utf-8")),
+        coding.bytes_sha256(sampled.KNOWN_GOOD_PATCH.encode("utf-8")),
+        sampled.ORDERS,
+        sampled.TEMPERATURE_MICROS,
+        sampled.SEEDS,
+        sampled.MAX_TOKENS,
+    )
+
+
+def validate_imported_contract() -> None:
+    """Refuse a predecessor whose measurement contract no longer matches item 69's.
+
+    This is deliberately semantic rather than a byte pin on the predecessor files: item 69's own
+    owner already refuses at current `main` because one chain file changed without any change to
+    the workload it defines.
+    """
+    if imported_workload() != EXPECTED_WORKLOAD:
+        raise BaselineError("inherited sampled workload drifted")
+    if (PACK_SHA256, TASK_SHA256, PROMPT_SHA256) != (
+        isolated.EXPECTED_PACK_SHA256,
+        isolated.EXPECTED_TASK_SHA256,
+        isolated.EXPECTED_PROMPT_SHA256,
+    ):
+        raise BaselineError("inherited fixed-input identity drifted")
+    if isolated.CEILING_SECONDS != CEILING_SECONDS:
+        raise BaselineError("inherited cost ceiling drifted")
+
+
+# ---------------------------------------------------------------------------
+# Profiles
+# ---------------------------------------------------------------------------
+def select_profile(name: str) -> dict[str, Any]:
+    profile = PROFILES.get(name)
+    if profile is None:
+        known = ", ".join(sorted(PROFILES))
+        raise BaselineError(f"unknown platform profile: {name} (known: {known})")
+    if set(profile) != set(IDENTITY_FIELDS):
+        raise BaselineError(f"platform profile {name} has drifted fields")
+    return profile
+
+
+def mismatched_fields(observed: dict[str, Any], profile: dict[str, Any]) -> list[str]:
+    return [name for name in IDENTITY_FIELDS if observed.get(name) != profile.get(name)]
+
+
+def require_profile_identity(observed: dict[str, Any], profile: dict[str, Any]) -> None:
+    drifted = mismatched_fields(observed, profile)
+    if drifted:
+        raise BaselineError("platform profile identity drifted: " + ", ".join(drifted))
+
+
+# ---------------------------------------------------------------------------
+# Host observation
+# ---------------------------------------------------------------------------
+def parse_meminfo(text: str) -> dict[str, int]:
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        matched = re.fullmatch(r"([A-Za-z()_]+):\s+(\d+) kB", line.strip())
+        if matched is not None:
+            values[matched.group(1)] = int(matched.group(2)) * 1024
+    return values
+
+
+def free_mem_line(clean_env: dict[str, str]) -> str | None:
+    try:
+        result = subprocess.run(
+            ["free", "-g"],
+            cwd=str(ROOT),
+            env={**clean_env, "LC_ALL": "C"},
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.decode("utf-8", "replace").splitlines():
+        if line.startswith("Mem:"):
+            return " ".join(line.split())
+    return None
+
+
+def page_cache_observation(clean_env: dict[str, str]) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "buffers_bytes": None,
+        "cached_bytes": None,
+        "reclaimable_bytes": None,
+        "buff_cache_gib": None,
+        "free_g_mem_line": free_mem_line(clean_env),
+    }
+    meminfo = Path("/proc/meminfo")
+    if meminfo.is_file():
+        values = parse_meminfo(meminfo.read_text(encoding="utf-8", errors="replace"))
+        buffers = values.get("Buffers")
+        cached = values.get("Cached")
+        reclaimable = values.get("SReclaimable")
+        row["buffers_bytes"] = buffers
+        row["cached_bytes"] = cached
+        row["reclaimable_bytes"] = reclaimable
+        if None not in (buffers, cached, reclaimable):
+            # `free` reports buff/cache as Buffers + Cached + SReclaimable.
+            row["buff_cache_gib"] = (buffers + cached + reclaimable) // (1024**3)
+    return row
+
+
+def total_memory_bytes() -> int | None:
+    meminfo = Path("/proc/meminfo")
+    if not meminfo.is_file():
+        return None
+    return parse_meminfo(meminfo.read_text(encoding="utf-8", errors="replace")).get("MemTotal")
+
+
+def preload_page_cache(paths: tuple[Path, ...]) -> int:
+    """Read each fixed input once so the timed pairs do not pay first-touch page-in cost."""
+    started_ns = time.monotonic_ns()
+    for path in paths:
+        with path.open("rb") as source:
+            while source.read(64 * 1024 * 1024):
+                pass
+    return time.monotonic_ns() - started_ns
+
+
+def interpreter_identity() -> tuple[str, str]:
+    executable = Path(sys.executable).resolve()
+    version = subprocess.run(
+        [str(executable), "-VV"],
+        cwd=str(ROOT),
+        capture_output=True,
+        timeout=30,
+        check=True,
+    )
+    return coding.file_sha256(executable), coding.command_output_sha256(version)
+
+
+def server_version_line(server: Path, clean_env: dict[str, str], deadline: float) -> str:
+    result = sampled.run_process(
+        [str(server), "--version"], deadline=deadline, maximum=30, env=clean_env, check=False
+    )
+    text = (result.stdout + result.stderr).decode("utf-8", "replace")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("version:"):
+            return stripped
+    raise BaselineError("llama-server --version printed no version line")
+
+
+def observe_identity(
+    required: tuple[Path, ...],
+    clean_env: dict[str, str],
+    linker_search: str,
+    deadline: float,
+) -> dict[str, Any]:
+    _model, _pack, geometry, _include, library, server = required
+    compiler_output = sampled.run_process(
+        [str(ROOT / "scripts/align-toolchain"), "ensure", "compiler"],
+        deadline=deadline,
+        maximum=300,
+        env=clean_env,
+    )
+    compiler = Path(compiler_output.stdout.decode("utf-8").strip())
+    if not compiler.is_file() or not os.access(compiler, os.X_OK):
+        raise BaselineError("managed pinned compiler is unusable")
+    c_compiler_name = shutil.which("cc", path=clean_env.get("PATH"))
+    if c_compiler_name is None:
+        raise BaselineError("the default C compiler is unavailable")
+    c_compiler = Path(c_compiler_name).resolve()
+    c_compiler_version = sampled.run_process(
+        [str(c_compiler), "--version"], deadline=deadline, maximum=30, env=clean_env
+    )
+    validator = coding.resolve_validator(deadline)
+    interpreter_sha256: str | None = None
+    interpreter_version_sha256: str | None = None
+    if validator["kind"] == "native":
+        interpreter_sha256, interpreter_version_sha256 = interpreter_identity()
+    return {
+        "os": platform.system(),
+        "architecture": platform.machine(),
+        "align_revision": (ROOT / ".align-revision").read_text(encoding="utf-8").strip(),
+        "compiler_sha256": coding.file_sha256(compiler),
+        "c_compiler_sha256": coding.file_sha256(c_compiler),
+        "c_compiler_version_sha256": coding.command_output_sha256(c_compiler_version),
+        "linker_search_sha256": (
+            None if not linker_search else coding.bytes_sha256(linker_search.encode("utf-8"))
+        ),
+        "ggml_libraries": coding.library_identities(library),
+        "geometry_sha256": coding.file_sha256(geometry),
+        "server_sha256": coding.file_sha256(server),
+        "server_version": server_version_line(server, clean_env, deadline),
+        "validator_kind": validator["kind"],
+        "validator_image_id": validator["image_id"],
+        "validator_interpreter_sha256": interpreter_sha256,
+        "validator_interpreter_version_sha256": interpreter_version_sha256,
+    }
+
+
+def identity_document(
+    profile_name: str, observed: dict[str, Any], profile: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "schema_version": PROFILE_SCHEMA_VERSION,
+        "artifact_kind": KIND + "_IDENTITY",
+        "platform_profile": profile_name,
+        "identity": {name: observed.get(name) for name in IDENTITY_FIELDS},
+        "committed": {name: profile.get(name) for name in IDENTITY_FIELDS},
+        "mismatched_fields": mismatched_fields(observed, profile),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
+def prerequisites() -> tuple[Path, ...] | None:
+    rows = []
+    for name in PREREQUISITE_NAMES:
+        if name in ("ALIGN_LLM_GGML_INCLUDE", "ALIGN_LLM_GGML_LIB"):
+            rows.append((name, coding.configured_directory(name)))
+        elif name == "ALIGN_LLM_LLAMA_SERVER":
+            rows.append((name, coding.configured_file(name, executable=True)))
+        else:
+            rows.append((name, coding.configured_file(name)))
+    missing = next((name for name, path in rows if path is None), None)
+    if missing is not None:
+        print(f"{LABEL}: N/A ({missing} unset)")
+        return None
+    return tuple(path.resolve() for _, path in rows)  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# Owned run loop
+#
+# `sampled.measure_candidate` and `sampled.measure_portfolio` are not reusable here: they call
+# the module-global `sampled.validate_patch`, which runs the validator with
+# `sampled.decision_environment()` and that function scrubs `ALIGN_LLM_TEMP_ROOT`. On Linux the
+# validator resolves as `native` and refuses an external patch without an owned temporary root
+# ("candidate patch escapes the project and temporary roots"). The two functions below are the
+# predecessor's loop with validation routed through `coding.validate_patch_details`, which owns
+# that root. Candidate/portfolio shape validation is still the predecessor's.
+# ---------------------------------------------------------------------------
+def validate_patch(
+    patch: Path,
+    work: Path,
+    deadline: float,
+    validator: dict[str, Any],
+    clean_env: dict[str, str],
+) -> tuple[bool, int]:
+    passed, elapsed_ns, _diagnostic = coding.validate_patch_details(
+        patch, work, deadline, validator, env=clean_env
+    )
+    return passed, elapsed_ns
+
+
+def measure_candidate(
+    arm: str,
+    pair_index: int,
+    index: int,
+    seed: int,
+    helper: Path,
+    endpoint: str,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    prompt: Path,
+    work: Path,
+    runtime_env: dict[str, str],
+    deadline: float,
+    validator: dict[str, Any],
+    clean_env: dict[str, str],
+) -> dict[str, Any]:
+    record_path = work / f"pair-{pair_index}-{arm}-candidate-{index}.json"
+    argv = sampled.candidate_command(
+        arm, helper, endpoint, model, pack, geometry, seed, prompt, record_path
+    )
+    started_ns = time.monotonic_ns()
+    process = sampled.run_process(
+        argv, deadline=deadline, maximum=360, env=runtime_env, check=False
+    )
+    command_wall_ns = time.monotonic_ns() - started_ns
+    if not record_path.is_file():
+        raise BaselineError(
+            f"{arm} candidate {index} returned {process.returncode} without a provider record: "
+            + process.stderr.decode("utf-8", "replace")[-4096:]
+        )
+    record = coding.parse_record(record_path, command_wall_ns, arm)
+    if record["status"] != "ok" or process.returncode != 0:
+        raise BaselineError(f"{arm} candidate {index} provider or seed request failed")
+    expected_endpoint = endpoint if arm == "local" else "in-process"
+    expected_model = ALIAS if arm == "local" else str(model)
+    if record["endpoint"] != expected_endpoint or record["model"] != expected_model:
+        raise BaselineError(f"{arm} candidate {index} provider identity drifted")
+
+    output = record["output"]
+    patch_sha256: str | None = None
+    validation_elapsed_ns = 0
+    status = "INVALID_PATCH"
+    try:
+        patch_text = coding.extract_patch(output)
+    except coding.DecisionError:
+        patch_text = None
+    if patch_text is not None:
+        patch = work / f"pair-{pair_index}-{arm}-candidate-{index}.patch"
+        patch.write_text(patch_text, encoding="utf-8")
+        patch_sha256 = coding.file_sha256(patch)
+        passed, validation_elapsed_ns = validate_patch(
+            patch, work, deadline, validator, clean_env
+        )
+        status = "PASS" if passed else "FAILING_PATCH"
+    candidate = {
+        "index": index,
+        "seed": seed,
+        "status": status,
+        "provider_elapsed_ns": record["elapsed_ns"],
+        "command_wall_ns": command_wall_ns,
+        "validation_elapsed_ns": validation_elapsed_ns,
+        "completion_tokens": record["completion_tokens"],
+        "output_sha256": coding.bytes_sha256(output.encode("utf-8")),
+        "patch_sha256": patch_sha256,
+    }
+    sampled.validate_candidate(candidate, index, seed)
+    return candidate
+
+
+def measure_portfolio(
+    arm: str,
+    pair_index: int,
+    helper: Path,
+    endpoint: str,
+    model: Path,
+    pack: Path,
+    geometry: Path,
+    prompt: Path,
+    work: Path,
+    runtime_env: dict[str, str],
+    deadline: float,
+    validator: dict[str, Any],
+    clean_env: dict[str, str],
+) -> dict[str, Any]:
+    started_ns = time.monotonic_ns()
+    candidates = []
+    for index, seed in enumerate(SEEDS, start=1):
+        candidate = measure_candidate(
+            arm, pair_index, index, seed, helper, endpoint, model, pack, geometry, prompt,
+            work, runtime_env, deadline, validator, clean_env,
+        )
+        candidates.append(candidate)
+        if candidate["status"] == "PASS":
+            break
+    passing = [candidate for candidate in candidates if candidate["status"] == "PASS"]
+    selected = passing[0] if passing else None
+    portfolio = {
+        "status": "PASS" if selected is not None else "NO_PASSING_PATCH",
+        "attempted_count": len(candidates),
+        "admitted_patch_count": sum(
+            candidate["status"] != "INVALID_PATCH" for candidate in candidates
+        ),
+        "passing_count": len(passing),
+        "selected_candidate_index": None if selected is None else selected["index"],
+        "selected_seed": None if selected is None else selected["seed"],
+        "selected_patch_sha256": None if selected is None else selected["patch_sha256"],
+        "time_to_passing_patch_ns": (
+            None if selected is None else time.monotonic_ns() - started_ns
+        ),
+        "candidates": candidates,
+    }
+    sampled.validate_portfolio(portfolio)
+    return portfolio
+
+
+# ---------------------------------------------------------------------------
+# Result schema
+# ---------------------------------------------------------------------------
+def require_exact_keys(value: dict[str, Any], expected: set[str], label: str) -> None:
+    if not isinstance(value, dict) or set(value) != expected:
+        raise BaselineError(f"{label} keys drifted")
+
+
+def baseline_metadata(profile: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "provider": "local-openai",
+        "runtime_identity": profile["server_version"],
+        "server_sha256": profile["server_sha256"],
+        "server_threads": SERVER_THREADS,
+        "effective_ggml_threads": EFFECTIVE_GGML_THREADS,
+        "context": 512,
+        "warmup": False,
+        "server_scope": "one-local-portfolio",
+        "server_instances": 4,
+        "startup_in_primary_metric": False,
+        "teardown_in_primary_metric": False,
+    }
+
+
+def validate_page_cache(page_cache: dict[str, Any]) -> None:
+    require_exact_keys(page_cache, PAGE_CACHE_KEYS, "page cache")
+    for name in sorted(PAGE_CACHE_KEYS):
+        row = page_cache[name]
+        require_exact_keys(row, PAGE_CACHE_ROW_KEYS, f"page cache {name}")
+        for field in ("buffers_bytes", "cached_bytes", "reclaimable_bytes", "buff_cache_gib"):
+            value = row[field]
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+                raise BaselineError(f"page cache {name}.{field} is malformed")
+        if row["free_g_mem_line"] is not None and not isinstance(row["free_g_mem_line"], str):
+            raise BaselineError(f"page cache {name}.free_g_mem_line is malformed")
+
+
+def validate_sample(sample: dict[str, Any], pair_index: int) -> None:
+    require_exact_keys(sample, SAMPLE_KEYS, "sample")
+    if sample["pair_index"] != pair_index or sample["order"] != list(ORDERS[pair_index - 1]):
+        raise BaselineError("balanced pair schedule drifted")
+    for arm in ("local", "runtime"):
+        if not isinstance(sample[arm], dict):
+            raise BaselineError("sample portfolio was malformed")
+        sampled.validate_portfolio(sample[arm])
+    isolated.validate_isolation(sample["isolation"])
+    validate_page_cache(sample["page_cache"])
+
+
+def validate_result(result: dict[str, Any], profile_name: str) -> None:
+    profile = select_profile(profile_name)
+    require_exact_keys(result, TOP_KEYS, "result")
+    if (
+        result["schema_version"] != 1
+        or result["artifact_kind"] != KIND
+        or result["status"] != "COMPLETE"
+        or result["gate"] != "none"
+        or result["platform_profile"] != profile_name
+        or result["platform_profile_schema_version"] != PROFILE_SCHEMA_VERSION
+        or result["comparable_across_hosts"] is not False
+        or isinstance(result["elapsed_ns"], bool)
+        or not isinstance(result["elapsed_ns"], int)
+        or result["elapsed_ns"] <= 0
+        or isinstance(result["page_cache_preload_ns"], bool)
+        or not isinstance(result["page_cache_preload_ns"], int)
+        or result["page_cache_preload_ns"] < 0
+    ):
+        raise BaselineError("result scalars drifted")
+    if result["model"] != {
+        "bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe",
+    }:
+        raise BaselineError("result model identity drifted")
+    if result["baseline"] != baseline_metadata(profile):
+        raise BaselineError("result baseline metadata drifted")
+    candidate = result["candidate"]
+    require_exact_keys(candidate, CANDIDATE_KEYS, "result candidate")
+    if (
+        candidate["provider"] != "align-runtime"
+        or not isinstance(candidate["align_llm_head"], str)
+        or re.fullmatch(r"[0-9a-f]{40}", candidate["align_llm_head"]) is None
+        or candidate["align_revision"] != profile["align_revision"]
+        or candidate["compiler_sha256"] != profile["compiler_sha256"]
+        or not isolated.valid_digest(candidate["helper_sha256"])
+        or not isolated.valid_digest(candidate["shim_sha256"])
+        or candidate["ggml_libraries"] != profile["ggml_libraries"]
+        or candidate["pack_sha256"] != PACK_SHA256
+        or candidate["geometry_sha256"] != profile["geometry_sha256"]
+        or candidate["cache_budget_bytes"] != BUDGET
+    ):
+        raise BaselineError("result candidate identity drifted")
+    require_exact_keys(result["task"], TASK_KEYS, "task")
+    require_exact_keys(result["sampling"], SAMPLING_KEYS, "sampling")
+    require_exact_keys(result["validator"], VALIDATOR_KEYS, "validator")
+    require_exact_keys(result["environment"], ENVIRONMENT_KEYS, "environment")
+    if result["task"] != {
+        "task_id": "python-inclusive-range",
+        "task_sha256": TASK_SHA256,
+        "prompt_sha256": PROMPT_SHA256,
+        "maximum_completion_tokens": MAX_TOKENS,
+    }:
+        raise BaselineError("result task identity drifted")
+    if result["sampling"] != {
+        "temperature_micros": TEMPERATURE_MICROS,
+        "ordered_seeds": list(SEEDS),
+        "maximum_candidates": len(SEEDS),
+        "stop_on_first_pass": True,
+    }:
+        raise BaselineError("result sampling policy drifted")
+    if result["validator"] != {
+        "kind": profile["validator_kind"],
+        "image_id": profile["validator_image_id"],
+        "interpreter_sha256": profile["validator_interpreter_sha256"],
+        "interpreter_version_sha256": profile["validator_interpreter_version_sha256"],
+    }:
+        raise BaselineError("result validator identity drifted")
+    environment = result["environment"]
+    if (
+        environment["os"] != profile["os"]
+        or environment["architecture"] != profile["architecture"]
+        or not isinstance(environment["release"], str)
+        or not environment["release"]
+        or isinstance(environment["cpu_count"], bool)
+        or not isinstance(environment["cpu_count"], int)
+        or environment["cpu_count"] <= 0
+        or environment["c_compiler_sha256"] != profile["c_compiler_sha256"]
+        or environment["c_compiler_version_sha256"] != profile["c_compiler_version_sha256"]
+        or environment["linker_search_sha256"] != profile["linker_search_sha256"]
+    ):
+        raise BaselineError("result environment identity drifted")
+    if environment["memory_bytes"] is not None and (
+        isinstance(environment["memory_bytes"], bool)
+        or not isinstance(environment["memory_bytes"], int)
+        or environment["memory_bytes"] <= 0
+    ):
+        raise BaselineError("result environment memory observation is malformed")
+    samples = result["samples"]
+    if not isinstance(samples, list) or len(samples) != len(ORDERS):
+        raise BaselineError("result samples were malformed")
+    for pair_index, sample in enumerate(samples, start=1):
+        validate_sample(sample, pair_index)
+    if result["aggregate"] != sampled.aggregate(samples):
+        raise BaselineError("result aggregate drifted")
+
+
+def check_ceiling(elapsed_ns: int) -> None:
+    if elapsed_ns > CEILING_SECONDS * 1_000_000_000:
+        raise BaselineError(
+            f"complete baseline exceeded its 25-minute ceiling ({elapsed_ns / 1e9:.1f}s)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Self-test
+# ---------------------------------------------------------------------------
+def expect_error(action: Any, message: str) -> None:
+    try:
+        action()
+    except (BaselineError, sampled.DecisionError, coding.DecisionError, SystemExit):
+        return
+    raise BaselineError(message)
+
+
+def synthetic_page_cache_row() -> dict[str, Any]:
+    return {
+        "buffers_bytes": 1024,
+        "cached_bytes": 2048,
+        "reclaimable_bytes": 512,
+        "buff_cache_gib": 0,
+        "free_g_mem_line": "Mem: 62 4 37 0 21 58",
+    }
+
+
+def synthetic_samples() -> list[dict[str, Any]]:
+    local = sampled.synthetic_portfolio(time_ns=200, salt="a")
+    runtime = sampled.synthetic_portfolio(time_ns=100, salt="c")
+    isolation = {
+        "local_server_instances": 1,
+        "local_ready": True,
+        "local_sole_owned_match": True,
+        "local_alive_after_portfolio": True,
+        "local_terminated": True,
+        "local_reaped": True,
+        "matching_before_local": 0,
+        "matching_after_local": 0,
+        "matching_before_runtime": 0,
+        "matching_after_runtime": 0,
+    }
+    return [
+        {
+            "pair_index": index,
+            "order": list(order),
+            "local": {**local, "time_to_passing_patch_ns": 200 + index},
+            "runtime": {**runtime, "time_to_passing_patch_ns": 100 + index},
+            "isolation": dict(isolation),
+            "page_cache": {name: synthetic_page_cache_row() for name in sorted(PAGE_CACHE_KEYS)},
+        }
+        for index, order in enumerate(ORDERS, start=1)
+    ]
+
+
+def synthetic_result(profile_name: str) -> dict[str, Any]:
+    profile = select_profile(profile_name)
+    samples = synthetic_samples()
+    return {
+        "schema_version": 1,
+        "artifact_kind": KIND,
+        "status": "COMPLETE",
+        "gate": "none",
+        "platform_profile": profile_name,
+        "platform_profile_schema_version": PROFILE_SCHEMA_VERSION,
+        "comparable_across_hosts": False,
+        "model": {"bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe"},
+        "baseline": baseline_metadata(profile),
+        "candidate": {
+            "provider": "align-runtime",
+            "align_llm_head": "a" * 40,
+            "align_revision": profile["align_revision"],
+            "compiler_sha256": profile["compiler_sha256"],
+            "helper_sha256": "b" * 64,
+            "shim_sha256": "c" * 64,
+            "ggml_libraries": profile["ggml_libraries"],
+            "pack_sha256": PACK_SHA256,
+            "geometry_sha256": profile["geometry_sha256"],
+            "cache_budget_bytes": BUDGET,
+        },
+        "task": {
+            "task_id": "python-inclusive-range",
+            "task_sha256": TASK_SHA256,
+            "prompt_sha256": PROMPT_SHA256,
+            "maximum_completion_tokens": MAX_TOKENS,
+        },
+        "sampling": {
+            "temperature_micros": TEMPERATURE_MICROS,
+            "ordered_seeds": list(SEEDS),
+            "maximum_candidates": len(SEEDS),
+            "stop_on_first_pass": True,
+        },
+        "validator": {
+            "kind": profile["validator_kind"],
+            "image_id": profile["validator_image_id"],
+            "interpreter_sha256": profile["validator_interpreter_sha256"],
+            "interpreter_version_sha256": profile["validator_interpreter_version_sha256"],
+        },
+        "environment": {
+            "os": profile["os"],
+            "release": "test",
+            "architecture": profile["architecture"],
+            "cpu_count": 32,
+            "memory_bytes": 67_000_000_000,
+            "c_compiler_sha256": profile["c_compiler_sha256"],
+            "c_compiler_version_sha256": profile["c_compiler_version_sha256"],
+            "linker_search_sha256": profile["linker_search_sha256"],
+        },
+        "page_cache_preload_ns": 1,
+        "samples": samples,
+        "aggregate": sampled.aggregate(samples),
+        "elapsed_ns": 1,
+    }
+
+
+def self_test() -> int:
+    validate_imported_contract()
+    with mock.patch.object(sampled, "MAX_TOKENS", MAX_TOKENS + 1):
+        expect_error(validate_imported_contract, "drifted inherited workload was accepted")
+    with mock.patch.object(isolated, "EXPECTED_PACK_SHA256", "0" * 64):
+        expect_error(validate_imported_contract, "drifted inherited pack identity was accepted")
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        if isolated.self_test() != 0:
+            raise BaselineError("predecessor owner failed")
+
+    # Pair-order table: the four balanced orders, inherited unchanged.
+    if ORDERS != sampled.ORDERS or ORDERS != (
+        ("local", "runtime"), ("runtime", "local"), ("runtime", "local"), ("local", "runtime")
+    ):
+        raise BaselineError("balanced pair schedule drifted")
+    if SEEDS != tuple(range(1, 9)) or TEMPERATURE_MICROS != 300_000 or MAX_TOKENS != 128:
+        raise BaselineError("sampling policy drifted")
+    if EFFECTIVE_GGML_THREADS != 4 or SERVER_THREADS != 4:
+        raise BaselineError("thread contract drifted")
+
+    # Profile selection.
+    for name in sorted(PROFILES):
+        select_profile(name)
+    expect_error(lambda: select_profile("linux-x86_64-v2"), "unknown profile was accepted")
+    expect_error(lambda: select_profile(""), "empty profile name was accepted")
+
+    # Identity drift refusal, one field at a time.
+    reference = {
+        "os": "Linux",
+        "architecture": "x86_64",
+        "align_revision": "8c8bfbc7a3169e84ecc8415f5149ab8c61afe863",
+        "compiler_sha256": "1" * 64,
+        "c_compiler_sha256": "2" * 64,
+        "c_compiler_version_sha256": "3" * 64,
+        "linker_search_sha256": None,
+        "ggml_libraries": [{"name": "libggml.so", "bytes": 1, "sha256": "4" * 64}],
+        "geometry_sha256": "5" * 64,
+        "server_sha256": "6" * 64,
+        "server_version": "version: 0.2.0-dev (build 1, commit bb4caa754)",
+        "validator_kind": "native",
+        "validator_image_id": None,
+        "validator_interpreter_sha256": "7" * 64,
+        "validator_interpreter_version_sha256": "8" * 64,
+    }
+    require_profile_identity(dict(reference), reference)
+    drifts = {
+        "ggml_libraries": [{"name": "libggml.so", "bytes": 2, "sha256": "4" * 64}],
+        "compiler_sha256": "0" * 64,
+        "align_revision": "8cefc803d5c7f883a8db5b67250ed4ed069b43a4",
+        "geometry_sha256": "0" * 64,
+        "server_version": "version: 0.2.0-dev (build 2, commit bb4caa754)",
+        "server_sha256": "0" * 64,
+        "c_compiler_sha256": "0" * 64,
+        "validator_kind": "docker",
+        "validator_interpreter_sha256": "0" * 64,
+        "os": "Darwin",
+    }
+    for field, value in drifts.items():
+        drifted = {**reference, field: value}
+        if mismatched_fields(drifted, reference) != [field]:
+            raise BaselineError(f"{field} drift was not reported exactly once")
+        expect_error(
+            lambda drifted=drifted: require_profile_identity(drifted, reference),
+            f"{field} drift was accepted",
+        )
+
+    # `--print-identity` output shape.
+    document = identity_document("linux-x86_64-v1", reference, dict(reference))
+    if set(document) != {
+        "schema_version", "artifact_kind", "platform_profile", "identity", "committed",
+        "mismatched_fields",
+    }:
+        raise BaselineError("identity document shape drifted")
+    if (
+        document["schema_version"] != PROFILE_SCHEMA_VERSION
+        or document["platform_profile"] != "linux-x86_64-v1"
+        or tuple(document["identity"]) != IDENTITY_FIELDS
+        or tuple(document["committed"]) != IDENTITY_FIELDS
+        or document["mismatched_fields"] != []
+    ):
+        raise BaselineError("identity document content drifted")
+    json.dumps(document, ensure_ascii=False, sort_keys=False)
+    partial = identity_document(
+        "linux-x86_64-v1", reference, {**reference, "server_sha256": None}
+    )
+    if partial["mismatched_fields"] != ["server_sha256"]:
+        raise BaselineError("identity document did not report an uncommitted field")
+
+    # Page-cache observation parsing.
+    parsed = parse_meminfo(
+        "MemTotal:       65536 kB\nBuffers:            1024 kB\n"
+        "Cached:          2048 kB\nSReclaimable:      512 kB\nnonsense\n"
+    )
+    if parsed != {
+        "MemTotal": 65_536 * 1024, "Buffers": 1024 * 1024, "Cached": 2048 * 1024,
+        "SReclaimable": 512 * 1024,
+    }:
+        raise BaselineError("meminfo parsing drifted")
+
+    # Result schema.
+    for profile_name in sorted(PROFILES):
+        result = synthetic_result(profile_name)
+        validate_result(result, profile_name)
+        for field, value in (
+            ("gate", "MET"),
+            ("artifact_kind", "R8_OLMOE_ISOLATED_SAMPLED_RUNTIME_DECISION"),
+            ("comparable_across_hosts", True),
+            ("platform_profile_schema_version", PROFILE_SCHEMA_VERSION + 1),
+            ("page_cache_preload_ns", -1),
+            ("status", "PARTIAL"),
+        ):
+            mutated = {**result, field: value}
+            expect_error(
+                lambda mutated=mutated, profile_name=profile_name: validate_result(
+                    mutated, profile_name
+                ),
+                f"mutated {field} was accepted",
+            )
+        extra = {**result, "unexpected": True}
+        expect_error(
+            lambda extra=extra, profile_name=profile_name: validate_result(extra, profile_name),
+            "noncanonical result keys were accepted",
+        )
+        wrong_profile = "darwin-aarch64-v1" if profile_name != "darwin-aarch64-v1" else (
+            "linux-x86_64-v1"
+        )
+        expect_error(
+            lambda result=result, wrong_profile=wrong_profile: validate_result(
+                result, wrong_profile
+            ),
+            "result validated against the wrong profile",
+        )
+        no_page_cache = {
+            **result,
+            "samples": [
+                {key: value for key, value in sample.items() if key != "page_cache"}
+                for sample in result["samples"]
+            ],
+        }
+        expect_error(
+            lambda no_page_cache=no_page_cache, profile_name=profile_name: validate_result(
+                no_page_cache, profile_name
+            ),
+            "a sample without its page-cache observation was accepted",
+        )
+
+    # Ceiling handling.
+    check_ceiling(CEILING_SECONDS * 1_000_000_000)
+    expect_error(
+        lambda: check_ceiling(CEILING_SECONDS * 1_000_000_000 + 1),
+        "an over-ceiling elapsed time was accepted",
+    )
+    with mock.patch("time.monotonic", return_value=100.0):
+        expect_error(
+            lambda: sampled.remaining_timeout(99.0, 1), "an expired deadline was accepted"
+        )
+
+    # Command surface.
+    with mock.patch.object(sys, "argv", [sys.argv[0]]):
+        expect_error(main, "a missing platform profile was accepted")
+    with mock.patch.object(sys, "argv", [sys.argv[0], "--platform-profile", "nope"]):
+        expect_error(main, "an unknown platform profile was accepted")
+    with mock.patch.object(sys, "argv", [sys.argv[0], "--unexpected"]):
+        expect_error(main, "an unexpected argument was accepted")
+
+    # Missing prerequisites.
+    with mock.patch.dict(os.environ, {}, clear=True):
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            if prerequisites() is not None:
+                raise BaselineError("missing prerequisites were accepted")
+    if captured.getvalue() != f"{LABEL}: N/A (ALIGN_LLM_OLMOE_MODEL unset)\n":
+        raise BaselineError("missing prerequisite result drifted")
+
+    print(f"{LABEL} self-test: PASS")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Command
+# ---------------------------------------------------------------------------
+def parse_arguments(argv: list[str]) -> tuple[str, bool]:
+    profile_name: str | None = None
+    print_identity = False
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token == "--platform-profile":
+            index += 1
+            if index >= len(argv):
+                raise BaselineError("--platform-profile requires a value")
+            profile_name = argv[index]
+        elif token.startswith("--platform-profile="):
+            profile_name = token.split("=", 1)[1]
+        elif token == "--print-identity":
+            print_identity = True
+        else:
+            raise BaselineError(f"unexpected argument: {token}")
+        index += 1
+    if profile_name is None:
+        raise BaselineError(
+            "--platform-profile is required (known: " + ", ".join(sorted(PROFILES)) + ")"
+        )
+    return profile_name, print_identity
+
+
+def prepared_environment() -> tuple[dict[str, str], str]:
+    clean_env = sampled.decision_environment()
+    linker_search = sampled.validate_linker_search(clean_env)
+    if linker_search:
+        clean_env["LIBRARY_PATH"] = linker_search
+    return clean_env, linker_search
+
+
+def main() -> int:
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
+    profile_name, print_identity = parse_arguments(sys.argv[1:])
+    profile = select_profile(profile_name)
+    validate_imported_contract()
+    required = prerequisites()
+    if required is None:
+        return 0
+    model, pack, geometry, include, library, server = required
+    started_ns = time.monotonic_ns()
+    deadline = time.monotonic() + CEILING_SECONDS
+    clean_env, linker_search = prepared_environment()
+
+    if print_identity:
+        observed = observe_identity(required, clean_env, linker_search, deadline)
+        document = identity_document(profile_name, observed, profile)
+        print(json.dumps(document, ensure_ascii=False, indent=2, sort_keys=False))
+        drifted = document["mismatched_fields"]
+        if drifted:
+            print(f"{LABEL}: MISMATCH ({', '.join(drifted)})", file=sys.stderr)
+            return 3
+        print(f"{LABEL}: MATCH", file=sys.stderr)
+        return 0
+
+    with tempfile.TemporaryDirectory(prefix="align-c0-olmoe-platform-baseline-") as raw:
+        work = Path(raw)
+        source_status = sampled.run_process(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            deadline=deadline, maximum=30, env=clean_env,
+        )
+        if source_status.stdout:
+            raise BaselineError("real baseline requires a clean worktree")
+        align_llm_head = sampled.run_process(
+            ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+        ).stdout.decode("ascii").strip()
+
+        observed = observe_identity(required, clean_env, linker_search, deadline)
+        require_profile_identity(observed, profile)
+        validator = coding.resolve_validator(deadline)
+
+        control = work / "known-good.patch"
+        control.write_text(sampled.KNOWN_GOOD_PATCH, encoding="utf-8")
+        passed, _ = validate_patch(control, work, deadline, validator, clean_env)
+        if not passed:
+            raise BaselineError("known-good validator control did not pass")
+
+        isolated.require_no_matching_process(server, model, deadline, clean_env)
+        if model.stat().st_size != MODEL_BYTES or coding.file_sha256(model) != MODEL_SHA256:
+            raise BaselineError("configured OLMoE GGUF does not have the pinned identity")
+        if coding.file_sha256(pack) != PACK_SHA256:
+            raise BaselineError("configured alignpack does not have the pinned identity")
+        if coding.file_sha256(TASK) != TASK_SHA256:
+            raise BaselineError("fixed task does not have the pinned identity")
+        prompt_sha256 = coding.bytes_sha256(sampled.PROMPT_TEXT.encode("utf-8"))
+        if prompt_sha256 != PROMPT_SHA256:
+            raise BaselineError("fixed prompt does not have the pinned identity")
+        prompt = work / "prompt.txt"
+        prompt.write_text(sampled.PROMPT_TEXT, encoding="utf-8")
+
+        page_cache_preload_ns = preload_page_cache((model, pack))
+
+        with sampled.built_helper(work, include, library, clean_env, deadline) as built:
+            if (
+                built["compiler_sha256"] != profile["compiler_sha256"]
+                or built["c_compiler_sha256"] != profile["c_compiler_sha256"]
+                or built["c_compiler_version_sha256"] != profile["c_compiler_version_sha256"]
+            ):
+                raise BaselineError("built toolchain identity left the platform profile")
+            samples = []
+            for pair_index, order in enumerate(ORDERS, start=1):
+                pair: dict[str, Any] = {"pair_index": pair_index, "order": list(order)}
+                isolation: dict[str, Any] = {}
+                page_cache: dict[str, Any] = {}
+                for arm in order:
+                    page_cache[f"{arm}_before"] = page_cache_observation(clean_env)
+                    if arm == "local":
+                        portfolio, evidence = isolated.measure_local_isolated(
+                            server, model, work, clean_env, deadline,
+                            lambda endpoint, pair_index=pair_index: measure_portfolio(
+                                "local", pair_index, built["helper"], endpoint, model, pack,
+                                geometry, prompt, work, built["runtime_env"], deadline,
+                                validator, clean_env,
+                            ),
+                        )
+                    else:
+                        portfolio, evidence = isolated.measure_runtime_isolated(
+                            server, model, clean_env, deadline,
+                            lambda pair_index=pair_index: measure_portfolio(
+                                "runtime", pair_index, built["helper"], "in-process", model,
+                                pack, geometry, prompt, work, built["runtime_env"], deadline,
+                                validator, clean_env,
+                            ),
+                        )
+                    page_cache[f"{arm}_after"] = page_cache_observation(clean_env)
+                    pair[arm] = portfolio
+                    isolation.update(evidence)
+                pair["isolation"] = isolation
+                pair["page_cache"] = page_cache
+                validate_sample(pair, pair_index)
+                samples.append(pair)
+                sampled.validate_repeatability(samples)
+            isolated.require_no_matching_process(server, model, deadline, clean_env)
+
+            final_status = sampled.run_process(
+                ["git", "status", "--porcelain", "--untracked-files=all"],
+                deadline=deadline, maximum=30, env=clean_env,
+            )
+            final_head = sampled.run_process(
+                ["git", "rev-parse", "HEAD"], deadline=deadline, maximum=30, env=clean_env,
+            ).stdout.decode("ascii").strip()
+            if final_status.stdout or final_head != align_llm_head:
+                raise BaselineError("align-llm source changed during the baseline")
+            isolated.verify_identities(
+                (
+                    ("model", model, MODEL_SHA256),
+                    ("pack", pack, PACK_SHA256),
+                    ("geometry", geometry, profile["geometry_sha256"]),
+                    ("server", server, profile["server_sha256"]),
+                    ("task", TASK, TASK_SHA256),
+                    ("compiler", built["compiler"], profile["compiler_sha256"]),
+                    ("C compiler", built["c_compiler"], profile["c_compiler_sha256"]),
+                    ("shim", built["shim"], built["shim_sha256"]),
+                    ("helper", built["helper"], built["helper_sha256"]),
+                )
+            )
+            require_profile_identity(
+                observe_identity(required, clean_env, linker_search, deadline), profile
+            )
+
+            aggregate = sampled.aggregate(samples)
+            elapsed_ns = time.monotonic_ns() - started_ns
+            check_ceiling(elapsed_ns)
+            result = {
+                "schema_version": 1,
+                "artifact_kind": KIND,
+                "status": "COMPLETE",
+                "gate": "none",
+                "platform_profile": profile_name,
+                "platform_profile_schema_version": PROFILE_SCHEMA_VERSION,
+                "comparable_across_hosts": False,
+                "model": {
+                    "bytes": MODEL_BYTES, "sha256": MODEL_SHA256, "architecture": "olmoe",
+                },
+                "baseline": baseline_metadata(profile),
+                "candidate": {
+                    "provider": "align-runtime",
+                    "align_llm_head": align_llm_head,
+                    "align_revision": observed["align_revision"],
+                    "compiler_sha256": built["compiler_sha256"],
+                    "helper_sha256": built["helper_sha256"],
+                    "shim_sha256": built["shim_sha256"],
+                    "ggml_libraries": observed["ggml_libraries"],
+                    "pack_sha256": PACK_SHA256,
+                    "geometry_sha256": observed["geometry_sha256"],
+                    "cache_budget_bytes": BUDGET,
+                },
+                "task": {
+                    "task_id": "python-inclusive-range",
+                    "task_sha256": TASK_SHA256,
+                    "prompt_sha256": prompt_sha256,
+                    "maximum_completion_tokens": MAX_TOKENS,
+                },
+                "sampling": {
+                    "temperature_micros": TEMPERATURE_MICROS,
+                    "ordered_seeds": list(SEEDS),
+                    "maximum_candidates": len(SEEDS),
+                    "stop_on_first_pass": True,
+                },
+                "validator": {
+                    "kind": observed["validator_kind"],
+                    "image_id": observed["validator_image_id"],
+                    "interpreter_sha256": observed["validator_interpreter_sha256"],
+                    "interpreter_version_sha256": observed[
+                        "validator_interpreter_version_sha256"
+                    ],
+                },
+                "environment": {
+                    "os": platform.system(),
+                    "release": platform.release(),
+                    "architecture": platform.machine(),
+                    "cpu_count": os.cpu_count(),
+                    "memory_bytes": total_memory_bytes(),
+                    "c_compiler_sha256": built["c_compiler_sha256"],
+                    "c_compiler_version_sha256": built["c_compiler_version_sha256"],
+                    "linker_search_sha256": observed["linker_search_sha256"],
+                },
+                "page_cache_preload_ns": page_cache_preload_ns,
+                "samples": samples,
+                "aggregate": aggregate,
+                "elapsed_ns": elapsed_ns,
+            }
+            validate_result(result, profile_name)
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+            print(
+                f"{LABEL}: COMPLETE profile={profile_name} gate=none "
+                f"local_median_ns={aggregate['local_median_time_to_passing_patch_ns']} "
+                f"runtime_median_ns={aggregate['runtime_median_time_to_passing_patch_ns']} "
+                f"elapsed={elapsed_ns / 1e9:.2f}s",
+                file=sys.stderr,
+            )
+    return 0
+
+
+def interrupted(signal_number: int, _frame: object) -> None:
+    isolated.stop_owned_processes()
+    raise SystemExit(128 + signal_number)
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        raise SystemExit(main())
+    except (
+        BaselineError,
+        isolated.DecisionError,
+        sampled.DecisionError,
+        coding.DecisionError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        json.JSONDecodeError,
+        subprocess.SubprocessError,
+    ) as error:
+        isolated.stop_owned_processes()
+        print(f"{LABEL}: FAIL {error}", file=sys.stderr)
+        raise SystemExit(1)
