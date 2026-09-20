@@ -426,13 +426,13 @@ Discovered during tokenizer candidate matching and joined token optimizations:
 
 ### Request 92: elementary exponential and logarithmic math intrinsics in core.math (exp, exp2, log, log2, log10) (2026-09-17)
 
-Status: ALIGN_MERGED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
 Priority: high
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: sampling algorithms, tokenizer, KV cache
-Resume condition: upstream design closure and implementation on issue #1063
-Align commit or pull request: [sanohiro/align#1063](https://github.com/sanohiro/align/issues/1063)
+Resume condition: adopt merge `cb4541ba48a991b9965bda64c816bbd14f1dfe19` through the managed pin, replace the sampler workaround, and run the named consumer verification
+Align commit or pull request: initial design [sanohiro/align#1141](https://github.com/sanohiro/align/pull/1141), corrected contract [sanohiro/align#1152](https://github.com/sanohiro/align/pull/1152), implementation [sanohiro/align#1153](https://github.com/sanohiro/align/pull/1153), merge `cb4541ba48a991b9965bda64c816bbd14f1dfe19`; closed tracking issue [sanohiro/align#1063](https://github.com/sanohiro/align/issues/1063)
 align-llm verification: scripts/bench-runtime-sampler, scripts/run-runtime-provider-smoke
 
 Discovered during Softmax and Sampler performance optimization (src/runtime_sampler.align:90):
@@ -447,22 +447,90 @@ Discovered during Softmax and Sampler performance optimization (src/runtime_samp
    - Lower to direct LLVM intrinsics: `@llvm.exp.*`, `@llvm.exp2.*`, `@llvm.log.*`, `@llvm.log2.*`, `@llvm.log10.*`.
 6. Acceptance criteria:
    - All 5 methods type-check on `f32` and `f64` scalars and numeric vectors.
-   - LLVM backend lowers directly to `@llvm.<fn>.*` with zero dynamic libc trampoline overhead.
-   - `runtime_sampler.align` consumes `delta.exp()` in place of `E.pow(delta)` and enables loop vectorization.
+   - LLVM backend lowers directly to the matching scalar or vector `@llvm.<fn>.*` intrinsic, without an Align-owned portable kernel or `pow` decomposition.
+   - The methods remain available when LLVM cannot retain vector execution. `--explain-opt` reports retained vector IR, scalarization, and an unavailable vector-library provider; object inspection remains the final machine-SIMD check.
+   - No cross-target, scalar/vector bit-identity, or universal ULP contract is promised. Consumer migration and performance verification remain consumer-owned.
 
 ### align-llm design review (2026-09-18)
 
 One fresh design review of this request against the Mac-native binary optimization audit ([#1063 comment](https://github.com/sanohiro/align/issues/1063#issuecomment-5716945294)) concluded that the intrinsic family is the right direction but that its acceptance criterion is unreachable as written. Intrinsics alone scalarize: with no vector math library configured, LLVM 22.1.8 turns a `llvm.exp.v2f32` loop into per-lane `bl _expf` calls plus lane insert/extract overhead, which is slower than the scalar loop, and Align's own `examples/vec_math.align` already records this for `pow`. The review therefore asks for a vector-math policy as part of the contract: Align-owned portable runtime-bitcode implementations (the mechanism `--rt-lto` already uses for four string primitives) as the guaranteed, target-independent default, with a per-target vector library (`Darwin_libsystem_m`, libmvec, SLEEF, SVML) only as an explicit opt-in whose results are allowed to differ; the closed function set taken from the IEEE 754-2019 §9.2 recommended elementary functions rather than from the next client's needs, implemented in stated tiers; and one accuracy (ULP) contract that holds for the scalar and vector lowerings and across targets, so a program's results do not change when the vectorizer fires. The portable route depends on Request 97 / issue #1069, because merged runtime bitcode does not inline at the default `--target-cpu` on aarch64 today.
 
+### Superseded Align response (2026-09-20)
+
+The design and fail-closed feasibility ledger is ALIGN_MERGED in PR #1141;
+implementation is not shipped. Plan 75 keeps the five E1 functions in one
+capability and gives f32/f64 scalars plus vec2/4/8/16 one total, one-ULP,
+bit-identical contract. It rejects direct LLVM intrinsic lowering, target
+vector libraries as the default, and reuse of the small optional string
+rt-LTO admission path. Portable math receives a distinct mandatory bitcode
+artifact with fixed validation precedence and whole-program/per-unit/cache
+ownership.
+
+The independent design review found four P2 gaps. The merged fix binds a
+universal f32/f64 accuracy proof and target-independent operation graph to the
+exact kernel inputs, adds deterministic precedence for multiply-invalid
+artifacts, matches invalidation to the existing executable-byte
+`compiler_build_id`, and removes a noise-dependent throughput benchmark.
+Recurring tests are deliberately bounded to structural IR and a deterministic
+hard-case corpus; exhaustive/proof-tool work reruns only when the kernel graph,
+tables, coefficients, or proof identity changes.
+
+Remaining provider work is the feasibility evidence itself and then the one
+implementation capability. Until all ten scalar kernels, every explicit vector
+shape, universal accuracy, cross-target bit identity, artifact closure and
+optimized no-libcall/no-lane-shuffle shape pass, no partial intrinsic surface
+lands. Consumer migration and sampler/runtime smoke verification remain
+consumer-owned after that implementation merge.
+
+The first provider feasibility pass is negative. LLVM intrinsics reproduce the
+measured scalar-libcall/lane-shuffle defect. Rust `libm` 0.2.16 supplies a useful
+one-ULP/MPFR reference, but a fat-LTO four-lane probe retained four scalar calls;
+even an LLVM inline threshold of 10000 left `expf` as scalar IR and left 12
+extract/insert operations in `logf`. LLVM libc mathvec currently has only f32
+`expf`/`logf` (with generic `logf` implemented as a scalar map), not the ten E1
+kernels. SLEEF's upstream determinism issue remains open. Plan 75 records exact
+versions, commands and results. Provider implementation is therefore deferred
+until a complete vector operation graph plus universal accuracy and
+cross-target identity proof exists; no benchmark or larger test budget can
+repair these structural failures.
+
+### Align implementation response (2026-09-21)
+
+Status is ALIGN_MERGED in [PR #1153](https://github.com/sanohiro/align/pull/1153),
+merge `cb4541ba48a991b9965bda64c816bbd14f1dfe19`; issue
+[#1063](https://github.com/sanohiro/align/issues/1063) is closed. The corrected
+public contract was published first in
+[PR #1152](https://github.com/sanohiro/align/pull/1152).
+
+Align now provides `exp`, `exp2`, `log`, `log2`, and `log10` on scalar `f32` and
+`f64` and on explicit `vec2`, `vec4`, `vec8`, and `vec16` values of those element
+types. Each operation lowers directly to the matching overloaded LLVM intrinsic.
+There is no Align-owned portable math kernel, no `pow` fallback, and no promise
+of cross-target or scalar/vector bit identity or a universal ULP bound.
+
+Source availability is independent from the optimizer's final machine shape.
+`--explain-opt` distinguishes eliminated/merged operations, retained vector IR,
+and scalarization, and reports when no vector-library provider is configured.
+Those diagnostics are authenticated to user source and do not affect ordinary
+IR, serialization, hashes, or code-generation identity. Retained vector IR is
+not itself a machine-SIMD guarantee; object inspection is the final check.
+
+Provider verification covers all five functions, both scalar types, all four
+explicit vector widths, IEEE special-value classes, checked-HIR rejection,
+per-unit compilation, diagnostic source authentication, and ordinary-IR
+invariance. Linux x86_64, Linux ARM64, and macOS Apple Silicon CI passed.
+Consumer adoption in `runtime_sampler.align` and the named sampler/runtime smoke
+checks remain align-llm-owned; no consumer code or managed pin was changed here.
+
 ### Request 93: safe typed slice reinterpretations (as_f32_slice) for SIMD vectorization (2026-09-17)
 
-Status: ALIGN_MERGED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
 Priority: high
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: greedy decode, sampler, prompt evaluation
-Resume condition: upstream design closure and implementation on issue #1064
-Align commit or pull request: [sanohiro/align#1064](https://github.com/sanohiro/align/issues/1064)
+Resume condition: satisfied by the merged Align design and implementation; align-llm adoption and measurement remain
+Align commit or pull request: design [sanohiro/align#1155](https://github.com/sanohiro/align/pull/1155); implementation [sanohiro/align#1156](https://github.com/sanohiro/align/pull/1156) (merge commit `dfcfd11f0b076320f3f9bfbf1f837a4130092964`); tracking [sanohiro/align#1064](https://github.com/sanohiro/align/issues/1064)
 align-llm verification: scripts/bench-runtime-greedy, scripts/bench-runtime-sampler
 
 Discovered during Logits selection SIMD analysis (src/runtime_generation.align:681, src/runtime_sampler.align:37):
@@ -484,15 +552,37 @@ Discovered during Logits selection SIMD analysis (src/runtime_generation.align:6
 
 One fresh design review of this request against the same audit ([#1064 comments](https://github.com/sanohiro/align/issues/1064#issuecomment-5716945640) and [second comment](https://github.com/sanohiro/align/issues/1064#issuecomment-5716945937)) kept the direction — no per-algorithm `argmax` intrinsic — and recorded three corrections. First, the acceptance criterion "clean loops over the resulting `slice<f32>` auto-vectorize" is measured false: argmax over `slice<u8>` plus `f32_le` measures 190.6 us/call and over an already typed `slice<f32>` measures 190.4 us/call on 152,064 elements, so the typed view alone buys nothing. The loops stay scalar because of the borrowed view-header reload, the surviving in-loop bounds checks and the `fcmp`+`select` max lowering (Requests 107, 109 and 110), and the first two are conjunctive — fixing either alone yields zero `vector.body`. Second, the request must reconcile explicitly with `docs/impl/62-decode-optimization-plan.md:45`, which rejected `as_f32_le()` on alignment, byte order and access authority; each has an answer: runtime-checked alignment returning `Option`/`Result` instead of aborting, an order-named native-order view that the compiler rejects when the named order is not the target's, and authority inherited from the borrow, with raw or foreign memory staying with `resource.view_from_raw`. Third, `as_f32_slice`/`as_i32_slice`/`as_f64_slice`/`as_i64_slice` repeats the per-width enumeration the existing `<ty>_le`/`<ty>_be` accessor family already has; one generic order-explicit `bytes.view_le<T>() -> Option<slice<T>>` over the closed scalar set, plus the writable form and the inverse `slice<T>.as_bytes()`, is the single primitive those accessors should be defined on. Acceptance for this request therefore becomes zero-copy view construction and `vecN` load/store reachable from `buffer.bytes()`; the greedy-argmax latency target moves to the vectorization contract, Request 116 / issue #1088.
 
+### Align response (2026-09-21)
+
+Shipped: `bytes.view_le<T>() -> Option<slice<T>>` provides a checked, zero-copy,
+read-only typed view for the closed scalar set `i8`, `u8`, `i16`, `u16`, `i32`,
+`u32`, `i64`, `u64`, `f32`, and `f64`; `mut bytes.view_le<T>()` preserves write
+authority, and `slice<T>.as_bytes()` provides the allocation-free inverse view.
+`view_le` returns `None` for a negative or indivisible length or a misaligned
+pointer. `as_bytes` traps on descriptor-length multiplication overflow. Both
+views preserve the source pointer, storage provenance, lifetime, and authority
+without allocation or copying. Targets that cannot implement the named
+little-endian contract are rejected before every cache or LLVM entry point.
+
+The owner suite covers the complete scalar domain, aligned and rejected views,
+round trips, checked-HIR and MIR mutation rejection, whole-program/per-unit/
+imported compilation, descriptor-only LLVM lowering, and `vec2`/`vec4`/`vec8`/
+`vec16` load/store reachability. Required Linux x86_64, Linux ARM64, and macOS
+Apple Silicon CI passed. The typed view deliberately does not promise that an
+arbitrary consumer loop vectorizes; final SIMD visibility remains owned by the
+separate vectorization contract and `--explain-opt`. Align PR #1156 merged as
+`dfcfd11f0b076320f3f9bfbf1f837a4130092964`. `ALIGN_LLM_VERIFIED` remains
+pending the named align-llm benchmarks and consumer migration.
+
 ### Request 94: fixed-size inline arrays in structs ([T; N]) to eliminate decode-step heap allocations (2026-09-17)
 
-Status: ALIGN_MERGED as a design ledger only; implementation remains PROPOSED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
 Priority: high
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: model IR, prompt evaluation
-Resume condition: upstream design closure and implementation on issue #1065
-Align commit or pull request: [sanohiro/align#1065](https://github.com/sanohiro/align/issues/1065)
+Resume condition: satisfied by the merged Align design and implementation; align-llm adoption remains
+Align commit or pull request: design [sanohiro/align#1137](https://github.com/sanohiro/align/pull/1137); implementation [sanohiro/align#1138](https://github.com/sanohiro/align/pull/1138) (merge commit `2907d5e56b3bdbc4652787376ec268db5507bdc4`), tracking [sanohiro/align#1065](https://github.com/sanohiro/align/issues/1065)
 align-llm verification: scripts/run-decode-step, scripts/run-gpu-session-reuse-smoke
 
 Discovered during Autoregressive decode step allocation profiling (src/decode_step.align:2457, src/layer_qwen2.align:1851, src/layer_olmoe.align:2250):
@@ -506,15 +596,37 @@ Discovered during Autoregressive decode step allocation profiling (src/decode_st
    - Structs with `[T; N]` fields allocate inline inside the struct memory layout.
    - `mf_decode_layer_node_table` allocates zero heap arrays during decode token generation.
 
+### Align response (2026-09-20)
+
+Shipped: `[T; N]` is a nameable fixed-array type with an exact decimal `u32`
+cardinality. Fixed-array record fields lower to inline `[N x T]` storage without
+a slice header, builder, or runtime allocation, and support field access,
+integer indexing, range slicing, `len`, slice pipelines, and indexed mutation
+when the receiver is stable record-field storage. Copy/Move, replacement,
+return, and destruction preserve element ownership and cleanup. Whole-program
+and per-unit compilation exchange the type through interface format 14.
+
+Ownership and limits: Align owns the compiler surface and inline-layout proof;
+align-llm owns rewriting `mf_decode_layer_node_table` / `mm_table` and measuring
+the consumer allocation result. Tuple-projected aggregate storage is not part
+of this capability; the stable-storage boundary is a fixed-array field of a
+stable record receiver. Align's dedicated 13-test suite, parser/interface/sema/
+MIR/LLVM owner suites, bounded gate, Clippy, and required Linux x86_64, Linux
+ARM64, and macOS CI passed. The 13-by-32 LLVM evidence confirms inline storage
+with no fixed-array allocation path. Align PR #1138 merged as
+`2907d5e56b3bdbc4652787376ec268db5507bdc4`. `ALIGN_LLM_VERIFIED` remains
+pending `scripts/run-decode-step`, `scripts/run-gpu-session-reuse-smoke`, and
+confirmation that the migrated tables allocate zero dynamic arrays.
+
 ### Request 95: default ThinLTO on --profile release or cross-module function inlining (2026-09-17)
 
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: provider runtime, benchmarks
-Resume condition: upstream design closure and implementation on issue #1066
-Align commit or pull request: [sanohiro/align#1066](https://github.com/sanohiro/align/issues/1066)
+Resume condition: consumer pin, benchmark runs, and call-site disassembly inspection
+Align commit or pull request: design [sanohiro/align#1139](https://github.com/sanohiro/align/pull/1139); implementation [sanohiro/align#1140](https://github.com/sanohiro/align/pull/1140), merge `854815acef2d7e2403532b40d7226aeb4fcbb66a`; tracking issue [sanohiro/align#1066](https://github.com/sanohiro/align/issues/1066)
 align-llm verification: scripts/bench-runtime-sampler, scripts/bench-runtime-greedy, disassembly inspection
 
 Discovered during Cross-module function call disassembly (runtime_attention.cached_f16, runtime_attention.fused, ggml_ffi.handle_absent):
@@ -539,6 +651,33 @@ in the ThinLTO prelink path; that defect is now fixed and merged
 ([Align PR #1092](https://github.com/sanohiro/align/pull/1092), merge commit
 `dd0937df186d42d7a047725fa1e19866601f48ae`), so proposal 2 is unblocked but
 not yet designed or implemented.
+
+### Align response (2026-09-20)
+
+Proposal 2 is ALIGN_MERGED. Plan 74 and PR #1140 carry eligible small,
+non-generic public source bodies in the versioned `.align-interface` record,
+recheck the producer facts and native extern closure in each consumer, and emit
+the selected consumer definition with LLVM `available_externally`. The focused
+release owner proves a direct cross-unit scalar call is absent from optimized
+consumer LLVM IR without ThinLTO; the producer remains the only external
+definition, while function-value and residual-call uses still link normally.
+Default ThinLTO remains unchanged.
+
+Align verification passed the interface owner, the complete MIR unit owners,
+the bounded PR gate, Clippy, all fourteen local PostgreSQL owner binaries, and
+Linux x86_64, Linux ARM64, macOS Apple Silicon, and all four PostgreSQL CI
+shards. A database-gate timeout found an unrelated exponential rejoining-CFG
+walk in MIR drop-state simplification; PR #1140 memoizes that scan. The q2
+binary contains fourteen tests and zero benchmarks/measurements, passed locally
+in 115 seconds with two test threads, and its CI portable-pool shard passed in
+9m14s rather than cancelling at 30 minutes.
+
+Consumer-owned work remains: pin merge
+`854815acef2d7e2403532b40d7226aeb4fcbb66a`, rebuild without ThinLTO, run
+`scripts/bench-runtime-sampler` and `scripts/bench-runtime-greedy`, and inspect
+the `runtime_attention.cached_f16`, `runtime_attention.fused`, and
+`ggml_ffi.handle_absent` call sites. Keep issue #1066 open and this request at
+ALIGN_MERGED until that call-site census advances it to ALIGN_LLM_VERIFIED.
 
 ### Request 96: fix invalid empty !dbg metadata attachment in align_codegen_llvm dropdeep loop (2026-09-17)
 
@@ -658,7 +797,7 @@ partition is formed.
 
 ### Request 99: derive a complete memory-effects model for every runtime ABI symbol (2026-09-18)
 
-Status: PROPOSED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
 Priority: high
 Blocking: no
 Blocked gate or slice: none
@@ -695,13 +834,13 @@ unchanged.
 
 ### Request 100: give per-element runtime primitives an inline fast path and a visible slow path (2026-09-18)
 
-Status: PROPOSED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: giving hot `array_builder()` calls their known capacity, replacing per-element fills with bulk writes, building invariant tables once per session
-Resume condition: upstream design closure and implementation on issue #1072
-Align commit or pull request: [sanohiro/align#1072](https://github.com/sanohiro/align/issues/1072)
+Resume condition: satisfied by the merged Align design and implementation; align-llm reprofiling and release-image measurement remain
+Align commit or pull request: [sanohiro/align#1129](https://github.com/sanohiro/align/pull/1129) (merge commit `9583d8c8`); tracking [sanohiro/align#1072](https://github.com/sanohiro/align/issues/1072)
 align-llm verification: scripts/run-tokenizer-smoke with a re-profiled tokenizer path (combined `align_rt_array_builder_push` plus `ArrayBuilder::reserve` share, 14.1% of samples at the baseline), plus static `bl align_rt_array_builder_push` call-site counts on the release image (1,084 today)
 
 Discovered during the Mac-native binary optimization audit of container construction (`src/layer_qwen2.align:1851`, `src/model_forward.align:1610`, `src/tokenizer_qwen2.align`):
@@ -846,8 +985,8 @@ Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: node-table and graph-construction work, all decode paths
-Resume condition: upstream design closure and implementation on issue #1075
-Align commit or pull request: [sanohiro/align#1075](https://github.com/sanohiro/align/issues/1075)
+Resume condition: consumer pin and release-image/disassembly verification
+Align commit or pull request: implementation [sanohiro/align#1143](https://github.com/sanohiro/align/pull/1143), merge `1a446e5e`; tracking issue [sanohiro/align#1075](https://github.com/sanohiro/align/issues/1075)
 align-llm verification: `and wN, wM, #0x1` count in Align-generated code of the release image (763 across 343 functions today), instruction count of `olmoe_nodes$build_range`'s inner loop (13 per node row today), plus scripts/run-moe-decode-step
 
 Discovered during the Mac-native binary optimization audit of boolean call boundaries (`src/layer_olmoe.align:1785`, `src/olmoe_nodes.align:41-47`):
@@ -861,6 +1000,38 @@ Discovered during the Mac-native binary optimization audit of boolean call bound
    - Client evidence: `and wN, wM, #0x1` in Align-generated code drops from 763 to under 100, and `olmoe_nodes$build_range`'s inner loop drops from 13 to 10 instructions per node row.
    - A caller of an inlined `bool` callee emits no residual mask.
 6. This is complementary to Requests 95, 97 and 98: inlining removes the call, while the scalar facts remove the masks that survive when the call cannot be removed and make the post-inlining cleanup possible. It is distinct from the borrowed view-header reload in Request 107, which is about the `{ptr,len}` aggregate rather than the scalar ABI.
+
+### Align response (2026-09-20)
+
+PR #1143 is ALIGN_MERGED. One total call-boundary rule now emits `zeroext`
+for `bool`, `u8`, `u16`, `u32`, and `char`, and `signext` for `i8`, `i16`,
+and `i32`, on definitions, imported declarations, direct calls, indirect
+calls, closure/function-value bridges, task and parallel trampolines, and
+whole-program/per-unit boundaries. Physical signature validation fails closed
+before LLVM module verification when either side disagrees. Native, foreign,
+runtime, raw, generated C-main, resource-Drop, and fixed SQLite callback shells
+remain excluded because their ABIs are not Align scalar call boundaries.
+
+The proposed `char` range was rejected after adversarial review: explicit
+integer-to-`char` casts currently admit every `u32` bit pattern, so declaring a
+Unicode-scalar range would turn valid Align executions into LLVM poison. Stored
+`bool` bytes and fieldless-enum tags are aggregate representation facts rather
+than scalar parameter/return attributes and are likewise outside this shipped
+boundary. The owner covers every admitted and rejected row, direct and indirect
+calls, task/parallel bridges, per-unit compilation, cleanup returns, and
+malformed physical transport; whole/per-unit execution covers boolean values,
+narrow signed/unsigned extrema, and `char` endpoints plus `0xffffffff as char`.
+The bounded gate, Clippy, and Linux x86_64, Linux ARM64, and macOS CI passed.
+No benchmark or full nightly suite was run. A first CI attempt needlessly
+classified fixed native shells as database-boundary work; those no-op adapters
+were removed before merge, and the final run correctly skipped all PostgreSQL
+service shards.
+
+Consumer-owned work remains: pin merge `1a446e5e`, rebuild the release image,
+recount the 763 Align-generated masks, inspect whether both node-builder loops
+drop from 13 to 10 instructions, and run `scripts/run-moe-decode-step`. Until
+those measurements pass, this request remains ALIGN_MERGED rather than
+ALIGN_LLM_VERIFIED.
 
 ### Request 104: lay out every sum type as a tagged union, including `Option` and `Result` (2026-09-18)
 
@@ -904,8 +1075,8 @@ Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: splitting `model_forward$Outcome` into hot and cold records, reducing by-value aggregate signatures in application code
-Resume condition: plan 71 PRs 3 and 4 implementation on issue #1077, after PRs 1 and 2
-Align commit or pull request: design [sanohiro/align#1130](https://github.com/sanohiro/align/pull/1130), merge `91fe3ed1`; implementation [sanohiro/align#1077](https://github.com/sanohiro/align/issues/1077)
+Resume condition: consumer verification against Align merge `8863ecc2`
+Align commit or pull request: design [sanohiro/align#1130](https://github.com/sanohiro/align/pull/1130), merge `91fe3ed1`; transport [sanohiro/align#1133](https://github.com/sanohiro/align/pull/1133), merge `5f71179e`; fresh construction [sanohiro/align#1134](https://github.com/sanohiro/align/pull/1134), merge `8863ecc2`
 align-llm verification: `decode_step$decode_pass` frame size (2,080 B today) and its `call.result.storage` slot count (5 of 835 program-wide), whole-program `huge struct copy` warning count (333), plus scripts/run-decode-step and scripts/run-runtime-provider-smoke output unchanged
 
 Discovered during the Mac-native binary optimization audit of aggregate call boundaries (`src/decode_step.align`, `src/model_forward.align:1610`):
@@ -921,14 +1092,36 @@ Discovered during the Mac-native binary optimization audit of aggregate call bou
    - No new language syntax, no public destination argument and no size heuristic.
 8. This names the exact residual predicates that keep issue #1047 finding 2 alive for the majority of Align signatures, and composes with Request 104 (smaller sums need indirect transport less often) and Request 106 (which owns the redundant pre-zeroing of destinations, not the scratch slots).
 
-**Align response (2026-09-20): design ALIGN_MERGED.** Plan 71 fixes
+**Align response (2026-09-20): implementation ALIGN_MERGED.** PR #1133 ships
 target-selected `byval` parameters and splits an indirect cleanup-bearing result
-into `void + sret(T) + cleanup_out`, or a direct T plus `cleanup_out`; tag-only
-consumers never load the whole aggregate. It deliberately refuses blanket
-field and indexed destination placement because that would reorder RHS, Drop,
-or bounds failure. ABI transport is PR 3; fresh whole-value construction and
-its reached-exit partial cleanup are a separate PR 4. Implementation and all
-provider/client measurements remain pending.
+into `void + sret(T) + cleanup_out`, or a direct T plus `cleanup_out`. Definitions,
+direct and indirect calls, imported declarations, whole/per-unit compilation and
+the function-value bridge consume the same target classification. Tag-only
+consumers load the tag before the selected payload.
+
+PR #1134 constructs fresh Move struct bindings field-by-field in their final MIR
+slot. One MIR-owned partial-initialization record drops exactly the initialized
+Move leaves in reverse order on reached `return`, `?`, and loop `break` edges;
+hard traps retain no-successor cleanup. Fully proved large fresh returns build
+directly into caller-owned sret storage. The proof requires one exact unescaped
+alloca, complete once-only field coverage, dominating writes and no alias or
+extra read; incomplete or aliased shapes retain the established whole-value
+fallback. Existing replacement, field, indexed, joined and fixed-array
+destinations also retain fallback because forwarding them would reorder RHS,
+Drop, or bounds failure. Ownership stays with the completed destination on
+success and with only the initialized guarded leaves on a reached exit; there
+is no new syntax, public destination parameter, allocation mode, runtime ABI or
+size heuristic.
+
+Provider owners pass for MIR, LLVM transport, runtime allocation parity,
+explicit return, `?`, loop break, terminal division, nested fields, sret and
+generic whole/per-unit compilation. Final-SHA preflight and Linux x86-64,
+Linux ARM64 and macOS Apple Silicon CI passed. The independent review's one
+loop-break cleanup finding is fixed with both positive cleanup and
+enclosing-construction preservation controls. The listed align-llm frame,
+scratch-slot, warning and smoke measurements remain consumer-owned and
+unverified; no align-llm code, fixture, build machinery, branch or managed pin
+was changed for this provider delivery.
 
 ### Request 106: one drop-state model — flag ownership, sweep folding, and move-out zeroing (2026-09-18)
 
@@ -1091,13 +1284,13 @@ starting. Status is unchanged.
 
 ### Request 110: one floating-point reduction semantics — uniform min/max lowering plus scoped reassociation (2026-09-18)
 
-Status: ALIGN_MERGED for Part 1 (uniform min/max lowering); Part 2 (scoped reassociation and contraction) remains PROPOSED as its own open design/RFC
+Status: ALIGN_MERGED for Parts 1 and 2; ALIGN_LLM_VERIFIED remains pending
 Priority: high
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: using `best.max(x)` instead of `if x > best` in the greedy, top-k and sampler selection loops, and splitting fused reductions so their integer half can vectorize
-Resume condition: consumer adoption and re-measurement of scripts/bench-runtime-greedy and scripts/bench-runtime-sampler at the merged pin; Part 2 resumes on its own design closure
-Align commit or pull request: [sanohiro/align#1096](https://github.com/sanohiro/align/pull/1096) (merge commit `cfe0f3bebdb85c24fc0f3c2f834743bea6a97da2`), fixing [sanohiro/align#1082](https://github.com/sanohiro/align/issues/1082) Part 1
+Resume condition: consumer adoption of the merged lexical scopes and re-measurement of scripts/bench-runtime-greedy and scripts/bench-runtime-sampler at the merged pin, with ordered bit-identity controls left unannotated
+Align commit or pull request: Part 1 [sanohiro/align#1096](https://github.com/sanohiro/align/pull/1096) (merge `cfe0f3bebdb85c24fc0f3c2f834743bea6a97da2`); Part 2 design [sanohiro/align#1144](https://github.com/sanohiro/align/pull/1144) (merge `69543a235e4764194bab04cfaf5ca3ca6702ca5c`); Part 2 implementation [sanohiro/align#1145](https://github.com/sanohiro/align/pull/1145) (merge `d6a6342106b171a03074bff5a189acca244fb4ac`), tracked by [sanohiro/align#1082](https://github.com/sanohiro/align/issues/1082)
 align-llm verification: scripts/bench-runtime-greedy (242 us/call over 151,936 logits today) and scripts/bench-runtime-sampler (267 us/call over 152,064 today), plus the llama.cpp bit-identity gates for the ordered accumulators at `src/layer_forward.align:2166` and `src/moe_layer_forward.align:2561` (verified in Align tree; consumer adoption pending)
 
 Discovered during the Mac-native binary optimization audit of float reductions (`src/runtime_generation.align`, `src/model_forward.align`, `src/layer_forward.align:2166`, `src/moe_layer_forward.align:2561`):
@@ -1127,9 +1320,22 @@ matching what `a.max(b)` already did. NaN-free results, the empty-pipeline
 fold identity and the integer lowering are unchanged in meaning. The
 `if xs[i] > best` hand-written loop is documented as not the vectorizable
 spelling, not canonicalized in MIR — canonicalizing it would silently change
-that program's meaning. Deferred: Part 2 (scoped opt-in `reassoc`/`contract`
-reassociation) stays open as its own future design; `nnan`/`ninf` are
-permanently excluded.
+that program's meaning. Part 2's public design merged in #1144 and its
+implementation merged in #1145:
+`float(reassoc)` and `float(contract)` are explicit value-producing lexical
+scopes, every callable root starts strict, all five existing sum/dot variants
+have exact authenticated modes, and generic/interface-carried bodies preserve
+and recheck the source scope in whole and per-unit compilation. Reassociation
+reaches eligible scalar/vector operations and reductions. Contraction forms an
+explicit FMA only from a direct MIR-visible pair whose producer and consumer
+both carry authenticated permission, preserves source evaluation order, and
+never emits LLVM's consumer-controlled raw `contract` flag. `nnan`/`ninf`
+remain permanently excluded. Provider acceptance passed focused owners, the
+bounded PR gate, Clippy, the lint ratchet, the Linux/macOS matrix and required
+database shards. It deliberately used no benchmark, nightly full suite, or
+align-llm build. The original speed targets and ordered bit-identity controls
+remain consumer-owned adoption measurements, so Request 110 is not yet
+`ALIGN_LLM_VERIFIED`.
 
 ### Request 111: make a vector mask structural — blend vectors of matching lane count and element width (2026-09-18)
 
@@ -1208,13 +1414,13 @@ starting. Status is unchanged.
 
 ### Request 113: add `str` literal patterns to `match`, completing the value-pattern family (2026-09-18)
 
-Status: PROPOSED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: adding a length pre-check before string-literal `==` chains, which short-circuits most arms with a two-instruction test today
-Resume condition: upstream design closure and implementation on issue #1085
-Align commit or pull request: [sanohiro/align#1085](https://github.com/sanohiro/align/issues/1085)
+Resume condition: consumer adoption and verification against Align merge `e4395337`
+Align commit or pull request: design [sanohiro/align#1135](https://github.com/sanohiro/align/pull/1135), merge `d433da02`; implementation [sanohiro/align#1136](https://github.com/sanohiro/align/pull/1136), merge `e4395337`, for [sanohiro/align#1085](https://github.com/sanohiro/align/issues/1085)
 align-llm verification: surviving `bl align_rt_str_eq` sites in `tokenizer_qwen2$build_eog_set` (29 today) and whole-image `bl align_rt_str_eq` count (1,523 today), plus scripts/run-tokenizer-smoke and scripts/run-alignpack-smoke with byte-identical output and pack digests
 
 Discovered during the Mac-native binary optimization audit of string dispatch (`src/alignpack.align:386-417`, `src/tokenizer_qwen2.align:1711-1719`, `:1754-1767`):
@@ -1231,6 +1437,34 @@ Discovered during the Mac-native binary optimization audit of string dispatch (`
    - Client evidence: rewriting `alignpack$role_id` and `tokenizer_qwen2$eog_text` as `match` reduces `build_eog_set` from 29 surviving `str_eq` sites to at most 2 per vocabulary entry, the whole-image count falls from 1,523, and tokenizer smoke output and all pack digests stay byte-identical.
    - A reproducible measurement for the vocabulary-scan kernel with a recorded baseline, plus a re-profiled tokenizer path.
 7. Request 90 / issue #1055 (PR #1060) is the direct precedent and the same argument; this asks for the remaining literal domain with the same checking discipline and a better lowering. It is neither a guard nor a new type nor recursion, so it does not cross the settled `match`-versus-`if` line recorded at `docs/open-questions.md:927`.
+
+**Align response (2026-09-20): implementation ALIGN_MERGED.** Exact decoded
+string literals and `|` alternatives now match both `str` and `string`; `_` is
+required, decoded duplicates and mixed domains diagnose, and string ranges
+remain unsupported. Selection evaluates once and shared-borrows without a
+dispatch clone, allocation, move or retained binding. Fresh owned temporaries
+remain live through selection and drop once before the selected body.
+
+Checked HIR and MIR retain the decoded literal-to-target relation and reject
+mixed records, duplicate values, missing defaults, invalid targets and
+non-dominating or multiply-defined scrutinee SSA before LLVM. For four or more
+literals LLVM lowers one length switch followed by deterministic in-bounds byte
+switches and at most one final `align_rt_str_eq` on any path; smaller matches may
+use source-ordered equality. Provider owners cover empty, non-ASCII and embedded
+NUL literals, every hit and miss at N=4/8/29, temporary cleanup, unchanged
+integer/char/range and sum matches, generic whole/per-unit compilation and
+malformed HIR/MIR. Final-SHA preflight and Linux x86-64, Linux ARM64 and macOS
+Apple Silicon CI passed. A local release miss-heavy kernel over 2,000,000
+dispatches measured about 3.3/3.3/4.0 ms at N=4/8/29 versus
+14.0/27.5/88.5 ms for the corresponding `if`/`==` ladders on Apple M1; this
+supports only the bounded-comparison claim.
+
+Remaining consumer-owned work: rewrite `alignpack$role_id` and
+`tokenizer_qwen2$eog_text`, measure surviving `align_rt_str_eq` sites in
+`tokenizer_qwen2$build_eog_set` and the whole image, run tokenizer and alignpack
+smoke suites, and confirm byte-identical output and pack digests. No align-llm
+code, tests, fixtures, build machinery, branch, PR or managed pin was changed by
+this provider delivery.
 
 ### Request 114: make `emit-llvm --stage optimized` and `explain-opt` report a unit that has no `main` (2026-09-18)
 
@@ -1270,14 +1504,14 @@ same PR, since both share the one target/root resolution seam.
 
 ### Request 115: normalize the Darwin triple to `macosx<deployment>` and single-source the deployment target (2026-09-18)
 
-Status: ALIGN_MERGED
+Status: ALIGN_MERGED; deployment target and explicit SDK provenance shipped, consumer verification pending
 Priority: low
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: everything; the linked executable is correct today and the 155 warnings per link are log noise
-Resume condition: consumer adoption — re-measure the `was built for newer 'macOS' version` warning count on a release link and `otool -l` on an `alignc emit-obj` product at the merged pin
-Align commit or pull request: [sanohiro/align#1090](https://github.com/sanohiro/align/pull/1090) (merge commit `674ba70e9aa769d189766041d0ac090e222b4994`), closing [sanohiro/align#1087](https://github.com/sanohiro/align/issues/1087)
-align-llm verification: `was built for newer 'macOS' version` warning count on a release link of `src/main.align` (155 today), and `otool -l` on an `alignc emit-obj` product reporting `minos` equal to the resolved deployment target with a non-empty `sdk` (verified in Align tree; consumer adoption pending)
+Resume condition: consumer adoption — re-measure the `was built for newer 'macOS' version` warning count on a release link, then run `alignc emit-obj --sdk-version <selected-version>` and inspect `minos`/`sdk` with `otool -l` at the merged pin
+Align commit or pull request: deployment target [sanohiro/align#1090](https://github.com/sanohiro/align/pull/1090) (merge `674ba70e9aa769d189766041d0ac090e222b4994`), closing [sanohiro/align#1087](https://github.com/sanohiro/align/issues/1087); SDK provenance [sanohiro/align#1147](https://github.com/sanohiro/align/pull/1147) (merge `4ff968c7e31b4a0f9d682ad41c4ca12733980701`), closing [sanohiro/align#1093](https://github.com/sanohiro/align/issues/1093)
+align-llm verification: `was built for newer 'macOS' version` warning count on a release link of `src/main.align` (155 today), plus `otool -l` on an `alignc emit-obj --sdk-version <selected-version>` product reporting `minos` equal to the resolved deployment target and `sdk` equal to the explicit canonical version. Omission intentionally remains `sdk n/a`; Align-tree verification passed, consumer adoption is pending.
 
 Discovered during the Mac-native binary optimization audit while collecting release-link output for `alignc build src/main.align --profile release` on Apple M1 / macOS 27.0 (Darwin 27.0.0):
 1. On macOS, `alignc` builds its `TargetMachine` and every module triple from `TargetMachine::get_default_triple()` verbatim, which yields `arm64-apple-darwin<kernel>.0.0`. LLVM then rewrites that triple's OS component through its Darwin N to macOS N+1 renumbering table, so on a host where the Darwin kernel major and the macOS major coincide every `alignc`-produced object is stamped one macOS major too high and with no SDK version: `minos 28.0, sdk n/a` where clang produces `minos 27.0, sdk 27.0`.
@@ -1303,9 +1537,16 @@ environment variable, then the host product version, then a documented
 per-platform floor. A malformed value at any layer is a hard error naming
 that layer; absent and invalid are different answers. The resolved triple is
 hashed into every cache key, and `alignc emit-obj`'s `minos` now matches it.
-Deferred, recorded in the ledger: `LC_BUILD_VERSION`'s `sdk` stays `n/a` in
-emitted objects — tracked as issue #1093. Shipped together with Request 114 /
-issue #1086 in the same PR.
+Shipped together with Request 114 / issue #1086 in the same PR. Follow-up
+[PR #1147](https://github.com/sanohiro/align/pull/1147) adds explicit
+`--sdk-version major[.minor[.patch]]` provenance to every Apple object path and
+to ordinary/ThinLTO cache identities. The compiler owns one atomic selected-or-
+absent process state; omission remains `sdk n/a`. The option records metadata
+only: it performs no SDK/sysroot selection and has no `SDKROOT`, `xcrun`, path,
+filesystem or subprocess fallback. Align verified exact LLVM metadata, native
+Mach-O load commands, omission, cache separation, validation before side
+effects, and concurrent direct-call freezing. Consumer-owned adoption and the
+release-link/`otool` measurements above remain pending.
 
 ### Request 116: one vectorization contract for ordinary Align code, with an owner per guarantee (2026-09-18)
 

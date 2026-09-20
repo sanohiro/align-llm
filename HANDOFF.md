@@ -4,8 +4,14 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/cpu-baseline-linux`, stacked on `agent/cuda-startup-measurement` (`d1fa659`), `agent/cuda-qwen-f16-kv` (`0d77097`) and `agent/backend-parity-ledger` (`02e1fc7`), based on `origin/main` `0457a7d`.
-Active capability: none active. This branch is the top of a linear four-segment stack awaiting the user's publication batch: (1) backend parity register and rule `02e1fc7`, docs preflight PASS; (2) P1 Qwen F16 KV policy 2 on CUDA `0d77097`, dedicated qualification PASS, paired speed NOT_MET at about 6.7%; (3) P2 capped-read loader startup measurement on CUDA `d1fa659`, MET: OLMoE startup −90.25%, Qwen −30.66%; (4) C0 Linux CPU baseline, this head, runtime 17.54 s vs llama-server 11.29 s, 1.55x time to passing patch, 8.3x per candidate. Each segment carries its own preflight stamp, review envelope and repair commit; PR bodies are drafted in the local evidence store.
+Branch: `agent/record-align-merges-20260921`, based on `origin/main` `4eb0f60e`.
+Active capability: none active; this branch is a classifier-eligible Markdown update recording upstream Align responses, design ledgers, and merges for requests 92–95, 99, 100, 103, 104, 105, 106, 110, 113, and 115.
+PR #281 merged at `4eb0f60e`: settled designs for CPU resident session, ready frame schema 2, GPU-side greedy selection, and prompt-lookup speculation.
+PR #280 merged at `2cfbae00`: platform-profiled OLMoE sampled runtime baseline owner and Linux CPU baseline results.
+PR #279 merged at `e535d7d0`: recorded capped-read loader startup result on CUDA.
+PR #278 merged at `486d1b2c`: selected retained F16 KV policy 2 for Qwen sessions on CUDA.
+PR #277 merged at `4921f060`: added backend parity register and rule for CPU/Metal/CUDA differences.
+PR #276 merged at `0457a7d4`: recorded Align responses and merges for requests 64, 95, and 97–116.
 PR #275 merged at `251d52b8`: registered binary optimization audit requests 97–116 in `docs/align-requests.md` and recorded Align issues #1069–#1088.
 PR #274 merged at `f8a4095`: optimized hot logits loops in `greedy` and `select` (`f32.to_bits()`), preallocated builder capacity in `tokenizer_qwen2` (`array_builder(count)`), registered Align Requests 92–96 in `docs/align-requests.md`, and filed upstream Align issues #1063–#1067.
 PR #273 merged at `ae2fecd`: adopted latest Align compiler and runtime (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`), adopted typed slice writers, buffer.filled, array_builder capacity, in-place array truncate, integer match range/value patterns, is_char_boundary, and verified all suites.
