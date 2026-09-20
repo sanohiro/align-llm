@@ -88,7 +88,7 @@ each id as a next action.
 | P5 | Verify pin `8c8bfbc7` on the Mac session build | Metal | qualification | `run-gpu-session-independent` 16 requests on Metal | none known |
 | P6 | CUDA per-kernel duration profile and host-side profile of the manifested worker, to match the Metal counter trace and `sample` profile | CUDA | diagnosis | Bounded `nsys` kernel summary on the manifested worker, retained outside Git | none known |
 | P7 | Record the host that measured `5efd7a0` or measure it on both | Metal, CUDA | measurement | Paired local campaign; update this register | none known |
-| P8 | Record the selected attention policy name in the session ready frame so receipts prove policy selection | CPU, Metal, CUDA | code (exchanged format; design gate) | session reuse smoke, independent session | none known |
+| P8 | Record the selected attention policy name in the session ready frame so receipts prove policy selection | CPU, Metal, CUDA | code (exchanged format; design gate) | session reuse smoke, independent session | none known. Design settled in `docs/specs/gpu-runtime.md` §3.12 "Ready frame schema 2" (2026-09-20); not in the minor bundle because `gpu_session_client.py` matches the ready frame exactly, so it is a schema bump. |
 
 ## 6. CPU plan
 
