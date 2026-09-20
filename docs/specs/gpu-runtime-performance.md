@@ -18,7 +18,10 @@ The final CUDA campaign in `../gpu-cuda-final-measurement-result.md` completed a
 with no material win. OLMoE warm cached paired reductions against its frozen newer baseline were
 -39.85% (short) and -64.66% (long). The different producer clock boundaries prevent assigning that
 gap to GPU kernels. Metal also missed all 16 comparisons. Do not restart G1 or rebuild existing
-session/prefix reuse merely because historical delivery prose still says planned.
+session/prefix reuse merely because historical delivery prose still says planned. Superseded on
+2026-09-20 by §6.3: the current tree clears the floor against the same-ggml reference on OLMoE
+`warm-long-changed` (+15.39%) and `warm-long-cached` (+20.36%), 5/5, and remains 3–9% slower than the
+current llama.cpp reference.
 
 The initial consumer is an unchanged resident OLMoE session executing the existing four runtime
 requests in section 6.1. Diagnose that execution before selecting a kernel or scheduling change.
@@ -590,6 +593,42 @@ Author consistency pass: §6.3 changes only the nominated candidate and adds a s
 name; workload, baselines, bounds, sampler, clocks, quality rule and decision rule are byte-for-byte
 the §6.1/§6.2 values implemented in the same code paths. `run-gpu-session-measurement-smoke` owns
 the new campaign's predicate, nomination selection and non-CUDA admission refusal.
+
+#### Result (2026-09-20)
+
+The campaign ran on the RTX 4070 Ti under WSL2 with Align pin `8c8bfbc7`, candidate build
+`source_commit` `83c53f0` (`source_dirty` false; the product tree equals `origin/main` `2cfbae0` and
+the §6.3 nomination `d4438e3`), against the same-ggml `llama-server` `bb4caa75` (F32 KV) and current
+`llama-server` `304665fe` (F16 KV) baselines, five paired repetitions, 30 arms, 348.7 s, status PASS,
+decision "measured".
+
+| Model | Case | vs same-ggml median (faster pairs) | vs current median (faster pairs) |
+| --- | --- | --- | --- |
+| qwen2 | cold-short | −3.53% (0/5) | −6.08% (0/5) |
+| qwen2 | warm-short-cached | −1.06% (0/5) | −3.25% (0/5) |
+| qwen2 | warm-long-changed | +0.93% (5/5) | −3.53% (0/5) |
+| qwen2 | warm-long-cached | +2.55% (5/5) | −3.50% (0/5) |
+| qwen2 | coding (time to passing patch) | −7.71% (0/5) | −7.73% (0/5) |
+| olmoe | cold-short | −2.64% (2/5) | −8.20% (1/5) |
+| olmoe | warm-short-cached | +6.02% (5/5) | −4.51% (1/5) |
+| olmoe | warm-long-changed | +15.39% (5/5) | −8.80% (0/5) |
+| olmoe | warm-long-cached | +20.36% (5/5) | −4.49% (0/5) |
+| olmoe | coding | unavailable (OLMoE fails the coding task on all systems, as on 2026-09-09) |  |
+
+Startup medians (service readiness): qwen2 candidate 1.808 s vs same 1.216 s vs current 1.116 s;
+olmoe candidate 1.525 s vs same 0.912 s vs current 0.913 s (2026-09-09: olmoe 16,483 ms).
+
+Interpretation: against the same-ggml revision, the resident OLMoE long-context rows clear the 15%
+floor with 5/5 for the first time (+15.39%, +20.36%), which isolates align-llm's integration (F16 KV
+retention, in-graph routing, graph reuse, capped-read loaders) against identical kernels; against the
+current llama.cpp reference every row is still slower by 3–9%, so no competitive claim is made; Qwen
+remains within a few percent of both baselines except the coding row (−7.7%), consistent with the
+dense bandwidth roofline; the OLMoE startup gap of 2026-09-09 is closed to 0.6 s and the remaining gap
+is loader and upload work; the coding-row gap is the next diagnostic target.
+
+Receipt: `gpu-cuda-parity-20260920/p3-run1/campaign/result.json`, schema 2, in the local evidence
+store outside Git. Per §6.3's host-quiet clause, the Claude Code CLI session was present as the only
+background process during this run.
 
 ## 7. Implementation entry and verification
 
