@@ -50,18 +50,19 @@ Completed work:
 - Filed the audit results upstream on `sanohiro/align`: issues #1069–#1087 (19 issues), the umbrella design issue #1088 ("[Design] Vectorization contract"), and review comments on #1063, #1064 (two comments), #1066 and #1067.
 - Registered Align Requests 97–116 in `docs/align-requests.md` (one per issue #1069–#1087 in issue-number order, plus Request 116 for umbrella #1088), all PROPOSED and non-blocking, and recorded the design-review conclusions for #1063 and #1064 under Requests 92 and 93.
 
-Backend parity next actions (register: `docs/backend-parity.md` sections 5 and 6), in priority order:
-1. P1: select F16 KV policy 2 for Qwen sessions on CUDA (`src/runtime_generation.align:270`); owners: attention policy smoke, session reuse smoke, independent session 7/7, then a paired local campaign.
+Next actions in priority order (backend parity items lead; register: `docs/backend-parity.md` sections 5 and 6):
+1. P1: select F16 KV policy 2 for Qwen sessions on CUDA (`src/runtime_generation.align:270`); owners: attention policy smoke, session reuse smoke, independent session 7/7, then a paired local campaign. Commit `0a1c19b` excluded CUDA pending dedicated qualification, so the independent session run is required, not optional.
 2. P2: measure capped-read loader startup on CUDA (five alternating pairs per model, startup and first-request clocks separate).
 3. C0: re-establish the CPU baseline at current main with the item-69 fixed-request protocol.
 4. P3: re-run the `llama-server` paired campaigns at current main, CUDA first, then Metal, with a fresh precommitted ledger; both existing results predate O1, PR #243, capped-read and `5efd7a0`.
 5. C1: set the ggml CPU thread count (default versus option decision; keep the CPU reference arm deterministic).
-6. C2: apply the CPU-only application items from the existing next action 2 plus the six legacy argmax loops.
+6. C2: apply the CPU-weighted application items from continued item 2 below; its argmax item covers the six legacy `value > best_value` loops as well as the session `greedy`.
 7. P5: verify pin `8c8bfbc7` on the Mac session build (16 independent requests).
 8. P4, P6, P7: indexed SET_ROWS prefill on Metal, CUDA per-kernel profile, record the `5efd7a0` measurement host.
 9. C3: design ledger for the resident session on the ggml CPU device (backend allowlist, shim registry, calibration contract), then implementation.
+10. Prerequisites recorded in the register: control `4bf8011` pins Align `f502fe3d` itself, so CUDA paired timing needs CONTROL re-settled in the enablement spec (proposed `0457a7d` at the current pin); no pre-fix CUDA control or CUDA startup owner exists for P2; the item-69 CPU owner is Darwin-only, so C0 needs a Linux-pinned owner or the M1.
 
-Next actions in priority order:
+Continued next actions from the previous checkpoint, after the list above:
 1. Adopt the Align pin containing PR #1068: update `.align-revision`, materialize and verify the managed toolchain, and confirm `alignc explain-opt` now reports on the 7 modules that crashed at `8c8bfbc7` (Request 96 moves toward ALIGN_LLM_VERIFIED).
 2. Application-side improvements available today at the current compiler, ranked by measured effect:
    - Replace the `prime_window` per-byte zero fill with `buffer.filled` (`src/moe_decode_step.align:3238`, `src/moe_model_forward.align:394-415`); 1,048,576 opaque runtime calls per generated token on the 16-layer OLMoE path.
@@ -77,9 +78,9 @@ Next actions in priority order:
 3. Monitor upstream Align responses to issues #1069–#1088 and to the comments on #1063, #1064, #1066 and #1067.
 
 Latest durable verification:
-- `git diff --check`: PASS (no whitespace errors).
-- `python3 scripts/pre-pr --plan`: selected the `docs` classifier row.
-- `python3 scripts/pre-pr`: PASS at the exact branch head.
+- `git diff --check`: PASS.
+- `python3 scripts/pre-pr --plan`: selects the `docs` classifier row (diff-check, markdown-fences).
+- `python3 scripts/pre-pr`: PASS at the exact branch head after the review repair (rerun after the final commit).
 
 Retained from the PR #274 checkpoint (source unchanged on this branch):
 - `alignc check-per-unit src/main.align`: PASS (checked 155 unit(s) per-unit).
