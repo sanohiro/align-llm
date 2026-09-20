@@ -31,7 +31,8 @@ historical fixtures and externally supplied products. They own only fixture adap
 paired ordering, independent timing and evidence capture; no product imports them.
 
 `scripts/measure-cuda-optimization` is `BENCHMARK_OR_MEASUREMENT`: it owns only
-fixed paired timing, source/build identity checks and independent result comparison.
+fixed paired timing, source/build identity checks against the control commit and primary
+row settled by its plan, and independent result comparison.
 It launches external native workers and is never imported by normal product execution.
 
 ## Historical preparation audit

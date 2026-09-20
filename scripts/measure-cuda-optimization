@@ -23,6 +23,7 @@ SYSTEM = 'You are a helpful assistant. Follow the output format exactly.'
 SHORT = 'List the integers from 1 through 500 in ascending order, separated by single spaces. Output only the integers.'
 LONG = 'Repository context (irrelevant to this formatting task):\n' + 'alpha beta gamma delta\n' * 128 + '\n' + SHORT
 CASES = [('cold-short', SHORT), ('warm-short-cached', SHORT), ('warm-long-changed', LONG), ('warm-long-cached', LONG)]
+CASE_NAMES = tuple(name for name, _ in CASES)
 COUNTS = ('output', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'token_count_exact')
 
 
@@ -76,7 +77,16 @@ def quality(result):
     return len(values) >= 16 and all(value == str(index) for index, value in enumerate(values, 1))
 
 
-def reductions(arms, model, case):
+def campaign_policy(control_commit, primary):
+    if len(control_commit) != 40 or control_commit.strip('0123456789abcdef'):
+        raise ValueError('control commit must be a full lowercase hexadecimal commit')
+    model, separator, case = primary.partition(':')
+    if not separator or model not in ('qwen2', 'olmoe') or case not in CASE_NAMES:
+        raise ValueError('primary must be MODEL:CASE naming a measured model and request case')
+    return dict(control_commit=control_commit, primary=dict(model=model, case=case))
+
+
+def reductions(arms, model, case, primary=('olmoe', 'warm-long-cached')):
     result = []
     for pair in range(5):
         selected = [a for a in arms if a['model'] == model and a['pair'] == pair]
@@ -95,9 +105,9 @@ def reductions(arms, model, case):
             raise ValueError('invalid client clock')
         result.append((a['client_ns'] - b['client_ns']) / a['client_ns'])
     median = statistics.median(result)
-    primary = model == 'olmoe' and case == 'warm-long-cached'
-    passed = median >= .15 and sum(r > 0 for r in result) >= 4 if primary else median >= -.05
-    return dict(paired_reductions=result, median_reduction=median, passed=passed)
+    selected = (model, case) == tuple(primary)
+    passed = median >= .15 and sum(r > 0 for r in result) >= 4 if selected else median >= -.05
+    return dict(primary=selected, paired_reductions=result, median_reduction=median, passed=passed)
 
 
 def identity(source, build):
@@ -163,6 +173,8 @@ def run(args):
     record = dict(schema_version=1, status='FAIL', arms=[], comparisons=[])
     worker = None
     try:
+        # The campaign policy is settled in the plan; the receipt records the exact values used.
+        record['policy'] = campaign_policy(args.control_commit, args.primary)
         admitted = admit(args.profile.resolve(strict=True))
         profile = admitted.records['profile']
         if len(profile['models']) != 2 or {m['model_id'] for m in profile['models']} != {'qwen2', 'olmoe'} or len(profile['runtime_options']) != 1:
@@ -180,8 +192,10 @@ def run(args):
             raise ValueError('measurement must execute from its exact candidate source tree')
         identities = {name: identity(sources[name], builds[name]) for name in builds}
         a, b = identities['control'], identities['candidate']
-        if a['source_commit'] != CONTROL or any(a[k] != b[k] for k in ('align_revision', 'compiler_sha256', 'bundle_id')) or b['bundle_id'] != admitted.records['bundle']['bundle_id']:
-            raise ValueError('campaign control, compiler or bundle mismatch')
+        if a['source_commit'] != record['policy']['control_commit']:
+            raise ValueError('control build is not the nominated control commit')
+        if any(a[k] != b[k] for k in ('align_revision', 'compiler_sha256', 'bundle_id')) or b['bundle_id'] != admitted.records['bundle']['bundle_id']:
+            raise ValueError('campaign compiler or bundle mismatch')
         stable_libs = lambda i: {k: v for k, v in i['libraries'].items() if 'shim' not in k}
         if stable_libs(a) != stable_libs(b):
             raise ValueError('non-shim libraries differ')
@@ -239,7 +253,8 @@ def run(args):
                     row['status'] = 'PASS'
                     (destination / 'result.json').write_text(json.dumps(record, indent=2) + '\n')
             for case, _ in CASES:
-                record['comparisons'].append(dict(model=model_name, case=case, **reductions(record['arms'], model_name, case)))
+                record['comparisons'].append(dict(model=model_name, case=case, **reductions(record['arms'], model_name, case,
+                    primary=(record['policy']['primary']['model'], record['policy']['primary']['case']))))
         admitted.recheck()
         if digest(Path(__file__)) != record['identities']['tool_sha256'] or digest(ROOT / 'docs/specs/cuda-optimization-enablement.md') != record['identities']['plan_sha256']:
             raise ValueError('measurement tool or plan changed during campaign')
@@ -291,7 +306,8 @@ option=dict(backend='cuda',placement='resident',prefetch='off',backend_bundle='p
 admitted=SimpleNamespace(root=w, files={}, recheck=lambda:None, records=dict(
  profile=dict(models=models,runtime_options=[option]), bundle=dict(bundle_id='fixture')))
 m.admit=lambda path:admitted
-m.identity=lambda source,build:dict(source_commit=m.CONTROL,align_revision='pin',
+nominated='0457a7d4d4645bb733b4cbf96126c5d79c4da31d'
+m.identity=lambda source,build:dict(source_commit=nominated,align_revision='pin',
  compiler_sha256='compiler',bundle_id='fixture',libraries={})
 m.quiet_host=lambda:dict(quiet=True)
 if len(sys.argv)>3 and sys.argv[3]=='construction':
@@ -306,10 +322,20 @@ if len(sys.argv)>3 and sys.argv[3]=='shutdown':
  m.subprocess.Popen.wait=observed_wait
 m.subprocess.check_output=lambda *a,**k:'fixture GPU'
 args=SimpleNamespace(output=w/'result',profile=w/'profile.json',control=w,candidate=w,
- control_source=source,candidate_source=source)
+ control_source=source,candidate_source=source,control_commit=nominated,
+ primary='qwen2:warm-long-cached')
 bad=SimpleNamespace(**vars(args)); bad.candidate_source=w; bad.output=w/'wrong-source'
 assert m.run(bad)==1
 assert 'exact candidate source tree' in m.json.loads((bad.output/'result.json').read_text())['error']
+# The nominated control is per campaign: the shipped default must be refused here.
+stale=SimpleNamespace(**vars(args)); stale.control_commit=m.CONTROL; stale.output=w/'wrong-control'
+assert m.run(stale)==1
+stale_record=m.json.loads((stale.output/'result.json').read_text())
+assert 'nominated control commit' in stale_record['error']
+assert stale_record['policy']['control_commit']==m.CONTROL
+bogus=SimpleNamespace(**vars(args)); bogus.primary='olmoe:nonexistent'; bogus.output=w/'wrong-primary'
+assert m.run(bogus)==1
+assert 'MODEL:CASE' in m.json.loads((bogus.output/'result.json').read_text())['error']
 assert not (w/'worker.pid').exists()
 with m.cancellation_scope():
  raise SystemExit(m.run(args))
@@ -370,6 +396,27 @@ def self_test():
     arms[-1]['requests'][0]['client_ns'] = 200
     arms[-3]['requests'][0]['client_ns'] = 200
     assert not reductions(arms, 'olmoe', 'warm-long-cached')['passed']
+    qwen = [dict(model='qwen2', pair=i, arm=name, status='PASS', requests=[dict(case='warm-long-cached',
+        client_ns=100 if name == 'control' else 80, quality=True, result=dict(result))]) for i in range(5) for name in ('control', 'candidate')]
+    selected = reductions(qwen, 'qwen2', 'warm-long-cached', primary=('qwen2', 'warm-long-cached'))
+    assert selected['primary'] and selected['passed'] and not reductions(qwen, 'qwen2', 'warm-long-cached')['primary']
+    qwen[-1]['requests'][0]['client_ns'] = 200
+    qwen[-3]['requests'][0]['client_ns'] = 200
+    # Three of five faster fails the selected primary and still clears the same row as a guardrail.
+    assert not reductions(qwen, 'qwen2', 'warm-long-cached', primary=('qwen2', 'warm-long-cached'))['passed']
+    assert reductions(qwen, 'qwen2', 'warm-long-cached')['passed']
+    assert campaign_policy('0457a7d4d4645bb733b4cbf96126c5d79c4da31d', 'qwen2:warm-long-cached') == dict(
+        control_commit='0457a7d4d4645bb733b4cbf96126c5d79c4da31d', primary=dict(model='qwen2', case='warm-long-cached'))
+    assert campaign_policy(CONTROL, 'olmoe:warm-long-cached')['primary'] == dict(model='olmoe', case='warm-long-cached')
+    for invalid in (('0457a7d', 'qwen2:warm-long-cached'), (CONTROL.upper(), 'qwen2:warm-long-cached'),
+            ('z' * 40, 'qwen2:warm-long-cached'), (CONTROL, 'qwen2'), (CONTROL, 'llama:warm-long-cached'),
+            (CONTROL, 'qwen2:no-such-case'), (CONTROL, ':warm-long-cached')):
+        try:
+            campaign_policy(*invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('invalid campaign policy accepted')
     for bad in (arms[:-1], json.loads(json.dumps(arms))):
         if len(bad) == 10:
             bad[-1]['requests'][0]['result']['output'] = 'different'
@@ -382,7 +429,7 @@ def self_test():
     cancellation_test()
     cancellation_test(construction=True)
     cancellation_test(shutdown=True)
-    print('CUDA measurement self-test PASS (paired decisions and SIGTERM worker cleanup)')
+    print('CUDA measurement self-test PASS (campaign policy, paired decisions and SIGTERM worker cleanup)')
 
 
 if __name__ == '__main__':
@@ -390,6 +437,8 @@ if __name__ == '__main__':
     parser.add_argument('--self-test', action='store_true')
     for name in ('profile', 'control-source', 'control', 'candidate-source', 'candidate', 'output'):
         parser.add_argument('--' + name, type=Path)
+    parser.add_argument('--control-commit', default=CONTROL)
+    parser.add_argument('--primary', default='olmoe:warm-long-cached')
     args = parser.parse_args()
     if args.self_test:
         self_test()
