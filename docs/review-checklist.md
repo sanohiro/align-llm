@@ -24,6 +24,9 @@ every listed dimension must be answered or marked `N/A` with a concrete reason.
   baseline, hardware/environment, sample count, and reproducible command.
 - `HANDOFF.md` changes only when durable execution state changed; GitHub retains transient review
   and check evidence.
+- A backend-specific gate, or a measurement/qualification from one host, has a
+  `docs/backend-parity.md` row with its reason and per-backend status; `leftover` and `unmeasured`
+  cells map to `HANDOFF.md` next actions or state an explicit deferral reason.
 
 ## Public contract ledger
 

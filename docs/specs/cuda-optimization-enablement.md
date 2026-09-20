@@ -9,6 +9,11 @@ Inspection base: `4bf8011` (including dispatch optimization `5efd7a0`).
 this document owns the CUDA enablement contract. The qualified local KV result is
 recorded below; it is separate from the deferred graph-concurrency experiment.
 
+Status note 2026-09-20: the inspection rows below reflect base `4bf8011`. Since `ae6eac7`
+(PR #243) CUDA OLMoE sessions select policy 2 (`src/runtime_generation.align:398`) and the
+retained-half native test has no MTL-only guard. Current per-backend state, including the
+Qwen-on-CUDA leftover, is in `../backend-parity.md`.
+
 ## Shipping scope after native production qualification
 
 **CUDA-KV-F16 is the active shipping candidate. CUDA-GRAPH-ENABLE is deferred.**

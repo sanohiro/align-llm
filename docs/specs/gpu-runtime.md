@@ -2,6 +2,9 @@
 
 Status: G1 merged; Metal independent numeric qualification passes, CUDA remains pending.
 G1R serial coding-session implementation is active (2026-09-09).
+Status note 2026-09-20: CUDA G1 19-case and 16-request session qualification passed at `688232c`
+(`../gpu-cuda-session-repair.md`); the per-backend state of every later mechanism is in
+`../backend-parity.md`.
 
 Resident generation and qualification infrastructure merged in PR #219. The complete independent
 Metal corpus passes all 19 cases at `5ae5351`, with exact layer/router/logit comparisons and
