@@ -202,7 +202,9 @@ Keep only performance-specific complexity that clears its declared floor.
 
 The historical `scripts/run-gpu-session-measurement --campaign cuda-final` deliberately rejects
 changed runtime sources beyond `688232c`. It cannot measure this candidate unchanged. Do not edit
-its frozen nominations or old receipts. The implementation owner must package the local paired
+its frozen nominations or old receipts; a current-tree comparison against the two retained
+`llama-server` baselines uses the separate `--campaign cuda-current` nomination settled in
+`gpu-runtime-performance.md` §6.3, which leaves `cuda-final` untouched. The implementation owner must package the local paired
 protocol above with its source-bound invocation and evidence; any new measurement CLI/receipt
 contract must be settled here before implementing that harness. Python may serve its classified
 measurement role only, with the required boundary-audit update/check if changed.

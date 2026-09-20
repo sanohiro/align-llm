@@ -549,6 +549,48 @@ Author consistency pass: §6.2 reuses the settled workload and bounds, nominates
 repair, explicitly separates internal clocks from transport/startup, and records quality failure
 without suppressing the independently valid runtime comparison. Review the harness before timing.
 
+### 6.3 CUDA current-tree comparison (2026-09-20)
+
+§6.2's result is a frozen historical measurement of runtime `688232c`. It is stale as a statement
+about the shipping tree: `688232c..d4438e3` contains 32 `src/` commits, including retained F16
+attention KV for OLMoE on Metal (`d60e2b6`) and for Qwen (`234b7fc`), the capped-read resident loader repair
+(`594981c`), the GPU dispatch/caching/sampling optimization (`5efd7a0`), the PR #243 CUDA retained
+half KV with validated indexed prefill (`ae6eac7`, `2f1b69c`, `1342274`) and Qwen F16 KV policy 2 on
+CUDA (`ba9ea4f`). §6.2's OLMoE construction-to-ready median of 16,483 ms is a pre-`594981c` loader
+artifact and is separately explained by the capped-read startup measurement in
+`cuda-optimization-enablement.md`, which measured OLMoE startup 17.125 s to 1.669 s on CUDA; it is
+not evidence about the current loader. This is therefore a new precommitted campaign, not a rerun,
+retune or replacement of §6.2, whose nomination, receipt and published result stay frozen.
+
+| Contract | Frozen value |
+| --- | --- |
+| Owner / CLI / receipt | The §6.1 command with `--campaign cuda-current`; schema 2 `GPU_SESSION_MEASUREMENT`, distinguished from §6.2 only by `policy.campaign`. `--campaign cuda-final` and `--campaign original` are unchanged. Fresh external output directory, whose parent exists and whose leaf does not; identity rechecks, failure retention and cleanup exactly as §6.1. |
+| Candidate / nomination | New driver constant `CUDA_CURRENT_CANDIDATE = d4438e313c59a71a11d0a65ed1735425a0e014e8`, selected through `NOMINATION[args.campaign]`. `CUDA_CANDIDATE` is not edited, and `688232c` ancestry is retained transitively because `d4438e3` descends from it. The candidate is the clean committed head of `agent/parity-minor-batch` that adds, on top of `d4438e3`, only documentation (this paragraph and the pointer added to `cuda-optimization-enablement.md`) and the `cuda-current` driver/smoke change, so its `src/`, `.align-revision` and `scripts/ggml_shim.c` content equals `d4438e3` and the existing frozen-source closure admits it unchanged. Build it with `scripts/build-gpu-independent-candidate PINNED_GGML KIT_PROFILE OUT --session`; `verify_build` already refuses a dirty build. |
+| Protocol / references / limits | Exactly §6.1 and §6.2: both retained unmodified `llama-server` baselines (same-ggml `bb4caa7540188872173c44d161602d9271386413` with F32 K/V, current `304665fe7ac957df95e3ff8c8c4ffdf92dd6ffa3` with F16 K/V), original Q4_K_M Qwen and OLMoE, the `cuda-kit-28a6fe3` profile's single resident/prefetch-off CUDA option, 1-GiB host and 6,000,000,000-byte GPU ceilings, context 2304, batch 2048, microbatch 128, four baseline CPU threads, Flash Attention on, no startup warmup or context shifting, the fixed system/short/long requests, 128 output tokens, the four ordered runtime cases, the eight-attempt native-validated coding portfolio, and five paired repetitions in the fixed rotated system order over 30 serial arms. |
+| Runtime metric / decision | §6.2's request-level producer internal clocks unchanged: candidate worker `elapsed_ns`, baselines `timings.prompt_ms + timings.predicted_ms`. Missing or invalid clocks invalidate the campaign and never fall back to caller wall time. A named model/case/reference clears the material floor only when all ten responses pass the fixed-output quality rule, the median paired reduction `(reference-candidate)/reference` is at least 15%, and at least four of five pairs are faster. Construction-to-ready wall time is recorded as operational context only. Coding reports successes, attempts and `processing_to_passing_patch_ns`, with null latency for failed portfolios. |
+| Cost ceiling | As §6.2: at most 7200 seconds for the whole campaign and 300 seconds per construction or request. §6.2's 30 arms took 517.206 seconds; the capped-read loader removes most of OLMoE's former construction time, so this campaign is expected to finish well inside the same ceiling. One run only; a negative or incomparable result completes it. |
+| Host quiet | `run-gpu-session-measurement` records host and GPU inventory but has **no** foreign-load admission of its own; unlike `measure-cuda-optimization`, it cannot refuse a busy host. "No other benchmark, compiler or qualification runs during timing" therefore remains an operator obligation evidenced outside the receipt. Prefer a plain terminal with no agent session. If a Claude Code session is present it is the only permitted background process: its idle load of 0.14–0.35 cores stays below the 0.5-core busy threshold of the shared-host constraint but exceeded the external observer's 0.1-core rule that invalidated the P1 and P2 receipts, so the result note records its presence, and no other benchmark, build, compiler or qualification runs during timing. |
+| Evidence binding | The receipt binds `identities.candidate` (build manifest with `source_commit`, `source_dirty` and the full source closure), `identities.campaign_commit`, `identities.campaign_source`, `plan_sha256`, both baseline `cmake_cache_sha256`/executable digests, the profile digest and the host snapshot, and rechecks all of them after the last arm. The driver enforces `merge-base --is-ancestor` plus byte equality for `src/`, `.align-revision` and `scripts/ggml_shim.c` at the nomination; it does not enforce `candidate.source_commit == campaign_commit`, so a reader confirms from the receipt that both name the campaign head. |
+
+Interpretation limits carry over unchanged and must accompany every conclusion. The two clocks are
+producer-reported service clocks with different boundaries: the candidate's includes request
+decoding, tokenization and CPU sampling, while llama.cpp's slot clocks exclude HTTP handling and
+some preparation. The asymmetry can penalize the candidate. These are not identical instruction
+boundaries, pure GPU-kernel timings or end-to-end request latency, and no estimated transport is
+subtracted. The result is scoped to this host, these two Q4_K_M models, this synthetic fixed-output
+workload and this single coding task; it establishes neither G6 coding competitiveness nor a
+capacity claim, and a comparison against these two explicitly configured baselines is not a claim of
+exhaustive upstream tuning. The frozen-source closure covers `src/`, `.align-revision` and
+`scripts/ggml_shim.c` only; other build inputs are bound by the recorded and rechecked campaign and
+candidate source closures rather than by the nomination. Because the nomination pins a commit id, a
+rebase of this branch invalidates it and requires updating both the constant and this paragraph
+before any run.
+
+Author consistency pass: §6.3 changes only the nominated candidate and adds a separate campaign
+name; workload, baselines, bounds, sampler, clocks, quality rule and decision rule are byte-for-byte
+the §6.1/§6.2 values implemented in the same code paths. `run-gpu-session-measurement-smoke` owns
+the new campaign's predicate, nomination selection and non-CUDA admission refusal.
+
 ## 7. Implementation entry and verification
 
 Start G1 now from this settled architecture. Inside that capability: probe pinned operations/build

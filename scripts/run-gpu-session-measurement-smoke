@@ -106,11 +106,20 @@ def main():
    rejected(lambda:m.run(argparse.Namespace(profile=profile,output=work/'absent')))
    assert not (work/'absent').exists()
   final_args=argparse.Namespace(campaign='cuda-final')
+  # Both CUDA campaigns share the internal-clock, schema-2 and native-validation policy, and each
+  # nominates its own frozen runtime source; only the default original campaign keeps caller wall time.
+  assert m.final_cuda(final_args) and m.final_cuda(argparse.Namespace(campaign='cuda-current'))
+  assert not m.final_cuda(argparse.Namespace(campaign='original'))
+  assert tuple(m.NOMINATION)==('original','cuda-final','cuda-current')
+  assert m.NOMINATION['cuda-final']==m.CUDA_CANDIDATE and m.NOMINATION['original']==m.CANDIDATE
+  assert m.NOMINATION['cuda-current']==m.CUDA_CURRENT_CANDIDATE!=m.CUDA_CANDIDATE
+  assert all(len(value)==40 and value==value.lower().strip() for value in m.NOMINATION.values())
   records={'profile':{'models':[{'model_id':'qwen2'},{'model_id':'olmoe'}],
    'runtime_options':[dict(option_id='fixture',placement='resident',prefetch='off',backend='metal')]}}
   with patch.object(m,'admit',return_value=SimpleNamespace(records=records)):
-   rejected(lambda:m.run(argparse.Namespace(profile=profile,output=work/'absent',campaign='cuda-final')))
-   assert not (work/'absent').exists()
+   for campaign in ('cuda-final','cuda-current'):
+    rejected(lambda:m.run(argparse.Namespace(profile=profile,output=work/'absent',campaign=campaign)))
+    assert not (work/'absent').exists()
   for system in ('candidate','same'):
    reply=dict(output=valid,completion_tokens=128,elapsed_ns=1250000,
               timings=dict(prompt_ms=1.0,predicted_ms=.25))
