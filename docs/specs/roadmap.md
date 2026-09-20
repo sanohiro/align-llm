@@ -2979,6 +2979,235 @@ small coding modelをdraftとして利用する。
 
 速くならない組み合わせは無効化する。
 
+### Prompt-lookup speculation for the coding workload (design, 2026-09-20)
+
+Design only; nothing here is implemented or measured. This replaces "small coding model を draft
+として利用する" as the *first* R9 step: the coding repair loop copies long spans verbatim from the
+prompt, so an n-gram lookup over the prompt and the generated tokens drafts them at zero model
+cost and needs no second model, no second weight set and no second KV arena. A draft model remains
+a later R9 option and is out of scope here.
+
+Two things are explicitly **not** design targets because G1R already ships them: warm session
+lifetime (one worker process, one loaded and uploaded weight set, `runtime_session_io` serial
+requests) and prompt-prefix KV reuse (`docs/specs/gpu-runtime.md` section 3.12, "Graph and prefix
+state"). This design changes only what happens inside one `generate_session` call.
+
+#### Draft source
+
+`runtime_generation.prompt_lookup_candidate` (`src/runtime_generation.align:669`) already does
+1-gram lookup over the prompt and is used today only as a scan hint for
+`greedy(logits, candidate)`. Generalize it in place rather than adding a module:
+`prompt_lookup_draft(borrow history: array<i64>, n_match: i64, k: i64, borrow mut out: array_builder<i64>) -> i64`.
+`history` is the concatenation of the prompt ids and the tokens generated so far; the match window
+`n_match` is the last `n_match` tokens of `history`; the search is the existing backward scan for
+the most recent earlier occurrence of that window; on a hit the following `k` tokens are the draft.
+Frozen values for the first capability: `n_match` tried at 3 then 2 (longest first, first hit
+wins), `k = SPECULATION_K = 4`, no static or cross-request n-gram cache. No draft is produced when
+the window has no earlier occurrence or fewer than `k` tokens follow it. Cost is one host scan over
+at most 2,175 ids, bounded and far below one target forward pass.
+
+#### Verification graph
+
+The k drafts plus the one committed-but-not-yet-decoded token are verified as one `k + 1` wide
+target forward pass. Settled decisions:
+
+- **A third graph kind, `GPU_GRAPH_VERIFY`**, not a reuse of `GPU_GRAPH_PREFILL`. One graph is
+  retained per kind, so reusing the prefill kind would invalidate and rebuild the 128-wide prefill
+  graph at every request boundary, which is exactly the cost G1R removed. This adds the kind to
+  `ggml_ffi`, to the shim's graph-slot table and to `runtime_execution.topology_key`'s currently
+  two-valued `graph_kind` admission (`src/runtime_execution.align:87-88`). `TopologyRecord`'s field
+  set and key order do not change, so `GPU_GRAPH_TOPOLOGY` stays schema 1.
+- **Speculation is an explicit option, not a derived mode.** There is no safe way to derive it:
+  the existing oracle's 1900-repeated-words request would trigger the lookup, so a derived mode
+  would silently change the output of owners whose contract is exact equality. `runtime_options`
+  schema 1 (`docs/specs/gpu-runtime.md` section 3.1) is strict-lexical with no implicit defaults,
+  so this is a schema 1 -> 2 bump adding a required `speculation` field with values `off|lookup`.
+  That is a triggered design-gate change and is recorded as such: every checked-in profile options
+  document and the assembled qualification kit must be regenerated with `"speculation":"off"`, and
+  every existing owner keeps `off` so the frozen 19-case corpus and the 16-request oracle stay
+  byte-unchanged. The new speculative owner and the candidate measurement arm use an options
+  document with `"speculation":"lookup"`. A `lookup` session that is not Qwen-greedy refuses at
+  admission rather than silently downgrading.
+- **`k` is a fixed constant, not a per-step variable.** Only one graph per kind is live, so a
+  varying query width would thrash. The session speculates only when the lookup yields exactly
+  `SPECULATION_K` tokens; otherwise it takes the ordinary width-1 decode step. Query width is
+  therefore always 1 or `1 + SPECULATION_K`.
+- **Logits for all `k + 1` positions.** Today the head emits one row: input 6 (`INPUT_OUTPUT_ID`)
+  is `ne0 = 1` (`src/runtime_generation.align:512-514`), set to `tokens - 1` in prefill
+  (`:589`) and to `0` in decode (`:662`), and both heads `GET_ROWS` it once
+  (`src/layer_qwen2.align:1569,1574,1819,1824`). Enlarge that input to `ne0 = 1 + SPECULATION_K`
+  at construction and add an `op_view_2d` to `ne0 = 1` in the prefill and decode heads, exactly as
+  prefill already views the token and position inputs (`src/runtime_qwen.align:88-91`); the verify
+  head views it to `1 + SPECULATION_K`. Because the prefill and decode structures then change
+  unconditionally for every session, no topology-key component is needed for them; the key is
+  in-process only and never persisted.
+- **Mask, tokens and positions reuse the prefill inputs.** Input 0 and 1 are `[prompt_count]` I32
+  and input 2 is `[context_length, prompt_count]` F32 with `prompt_count >= 129`, so the verify
+  graph views them to `1 + SPECULATION_K` rows with no new input tensor and no change to
+  `INPUT_COUNT`.
+- **KV capacity.** The session reserves `min(model_context, 2175)` rows. A verify step writes up to
+  `SPECULATION_K` rows beyond the committed count, so the reservation becomes
+  `min(model_context, 2175 + SPECULATION_K)` and the host/device admission and the recorded
+  `run-gpu-session-host-capacity` peaks must be re-verified.
+
+#### Acceptance rule
+
+Let `t0` be the committed-but-undecoded token, `d1..dk` the draft, and `r0..rk` the argmax of the
+`k + 1` returned logit rows. Accept the longest prefix with `r_{i-1} == d_i`; let `a` be its length.
+The step emits `d1..da` followed by `r_a`, that is `a + 1` tokens, advances `n_past` by `1 + a`, and
+sets the new committed-but-undecoded token to `r_a`. With `a = 0` this degenerates exactly to one
+ordinary decode step, so the speculative path never emits fewer tokens per target pass than the
+non-speculative path.
+
+This is the standard greedy acceptance rule and it preserves the target's greedy decision at every
+emitted position. It does **not** promise bitwise-identical output against the non-speculative arm:
+a `k + 1` wide matmul has a different reduction order than a width-1 matmul, so a logit can move in
+the last bits and flip a near-tie argmax. Section 3.12's author consistency pass already records
+the same property for fresh versus cached graph partitions. The qualification consequence is in
+"Owners" below; it is the single largest risk in this design and must not be papered over as
+"exact".
+
+Two bounds apply to every accepted run, in order: stop at the first EOG id anywhere in
+`d1..da, r_a` (not only at the last token), and truncate the run so the request never exceeds its
+`max_tokens`. `publish_prefix` snapshots accepted tokens only; rejected draft positions were
+written to KV but are not part of the prefix.
+
+**Seeded sampling is deferred, with a reason.** Preserving a seeded distribution under speculation
+requires per-position rejection sampling against the draft's own distribution, and the draft here
+is a lookup with no distribution, so every rejected position would consume host RNG draws that the
+non-speculative arm does not consume. `run-gpu-session-independent`'s repeated-seed-42 request
+requires exact equality against an oracle that reimplements the shipped RNG consumption order, so
+seeded speculation cannot be qualified without changing that oracle. Qwen coding is greedy and
+OLMoE coding is seeded (temperature 0.3, seeds 1-8), so this capability ships Qwen-greedy
+speculation and leaves OLMoE on the existing path. A later capability may specify rejection
+sampling; it is not designed here.
+
+#### KV rollback contract
+
+Rejected drafts leave written KV rows, and correctness depends on two mechanisms, not one:
+
+1. **Positional overwrite.** Prefill-class KV writes use `runtime_kv.write_indexed_prefix`
+   (`src/runtime_kv.align:78-82`), which is SET_ROWS with explicit I32 indices on CUDA and the
+   in-place SET conversion on Metal (`docs/backend-parity.md`, "Indexed prefill KV write"). Both
+   write at absolute positions, so the next verify or decode step writing positions
+   `n_past .. n_past + k` overwrites the stale rows. Rollback is therefore *not advancing
+   `n_past`*; no erase step exists or is needed. One touchpoint this requires:
+   `runtime_kv.prefill_chunk` hardcodes `ggml_ffi.GPU_GRAPH_PREFILL` in both of its branches
+   (`src/runtime_kv.align:110-114`), so it must take the graph kind as a parameter or the verify
+   graph's KV write binds to the prefill graph's slots.
+2. **Opening the decode mask for the newly accepted tokens, which is not automatic.** The verify
+   graph builds its own `k + 1` mask rows as a view of input 2 and rewrites them in full each step,
+   like prefill; input 5 is a different tensor with a different invariant. `update_decode`
+   maintains input 5 incrementally: when the width bucket is unchanged it writes a single `0` at
+   column `n_past` (`src/runtime_generation.align:658-660`), relying on the invariant "columns
+   `[0, n_past]` are `0` and every column above is `MASK_NEG_INFINITY`". A verify step advances
+   `n_past` by `1 + a` without touching input 5, so columns `[old_n_past, new_n_past)` would stay
+   `MASK_NEG_INFINITY` and the next ordinary decode step, which writes only column `new_n_past`,
+   would be unable to attend to the accepted tokens' KV at all. The contract is therefore the
+   opposite of an erase: after each verify step write `0` to input 5 columns
+   `[old_n_past, new_n_past)` in the host mask mirror and upload that one contiguous
+   `(1 + a) * 4`-byte sub-range through `runtime_inputs.update(owner, 5, old_n_past * 4, range)`.
+   Rejected-draft columns need no action on input 5, because the invariant already leaves every
+   column above `n_past` at `MASK_NEG_INFINITY` and the verify graph never writes input 5.
+
+**Attention width is monotonic non-decreasing within a request.** `attention_width` rounds up to a
+multiple of 256 and caps at the context (`src/runtime_inputs.align:15-21`); a verify step uses
+`attention_width(n_past + 1 + k, context)`. A rollback must never shrink the recorded width,
+because shrinking would change the topology key and rebuild both the decode and the verify graph at
+a bucket boundary. The masked-off columns make the larger bucket harmless.
+
+#### Accounting, receipts and failure modes
+
+Accounting uses the existing diagnostic-observation precedent rather than a wire schema bump:
+`provider_runtime.run_session_observed` / `SessionObservation` (section 3.12, "Session observation")
+gains `speculation_steps`, `decode_steps`, `drafted_tokens`, `accepted_tokens`,
+`rejected_tokens` and `verify_positions_computed`. The ordinary wrapper discards it, so the session
+response stays schema 1 and the provider result stays schema 2. Receipts are unchanged:
+`GPU_SESSION_QUALIFICATION`, `GPU_SESSION_CODING` and `GPU_SESSION_MEASUREMENT` gain no field; the
+speculative configuration is recorded in the measurement receipt's `policy` block, which already
+carries campaign policy.
+
+Failure modes: no draft available, or a draft shorter than `k`, takes the ordinary decode step and
+is not an error. `GPU_GRAPH_VERIFY` shapes not admitted by `ggml_backend_dev_supports_op` at
+pre-plan refuse speculation for the whole session and run today's path; there is no fallback after
+compute has begun. A compute or readback failure inside a verify step poisons the session under the
+existing rule, and because KV beyond `n_past` may be partially written, no retry is attempted. An
+out-of-range or `-1` selected id is `Error.Invalid`. A draft that would write past the KV
+reservation refuses to speculate for that step.
+
+#### Owners
+
+- Unchanged with `"speculation":"off"`: `scripts/run-gpu-session-independent` (7 Qwen, 9 OLMoE,
+  exact match), `scripts/run-gpu-independent-acceptance` (19 cases per model),
+  `scripts/run-gpu-session-host-capacity`, `scripts/run-gpu-session-reuse-smoke`. These prove no
+  regression on the existing path and are the gate before any speculative run.
+- New `scripts/run-gpu-speculation-independent`, with `eval/gpu/session-reference.cpp` extended to
+  perform the *same* batched `k + 1` verification and the same acceptance rule. Comparing the
+  speculative arm against the width-1 arm is not a valid exact-equality owner, for the reduction
+  order reason above; comparing it against a same-shape reference is. The owner additionally
+  requires that the speculative arm's output be a valid continuation and that accepted-token
+  accounting be internally consistent (`accepted + rejected == drafted`).
+- New `gpu-speculation-rollback` model-free case on the deterministic stub: partial acceptance at
+  `a = 0, 1, k - 1, k`, asserting the opened input-5 column range `[old_n_past, new_n_past)`, that no column above
+  `new_n_past` is opened, the unchanged width bucket, the
+  published prefix and the EOG-inside-accepted-run truncation.
+
+#### Measurement contract
+
+| Contract | Frozen value |
+| --- | --- |
+| Protocol | The local paired intervention protocol, `scripts/measure-cuda-optimization`, with a new `speculation` entry in its `PROTOCOLS` table. This is a Python measurement-harness change: classify it in `docs/python-boundary-audit.md` as an independent measurement role and run `python3 scripts/check-python-boundary --strict`. |
+| Workload | The existing fixed integer-list requests copy nothing from the prompt and would measure a zero acceptance rate, so this protocol needs its own edit-shaped fixed request, frozen before implementation: a system prompt identical to section 6.1's, a user prompt containing a fixed 10-line Python function followed by an instruction to re-emit the whole function with exactly one named line changed, and a quality predicate requiring the output to be the original function with exactly that one line differing and exactly the declared token count. The function is sized so the complete re-emission fits well inside the request schema's 128-token `max_tokens` cap, which the campaign keeps at 128 unchanged. That output is about 95% verbatim from the prompt, which is the acceptance regime the coding repair loop actually has. |
+| Primary row | `qwen2 warm-long-changed`. It is the edit-shaped case: a changed long prefix, so the prompt is re-processed and the output is dominated by verbatim copying. Guardrails: `qwen2 warm-short-cached` and both OLMoE rows (OLMoE must be bit-for-bit unaffected because it stays on the existing path) must not regress by more than 5%. |
+| Metrics | Primary `client_ns`. Reported alongside, never substituted for it: accepted tokens per target forward pass (the "verified tokens per weight sweep" of section 5's constrained-memory table), tokens per second, and the accounting counters above. A high acceptance rate with no wall-clock win is a negative result. |
+| Decision floor | Section 6 unchanged: at least 15% median paired reduction on the primary row, at least 4 of 5 pairs faster, all responses passing the quality predicate. |
+| llama-server baseline | Section 5 view 2 requires a properly configured current baseline, and the pinned current llama.cpp `304665fe7ac957df95e3ff8c8c4ffdf92dd6ffa3` ships draft-model-free self-speculation: `COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE` (`common/common.h:171-183`), selected by `--spec-type ngram-simple` with `--spec-ngram-simple-size-n`, `--spec-ngram-simple-size-m` and `--spec-ngram-simple-min-hits` (`common/arg.cpp:4272-4343`, `common/speculative.cpp:40-44`). The same-ggml pin `bb4caa75` carries the same enum. The comparison campaign therefore adds a fourth arm, a current llama-server configured with `ngram-simple` at the same `n` and `m` as the candidate, to the section 6.1 / 6.2 baseline policy row, keeping every other baseline setting frozen. The candidate is not compared only against a non-speculative server. |
+| Cost ceiling | Total 31 active hours: 6 for the verify graph kind and input reshaping, 4 for the draft source and acceptance loop, 1 for the options schema bump and kit regeneration, 5 for the rollback and mask contract, 6 for the reference driver extension and the new owners, 4 for the harness protocol and workload, 5 for qualification and the campaign. Campaign wall time at most 7200 s. Reconsider the capability boundary if 24 hours pass without a consumer-usable speculative result. |
+| Observer caveat | A valid external load-observer receipt requires a bare terminal with no Claude Code CLI session attached; see `docs/specs/cuda-optimization-enablement.md`, P1 and the capped-read startup result. |
+
+#### Ordered implementation steps
+
+1. Bump `runtime_options` to schema 2 with the required `speculation` field, regenerate every
+   checked-in options document and the qualification kit with `"speculation":"off"`, and update
+   `docs/specs/gpu-runtime.md` section 3.1. Owner: `make check`,
+   `scripts/run-gpu-session-reuse-smoke`, then `scripts/run-gpu-session-independent` to prove the
+   existing path is byte-unchanged.
+2. Enlarge input 6 to `ne0 = 1 + SPECULATION_K` and add the `ne0 = 1` view in both heads. Owner:
+   `make check`, `make fmt`, `scripts/run-gpu-session-reuse-smoke`.
+3. Add `GPU_GRAPH_VERIFY` to `ggml_ffi`, the shim graph-slot table and `topology_key` admission.
+   Owner: `make check`, `scripts/run-gpu-session-reuse-smoke`.
+4. Build the verify graph in `runtime_qwen` from the prefill body at query width `1 + K`, with the
+   existing indexed KV write. Owner: `scripts/run-gpu-session-reuse-smoke`.
+5. Generalize `prompt_lookup_candidate` into `prompt_lookup_draft` and keep the existing 1-gram
+   behaviour reachable. Owner: `make check`, the existing `runtime_session_reuse_smoke` cases at
+   `src/runtime_session_reuse_smoke.align:125-153`.
+6. Implement the verify step, acceptance rule, EOG and `max_tokens` truncation, the input-5 mask
+   opening and monotonic width in `generate_session`. Owner: new `gpu-speculation-rollback` stub case.
+7. Extend `SessionObservation`. Owner: `scripts/run-gpu-session-host-capacity`.
+8. Extend `eval/gpu/session-reference.cpp` and add `scripts/run-gpu-speculation-independent`.
+   Owner: that command on real hardware, both with `"speculation":"off"` (must equal today's
+   results byte for byte) and `"lookup"`.
+9. Re-run the unchanged owners in "Owners" above with `"speculation":"off"`.
+10. Add the `speculation` protocol and workload to `scripts/measure-cuda-optimization`, update
+   `docs/python-boundary-audit.md`, run `python3 scripts/check-python-boundary --strict` and
+   `scripts/measure-cuda-optimization --self-test`, then the campaign including the
+   `ngram-simple` llama-server arm.
+11. `python3 scripts/pre-pr --owner-test gpu-session-reuse -- scripts/run-gpu-session-reuse-smoke`,
+    then one comprehensive review.
+
+#### Align gap check
+
+No new Align gap. Reading `k + 1` logit rows is one `gpu_slot_get` of `(k + 1) * n_vocab * 4` bytes
+into one host buffer, and per-row access is ordinary slice arithmetic over that buffer, so no
+"batched logits readback view" surface is required. The draft scan, the acceptance loop, the mask
+mirror rewrite and the accounting counters are ordinary Align data and control flow. If this
+capability composes with the GPU-side greedy selection design (`docs/specs/gpu-runtime.md`
+section 3.13), the verify graph's argmax node returns `k + 1` ids in `4 * (k + 1)` bytes and the
+acceptance loop consumes those instead; that composition needs no further Align surface either.
+Requests 93 / issue #1064 and 116 / issue #1088 remain the recorded host-scan gaps and are neither
+prerequisites nor blockers. Nothing here consumes a `PROPOSED`, `ACCEPTED` or `IMPLEMENTING`
+surface.
+
 ---
 
 ## R10: Large-model Pressure Test
