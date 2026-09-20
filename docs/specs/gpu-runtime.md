@@ -1245,7 +1245,7 @@ type derive it from the policy name; this document is the authority for that map
 | Field | Contract |
 | --- | --- |
 | Surface | The ready frame written by `provider_runtime.run_session_observed` before the request loop, and read by `scripts/gpu_session_client.py::Session.__init__`. |
-| Inputs / defaults | Producer: `runtime_attention.name(generation.owner)` (`src/runtime_attention.align:44`) supplies `POLICY`. It returns one of three fixed ASCII identifiers, so the frame is assembled by string concatenation of literal segments; no JSON encoder, escaping or allocation policy changes. The call happens after `runtime_generation.create_session` returns, so the policy is already final and frozen (`align_gpu_attention_select` refuses after `memory_planned`). The literal moves out of `provider_runtime` into a new `pub fn runtime_session_io.ready_frame(policy: str) -> string`, which returns the exact frame body for one of the three identifiers and is the single definition of those bytes; `provider_runtime.run_session_observed` then calls `runtime_session_io.write_frame(runtime_session_io.ready_frame(runtime_attention.name(generation.owner)))`. That move is what gives the frame a hardware-free golden-bytes owner: neither `run-gpu-session-reuse-smoke` (`src/runtime_session_reuse_smoke.align` calls `ggml_ffi.gpu_device_open` directly) nor `run-gpu-session-protocol-smoke` (`src/runtime_session_protocol_smoke.align` imports only `runtime_session_io` and `runtime_session_request`) reaches `provider_runtime`'s emission site today, so without the helper the frame's bytes would first be exercised on real hardware. Consumer: no new argument; `Session` exposes the value as a new read-only attribute `self.attention_policy`, which is `None` for a schema 1 worker. |
+| Inputs / defaults | Producer: `runtime_attention.name(generation.owner)` (`src/runtime_attention.align:44`) supplies `POLICY`. It returns one of three fixed ASCII identifiers, so the frame is assembled by string concatenation of literal segments; no JSON encoder, escaping or allocation policy changes. The call happens after `runtime_generation.create_session` returns, so the policy is already final and frozen (`align_gpu_attention_select` refuses after `memory_planned`). The literal moves out of `provider_runtime` into a new `pub fn runtime_session_io.ready_frame(policy: str) -> Result<string, Error>`, which returns the exact frame body for one of the three identifiers and `Err(Error.Invalid)` for anything else, and is the single definition of those bytes. It is fallible rather than total because refusing an unknown policy is the contract the closure matrix asserts, and a `-> string` signature could only satisfy that by returning some frame anyway. `provider_runtime.run_session_observed` then calls `runtime_session_io.write_frame(runtime_session_io.ready_frame(runtime_attention.name(generation.owner))?)`, so an unknown policy propagates out of the constructor and no ready frame is written. That move is what gives the frame a hardware-free golden-bytes owner: neither `run-gpu-session-reuse-smoke` (`src/runtime_session_reuse_smoke.align` calls `ggml_ffi.gpu_device_open` directly) nor `run-gpu-session-protocol-smoke` (`src/runtime_session_protocol_smoke.align` imports only `runtime_session_io` and `runtime_session_request`) reaches `provider_runtime`'s emission site today, so without the helper the frame's bytes would first be exercised on real hardware. Consumer: no new argument; `Session` exposes the value as a new read-only attribute `self.attention_policy`, which is `None` for a schema 1 worker. |
 | Results / errors | A frame that is neither an exact schema 1 nor an exact schema 2 frame raises the existing `SessionError("worker did not acknowledge session construction")`. No new exception type. |
 | Ownership / allocation | Unchanged on both sides. The producer writes one bounded literal; the consumer stores one short string on the `Session` object it already owns. |
 | Owner module | Producer `src/provider_runtime.align`; consumer `scripts/gpu_session_client.py`. |
@@ -1281,8 +1281,8 @@ Consequences, fixed here so no one re-derives them:
 
 | Consumer | Change |
 | --- | --- |
-| `src/runtime_session_io.align` | New `pub fn ready_frame(policy: str) -> string` returning the exact schema 2 frame body for one of the three identifiers, and refusing any other input. Single definition of those bytes. |
-| `src/provider_runtime.align:519` | Call `runtime_session_io.write_frame(runtime_session_io.ready_frame(runtime_attention.name(generation.owner)))`. Add the `runtime_attention` import if absent. This is the only producer in shipping code. |
+| `src/runtime_session_io.align` | New `pub fn ready_frame(policy: str) -> Result<string, Error>` returning the exact schema 2 frame body for one of the three identifiers and `Err(Error.Invalid)` for any other input. Single definition of those bytes. |
+| `src/provider_runtime.align:519` | Call `runtime_session_io.write_frame(runtime_session_io.ready_frame(runtime_attention.name(generation.owner))?)`, the `?` being what refuses an unknown policy. Add the `runtime_attention` import if absent. This is the only producer in shipping code. |
 | `scripts/gpu_session_client.py:45` | Replace the exact-dict comparison with the six-step validation order above; set `self.attention_policy`. |
 | `scripts/run-gpu-session-client-smoke:29` | Its fixture worker gains modes: `ok` emits schema 2 with `flash_f16_cached`; new `ready-v1` emits the schema 1 frame and asserts `attention_policy is None`; new `bad-policy` emits schema 2 with `"flash"`; new `mixed-keys` emits `{"schema_version":1,"status":"ready","attention_policy":"decomposed"}`; new `missing-policy` emits `{"schema_version":2,"status":"ready"}`; the existing `bad-ready` (`schema_version: True`) stays. The last four must raise `SessionError`. |
 | `scripts/measure-cuda-optimization:~385` | The cancellation-test worker's literal `raw` becomes the schema 2 frame; keep one cancellation case on the schema 1 literal so the control-arm path is exercised by the self-test. |
@@ -1298,7 +1298,7 @@ Consequences, fixed here so no one re-derives them:
 
 | Owner | Construction | Success | Failure | Malformed input | Early exit | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- |
-| producer bytes (`runtime_session_io.ready_frame`) | `make check` compiles it | golden bytes for all three identifiers, including exact key order — `run-gpu-session-protocol-smoke` case `ready-frame-golden`, which already builds a binary importing `runtime_session_io` | N/A — a pure function over a closed enum | `ready_frame("flash")` returns the `decomposed` frame only if `runtime_attention.name` could produce it; it cannot, so the function refuses instead — same smoke, case `ready-frame-unknown-policy` | N/A — pure function | N/A — pure function |
+| producer bytes (`runtime_session_io.ready_frame`) | `make check` compiles it | golden bytes for all three identifiers, including exact key order — `run-gpu-session-protocol-smoke` case `ready-frame-golden`, which already builds a binary importing `runtime_session_io` | `ready_frame("flash")` returns `Err(Error.Invalid)`; the `?` at the `provider_runtime` call site turns that into a constructor failure with no frame written — same smoke, case `ready-frame-unknown-policy` | same case: the closed enum means every non-member input, including the empty string, takes the same refusal | N/A — pure function | N/A — pure function |
 | producer wiring (`provider_runtime`) | `make check` | the emitted policy equals `runtime_attention.name(owner)` at the moment of emission — `run-gpu-session-independent`, whose `result.json` policy must equal the policy the same run's `run-gpu-attention-policy-smoke` selected on that device | constructor failure exits nonzero without a ready frame — existing `gpu-session-protocol` case, unchanged | N/A — `runtime_attention.name` maps any out-of-range shim policy to `decomposed`; a unit case in `make check` pins that mapping | a failure before `create_session` returns emits nothing — existing behavior, unchanged | unchanged: the device owner drains on the existing paths |
 | consumer (`gpu_session_client`) | `run-gpu-session-client-smoke` mode `ok` (schema 2) and `ready-v1` (schema 1) | `session.attention_policy` is the expected string, or `None` for schema 1 — same smoke | `run-gpu-session-client-smoke` mode `bad-policy` raises `SessionError` | modes `mixed-keys`, `missing-policy`, `bad-ready` all raise `SessionError` | a refused ready frame must not leave a worker running — the existing `gone(marker)` check runs for every new mode | the existing `close(check=False)` diagnostic path covers all new modes |
 | `measure-cuda-optimization` | `--self-test` constructs both the schema 1 and schema 2 cancellation workers | arm rows carry the policy — `--self-test` assertion on the synthetic arm row | the existing `record['arms'][0]['status'] == 'FAIL'` assertion is unchanged | a worker emitting an unknown frame fails the arm, not the tool — `--self-test` case `bad-ready-frame-fails-arm` | cancellation during construction still reaps the process group — existing `cancellation_test` cases, re-run for both frame versions | unchanged |
@@ -1308,8 +1308,8 @@ Consequences, fixed here so no one re-derives them:
 
 ##### Implementation steps
 
-1. Producer bytes: `pub fn runtime_session_io.ready_frame(policy: str) -> string`, and
-   `src/provider_runtime.align:519` rewired to call it. Owner: `make check`.
+1. Producer bytes: `pub fn runtime_session_io.ready_frame(policy: str) -> Result<string, Error>`, and
+   `src/provider_runtime.align:519` rewired to call it with `?`. Owner: `make check`.
 2. Golden-bytes assertion: `run-gpu-session-protocol-smoke` cases `ready-frame-golden` and
    `ready-frame-unknown-policy`, driven through the binary it already builds. Owner:
    `./scripts/run-gpu-session-protocol-smoke`.
@@ -1336,8 +1336,8 @@ Steps 1–9 need no hardware. Step 10 does, and P8 is not closed without it.
 ##### Align gap check
 
 No genuine Align language, compiler, runtime or standard-library gap. The producer change is a new
-`pub fn` returning a `string` built by concatenating literal segments around a `str` from an existing
-`pub fn`, in a module that already builds and writes response frames the same way. No new Align API is assumed and no `PROPOSED`,
+`pub fn` returning a `Result<string, Error>` whose `Ok` payload is built by concatenating literal
+segments around a `str` from an existing `pub fn`, in a module that already builds and writes response frames the same way. No new Align API is assumed and no `PROPOSED`,
 `ACCEPTED` or `IMPLEMENTING` request is consumed. `docs/align-requests.md` is unchanged.
 
 ### 3.13 GPU-side greedy selection (design, 2026-09-20)
@@ -1347,6 +1347,16 @@ parity register's "GPU argmax" lever and `docs/specs/gpu-runtime-performance.md`
 "Consider GPU argmax or supported sampling only if full-logit readback/CPU sampling is material"
 row, so an implementing capability does not re-derive it. Adding the register row for this lever
 is not part of this design.
+
+**Scope: `cuda` only.** Device selection is admitted on the CUDA backend and on the deterministic
+stub, and never on Metal. Two reasons, both from 3.13.2. First, the tie rules differ per backend —
+CPU takes the highest tied index, Metal the highest surviving per-thread candidate, CUDA whichever
+candidate survives its reduction tree — so the zero-tie census that gates this lever is a
+per-backend fact and a CUDA census says nothing about Metal. Second, the retention rule below
+depends on a paired `measure-cuda-optimization` campaign, which exists only on the CUDA host; there
+is no equivalent paired harness on Metal, so a Metal arm could not clear or fail the floor. A later
+capability may extend the lever to Metal; doing so requires its own census on Metal hardware and
+its own measurement protocol, and neither is designed here.
 
 #### 3.13.1 Consumer and measured starting point
 
@@ -1403,8 +1413,8 @@ Two host promises therefore cannot both be kept by any pinned backend argmax:
 
 | Field | Contract |
 | --- | --- |
-| Exact surfaces | `ggml_ffi.op_argmax(ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, label: str) -> Result<(), Fault>` and `ggml_ffi.op_sum_rows(ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, label: str) -> Result<(), Fault>`, each one `unsafe` block containing one foreign call, in the `op_argsort` shape. New extern declarations `align_ggml_op_argmax(ctx, slots, out, a) -> i32` and `align_ggml_op_sum_rows(ctx, slots, out, a) -> i32` beside `align_ggml_op_argsort` (`src/ggml_ffi.align:516`). New internal `runtime_qwen.select_slot() -> i64`, `runtime_qwen.guard_slot() -> i64` and the OLMoE pair, plus a private `runtime_generation.device_select(borrow session, graph_kind, borrow mut id_slot: slice<u8>, borrow mut guard_slot: slice<u8>) -> Result<i64, Error>`. No public CLI, wire, provider or session-request surface changes. |
-| Inputs and defaults | Device selection is active for a request when, and only when, all of: the session's sampler mode for that request is greedy (`!(session.olmoe && seed.is_some())`); no diagnostic capture is active (`capture` absent, `runtime_diagnostic.retain` inactive); the private numeric stream (section 3.10) is off; the oracle/independent-acceptance flag is off; and `ggml_backend_dev_supports_op` admitted both nodes at pre-plan. Otherwise the session uses today's full-logit readback path unchanged. There is no user-visible option and no default to choose; the mode is derived, fixed for the graph's lifetime, and never switched after a graph is prepared. |
+| Exact surfaces | `ggml_ffi.op_argmax(ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, label: str) -> Result<(), Fault>` and `ggml_ffi.op_sum_rows(ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, label: str) -> Result<(), Fault>`, each one `unsafe` block containing one foreign call, in the `op_argsort` shape. New extern declarations `align_ggml_op_argmax(ctx, slots, out, a) -> i32` and `align_ggml_op_sum_rows(ctx, slots, out, a) -> i32` beside `align_ggml_op_argsort` (`src/ggml_ffi.align:516`). New internal `runtime_qwen.select_slot() -> i64`, `runtime_qwen.guard_slot() -> i64` and the OLMoE pair, plus a private `runtime_generation.device_select(borrow session, graph_kind, borrow mut id_slot: slice<u8>, borrow mut guard_slot: slice<u8>) -> Result<i64, Error>`. **The finite probe is a named surface, not a recorded answer:** `align_gpu_finite_probe(owner) -> i32` in `scripts/ggml_shim.c`, wrapped as `ggml_ffi.gpu_finite_probe(borrow owner: GpuDevice) -> Result<bool, Fault>`. It returns `1` when all three non-finite rows yield a non-finite guard and the all-finite row yields a finite guard, `0` when any of the four disagrees, and a negative status code on a construction or compute fault. A recorded per-backend answer was rejected: 3.13.2 settles that the pinned CUDA backend compiles with `-use_fast_math` and the pinned Metal backend takes Apple's default fast math, so NaN propagation is a property of the build actually loaded rather than of the backend name, and a table would also delete the two `gpu-device` finite-probe cells in 3.13.4, which presuppose a runtime probe. Ownership and allocation: the probe owns everything it creates — one transient `ggml_context`, one backend buffer holding four 64-element F32 rows and their `SUM_ROWS` outputs, one `ggml_cgraph` — and releases all of it before returning, so nothing it allocates survives the call or enters session accounting. It is self-contained in the shim rather than assembled from the session's graph slots because it runs pre-plan, before `align_gpu_memory_admit` sets `state->memory_planned` (`scripts/ggml_shim.c:1519`), while every session compute entry point requires `memory_planned` (`:1664`); its allocation is therefore outside the admitted budget and is permitted at exactly the point the existing `ggml_backend_dev_supports_op` probes run (`:1439-1442`). No public CLI, wire, provider or session-request surface changes. |
+| Inputs and defaults | Device selection is active for a request when, and only when, all of: `options.backend` is `cuda`; the session's sampler mode for that request is greedy (`!(session.olmoe && seed.is_some())`); no diagnostic capture is active (`capture` absent, `runtime_diagnostic.retain` inactive); the private numeric stream (section 3.10) is off; `ggml_backend_dev_supports_op` admitted both nodes at pre-plan; and `align_gpu_finite_probe` returned `1`. One fixture consequence, named here so the matrix's stub cells are not dead code: `src/runtime_session_reuse_smoke.align:15` hardcodes `backend: "metal"` with `device: "stub-gpu"`, so the existing stub arm never derives device selection. The smoke therefore gains a **`backend: "cuda"` stub arm** that carries every device-selection case in 3.13.4, and the existing `metal` arm stays exactly as it is and keeps proving the fallback path. `ggml_shim_stub.c` has no real registry and accepts the backend string as data, so this is a fixture addition, not a behaviour change. It composes with `docs/specs/cpu-resident-session.md` section 3.9, which adds a `cpu` arm to the same fixture for a different reason; the three arms are independent. There is deliberately **no** oracle or independent-acceptance condition: no such flag exists in the session — `scripts/run-gpu-session-independent` and `scripts/run-gpu-independent-acceptance` drive the ordinary worker with an ordinary options document, and they are exactly the owners that must produce byte-identical results *with* device selection active, so exempting them would remove the evidence the lever depends on. Otherwise the session uses today's full-logit readback path unchanged. There is no user-visible option and no default to choose; the mode is derived, fixed for the graph's lifetime, and never switched after a graph is prepared. |
 | Results and errors | `device_select` returns the selected `i64` token id. Errors: `Error.Invalid` when the guard value is non-finite (exactly today's `greedy` non-finite refusal), when either 4-byte readback fails, when the returned id is outside `[0, n_vocab)`, or when the id is negative (the backends initialize `argmax = -1`, so `-1` is the "empty row" signal and must be rejected rather than used). Every one of these marks the session unusable under the existing rule that a failure inside execution poisons the session. No new error kind and no new failure vocabulary entry (section 3.2 unchanged). |
 | Ownership and allocation | The two output tensors are graph nodes owned by the existing graph context and covered by the existing pre-allocation admission; they add `4 + 4` device bytes per graph plus ggml node metadata. Host side adds two 4-byte lexically owned buffers in `generate_session`, replacing nothing (the `logits` buffer stays allocated because any non-greedy or diagnostic request in the same session still needs it). Slot table: `runtime_generation.SLOT_BYTES` moves `1040 -> 1056` (capacity `(1056 - 16) / 8 = 130`), with `SELECT_SLOT := 128` and `GUARD_SLOT := 129` named in `runtime_generation`. `layer_qwen2.MAX_NODE_SLOTS` and `layer_olmoe.MAX_NODE_SLOTS` stay `128` so every legacy golden is byte-unchanged, and `MM_SLOT_KPAST`/`MM_SLOT_VPAST` do not move. Host accounting follows automatically: `application_capacity` already adds `SLOT_BYTES` (`src/runtime_generation.align:140`), so the reservation grows by 16 bytes and the recorded `run-gpu-session-host-capacity` peaks must be re-verified, not re-derived. |
 | Owner module | `src/ggml_ffi.align` owns the wrappers; `scripts/ggml_shim.c` and `scripts/ggml_shim_stub.c` own the symbols and the deterministic stub kernels; `src/runtime_qwen.align` and `src/runtime_olmoe.align` own appending the two nodes to `build_head`; `src/runtime_generation.align` owns mode derivation, the topology component, the readback and the decode-loop branch. `runtime_sampler` is untouched. |
@@ -1423,16 +1433,16 @@ Test names are implementation targets, not passing evidence.
 | Cell | Implementation | Exact regression test |
 | --- | --- | --- |
 | Construction: wrappers exist and validate | `ggml_ffi.op_argmax`, `op_sum_rows`; `align_ggml_op_argmax`, `align_ggml_op_sum_rows` with the `ALIGN_GGML_OP_PROLOGUE_1` checks plus `ggml_is_matrix(a)`, F32 type and `a->ne[0] <= INT32_MAX` re-stated before the call so a malformed node table is a status code, not a `GGML_ASSERT` abort | `gpu-device` new cases: argmax and sum-rows over a fixed 2-D F32 slot produce the documented I32 and F32 results |
-| Construction: deterministic stub kernel | `ALIGN_STUB_OP_ARGMAX` and `ALIGN_STUB_OP_SUM_ROWS` in `scripts/ggml_shim_stub.c`, argmax written as a single forward scan keeping the **last** maximum (deterministic, F32 only, I32 `[1, ne1]` output) so that the stub matches the pinned CPU and Metal rule rather than the host `greedy` rule, with a comment stating that this is the stub's own rule and explicitly **not** a claim about CUDA's reduction-order tie, mirroring the argsort C12 note. Keeping the first maximum would make a model-free tie case agree with the host loop and hide on the stub exactly the divergence that real hardware has | `run-gpu-session-reuse-smoke` (deterministic GPU stub, no hardware) |
+| Construction: deterministic stub kernel | `ALIGN_STUB_OP_ARGMAX` and `ALIGN_STUB_OP_SUM_ROWS` in `scripts/ggml_shim_stub.c`, argmax written as a single forward scan keeping the **last** maximum (deterministic, F32 only, I32 `[1, ne1]` output) so that the stub matches the pinned **CPU** rule — highest tied index — rather than the host `greedy` rule, with a comment stating that this is the stub's own rule and explicitly **not** a claim about either GPU backend's tie: 3.13.2 records that Metal returns the highest surviving per-thread candidate (a tie at columns 0 and `ntg` returns 0) and that CUDA returns whichever candidate survives its reduction tree, so neither matches the stub in general. Mirrors the argsort C12 note. Keeping the first maximum would make a model-free tie case agree with the host loop and hide on the stub exactly the divergence that real hardware has | `run-gpu-session-reuse-smoke` (deterministic GPU stub, no hardware) |
 | Construction: graph topology | `runtime_qwen.build_head` and `runtime_olmoe.build_head` append argmax and sum-rows over the head output, `slot_mark_output` both, `graph_expand` both, only when the session's selection mode is device | `gpu-session-reuse` asserts `slots_high_water` is 129 in device mode and unchanged in fallback mode, for both models. One deliberate exact-tie case asserts the documented difference: the stub's device-mode id is the highest tied index and the host `greedy` id is the lowest |
 | Construction: cache key separation | `topology_fast` selection-site component | `gpu-prefix-invalidation` new case: a device-mode key and a fallback-mode key for identical shapes differ, and a fallback request in a device-mode session finds no device-mode graph |
 | Success: greedy equivalence, both graphs | `device_select` used for the first token from prefill and every decode token | `run-gpu-session-independent` 7 Qwen and 9 OLMoE requests must match the independent oracle's complete text and exact prompt/completion counts, unchanged thresholds; `run-gpu-independent-acceptance` 19 cases per model with exact expected token ids |
-| Success: exact-tie behaviour is bounded | A focused `scripts/run-gpu-top1-tie-census` that runs the acceptance corpus and the 16 oracle requests with full-logit readback forced on and, per generated token, counts positions whose top-1 F32 value is attained more than once | Census must report zero ties across every case of both models. A nonzero count refuses this lever outright; it is not a tolerance to widen. |
+| Success: exact-tie behaviour is bounded | A focused `scripts/run-gpu-top1-tie-census` that runs the acceptance corpus and the 16 oracle requests on today's unchanged full-logit readback path and, per generated token, counts positions whose top-1 F32 value is attained more than once. It needs no new code in the runtime: full-logit readback is what the session does today, so the census is step 0 of 3.13.7, run before any implementation | Census must report zero ties across every case of both models on the CUDA host. A nonzero count refuses this lever outright; it is not a tolerance to widen. The census is per backend: a CUDA result licenses nothing on Metal, which is out of scope. |
 | Failure: non-finite logits | Guard read and refusal before the id read | `gpu-session-second-after-failure` extension: an injected non-finite head output refuses with `Error.Invalid` and marks the session unusable, in device mode and in fallback mode alike |
 | Failure: malformed device result | Range check rejecting `-1` and any id outside `[0, n_vocab)` | `gpu-device` fault-injection case returning `-1` and `n_vocab` from the stub argmax under a build-only `ALIGN_GGML_FORCE_ARGMAX_RANGE` define, in the style of `ALIGN_GGML_FORCE_ARGSORT_RANGE` |
 | Malformed input: unsupported device | `ggml_backend_dev_supports_op` refusal at pre-plan selects the fallback path for the session lifetime; no fallback ever happens after compute | `gpu-device` case with a stubbed unsupported probe: the session reaches ready, executes on the full-readback path, and no argmax node is ever built |
-| Malformed input: backend does not propagate non-finites | The construction-time finite probe; refusal selects the fallback path for the session lifetime | `gpu-device` finite-probe case on the stub (must pass) and a forced-finite stub variant (must decline device selection); the real-hardware answer is whatever the probe returns on Metal and on CUDA, recorded, not assumed |
-| Early exit: non-greedy or diagnostic request | Mode derivation refuses device selection when a seed is present, capture is active, the numeric stream is on, or the oracle flag is set | `run-gpu-session-independent` OLMoE repeated-seed-42 request and the existing diagnostic/oracle owners still produce today's byte-identical results |
+| Malformed input: backend does not propagate non-finites | The construction-time finite probe; refusal selects the fallback path for the session lifetime | `gpu-device` finite-probe case on the stub (must pass) and a forced-finite stub variant (must decline device selection); the real-hardware answer is whatever the probe returns on CUDA, recorded, not assumed. Metal is out of scope for this lever, so no Metal probe result is required or implied |
+| Early exit: non-greedy or diagnostic request | Mode derivation refuses device selection when a seed is present, capture is active, the numeric stream is on, or the backend is not `cuda` | `run-gpu-session-independent` OLMoE repeated-seed-42 request and the existing diagnostic and numeric-stream owners still produce today's byte-identical results. The oracle owners are not exempt: they run with device selection active and must match anyway, which is the Success row above |
 | Cleanup and allocation | Enlarged slot table and 16 extra reserved host bytes | `run-gpu-session-host-capacity` for both models: requested-allocation peak still fits the recorded reservation and the 1 GiB timing-host limit |
 | Affected module: `runtime_sampler` | Untouched | Existing sampler owners unchanged; no new case |
 | Affected module: legacy CPU paths | Untouched; the six legacy `value > best_value` loops and `prompt_lookup_candidate` stay as they are, the latter because it is the seed of the R9 draft source | Existing CPU smokes unchanged |
@@ -1451,8 +1461,10 @@ Test names are implementation targets, not passing evidence.
 - **Device returns `-1` or an out-of-range id.** `Error.Invalid`, session unusable. This is the
   backends' own "empty row" initializer, so it must be a refusal and not a token.
 - **Exact top-1 tie.** Not detectable on the fast path. It is a declared behavioural difference
-  from the host `greedy` rule, gated by the zero-tie census above. If a tie is ever observed the
-  lever is deleted rather than qualified; this design does not offer a tolerance for it.
+  from the host `greedy` rule, gated by the zero-tie census above, which runs as step 0 on today's
+  unchanged path before any code is written. If a tie is ever observed the lever is deleted rather
+  than qualified; this design does not offer a tolerance for it. The census result is valid only for
+  the backend it was run on, which is why this lever is `cuda`-scoped.
 - **CUDA graph capture.** Adding two nodes to an already-captured graph must not change capture
   status. Existing evidence (`docs/specs/gpu-runtime.md`, E7 note) is that no actual CUDA capture
   or replay counter has ever been obtained for this runtime, so the design cannot assert that
@@ -1488,34 +1500,41 @@ Precommitted before implementation, per section 6 of `docs/specs/gpu-runtime-per
 
 #### 3.13.7 Ordered implementation steps and owner commands
 
+0. **Zero-tie census, before any implementation.** Build and run
+   `scripts/run-gpu-top1-tie-census` on the CUDA host over the 19-case acceptance corpus and the 16
+   oracle requests for both models. It requires no runtime change: it reads the full logits the
+   session already reads today. A nonzero tie count stops the capability here and nothing below is
+   written. Owner: that command, plus `python3 scripts/check-python-boundary --strict` if the census
+   script is Python (classify it in `docs/python-boundary-audit.md` as an independent measurement
+   role first).
 1. Add `op_argmax` and `op_sum_rows` to `src/ggml_ffi.align` with their extern declarations, and
    `align_ggml_op_argmax` / `align_ggml_op_sum_rows` to `scripts/ggml_shim.c` with shape, type and
    extent validation before the ggml call. Owner: `make check`, `make fmt`.
 2. Add `ALIGN_STUB_OP_ARGMAX` and `ALIGN_STUB_OP_SUM_ROWS` to `scripts/ggml_shim_stub.c`, argmax as
    a deterministic last-maximum forward scan in F32, plus the `ALIGN_GGML_FORCE_ARGMAX_RANGE`
-   fault-injection define. Owner: `make check`, then `scripts/run-gpu-session-reuse-smoke`.
+   fault-injection define, and add the `backend: "cuda"` stub arm to the reuse smoke beside the
+   existing `metal` arm (`src/runtime_session_reuse_smoke.align:15`) so device selection is derived
+   at all. Owner: `make check`, then `scripts/run-gpu-session-reuse-smoke`.
 3. Grow `runtime_generation.SLOT_BYTES` to 1056, add `SELECT_SLOT` and `GUARD_SLOT`, leave both
    `MAX_NODE_SLOTS` at 128. Owner: `make check`, `scripts/run-gpu-session-reuse-smoke`.
 4. Append the two nodes in `runtime_qwen.build_head` and `runtime_olmoe.build_head` under the
-   session's selection mode, and add the `supports_op` pre-plan probe. Owner:
-   `scripts/run-gpu-session-reuse-smoke`.
+   session's selection mode, and add the `supports_op` pre-plan probe and `align_gpu_finite_probe`
+   with its `ggml_ffi` wrapper. Owner: `scripts/run-gpu-session-reuse-smoke`.
 5. Fold the selection site into `output_selection_sha256` in `topology_fast`. Owner:
    `scripts/run-gpu-session-reuse-smoke` (prefix-invalidation cases).
 6. Branch `generate_session` for the prefill first token and the decode loop: guard read, refusal,
    id read, range check. Keep `logits_buffer` and the host `greedy`/`select` path intact for every
    other mode. Owner: `make check`, `scripts/run-gpu-session-reuse-smoke`.
-7. Implement and run `scripts/run-gpu-top1-tie-census` on both models. A nonzero count stops here.
-8. Real-hardware qualification on the CUDA host: `scripts/run-gpu-session-independent --profile
+7. Real-hardware qualification on the CUDA host: `scripts/run-gpu-session-independent --profile
    PROFILE --runtime EXE --reference REFERENCE --output NEW_DIRECTORY` (7 Qwen, 9 OLMoE, exact
    match), `scripts/run-gpu-independent-acceptance KIT_PROFILE CORPUS CANDIDATE_BUILD
    REFERENCE_BUILD NEW_EVIDENCE` (19 cases per model), `scripts/run-gpu-session-host-capacity`
    for both models, and `scripts/run-gpu-attention-policy-smoke GGML_SOURCE CORE_LIB
    BACKEND_PLUGIN`.
-9. CUDA capture evidence per section 3.13.5, candidate against control.
-10. `python3 scripts/check-python-boundary --strict` if step 7's census script is Python (classify
-    it as an independent measurement role in `docs/python-boundary-audit.md` first), then
-    `scripts/measure-cuda-optimization --self-test` and the campaign in section 3.13.6.
-11. `python3 scripts/pre-pr --owner-test gpu-session-reuse -- scripts/run-gpu-session-reuse-smoke`,
+8. CUDA capture evidence per section 3.13.5, candidate against control.
+9. `scripts/measure-cuda-optimization --self-test` and the campaign in section 3.13.6. The census
+   script's Python classification and `check-python-boundary --strict` were already done in step 0.
+10. `python3 scripts/pre-pr --owner-test gpu-session-reuse -- scripts/run-gpu-session-reuse-smoke`,
     then one comprehensive review.
 
 #### 3.13.8 Align gap check
@@ -1532,8 +1551,13 @@ this lever. Nothing in this design consumes a `PROPOSED`, `ACCEPTED` or `IMPLEME
 #### 3.13.9 Author consistency pass
 
 The ledger, matrix, failure list and steps agree that device selection is derived rather than
-configured, fixed for a graph lifetime, refused before planning rather than after compute, and
-invisible in every persisted and exchanged schema. The two behavioural differences from the host
+configured, scoped to the `cuda` backend and the deterministic stub, fixed for a graph lifetime,
+refused before planning rather than after compute, and invisible in every persisted and exchanged
+schema. The derivation has no oracle or independent-acceptance exemption anywhere, because no such
+flag exists and the oracle owners are the evidence. The finite probe is one named shim surface with
+stated ownership and release, invoked in the same pre-plan window as the existing `supports_op`
+probes, and the zero-tie census is step 0 on today's unchanged path, so the gate that can delete
+this lever runs before any of its code is written. The two behavioural differences from the host
 `greedy` contract are named once each and each has an owner: the non-finite refusal is restored by
 the guard node and tested by fault injection, and the exact-tie divergence is declared, censused to
 zero, and deletes the lever if it ever occurs. The precommitted expectation is below the shipping
