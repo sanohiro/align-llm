@@ -4,8 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/cuda-startup-measurement`, stacked on `agent/cuda-qwen-f16-kv` (`0d77097`) and `agent/backend-parity-ledger` (`02e1fc7`), based on `origin/main` `0457a7d`.
-Active capability: P2 capped-read loader startup measurement on CUDA (executable consumer capability): `--protocol startup` in `scripts/measure-cuda-optimization` (schema 2 receipt), settled in the enablement specification, measured MET: OLMoE startup −90.25%, Qwen −30.66%, 5/5. Stacked below it: P1 (`0d77097`, preflight PASS, review repaired) and the parity register (`02e1fc7`, preflight PASS).
+Branch: `agent/cpu-baseline-linux`, stacked on `agent/cuda-startup-measurement` (`d1fa659`), `agent/cuda-qwen-f16-kv` (`0d77097`) and `agent/backend-parity-ledger` (`02e1fc7`), based on `origin/main` `0457a7d`.
+Active capability: none active. This branch is the top of a linear four-segment stack awaiting the user's publication batch: (1) backend parity register and rule `02e1fc7`, docs preflight PASS; (2) P1 Qwen F16 KV policy 2 on CUDA `0d77097`, dedicated qualification PASS, paired speed NOT_MET at about 6.7%; (3) P2 capped-read loader startup measurement on CUDA `d1fa659`, MET: OLMoE startup −90.25%, Qwen −30.66%; (4) C0 Linux CPU baseline, this head, runtime 17.54 s vs llama-server 11.29 s, 1.55x time to passing patch, 8.3x per candidate. Each segment carries its own preflight stamp, review envelope and repair commit; PR bodies are drafted in the local evidence store.
 PR #275 merged at `251d52b8`: registered binary optimization audit requests 97–116 in `docs/align-requests.md` and recorded Align issues #1069–#1088.
 PR #274 merged at `f8a4095`: optimized hot logits loops in `greedy` and `select` (`f32.to_bits()`), preallocated builder capacity in `tokenizer_qwen2` (`array_builder(count)`), registered Align Requests 92–96 in `docs/align-requests.md`, and filed upstream Align issues #1063–#1067.
 PR #273 merged at `ae2fecd`: adopted latest Align compiler and runtime (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`), adopted typed slice writers, buffer.filled, array_builder capacity, in-place array truncate, integer match range/value patterns, is_char_boundary, and verified all suites.
@@ -53,7 +53,7 @@ Completed work:
 Next actions in priority order (backend parity items lead; register: `docs/backend-parity.md` sections 5 and 6):
 1. P1: done. F16 KV policy 2 selected for Qwen sessions on CUDA (`ba9ea4f`); dedicated CUDA qualification PASS; paired local campaign result NOT_MET (+6.7% on the primary, below the 15% floor). Receipts are observer-invalid (Claude Code CLI CPU); no rerun scheduled, see the register's P1 deferral.
 2. P2: done. Capped-read loader startup measured on CUDA against synthetic control `5fbecf17`: OLMoE 17.125 s → 1.669 s (−90.25%), Qwen −30.66%, 5/5; receipt observer-invalid (Claude Code CLI CPU), same deferral as P1.
-3. C0: re-establish the CPU baseline at current main with the item-69 fixed-request protocol.
+3. C0: done. Linux CPU baseline established with the platform-profiled owner (runtime 17.54 s vs llama-server 11.29 s median time to passing patch, 1.55x; about 8x per candidate, 8.3x on this receipt, and about 5.6x per completion token, the arms emitting 52–55 versus 81 tokens). C1 and C2 pair against it with the same owner.
 4. P3: re-run the `llama-server` paired campaigns at current main, CUDA first, then Metal, with a fresh precommitted ledger; both existing results predate O1, PR #243, capped-read and `5efd7a0`.
 5. C1: set the ggml CPU thread count (default versus option decision; keep the CPU reference arm deterministic).
 6. C2: apply the CPU-weighted application items from continued item 2 below; its argmax item covers the six legacy `value > best_value` loops as well as the session `greedy`.
@@ -78,9 +78,11 @@ Continued next actions from the previous checkpoint, after the list above:
 3. Monitor upstream Align responses to issues #1069–#1088 and to the comments on #1063, #1064, #1066 and #1067.
 
 Latest durable verification:
+- C0 (2026-09-20, `465957d`): `scripts/run-olmoe-platform-sampled-runtime-baseline --self-test`: PASS; `--print-identity --platform-profile linux-x86_64-v1`: MATCH; baseline run: COMPLETE in 145.24 s, local median 11.291 s, runtime median 17.543 s, 4/4 both arms; `python3 scripts/check-python-boundary --strict`: PASS (274 files). Portable receipt `eval/benchmarks/cpu-baseline-linux-2026-09-20.json`; the raw receipt is retained outside Git.
 - `git diff --check`: PASS.
-- `python3 scripts/pre-pr --plan`: selects the `docs` classifier row (diff-check, markdown-fences).
-- `python3 scripts/pre-pr`: PASS at the exact branch head after the review repair (rerun after the final commit).
+- `python3 scripts/pre-pr --plan` (parity register segment `02e1fc7`): selects the `docs` classifier row (diff-check, markdown-fences).
+- `python3 scripts/pre-pr` (parity register segment `02e1fc7`): PASS at the exact branch head after the review repair (rerun after the final commit).
+- `python3 scripts/pre-pr --base 02e1fc7 --owner-test cpu-baseline -- scripts/run-olmoe-platform-sampled-runtime-baseline --self-test`: PASS at the repaired branch head (hosted; owner cpu-baseline), rerun after the review repair.
 - P1 Qwen F16 KV CUDA qualification (2026-09-20, candidate `f874c10`/`ba9ea4f`, `source_dirty` false):
 - `scripts/run-cuda-kv-prefill-smoke`: PASS.
 - `scripts/run-gpu-session-reuse-smoke` (deterministic GPU stub, no hardware): PASS.

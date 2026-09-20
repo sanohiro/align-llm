@@ -2863,6 +2863,19 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/run-olmoe-platform-sampled-runtime-baseline",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Re-establish the OLMoE legacy-path CPU inference baseline on one named platform profile.",
+      "reachability": "No product call: independent developer/test entry or imported support; may launch the product under test.",
+      "substitution": "Fixed experimental workload/control/reduction only; does not implement a normal product command.",
+      "python_reason": "Independent timing, paired ordering and controlled benchmark orchestration remain test-side responsibilities.",
+      "target": "Retain as measurement only; product retry/session policy must use Align, not import this harness.",
+      "migration": "N/A",
+      "acceptance": "A0 inventory and A4 relocated runtime closure; existing focused owner for this tool.",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/run-olmoe-post-optimization-remaining-decode-diagnosis",
       "classification": "BENCHMARK_OR_MEASUREMENT",
       "behavior": "Reselect the largest current OLMoE remaining-decode leaf bucket.",

@@ -8,7 +8,8 @@ use the post-edit line numbers and drift afterwards; update the row, not the rea
 that maintains this file is in `CLAUDE.md`
 ("Backend parity") and `docs/review-checklist.md`.
 
-Status vocabulary, one value per backend cell:
+Status vocabulary, one value per backend cell, or one value per host profile when a backend
+is measured on more than one host profile:
 
 | Status | Meaning |
 | --- | --- |
@@ -54,7 +55,7 @@ Status vocabulary, one value per backend cell:
 
 | Item | CPU | Metal | CUDA | Notes |
 | --- | --- | --- | --- | --- |
-| Paired campaign vs `llama-server` | `done` (item 69, 2026-09-05: 91.4 s vs 14.0 s time to passing patch, 6.53x slower; owner is Darwin-only, see C0) | 2026-09-09, candidate `12a633d`, all 16 comparisons fail the 15% floor; predates O1, capped-read and `5efd7a0`: `unmeasured` at current main (P3) | 2026-09-09, runtime `688232c`, all 16 fail; predates O1, PR #243, capped-read and `5efd7a0`: `unmeasured` at current main (P3); its OLMoE startup of 16,483 ms is explained by the pre-`594981c` loader (P2) | `docs/gpu-metal-campaign-result.md`; `docs/gpu-cuda-final-measurement-result.md`; `docs/specs/roadmap.md:1704-1719`. |
+| Paired campaign vs `llama-server` | `done` (darwin-aarch64: item 78, 2026-09-06, 84.062 s vs 14.174 s time to passing patch; item 69, 2026-09-05, 91.4 s vs 14.0 s, 6.53x slower) / `done` (linux-x86_64: C0, 2026-09-20, runtime 17.54 s vs llama-server 11.29 s time to passing patch, 1.55x; about 8x per candidate, 8.3x on this receipt, and about 5.6x per completion token, the arms emitting 52–55 versus 81 tokens; receipt `eval/benchmarks/cpu-baseline-linux-2026-09-20.json`) | 2026-09-09, candidate `12a633d`, all 16 comparisons fail the 15% floor; predates O1, capped-read and `5efd7a0`: `unmeasured` at current main (P3) | 2026-09-09, runtime `688232c`, all 16 fail; predates O1, PR #243, capped-read and `5efd7a0`: `unmeasured` at current main (P3); its OLMoE startup of 16,483 ms is explained by the pre-`594981c` loader (P2) | `docs/gpu-metal-campaign-result.md`; `docs/gpu-cuda-final-measurement-result.md`; `eval/benchmarks/cpu-baseline-linux-2026-09-20.json`; `docs/specs/roadmap.md:1704-1719`. |
 | F16 KV local paired intervention | `n/a` | `done`: 44.00 / 46.00 / 63.33 / 73.82% request-wall reduction, 5/5 (`d60e2b6`) | `done`: 27.47% OLMoE long-cached, 5/5 (`48f249b` vs `4bf8011`, old compiler `f502fe3d`) | `docs/gpu-moe-diagnosis.md:165-229`; `eval/benchmarks/cuda-kv-f16-2026-09-14.json`. |
 | Capped-read startup paired campaign | `n/a` | `done`: Qwen 24.05%, OLMoE 61.58%, 5/5 | `done` 2026-09-20: OLMoE 17.125 s → 1.669 s (−90.25%), Qwen 2.777 s → 1.921 s (−30.66%), 5/5 both; rchar 54.48 GB → 4.57 GB OLMoE | `docs/gpu-moe-diagnosis.md:230-286`; `docs/specs/cuda-optimization-enablement.md` "Capped-read loader startup measurement on CUDA (2026-09-20)" Result. |
 | GPU per-kernel profile | `n/a` | `done`: Metal GPU Counters, `kernel_cpy_f32_f16` 46.03% (2026-09-13) | `unmeasured` (P6): only CUDA Graph launch/capture counts and `nsys` overlap counts exist | `docs/gpu-moe-diagnosis.md:101-124`; `docs/specs/cuda-optimization-enablement.md:18-26`. |
@@ -91,15 +92,16 @@ each id as a next action.
 
 ## 6. CPU plan
 
-Facts: CPU inference is the legacy per-layer path, is 6.53x slower than llama.cpp's CPU server on
-the fixed OLMoE coding request (item 69, 2026-09-05), and is also the G1 numeric reference arm.
+Facts: CPU inference is the legacy per-layer path, is several times slower than llama.cpp's CPU
+server on the fixed OLMoE coding request (item 78, 2026-09-06: 84.062 s versus 14.174 s; item 69,
+2026-09-05: 6.53x slower), and is also the G1 numeric reference arm.
 None of the resident-session mechanisms in section 2 reach it. No document freezes or deprecates
 it; `docs/specs/gpu-runtime-performance.md:172-174` retains "the existing CPU provider". The plan
 below adds to it and decides its fate on measurement. `HANDOFF.md` owns the order:
 
 | Id | Item | Gate | Owner evidence | Known prerequisite / blocker |
 | --- | --- | --- | --- | --- |
-| C0 | Re-establish the CPU baseline at current main with the item-69 fixed-request protocol; nothing CPU-side has been measured since 2026-09-05 | none | `docs/specs/r8-olmoe-post-optimization-sampled-runtime-decision.md` protocol, same host class | The item-69 owner `scripts/run-olmoe-post-optimization-sampled-runtime-decision` is Darwin-only: `.dylib` library digests, Apple toolchain digests, a Docker validator identity that Linux resolves as `native`, Align pin `8cefc803`, and item 78's `platform.system() == "Darwin"` check. A Linux-pinned owner must be designed and settled before C0 runs on the CUDA host; otherwise C0 runs on the M1. |
+| C0 | Re-establish the CPU baseline at current main with the item-69 fixed-request protocol, per host profile; the latest CPU measurement is item 78, 2026-09-06, and nothing CPU-side has been measured since | none (baseline, not `MET`/`NOT_MET`) | `run-olmoe-platform-sampled-runtime-baseline --self-test` PASS; `--print-identity` MATCH; baseline COMPLETE 145 s; `check-python-boundary --strict` PASS | Done 2026-09-20 on linux-x86_64-v1 (receipt `eval/benchmarks/cpu-baseline-linux-2026-09-20.json`; the raw receipt is retained outside Git); the Darwin profile is carried at pin `8cefc803` and needs `--print-identity` on the M1 before it can run there. |
 | C1 | Set the ggml CPU thread count. Decide between a shim default (physical cores) and a runtime option; an option changes runtime options schema 1 and triggers the design gate. The CPU reference arm must remain deterministic (single-threaded or fixed reduction order) or the zero-bit calibration contract must be revisited | design gate if an option; none for an internal default that keeps the reference arm unchanged | Item-69 protocol paired against C0; G1 19-case acceptance unchanged | none known |
 | C2 | Apply the CPU-weighted application items already listed in `HANDOFF.md`, including the shared `null_handle` const: `prime_window` fill via `buffer.filled`, `stage_kv` on the Qwen path, member columns built once, `digest_region` behind the oracle flag, `Outcome` hot/cold split, the six argmax loops | none | Existing CPU smokes and the item-69 protocol | none known |
 | C3 | Allow the resident session on the ggml CPU device by lifting the three refusals, so graph reuse, in-graph routing, flash attention, F16 KV and the capped-read loaders reach CPU in one move. The legacy path stays as the numeric reference until the calibration contract defines a deterministic replacement | design gate: runtime options schema (backend allowlist), shim registry boundary, calibration contract | Session reuse smoke and independent session oracle on CPU; item-69 protocol paired against C0 | none known |
