@@ -4,8 +4,11 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/align-request-118`, based on `origin/main` `50e8936`.
-Active capability: none active; this branch registers Align Request 118 (issue sanohiro/align#1157: drop-state codegen regression since Align #1132) and records the ALIGN_MERGED statuses of Requests 99, 102, 103, 105, 109 and 112. The Align pin stays at `8c8bfbc7`: adopting `dfcfd11f` is blocked (SIGSEGV in `run-gpu-session-reuse-smoke`, failure of `run-layer-forward-smoke`), see Request 118.
+Branch: `agent/align-request-publication`, based on `origin/main` `4dc80ce2`.
+Active capability: publish the upstream tracking and complete consumer evidence for Align Requests
+117–119. This is documentation-only: the Align pin stays at `8c8bfbc7`; adopting `dfcfd11f` remains
+blocked by Request 118 / sanohiro/align#1157. Request 117 is tracked by #1159 and the new
+non-blocking fixed-array producer-certification Request 119 is tracked by #1158.
 PR #282 merged at `58f5176`: recorded Align responses and merges for requests 92–95, 99, 100, 103, 104, 105, 106, 110, 113, and 115.
 PR #281 merged at `4eb0f60e`: settled designs for CPU resident session, ready frame schema 2, GPU-side greedy selection, and prompt-lookup speculation.
 PR #280 merged at `2cfbae00`: platform-profiled OLMoE sampled runtime baseline owner and Linux CPU baseline results.
@@ -56,11 +59,16 @@ Completed work:
   - Audit artifacts live in the session scratchpad (disposable); nothing is retained in Git.
 - Filed the audit results upstream on `sanohiro/align`: issues #1069–#1087 (19 issues), the umbrella design issue #1088 ("[Design] Vectorization contract"), and review comments on #1063, #1064 (two comments), #1066 and #1067.
 - Registered Align Requests 97–116 in `docs/align-requests.md` (one per issue #1069–#1087 in issue-number order, plus Request 116 for umbrella #1088), all PROPOSED and non-blocking, and recorded the design-review conclusions for #1063 and #1064 under Requests 92 and 93.
-- Registered Align Request 117 in `docs/align-requests.md` for the C2 `null_handle` constant gap (PROPOSED, non-blocking, not yet filed upstream).
+- Registered Align Request 117 in `docs/align-requests.md` for the C2 `null_handle` constant gap
+  (PROPOSED, non-blocking, tracked by sanohiro/align#1159).
+- Expanded Request 118 with the pin-only tokenizer, alignpack, runtime-provider, and GPU-session
+  failure matrix recorded on sanohiro/align#1157.
+- Registered Request 119 for borrowed fixed-array record producer certification across fallible
+  imported calls (PROPOSED, non-blocking, tracked by sanohiro/align#1158).
 
 Next actions in priority order (backend parity items lead; register: `docs/backend-parity.md` sections 5 and 6):
 0. When Align fixes #1157: adopt the fixed pin, run the standing owner set plus `run-gpu-session-reuse-smoke` and `run-layer-forward-smoke`, refresh the C0 platform profile (`--print-identity`; it mismatches on `align_revision` and `compiler_sha256` at any new pin) and `docs/python-boundary-inventory.json` `align_revision`, then move the merged requests to ALIGN_LLM_VERIFIED.
-1. Publish this bundle after review repair; `pre-pr` stamped at the final head (see verification).
+1. After this request-only publication merges, resume independent roadmap work at the current pin.
 2. Metal items P4, P5 and the P3 Metal leg: the `llama-server` paired rerun at current main (M1).
 3. C3 CPU resident session per `docs/specs/cpu-resident-session.md` (scheduled before R9).
 4. P9 pinned logits staging (cheap; request protocol).
@@ -99,7 +107,9 @@ Latest durable verification:
 Blockers, constraints, decisions:
 - Zero regressions against all smoke and benchmark suites.
 - Python boundary launch sources strictly preserved without unverified digest modifications.
-- Request 118 is the only blocking Align request (pin adoption); Requests 92–95 and 97–117 are `Blocking: no`, so every application-side item at pin `8c8bfbc7` may proceed. Do not consume any proposed Align surface while those requests are PROPOSED.
+- Request 118 is the only blocking Align request (pin adoption); Requests 92–95, 97–117, and 119
+  are `Blocking: no`, so every application-side item at pin `8c8bfbc7` may proceed. Do not consume
+  any proposed Align surface while those requests are PROPOSED.
 - Align #1070 (Request 98) means `--thin-lto` cannot be used on align-llm at all today, and Align #1069 (Request 97) means the default `--target-cpu` loses the `--rt-lto` inline on aarch64; choosing `--target-cpu native` for align-llm's own builds is the only available mitigation.
 - The audit's own artifacts are in the session scratchpad (disposable). Re-derive them rather than citing a local path.
 - Request 118 (Blocking: yes) pauses every `.align-revision` adoption at or after `2c39850b`; resume when sanohiro/align#1157 is fixed and the reproducer passes; then adopt in one pin update and verify Requests 92–95, 99–100, 102–103, 105–106, 109–110, 112–116.
