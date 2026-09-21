@@ -202,10 +202,15 @@ Keep only performance-specific complexity that clears its declared floor.
 
 The historical `scripts/run-gpu-session-measurement --campaign cuda-final` deliberately rejects
 changed runtime sources beyond `688232c`. It cannot measure this candidate unchanged. Do not edit
-its frozen nominations or old receipts. The implementation owner must package the local paired
-protocol above with its source-bound invocation and evidence; any new measurement CLI/receipt
-contract must be settled here before implementing that harness. Python may serve its classified
-measurement role only, with the required boundary-audit update/check if changed.
+its frozen nominations or old receipts; a current-tree comparison against the two retained
+`llama-server` baselines uses the separate `--campaign cuda-current` nomination settled in
+`gpu-runtime-performance.md` §6.3, which leaves `cuda-final` untouched. `cuda-current` is itself
+frozen, to the `d4438e3` source closure, and is not a general current-tree harness: any later
+source commit needs its own nomination constant and its own §6.3 paragraph before it can be
+measured. The implementation owner must package the local paired protocol above with its
+source-bound invocation and evidence; any new measurement CLI/receipt contract must be settled here
+before implementing that harness. Python may serve its classified measurement role only, with the
+required boundary-audit update/check if changed.
 
 This local test establishes neither a competitive llama.cpp win nor time to a passing patch.
 Those require separately frozen baselines and the performance plan's coding-quality gate.
@@ -676,3 +681,30 @@ llama-server's 913 ms: that runtime (`688232c`) predates the capped-read fix `59
 Limits: this is a local startup intervention result on this WSL2 CUDA host only. It is not a
 llama.cpp comparison, not a whole-session or decode speedup claim, and not a time-to-passing-patch
 result.
+
+#### Kernel-level attribution on CUDA (P6, 2026-09-20)
+
+`nsys` profile of the current-tree session worker on RTX 4070 Ti under WSL2, one run per model,
+instrumented; this is attribution, not a benchmark. Evidence:
+`gpu-cuda-parity-20260920/p6-run1/summary.md` (local evidence store, outside Git).
+
+CUDA graphs engage on both models: 5 captures, 1 instantiate, 376 graph launches per model; the
+`mul_mat_id` capture concern noted elsewhere does not reproduce.
+
+Qwen warm-long-cached kernel time is 93.1% matmul (`mul_mat_vec_q` q4_K 66.6%, q6_K 17.2%, lm_head
+9.2%), attention 2.4%, F16 casts 0.05%. OLMoE kernel time splits as expert matmuls 42.9%, dense
+24.1%, flash attention 12.1%, and elementwise ops (about 35k tiny launches) 13.8%.
+
+Host/device sync accounts for 83% of the Qwen request wall (the GPU is saturated) but only 51% of
+the OLMoE request wall, leaving about 49% (about 1.75 ms/token) as host-side work on OLMoE. Each
+model performs one full-logits device-to-host copy per token (Qwen 608 KB, OLMoE 201 KB, about
+0.25% of request time), and every one of those D2H copies targets pageable host memory — none of
+the staging is pinned. Profiler overhead measured +3–10% warm, +16% on the qwen2 cold path and
++62% on the OLMoE cold path.
+
+Interpretation and derived leftovers, recorded in `docs/backend-parity.md` section 5: P9 (pinned
+host staging for the per-token logits readback — all D2H copies are Device→Pageable) and P10
+(OLMoE's per-token host-side work, about 1.75 ms/token or 49% of the cached request, needs an
+uninstrumented A/B and the session observation counters before any optimization is attempted).
+Neither is a performance claim; both require the request protocol before any `MET`/`NOT_MET`
+verdict.

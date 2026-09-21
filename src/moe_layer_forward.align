@@ -1498,8 +1498,7 @@ fn fill_zero(borrow mut b: buffer, n: i64) {
 // window has to be **written** to exist. Appending a 64 KiB zero block is one `memcpy` per round and
 // stays inside the reservation, so the base pointer never moves (R5B's `prime_window`).
 fn prime_window(borrow mut window: buffer, bytes: i64) {
-  mut chunk: buffer := buffer(PRIME_CHUNK_BYTES)
-  fill_zero(chunk, PRIME_CHUNK_BYTES)
+  mut chunk: buffer := buffer.filled(PRIME_CHUNK_BYTES, 0 as u8)
   view := chunk.bytes()
   mut remaining := bytes
   loop {

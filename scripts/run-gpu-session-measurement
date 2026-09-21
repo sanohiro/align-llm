@@ -31,6 +31,8 @@ PIN = 'bb4caa7540188872173c44d161602d9271386413'
 CURRENT = '304665fe7ac957df95e3ff8c8c4ffdf92dd6ffa3'
 CANDIDATE = '12a633d5fe60c3c3f853203c452754a695d908dd'
 CUDA_CANDIDATE = '688232c665aafca3cdff940e9e34eac5c7f0509e'
+CUDA_CURRENT_CANDIDATE = 'd4438e313c59a71a11d0a65ed1735425a0e014e8'
+NOMINATION = {'original': CANDIDATE, 'cuda-final': CUDA_CANDIDATE, 'cuda-current': CUDA_CURRENT_CANDIDATE}
 ORDER = [('candidate','same','current'), ('same','current','candidate'),
          ('current','candidate','same'), ('current','same','candidate'), ('candidate','current','same')]
 SYSTEM = 'You are a helpful assistant. Follow the output format exactly.'
@@ -107,7 +109,7 @@ def internal_elapsed_ns(result, system):
 
 
 def final_cuda(args):
-    return args.campaign == 'cuda-final'
+    return args.campaign in ('cuda-final', 'cuda-current')
 
 
 def coding_clock(args):
@@ -368,8 +370,8 @@ def run(args):
         raise ValueError('campaign requires one resident option')
     option = {key:value for key,value in profile['runtime_options'][0].items() if key!='option_id'}
     if option['placement'] != 'resident' or option['prefetch'] != 'off': raise ValueError('unsupported campaign option')
-    if final_cuda(args) and option['backend'] != 'cuda': raise ValueError('cuda-final requires CUDA')
-    nomination = CUDA_CANDIDATE if final_cuda(args) else CANDIDATE
+    if final_cuda(args) and option['backend'] != 'cuda': raise ValueError(f'{args.campaign} requires CUDA')
+    nomination = NOMINATION[args.campaign]
     if option['host_budget_bytes'] < 1073741824 or option['device_budget_bytes'] < 6000000000:
         raise ValueError('profile cannot admit the frozen resident memory ceilings')
     if any(row['runtime_cache_budget_bytes']>1073741824 for row in profile['models']):
@@ -412,7 +414,7 @@ def run(args):
         arms=[],comparisons=[],failure='',elapsed_ns=0)
     try:
         validator = base.resolve_validator(deadline)
-        if final_cuda(args) and validator['kind'] != 'native': raise ValueError('cuda-final requires native validation')
+        if final_cuda(args) and validator['kind'] != 'native': raise ValueError(f'{args.campaign} requires native validation')
         record['identities']['validator'] = dict(validator)
         control = destination/'known-good.patch'
         control.write_text(base.KNOWN_GOOD_PATCH)
@@ -472,7 +474,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ('profile','runtime','same-server','current-server','output'):
         parser.add_argument('--'+name,type=Path,required=True)
-    parser.add_argument('--campaign', choices=('original','cuda-final'), default='original')
+    parser.add_argument('--campaign', choices=tuple(NOMINATION), default='original')
     args=parser.parse_args()
     def interrupted(*_): raise KeyboardInterrupt
     previous=signal.signal(signal.SIGTERM,interrupted)

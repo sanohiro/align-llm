@@ -47,10 +47,13 @@ authorized; the independent A0 guard is now a local checkpoint. Historical evide
 product implementations remain frozen pending the full cutover. The 2026-09-11 adoption selects
 Align `f83f5c3c365ac992c6c2dc5a371164c9f7b4339f`; the baseline identifiers above remain historical.
 The inventory's Align source hashes were refreshed after inspecting the JSON Result and process
-status API changes. Twelve additional product modules import `std.process` solely for explicit
-impossible-encoder-error aborts and therefore enter the conservative process-owner inventory;
-they launch no child. This does not add a Python allowance. The environment/source-file/tree-snapshot smoke
-scripts add three independent Python fixture/OS/digest oracles outside the product runtime.
+status API changes. 2026-09-20: the three legacy forward modules' launch-source digests were
+re-recorded after byte-identical C2 edits (see docs/specs/cpu-baseline-linux.md §9); their
+process-launch surface is unchanged. Twelve additional product modules import `std.process` solely
+for explicit impossible-encoder-error aborts and therefore enter the conservative process-owner
+inventory; they launch no child. This does not add a Python allowance. The
+environment/source-file/tree-snapshot smoke scripts add three independent Python fixture/OS/digest
+oracles outside the product runtime.
 `scripts/run-prompt-evaluation-provider-smoke` is classified as `CI_OR_DEVELOPER_TOOL` before
 implementation. It prepares a deterministic HTTP fixture and checks the actual native evaluator's
 requests, edits, evidence and cleanup. Only the test launcher imports the existing HTTP fixture;

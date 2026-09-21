@@ -1593,6 +1593,58 @@ gated on issue #1069, and #1064 becomes a zero-copy checked-view contract
 (`view_le`) with its remaining design questions left open — both criteria
 were previously measured false and unfixable by their original proposals.
 
+### Request 117: [Language] Module constants for opaque `raw` values and pure-function initializers (FFI null sentinel) (2026-09-21)
+
+Status: PROPOSED
+Priority: low
+Blocking: no
+Blocked gate or slice: none
+Independent work that may continue: all
+Resume condition: Align ships constant support for opaque/`raw` values or function-call initializers
+Align commit or pull request: none
+align-llm verification: `make check` (155 units) with the constant declared in `src/ggml_ffi.align` and the legacy call sites replaced, plus the `ggml_ffi.null_handle()` call-site count in the six legacy modules falling from 136 to 0
+
+Discovered during C2, the CPU-weighted legacy-path application items recorded in
+`docs/specs/cpu-baseline-linux.md` section 9 and as item C2 in `docs/backend-parity.md` section 6.
+The item "replace `ggml_ffi.null_handle()` with a `pub` const" could not be applied at pin
+`8c8bfbc7`, in either spelling a constant can take.
+
+1. Evidence. Both forms are refused by `alignc 0.7.5` at the managed pin. With the type written
+   out, `pub NULL: raw := make()` where `make() -> raw` returns `raw.null()`, the compiler emits
+   two errors: "a constant's type must be a scalar, `str`, or `slice<T>`, got raw" and "a constant
+   initializer must be a literal, a unary/binary expression, or another constant". With the type
+   inferred, `pub NULL := make()`, only the second remains. There is no `raw` literal to fall back
+   on: `raw.null()` is a function call inside an `unsafe` block, so the initializer restriction
+   blocks the value even if the type restriction were lifted.
+2. Consumer. `ggml_ffi.null_handle()` is the single failure vocabulary of every constructor at the
+   ggml FFI boundary, and the legacy per-layer CPU path calls it on every graph construction and
+   teardown. Today it appears on 136 call-site lines across the six legacy modules
+   (`layer_forward` 13, `model_forward` 13, `moe_layer_forward` 20, `moe_model_forward` 34,
+   `decode_step` 12, `moe_decode_step` 44) and on 159 occurrences across `src/` as a whole. On the
+   16-layer OLMoE path that is hundreds of opaque calls per generated token, each returning the
+   same immutable sentinel. The workaround, a local `null := ggml_ffi.null_handle()` per function,
+   is exactly the userland duplication a module constant exists to remove, so it is not recorded as
+   a fix.
+3. Proposed Align surface, in Align's existing top-level constant syntax. Either is sufficient:
+   admit an opaque pointer-width type in a constant, `pub NULL: raw := raw.null()`, with `raw.null()`
+   recognized as a `raw` literal the way an integer literal is recognized today; or widen the
+   initializer rule to a call of a pure, argument-free function whose body the compiler can already
+   fold, `pub NULL: raw := ggml_ffi.null_handle()`. The first is the narrower change and is enough
+   for this consumer. Neither needs a new type, a new keyword or a new lowering: the value is the
+   target's null pointer.
+4. Acceptance criteria:
+   - `alignc check src/main.align` passes with the constant declared in `src/ggml_ffi.align` and
+     the 136 legacy call sites replaced by it.
+   - `make check` passes at 155 units, and `scripts/run-layer-forward-smoke` reproduces the
+     checked-in goldens byte for byte (1,426 sha256 and 626 bit_sum values), since the replacement
+     must be behaviour-preserving.
+   - A compiler owner test pins the admitted spelling, so a later tightening of the constant rules
+     cannot silently re-break it.
+5. Non-blocking. The legacy path works unchanged with the call form, and C2's measured C0-protocol
+   pair (+0.8%, noise) says this item would not have been a performance claim either way. It is
+   recorded because it is a language-owned restriction, not an application choice; per `CLAUDE.md`,
+   a workaround is not a reason to leave a language gap unrecorded.
+
 ### Latest Align toolchain and language feature adoption (2026-09-17)
 
 Status: ALIGN_LLM_VERIFIED

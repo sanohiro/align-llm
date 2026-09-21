@@ -18,7 +18,10 @@ The final CUDA campaign in `../gpu-cuda-final-measurement-result.md` completed a
 with no material win. OLMoE warm cached paired reductions against its frozen newer baseline were
 -39.85% (short) and -64.66% (long). The different producer clock boundaries prevent assigning that
 gap to GPU kernels. Metal also missed all 16 comparisons. Do not restart G1 or rebuild existing
-session/prefix reuse merely because historical delivery prose still says planned.
+session/prefix reuse merely because historical delivery prose still says planned. Superseded as a
+statement about the shipping tree on 2026-09-20 by §6.3 (measured closure `d4438e3`): that closure
+clears the floor against the same-ggml reference on OLMoE `warm-long-changed` (+15.39%) and
+`warm-long-cached` (+20.36%), 5/5, and remains 3–9% slower than the current llama.cpp reference.
 
 The initial consumer is an unchanged resident OLMoE session executing the existing four runtime
 requests in section 6.1. Diagnose that execution before selecting a kernel or scheduling change.
@@ -548,6 +551,86 @@ Run the complete comparison and publish negative/quality-limited outcomes withou
 Author consistency pass: §6.2 reuses the settled workload and bounds, nominates only the qualified
 repair, explicitly separates internal clocks from transport/startup, and records quality failure
 without suppressing the independently valid runtime comparison. Review the harness before timing.
+
+### 6.3 CUDA current-tree comparison (2026-09-20)
+
+§6.2's result is a frozen historical measurement of runtime `688232c`. It is stale as a statement
+about the shipping tree: `688232c..d4438e3` contains 32 `src/` commits, including retained F16
+attention KV for OLMoE on Metal (`d60e2b6`) and for Qwen (`234b7fc`), the capped-read resident loader repair
+(`594981c`), the GPU dispatch/caching/sampling optimization (`5efd7a0`), the PR #243 CUDA retained
+half KV with validated indexed prefill (`ae6eac7`, `2f1b69c`, `1342274`) and Qwen F16 KV policy 2 on
+CUDA (`ba9ea4f`). §6.2's OLMoE construction-to-ready median of 16,483 ms is a pre-`594981c` loader
+artifact and is separately explained by the capped-read startup measurement in
+`cuda-optimization-enablement.md`, which measured OLMoE startup 17.125 s to 1.669 s on CUDA; it is
+not evidence about the current loader. This is therefore a new precommitted campaign, not a rerun,
+retune or replacement of §6.2, whose nomination, receipt and published result stay frozen.
+
+| Contract | Frozen value |
+| --- | --- |
+| Owner / CLI / receipt | The §6.1 command with `--campaign cuda-current`; schema 2 `GPU_SESSION_MEASUREMENT`, distinguished from §6.2 only by `policy.campaign`. `--campaign cuda-final` and `--campaign original` are unchanged. Fresh external output directory, whose parent exists and whose leaf does not; identity rechecks, failure retention and cleanup exactly as §6.1. |
+| Candidate / nomination | New driver constant `CUDA_CURRENT_CANDIDATE = d4438e313c59a71a11d0a65ed1735425a0e014e8`, selected through `NOMINATION[args.campaign]`. `CUDA_CANDIDATE` is not edited, and `688232c` ancestry is retained transitively because `d4438e3` descends from it. The nomination pins the `d4438e3` source closure, not a branch head: it admits a build whose `src/`, `.align-revision` and `scripts/ggml_shim.c` bytes equal `d4438e3`. The measured candidate was `83c53f0`, the pre-rebase commit of `agent/parity-minor-batch` that carried exactly that closure; it is unreachable from the merging head, and its closure is byte-equal to the reachable `d4438e3` and to `origin/main` `2cfbae0`, which is what keeps the receipt readable from this branch. This branch's later source commits are **not** covered by this campaign: `e3a86ee` (C1, `scripts/ggml_shim.c`) and `6704913` (C2, `src/decode_step.align`, `src/model_forward.align`, `src/moe_layer_forward.align`, `src/moe_model_forward.align`) both leave the `d4438e3` closure, so the driver refuses them and the recorded result says nothing about them. A further run against a later head is a new campaign needing its own nomination constant and its own paragraph here. Build it with `scripts/build-gpu-independent-candidate PINNED_GGML KIT_PROFILE OUT --session`; `verify_build` already refuses a dirty build. |
+| Protocol / references / limits | Exactly §6.1 and §6.2: both retained unmodified `llama-server` baselines (same-ggml `bb4caa7540188872173c44d161602d9271386413` with F32 K/V, current `304665fe7ac957df95e3ff8c8c4ffdf92dd6ffa3` with F16 K/V), original Q4_K_M Qwen and OLMoE, the `cuda-kit-28a6fe3` profile's single resident/prefetch-off CUDA option, 1-GiB host and 6,000,000,000-byte GPU ceilings, context 2304, batch 2048, microbatch 128, four baseline CPU threads, Flash Attention on, no startup warmup or context shifting, the fixed system/short/long requests, 128 output tokens, the four ordered runtime cases, the eight-attempt native-validated coding portfolio, and five paired repetitions in the fixed rotated system order over 30 serial arms. |
+| Runtime metric / decision | §6.2's request-level producer internal clocks unchanged: candidate worker `elapsed_ns`, baselines `timings.prompt_ms + timings.predicted_ms`. Missing or invalid clocks invalidate the campaign and never fall back to caller wall time. A named model/case/reference clears the material floor only when all ten responses pass the fixed-output quality rule, the median paired reduction `(reference-candidate)/reference` is at least 15%, and at least four of five pairs are faster. Construction-to-ready wall time is recorded as operational context only. Coding reports successes, attempts and `processing_to_passing_patch_ns`, with null latency for failed portfolios. |
+| Cost ceiling | As §6.2: at most 7200 seconds for the whole campaign and 300 seconds per construction or request. §6.2's 30 arms took 517.206 seconds; the capped-read loader removes most of OLMoE's former construction time, so this campaign is expected to finish well inside the same ceiling. One run only; a negative or incomparable result completes it. |
+| Host quiet | `run-gpu-session-measurement` records host and GPU inventory but has **no** foreign-load admission of its own; unlike `measure-cuda-optimization`, it cannot refuse a busy host. "No other benchmark, compiler or qualification runs during timing" therefore remains an operator obligation evidenced outside the receipt. Prefer a plain terminal with no agent session. If a Claude Code session is present it is the only permitted background process: its idle load of 0.14–0.35 cores stays below the 0.5-core busy threshold of the shared-host constraint but exceeded the external observer's 0.1-core rule that invalidated the P1 and P2 receipts, so the result note records its presence, and no other benchmark, build, compiler or qualification runs during timing. |
+| Evidence binding | The receipt binds `identities.candidate` (build manifest with `source_commit`, `source_dirty` and the full source closure), `identities.campaign_commit`, `identities.campaign_source`, `plan_sha256`, both baseline `cmake_cache_sha256`/executable digests, the profile digest and the host snapshot, and rechecks all of them after the last arm. The driver enforces `merge-base --is-ancestor` plus byte equality for `src/`, `.align-revision` and `scripts/ggml_shim.c` at the nomination; it does not enforce `candidate.source_commit == campaign_commit`, so a reader confirms from the receipt that both name the campaign head. |
+
+Interpretation limits carry over unchanged and must accompany every conclusion. The two clocks are
+producer-reported service clocks with different boundaries: the candidate's includes request
+decoding, tokenization and CPU sampling, while llama.cpp's slot clocks exclude HTTP handling and
+some preparation. The asymmetry can penalize the candidate. These are not identical instruction
+boundaries, pure GPU-kernel timings or end-to-end request latency, and no estimated transport is
+subtracted. The result is scoped to this host, these two Q4_K_M models, this synthetic fixed-output
+workload and this single coding task; it establishes neither G6 coding competitiveness nor a
+capacity claim, and a comparison against these two explicitly configured baselines is not a claim of
+exhaustive upstream tuning. The frozen-source closure covers `src/`, `.align-revision` and
+`scripts/ggml_shim.c` only; other build inputs are bound by the recorded and rechecked campaign and
+candidate source closures rather than by the nomination. Because the nomination pins a commit id, a
+rebase of this branch — or any later source commit that changes `src/`, `.align-revision` or
+`scripts/ggml_shim.c`, such as C1 `e3a86ee` and C2 `6704913` — invalidates it and requires a new
+nomination constant and a new paragraph before any further run.
+
+Author consistency pass: §6.3 changes only the nominated candidate and adds a separate campaign
+name; workload, baselines, bounds, sampler, clocks, quality rule and decision rule are byte-for-byte
+the §6.1/§6.2 values implemented in the same code paths. `run-gpu-session-measurement-smoke` owns
+the new campaign's predicate, nomination selection and non-CUDA admission refusal.
+
+#### Result (2026-09-20)
+
+The campaign ran on the RTX 4070 Ti under WSL2 with Align pin `8c8bfbc7`, candidate build
+`source_commit` `83c53f0` (`source_dirty` false; the product tree equals `origin/main` `2cfbae0` and
+the §6.3 nomination `d4438e3`), against the same-ggml `llama-server` `bb4caa75` (F32 KV) and current
+`llama-server` `304665fe` (F16 KV) baselines, five paired repetitions, 30 arms, 348.7 s, status PASS,
+decision "measured".
+
+| Model | Case | vs same-ggml median (faster pairs) | vs current median (faster pairs) |
+| --- | --- | --- | --- |
+| qwen2 | cold-short | −3.53% (0/5) | −6.08% (0/5) |
+| qwen2 | warm-short-cached | −1.06% (0/5) | −3.25% (0/5) |
+| qwen2 | warm-long-changed | +0.93% (5/5) | −3.53% (0/5) |
+| qwen2 | warm-long-cached | +2.55% (5/5) | −3.50% (0/5) |
+| qwen2 | coding (time to passing patch) | −7.71% (0/5) | −7.73% (0/5) |
+| olmoe | cold-short | −2.64% (2/5) | −8.20% (1/5) |
+| olmoe | warm-short-cached | +6.02% (5/5) | −4.51% (1/5) |
+| olmoe | warm-long-changed | +15.39% (5/5) | −8.80% (0/5) |
+| olmoe | warm-long-cached | +20.36% (5/5) | −4.49% (0/5) |
+| olmoe | coding | unavailable (OLMoE fails the coding task on all systems, as on 2026-09-09) |  |
+
+Startup medians (service readiness): qwen2 candidate 1.808 s vs same 1.216 s vs current 1.116 s;
+olmoe candidate 1.525 s vs same 0.912 s vs current 0.913 s (2026-09-09: olmoe 16,483 ms).
+
+Interpretation: against the same-ggml revision, the resident OLMoE long-context rows clear the 15%
+floor with 5/5 for the first time (+15.39%, +20.36%), which isolates align-llm's integration (F16 KV
+retention, in-graph routing, graph reuse, capped-read loaders) against the same ggml revision (the
+same-ggml baseline runs F32 K/V, the candidate F16 K/V); against the current llama.cpp reference
+every row is still slower by 3–9%, so no competitive claim is made; Qwen
+remains within a few percent of both baselines except the coding row (−7.7%), consistent with the
+dense bandwidth roofline; the OLMoE startup gap of 2026-09-09 is closed to 0.6 s and the remaining gap
+is loader and upload work; the coding-row gap is the next diagnostic target.
+
+Receipt: `gpu-cuda-parity-20260920/p3-run1/campaign/result.json`, schema 2, in the local evidence
+store outside Git. Per §6.3's host-quiet clause, the Claude Code CLI session was present as the only
+background process during this run.
 
 ## 7. Implementation entry and verification
 
