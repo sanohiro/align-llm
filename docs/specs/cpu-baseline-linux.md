@@ -228,6 +228,13 @@ until bit identity is proven; this section adds an explicit opt-in and leaves th
 Until evidence 3 is recorded, the default stays unset and no qualification, aggregate or profile
 exports the variable.
 
+Deferral: the C-side grammar and the proc-address-absent refusal have no automated owner. The
+resolver lives in `scripts/ggml_shim.c` only, and `scripts/run-ggml-spike-smoke` builds the
+ggml-free stub, because `scripts/build-ggml-shim` selects `scripts/ggml_shim_stub.c` when
+`ALIGN_LLM_GGML_INCLUDE` is unset. Add a real-shim case to `scripts/run-ggml-spike-smoke` when that
+smoke next builds the real shim. The Python mirror, `parse_ggml_cpu_threads` in
+`scripts/run-olmoe-platform-sampled-runtime-baseline`, is self-tested.
+
 ### Exposure outside this owner
 
 `sampled.decision_environment()` is a denylist over `os.environ`, so an exported
@@ -245,6 +252,9 @@ median 17.543 s), with `ALIGN_LLM_GGML_CPU_THREADS=16`: runtime median 16.459 s 
 median 11.037 s, 4/4 in both arms, seeds unchanged (local 5, runtime 1). Runtime candidate walls
 16.72/16.25/16.09/15.74 s, mean 16.20 s versus the 17.30 s baseline mean (−6.4%); elapsed 138.3 s.
 Receipt: `gpu-cuda-parity-20260920/c1-run1/result.json` (outside Git).
+Both C0-protocol receipts (C1 and C2) were produced from a working tree carrying the C0-owner fix
+committed as `6790407` (a bare `validate_patch` call in the known-good control step, outside the
+measured interval); the attributed commits `e3a86ee`/`6704913` cannot run the owner unmodified.
 
 Evidence 1 (G1 unchanged with the variable unset) passed: the 19-case CPU-vs-GPU acceptance PASS on
 the bundle build with the variable unset, using the candidate build together with the same-source
@@ -263,13 +273,14 @@ CPU-weighted application items already listed in `HANDOFF.md`.
 
 | Item | Disposition | Owner |
 | --- | --- | --- |
-| (a) `prime_window` chunk via `buffer.filled` | Done | `src/layer_forward.align` / `src/moe_layer_forward.align` (prime_window) |
+| (a) `prime_window` chunk via `buffer.filled` | Done | `src/model_forward.align:2466`, `src/moe_layer_forward.align:1500`, `src/moe_model_forward.align:403` |
 | (b) Qwen legacy path `stage_kv` | Done | Qwen legacy per-layer path |
 | (f) `digest_region` single load | Done | `digest_region` (shared with the `Greedy argmax single load` register row) |
 | (c) member columns built once | Skipped | Not structural: 11 of 13 columns vary per layer |
 | (d) `digest_region` behind the oracle flag | Skipped (SHA kept) | Persisted documents consume `steps[].sha256` |
-| (e) `null_handle` as a `pub` const | Skipped (refused by Align) | Align at pin `8c8bfbc7` refuses a `raw`-typed or function-initialised constant ("a constant's type must be a scalar, `str`, or `slice<T>`, got raw"; "a constant initializer must be a literal…"); recorded as an Align gap candidate, not filed |
+| (e) `null_handle` as a `pub` const | Skipped (refused by Align) | Align at pin `8c8bfbc7` refuses a `raw`-typed or function-initialised constant ("a constant's type must be a scalar, `str`, or `slice<T>`, got raw"; "a constant initializer must be a literal…"); registered as Request 117 in `docs/align-requests.md` |
 | (g) `Outcome` hot/cold split | Deferred | Not attempted in this batch |
+| Six legacy argmax loops (`best.max` / bits fast path) | Skipped (numerics) | Not applied: a bits comparison ranks a positive NaN above `+inf`, and `max` displaces a NaN best. The loops keep their explicit compares and the first-index tie rule: `src/decode_step.align:493`, `src/moe_decode_step.align:618`, `src/model_forward.align:2669,2813`, `src/moe_model_forward.align:2466,3048` |
 
 Byte identity: `scripts/run-layer-forward-smoke` PASS against checked-in goldens (1426 sha256, 626
 bit_sum); `make check` 155 units; provider/tokenizer smokes PASS.
@@ -277,6 +288,9 @@ bit_sum); `make check` 155 units; provider/tokenizer smokes PASS.
 C0-protocol pair result at default thread count: runtime median 17.677 s versus the
 `cpu-baseline-linux-2026-09-20.json` baseline of 17.543 s (+0.8%, noise), local median 10.995 s.
 Receipt: `c2-run1/result.json`.
+Both C0-protocol receipts (C1 and C2) were produced from a working tree carrying the C0-owner fix
+committed as `6790407` (a bare `validate_patch` call in the known-good control step, outside the
+measured interval); the attributed commits `e3a86ee`/`6704913` cannot run the owner unmodified.
 
 Interpretation: no measurable effect on the C0 protocol; the changes are retained as byte-identical
 cleanup, not a performance claim.

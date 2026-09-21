@@ -56,44 +56,49 @@ Completed work:
   - Audit artifacts live in the session scratchpad (disposable); nothing is retained in Git.
 - Filed the audit results upstream on `sanohiro/align`: issues #1069–#1087 (19 issues), the umbrella design issue #1088 ("[Design] Vectorization contract"), and review comments on #1063, #1064 (two comments), #1066 and #1067.
 - Registered Align Requests 97–116 in `docs/align-requests.md` (one per issue #1069–#1087 in issue-number order, plus Request 116 for umbrella #1088), all PROPOSED and non-blocking, and recorded the design-review conclusions for #1063 and #1064 under Requests 92 and 93.
+- Registered Align Request 117 in `docs/align-requests.md` for the C2 `null_handle` constant gap (PROPOSED, non-blocking, not yet filed upstream).
 
 Next actions in priority order (backend parity items lead; register: `docs/backend-parity.md` sections 5 and 6):
-1. Publish this bundle after its review (three disjoint scopes: legacy CPU numerics + shim + C0 owner; measurement driver + specs; register/HANDOFF).
-2. Metal items P4, P5 and the Metal `llama-server` rerun (M1).
+1. Publish this bundle after review repair; `pre-pr` stamped at the final head (see verification).
+2. Metal items P4, P5 and the P3 Metal leg: the `llama-server` paired rerun at current main (M1).
 3. C3 CPU resident session per `docs/specs/cpu-resident-session.md` (scheduled before R9).
 4. P9 pinned logits staging (cheap; request protocol).
 5. P10 OLMoE host-side per-token attribution.
-6. §3.13 GPU-side greedy selection: census step 0 only, delete on any tie.
-7. R9 speculation after C3.
+6. P8 ready frame schema 2 (design merged in #281; implement per `docs/specs/gpu-runtime.md` §3.12).
+7. §3.13 GPU-side greedy selection: census step 0 only, delete on any tie.
+8. R9 speculation after C3.
+9. C1 deferral: record bit identity of the legacy path at 4 vs 16 threads with `scripts/run-moe-decode-step` gate G1 on `linux-x86_64-v1`.
 
 Continued next actions from the previous checkpoint, after the list above:
 1. Adopt the Align pin containing PR #1068: update `.align-revision`, materialize and verify the managed toolchain, and confirm `alignc explain-opt` now reports on the 7 modules that crashed at `8c8bfbc7` (Request 96 moves toward ALIGN_LLM_VERIFIED).
 2. Application-side improvements available today at the current compiler, ranked by measured effect:
-   - Build the 13 member columns once for all layers instead of per layer per token (`src/model_forward.align:1610`, `src/moe_model_forward.align:1940`).
    - Add length pre-checks before string-literal `==` chains (`src/tokenizer_qwen2.align:1754-1767`, `build_eog_set`).
    - Give hot `array_builder()` calls their known capacity.
    - Split `model_forward$Outcome` into a hot per-step record and a cold per-run diagnostics record.
    - Recommend `--target-cpu native` for align-llm's own release builds in `docs/align-development.md` (removes 1,275 call sites and 41 duplicate bodies; the portable compiler default stays settled upstream).
+   - Dropped, with the disposition recorded in the register: the 13 member columns (skipped, not structural) and the `best.max`/bits argmax fast path (legacy argmax loops keep explicit compares; see `docs/specs/cpu-baseline-linux.md` §9).
 3. Monitor upstream Align responses to issues #1069–#1088 and to the comments on #1063, #1064, #1066 and #1067.
 
 Latest durable verification:
+- `python3 scripts/pre-pr --base origin/main --owner-test bundle-owners -- sh -c 'make build >/dev/null && python3 scripts/measure-cuda-optimization --self-test && python3 scripts/run-gpu-session-measurement-smoke && python3 scripts/run-olmoe-platform-sampled-runtime-baseline --self-test && scripts/run-ggml-spike-smoke'`: PASS at the repaired branch head (hosted; owner bundle-owners), rerun after the review repair.
 - `make check`: PASS, 155 units.
+- `make fmt`: no change.
+- `scripts/check-format`: PASS.
 - `scripts/run-layer-forward-smoke`: PASS.
 - `scripts/run-ggml-spike-smoke`: PASS.
 - `scripts/run-runtime-provider-smoke`: PASS.
 - `scripts/run-gpu-session-measurement-smoke`: PASS.
 - `scripts/measure-cuda-optimization --self-test`: PASS.
 - `scripts/run-olmoe-platform-sampled-runtime-baseline --self-test`: PASS (with the new unresolved-name guard).
-- `python3 scripts/check-python-boundary --strict`: PASS.
+- `python3 scripts/check-python-boundary --strict`: PASS (after the C2 launch-source digest refresh).
 - G1 `run-gpu-independent-acceptance`: PASS (19 cases twice) on the bundle build.
 - `run-gpu-session-measurement --campaign cuda-current`: PASS (348.7 s).
 - C0-protocol pairs C2 and C1: COMPLETE.
-- `pre-pr`: to be stamped at the final head.
 
 Blockers, constraints, decisions:
 - Zero regressions against all smoke and benchmark suites.
 - Python boundary launch sources strictly preserved without unverified digest modifications.
-- No Align capability request is blocking: Requests 92–95 and 97–116 are all `Blocking: no`, so every application-side item above may proceed. Do not consume any proposed Align surface while those requests are PROPOSED.
+- No Align capability request is blocking: Requests 92–95 and 97–117 are all `Blocking: no`, so every application-side item above may proceed. Do not consume any proposed Align surface while those requests are PROPOSED.
 - Align #1070 (Request 98) means `--thin-lto` cannot be used on align-llm at all today, and Align #1069 (Request 97) means the default `--target-cpu` loses the `--rt-lto` inline on aarch64; choosing `--target-cpu native` for align-llm's own builds is the only available mitigation.
 - The audit's own artifacts are in the session scratchpad (disposable). Re-derive them rather than citing a local path.
 

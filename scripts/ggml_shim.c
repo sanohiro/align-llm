@@ -3522,6 +3522,8 @@ static int align_ggml_cpu_threads_parse(const char *value) {
 /* Read once per process, like the registry loader above: a configuration input that changed part
  * way through a measured run would make the measurement meaningless. */
 static int align_ggml_cpu_threads(void) {
+    /* Single-threaded construction: backend open runs on the owning thread before any compute, so
+     * these two statics need no atomics. */
     static int resolved = 0;
     static int read_once = 0;
     if (!read_once) {

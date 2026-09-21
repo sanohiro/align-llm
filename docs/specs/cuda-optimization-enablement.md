@@ -204,10 +204,13 @@ The historical `scripts/run-gpu-session-measurement --campaign cuda-final` delib
 changed runtime sources beyond `688232c`. It cannot measure this candidate unchanged. Do not edit
 its frozen nominations or old receipts; a current-tree comparison against the two retained
 `llama-server` baselines uses the separate `--campaign cuda-current` nomination settled in
-`gpu-runtime-performance.md` §6.3, which leaves `cuda-final` untouched. The implementation owner must package the local paired
-protocol above with its source-bound invocation and evidence; any new measurement CLI/receipt
-contract must be settled here before implementing that harness. Python may serve its classified
-measurement role only, with the required boundary-audit update/check if changed.
+`gpu-runtime-performance.md` §6.3, which leaves `cuda-final` untouched. `cuda-current` is itself
+frozen, to the `d4438e3` source closure, and is not a general current-tree harness: any later
+source commit needs its own nomination constant and its own §6.3 paragraph before it can be
+measured. The implementation owner must package the local paired protocol above with its
+source-bound invocation and evidence; any new measurement CLI/receipt contract must be settled here
+before implementing that harness. Python may serve its classified measurement role only, with the
+required boundary-audit update/check if changed.
 
 This local test establishes neither a competitive llama.cpp win nor time to a passing patch.
 Those require separately frozen baselines and the performance plan's coding-quality gate.
@@ -696,7 +699,8 @@ Host/device sync accounts for 83% of the Qwen request wall (the GPU is saturated
 the OLMoE request wall, leaving about 49% (about 1.75 ms/token) as host-side work on OLMoE. Each
 model performs one full-logits device-to-host copy per token (Qwen 608 KB, OLMoE 201 KB, about
 0.25% of request time), and every one of those D2H copies targets pageable host memory — none of
-the staging is pinned. Profiler overhead measured +3-16% warm and +62% on the OLMoE cold path.
+the staging is pinned. Profiler overhead measured +3–10% warm, +16% on the qwen2 cold path and
++62% on the OLMoE cold path.
 
 Interpretation and derived leftovers, recorded in `docs/backend-parity.md` section 5: P9 (pinned
 host staging for the per-token logits readback — all D2H copies are Device→Pageable) and P10

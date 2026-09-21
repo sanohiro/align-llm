@@ -370,7 +370,7 @@ def run(args):
         raise ValueError('campaign requires one resident option')
     option = {key:value for key,value in profile['runtime_options'][0].items() if key!='option_id'}
     if option['placement'] != 'resident' or option['prefetch'] != 'off': raise ValueError('unsupported campaign option')
-    if final_cuda(args) and option['backend'] != 'cuda': raise ValueError('a CUDA campaign requires CUDA')
+    if final_cuda(args) and option['backend'] != 'cuda': raise ValueError(f'{args.campaign} requires CUDA')
     nomination = NOMINATION[args.campaign]
     if option['host_budget_bytes'] < 1073741824 or option['device_budget_bytes'] < 6000000000:
         raise ValueError('profile cannot admit the frozen resident memory ceilings')
@@ -414,7 +414,7 @@ def run(args):
         arms=[],comparisons=[],failure='',elapsed_ns=0)
     try:
         validator = base.resolve_validator(deadline)
-        if final_cuda(args) and validator['kind'] != 'native': raise ValueError('a CUDA campaign requires native validation')
+        if final_cuda(args) and validator['kind'] != 'native': raise ValueError(f'{args.campaign} requires native validation')
         record['identities']['validator'] = dict(validator)
         control = destination/'known-good.patch'
         control.write_text(base.KNOWN_GOOD_PATCH)
