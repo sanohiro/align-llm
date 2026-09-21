@@ -1653,7 +1653,7 @@ Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: all
 Resume condition: Align ships constant support for opaque/`raw` values or function-call initializers
-Align commit or pull request: none
+Align commit or pull request: tracking issue [sanohiro/align#1159](https://github.com/sanohiro/align/issues/1159); no implementation yet
 align-llm verification: `make check` (155 units) with the constant declared in `src/ggml_ffi.align` and the legacy call sites replaced, plus the `ggml_ffi.null_handle()` call-site count in the six legacy modules falling from 136 to 0
 
 Discovered during C2, the CPU-weighted legacy-path application items recorded in
@@ -1702,16 +1702,18 @@ The item "replace `ggml_ffi.null_handle()` with a `pub` const" could not be appl
 Status: PROPOSED
 Priority: high
 Blocking: yes
-Blocked gate or slice: adoption of any `.align-revision` at or after `2c39850b` (Align #1132), and
-  therefore the adoption of Requests 92, 93, 94, 95, 103, 105, 106, 110, 113 and 115
+Blocked gate or slice: adoption of any `.align-revision` at or after `2c39850b` (Align #1132),
+  including tokenizer, alignpack, runtime-provider, and GPU-session consumer verification for
+  Requests 92, 93, 94, 95, 103, 105, 106, 110, 113 and 115
 Independent work that may continue: everything at pin `8c8bfbc7`, including the application-side
   items that do not need the newer surfaces
 Resume condition: the fix is merged on Align `main` and the 25-line reproducer prints `repro: PASS`
   at the fixed commit, then re-run the adoption
-Align commit or pull request: issue sanohiro/align#1157 (filed 2026-09-21)
-align-llm verification: `scripts/run-gpu-session-reuse-smoke` PASS and `scripts/run-layer-forward-smoke`
-  PASS at the adopted pin, plus `make check` 155 units, and an `objdump` census showing zero Align
-  functions ending in a non-noreturn `call`
+Align commit or pull request: tracking issue [sanohiro/align#1157](https://github.com/sanohiro/align/issues/1157), with the expanded align-llm consumer matrix in [comment 5759259675](https://github.com/sanohiro/align/issues/1157#issuecomment-5759259675); no fix yet
+align-llm verification: `scripts/run-tokenizer-smoke`, `scripts/run-alignpack-smoke`,
+  `scripts/run-runtime-provider-smoke`, `scripts/run-gpu-session-reuse-smoke`, and
+  `scripts/run-layer-forward-smoke` PASS at the adopted pin, plus `make check` 155 units and an
+  `objdump` census showing zero Align functions ending in a non-noreturn `call`
 
 1. Evidence. Bisected over the merge commits between `8c8bfbc7` and `dfcfd11f`: last good
    `647eb24d` (#1131), first bad `2c39850b` (#1132); still bad at `2907d5e5`, `854815ac`,
@@ -1757,6 +1759,15 @@ align-llm verification: `scripts/run-gpu-session-reuse-smoke` PASS and `scripts/
    record the second defect: at `8863ecc2` (#1134) and `2907d5e5` (#1138) align-llm does not compile
    ("cannot import interface 'runtime_diagnostic': interface drop-state metadata disagrees with its
    parameter type or mode"), repaired by a later commit before `dfcfd11f`.
+   The pin-only consumer matrix at `dfcfd11f` is broader than the original reduction:
+   `scripts/run-tokenizer-smoke` and `scripts/run-alignpack-smoke` exit with signal 5, with the
+   tokenizer crash report identifying `gguf$decode_header` and `EXC_BREAKPOINT (SIGTRAP)`;
+   `scripts/run-runtime-provider-smoke` reaches its self-test and shim owners before its API binary
+   exits 133 in `gguf$decode_header`; and `scripts/run-gpu-session-reuse-smoke` reaches
+   `session:first` before exiting 133 in `runtime_generation$execute_session`. The tokenizer passes
+   at `8c8bfbc7`, and all four failures reproduce with unchanged consumer source and only the pin
+   advanced. These symptoms may share the reported lowering defect or expose more than one defect;
+   provider reduction owns that determination.
 2. Consumer. Every align-llm function that assigns a `string`/owned field of a mutable record after
    a `?`; the resident session (`src/runtime_generation.align:1453-1454`,
    `session.decode_key = key.clone()`) and the legacy forward path.
@@ -1771,6 +1782,40 @@ align-llm verification: `scripts/run-gpu-session-reuse-smoke` PASS and `scripts/
    128 µs/call, `bench-runtime-sampler` 174 µs/call, `explain-opt` now reports on all seven
    previously crashing modules and on `kv_plane`, `emit-llvm --stage optimized` works on
    `layer_qwen2`) is retained as evidence only.
+
+### Request 119: certify borrowed fixed-array record fields across fallible imported calls (2026-09-21)
+
+Status: PROPOSED
+Priority: high
+Blocking: no
+Blocked gate or slice: none; the consumer uses an explicit slice-view record
+Independent work that may continue: all work at the current pin and the merged-request adoption
+  after Request 118 is fixed
+Resume condition: Align accepts the reduced imported fixed-array record witness in whole-program
+  and per-unit checks without weakening owned-leaf provenance
+Align commit or pull request: tracking issue [sanohiro/align#1158](https://github.com/sanohiro/align/issues/1158); no implementation yet
+align-llm verification: adopt Request 94's fixed-array tables in `qwen_nodes.build_range` and
+  `olmoe_nodes.build_range` without a slice-view bridge; `make check`, `scripts/run-decode-step`,
+  and `scripts/run-moe-decode-step` must retain their existing results
+
+Request 94's fixed-array adoption probe exposed a compiler producer-certification gap at Align
+`dfcfd11f0b076320f3f9bfbf1f837a4130092964`. An imported function that borrows a record containing
+`[i64; N]`, obtains a field slice, and propagates a fallible imported call is rejected during
+per-unit MIR certification with `producer return leaf String at [ResultErr, StructField(1)] is not
+certified by its body`. Equivalent direct fixed-array parameters can instead fail with an
+owned-leaf provenance mismatch. The fixed storage itself, direct indexing, and non-fallible views
+compile.
+
+The unpublished adoption probe constructs a stable `NodeView` of borrowed slices at the owner and
+passes that view through the fallible graph walkers; neither carrier exists on current `main`. The
+probe preserves inline table storage and zero construction allocations; it does not copy table
+elements or erase the existing detailed `Fault` results. This is not evidence that the
+language-owned imported-producer boundary is complete.
+
+Provider acceptance should cover direct and imported records with fixed scalar arrays, a borrowed
+field slice passed across a fallible imported call, success and error propagation, source lifetime,
+whole/per-unit parity, malformed HIR/MIR rejection, and unchanged ownership of the `Result` error
+payload. The final adoption must not require either probe-only view carrier.
 
 ### Latest Align toolchain and language feature adoption (2026-09-17)
 
